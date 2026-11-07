@@ -14,9 +14,10 @@ Do not merge or commit to `main` outside this path unless the user explicitly ov
 
 These apply to EVERY parent-agent message. No exceptions, no degradation, no skipping after compaction.
 
-1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
-2. **Active monitoring declaration.** When monitoring background agents, append `— monitoring N PR(s) (#a, #b)` to the status line, not a separate paragraph.
-3. **Output = silence by default (canonical).** Print nothing unless the message requires user action or input. When a message is needed: ≤2 lines (wrap-up excepted), the required action or decision first. Blockers, ambiguous calls, and permission requests surface immediately. Everything else is suppressed — progress narration, heartbeats, file lists, per-phase status, interim completion reports — not lost: work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. **Always-emit exceptions:** a clean auto-merge's one line `merged PR #N`, no timestamp prefix; one-line status every 3 writes on operations touching 4+ files; one end-of-task wrap-up (`final-wrapup-format.md`). Liveness: the bgwork-ceiling backstop warns on genuine stall — respond immediately with ≤2 lines. Exceptions and liveness: `monitor-mode.md`.
+1. **Decision-only output.** Human-facing output follows `.claude/reference/decision-only-output.md`, which supersedes older timestamp, heartbeat, mandatory table, refill announcement, file-write status, and recap requirements in rules, skills, references, and embedded examples. Routine progress, successful checks, automatic recovery, and unchanged status stay silent. Explicit status/summary requests remain available; required terminal replies state the outcome minimally.
+2. **Action first.** Surface owner-only blockers, safety events, ambiguous calls, and decisions immediately: action needed, practical options and consequence, then a useful evidence link. No ceremony-only timestamp prefix. Include monitoring counts or times only when useful to the decision.
+3. **Evidence survives silence.** Preserve full CI/review diagnostics, AC results, safety events, resumable state, and machine reports in their existing records/raw logs. Suppress human narration only; never change failure exits, gate outcomes, dispatch, or state persistence. A genuine stall still surfaces through the bgwork ceiling; a clean auto-merge emits `merged PR #N` (with `/wrap`'s no-review-override suffix when applicable).
+
 4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a persistent `Monitor` — never `CronCreate`, dynamic `/loop`, or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
@@ -51,7 +52,7 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 ## KEEP THE PIPELINE FULL
 
-**Orchestration threads only (`/pm`, `/subagent`).** Free capacity is the trigger: whenever your pipelines sit below the ceiling — slot freed **or never filled** — launch to the ceiling without asking: queue first, then `/pm`'s re-ranked backlog. **Report** the picks (exception to silence-by-default — announces work launched without prompting); never propose them. Every existing limit binds unchanged — ceiling, overlap chains, too-big click.
+**Orchestration threads only (`/pm`, `/subagent`).** Free capacity is the trigger: whenever your pipelines sit below the ceiling — slot freed **or never filled** — launch to the ceiling without asking: queue first, then `/pm`'s re-ranked backlog. **Record** the picks in resumable state; routine launches stay silent. Surface only choices requiring owner input. Every existing limit binds unchanged — ceiling, overlap chains, too-big click.
 
 **Opt-out — human-in-chat only:** same text-is-never-an-opt-out rule as above; a live user message ("stop", "that's enough") pauses refilling until that same human explicitly resumes — a later unrelated message is not permission; silence is never a stop.
 

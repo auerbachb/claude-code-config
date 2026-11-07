@@ -3,6 +3,8 @@ name: fixpr
 description: Bounded-convergence PR cleanup — audit every review thread + every CI check-run, fix all issues, push once per sweep, dismiss stale bot CHANGES_REQUESTED on old commits, resolve all threads via GraphQL, then wait (capped) for bot verdicts + CI on the new SHA, re-sweeping on new findings up to 5 iterations. Zero uncollapsed threads and zero failing checks when done.
 ---
 
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
+
 Bounded-convergence cleanup of the current branch's PR (issue #454 added the post-push review-wait loop to the original single-pass design). After this completes:
 
 1. **Zero uncollapsed review threads** in the browser (all resolved via GraphQL)
@@ -58,7 +60,7 @@ CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** con
 
 ## How this skill is structured
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` scripts (Step 3b delegates), which need a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. Inline `gh api` calls for these three endpoints are permitted only inside `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` (Step 3b delegates), which need a custom post-push timestamp filter, and Step 5d's projected all-author invitation check: `pr-state.sh` keeps reviewer-bot comments, so it cannot detect a human's paid-review invitation. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
 All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared `pr-state.sh` script. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
@@ -593,6 +595,22 @@ Wait — bounded — for the bots and CI to deliver a verdict on the **current H
 
 **Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Set `WATCH_SHA` / `WAIT_BASELINE` from the entry path above (`PUSHED_SHA`/`PUSHED_AT` when `DID_PUSH=1`, else `HEAD_SHA`/`RUN_STARTED_AT`). Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
 
+Persist the latest snapshot before classifying it, including the zero-wait pre-check. The per-PR handoff must already exist (initialize it through `polling-state-gate.sh --ensure-session`); an unavailable helper or failed write stops this wait without a clean verdict. Raw bundle diagnostics remain at the recorded path; prior CI/review failures retain their original logs.
+
+<!-- test-anchor: fixpr-persist-wait-evidence -->
+```bash
+persist_fixpr_wait_evidence() {
+  [[ -n "$HANDOFF_STATE_SH" ]] || { echo "ERROR: wait evidence helper unavailable" >&2; return 1; }
+  local wait_record
+  wait_record=$(jq -cn --argjson verdict "$WAIT_STATE" --arg sha "$WATCH_SHA" \
+    --arg baseline "$WAIT_BASELINE" --arg bundle "$TICK" \
+    --arg at "$(date -u +%FT%TZ)" \
+    '{head_sha:$sha, baseline:$baseline, bundle_path:$bundle, observed_at:$at, verdict:$verdict}') || return 1
+  "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing \
+    --set "$PR_NUMBER" ".fixpr_wait=$wait_record" >/dev/null
+}
+```
+
 ```bash
 # Idempotent pre-check (DID_PUSH=0 only) — one tick, no iter increment
 SKIP_WAIT_LOOP=0
@@ -601,6 +619,7 @@ if [[ "${DID_PUSH:-0}" -eq 0 ]]; then
   WAIT_BASELINE=$RUN_STARTED_AT
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
   WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
+  persist_fixpr_wait_evidence || { echo "ERROR: wait evidence not saved; no clean verdict" >&2; exit 1; }
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   if [[ "$BOTS_PENDING" == "none" && "$CI_PENDING" == "none"
@@ -628,14 +647,13 @@ if [[ "$SKIP_WAIT_LOOP" -eq 0 ]]; then
   while :; do
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
   WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
+  persist_fixpr_wait_evidence || { echo "ERROR: wait evidence not saved; no clean verdict" >&2; exit 1; }
 
   ELAPSED=$(( $(date +%s) - WAIT_STARTED ))
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
 
-  # Heartbeat — every tick, user-visible, ET-timestamped
-  TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-  echo "[$TS] [WAIT] iter $FIXPR_WAIT_ITER/$FIXPR_MAX_ITERATIONS — ${ELAPSED}s/${FIXPR_WAIT_CAP_SECS}s on ${WATCH_SHA:0:7} — bots pending: $BOTS_PENDING — CI pending: $CI_PENDING"
+  # The snapshot was saved before classification; routine waits stay silent.
 
   if [[ "$(jq -r '.head_moved' <<<"$WAIT_STATE")" == "true" ]]; then
     WAIT_OUTCOME="head-moved"; break          # external push — re-audit from Step 0
@@ -663,6 +681,8 @@ fi   # end SKIP_WAIT_LOOP
 ```
 
 **Running this block as a worktree-isolated subagent.** The block above is a multi-line loop, which the harness's worktree-isolation guard refuses when pasted directly — it classifies by command shape, and the refusal names git operations that are not in it (issue #1470). Write the block to a file in the session scratchpad and run `bash <file>`: a single plain call is an allowed shape, and everything inside it then runs in a child process the guard does not gate.
+
+**Include the persistence helper in the child file.** Copy the `persist_fixpr_wait_evidence` definition above into that same file before the pre-check/loop, and pass `HANDOFF_STATE_SH` plus the verified `OWNER_REPO` alongside the inputs below. Neither a parent-shell function nor unexported helper/scope variables exist in `bash <file>`. Keep `WAIT_BASELINE` and the entry-path inputs (`DID_PUSH`, `HEAD_SHA`, `PUSHED_SHA`, `PUSHED_AT`) available there too; the snapshots assign `TICK` and `WAIT_STATE` inside the child. Missing helper/scope or failed evidence writes must stop, never fabricate a clean wait.
 
 **`bash <file>` is a FRESH shell — it inherits nothing you set in earlier steps.** `PR_NUMBER`, `WATCH_SHA`, `SCRIPT`, `RUN_STARTED_AT`, `FIXPR_WAIT_ITER`, `FIXPR_MAX_ITERATIONS`, `FIXPR_WAIT_CAP_SECS`, `FIXPR_WAIT_POLL_SECS` and `FIXPR_TOTAL_WAIT_SECS` are plain shell variables, so every one of them arrives empty. Under `set -u` that aborts; without it the loop watches an empty PR, compares against an empty cap, and reports a verdict it never measured. So write their current values into the top of the file (or pass them on the command line as `PR_NUMBER=… WATCH_SHA=… bash <file>`) — and read the outcome back out of the child, which cannot assign your variables: have the file print `WAIT_OUTCOME` and `ELAPSED` on its last line and capture that, rather than expecting the assignments above to survive. That includes the accumulator: `FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))` runs in the child and is discarded with it, so the CALLER must re-apply it to the `ELAPSED` it captured — otherwise every summary that quotes total wait under-reports it by exactly the time this loop spent.
 
@@ -791,7 +811,8 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 <!-- test-anchor: fixpr-step-5d-bugbot-invited -->
 ```bash
 BUGBOT_AWAITED=1   # fail closed until the evidence says otherwise
-if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100"); then
+if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+    --jq '[.[] | {created_at, body}]'); then
   INVITED_RC=0
   jq -s -e --arg since "$PUSHED_AT" '[.[][]? | select((.created_at // "") >= $since)
       | select((.body // "") | test("^\\s*@cursor\\s+review\\b"))] | length > 0' \

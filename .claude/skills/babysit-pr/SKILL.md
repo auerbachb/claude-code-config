@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
+description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, records each tick and surfaces owner-action blockers, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
 triggers:
   - babysit pr
   - babysit this pr
@@ -8,6 +8,8 @@ triggers:
   - keep an eye on pr
 argument-hint: "<PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]"
 ---
+
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
 
 Watch one PR and drive it toward merge **without looping forever**. Each tick reads the PR's state through the shared scripts, classifies it, and dispatches the right skill — `/fixpr` to fix recoverable blockers, `/wrap` to merge when the gate is met — then re-arms the poll until a terminal condition fires.
 
@@ -37,7 +39,7 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `<PR>` (required) | — | PR number to watch. Must be an open PR. |
 | `--cadence Nm` | `5m` | Base poll cadence. Floor `1m` (60s) — clamp anything lower. |
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
-| `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
+| `--silent` | on | Compatibility flag: decision-only output is already the default; explicit status requests render the stored tick details. |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
 | ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped the session watcher for a `CronCreate` job to buy cross-session continuity that never existed. Issue #914 measured cron producing zero ticks; issue #924 found dynamic `/loop` unreliable too. The watcher is always a persistent `Monitor`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
 | `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
@@ -831,25 +833,9 @@ Terminate (→ T-END) when **any** hold:
 
 Otherwise the Monitor continues — its next stdout event re-enters tick mode.
 
-### T7. Heartbeat (per tick — never silent by default)
+### T7. Notification decision
 
-Always run a `date` for the timestamp (never estimate — `monitor-mode.md`):
-
-```bash
-TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-```
-
-One-liner format:
-
-```
-[<TS>] #<PR> tick <n>: state=<class>, action=<dispatch /fixpr | dispatch /wrap | no-op | waiting | dispatch-in-progress>, next in <effective-cadence>
-```
-
-Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch target on a dispatch; `(backoff: stable ×<streak>, widened to <WIDE_MIN>m)` when cadence widened; the final summary on termination.
-
-**Horizon context (issue #1444).** When T1a's verdict was anything but `clear`, append `WATCH_IDLE_REASON` and, when anything was suppressed, what was held — the T1b pre-flight included, since it is held on the same flag: `… — paused (horizon approaching): pre-flight and /fixpr held, /wrap still dispatching`. On `critical` say the watcher is standing down, name the cadence it held to, and use `WATCH_PARK_SEEN` for the park clause — `adopting the park already open for <owner/repo>`, `no park open`, or `park slot unreadable`. This line is **always emitted**, `--silent` included: a watcher that quietly stops dispatching looks identical to one that has nothing to do, and those are opposite states.
-
-**`--silent`:** suppress the line on plain `waiting-on-bots`/no-change ticks, but **always** print on state change, any dispatch, backoff transitions, and termination. (Default — no `--silent` — prints every tick, satisfying the per-tick heartbeat AC.)
+Apply `decision-only-output.md`. Persist tick/class, dispatch, backoff, horizon holds and evidence in `.babysit` even when silent. Waiting, dispatch-in-progress, routine recovery, and state changes alone print nothing. On an owner-only blocker, safety event, exhausted recovery or genuine stall, surface a concise action/choice with consequence and evidence. Explicit status requests can render those stored fields without ceremony-only timestamps. `--silent` is a compatibility flag, not an opt-out from required notices.
 
 ### T-END. Terminate cleanly
 
@@ -888,7 +874,7 @@ still mandatory so the runtime stops invoking the watcher.
 If exact teardown failed, emit a `babysit-pr teardown incomplete` report with the retained task ID
 and generation instead of the successful `babysit-pr complete` summary below.
 
-Emit the final summary:
+Persist the final summary fields below in the existing babysit state/handoff; render this full report only on an explicit status/verbose request. Default terminal output follows `final-wrapup-format.md`:
 
 ```
 === babysit-pr complete ===

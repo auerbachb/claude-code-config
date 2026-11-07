@@ -4,6 +4,8 @@ description: Run issues inline as subagents directly from a PM thread — any ti
 argument-hint: "#42 [#55 #61 ...] (one or more issue numbers)"
 ---
 
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
+
 Execute one or more issues as subagents within the current thread. Each issue goes through the full Phase A/B/C orchestration protocol (fix, review, merge prep) while this skill monitors progress and manages transitions. Inline execution is the default for issues of any tier. Only two of Step 4's three too-big criteria route an issue out to a separate thread; the third — "should be split into multiple PRs" — is decomposed into an inline increment chain instead (Step 5.1).
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers. If no arguments provided, ask the user which issue(s) to execute.
