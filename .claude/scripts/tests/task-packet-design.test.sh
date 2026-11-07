@@ -165,8 +165,13 @@ verify(evidence_validity(missing, base) == 'unknown', 'missing evidence is unkno
 missing['pointer'] = 'fixture://unreadable'
 missing['revision'] = None
 verify(evidence_validity(missing, base) == 'unknown', 'unreadable revision is unknown')
-missing.update(revision='check-v1', repo='fixture/other')
-verify(evidence_validity(missing, base) == 'unknown', 'wrong-repo evidence is unknown')
+wrong_repo = copy.deepcopy(base['evidence'][0])
+wrong_repo['repo'] = 'fixture/other'
+verify(evidence_validity(wrong_repo, base) == 'unknown', 'wrong-repo evidence is unknown')
+wrong_observation = copy.deepcopy(base)
+wrong_observation['evidence_reads'][base['evidence'][0]['pointer']]['repo'] = 'fixture/other'
+verify(evidence_validity(base['evidence'][0], wrong_observation) == 'unknown', 'wrong-repo retrieved evidence is unknown')
+verify(evidence_validity(wrong_repo, wrong_observation) == 'unknown', 'matching foreign row and read cannot certify this repository')
 verify(packet['evidence'][0]['validity'] == 'current', 'readable matching evidence is current')
 unreadable = copy.deepcopy(base['evidence'][0])
 unreadable['pointer'] = 'fixture://unreadable'
