@@ -835,7 +835,7 @@ Resolve `model-route.sh` through the same shared-script order. Build the current
 phase's request from scoped session/handoff state and refreshed runtime/launch
 checks, execute the reference’s `task-model-route-dispatch` block before every
 Agent call to persist `{request, decision}` with the owning locked helper and
-set `ROUTED_MODEL` only for `start`, `retry`, or `escalate`. Invalid input, blocked/diagnose/owner-decision, or a failed write
+set `ROUTED_MODEL` only for `start`, `retry`, or `escalate`. Pass the stable task identity and current routing request/record file pointers in every child prompt; successors load them from scoped state without resetting attempts. Invalid input, blocked/diagnose/owner-decision, or a failed write
 launches nothing. Preserve attempts and targeted feedback on successors; never
 reset routing to a phase literal. Append finished-attempt evidence before
 rerouting. Before new pushes/review/CI, require local checks, distinct changes
@@ -869,12 +869,12 @@ Body:
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
    - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For any degraded state (`none`, `cr-only`, or `codeant-only`), this line is mandatory and must be visible before the push.
 5. Commit all changes in ONE commit.
-6. Push the branch.
+6. Refresh/persist post-edit submission evidence and run the `model-route-submission` guard from `task-model-routing.md` before pushing the branch.
 7. Create the PR via `gh pr create` with:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
    - A `**Local review coverage:** <level>` labeled line (e.g. `**Local review coverage:** none — both CLIs unavailable, self-review only`). This is mandatory for `none` and `cr-only`/`codeant-only`; omit only when coverage is `both`.
-8. Write the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --create` so the
+8. Write the handoff through the literal locked operations below so the
    write is serialized under the shared state-lock.sh advisory lock (issue #682) **and** lands
    on the scoped path Phase B and Phase C read (issue #1302). Never write inline with
    `jq … > tmp && mv tmp` — that bypasses the lock.
@@ -902,7 +902,24 @@ Body:
        findings_dismissed:[],threads_replied:[],threads_resolved:[],
        files_changed:$files,push_timestamp:$now,notes:$notes,
        local_review_coverage:$coverage}')"
-   "$HANDOFF_STATE_SH" --owner-repo {owner}/{repo} --create "{PR_NUMBER}" "$HANDOFF_JSON"
+   OWNER_REPO="{owner}/{repo}"
+   PR_NUMBER="{PR_NUMBER}"
+   # routed-handoff-write
+   : "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
+   jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
+   jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+   ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
+     '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
+   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
+   ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+   while IFS= read -r ROUTED_METADATA_ROW; do
+     [ -n "$ROUTED_METADATA_ROW" ] || continue
+     ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
+     "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_METADATA_ASSIGNMENT" || exit 5
+   done <<<"$ROUTED_METADATA_ROWS"
+   ROUTED_COMPLETION=$(jq -c '.phase_completed' <<<"$HANDOFF_JSON") || exit 5
+   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" ".phase_completed=$ROUTED_COMPLETION" || exit 5
    ```
 9. Print the Structured Exit Report as your FINAL output:
    ```

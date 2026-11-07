@@ -257,6 +257,12 @@ run_in_background: true
 
 **Subagent prompt MUST include:**
 
+- Stable routing task identity and current record/request file pointers; require
+  the fixer to refresh/persist local-check, changed-tree and batch evidence after
+  editing and execute the `model-route-submission` guard before every push.
+  Pre-spawn eligibility is not post-edit submission permission.
+
+
 - PR number, branch name (`headRefName`), repo (`$OWNER/$REPO`), linked issue number (if any)
 - Current HEAD SHA from the tick's gate JSON
 - Reviewer classification (`cr`, `bugbot`, or `greptile`) — omit or set to `none` for merge-conflict-only dispatches

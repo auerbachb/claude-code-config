@@ -19,7 +19,10 @@ pause/deadline controls, unchanged permissions, unchanged pushes, unknown checks
 partial spend and nonfinite spend. The actual fenced dispatch code runs against
 the real locked session/handoff writers: it persists routing before selecting
 the model, retains other phases, records blocked decisions, and refuses launch
-on missing handoffs or failed state writes. No merge/reviewer gate is substituted.
+on missing handoffs or failed state writes. No merge/reviewer gate is substituted. Additional cases verify truthful waiting
+and exhaustion, minimum runtime precedence/forced overrides, task-keyed handoff
+history and post-edit push guards. The actual literal handoff writer preserves
+unknown fields and prior completed tasks while seeding a different goal.
 
 Fixture costs/times are simulated or null. The JSON report separately measures
 the router process elapsed time; this is not model inference latency. Full source
@@ -35,6 +38,7 @@ precedence rule; no code/repository access or paid reviewer was used.
 
 | Measure | Observed result |
 |---|---|
+| Effective model | Haiku, matching the request in CLI model-usage telemetry |
 | Completion | Successful, exit 0 |
 | Quality | 5/5 exact classifications |
 | End-to-end elapsed | 4.393 seconds, measured with a monotonic clock |

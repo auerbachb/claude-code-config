@@ -205,6 +205,7 @@ routing or safety behavior rather than merely reducing output quality.
 | ★ `issue-claim.sh` | pm, subagent, prompt, wave, issue-maker, start-issue, + every generated chip | fallback | optional | Repo-agnostic (`gh`-driven). Also ships inside the chip `### Constraints` bullet — see below. |
 | ★ `session-state.sh` | pm, subagent, pr-monitor-and-manage | fallback | required | Repo-keyed state; see repo-scoped state below. |
 | `handoff-state.sh` | subagent, phase agents | fallback | required | Already resolved before #1189. |
+| `model-route.sh` | subagent, phase agents, PM and fleet/forgotten-PR launchers | fallback | required | Cost-first routing/submission; missing helper blocks dispatch or push (Issue #1875). |
 | `issue-dedup.sh` | issue-maker, start-issue, pm-worker | fallback | optional | Already resolved before #1189. |
 | `pr-preflight.sh`, `release-sweep.sh` | pr-monitor-and-manage | fallback | optional | Already resolved before #1189. |
 | `cr-plan.sh` | subagent, start-issue | fallback | optional | Absence means no CR plan poll; the issue-body merge is still required. |
@@ -230,6 +231,7 @@ for absent config; emit one only when the script itself cannot be found.
 | ★ `chip-launching.md` (PM-context inline gate) | pm, wave, prompt, issue-maker, start-issue | fallback | **required** |
 | `pm-output-templates.md` | pm | fallback | optional |
 | `subagent-phase-guardrails.md` | subagent | fallback | required |
+| `task-model-routing.md` | worker launchers and phase agents | fallback | required |
 | `issue-claim.md` | subagent, start-issue | fallback | optional |
 | `autofile-dedup.md` | issue-maker, start-issue | fallback | optional |
 | `cr-rate-limits.md` | wave | fallback | optional |

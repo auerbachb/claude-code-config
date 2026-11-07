@@ -35,7 +35,8 @@ def require(ok, message):
 
 def decide(request):
     require(isinstance(request, dict), "request must be an object")
-    require(text(request.get("task")) and text(request.get("phase")), "task and phase required")
+    require(all(isinstance(request.get(k), str) and re.fullmatch(r"[A-Za-z0-9_.:/@+-]{1,512}", request[k])
+                for k in ("task", "phase")), "task and phase must be stable metadata identifiers")
     models = request.get("models")
     require(isinstance(models, list), "models must be an explicit runtime inventory")
     inventory = {}
@@ -51,15 +52,17 @@ def decide(request):
         require(text(attempt.get("id")) and attempt["id"] not in ids, "unique attempt id required")
         ids.add(attempt["id"])
         require(attempt.get("model") in MODELS, "attempt model required")
-        require(attempt.get("outcome") in ("failed", "progress", "complete"), "invalid outcome")
-        require(all(text(attempt.get(k)) for k in ("bug", "signature", "approach")),
-                "bug, failure signature and approach required")
+        require(attempt.get("outcome") in ("failed", "progress", "complete", "waiting", "exhaustion"), "invalid outcome")
+        if attempt["outcome"] == "failed":
+            require(all(text(attempt.get(k)) for k in ("bug", "signature", "approach")),
+                    "failed attempts require bug, failure signature and approach")
         require(pointers(attempt.get("evidence")) and attempt["evidence"], "attempt evidence required")
-        require(pointers(attempt.get("new_evidence")), "new_evidence must be an array")
-        require(attempt["outcome"] != "progress" or bool(attempt["new_evidence"]),
+        require(pointers(attempt.get("new_evidence", [])), "new_evidence must be an array")
+        require(attempt["outcome"] != "progress" or bool(attempt.get("new_evidence")),
                 "progress requires new evidence pointers")
         if attempt["outcome"] != "complete":
-            require(text(attempt.get("remaining_blocker")), "remaining blocker required")
+            require(text(attempt.get("remaining_blocker")) or text(attempt.get("next_action")),
+                    "remaining blocker or next action required")
         for key in ("review_rounds", "ci_reruns"):
             value = attempt.get(key, 0)
             require(isinstance(value, int) and not isinstance(value, bool) and value >= 0,
@@ -97,7 +100,7 @@ def decide(request):
 
     def finish(action, reason, model=None):
         result.update(action=action, reason=reason, model=model)
-        if action in ("blocked", "diagnose", "owner_decision"):
+        if action in ("blocked", "diagnose", "owner_decision", "wait"):
             result["submission_allowed"] = False
         return result
 
@@ -113,6 +116,13 @@ def decide(request):
         return finish("blocked", "Launch controls or unchanged permission/tool boundaries are not explicitly clear.")
     if current == "fable" and owner is None:
         return finish("blocked", "Retain the explicit owner choice for a tier outside the unattended ladder.")
+    runtime = request.get("runtime", {})
+    version = runtime.get("version") if isinstance(runtime, dict) else None
+    parsed = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version) if isinstance(version, str) else None
+    if parsed is None or tuple(map(int, parsed.groups())) < (2, 1, 251):
+        return finish("blocked", "Verify Claude Code >=2.1.251 so explicit models override legacy defaults.")
+    if runtime.get("model_override_forced") is not False:
+        return finish("blocked", "A forced/unknown runtime model override cannot honor the routed model; preserve owner control.")
     if owner is not None:
         if not eligible(owner):
             return finish("blocked", "Owner-selected model is unavailable/ineligible; never substitute silently.")
@@ -138,9 +148,17 @@ def decide(request):
         window.append(attempt)
     window.reverse()
     latest = window[-1]
-    if latest["outcome"] == "progress" or latest["new_evidence"]:
+    if latest["outcome"] == "waiting":
+        wake = request.get("wake_evidence", [])
+        require(pointers(wake), "wake_evidence must be pointers to changed state")
+        if not wake:
+            return finish("wait", "Keep existing monitoring; unchanged waiting is not a failure or a new model invocation.")
+        return finish("retry", "New state evidence wakes the same task/model.", selected)
+    if latest["outcome"] == "exhaustion":
+        return finish("retry", "Resume from the valid recovery handoff on the same model; exhaustion is not poor quality.", selected)
+    if latest["outcome"] == "progress" or latest.get("new_evidence", []):
         return finish("retry", "Useful progress: retain discoveries and targeted feedback on the same model.", selected)
-    repeated = (len(window) >= 2 and all(a["outcome"] == "failed" and not a["new_evidence"] for a in window[-2:])
+    repeated = (len(window) >= 2 and all(a["outcome"] == "failed" and not a.get("new_evidence", []) for a in window[-2:])
                 and window[-2]["bug"] == latest["bug"] and window[-2]["signature"] == latest["signature"])
     poor = [a for a in window if a.get("poor_patch") is True and a["outcome"] == "failed"
             and a.get("review_rounds", 0) + a.get("ci_reruns", 0) > 0]
@@ -184,9 +202,9 @@ def main():
     args = parser.parse_args()
     try:
         require(args.input.stat().st_size <= 1024 * 1024, "request exceeds 1 MiB; use evidence pointers")
-        result = decide(json.loads(args.input.read_text()))
+        result = decide(json.loads(args.input.read_text(encoding="utf-8")))
         print(json.dumps(result, allow_nan=False))
-        return 3 if result["action"] in ("blocked", "diagnose", "owner_decision") else 0
+        return 3 if result["action"] in ("blocked", "diagnose", "owner_decision", "wait") else 0
     except (OSError, ValueError, TypeError, KeyError) as exc:
         print(json.dumps({"action": "invalid", "model": None, "error": str(exc)}))
         return 2

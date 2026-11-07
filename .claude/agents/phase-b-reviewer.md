@@ -47,6 +47,15 @@ in one line and block the step that needed it. Full contract:
 
 Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
 
+## Cost-first runtime context
+
+The parent supplies the stable task identity and current routing record/request
+file pointers. Preserve attempt history. Before any fix push, refresh the
+submission request from actual local checks, distinct changes and batched fixes;
+persist request/result and evidence through the existing scoped phase record.
+Never treat a pre-spawn route as post-edit verification. Apply the mandatory
+submission guard before pushing and retain recovery evidence if it refuses.
+
 ## Runtime Context
 
 The parent agent provides:
@@ -97,6 +106,10 @@ git fetch origin <branch>
 LOCAL="phase-b-<branch>-$(date +%s)"
 git checkout -b "$LOCAL" origin/<branch>
 # ... poll, fix, commit ...
+# model-route-submission
+: "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+SUBMISSION_RESULT=$(run_script model-route.sh --input "$MODEL_ROUTE_REQUEST") || exit 5
+jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
 git push origin HEAD:<branch>
 ```
 

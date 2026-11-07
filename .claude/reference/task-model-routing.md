@@ -29,6 +29,7 @@ Request shape (the inventory below is illustrative, not a live authorization):
 {
   "task": "issue-123", "phase": "A",
   "launch_allowed": true, "permissions_preserved": true,
+  "runtime": {"version": "2.1.312", "model_override_forced": false},
   "owner_model": null, "current_model": null,
   "models": [{
     "model": "haiku", "available": true, "capable": true,
@@ -51,17 +52,32 @@ recommendation. If pinned and unavailable, block; never silently substitute.
 
 The result contains `action`, `model`, `reason`, evidence IDs and metrics. Exit
 0 permits `start`, `retry`, `escalate`, or reports `complete`; only the first
-three launch. Exit 3 (`diagnose`, `owner_decision`, `blocked`) launches nothing;
+three launch. Exit 3 (`wait`, `diagnose`, `owner_decision`, `blocked`) launches nothing;
 persist the pending work and recover or surface an owner-only decision as
 appropriate. Exit 2 means invalid/unreadable input: retain the error and repair
 the request, never fall back to a premium literal.
+
+### Runtime precedence preflight
+
+Require a verified runtime version at least 2.1.251 and an explicitly false
+`runtime.model_override_forced`. The caller reads the active Claude runtime
+version and effective `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, not merely a source
+settings file. Missing/older versions or forced/unknown overrides block routing.
+The [official 2.1.251 release](https://github.com/anthropics/claude-code/releases/tag/v2.1.251)
+changed the legacy model environment setting to a default; earlier clients can
+ignore a routed alias in favor of the installed premium pin. Current
+[provider docs](https://code.claude.com/docs/en/sub-agents) separately describe
+forced overrides. Do not silently edit owner settings or clear an explicit pin.
+This repository's old seeded fallback therefore requires a compatible client;
+verify the effective model with runtime telemetry after launch as well. The
+version shown in the JSON example is illustrative, not automatic detection.
 
 ## State and dispatch integration
 
 Before first dispatch, store the request and result in the existing repo-scoped
 session record (`.repos["owner/repo"].tasks["issue-N"].model_routing["A"]` for issue work; another
 explicit task key for read-only PM work). Once a PR exists, use its selected handoff's
-`.model_routing["A"|"B"|"C"]`. Use `session-state.sh`/`handoff-state.sh` with
+`.model_routing["task-id"]["A"|"B"|"C"]`. Use `session-state.sh`/`handoff-state.sh` with
 explicit repository scope and their locks. Copy the current phase's routing
 record when creating its handoff; preserve earlier attempts rather than
 rebuilding from chat or resetting retry counts. Do not add another state store.
@@ -89,11 +105,12 @@ MODEL_ROUTE_RC=0
 MODEL_ROUTE_DECISION=$("$MODEL_ROUTE_SH" --input "$MODEL_ROUTE_REQUEST") || MODEL_ROUTE_RC=$?
 MODEL_ROUTE_RECORD=$(jq -cn --slurpfile request "$MODEL_ROUTE_REQUEST" \
   --argjson decision "$MODEL_ROUTE_DECISION" '{request:$request[0], decision:$decision}') || exit 2
+MODEL_ROUTE_TASK=$(jq -er ' .request.task | strings | select(length > 0)' <<<"$MODEL_ROUTE_RECORD") || exit 2
 MODEL_ROUTE_PHASE=$(jq -er '.request.phase | strings | select(length > 0)' <<<"$MODEL_ROUTE_RECORD") || exit 2
 if [ -n "${PR_NUMBER:-}" ]; then
   : "${HANDOFF_STATE_SH:?handoff helper required}"
-  MODEL_ROUTE_FILTER=$(jq -nr --arg phase "$MODEL_ROUTE_PHASE" --argjson record "$MODEL_ROUTE_RECORD" \
-    '".model_routing[" + ($phase|tojson) + "]=" + ($record|tojson)') || exit 2
+  MODEL_ROUTE_FILTER=$(jq -nr --arg task "$MODEL_ROUTE_TASK" --arg phase "$MODEL_ROUTE_PHASE" --argjson record "$MODEL_ROUTE_RECORD" \
+    '".model_routing[" + ($task|tojson) + "][" + ($phase|tojson) + "]=" + ($record|tojson)') || exit 2
   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing \
     --set "$PR_NUMBER" "$MODEL_ROUTE_FILTER" || exit 4
 else
@@ -109,6 +126,37 @@ fi
 MODEL_ROUTE_ACTION=$(jq -er '.action' <<<"$MODEL_ROUTE_DECISION") || exit 2
 case "$MODEL_ROUTE_ACTION" in start|retry|escalate) ;; *) exit 3 ;; esac
 ROUTED_MODEL=$(jq -er '.model | strings | select(length > 0)' <<<"$MODEL_ROUTE_DECISION") || exit 2
+```
+
+### Creating or updating a Phase A handoff
+
+Pass the stable task identity and current request/record file pointers in every
+child prompt. The child loads `MODEL_ROUTE_RECORD` into a shell variable from
+the current record file (without printing whole histories into model context),
+and creates/updates `MODEL_ROUTE_REQUEST` from its `.request` as needed.
+The initial PR handoff must copy that current phase record from session state;
+subsequent fix tasks retain earlier task histories. Use this write block with
+the existing `HANDOFF_JSON` metadata instead of an overwriting `--create`.
+Each literal assignment uses the handoff helper's lock; write the completion marker last. Never read/overwrite the whole existing record outside that lock.
+
+<!-- test-anchor: routed-handoff-write -->
+```bash
+# routed-handoff-write
+: "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
+jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
+jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
+  '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
+ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+while IFS= read -r ROUTED_METADATA_ROW; do
+  [ -n "$ROUTED_METADATA_ROW" ] || continue
+  ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
+  "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_METADATA_ASSIGNMENT" || exit 5
+done <<<"$ROUTED_METADATA_ROWS"
+ROUTED_COMPLETION=$(jq -c '.phase_completed' <<<"$HANDOFF_JSON") || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" ".phase_completed=$ROUTED_COMPLETION" || exit 5
 ```
 
 On retry, pass only the task/AC, current phase, source pointers, approaches,
@@ -136,7 +184,21 @@ Append each finished attempt to the phase record before routing again:
 }
 ```
 
-Outcomes: `progress`, `failed`, `complete`. Use `new_evidence` for discoveries,
+Outcomes: `progress`, `failed`, `complete`, `waiting`, `exhaustion`. Only failed
+attempts require a bug/signature/approach. A truthful wait needs its observed
+state pointer and next action, not an invented bug. `waiting` returns `wait`
+(exit 3, no model): keep existing event monitoring until changed-state
+`wake_evidence` permits a same-model retry. `exhaustion` with a valid recovery
+handoff resumes on the same model, without counting as failed quality.
+
+Use a stable task ID for retries of the same goal. A materially new finding
+batch after task completion gets a new ID bound to its PR/HEAD/finding watermark;
+never reset IDs merely because an attempt was slow or failed. Handoff routing
+is keyed by task **and** phase so a prior completed fix cannot suppress or erase
+a new fix task. Copy the full current phase record into the handoff before
+transition; retain other tasks and phases under the existing locked writer.
+
+ Use `new_evidence` for discoveries,
 distinct failures repaired or a narrowed cause, with real source/log pointers.
 Do not relabel repetition as progress. One bad answer, slow work, one failing
 test, one review rejection or a retry count alone never upgrades a worker.
@@ -169,6 +231,21 @@ compare the proposed tree with the last pushed tree. Persist their results as
 evidence. `submission_allowed` is true only when all three request flags are
 true: `local_checks_passed`, `distinct_changes`, `batched`. A false/unknown
 result blocks a routine new push/review/CI request, not local diagnosis/retry.
+The fixer (not just its spawning parent) refreshes the request **after editing**,
+using actual local-check logs, current versus last-pushed tree and batch contents.
+Persist the updated request/result and evidence pointers in its existing phase
+record before pushing. A pre-spawn decision with false submission flags is not
+post-edit verification. The Phase A/B push guards execute this check immediately
+before a push; their prompts must carry the current request file pointer.
+
+<!-- test-anchor: model-route-submission -->
+```bash
+# model-route-submission
+: "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+SUBMISSION_RESULT=$(run_script model-route.sh --input "$MODEL_ROUTE_REQUEST") || exit 5
+jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
+```
+
 Do not use empty commits or unchanged pushes as routine retry progress. A
 necessary reviewer-recovery exception follows its existing explicit workflow
 and records why. This helper never satisfies or relaxes CI, substantive review,

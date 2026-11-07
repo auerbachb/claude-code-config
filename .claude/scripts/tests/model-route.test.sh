@@ -20,6 +20,7 @@ report = []
 base = {
     'task': 'fixture-task', 'phase': 'A', 'launch_allowed': True,
     'permissions_preserved': True, 'attempts': [],
+    'runtime': {'version':'2.1.312', 'model_override_forced':False},
     'models': [dict(model=m, available=True, capable=True, budget_allowed=True,
                     reserve_allowed=True, evidence='fixture/runtime.json')
                for m in ['haiku', 'sonnet', 'opus', 'fable']],
@@ -42,7 +43,7 @@ with tempfile.TemporaryDirectory() as tmp:
     request = Path(tmp) / 'request.json'
 
     def check(name, data, action, model=None, code=0):
-        request.write_text(json.dumps(data))
+        request.write_text(json.dumps(data), encoding="utf-8")
         started = time.monotonic()
         run = subprocess.run([str(script), '--input', str(request)], capture_output=True, text=True)
         measured = time.monotonic() - started
@@ -162,22 +163,50 @@ with tempfile.TemporaryDirectory() as tmp:
     check('owner-only tier never loses its explicit pin', data, 'blocked', code=3)
     data['attempts'][0]['cost_usd'] = 10 ** 1000
     check('overflowing JSON integer returns structured invalid', data, 'invalid', code=2)
+    data = copy.deepcopy(base)
+    data['runtime']['version'] = '2.1.250'
+    check('legacy runtime cannot override recorded cheap route', data, 'blocked', code=3)
+    data['runtime']['version'] = '2.1.312'
+    data['runtime']['model_override_forced'] = True
+    check('forced runtime model choice is not silently cleared', data, 'blocked', code=3)
+    data.pop('runtime')
+    check('unknown runtime precedence cannot launch', data, 'blocked', code=3)
+    data = copy.deepcopy(base)
+    data['current_model'] = 'haiku'
+    data['attempts'] = [dict(id='wait-1', model='haiku', outcome='waiting',
+                             evidence=['fixture/pending-review.json'], next_action='await changed reviewer state')]
+    check('truthful unchanged waiting does not invoke model', data, 'wait', code=3)
+    data['wake_evidence'] = ['fixture/new-review.json']
+    check('changed evidence resumes waiting task on cheap model', data, 'retry', 'haiku')
+    data['attempts'] = [dict(id='exhaust-1', model='haiku', outcome='exhaustion',
+                             evidence=['fixture/valid-handoff.json'], next_action='resume preserved investigation')]
+    check('exhaustion is not a quality failure', data, 'retry', 'haiku')
     # The caller examples must still feed all three phase call sites through routing.
-    skill = (root / '.claude/skills/subagent/SKILL.md').read_text()
+    skill = (root / '.claude/skills/subagent/SKILL.md').read_text(encoding="utf-8")
     assert skill.count('`model: ROUTED_MODEL`') == 3
     assert 'model-route.sh' in skill and 'failed write' in skill
-    pmm = (root / '.claude/skills/pr-monitor-and-manage/references/pmm-act.md').read_text()
-    forgotten = (root / '.claude/skills/pm-forgotten-pr/SKILL.md').read_text()
+    pmm = (root / '.claude/skills/pr-monitor-and-manage/references/pmm-act.md').read_text(encoding="utf-8")
+    forgotten = (root / '.claude/skills/pm-forgotten-pr/SKILL.md').read_text(encoding="utf-8")
     assert 'model: ROUTED_MODEL' in pmm and 'task-model-route-dispatch' in pmm
     assert 'model: ROUTED_MODEL' in forgotten and 'task-model-route-dispatch' in forgotten
+    reference = (root / '.claude/reference/task-model-routing.md').read_text(encoding='utf-8')
+    handoff_block = reference.split('# routed-handoff-write\n', 1)[1].split('\n```', 1)[0]
+    submission_block = reference.split('# model-route-submission\n', 1)[1].split('\n```', 1)[0]
+    normalize = lambda content: '\n'.join(line.strip() for line in content.splitlines())
+    phase_a = (root / '.claude/agents/phase-a-fixer.md').read_text(encoding='utf-8')
+    phase_b = (root / '.claude/agents/phase-b-reviewer.md').read_text(encoding='utf-8')
+    assert normalize(handoff_block) in normalize(phase_a)
+    assert normalize(handoff_block) in normalize(skill)
+    assert normalize(submission_block) in normalize(phase_a)
+    assert normalize(submission_block) in normalize(phase_b)
     for role in ['phase-a-fixer', 'phase-b-reviewer', 'phase-c-merger', 'pm-worker', 'researcher']:
-        agent = (root / '.claude/agents' / (role + '.md')).read_text()
+        agent = (root / '.claude/agents' / (role + '.md')).read_text(encoding="utf-8")
         assert '\nmodel: haiku\n' in agent
 
 payload = dict(kind='deterministic_router_fixtures', model_quality=None,
                model_spend_usd=None, scenarios=report)
 if os.environ.get('MODEL_ROUTE_TRIAL_REPORT'):
-    Path(os.environ['MODEL_ROUTE_TRIAL_REPORT']).write_text(json.dumps(payload, indent=2) + '\n')
+    Path(os.environ['MODEL_ROUTE_TRIAL_REPORT']).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 print(f'{len(report)} routing scenarios passed; simulated attempt histories, no inference/savings claim.')
 PY
 
@@ -195,7 +224,7 @@ export MODEL_ROUTE_REQUEST="$ROUTE_TMP/request.json"
 unset PR_NUMBER
 extract_skill_bash "$ROOT/.claude/reference/task-model-routing.md" task-model-route-dispatch > "$ROUTE_TMP/dispatch.sh"
 cat > "$MODEL_ROUTE_REQUEST" <<'JSON'
-{"task":"issue-123","phase":"A","launch_allowed":true,"permissions_preserved":true,"attempts":[],"models":[{"model":"haiku","available":true,"capable":true,"budget_allowed":true,"reserve_allowed":true,"evidence":"fixture/runtime.json"}]}
+{"task":"issue-123","phase":"A","launch_allowed":true,"permissions_preserved":true,"runtime":{"version":"2.1.312","model_override_forced":false},"attempts":[],"models":[{"model":"haiku","available":true,"capable":true,"budget_allowed":true,"reserve_allowed":true,"evidence":"fixture/runtime.json"}]}
 JSON
 printf '\nprintf "%%s" "$ROUTED_MODEL"\n' >> "$ROUTE_TMP/dispatch.sh"
 selected=$(bash "$ROUTE_TMP/dispatch.sh")
@@ -218,10 +247,10 @@ SESSION_STATE_SH=/usr/bin/false bash "$ROUTE_TMP/dispatch.sh" > "$ROUTE_TMP/fail
 [[ "$rc" == 4 && ! -s "$ROUTE_TMP/failed-session-write.out" ]]
 
 export PR_NUMBER=123
-"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{"model_routing":{"B":{"sentinel":true}}}' >/dev/null
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{"unknown_future":{"keep":true},"model_routing":{"old-task":{"B":{"sentinel":true}}}}' >/dev/null
 selected=$(bash "$ROUTE_TMP/dispatch.sh")
 [[ "$selected" == haiku ]]
-"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.model_routing.B.sentinel and .model_routing.A.decision.model == "haiku"' >/dev/null
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.model_routing["old-task"].B.sentinel and .model_routing["issue-123"].A.decision.model == "haiku"' >/dev/null
 rc=0
 HANDOFF_STATE_SH=/usr/bin/false bash "$ROUTE_TMP/dispatch.sh" > "$ROUTE_TMP/failed-write.out" 2>/dev/null || rc=$?
 [[ "$rc" == 4 && ! -s "$ROUTE_TMP/failed-write.out" ]]
@@ -229,8 +258,35 @@ jq '.launch_allowed=false' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/blocked.json"
 rc=0
 MODEL_ROUTE_REQUEST="$ROUTE_TMP/blocked.json" bash "$ROUTE_TMP/dispatch.sh" > "$ROUTE_TMP/blocked.out" || rc=$?
 [[ "$rc" == 3 && ! -s "$ROUTE_TMP/blocked.out" ]]
-"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.model_routing.A.decision.action == "blocked" and .model_routing.A.decision.model == null' >/dev/null
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.model_routing["issue-123"].A.decision.action == "blocked" and .model_routing["issue-123"].A.decision.model == null' >/dev/null
 rc=0
 PR_NUMBER=999 bash "$ROUTE_TMP/dispatch.sh" > "$ROUTE_TMP/missing.out" 2>/dev/null || rc=$?
 [[ "$rc" == 4 && ! -s "$ROUTE_TMP/missing.out" ]]
 echo 'Real dispatch block: session and handoff records persisted, other phase retained, blocked/write-failure/missing-record launches refused.'
+
+# The actual handoff-write block retains old completed tasks while seeding a new goal.
+extract_skill_bash "$ROOT/.claude/reference/task-model-routing.md" routed-handoff-write > "$ROUTE_TMP/handoff-write.sh"
+export HANDOFF_JSON='{"phase_completed":"A","notes":"fixture metadata"}'
+jq '.current_model="haiku" | .attempts=[{"id":"done-1","model":"haiku","outcome":"complete","evidence":["fixture/passed.json"]}]' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/completed-request.json"
+route_decision=$("$MODEL_ROUTE_SH" --input "$ROUTE_TMP/completed-request.json")
+export MODEL_ROUTE_RECORD
+MODEL_ROUTE_RECORD=$(jq -cn --slurpfile request "$ROUTE_TMP/completed-request.json" --argjson decision "$route_decision" '{request:$request[0],decision:$decision}')
+bash "$ROUTE_TMP/handoff-write.sh"
+jq '.task="pr-123-new-findings" | del(.current_model) | .attempts=[]' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/new-task-request.json"
+route_decision=$("$MODEL_ROUTE_SH" --input "$ROUTE_TMP/new-task-request.json")
+MODEL_ROUTE_RECORD=$(jq -cn --slurpfile request "$ROUTE_TMP/new-task-request.json" --argjson decision "$route_decision" '{request:$request[0],decision:$decision}')
+bash "$ROUTE_TMP/handoff-write.sh"
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.model_routing["issue-123"].A.decision.action == "complete" and .model_routing["pr-123-new-findings"].A.decision.action == "start" and .model_routing["old-task"].B.sentinel and .unknown_future.keep' >/dev/null
+
+# The same tested post-edit guard is embedded in both fixer agents.
+cat > "$ROUTE_TMP/submission.sh" <<'SH'
+run_script() { shift; "$MODEL_ROUTE_SH" "$@"; }
+SH
+extract_skill_bash "$ROOT/.claude/reference/task-model-routing.md" model-route-submission >> "$ROUTE_TMP/submission.sh"
+printf '\nprintf "allowed"\n' >> "$ROUTE_TMP/submission.sh"
+rc=0
+bash "$ROUTE_TMP/submission.sh" > "$ROUTE_TMP/submission.out" || rc=$?
+[[ "$rc" == 5 && ! -s "$ROUTE_TMP/submission.out" ]]
+jq '.submission={local_checks_passed:true,distinct_changes:true,batched:true}' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/checked-request.json"
+[[ "$(MODEL_ROUTE_REQUEST="$ROUTE_TMP/checked-request.json" bash "$ROUTE_TMP/submission.sh")" == allowed ]]
+echo 'Real handoff/submit blocks: completed task retained, new task seeded, unknown fields kept, post-edit push guard enforced.'

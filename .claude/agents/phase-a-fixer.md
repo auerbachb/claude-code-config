@@ -67,6 +67,14 @@ in one line and block the step that needed it. Full contract:
 
 Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
 
+## Cost-first runtime context
+
+The parent supplies the stable routing task identity and current record/request
+file pointers. Load `MODEL_ROUTE_RECORD` into the shell from the record file;
+use its `.request` for `MODEL_ROUTE_REQUEST`, preserving attempts. If missing,
+resolve the current scoped session/handoff record rather than guessing a model.
+Follow `task-model-routing.md`, including the post-edit submission preflight.
+
 ## Runtime Context
 
 The parent agent provides these values in your prompt:
@@ -111,6 +119,13 @@ Fix ALL valid findings before committing. Also fix any lint/CI failures.
 
 Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit but **still proceed through Steps 4-6** (reply to any existing threads, resolve them, and write the handoff file). Only Step 3 itself is conditional — the handoff file MUST be written regardless of OUTCOME, or Phase B will have no state to read from.
 
+Before this step, run appropriate local checks/local review, batch related fixes,
+and compare the proposed tree with the last pushed tree. Refresh
+`MODEL_ROUTE_REQUEST`'s submission flags only from those results and persist the
+request/result and evidence pointers through the existing scoped phase record.
+The pre-spawn route does not count as this post-edit check. The push guard below
+is mandatory; on refusal preserve a recovery handoff and report the blocker.
+
 **Stage files explicitly by name.** NEVER use `git add -A` or `git add .` — those can accidentally include untracked sensitive files (`.env`, credentials) or large binaries. You already know exactly which files you modified in Step 2 (from the findings you fixed), so pass those paths explicitly:
 
 ```bash
@@ -122,6 +137,10 @@ if git diff --cached --quiet; then
   # Do NOT exit here. Steps 4-6 still run.
 else
   git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
+  # model-route-submission
+  : "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+  SUBMISSION_RESULT=$(run_script model-route.sh --input "$MODEL_ROUTE_REQUEST") || exit 5
+  jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
   git push origin {{BRANCH_NAME}}
 fi
 ```
@@ -203,7 +222,24 @@ HANDOFF_JSON="$(jq -n \
     push_timestamp: $now,
     notes: $notes
   }')"
-"$HANDOFF_STATE_SH" --owner-repo {{OWNER}}/{{REPO}} --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
+OWNER_REPO="{{OWNER}}/{{REPO}}"
+PR_NUMBER="{{PR_NUMBER}}"
+# routed-handoff-write
+: "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
+jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
+jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
+  '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
+ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+while IFS= read -r ROUTED_METADATA_ROW; do
+  [ -n "$ROUTED_METADATA_ROW" ] || continue
+  ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
+  "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_METADATA_ASSIGNMENT" || exit 5
+done <<<"$ROUTED_METADATA_ROWS"
+ROUTED_COMPLETION=$(jq -c '.phase_completed' <<<"$HANDOFF_JSON") || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" ".phase_completed=$ROUTED_COMPLETION" || exit 5
 ```
 
 `--owner-repo` is not optional here. Without it `handoff-state.sh` derives a scope
