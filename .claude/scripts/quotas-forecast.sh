@@ -130,7 +130,9 @@
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
-#   bash 3.2+, jq, date(1) (either GNU or BSD dialect)
+#   bash 3.2+, jq
+#   Python 3.9+ and sibling lib/quota-date.sh / quota-date.py for bounded date
+#   operations. Unavailable adapters leave weekday labels unknown.
 #
 # SEE ALSO
 #   ai-quotas.sh --help              the reader that produces the rows
@@ -143,6 +145,7 @@
 set -uo pipefail
 
 SELF_NAME="$(basename "$0")"
+SELF_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Telemetry logs the script name and the action word only, never "$*": the
 # arguments can name a history path under a home directory. Same reasoning as
@@ -207,25 +210,21 @@ now_seconds() {
 NOW="$(now_seconds)"
 [[ "$NOW" =~ ^[0-9]+$ ]] || die 5 "could not read the current time from date(1)"
 
-# Which date(1) dialect is on PATH, decided once. GNU accepts `-r` and reads
-# its argument as a FILENAME, so falling through from BSD's `-r <epoch>` would
-# silently print an unrelated file's mtime on the day such a file exists.
-DATE_IS_GNU=0
-if date --version 2>/dev/null | grep -i 'GNU coreutils' >/dev/null; then
-  DATE_IS_GNU=1
+# Select operation capabilities once; unsupported tools remain explicit unknowns.
+QUOTA_DATE_DIALECT=unavailable
+if [[ -r "$SELF_DIR/lib/quota-date.sh" ]] && source "$SELF_DIR/lib/quota-date.sh"; then
+  QUOTA_DATE_DIALECT=$(quota_date_detect) || QUOTA_DATE_DIALECT=unavailable
+fi
+if [[ "$QUOTA_DATE_DIALECT" == unavailable ]]; then
+  warn "DEGRADED: quota date operations unavailable — reset dates/weekday or calendar validation may be unknown"
 fi
 
 # The weekday of an instant in Eastern time — the same zone the table's reset
 # column is formatted in, so "Wed" in START and "Wed" in RESETS mean the same
 # Wednesday.
 epoch_to_et_weekday() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" && "$e" != "null" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%a' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%a' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%a' America/New_York || true
 }
 
 TMP="$(mktemp -d)" || die 5 "could not create a temp directory"
