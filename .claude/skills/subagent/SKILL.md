@@ -869,7 +869,7 @@ Body:
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
    - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For any degraded state (`none`, `cr-only`, or `codeant-only`), this line is mandatory and must be visible before the push.
 5. Commit all changes in ONE commit.
-6. Refresh/persist post-edit submission evidence and run the `model-route-submission` guard from `task-model-routing.md` before pushing the branch.
+6. Refresh/persist post-edit submission evidence and execute the self-contained `model-route-submission` guard from `task-model-routing.md` in a subshell before pushing the branch. On refusal, retain the unpushed HEAD, persist the request, refusal and recovery pointers through the existing scoped task/session helper, print `OUTCOME: blocked` with the SHA and blocker, and exit without creating a PR.
 7. Create the PR via `gh pr create` with:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue

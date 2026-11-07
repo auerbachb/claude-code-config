@@ -130,6 +130,7 @@ is mandatory; on refusal preserve a recovery handoff and report the blocker.
 
 ```bash
 # Replace the placeholder list below with the actual paths you modified in Step 2
+SUBMISSION_BLOCKED=false
 git add path/to/file1 path/to/file2 ...
 
 if git diff --cached --quiet; then
@@ -137,17 +138,39 @@ if git diff --cached --quiet; then
   # Do NOT exit here. Steps 4-6 still run.
 else
   git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
-  # model-route-submission
-  : "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
-  SUBMISSION_RESULT=$(run_script model-route.sh --input "$MODEL_ROUTE_REQUEST") || exit 5
-  jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
-  git push origin {{BRANCH_NAME}}
+  if (
+# model-route-submission
+: "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+MODEL_ROUTE_SH=""
+for ROUTE_CANDIDATE in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh" \
+  "$HOME/.claude/scripts/model-route.sh" \
+  ".claude/scripts/model-route.sh"; do
+  if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
+done
+if [ -z "$MODEL_ROUTE_SH" ]; then
+  echo "ERROR: model-route.sh not found (checked all three paths) — submission unavailable" >&2
+  exit 5
+fi
+SUBMISSION_RESULT=$("$MODEL_ROUTE_SH" --input "$MODEL_ROUTE_REQUEST") || exit 5
+jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
+  ); then
+    git push origin {{BRANCH_NAME}}
+  else
+    SUBMISSION_BLOCKED=true
+    echo "Submission blocked — retain unpushed HEAD and continue to recovery handoff" >&2
+  fi
 fi
 ```
 
 One commit = one review consumed. Never push multiple commits for separate findings.
 
 ### Step 4: Reply to Review Threads
+
+If `SUBMISSION_BLOCKED=true`, skip Steps 4–5: no pushed fix exists to acknowledge
+or resolve. Continue to Step 6 with the unpushed HEAD, `outcome: "blocked"`,
+`phase_completed: ""`, and notes identifying the submission refusal and recovery
+evidence. Then print Step 7 with `OUTCOME: blocked` and `NEXT_PHASE: none`.
 
 Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for the retired Graphite, which still posts until its App is uninstalled — each mode strips only its own token, never another's):
 
@@ -175,7 +198,7 @@ Pass the IDs of the threads you handled. Without `--thread-ids` the script resol
 
 ### Step 6: Write Handoff File
 
-Write the handoff file via `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --create {{PR_NUMBER}} <json>` so
+Write the handoff file via the locked `--init` and guarded literal `--set` operations below so
 the write lands at `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json` and is
 serialized under the shared state-lock.sh advisory lock (issues #655, #682).
 Never write the file inline with `jq … > tmp && mv tmp` — that bypasses the lock.
@@ -222,6 +245,9 @@ HANDOFF_JSON="$(jq -n \
     push_timestamp: $now,
     notes: $notes
   }')"
+if [[ "${SUBMISSION_BLOCKED:-false}" == true ]]; then
+  HANDOFF_JSON=$(jq --arg sha "$(git rev-parse HEAD)" ' .head_sha=$sha | .outcome="blocked" | .phase_completed="" | .notes="Submission refused; unpushed HEAD retained. Resume post-edit submission checks before replying or resolving."' <<<"$HANDOFF_JSON") || exit 5
+fi
 OWNER_REPO="{{OWNER}}/{{REPO}}"
 PR_NUMBER="{{PR_NUMBER}}"
 # routed-handoff-write
@@ -249,7 +275,7 @@ Confirm before exiting that `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --
 returns the JSON you just wrote — that is the assertion, and it is checked against
 the resolved scoped path directly.
 
-**This `--create` is the record's creation, so it does NOT take `--require-existing`.**
+**The initial `--init` creates only an absent record, so it does NOT take `--require-existing`.**
 Every write you make AFTER it — any `--set` or `--append` correcting or extending the
 record you just wrote — must pass `--require-existing` (issue #1603), because Phase C
 merges and the parent then deletes this record; without the flag a late write seeds a

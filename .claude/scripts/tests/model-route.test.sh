@@ -279,10 +279,10 @@ bash "$ROUTE_TMP/handoff-write.sh"
 "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.model_routing["issue-123"].A.decision.action == "complete" and .model_routing["pr-123-new-findings"].A.decision.action == "start" and .model_routing["old-task"].B.sentinel and .unknown_future.keep' >/dev/null
 
 # The same tested post-edit guard is embedded in both fixer agents.
-cat > "$ROUTE_TMP/submission.sh" <<'SH'
-run_script() { shift; "$MODEL_ROUTE_SH" "$@"; }
-SH
-extract_skill_bash "$ROOT/.claude/reference/task-model-routing.md" model-route-submission >> "$ROUTE_TMP/submission.sh"
+mkdir -p "$HOME/.claude/scripts"
+ln -s "$MODEL_ROUTE_SH" "$HOME/.claude/scripts/model-route.sh"
+ln -s "$ROOT/.claude/scripts/lib" "$HOME/.claude/scripts/lib"
+extract_skill_bash "$ROOT/.claude/reference/task-model-routing.md" model-route-submission > "$ROUTE_TMP/submission.sh"
 printf '\nprintf "allowed"\n' >> "$ROUTE_TMP/submission.sh"
 rc=0
 bash "$ROUTE_TMP/submission.sh" > "$ROUTE_TMP/submission.out" || rc=$?
@@ -290,3 +290,22 @@ bash "$ROUTE_TMP/submission.sh" > "$ROUTE_TMP/submission.out" || rc=$?
 jq '.submission={local_checks_passed:true,distinct_changes:true,batched:true}' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/checked-request.json"
 [[ "$(MODEL_ROUTE_REQUEST="$ROUTE_TMP/checked-request.json" bash "$ROUTE_TMP/submission.sh")" == allowed ]]
 echo 'Real handoff/submit blocks: completed task retained, new task seeded, unknown fields kept, post-edit push guard enforced.'
+
+# Execute the actual Phase A commit/submission block with a denied submission.
+# A local commit must survive, pushes must not run, and recovery must be reached.
+python3 - "$ROOT" "$ROUTE_TMP/fixer-submit.sh" <<'PYFIX'
+from pathlib import Path
+import sys
+text = (Path(sys.argv[1]) / '.claude/agents/phase-a-fixer.md').read_text()
+block = text.split('# Replace the placeholder list below', 1)[1].split('\n```', 1)[0]
+Path(sys.argv[2]).write_text("git() { case \"$1\" in diff) return 1;; commit) echo commit >> \"$ROUTE_TMP/events\";; push) echo push >> \"$ROUTE_TMP/events\";; esac; }\n# Replace the placeholder list below" + block + '\n[[ "$SUBMISSION_BLOCKED" == true ]] || exit 1\nprintf recovery\n')
+PYFIX
+export ROUTE_TMP
+[[ "$(bash "$ROUTE_TMP/fixer-submit.sh" 2>"$ROUTE_TMP/fixer-submit.err")" == recovery ]]
+[[ "$(cat "$ROUTE_TMP/events")" == commit ]]
+echo 'Actual Phase A refusal: local commit retained, push suppressed, recovery path reached.'
+
+# A blocked submission writes recovery state without a completed phase marker.
+HANDOFF_JSON='{"phase_completed":"","head_sha":"unpushed-fixture","outcome":"blocked","notes":"submission refused"}' bash "$ROUTE_TMP/handoff-write.sh"
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.phase_completed == "" and .outcome == "blocked" and .head_sha == "unpushed-fixture" and .model_routing["pr-123-new-findings"].A.decision.action == "start"' >/dev/null
+echo 'Blocked recovery handoff: unpushed SHA/routing preserved, completion marker cleared.'

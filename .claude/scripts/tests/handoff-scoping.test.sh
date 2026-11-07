@@ -844,15 +844,15 @@ neg_out="$(bad_or_arrays "$NEG_TPL")"
 if [[ -n "$neg_out" ]]; then ok "negative control: predicate flags a stripped OR=() array"
 else fail "negative control: predicate did NOT flag a stripped OR=() array"; fi
 
-# Phase A creates the record, so its --create must stay flagless.
+# Phase A initializes only absent records, so its --init must stay flagless.
 PHASE_A="${REPO_ROOT}/.claude/agents/phase-a-fixer.md"
 # Match the invocation line only — the surrounding prose deliberately names both
-# the flag and --create while explaining why the create does not take it.
-create_lines="$(grep -n -- '^"\$HANDOFF_STATE_SH".*--create' "$PHASE_A" | grep -- '--require-existing' || true)"
-create_all="$(grep -c -- '^"\$HANDOFF_STATE_SH".*--create' "$PHASE_A" || true)"
-if [[ "${create_all:-0}" -ge 1 ]]; then ok "phase-a-fixer.md still shows a --create invocation"
-else fail "phase-a-fixer.md still shows a --create invocation (found none — did Step 6 move?)"; fi
-check "phase-a-fixer.md --create does NOT carry --require-existing" "" "$create_lines"
+# the flag and --init while explaining why initialization does not take it.
+create_lines="$(grep -n -- '^"\$HANDOFF_STATE_SH".*--init' "$PHASE_A" | grep -- '--require-existing' || true)"
+create_all="$(grep -c -- '^"\$HANDOFF_STATE_SH".*--init' "$PHASE_A" || true)"
+if [[ "${create_all:-0}" -ge 1 ]]; then ok "phase-a-fixer.md still shows a --init invocation"
+else fail "phase-a-fixer.md still shows a --init invocation (found none — did Step 6 move?)"; fi
+check "phase-a-fixer.md --init does NOT carry --require-existing" "" "$create_lines"
 
 # Both agent definitions explain what exit 3 means, so an agent that hits it
 # does not "fix" it by recreating the record.

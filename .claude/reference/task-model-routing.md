@@ -237,12 +237,26 @@ Persist the updated request/result and evidence pointers in its existing phase
 record before pushing. A pre-spawn decision with false submission flags is not
 post-edit verification. The Phase A/B push guards execute this check immediately
 before a push; their prompts must carry the current request file pointer.
+Run this block in a subshell and catch refusal in the caller: preserve the
+unpushed SHA and recovery evidence, write the existing handoff, and print a
+blocked exit report. Never mark a rejected submission ready for Phase B.
 
 <!-- test-anchor: model-route-submission -->
 ```bash
 # model-route-submission
 : "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
-SUBMISSION_RESULT=$(run_script model-route.sh --input "$MODEL_ROUTE_REQUEST") || exit 5
+MODEL_ROUTE_SH=""
+for ROUTE_CANDIDATE in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh" \
+  "$HOME/.claude/scripts/model-route.sh" \
+  ".claude/scripts/model-route.sh"; do
+  if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
+done
+if [ -z "$MODEL_ROUTE_SH" ]; then
+  echo "ERROR: model-route.sh not found (checked all three paths) — submission unavailable" >&2
+  exit 5
+fi
+SUBMISSION_RESULT=$("$MODEL_ROUTE_SH" --input "$MODEL_ROUTE_REQUEST") || exit 5
 jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
 ```
 
