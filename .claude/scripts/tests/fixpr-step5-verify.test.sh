@@ -228,6 +228,21 @@ printf '%s' '[{"event":"head_ref_force_pushed","created_at":"2026-11-06T16:00:00
 run_nopush "$old"
 check_eq "a newer unbound head movement fails closed" 1 "$(verdict)"
 check_eq "unbound movement is diagnosed as unknown, not an invitation" 1 "$(grep -c 'head_push_boundary_mismatch' <<<"$NOPUSH_OUT")"
+# Restoring an unchanged branch advances the invitation window without
+# inventing a push SHA. Deletion alone and mismatching SHA evidence stay unknown.
+printf '%s' '[{"event":"head_ref_deleted","created_at":"2026-11-06T16:00:00Z"},{"event":"head_ref_restored","created_at":"2026-11-06T17:00:00Z"}]' >"$TMP/timeline.json"
+run_nopush "[$(c 2026-11-06T16:30:00Z '@cursor review')]"
+check_eq "restored unchanged head expires invitations before restoration" 0 "$(verdict)"
+check_eq "restoration has known prior-SHA binding rather than permanent unknown" 0 "$(grep -c 'DEGRADED: BugBot invitation unknown' <<<"$NOPUSH_OUT")"
+run_nopush "[$(c 2026-11-06T17:30:00Z '@cursor review')]"
+check_eq "invitation after branch restoration is awaited" 1 "$(verdict)"
+printf '%s' '[{"event":"head_ref_deleted","created_at":"2026-11-06T17:00:00Z"}]' >"$TMP/timeline.json"
+run_nopush "$old"
+check_eq "deletion without restoration stays unknown/awaited" 1 "$(verdict)"
+printf '%s' '[{"event":"head_ref_force_pushed","created_at":"2026-11-06T16:00:00Z","commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"event":"head_ref_restored","created_at":"2026-11-06T17:00:00Z"}]' >"$TMP/timeline.json"
+run_nopush "$old"
+check_eq "restoration cannot redeem a mismatching latest bound SHA" 1 "$(verdict)"
+check_eq "restored SHA mismatch retains its explicit unknown reason" 1 "$(grep -c 'head_push_boundary_mismatch' <<<"$NOPUSH_OUT")"
 unset GH_TIMELINE_FILE
 # Unrelated old timeline/comment history must not exhaust current-head reads.
 jq -nc '[range(700) | {event:"commented",created_at:"2026-11-01T12:00:00Z"}] + [{event:"head_ref_force_pushed",created_at:"2026-11-06T15:00:00Z",commit_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]' >"$TMP/busy-timeline.json"

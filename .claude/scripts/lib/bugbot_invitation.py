@@ -129,8 +129,8 @@ def head_movements(args):
             value = None
         else:
             raise Unknown('head_history_type_invalid')
-        movements.append((stamp(row.get('createdAt')), value))
-    if previous and (not movements or min(t for t, _ in movements) == max(t for t, _ in movements)):
+        movements.append((stamp(row.get('createdAt')), value, kind))
+    if previous and (not movements or min(t for t, _, _ in movements) == max(t for t, _, _ in movements)):
         raise Unknown('head_history_timestamp_boundary_ambiguous')
     return movements
 
@@ -159,15 +159,27 @@ def boundary(args, pr, evidence):
     # newer, unbound head movement than the repository event we selected.
     evidence['read_stage'] = 'pr_head_movements'
     movements = head_movements(args)
-    candidates = pushes + movements
+    candidates = [(t, sha, 'push') for t, sha in pushes] + movements
     if not candidates:
         raise Unknown('head_push_boundary_unavailable')
-    newest = max(t for t, _ in candidates)
-    newest_heads = {sha for t, sha in candidates if t == newest}
+    newest = max(t for t, _, _ in candidates)
+    latest = [(sha, kind) for t, sha, kind in candidates if t == newest]
+    newest_heads = {sha for sha, _ in latest}
     evidence['latest_movement_at'] = newest.isoformat()
+    if all(kind == 'HeadRefRestoredEvent' for _, kind in latest):
+        # A restore provides a boundary timestamp but no SHA. Bind it to the
+        # newest actual SHA evidence, then recheck live HEAD at classification
+        # completion. A deletion alone or same-second conflicting event still
+        # fails closed; a restore cannot redeem stale/different SHA evidence.
+        bound = [(t, sha) for t, sha, _ in candidates if sha is not None]
+        if not bound:
+            raise Unknown('head_push_boundary_unavailable')
+        newest_bound = max(t for t, _ in bound)
+        newest_heads = {sha for t, sha in bound if t == newest_bound}
+        evidence['boundary_source'] = 'github_restore_with_prior_sha_binding'
     if newest_heads != {pr[0]}:
         raise Unknown('head_push_boundary_mismatch')
-    evidence['boundary_source'] = 'github_sha_bound_push_history'
+    evidence.setdefault('boundary_source', 'github_sha_bound_push_history')
     return max(newest, pr[3])
 
 
