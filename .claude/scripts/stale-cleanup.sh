@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # stale-cleanup.sh — Detect and optionally remove stale worktrees and branches.
-# catalog: trust-worktree-repo — Detect and optionally remove stale worktrees, branches, and orphaned worktree registrations (out-of-band, safe; every registration read wall-clock bounded)
+# catalog: trust-worktree-repo — Detect stale/finished worktrees, branches and orphaned registrations; finished-only apply rechecks ownership, pushed work and session liveness
 #
 # PURPOSE
 #   Replaces the self-cleanup that /wrap used to do (worktree removal + branch
@@ -8,7 +8,7 @@
 #   never deletes itself. /pm-clean (workspace sweep) is the sole skill caller,
 #   and this script is the single source of truth for stale worktree/branch
 #   detection and safety, so no second implementation can diverge from it
-#   (issue #618). Detects five classes of stale state on the target repo's root:
+#   (issue #618). Detects age/orphan classes plus finished worktrees on the target repo's root:
 #     1. Local worktrees whose HEAD commit is older than STALE_DAYS.
 #     2. Local branches whose tip commit is older than STALE_DAYS.
 #     3. Remote branches (refs/remotes/origin/*) whose tip commit is older
@@ -18,6 +18,18 @@
 #     5. Orphaned worktree *checkouts* — directories under `.claude/worktrees/`
 #        whose `.git` gitdir target is gone: the inverse of class 4, and
 #        REPORT-ONLY unless --remove-orphaned-checkouts is passed (issue #1417).
+#
+#     6. Finished worktrees: same-repo, owner-authored MERGED/CLOSED PR and
+#        verified clean/pushed/unlocked/inactive state, independent of age.
+#        Unknown metadata or session liveness is never deletion permission.
+#
+#   --apply-finished removes ONLY verified finished worktrees/local refs,
+#   without confirmation. It never runs age/prune/orphan/remote-deletion passes.
+#   All probes are bounded. lsof/ps must be complete; known desktop hosts without
+#   worktree-session bindings and managed Codex/Cursor worktrees are unknown.
+#   Non-template dotenv files remain protected, including ignored files.
+#   Removal uses non-forced git worktree remove. Directory-not-empty failures
+#   list the remaining path; no recursive deletion or git clean is used.
 #
 #   TARGET REPO RESOLUTION (invoking-repo scope — issues #687/#697): the swept
 #   repo is resolved from the CALLER's current directory (or an explicit
@@ -314,6 +326,18 @@
 #              Also accepts --root=<path>. An empty or flag-like value (e.g.
 #              `--root --json`) is a usage error (exit 3).
 #
+#   stale-cleanup.sh --apply-finished [--root <path>] [--json]
+#     Removes only the finished class non-interactively; local branch ref
+#     deletion uses an expected-old-SHA compare. Never deletes remote branches.
+#     Incompatible with --check, --apply and --include-locked.
+#   STALE_CLEANUP_LSOF_TIMEOUT_SECS bounds cwd/process census (default 10s).
+#   STALE_CLEANUP_REMOVE_TIMEOUT_SECS bounds finished removal (default 120s);
+#     a timed-out removal is a failed/unknown attempt, never a clean skip.
+#   Finished reporting adds finished_worktrees, skipped_finished_worktrees,
+#     unknown_finished_worktrees and finished_scan (complete/incomplete/not_run).
+#   Finished apply exits 0 when eligible work completes, 1 on unknown/failure,
+#     4 if the required Python helper is unavailable. Age-only --apply is unchanged.
+#
 # OUTPUT (human-readable, default)
 #   Stale worktrees (older than 7 days):
 #     <path> (branch <branch>, last commit <YYYY-MM-DD>)
@@ -385,9 +409,9 @@ while [[ $# -gt 0 ]]; do
       print_help
       exit 0
       ;;
-    --check|--apply)
+    --check|--apply|--apply-finished)
       if (( MODE_SET == 1 )); then
-        usage_error "--check and --apply are mutually exclusive"
+        usage_error "--check, --apply and --apply-finished are mutually exclusive"
       fi
       MODE="${1#--}"
       MODE_SET=1
@@ -436,6 +460,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$MODE" == "apply-finished" && "$INCLUDE_LOCKED" == 1 ]]; then
+  usage_error "--include-locked cannot be combined with --apply-finished; finished cleanup always protects locks"
+fi
 
 # The one flag that can delete source is never usable in the mode that promises
 # to delete nothing. Silently ignoring it in --check would teach the habit of
@@ -800,6 +828,33 @@ is_protected() {
   return 1
 }
 
+# Finished mode is isolated from every legacy age/prune/remote-deletion pass.
+FINISHED_JSON='{"finished_worktrees":[],"skipped_finished_worktrees":[],"unknown_finished_worktrees":[],"finished_scan":"not_run"}'
+FINISHED_RC=0
+finished_report_json() {
+  FINISHED_RC=0
+  if command -v python3 >/dev/null 2>&1 && [[ -r "$SCRIPT_DIR/lib/stale-cleanup-finished.py" ]]; then
+    FINISHED_JSON=$(python3 "$SCRIPT_DIR/lib/stale-cleanup-finished.py" \
+      --root "$ROOT" --caller "$(pwd -P)" --json "$@") || FINISHED_RC=$?
+  else
+    FINISHED_JSON=""
+    FINISHED_RC=4
+  fi
+  if ! jq -e 'type == "object" and (.finished_worktrees|type == "array") and (.skipped_finished_worktrees|type == "array") and (.unknown_finished_worktrees|type == "array") and (.finished_scan == "complete" or .finished_scan == "incomplete")' <<<"$FINISHED_JSON" >/dev/null 2>&1; then
+    FINISHED_JSON=$(jq -cn --arg root "$ROOT" '{finished_worktrees:[], skipped_finished_worktrees:[], unknown_finished_worktrees:[{path:$root,branch:"",reason:"finished_helper_unavailable"}],finished_scan:"incomplete"}')
+    FINISHED_RC=4
+  fi
+}
+emit_finished_text() {
+  [[ "$(jq -r '.finished_scan' <<<"$FINISHED_JSON")" == "not_run" ]] && return 0
+  jq -r '"Finished worktrees:", (if (.finished_worktrees|length)==0 then "  none" else .finished_worktrees[]|"  \(.path) — \(.pr_state) PR #\(.pr_number)" end), (.unknown_finished_worktrees[]|"unknown: \(.path) — \(.reason)"), (.finished_apply[]?|"\(.outcome): \(.path) — \(.reason)", (.remaining_entries // empty))' <<<"$FINISHED_JSON"
+}
+if [[ "$MODE" == "apply-finished" ]]; then
+  finished_report_json --apply
+  if (( JSON == 1 )); then printf '%s\n' "$FINISHED_JSON"; else emit_finished_text; fi
+  exit "$FINISHED_RC"
+fi
+
 # Cache open-PR head refs once. `gh pr list --json headRefName` caps at 1000
 # per call (gh's hard limit), so we paginate via `--search "is:open"` with
 # created-time pagination by walking pages until we get a short page back.
@@ -877,12 +932,12 @@ fetch_open_prs() {
         echo "error: 'gh pr list' exceeded ${GH_BOUND_SECS}s and was killed — refusing to run with an unverified open-PR set (raise STALE_CLEANUP_GH_TIMEOUT_SECS if the forge is genuinely this slow)" >&2
       fi
       sed 's/^/  gh: /' "$GH_TMPERR" >&2 || true
-      exit 4
+      return 4
     fi
     if (( rc != 0 )); then
       echo "error: gh pr list failed — refusing to run with an unverified open-PR set" >&2
       sed 's/^/  gh: /' "$GH_TMPERR" >&2 || true
-      exit 4
+      return 4
     fi
     # Safe where the substitution around run_bounded was not: $CAPTURE is our
     # own temp file, and any handover has already happened in this shell.
@@ -891,7 +946,7 @@ fetch_open_prs() {
     local count
     if ! count="$(printf '%s' "$page" | jq 'length')"; then
       echo "error: gh pr list returned non-JSON output — refusing to proceed" >&2
-      exit 4
+      return 4
     fi
     (( count == 0 )) && break
     local refs
@@ -921,7 +976,13 @@ fetch_open_prs() {
   OPEN_PR_BRANCHES="$accumulated"
   return 0
 }
-fetch_open_prs
+if ! fetch_open_prs; then
+  if [[ "$MODE" == "check" ]]; then
+    finished_report_json --pr-lookup-unavailable
+    if (( JSON == 1 )); then printf '%s\n' "$FINISHED_JSON"; else emit_finished_text; fi
+  fi
+  exit 4
+fi
 has_open_pr() {
   local b="$1"
   [[ -z "$OPEN_PR_BRANCHES" ]] && return 1
@@ -1838,6 +1899,7 @@ emit_text() {
       done
     fi
   fi
+  emit_finished_text
 }
 
 emit_json() {
@@ -1886,7 +1948,7 @@ emit_json() {
     sc_json="$(printf '%s\n' "${SKIPPED_CHECKOUTS[@]}" \
       | jq -Rn --arg D "$US" '[inputs | split($D) | {path:.[0], reason:.[1]}]')"
   fi
-  jq -n --argjson wt "$wt_json" --argjson lb "$lb_json" --argjson rb "$rb_json" \
+  jq -n --argjson finished "$FINISHED_JSON" --argjson wt "$wt_json" --argjson lb "$lb_json" --argjson rb "$rb_json" \
         --argjson sw "$sw_json" --argjson sl "$sl_json" --argjson sr "$sr_json" \
         --argjson or "$or_json" --argjson sg "$sg_json" \
         --argjson oc "$oc_json" --argjson sc "$sc_json" \
@@ -1913,14 +1975,15 @@ emit_json() {
           worktree_enumeration:$enum_state,
           registration_scan:$reg_scan,
           ref_scan:$ref_scan,
-          checkout_scan:$checkout_scan}'
+          checkout_scan:$checkout_scan} + $finished'
 }
 
 if [[ "$MODE" == "check" ]]; then
+  finished_report_json
   if (( JSON == 1 )); then emit_json; else emit_text; fi
   total=$(( ${#STALE_WORKTREES[@]} + ${#STALE_LOCAL_BRANCHES[@]} + ${#STALE_REMOTE_BRANCHES[@]} \
             + ${#ORPHANED_REGISTRATIONS[@]} ))
-  if (( total > 0 )); then exit 1; fi
+  if (( total > 0 )) || [[ "$(jq -r ' .finished_worktrees|length' <<<"$FINISHED_JSON")" != 0 ]] || [[ "$(jq -r ' .finished_scan' <<<"$FINISHED_JSON")" != complete ]]; then exit 1; fi
   # A sweep that could not classify is a finding, not a clean bill of health:
   # exiting 0 here would tell the caller "nothing stale" about a repo we never
   # managed to read.
