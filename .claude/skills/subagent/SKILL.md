@@ -30,6 +30,7 @@ resolve_script() {
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
+MODEL_ROUTE_SH=$(resolve_script model-route.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 SPLIT_THRESHOLDS_SH=$(resolve_script split-thresholds.sh || true)
@@ -828,6 +829,18 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   Report the chain as held, naming the declined head, rather than silently skipping to its
   successor.
 
+**Cost-first model preflight (every phase and successor).** Before each Agent
+call, follow `task-model-routing.md` through the Step 0 reference candidate order.
+Resolve `model-route.sh` through the same shared-script order. Build the current
+phase's request from scoped session/handoff state and refreshed runtime/launch
+checks, execute the reference’s `task-model-route-dispatch` block before every
+Agent call to persist `{request, decision}` with the owning locked helper and
+set `ROUTED_MODEL` only for `start`, `retry`, or `escalate`. Invalid input, blocked/diagnose/owner-decision, or a failed write
+launches nothing. Preserve attempts and targeted feedback on successors; never
+reset routing to a phase literal. Append finished-attempt evidence before
+rerouting. Before new pushes/review/CI, require local checks, distinct changes
+and batched fixes per the reference; all independent review/merge gates remain.
+
 **Subagent prompt template** (fill in variables per issue):
 
 ```
@@ -909,7 +922,7 @@ Body:
 
 **Agent tool call parameters:**
 - `mode: "bypassPermissions"`
-- `model: "opus"` (heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
+- `model: ROUTED_MODEL` (the literal alias returned by the persisted current-phase routing decision)
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
 
@@ -1672,7 +1685,7 @@ If missing, reconstruct state from GitHub API.
 **Phase B Agent tool call parameters:**
 - `subagent_type: "phase-b-reviewer"`
 - `mode: "bypassPermissions"`
-- `model: "opus"` (Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
+- `model: ROUTED_MODEL` (the literal alias returned by the persisted current-phase routing decision)
 - `isolation: "worktree"` (same as Phase A — Phase B fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 
@@ -1768,7 +1781,7 @@ Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this
 **Phase C Agent tool call parameters:**
 - `subagent_type: "phase-c-merger"`
 - `mode: "bypassPermissions"`
-- `model: "sonnet"` (Phase C is lightweight verification plus the mechanical `/wrap` flow — see `subagent-orchestration.md` "Model Selection")
+- `model: ROUTED_MODEL` (the literal alias returned by the persisted current-phase routing decision)
 - `isolation: "worktree"` (same as Phase A — Phase C fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 

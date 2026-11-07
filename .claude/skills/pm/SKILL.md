@@ -2194,8 +2194,8 @@ When the conversation is getting long (many back-and-forth cycles, multiple batc
 
 **Model selection for spawned subagents:**
 
-- **Coding subagents** (Phase A/B executing a selected issue): always the `/subagent` skill via the Skill tool (Execution Boundary), which already enforces per-phase model selection (`opus` for Phase A/B, `sonnet` for Phase C). See `.claude/rules/subagent-orchestration.md` "Model Selection".
-- **Read-only PM data-gathering subagents** (e.g., scanning GitHub for backlog context, summarizing recent PR activity, reviewing progress on in-flight threads): spawn with `subagent_type: "pm-worker"`, `mode: "bypassPermissions"`, and `model: "sonnet"`. These tasks are template-driven data collection — Sonnet is the right cost tier and the frontmatter default on `pm-worker` matches.
+- **Coding subagents** (Phase A/B executing a selected issue): always the `/subagent` skill via the Skill tool (Execution Boundary), which enforces the cost-first routing/retry contract for every phase (`task-model-routing.md`), without premium-by-phase defaults. See `.claude/rules/subagent-orchestration.md` "Model Selection".
+- **Read-only PM data-gathering subagents** (e.g., scanning GitHub for backlog context, summarizing recent PR activity, reviewing progress on in-flight threads): spawn with `subagent_type: "pm-worker"`, `mode: "bypassPermissions"`, and an explicit `model` from `model-route.sh` under `task-model-routing.md`. Resolve the helper through the shared-script paths and execute the reference’s `task-model-route-dispatch` block before each launch to persist its task-scoped request/decision. Refresh runtime/launch eligibility and append attempt evidence before retries. Block on unreadable controls or failed writes; do not use a phase literal or weaken read-only tools.
 - **Never omit `model`** at the call site. Explicit model selection keeps cost decisions visible at every spawn point and prevents silent Opus usage for lightweight work.
 
 ---

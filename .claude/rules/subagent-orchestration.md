@@ -23,17 +23,19 @@ Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/
 
 ## Model Selection
 
-**Defaults (set at every spawn site).**
+**Cost-first selection (every spawn).** Resolve `model-route.sh` and execute
+`.claude/reference/task-model-routing.md`'s dispatch block for each task/phase.
+Choose the cheapest available capable tier; preserve explicit owner choices,
+tool/context support, permissions and launch/reserve/budget gates. Persist the
+request and decision through scoped state helpers before dispatch; failed writes
+launch nothing. Pass the returned alias explicitly; frontmatter is only a cheap
+fallback.
 
-| Phase / Agent | Model |
-|---------------|-------|
-| Phase A (`phase-a-fixer`) | `opus` |
-| Phase B (`phase-b-reviewer`) | `opus` |
-| Phase C (`phase-c-merger`) | `sonnet` |
-| `pm-worker` | `sonnet` |
-| Read-only review agents (e.g., `/recap`) | `sonnet` |
-
-Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms. Alias resolution: `.claude/agents/README.md`.
+Keep cheap retries while producing useful evidence. Slow work, one failed test
+or an arbitrary retry count never upgrades a worker. Diagnose equivalent failures
+or poor-patch review/CI churn before task-local escalation. Preserve discoveries,
+local checks, batched changed pushes, independent review and merge gates. Store
+actual cost or unknown; routine retries stay silent.
 
 **Effort is not settable on a spawn** — subagents inherit the parent's effort level; never write an effort instruction into a spawn prompt. **Set model at spawn, never mid-session** — session-scoped caches make tier switches costly (`token-efficiency-audit-2026-07.md` §FU-4).
 

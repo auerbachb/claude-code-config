@@ -2,7 +2,7 @@
 name: silent-failure-hunter
 description: "Read-only review agent that hunts silent failures in Bash scripts and shell tooling — swallowed exit codes, fabricated sentinels, guarded no-ops, and missing error propagation. Adapted from affaan-m/everything-claude-code @ 569b1d5b."
 tools: Read, Grep, Glob, Bash(grep:*), Bash(wc:*), Bash(find:*), Bash(cat:*), Bash(head:*), Bash(tail:*), Bash(ls:*), Bash(echo:*), Bash(git diff:*), Bash(git show:*), Bash(git log:*), Bash(git blame:*)
-model: sonnet
+model: haiku
 ---
 
 <!-- Adapted from affaan-m/everything-claude-code/agents/silent-failure-hunter.md @ 569b1d5b -->

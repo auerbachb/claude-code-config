@@ -55,7 +55,11 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 Each agent definition declares a default `model` in frontmatter. The parent must also set `model` explicitly at every Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
 
-**Fleet:** Fable, Opus, Sonnet, Haiku. Opus is the default for unattended and heavy-phase spawns; Fable is the strongest model in the fleet but is never a spawn default (see below).
+**Fleet:** Fable, Opus, Sonnet, Haiku. Worker selection follows
+`task-model-routing.md`: start with the cheapest available capable model,
+retain cheap retries while progressing, and diagnose before task-local escalation.
+Frontmatter uses the cheap fallback; every caller still runs routing and passes
+its returned alias explicitly. Permissions and tool restrictions stay unchanged.
 
 **Aliases:** the Agent tool's `model` parameter accepts exactly four values — `sonnet`, `opus`, `haiku`, `fable` — and each resolves to the newest non-legacy model of that family. Frontmatter intentionally uses these bare aliases, so agent definitions need no editing when Anthropic ships a new version. Write an explicit model ID (e.g. `claude-opus-5`) only where a tool literally consumes the string; if the runtime ever stops resolving bare aliases, switch frontmatter to explicit IDs and update this note.
 
@@ -72,19 +76,13 @@ This reverses the version-pinning call made in #749. That change wanted the docs
 
 **Effort is not a spawn parameter.** The Agent tool takes `model` but has no `effort` — a subagent inherits the parent session's effort. Effort *is* settable per agent inside a Workflow script, via `agent()`'s `opts.effort`. Never write an effort instruction into a subagent prompt expecting it to change anything.
 
-**Per-phase rationale:**
-
-| Agent | Model | Why |
-|-------|-------|-----|
-| `phase-a-fixer` | `opus` | Heaviest reasoning: reads findings, edits source files across multiple locations, resolves rule conflicts, designs fixes. Quality regressions here cost a full review cycle. |
-| `phase-b-reviewer` | `opus` | Evaluates review findings (many are false positives), decides when to dismiss vs. fix, handles multi-reviewer edge cases, judges severity. Needs strong judgment. |
-| `phase-c-merger` | `sonnet` | Lightweight verification plus canonical `/wrap` execution: reads PR body, checks boxes against code, runs `gh`/git commands, and reports blockers. Read-only tool restrictions (no Write/Edit) — the mechanical work does not need Opus-level reasoning. |
-| `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, repo bootstrap checks. Each task follows a well-defined template. |
-| `researcher` | `sonnet` | Read-only exploration and summarization: reads files, runs `gh`/`git` queries, synthesizes findings. No code edits, no fixes — `sonnet` is sufficient for read-and-report work, and the `tools:` frontmatter restriction prevents any write operations regardless of model. |
-
-**Why Fable is not any agent's default:** Fable is the strongest model in the fleet, but no agent defaults to it — the same cost logic that puts `sonnet` on `phase-c-merger` applies in the other direction. Phase spawns run unattended, often several in parallel, and Opus already clears the reasoning bar for the heaviest phase (A/B) work; paying roughly double per spawn buys headroom these phases do not need. Fable is reserved for interactive hardest-work step-ups, where a human is watching the spend and can judge the trade. `/prompt`'s tier ladder is where it is actively recommended (see `.claude/skills/prompt/SKILL.md` "Model Lineup & Effort Levels"). Escalating a specific spawn to `fable` is a deliberate exception — document why, and do not make it a default.
-
-The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net for unexpected/undocumented spawns only — **not** a compliant spawn pattern. Compliant calls must still set `model` explicitly at the call site and must not rely on either the frontmatter default or this env var.
+**One worker contract, independent roles.** Phase A implements, B independently
+reviews and repairs, C verifies and wraps, PM gathers structured data, and the
+researcher stays read-only. Those roles keep their existing tool boundaries;
+none mandates a premium model. Use the current runtime's capability/context
+checks and the existing reserve/budget controls before routing. Fable is only an
+explicit owner selection, never an automatic fallback. Do not rely on
+`CLAUDE_CODE_SUBAGENT_MODEL` or inherited parent models instead of routing.
 
 ## Spawning Pattern
 
@@ -94,7 +92,7 @@ The parent agent spawns subagents like this:
 Agent tool call:
   subagent_type: "phase-a-fixer"
   mode: "bypassPermissions"
-  model: "opus"
+  model: ROUTED_MODEL  # pass the actual alias from the persisted routing decision
   prompt: "Work on PR #618 for issue #617 on branch issue-617-add-auth.
            Repo: auerbachb/claude-code-config
            Handoff file: ~/.claude/handoffs/auerbachb/claude-code-config/pr-618-handoff.json
