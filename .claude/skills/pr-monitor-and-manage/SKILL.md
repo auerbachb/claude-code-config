@@ -398,6 +398,20 @@ PREV=$("$SESSION_STATE_SH" --get '.pmm_digest' 2>/dev/null || echo null)
 ROW_PREV=$("$SESSION_STATE_SH" --get '.pmm_row_digest' 2>/dev/null || echo null)
 ```
 
+Persist the current watch posture before dispatch or withholding work, including `clear` ticks so an old hold cannot survive recovery. A write failure stops the tick before any dispatch; it never publishes success. This is reporting state in PMM's own namespace, not a write to the shared day-mode park.
+
+<!-- test-anchor: pmm-persist-watch-posture -->
+```bash
+WATCH_POSTURE=$(jq -cn --arg status "$HORIZON_STATUS" --arg reason "$WATCH_IDLE_REASON" \
+  --argjson launch "$WATCH_LAUNCH_OK" --argjson finish "$WATCH_FINISH_OK" \
+  --arg at "$(date -u +%FT%TZ)" \
+  '{status:$status, reason:$reason, launch_allowed:$launch, finish_allowed:$finish, observed_at:$at}') || exit 1
+"$SESSION_STATE_SH" --set ".pmm.watch_posture=$WATCH_POSTURE" || {
+  echo "ERROR: watch posture not saved; stopping tick before dispatch" >&2
+  exit 1
+}
+```
+
 First/resume ticks, digest changes, dispatch, held work, and unchanged ticks do not require a message. Record horizon holds and `WATCH_IDLE_REASON`; notify only when owner action or stopped recovery requires it. No routine heartbeat. On explicit status/verbose request, render the existing table (Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent) and engagement matrix from recorded state. Column definitions remain in `references/pmm-classify.md`. Decisions need only the relevant PR/evidence, not a mandatory full table.
 
 **The round-progress question is answered by `/board`, not by reshaping this table.** When the user asks "where is everything", "how far along",  run the complete `.claude/skills/board/SKILL.md` workflow inline and print its canonical table — the same "run the full SKILL.md, no shortcuts" idiom `/pm` Steps 1C, 1D and 2D.4 use, and the same shape every other surface renders, unaltered. If `/board` does not resolve, print `DEGRADED: /board not available — rendering the "Running now" table inline per time-estimates.md §"Running now Table"` and render it from that spec directly; unlike `/pm`, PMM resolves no table-freshness binding of its own, so state that the render went unrecorded and expect an armed floor to re-fire. PMM records no launch timestamp of its own and **never re-derives a Start**: `/board` Step 2 reads it back from `.prs["<pr>"].pipeline_started_at`, then `.repos["<key>"].pipelines["<issue>"].started_at`, falling back to `gh pr view --json createdAt` only for pipelines that predate the record. A PMM thread that did not dispatch the round gets `/board`'s own partial-board honesty — no queued rows, an approximate delivered count, both stated — which is correct here rather than something to paper over: PMM discovers PRs by author, so it genuinely does not know a round's membership.

@@ -595,6 +595,22 @@ Wait — bounded — for the bots and CI to deliver a verdict on the **current H
 
 **Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Set `WATCH_SHA` / `WAIT_BASELINE` from the entry path above (`PUSHED_SHA`/`PUSHED_AT` when `DID_PUSH=1`, else `HEAD_SHA`/`RUN_STARTED_AT`). Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
 
+Persist the latest snapshot before classifying it, including the zero-wait pre-check. The per-PR handoff must already exist (initialize it through `polling-state-gate.sh --ensure-session`); an unavailable helper or failed write stops this wait without a clean verdict. Raw bundle diagnostics remain at the recorded path; prior CI/review failures retain their original logs.
+
+<!-- test-anchor: fixpr-persist-wait-evidence -->
+```bash
+persist_fixpr_wait_evidence() {
+  [[ -n "$HANDOFF_STATE_SH" ]] || { echo "ERROR: wait evidence helper unavailable" >&2; return 1; }
+  local wait_record
+  wait_record=$(jq -cn --argjson verdict "$WAIT_STATE" --arg sha "$WATCH_SHA" \
+    --arg baseline "$WAIT_BASELINE" --arg bundle "$TICK" \
+    --arg at "$(date -u +%FT%TZ)" \
+    '{head_sha:$sha, baseline:$baseline, bundle_path:$bundle, observed_at:$at, verdict:$verdict}') || return 1
+  "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing \
+    --set "$PR_NUMBER" ".fixpr_wait=$wait_record" >/dev/null
+}
+```
+
 ```bash
 # Idempotent pre-check (DID_PUSH=0 only) — one tick, no iter increment
 SKIP_WAIT_LOOP=0
@@ -603,6 +619,7 @@ if [[ "${DID_PUSH:-0}" -eq 0 ]]; then
   WAIT_BASELINE=$RUN_STARTED_AT
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
   WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
+  persist_fixpr_wait_evidence || { echo "ERROR: wait evidence not saved; no clean verdict" >&2; exit 1; }
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   if [[ "$BOTS_PENDING" == "none" && "$CI_PENDING" == "none"
@@ -630,13 +647,13 @@ if [[ "$SKIP_WAIT_LOOP" -eq 0 ]]; then
   while :; do
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
   WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
+  persist_fixpr_wait_evidence || { echo "ERROR: wait evidence not saved; no clean verdict" >&2; exit 1; }
 
   ELAPSED=$(( $(date +%s) - WAIT_STARTED ))
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
 
-  # WAIT_STATE remains the structured evidence for this tick. Persist it with
-  # the existing wait/handoff record; routine waits produce no chat heartbeat.
+  # The snapshot was saved before classification; routine waits stay silent.
 
   if [[ "$(jq -r '.head_moved' <<<"$WAIT_STATE")" == "true" ]]; then
     WAIT_OUTCOME="head-moved"; break          # external push — re-audit from Step 0

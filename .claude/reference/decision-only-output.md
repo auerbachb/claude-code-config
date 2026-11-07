@@ -30,9 +30,9 @@ Read a cached PR bundle with a bounded `jq` projection for the immediate decisio
 Issue #1878 owns avoiding unchanged-tick model invocation. Keep its script-side digest/filter path and scheduling intact; do not add a summarizer model to decide to say nothing. Silencing text alone claims no inference or token savings.
 
 - `/wrap`: retain `pr-state.sh` bundle caching, gate JSON and per-iteration missing sets. Read selected fields before specific findings; preserve all post-merge sweep/AC state.
-- `/fixpr`: retain bounded wait-state fields (`bots_pending`, `ci_pending`, `ci_failing`, `new_findings`, `head_moved`) and parser footers. Wait-loop diagnostic echoes go to evidence, not routine chat.
+- `/fixpr`: save the latest snapshot in handoff `.fixpr_wait` before classification (HEAD, baseline, bundle path, observation time and complete wait verdict); a failed write cannot return clean. Retain bounded wait-state fields (`bots_pending`, `ci_pending`, `ci_failing`, `new_findings`, `head_moved`) and parser footers. Wait-loop diagnostic echoes go to evidence, not routine chat.
 - `/babysit-pr`: retain fetch error handling (skip classification on empty state), gate exit codes, digest/cadence persistence, dispatch locks and exact teardown. T7 is an optional status rendering, not a per-tick notification.
-- `/pr-monitor-and-manage`: compute/persist state and row digests even with no table; retain complete dispatch inputs. Status tables/reviewer engagement matrices render only on explicit request; owner asks need only relevant rows.
+- `/pr-monitor-and-manage`: persist `.pmm.watch_posture` (status, hold reason, launch/finish flags and observation time) before dispatch; clear ticks overwrite previous holds, and failed writes stop the tick. Compute/persist state and row digests even with no table; retain complete dispatch inputs. Status tables/reviewer engagement matrices render only on explicit request; owner asks need only relevant rows.
 - `/pm` and `/subagent`: retain launch/queue/claim and handoff records. Routine board freshness does not trigger a model or render; maintain explicit `/board` access. Do not stamp a board render that did not occur.
 
 No new proxy, universal interception, or optional compression tooling is introduced. Existing compact-result and PR-state contracts remain the foundation.
