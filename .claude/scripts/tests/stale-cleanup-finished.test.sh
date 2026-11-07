@@ -115,6 +115,17 @@ if 'branch' in a and '-d' in a and os.environ.get('FINISHED_TEST_REF_RACE'):
  new=subprocess.check_output([real,'-C',base,'commit-tree',tree,'-p',old,'-m','concurrent local work'],text=True).strip()
  subprocess.run([real,'-C',base,'update-ref',ref,new,old],check=True)
  Path(os.environ['FINISHED_TEST_REF_RACE']).write_text(new)
+if 'branch' in a and '-d' in a and os.environ.get('FINISHED_TEST_ATOMIC_RACE'):
+ # Model a ref advancing after Git's merge check: bypass that earlier check
+ # only in this disposable fixture. The serialized expected-tip guard must
+ # still veto deletion of the new commit at transaction preparation.
+ base=a[a.index('-C')+1];ref='refs/heads/'+a[-1];real=os.environ['FINISHED_TEST_REAL_GIT']
+ old=subprocess.check_output([real,'-C',base,'rev-parse',ref],text=True).strip()
+ tree=subprocess.check_output([real,'-C',base,'rev-parse',old+'^{tree}'],text=True).strip()
+ new=subprocess.check_output([real,'-C',base,'commit-tree',tree,'-p',old,'-m','late unpublished work'],text=True).strip()
+ subprocess.run([real,'-C',base,'update-ref',ref,new,old],check=True)
+ Path(os.environ['FINISHED_TEST_ATOMIC_RACE']).write_text(new)
+ a[a.index('-d')]='-D'
 if 'branch' in a and '-d' in a and os.environ.get('FINISHED_TEST_CHECKOUT_RACE'):
  base=a[a.index('-C')+1];real=os.environ['FINISHED_TEST_REAL_GIT']
  subprocess.run([real,'-C',base,'worktree','add','-q',os.environ['FINISHED_TEST_CHECKOUT_RACE'],a[-1]],check=True)
@@ -205,7 +216,7 @@ print('p100\\nn'+cwd)
     verify(any(r['reason']=='main_worktree' for r in data['skipped_finished_worktrees']), 'main worktree is protected')
     code, data = sweep('--apply-finished',extra={'FINISHED_TEST_CWD':str(live/'child')})
     verify(not young.exists() and not closed.exists(), 'finished mode removes both verified trees')
-    verify(git('branch','--list','young')=='', 'finished local branch removed')
+    verify(git('branch','--list','young')=='', ('finished local branch removed',data.get('finished_apply'),data.get('unknown_finished_worktrees')))
     verify(git('--git-dir',str(bare),'rev-parse','refs/heads/young')!='', 'remote branch stays intact')
     verify(old.exists() and git('branch','--list','old-unmerged')!='', 'finished mode never reaches age-only apply')
     verify(all(path.exists() for path in [dirty,untracked,unpushed,opened,locked,live,protected,foreign,managed]), 'every unsafe/unknown worktree retained')
@@ -265,6 +276,42 @@ print('p100\\nn'+cwd)
     code, data = sweep('--apply-finished',extra={'FINISHED_TEST_CHECKOUT_RACE':str(replacement)})
     verify(not checkout_candidate.exists() and replacement.exists() and git('branch','--list','checkout-race')!='', 'Git branch deletion refuses a new concurrent checkout')
     verify(git('for-each-ref','--format=%(refname)','refs/claude/finished-cleanup')=='', 'temporary pinned upstream refs are removed')
+    atomic_candidate = worktree('atomic-race')
+    atomic_marker = tmp/'atomic-new-ref'
+    code, data = sweep('--apply-finished',extra={'FINISHED_TEST_ATOMIC_RACE':str(atomic_marker)})
+    late_tip = atomic_marker.read_text().strip()
+    verify(not atomic_candidate.exists() and git('rev-parse','refs/heads/atomic-race',check=False)==late_tip, 'serialized expected-tip guard retains a commit after the earlier merge test')
+
+    # Run actual owner hooks through the guarded deletion, including a path
+    # with spaces and inherited command config. An owner veto stays binding.
+    hooks = tmp/'owner hooks'; hooks.mkdir()
+    hook_log = tmp/'owner-hook.jsonl'
+    hook = hooks/'reference-transaction'
+    hook.write_text('''#!/usr/bin/env python3
+import json,os,subprocess,sys
+payload=sys.stdin.read();stage=sys.argv[1]
+def config(key):
+ return subprocess.check_output(['git','config','--get',key],text=True).strip()
+with open(os.environ['FINISHED_OWNER_HOOK_LOG'],'a') as stream:
+ stream.write(json.dumps({'stage':stage,'payload':payload,'hooks_path':config('core.hooksPath'),'setting':config('fixture.setting')})+'\\n')
+if stage=='prepared' and any(line.split()[-1]=='refs/heads/owner-veto' and set(line.split()[1])=={'0'} for line in payload.splitlines()):sys.exit(1)
+''')
+    hook.chmod(0o755)
+    env['FINISHED_OWNER_HOOK_LOG'] = str(hook_log)
+    env['GIT_CONFIG_PARAMETERS'] = "'fixture.setting'='owner'"
+    git('config','core.hooksPath',str(hooks))
+    allowed = worktree('owner-allowed')
+    code, data = sweep('--apply-finished')
+    verify(not allowed.exists() and not git('branch','--list','owner-allowed'), 'existing owner hook permits normal guarded deletion')
+    vetoed = worktree('owner-veto')
+    code, data = sweep('--apply-finished')
+    verify(not vetoed.exists() and bool(git('branch','--list','owner-veto')), 'existing owner hook veto retains branch and reports partial removal')
+    verify(any(r['branch']=='owner-veto' and r['outcome']=='failed' and r.get('worktree_removed') for r in data.get('finished_apply',[])), 'owner veto is never reported as a successful branch deletion')
+    rows = [json.loads(row) for row in hook_log.read_text().splitlines()]
+    verify(rows and all(row['hooks_path']==str(hooks) and row['setting']=='owner' for row in rows), 'owner hook sees original hooks path and inherited config')
+    verify(all(any(row['stage']==stage and 'refs/heads/owner-allowed' in row['payload'] for row in rows) for stage in ['prepared','committed']), 'owner hook receives transaction lifecycle and stdin')
+    git('config','--unset','core.hooksPath')
+    env.pop('GIT_CONFIG_PARAMETERS')
     log = Path(env['FINISHED_TEST_LOG']).read_text()
     verify('"clean"' not in log and '"--force"' not in log, 'no git clean or forced worktree remove')
     bad = subprocess.run(['bash',script,'--apply-finished','--apply'],cwd=root,env=env,capture_output=True)

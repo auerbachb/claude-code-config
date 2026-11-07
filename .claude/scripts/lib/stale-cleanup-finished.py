@@ -34,6 +34,71 @@ LSOF_TIMEOUT = bound("STALE_CLEANUP_LSOF_TIMEOUT_SECS", 10)
 REMOVE_TIMEOUT = bound("STALE_CLEANUP_REMOVE_TIMEOUT_SECS", 120)
 MAX_OUTPUT = 2 * 1024 * 1024
 
+REF_TRANSACTION_GUARD = r"""
+import os, stat, subprocess, sys
+from pathlib import Path
+prefix = 'CLAUDE_FINISHED_REF_GUARD_'
+stage = sys.argv[1] if len(sys.argv) == 2 else ''
+if stage not in ('preparing', 'prepared', 'committed', 'aborted'):
+    sys.exit(1)
+payload = sys.stdin.buffer.read(2 * 1024 * 1024 + 1)
+if len(payload) > 2 * 1024 * 1024:
+    sys.exit(1)
+expected = os.environ[prefix + 'SHA'].encode()
+target = os.environ[prefix + 'REF'].encode()
+anchor = os.environ[prefix + 'ANCHOR'].encode()
+zero = b'0' * len(expected)
+# Forward the repository's actual hook, restoring the pre-command config.
+# Our transient hooksPath and pinned-upstream overrides must not change what
+# that hook (or its own Git children) sees. No persistent config is edited.
+env = dict(os.environ)
+if env[prefix + 'CONFIG_PRESENT'] == '1':
+    env['GIT_CONFIG_PARAMETERS'] = env[prefix + 'CONFIG']
+else:
+    env.pop('GIT_CONFIG_PARAMETERS', None)
+for key in list(env):
+    if key.startswith(prefix):
+        env.pop(key)
+if stage == 'prepared':
+    for line in payload.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            sys.exit(1)
+        old, new, ref = parts
+        if ref == target:
+            # branch -d supplies no old OID, so Git reports zero here. Read
+            # the real tip while this prepared transaction holds its lock.
+            # A cooperating writer cannot advance it before this commit.
+            current = subprocess.run(['git', 'rev-parse', '--verify',
+                                      target.decode('utf-8')], env=env,
+                                     stdout=subprocess.PIPE)
+            if (current.returncode or current.stdout.strip() != expected
+                    or old not in (zero, expected) or new != zero):
+                sys.exit(1)
+        if ref == anchor:
+            if old == zero and new == expected:
+                Path(os.environ[prefix + 'MARKER']).write_text('prepared\n')
+            elif old != expected or new != zero:
+                sys.exit(1)
+resolved = subprocess.run(['git', 'rev-parse', '--path-format=absolute',
+                           '--git-path', 'hooks/reference-transaction'],
+                          env=env, stdout=subprocess.PIPE)
+if resolved.returncode:
+    sys.exit(1)
+hook = resolved.stdout.decode('utf-8').rstrip('\n')
+if not os.path.isabs(hook):
+    sys.exit(1)
+try:
+    info = os.stat(hook)
+except (FileNotFoundError, NotADirectoryError):
+    sys.exit(0)
+if not stat.S_ISREG(info.st_mode):
+    sys.exit(1)
+if not os.access(hook, os.X_OK):
+    sys.exit(0)
+sys.exit(subprocess.run([hook, stage], input=payload, env=env).returncode)
+"""
+
 
 def run(args, cwd, timeout=GIT_TIMEOUT, env=None):
     """Bound process groups and capture files, not unbounded pipes in memory."""
@@ -322,6 +387,43 @@ sys.exit(11 if errors else 0)
         if unknown:
             self.report["finished_scan"] = "incomplete"
 
+    def delete_branch(self, candidate):
+        """Git checkout protection plus an expected-tip check under the ref lock."""
+        anchor = "refs/claude/finished-cleanup/" + uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="finished-ref-guard-") as directory:
+            temporary = Path(directory)
+            program = temporary / "guard.py"
+            program.write_text(REF_TRANSACTION_GUARD, encoding="utf-8")
+            hook = temporary / "reference-transaction"
+            hook.write_text('#!/bin/sh\nexec "$CLAUDE_FINISHED_REF_GUARD_PYTHON" "$CLAUDE_FINISHED_REF_GUARD_PROGRAM" "$@"\n')
+            hook.chmod(0o700)
+            marker = temporary / "hook-supported"
+            prefix = "CLAUDE_FINISHED_REF_GUARD_"
+            env = dict(os.environ)
+            env.update({
+                prefix + "PYTHON": sys.executable, prefix + "PROGRAM": str(program),
+                prefix + "REF": "refs/heads/" + candidate["branch"],
+                prefix + "SHA": candidate["head_sha"], prefix + "ANCHOR": anchor,
+                prefix + "MARKER": str(marker),
+                prefix + "CONFIG_PRESENT": "1" if "GIT_CONFIG_PARAMETERS" in os.environ else "0",
+                prefix + "CONFIG": os.environ.get("GIT_CONFIG_PARAMETERS", ""),
+            })
+            git = ["git", "-C", self.root, "-c", "core.hooksPath=" + str(temporary)]
+            # A private anchor creation proves this Git/backend executes the
+            # guard before any real branch deletion. Its hook sees the same
+            # original repository policy as an ordinary reference update.
+            checked([*git, "update-ref", anchor, candidate["head_sha"],
+                     "0" * len(candidate["head_sha"])], self.root, env=env)
+            try:
+                if not marker.is_file():
+                    raise Unknown("reference_transaction_guard_unavailable")
+                return run([*git, "-c", "branch." + candidate["branch"] + ".remote=.",
+                            "-c", "branch." + candidate["branch"] + ".merge=" + anchor,
+                            "branch", "-d", "--", candidate["branch"]], self.root, env=env)
+            finally:
+                checked([*git, "update-ref", "--no-deref", "-d", anchor,
+                         candidate["head_sha"]], self.root, env=env)
+
     def detect(self):
         self.root = canonical(self.root, self.root)
         self.caller = canonical(self.caller, self.root)
@@ -373,23 +475,14 @@ sys.exit(11 if errors else 0)
                 elif any(r.get("branch") == candidate["branch"] for r in self.worktrees()):
                     item.update(outcome="failed", reason="worktree_removed_branch_checked_out")
                 else:
-                    # Let Git's own non-forced branch deletion protect a branch
-                    # checked out after our census. A unique, pinned upstream
-                    # anchors the merge test at exactly the verified old tip:
-                    # a concurrent new commit cannot be "merged" into this tip.
-                    anchor = "refs/claude/finished-cleanup/" + uuid.uuid4().hex
-                    self.git("update-ref", anchor, candidate["head_sha"], "0" * len(candidate["head_sha"]))
-                    try:
-                        code, _, errors = run(["git", "-C", self.root,
-                            "-c", "branch." + candidate["branch"] + ".remote=.",
-                            "-c", "branch." + candidate["branch"] + ".merge=" + anchor,
-                            "branch", "-d", "--", candidate["branch"]], self.root)
-                        item.update(outcome="removed" if code == 0 else "failed",
-                                    reason="finished" if code == 0 else "worktree_removed_branch_retained")
-                        if code:
-                            item["detail"] = errors[:4000]
-                    finally:
-                        self.git("update-ref", "--no-deref", "-d", anchor, candidate["head_sha"])
+                    # branch -d owns the checkout guard; the transaction hook
+                    # independently rejects a tip that advanced after its merge
+                    # check. The private upstream also supports squash merges.
+                    code, _, errors = self.delete_branch(candidate)
+                    item.update(outcome="removed" if code == 0 else "failed",
+                                reason="finished" if code == 0 else "worktree_removed_branch_retained")
+                    if code:
+                        item["detail"] = errors[:4000]
 
             except Skip as exc:
                 item.update(outcome="failed" if item.get("removal_attempted") else "skipped", reason=str(exc))
