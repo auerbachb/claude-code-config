@@ -4,12 +4,14 @@ Only the observer's private cache is written. Registry entries and runtime
 tasks are never stopped, updated, or declared complete by this check.
 """
 from datetime import datetime
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -22,12 +24,77 @@ class Unknown(Exception):
     pass
 
 
-def read_json(path, limit):
-    with open(path, 'rb') as stream:
+def verify_private_file(descriptor):
+    info = os.fstat(descriptor)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise Unknown('private_state_file_unsafe')
+
+
+def private_read(path, limit):
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        verify_private_file(stream.fileno())
         raw = stream.read(limit + 1)
     if len(raw) > limit:
         raise Unknown('inventory_or_cache_limit')
+    return raw
+
+
+def private_write(path, raw):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(raw)
+    try:
+        os.replace(temporary, path)  # replace an entry, never truncate its target
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def private_workspace(prefix, create=True):
+    directory = Path(prefix + '.d')
+    try:
+        if create:
+            directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    try:
+        descriptor = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if not create:
+            return None
+        raise
+    try:
+        info = os.fstat(descriptor)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise Unknown('private_state_directory_unsafe')
+    finally:
+        os.close(descriptor)
+    return directory
+
+
+@contextmanager
+def private_lock(path):
+    descriptor = os.open(str(path), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(descriptor, 'r+') as stream:
+        verify_private_file(stream.fileno())
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
+def read_json(path, limit, private=False):
+    if private:
+        raw = private_read(path, limit)
+    else:
+        with open(path, 'rb') as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise Unknown('inventory_or_cache_limit')
     return json.loads(raw)
+
+
+def fingerprint_hash(parts):
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
 def timestamp(value):
@@ -43,7 +110,10 @@ def observe(session, cache_path):
     repos = inventory.get('repos')
     if not isinstance(repos, dict):
         raise Unknown('inventory_shape_invalid')
-    cache = read_json(cache_path, 1024 * 1024) if cache_path.exists() else {}
+    try:
+        cache = read_json(cache_path, 1024 * 1024, private=True)
+    except FileNotFoundError:
+        cache = {}
     if not isinstance(cache, dict) or cache.get('session', session) != session:
         raise Unknown('cache_shape_invalid')
     previous = cache.get('tasks', {})
@@ -72,8 +142,11 @@ def observe(session, cache_path):
                 raise Unknown('task_type_unknown')
             if row['type'] != 'agent':
                 continue
+            if (not isinstance(repo, str) or (repo != '_unknown' and not
+                    re.fullmatch(r'[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}', repo))):
+                raise Unknown('inventory_scope_invalid')
             status = row.get('status')
-            if status in ('done', 'failed', 'stopped', 'rearmed', 'abandoned'):
+            if status in ('done', 'failed', 'stopped', 'rearming', 'rearmed', 'abandoned'):
                 continue
             count += 1
             if count > 200:
@@ -92,7 +165,7 @@ def observe(session, cache_path):
                 started = timestamp(generation)
                 if started > now or repo == '_unknown' or row.get('repo_key') != repo:
                     raise Unknown('task_scope_or_clock_unknown')
-                if status not in ('running', 'stopping', 'stop_failed', 'rearming'):
+                if status not in ('running', 'stopping', 'stop_failed'):
                     raise Unknown('task_status_unknown')
                 paths = [row.get(name) for name in ('output_file', 'checkpoint_path') if row.get(name)]
                 if not paths:
@@ -108,6 +181,7 @@ def observe(session, cache_path):
                     with open(path, 'rb') as stream:
                         stream.read(1)
                     fingerprint.append([path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns])
+                fingerprint = fingerprint_hash(fingerprint)
                 last = old.get('last_activity_at', now) if old.get('fingerprint') == fingerprint else now
                 if type(last) not in (int, float) or not math.isfinite(last) or last > now:
                     raise Unknown('observation_clock_unknown')
@@ -116,8 +190,10 @@ def observe(session, cache_path):
             except (Unknown, OSError, ValueError, TypeError) as exc:
                 condition = str(exc) if isinstance(exc, Unknown) else 'child_artifact_unreadable'
                 last = now
+            if not isinstance(fingerprint, str):
+                fingerprint = fingerprint_hash(fingerprint)
             notice = [condition, fingerprint] if condition else None
-            current[key] = dict(identity=json.loads(identity), fingerprint=fingerprint,
+            current[key] = dict(repo=repo, task_id=task, fingerprint=fingerprint,
                                 last_activity_at=last, observed_at=now, notice=notice)
             if notice and notice != old.get('notice'):
                 label = 'CHILD STALL SUSPECT' if condition == 'suspect' else 'CHILD PROGRESS UNKNOWN'
@@ -126,22 +202,30 @@ def observe(session, cache_path):
                                + ' ' + detail + '. Investigate child evidence; parent heartbeats do not prove progress. Do not stop or respawn from this notice.')
     # Exact runtime/generation keys disappear when terminal or absent; a later
     # runtime never inherits an earlier task's inactivity or notification.
-    with tempfile.NamedTemporaryFile(mode='w', dir=cache_path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        json.dump(dict(session=session, tasks=current, observed_at=now), stream)
-    os.replace(temporary, cache_path)
+    raw_cache = json.dumps(dict(session=session, tasks=current, observed_at=now)).encode()
+    if len(raw_cache) > 1024 * 1024:
+        raise Unknown('cache_publish_limit')
+    private_write(cache_path, raw_cache)
     for line in notices:
         print(line)
 
 
-def main(session, prefix):
-    cache = Path(prefix + '.json')
-    failure = Path(prefix + '.unknown')
+def main(session, prefix, clear=False):
+    failure = None
     # A separate observer bounds local file/registry reads too, including an
     # unexpectedly hanging filesystem. Only this probe group can be killed.
     try:
-        with open(prefix + '.lock', 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not session or len(session) > 256:
+            raise Unknown('session_identity_invalid')
+        directory = private_workspace(prefix, create=not clear)
+        if directory is None:
+            return
+        cache, failure = directory/'cache.json', directory/'unknown'
+        with private_lock(directory/'lock'):
+            if clear:
+                for name in ('cache.json', 'unknown', 'diagnostic'):
+                    (directory/name).unlink(missing_ok=True)
+                return
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
                 proc = subprocess.Popen([sys.executable, __file__, '--observe', session, str(cache)],
                                         stdout=output, stderr=errors, start_new_session=True)
@@ -161,9 +245,7 @@ def main(session, prefix):
                 if proc.returncode:
                     errors.seek(0)
                     detail = errors.read(4096)
-                    fd = os.open(prefix + '.diagnostic', os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-                    with os.fdopen(fd, 'wb') as stream:
-                        stream.write(detail)
+                    private_write(directory/'diagnostic', detail)
                     raise Unknown('progress_probe_failed')
                 if output.tell() > 256 * 1024:
                     raise Unknown('progress_output_limit')
@@ -174,12 +256,16 @@ def main(session, prefix):
         reason = str(exc) if isinstance(exc, Unknown) else 'progress_probe_unavailable'
         # Persist the error class, not exception paths or provider output.
         try:
-            if failure.exists() and failure.read_text() == reason:
+            if failure is None:
+                raise Unknown('private_state_unavailable')
+            try:
+                prior = private_read(failure, 4096).decode()
+            except FileNotFoundError:
+                prior = None
+            if prior == reason:
                 return
-            fd = os.open(str(failure), os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, 'w') as stream:
-                stream.write(reason)
-        except OSError:
+            private_write(failure, reason.encode())
+        except (Unknown, OSError, UnicodeError):
             print('bgwork-ceiling: cannot persist child-progress dedup; notice may repeat', file=sys.stderr)
         print('CHILD PROGRESS UNKNOWN: ' + reason + '. Investigate registry/artifact reads; do not treat parent heartbeat as child health or stop/respawn a child.')
 
@@ -193,12 +279,12 @@ if __name__ == '__main__':
         except (Unknown, OSError, ValueError, TypeError) as exc:
             print(str(exc) if isinstance(exc, Unknown) else 'progress_observation_invalid', file=sys.stderr)
             sys.exit(1)
-    elif sys.argv[1] == '--tick':
+    elif sys.argv[1] in ('--tick', '--clear'):
         def interrupted(_signal, _frame):
             raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM, interrupted)
         try:
-            main(sys.argv[2], sys.argv[3])
+            main(sys.argv[2], sys.argv[3], clear=sys.argv[1] == '--clear')
         except KeyboardInterrupt:
             sys.exit(130)
     else:

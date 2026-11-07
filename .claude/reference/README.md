@@ -15,7 +15,6 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 ### Runbooks and long command forms
 
-- `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `incremental-skill-loading.md` — operation/phase loading contract, source-measured `/issue-maker` pilot traces, recovery and parity checklist, and ordered migration roadmap for `/pm`, `/subagent`, `/wrap`, and `/pr-monitor-and-manage` (#1872)
 
 - `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)
@@ -96,6 +95,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `model-fleet-drift-guard-decision.md` — decision record: build a generational deny-list lint (`model-drift-lint.sh`) that flags enumerated legacy model versions in live surfaces; fails open; auto-discovered by `run-doc-lints.sh` (#752)
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `bgwork-ceiling.md` — why background work arms a turn-independent silence ceiling, why `Monitor` over `ScheduleWakeup`/`CronCreate`, and why the number stays unpublished (#803)
+- `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `skill-symlink-setup.md` — why a dedicated worktree, session-start bootstrap, symlink install, and migration commands (`skill-symlinks.md`)
 - `portable-skill-resolution.md` — how a shared skill reaches its scripts, reference docs, and phase agents from a repo with no `.claude/`: the `resolve_script()`/`resolve_doc()` shapes, the required-vs-optional degraded-mode warning format, and the classified dependency inventory for the seven PM/orchestration skills (#1189)

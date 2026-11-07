@@ -318,6 +318,9 @@ case "$MODE" in
   clear)
     rm -f "$BGWORK_FILE" "$ARMED_FILE" "$EMITTED_FILE" "$BLOCKS_FILE" "$BREACH_FILE" \
           "$ADVISED_FILE" 2>/dev/null || true
+    python3 "${SCRIPT_PATH%/*}/lib/bgwork-child-progress.py" --clear "$RUNTIME_SESSION_ID" \
+      "$MARKER_DIR/claude-bgprogress-${SESSION_ID}" || \
+      printf 'bgwork-ceiling: child observation cleanup unavailable\n' >&2
     rm -f "$MARKER_DIR/claude-bgprogress-${SESSION_ID}.json" \
       "$MARKER_DIR/claude-bgprogress-${SESSION_ID}.unknown" \
       "$MARKER_DIR/claude-bgprogress-${SESSION_ID}.diagnostic" 2>/dev/null || true

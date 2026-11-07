@@ -28,7 +28,8 @@ class ChildProgressTest(unittest.TestCase):
         self.command('--note-started', 'Agent')
         self.heartbeat = self.root/('claude-heartbeat-'+self.session)
         self.heartbeat.touch()
-        self.cache = self.root/('claude-bgprogress-'+self.session+'.json')
+        self.private = self.root/('claude-bgprogress-'+self.session+'.d')
+        self.cache = self.private/'cache.json'
 
     def publish(self):
         Path(self.env['CLAUDE_SESSION_STATE_FILE']).write_text(json.dumps(self.inventory))
@@ -82,7 +83,7 @@ class ChildProgressTest(unittest.TestCase):
         self.assertEqual(self.command('--tick'), '')
         self.output.unlink()
         self.assertIn('CHILD PROGRESS UNKNOWN', self.command('--tick'))
-        for status in ('done', 'failed', 'stopped', 'rearmed', 'abandoned'):
+        for status in ('done', 'failed', 'stopped', 'rearming', 'rearmed', 'abandoned'):
             self.row['status'] = status
             self.publish()
             self.assertEqual(self.command('--tick'), '')
@@ -92,6 +93,7 @@ class ChildProgressTest(unittest.TestCase):
 
     def test_scope_and_malformed_inventory_remain_unknown(self):
         self.row['session_id'] = 'foreign-session'
+        self.inventory['repos'][''] = {'legacy_field': 'unrelated to this session'}
         self.publish()
         self.assertEqual(self.command('--tick'), '')
         self.row['session_id'] = self.session
@@ -104,7 +106,7 @@ class ChildProgressTest(unittest.TestCase):
         Path(self.env['CLAUDE_SESSION_STATE_FILE']).write_text('not JSON')
         self.assertIn('CHILD PROGRESS UNKNOWN', self.command('--tick'))
         self.assertEqual(self.command('--tick'), '')
-        diagnostic = self.root/('claude-bgprogress-'+self.session+'.diagnostic')
+        diagnostic = self.private/'diagnostic'
         self.assertTrue(diagnostic.is_file())
         self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
         self.publish()
@@ -131,6 +133,59 @@ class ChildProgressTest(unittest.TestCase):
         source.unlink()
         self.publish()
         self.assertEqual(self.command('--tick'), '')
+
+    def test_shared_marker_symlinks_never_truncate_or_follow_victim(self):
+        victim = self.root/'owner-file'
+        victim.write_text('preserve this owner data')
+        # The former predictable shared-directory failure path is untouched.
+        legacy = self.root/('claude-bgprogress-'+self.session+'.unknown')
+        legacy.symlink_to(victim)
+        Path(self.env['CLAUDE_SESSION_STATE_FILE']).write_text('bad JSON')
+        self.assertIn('CHILD PROGRESS UNKNOWN', self.command('--tick'))
+        self.assertEqual(victim.read_text(), 'preserve this owner data')
+        # Even injected entries inside an owned fixture directory cannot
+        # redirect private writes or the lock to another file.
+        for name in ('unknown', 'diagnostic', 'lock'):
+            target = self.private/name
+            target.unlink(missing_ok=True)
+            target.symlink_to(victim)
+            self.command('--tick')
+            self.assertEqual(victim.read_text(), 'preserve this owner data')
+            target.unlink(missing_ok=True)
+        self.assertEqual(self.private.stat().st_mode & 0o777, 0o700)
+
+    def test_precreated_private_directory_symlink_fails_closed(self):
+        victim = self.root/'other-directory'
+        victim.mkdir()
+        (victim/'keep').write_text('owner file')
+        self.private.symlink_to(victim, target_is_directory=True)
+        self.assertIn('CHILD PROGRESS UNKNOWN', self.command('--tick'))
+        self.command('--clear')
+        self.assertEqual([p.name for p in victim.iterdir()], ['keep'])
+        self.assertEqual((victim/'keep').read_text(), 'owner file')
+
+    def test_wide_readable_inventory_never_publishes_an_unreadable_cache(self):
+        # Unicode escapes make the old repeated-path cache exceed1MiB even
+        # under macOS's shorter physical path limit. All artifacts are real.
+        directory = self.root
+        for _ in range(3):
+            directory = directory/('界'*75)
+            directory.mkdir()
+        output, checkpoint = directory/'output', directory/'checkpoint'
+        output.write_text('running')
+        checkpoint.write_text('checkpoint')
+        rows = [dict(self.row, task_id=('runtime-'+str(n)+'-'+'x'*100),
+                     output_file=str(output), checkpoint_path=str(checkpoint)) for n in range(200)]
+        self.inventory['repos']['fixture/repo']['background_tasks'] = rows
+        self.publish()
+        self.assertEqual(self.command('--tick'), '')
+        self.age_observation()
+        notice = self.command('--tick')
+        self.assertEqual(notice.count('CHILD STALL SUSPECT'), 200)
+        self.assertLess(self.cache.stat().st_size, 1024*1024)
+        self.assertEqual(self.command('--tick'), '')
+        self.command('--clear')
+        self.assertFalse(self.cache.exists())
 
 
 if __name__ == '__main__':
