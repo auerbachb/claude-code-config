@@ -109,7 +109,7 @@ acquires/releases real claims, edits worktrees, launches workers or merges PRs.
    hold an atomic cross-thread file lock. Refresh/replan on changed scope.
 2. **Two disjoint issues:** `src/parser.py` and `docs/guide.md` map to different
    surfaces. The packet permits parallel *planning* subject to live claim,
-   capacity/stop controls and normal dispatch gates; it grants no extra slot.
+   capacity and stop controls and normal dispatch gates; it grants no extra slot.
    Two different rule files are deliberately a negative control: both map to
    `rule-corpus`, so they are not disjoint.
 3. **Interrupted/resumed work:** packet points to the prior failed investigation,
