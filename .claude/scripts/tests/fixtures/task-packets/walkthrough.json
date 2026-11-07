@@ -75,6 +75,14 @@
       "review": "fixture://live-review",
       "ci": "fixture://live-ci",
       "ac": "fixture://issue/101#criteria"
+    },
+    "evidence_reads": {
+      "fixture://evidence/check-1": {
+        "readable": true,
+        "revision": "check-v1",
+        "repo": "fixture/config",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
     }
   },
   "pairs": [

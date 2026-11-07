@@ -52,8 +52,13 @@ def overlaps(left, right):
 
 
 def evidence_validity(row, live):
-    return ('current' if row.get('pointer') and row.get('revision')
+    # This offline observation models a canonical retrieval result. A URL's
+    # presence alone is not evidence that it was readable or matched revision.
+    observation = live.get('evidence_reads', {}).get(row.get('pointer'))
+    return ('current' if isinstance(observation, dict) and observation.get('readable') is True
+            and isinstance(row.get('revision'), str) and row['revision'].strip()
             and row.get('repo') == live['repo'] and row.get('head') == live['head']
+            and all(observation.get(key) == row.get(key) for key in ('repo', 'head', 'revision'))
             else 'unknown')
 
 
@@ -105,6 +110,11 @@ def index_for_fixture(source):
 
 
 def freshness(packet, live, age=0):
+    required = ('issue', 'handoff', 'session', 'module')
+    for stamps in (packet.get('sources'), live.get('sources')):
+        if not isinstance(stamps, dict) or any(not isinstance(stamps.get(key), str)
+                or not stamps[key].strip() for key in required):
+            return 'unknown'
     if live['claim']['status'] != 'mine':
         return 'unknown'
     if age > fixture['max_age_seconds']:
@@ -157,6 +167,29 @@ missing['revision'] = None
 verify(evidence_validity(missing, base) == 'unknown', 'unreadable revision is unknown')
 missing.update(revision='check-v1', repo='fixture/other')
 verify(evidence_validity(missing, base) == 'unknown', 'wrong-repo evidence is unknown')
+verify(packet['evidence'][0]['validity'] == 'current', 'readable matching evidence is current')
+unreadable = copy.deepcopy(base['evidence'][0])
+unreadable['pointer'] = 'fixture://unreadable'
+verify(evidence_validity(unreadable, base) == 'unknown', 'nonempty unreadable pointer with matching stamps is unknown')
+for state in (False, None, 'true'):
+    observed = copy.deepcopy(base)
+    observed['evidence_reads'][base['evidence'][0]['pointer']]['readable'] = state
+    verify(evidence_validity(base['evidence'][0], observed) == 'unknown', 'readability must be explicitly verified true')
+observed = copy.deepcopy(base)
+observed['evidence_reads'][base['evidence'][0]['pointer']]['revision'] = 'check-v2'
+verify(evidence_validity(base['evidence'][0], observed) == 'unknown', 'retrieved evidence revision must match the indexed revision')
+for required in ('issue', 'handoff', 'session', 'module'):
+    for invalid in (None, '', ' ', False):
+        incomplete_live = copy.deepcopy(base)
+        incomplete_packet = copy.deepcopy(packet)
+        incomplete_live['sources'][required] = invalid
+        incomplete_packet['sources'][required] = invalid
+        verify(freshness(incomplete_packet, incomplete_live) == 'unknown', 'equal incomplete source stamps remain unknown: '+required)
+    incomplete_live = copy.deepcopy(base)
+    incomplete_packet = copy.deepcopy(packet)
+    del incomplete_live['sources'][required]
+    del incomplete_packet['sources'][required]
+    verify(freshness(incomplete_packet, incomplete_live) == 'unknown', 'source missing on both sides remains unknown: '+required)
 verify(packet['commands'][0]['cwd'] == base['worktree'], 'verification command preserves working directory')
 verify(packet['commands'][0]['result_pointer'] == 'fixture://evidence/check-1', 'verification command retains result pointer')
 indented = copy.deepcopy(base)
