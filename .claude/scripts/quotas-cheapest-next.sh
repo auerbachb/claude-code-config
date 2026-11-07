@@ -145,6 +145,9 @@
 #
 # DEPENDENCIES
 #   bash 3.2+, jq
+#   Python 3.9+ and sibling lib/quota-date.sh / quota-date.py for bounded date
+#   operations. Unavailable adapters leave date fields unknown; record mode
+#   refuses unverifiable calendar writes.
 #   .claude/scripts/pm-config-get.sh and repo-root.sh for the config knob —
 #   both optional: absent, the knob falls back to env then to the default.
 #
@@ -327,42 +330,29 @@ BASIS='Approximate: a Codex reset buys a fixed week at a flat price, while Claud
 STATE_DIR="${CLAUDE_QUOTAS_STATE_DIR:-${HOME:-/tmp}/.claude/quotas}"
 RESET_FILE="$STATE_DIR/codex-reset.json"
 
-# Which date(1) dialect is on PATH, asked ONCE — the same probe, for the same
-# reason, as ai-quotas.sh: `-r` is not safe to try-and-fall-through, because
-# GNU ACCEPTS `-r` and reads its argument as a FILENAME whose mtime to print.
-# A file named for an epoch second almost never exists, so a fallthrough
-# usually recovers; "usually" is the whole problem. Probing with a GNU-only
-# form would be a coincidence of the same kind — it works only as long as BSD
-# keeps rejecting it. Ask the tool what it is.
-DATE_IS_GNU=0
-if grep -qi 'GNU coreutils' <<<"$(date --version 2>/dev/null)"; then
-  DATE_IS_GNU=1
+# Select operation capabilities once; unsupported tools remain explicit unknowns.
+QUOTA_DATE_DIALECT=unavailable
+if [[ -r "$SELF_DIR/lib/quota-date.sh" ]] && source "$SELF_DIR/lib/quota-date.sh"; then
+  QUOTA_DATE_DIALECT=$(quota_date_detect) || QUOTA_DATE_DIALECT=unavailable
+fi
+if [[ "$QUOTA_DATE_DIALECT" == unavailable ]]; then
+  warn "DEGRADED: quota date operations unavailable — reset dates/weekday or calendar validation may be unknown"
 fi
 
 # The ET month, so a watermark written on the 31st in Eastern time is not read
 # as next month's by a UTC clock four hours ahead of it.
 et_month() {
   local now="${AI_QUOTAS_NOW:-}"
-  if [[ "$now" =~ ^[0-9]+$ ]]; then
-    if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-      TZ='America/New_York' date -d "@$now" '+%Y-%m' 2>/dev/null && return 0
-    else
-      TZ='America/New_York' date -r "$now" '+%Y-%m' 2>/dev/null && return 0
-    fi
-  fi
-  TZ='America/New_York' date '+%Y-%m'
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || now=now
+  quota_date_format "$QUOTA_DATE_DIALECT" "$now" '+%Y-%m' America/New_York || true
 }
 
 et_today() {
   local now="${AI_QUOTAS_NOW:-}"
-  if [[ "$now" =~ ^[0-9]+$ ]]; then
-    if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-      TZ='America/New_York' date -d "@$now" '+%Y-%m-%d' 2>/dev/null && return 0
-    else
-      TZ='America/New_York' date -r "$now" '+%Y-%m-%d' 2>/dev/null && return 0
-    fi
-  fi
-  TZ='America/New_York' date '+%Y-%m-%d'
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || now=now
+  quota_date_format "$QUOTA_DATE_DIALECT" "$now" '+%Y-%m-%d' America/New_York || true
 }
 
 # Result in globals, never through `$( )`: the caller needs BOTH the verdict
@@ -377,6 +367,7 @@ read_codex_watermark() {
   CODEX_FREE_RESET=1
   CODEX_RESET_SOURCE="assumed"
   CODEX_RESET_USED_ON=""
+  [[ -n "$month" ]] || { warn "current ET month unavailable — assuming one free reset is available"; return 0; }
   [[ -r "$RESET_FILE" ]] || return 0
   # Fail soft, deliberately. A corrupt file must not read as "you already
   # spent this month's free reset": that is the reading that steers the hint
@@ -394,6 +385,7 @@ read_codex_watermark() {
 
 record_codex_reset() {
   local day="${1:-}" month tmp existing canon
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || die 5 "calendar validation unavailable — watermark not written"
   [[ -n "$day" ]] || day="$(et_today)"
   [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die_usage "--record-codex-reset takes a YYYY-MM-DD date (got '${day}')"
   # The SHAPE is not the date. `2026-99-99` and `2026-02-31` both match the
@@ -403,11 +395,10 @@ record_codex_reset() {
   # `date` instead: GNU rejects an impossible date outright, BSD normalises it
   # (`2026-02-31` comes back `2026-03-03`), and the equality catches both.
   # Noon pins the time-of-day so no zone can move the answer across midnight.
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    canon="$(date -d "${day} 12:00:00" '+%Y-%m-%d' 2>/dev/null || true)"
-  else
-    canon="$(date -j -f '%Y-%m-%d %H:%M:%S' "${day} 12:00:00" '+%Y-%m-%d' 2>/dev/null || true)"
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || die 5 "calendar validation unavailable — watermark not written"
+  local calendar_rc=0
+  canon=$(quota_date_calendar "$QUOTA_DATE_DIALECT" "$day") || calendar_rc=$?
+  [[ "$calendar_rc" != 4 ]] || die 5 "calendar validation unavailable — watermark not written"
   [[ "$canon" == "$day" ]] ||
     die_usage "--record-codex-reset takes a real calendar date (got '${day}')"
   month="${day%-*}"

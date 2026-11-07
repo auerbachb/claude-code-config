@@ -313,7 +313,9 @@
 #
 # DEPENDENCIES
 #   - bash 3.2+, jq, curl
-#   - Python 3 (Unix) for the optional read-outcome ledger and reliability stats
+#   - Python 3.9+ (Unix) for bounded date capability checks/operations and the
+#     optional read-outcome ledger and reliability stats. Without the date
+#     adapter, reset formatting degrades explicitly rather than guessing a dialect.
 #   - macOS security(1) for the Keychain credential path
 #   - the `codex` CLI for the preferred Codex path (the HTTP fallback needs
 #     only curl)
@@ -614,52 +616,26 @@ NOW="$(report_now_epoch)"
 # quietly report `reset` for everything.
 [[ "$NOW" =~ ^[0-9]+$ ]] || die 5 "could not read the current time from date(1)"
 
-# Which date(1) dialect is on PATH, decided ONCE rather than by trying one
-# form and falling through when it fails. Falling through is safe for the
-# BSD-only `-j -f`, which GNU simply rejects — but it is NOT safe for `-r`:
-# GNU accepts `-r` and reads its argument as a FILENAME whose mtime to print.
-# A file named for the epoch second almost never exists, so the fallback
-# usually saves it; "usually" is the whole problem, because the day one does
-# exist the reset column silently shows that file's timestamp. Asking the
-# tool which dialect it is removes the coincidence from the answer.
-DATE_IS_GNU=0
-if grep -qi 'GNU coreutils' <<<"$(date --version 2>/dev/null)"; then
-  DATE_IS_GNU=1
+# Select operation capabilities once; unsupported tools remain explicit unknowns.
+QUOTA_DATE_DIALECT=unavailable
+if [[ -r "$SELF_DIR/lib/quota-date.sh" ]] && source "$SELF_DIR/lib/quota-date.sh"; then
+  QUOTA_DATE_DIALECT=$(quota_date_detect) || QUOTA_DATE_DIALECT=unavailable
+fi
+if [[ "$QUOTA_DATE_DIALECT" == unavailable ]]; then
+  warn "DEGRADED: quota date operations unavailable — reset dates/weekday or calendar validation may be unknown"
 fi
 
 # ISO-8601 (…Z or with an offset) → epoch seconds. Empty output means "not
 # parseable", which callers render as `-` rather than as a reset that has
 # already happened.
 iso_to_epoch() { # <iso>
-  local iso="$1" trimmed
-  [[ -n "$iso" ]] || return 0
-  # Drop fractional seconds and normalise the zone so either date(1) dialect
-  # sees a shape it accepts.
-  trimmed="$(printf '%s' "$iso" | sed -e 's/\.[0-9][0-9]*//' -e 's/+00:00$/Z/')"
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    date -u -d "$trimmed" +%s 2>/dev/null || true
-    return 0
-  fi
-  # BSD date needs the exact format, and GNU's `-d` accepts a numeric offset
-  # (`…+05:00`) that the `…Z` format below cannot match. Without the second
-  # attempt the SAME payload yields a reset time on Linux and a bare `-` on
-  # macOS — the fleet's primary platform — which reads as "the provider
-  # didn't say" rather than "this reader couldn't parse it". `%z` wants the
-  # offset without its colon.
-  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$trimmed" +%s 2>/dev/null && return 0
-  local offset_form
-  offset_form="$(printf '%s' "$trimmed" | sed -e 's/\([+-][0-9][0-9]\):\([0-9][0-9]\)$/\1\2/')"
-  date -u -j -f '%Y-%m-%dT%H:%M:%S%z' "$offset_form" +%s 2>/dev/null || true
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_iso "$QUOTA_DATE_DIALECT" "${1:-}" || true
 }
 
 epoch_to_et() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" && "$e" != "null" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%a %b %-d %-I:%M %p %Z' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%a %b %-d %-I:%M %p %Z' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%a %b %-d %-I:%M %p %Z' America/New_York || true
 }
 
 # `Thu 8:00 PM` — the same instant, for the table (#1701). The date is dropped
@@ -667,13 +643,8 @@ epoch_to_et() { # <epoch>
 # zone because the column heading says ET; what a reader needs from that cell
 # is which day and what time. The full string is still on every --json row.
 epoch_to_et_short() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" && "$e" != "null" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%a %-I:%M %p' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%a %-I:%M %p' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%a %-I:%M %p' America/New_York || true
 }
 
 # `Nov 6 6:31 PM ET` — a deadline as an instant (#1862). The provider states the
@@ -683,11 +654,8 @@ epoch_to_et_short() { # <epoch>
 epoch_to_et_datetime_short() { # <epoch>
   local e="${1:-}"
   [[ -n "$e" && "$e" =~ ^[0-9]+$ ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%b %-d %-I:%M %p ET' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%b %-d %-I:%M %p ET' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "$e" '+%b %-d %-I:%M %p ET' America/New_York || true
 }
 
 # `{"window_start_epoch": N}` merged into a provider's extra object, or that
@@ -2915,13 +2883,8 @@ apply_forecast() {
 # with nothing saying why is exactly what #1701 would misread as a quiet day.
 
 epoch_to_utc_iso() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
-  else
-    date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%Y-%m-%dT%H:%M:%SZ' UTC || true
 }
 
 # One `ts` for the whole run, taken from the SAME clock every countdown in
