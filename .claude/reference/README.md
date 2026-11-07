@@ -93,6 +93,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `chip-model-guard-decision.md` — decision record: the chip model-guard preamble rides in both the chip `prompt` and the fallback block, redefining the fallback baseline (#601)
 - `model-fleet-drift-guard-decision.md` — decision record: build a generational deny-list lint (`model-drift-lint.sh`) that flags enumerated legacy model versions in live surfaces; fails open; auto-discovered by `run-doc-lints.sh` (#752)
 - `scheduling-failure-modes.md` — recurring poll failure analysis
+- `workspace-sweep-cadence.md` — finished-only post-merge, PM tick and daily scheduling; registry, interval, logging and safety boundary (Issue #1962)
 - `bgwork-ceiling.md` — why background work arms a turn-independent silence ceiling, why `Monitor` over `ScheduleWakeup`/`CronCreate`, and why the number stays unpublished (#803)
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `skill-symlink-setup.md` — why a dedicated worktree, session-start bootstrap, symlink install, and migration commands (`skill-symlinks.md`)
