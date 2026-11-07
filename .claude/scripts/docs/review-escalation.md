@@ -10,6 +10,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | Script | Purpose |
 |--------|---------|
 <!-- catalog:rows:begin -->
+| [bugbot-invitation.sh](../bugbot-invitation.sh) | Read-only bounded current-HEAD BugBot invitation/grant verdict with private recovery evidence; never triggers or consumes |
 | [bugbot-refused-head.sh](../bugbot-refused-head.sh) | One shared answer for every `@cursor review` trigger path: has BugBot already refused this HEAD for a Cursor usage/spend limit? |
 | [bugbot-tier-excluded.sh](../bugbot-tier-excluded.sh) | One shared answer for every `@cursor review` trigger path and the escalation chain: does the PR's review tier exclude BugBot? |
 | [complexity-score.sh](../complexity-score.sh) | Compute a PR complexity score from additions, deletions, and changed-file count |

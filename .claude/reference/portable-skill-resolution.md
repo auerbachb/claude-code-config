@@ -210,6 +210,7 @@ routing or safety behavior rather than merely reducing output quality.
 | `cr-plan.sh` | subagent, start-issue | fallback | optional | Absence means no CR plan poll; the issue-body merge is still required. |
 | `ac-checkboxes.sh` | subagent | fallback | optional | |
 | `escalate-review.sh` | subagent | fallback | required | Drives the reviewer escalation chain. |
+| `bugbot-invitation.sh` | fixpr | fallback | required | Missing/unreadable → unknown and awaited, with a visible diagnostic; reads only, never triggers or consumes a grant. |
 | `local-review.sh` | pm, subagent, prompt (chip text) | fallback | optional | Missing → self-review fallback per `cr-local-review.md`. |
 | `backlog-health.sh` | pm | fallback | optional | Missing → omit the staleness block, say so. |
 | `merge-gate.sh`, `merge-sequence.sh` | pr-monitor-and-manage | fallback | required | Merge decisions must never run on a guessed gate. |
