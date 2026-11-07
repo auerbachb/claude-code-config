@@ -41,6 +41,14 @@ isolated login profile, and report which are reachable.
 > neither do you. If a login needs the user's hands, say so and stop; do not offer to
 > type credentials.
 
+For a logged-out account, lead with the exact action supplied by `/quotas` and preserve
+its label/provider quoting. The human completes the provider's sign-in. Do not install
+`claude setup-token` for this usage reader: those long-lived tokens are model-request-only.
+Issue #1886 uses notification + one-line relogin as its explicit scope fallback, with
+no password storage or replay. See the reference and Issue #1970 for the deferred
+actual Codex-cause investigation; do not invent a cause or make it a prerequisite
+for the authorized notification/relogin fallback.
+
 ## Step 1 — Resolve the helper
 
 <!-- test-anchor: resolve-helper -->

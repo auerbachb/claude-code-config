@@ -44,7 +44,7 @@ check_contains() { # <haystack> <needle> <label>
 STUB_ROWS="$TMP/rows.json"; STUB_FAIL="$TMP/reader-fails"; READER_LOG="$TMP/reader.log"; NOTIFY_LOG="$TMP/notify.log"
 cat > "$TMP/bin/ai-quotas.sh" <<EOF
 #!/usr/bin/env bash
-printf 'call history=%s args=%s\n' "\${AI_QUOTAS_HISTORY:-<unset>}" "\$*" >> "$READER_LOG"
+printf 'call history=%s source=%s args=%s\n' "\${AI_QUOTAS_HISTORY:-<unset>}" "\${AI_QUOTAS_SOURCE:-<unset>}" "\$*" >> "$READER_LOG"
 [[ -f "$STUB_FAIL" ]] && exit 1
 cat "$STUB_ROWS"
 EOF
@@ -86,7 +86,9 @@ decide() { # <payload-json> -> verdict line
   printf '%s' "$1" | "$SCRIPT" --decide 2>/dev/null
 }
 payload() { # <tool> [extra-json-object]
-  jq -nc --arg t "$1" --argjson x "${2:-{\}}" '{tool_name: $t, session_id: "sess-1", tool_input: {}, cwd: "/tmp"} + $x'
+  local extra="${2:-}"
+  [[ -n "$extra" ]] || extra='{}'
+  jq -nc --arg t "$1" --argjson x "$extra" '{tool_name: $t, session_id: "sess-1", tool_input: {}, cwd: "/tmp"} + $x'
 }
 
 CLAUDE_A="a@example.com"; CLAUDE_B="b@example.com"; CLAUDE_D="d@example.com"
@@ -119,6 +121,8 @@ check_eq "$(jq -r '[.accounts[].provider] | unique | join(",")' "$QUOTA_RESERVE_
 check_eq "$(ls -l "$QUOTA_RESERVE_DIR/marker.json" | cut -c1-10)" "-rw-------" "the marker is private to the owner"
 check_contains "$(cat "$READER_LOG")" "history=$QUOTA_RESERVE_DIR/reader-history.jsonl" \
   "the reader runs with its history redirected, so refreshes do not pollute the daily record"
+check_contains "$(cat "$READER_LOG")" "source=manual" \
+  "reserve refresh explicitly clears scheduled notification context"
 
 # threshold: env, config, precedence, garbage
 reset_state
