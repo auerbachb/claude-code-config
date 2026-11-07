@@ -94,6 +94,7 @@ DISMISS=$(resolve_script dismiss-stale-bot-changes.sh || true)
 PR_STATE_SH=$(resolve_script pr-state.sh || true)
 MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
+WRAP_AUDIT_STATE_SH=$(resolve_script session-state.sh || true)
 CI_STATUS_SH=$(resolve_script ci-status.sh || true)
 RELEASE_DECIDE=$(resolve_script release-decide.sh || true)
 RELEASE_SWEEP=$(resolve_script release-sweep.sh || true)
@@ -227,7 +228,19 @@ fi
 
 **The silent default preserves required signals:** owner-action blockers, safety events and exhausted recovery surface immediately; a clean merge emits `merged PR #N`. Dispatch transitions and ordinary waits remain recorded and silent.
 
-After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Always built; rendered to the user only under `--verbose`.
+After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Then run the write below before continuing or exiting, including cap/blocker exits. It saves the complete current-run audit and last gate JSON under `.prs["<PR>"].wrap_sweep.recovery_audit`; Step 3.13's sibling-field writes preserve it. Later status/verbose requests read that record rather than relying on a child shell's variables. A failed write stops recovery with an evidence-storage error, never a clean result.
+
+<!-- test-anchor: wrap-persist-recovery-audit -->
+```bash
+[[ -n "$WRAP_AUDIT_STATE_SH" ]] || { echo "ERROR: recovery audit storage unavailable" >&2; exit 1; }
+WRAP_AUDIT_JSON=$(jq -cn --arg cycles "$WRAP_RECOVERY_AUDIT" --argjson gate "$GATE_JSON" \
+  --arg at "$(date -u +%FT%TZ)" \
+  '{cycles:$cycles, last_gate:$gate, observed_at:$at}') || exit 1
+"$WRAP_AUDIT_STATE_SH" --set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_audit=$WRAP_AUDIT_JSON" || {
+  echo "ERROR: recovery audit not saved; stopping recovery" >&2
+  exit 1
+}
+```
 
 **Merge-ready shortcut:** Run `merge-gate.sh` once before the loop, capturing its stdout into `GATE_JSON` exactly as the loop does. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2. Capturing is not optional — Step 2.4 reads `merge_state` out of `GATE_JSON`, so a shortcut that discarded the output would leave it unset there.
 

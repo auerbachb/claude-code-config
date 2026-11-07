@@ -49,4 +49,18 @@ if HORIZON_STATUS=unknown WATCH_IDLE_REASON=unreadable WATCH_LAUNCH_OK=false WAT
   echo 'FAIL: failed watch posture write returned success' >&2; exit 1
 fi
 "$SESSION_STATE_SH" --get-json '.repos["auerbachb/claude-code-config"].day' | jq -e '.==null' >/dev/null
-printf '%s\n' 'PASS: quiet snapshots retain failure evidence; holds survive recovery and clear; failed writes stop; shared park untouched'
+WRAP_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/skills/wrap/SKILL.md" wrap-persist-recovery-audit)
+printf '%s\n' "$WRAP_BLOCK" > "$TMP_TEST/wrap.sh"
+export WRAP_AUDIT_STATE_SH="$SESSION_STATE_SH" PR_NUM=1972
+export WRAP_RECOVERY_AUDIT=$'cycle 1: CI failed; retry "build"\ncycle 2: owner-only blocker remains'
+export GATE_JSON='{"met":false,"missing":["human CHANGES_REQUESTED"],"head_sha":"abcdef123456"}'
+bash "$TMP_TEST/wrap.sh" > "$TMP_TEST/stdout"
+test ! -s "$TMP_TEST/stdout"
+"$SESSION_STATE_SH" --get-json '.prs["1972"].wrap_sweep.recovery_audit' | jq -e --arg cycles "$WRAP_RECOVERY_AUDIT" '.cycles==$cycles and .last_gate.met==false and .last_gate.missing==["human CHANGES_REQUESTED"] and (.observed_at|length>0)' >/dev/null
+# Later sweep bookkeeping cannot replace the recovery evidence.
+"$SESSION_STATE_SH" --set '.prs["1972"].wrap_sweep.filed_issues=[]'
+"$SESSION_STATE_SH" --get-json '.prs["1972"].wrap_sweep.recovery_audit' | jq -e '.last_gate.head_sha=="abcdef123456"' >/dev/null
+if WRAP_AUDIT_STATE_SH=/usr/bin/false bash "$TMP_TEST/wrap.sh" 2>/dev/null; then
+  echo 'FAIL: failed recovery-audit write returned success' >&2; exit 1
+fi
+printf '%s\n' 'PASS: quiet snapshots, hold reasons and recovery audit survive; failed writes stop; raw evidence and shared park preserved'
