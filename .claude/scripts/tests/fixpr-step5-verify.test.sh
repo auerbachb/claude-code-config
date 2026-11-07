@@ -81,7 +81,22 @@ with open(os.environ['GH_CALL_LOG'],'a') as stream:stream.write(json.dumps(a)+'\
 if len(a)<2 or a[0]!='api':sys.exit(90)
 if os.environ.get('GH_HANG'):
  import time;time.sleep(30)
-endpoint=sys.argv[2]; path=endpoint.split('?')[0]; page=int(parse_qs(urlsplit(endpoint).query).get('page',['1'])[0])
+endpoint=a[1]
+if endpoint=='graphql':
+ query=a[a.index('-f')+1]
+ if not query.startswith('query=query{') or 'mutation' in query:sys.exit(90)
+ if os.environ.get('GH_GRAPHQL_FILE'):
+  print(Path(os.environ['GH_GRAPHQL_FILE']).read_text());sys.exit(0)
+ rows=json.loads(Path(os.environ['GH_TIMELINE_FILE']).read_text()) if os.environ.get('GH_TIMELINE_FILE') else []
+ nodes=[]
+ for row in rows:
+  kind={'head_ref_force_pushed':'HeadRefForcePushedEvent','head_ref_deleted':'HeadRefDeletedEvent','head_ref_restored':'HeadRefRestoredEvent'}.get(row.get('event'))
+  if kind:
+   node={'__typename':kind,'createdAt':row.get('created_at')}
+   if kind=='HeadRefForcePushedEvent':node['afterCommit']={'oid':row.get('commit_id')}
+   nodes.append(node)
+ print(json.dumps({'data':{'repository':{'pullRequest':{'timelineItems':{'nodes':nodes[-3:],'pageInfo':{'hasPreviousPage':len(nodes)>3}}}}}}));sys.exit(0)
+path=endpoint.split('?')[0]; parameters=parse_qs(urlsplit(endpoint).query);page=int(parameters.get('page',['1'])[0])
 sha=os.environ.get('GH_LIVE_SHA','a'*40)
 if '/pulls/' in path:
  if os.environ.get('GH_MOVE_AFTER_FIRST'):
@@ -98,6 +113,12 @@ elif path.endswith('/comments'):
  try:
   while raw.strip():
    value,index=decoder.raw_decode(raw.lstrip());parts.append(value);raw=raw.lstrip()[index:]
+  if 'since' in parameters:
+   cutoff=parameters['since'][0]
+   flat=[row for part in parts for row in part] if all(isinstance(part,list) for part in parts) else None
+   if flat is not None:
+    flat=[row for row in flat if not isinstance(row,dict) or not isinstance(row.get('created_at'),str) or row.get('updated_at',row['created_at'])>cutoff]
+    print(json.dumps(flat[(page-1)*100:page*100]));sys.exit(0)
   print(json.dumps(parts[page-1] if page<=len(parts) else []))
  except ValueError: print('invalid JSON')
 elif path.endswith('/events'):
@@ -208,6 +229,25 @@ run_nopush "$old"
 check_eq "a newer unbound head movement fails closed" 1 "$(verdict)"
 check_eq "unbound movement is diagnosed as unknown, not an invitation" 1 "$(grep -c 'head_push_boundary_mismatch' <<<"$NOPUSH_OUT")"
 unset GH_TIMELINE_FILE
+# Unrelated old timeline/comment history must not exhaust current-head reads.
+jq -nc '[range(700) | {event:"commented",created_at:"2026-11-01T12:00:00Z"}] + [{event:"head_ref_force_pushed",created_at:"2026-11-06T15:00:00Z",commit_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]' >"$TMP/busy-timeline.json"
+export GH_TIMELINE_FILE="$TMP/busy-timeline.json"
+busy_old=$(jq -nc '[range(700) | {body:"old history",created_at:"2026-11-01T12:00:00Z"}]')
+run_nopush "$busy_old$current"
+check_eq "filtered latest head movement survives 700 unrelated timeline events" 1 "$(verdict)"
+run_nopush "$busy_old"
+check_eq "700 comments before the current push do not make no-invitation permanently unknown" 0 "$(verdict)"
+run_nopush "[$(c 2026-11-06T15:00:00Z '@cursor review')]"
+check_eq "invitation exactly at the push second is retained by the since filter" 1 "$(verdict)"
+unset GH_TIMELINE_FILE
+export GH_GRAPHQL_FILE="$TMP/graphql-response.json"
+for bad_history in '{"errors":[{"message":"fixture denied"}],"data":null}' '{"data":{"repository":{"pullRequest":null}}}'; do
+  printf '%s' "$bad_history" > "$GH_GRAPHQL_FILE"
+  run_nopush "$current"
+  check_eq "unavailable filtered history cannot produce a clean invitation verdict" 1 "$(verdict)"
+  check_eq "unavailable filtered history is explicitly unknown" 1 "$(grep -c 'DEGRADED: BugBot invitation unknown' <<<"$NOPUSH_OUT")"
+done
+unset GH_GRAPHQL_FILE
 printf '%s' '[]' >"$TMP/events.json"
 export GH_EVENT_FILE="$TMP/events.json"
 run_nopush "$old"
@@ -226,7 +266,7 @@ check_eq "head movement during reads invalidates a clean verdict" 1 "$(verdict)"
 check_eq "head movement is recoverable, not a silent empty result" 1 "$(grep -c 'head_changed' <<<"$NOPUSH_OUT")"
 unset GH_MOVE_AFTER_FIRST
 # More than the documented page cap is indeterminate, never a partial clean list.
-jq -nc '[range(100) | {body:"LGTM",created_at:"2026-11-06T14:00:00Z"}]' >"$TMP/page.json"
+jq -nc '[range(100) | {body:"LGTM",created_at:"2026-11-06T15:02:00Z"}]' >"$TMP/page.json"
 full=$(cat "$TMP/page.json")
 run_nopush "$full$full$full"
 check_eq "three full comment pages fail closed at the bound" 1 "$(verdict)"
@@ -283,10 +323,13 @@ python3 - "$GH_CALL_LOG" "$TMP/grant.log" <<'READONLY'
 import json,sys
 from pathlib import Path
 for line in Path(sys.argv[1]).read_text().splitlines():
-    args=json.loads(line);assert args[0]=='api';assert not any(x in args for x in ['-X','--method','-f','-F','--field','--raw-field'])
+    args=json.loads(line);assert args[0]=='api'
+    if len(args)>1 and args[1]=='graphql':
+        assert args[2]=='-f' and len(args)==4 and args[3].startswith('query=query{') and 'mutation' not in args[3]
+    else:assert not any(x in args for x in ['-X','--method','-f','-F','--field','--raw-field'])
 for line in Path(sys.argv[2]).read_text().splitlines():assert line.startswith('--check ') and '--consume' not in line
 READONLY
-check_eq "only GETs and read-only grant checks ran" 0 "$?"
+check_eq "only REST GETs, read-only GraphQL queries and grant checks ran" 0 "$?"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
