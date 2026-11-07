@@ -44,7 +44,12 @@
       "src/shared.py"
     ],
     "commands": [
-      "python3 -m unittest parser_tests"
+      {
+        "command": "python3 -m unittest parser_tests",
+        "cwd": "/fixture/worktrees/issue-101",
+        "result_pointer": "fixture://evidence/check-1",
+        "observed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
     ],
     "evidence": [
       {
@@ -118,6 +123,36 @@
       "left": null,
       "right": [
         "src/one.py"
+      ],
+      "expected_overlap": null
+    },
+    {
+      "name": "leading-dot-normalization",
+      "left": [
+        "./src/shared.py"
+      ],
+      "right": [
+        "src/shared.py"
+      ],
+      "expected_overlap": true
+    },
+    {
+      "name": "lexical-parent-normalization",
+      "left": [
+        "src/util/../shared.py"
+      ],
+      "right": [
+        "src/shared.py"
+      ],
+      "expected_overlap": true
+    },
+    {
+      "name": "outside-repo-is-unknown",
+      "left": [
+        "../foreign/file.py"
+      ],
+      "right": [
+        "src/shared.py"
       ],
       "expected_overlap": null
     }

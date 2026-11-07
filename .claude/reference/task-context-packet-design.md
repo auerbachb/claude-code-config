@@ -40,7 +40,7 @@ all phase histories or raw logs into the default packet.
 | `spec` | Issue URL, `updatedAt`, SHA-256 of body, full AC count and a pointer to full spec/AC; load complete criteria before implementation/verification. No truncated AC substitute. |
 | `ownership` | Exact claim holder, author, marker ID and timestamp, plus session/task identity when actually supplied by the runtime; live claim recheck is mandatory. |
 | `phase` | Current operation/phase and one active module pointer/hash from the existing lazy-loading index. Load only that module and its explicitly triggered references. |
-| `touchpoints` | Declared relevant files/symbols with source-plan pointers; use the existing `/wave` collision-surface rules, including `rule-corpus`. Unknown footprint stays unknown. |
+| `touchpoints` | Declared repository-relative files/symbols with lexical `./` and `..` normalization and source-plan pointers; use the existing `/wave` collision-surface rules, including `rule-corpus`. Unknown footprint stays unknown. |
 | `verification` | Short list of relevant commands with working directory and existing results' pointers; evidence is bound to repo/HEAD, not implied by command presence. |
 | `recovery` | Selected scoped handoff/session pointer, recorded HEAD/phase, compact discoveries, attempted approaches, remaining blocker and next action. Retain the authoritative attempt history at its source. |
 | `evidence` | IDs/URLs/paths with repo, observed HEAD, source revision/digest and validity status. CI/review/AC remain independently verified live gates. |

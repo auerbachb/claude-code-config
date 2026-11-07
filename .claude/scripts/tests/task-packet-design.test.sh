@@ -7,12 +7,13 @@ python3 - "$ROOT" <<'PY'
 import copy
 import hashlib
 import json
+import posixpath
 from pathlib import Path
 import re
 import sys
 
 root = Path(sys.argv[1])
-fixture = json.loads((root / '.claude/scripts/tests/fixtures/task-packets/walkthrough.json').read_text())
+fixture = json.loads((root / '.claude/scripts/tests/fixtures/task-packets/walkthrough.json').read_text(encoding="utf-8"))
 base = fixture['base']
 checks = 0
 
@@ -39,7 +40,10 @@ def merge(target, changes):
 def surfaces(paths):
     if paths is None:
         return None
-    return {'rule-corpus' if p == 'CLAUDE.md' or p.startswith('.claude/rules/') else p for p in paths}
+    normalized = [posixpath.normpath(p) for p in paths]
+    if any(p == '..' or p.startswith('../') or p.startswith('/') for p in normalized):
+        return None
+    return {'rule-corpus' if p == 'CLAUDE.md' or p.startswith('.claude/rules/') else p for p in normalized}
 
 
 def overlaps(left, right):
@@ -60,7 +64,7 @@ def index_for_fixture(source):
         'identity': {k: source[k] for k in ('repo', 'issue', 'worktree', 'branch', 'head')},
         'spec': {'pointer': source['spec']['url'], 'revision': source['spec']['revision'],
                  'body_sha256': digest(source['spec']['body']),
-                 'ac_count': len(re.findall(r'^- \[[ xX]\]', source['spec']['body'], re.M)),
+                 'ac_count': len(re.findall(r'^[ \t]*-[ \t]+\[[ xX]\]', source['spec']['body'], re.M)),
                  'load_complete_before_act': True},
         'ownership': copy.deepcopy(source['claim']),
         'phase': source['phase'],
@@ -79,13 +83,23 @@ def index_for_fixture(source):
             count = len(packet[key]) if packet[key] is not None else None
             packet[key] = {'count': count, 'pointer': 'fixture://canonical/' + key}
             packet['needs_detail'].append(key)
-    encoded = json.dumps(packet, ensure_ascii=False).encode('utf-8')
-    if len(encoded) > fixture['index_bytes']:
-        # Keep source identity/bindings, do not truncate a discovery mid-sentence.
-        packet['recovery'] = {'pointer': source['recovery']['pointer']}
-        packet['needs_detail'].append('recovery')
-        encoded = json.dumps(packet, ensure_ascii=False).encode('utf-8')
-    if len(encoded) > fixture['index_bytes']:
+    def size(value):
+        return len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+    # Byte overflow can occur below any list-count cap. Replace complete detail
+    # sections by pointers, largest first; never silently cut their contents.
+    for key in sorted(('touchpoints', 'commands', 'evidence', 'recovery'),
+                      key=lambda key: size(packet[key]), reverse=True):
+        if size(packet) <= fixture['index_bytes']:
+            break
+        if key == 'recovery':
+            packet[key] = {'pointer': source['recovery']['pointer']}
+        elif isinstance(packet[key], list):
+            packet[key] = {'count': len(packet[key]), 'pointer': 'fixture://canonical/' + key}
+        else:
+            continue
+        if key not in packet['needs_detail']:
+            packet['needs_detail'].append(key)
+    if size(packet) > fixture['index_bytes']:
         raise ValueError('minimal identity/source index exceeds bound; retrieve canonical task directly')
     return packet
 
@@ -143,13 +157,25 @@ missing['revision'] = None
 verify(evidence_validity(missing, base) == 'unknown', 'unreadable revision is unknown')
 missing.update(revision='check-v1', repo='fixture/other')
 verify(evidence_validity(missing, base) == 'unknown', 'wrong-repo evidence is unknown')
+verify(packet['commands'][0]['cwd'] == base['worktree'], 'verification command preserves working directory')
+verify(packet['commands'][0]['result_pointer'] == 'fixture://evidence/check-1', 'verification command retains result pointer')
+indented = copy.deepcopy(base)
+indented['spec']['body'] += '\n  - [ ] Indented criterion.\n\t- [x] Tab-indented criterion.'
+verify(index_for_fixture(indented)['spec']['ac_count'] == 4, 'indented acceptance criteria counted')
+under_cap = copy.deepcopy(base)
+under_cap['commands'][0]['command'] = 'é' * 6000
+bounded_command = index_for_fixture(under_cap)
+verify(bounded_command['commands']['count'] == 1 and 'commands' in bounded_command['needs_detail'], 'under-count-limit byte overflow uses complete detail pointer')
+under_cap = copy.deepcopy(base)
+under_cap['touchpoints'] = ['src/' + 'é' * 6000]
+verify('touchpoints' in index_for_fixture(under_cap)['needs_detail'], 'oversized single touchpoint becomes pointer')
 large = copy.deepcopy(base)
 large['spec']['body'] += '\n' + '\n'.join('- [ ] Criterion ' + str(i) for i in range(1000))
 bounded = index_for_fixture(large)
 verify(bounded['spec']['ac_count'] == 1002, 'large spec loses no acceptance criteria')
 verify(len(json.dumps(bounded).encode()) <= fixture['index_bytes'], 'canonical spec pointer keeps bounded index')
 large['touchpoints'] = ['src/file-' + str(i) for i in range(17)]
-large['commands'] = ['check ' + str(i) for i in range(9)]
+large['commands'] = [dict(command='check ' + str(i), cwd='/fixture', result_pointer=None) for i in range(9)]
 large['evidence'] = [dict(base['evidence'][0], id='e' + str(i)) for i in range(9)]
 bounded = index_for_fixture(large)
 verify(set(bounded['needs_detail']) == {'touchpoints', 'commands', 'evidence'}, 'overflow requires on-demand detail')
