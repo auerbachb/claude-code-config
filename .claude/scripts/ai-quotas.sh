@@ -11,7 +11,7 @@
 #   `/quotas-setup` registered, in one table.
 #
 #   DISPLAY ONLY. Nothing here may gate dispatch, pause work, downgrade a
-#   model, or feed `credit-budget.sh`. It writes no state file: not
+#   model, or feed `credit-budget.sh`. It writes no dispatch state: not
 #   `session-state.json`, not `credit-budget.sh`'s inputs
 #   (`~/.claude/usage-limit-events.jsonl`, `~/.claude/usage-limit-last.json`,
 #   the `credit_budget` state key), not any dispatch gate. Quota and spend
@@ -193,7 +193,7 @@
 #   stdout: the table (default) or a JSON OBJECT (--json). Each JSON row
 #           carries provider, label, nickname, reported_email, window,
 #           used_pct, remaining_pct, resets_at_epoch, resets_at_et,
-#           resets_at_et_short, status,
+#           resets_at_et_short, status, action,
 #           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
 #           spend_limit_usd, overage, window_start_epoch, and the projection
@@ -248,6 +248,12 @@
 #                             a source nobody can interpret makes an
 #                             unattended reading indistinguishable from a
 #                             hand-run one.
+#   AI_QUOTAS_NOTIFY_STATE    Private local notification state path (default
+#                             ~/.claude/ai-quotas-notifications.json).
+#   AI_QUOTAS_NOTIFY_DAY      Local YYYY-MM-DD override for synthetic tests.
+#   AI_QUOTAS_NOTIFY_BIN      Notification adapter for tests; receives provider,
+#                             label, action as three argv values. Default:
+#                             bounded native macOS notification.
 #   AI_QUOTAS_CURL_BIN        Path to curl.
 #   AI_QUOTAS_SECURITY_BIN    Path to macOS security(1).
 #   AI_QUOTAS_CLAUDE_BIN      Path to the `claude` CLI (User-Agent version).
@@ -905,7 +911,10 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
 }
 
 relogin_hint() { # <provider> <label>
-  printf '/quotas-setup relogin %s %s' "$2" "$1"
+  local quoted
+  quoted="$(jq -nr --arg value "$2" '$value | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end')"
+  [[ "$2" != -* ]] || quoted="-- $quoted"
+  printf '/quotas-setup relogin %s %s' "$quoted" "$1"
 }
 
 # --- claude ------------------------------------------------------------------
@@ -3159,6 +3168,15 @@ fi
 
 ROWS_JSON="$TMP/rows.json"
 jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the rows into an array"
+# Build actions from registered identity, never endpoint prose. The nullable
+# field is present on every final row, including successful fallback rows.
+jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001f\u007f]")) then null
+  elif .provider == "cursor" then "open the Cursor IDE and sign in"
+  elif .provider == "claude" or .provider == "codex" then
+    "/quotas-setup relogin " + (if (.label|startswith("-")) then "-- " else "" end) + (.label | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end) + " " + .provider
+  else null end)})' "$ROWS_JSON" > "$TMP/actions.json" \
+  || die 70 "could not build account actions"
+mv "$TMP/actions.json" "$ROWS_JSON"
 annotate_rows "$ROWS_JSON"
 
 # Recorded BEFORE the footer is read, so a scheduled run's own snapshot is the
@@ -3174,6 +3192,16 @@ append_history "$DOC"
 apply_forecast
 stamp_snapshot_field
 
+# Notify only final logged-out accounts, after all sources have finished. This
+# isolated helper owns its lock/trap; notification failure never changes output.
+if [[ "$SNAPSHOT_SOURCE" == scheduled ]]; then
+  if [[ -x "$SELF_DIR/quotas-notify.sh" ]]; then
+    "$SELF_DIR/quotas-notify.sh" "$DOC" >/dev/null 2>&1 || true
+  else
+    warn "DEGRADED: quotas-notify.sh unavailable — logout notifications disabled"
+  fi
+fi
+
 if [[ "$JSON" -eq 1 ]]; then
   cat "$DOC"
   exit 0
@@ -3184,6 +3212,9 @@ fi
 # falling back to `cat "$ROWS"` printed the TSV header over the raw JSON rows —
 # a fallback that does not degrade the output but replaces it.
 TABLE="$TMP/table.tsv"
+# Each action leads its account output and is printed once even for multi-pool
+# accounts. Keep the diagnostic detail unchanged in JSON for existing callers.
+jq -r '[.rows[] | select(.action != null) | {provider,label,action}] | unique[] | .action' "$DOC"
 {
   printf '%s\n' 'ACCOUNT	WINDOW	USED	START	%/DAY	LEFT	OVERAGE	RESETS (ET)	IN	NOTE'
   jq -r '
@@ -3273,7 +3304,7 @@ TABLE="$TMP/table.tsv"
       # still the field to branch on.
       ([ (if (.status // "ok") != "ok" then .status else empty end),
          (if .label != .reported_email then "registered as \(.label)" else empty end),
-         (.detail | if . == null or . == "" then empty else . end) ]
+         (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end) ]
        | join("; ") | if . == "" then "-" else . end)
     ] | @tsv' "$DOC"
 } > "$TABLE"

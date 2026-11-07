@@ -46,7 +46,7 @@ FAIL_B="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_B, $BANNER_B]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (c): banner PREDATES the HEAD commit -> no grace (stale banner) =="
@@ -60,7 +60,7 @@ FAIL_C="$(failure_comment "$(ts_seconds_ago 30)")"
 write_state "[]" "[]" "[]" "[$BANNER_C, $FAIL_C]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (d): banner with NO readable window -> no grace (fails toward escalation) =="
@@ -71,7 +71,7 @@ FAIL_D="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_D, $BANNER_D]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (e): absurd window is CAPPED at 1h -> a 4000s-old banner escalates =="
@@ -85,7 +85,7 @@ FAIL_E="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_E, $BANNER_E]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (e2): control — the SAME absurd window still grants grace under the cap =="
@@ -111,7 +111,7 @@ REVIEW_F="$(cr_review_on_head "$(ts_seconds_ago 6000)")"
 write_state "[]" "[$REVIEW_F]" "[]" "[$FAIL_F, $BANNER_F]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (g): banner text from a NON-CodeRabbit author -> no grace =="
@@ -122,7 +122,7 @@ FAIL_G="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_G, $BANNER_G]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (h): NEWEST banner wins — an old open window cannot revive a closed one =="
@@ -138,7 +138,7 @@ FAIL_H="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_H, $BANNER_H_OLD, $BANNER_H_NEW]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (i): no banner at all -> pre-#1199 behaviour is untouched =="
@@ -148,7 +148,7 @@ FAIL_I="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_I]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (j): a genuinely-responding BugBot still wins over an open window =="
@@ -163,7 +163,7 @@ GENUINE_J="$(genuine_comment "$(ts_seconds_ago 7000)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$GENUINE_J, $BANNER_J]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== (k): a NEVER-INVITED BugBot still wins over an open window =="
@@ -176,7 +176,7 @@ BANNER_K="$(cr_limit_banner "$(ts_seconds_ago 60)" "12 minutes")"
 write_state "[]" "[]" "[]" "[$BANNER_K]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== (h2): NEWEST banner has no readable window -> no grace, even if an older one does =="
@@ -194,7 +194,7 @@ FAIL_H2="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_H2, $BANNER_H2_OLD, $BANNER_H2_NEW]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (h3): control — that same older banner DOES grant grace when it is newest =="
@@ -244,7 +244,7 @@ FAIL_P2="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P2, $BANNER_P2]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p3): control — the SAME banner 1500s old is still INSIDE 27 minutes -> polling_cr =="
@@ -272,7 +272,7 @@ FAIL_P4="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P4, $BANNER_P4]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p5): CURRENT wording with NO window -> no grace =="
@@ -285,7 +285,7 @@ FAIL_P5="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P5, $BANNER_P5]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p6): MARKER-ONLY banner (no heading prose) -> polling_cr =="
@@ -316,7 +316,7 @@ FAIL_P7="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P7, $NONBANNER_P7]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p8): CURRENT wording from a NON-CodeRabbit author -> no grace =="
@@ -329,7 +329,7 @@ FAIL_P8="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P8, $BANNER_P8]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p9): CURRENT wording is still subject to the stale-banner guard =="
@@ -348,7 +348,7 @@ FAIL_P9="$(failure_comment "$(ts_seconds_ago 30)")"
 write_state "[]" "[]" "[]" "[$BANNER_P9, $FAIL_P9]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p9b): control — the SAME banner grants grace once the push predates it =="
@@ -382,7 +382,7 @@ FAIL_P10="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P10, $BANNER_P10_OLD, $BANNER_P10_NEW]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (p11): per-word emphasis leaves double spaces -> window still read =="
@@ -417,7 +417,7 @@ FAIL_P12="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_P12, $PROSE_P12]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 # CodeAnt review of PR #1393 — the FUTURE-TENSE window sentence. Everything above
@@ -451,7 +451,7 @@ FAIL_Q2="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_Q2, $BANNER_Q2]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (q3): BOTH slots at once — inserted word AND future tense -> polling_cr =="
@@ -484,7 +484,7 @@ FAIL_Q4="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_Q4, $BANNER_Q4]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (q5): ADAPTIVE-LIMITS notice is still not a banner -> no grace =="
@@ -502,7 +502,7 @@ FAIL_Q5="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_Q5, $ADAPTIVE_Q5]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 # Issue #1440 — the banner is EDITED IN PLACE, so `created_at` is the wrong
@@ -540,7 +540,7 @@ FAIL_R1B="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_R1B, $BANNER_R1B]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (r2): NEGATIVE CONTROL — a genuinely EXPIRED banner still grants no grace =="
@@ -558,7 +558,7 @@ FAIL_R2="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_R2, $BANNER_R2]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (r2b): control — the SAME banner refreshed 1500s ago is still INSIDE 27 minutes =="
@@ -641,7 +641,7 @@ FAIL_R5="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_R5, $BANNER_R5_UNEDITED, $BANNER_R5_EDITED]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (r5b): control — same pair, refreshed banner still INSIDE its window =="

@@ -281,3 +281,60 @@ m.MAX_STATUS_CURSORS=2
 assert m.pending_summary(str(log),str(cursors))['pending_children']==-1
 print('PASS: bounded spool scans persist progress, replay safely after crash/rotation/truncation/tails; child visits rotate fairly across restarts')
 PY
+
+# Issue #1892: a cursor that needs several hook passes is ONE resumed source,
+# and a hook call that times out before completing counts nothing. A second
+# spool batch rescans the large log from offset 0, so a retry-duplicated row
+# from the first batch is recognized rather than appended again.
+python3 - "$ROOT" "$TMP/issue-1892" <<'PY'
+import hashlib,importlib.util,json,pathlib,subprocess,sys
+root=pathlib.Path(sys.argv[1]);base=pathlib.Path(sys.argv[2]);base.mkdir()
+module_path=root/'.claude/scripts/lib/spend-telemetry-maintenance.py'
+def load(scan_bytes=64):
+    spec=importlib.util.spec_from_file_location('maintenance',module_path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    module.LOG_SCAN_BYTES=scan_bytes
+    return module
+cursors=base/'cursors';cursors.mkdir();source=base/'child.jsonl';source.write_text('x'*100+'\n')
+files={}
+for agent in ('multi','plain','timeout'):
+    identity=hashlib.sha256(('session\0%s\0subagent\0%s'%(agent,source)).encode()).hexdigest()
+    meta=dict(cursor_identity=identity,cursor_path_input=str(source),transcript_path=str(source),exec_type='inline',session_id='session',agent_id=agent,agent_type='general-purpose',cwd=str(base),repo_root='',repo_slug='',phase='unknown',transcript_scope='subagent')
+    files[agent]=cursors/(identity+'.offset');files[agent].write_text(json.dumps(dict(offset=0,metadata=meta)))
+calls={'multi':0,'plain':0,'timeout':0}
+def run(args,**kwargs):
+    agent=json.loads(kwargs['input'])['agent_id'];calls[agent]+=1
+    if agent=='timeout' or (agent=='multi' and calls[agent]==3):
+        raise subprocess.TimeoutExpired(args,kwargs['timeout'])
+    if agent=='multi':
+        saved=json.loads(files[agent].read_text());saved['offset']+=10;files[agent].write_text(json.dumps(saved))
+m=load();m.subprocess.run=run
+resumed=m.resume_children(str(cursors),'unused-hook')[0]
+assert calls=={'multi':3,'plain':1,'timeout':1},calls
+assert resumed==2,'resumed counted %d hook invocations, expected 2 distinct completed cursors'%resumed
+print('PASS: resumed counts distinct cursors once; timed-out invocations are not counted')
+
+log=base/'telemetry.log';queue=base/'spend-telemetry-pending';queue.mkdir()
+log.write_bytes(b''.join(('existing-row-%04d\n'%i).encode() for i in range(80)))
+def drain_until_empty():
+    totals=[0,0];first_offset=None
+    for _ in range(200):
+        result=load().drain_spool(str(log),str(queue))
+        totals[0]+=result[0];totals[1]+=result[1]
+        if not list(queue.glob('pending-*.tsv')):return totals,first_offset
+        if first_offset is None:first_offset=json.loads((queue/'.drain-scan.json').read_text())['offset']
+    raise AssertionError('spool never drained')
+(queue/'pending-batch1.tsv').write_bytes(b'retried-row\n')
+assert drain_until_empty()[0]==[1,0]
+batch1_eof=log.stat().st_size
+with log.open('ab') as output:
+    output.write(b''.join(('later-hook-row-%04d\n'%i).encode() for i in range(40)))
+# Retry re-spools the batch-1 row (crash between append and unlink) beside a new one.
+(queue/'pending-batch2-retry.tsv').write_bytes(b'retried-row\n')
+(queue/'pending-batch2-new.tsv').write_bytes(b'new-row\n')
+totals,first_offset=drain_until_empty()
+assert totals==[1,1],totals
+assert first_offset is not None and first_offset < batch1_eof,'batch 2 did not rescan from the log start'
+assert log.read_bytes().count(b'retried-row\n')==1 and log.read_bytes().count(b'new-row\n')==1
+print('PASS: a second spool batch rescans a large log and recognizes a retry-duplicated row')
+PY

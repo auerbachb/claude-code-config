@@ -99,6 +99,7 @@ PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
 ISSUE_CLAIM_SH=$(resolve_script issue-claim.sh || true)
 SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 DIRTY_MAIN_GUARD_SH=$(resolve_script dirty-main-guard.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
 HHG_STATE_SH=$(resolve_script hhg-state.sh || true)
@@ -228,11 +229,43 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 
 **Merge-ready shortcut:** Run `merge-gate.sh` once before the loop, capturing its stdout into `GATE_JSON` exactly as the loop does. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2. Capturing is not optional — Step 2.4 reads `merge_state` out of `GATE_JSON`, so a shortcut that discarded the output would leave it unset there.
 
+**Claim renewal before every wait (issue #1927).** A `/fixpr` wait can outlast the claim's stale window, so before **each** Branch B/C/D dispatch below — the first and every later one, including the iterations Step 2.4's `BEHIND` re-entry adds — renew every linked issue whose holder this run was **handed**: the Phase C prompt (`/subagent`) or the `/start-issue` Form B handoff names the issue and its holder. Keep holders per issue; never apply one to every linked issue, never adopt a `claimant_holder` read off GitHub, never use `--claim` as a check.
+
+```bash
+# CLAIM_PAIRS: "<issue> <holder>" lines from the caller; empty in a standalone /wrap.
+CLAIM_PAIRS="${CLAIM_PAIRS:-}"
+WRAP_STOP=0
+if [[ -z "$CLAIM_PAIRS" ]]; then
+  echo "note: no claim holder handed to /wrap — claim not renewed before the wait"
+elif [[ -z "$ISSUE_CLAIM_SH" ]]; then
+  echo "DEGRADED: issue-claim.sh not found (checked all three paths) — claim not renewed"
+else
+  CLAIM_ERR=$(mktemp)
+  while read -r C_ISSUE C_HOLDER; do
+    [[ -n "$C_ISSUE" && -n "$C_HOLDER" ]] || continue
+    for attempt in 1 2; do
+      [[ "$attempt" -eq 2 ]] && sleep 5   # let a transient gh failure clear
+      "$ISSUE_CLAIM_SH" "$C_ISSUE" --renew --holder "$C_HOLDER" >/dev/null 2>"$CLAIM_ERR"; rc=$?
+      [[ "$rc" -eq 0 || "$rc" -eq 5 || "$rc" -eq 2 ]] && break
+    done
+    case "$rc" in
+      0) ;;
+      5) echo "BLOCKED: lost ownership of issue #$C_ISSUE — another thread holds or released the claim; not merging"; WRAP_STOP=1 ;;
+      2) echo "DEGRADED: issue-claim.sh --renew unavailable for #$C_ISSUE: $(head -1 "$CLAIM_ERR")" ;;
+      *) echo "WARN: claim renewal for #$C_ISSUE failed (exit $rc) — continuing to the wait" ;;
+    esac
+  done <<< "$CLAIM_PAIRS"
+  rm -f "$CLAIM_ERR"
+fi
+```
+
+Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** — stop and report; do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). The Step 2.4 claim release is unchanged.
+
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
 1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → exit for Phase 3. `CLOSED` → stop.
 2. **Refresh gate** — `GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")`. Exit `3` → Phase 3. Exit `2`/`4` → surface stderr, stop. Exit `0` with no pending `WRAP_PHASE1_FINDINGS` → proceed to Step 2.2. Exit `0` with `WRAP_PHASE1_FINDINGS` pending → treat as Branch B dispatch (findings still unresolved despite clean gate — delegate to `/fixpr`).
-3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`):
+3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`). Every B/C/D wait dispatch runs the claim renewal above first; its exit 5 stops here:
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
    - **`mergeable == CONFLICTING`** → stop; recommend `/merge-conflict`.
@@ -303,7 +336,8 @@ MERGE_STATE=$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // empty')
 
 `printf '%s'`, never `echo` — zsh's builtin corrupts the JSON payload (issue #574).
 
-- **`CLEAN`** → `gh pr merge "$PR_NUM" --squash`, unchanged.
+- **`CLEAN`** (override not applied) → `gh pr merge "$PR_NUM" --squash`, unchanged.
+- **No-review override** (issue #1899) — `GATE_JSON` has `.no_review_override.applied == true`: on `CLEAN`, or on `UNSTABLE` only when `.no_review_override.excluded_reviewer_checks` is non-empty (a pending, non-required reviewer check is then what makes it unstable; the gate already cleared build CI and required contexts — any other `UNSTABLE` stops as below) first **re-run `merge-gate.sh` into `GATE_JSON`** (the gate can flip between Step 2.1 and here) and proceed only if it is still `met` with the override applied **and** its refreshed `merge_state` still passes this same test (`CLEAN`, or `UNSTABLE` with a non-empty refreshed `excluded_reviewer_checks`) — otherwise re-enter Step 2.1 — then run `gh pr merge "$PR_NUM" --squash --match-head-commit "$(printf '%s' "$GATE_JSON" | jq -r .head_sha)"` with that refreshed `head_sha`. On `BEHIND` **never** take the clean-`BEHIND` admin path (`admin-merge.sh` refuses it anyway) — rebase via `/fixpr` and re-enter Step 2.1; the new HEAD gets its own window. A head-pin refusal re-enters Step 2.1 the same way. After a confirmed merge, run the **override recorder** below before the claim release.
 - **`BEHIND`** → the clean-`BEHIND` path below. A plain squash is **rejected** here by `required_status_checks.strict`.
 - **Anything else** → **not merge-ready** per `cr-merge-gate.md` Step 1d — stop with the state and the last `missing[]`. Never merge on an unenumerated state: `BLOCKED` and `UNSTABLE` add no `missing[]` entry, so a gate exit `0` does not by itself clear them.
 
@@ -335,6 +369,23 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 **Both fall-throughs re-enter the Step 2.1 recovery loop — they never merge from here and never end `/wrap` (issue #1425).** The rebase moves HEAD, which invalidates the bot approval that satisfied the gate and restarts CI, so the post-rebase SHA is unreviewed by construction: merging it would bypass the gate, and stopping would abandon a PR that is one review round from mergeable. Re-entry runs against the **same** `i` counter and `WRAP_RECOVERY_MAX_ITERATIONS` cap, so rebase → re-review → `BEHIND`-again cannot spin unbounded; exhausting the cap stops with the last `missing` and the full `WRAP_RECOVERY_AUDIT`. Because re-entry passes back through Step 2.2, AC is re-verified against the rebased SHA before Step 2.4 runs again — which is what keeps the later `--ac-verified` attestation truthful on the retry.
 
 `--ac-verified` is justified because **Step 2.2 already ran unconditionally** — every Test Plan checkbox was verified against the source at this SHA on both paths. `clean-behind-check.sh` counts unchecked boxes as `reasons_not_safe`, so running it before Step 2.2 would report exit `1` for bookkeeping rather than for a real blocker.
+
+**Override recorder (issue #1899) — only when `.no_review_override.applied == true`.** Log the merge in the cross-repo ledger, which also labels the PR `merged-unreviewed`; the result picks the report suffix (`NRO_SUFFIX`):
+
+```bash
+NRO_SUFFIX=""
+if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
+  LEDGER_SH=$(resolve_script unreviewed-merge-ledger.sh || true)
+  if [[ -n "$LEDGER_SH" ]] && printf '%s' "$GATE_JSON" | "$LEDGER_SH" record --pr "$PR_NUM" --gate-json - >/dev/null; then
+    NRO_SUFFIX=" (no AI review — logged)"
+  else
+    NRO_SUFFIX=" (no AI review — ledger write failed)"
+    [[ -n "$LEDGER_SH" ]] || echo "ERROR: unreviewed-merge-ledger.sh not found (checked all three paths) — no-review merge ledger unavailable" >&2
+  fi
+fi
+```
+
+A ledger failure never un-merges anything; `NRO_SUFFIX` carries it into the report line (`merged PR #N (no AI review — ledger write failed)`) so the row can be added by hand (`unreviewed-merge-ledger.sh record`).
 
 **Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
 
@@ -467,7 +518,9 @@ dedup_search() {   # sets DEDUP_JSON/DUP_NUM/DUP_STATE
   DEDUP_JSON='[]'
   DEDUP_DEGRADED=""
   if [ -n "$ISSUE_DEDUP" ] && [ -n "$kw" ]; then
-    DEDUP_JSON=$("$ISSUE_DEDUP" "$kw" ${DEDUP_EXCLUDE:+--exclude "$DEDUP_EXCLUDE"}) || rc=$?
+    local dedup_args=("$kw")   # an array: zsh keeps `${X:+--flag "$X"}` as one word
+    [ -n "$DEDUP_EXCLUDE" ] && dedup_args+=(--exclude "$DEDUP_EXCLUDE")
+    DEDUP_JSON=$("$ISSUE_DEDUP" "${dedup_args[@]}") || rc=$?
     if [ "$rc" -gt 1 ]; then
       DEDUP_DEGRADED="helper exit $rc"
       DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
@@ -907,7 +960,9 @@ done
 #    re-emitted below, one line each.
 MERGED_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
 if [ -x "$RELEASE_SWEEP" ]; then
-  SWEEP_OUT=$("$RELEASE_SWEEP" ${MERGED_REPO:+--repo "$MERGED_REPO"} --json 2>/dev/null) || true
+  SWEEP_ARGS=()   # an array: zsh keeps `${X:+--repo "$X"}` as one word (issue #1857)
+  [ -n "$MERGED_REPO" ] && SWEEP_ARGS=(--repo "$MERGED_REPO")
+  SWEEP_OUT=$("$RELEASE_SWEEP" ${SWEEP_ARGS[@]+"${SWEEP_ARGS[@]}"} --json 2>/dev/null) || true
   if [ -n "${SWEEP_OUT:-}" ]; then
     # A build the sweep cut folds into the single success line rather than adding
     # one of its own.
@@ -968,7 +1023,7 @@ Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode pr
 
 #### Silent default
 
-On a clean run, print exactly one line — `merged PR #N` — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
+On a clean run, print exactly one line — `merged PR #N`, plus `$NRO_SUFFIX` when the no-review override merged it (`merged PR #N (no AI review — logged)`, issue #1899) — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
 
 This bounds `/wrap`'s **own** output only. The thread's single end-of-task wrap-up (`.claude/reference/final-wrapup-format.md`) is a task-level always-emit exception under `CLAUDE.md` #3 — it is not `/wrap` output, and it does not violate this default. Its trigger is the **task** reaching terminal state, never a `/wrap` return: a fleet loop such as `/pr-monitor-and-manage`, which calls `/wrap` once per merge-ready PR and keeps managing the fleet, emits no wrap-up on those returns — only one when the fleet run itself ends.
 
@@ -988,7 +1043,7 @@ Print this block first:
 ```
 ## Wrapped up
 
-**Merged:** PR #{N} ({title}) — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
+**Merged:** PR #{N} ({title}){$NRO_SUFFIX — no-review override only} — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
 
 **Follow-ups:** {either "Opened [#{a}](url) — {one line}; [#{b}](url) — {one line}." listing every WRAP_FILED_ISSUES entry (≤3 sentences), or "No follow-ups opened."}{ When any filing was suppressed as a duplicate: " {M} finding(s) appended to existing issues."}
 

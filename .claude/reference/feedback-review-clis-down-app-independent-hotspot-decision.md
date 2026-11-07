@@ -1,5 +1,7 @@
 # Review CLIs Down ≠ App Reviewers Down — Memory Hotspot Decision
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 <!-- churn-hotspot: .claude/memory/feedback_review_clis_down_app_independent.md -->
 
 Reference for Issue #1074 (`.claude/memory/feedback_review_clis_down_app_independent.md` churn hotspot). Not auto-loaded.
@@ -10,7 +12,7 @@ Reference for Issue #1074 (`.claude/memory/feedback_review_clis_down_app_indepen
 
 Keep `.claude/memory/feedback_review_clis_down_app_independent.md` as the durable incident record for the PR #763 both-CLIs-down event and the App-vs-CLI independence lesson. The core narrative is unique and has no canonical home elsewhere.
 
-Trim the "Standing state update" addendum (added by PR #821, updated by PR #858) to a one-line pointer to `.claude/reference/codeant-graphite-supplemental.md` §Install state. The addendum is a confirmed three-place restatement; CLAUDE.md mandates "dedupe and prune stale entries."
+Trim the "Standing state update" addendum (added by PR #821, updated by PR #858) to a one-line pointer to `.claude/reference/codeant-supplemental.md` §Install state. The addendum is a confirmed three-place restatement; CLAUDE.md mandates "dedupe and prune stale entries."
 
 ## 1. Trigger and current evidence
 
@@ -43,7 +45,7 @@ These same facts appear in two other files:
 | Location | Form | Canonical? |
 |---|---|---|
 | `feedback_review_clis_down_app_independent.md` §Standing state update | One-paragraph addendum | No |
-| `.claude/reference/codeant-graphite-supplemental.md` §"Install state on this machine" | Full detailed section with runbook commands | **Yes** — the richest version |
+| `.claude/reference/codeant-supplemental.md` §"Install state on this machine" | Full detailed section with runbook commands | **Yes** — the richest version |
 | `.claude/reference/local-review-cli-failure-modes.md` §"Standing state on this machine" | One-sentence summary + cross-reference | No |
 
 The memory file's addendum is the thinnest version: it has no runbook commands, no Option B path, and no stderr-check guidance. It adds no unique information not already in the canonical reference.
@@ -56,7 +58,7 @@ The core incident narrative (the PR #763 incident, the three durable App-vs-CLI 
 
 Treat the memory note as small, cohesive, and append-only. Accept the three-place restatement as acceptable duplication given file size.
 
-**Rejected.** CLAUDE.md §Memory System mandates "dedupe and prune stale entries." The addendum is a confirmed three-place restatement with no unique content, and its canonical home (`codeant-graphite-supplemental.md`) is already cross-referenced in `local-review-cli-failure-modes.md`. A pure KEEP leaves the addendum as a stale pointer-substitute where a pointer is shorter and more reliable.
+**Rejected.** CLAUDE.md §Memory System mandates "dedupe and prune stale entries." The addendum is a confirmed three-place restatement with no unique content, and its canonical home (`codeant-supplemental.md`) is already cross-referenced in `local-review-cli-failure-modes.md`. A pure KEEP leaves the addendum as a stale pointer-substitute where a pointer is shorter and more reliable.
 
 ### Option 2: KEEP + targeted dedup — trim addendum to a one-line pointer
 
@@ -68,21 +70,21 @@ Keep the core incident narrative intact; replace the addendum with a one-line po
 
 Create a separate memory file for the CodeAnt install-state fact.
 
-**Rejected.** A state-update fact this small does not warrant its own memory file. The fact is already covered by `codeant-graphite-supplemental.md`. A separate file would add a third memory entry for the same state, worsening duplication rather than reducing it.
+**Rejected.** A state-update fact this small does not warrant its own memory file. The fact is already covered by `codeant-supplemental.md`. A separate file would add a third memory entry for the same state, worsening duplication rather than reducing it.
 
 ## 4. Canonical ownership boundaries
 
 | Concern | Owner | Non-owner action |
 |---|---|---|
 | App-vs-CLI independence lesson; zero-coverage surfacing lesson; self-review scope | `.claude/memory/feedback_review_clis_down_app_independent.md` (core narrative) | Point here for the incident; do not restate the lessons |
-| CodeAnt CLI install state, auth runbook, coverage baseline | `.claude/reference/codeant-graphite-supplemental.md` §Install state | Cross-reference; do not re-copy the install facts |
+| CodeAnt CLI install state, auth runbook, coverage baseline | `.claude/reference/codeant-supplemental.md` §Install state | Cross-reference; do not re-copy the install facts |
 | CLI binary-absent failure mode and restore path | `.claude/reference/local-review-cli-failure-modes.md` §CodeAnt CLI not installed | Cross-reference; do not re-copy the diagnostic table |
 | Enforced directive: dual-CLI review, coverage classification, self-review surface | `.claude/rules/cr-local-review.md` | The rule is binding; do not restate enforcement prose in memory |
 
 ## 5. Preserved invariants
 
 - The core incident narrative (PR #763 incident, three durable lessons, Provenance line) stays byte-for-byte intact.
-- `.claude/reference/codeant-graphite-supplemental.md` and `.claude/reference/local-review-cli-failure-modes.md` are not modified.
+- `.claude/reference/codeant-supplemental.md` and `.claude/reference/local-review-cli-failure-modes.md` are not modified.
 - `.claude/rules/cr-local-review.md` is not modified.
 - The memory file remains a single cohesive note; it is not split.
 
@@ -97,7 +99,7 @@ Changes in this PR:
 
 ## 7. Future edits and reconsideration
 
-Future state-update edits for CodeAnt install state belong in `codeant-graphite-supplemental.md` §Install state, not in this memory file.
+Future state-update edits for CodeAnt install state belong in `codeant-supplemental.md` §Install state, not in this memory file.
 
 Reconsider if:
 - The core incident narrative is superseded (e.g., a future policy change makes the App-vs-CLI distinction obsolete).

@@ -5,10 +5,13 @@ Not auto-loaded; read it when working on the quota tools.
 
 **Display and configuration only.** Nothing in this file — and nothing any tool built on
 it produces — may gate dispatch, pause work, downgrade a model, or feed
-`credit-budget.sh`. Quota and spend authority stays with Anthropic's in-app UI and
-upstream harness signals, per `.claude/rules/safety.md` §"Anthropic Quota & Spend
-Authority". This registry answers "which accounts exist and can I reach them", nothing
-more.
+`credit-budget.sh`, with one exception: `quota-reserve.sh` may pause *autonomous* work on
+an account whose provider-reported weekly used-percent reaches the owner's threshold
+(§"The one consumer that acts on these readings (#1863)" below; [`quota-reserve.md`](./quota-reserve.md)). That carve-out
+is authorized only by `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority",
+which stays the authority on its scope. Otherwise quota and spend authority stays with
+Anthropic's in-app UI and upstream harness signals. This registry answers "which
+accounts exist and can I reach them", nothing more.
 
 **Distinct wallet.** This file governs the owner's **AI coding-assistant subscriptions** —
 Claude Max, ChatGPT Pro / Codex, Cursor Ultra — including what continuing past their caps
@@ -16,6 +19,59 @@ costs (§"Overage — what continuing costs"). `.claude/reference/pricing-matrix
 separate **review-stack** wallet: CodeRabbit, BugBot, Greptile, CodeAnt. The two are never
 mixed, and no price is copied between them — a figure that appears in both files is a
 figure that will be updated in one of them and silently stale in the other.
+
+## Logged-out actions, notifications, and diagnosis (Issue #1886)
+
+Every final report row declares `action`, a string on `needs-login` and null otherwise.
+Claude/Codex actions are `/quotas-setup relogin <label> <provider>` with shell quoting
+when needed; Cursor says `open the Cursor IDE and sign in`. Text prints each account's
+action once before the table. The JSON `detail` is unchanged. Relaying an account must
+lead with its action. Labels with terminal controls have no printable action and are
+excluded from notifications. No path stores/replays a password or completes a human's
+OAuth sign-in.
+
+A scheduled snapshot (`--quiet` or `AI_QUOTAS_SOURCE=scheduled`) attempts a native macOS
+notification for each **final** logged-out account, after source fallback. Interactive
+reads and reserve refreshes do not notify. The local calendar date follows the machine's
+time zone, not the report's UTC/ET display clock. State is private mode 0600 at
+`~/.claude/ai-quotas-notifications.json`, override `AI_QUOTAS_NOTIFY_STATE`. The shared
+state lock serializes claims; a bounded, atomically published `(provider,label,day)`
+claim precedes delivery. Multiple usage windows and simultaneous runs cannot duplicate
+an attempt. At most one **attempt** per account/day: failed/disabled OS delivery is not
+retried that day. The latest seven observed local dates are retained (at most 1000
+claims). A clock rollback before that retained window skips delivery, preserving
+deduplication without unbounded state; returning to a retained date reuses its claim.
+Corrupt, oversized, symlink, special-file or contended state fails open for the report
+and skips delivery. OS notification settings may suppress presentation. The adapter is
+bounded to three seconds per account; lock wait is at most one second. Notifications
+use only provider, registered label and exact action, never endpoint detail, tokens or
+reported-email metadata. The helper owns its cleanup and cannot replace the reader's
+trap. `AI_QUOTAS_NOTIFY_DAY` and `AI_QUOTAS_NOTIFY_BIN` are synthetic-test seams.
+
+**Token scope fallback.** [Official Claude authentication documentation](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)
+states that `setup-token` produces a one-year token for model requests and prints it
+instead of saving it. That scope cannot serve the usage reader; the issue explicitly
+narrows the delivery scope to notification + relogin in this case. The original Codex
+cause investigation is deferred to [Issue #1970](https://github.com/auerbachb/claude-code-config/issues/1970),
+not an additional acceptance gate for that authorized fallback. No long-lived-token installer or reader
+override is shipped, and no token was minted or live credential inspected to verify
+this. Existing OAuth refresh behavior remains in place. Do not run `setup-token` merely
+to inspect its output or store a password to work around expiry.
+
+**Codex diagnosis remains unverified.** On November 6, 2026, a metadata-only audit of
+the actual default/`AI_QUOTAS_HISTORY`, configured LaunchAgent history, and reserve
+reader outcome paths found 317 Codex outcomes across two account labels, all
+`ok`, `app-server`, and null error class. No refresh failure was present. The previous
+two bounded ordinary profile reads also succeeded; there is no basis to claim expiry,
+revocation or reuse caused the reported historical logouts. `credential_unavailable`,
+HTTP 401, or a generic reader failure alone cannot distinguish these causes. Preserve
+sanitized fixed upstream failure codes when they become available and correlate their
+account/source/time before naming a cause. Do not copy response bodies, auth files,
+tokens or passwords into the ledger or a diagnosis. The original diagnosis is not
+claimed completed: [Issue #1970](https://github.com/auerbachb/claude-code-config/issues/1970)
+tracks the actual failure evidence and follow-up work under the original conditional
+scope. Unknown history does not prevent the notification/relogin fallback from shipping
+once its active acceptance criteria and the normal review/CI gates pass.
 
 ## Why per-account profiles at all
 
@@ -1590,3 +1646,7 @@ Every source attempt uses the bounded sibling outcomes ledger introduced in #188
 `--browser` is explicit interactive authority to invoke the supported Claude CLI v2.1.248-or-later `--chrome` bridge. Only navigation to the Cursor usage dashboard and rendered-page reading are permitted; the bridge enforces its tool boundary with PreToolUse/PostToolUse hooks. It initializes a native tab group and creates a dedicated tab. Navigation acknowledgments never authorize reads: fresh native `tabs_context_mcp` metadata must prove the actual dedicated-tab URL before each page read, and the permission is consumed by that read. Redirects, errors and unknown context remain unavailable. It never signs in, types credentials, executes page JavaScript, or changes settings. Chrome must already have its extension/session connected. Plain shell and quiet/scheduled runs never invoke it. `--browser-results <file>` supports externally mediated observations and resumes at browser; private regular result files, schema, freshness, identity and finite pool numbers are strictly validated. CLI transport failure, missing connection and malformed observations fail closed without echoing diagnostics. See `/quotas` for the exact schema. The previous IDE-only implementation remains the default first source.
 
 Supported CLI integration: [Claude Code Chrome documentation](https://code.claude.com/docs/en/chrome) and [CLI reference](https://code.claude.com/docs/en/cli-reference). The live Chrome extension may be unavailable in a given runtime; synthetic bridge tests verify support independently of live login availability.
+
+## Session attribution
+
+For account × project history, see [ai-account-ledger.md](ai-account-ledger.md). The dedicated ledger report is separate from live quota output.

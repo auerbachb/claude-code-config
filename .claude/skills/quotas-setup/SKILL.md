@@ -41,6 +41,14 @@ isolated login profile, and report which are reachable.
 > neither do you. If a login needs the user's hands, say so and stop; do not offer to
 > type credentials.
 
+For a logged-out account, lead with the exact action supplied by `/quotas` and preserve
+its label/provider quoting. The human completes the provider's sign-in. Do not install
+`claude setup-token` for this usage reader: those long-lived tokens are model-request-only.
+Issue #1886 uses notification + one-line relogin as its explicit scope fallback, with
+no password storage or replay. See the reference and Issue #1970 for the deferred
+actual Codex-cause investigation; do not invent a cause or make it a prerequisite
+for the authorized notification/relogin fallback.
+
 ## Step 1 — Resolve the helper
 
 <!-- test-anchor: resolve-helper -->
@@ -336,3 +344,9 @@ over the journal.
 ## Usage source preferences
 
 Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+
+## Session ledger hooks
+
+For requests to install account-ledger hooks, run `"$AI_QUOTAS_SETUP_SH" ledger-hooks`. It merges per-profile Codex SessionStart entries while preserving unrelated hooks and config.toml. If the action fails, report its message and stop that action. Hook support and trust depend on the Codex version.
+
+For backfill requests or sessions missing live hook capture, resolve the ledger helper with `LEDGER_SH=$(resolve_script ai-account-ledger.sh || true)` and run `"$LEDGER_SH" backfill-codex` when it resolves. Otherwise report `ERROR: ai-account-ledger.sh not found (checked all three paths) — Codex backfill unavailable`. See `.claude/reference/ai-account-ledger.md` for privacy and historical ownership limits.

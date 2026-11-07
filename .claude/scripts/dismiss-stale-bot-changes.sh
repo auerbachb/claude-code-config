@@ -114,6 +114,7 @@ if [[ -z "$HEAD_SHA" ]]; then
 fi
 
 # Literal bot logins — must match dismiss targets; humans never appear here.
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still dismisses.
 ALLOWLIST_JSON='["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"]'
 
 if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then

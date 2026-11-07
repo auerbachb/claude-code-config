@@ -332,13 +332,37 @@ ok "CLAUDE_ACTIVE_WORK_CAP overrides the config value"
 # --- 7. Invalid and out-of-range fall back LOUDLY ----------------------------
 # Silent fallback is the failure mode this guards: a typo'd knob that reads as
 # "the default" with no signal looks identical to never having set one.
-for BAD in "abc" "0" "99" "-3" "18446744073709551618"; do
+for BAD in "abc" "0" "21" "99" "-3" "18446744073709551618"; do
   OUT=$(CLAUDE_ACTIVE_WORK_CAP="$BAD" run --cap 2>"$TMP_DIR/err") || \
     fail "a bad cap ('$BAD') should fall back, not exit non-zero"
   [[ "$OUT" == "6" ]] || fail "bad cap '$BAD' should fall back to 6, got '$OUT'"
   [[ -s "$TMP_DIR/err" ]] || fail "bad cap '$BAD' must warn on stderr, but stderr was empty"
 done
-ok "unparseable / zero / over-max / negative / overlong caps all fall back to 6 and warn"
+ok "unparseable / zero / over-max (21) / negative / overlong caps all fall back to 6 and warn"
+
+# The upper bound is 20 (#1920; was 10). 20 is accepted silently from both the
+# env and the config, and 21 from the config warns and falls back — the
+# boundary pair that fails against the old CAP_MAX=10.
+CAP=$(CLAUDE_ACTIVE_WORK_CAP=20 run --cap 2>"$TMP_DIR/err") || fail "--cap failed on env cap 20"
+[[ "$CAP" == "20" && ! -s "$TMP_DIR/err" ]] || \
+  fail "env cap 20 should resolve 20 silently, got '$CAP' / $(cat "$TMP_DIR/err")"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=20
+```'
+CAP=$(run --cap 2>"$TMP_DIR/err") || fail "--cap failed on config cap 20"
+[[ "$CAP" == "20" && ! -s "$TMP_DIR/err" ]] || \
+  fail "config cap 20 should resolve 20 silently, got '$CAP' / $(cat "$TMP_DIR/err")"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=21
+```'
+CAP=$(run --cap 2>"$TMP_DIR/err") || fail "--cap failed on config cap 21"
+[[ "$CAP" == "6" ]] || fail "config cap 21 should fall back to 6, got '$CAP'"
+grep -q 'outside \[1, 20\]' "$TMP_DIR/err" || \
+  fail "config cap 21 must warn naming the [1, 20] range, stderr: $(cat "$TMP_DIR/err")"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=7
+```'
+ok "cap bound is 20: 20 accepted from env and config, 21 rejected with a warning"
 
 # Leading zeros are still just a number: the overflow guard strips them before
 # counting digits, so 0007 is 7, silently.
@@ -1536,7 +1560,8 @@ reset_old_gh_case
 
 # --- 38. PIPELINE_CEILING — the per-thread ceiling knob (#1729) ---------------
 # Same resolution contract as the cap (env -> `## Active work` -> default),
-# its own default (4, the top of the historical 3–4 band) and bounds [1, 10].
+# its own default (4, the top of the historical 3–4 band) and bounds [1, 20]
+# (widened from [1, 10] by #1920).
 # Every case below fails against the pre-#1729 script, which has no --ceiling
 # mode and exits 2 on it — a plain "prints 4" check would not prove the knob
 # is read, so case (b) and the env cases are the discriminating ones.
@@ -1577,7 +1602,7 @@ CEIL=$(run --ceiling) || fail "38c: --ceiling failed on the colon form"
 ok "38c: the lowercase colon form 'pipeline_ceiling: N' resolves"
 
 # (d) Out-of-range and non-integer config values warn and fall back to 4.
-for BAD in 0 11 abc 18446744073709551621; do
+for BAD in 0 21 abc 18446744073709551621; do
   set_cap_config "\`\`\`ini
 PIPELINE_CEILING=$BAD
 \`\`\`"
@@ -1587,7 +1612,22 @@ PIPELINE_CEILING=$BAD
   grep -q 'PIPELINE_CEILING (config)' "$TMP_DIR/ceilerr" || \
     fail "38d: bad config ceiling '$BAD' must warn naming PIPELINE_CEILING, stderr: $(cat "$TMP_DIR/ceilerr")"
 done
-ok "38d: config PIPELINE_CEILING of 0 / 11 / abc / an overlong value warns on stderr and falls back to 4"
+ok "38d: config PIPELINE_CEILING of 0 / 21 / abc / an overlong value warns on stderr and falls back to 4"
+
+# (d2) The upper bound is 20 (#1920): 20 resolves silently from config and env;
+# 11 — rejected under the old bound — is now accepted.
+for GOOD in 11 20; do
+  set_cap_config "\`\`\`ini
+PIPELINE_CEILING=$GOOD
+\`\`\`"
+  CEIL=$(run --ceiling 2>"$TMP_DIR/ceilerr") || fail "38d2: --ceiling failed on config $GOOD"
+  [[ "$CEIL" == "$GOOD" && ! -s "$TMP_DIR/ceilerr" ]] || \
+    fail "38d2: config ceiling $GOOD should resolve silently, got '$CEIL' / $(cat "$TMP_DIR/ceilerr")"
+done
+CEIL=$(CLAUDE_PIPELINE_CEILING=20 run --ceiling 2>"$TMP_DIR/ceilerr") || fail "38d2: --ceiling failed on env 20"
+[[ "$CEIL" == "20" && ! -s "$TMP_DIR/ceilerr" ]] || \
+  fail "38d2: env ceiling 20 should resolve silently, got '$CEIL' / $(cat "$TMP_DIR/ceilerr")"
+ok "38d2: PIPELINE_CEILING bound is 20 — 11 and 20 accepted, 21 rejected (38d)"
 
 # (e) The env override wins over a valid config; an invalid env value warns
 # and falls back to the DEFAULT — never to the config value underneath it.
@@ -1596,7 +1636,7 @@ PIPELINE_CEILING=8
 ```'
 CEIL=$(CLAUDE_PIPELINE_CEILING=3 run --ceiling) || fail "38e: --ceiling failed with env override"
 [[ "$CEIL" == "3" ]] || fail "38e: CLAUDE_PIPELINE_CEILING=3 should win over config 8, got '$CEIL'"
-for BAD in 0 11 abc 18446744073709551621; do
+for BAD in 0 21 abc 18446744073709551621; do
   OUT=$(CLAUDE_PIPELINE_CEILING="$BAD" run --ceiling 2>"$TMP_DIR/ceilerr") || \
     fail "38e: a bad env ceiling ('$BAD') should fall back, not exit non-zero"
   [[ "$OUT" == "4" ]] || fail "38e: bad env ceiling '$BAD' should fall back to 4 (not config 8), got '$OUT'"

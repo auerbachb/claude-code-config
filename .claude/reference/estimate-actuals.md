@@ -12,6 +12,8 @@ per-round unit as minutes ÷ rounds off this table: the minutes span
 claim → merge (`pr_created` fallback), so they are the right comparison
 for the planning bound but include the coding term the per-round unit
 excludes. That unit is re-derived only from an open → merge measurement.
+The claim start is the claim marker's payload `since` when valid, else the
+marker comment's `created_at`, so a renewed claim does not shorten the duration.
 The published tier table stays authoritative for tiers with fewer than ~5 rows.
 
 ## Recalibrated Tier → Time Table

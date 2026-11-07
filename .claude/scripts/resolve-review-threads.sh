@@ -15,6 +15,7 @@
 #   --authors  Comma-separated list of GitHub logins (without [bot] suffix) whose
 #              threads are eligible for resolution. Default:
 #              coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai
+#              (graphite-app retired 2026-11-03, #1889; kept so leftover threads resolve)
 #   --thread-ids
 #              Comma-separated GraphQL review thread node IDs that must be verified
 #              resolved after mutation attempts. When provided, these explicit IDs

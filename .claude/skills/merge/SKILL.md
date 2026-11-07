@@ -25,6 +25,7 @@ MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
 CI_STATUS_SH=$(resolve_script ci-status.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — merge authorship gate unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
@@ -83,9 +84,9 @@ GATE_EXIT=$?
 - Exit `3` → PR not found (already merged/closed). Stop.
 - Exit `2`/`4` → script or gh error; surface the stderr message to the user.
 
-If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger the matching bot re-review (`@coderabbitai full review` or `@greptileai`) and wait for a fresh current-HEAD approval.
+If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger only a listed bot that can satisfy the code-owner requirement: `coderabbitai[bot]` listed → `@coderabbitai full review` unless the PR's review tier excludes CodeRabbit (`review-triggers-allowed.sh <PR>` in `tiered` mode not allowing `coderabbit`, as `ci-only`/`ci+codeant-one-round` do — then report the blocker), then wait for a fresh current-HEAD approval. When `greptile-apps[bot]` is the bot the requirement needs, a Greptile re-review (`@greptileai`) is paid — post it only under an owner grant, through `"$PAID_GRANT_SH" --trigger <PR> --vendor greptile` (issues #1897, #1898; `.claude/reference/paid-review-approval.md`); without one — or with `PAID_GRANT_SH` empty (`ERROR: paid-review-grant.sh not found (checked all three paths)`) — stop and report the blocker.
 
-Reviewer assignment is resolved automatically from `~/.claude/session-state.json` and live history. Pass `--reviewer cr|bugbot|greptile` to `merge-gate.sh` to override — those three are `merge-gate.sh`'s complete set (it rejects anything else with exit `2`), and it is a different flag from `reply-thread.sh`'s five-mode `--reviewer cr|bugbot|greptile|codeant|graphite`.
+Reviewer assignment is resolved automatically from `~/.claude/session-state.json` and live history. Pass `--reviewer cr|bugbot|greptile` to `merge-gate.sh` to override — those three are `merge-gate.sh`'s complete set (it rejects anything else with exit `2`), and it is a different flag from `reply-thread.sh`'s `--reviewer cr|bugbot|greptile|codeant|graphite` (graphite kept only while the retired App still posts).
 
 ### Step 3: Verify acceptance criteria
 
@@ -138,6 +139,8 @@ If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): .
 ```bash
 gh pr merge --squash
 ```
+
+**No-review override (issue #1899).** When the gate JSON shows `.no_review_override.applied == true`, this replaces the plain `gh pr merge --squash` above. The gate JSON from Step 2 predates AC verification, so first **re-run `merge-gate.sh` into the gate JSON** and continue only if it is still `met` with `.no_review_override.applied == true` (a same-HEAD `CHANGES_REQUESTED` or a bot verdict that landed meanwhile flips it — then stop and re-run from Step 2); the head pin does not protect review state. Then merge with the head pinned — `gh pr merge --squash --match-head-commit <gate head_sha>` — never through `admin-merge.sh`, then record it before branch cleanup: `unreviewed-merge-ledger.sh record --pr <N> --gate-json -` (gate JSON on stdin; it labels the PR `merged-unreviewed`). Report `merged PR #N (no AI review — logged)`, or `… — ledger write failed)` when the recorder exits non-zero. Mechanism: `.claude/reference/no-review-override.md`.
 
 Do NOT use `--delete-branch`. That flag attempts local branch deletion immediately, which fails when run from a worktree (the branch is still checked out). Handle branch cleanup in Step 5a below.
 

@@ -13,7 +13,8 @@
 #   - its body has no line, outside a fenced code block, that is exactly the
 #     complete marker reply-thread.sh --verdict appends as its own line:
 #     `<!-- review-verdict: <fixed|deferred|declined> defect=<real|not>
-#     agent=<name> -->` (trailing whitespace allowed). A partial marker — no
+#     agent=<name>[ fix=<as-given|adapted|wrong|none>] -->` (trailing
+#     whitespace allowed; the optional fix token is issue #1843). A partial marker — no
 #     `defect`, no `agent`, or no closing `-->` (which the ledger cannot parse
 #     at all) — skipped the mandatory flags, so it does not count. A quoted
 #     (`> …`) or inline-code marker does not start the line, so it does not
@@ -29,13 +30,14 @@
 # The bot list mirrors pr-state.sh's `$botlist`; pr-state-unmarked-replies.test.sh
 # asserts the two stay equal.
 
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical comments still classify.
 def review_bot_logins:
   ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"];
 
 # The whole marker line reply-thread.sh writes; the agent token shape is its
-# `agent_re`.
+# `agent_re`, and the optional fix token its --fix values (issue #1843).
 def verdict_marker_line:
-  "^<!-- review-verdict: (fixed|deferred|declined) defect=(real|not) agent=[A-Za-z0-9][A-Za-z0-9._-]{0,63} -->[ \t]*$";
+  "^<!-- review-verdict: (fixed|deferred|declined) defect=(real|not) agent=[A-Za-z0-9][A-Za-z0-9._-]{0,63}( fix=(as-given|adapted|wrong|none))? -->[ \t]*$";
 
 # True when a marker line sits outside every fenced block. Fences follow
 # CommonMark: an opener of 3+ backticks or tildes (up to 3 leading spaces)

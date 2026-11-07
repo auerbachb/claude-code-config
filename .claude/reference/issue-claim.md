@@ -18,7 +18,7 @@ GitHub is the only store. There is no local claim state — a local file by defi
 |---|---|---|
 | `in-progress` label | the coarse "someone is working this" bit | any issue list, `/wave`'s batch pre-filter, a human skimming the backlog |
 | `@me` assignee | ownership at **account** level (#732) | `--release`'s ownership test |
-| claim comment `<!-- claude-claim: {"holder":…,"login":…} -->` | **holder** identity + the claimed-at timestamp (`created_at`) | `--check`'s `mine` vs `claimed` decision |
+| claim comment `<!-- claude-claim: {"holder":…,"login":…,"since":…} -->` | **holder** identity + the claimed-at timestamp (`created_at`); `since` (renewed markers only) carries the original pickup time | `--check`'s `mine` vs `claimed` decision |
 
 The label is created idempotently on first use (`gh label list` existence check, then `gh label create … || true`) — the repo had no such label before this feature.
 
@@ -48,12 +48,13 @@ Releasing your own account's claim is always safe. #732 protects a *collaborator
 | Verdict | Meaning | Exit | Caller does |
 |---|---|---|---|
 | `unclaimed` | no label, no claim comment | 0 | proceed |
-| `mine` | claim comment holder == this holder | 0 | proceed (re-claim is a no-op) |
+| `mine` | claim comment holder == this holder | 0 | proceed (re-claim is a no-op, or a renewal once due — see Renewal) |
 | `stale` | foreign holder, older than `CLAIM_STALE_HOURS` | 0 | **warn** and proceed; `--claim` takes it over |
 | `claimed` | foreign holder, fresh | 1 | skip, naming the claim |
-| `unknown` | any indeterminate `gh` result | 4 | skip — treat exactly as `claimed` |
+| `unknown` | any indeterminate `gh` result, or a renewal that could not be written or verified | 4 | skip — treat exactly as `claimed` |
+| *(any)* | `--renew` found no claim of this holder's, the issue is closed, or a renewal was superseded or released under it | 5 | stop the work and report lost ownership |
 
-Exit codes mirror `pr-authorship.sh` (`2` usage, `3` not found) so the two guards read the same way at a call site.
+Exit codes mirror `pr-authorship.sh` (`2` usage, `3` not found) so the two guards read the same way at a call site. Exit `5` is only ever returned by a renewal (`--renew`, or a due `--claim` renewal that lost a race); it keeps "blocked before any write" (`1`) distinct from "ownership lost" (`5`), the same split `session-state.sh` makes for a lost compare.
 
 **Fail-closed** is the rule that matters most: a `gh` failure, an unparseable issue, or a claim with no readable timestamp all resolve to a live claim, never to "startable". An `unknown` verdict never reads as permission.
 
@@ -64,6 +65,75 @@ A thread that dies mid-task must not poison the issue forever, so a claim ages o
 Stale is **surfaced as a warning, never a block**: `--check` returns `stale` with exit **0**. The timestamp comes from the claim comment's `created_at`, falling back to the most recent `labeled` event for `in-progress` on the issue timeline — which is what makes a label applied by hand, with no claim comment, still expirable rather than permanent.
 
 Timestamp parsing is done arithmetically in `awk` rather than by shelling out to `date -d` / `date -j`, because GNU and BSD `date` disagree on both spellings.
+
+Staleness measures time since the claim was last **written or renewed**, not since the last activity — nothing else refreshes it. Long-running work keeps its claim by renewing (below); work that stops renewing ages out exactly as before, so stale recovery for dead threads is unchanged.
+
+## Renewal (issue #1914)
+
+A claim is aged from its marker's GitHub `created_at`, so before #1914 a live thread whose review and CI outlasted `CLAIM_STALE_HOURS` lost its claim: a same-holder `--claim` was a pure no-op, and another holder could read the old marker as `stale` and take over. Renewal lets the holder extend a genuinely active claim.
+
+**Order — create, verify, then clean up.** A new marker is POSTed (via `gh api`, so the response carries its comment id); the comments and then the issue are re-read and the winner selected (newest `created_at`, ties broken by id); only once the winner is this run's marker — or another viewer-authored marker of this holder, newer than the one replaced — is the label and assignee re-asserted and are the holder's **other viewer-authored** markers deleted. One final re-read of comments and issue then follows (#1933, below). The label and the old marker stay until the new marker is verified, so there is never an unclaimed interval, and older helpers (which read the newest `created_at`) see the renewal with no change. Editing the marker in place was rejected: a PATCH does not move `created_at`, and GitHub's comment PATCH has no `If-Match` compare.
+
+**When.** Only once the marker is older than `CLAIM_RENEW_MINUTES` (default: half the stale window, 120 min at the default 4h). A value at or past the stale window is rejected with a stderr warning and the default is used instead — otherwise another holder could read live work as stale before renewal is ever due. Inside the threshold a same-holder call writes nothing, so routine resumes and post-compaction re-claims never spam comments, while active work renews well before any other holder can classify the claim as stale.
+
+**Actions.**
+
+| Call | Same holder, not due | Same holder, due | Anything else |
+|---|---|---|---|
+| `--claim` | `mine`/0, no comment written | renews | unchanged acquire / takeover / block |
+| `--renew` | `mine`/0, `renewed:false`, no comment written; closed issue → `mine`/5 `not-held` | renews | verdict word + exit `5` (`not-held`), **nothing written** |
+
+**Not-due label repair (#1933).** A not-due, authorized (payload login and comment author are the viewer) same-holder call on an **open** issue re-adds a missing `in-progress` label or viewer assignee. A failed repair warns on stderr and keeps `mine`/0. Nothing is written when both are present, for an unauthorized same-holder `--claim`, or on a closed issue. This heals a fresh marker that has lost its label, which label-filtering readers (`/wave`) would otherwise treat as unclaimed. The repair cannot revive a release in progress: the helper reads the issue before the comments, and `--release` deletes markers before it removes the label.
+
+**Closed issues (#1933).** `--renew` on a closed issue returns verdict `mine`, reason `not-held …closed…`, exit `5`, and writes nothing, whether or not renewal is due. `not-held` is a reason, not a verdict word. A not-due `--claim` on a closed issue keeps its old `mine`/0 no-op and never re-labels.
+
+`--renew` never acquires or takes over — a heartbeat caller can never accidentally claim an issue it does not hold. `--check` never writes.
+
+**Protection.** Renewal requires the marker's payload `login` **and** its comment author to be the viewer. A same holder token from another account is never renewed: `--claim` keeps `mine`/0 with a `renew-not-authorized` warning, `--renew` exits `5`. Cleanup deletes only viewer-authored markers carrying this holder — never another holder's, never a collaborator's (#732).
+
+**Outcomes.**
+
+| Situation | Result |
+|---|---|
+| verified renewal | `mine`/0, `renewed:true`, reason `renewed` |
+| own claim already past the stale window | renews and verifies as usual; reason `renewed-after-expiry` plus a stderr warning (another holder could have taken it in that gap) |
+| label/assignee write or POST failed, re-read shows no new marker | `unknown`/4 `renew-failed`; old marker and label kept |
+| POST reported failure but the marker landed | reconciled on re-read as a normal renewal — matched only by the per-run nonce (payload `run`), never by holder, so a sibling same-holder renewal's marker is never taken for this run's |
+| POST failed and no marker with this run's nonce is on the re-read | `unknown`/4 `renew-failed`; nothing deleted |
+| verification re-read failed | `unknown`/4 `renew-unverified`; the new marker stays, no old marker is deleted |
+| a newer foreign marker won | this run's new marker is deleted (best effort), winner reported with exit `5` `superseded` |
+| the replaced marker vanished or the issue closed mid-renewal (a concurrent `--release`) | this run's new marker is withdrawn, the label is not re-added, exit `5` `released` |
+| issue already closed | `5` `not-held`, nothing written |
+| new marker missing on re-read, no newer winner | `unknown`/4 `renew-unverified` |
+| cleanup delete failed | still a renewal; stderr warns a duplicate remains — inert (the newest wins) and removed by the next renewal or release |
+| label re-assert failed after the POST | `unknown`/4 `renew-failed`; the new marker stays, and the next not-due `--renew`/`--claim` re-adds the label |
+| **final re-read** (#1933): issue closed, or no marker of this holder left | this run's markers withdrawn; when no marker at all remains, the label/assignee this run re-added (absent before) is removed; exit `5` `released` |
+| final re-read: this run's marker present but a newer foreign marker wins | this run's markers withdrawn, label left for the winner; exit `5` `superseded` |
+| final re-read: a marker of this holder wins but the label or assignee is gone | re-added once; if that fails, `unknown`/4 `renew-failed` |
+| final re-read failed | warning only — the renewal was already verified and stands (`mine`/0) |
+
+**Output.** JSON adds `renewed`, `previous_claimed_at` (the replaced marker's `created_at`), and `claimed_since` (the original pickup time). After a renewal `claimed_at` is the new marker's GitHub `created_at`, never the local clock. The renewed marker's payload carries `since` — the old marker's `since`, else its `created_at` — so the pickup time survives any number of renewals; staleness still reads `created_at` only. `estimate-log.sh` takes its start time from a valid payload `since` (exact `YYYY-MM-DDTHH:MM:SSZ`, not after the marker), else the marker's `created_at`, so a renewal never shortens the measured duration (#1927).
+
+**Residual race.** A takeover that read the claim as stale *before* the renewal can still post after the renewal verified. Verification catches it only if it lands first; the final re-read catches it only if it lands before that. Renewing inside the stale window — the default threshold — is what keeps that window closed in practice; `renewed-after-expiry` names the case where it was already open.
+
+**Accepted residual risk (#1933).** GitHub has no compare-and-set on comments or labels, so the helper narrows these windows but cannot close them. Each one fails toward over-blocking or toward an exit `5` / `4` that the caller already handles. None of them makes a lost or stolen claim read as `mine`.
+
+- **Release after the final re-read** (rest of items 1 and 3). If a release removes the label after the final re-read, the renewed marker can remain without the label. If a release lands between the two final reads (comments, then issue), it is not detected. Direct `--check` still blocks other holders, and the next not-due authorized call re-adds the label. Policy: the marker is the claim, and the label follows it. A surviving marker of this holder keeps its claim; a missing one means the claim was released.
+- **No retry after `unknown`/4** (rest of item 2). The marker stays without the label until the holder's next `--renew` or `--claim`. The caller convention retries at the next cadence (#1927).
+- **`CLAIM_STALE_HOURS=0` skips the renew-threshold clamp** (item 4, documented, no code change). With no stale window there is nothing to compare against. Every marker with positive age reads as `stale` to a foreign holder, and an explicit positive `CLAIM_RENEW_MINUTES` is accepted without a warning. The helper does not reject the combination, because configuration is validated before action dispatch, so a rejection would also turn `--check` and `--release` into usage errors. No caller sets either variable to 0.
+- **Other windows.** A write can land even though it reported an error. A sibling renewal and an in-progress release can look the same in one snapshot (old marker gone, label present); the sibling reading wins, and the final re-read corrects it if the release has finished by then.
+
+**Mixed versions.** An older helper rejects `--renew` with usage exit `2` (callers report a degraded state), and its `--claim` keeps the old same-holder no-op. Both read renewed markers correctly, since the extra `since` field is ignored and the newest `created_at` still wins.
+
+**Caller convention.** Long-running work renews with `--renew --holder <the holder it claimed with>` at phase transitions and at a low cadence (e.g. every 30 min, never every poll tick). Exit `5` → stop and report lost ownership; `4` → warn and retry at the next cadence; `2` → the helper predates renewal, report degraded (with its first stderr line — `2` is also a usage error). Other non-zero → as `4`. Renew only with a holder captured at claim time or handed over by a trusted caller — never one read off a GitHub marker (that may be another thread's), and never `--claim` as a check.
+
+Wired callers (#1927):
+
+| Caller | Holder source | Renews |
+|---|---|---|
+| `/subagent` | `.holder` from its Step 6.0 `--claim --json`, stored as `claim_holder` in the issue-keyed pipeline entry | before every successor launch (A→B, replacement B, B→C) and from the monitor loop when `claim_renewed_at` is ≥30 min old; Phase C's prompt carries the pair to `/wrap` |
+| `/start-issue` → coding thread | `CLAIM_HOLDER`, handed over in the Form B Constraints bullet | Form B reaffirm (renews when due), then before each review/CI wait; hands the pair to `/wrap` |
+| `/wrap` | only a pair its caller handed over | before each Step 2.1 `/fixpr` wait dispatch; none handed over → skip with a one-line note. Release unchanged |
 
 ## Override
 
@@ -87,7 +157,7 @@ It is only ever an explicit per-issue, per-session instruction from the user in 
 
 ### `/wave` batching
 
-Running `--check` per candidate over a 30-issue backlog would be ~90 API calls. `/wave` instead makes **one** `gh issue list --label in-progress --json number` call and runs the helper only for candidates in that (usually tiny) intersection. Candidates outside it cannot hold a claim, because the label is written before the claim comment.
+Running `--check` per candidate over a 30-issue backlog would be ~90 API calls. `/wave` instead makes **one** `gh issue list --label in-progress --json number` call and runs the helper only for candidates in that (usually tiny) intersection. A fresh claim almost always carries the label: acquisition writes the label before the comment. A renewal whose label re-assert failed or raced a release can briefly leave a marker without it (see *Accepted residual risk*); the holder's next call re-adds it, and a direct `--check` blocks regardless.
 
 ### The owned-resumable upgrade lives outside this script (#1431)
 

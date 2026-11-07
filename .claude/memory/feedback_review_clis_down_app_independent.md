@@ -18,4 +18,4 @@ During PR #763, both local review CLIs were unavailable simultaneously: CodeRabb
 
 **Provenance:** Issue #769, PR #763 incident; related issues #642 (CodeAnt false-clean on API failure), #643 (403 entitlement), #663 (CodeAnt 403 re-auth advice).
 
-**Standing state update (2026-07-30, Issue #819):** CodeAnt CLI installed; auth is a rung-5 wall; coverage is `cr-only`. Full detail and restore runbook: `.claude/reference/codeant-graphite-supplemental.md` §Install state.
+**Standing state update (2026-07-30, Issue #819):** CodeAnt CLI installed; auth is a rung-5 wall; coverage is `cr-only`. Full detail and restore runbook: `.claude/reference/codeant-supplemental.md` §Install state (renamed from `codeant-graphite-supplemental.md` when Graphite was retired 2026-11-03, #1889).

@@ -25,7 +25,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 2. Union the findings — verify each against the actual code before fixing
 3. Fix **all valid findings**
 4. Run both CLIs again
-5. Repeat until **each available CLI** returns a verified-successful run with no findings
+5. Repeat until **each available CLI** returns a verified-successful run with no findings, or stops contentless-only
 
 ### A "clean" result may be a failed run (NON-NEGOTIABLE)
 
@@ -33,7 +33,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 
 `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"relevant_error":…,"log_path":…}`
 
-with the raw capture at `log_path`. A CLI counts as covered **only** on `verified_run == true && ok == true`; every other result is a **failed run** (Timeout & fallback below), never a clean pass. Exit codes, failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
+with the raw capture at `log_path`. A CLI counts as covered **only** on `verified_run == true && ok == true`. Findings with `failure_mode: null` go to the fix loop (contentless: flagged-scope review, no rerun); anything else is a **failed run** (Timeout & fallback below). Exit codes, failure shapes, contentless findings, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
 > **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (`.claude/reference/pricing-matrix.md` §CodeAnt), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
 
@@ -50,6 +50,6 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 
 ### Exit criteria
 
-- **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
+- **One verified-successful clean pass on both CLIs** (or on the surviving CLI — a contentless-only stop counts as dropped — + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
 - **Record coverage** before committing/pushing: surface any degraded state (`none`, `cr-only`, or `codeant-only`) in-thread and in the PR body.
 - Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md`. Local review never satisfies `cr-merge-gate.md`.

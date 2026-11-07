@@ -72,7 +72,7 @@
 #   - .claude/scripts/state-lock.sh (sibling library — write serialization)
 #
 # EXAMPLES
-#   # Gate a @greptileai trigger — exit 1 means "do not trigger":
+#   # Gate an OWNER-APPROVED @greptileai trigger (issue #1897) — exit 1 means "do not trigger":
 #   if ! greptile-budget.sh --consume >/dev/null; then
 #     echo "Greptile budget exhausted — falling back to self-review" >&2
 #     exit 1

@@ -96,7 +96,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
 gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
 ```
 
-Filter by `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
+Filter by `coderabbitai[bot]`, `cursor[bot]`, `codeant-ai[bot]`, `greptile-apps[bot]`, or the retired `graphite-app[bot]` (still posting until the App is uninstalled).
 
 ### Step 2: Verify and Fix
 
@@ -130,31 +130,29 @@ One commit = one review consumed. Never push multiple commits for separate findi
 
 ### Step 4: Reply to Review Threads
 
-Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for Graphite — each mode strips only its own token, never another's):
+Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for the retired Graphite, which still posts until its App is uninstalled — each mode strips only its own token, never another's):
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
-  --verdict fixed --defect real
+  --verdict fixed --defect real --fix as-given
 ```
 
-**The verdict flags are mandatory on every reply to a bot finding** (issue #1842) — they stamp the `<!-- review-verdict: … -->` marker the review-cost ledger reads. Set `--verdict` to `fixed`, `deferred` (follow-up issue), or `declined`, and `--defect real` only when the finding named a behaviour the code would actually have gotten wrong — `--defect not` for style, duplication, or a reviewer misreading. Leave `--agent` at its default. Mapping and rationale: `.claude/reference/review-stack-audit.md` §The marker.
+**The verdict flags are mandatory on every reply to a bot finding** (issue #1842) — they stamp the `<!-- review-verdict: … -->` marker the review-cost ledger reads. Set `--verdict` to `fixed`, `deferred` (follow-up issue), or `declined`, and `--defect real` only when the finding named a behaviour the code would actually have gotten wrong — `--defect not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Leave `--agent` at its default. Mapping and rationale: `.claude/reference/review-stack-audit.md` §The marker.
 
 Exit codes: `0` reply posted — by either the inline endpoint or the PR-level fallback (the fallback also emits a note to stderr); `1` unused/reserved; `2` usage error (unknown `--reviewer`, or a body left empty after the @mention strip); `3` PR number could not be resolved from the comment and no `--pr` was supplied, OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error, including a non-404 failure of the PR-number lookup. Treat `0` as success. See `run_script reply-thread.sh --help` for the full contract.
 
 ### Step 5: Resolve Threads
 
-After replying, resolve **only** the threads whose first-comment author is `coderabbitai`, `cursor`, or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
+After replying, resolve **only** the threads you actually handled in Step 2, from any of the Step 1 bots. Do NOT resolve threads authored by human reviewers, or bot threads you did not handle — those may be active discussion unrelated to your fix work.
 
-Use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
+If you handled no threads (a clean or CI-only run), skip this step — `--thread-ids` rejects an empty list — and go to Step 6. Otherwise use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
 
 ```bash
-run_script resolve-review-threads.sh {{PR_NUMBER}}
-# or, when you already have thread IDs from a prior gh api call:
 run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
 ```
 
-The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.
+Pass the IDs of the threads you handled. Without `--thread-ids` the script resolves every unresolved thread whose first-comment author is in its default `--authors` list (`coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai`) — including bot threads you never saw when your findings were pre-fetched — so never run it bare. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent; a thread you handled but could not resolve blocks the move to Phase B. A bot thread you never handled (posted after your findings were pre-fetched) is not yours to resolve and does not block: leave it open, list its ID in the handoff `notes`, and Phase B processes it.
 
 ### Step 6: Write Handoff File
 

@@ -15,42 +15,48 @@
 # OUTPUT
 #   stdout: one line, exactly one of:
 #     STATUS=gate_met         CR-path primary review already satisfied (CodeRabbit or
-#                             CodeAnt has a valid APPROVED review on current HEAD) —
+#                             CodeAnt has a valid APPROVED review on current HEAD), OR
+#                             merge-gate.sh is met via the no-review override at a
+#                             paid-escalation point (issue #1899; stderr names it) —
 #                             do not escalate; the merge gate will pick this up
 #     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window — including
 #                             while a CodeRabbit `Review limit reached` banner's own
 #                             stated retry window is still open (issue #1199), and
 #                             while review-substance.sh is unusable and the PR is
 #                             inside the evaluator-outage cap (issue #1465)
-#     STATUS=switch_bugbot    BugBot has responded — OR BugBot was never invited
-#                             (no footprint on HEAD and no fresh `@cursor review`
-#                             trigger comment). Make BugBot the sticky reviewer;
-#                             when it has no footprint yet, post the manual
-#                             `@cursor review` trigger before polling
+#     STATUS=no_reviewer      a PAID reviewer (BugBot or Greptile) would be next, and
+#                             paid reviews need the owner's explicit approval in
+#                             chat (issue #1897). Nothing was posted and merge is
+#                             NOT authorized: post no `@cursor review` and no
+#                             `@greptileai`, never retry a paid trigger, keep the
+#                             reviewer `cr`, and keep polling — CodeRabbit's free
+#                             allowance may return, and merge-gate.sh's no-review
+#                             override (issue #1899) turns this into gate_met once
+#                             its window passes. stderr names the paid verdict this
+#                             replaced (`paid_route=switch_bugbot|trigger_greptile`)
+#                             — the seam the per-review approval path (issue
+#                             #1898) hooks. Emitted where switch_bugbot or
+#                             trigger_greptile used to be, BEFORE the Greptile
+#                             budget is read, so budget_exhausted is unreachable
 #     STATUS=tier_gate        the PR's review tier excludes BugBot (gate ci-only or
 #                             ci+codeant-one-round, issue #1728), so the tier, not
 #                             this chain, governs it. Emitted INSTEAD of
-#                             switch_bugbot, at the same two points: do NOT make
-#                             BugBot the reviewer and do NOT post `@cursor review`;
-#                             trigger nothing, keep the current reviewer, and keep
-#                             polling — merge-gate.sh applies the tier's gate. Not
-#                             a stop and not self-review. An unresolvable tier
-#                             emits switch_bugbot as before (fail-open).
+#                             no_reviewer at the BugBot point: trigger nothing,
+#                             keep the current reviewer, and keep polling —
+#                             merge-gate.sh applies the tier's gate. Not a stop and
+#                             not self-review. An unresolvable tier emits
+#                             no_reviewer (fail-open to the cheaper verdict).
 #                             ALSO emitted, with the same meaning, when the repo
 #                             turned escalation off (REVIEW_ESCALATION=off in
-#                             `## Review policy`, issue #1807): on ANY gate,
-#                             full and legacy included, in place of switch_bugbot
-#                             AND of trigger_greptile / budget_exhausted. The
+#                             `## Review policy`, issue #1807): on ANY gate, full
+#                             and legacy included, at both paid points. The
 #                             Greptile budget is then never read or consumed. A
 #                             full PR needs a CodeRabbit or CodeAnt APPROVED on
 #                             HEAD, with no fallback reviewer
-#     STATUS=trigger_greptile CR failed AND BugBot either failed outright or was
-#                             invited and then timed out; trigger Greptile. NOT
-#                             emitted for a BugBot that was never invited — that
-#                             case is switch_bugbot (or tier_gate) above — nor
-#                             when escalation is off (tier_gate instead)
-#     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile.
-#                             Not emitted when escalation is off (tier_gate)
+#     STATUS=switch_bugbot, STATUS=trigger_greptile, STATUS=budget_exhausted
+#                             RETIRED as autonomous verdicts (issue #1897): this
+#                             script no longer emits them. Consumers keep a
+#                             defensive arm that routes them to no_reviewer
 #     STATUS=self_review      PR is already marked for self-review fallback
 #
 # EXIT STATUS
@@ -162,7 +168,7 @@ emit() {
 # switch, so every earlier verdict keeps its precedence, the Greptile branches
 # are untouched, and no other cycle pays for the lookup.
 #
-# FAILS OPEN to switch_bugbot — a missing helper, an unresolvable tier, or any
+# FAILS OPEN to the paid-point verdict (no_reviewer since #1897) — a missing helper, an unresolvable tier, or any
 # exit but 0 (full and legacy are exit 1). `|| tier_rc=$?` keeps a failing or
 # unlaunchable helper (126/127) away from `set -e` and the EXIT trap: an
 # unreadable policy has a defined answer here, the pre-#1728 one.
@@ -170,6 +176,45 @@ emit() {
 # The helper also answers 0 on ANY gate when the repo turned escalation off
 # (REVIEW_ESCALATION=off, issue #1807), and names that reason on its own
 # stderr line — so this arm needs no lookup of its own.
+# No-review override precedence (issue #1899). Asked ONLY at the two points
+# that would spend on a paid reviewer (switch_bugbot, trigger_greptile): when
+# merge-gate.sh is already met through the no-review override, the PR merges
+# unreviewed and is logged for backfill — inviting a paid review now would
+# spend exactly what the owner's policy exists to save. gate_met, never a
+# paid verdict. FAILS OPEN to today's routing: a missing gate, any non-zero
+# exit, or unparseable output changes nothing.
+override_gate_met() {
+  local gate="$SCRIPT_DIR/merge-gate.sh" out="" rc=0 here=""
+  [[ -x "$gate" ]] || return 1
+  # merge-gate.sh judges the cwd's repo; never let it answer for another one.
+  here="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
+  [[ "$(printf '%s' "$here" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]] || return 1
+  out="$("$gate" "$PR_NUMBER" 2>/dev/null)" || rc=$?
+  [[ "$rc" -eq 0 ]] || return 1
+  printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1
+}
+emit_unless_override() { # <paid verdict>
+  if override_gate_met; then
+    echo "escalate-review.sh: merge gate met via the no-review override on HEAD — gate_met, not $1; no paid reviewer is invited (issue #1899)" >&2
+    emit "gate_met"
+  fi
+  paid_review_denied "$1"
+}
+
+# The ONE place a paid hand-off is refused (issue #1897). The owner's policy:
+# no paid AI review without explicit approval in chat, and nothing this script
+# reads can carry that approval — so there is no flag, variable, or state
+# marker that lets a paid verdict through. The per-review approval path (issue
+# #1898) does not change this verdict: an owner grant is spent only by
+# paid-review-grant.sh --trigger, and an attended consumer of no_reviewer is
+# where the agent may ask for one (.claude/reference/paid-review-approval.md).
+# `paid_route=` names the verdict that would have been emitted, so a reader
+# (and the regression suites) can still tell the two hand-off points apart.
+paid_review_denied() { # <paid verdict it replaces>
+  echo "escalate-review.sh: paid_route=$1 — a paid review (BugBot or Greptile) needs the owner's explicit approval in chat; nothing was posted, merge is not authorized, do not retry a paid trigger — no_reviewer (issue #1897)" >&2
+  emit "no_reviewer"
+}
+
 emit_switch_bugbot() {
   local helper="$SCRIPT_DIR/bugbot-tier-excluded.sh" gate="" tier_rc=0
   if [[ -x "$helper" ]]; then
@@ -179,7 +224,7 @@ emit_switch_bugbot() {
       emit "tier_gate"
     fi
   fi
-  emit "switch_bugbot"
+  emit_unless_override "switch_bugbot"
 }
 
 # Has the repo turned escalation off (REVIEW_ESCALATION=off in `## Review
@@ -761,7 +806,64 @@ CR_REVIEW_ON_HEAD="$(jq -r --arg sha "$HEAD_SHA" '
   | length > 0
 ' "$STATE_PATH")"
 
-if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 720 && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
+# CR-PATH STUCK STATE (issue #1736). `CR_REVIEW_ON_HEAD` keeps the gate above in
+# polling_cr for as long as CodeRabbit has ANY review on HEAD. That is right
+# while CodeRabbit may still approve, and wrong forever when it cannot: in a
+# repo where CodeRabbit only ever posts COMMENTED, CodeAnt is the sole possible
+# CR-path approver, and once CodeAnt's only approval on HEAD is a pre-run stub
+# whose run has already COMPLETED without redeeming it (review-substance.sh
+# `.pre_run_stuck`), no amount of polling changes the verdict on this SHA —
+# CodeAnt never re-approves a SHA it already approved. Observed on
+# auerbachb/sales-kit PR #114 at 69650c8: CI green, 0 unresolved threads,
+# reviewDecision APPROVED, and polling_cr indefinitely.
+#
+# Every term is required, and every unreadable term reads as NOT stuck, so this
+# can only ever release the existing wait, never invent an escalation:
+#   1. the evaluator answered (SUBSTANCE_OK) and lists a stuck approver — the
+#      SAME review_evidence merge-gate.sh reports, so the two agree on why;
+#   2. CodeRabbit has posted no APPROVED anywhere on this PR (comment-only);
+#   3. CodeRabbit's latest review on HEAD is older than the 720 s CR window;
+#   4. the thread snapshot exists and holds zero unresolved threads;
+#   5. no non-reviewer check-run on HEAD is incomplete or blocking.
+# On a match the PR falls through to the ordinary BugBot -> Greptile chain below.
+CR_SILENCE_WINDOW_SECONDS=720
+CR_PATH_STUCK=false
+if [[ "$SUBSTANCE_OK" == "true" && "$CR_RATE_LIMITED" != "true" && "$CR_REVIEW_ON_HEAD" == "true" \
+      && "$AGE_SECONDS" -gt "$CR_SILENCE_WINDOW_SECONDS" ]]; then
+  STUCK_APPROVERS="$(jq -r '(.pre_run_stuck // []) | join(",")' <<<"$SUBSTANCE_JSON" 2>/dev/null || echo "")"
+  CR_LAST_REVIEW_TS=""
+  STUCK_SHAPE="$(jq -r --arg sha "$HEAD_SHA" '
+    def blocking: . == "failure" or . == "timed_out" or . == "action_required"
+                  or . == "startup_failure" or . == "stale";
+    ([.comments.reviews[]? | select(.user.login == "coderabbitai[bot]" and .state == "APPROVED")]
+       | length == 0) as $cr_comment_only
+    | ([.comments.reviews[]? | select(.user.login == "coderabbitai[bot]" and ((.commit_id // "") == $sha))
+        | (.submitted_at // "")] | sort | last // "") as $cr_last
+    | ((.threads | type) == "object" and (.threads.all | type) == "array"
+       and ([.threads.all[] | select(.isResolved != true)] | length) == 0) as $threads_clear
+    # An absent or malformed check-run list is unreadable, never clear.
+    | ((.check_runs.all | type) == "array" and
+       ([.check_runs.all[]
+        # Reviewer runs are not CI. Both are excluded by their publishing app,
+        # never by check name alone (issue #956 structural guard): a pending or
+        # failing "CodeRabbit" run from any other app is CI like any other.
+        | select(((.name // "") == "CodeRabbit" and (.app.slug // "") == "coderabbitai") | not)
+        | select((.app.slug // "") != "cursor")
+        | select((.status // "") != "completed" or ((.conclusion // "") | blocking))]
+       | length == 0)) as $ci_clear
+    | [ ($cr_comment_only and $threads_clear and $ci_clear), $cr_last ] | @tsv
+  ' "$STATE_PATH" 2>/dev/null || printf 'false\t\n')"
+  IFS=$'\t' read -r STUCK_SHAPE_OK CR_LAST_REVIEW_TS <<<"$STUCK_SHAPE" || true
+  if [[ -n "$STUCK_APPROVERS" && "${STUCK_SHAPE_OK:-false}" == "true" && -n "${CR_LAST_REVIEW_TS:-}" ]]; then
+    if [[ "$(iso_age_seconds "$CR_LAST_REVIEW_TS")" -gt "$CR_SILENCE_WINDOW_SECONDS" ]]; then
+      CR_PATH_STUCK=true
+      echo "escalate-review.sh: CR path stuck on ${HEAD_SHA:0:7} — CodeRabbit is comment-only, the only approval ($STUCK_APPROVERS) is a pre-run stub its own completed run did not redeem (review_evidence.pre_run_stuck), threads resolved, CI clear; escalating instead of polling_cr (issue #1736)" >&2
+    fi
+  fi
+fi
+
+if [[ "$CR_RATE_LIMITED" != "true" && "$CR_PATH_STUCK" != "true" \
+      && ! ( "$AGE_SECONDS" -gt "$CR_SILENCE_WINDOW_SECONDS" && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
   emit "polling_cr"
 fi
 
@@ -1179,15 +1281,7 @@ if escalation_off; then
   emit "tier_gate"
 fi
 
-BUDGET_CHECK_RC=0
-BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)" || BUDGET_CHECK_RC=$?
-if [[ $BUDGET_CHECK_RC -ge 2 ]]; then
-  die 4 "failed to check Greptile budget"
-fi
-
-BUDGET_EXHAUSTED="$(jq -r '.exhausted == true' <<<"$BUDGET_JSON")"
-if [[ "$BUDGET_EXHAUSTED" == "true" ]]; then
-  emit "budget_exhausted"
-fi
-
-emit "trigger_greptile"
+# Greptile point (issue #1897). Greptile bills per review, so it is refused
+# BEFORE its budget is read: budget_exhausted is unreachable, and the budget
+# ledger is never consumed or even consulted on an autonomous cycle.
+emit_unless_override "trigger_greptile"

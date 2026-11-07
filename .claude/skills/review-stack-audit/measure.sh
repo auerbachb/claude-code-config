@@ -141,10 +141,35 @@
 #                              when both are 0 (unanswered is left out)
 #     cost_per_real_defect_usd spend_usd / real_defects, in cents; null when
 #                              either is null or 0
+#     fix_as_given, fix_adapted, fix_wrong, fix_none, fix_unknown
+#                              real-defect findings not declined, by the
+#                              deciding marker's `fix=` value (issue #1843);
+#                              absent or unknown → fix_unknown, never fix_none
+#     fix_quality              fix_as_given / (as_given + adapted + wrong),
+#                              3 decimals; null when that sum is 0
 #     median_response_min      median minutes, over the PRs the tool reviewed
 #                              or commented on, from the earliest trigger
 #                              comment for it that precedes its first response
 #                              (else from PR open) to that first response
+#     rounds_per_pr            median, over the PRs the tool posted a review
+#                              object or inline comment on, of the distinct
+#                              commits those were posted against (a review's
+#                              commit_id; an inline comment's
+#                              original_commit_id, else commit_id), 1 decimal;
+#                              null when it reviewed no PR (issue #1844)
+#     prs_with_3plus_rounds    PRs where that count is 3 or more (0, never null)
+#
+# VELOCITY (--ledger; issue #1844)
+#   Per PR, not per tool: `velocity` beside `tools[]` carries
+#   push_to_gate_min_median and push_to_gate_min_p90 (nearest rank) — minutes
+#   from the committer date of the merged HEAD (GraphQL headRefOid, dated from
+#   the PR commit list already read for BugBot) to the earliest first-cut
+#   gate signal on that HEAD: a CodeRabbit or CodeAnt APPROVED review on it, or
+#   a completed, successful `Cursor Bugbot` run on it — plus prs_timed,
+#   no_gate_signal (HEAD dated, no such signal: admin merge, relaxed tier,
+#   Greptile-only gate) and no_head_date (HEAD not in the commit list, or
+#   undated). A single-repo document also lists every PR under velocity.prs.
+#   The multi-repo total pools every PR's sample once.
 #   Multi-repo totals are recomputed from the summed counts and the pooled
 #   response times, never averaged across repos. Classification rules, the
 #   marker syntax, and the trigger table: .claude/reference/review-stack-audit.md
@@ -177,6 +202,12 @@
 #   `user_type` is GitHub's account type (`User`, `Bot`, ...); only `User`
 #   replies decide a verdict. A PR without `threads` has no findings.
 #
+#   Velocity inputs (optional, ledger mode only; issue #1844): `commit_id` on a
+#   review, `commit_id` / `original_commit_id` on an inline comment, a per-PR
+#   `head_sha` (the merged HEAD), a per-PR `commits` list of
+#   {"sha", "committed_at"}, and `head_sha`, `status`, `conclusion`,
+#   `completed_at` on a check-run. Missing values are null.
+#
 #   Multi-repo: {"repos": [{"repo": "owner/name", "truncated": false,
 #                           "prs": [ ...as above... ]}]}
 #   `truncated` (optional) stands in for a live listing that hit --limit. A
@@ -198,7 +229,14 @@
 #                "spend_usd", "spend_source",     # spend_*: ledger mode only
 #                "findings", "valid", "real_defects", "declined",
 #                "unanswered", "precision", "cost_per_real_defect_usd",
-#                "median_response_min"}],         # value fields: ledger only
+#                "median_response_min", "fix_as_given", "fix_adapted",
+#                "fix_wrong", "fix_none", "fix_unknown",
+#                "fix_quality", "rounds_per_pr",
+#                "prs_with_3plus_rounds"}],       # value fields: ledger only
+#     "velocity": {"push_to_gate_min_median", "push_to_gate_min_p90",
+#                  "prs_timed", "no_gate_signal", "no_head_date",
+#                  "prs": [{"number", "push_to_gate_min", "excluded"}]},
+#                                                 # ledger only
 #     "unclassified": [{"tool", "pr", "token", "excerpt"}],
 #     "unclassified_hits": N,   # bodies (review body, inline comment, or
 #                               # conversation comment) carrying >=1 unexplained
@@ -224,6 +262,7 @@
 #                       # sole_provider_on, which stays a count.
 #     "unclassified": [...],        # merged, `pr` repo-qualified
 #     "unclassified_hits": N,       # summed
+#     "velocity": {...},            # ledger only: pooled over every PR, no `prs`
 #     "notes": ["owner/name: <note>", ...]   # merged, each tagged with its repo;
 #                                            # run-wide notes (plan disagreement,
 #                                            # ledger rates) follow, untagged
@@ -510,7 +549,6 @@ TOOLS = [
     {"key": "codeant",    "login": "codeant-ai[bot]",   "name": "CodeAnt"},
     {"key": "bugbot",     "login": "cursor[bot]",       "name": "BugBot (Cursor)"},
     {"key": "greptile",   "login": "greptile-apps[bot]", "name": "Greptile"},
-    {"key": "graphite",   "login": "graphite-app[bot]", "name": "Graphite"},
     {"key": "vercel",     "login": "vercel[bot]",       "name": "Vercel Agent"},
 ]
 LOGIN_TO_KEY = {t["login"]: t["key"] for t in TOOLS}
@@ -769,8 +807,15 @@ def fetch_prs(repo):
                                 "updated_at": c.get("updated_at")} for c in issue_comments],
         }
         if ledger is not None:
-            pr["check_runs"] = fetch_bugbot_runs(repo, num)
-            pr["created_at"], pr["threads"] = fetch_threads(repo, num)
+            # The commit each review and inline comment was posted against
+            # (rounds per PR, issue #1844); ledger only, like everything below.
+            for norm, raw in zip(pr["reviews"], reviews):
+                norm["commit_id"] = raw.get("commit_id") or None
+            for norm, raw in zip(pr["pr_comments"], pr_comments):
+                norm["commit_id"] = raw.get("commit_id") or None
+                norm["original_commit_id"] = raw.get("original_commit_id") or None
+            pr["check_runs"], pr["commits"] = fetch_bugbot_runs(repo, num)
+            pr["created_at"], pr["head_sha"], pr["threads"] = fetch_threads(repo, num)
         prs.append(pr)
     return prs
 
@@ -783,6 +828,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       createdAt
+      headRefOid
       reviewThreads(first: 100, after: $endCursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -799,7 +845,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 
 
 def fetch_threads(repo, num):
-    """(PR createdAt, normalized review threads) for one PR, every page.
+    """(PR createdAt, headRefOid, normalized review threads) for one PR, every page.
 
     GraphQL bot logins carry no `[bot]` suffix, so one is added for a `Bot`
     author: thread attribution then keys on the same login as the REST data.
@@ -813,6 +859,7 @@ def fetch_threads(repo, num):
     if isinstance(pages, dict):
         pages = [pages]
     created_at = None
+    head_sha = None
     threads = []
     for page in pages:
         if not isinstance(page, dict) or page.get("errors"):
@@ -822,6 +869,7 @@ def fetch_threads(repo, num):
         if not isinstance(pull, dict):
             fail("gh api graphql returned no pull request for %s#%d" % (repo, num))
         created_at = created_at or pull.get("createdAt")
+        head_sha = head_sha or pull.get("headRefOid")
         for node in ((pull.get("reviewThreads") or {}).get("nodes") or []):
             block = (node or {}).get("comments") or {}
             nodes = block.get("nodes") or []
@@ -838,7 +886,7 @@ def fetch_threads(repo, num):
             total = block.get("totalCount")
             threads.append({"comments": comments,
                             "comments_truncated": isinstance(total, int) and total > len(nodes)})
-    return created_at, threads
+    return created_at, head_sha, threads
 
 
 def fetch_bugbot_runs(repo, num):
@@ -847,13 +895,20 @@ def fetch_bugbot_runs(repo, num):
     BugBot posts no receipt, so its runs are the only count to price. Each push
     can be a run, so every commit is read, not just HEAD; `filter=all` keeps
     reruns, which bill again. A run reachable from two commits dedupes by id
-    in review_ledger.bugbot_runs."""
+    in review_ledger.bugbot_runs.
+
+    Also returns the PR's commits as [{"sha", "committed_at"}] — the committer
+    date, not the author's — so push-to-gate velocity (issue #1844) reads the
+    list this already fetched rather than a new endpoint."""
     commits = run_gh(["api", "repos/%s/pulls/%d/commits?per_page=100" % (repo, num), "--paginate"])
     runs = []
+    normalized = []
     for commit in commits:
         sha = commit.get("sha") if isinstance(commit, dict) else None
         if not sha:
             continue
+        committer = ((commit.get("commit") or {}).get("committer") or {})
+        normalized.append({"sha": sha, "committed_at": committer.get("date")})
         pages = run_gh(["api", "repos/%s/commits/%s/check-runs?per_page=100&filter=all"
                         "&check_name=Cursor%%20Bugbot" % (repo, sha), "--paginate"])
         if isinstance(pages, dict):
@@ -863,8 +918,10 @@ def fetch_bugbot_runs(repo, num):
                          "head_sha": run.get("head_sha"),
                          "app": (run.get("app") or {}).get("slug"),
                          "started_at": run.get("started_at"),
-                         "completed_at": run.get("completed_at")})
-    return runs
+                         "completed_at": run.get("completed_at"),
+                         "status": run.get("status"),
+                         "conclusion": run.get("conclusion")})
+    return runs, normalized
 
 
 # --- classify -----------------------------------------------------------------
@@ -878,7 +935,8 @@ def measure_repo(repo, source, prs, truncated):
 
     Third, in ledger mode, the per-tool value tallies (None otherwise): the
     multi-repo totals are recomputed from them — pooled response times, summed
-    counts — rather than from the rounded per-repo figures."""
+    counts — rather than from the rounded per-repo figures. Fourth, likewise,
+    the repo's exact push-to-gate samples (issue #1844), pooled the same way."""
     notes = []
     if truncated:
         notes.append(
@@ -1062,9 +1120,11 @@ def measure_repo(repo, source, prs, truncated):
             % (len(unclassified), unclassified_hits))
 
     tallies = None
+    velocity = None
     if ledger is not None:
         notes.extend(apply_spend(tools_out, prs))
         tallies = apply_value(tools_out, prs, repo, notes)
+        velocity = ledger.measure_velocity(prs)
 
     snapshot = {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1083,7 +1143,11 @@ def measure_repo(repo, source, prs, truncated):
         "unclassified_hits": unclassified_hits,
         "notes": notes,
     }
-    return snapshot, sole_prs, tallies
+    if velocity is not None:
+        # Per PR, not per tool: a PR's push-to-gate time belongs to its fix
+        # loop, so it is never attributed to one reviewer (issue #1844).
+        snapshot["velocity"] = ledger.velocity_fields(velocity, with_prs=True)
+    return snapshot, sole_prs, tallies, velocity
 
 
 def apply_value(tools_out, prs, repo, notes):
@@ -1221,7 +1285,7 @@ if not multi:
         prs = fetch_prs(repo)
 
     truncated = (not fixture) and len(prs) >= limit
-    snapshot, _, _ = measure_repo(repo, source, prs, truncated)
+    snapshot, _, _, _ = measure_repo(repo, source, prs, truncated)
     if ledger is not None:
         snapshot["notes"].extend(rate_notes)
         snapshot["notes"].append(
@@ -1264,6 +1328,7 @@ if not targets:
 
 results = []
 repo_tallies = []   # ledger value tallies, parallel to results (None outside ledger mode)
+repo_velocity = []  # ledger push-to-gate samples, parallel to results (issue #1844)
 for repo in targets:
     if fixture:
         entry = fixture_entries.get(repo.lower())
@@ -1274,9 +1339,10 @@ for repo in targets:
     else:
         prs = fetch_prs(repo)
         truncated = len(prs) >= limit
-    doc, sole, tallies = measure_repo(repo, source, prs, truncated)
+    doc, sole, tallies, velocity = measure_repo(repo, source, prs, truncated)
     results.append((repo, doc, sole))
     repo_tallies.append(tallies)
+    repo_velocity.append(velocity)
 
 # A flat fee is billed once to the account, not once per repo. Each repo's share
 # is that tool's prs_touched share of the one prorated fee, allocated in whole
@@ -1378,6 +1444,9 @@ rollup = {
     "unclassified_hits": sum(doc["unclassified_hits"] for _, doc, _ in results),
     "notes": merged_notes + notes,
 }
+if ledger is not None:
+    # Every PR's exact sample, pooled once — never a median of repo medians.
+    rollup["velocity"] = ledger.velocity_fields(ledger.pool_velocity(repo_velocity))
 
 if mode == "summary":
     blocks = []
