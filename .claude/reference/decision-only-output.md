@@ -36,3 +36,6 @@ Issue #1878 owns avoiding unchanged-tick model invocation. Keep its script-side 
 - `/pm` and `/subagent`: retain launch/queue/claim and handoff records. Routine board freshness does not trigger a model or render; maintain explicit `/board` access. Do not stamp a board render that did not occur.
 
 No new proxy, universal interception, or optional compression tooling is introduced. Existing compact-result and PR-state contracts remain the foundation.
+
+
+Runtime integration (Issue #1977): the silence detector, parent ceiling, PostCompact recovery and PMM Step5e apply this policy. The ceiling independently observes Agent artifacts; parent heartbeat freshness cannot hide unchanged child evidence. Investigate suspect/unknown notices; preserve ownership, generation, acknowledgment and watch lifecycle. Coverage and limitations: `bgwork-ceiling.md` §Child progress and coverage. Instruction-contract tests verify the emitted policy cases; they do not claim the hooks classify user intent or recovery state themselves.

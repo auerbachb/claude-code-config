@@ -14,6 +14,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `review-stack-baseline.json` — the review stack's recorded roles, billed state, and expected caps, schema `review-stack-baseline/v1`; the baseline `/review-stack-audit` compares each run against. Seeded from the 2026-06 audit; Issue #1199's decision record replaces its `tools` array (#1201)
 
 ### Runbooks and long command forms
+
+- `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `incremental-skill-loading.md` — operation/phase loading contract, source-measured `/issue-maker` pilot traces, recovery and parity checklist, and ordered migration roadmap for `/pm`, `/subagent`, `/wrap`, and `/pr-monitor-and-manage` (#1872)
 
 - `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)
@@ -237,7 +239,6 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `session-state-convergence-audit.md` — post-merge convergence audit of `session-state.json` and all scripts that touch it as one system; verdict: coherent (#651)
 - `token-efficiency-audit-2026-07.md` — token-efficiency playbook: adopt/skip/adapt verdicts, ranked cuts, shipped v1 (one-line heartbeats, delta PMM table, silence-detector dedupe) + FU-1…FU-7 (#773)
 - `compact-result-contract.md` — the `ok`/`failed_tests`/`relevant_error`/`log_path` output shape, its adopters, why failures are never compacted away, and what is deliberately left unwrapped (FU-7; #782)
-- `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `inline-default-any-thread-2026-08.md` — why absence of PM context stopped routing work to a separate thread: the execution-capability test and its single named exception, bootstrapping vs becoming `/pm`, the capture-session batch hand-off and its census trade-off, `/start-issue`'s two inline shapes, and why this sidesteps rather than fixes the `spawn_task` model/effort gap (#1229)
 - `verbosity-decisions-1253.md` — the two open-question decisions from Issue #1253: heartbeat removal in favor of bgwork-ceiling liveness, and the `merged PR #N` exception that survives under silence-by-default (#1253)
 - `chip-emission-audit-2026-08.md` — emission-path audit of every route that can put a task chip on screen: the six canonical emitters and their gates, `/wrap` Phase 3 and `pm-worker` as textual non-emitters, and the ungated ad-hoc `spawn_task` path confirmed as the root cause of the 2026-08-26 five-chip incident; plus the layer-mismatch diagnosis (gate in a non-auto-loaded reference file), the no-registry-change and no-CLAUDE.md-line decisions, and the budget accounting (#1367)

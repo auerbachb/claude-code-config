@@ -9,9 +9,9 @@
 #   and waits for a completion notification — there are no tool calls to hook.
 #   The launchd watchdog (silence-watchdog.sh) reads the same heartbeat file
 #   out-of-turn but can only raise an OS notification, and it deliberately
-#   skips sessions whose /tmp/claude-active-<id> marker is absent — which is
-#   exactly the "ended its turn and is waiting" state. Result: silence with no
-#   ceiling and no observer that can force a turn.
+#   historically skipped inactive sessions; its background-work exception now
+#   retains desktop warnings there, but cannot inject a turn. This watch also
+#   checks child artifacts independently of the parent's message heartbeat.
 #
 #   This script is the enforcement layer for that gap and the SOLE OWNER of the
 #   ceiling number. Rule files describe the behavior ("arm the ceiling") and
@@ -45,10 +45,12 @@
 #   --check         Gate used by the Stop hook. Exit 0 when there is nothing to
 #                   guard (no background work started) or the watch is armed;
 #                   exit 1 when background work is in flight and unarmed.
-#   --tick          What the armed watch runs on a loop. Prints ONE breach line
+#   --tick          What the armed watch runs on a loop. Checks registered Agent
+#                   artifacts independently; prints investigative unknown/stall
+#                   notices once per task/progress generation. Prints ONE breach line
 #                   when the heartbeat file is stale past the trip point, and
-#                   prints nothing otherwise, so a thread emitting status at
-#                   each turn-end never produces a ceiling message.
+#                   prints nothing otherwise. Parent freshness is not evidence
+#                   of child progress; artifact activity is not task success.
 #                   Deduped per heartbeat mtime: one breach line per silence,
 #                   not one per poll. Always exits 0 — a watch that exits stops
 #                   watching.
@@ -202,6 +204,7 @@ fi
 # Match the session-id sanitising the silence hooks apply, so this script and
 # silence-detector-ack.sh derive the SAME heartbeat path from the same raw id.
 SESSION_ID="${SESSION_ID:-default}"
+RUNTIME_SESSION_ID="$SESSION_ID"
 SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 SESSION_ID="${SESSION_ID:-default}"
 
@@ -241,6 +244,13 @@ case "$MODE" in
     ;;
 
   tick)
+    # Run before the independent parent-heartbeat early exits. Read only exact
+    # session/runtime registry rows; never mutate or stop another task.
+    if [[ -f "$BGWORK_FILE" ]]; then
+      python3 "${SCRIPT_PATH%/*}/lib/bgwork-child-progress.py" --tick "$RUNTIME_SESSION_ID" \
+        "$MARKER_DIR/claude-bgprogress-${SESSION_ID}" || \
+        printf 'CHILD PROGRESS UNKNOWN: progress helper unavailable; investigate; parent heartbeat is not child health.\n'
+    fi
     # No heartbeat file yet means the session has not produced a visible
     # message for the hooks to stamp; there is nothing to measure from.
     [[ -f "$HEARTBEAT_FILE" ]] || exit 0
@@ -261,7 +271,7 @@ case "$MODE" in
       printf 'bgwork-ceiling.sh: cannot write %s — breach line may repeat\n' "$EMITTED_FILE" >&2
 
     log_event "breach" "age_s=${age}"
-    printf 'CEILING BREACH: no user-visible message in %dm (%ds) while background work is in flight. Send a one-line status NOW (monitor-mode.md "Liveness"): [<ET timestamp>] <state> · next: <action>. "Still running, nothing new" is a complete and correct status line — say that rather than staying silent.\n' \
+    printf 'CEILING BREACH: no user-visible message in %dm (%ds). Check child evidence (monitor-mode.md Liveness): a fresh parent heartbeat is not child progress. Surface a verified stall, unknown health, blocker, failure, decision, safety event, stopped/exhausted recovery, explicit status request or requested periodic report. Continue silently only when progress is verified and no notice is required; never send routine unchanged status.\n' \
       "$(( age / 60 ))" "$age"
     ;;
 
@@ -308,6 +318,9 @@ case "$MODE" in
   clear)
     rm -f "$BGWORK_FILE" "$ARMED_FILE" "$EMITTED_FILE" "$BLOCKS_FILE" "$BREACH_FILE" \
           "$ADVISED_FILE" 2>/dev/null || true
+    rm -f "$MARKER_DIR/claude-bgprogress-${SESSION_ID}.json" \
+      "$MARKER_DIR/claude-bgprogress-${SESSION_ID}.unknown" \
+      "$MARKER_DIR/claude-bgprogress-${SESSION_ID}.diagnostic" 2>/dev/null || true
     ;;
 
   *)
