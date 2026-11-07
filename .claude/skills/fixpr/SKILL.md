@@ -193,7 +193,7 @@ Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 
 ### Step 0c: Pre-flight — draft→ready + reviewer trigger (issue #493)
 
-Run the shared pre-flight **before** the audit so the PR is out of draft and all three conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor) are engaged on the current SHA before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
+Run the shared pre-flight **before** the audit so the PR is out of draft and each conditionally-triggered reviewer (CodeAnt, CodeRabbit, Cursor) gets a recorded per-reviewer status on the current SHA — engaged (already present or triggered), skipped (excluded by the PR's review tier — on `ci-only`, all three — tier-deferred, rate-capped, or awaiting owner approval for BugBot), or trigger-failed — before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
 
 ```bash
 PREFLIGHT_SH=""
@@ -219,7 +219,7 @@ elif [[ -z "$PREFLIGHT_SH" ]]; then
 fi
 ```
 
-`pr-preflight.sh` is idempotent and rate-cap safe: it marks the PR ready only when **you** authored it, never overrides someone else's intentional draft, never triggers Greptile, posts `@cursor review` only by spending an owner grant for HEAD (paid — #1897, #1898), and skips `@coderabbitai full review` (still posting the other free reviewers) when `cr-review-hourly.sh` reports the cap hit. On a PR that is already ready with every reviewer already engaged **on the current HEAD SHA** (or skipped: BugBot without owner approval and no grant, a tier-excluded reviewer) it prints `Pre-flight clean — proceeding` and does nothing. Since #576 engagement is judged against HEAD rather than PR-wide history, a reviewer whose only artifact is on a superseded commit — the normal state after `/fixpr`'s own rebase + force-push — is re-triggered instead of being counted as present. Keep `$PREFLIGHT_SUMMARY_JSON` for the Step 7 "Pre-flight" line.
+`pr-preflight.sh` is idempotent and rate-cap safe: it marks the PR ready only when **you** authored it, never overrides someone else's intentional draft, never triggers Greptile, posts `@cursor review` only by spending an owner grant for HEAD (paid — #1897, #1898), and skips `@coderabbitai full review` (still posting the other free reviewers) when `cr-review-hourly.sh` reports the cap hit. On a PR that is already ready with every reviewer already engaged **on the current HEAD SHA** or skipped (BugBot without owner approval and no grant, a tier-excluded reviewer) it prints `Pre-flight clean — proceeding` and does nothing — so a clean pre-flight does **not** mean any reviewer was engaged (on `ci-only`, none is). Since #576 engagement is judged against HEAD rather than PR-wide history, a reviewer whose only artifact is on a superseded commit — the normal state after `/fixpr`'s own rebase + force-push — is re-triggered instead of being counted as present. Keep `$PREFLIGHT_SUMMARY_JSON` for the Step 7 "Pre-flight" line.
 
 ### Step 0b: Run the audit
 
@@ -867,7 +867,7 @@ After any rebase + force-push: `[MERGE] rebase complete, force-pushed (SHA: <new
 ```text
 === fixpr complete ===
 PR:              #$PR_NUMBER ($BRANCH)
-Pre-flight:      <draft→ready action if any + reviewers triggered, from $PREFLIGHT_SUMMARY_JSON; "clean" when nothing was done; "skipped" when no PR/script>
+Pre-flight:      $PREFLIGHT_LINE (rendered below from $PREFLIGHT_SUMMARY_JSON)
 Threads:         N total, M were unresolved
   - Addressed:   A threads replied to by /fixpr
   - Resolved:    Y addressed threads verified isResolved=true
@@ -886,7 +886,54 @@ FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable
 FIXPR_WAIT_SUMMARY: iterations=<N> total_wait_secs=<S> final=<clean|cap-exhausted|new-findings-pending>
 ```
 
-Render the **Pre-flight** line from `$PREFLIGHT_SUMMARY_JSON` (Step 0c): when `.clean == true` print `clean — already ready` plus each reviewer key's `.status` (BugBot is `skipped-approval-required` without owner approval, so never claim every reviewer engaged); otherwise summarize `.draft_action` (e.g. `marked ready`) plus the reviewer keys whose `.status == "triggered"` (and note any `skipped-rate-cap`). When the pre-flight was skipped (no PR resolved yet, or the script was missing) print `skipped`.
+Render the **Pre-flight** line from the per-reviewer `.status` values in `$PREFLIGHT_SUMMARY_JSON` (Step 0c), never from `.clean` alone, which is also true when the review tier excluded every reviewer (issue #1839). Print `$PREFLIGHT_LINE` verbatim:
+
+<!-- test-anchor: fixpr-step-7-preflight-line -->
+```bash
+# Head: "clean — already ready" or the draft action. Then "all N reviewers
+# engaged" only when every reviewer is already-present; otherwise "K of N
+# reviewers engaged" plus each other status naming its reviewers, e.g.
+# "clean — already ready, 0 of 3 reviewers engaged; review tier excludes codeant, coderabbit, cursor".
+if [[ -z "${PREFLIGHT_SUMMARY_JSON:-}" ]]; then
+  PREFLIGHT_LINE="skipped"   # no PR resolved yet, or pr-preflight.sh missing
+else
+  PREFLIGHT_LINE="$(jq -r '
+    def status_name: {
+      "skipped-tier-excluded": "review tier excludes",
+      "skipped-approval-required": "awaiting owner approval:",
+      "skipped-tier-deferred": "tier-deferred:",
+      "skipped-rate-cap": "rate-capped:",
+      "triggered": "triggered:",
+      "trigger-failed": "trigger failed:",
+      "dry-run-would-trigger": "would trigger:"
+    }[.] // (. + ":");
+    def draft: {
+      "not-draft": "already ready", "marked-ready": "marked ready",
+      "would-mark-ready": "would mark ready", "ready-failed": "ready flip failed",
+      "skipped-not-author": "still draft (not author)",
+      "skipped-auth-unknown": "still draft (author unknown)"
+    }[.] // .;
+    if (.reviewers | type) != "object" or (.reviewers | length) == 0
+       or ([.reviewers[] | (.status | type) == "string"] | all | not)
+       or ((.draft_action | type) != "string")
+    then error("incomplete summary") else . end
+    | (.reviewers | to_entries) as $r
+    | ($r | length) as $n
+    | ([$r[] | select(.value.status == "already-present")] | length) as $k
+    | (if .clean == true then "clean — already ready" else (.draft_action | draft) end) as $head
+    | if $k == $n then $head + ", all " + ($n | tostring) + " reviewers engaged"
+      else $head + ", " + ($k | tostring) + " of " + ($n | tostring) + " reviewers engaged; "
+        + ([$r[] | select(.value.status != "already-present")]
+           | group_by(.value.status)
+           | map((.[0].value.status | status_name) + " " + (map(.key) | join(", ")))
+           | join("; "))
+      end
+  ' <<<"$PREFLIGHT_SUMMARY_JSON" 2>/dev/null)" || PREFLIGHT_LINE=""
+  [[ -n "$PREFLIGHT_LINE" ]] || PREFLIGHT_LINE="unreadable — pr-preflight.sh summary did not parse; see the Step 0c output"
+fi
+```
+
+Legacy repos (no `## Review policy`) never produce `skipped-tier-excluded`, so a fully engaged legacy PR still reads `all N reviewers engaged`. N is counted from the summary (three since Graphite's retirement), never a literal.
 
 `/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** and **`FIXPR_WAIT_SUMMARY:`** (and echo **`Status:`**) into heartbeats without re-parsing prose. `FIXPR_WAIT_SUMMARY` is the issue #454 contract: `/wrap` trusts this verdict — the bots and CI were already waited on here, so `/wrap` re-runs `merge-gate.sh` immediately with no polling of its own. `final=clean` when the last wait exited on a full bot+CI verdict (or the idempotent no-push path was already clean — `iterations=0`); `final=cap-exhausted` when the last wait hit `FIXPR_WAIT_CAP_SECS`; `final=new-findings-pending` when the outer iteration cap exhausted with findings still arriving.
 
