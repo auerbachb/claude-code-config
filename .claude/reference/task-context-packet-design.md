@@ -83,7 +83,15 @@ bindings even if younger than fifteen minutes.
 
 Compare the issue body revision/hash, actual repo/worktree/HEAD, current owner
 marker, handoff HEAD/phase, relevant session subtree digest and module hash.
-Any mismatch makes the packet stale and names what to retrieve. Missing,
+Known, well-formed identity/source mismatches take precedence: return `stale`,
+even when ownership or another binding is unknown. Otherwise missing, blank or
+malformed binding data, or a claim not verified `mine`, returns `unknown`.
+Absent values are not mismatches; compare only bindings known on both sides.
+Only complete matching bindings with a current verified claim can be `current`.
+Both `stale` and `unknown` block packet reuse; neither authorizes work or merge.
+This ordering describes the offline design oracle, not a deployed runtime.
+A stale result names the canonical material to retrieve; this narrow follow-up
+does not add retrieval-list output to the oracle. Missing,
 unreadable, wrong-repository or wrong-HEAD evidence is `unknown`, never a pass. A nonempty URL is not a readability check: the canonical read must succeed and its observed repo, HEAD and revision must match the indexed metadata. The offline walkthrough models that retrieval explicitly with fixture read observations. All four selected source stamps (issue, handoff, session and module) must be present and nonempty on both sides before equality can establish freshness. A legitimately absent source needs an explicit checked-absence record from its owner; two omitted, null or empty stamps are unknown, not current.
 Retain its pointer for diagnosis, fetch the canonical evidence, and obey the
 existing gate's failure behavior. A current packet can still have unknown
