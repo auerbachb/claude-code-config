@@ -2,15 +2,15 @@
 # maybe-trigger-ai-review.sh — Round-gated complexity trigger for AI reviewers (issue #362).
 # catalog: review-escalation — Post supplemental AI reviewer triggers when complexity and CR-round gates pass
 #
-# When gates pass, posts three separate PR comments (never batched):
+# When gates pass, posts separate PR comments (never batched):
 #   1) @codeant-ai review
-#   2) @cursor review
-#   3) @graphite-app re-review
-#
-# Graphite known outage (issue #610, confirmed 2026-07-21): the graphite trigger
-# above has produced zero engagement since 2026-05-08 — external GitHub App
-# issue, kept anyway (cheap, self-healing). See
-# .claude/reference/codeant-graphite-supplemental.md.
+#   2) @cursor review — NEVER autonomously (issue #1897): BugBot is a paid
+#      review and needs the owner's explicit approval in chat, so this step
+#      ends in a `bugbot_skipped: {"reason":"approval_required"}` skip unless
+#      an earlier skip below (tier, refused HEAD, daily cap) already applied.
+#      The one exception is an owner grant for this PR and HEAD (issue #1898):
+#      paid-review-grant.sh --trigger spends it once and posts @cursor review.
+#   (Graphite was a third step until its retirement on 2026-11-03, #1889.)
 #
 # BugBot spend-refusal suppression (issue #1199): the `@cursor review` nudge is
 # SKIPPED when cursor[bot] has already refused THIS HEAD for a Cursor usage/spend
@@ -31,9 +31,8 @@
 # Tier-aware repos (issue #1749): once the round gates pass, the sibling
 # review-triggers-allowed.sh decides every post. A repo with no `## Review
 # policy` (mode `legacy`), or a missing helper, takes the unchanged path above.
-# Otherwise each of the three steps posts only when the helper allows it, and
-# only after `--claim` records it (a failed post `--release`s it): Graphite
-# never, CodeAnt once, BugBot on a settled green HEAD at most twice, with the
+# Otherwise each step posts only when the helper allows it, and
+# only after `--claim` records it (a failed post `--release`s it): CodeAnt once, BugBot on a settled green HEAD at most twice, with the
 # refused-HEAD guard and the daily cap applied inside the helper, the cap last.
 # A deferred step (CI pending, HEAD not settled, daily cap) leaves the step
 # record open so the next tick re-asks instead of stopping at
@@ -234,7 +233,6 @@ steps_incomplete() {
       and (
         ($st.codeant | not)
         or ($st.cursor | not)
-        or ($st.graphite | not)
       )
   ' <<<"$st" >/dev/null 2>&1
 }
@@ -288,6 +286,28 @@ fi
 # that path and says so; an unusable answer from a present helper posts
 # nothing this tick (fail closed), and the next tick asks again.
 TRIGGERS_SH="${SCRIPT_DIR}/review-triggers-allowed.sh"
+
+# The one exception (issue #1898): an owner grant for THIS PR, HEAD and vendor,
+# written only after the owner said yes in chat. paid-review-grant.sh spends it
+# (single use, compare-and-set) and posts `@cursor review` itself; anything but
+# `triggered` — no grant, a used one, another HEAD, unreadable state, a missing
+# helper — leaves the approval skip in place (fail closed).
+paid_grant_post_cursor() {
+  local g="${SCRIPT_DIR}/paid-review-grant.sh" st
+  if [[ ! -x "$g" ]]; then
+    echo "maybe-trigger-ai-review.sh: paid-review-grant.sh missing — no owner grant can be spent (fail closed, #1898)" >&2
+    return 1
+  fi
+  # Every refusal exits non-zero, so keep the STATUS line whatever the exit
+  # code: a failed post (grant released) must not read as approval_required.
+  st="$("$g" --trigger "$PR_NUM" --vendor cursor --head "$HEAD_SHA" | sed -n 's/^STATUS=//p')" || true
+  if [[ "$st" == "trigger_failed" ]]; then
+    echo "maybe-trigger-ai-review.sh: failed posting @cursor review under the owner's grant (trigger_failed; the grant was released)" >&2
+    exit 5
+  fi
+  [[ "$st" == "triggered" ]]
+}
+
 TRIGGER_MODE="legacy"
 TRIGGER_JSON=""
 if [[ -x "$TRIGGERS_SH" ]]; then
@@ -298,9 +318,9 @@ if [[ -x "$TRIGGERS_SH" ]]; then
     echo "maybe-trigger-ai-review.sh: review-triggers-allowed.sh gave no usable answer (rc=$RC) — posting no reviewer trigger this tick (fail closed)" >&2
     TRIGGER_MODE="fail_closed"
     TRIGGER_JSON="$(jq -cn '{mode: "fail_closed", gate: null, allowed: [],
-      reviewers: ({codeant: 0, cursor: 0, graphite: 0}
+      reviewers: ({codeant: 0, cursor: 0}
         | with_entries(.value = {allowed: false, kind: "deferred", reason: "helper_unusable"})),
-      deferred: ["codeant", "cursor", "graphite"]}')"
+      deferred: ["codeant", "cursor"]}')"
   fi
 else
   echo "maybe-trigger-ai-review.sh: DEGRADED: review-triggers-allowed.sh not found beside this script — tier-aware triggers unavailable, continuing with the legacy path" >&2
@@ -308,11 +328,11 @@ fi
 
 if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
-  # The three reviewers this script invites; CodeRabbit is never one of them.
+  # The reviewers this script invites; CodeRabbit is never one of them.
   TRIGGER_SKIPS_JSON="$(jq -c '[ .reviewers | to_entries[]
-      | select(.key == "codeant" or .key == "cursor" or .key == "graphite")
+      | select(.key == "codeant" or .key == "cursor")
       | select(.value.allowed | not) | {key, value: {kind: .value.kind, reason: .value.reason}} ] | from_entries' <<<"$TRIGGER_JSON")"
-  DEFERRED_JSON="$(jq -c '[ .deferred[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ]' <<<"$TRIGGER_JSON")"
+  DEFERRED_JSON="$(jq -c '[ .deferred[]? | select(. == "codeant" or . == "cursor") ]' <<<"$TRIGGER_JSON")"
   # bugbot_skipped keeps its pre-#1749 shape for the reasons it already had.
   # <helper json> [reason]: a denied claim passes its own reason, so the report
   # follows the claim's re-evaluation, not the earlier answer.
@@ -332,7 +352,7 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     fi
   }
   bugbot_report "$TRIGGER_JSON"
-  ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ] | join(", ")' <<<"$TRIGGER_JSON")"
+  ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "codeant" or . == "cursor") ] | join(", ")' <<<"$TRIGGER_JSON")"
   step_allowed() { [[ "$(jq -r --arg r "$1" '.reviewers[$r].allowed' <<<"$TRIGGER_JSON")" == "true" ]]; }
   skips_text() { jq -r 'to_entries | map("\(.key)=\(.value.reason)") | join(", ") | if . == "" then "none" else . end' <<<"$TRIGGER_SKIPS_JSON"; }
 
@@ -362,7 +382,7 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     echo "maybe-trigger-ai-review.sh: session-state.sh missing or not executable: $STATE_HELPER (required to dedupe triggers)" >&2
     exit 4
   fi
-  T_STEPS="$(jq -cn --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '{head_sha: $h, cr_rounds: $r, codeant: false, cursor: false, graphite: false}')"
+  T_STEPS="$(jq -cn --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '{head_sha: $h, cr_rounds: $r, codeant: false, cursor: false}')"
   if [[ -f "$STATE_FILE" ]]; then
     EXISTING="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // empty" 2>/dev/null || true)"
     if [[ -n "$EXISTING" && "$EXISTING" != "null" ]]; then
@@ -378,16 +398,25 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   T_POSTED=0
   ANY_DEFERRED=0
   [[ "$DEFERRED_JSON" != "[]" ]] && ANY_DEFERRED=1
-  for step in codeant cursor graphite; do
+  for step in codeant cursor; do
     case "$step" in
       codeant) body="@codeant-ai review" ;;
       cursor) body="@cursor review" ;;
-      graphite) body="@graphite-app re-review" ;;
     esac
     done_already="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step\"] // empty" 2>/dev/null || true)"
     [[ "$done_already" == "true" ]] && continue
     if ! step_allowed "$step"; then
       reason="$(jq -r --arg r "$step" '.reviewers[$r].reason' <<<"$TRIGGER_JSON")"
+      if [[ "$step" == "cursor" && "$reason" == "approval_required" ]] && paid_grant_post_cursor; then
+        # Posted under the owner's grant (issue #1898): every earlier guard
+        # already passed — approval_required is the last step of the chain.
+        "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true" >/dev/null 2>&1 \
+          || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the grant is used, so no re-post" >&2
+        TRIGGER_SKIPS_JSON="$(jq -c 'del(.cursor)' <<<"$TRIGGER_SKIPS_JSON")"
+        BUGBOT_SKIPPED_JSON="null"
+        T_POSTED=$((T_POSTED + 1))
+        continue
+      fi
       echo "maybe-trigger-ai-review.sh: skipping $body — review tier $TIER_GATE_TXT: $reason (#1749)" >&2
       # A refusal is a fact about THIS HEAD: handled, as the legacy path records
       # it. Every other skip stays open, so a resumed run asks again.
@@ -460,8 +489,8 @@ fi
 
 # Review-tier suppression (issue #1728). BugBot is invited only on the `full`
 # gate and on `legacy` (no `## Review policy`); a ci-only or ci+codeant-one-round
-# PR never needs it, so its nudge is skipped while CodeAnt and Graphite still
-# post. The shared helper owns the excluded-gate list.
+# PR never needs it, so its nudge is skipped while CodeAnt still
+# posts. The shared helper owns the excluded-gate list.
 #
 # FAILS OPEN like the refusal guard below: a missing helper, an unresolvable
 # tier, or any exit but 0 posts the nudge — `legacy` behaviour is to post.
@@ -529,11 +558,18 @@ if [[ -z "$BUGBOT_TIER_GATE" ]]; then
   bugbot_daily_cap
 fi
 
+# Owner approval (issue #1897): BugBot is paid per review, and no paid review
+# starts without the owner's explicit approval in chat. When none of the
+# earlier skips (tier, refused HEAD, daily cap) applies, this is the skip — the
+# last step of the chain, so those reasons keep their precedence.
+APPROVAL_SKIP_JSON='{"reason":"approval_required","gate":null}'
+
 if (( DRY_RUN )); then
   # A dry run never reaches the refused-HEAD guard (Issue #1735), so the cap is
   # the only skip it can add to the tier's.
   DRY_SKIPPED_JSON="$BUGBOT_SKIPPED_JSON"
   [[ "$BUGBOT_CAP_STATUS" == "over" ]] && DRY_SKIPPED_JSON="$(cap_skip_json)"
+  [[ "$DRY_SKIPPED_JSON" == "null" ]] && DRY_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
   if (( JSON_OUT )); then
     jq -n \
       --arg status dry_run \
@@ -557,11 +593,11 @@ if (( DRY_RUN )); then
         bugbot_daily_cap: $bugbot_daily_cap
       }'
   elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
-    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
   elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
-    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
   else
-    echo "[DRY-RUN] would post 3 separate comments (codeant, cursor, graphite) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — paid review requires owner approval) cr_rounds=$CR_ROUNDS score=$SCORE"
   fi
   exit 0
 fi
@@ -579,8 +615,7 @@ INIT_STEPS="$(jq -cn \
     head_sha: $h,
     cr_rounds: $r,
     codeant: false,
-    cursor: false,
-    graphite: false
+    cursor: false
   }')"
 
 if [[ -f "$STATE_FILE" ]]; then
@@ -667,8 +702,18 @@ elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
   # daily tally, not a fact about this HEAD, so a resumed run asks it again.
   echo "maybe-trigger-ai-review.sh: skipping @cursor review — account $(cap_text) (#1812)" >&2
   BUGBOT_SKIPPED_JSON="$(cap_skip_json)"
-elif ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
-if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
+elif [[ "$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"cursor\"] // empty" 2>/dev/null || true)" == "true" ]]; then
+  : # already posted for this round (a resumed run)
+elif paid_grant_post_cursor; then
+  # The owner approved this one review in chat (issue #1898); the grant is now used.
+  "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true" >/dev/null 2>&1 \
+    || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the grant is used, so no re-post" >&2
+else
+  # Left open (cursor stays false), like the tier and cap skips: approval is
+  # not a fact about this HEAD. A completed run clears the record anyway.
+  echo "maybe-trigger-ai-review.sh: skipping @cursor review — BugBot is a paid review and needs the owner's explicit approval (#1897)" >&2
+  BUGBOT_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
+fi
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! "$STATE_HELPER" \
@@ -693,6 +738,8 @@ elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — review tier $BUGBOT_TIER_GATE)"
 elif [[ "$(jq -r '.reason // ""' <<<"$BUGBOT_SKIPPED_JSON")" == "daily_cap" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — $(cap_text))"
+elif [[ "$(jq -r '.reason // ""' <<<"$BUGBOT_SKIPPED_JSON")" == "approval_required" ]]; then
+  echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — paid review requires owner approval)"
 else
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE)"
 fi

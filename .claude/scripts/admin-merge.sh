@@ -526,6 +526,16 @@ if [[ -z "$GATE_JSON" ]] || ! echo "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   exit 4
 fi
 
+# No-review override (issue #1899): an unreviewed merge never also takes an
+# admin bypass. Refused in every shape with the ordinary not-merge-ready exit
+# (1), which callers route to rebase/recovery — the rebased HEAD then gets its
+# own window. Never exit 8: there is nothing for the repo admin to print.
+if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
+  echo "AUTO_PLAIN_REFUSED: reason=no-review-override" >&2
+  echo "REFUSED: PR #$PR_NUMBER would merge through the no-review override — admin bypass is never combined with an unreviewed merge. If the PR is CLEAN, merge it plainly via /wrap (gh pr merge --squash --match-head-commit, no admin); only if it is BEHIND, rebase via /fixpr — the new HEAD gets its own window." >&2
+  exit 1
+fi
+
 # Clean-BEHIND allowance (issue #631): a `mergeStateStatus: BEHIND` is normally a
 # hard blocker (rebase first). But when the base delta does NOT touch the PR's
 # files, rebasing is pure churn and an admin squash-merge is safe — `gh pr merge
@@ -536,7 +546,7 @@ fi
 # protection reviewDecision note that admin-merge is independently allowed to
 # bypass. Keep that note separate from the mechanical clean-BEHIND verdict so the
 # two gate filters cannot make --auto-plain unreachable (issue #947).
-REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
+REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, a Greptile re-review is paid: ask the owner to approve it in chat \(#1897\)|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
 
 clean_behind_evidence_allows_admin() {
   local json="$1" rc="$2"
@@ -663,6 +673,7 @@ if [[ "$FORCE_SOLO" != true ]]; then
     fi
   done
 
+  # graphite-app: retired 2026-11-03 (#1889); kept so a stale CODEOWNERS entry is never a human.
   HUMAN_OWNERS=$(printf '%s\n' "$CODEOWNERS_TEXT" \
     | sed 's/#.*$//' \
     | grep -oE '@[A-Za-z0-9/_-]+' \

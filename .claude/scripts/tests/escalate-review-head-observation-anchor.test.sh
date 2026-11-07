@@ -49,7 +49,7 @@ FAIL_A="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_A, $BANNER_A]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (b): NEGATIVE CONTROL — same fixture, no force-push -> polling_cr as before =="
@@ -132,7 +132,7 @@ FAIL_D3="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_D3, $BANNER_D3]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (e): trigger comment from the PRIOR head + fresh force-push -> switch_bugbot =="
@@ -155,7 +155,7 @@ TRIGGER_E="$(trigger_comment "$(ts_seconds_ago 1800)")"
 write_state "[]" "[]" "[]" "[$TRIGGER_E]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== (f): NEGATIVE CONTROL — same fixture, no force-push -> trigger_greptile as before =="
@@ -166,7 +166,7 @@ TRIGGER_F="$(trigger_comment "$(ts_seconds_ago 1800)")"
 write_state "[]" "[]" "[]" "[$TRIGGER_F]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (g): a fresh force-push attributed to ANOTHER SHA still anchors HEAD =="
@@ -191,7 +191,7 @@ FAIL_G="$(failure_comment "$(ts_seconds_ago 7000)")"
 write_state "[]" "[]" "[]" "[$FAIL_G, $BANNER_G]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== (h): the anchor adds no second timestamp-ordering rule =="

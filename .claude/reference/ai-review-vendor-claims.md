@@ -1,5 +1,7 @@
 # AI review vendor claims — published accuracy figures
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Issue:** [#1811](https://github.com/auerbachb/claude-code-config/issues/1811) — increment 4 of 5 under [#1747](https://github.com/auerbachb/claude-code-config/issues/1747)
 **Last verified:** 2026-10-08 (every source below was re-read on this date)
 **Read by:** `/review-stack-audit` Step 7's claims-vs-observed table (`scorecard.sh`), which reads **only** the fenced block in §[Machine-readable claims](#machine-readable-claims-review-stack-claimsv1)
@@ -36,7 +38,7 @@ What each source says, and where it differs from the claim as first recorded on 
 - **Qodo.** **The 63.4% precision figure could not be re-confirmed at its source.** Qodo's post, dated 2026-03-15, reports 62.3% precision, 66.4% recall, and a 64.3% F1 for its research-preview "Qodo Extended" configuration. It ranks Qodo first **by F1**, not by precision, and its production configuration at 47.9% F1, fourth. The row keeps the claim as originally recorded, marked unverified. Qodo is not in this review stack, so the scorecard shows no observed figure beside it.
 - **CodeAnt.** The figures are CodeAnt's own, from a post it published about its third-place ranking. The post cites 200,000+ real PRs as the benchmark's scope but does not say which of Martian's two tracks produced these three numbers. Treat it as vendor-reported, not independently confirmed.
 
-Graphite and Vercel Agent have no claim recorded here. The scorecard renders each of them as a `no published claim` row, never drops it.
+Vercel Agent has no claim recorded here. The scorecard renders it as a `no published claim` row, never drops it. (Graphite, retired 2026-11-03, is no longer measured.)
 
 ## Public benchmarks
 
@@ -56,7 +58,7 @@ Signal65's March 2026 study and Macroscope's September 2025 benchmark are one-of
 Rules the block keeps:
 
 - **Every claim carries** `vendor`, `claim`, `metric`, `benchmark`, `authorship`, `source_url` (`https://`), `retrieved` (`YYYY-MM-DD`), and `status` (`verified` or `unverified`).
-- **`tool_key`** is the `measure.sh` key of the tool the claim is about (`coderabbit`, `codeant`, `bugbot`, `greptile`, `graphite`, `vercel`), or `null` for a vendor outside this stack. The scorecard joins observed figures on it.
+- **`tool_key`** is the `measure.sh` key of the tool the claim is about (`coderabbit`, `codeant`, `bugbot`, `greptile`, `vercel`), or `null` for a vendor outside this stack. The scorecard joins observed figures on it.
 - **`page_url` and `retrieved` at the top** are the source and date a `no published claim` row cites, so every row of the rendered table carries a URL and a date.
 
 ```json review-stack-claims

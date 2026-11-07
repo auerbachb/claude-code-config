@@ -16,7 +16,7 @@
 #   It also resolves that per-thread ceiling, `PIPELINE_CEILING` (#1729), so a
 #   repo can widen its own band with a config change instead of a global rule
 #   edit. The ceiling never raises the cap: the governing limit stays
-#   min(PIPELINE_CEILING, ACTIVE_WORK_CAP), so running 10 wide means raising
+#   min(PIPELINE_CEILING, ACTIVE_WORK_CAP), so running wider means raising
 #   both knobs. See --ceiling below.
 #
 #   Derivation of the default — why 6 and not the originally proposed 8:
@@ -277,14 +277,14 @@ set -uo pipefail
 
 CAP_DEFAULT=6
 CAP_MIN=1
-CAP_MAX=10
+CAP_MAX=20
 
 # Per-thread pipeline ceiling (#1729). 4 is the top of the historical 3–4 band,
 # so a repo that never sets PIPELINE_CEILING behaves exactly as before. Same
 # bounds as the cap; this script owns the default for the same reason.
 CEILING_DEFAULT=4
 CEILING_MIN=1
-CEILING_MAX=10
+CEILING_MAX=20
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
@@ -686,8 +686,8 @@ pr_list_with_closing_refs() {
 
 # `--limit 100` cannot affect the answer, despite looking like the same
 # truncation bug fixed in open_among. FREE is max(0, CAP - ACTIVE) and CAP_MAX
-# is 10, so any repo with enough open PRs to hit the limit is already an order
-# of magnitude past the cap and FREE is 0 whether the count reads 100 or 400.
+# is 20, so any repo with enough open PRs to hit the limit is already 5x
+# past the cap and FREE is 0 whether the count reads 100 or 400.
 # The closing-issue references share the fetch, and a truncated one there only
 # subtracts fewer chips — the over-counting, safe direction.
 fetch_open_prs() {

@@ -4,7 +4,7 @@
 # it does not claim to observe Claude Code's private runtime loader.
 set -euo pipefail
 
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 DISPATCH="$ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh"
 TRACE="$(mktemp "${TMPDIR:-/tmp}/issue-maker-trace.XXXXXX")"
@@ -356,6 +356,12 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     r=run(setup+'CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\n'+payload_setup+handoff_stamp); assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]['chip_task_id'].startswith('offer-') and rows[1]['chip_task_id'] is None
     print('ok workflow: explicit fallback handoff after decline stamps only session-filed rows')
+    # An unset or false chip-tool flag takes the uncounted path and says so (#1892).
+    for flag,needle in [('unset CHIP_TOOL_AVAILABLE\n','CHIP_TOOL_AVAILABLE not set'),('CHIP_TOOL_AVAILABLE=false\n','CHIP_TOOL_AVAILABLE=false')]:
+        seed([row(1,origin='create'),row(2,origin='update')])
+        r=run(setup+flag+'ISSUE_ARGS=()\n'+payload_setup+handoff_stamp); assert r.returncode==0,r.stderr
+        assert 'DEGRADED:' in r.stderr and needle in r.stderr and 'continuing uncounted' in r.stderr,(flag,r.stderr)
+    print('ok workflow: unset or false CHIP_TOOL_AVAILABLE emits DEGRADED for the uncounted handoff path')
     # Execute the production reservation/stamp/launch/receipt/cleanup fences with
     # the REAL registry helper. Only boundary failures are injected by a shim.
     home=pathlib.Path(td)/'reserve-home'; registry=home/'.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh'; registry.parent.mkdir(parents=True)

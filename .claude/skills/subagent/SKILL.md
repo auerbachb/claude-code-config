@@ -336,11 +336,25 @@ Either signal skips the issue, and the skip line names **which** one fired:
 When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
 
 ```bash
-"$ISSUE_CLAIM" {NUMBER} --claim || {
-  echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."; }
+CLAIM_HOLDER=""
+if CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json); then
+  # The exact token this claim was taken with — every later --renew must pass
+  # it (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived.
+  CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty' 2>/dev/null)
+  [[ -n "$CLAIM_HOLDER" ]] || echo "Issue #{NUMBER} — claim held but no holder reported; claim renewal off."
+  # Record it now, not at launch: a queued issue is claimed here too, and Step 8
+  # item 8 renews every recorded claim — running or queued (no started_at yet).
+  [[ -n "$CLAIM_HOLDER" ]] && "$SESSION_STATE_SH" \
+    --set ".repos[\"$("$SESSION_STATE_SH" --repo-key)\"].pipelines[\"{NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')" \
+    --set ".repos[\"$("$SESSION_STATE_SH" --repo-key)\"].pipelines[\"{NUMBER}\"].claim_renewed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+    || echo "Issue #{NUMBER} — claim held but not recorded; renewal off until Step 7.1 records it."
+else
+  echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."
+  # -> skip this issue: no Phase A spawn, no Step 7.1 record.
+fi
 ```
 
-Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/undetermined), reporting it the same way as a `claimed` verdict. Do not spawn.
+Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/undetermined), reporting it the same way as a `claimed` verdict. Do not spawn. A held claim whose JSON carries no `.holder` still spawns, with one line saying renewal is off for that issue.
 
 `/wrap` releases it at merge. If the user explicitly says to start a claimed issue anyway — naming that issue, in chat — pass `--allow-claimed` and say in the report that you are overriding a live claim; it is per-issue and per-session, never inferred and never a default. Contract: `.claude/reference/issue-claim.md`.
 
@@ -835,7 +849,7 @@ Body:
 3. Implement the changes.
 4. Run the local dual-CLI review per `cr-local-review.md`: resolve `local-review.sh` per RESOLVE, then run it `--tool coderabbit` AND `--tool codeant` (each emits `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"log_path":…}`; raw output stays at `log_path`)
    - Union the findings; fix all valid findings.
-   - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
+   - Run all available CLIs again. Repeat until each remaining CLI has one clean pass. Exception: CodeAnt findings counted in `contentless_findings` get the flagged-scope review and **no rerun** — when only contentless findings remain, stop and treat CodeAnt as dropped (`.claude/reference/local-review-cli-failure-modes.md` §Contentless CodeAnt findings).
    - If a CLI trips a `local-review.sh` bound (`failure_mode: timeout` — idle or ceiling, per `cr-local-review.md`) or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
    - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For any degraded state (`none`, `cr-only`, or `codeant-only`), this line is mandatory and must be visible before the push.
@@ -1082,9 +1096,21 @@ if [[ -z "$LAUNCHED_AT" ]]; then
   # record, monitoring_active, AND this spawn's agent entry. A second call for
   # the agent would leave the pipeline active with no active_agents record
   # whenever that second call failed.
+  # The claim holder from Step 6.0 rides in the same write (Step 8.1 renews with
+  # it). Omitted when unknown — no claim helper, or no .holder in the JSON — and
+  # a pipeline without one is simply never renewed.
+  # Step 6.0 normally recorded both already; never reset a recorded
+  # claim_renewed_at — that would hide a queued claim's real age.
+  CLAIM_SET=()
+  [[ -n "$CLAIM_HOLDER" ]] && CLAIM_SET=(
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')")
+  C_PREV=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at" 2>/dev/null) || C_PREV=""
+  [[ -n "$CLAIM_HOLDER" && ( -z "$C_PREV" || "$C_PREV" == "null" ) ]] && CLAIM_SET+=(
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
   "$SESSION_STATE_SH" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
+    ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} \
     --set '.monitoring_active=true' \
     "${AGENT_SET[@]}"
 else
@@ -1244,6 +1270,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    re-arms the question, and a **phase transition never elicits a leave time** at all;
    `ELICIT_LEAVE_TIME` is a new-pipeline concern.
    - Parse the Structured Exit Report from its output.
+   - **Renew the issue's claim (Step 8.1) immediately before launching any successor** — A→B, each replacement B, and B→C after `merge_ready`. Exit 5 → launch nothing for that issue: mark it blocked and report lost ownership; other pipelines continue.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
 4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
@@ -1307,10 +1334,15 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      # Build OTHER_ISSUES: batch members excluding the current PR (comma-separated issue numbers)
      OTHER_ISSUES=$(printf '%s' "$BATCH_ISSUES" | sed 's/[][" ]//g' | tr ',' '\n' \
        | grep -v "^${ISSUE_NUM}$" | paste -sd ',' - 2>/dev/null || true)
+     # An array, not `${X:+--flag "$X"}`: zsh passes that as one word (issue #1857).
+     WINDOW_ARGS=()
+     if [[ -n "$SCOPED_DEADLINE" ]]; then
+       WINDOW_ARGS=(--window-deadline "$SCOPED_DEADLINE")
+       [[ -n "$OTHER_ISSUES" ]] && WINDOW_ARGS+=(--window-issues "$OTHER_ISSUES")
+     fi
      OVERRUN_RC=0
      ALERT=$("$OVERRUN_CHECK_SH" --pr "$PR_NUM" --bound-min "$BOUND_MIN" \
-       --started-at "$STARTED_AT" ${SCOPED_DEADLINE:+--window-deadline "$SCOPED_DEADLINE"} \
-       ${SCOPED_DEADLINE:+${OTHER_ISSUES:+--window-issues "$OTHER_ISSUES"}}) || OVERRUN_RC=$?
+       --started-at "$STARTED_AT" ${WINDOW_ARGS[@]+"${WINDOW_ARGS[@]}"}) || OVERRUN_RC=$?
      # RC=0: no breach — silent. RC=1: first breach — emit ALERT (bounded exception). RC=2: already alerted — silent.
      [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
    fi
@@ -1488,6 +1520,46 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    with no `started_at`" queued test. Clearing on a refill would delete the queue
    the board is reading.
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
+8. **Renew due claims (Step 8.1, with `DUE_ONLY=1`).** For each pipeline with a recorded `claim_holder` — running **or queued** (Step 6.0 claims and records queued issues too) — renew only when its `claim_renewed_at` is **≥30 minutes** old. **Never renew on every tick** — a 60-second cadence would cost a GitHub round trip per pipeline per minute for no gain, since the helper itself writes nothing until renewal is due.
+
+### 8.1: Keep each claim renewed (issue #1927)
+
+A pipeline routinely outlasts the claim's stale window (`CLAIM_STALE_HOURS`, default 4h); unrenewed, another thread could read live work as `stale` and take it over. The parent renews — it holds the claim, and its token was captured at Step 6.0. Renew **only** with the pipeline's recorded `claim_holder`: never one derived from the environment or read off a GitHub marker (that may be another thread's), and never `--claim` as a check. Read it through the full repo-scoped path, never `--session-view`:
+
+```bash
+P=".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"]"
+C_HOLDER=$("$SESSION_STATE_SH" --get "$P.claim_holder")
+C_RENEWED=$("$SESSION_STATE_SH" --get "$P.claim_renewed_at")
+# DUE_ONLY=1 on a monitor tick (item 8): skip unless the last renewal is >=30 min
+# old. A successor launch (item 2) leaves it 0 and renews immediately.
+C_DUE=1
+if [[ "${DUE_ONLY:-0}" == "1" && "$C_RENEWED" != "null" && -n "$C_RENEWED" ]]; then
+  jq -en --arg t "$C_RENEWED" 'try ((now - ($t | fromdateiso8601)) >= 1800) catch true' >/dev/null 2>&1 || C_DUE=0
+fi
+if [[ "$C_DUE" == "0" ]]; then
+  :   # not due — write nothing, call nothing
+elif [[ -z "$ISSUE_CLAIM" || -z "$C_HOLDER" || "$C_HOLDER" == "null" ]]; then
+  [[ "${DUE_ONLY:-0}" == "1" ]] || echo "note: issue #{ISSUE_NUMBER} has no recorded claim holder — claim not renewed"
+else
+  C_ERR=$(mktemp)
+  "$ISSUE_CLAIM" {ISSUE_NUMBER} --renew --holder "$C_HOLDER" >/dev/null 2>"$C_ERR"; rc=$?
+  case "$rc" in
+    0) "$SESSION_STATE_SH" --set "$P.claim_renewed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" ;;
+    5) echo "BLOCKED: lost ownership of issue #{ISSUE_NUMBER} — launching no successor" ;;
+    2) echo "DEGRADED: issue-claim.sh --renew unavailable for #{ISSUE_NUMBER}: $(head -1 "$C_ERR") — renewal off for this issue"
+       "$SESSION_STATE_SH" --set "$P.claim_holder=null" ;;
+    *) echo "WARN: claim renewal for #{ISSUE_NUMBER} failed (exit $rc) — retrying next tick" ;;
+  esac
+  rm -f "$C_ERR"
+fi
+```
+
+- **`0`** — continue; `claim_renewed_at` restarts the 30-minute clock.
+- **`5`** — ownership lost. Launch no successor for that issue, mark it blocked, report it; the other pipelines continue. A running phase agent is not killed — its PR is still yours — but nothing new starts on an issue another thread now holds.
+- **`4`/other** — warn and let a due transition proceed; `claim_renewed_at` is left alone, so the next tick retries.
+- **`2`** — degraded (an older helper, or a usage error its first stderr line names); the holder is cleared, so that issue is not renewed again. Item 8 skips holder-less pipelines silently; only a successor launch prints the note.
+
+Phase C's prompt carries the issue and holder so `/wrap` renews before its own waits (Step 9).
 
 ### Permitted activities in monitor mode:
 - Poll subagent status
@@ -1555,16 +1627,14 @@ If missing, reconstruct state from GitHub API.
 3. Check ALL CI check-runs. Fix any failures before continuing.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
 5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
-   - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD — do not escalate; continue to the merge gate check.
+   - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD, or the gate is met via the no-review override (issue #1899) — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
-   - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
+   - `no_reviewer` (and, defensively, the retired `switch_bugbot` / `trigger_greptile` / `budget_exhausted`): a PAID reviewer would be next (issue #1897). Post NO `@cursor review` and NO `@greptileai`, never retry a paid trigger, keep `reviewer: cr`, report the blocker "paid review requires owner approval" once, and keep polling — the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes; with it off, the blocker stands until the owner acts. Only the owner's explicit approval in chat authorizes a paid review; this prompt never does. Never ask the owner yourself: a review the owner approved in the parent session is a grant (issue #1898), spent only with `paid-review-grant.sh --trigger {PR_NUMBER} --vendor cursor|greptile` (`STATUS=triggered` is the only success). Otherwise add `PAID_REVIEW: skipped (<vendor>, <reason>)` to the exit report notes.
    - `tier_gate`: the PR's review tier excludes BugBot — do NOT switch or post `@cursor review`; trigger nothing, keep polling, and let the merge gate apply the tier's gate.
-   - `trigger_greptile`: run `greptile-budget.sh --consume`, post `@greptileai`, persist `reviewer: greptile`, and follow the Greptile path.
-   - `budget_exhausted`: persist the self-review fallback/blocker; do NOT post `@greptileai`.
    - `self_review`: perform/report self-review fallback; merge remains blocked.
 6. Check commit status for CR completion signal and rate-limit fast-path.
 7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
-8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread through `reply-thread.sh` with the mandatory verdict flags (`--verdict fixed|deferred|declined --defect real|not` — issue #1842; rule and mapping: `review-stack-audit.md` §The marker), resolve threads via GraphQL.
+8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread through `reply-thread.sh` with the mandatory verdict flags (`--verdict fixed|deferred|declined --defect real|not`, plus `--fix as-given|adapted|wrong|none` with `--defect real` — issues #1842, #1843; rule and mapping: `review-stack-audit.md` §The marker), resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
    - Greptile: severity-gated (no P0 after fix = merge-ready).
@@ -1614,6 +1684,7 @@ When a Phase B subagent returns:
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
    - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
+   - Any `PAID_REVIEW: skipped (...)` note -> relay it with the report. In an attended session this is where you may ask the owner for one paid review (`.claude/reference/paid-review-approval.md`); never from `/pm day` or `--window` ticks.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
 4. **Update `session-state.json`.**
@@ -1627,6 +1698,9 @@ Execute the canonical `/wrap` flow after verification — no pre-merge prompt.
 
 ## Handoff File
 Resolve the path with `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}` and read that file first.
+
+## Claim
+Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this pair (`CLAIM_PAIRS="{ISSUE_NUMBER} {CLAIM_HOLDER}"`) so it renews before each wait; its exit 5 means ownership was lost — stop with `OUTCOME: blocked`, do not merge. (Parent: when the pipeline has no recorded `claim_holder`, **omit this whole section** — never substitute a placeholder, which `--renew` would read as a foreign holder and stop on — and `/wrap` runs with an empty `CLAIM_PAIRS`, skipping renewal with a note.)
 
 ## Guardrails (MANDATORY)
 **Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert the RESOLVE and SAFETY blocks verbatim at this point** (Phase C / `phase-c-merger` carries only those two — no MINDSET or SKILLS).

@@ -173,6 +173,12 @@ def drain_spool(log_path, queue, refresh_deadline=None):
         # Freeze a bounded batch. New spool files cannot invalidate its progress.
         batch = saved.get("batch")
         if not isinstance(batch, dict) or not batch or len(batch) > MAX_PENDING_ROWS:
+            # A new batch deliberately rescans the whole log from offset 0. A
+            # retry can re-spool a row a previous batch already appended (the
+            # crash-after-append window), and that row may sit anywhere before
+            # the old EOF. Any carried-over watermark would skip it and append
+            # a duplicate, so exact-row dedup needs the full scan. Large logs
+            # stay bounded: LOG_SCAN_BYTES per refresh, resumed via checkpoint.
             batch = {}
             for spool in files[:MAX_PENDING_ROWS]:
                 raw = spool_line(spool)
@@ -301,6 +307,8 @@ def resume_children_locked(cursor_dir, hook_path, deadline):
         previous_offset = saved.get("offset")
         if type(previous_offset) is not int or previous_offset < 0:
             previous_offset = -1
+        # One cursor may need several hook passes; report it as one source.
+        counted = False
         for _ in range(10):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -309,9 +317,11 @@ def resume_children_locked(cursor_dir, hook_path, deadline):
                 subprocess.run(["bash", hook_path], input=json.dumps(payload), text=True,
                     encoding="utf-8", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     env=resume_env, timeout=min(4.5, max(.1, remaining)), check=False)
-                resumed += 1
             except (OSError, subprocess.TimeoutExpired):
                 break
+            if not counted:
+                resumed += 1
+                counted = True
             still_pending, _ = child_cursors(cursor_dir, [cursor], deadline)
             updated = next((item for candidate, item in still_pending if candidate == cursor), None)
             if updated is None:

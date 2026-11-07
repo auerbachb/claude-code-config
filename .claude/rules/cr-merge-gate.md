@@ -7,15 +7,15 @@
 
 ## Polling exit criterion
 
-Stop polling ONLY when the current-HEAD gate for the owning path is satisfied (Step 1 rules): **CR path** — an explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD, plus a clean CodeAnt where CodeAnt participated on that SHA; **BugBot** — a clean pass on current HEAD; **Greptile** — severity gate passed; **relaxed tier** — `merge-gate.sh` `met`.
+Stop polling ONLY when the current-HEAD gate for the owning path is satisfied (Step 1 rules): **CR path** — an explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD, plus a clean CodeAnt where CodeAnt participated on that SHA; **BugBot** — a clean pass on current HEAD; **Greptile** — severity gate passed; **relaxed tier** or **no-review override** — `merge-gate.sh` `met`.
 
 "0 unresolved threads right now" is transient, not an exit condition — keep polling for a current-HEAD gate.
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 
-Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/review-policy.md`). Per-path gates below; detail: `.claude/reference/merge-gate-reviewer-paths.md`.
+Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/review-policy.md`). Per-path gates below; detail and re-trigger policy: `.claude/reference/merge-gate-reviewer-paths.md`.
 
-**CR path** (neither BugBot nor Greptile triggered — `merge-gate.sh` reviewer `cr`): **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA` — either bot alone suffices. Routing: CodeAnt/CodeRabbit in PR history → CR path; cursor-only → BugBot (`reviewer-of.sh`). Stale-SHA approvals never count — re-trigger that bot (rate cap applies), keep polling. A newer same-SHA `CHANGES_REQUESTED` retracts that bot's earlier `APPROVED` until fixed, pushed, re-approved. Bot `CHANGES_REQUESTED` on an old SHA is obsolete after a fix push — `/fixpr` dismisses via `dismiss-stale-bot-changes.sh` (bots only); dismiss leftovers rather than reading their `reviewDecision: CHANGES_REQUESTED` as a human block. Human `CHANGES_REQUESTED` on current HEAD blocks until addressed/withdrawn. **Not approvals:** the "Full review triggered" ack; "0 unresolved threads" without an APPROVED on current SHA; early absence of findings; a CR check-run without an APPROVED review object; a hollow `APPROVED` — no substantive footprint, or one predating that bot's own run marker, after its capability-failure notice, or naming another SHA (`review_evidence`; #875). **Re-trigger policy:** 12 min → `@coderabbitai full review`, max 2/PR/hour; after 2 failures on one SHA, escalate BugBot → Greptile → self-review.
+**CR path** (neither BugBot nor Greptile triggered — `merge-gate.sh` reviewer `cr`): **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA` — either bot alone suffices. Routing: CodeAnt/CodeRabbit in PR history → CR path; cursor-only → BugBot (`reviewer-of.sh`). Stale-SHA approvals never count — re-trigger that bot (rate cap applies), keep polling. A newer same-SHA `CHANGES_REQUESTED` retracts that bot's earlier `APPROVED` until fixed, pushed, re-approved. Bot `CHANGES_REQUESTED` on an old SHA is obsolete after a fix push — `/fixpr` dismisses via `dismiss-stale-bot-changes.sh` (bots only); dismiss leftovers rather than reading their `reviewDecision: CHANGES_REQUESTED` as a human block. Human `CHANGES_REQUESTED` on current HEAD blocks until addressed/withdrawn. **Not approvals:** the "Full review triggered" ack; "0 unresolved threads" without an APPROVED on current SHA; early absence of findings; a CR check-run without an APPROVED review object; a hollow `APPROVED` — no substantive footprint, or one predating that bot's own run marker, after its capability-failure notice, or naming another SHA (`review_evidence`; #875).
 
 **CodeAnt on the CR path:** applies when CodeAnt has a review/comment or check-run on current HEAD. Clean = `APPROVED` on HEAD or completed CodeAnt check with `conclusion: success`; `CHANGES_REQUESTED` blocks only if newer than the latest clean signal on that SHA. A CodeAnt "no PR Review subscription" comment is **not** a block. Threads: Step 1c.
 
@@ -25,7 +25,7 @@ Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/
 
 **All three down:** self-review for risk reduction only — it never satisfies the gate; report the blocker.
 
-Once Step 1 passes, proceed immediately to Step 1b.
+**No-review override:** no bot verdict on HEAD after the window waives reviewer coverage only; hard stops stand (`.claude/reference/no-review-override.md`).
 
 ### Code-owner bots
 

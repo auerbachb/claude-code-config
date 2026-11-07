@@ -241,7 +241,7 @@ disable_state_dedupe() { export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session
 commit_ok; no_checks; no_timeline
 
 ############################################################################
-echo "== Scenario 1: draft + author is me + all 4 reviewers absent =="
+echo "== Scenario 1: draft + author is me + all 3 reviewers absent =="
 export GH_USER="me"
 unset CR_CHECK_RC CR_RECORD_RC GH_READY_RC GH_COMMENT_RC
 view_draft me
@@ -249,23 +249,26 @@ write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMP
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action marked-ready" "marked-ready" "$(jq -r '.draft_action' <<<"$OUT")"
-check_eq "actions=5" "5" "$(jq -r '.actions' <<<"$OUT")"
+check_eq "actions=3 (ready + 2 free triggers; BugBot needs owner approval)" "3" "$(jq -r '.actions' <<<"$OUT")"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 check_eq "codeant triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "coderabbit triggered" "triggered" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
-check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "graphite triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
+check_eq "cursor skipped: paid review needs owner approval (#1897)" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+# Graphite retired 2026-11-03 (#1889): no reviewer key, no post.
+check_eq "no graphite reviewer" "null" "$(jq -r '.reviewers.graphite // "null"' <<<"$OUT")"
+check_eq "no @graphite-app post" "0" "$(actions | grep -cF '@graphite-app')"
 check_eq "ready was called" "1" "$(actions | grep -c '^READY 493$')"
-check_eq "4 comments posted" "4" "$(actions | grep -c '^COMMENT 493 ::')"
+check_eq "2 comments posted (no @cursor review)" "2" "$(actions | grep -c '^COMMENT 493 ::')"
 check_eq "cr trigger literal" "1" "$(actions | grep -cF 'COMMENT 493 :: @coderabbitai full review')"
 check_eq "no greptile trigger" "0" "$(actions | grep -ciF 'greptile')"
 
 ############################################################################
-echo "== Scenario 2: ready + all 4 engaged ON HEAD → clean no-op =="
+echo "== Scenario 2: ready + all 3 engaged ON HEAD → clean no-op =="
 view_ready
 # coderabbit/codeant bodies must be >= 40 chars so the substance check counts
 # them as engaged (#1226). cursor uses an inline pull comment (type "c" →
-# always engaged). graphite uses an issue comment (timestamp-based → engaged).
+# always engaged). The graphite-app[bot] comment is historical (retired 2026-11-03,
+# #1889) and must be ignored.
 write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$HEAD_DATE\",\"body\":\"y\"}]"
 write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"z\"}]"
@@ -274,7 +277,7 @@ check_eq "exit 0" 0 "$RC"
 check_eq "draft_action not-draft" "not-draft" "$(jq -r '.draft_action' <<<"$OUT")"
 check_eq "actions=0" "0" "$(jq -r '.actions' <<<"$OUT")"
 check_eq "clean=true" "true" "$(jq -r '.clean' <<<"$OUT")"
-check_eq "all already-present" "already-present already-present already-present already-present" \
+check_eq "all already-present" "already-present already-present already-present" \
   "$(jq -r '[.reviewers[].status] | join(" ")' <<<"$OUT")"
 check_eq "no comments posted" "0" "$(actions | grep -c '^COMMENT')"
 check_eq "no ready called" "0" "$(actions | grep -c '^READY')"
@@ -288,21 +291,20 @@ OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action skipped-not-author" "skipped-not-author" "$(jq -r '.draft_action' <<<"$OUT")"
 check_eq "no ready called" "0" "$(actions | grep -c '^READY')"
-check_eq "4 reviewers triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "2 free reviewers triggered" "2" "$(actions | grep -c '^COMMENT')"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 
 ############################################################################
-echo "== Scenario 4: CR rate cap exhausted (--check fails) → skip CR, post other 3 =="
+echo "== Scenario 4: CR rate cap exhausted (--check fails) → skip CR, post the other free one =="
 view_ready
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(CR_CHECK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "codeant triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
-check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "graphite triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
+check_eq "cursor skipped: paid review needs owner approval (#1897)" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
-check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "1 comment posted" "1" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 4b: CR per-PR cap (--peek-explicit fails) → skip CR only =="
@@ -312,7 +314,7 @@ OUT=$(CR_PEEK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
-check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "1 comment posted" "1" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 4c: dry-run also respects CR per-PR cap (Fix B coverage) =="
@@ -324,19 +326,18 @@ check_eq "dry-run coderabbit skipped-rate-cap when peek-explicit fails" "skipped
 check_eq "no real comments in dry-run" "0" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
-echo "== Scenario 5: 3 engaged on HEAD, 1 missing → trigger only the missing one =="
+echo "== Scenario 5: 2 engaged on HEAD, 1 missing → trigger only the missing one =="
 view_ready
-write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$HEAD_DATE\",\"body\":\"c\"}]"
 write_issue_comments "$EMPTY"
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "graphite triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
-check_eq "codeant present" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "codeant triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "coderabbit present" "already-present" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "cursor present" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "only 1 comment posted" "1" "$(actions | grep -c '^COMMENT')"
-check_eq "the comment is graphite" "1" "$(actions | grep -cF '@graphite-app re-review')"
+check_eq "the comment is codeant" "1" "$(actions | grep -cF '@codeant-ai review')"
 
 ############################################################################
 echo "== Scenario 6: prior @coderabbitai full review trigger FOR HEAD, CR not yet responded =="
@@ -367,7 +368,7 @@ write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMP
 OUT=$(run_json 493 --dry-run); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action would-mark-ready (dry-run)" "would-mark-ready" "$(jq -r '.draft_action' <<<"$OUT")"
-check_eq "reviewers dry-run-would-trigger" "dry-run-would-trigger" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "dry-run: cursor is the approval skip, never a would-trigger" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "no real ready" "0" "$(actions | grep -c '^READY')"
 check_eq "no real comments" "0" "$(actions | grep -c '^COMMENT')"
 
@@ -400,7 +401,7 @@ OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action skipped-auth-unknown" "skipped-auth-unknown" "$(jq -r '.draft_action' <<<"$OUT")"
 check_eq "no ready called" "0" "$(actions | grep -c '^READY')"
-check_eq "4 reviewers triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "2 free reviewers triggered" "2" "$(actions | grep -c '^COMMENT')"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 export GH_USER="me"  # restore
 
@@ -409,7 +410,7 @@ export GH_USER="me"  # restore
 ############################################################################
 
 echo "== Scenario 12: THE #565 REGRESSION — every reviewer only on an OLD sha =="
-# Pre-#576 this returned all four already-present + clean:true while merge-gate
+# Pre-#576 this returned every reviewer already-present + clean:true while merge-gate
 # correctly said "need an APPROVED review on HEAD". Each reviewer must now be
 # seen as stale and re-triggered.
 export GH_USER="me"
@@ -423,10 +424,9 @@ check_eq "exit 0" 0 "$RC"
 check_eq "head_sha reported" "$HEAD_SHA" "$(jq -r '.head_sha' <<<"$OUT")"
 check_eq "stale codeant NOT already-present" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "stale coderabbit NOT already-present" "triggered" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
-check_eq "stale cursor NOT already-present" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "stale graphite NOT already-present" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
+check_eq "stale cursor NOT already-present — reaches the approval skip" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "clean=false (pre-#576 said true)" "false" "$(jq -r '.clean' <<<"$OUT")"
-check_eq "all 4 re-triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "the 2 free reviewers re-triggered" "2" "$(actions | grep -c '^COMMENT')"
 check_eq "still no greptile" "0" "$(actions | grep -ciF 'greptile')"
 
 ############################################################################
@@ -482,7 +482,7 @@ OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "cursor already-present via HEAD check-run" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "cursor not re-triggered" "0" "$(actions | grep -cF '@cursor review')"
-check_eq "others still triggered" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "others still triggered" "2" "$(actions | grep -c '^COMMENT')"
 no_checks
 
 ############################################################################
@@ -515,17 +515,17 @@ OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "both apps recognized from one check name" "already-present already-present" \
   "$(jq -r '[.reviewers.cursor.status, .reviewers.codeant.status] | join(" ")' <<<"$OUT")"
-check_eq "only the 2 reviewers without a check-run are triggered" "2" "$(actions | grep -c '^COMMENT')"
+check_eq "only the reviewer without a check-run (coderabbit) is triggered" "1" "$(actions | grep -c '^COMMENT')"
 no_checks
 
 ############################################################################
 echo "== Scenario 15: issue comment BEFORE head date is stale → re-triggered =="
 view_ready; commit_ok; no_checks
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"
-write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$BEFORE_HEAD\",\"body\":\"stale finding\"}]"
+write_issue_comments "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"created_at\":\"$BEFORE_HEAD\",\"body\":\"stale finding\"}]"
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "graphite triggered (comment pre-dates HEAD)" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
+check_eq "codeant triggered (comment pre-dates HEAD)" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 
 ############################################################################
 echo "== Scenario 16: STALE trigger comment must NOT suppress a fresh trigger =="
@@ -546,7 +546,7 @@ OUT=$(run_json 493)
 check_eq "prose mention does not suppress" "triggered" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 
 ############################################################################
-echo "== Scenario 17: stale SHA + CR cap hit → CR still capped, other 3 posted =="
+echo "== Scenario 17: stale SHA + CR cap hit → CR still capped, the other free one posted =="
 # SHA-freshness must never bypass the <=2/PR/hour CodeRabbit cap.
 view_ready; commit_ok; no_checks
 write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$OLD_SHA\",\"submitted_at\":\"$BEFORE_HEAD\",\"body\":\"r\"}]"
@@ -555,7 +555,7 @@ OUT=$(CR_PEEK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap (cap NOT bypassed)" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
-check_eq "other 3 posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "the other free reviewer posted" "1" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 18: HEAD commit date unavailable → degrade, no trigger storm =="
@@ -600,11 +600,11 @@ write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(GH_CHECK_RUNS_RC=1 run_json 493); RC=$?
 check_eq "exit 0 (check-runs failure is non-fatal)" 0 "$RC"
 check_eq "cursor still present via HEAD review" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-# The other three have no HEAD artifact — assert they are still triggered, so an
+# The other two have no HEAD artifact — assert they are still triggered, so an
 # implementation that swallowed the failure by marking everyone present fails here.
-check_eq "other 3 still triggered (failure not read as 'all present')" "triggered triggered triggered" \
-  "$(jq -r '[.reviewers.codeant.status, .reviewers.coderabbit.status, .reviewers.graphite.status] | join(" ")' <<<"$OUT")"
-check_eq "exactly 3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "other 2 still triggered (failure not read as 'all present')" "triggered triggered" \
+  "$(jq -r '[.reviewers.codeant.status, .reviewers.coderabbit.status] | join(" ")' <<<"$OUT")"
+check_eq "exactly 2 comments posted" "2" "$(actions | grep -c '^COMMENT')"
 no_checks
 
 ############################################################################
@@ -614,12 +614,12 @@ enable_state_dedupe
 view_ready; commit_ok; no_checks
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(run_json 493)
-check_eq "first run triggers all 4" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "first run triggers the 2 free reviewers" "2" "$(actions | grep -c '^COMMENT')"
 check_eq "marker records HEAD sha" "$HEAD_SHA" "$(jq -r '.prs["493"].preflight_trigger_head_sha' "$STATE_JSON")"
 # Second run: GitHub has not yet surfaced our comments (fixtures still empty).
 OUT=$(run_json 493)
 check_eq "second run posts nothing (dedupe held)" "0" "$(actions | grep -c '^COMMENT')"
-check_eq "second run all already-present" "already-present already-present already-present already-present" \
+check_eq "second run: free reviewers already-present, cursor still the approval skip" "already-present already-present skipped-approval-required" \
   "$(jq -r '[.reviewers[].status] | join(" ")' <<<"$OUT")"
 
 echo "== Scenario 19a: --dry-run writes NO dedupe state =="
@@ -637,7 +637,7 @@ check_eq "dry-run leaves entire state untouched" "$STATE_BEFORE" "$(jq -cS . "$S
 reset_state
 
 # Re-establish the old-HEAD marker that 19b needs. Without this precondition
-# 19b runs against empty state, so "new HEAD re-triggers all 4" would pass
+# 19b runs against empty state, so "new HEAD re-triggers" would pass
 # vacuously — there would be no stale marker for the new HEAD to invalidate.
 view_ready
 run_json 493 >/dev/null
@@ -649,25 +649,25 @@ echo "== Scenario 19b: dedupe marker is invalidated when HEAD moves =="
 NEW_SHA="newsha00000000000000000000000000000003"
 write_view "{\"isDraft\":false,\"author\":{\"login\":\"me\"},\"state\":\"OPEN\",\"headRefOid\":\"$NEW_SHA\"}"
 OUT=$(run_json 493)
-check_eq "new HEAD re-triggers all 4" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "new HEAD re-triggers the 2 free reviewers" "2" "$(actions | grep -c '^COMMENT')"
 check_eq "marker now tracks the new sha" "$NEW_SHA" "$(jq -r '.prs["493"].preflight_trigger_head_sha' "$STATE_JSON")"
 
 echo "== Scenario 19c: HEAD moves again; only the ONE stale reviewer is triggered =="
 # The map must be REPLACED (not merged) when the sha changes. Merging would keep
-# the four flags from NEW_SHA while stamping NEWER_SHA — marking reviewers
+# the flags from NEW_SHA while stamping NEWER_SHA — marking reviewers
 # triggered-for-HEAD that were only triggered for the parent commit, suppressing
 # exactly the re-trigger #576 exists to perform.
-# Here three reviewers are genuinely fresh on NEWER_SHA and only graphite is not:
-# the map must end up with graphite ONLY, and only graphite may be posted.
+# Here two reviewers are genuinely fresh on NEWER_SHA and only codeant is not:
+# the map must end up with codeant ONLY, and only codeant may be posted.
 NEWER_SHA="newersha000000000000000000000000000004"
 write_view "{\"isDraft\":false,\"author\":{\"login\":\"me\"},\"state\":\"OPEN\",\"headRefOid\":\"$NEWER_SHA\"}"
-write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"}]"
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"created_at\":\"$AFTER_HEAD\",\"body\":\"c\"}]"
 write_issue_comments "$EMPTY"
 OUT=$(run_json 493)
-check_eq "only graphite posted" "1" "$(actions | grep -c '^COMMENT')"
-check_eq "the post is graphite" "1" "$(actions | grep -cF '@graphite-app re-review')"
-check_eq "map REPLACED — holds graphite only, no carry-over" "graphite" \
+check_eq "only codeant posted" "1" "$(actions | grep -c '^COMMENT')"
+check_eq "the post is codeant" "1" "$(actions | grep -cF '@codeant-ai review')"
+check_eq "map REPLACED — holds codeant only, no carry-over" "codeant" \
   "$(jq -r '[.prs["493"].preflight_triggered | to_entries[] | select(.value == true) | .key] | sort | join(",")' "$STATE_JSON")"
 disable_state_dedupe
 
@@ -689,17 +689,16 @@ view_ready
 write_commit "{\"commit\":{\"committer\":{\"date\":\"$REBASE_TIME\"}}}"
 write_timeline "[{\"event\":\"head_ref_force_pushed\",\"created_at\":\"$PUSH_TIME_A\",\"commit_id\":\"$HEAD_SHA\"}]"
 no_checks
-write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"$SUBSTANCE_BODY\"}]"
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$PUSH_TIME_A\",\"body\":\"c\"}]"
-write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$COMMENT_ON_OLD_SHA\",\"body\":\"finding on the pre-rebase commit\"}]"
+write_issue_comments "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"created_at\":\"$COMMENT_ON_OLD_SHA\",\"body\":\"finding on the pre-rebase commit\"}]"
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "rebase-window comment judged stale — graphite re-triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
-check_eq "codeant already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "rebase-window comment judged stale — codeant re-triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "coderabbit already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "cursor already-present via HEAD comment (unaffected)" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "only graphite re-triggered" "1" "$(actions | grep -c '^COMMENT')"
-check_eq "the trigger is graphite" "1" "$(actions | grep -cF '@graphite-app re-review')"
+check_eq "only codeant re-triggered" "1" "$(actions | grep -c '^COMMENT')"
+check_eq "the trigger is codeant" "1" "$(actions | grep -cF '@codeant-ai review')"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 no_timeline; commit_ok; no_checks
 
@@ -726,7 +725,6 @@ check_eq "exit 0" 0 "$RC"
 check_eq "clock-skew comment judged fresh — coderabbit stays already-present" "already-present" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "codeant already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "cursor already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "graphite already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
 check_eq "no CR trigger posted (budget not spent)" "0" "$(actions | grep -cF '@coderabbitai full review')"
 check_eq "fully clean — no comments posted at all" "0" "$(actions | grep -c '^COMMENT')"
 check_eq "clean=true" "true" "$(jq -r '.clean' <<<"$OUT")"
@@ -811,7 +809,7 @@ use_tier() { # <resolver stdout> [resolver exit code]
 }
 
 for gate in ci-only ci+codeant-one-round; do
-  echo "== Scenario T1: gate $gate, no reviewer engaged → cursor skipped, the other 3 posted =="
+  echo "== Scenario T1: gate $gate, no reviewer engaged → cursor skipped, the other 2 posted =="
   use_tier "$(tier_json "$gate")"
   view_ready; commit_ok; no_checks; no_timeline
   write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
@@ -819,13 +817,13 @@ for gate in ci-only ci+codeant-one-round; do
   check_eq "exit 0" 0 "$RC"
   check_eq "cursor skipped-tier-excluded" "skipped-tier-excluded" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
   check_eq "no @cursor review posted" "0" "$(actions | grep -cF '@cursor review')"
-  check_eq "codeant, coderabbit, graphite still triggered" "triggered triggered triggered" \
-    "$(jq -r '[.reviewers.codeant.status, .reviewers.coderabbit.status, .reviewers.graphite.status] | join(" ")' <<<"$OUT")"
-  check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+  check_eq "codeant, coderabbit still triggered" "triggered triggered" \
+    "$(jq -r '[.reviewers.codeant.status, .reviewers.coderabbit.status] | join(" ")' <<<"$OUT")"
+  check_eq "2 comments posted" "2" "$(actions | grep -c '^COMMENT')"
   check_eq "resolver asked about THIS PR" "493 --json;" "$(tr '\n' ';' < "$TIER_CALLS")"
 done
 
-echo "== Scenario T2: gate ci-only, the other 3 engaged on HEAD → clean (the skip leaves nothing pending) =="
+echo "== Scenario T2: gate ci-only, the other 2 engaged on HEAD → clean (the skip leaves nothing pending) =="
 use_tier "$(tier_json ci-only)"
 view_ready; commit_ok; no_checks; no_timeline
 write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
@@ -838,14 +836,14 @@ check_eq "actions=0" "0" "$(jq -r '.actions' <<<"$OUT")"
 check_eq "no comments posted" "0" "$(actions | grep -c '^COMMENT')"
 
 for gate in full legacy; do
-  echo "== Scenario T3: gate $gate → cursor triggered, exactly as today =="
+  echo "== Scenario T3: gate $gate → cursor is the owner-approval skip (#1897) =="
   use_tier "$(tier_json "$gate")"
   view_ready; commit_ok; no_checks; no_timeline
   write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
   OUT=$(run_json 493); RC=$?
   check_eq "exit 0" 0 "$RC"
-  check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-  check_eq "@cursor review posted" "1" "$(actions | grep -cF '@cursor review')"
+  check_eq "cursor skipped: owner approval required" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+  check_eq "no @cursor review posted" "0" "$(actions | grep -cF '@cursor review')"
 done
 
 echo "== Scenario T4: FAILS OPEN — the resolver fails → cursor triggered =="
@@ -854,8 +852,8 @@ view_ready; commit_ok; no_checks; no_timeline
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "@cursor review posted" "1" "$(actions | grep -cF '@cursor review')"
+check_eq "cursor skipped: owner approval required" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "no @cursor review posted" "0" "$(actions | grep -cF '@cursor review')"
 check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
 
 echo "== Scenario T5: --dry-run on gate ci-only reports the skip, not a would-trigger =="

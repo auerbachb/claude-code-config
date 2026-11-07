@@ -76,22 +76,6 @@
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -118,7 +102,6 @@ coderabbit	active	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === caps --json
 {
@@ -222,22 +205,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -264,7 +231,6 @@ coderabbit	capped	1	0	0
 codeant	capped	1	0	0
 bugbot	capped	1	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === cr-burst-only --json
 {
@@ -352,22 +318,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -394,7 +344,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === cr-cap-both --json
 {
@@ -488,22 +437,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -530,7 +463,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === cr-cap-kinds --json
 {
@@ -618,22 +550,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -660,7 +576,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	active	1	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === cr-fair-usage-linked --json
 {
@@ -748,22 +663,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -790,7 +689,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === cr-fair-usage-prose --json
 {
@@ -872,22 +770,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -921,7 +803,6 @@ coderabbit	active	1	1	1
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === crosstalk --json
 {
@@ -1003,22 +884,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1052,7 +917,6 @@ coderabbit	active	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === plan --json
 {
@@ -1132,22 +996,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1174,7 +1022,6 @@ coderabbit	active	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === sole --json
 {
@@ -1254,22 +1101,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1296,7 +1127,6 @@ coderabbit	active	2	2	1
 codeant	active	1	1	0
 bugbot	silent	0	0	0
 greptile	active	1	1	1
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === unclass --json
 {
@@ -1378,22 +1208,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1427,7 +1241,6 @@ coderabbit	active	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === unclass-freq --json
 {
@@ -1509,22 +1322,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1558,7 +1355,6 @@ coderabbit	silent	0	0	0
 codeant	active	3	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === unclass-plus-declared --json
 {
@@ -1648,22 +1444,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1697,7 +1477,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === unclass-review-body --json
 {
@@ -1779,22 +1558,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1828,7 +1591,6 @@ coderabbit	silent	0	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	active	1	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === unclass-spending-cap --json
 {
@@ -1918,22 +1680,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -1967,7 +1713,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === unclass-two-tokens --json
 {
@@ -2057,22 +1802,6 @@ vercel	silent	0	0	0
       "changes_requested": 0,
       "inline_findings": 0,
       "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
       "key": "vercel",
       "login": "vercel[bot]",
       "name": "Vercel Agent",
@@ -2112,7 +1841,6 @@ coderabbit	capped	1	0	0
 codeant	silent	0	0	0
 bugbot	silent	0	0	0
 greptile	silent	0	0	0
-graphite	silent	0	0	0
 vercel	silent	0	0	0
 === caps --repo golden/override --json
 {
@@ -2203,22 +1931,6 @@ vercel	silent	0	0	0
       "key": "greptile",
       "login": "greptile-apps[bot]",
       "name": "Greptile",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
       "observed_state": "silent",
       "plan_observed": null,
       "prs_touched": 0,
@@ -2342,22 +2054,6 @@ vercel	silent	0	0	0
       "key": "greptile",
       "login": "greptile-apps[bot]",
       "name": "Greptile",
-      "observed_state": "silent",
-      "plan_observed": null,
-      "prs_touched": 0,
-      "review_objects": 0,
-      "sole_provider_on": 0
-    },
-    {
-      "approved": 0,
-      "cap_kinds": [],
-      "cap_signals": [],
-      "changes_requested": 0,
-      "inline_findings": 0,
-      "issue_comments": 0,
-      "key": "graphite",
-      "login": "graphite-app[bot]",
-      "name": "Graphite",
       "observed_state": "silent",
       "plan_observed": null,
       "prs_touched": 0,

@@ -33,9 +33,9 @@ check_eq() {
   fi
 }
 
-echo "== premise: Step 3b's script exists and holds the cursor post =="
-check_eq "the script posts @cursor review" "yes" \
-  "$( [[ -r "$SRC" ]] && grep -qF -- '--body "@cursor review"' "$SRC" && echo yes || echo no )"
+echo "== premise: Step 3b's script exists and its last BugBot step is the owner-approval skip (#1897) =="
+check_eq "the script ends the BugBot chain in the approval skip, and never posts @cursor review" "yes" \
+  "$( [[ -r "$SRC" ]] && grep -qF -- 'BugBot not invited — paid review requires owner approval' "$SRC" && ! grep -qF -- '--body "@cursor review"' "$SRC" && echo yes || echo no )"
 if [[ ! -r "$SRC" ]]; then
   echo "== summary: $PASS passed, $((FAIL)) failed =="; exit 1
 fi
@@ -145,25 +145,25 @@ check_eq "the cap was asked with 0" "cap bugbot --add-usd 0" "$(grep '^cap ' "$C
 echo "== ok: posts, writes nothing to the body =="
 reset "$ok" 0
 step3b "$SHA_A"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 check_eq "no note" "0" "$(grep -c 'Review notes' "$GH_BODY" | tr -d ' ')"
 
 echo "== unknown: posts and says the cap is unknown =="
 reset "$unknown" 0
 step3b "$SHA_A"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 check_eq "it says so" "yes" "$( [[ "$STDOUT" == *"BugBot daily cap unknown"* ]] && echo yes || echo no )"
 echo "== over with a disagreeing exit code: posts =="
 reset "$over" 0
 step3b "$SHA_A"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 
 echo "== the helper is missing: posts and says so =="
 reset "$over" 1
 mv "$S/review-daily-cap.sh" "$TMP/cap.bak"
 step3b "$SHA_A"
 mv "$TMP/cap.bak" "$S/review-daily-cap.sh"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 check_eq "DEGRADED line" "yes" "$( [[ "$STDOUT" == *"DEGRADED: review-daily-cap.sh not found"* ]] && echo yes || echo no )"
 
 echo "== the note helper is missing: still skips, warns, body untouched =="

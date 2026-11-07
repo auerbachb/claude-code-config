@@ -28,6 +28,8 @@ Issue: [#1213](https://github.com/auerbachb/claude-code-config/issues/1213) — 
 >
 > This file stays a standing tracker. If a new paid lever appears, add it — but nothing below is
 > awaiting anyone.
+>
+> **Later lever (2026-11-03, [#1889](https://github.com/auerbachb/claude-code-config/issues/1889)):** Graphite's Team plan was cancelled by support (ticket T-J15030) with a pro-rated **$450 refund** — it reviewed 30 of 620 PRs (2026-08-21 → 11-01) against 484–620 for CodeAnt, CodeRabbit and BugBot.
 
 Dashboard readings every figure rests on: [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) (#1204)
 
@@ -472,7 +474,7 @@ Carried from the #1202 / #1204 investigation so they are not re-litigated from s
 
 | Rejected purchase | Why |
 |---|---|
-| **Graphite Starter ($20/user/mo annual, $25 monthly)** | Buys org repositories, not more AI reviews — the AI-review allowance stays "Limited," exactly as on Hobby. Graphite is also still *under re-measurement* (1 sole-source PR in 244) and is not promoted on price. |
+| **Graphite Starter ($20/user/mo annual, $25 monthly)** | Buys org repositories, not more AI reviews — the AI-review allowance stays "Limited," exactly as on Hobby. *(Moot: Graphite's Team plan was later bought and then **cancelled 2026-11-03** with a pro-rated **$450 refund** — it reviewed 30 of 620 PRs vs 484–620 for CodeAnt/CodeRabbit/BugBot; [#1889](https://github.com/auerbachb/claude-code-config/issues/1889).)* |
 | **A third CodeAnt seat (+$24/mo)** | Superseded: #1209's commit-identity fix achieves the same result for **$0**. Buying the seat solves a problem a free settings change already closes. |
 | **Greptile Pro, before the OSS application is answered** | ~$51/mo for something the OSS program may grant free. It is the *recommended fallback* on refusal (item 1), not a pre-emptive purchase. |
 | **CodeRabbit Pro+ ($144/mo annual)** | Stays **second-line behind the metered lever** (item 4). It doubles the per-developer hourly cap and raises the weekly fair-use threshold, but the overflow add-on addresses the same blockage incrementally and is sized to actual overflow rather than to a doubled ceiling. |

@@ -364,7 +364,19 @@ fetch_claim_ts() {
     | jq -rs --arg merge_ts "$merge_ts" \
          '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- claude-claim:")))
                        | select($merge_ts == "" or .created_at <= $merge_ts) ]
-          | if length > 0 then (sort_by(.created_at) | last).created_at else "" end' \
+          | if length > 0 then (sort_by(.created_at) | last) as $c
+              # A renewed marker (#1914) carries the original pickup time as its
+              # payload `since`; prefer it so renewals do not shorten durations.
+              # Strict: the exact format compute_actual_min parses (anything
+              # looser would yield a silent 0-minute row), and never later
+              # than the marker itself. Otherwise fall back to created_at.
+              | ((try ($c.body | capture("<!-- claude-claim: *(?<p>.*?) *-->") | .p | fromjson | .since
+                       | select(type == "string"
+                                and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+                                and . <= $c.created_at
+                                and (fromdateiso8601 | type) == "number")) catch null)
+                 // $c.created_at)
+            else "" end' \
     2>/dev/null || echo "")
 
   if [[ -n "$claim_ts" && "$claim_ts" != "null" && "$claim_ts" != "" ]]; then
@@ -928,6 +940,8 @@ mode_rollup() {
     printf 'claim → merge (`pr_created` fallback), so they are the right comparison\n'
     printf 'for the planning bound but include the coding term the per-round unit\n'
     printf 'excludes. That unit is re-derived only from an open → merge measurement.\n'
+    printf 'The claim start is the claim marker'\''s payload `since` when valid, else the\n'
+    printf 'marker comment'\''s `created_at`, so a renewed claim does not shorten the duration.\n'
     printf 'The published tier table stays authoritative for tiers with fewer than ~5 rows.\n\n'
 
     printf '## Recalibrated Tier → Time Table\n\n'

@@ -77,7 +77,8 @@ if [ -n "$DISMISS" ] && [ -n "$BASH4" ]; then
 else
   # Inline REST fallback (POSIX-safe, no mapfile) — same allowlist + semantics
   # as the script: dismiss only Bot-authored CHANGES_REQUESTED whose commit_id
-  # != current HEAD. NEVER touches human reviews.
+  # != current HEAD. NEVER touches human reviews. graphite-app[bot]: retired
+  # 2026-11-03; kept so a leftover stale review still dismisses.
   HEAD_SHA=$(gh pr view "$N" --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/$OWNER/$REPO/pulls/$N/reviews?per_page=100" | jq -s 'add // []' \
    | jq -r --arg sha "$HEAD_SHA" '
@@ -117,7 +118,6 @@ PF_KEY=""
 case "$REVIEWER" in
   cr) PF_KEY="coderabbit" ;;   # gate-side name → pre-flight reviewer key
   bugbot) PF_KEY="cursor" ;;
-  graphite) PF_KEY="graphite" ;;
 esac
 if [ -n "$PF_KEY" ] && [ -n "${PF_SUMMARY_BY_PR[$N]:-}" ] \
    && [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].status // ""' <<<"${PF_SUMMARY_BY_PR[$N]}" 2>/dev/null)" = "triggered" ]; then
@@ -142,6 +142,10 @@ if [ -n "$PF_KEY" ] && [ "$REVIEWER" != "__already_triggered__" ] && [ -n "$TRIG
     if [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].allowed // false' <<<"$TA_JSON" 2>/dev/null)" = "true" ] \
        && "$TRIGGERS_ALLOWED" "$N" --claim "$PF_KEY" >/dev/null 2>&1; then
       TA_CLAIMED="$PF_KEY"
+    elif [ "$PF_KEY" = "cursor" ] \
+         && [ "$(jq -r '.reviewers.cursor.reason // ""' <<<"$TA_JSON" 2>/dev/null)" = "approval_required" ]; then
+      : # tier allows BugBot; only owner approval is missing (#1897) — fall through
+        # to the bugbot branch, which spends a grant or posts nothing (#1898)
     else
       echo "[PMM] review tier does not allow re-triggering $REVIEWER on #$N now ($(jq -r --arg k "$PF_KEY" '.reviewers[$k].reason // "tier_unresolved"' <<<"$TA_JSON" 2>/dev/null)) — skipping"
       REVIEWER="__tier_skipped__"
@@ -172,18 +176,19 @@ case "$REVIEWER" in
     fi
     ;;
   bugbot)
-    if gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1; then
-      echo "[PMM] re-triggered owning bot (bugbot) on #$N"
+    # BugBot is paid per review (issue #1897): a fleet tick never asks. It only
+    # spends a grant the owner already approved for this PR and HEAD (#1898).
+    PRG=""
+    for c in "$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh" \
+             "$HOME/.claude/scripts/paid-review-grant.sh" ".claude/scripts/paid-review-grant.sh"; do
+      [ -x "$c" ] && { PRG="$c"; break; }
+    done
+    if [ -n "$PRG" ] && [ "$("$PRG" --trigger "$N" --vendor cursor 2>/dev/null | sed -n 's/^STATUS=//p')" = "triggered" ]; then
+      echo "[PMM] re-triggered owning bot (bugbot) on #$N under the owner's grant (now used, #1898)"
     else
-      ta_release
+      echo "[PMM] bugbot owning reviewer on #$N — re-review is paid and needs owner approval; not posted (#1897)"
     fi
-    ;;
-  graphite)
-    if gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1; then
-      echo "[PMM] re-triggered owning bot (graphite) on #$N"
-    else
-      ta_release
-    fi
+    ta_release
     ;;
   greptile)
     echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"

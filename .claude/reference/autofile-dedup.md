@@ -13,6 +13,7 @@ Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site mus
 | `.claude/agents/pm-worker.md` (Task: Issue Creation) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #680) |
 | `.claude/skills/harness-audit/SKILL.md` (Step 7) | **Autonomous** | **Exact-artifact** on the audited path — see "Exact-artifact dedup" below (issue #770) |
 | `.claude/skills/subagent/SKILL.md` (Step 5.1 — pick-time decomposition) | **Autonomous** | Strong/weak/none — suppress + report, with two mandatory `--exclude` entries: see "Decomposition children" below (issue #1193) |
+| `.claude/scripts/backfill-review.sh` (overnight no-review backfill) | **Autonomous** | **Exact-artifact** on a `<!-- backfill-finding: owner/repo#PR:fingerprint -->` marker suppresses; `issue-dedup.sh` candidates are only noted, never suppress — `backfill-review.md` (issue #1900) |
 | `.claude/skills/issue-maker/SKILL.md` (Step 4) | **Human-in-the-loop** | Surface-only — never auto-suppress (wired since PR #661) |
 | `.claude/skills/start-issue/SKILL.md` (Step 1a) | **Human-in-the-loop** | Surface strong matches, pause for confirmation (wired since PR #680) |
 | `.claude/agents/researcher.md` | **Non-filer** | `gh issue create` appears in the agent's forbidden-command list |

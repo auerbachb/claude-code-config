@@ -31,10 +31,10 @@ Current monthly spend, as billed:
 | CodeRabbit | Pro, 3 seats, monthly billing | **$90** | $0 (usage-based reviews off) | dashboard |
 | CodeAnt | Premium, 2 seats | **~$48** | $0 (unlimited) | dashboard |
 | Greptile | **Canceled → Free** | **$0** | $0 | dashboard |
-| Graphite | Newly paid, tier unread ([#1204](https://github.com/auerbachb/claude-code-config/issues/1204) scoped it out) | unknown | — | — |
+| Graphite | **Cancelled 2026-11-03** (Team plan; $450 pro-rated refund, [#1889](https://github.com/auerbachb/claude-code-config/issues/1889)) | $0 from 2026-11-03 | — | support ticket |
 | **Total (excl. Graphite)** | | **$338 fixed** | **+$999.87 metered** | **≈$1,337.87 this cycle** |
 
-The total excludes Graphite, whose tier was not read; the real figure is $1,337.87 **plus** whatever Graphite costs.
+The total excluded Graphite, whose tier was not read at the time; Graphite has since been cancelled (§Graphite).
 
 The single largest line is Cursor on-demand at **$999.87 against a $1,000.00 cap — 100.0% consumed**. Within it, the invoice itemizes **$815.58 as `github_bugbot`** (516 reviews) and **$184.29 as `claude-sonnet-5-thinking-high`** (48 requests, the IDE/agent line). The `github_bugbot` line was recorded here as disputed, leaving only **$522.29** ($338 fixed + $184.29) unconditional. **That dispute is settled** ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)): the dashboard event log — 763 runs across 324 PRs, per-PR rows — confirms the $815.58 really is BugBot, so the whole $1,337.87 is unconditional review spend. Full evidence in §Cursor BugBot below.
 
@@ -51,8 +51,8 @@ The single largest line is Cursor on-demand at **$999.87 against a $1,000.00 cap
 | **CodeRabbit — Pro → Pro+** | **CONDITIONAL** | 3 seats: **$144/mo annual** or **$180/mo monthly** (vs $72 / $90 on Pro) | per-seat | Genuinely doubles the per-developer hourly allowance (see the corrected Fair Usage reading below). Helps bursts; does not guarantee zero blocking. |
 | **CodeAnt — apply for the 100% OSS discount** | **PURSUE (free to try)** | **$48 today**, → $0 only if approved | per-org waiver | Public repo, qualifies on its face — but the page routes through "contact required", so approval is CodeAnt's call. Budget $48/month until it lands. |
 | **CodeAnt — buy a third seat for the CI identity** | **DON'T BUY** | +$24/user/mo | per-seat | Path B (fix the email) achieves the same thing for $0. |
-| **Graphite — Starter tier** | **DON'T BUY** | $20/user/mo annual | per-seat | Buys org-repo support; **no documented increase in AI review allowance** over free Hobby — both tiers are published only as "Limited AI Reviews", with no number attached to either. |
-| **Graphite — Team tier** | **DON'T BUY (revisit)** | $40/user/mo annual | per-seat | Unlimited AI reviews, but Graphite produced findings on 9 of 244 PRs and was sole-source once. Revisit after ≥30 PRs under the paid plan, per #1199's trigger. |
+| **Graphite — Starter tier** | **N/A — cancelled 2026-11-03** | $20/user/mo annual | per-seat | Buys org-repo support; **no documented increase in AI review allowance** over free Hobby — both tiers are published only as "Limited AI Reviews", with no number attached to either. |
+| **Graphite — Team tier** | **CANCELLED 2026-11-03, $450 refund** | $40/user/mo annual | per-seat | Bought, then cancelled for yield: 30 of 620 PRs reviewed (2026-08-21 → 11-01) vs 484–620 for CodeAnt/CodeRabbit/BugBot ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)). |
 | **CodeAnt CLI daily cap** | **NO PAID LEVER EXISTS** | — | — | The ~10 agent-reviews/day cap is undocumented and unpriced. The App is a separate pool and satisfies the merge gate alone, so the CLI cap is never blocking. |
 
 **Most of the recommended set adds no spend at all.** The BugBot scope changes, the CodeAnt email fix, and locating the second Greptile installation are settings and housekeeping; the two OSS applications cost nothing to file but are not guaranteed to be granted, so keep budgeting today's prices until they are. The one genuine new line is a capped, opt-in metered budget for CodeRabbit — a **$50/month** cap buys 200 files (≈67 PRs at the 3-file median, ≈40 at the 5.04-file mean), which is a deliberate partial budget rather than full overflow coverage. The set also plausibly *reduces* total spend, since the BugBot scope changes attack a four-figure line.
@@ -207,14 +207,9 @@ Credit weights, verbatim: "1 credit = 1 standard review", "3 credits = 1 trex re
 
 ### Graphite
 
-Source — *public:* [pricing](https://graphite.com/pricing), retrieved 2026-08-21. No dashboard reading: [#1204](https://github.com/auerbachb/claude-code-config/issues/1204) scoped Graphite out because it is newly paid and the audit measured it pre-payment, making its re-measure trigger evidence-based (≥30 PRs under the paid plan) rather than a billing question.
+**Cancelled 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)). Graphite support (ticket T-J15030) cancelled the **Team plan** effective immediately and issued a **pro-rated $450 refund**. Reason — yield: across 620 PRs (2026-08-21 → 2026-11-01) Graphite reviewed **30**, against **484–620** for CodeAnt, CodeRabbit and BugBot. Decision record: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) §Graphite retirement. Provenance is the support ticket; no dashboard reading is checked in.
 
-| Surface | Current plan | Included quota / rate limit | Upgrade tiers | Metered? | Marginal cost/review | Billing unit | Pool |
-|---|---|---|---|---|---|---|---|
-| **GitHub App** | Newly paid, **tier unread** | **"Limited AI Reviews"** on Hobby **and Starter** — the limit is not published anywhere | Starter $20/user/mo annual ($25 monthly); **Team $40/user/mo annual ($50 monthly)** for **Unlimited AI Reviews** | No metered option | **$0** marginal at Team; unpriced below it | per-seat | Single pool |
-| **CLI** (`gt`) | Same account | Stacking/PR CLI on every tier including free Hobby — **no AI review quota attached** | — | — | n/a — does not consume AI review quota | per-seat | n/a |
-
-**The $20 tier is a trap for this use case.** Starter buys org-repo support, Slack notifications, and team insights. Its AI review allowance is published as **"Limited"** — the same label free Hobby carries, with **no number attached to either**, so there is **no documented increase** between them. Graphite may in fact grant Starter more reviews than Hobby; nothing on the page says so, and confirming it would take dashboard access or a measured trial. Only **Team at $40/user/mo annual** states Unlimited AI Reviews, plus review customization, automations, and merge queue. Any "spend $20 to get more Graphite reviews" reasoning is buying an undocumented change.
+*(Historical: this section held the 2026-08-21 public-pricing read — Starter $20/user/mo annual with an unpublished "Limited" AI-review allowance, Team $40/user/mo annual for unlimited reviews.)*
 
 ## Machine-readable rates (review-stack-rates/v1)
 
@@ -265,14 +260,6 @@ Rules the block keeps:
       "unit": "month",
       "basis": "observed",
       "source": "CodeAnt Premium, 2 of 2 seats, about $48/month, unlimited PR reviews (dashboard, #1204).",
-      "retrieved": "2026-08-21"
-    },
-    {
-      "key": "graphite",
-      "usd": null,
-      "unit": "month",
-      "basis": "unknown",
-      "source": "Graphite is newly paid and its tier was never read (#1204 scoped it out). Stays null until someone reads the dashboard.",
       "retrieved": "2026-08-21"
     },
     {
@@ -384,15 +371,15 @@ The 245 figure is this ticket's own `gh pr list` count for the window; #1199's c
 | **Greptile via OSS program** (needs a LICENSE file, then acceptance) | **$0** | **$0** |
 | **CodeRabbit Pro, annual instead of monthly** (3 seats) | $72 *(saves $18/mo)* | $0.294 |
 | CodeRabbit Pro (current, monthly, 3 seats) | $90 | $0.367 |
-| Graphite Team | $40/seat | $0.16/seat — *if* it reviewed everything, which it does not |
+| Graphite Team *(cancelled 2026-11-03)* | $40/seat | $0.16/seat — *if* it reviewed everything, which it did not |
 | **Greptile Pro + overage** (71 completed reviews: 50 included + 21 × $1) | **~$51** | **$0.72** |
 | **CodeRabbit metered overflow** (~196 blocked reviews, priced per *file*) | **$147–247** (median 3 files → $147; mean 5.04 → $247) | **$0.75–1.26** |
 | CodeRabbit metered, all 245 PRs (1,235 files × $0.25) | $309 | $1.26 |
 | CodeRabbit Pro → Pro+ (3 seats) | $144 annual / $180 monthly | +$72 or +$90 over Pro at the same cadence; doubles allowance, blocking reduced not eliminated |
 | **BugBot at measured run-rate** (516 reviews × $1.58) | **$815** | **$1.58** |
-| Graphite Hobby → Starter | +$20/seat | **no documented additional reviews** — both tiers publish only "Limited" |
+| Graphite Hobby → Starter *(cancelled 2026-11-03)* | +$20/seat | **no documented additional reviews** — both tiers publish only "Limited" |
 
-Two rows look like upgrades and are not: **Graphite Starter** costs real money for an AI-review allowance that is not documented to change, and **raising the BugBot cap** funds a line item nobody has yet confirmed is BugBot. Both are the natural instinct when a cap bites.
+Two rows looked like upgrades and were not: **Graphite Starter** (now moot — cancelled 2026-11-03) cost real money for an AI-review allowance that is not documented to change, and **raising the BugBot cap** funds a line item nobody has yet confirmed is BugBot. Both are the natural instinct when a cap bites.
 
 **Sizing the CodeRabbit lever.** A **$50/month** cap buys 200 reviewed files — **≈67 PRs at the 3-file median, ≈40 at the 5.04-file mean**. That is not full coverage and is not meant to be: with CodeAnt unlimited and Greptile cheap-or-free, CodeRabbit's credits should be reserved for PRs where its finding profile is worth $1.26 — not spent automatically on every incremental push. This is why **On demand** beats **Automatic**, and it is the difference between a $50 bill and a $309 one. The historical dashboard range of **$0.25–$5.75 per review** confirms the tail risk that makes Automatic unattractive. Note the cap is a stop, not a smoother: once it is reached, over-limit reviews queue exactly as they do today until an admin raises it or the month rolls over.
 
@@ -408,7 +395,7 @@ Issue `#1202` asks this explicitly, because buying one lever may not raise the o
 | **CodeAnt** | **Separate.** Documented App "Unlimited" and the undocumented ~10/day CLI agent cap are independent; the App served 234 reviews on a day the CLI was locked out. Buying Premium does not raise the CLI cap, and nothing else does either. |
 | **Cursor BugBot** | **N/A — no CLI surface.** Single pool, shared with all other Cursor on-demand usage — which is why the attribution question arose at all. It is settled ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)): the pool is shared, but the line items are not, and `github_bugbot` is the review line. |
 | **Greptile** | **N/A — no CLI surface.** Single credit pool, per installation — and we appear to have more than one installation. |
-| **Graphite** | **N/A for AI reviews.** The `gt` CLI does stacking and does not consume AI review quota. |
+| **Graphite** | **N/A — cancelled 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)). |
 
 ## Owner action list
 
@@ -424,7 +411,7 @@ None of these are agent-executable. Ordered by value per unit of effort. Items 1
 8. **Apply for CodeAnt's 100% open-source discount.** Public repo, qualifies on its face; $48/month to zero.
 9. **Enable CodeRabbit usage-based reviews in On demand mode with a ~$50 monthly cap.** Requires completing the billing profile flagged incomplete (name, phone, address). Do **not** use Automatic.
 10. **Assign CodeRabbit seats** to unassigned human authors (`paulkathat-lmc`, `davidpetersen`, `mirkosalvato1-ctrl`) or accept that their PRs go unreviewed.
-11. **Do not buy** Graphite Starter, a Greptile Pro seat, or a third CodeAnt seat on current evidence. Treat CodeRabbit Pro+ as a second-line option behind the metered lever.
+11. **Do not buy** a Greptile Pro seat, or a third CodeAnt seat on current evidence. Treat CodeRabbit Pro+ as a second-line option behind the metered lever.
 
 ## Rule-file pointers
 
