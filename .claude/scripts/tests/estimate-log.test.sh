@@ -317,6 +317,32 @@ for publication_case in race allocate render rename; do
   fi
 done
 
+# Atomic replacement preserves the redirect's prior permission contract.
+file_mode() {
+  python3 - "$1" <<'MODE_PY'
+import os, stat, sys
+print(f'{stat.S_IMODE(os.stat(sys.argv[1]).st_mode):03o}')
+MODE_PY
+}
+SAVED_UMASK=$(umask)
+for output_mask in 0022 0027 0077 0002; do
+  MODE_REPORT="$ROLLUP_DIR/mode-new-$output_mask.md"
+  umask "$output_mask"
+  run_rollup "$ROLLUP_DIR/native.jsonl" "$MODE_REPORT"
+  umask "$SAVED_UMASK"
+  check_eq "rollup new report umask $output_mask: status" 0 "$ROLLUP_RC"
+  case "$output_mask" in 0022) EXPECTED_MODE=644 ;; 0027) EXPECTED_MODE=640 ;; 0077) EXPECTED_MODE=600 ;; 0002) EXPECTED_MODE=664 ;; esac
+  check_eq "rollup new report umask $output_mask: permissions" "$EXPECTED_MODE" "$(file_mode "$MODE_REPORT")"
+done
+for output_mode in 600 640 644 664; do
+  MODE_REPORT="$ROLLUP_DIR/mode-existing-$output_mode.md"
+  printf 'existing\n' > "$MODE_REPORT"
+  chmod "$output_mode" "$MODE_REPORT"
+  run_rollup "$ROLLUP_DIR/native.jsonl" "$MODE_REPORT"
+  check_eq "rollup existing mode $output_mode: status" 0 "$ROLLUP_RC"
+  check_eq "rollup existing mode $output_mode: permissions" "$output_mode" "$(file_mode "$MODE_REPORT")"
+done
+
 if [[ -s "$TMP/fix/unexpected.log" ]]; then
   FAIL=$((FAIL + 1)); echo "FAIL — unexpected gh calls:"; sed 's/^/       /' "$TMP/fix/unexpected.log"
 fi
