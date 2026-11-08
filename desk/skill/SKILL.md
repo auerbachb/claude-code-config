@@ -67,13 +67,22 @@ done
 
 1. **Prelude.** `DESK` or `SID` empty → say so in one line and stop. Nothing is armed.
 2. **Policy and cadence.** Capture the policy’s `interrupt_rule` once as this desk’s `<DEFAULT>` (`everything` or `away`; missing/invalid means `everything`, matching the policy parser). Keep it in this conversation and carry it into `.desk.interrupt_default` in step 7. A policy edit applies at the next `/desk`; a re-arm retains the captured default. Read `desk/policy.json` first (`interrupts.md`, "The policy": block `desk-policy`); a warning line it prints goes in the start report, once. `--cadence Nm`, a whole number of minutes, default the policy's `tick_cadence_min` (5), and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
-3. **Migrate**, then **register** this session:
+3. **Migrate, validate the initial hold, then register** this session. Do the read before registration, stopping an earlier loop or stamping a tick: a failed hold read leaves the earlier desk working and creates no fresh capture target without a Monitor.
 
    <!-- test-anchor: desk-start -->
 
    ```bash
-   "$HQ" migrate && "$HQ" register-control "$SID"
+   "$HQ" migrate || exit "$?"
+   START_HOLD=$("$HQ" interrupt get --session "$SID" --default "<DEFAULT>" --json) || exit "$?"
+   HELD_FLAG=$(printf '%s' "$START_HOLD" | jq -er 'if type == "object" and (.held | type) == "boolean" then (if .held then "--held" else "" end) else error("invalid held") end' 2>/dev/null) || {
+     printf '%s\n' 'Desk not started: interrupt state is unreadable.' >&2
+     exit 4
+   }
+   "$HQ" register-control "$SID" || exit "$?"
+   printf '%s\nHELD_FLAG=%s\n' "$START_HOLD" "$HELD_FLAG"
    ```
+
+   A failed/malformed hold read exits before control registration; use the not-started report below and stop. On success, retain `HELD_FLAG` from the receipt for step 6. A held seed covers focus expiry before the first persistent observation.
 
    - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, the Reviews view `007_reviews_summary_l1.sql`, and feedback tags `008_event_session.sql`).
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
@@ -89,20 +98,7 @@ done
    ```
 
    An `error` line → the same "not started" report as step 3, and stop. Exit 4 → the cadence (or another argument) was refused: report its one stderr line as "not started", and stop. Nothing is armed. An `eod` line (a desk started after `eod_time` that has not swept today) → after the start report, show the sweep (`sweep.md`). A `morning` line (the day's first desk, from 04:00 until `eod_time`) → after the start report, show the morning check-in (`checkin.md`) before the backlog of step 8.
-6. **Resolve the initial hold, then arm the Monitor.** Read it with the captured startup default before arming, so a focus that expires before the first persistent cycle still has an evidenced held start:
-
-   <!-- test-anchor: desk-start-held -->
-
-   ```bash
-   START_HOLD=$("$HQ" interrupt get --session "$SID" --default "<DEFAULT>" --json) || exit "$?"
-   HELD_FLAG=$(printf '%s' "$START_HOLD" | jq -er 'if type == "object" and (.held | type) == "boolean" then (if .held then "--held" else "" end) else error("invalid held") end' 2>/dev/null) || {
-     printf '%s\n' 'Desk not started: interrupt state is unreadable.' >&2
-     exit 4
-   }
-   printf '%s\nHELD_FLAG=%s\n' "$START_HOLD" "$HELD_FLAG"
-   ```
-
-   A failed read or malformed result → the same not-started report as step 3; arm nothing. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from the block:
+6. **Arm the Monitor** using the validated initial hold from step 3. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from step 3:
 
    <!-- test-anchor: desk-monitor -->
 

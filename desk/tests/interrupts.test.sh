@@ -309,6 +309,54 @@ for LIVE_SH in $LIVE_SHELLS; do
     check "[$LIVE_SH/$captured_default] effective hold follows the captured default" "$RC:$(jqo .held)" "0:$expected_held"
   done
 done
+# Review1: a failed startup lookup must leave the earlier live desk intact.
+hq_t_skill_block "$HQ_T_DESK_DIR/skill/SKILL.md" desk-start > "$TMP/activate-raw.sh"
+literal "$TMP/activate-raw.sh" "<DEFAULT>" "everything" > "$TMP/activate.sh"
+hq_t_skill_block "$HQ_T_DESK_DIR/skill/SKILL.md" desk-first-tick > "$TMP/activation-tick-raw.sh"
+literal "$TMP/activation-tick-raw.sh" "<DEFAULT>" "everything" > "$TMP/activation-tick-default.sh"
+literal "$TMP/activation-tick-default.sh" "<N>" "5" > "$TMP/activation-tick.sh"
+cat "$TMP/activate.sh" "$TMP/activation-tick.sh" > "$TMP/activation-workflow.sh"
+ACTIVATION_WORKFLOW="${DESK_ACTIVATION_WORKFLOW_TEST_SOURCE:-$TMP/activation-workflow.sh}"
+ACTIVATION_REAL_HQ="$HQ_T_CLI"
+ACTIVATION_CALLS="$TMP/activation-calls"
+ACTIVATION_FAILURE="$TMP/activation-failure"
+export ACTIVATION_REAL_HQ ACTIVATION_CALLS ACTIVATION_FAILURE
+cat > "$TMP/activation-cli.sh" <<'ACTIVATION_CLI'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ACTIVATION_CALLS"
+if [ "$1" = interrupt ] && [ "${2:-}" = get ]; then
+  if [ "$(cat "$ACTIVATION_FAILURE")" = read ]; then
+    echo 'human-queue: interrupt lookup unavailable (fixture)' >&2
+    exit 7
+  fi
+  echo '{"held":"false"}'
+  exit 0
+fi
+exec "$ACTIVATION_REAL_HQ" "$@"
+ACTIVATION_CLI
+chmod +x "$TMP/activation-cli.sh"
+for LIVE_SH in $LIVE_SHELLS; do
+  for activation_failure in read malformed; do
+    hq register-control desk-2
+    hq tick --session desk-2 --interrupts everything
+    previous_tick=$(sql_in "SELECT value FROM state WHERE key = 'tick_at'")
+    printf '%s\n' "$activation_failure" > "$ACTIVATION_FAILURE"
+    : > "$ACTIVATION_CALLS"
+    RC=0
+    env HUMAN_QUEUE_SCHEMA="$S" HQ="$TMP/activation-cli.sh" SID=desk-1 DESK="$HQ_T_DESK_DIR" \
+      HUMAN_QUEUE_CLI="$TMP/activation-cli.sh" "$LIVE_SH" "$ACTIVATION_WORKFLOW" \
+      >"$TMP/activation-out" 2>"$TMP/activation-err" </dev/null || RC=$?
+    if [ "$activation_failure" = read ]; then expected_rc=7; else expected_rc=4; fi
+    check "[$LIVE_SH] failed activation $activation_failure retains its status" "$RC" "$expected_rc"
+    check_absent "[$LIVE_SH] failed activation never registers a new control" "$(cat "$ACTIVATION_CALLS")" 'register-control'
+    check "[$LIVE_SH] failed activation does not create a fresh live tick" \
+      "$(sql_in "SELECT value FROM state WHERE key = 'tick_at'")" "$previous_tick"
+    hq control-status --json
+    check "[$LIVE_SH] earlier control remains registered" "$RC:$(jqo .session)" '0:desk-2'
+    hq tick --session desk-2 --interrupts everything
+    check "[$LIVE_SH] earlier control can still tick after failure" "$RC" 0
+  done
+done
 hq register-control desk-1
 hq interrupt set everything --session desk-1 --json
 

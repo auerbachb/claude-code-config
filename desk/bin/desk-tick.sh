@@ -549,8 +549,9 @@ dt_released() {
 }
 
 dt_cycle() {
-  local out rc control ids due held released
+  local out rc control ids due held released hold_ok
   released=""
+  hold_ok=1
   rc=0
   out=$("$dt_cli" control-status --json 2>"$dt_err") || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -607,21 +608,21 @@ dt_cycle() {
     if [ "$rc" -eq 4 ]; then dt_still_ours; fi
     if [ "$rc" -ne 0 ]; then
       dt_fail interrupt "$rc"
-      dt_new "$ids"
-      dt_retry "$due"
-      return 0
+      hold_ok=0
+    else
+      rc=0
+      held=$(dt_held "$out") || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf 'interrupt get printed something other than a JSON object with boolean held\n' >"$dt_err"
+        dt_fail interrupt 1
+        hold_ok=0
+      else
+        if [ "$dt_held_state" = held ] && [ "$held" = unheld ]; then released=yes; fi
+        dt_held_state="$held"
+      fi
     fi
-    rc=0
-    held=$(dt_held "$out") || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      printf 'interrupt get printed something other than a JSON object with boolean held\n' >"$dt_err"
-      dt_fail interrupt 1
-      dt_new "$ids"
-      dt_retry "$due"
-      return 0
-    fi
-    if [ "$dt_held_state" = held ] && [ "$held" = unheld ]; then released=yes; fi
-    dt_held_state="$held"
+    # A failed hold read must not suppress independent daily checks. Keep
+    # the error streak and prior hold until a fully successful cycle.
   fi
   if ! dt_morning; then
     dt_new "$ids"
@@ -641,7 +642,7 @@ dt_cycle() {
     dt_released "$released"
     return 0
   fi
-  dt_ok
+  if [ "$hold_ok" -eq 1 ]; then dt_ok; fi
   if [ -n "$dt_morning_line" ]; then
     printf '%s\n' "$dt_morning_line"
   fi

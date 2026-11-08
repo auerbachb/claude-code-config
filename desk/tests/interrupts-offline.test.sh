@@ -544,11 +544,16 @@ cat > "$HSTUB" <<'EOF'
 #!/usr/bin/env bash
 : > "$STUB_DIR/hq-args"
 for a in "$@"; do printf '%s\n' "$a" >> "$STUB_DIR/hq-args"; done
-if [ -f "$STUB_DIR/held-rc" ]; then
-  echo 'human-queue: store unavailable (fixture)' >&2
-  exit "$(cat "$STUB_DIR/held-rc")"
+printf '%s\n' "$*" >> "$STUB_DIR/hq-calls"
+if [ "$1" = interrupt ] && [ "${2:-}" = get ]; then
+  if [ -f "$STUB_DIR/held-rc" ]; then
+    echo 'human-queue: store unavailable (fixture)' >&2
+    exit "$(cat "$STUB_DIR/held-rc")"
+  fi
+  if [ -f "$STUB_DIR/held-json" ]; then cat "$STUB_DIR/held-json"; else echo '{"stub": true}'; fi
+else
+  echo '{"stub": true}'
 fi
-if [ -f "$STUB_DIR/held-json" ]; then cat "$STUB_DIR/held-json"; else echo '{"stub": true}'; fi
 EOF
 chmod +x "$HSTUB"
 
@@ -559,7 +564,7 @@ literal() { FROM="$2" TO="$3" perl -pe 's/\Q$ENV{FROM}\E/$ENV{TO}/g' "$1"; }
 # SID set, in $TMP/run, with its own TMPDIR.
 mkdir -p "$TMP/run" "$TMP/blocktmp"
 run_block() {
-  rm -f "$STUB_DIR/hq-args"
+  rm -f "$STUB_DIR/hq-args" "$STUB_DIR/hq-calls"
   (cd "$TMP/run" && env DESK="$HQ_T_DESK_DIR" HQ="$HSTUB" SID="desk-1" STUB_DIR="$STUB_DIR" \
      HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
      TMPDIR="$TMP/blocktmp" HUMAN_QUEUE_POLICY="${3:-$TMP/missing.json}" "$1" "$2") 2>&1
@@ -591,7 +596,8 @@ hq_t_skill_block "$SKILL" desk-record > "$TMP/record-raw.sh"
 literal "$TMP/record-raw.sh" "<DEFAULT>" "away" > "$TMP/record-default.sh"
 literal "$TMP/record-default.sh" "<N>" "5" > "$TMP/record-cadence.sh"
 literal "$TMP/record-cadence.sh" "<TASK_ID>" "monitor-1" > "$TMP/record.sh"
-hq_t_skill_block "$SKILL" desk-start-held > "$TMP/start-held-raw.sh"
+START_SKILL="${DESK_START_TEST_SOURCE:-$SKILL}"
+hq_t_skill_block "$START_SKILL" desk-start > "$TMP/start-held-raw.sh"
 literal "$TMP/start-held-raw.sh" "<DEFAULT>" "away" > "$TMP/start-held.sh"
 hq_t_skill_block "$SKILL" desk-monitor > "$TMP/monitor-raw.sh"
 literal "$TMP/monitor-raw.sh" "<DESK>" "$HQ_T_DESK_DIR" > "$TMP/monitor-desk.sh"
@@ -674,8 +680,9 @@ for SH in $BLOCK_SHELLS; do
     OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
     if [ "$initial_held" = true ]; then expected_flag=--held; else expected_flag=""; fi
     seed_flag=$(printf '%s\n' "$OUT" | sed -n 's/^HELD_FLAG=//p')
-    check "[$SH] startup observes hold with captured default" "$(args)" \
-      'interrupt get --session desk-1 --default away --json'
+    check "[$SH] activation validates the captured hold before registration" "$(cat "$STUB_DIR/hq-calls")" \
+      "$(printf 'migrate\ninterrupt get --session desk-1 --default away --json\nregister-control desk-1')"
+    check_contains "[$SH] successful activation emits an explicit seed receipt" "$OUT" 'HELD_FLAG='
     check "[$SH] boolean $initial_held produces a typed seed" "$RC:$seed_flag" "0:$expected_flag"
     literal "$TMP/monitor-default.sh" "<HELD_FLAG>" "$seed_flag" > "$TMP/monitor.sh"
     rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
@@ -692,12 +699,15 @@ for SH in $BLOCK_SHELLS; do
     OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
     check "[$SH] invalid startup hold is refused: $invalid_held" "$RC" 4
     check_absent "[$SH] invalid startup hold creates no seed" "$OUT" 'HELD_FLAG='
+    check_absent "[$SH] invalid hold cannot replace the earlier control session" "$(cat "$STUB_DIR/hq-calls")" 'register-control'
   done
   printf '7\n' > "$STUB_DIR/held-rc"
   RC=0
   OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
   check "[$SH] failed startup hold read retains its exit" "$RC" 7
   check_absent "[$SH] failed startup hold read creates no seed" "$OUT" 'HELD_FLAG='
+  check "[$SH] failed hold read stops after migration and lookup" "$(cat "$STUB_DIR/hq-calls")" \
+    "$(printf 'migrate\ninterrupt get --session desk-1 --default away --json')"
   check "[$SH] hostile hold text was never executed" "$(find "$TMP/run" -name 'seed-pwned' | wc -l | tr -d ' ')" 0
   rm -f "$STUB_DIR/held-json" "$STUB_DIR/held-rc"
 
@@ -705,6 +715,14 @@ for SH in $BLOCK_SHELLS; do
   check_contains "[$SH] desk-release block: one tick, now" "$(cat "$TMP/release.sh")" \
     '"$DESK/bin/desk-tick.sh" --session "$SID" --generation "g7" --interrupts "away" --once'
 done
+
+ACTIVATION_LINE=$(grep -n 'START_HOLD=' "$START_SKILL" | cut -d: -f1)
+FIRST_TICK_LINE=$(grep -n 'test-anchor: desk-first-tick -->' "$START_SKILL" | cut -d: -f1)
+if [ -n "$ACTIVATION_LINE" ] && [ -n "$FIRST_TICK_LINE" ] && [ "$ACTIVATION_LINE" -lt "$FIRST_TICK_LINE" ]; then
+  ok 'startup hold validation precedes the inline tick stamp'
+else
+  bad 'startup hold validation precedes the inline tick stamp'
+fi
 
 # The router and the files around it.
 contract() {
