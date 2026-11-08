@@ -1664,7 +1664,9 @@ synthetic controls, not additional provider captures.
 The HTTP boundary maps `rate_limit.primary_window` and `secondary_window` to
 the shared renderer: `used_percent`, `limit_window_seconds` (seconds to minutes),
 and absolute `reset_at`, falling back to `reset_after_seconds` on the reader's
-clock. Invalid percentages or explicit unsupported durations fail closed; an
+clock. Invalid percentages or explicit unsupported durations fail closed. The shared
+renderer labels whole hours, so a present fractional-hour wire window refuses
+the response rather than truncating its label or presenting it as absent. An
 omitted duration remains an honestly labelled generic window. Weekly selection
 still follows duration rather than slot position. The app-server path and older
 HTTP camelCase bodies retain their existing behavior. An unlabelled

@@ -1845,11 +1845,16 @@ for wire_bad in 'true' 'null' '-1' '"unknown"'; do
   run --json --five-hour
   check_eq "$(rows_for codex-one@example.com)" "unreachable" "invalid wire usage $wire_bad cannot become a successful empty report"
 done
-for wire_bad in '0' '-60' '61' 'true' '"one week"'; do
+for wire_bad in '0' '-60' '60' '61' '1800' '5400' 'true' '"one week"'; do
   jq --argjson bad "$wire_bad" '.rate_limit.primary_window.limit_window_seconds=$bad' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
   run --json
   check_eq "$(rows_for codex-one@example.com)" "unreachable" "invalid wire duration $wire_bad cannot invent a window unit"
 done
+# A present unsupported short window must not become a claim that the plan
+# reports no short window merely because a separate weekly window is valid.
+jq '.rate_limit.secondary_window={used_percent:12,limit_window_seconds:5400,reset_after_seconds:600}' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+run --json --five-hour
+check_eq "$(rows_for codex-one@example.com)" "unreachable" "present unsupported window cannot be silently presented as absent"
 jq '.rate_limit.secondary_window=.rate_limit.primary_window | .rate_limit.primary_window={used_percent:12,limit_window_seconds:18000,reset_after_seconds:600}' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
 run --json --five-hour
 check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "30" "weekly wire window is selected from secondary by duration"

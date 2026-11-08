@@ -2007,6 +2007,8 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
   # A reset is an absolute Unix second when supplied, otherwise a validated
   # relative interval on the reader's existing clock. Never invent USD from
   # the unlabelled credits.balance or guess an unsupported duration's unit.
+  # The shared renderer labels whole hours; fractional-hour wire windows
+  # therefore remain unreadable rather than being truncated to a false label.
   jq --argjson now "$NOW" '
       def num:
         if type == "number" then (if isfinite then . else null end)
@@ -2024,7 +2026,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
           | ($w.reset_after_seconds | whole) as $relative
           | if $pct == null or $pct < 0
                or ($w.limit_window_seconds != null and
-                   ($seconds == null or $seconds == 0 or $seconds % 60 != 0))
+                   ($seconds == null or $seconds == 0 or $seconds % 3600 != 0))
             then null else
               {usedPercent:$pct,
                windowDurationMins:(if $seconds != null then $seconds / 60 else null end),
@@ -2034,9 +2036,14 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
         end;
       . as $top
       | (if (.rate_limit | type) == "object" then
-           {planType:(if (.plan_type | type) == "string" then .plan_type else null end),
-            primary:(.rate_limit.primary_window | wire_window),
-            secondary:(.rate_limit.secondary_window | wire_window)}
+           (.rate_limit.primary_window | wire_window) as $primary
+           | (.rate_limit.secondary_window | wire_window) as $secondary
+           | if (.rate_limit.primary_window != null and $primary == null)
+                or (.rate_limit.secondary_window != null and $secondary == null)
+             then null
+             else {planType:(if (.plan_type | type) == "string" then .plan_type else null end),
+                   primary:$primary, secondary:$secondary}
+             end
          else (.rate_limits // .rateLimits // .usage.rateLimits // .) end) as $s
       | if ($s | type) == "object" and ($top.rate_limit_reset_credits | type) == "object"
         then $s + {rate_limit_reset_credits: $top.rate_limit_reset_credits}
