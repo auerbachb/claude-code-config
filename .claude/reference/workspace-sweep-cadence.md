@@ -15,7 +15,7 @@ remaining Phase B/C branches qualify only under the same finished-class checks.
 - The parent orchestration checkout runs `--trigger post-merge --repo-dir DIR`
   only after verifying Phase C's `merged` outcome against GitHub.
 - A `/pm day` tick runs `--trigger pm-day --repo-dir DIR --min-interval SECONDS`
-  after its generation/activity/stop gate passes. Default interval is 3600;
+  after its generation and activity checks pass and no stop is requested. Default interval is 3600;
   `CLAUDE_WORKSPACE_SWEEP_INTERVAL_S` overrides it. This never repeats Step 1,
   `/pm-clean`, or age confirmations. `/wrap` does not remove its own checkout.
 - The opt-in LaunchAgent runs `--trigger daily --configured`. The installer
