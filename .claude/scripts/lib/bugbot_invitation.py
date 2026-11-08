@@ -1,8 +1,31 @@
 """Read-only, bounded current-HEAD BugBot invitation classification.
 
+An invitation qualifies at or after the verified push/restoration boundary for
+this HEAD. Pushed runs bind their exact SHA to a captured pre-push time. No-push
+runs ignore inherited push variables and verify server push/ref and filtered
+head-movement history against the live HEAD. Invitations before the rerun still
+count; rerun start times, commit dates and other heads' workflow times do not.
+Missing, lagging, expired or inconsistent history remains unknown when needed
+to classify an invitation. With no invitations, a readable matching grant check
+can establish a known negative without a boundary. Unreadable grant evidence
+remains unknown. Unknown decisions are always awaited.
+
+Repository history and each comments pass are bounded to three 100-row pages;
+head movements use the latest three filtered force-push/delete/restore events.
+A known boundary filters comments from one second before it, then classifies by
+creation time. Before a negative, one final comments reread detects changes;
+changed/unreadable comments remain unknown. Live HEAD is checked before/after.
+Commands have a 10-second bound; timeout/interruption kills the command group.
+
+The JSON result names a private 0700 directory/0600 evidence file containing
+heads, timestamps, counts, read stage and fixed failure classes, without comment
+bodies or credentials. Retain this diagnostic pointer with recovery evidence;
+it is not cached authorization. Only REST GETs, a constant read-only GraphQL
+query and the matching grant helper's --check are used. Nothing triggers a
+review or creates/consumes a grant.
+
 Server anchors: https://docs.github.com/en/rest/using-the-rest-api/github-event-types
 and https://docs.github.com/en/rest/using-the-rest-api/issue-event-types .
-No workflow timestamp or commit date is substituted for a push boundary.
 """
 import argparse
 from datetime import datetime, timedelta, timezone
