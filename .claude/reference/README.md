@@ -16,6 +16,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 ### Runbooks and long command forms
 
 - `recovery-evidence.md` — typed gate/wait failures, private raw captures, separate failure indexes and read-only recovery after child exit (Issue #1974)
+- `wait-handoff-selection.md` — pinned scoped/legacy wait persistence, locked identity guards, migration refusal and explicit repair (Issue #1975)
 - `incremental-skill-loading.md` — operation/phase loading contract, source-measured `/issue-maker` pilot traces, recovery and parity checklist, and ordered migration roadmap for `/pm`, `/subagent`, `/wrap`, and `/pr-monitor-and-manage` (#1872)
 
 - `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)

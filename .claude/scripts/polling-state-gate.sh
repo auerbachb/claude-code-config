@@ -59,6 +59,9 @@
 #   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
 #   polling-state-gate.sh <pr_number> [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
 #   polling-state-gate.sh <pr_number> --verify-state [--root-repo <path>] [--repo <owner>/<name>]
+#   polling-state-gate.sh <pr_number> --resolve-handoff [--root-repo <path>] [--repo <owner>/<name>]
+#     Offline selected-handoff/v1 JSON for persistence. Reuses gate selection
+#     and requires explicit embedded PR/owner identity; never creates a record.
 #
 # Modes:
 #   --ensure-session  Run once before the first poll tick: write/update session-state,
@@ -218,6 +221,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-state)
       MODE="verify"
+      shift
+      ;;
+    --resolve-handoff)
+      MODE="resolve-handoff"
       shift
       ;;
     --allow-nonauthor)
@@ -964,18 +971,36 @@ require_handoff_and_state() {
   if ! validate_root_match "$resolved"; then
     exit 4
   fi
+  VERIFIED_HANDOFF_PATH="$handoff_path"
+  VERIFIED_HANDOFF_HEAD="$handoff_sha"
+  VERIFIED_HANDOFF_LANE="scoped"
+  [[ "$handoff_path" == "$flat_path" ]] && VERIFIED_HANDOFF_LANE="legacy-flat"
+  return 0
 }
 
 if [[ "$MODE" == "ensure" ]]; then
   ensure_session
 fi
 
-if [[ "$MODE" == "verify" ]]; then
+if [[ "$MODE" == "verify" || "$MODE" == "resolve-handoff" ]]; then
   resolved=""
   if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
     exit 4
   fi
   require_handoff_and_state "$resolved" verify
+  if [[ "$MODE" == "resolve-handoff" ]]; then
+    selected_owner="$(active_scope_key)"
+    if ! jq -se --argjson pr "$PR_NUMBER" --arg owner "$selected_owner" \
+      'length == 1 and (.[0] | type == "object" and .pr_number == $pr
+       and (.owner_repo | type == "string") and (.owner_repo | ascii_downcase) == $owner)' \
+      "$VERIFIED_HANDOFF_PATH" >/dev/null 2>&1; then
+      echo "polling-state-gate.sh: selected handoff identity is unknown or foreign at $VERIFIED_HANDOFF_PATH; verify ownership and repair explicitly (wait-handoff-selection.md); no write authorized" >&2
+      exit "$HANDOFF_UNREADABLE_EXIT"
+    fi
+    jq -n --argjson pr "$PR_NUMBER" --arg owner "$selected_owner" --arg head "$VERIFIED_HANDOFF_HEAD" \
+      --arg scope "$VERIFIED_HANDOFF_LANE" --arg path "$VERIFIED_HANDOFF_PATH" \
+      '{schema:"selected-handoff/v1",pr_number:$pr,owner_repo:$owner,head_sha:$head,scope:$scope,path:$path}'
+  fi
   exit 0
 fi
 

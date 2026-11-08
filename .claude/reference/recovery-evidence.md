@@ -26,3 +26,7 @@ recovery-evidence.sh show --repo OWNER/REPO --pr N --kind wait --directory CAPTU
 ```
 
 An explicit detailed/verbose request can select raw stdout, stderr, fetch.stdout, fetch.stderr, audit or the retained bundle with `--raw NAME`. Default status prints classification, exits, HEAD, observation time and handles only. Preserve full logs; do not dump them merely to discover a verdict already in the record. The helper performs no GitHub writes and never turns a stored record into merge permission.
+
+Wait persistence uses the shared source-only `scripts/lib/fixpr-wait-evidence.sh`
+module. The loader is the actual tested skill fence. Target selection and legacy
+repair follow [wait-handoff-selection.md](wait-handoff-selection.md).

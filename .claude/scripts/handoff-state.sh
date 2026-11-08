@@ -67,6 +67,10 @@
 #                                 `{}` when the target is absent. Checked under
 #                                 the lock, so it is race-free where a caller's
 #                                 own -e test is not.
+#     --expect-pr N --expect-owner owner/repo --expect-head SHA
+#                                 Guard an existing --set/--append by embedded
+#                                 identity under its lock. All three flags and
+#                                 --require-existing are required together.
 #
 #   handoff-state.sh [<scope-flags>] --path   <pr_number>        # print canonical path (no lock)
 #   handoff-state.sh [<scope-flags>] --get    <pr_number>        # lock-free read
@@ -242,6 +246,9 @@ OWNER_REPO=""
 OWNER_REPO_EXPLICIT=""
 LEGACY_FLAT=0
 REQUIRE_EXISTING=0
+EXPECTED_PR=""
+EXPECTED_OWNER=""
+EXPECTED_HEAD=""
 SCOPE_SOURCE=""
 
 # Every array field the handoff schema defines — the complete set --append may
@@ -301,6 +308,16 @@ while [[ $# -gt 0 ]]; do
       REQUIRE_EXISTING=1
       shift
       ;;
+    --expect-pr)
+      [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { echo "handoff-state.sh: --expect-pr requires a positive PR number" >&2; exit 2; }
+      EXPECTED_PR="$2"; shift 2 ;;
+    --expect-owner)
+      EXPECTED_OWNER="$(normalize_repo_key "${2:-}")"
+      is_strict_owner_repo "$EXPECTED_OWNER" || { echo "handoff-state.sh: --expect-owner requires owner/repo" >&2; exit 2; }
+      shift 2 ;;
+    --expect-head)
+      [[ "${2:-}" =~ ^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$ ]] || { echo "handoff-state.sh: --expect-head requires a full SHA" >&2; exit 2; }
+      EXPECTED_HEAD="$2"; shift 2 ;;
     *)
       break
       ;;
@@ -447,6 +464,12 @@ fi
 # Scoped (owner/repo resolved): ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
 # Legacy flat (explicit only)  : ~/.claude/handoffs/pr-{N}-handoff.json
 # ---------------------------------------------------------------------------
+if [[ -n "$EXPECTED_PR$EXPECTED_OWNER$EXPECTED_HEAD" ]]; then
+  if [[ "$REQUIRE_EXISTING" != 1 || "$EXPECTED_PR" != "$PR_NUMBER" || -z "$EXPECTED_OWNER" || -z "$EXPECTED_HEAD" || ( "$MODE" != set && "$MODE" != append ) ]]; then
+    echo "handoff-state.sh: identity guards require matching --expect-pr, --expect-owner, --expect-head and --require-existing before --set/--append; nothing written" >&2
+    exit 2
+  fi
+fi
 _resolve_handoff_path() {
   local pr="$1" owner_repo="$2"
   if [[ -n "$owner_repo" ]]; then
@@ -652,6 +675,23 @@ if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" ) &
   echo "handoff-state.sh: --${MODE} on PR #${PR_NUMBER} requires an existing handoff, but none is at $HANDOFF_FILE (--require-existing). Nothing was written; the record was never created, or was deleted/migrated after the caller checked." >&2
   state_lock_release
   exit 3
+fi
+
+if [[ -n "$EXPECTED_PR" && "$LEGACY_FLAT" == 1 ]]; then
+  _selected_scoped=$(_resolve_handoff_path "$PR_NUMBER" "$EXPECTED_OWNER")
+  if [[ -e "$_selected_scoped" || -L "$_selected_scoped" ]]; then
+    echo "handoff-state.sh: selected legacy lane changed: scoped handoff now exists at $_selected_scoped; restart selection; nothing written" >&2
+    state_lock_release
+    exit 4
+  fi
+fi
+if [[ -n "$EXPECTED_PR" ]] && ! jq -se --argjson pr "$EXPECTED_PR" --arg owner "$EXPECTED_OWNER" --arg head "$EXPECTED_HEAD" \
+  'length == 1 and (.[0] | type == "object" and .pr_number == $pr
+   and (.owner_repo | type == "string") and (.owner_repo | ascii_downcase) == $owner
+   and .head_sha == $head)' "$HANDOFF_FILE" >/dev/null 2>&1; then
+  echo "handoff-state.sh: selected handoff identity changed or is unknown at $HANDOFF_FILE; expected PR #$EXPECTED_PR, $EXPECTED_OWNER and HEAD $EXPECTED_HEAD; nothing written" >&2
+  state_lock_release
+  exit 4
 fi
 
 # Atomic write using a same-directory temp so mv is on the same filesystem
