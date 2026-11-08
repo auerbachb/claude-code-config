@@ -659,8 +659,11 @@ check_eq "T13d: and relays its output" "hi" "$OUT"
 
 # ---- T14: a cap smaller than one interval still costs exactly one check ------
 echo 0 > "$STUB_STATE"
+# A whole-second clock can exhaust a 1s cap almost immediately. Give the
+# stub its counter-write margin on loaded macOS runners; 3s is still < 60s
+# and must produce exactly one check (Issue #1710 / PR #1664).
 RC=0
-"$WAIT" --interval 60 --timeout 1 --quiet --expect completed -- "$TMP/gh-run-status" >/dev/null 2>&1 || RC=$?
+"$WAIT" --interval 60 --timeout 3 --quiet --expect completed -- "$TMP/gh-run-status" >/dev/null 2>&1 || RC=$?
 check_eq "T14: cap < interval exits 4 without sleeping past the cap" "4" "$RC"
 check_eq "T14: and ran the check exactly once" "1" "$(cat "$STUB_STATE")"
 
