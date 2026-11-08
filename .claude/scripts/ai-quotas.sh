@@ -2547,7 +2547,7 @@ effective_sources() { # <provider> <account-index>
 }
 
 read_cursor_browser() { # <label>
-  local label="$1" email="$CURSOR_EMAIL" result row used reset window db browser_cli
+  local label="$1" email="$CURSOR_EMAIL" result row used reset window db browser_cli status error_class detail outcome_status
   if [[ -z "$email" ]]; then
     db="$(cursor_state_db)"
     [[ ! -f "$db" ]] || email="$(cursor_cached_email "$db")"
@@ -2557,14 +2557,27 @@ read_cursor_browser() { # <label>
   [[ -z "$email" ]] || identity_note="account verified"
   browser_cli="${AI_QUOTAS_BROWSER_CLI:-}"
   [[ -n "$browser_cli" ]] || browser_cli="$(claude_bin || true)"
-  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$email" "$NOW" "$browser_cli")"
-  if [[ "$(printf '%s' "$result" | jq -r '.status')" != "ok" ]]; then
-    if [[ "$(printf '%s' "$result" | jq -r '.status')" == "logged_out" ]]; then
+  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$email" "$NOW" "$browser_cli" 2>/dev/null)"
+  status="$(printf '%s' "$result" | jq -r '.status' 2>/dev/null)" || status=""
+  if [[ "$status" != "ok" ]]; then
+    if [[ "$status" == "logged_out" ]]; then
       set_outcome logged_out browser browser_logged_out
       emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" needs-login "browser is logged out; sign in yourself" browser ""
     else
-      set_outcome unreadable browser browser_unavailable
-      emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" unreadable "browser unavailable or observation rejected" browser ""
+      error_class="$(printf '%s' "$result" | jq -r '.error_class' 2>/dev/null)" || error_class=""
+      outcome_status=unreadable
+      case "$error_class" in
+        browser_launch_failed) detail="browser bridge could not launch" ;;
+        browser_connection_unavailable) detail="browser connection unavailable" ;;
+        browser_tool_denied) detail="browser tool denied by the read-only guard" ;;
+        browser_tab_create_failed) detail="browser owned-tab creation failed" ;;
+        browser_destination_unverified) detail="browser owned-tab destination could not be verified" ;;
+        browser_observation_rejected) detail="browser observation rejected" ;;
+        browser_timeout) detail="browser bridge reached its outer timeout"; outcome_status=timeout ;;
+        *) error_class=browser_stage_unknown; detail="browser unavailable; failure stage unknown" ;;
+      esac
+      set_outcome "$outcome_status" browser "$error_class"
+      emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" unreadable "$detail" browser ""
     fi
     return 0
   fi
