@@ -99,7 +99,7 @@ def write(args):
     parent = args.file.parent
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     metadata = parent.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o002:
         raise ResetError("unsafe watermark directory")
     fd = os.open(str(args.file) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, "a") as lock:

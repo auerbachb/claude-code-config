@@ -548,6 +548,21 @@ HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
 check_eq "$?" 0 "another account's newer record does not block a backfill"
 check_eq "$(jq -r '.accounts.c.month+":"+.accounts.d.month' "$STATE_DIR/codex-reset.json")" '2026-10:2026-09' "independent account months remain distinct"
 
+# Existing group-writable directories from umask002 remain usable; records
+# themselves stay private, and world-writable state directories are refused.
+reset_state
+mkdir -p "$STATE_DIR"
+chmod 775 "$STATE_DIR"
+run_mode --record-codex-reset "2026-09-07"
+check_eq "$RC" 0 "a preexisting0775 state directory can record"
+check_eq "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$STATE_DIR/codex-reset.json")" 600 "a legacy group-writable directory still receives a private record"
+BEFORE=$(cat "$STATE_DIR/codex-reset.json")
+chmod 777 "$STATE_DIR"
+run_mode --record-codex-reset "2026-09-08"
+check_eq "$RC" 5 "a world-writable state directory remains refused"
+check_eq "$(cat "$STATE_DIR/codex-reset.json")" "$BEFORE" "unsafe-directory refusal preserves the prior record"
+chmod 775 "$STATE_DIR"
+
 # --- 11. unknown providers are never priced ----------------------------------
 
 reset_state
