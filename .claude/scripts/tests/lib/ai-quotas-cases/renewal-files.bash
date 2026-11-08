@@ -155,7 +155,7 @@ check_eq "$(printf '%s' "$COMBINED" | grep -cE 'sk-ant|eyJ|refresh_token=' || tr
 # `"${VAR}"` — the same leak, spelled differently, which is exactly how a
 # guard stops guarding.
 ARGV_PAT='--arg(json)?[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"?\$\{?(CLAUDE_TOKEN|CLAUDE_REFRESH_TOKEN|CLAUDE_CRED_PRIOR_ACCESS|CURSOR_TOKEN)\}?"?'
-ARGV_LEAKS="$(grep -nE -- "$ARGV_PAT" "$SCRIPT" || true)"
+if ! ARGV_LEAKS="$(argv_scan -n < "$SCRIPT")"; then ARGV_LEAKS=ARGV_SCAN_FAILED; fi
 check_eq "$ARGV_LEAKS" "" \
   "no credential global is passed to jq with --arg/--argjson, which would put it in argv"
 
@@ -174,6 +174,34 @@ check_eq "$(argv_probe 'jq -n --argjson at "$CLAUDE_TOKEN" .')" "1" \
 # satisfied by any jq call at all and prove nothing about secrets.
 check_eq "$(argv_probe 'jq -n --arg ea "$CLAUDE_EXPIRES_AT_MS" .')" "0" \
   "control(-): and does not fire on a non-credential variable"
+
+continued_arg=$(cat <<'CONTINUED_ARG'
+jq -n --arg rt \
+  "$CLAUDE_REFRESH_TOKEN" .
+CONTINUED_ARG
+)
+continued_json=$(cat <<'CONTINUED_JSON'
+jq -n --argjson at \
+  "${CLAUDE_TOKEN}" .
+CONTINUED_JSON
+)
+continued_safe=$(cat <<'CONTINUED_SAFE'
+jq -n --arg ea \
+  "$CLAUDE_EXPIRES_AT_MS" .
+CONTINUED_SAFE
+)
+check_eq "$(argv_probe "$continued_arg")" "1" \
+  'control(+): an LF continuation cannot hide a credential argument'
+check_eq "$(argv_probe "$continued_json")" "1" \
+  'control(+): a continued --argjson and braced credential are detected'
+continued_crlf="$(printf '%s\n' "$continued_arg" | sed $'s/$/\r/')"
+check_eq "$(argv_probe "$continued_crlf")" "1" \
+  'control(+): a CRLF continuation cannot hide a credential argument'
+check_eq "$(argv_probe "$continued_safe")" "0" \
+  'control(-): continued non-credential metadata remains allowed'
+normalizer_failure="$( (python3() { return 97; }; argv_probe "$continued_arg") )"
+check_eq "$normalizer_failure" ARGV_SCAN_FAILED \
+  'control(+): an unavailable normalizer cannot report a clean source scan'
 
 # --- 12r-i. a credential with a refresh token but NO access token ------------
 #

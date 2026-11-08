@@ -573,11 +573,10 @@ seed_codex_profile() { # <label> <snapshot-json|""> [<reported-email>]
 }
 
 write_config() { # <account-json…>
-  local acc="[]" a
-  for a in "$@"; do
-    acc="$(printf '%s' "$acc" | jq --argjson e "$a" '. += [$e]')"
-  done
-  printf '%s' "$acc" | jq '{schema_version: "1.0", accounts: .}' > "$CONFIG"
+  # Keep each argument a complete JSON value; empty/invalid fixture arguments
+  # must fail instead of disappearing. Zero arguments still yields no accounts.
+  jq -n --args '{schema_version: "1.0", accounts: ($ARGS.positional | map(fromjson))}' \
+    -- "$@" > "$CONFIG"
 }
 
 # --- cursor fixtures (#1703) -------------------------------------------------
@@ -735,8 +734,8 @@ reset_state() {
   printf '0' > "$STUB_KEYCHAIN_RACE_N"
   printf 'swap' > "$STUB_KEYCHAIN_RACE_MODE"
   printf '0' > "$STUB_ANTHROPIC_401_COUNT"
-  anthropic_body 0 > "$STUB_ANTHROPIC_BODY"
-  jq -n '{}' > "$STUB_CHATGPT_BODY"
+  printf '%s\n' "$DEFAULT_ANTHROPIC_BODY" > "$STUB_ANTHROPIC_BODY"
+  printf '{}\n' > "$STUB_CHATGPT_BODY"
   echo "ok" > "$STUB_CURSOR_MODE"
   : > "$STUB_CURSOR_UID_LOG"
   CURSOR_DB_UNDER_TEST=""
@@ -754,6 +753,11 @@ build_cursor_db "$CURSOR_DB_SIGNED_OUT" "" \
   || { echo "FATAL: could not build the signed-out cursor fixture DB" >&2; exit 1; }
 rm -f "$CURSOR_DB_MISSING"
 
+# The clock and default response are immutable within a worker. Keep the exact
+# generated response, then restore its bytes without rerunning jq for each case.
+DEFAULT_ANTHROPIC_BODY="$(anthropic_body 0)" || {
+  echo 'FATAL: could not generate the default Anthropic fixture' >&2; exit 1;
+}
 reset_state
 
 echo "== ai-quotas.sh =="
@@ -772,7 +776,20 @@ seed_renewal_case() { # <expires-at-ms|"">
   write_config "$(account_json claude claude-one@example.com "$CR" "$SVC_R")"
 }
 
-argv_probe() { printf '%s\n' "$1" | grep -cE -- "$ARGV_PAT" || true; }
+argv_scan() { # -n for matching logical lines, -c for fixture match counts
+  local mode="${1:--n}" normalized rc
+  # Fold LF and CRLF continuations before the line-oriented pattern check.
+  # This is a conservative source guard, not a general shell parser.
+  normalized="$(python3 -c 'import sys; text=sys.stdin.read(); sys.stdout.write(text.replace(chr(92)+"\r\n", "").replace(chr(92)+"\n", ""))')" || {
+    printf 'ARGV_SCAN_FAILED\n'; return 2;
+  }
+  printf '%s\n' "$normalized" | grep "${mode}E" -- "$ARGV_PAT"
+  rc=$?
+  if [[ "$rc" -gt 1 ]]; then printf 'ARGV_SCAN_FAILED\n'; return 2; fi
+  return 0
+}
+
+argv_probe() { printf '%s\n' "$1" | argv_scan -c; }
 
 cursor_field() { # <label> <pool> <field>
   printf '%s' "$OUT" | jq -r --arg l "$1" --arg p "$2" --arg f "$3" \

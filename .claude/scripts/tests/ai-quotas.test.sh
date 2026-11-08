@@ -5,11 +5,11 @@ unset BASH_ENV ENV
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TEST_FILE="$ROOT/.claude/scripts/tests/ai-quotas.test.sh"
 CASE_DIR="$ROOT/.claude/scripts/tests/lib/ai-quotas-cases"
-GROUPS_LIST="core acceptance failure-isolation renewal renewal-files cursor cursor-identity codex codex-duration row-shape codex-cleanup overage history nicknames table forecast forecast-failures reset-credits outcomes layout fallback recommendations notifications"
+GROUPS_LIST="core acceptance failure-isolation renewal renewal-files cursor cursor-identity codex codex-duration row-shape codex-cleanup overage credential-output history snapshot-footer nicknames table forecast forecast-failures forecast-types history-errors reset-credits outcomes outcomes-protocol outcomes-preflight layout fallback browser-resume recommendations notifications"
 case "${1:-}" in
   --fixture-worker)
     FIXTURE_GROUP="${2:-}"
-    case "$FIXTURE_GROUP" in core|acceptance|failure-isolation|renewal|renewal-files|cursor|cursor-identity|codex|codex-duration|row-shape|codex-cleanup|overage|history|nicknames|table|forecast|forecast-failures|reset-credits|outcomes|layout|fallback|recommendations|notifications) ;; *) echo 'FAIL — unknown quota fixture group' >&2; exit 2 ;; esac
+    case "$FIXTURE_GROUP" in core|acceptance|failure-isolation|renewal|renewal-files|cursor|cursor-identity|codex|codex-duration|row-shape|codex-cleanup|overage|credential-output|history|snapshot-footer|nicknames|table|forecast|forecast-failures|forecast-types|history-errors|reset-credits|outcomes|outcomes-protocol|outcomes-preflight|layout|fallback|browser-resume|recommendations|notifications) ;; *) echo 'FAIL — unknown quota fixture group' >&2; exit 2 ;; esac
     echo "== quota fixture group: $FIXTURE_GROUP =="
     # Every group sources the same fixture module before its original cases.
     load_fixture_group() {
@@ -50,9 +50,15 @@ case "${1:-}" in
         overage)
           # shellcheck source=lib/ai-quotas-cases/overage.bash
           source "$CASE_DIR/overage.bash" ;;
+        credential-output)
+          # shellcheck source=lib/ai-quotas-cases/credential-output.bash
+          source "$CASE_DIR/credential-output.bash" ;;
         history)
           # shellcheck source=lib/ai-quotas-cases/history.bash
           source "$CASE_DIR/history.bash" ;;
+        snapshot-footer)
+          # shellcheck source=lib/ai-quotas-cases/snapshot-footer.bash
+          source "$CASE_DIR/snapshot-footer.bash" ;;
         nicknames)
           # shellcheck source=lib/ai-quotas-cases/nicknames.bash
           source "$CASE_DIR/nicknames.bash" ;;
@@ -65,18 +71,33 @@ case "${1:-}" in
         forecast-failures)
           # shellcheck source=lib/ai-quotas-cases/forecast-failures.bash
           source "$CASE_DIR/forecast-failures.bash" ;;
+        forecast-types)
+          # shellcheck source=lib/ai-quotas-cases/forecast-types.bash
+          source "$CASE_DIR/forecast-types.bash" ;;
+        history-errors)
+          # shellcheck source=lib/ai-quotas-cases/history-errors.bash
+          source "$CASE_DIR/history-errors.bash" ;;
         reset-credits)
           # shellcheck source=lib/ai-quotas-cases/reset-credits.bash
           source "$CASE_DIR/reset-credits.bash" ;;
         outcomes)
           # shellcheck source=lib/ai-quotas-cases/outcomes.bash
           source "$CASE_DIR/outcomes.bash" ;;
+        outcomes-protocol)
+          # shellcheck source=lib/ai-quotas-cases/outcomes-protocol.bash
+          source "$CASE_DIR/outcomes-protocol.bash" ;;
+        outcomes-preflight)
+          # shellcheck source=lib/ai-quotas-cases/outcomes-preflight.bash
+          source "$CASE_DIR/outcomes-preflight.bash" ;;
         layout)
           # shellcheck source=lib/ai-quotas-cases/layout.bash
           source "$CASE_DIR/layout.bash" ;;
         fallback)
           # shellcheck source=lib/ai-quotas-cases/fallback.bash
           source "$CASE_DIR/fallback.bash" ;;
+        browser-resume)
+          # shellcheck source=lib/ai-quotas-cases/browser-resume.bash
+          source "$CASE_DIR/browser-resume.bash" ;;
         recommendations)
           # shellcheck source=lib/ai-quotas-cases/recommendations.bash
           source "$CASE_DIR/recommendations.bash" ;;
@@ -120,8 +141,8 @@ case "${1:-}" in
         BATCH_RC=1
       fi
     done
-    echo "passed: $BATCH_PASS   failed: $BATCH_FAILED   completed groups: $COMPLETED/23"
-    [[ "$BATCH_FAILED" -eq 0 && "$COMPLETED" -eq 23 ]] || BATCH_RC=1
+    echo "passed: $BATCH_PASS   failed: $BATCH_FAILED   completed groups: $COMPLETED/30"
+    [[ "$BATCH_FAILED" -eq 0 && "$COMPLETED" -eq 30 ]] || BATCH_RC=1
     exit "$BATCH_RC" ;;
 esac
 SUITE_BOUND_LIB="$ROOT/.claude/scripts/lib/bounded-run.sh"
