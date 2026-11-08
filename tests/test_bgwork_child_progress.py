@@ -230,6 +230,46 @@ m.main(sys.argv[2],sys.argv[3])
         self.assertIn('CHILD STALL SUSPECT',self.command('--tick'))
         self.assertEqual(self.command('--tick'),'')
 
+    def test_short_caller_write_does_not_commit_dedup(self):
+        self.command('--tick')
+        self.age_observation()
+        before=self.cache.read_bytes()
+        result=self.observer_process("""
+class ShortBuffer:
+ def write(self,value): return 0
+ def flush(self): pass
+class Sink:
+ buffer=ShortBuffer()
+ def write(self,value): return len(value)
+ def flush(self): pass
+m.sys.stdout=Sink()
+m.main(sys.argv[2],sys.argv[3])
+""")
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.cache.read_bytes(),before)
+        self.assertIn('CHILD STALL SUSPECT',self.command('--tick'))
+        self.assertEqual(self.command('--tick'),'')
+
+    def test_short_observer_write_is_not_a_successful_probe(self):
+        self.command('--tick')
+        self.age_observation()
+        before=self.cache.read_bytes()
+        result=self.observer_process("""
+class ShortBuffer:
+ def write(self,value): return 0
+ def flush(self): pass
+class Sink:
+ buffer=ShortBuffer()
+ def write(self,value): return len(value)
+ def flush(self): pass
+m.sys.stdout=Sink()
+m.observe(sys.argv[2],Path(sys.argv[4]))
+""")
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(self.cache.read_bytes(),before)
+        self.assertIn('CHILD STALL SUSPECT',self.command('--tick'))
+        self.assertEqual(self.command('--tick'),'')
+
     def test_observer_killed_after_pending_write_retries_notice(self):
         self.command('--tick')
         self.age_observation()

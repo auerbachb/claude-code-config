@@ -211,7 +211,8 @@ def observe(session, cache_path):
     # Pending state never suppresses a notice. The parent owns promotion after
     # successful bounded delivery; a killed observer leaves the old dedup live.
     private_write(cache_path.with_name('pending-cache.json'), raw_cache)
-    sys.stdout.buffer.write(raw_output)
+    if sys.stdout.buffer.write(raw_output) != len(raw_output):
+        raise Unknown('progress_output_incomplete')
     sys.stdout.buffer.flush()
 
 
@@ -264,7 +265,9 @@ def main(session, prefix, clear=False):
                         or not isinstance(candidate.get('tasks'), dict)):
                     raise Unknown('cache_publish_shape_invalid')
                 output.seek(0)
-                sys.stdout.buffer.write(output.read())
+                raw_output = output.read()
+                if sys.stdout.buffer.write(raw_output) != len(raw_output):
+                    raise Unknown('progress_output_incomplete')
                 sys.stdout.buffer.flush()
                 private_write(cache, raw_cache)
                 pending.unlink(missing_ok=True)

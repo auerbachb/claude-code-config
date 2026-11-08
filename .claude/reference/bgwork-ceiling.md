@@ -120,7 +120,8 @@ No scheduler, new persistent watch, runtime stopping, summarizer or unchanged-ti
 ### Child notice delivery and dedup publication
 
 The observer stages private `pending-cache.json` and bounded UTF-8 notices. The
-parent verifies the output and candidate state, writes and flushes notices to
+parent verifies the output and candidate state, checks accepted byte counts at
+both stages, then writes and flushes notices to
 its immediate caller, then publishes the dedup cache. Oversized output, an
 interrupted observer or failed delivery cannot record an undelivered notice as
 already emitted. Later ticks retry from the previous cache; a failure after
