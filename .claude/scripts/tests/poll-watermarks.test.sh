@@ -43,7 +43,7 @@ check_eq() {
 
 STUB_DIR="$TMP/scripts"
 mkdir -p "$STUB_DIR/lib"
-cp "$REPO_ROOT/.claude/scripts/poll-watermarks.sh" "$STUB_DIR/poll-watermarks.sh"
+cp "${POLL_WATERMARKS_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/poll-watermarks.sh}" "$STUB_DIR/poll-watermarks.sh"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/session-state.sh"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/state-lock.sh"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/repo-normalizer.sh"
@@ -117,7 +117,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state null
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --init)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --init)"
 check_eq "init returns review max" "100" "$(jq -r '.last_review_id' <<<"$OUT")"
 check_eq "init returns inline max" "200" "$(jq -r '.last_inline_comment_id' <<<"$OUT")"
 check_eq "init returns issue max" "50" "$(jq -r '.last_issue_comment_id' <<<"$OUT")"
@@ -133,7 +133,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":100,"last_inline_comment_id":200,"last_issue_comment_id":50}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "no new findings when watermarks match" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
 check_eq "no new inline findings" "NEW_INLINE_FINDINGS=0" "$(sed -n '3p' <<<"$OUT")"
 
@@ -149,7 +149,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":100,"last_inline_comment_id":200,"last_issue_comment_id":50}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "new inline finding trips trigger" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
 check_eq "inline flag set" "NEW_INLINE_FINDINGS=1" "$(sed -n '3p' <<<"$OUT")"
 check_eq "review flag clear" "NEW_REVIEW_FINDINGS=0" "$(sed -n '2p' <<<"$OUT")"
@@ -165,7 +165,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "inline-only finding detected" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
 check_eq "inline-only inline flag" "NEW_INLINE_FINDINGS=1" "$(sed -n '3p' <<<"$OUT")"
 
@@ -178,7 +178,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "Greptile clean summary is acknowledgment" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
 STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
 check_eq "acknowledgment advances issue watermark" "401" "$(jq -r '.last_issue_comment_id' <<<"$STORED_AFTER")"
@@ -192,9 +192,9 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":100,"last_inline_comment_id":200,"last_issue_comment_id":50}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --reset)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --reset)"
 check_eq "reset advances inline watermark" "305" "$(jq -r '.last_inline_comment_id' <<<"$OUT")"
-OUT2="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT2="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "clean after reset on ack-only comments" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT2")"
 
 echo "== Scenario 6: CodeAnt review-status table is NOT a finding (issue #1207) =="
@@ -214,7 +214,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "CodeAnt review-status table is not a finding" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
 check_eq "NEW_ISSUE_COMMENT_FINDINGS=0 for CodeAnt status" "NEW_ISSUE_COMMENT_FINDINGS=0" "$(sed -n '4p' <<<"$OUT")"
 STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
@@ -235,7 +235,7 @@ write_fixture "$(jq -n '{
   }
 }')"
 seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "real CodeAnt finding (severity badge) still triggers" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
 check_eq "NEW_ISSUE_COMMENT_FINDINGS=1 for real finding" "NEW_ISSUE_COMMENT_FINDINGS=1" "$(sed -n '4p' <<<"$OUT")"
 
@@ -257,11 +257,133 @@ write_fixture "$(jq -n --arg b "$CODEANT_LOW_RISK_BODY" '{
   }
 }')"
 seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
-OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "CodeAnt Low Risk summary is not a finding" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
 check_eq "NEW_ISSUE_COMMENT_FINDINGS=0 for CodeAnt Low Risk summary" "NEW_ISSUE_COMMENT_FINDINGS=0" "$(sed -n '4p' <<<"$OUT")"
 STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
 check_eq "watermark advanced past CodeAnt Low Risk summary" "602" "$(jq -r '.last_issue_comment_id' <<<"$STORED_AFTER")"
+
+
+echo "== Scenario 7: >1 MiB bundles use files in reset and check (#1557) =="
+mkdir -p "$TMP/scratch"
+export TMPDIR="$TMP/scratch"
+python3 - "$STATE_JSON" <<'LARGE_FIXTURE'
+import json,sys
+body="Full review triggered " + "x"*(1100*1024) + " END-OF-LARGE-FIXTURE"
+def c(n):return {"id":n,"user":{"login":"codeant-ai[bot]"},"body":body}
+with open(sys.argv[1],"w") as f:json.dump({"comments":{"reviews":[c(701)],"inline":[c(702)],"conversation":[c(703)]}},f)
+LARGE_FIXTURE
+export PR_STATE_FIXTURE_FILE="$STATE_JSON"
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+RC=0
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --reset 2>"$TMP/large-reset.err")" || RC=$?
+check_eq "large reset succeeds" "0" "$RC"
+check_eq "large reset records all endpoint maxima" "701:702:703:reset" "$(jq -r '[.last_review_id,.last_inline_comment_id,.last_issue_comment_id,.mode]|map(tostring)|join(":")' <<<"$OUT")"
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+RC=0
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check 2>"$TMP/large-check.err")" || RC=$?
+check_eq "large acknowledgment check succeeds" "0" "$RC"
+check_eq "large acknowledgments are not findings" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
+STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
+check_eq "large acknowledgments advance all watermarks" "701:702:703" "$(jq -r '[.last_review_id,.last_inline_comment_id,.last_issue_comment_id]|map(tostring)|join(":")' <<<"$STORED_AFTER")"
+python3 - "$STATE_JSON" <<'LARGE_FINDING'
+import json,sys
+p=sys.argv[1]
+with open(p) as f:d=json.load(f)
+d['comments']['conversation'][0]['body']='Potential issue: '+ 'x'*(1100*1024)+' FINDING-TAIL'
+with open(p,'w') as f:json.dump(d,f)
+LARGE_FINDING
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+cp "$HOME/.claude/session-state.json" "$TMP/before-large-finding.json"
+RC=0
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check 2>"$TMP/large-finding.err")" || RC=$?
+check_eq "large finding check succeeds" "0" "$RC"
+check_eq "large finding remains actionable" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
+check_eq "large finding names conversation endpoint" "NEW_ISSUE_COMMENT_FINDINGS=1" "$(sed -n '4p' <<<"$OUT")"
+SAME=no
+cmp -s "$TMP/before-large-finding.json" "$HOME/.claude/session-state.json" && SAME=yes
+check_eq "finding leaves the actual stored state byte-identical" "yes" "$SAME"
+LEFT=no
+compgen -G "$TMP/scratch/poll-watermarks.*" >/dev/null && LEFT=yes
+check_eq "successful large runs clean private scratch" "no" "$LEFT"
+
+echo "== Scenario 8: invalid snapshots fail closed before any watermark write =="
+for invalid in empty malformed array boolean comments-boolean endpoint-boolean unsafe-id missing; do
+  case "$invalid" in
+    empty) : > "$STATE_JSON" ;;
+    malformed) printf '{' > "$STATE_JSON" ;;
+    array) printf '[]' > "$STATE_JSON" ;;
+    boolean) printf 'false' > "$STATE_JSON" ;;
+    comments-boolean) printf '{"comments":false}' > "$STATE_JSON" ;;
+    endpoint-boolean) printf '{"comments":{"reviews":false}}' > "$STATE_JSON" ;;
+    unsafe-id) printf '{"comments":{"reviews":[{"id":"unbounded-string-id"}]}}' > "$STATE_JSON" ;;
+    missing) rm -f "$STATE_JSON" ;;
+  esac
+  for mode in --reset --check --init; do
+    seed_state '{"last_review_id":81,"last_inline_comment_id":82,"last_issue_comment_id":83}'
+    cp "$HOME/.claude/session-state.json" "$TMP/before-invalid.json"
+    RC=0
+    OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" "$mode" 2>"$TMP/invalid.err")" || RC=$?
+    check_eq "$invalid/$mode refuses with documented state error" "4" "$RC"
+    check_eq "$invalid/$mode never emits a clean finding result" "" "$OUT"
+    SAME=no
+    cmp -s "$TMP/before-invalid.json" "$HOME/.claude/session-state.json" && SAME=yes
+    check_eq "$invalid/$mode preserves actual state bytes" "yes" "$SAME"
+  done
+done
+write_fixture '{"comments":{"reviews":[],"inline":[],"conversation":[]}}'
+printf 'not valid jq !!!' > "$STUB_DIR/lib/pr-state-classify.jq"
+seed_state '{"last_review_id":81,"last_inline_comment_id":82,"last_issue_comment_id":83}'
+cp "$HOME/.claude/session-state.json" "$TMP/before-classifier-failure.json"
+RC=0
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --reset 2>"$TMP/classifier-failure.err")" || RC=$?
+check_eq "classifier failure maps to exit4" "4" "$RC"
+check_eq "classifier failure emits no result" "" "$OUT"
+SAME=no
+cmp -s "$TMP/before-classifier-failure.json" "$HOME/.claude/session-state.json" && SAME=yes
+check_eq "classifier failure leaves actual state byte-identical" "yes" "$SAME"
+LEFT=no
+compgen -G "$TMP/scratch/poll-watermarks.*" >/dev/null && LEFT=yes
+check_eq "failure paths clean private scratch" "no" "$LEFT"
+
+
+echo "== Scenario 9: stored-state read failure cannot invent a zero baseline =="
+cp "$REPO_ROOT/.claude/scripts/lib/pr-state-classify.jq" "$STUB_DIR/lib/pr-state-classify.jq"
+mv "$SESSION" "$STUB_DIR/session-state-real.sh"
+cat > "$SESSION" <<'FAILED_STATE_READ'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == --get ]]; then
+    printf 'fixture stored-state read failed\n' >&2
+    exit 17
+  fi
+done
+exec "$(dirname "$0")/session-state-real.sh" "$@"
+FAILED_STATE_READ
+chmod +x "$SESSION"
+# Preserve a nonzero baseline. A swallowed read failure would reset this to 0.
+for mode in --reset --check --init; do
+  for root_mode in implicit explicit; do
+    cp "$HOME/.claude/session-state.json" "$TMP/before-stored-read.json"
+    RC=0
+    if [[ "$root_mode" == explicit ]]; then
+      OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" "$mode" --root-repo "$REPO_ROOT" 2>"$TMP/stored-read.err")" || RC=$?
+    else
+      OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" "$mode" 2>"$TMP/stored-read.err")" || RC=$?
+    fi
+    check_eq "stored read failure/$mode/$root_mode returns exit4" "4" "$RC"
+    check_eq "stored read failure/$mode/$root_mode emits no result" "" "$OUT"
+    SAME=no
+    cmp -s "$TMP/before-stored-read.json" "$HOME/.claude/session-state.json" && SAME=yes
+    check_eq "stored read failure/$mode/$root_mode preserves state bytes" "yes" "$SAME"
+    DIAGNOSTIC=no
+    grep -q 'fixture stored-state read failed' "$TMP/stored-read.err" && DIAGNOSTIC=yes
+    check_eq "stored read failure/$mode/$root_mode keeps original diagnostic" "yes" "$DIAGNOSTIC"
+  done
+done
+LEFT=no
+compgen -G "$TMP/scratch/poll-watermarks.*" >/dev/null && LEFT=yes
+check_eq "stored-state read failures clean scratch" "no" "$LEFT"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"
