@@ -175,6 +175,12 @@ MD
 run "CLAUDE_ACCOUNT_CONFIG=$COMMENTED" --
 expect_list "config: bullets inside HTML comments are notes, not entries" $'acme/alpha\nacme/beta'
 
+# #1820: whitespace-only bullets do not turn a valid list into an error.
+EMPTY_BULLET_CONFIG="$TMP_DIR/empty-bullet-account-config.md"
+printf '## Review repos\n\n- acme/one\n-   \n* \t \n+ \t\n- acme/two\n' > "$EMPTY_BULLET_CONFIG"
+run "CLAUDE_ACCOUNT_CONFIG=$EMPTY_BULLET_CONFIG" --
+expect_list "config: whitespace-only bullets between valid repos are ignored" $'acme/one\nacme/two'
+
 mkdir -p "$TMP_DIR/config-is-a-dir"
 run "CLAUDE_ACCOUNT_CONFIG=$TMP_DIR/config-is-a-dir" --
 expect_fail_closed "config: a config path that is not a readable file fails rather than falling to discovery"
@@ -285,6 +291,11 @@ printf '## Review repos\n\nowner = acme\n' > "$OWNER_ONLY"
 run "CLAUDE_ACCOUNT_CONFIG=$OWNER_ONLY" -- --fixture "$DISC"
 expect_list "discovery: a configured owner filters out repos it does not own" \
   $'acme/live\nacme/page-two'
+
+EMPTY_ONLY_CONFIG="$TMP_DIR/empty-only-account-config.md"
+printf '## Review repos\n\nowner = acme\n-   \n* \t\n+ \t \n' > "$EMPTY_ONLY_CONFIG"
+run "CLAUDE_ACCOUNT_CONFIG=$EMPTY_ONLY_CONFIG" -- --fixture "$DISC"
+expect_list "config: empty-only bullets preserve discovery fallback" $'acme/live\nacme/page-two'
 
 # Steps 1 and 2 still win when they resolve; the fixture feeds step 3 only.
 run "CLAUDE_ACCOUNT_CONFIG=$CONFIG" -- --fixture "$DISC"

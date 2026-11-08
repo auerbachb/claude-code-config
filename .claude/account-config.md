@@ -18,8 +18,10 @@ rules are (`.claude/rules/skill-symlinks.md`). Sections are read with
      under `owner` whose default branch carries .github/workflows/<discovery_marker>.
      Add a repo by hand when we review it without running the harness there —
      it still draws down the account caps, and discovery cannot see it.
-     One Markdown bullet per repo; the first token is owner/name. Every
-     bullet outside a comment is read as a repo, so keep notes in comments.
+     One Markdown bullet per repo; the first token is owner/name. Empty or
+     whitespace-only bullets are ignored. Every nonempty bullet outside a
+     comment must name a repo; invalid tokens reject the entire list. Keep
+     notes in comments.
 
      This file is tracked, and may be public. Repos whose names you would rather
      not publish go in a PRIVATE OVERLAY instead: an untracked file at
