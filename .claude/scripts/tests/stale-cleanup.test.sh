@@ -52,12 +52,50 @@ if [[ "$(id -u 2>/dev/null || echo 0)" -eq 0 ]]; then CAN_STAGE_UNSEARCHABLE=0; 
 
 check_json() {
   # $1 desc, $2 json, $3 jq boolean expr — passes when the expr is truthy.
-  local desc="$1" json="$2" expr="$3"
-  if printf '%s' "$json" | jq -e "$expr" >/dev/null 2>&1; then
+  local desc="$1" json="$2" expr="$3" jq_rc=0
+  local error_file="$TMP/check-json.stderr"
+  if printf '%s' "$json" | jq -e "$expr" >/dev/null 2>"$error_file"; then
     pass "$desc"
+    return 0
   else
-    fail "$desc"
+    jq_rc=$?
   fi
+  fail "$desc"
+  printf '  jq predicate: %s\n' "$expr" >&2
+  if [[ "$jq_rc" -eq 1 ]]; then
+    printf '  failure kind: predicate false/null (jq exit %s)\n' "$jq_rc" >&2
+  else
+    printf '  failure kind: jq error / invalid or empty JSON (jq exit %s)\n' "$jq_rc" >&2
+  fi
+  if [[ -s "$error_file" ]]; then
+    printf '  jq stderr:\n' >&2
+    sed 's/^/    /' "$error_file" >&2
+  fi
+  if [[ -n "$json" ]]; then
+    printf '  actual JSON input:\n%s\n' "$json" >&2
+  else
+    printf '  actual JSON input: <empty input>\n' >&2
+  fi
+  return 1
+}
+
+json_case_context() {
+  local label="$1" rc="$2" stderr_file="$3" caller="$4" json="$5"
+  printf '  %s CLI exit: %s\n' "$label" "$rc" >&2
+  printf '  caller physical path: %s\n' "$caller" >&2
+  if [[ -s "$stderr_file" ]]; then
+    printf '  CLI stderr:\n' >&2
+    sed 's/^/    /' "$stderr_file" >&2
+  else
+    printf '  CLI stderr: <empty stderr>\n' >&2
+  fi
+  printf '  worktree_enumeration: %s\n' \
+    "$(printf '%s' "$json" | jq -c '.worktree_enumeration // "unavailable"' 2>/dev/null || printf 'unparseable JSON')" >&2
+  printf '  timeout overrides: git=%s read=%s network=%s gh=%s\n' \
+    "${STALE_CLEANUP_TIMEOUT_SECS:-<default>}" \
+    "${STALE_CLEANUP_READ_TIMEOUT_SECS:-<default>}" \
+    "${STALE_CLEANUP_NET_TIMEOUT_SECS:-<default>}" \
+    "${STALE_CLEANUP_GH_TIMEOUT_SECS:-<default>}" >&2
 }
 
 check_eq() {
@@ -148,29 +186,38 @@ chmod +x "$STUB_BIN/gh"
 export PATH="$STUB_BIN:$PATH"
 
 # ---- T1: cwd=repoB, script living in repoA → sweeps repoB --------------------
-OUT="$(cd "$REPO_B" && "$SUT" --check --json 2>&1)"
+OUT="$(cd "$REPO_B" && "$SUT" --check --json 2>"$TMP/T1.stderr")"
 RC=$?
 check_eq "T1: exit 1 (stale items found)" 1 "$RC"
 check_json "T1: repoB stale branch listed" "$OUT" \
-  '.stale_local_branches | map(.branch) | index("issue-100-repob-stale") != null'
+  '.stale_local_branches | map(.branch) | index("issue-100-repob-stale") != null' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: repoB stale worktree listed" "$OUT" \
-  '.stale_worktrees | any(.branch == "issue-102-repob-wt")'
+  '.stale_worktrees | any(.branch == "issue-102-repob-wt")' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: repoB main worktree skipped as main" "$OUT" \
-  '.skipped_worktrees | any(.reason == "main worktree" and (.path | endswith("repoB")))'
+  '.skipped_worktrees | any(.reason == "main worktree" and (.path | endswith("repoB")))' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: protected branch skipped" "$OUT" \
-  '.skipped_local_branches | any(.branch == "develop" and .reason == "protected")'
+  '.skipped_local_branches | any(.branch == "develop" and .reason == "protected")' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: open-PR branch skipped" "$OUT" \
-  '.skipped_local_branches | any(.branch == "issue-101-repob-pr" and .reason == "open PR")'
+  '.skipped_local_branches | any(.branch == "issue-101-repob-pr" and .reason == "open PR")' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: checked-out branch skipped" "$OUT" \
-  '.skipped_local_branches | any(.branch == "issue-103-repob-dirty" and .reason == "checked out in a worktree")'
+  '.skipped_local_branches | any(.branch == "issue-103-repob-dirty" and .reason == "checked out in a worktree")' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: dirty worktree skipped" "$OUT" \
-  '.skipped_worktrees | any((.path | endswith("wtB-dirty")) and .reason == "uncommitted tracked changes")'
+  '.skipped_worktrees | any((.path | endswith("wtB-dirty")) and .reason == "uncommitted tracked changes")' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 check_json "T1: fresh branch appears nowhere" "$OUT" \
-  '[.. | strings] | any(contains("issue-104-repob-fresh")) | not'
+  '[.. | strings] | any(contains("issue-104-repob-fresh")) | not' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 # Negative control — the tripwire for the #697 regression: nothing from repoA
 # (its stale branch or any path under it) may appear in the output.
 check_json "T1: no repoA refs leak into the sweep (negative control)" "$OUT" \
-  '[.. | strings] | any(contains("repoA") or contains("issue-999")) | not'
+  '[.. | strings] | any(contains("repoA") or contains("issue-999")) | not' || \
+  json_case_context T1 "$RC" "$TMP/T1.stderr" "$(cd "$REPO_B" && pwd -P)" "$OUT"
 
 # ---- T2: open-PR check ran inside the swept repo -----------------------------
 GH_PWD="$(tail -1 "$TMP/gh-pwd.log" 2>/dev/null || echo "")"
@@ -178,18 +225,22 @@ check_eq "T2: gh pr list ran from repoB root" "$REPO_B_REAL" "$GH_PWD"
 
 # ---- T1b: subdirectory of repoB still resolves repoB's root ------------------
 mkdir -p "$REPO_B/subdir"
-OUT="$(cd "$REPO_B/subdir" && "$SUT" --check --json 2>&1)"
+OUT="$(cd "$REPO_B/subdir" && "$SUT" --check --json 2>"$TMP/T1b.stderr")"
+RC_T1B=$?
 check_json "T1b: sweep from a repoB subdirectory finds repoB's stale branch" "$OUT" \
-  '.stale_local_branches | map(.branch) | index("issue-100-repob-stale") != null'
+  '.stale_local_branches | map(.branch) | index("issue-100-repob-stale") != null' || \
+  json_case_context T1b "$RC_T1B" "$TMP/T1b.stderr" "$(cd "$REPO_B/subdir" && pwd -P)" "$OUT"
 
 # ---- T3: --root override beats cwd -------------------------------------------
-OUT="$(cd "$REPO_A" && "$SUT" --check --json --root "$REPO_B" 2>&1)"
+OUT="$(cd "$REPO_A" && "$SUT" --check --json --root "$REPO_B" 2>"$TMP/T3.stderr")"
 RC=$?
 check_eq "T3: exit 1 under --root" 1 "$RC"
 check_json "T3: --root repoB sweeps repoB from repoA cwd" "$OUT" \
-  '.stale_local_branches | map(.branch) | index("issue-100-repob-stale") != null'
+  '.stale_local_branches | map(.branch) | index("issue-100-repob-stale") != null' || \
+  json_case_context T3 "$RC" "$TMP/T3.stderr" "$(cd "$REPO_A" && pwd -P)" "$OUT"
 check_json "T3: no repoA refs under --root (negative control)" "$OUT" \
-  '[.. | strings] | any(contains("repoA") or contains("issue-999")) | not'
+  '[.. | strings] | any(contains("repoA") or contains("issue-999")) | not' || \
+  json_case_context T3 "$RC" "$TMP/T3.stderr" "$(cd "$REPO_A" && pwd -P)" "$OUT"
 GH_PWD="$(tail -1 "$TMP/gh-pwd.log" 2>/dev/null || echo "")"
 check_eq "T3: gh pr list pinned to --root repo, not cwd" "$REPO_B_REAL" "$GH_PWD"
 
@@ -200,10 +251,12 @@ check_eq "T4: non-repo cwd exits 4" 4 "$RC"
 check_contains "T4: error suggests --root" "--root" "$ERR"
 
 # ---- T5: caller's-current-worktree safety skip survives ----------------------
-OUT="$(cd "$TMP/wtB-stale" && "$SUT" --check --json 2>&1)"
+OUT="$(cd "$TMP/wtB-stale" && "$SUT" --check --json 2>"$TMP/T5.stderr")"
+RC_T5=$?
 check_json "T5: caller's worktree skipped, not stale" "$OUT" \
   '(.skipped_worktrees | any((.path | endswith("wtB-stale")) and (.reason | contains("current worktree"))))
-   and (.stale_worktrees | any(.path | endswith("wtB-stale")) | not)'
+   and (.stale_worktrees | any(.path | endswith("wtB-stale")) | not)' || \
+  json_case_context T5 "$RC_T5" "$TMP/T5.stderr" "$(cd "$TMP/wtB-stale" && pwd -P)" "$OUT"
 
 # ---- T6: --root with a missing value is a usage error ------------------------
 ( cd "$REPO_B" && "$SUT" --check --root >/dev/null 2>&1 )
@@ -233,23 +286,32 @@ check_eq "T7b: unpushed commit on repoB main exits 1" 1 "$RC"
 check_contains "T7b: reports unpushed commit" "unpushed commit" "$OUT"
 
 # ---- T8: --json root key + --root= form + flag-like values (issue #707) ------
-OUT="$(cd "$REPO_B" && "$SUT" --check --json 2>&1)"
+OUT="$(cd "$REPO_B" && "$SUT" --check --json 2>"$TMP/T8a.stderr")"
+RC_T8A=$?
 check_json "T8a: --json includes top-level root ending in repoB" "$OUT" \
-  '.root | endswith("/repoB")'
+  '.root | endswith("/repoB")' || \
+  json_case_context T8a "$RC_T8A" "$TMP/T8a.stderr" "$REPO_B_REAL" "$OUT"
 check_json "T8a: all documented JSON keys present alongside root" "$OUT" \
   'has("root") and has("stale_days") and has("threshold_ts")
    and has("stale_worktrees") and has("stale_local_branches") and has("stale_remote_branches")
-   and has("skipped_worktrees") and has("skipped_local_branches") and has("skipped_remote_branches")'
+   and has("skipped_worktrees") and has("skipped_local_branches") and has("skipped_remote_branches")' || \
+  json_case_context T8a "$RC_T8A" "$TMP/T8a.stderr" "$REPO_B_REAL" "$OUT"
 
 # --root=<path> must behave exactly like the two-arg form.
-OUT_TWOARG="$(cd "$TMP/plain" && "$SUT" --check --json --root "$REPO_B" 2>&1)"
+OUT_TWOARG="$(cd "$TMP/plain" && "$SUT" --check --json --root "$REPO_B" 2>"$TMP/T8b-twoarg.stderr")"
 RC_TWOARG=$?
-OUT_EQFORM="$(cd "$TMP/plain" && "$SUT" --check --json --root="$REPO_B" 2>&1)"
+OUT_EQFORM="$(cd "$TMP/plain" && "$SUT" --check --json --root="$REPO_B" 2>"$TMP/T8b-eqform.stderr")"
 RC_EQFORM=$?
 check_eq "T8b: --root=<path> exit code matches two-arg form" "$RC_TWOARG" "$RC_EQFORM"
 check_eq "T8b: --root=<path> resolves the same root" \
   "$(printf '%s' "$OUT_TWOARG" | jq -r '.root')" \
   "$(printf '%s' "$OUT_EQFORM" | jq -r '.root')"
+if [[ "$RC_TWOARG" != "$RC_EQFORM" || \
+      "$(printf '%s' "$OUT_TWOARG" | jq -r '.root' 2>/dev/null)" != \
+      "$(printf '%s' "$OUT_EQFORM" | jq -r '.root' 2>/dev/null)" ]]; then
+  json_case_context T8b-twoarg "$RC_TWOARG" "$TMP/T8b-twoarg.stderr" "$(cd "$TMP/plain" && pwd -P)" "$OUT_TWOARG"
+  json_case_context T8b-eqform "$RC_EQFORM" "$TMP/T8b-eqform.stderr" "$(cd "$TMP/plain" && pwd -P)" "$OUT_EQFORM"
+fi
 
 # Empty or flag-like --root values are usage errors (3), never resolution
 # failures (4) — `--root --json` previously swallowed --json as the path.
