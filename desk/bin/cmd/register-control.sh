@@ -28,10 +28,11 @@ BEHAVIOR
   `state get control_session`. No event is recorded (state is not an item).
 
   Registering a session other than the one registered also clears tick_at,
-  the time of the last tick, so a replacement desk is not live (and the
-  capture hook queues nothing) until it has ticked itself; the previous
-  desk's tick never vouches for it. Registering the same session again
-  keeps tick_at.
+  the time of the last tick. A preceding tick finishes before that clear.
+  Named desk ticks (--session) must match the registered session; an old
+  session cannot stamp after replacement. The argument-free compatibility
+  tick has no caller identity: any such tick committing after registration
+  can make the desk live. Registering the same session again keeps tick_at.
 
 OUTPUT
   `control session SESSION`, plus `(replaces PREVIOUS)` when another session
@@ -50,6 +51,9 @@ EOF
 hq__register_sql() {
   cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
+-- Match tick --session's order: tick first, then control. Every tick_at writer
+-- is serialized before the following statement rereads and clears its stamp.
+SELECT pg_advisory_xact_lock(hashtextextended('human-queue:tick:' || :'hq_schema', 0)) AS hq_tick_locked \gset
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_locked \gset
 WITH prev AS (
   SELECT value FROM state WHERE key = 'control_session'

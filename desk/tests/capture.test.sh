@@ -30,7 +30,7 @@
 #                   profile: still captured
 #   replacement     re-registering the same session keeps tick_at; a
 #                   different session clears it, so nothing is queued
-#                   until the new desk ticks, then its questions are
+#                   until a later tick, then its questions are
 set -uo pipefail
 
 TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -60,7 +60,13 @@ chmod 700 "$TMP"
 
 admin_sql() { hq_psql -At -c "$1"; }
 
+RACE_HELD_PID=""; RACE_REGISTER_PID=""; RACE_TICK_PID=""; RACE_FD_OPEN=false
 cleanup() {
+  # Only children created below; close the owned FIFO before joining them.
+  if [ "$RACE_FD_OPEN" = true ]; then exec 3>&-; fi
+  for child in "$RACE_HELD_PID" "$RACE_REGISTER_PID" "$RACE_TICK_PID"; do
+    if [ -n "$child" ]; then wait "$child" 2>/dev/null || true; fi
+  done
   admin_sql "DROP SCHEMA IF EXISTS $S_MAIN CASCADE;" >/dev/null 2>&1 \
     || echo "WARN: could not drop scratch schema $S_MAIN — drop it by hand" >&2
   rm -rf "$TMP"
@@ -276,7 +282,104 @@ check "replacement desk, not yet ticked: nothing queued" "$(n_items)" "$BEFORE"
 hq tick
 hook "$(input worker-4 '{"question": "Queued after the new desk ticks?", "options": [{"label": "Yes"}]}')"
 IDR=$(sql_in "SELECT id FROM items WHERE question = 'Queued after the new desk ticks?'")
-check "replacement desk after its own tick: queued" "$(reason)" "$(receipt "$IDR")"
+check "replacement desk after later compatibility tick: queued" "$(reason)" "$(receipt "$IDR")"
+
+# --------------------------------------------------- replacement/tick lock order
+# A controlled transaction holds the same key and writes the same tick_at stamp
+# as compatibility tick. FIFO release and pg_stat_activity establish ordering;
+# an elapsed sleep alone is never evidence that registration waited.
+race_hold() {
+  local key="$1" label="${2:-$1}" i=0
+  mkfifo "$TMP/$label.fifo"
+  ( HQ_CONN_MARKER="$TMP/$label.marker"; hq_psql -At -f - >"$TMP/$label.out" 2>"$TMP/$label.err" ) <"$TMP/$label.fifo" &
+  RACE_HELD_PID=$!
+  exec 3>"$TMP/$label.fifo"
+  RACE_FD_OPEN=true
+  printf '%s\n' "SET search_path TO $S_MAIN;" 'BEGIN;' \
+    "SELECT pg_advisory_xact_lock(hashtextextended('human-queue:$key:' || '$S_MAIN', 0));" \
+    '\echo locked' >&3
+  while [ "$i" -lt 100 ] && ! grep -q '^locked$' "$TMP/$label.out"; do sleep 0.05; i=$((i + 1)); done
+  check "race holder owns $key lock" "$(grep -c '^locked$' "$TMP/$label.out")" 1
+}
+race_release() {
+  printf '%s\n' 'COMMIT;' >&3
+  exec 3>&-
+  RACE_FD_OPEN=false
+  wait "$RACE_HELD_PID"
+  RACE_HELD_PID=""
+}
+race_waiting() {
+  local key="$1" i=0
+  RACE_WAITING=0
+  while [ "$i" -lt 100 ]; do
+    RACE_WAITING=$(sql_in "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'human-queue' AND wait_event = 'advisory' AND query LIKE '%human-queue:$key:%$S_MAIN%' AND pid <> pg_backend_pid()")
+    [ "$RACE_WAITING" = 1 ] && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+}
+
+hq register-control race-old
+RACE_ITEMS=$(n_items)
+RACE_WATERMARK=$(sql_in "SELECT value FROM state WHERE key = 'tick_watermark'")
+race_hold tick
+HUMAN_QUEUE_SCHEMA="$S_MAIN" bash "$HQ_T_CLI" register-control race-new --json \
+  >"$TMP/race-register.out" 2>"$TMP/race-register.err" 3>&- </dev/null &
+RACE_REGISTER_PID=$!
+race_waiting tick
+check "registration waits for the preceding compatibility tick lock" "$RACE_WAITING" 1
+printf '%s\n' "INSERT INTO state (key,value) VALUES ('tick_at','2026-11-08T00:00:00Z') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;" >&3
+race_release
+RC=0; wait "$RACE_REGISTER_PID" || RC=$?; RACE_REGISTER_PID=""
+check "replacement after preceding tick succeeds" "$RC" 0
+check "replacement after preceding tick is the registered owner" "$(sql_in "SELECT value FROM state WHERE key='control_session'")" race-new
+check "replacement clears preceding tick's committed stamp" "$(sql_in "SELECT count(*) FROM state WHERE key='tick_at'")" 0
+check "replacement ordering leaves queued items intact" "$(n_items)" "$RACE_ITEMS"
+check "replacement ordering does not move the watermark" "$(sql_in "SELECT value FROM state WHERE key='tick_watermark'")" "$RACE_WATERMARK"
+hq tick --session race-old
+check "named old session is rejected after replacement" "$RC" 4
+check "rejected named tick does not stamp" "$(sql_in "SELECT count(*) FROM state WHERE key='tick_at'")" 0
+hq tick
+check "later compatibility tick is intentionally allowed" "$RC" 0
+check "later compatibility tick can make the desk live" "$(sql_in "SELECT count(*) FROM state WHERE key='tick_at'")" 1
+
+# A named tick already owns tick, then waits for control. Registration must wait
+# behind it on tick, rather than taking control and forming an inverse-order cycle.
+race_hold control
+HUMAN_QUEUE_SCHEMA="$S_MAIN" bash "$HQ_T_CLI" tick --session race-new \
+  >"$TMP/race-tick.out" 2>"$TMP/race-tick.err" 3>&- </dev/null &
+RACE_TICK_PID=$!
+race_waiting control
+check "named tick waits for control after taking tick" "$RACE_WAITING" 1
+HUMAN_QUEUE_SCHEMA="$S_MAIN" bash "$HQ_T_CLI" register-control race-next \
+  >"$TMP/race-next.out" 2>"$TMP/race-next.err" 3>&- </dev/null &
+RACE_REGISTER_PID=$!
+race_waiting tick
+check "registration uses the same tick-before-control order" "$RACE_WAITING" 1
+race_release
+RC=0; wait "$RACE_TICK_PID" || RC=$?; RACE_TICK_PID=""
+check "named tick completes without deadlock" "$RC" 0
+RC=0; wait "$RACE_REGISTER_PID" || RC=$?; RACE_REGISTER_PID=""
+check "following registration completes without deadlock" "$RC" 0
+check "following registration clears named tick's stamp" "$(sql_in "SELECT count(*) FROM state WHERE key='tick_at'")" 0
+
+# The CLI keeps its production 30s lock_timeout. A fixture-only connection
+# statement timeout bounds this failure control without waiting thirty seconds.
+case "$HUMAN_QUEUE_DATABASE_URL" in
+  *options=*) printf 'skip — URL options already set; bounded lock-failure control needs its own\n' ;;
+  *)
+    case "$HUMAN_QUEUE_DATABASE_URL" in *\?*) RACE_SEP='&' ;; *) RACE_SEP='?' ;; esac
+    RACE_TIMEOUT_URL="$HUMAN_QUEUE_DATABASE_URL${RACE_SEP}options=-c%20statement_timeout%3D500"
+    RACE_STATE=$(sql_in "SELECT jsonb_object_agg(key,value)::text FROM state")
+    race_hold tick timeout
+    RC=0
+    HUMAN_QUEUE_DATABASE_URL="$RACE_TIMEOUT_URL" HUMAN_QUEUE_SCHEMA="$S_MAIN" bash "$HQ_T_CLI" register-control must-not-register \
+      >"$TMP/timeout.out" 2>"$TMP/timeout.err" 3>&- </dev/null || RC=$?
+    check "registration lock failure is nonzero" "$RC" 1
+    check "registration lock failure publishes no partial state" "$(sql_in "SELECT jsonb_object_agg(key,value)::text FROM state")" "$RACE_STATE"
+    race_release
+    ;;
+esac
 
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
 check "the public schema's tables are unchanged" "$PUBLIC_AFTER" "$PUBLIC_BEFORE"

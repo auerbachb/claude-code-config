@@ -262,9 +262,11 @@ full contract.
 - **When the desk last ticked.** The watermark is not a time, so each tick
   also stores its own time (UTC ISO 8601) under `tick_at`. `control-status`
   turns it into an age; it reads any tick, and in practice only the desk
-  ticks. Registering a different control session clears `tick_at`, so a
-  replacement desk is live only after its own first tick, never on the
-  previous desk's.
+  ticks. Registering a different control session waits for preceding ticks
+  and clears `tick_at`. Named desk ticks (`--session`) are checked against the
+  registered owner under the same locks. The argument-free compatibility
+  command has no caller identity: any such tick committing after registration
+  can make it live, so its stamp does not prove the new session itself ticked.
 
 ## Capture hook
 
