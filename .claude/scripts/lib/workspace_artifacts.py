@@ -72,6 +72,42 @@ class Artifacts:
                 row["removed"] = None
         self.items.append(row)
 
+    def handoff_inactive(self, doc, number):
+        # A merged PR alone does not finish the wrap/issue-recovery handoff.
+        completion = doc.get("issue_completion")
+        if (doc.get("phase_completed") != "C" or not isinstance(completion, dict)
+                or completion.get("outcome") not in ("verified", "retained")
+                or str(completion.get("owner_repo", "")).lower() != self.sweep.repo.lower()
+                or type(completion.get("pr")) is not int or completion.get("pr") != number
+                or completion.get("head_sha") != doc["head_sha"]):
+            raise finished.Skip("handoff_completion_pending")
+        if completion.get("outcome") == "retained" and (not isinstance(completion.get("retained_scope"), dict) or not completion["retained_scope"]):
+            raise finished.Unknown("handoff_retained_scope_unknown")
+        location = doc.get("worktree")
+        if not isinstance(location, str) or not Path(location).is_absolute():
+            raise finished.Unknown("handoff_worktree_identity_unknown")
+        original = Path(location)
+        if original.is_symlink():
+            raise finished.Unknown("handoff_worktree_identity_unknown")
+        worktree = original.resolve()
+        if any(part in str(worktree) for part in ("/.codex/worktrees/", "/.cursor/worktrees/")):
+            raise finished.Unknown("desktop_session_liveness_unknown")
+        self.sweep.census()
+        if any(cwd == str(worktree) or cwd.startswith(str(worktree) + "/") for cwd in self.sweep.cwds):
+            raise finished.Skip("live_process")
+        candidates = [candidate for candidate in self.sweep.worktrees()
+                      if Path(candidate["path"]).resolve() == worktree]
+        if worktree.exists():
+            if len(candidates) != 1:
+                raise finished.Unknown("handoff_worktree_identity_unknown")
+            checked = self.sweep.verify(candidates[0], refresh=True)
+            if checked["head_sha"] != doc["head_sha"] or checked["pr_number"] != number:
+                raise finished.Unknown("handoff_worktree_identity_unknown")
+        elif candidates:
+            raise finished.Unknown("handoff_worktree_state_unknown")
+        # An explicitly completed, already reaped checkout has no remaining
+        # source here; the complete census still has to prove its owner idle.
+
     def handoff(self, path, row):
         number = int(re.fullmatch(r"pr-([1-9][0-9]*)-handoff\.json", path.name)[1])
         doc, meta = self.private_json(path)
@@ -79,9 +115,14 @@ class Artifacts:
                 or str(doc.get("owner_repo", "")).lower() != self.sweep.repo.lower()
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(doc.get("head_sha", "")))):
             raise finished.Unknown("handoff_identity_unknown")
-        self.terminal(number)
+        terminal = self.terminal(number)
+        if terminal.get("headRefOid") != doc["head_sha"]:
+            raise finished.Unknown("handoff_head_unknown")
+        self.handoff_inactive(doc, number)
         if self.apply:
-            self.terminal(number)
+            if self.terminal(number).get("headRefOid") != doc["head_sha"]:
+                raise finished.Unknown("handoff_head_unknown")
+            self.handoff_inactive(doc, number)
             helper = str(Path(__file__).parents[1] / "handoff-state.sh")
             env = dict(os.environ, HOME=str(self.home))
             row["removal_attempted"] = True

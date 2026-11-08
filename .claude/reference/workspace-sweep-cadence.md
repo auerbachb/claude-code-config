@@ -181,3 +181,13 @@ Cleanup rechecks the allowed scratch roots independently of discovery entries. A
 forged index cannot expand that namespace, and a native per-user `claude-UID`
 container is never registered as one session. Only an attributable session subtree
 may qualify; nested ownership records prevent one artifact from absorbing another.
+
+Handoff cleanup additionally requires explicit Phase C completion with a matching
+repo/PR/HEAD completion disposition (`verified`, or justified `retained` scope),
+a recorded worktree, and a complete inactive-owner census. Pending or legacy
+handoffs without that evidence stay put, including merged PRs still recovering
+issue closure. Registered checkouts must still pass clean/pushed/terminal checks;
+managed desktop bindings remain unknown. A completed already-reaped checkout can
+release its metadata only after the same liveness checks. Completion writers publish the guarded
+disposition before Phase C is marked finished; ordinary wrap deletes its own
+scoped handoff after successful reconciliation.

@@ -36,15 +36,32 @@ cases=r'''
     directory=Path(env['HOME'])/'.claude/handoffs/fixture/repo';directory.mkdir(parents=True)
     def handoff(row):
         path=directory/('pr-'+str(row['number'])+'-handoff.json')
-        path.write_text(json.dumps(dict(pr_number=row['number'],owner_repo='fixture/repo',head_sha=row['headRefOid'])))
+        path.write_text(json.dumps(dict(pr_number=row['number'],owner_repo='fixture/repo',head_sha=row['headRefOid'],phase_completed='C',worktree=str(merged),issue_completion=dict(outcome='verified',owner_repo='fixture/repo',pr=row['number'],head_sha=row['headRefOid']))))
         path.chmod(0o600);return path
     finished_handoff=handoff(merged_row);open_handoff=handoff(open_row)
+    result=artifacts(extra={'FINISHED_TEST_CWD':str(merged)})
+    verify(finished_handoff.exists() and outcome(result,finished_handoff)['reason']=='live_process','live session keeps its completed handoff')
+    saved=json.loads(finished_handoff.read_text())
+    for label,update in [('phase',{'phase_completed':'B'}),('pending',{'issue_completion':dict(saved['issue_completion'],outcome='pending')}),('legacy',{'worktree':None}),('foreign-completion',{'issue_completion':dict(saved['issue_completion'],owner_repo='other/repo')}),('boolean-pr',{'issue_completion':dict(saved['issue_completion'],pr=True)}),('retained-without-proof',{'issue_completion':dict(saved['issue_completion'],outcome='retained',retained_scope='unchecked')})]:
+        finished_handoff.write_text(json.dumps(dict(saved,**update)))
+        result=artifacts()
+        verify(finished_handoff.exists() and not outcome(result,finished_handoff)['removed'],'uncertain handoff retained: '+label)
+    finished_handoff.write_text(json.dumps(saved))
+    result=artifacts(extra={'FINISHED_TEST_DESKTOP':'1'})
+    verify(finished_handoff.exists() and not outcome(result,finished_handoff)['removed'],'unknown desktop binding keeps handoff')
     result=artifacts(False)
     verify(finished_handoff.exists() and outcome(result,finished_handoff)['outcome']=='candidate','artifact report never deletes')
     result=artifacts()
     verify(not finished_handoff.exists() and outcome(result,finished_handoff)['removed'],'terminal scoped handoff is removed through guarded helper')
     verify(open_handoff.exists() and outcome(result,open_handoff)['reason']=='open_pr','open PR handoff retained')
     verify(outcome(result,finished_handoff)['logical_bytes_reclaimed']>0,'handoff bytes count only after actual deletion')
+
+    reaped=worktree('handoff-reaped')
+    reaped_row=next(r for r in db['rows'] if r['headRefName']=='handoff-reaped')
+    reaped_handoff=handoff(reaped_row);doc=json.loads(reaped_handoff.read_text());doc['worktree']=str(reaped);reaped_handoff.write_text(json.dumps(doc))
+    git('worktree','remove',str(reaped))
+    result=artifacts()
+    verify(not reaped_handoff.exists() and outcome(result,reaped_handoff)['removed'],'completed handoff of already reaped inactive checkout removed')
 
     released=worktree('unheld-finished');git('worktree','remove',str(released))
     open_released=worktree('unheld-open','OPEN');git('worktree','remove',str(open_released))
