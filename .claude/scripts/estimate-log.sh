@@ -140,47 +140,110 @@ check_deps() {
 
 # ---------------------------------------------------------------------------
 # Advisory file lock (mkdir-based, portable)
-# Acquires LOG_LOCK directory; sets LOCK_TOKEN for release check.
-# Returns 0 on success, 5 on timeout.
+# Known live holders never expire by age. Unknown ownership is retained until
+# the caller's bounded wait ends; only a recorded same-host dead PID is reaped.
 # ---------------------------------------------------------------------------
 LOCK_TOKEN=""
+# A shell may die while its append/replace utility still owns a write. Publish
+# pending BEFORE forking; an interrupted PID publication remains unknown.
+lock_mutation_inactive() {
+  local token="$1" operation recorded extra seen rc
+  [[ -e "$LOG_LOCK/writer" ]] || return 0
+  IFS=' ' read -r operation recorded extra < "$LOG_LOCK/writer" || return 1
+  [[ "$recorded" == "$token" && -z "$extra" ]] || return 1
+  [[ "$operation" == "done" ]] && return 0
+  [[ "$operation" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$operation" 2>/dev/null && return 1
+  rc=0
+  seen=$(ps -p "$operation" -o pid= 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 1 && -z "$seen" ]]
+}
+
+run_log_mutation() {
+  local kind="$1" source="$2" writer rc=0 publication=0
+  [[ "$kind" == append || "$kind" == replace ]] || return 5
+  printf 'pending %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || {
+    # No child was started: an empty/truncated marker is ours to remove.
+    rm -f "$LOG_LOCK/writer" 2>/dev/null || true
+    return 5
+  }
+  case "$kind" in
+    append) cat "$source" >> "$LOG_FILE" & ;;
+    replace) mv "$source" "$LOG_FILE" & ;;
+  esac
+  writer=$!
+  printf '%s %s\n' "$writer" "$LOCK_TOKEN" > "$LOG_LOCK/writer" || publication=5
+  wait "$writer" || rc=$?
+  # Once wait completed, this generation cannot write again through this child.
+  printf 'done %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || {
+    # wait has reaped the child, so removing our marker cannot expose a writer.
+    rm -f "$LOG_LOCK/writer" 2>/dev/null || true
+    publication=5
+  }
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  return "$publication"
+}
+
+lock_owner_dead() {
+  local snapshot="$1" pid host token extra seen rc
+  IFS=' ' read -r pid host token extra <<< "$snapshot"
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$host" == "$LOCK_HOST" \
+      && "$token" =~ ^[0-9]+-[0-9]+N?-[0-9]+$ && -z "$extra" \
+      && "$snapshot" == "$pid $host $token" ]] || return 1
+  kill -0 "$pid" 2>/dev/null && return 1
+  # Permission or inspection failures are not proof of death. Both BSD and GNU
+  # ps return 1 with no PID when the process is absent.
+  rc=0
+  seen=$(ps -p "$pid" -o pid= 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 1 && -z "$seen" ]] && lock_mutation_inactive "$token"
+}
+
+LOCK_HOST=""
 acquire_lock() {
   local deadline=$(( $(date +%s) + LOCK_STALE_SECS ))
+  local owner stored_token current retired reaper_guard
+  LOCK_HOST=$(hostname 2>/dev/null) || return 5
+  [[ "$LOCK_HOST" =~ ^[a-zA-Z0-9._-]+$ ]] || return 5
   LOCK_TOKEN="$$-$(date +%s%N 2>/dev/null || date +%s)-$RANDOM"
   while true; do
     if mkdir "$LOG_LOCK" 2>/dev/null; then
-      printf '%s\n' "$LOCK_TOKEN" > "$LOG_LOCK/token" 2>/dev/null || true
+      # Missing/partial metadata is never reaped, so publication cannot expose
+      # an apparently dead holder. Refuse the write if ownership cannot persist.
+      if ! printf '%s\n' "$LOCK_TOKEN" > "$LOG_LOCK/token" \
+          || ! printf '%s %s %s\n' "$$" "$LOCK_HOST" "$LOCK_TOKEN" > "$LOG_LOCK/owner.tmp" \
+          || ! mv "$LOG_LOCK/owner.tmp" "$LOG_LOCK/owner"; then
+        rm -rf "$LOG_LOCK" 2>/dev/null || true
+        return 5
+      fi
       return 0
     fi
-    # Stale lock check: only reap if the lock dir is old enough AND
-    # the recorded token (if any) differs from ours — avoids clobbering
-    # a live holder's lock on a re-entry path.
-    # Get lock directory mtime as epoch seconds, portable across BSD and GNU.
-    # stat -f %m is BSD (macOS); stat -c %Y is GNU (Linux).
-    # Validate the result is numeric before arithmetic to guard against
-    # GNU stat's -f flag returning a non-numeric mount-point string.
-    local lock_time _t
-    _t=$(stat -f %m "$LOG_LOCK" 2>/dev/null || true)
-    if ! [[ "$_t" =~ ^[0-9]+$ ]]; then
-      _t=$(stat -c %Y "$LOG_LOCK" 2>/dev/null || echo 0)
-    fi
-    [[ "$_t" =~ ^[0-9]+$ ]] && lock_time=$_t || lock_time=0
-    local lock_age=$(( $(date +%s) - lock_time ))
-    if [[ $lock_age -gt $LOCK_STALE_SECS ]]; then
-      # Read the stored token before removing to avoid clobbering a newly
-      # acquired lock from another writer. The window between reading the token
-      # and removing the directory is a theoretical race; in practice the lock
-      # is held for < 1 ms (append only), and LOCK_STALE_SECS=120 ensures
-      # only truly dead/stale holders are reaped. A re-try loop means any
-      # false-reap is self-correcting.
-      local stored_token
-      stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
-      # An empty token means the holder never recorded ownership (crash or
-      # failed write); treat it as stale just like a differing token.
-      if [[ "$stored_token" != "$LOCK_TOKEN" ]]; then
-        rm -rf "$LOG_LOCK" 2>/dev/null || true
-        continue
+    owner=$(cat "$LOG_LOCK/owner" 2>/dev/null || true)
+    stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || true)
+    reaper_guard="$LOG_LOCK/reaper-$stored_token"
+    if [[ -n "$stored_token" && "$owner" == *" $stored_token" ]] \
+        && lock_owner_dead "$owner" \
+        && mkdir "$reaper_guard" 2>/dev/null; then
+      # Only one reaper may move this dead generation. Recheck after obtaining
+      # the guard so a second contender cannot remove a new writer's lock.
+      current=$(cat "$LOG_LOCK/owner" 2>/dev/null || true)
+      if [[ "$current" == "$owner" \
+          && "$(cat "$LOG_LOCK/token" 2>/dev/null || true)" == "$stored_token" ]] \
+          && lock_owner_dead "$current"; then
+        retired=$(mktemp -d "${LOG_LOCK}.reaped.XXXXXX") || {
+          rmdir "$reaper_guard" 2>/dev/null || true
+          return 5
+        }
+        if mv "$LOG_LOCK" "$retired/lock" 2>/dev/null; then
+          rm -rf "$retired" 2>/dev/null || true
+          continue
+        fi
+        rmdir "$retired" 2>/dev/null || true
       fi
+      # Always release our guard, including when it landed in a successor's
+      # directory. Its name is tied to the observed acquisition token, so an
+      # obsolete/crashed guard can never block a different generation's reaper.
+      # A crash while guarding this same generation still fails closed.
+      rmdir "$reaper_guard" 2>/dev/null || true
     fi
     if [[ $(date +%s) -gt $deadline ]]; then
       return 5
@@ -190,11 +253,10 @@ acquire_lock() {
 }
 
 release_lock() {
-  # Release if this process owns the lock (token match) or if no token was
-  # ever recorded (crash between mkdir and token write): this process owns it.
   local stored_token
-  stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
-  if [[ -z "$stored_token" || "$stored_token" == "$LOCK_TOKEN" ]]; then
+  stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || true)
+  if [[ -n "$LOCK_TOKEN" && "$stored_token" == "$LOCK_TOKEN" ]] \
+      && lock_mutation_inactive "$LOCK_TOKEN"; then
     rm -rf "$LOG_LOCK" 2>/dev/null || true
   fi
 }
@@ -461,7 +523,7 @@ append_row() {
   fi
 
   local cat_rc=0
-  cat "$tmp" >> "$LOG_FILE" || cat_rc=$?
+  run_log_mutation append "$tmp" || cat_rc=$?
   rm -f "$tmp"
 
   if [[ $cat_rc -ne 0 ]]; then
@@ -515,10 +577,9 @@ patch_row_rounds() {
   # shellcheck disable=SC2064
   trap "release_lock; rm -f '$tmp'" EXIT
 
-  # Fence the read-modify-write. `acquire_lock`'s age-based reaper can hand the
-  # lock to a second writer while this one still believes it holds it — harmless
-  # for an append (one atomic short write), but this path REPLACES the whole
-  # file, so a lost race would discard the other writer's rows. Snapshot the log
+  # Fence the read-modify-write independently of the holder-liveness lock. This
+  # path REPLACES the whole file, so any lost ownership or changed snapshot
+  # must refuse rather than discard another writer's rows. Snapshot the log
   # now and re-verify both the checksum and our lock token immediately before the
   # mv; either mismatch aborts with the log untouched.
   local fence_before
@@ -583,7 +644,7 @@ patch_row_rounds() {
     return 5
   fi
 
-  if ! mv "$tmp" "$LOG_FILE"; then
+  if ! run_log_mutation replace "$tmp"; then
     rm -f "$tmp"; release_lock; trap - EXIT
     echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching PR #$pr_num" >&2
     return 5
