@@ -45,6 +45,8 @@ never driven through PM, such as sales-kit, after their first registration.
 Already-open sessions without stored paths or linked worktrees need one explicit
 `workspace-sweep.sh --register-repo /absolute/checkout` or an explicit list.
 Repository identity keys are never interpreted as filesystem paths.
+Malformed repository/session discovery state is actionable, never an empty
+successful sweep. Missing files may still bootstrap an unregistered installation.
 
 ## State, bounds and output
 
@@ -70,8 +72,9 @@ API uncertainty and removal failures print one actionable line per repository.
 Daily actionable output lands in the LaunchAgent stdout log.
 
 Git discovery is bounded to 15 seconds per command, cleanup to 300 seconds;
-timeouts kill the entire owned process group. Command output parsing is capped
-at 16 MiB. No credentials, provider usage, or review invocations are involved.
+timeouts kill the entire owned process group. SIGTERM and interruption also
+kill/reap the owned command group before exit 130. Command output parsing is
+capped at 16 MiB. No credentials, provider usage, or review invocations are involved.
 Each executed cleanup retains private byte-for-byte stdout/stderr up to the
 16 MiB per-stream bound, explicitly marking oversize captures, and its exit
 code under a unique `workspace-sweep/run-*` directory, including refused-path
@@ -87,7 +90,10 @@ XML plus the exact manual command, without creating directories/files, changing
 launchd, logging telemetry, or sweeping. Normal install selects the complete
 skills-worktree runner when available, builds an absolute tool PATH, validates
 with `plutil` when installed, backs up an existing plist, then uses
-bootout/bootstrap/enable/kickstart/list. A failed bootstrap restores the previous
-plist and attempts its bootstrap. Different runner paths require `--force`.
+bootout/bootstrap/enable/kickstart/list. Failure at any of the four activation
+steps unloads the new job, verifies removal, then restores and bootstraps the
+previous plist (or removes the new plist on first install). Rollback failures
+are reported explicitly; an unload failure retains the plist and backup.
+Different runner paths require `--force`.
 Uninstall verifies the job is unloaded before removing its plist and retains
 registry, state, logs and backup. No installer runs automatically from setup.

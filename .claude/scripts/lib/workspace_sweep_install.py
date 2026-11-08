@@ -105,16 +105,24 @@ def main():
     launch("bootout", service, check=False)
     try:
         launch("bootstrap", domain, str(target))
+        launch("enable", service)
+        launch("kickstart", service)
+        launch("list", LABEL)
     except (RuntimeError, OSError, subprocess.SubprocessError):
-        if previous:
-            publish(target, previous)
-            launch("bootstrap", domain, str(target), check=False)
-        else:
-            target.unlink()
+        try:
+            # bootstrap can succeed before a later step fails (or time out).
+            # Remove that new job before restoring the previous definition.
+            launch("bootout", service, check=False)
+            if launch("list", LABEL, check=False) == 0:
+                raise RuntimeError("new job remains loaded; plist retained")
+            if previous:
+                publish(target, previous)
+                launch("bootstrap", domain, str(target))
+            else:
+                target.unlink()
+        except (RuntimeError, OSError, subprocess.SubprocessError) as rollback:
+            raise RuntimeError("installation failed; rollback failed: " + str(rollback)) from rollback
         raise
-    launch("enable", service)
-    launch("kickstart", service)
-    launch("list", LABEL)
     print("Installed " + LABEL)
     return 0
 

@@ -124,6 +124,50 @@ cases = r'''
         verify((capture/'stdout').read_text()=='partial\n' and json.loads((capture/'capture.json').read_text())['exception']=='TimeoutExpired','deadline retains partial evidence before raising unknown')
     verify(all((p.stat().st_mode & 0o077)==0 for p in base.rglob('*')),'all cadence state and raw evidence files stay private')
     verify(any(p.name=='stdout' for p in base.rglob('*')),'raw cleanup evidence survives subsequent invocations')
+    # A real SIGTERM must not leave the detached cleanup helper/descendant
+    # executing after the adapter returns. Signal only owned, recorded PIDs.
+    import signal
+    hanging=tmp/'interrupt-cleanup.sh'
+    hanging.write_text('#!/bin/bash\nprintf "%s\\n" "$$" > "$CADENCE_PID.api"\nsleep 30 &\nprintf "%s\\n" "$!" > "$CADENCE_PID.child"\nwait\n')
+    prefix=tmp/'interrupt-pid'
+    env['WORKSPACE_SWEEP_CLEANUP_SH']=str(hanging)
+    def live(pid, group):
+        probe=subprocess.run(['ps','-o','pgid=,stat=','-p',str(pid)],capture_output=True,text=True,timeout=2)
+        row=probe.stdout.split()
+        if not row:return False
+        assert int(row[0])==group,'fixture PID changed process group'
+        return not row[1].startswith('Z')
+    pending=subprocess.Popen(['bash',str(runner),'--trigger','post-merge','--repo-dir',str(root)],cwd=root,env=dict(env,CADENCE_PID=str(prefix)),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    owned=[];stopped=False
+    try:
+        deadline=time.monotonic()+5
+        while not Path(str(prefix)+'.child').exists() and time.monotonic()<deadline:time.sleep(0.01)
+        api=int(Path(str(prefix)+'.api').read_text());child=int(Path(str(prefix)+'.child').read_text());owned=[api,child]
+        verify(live(api,api) and live(child,api),'real cleanup helper and descendant are live before SIGTERM')
+        pending.send_signal(signal.SIGTERM);pending.communicate(timeout=5)
+        deadline=time.monotonic()+3
+        while any(live(pid,api) for pid in owned) and time.monotonic()<deadline:time.sleep(0.02)
+        stopped=not any(live(pid,api) for pid in owned)
+    finally:
+        if pending.poll() is None:pending.kill()
+        pending.communicate(timeout=5)
+        for pid in owned:
+            if live(pid,api):
+                try:os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+    verify(stopped and pending.returncode==130,'SIGTERM reaps helper and terminates its real descendant')
+    # Malformed discovery metadata is not evidence that no repositories exist.
+    explicit.unlink()  # Exercise default discovery rather than the earlier explicit override.
+    env['WORKSPACE_SWEEP_CLEANUP_SH']=str(bad)
+    session.write_text('{broken');session.chmod(0o600)
+    result=cadence('--trigger','daily','--configured')
+    verify(result.returncode==1 and 'invalid JSON state' in result.stdout,'malformed session discovery reports action instead of clean empty success')
+    session.write_text('[]')
+    result=cadence('--trigger','daily','--configured')
+    verify(result.returncode==1 and 'session discovery' in result.stdout,'non-object session discovery reports unknown')
+    registry.write_text('{broken');registry.chmod(0o600)
+    result=cadence('--trigger','daily','--configured')
+    verify(result.returncode==1 and 'invalid JSON state' in result.stdout,'malformed repository registry reports action')
     print(str(checks)+' cadence checks passed')
 '''
 exec(compile(bootstrap+cases,'workspace-sweep-fixture','exec'))

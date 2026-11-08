@@ -23,9 +23,14 @@ import json,os,sys
 from pathlib import Path
 a=sys.argv[1:];state=Path(os.environ['LAUNCH_STATE']);fail=Path(os.environ['LAUNCH_FAIL'])
 with open(os.environ['LAUNCH_LOG'],'a') as f:f.write(json.dumps(a)+'\\n')
+if fail.exists() and fail.read_text().split(',')[0]==a[0]:
+ sequence=fail.read_text().split(',')[1:]
+ if sequence:fail.write_text(','.join(sequence))
+ else:fail.unlink()
+ sys.exit(1)
 if a[0]=='bootout':state.unlink(missing_ok=True)
 elif a[0]=='bootstrap':
- if fail.exists():fail.unlink();sys.exit(1)
+ if fail.exists() and fail.read_text()=='fail once':fail.unlink();sys.exit(1)
  state.write_text('loaded')
 elif a[0]=='list':sys.exit(0 if state.exists() else 1)
 ''')
@@ -51,6 +56,23 @@ elif a[0]=='list':sys.exit(0 if state.exists() else 1)
     (tmp/'fail').write_text('fail once');result=run('--hour','8')
     verify(result.returncode!=0 and target.read_bytes()==prior and (tmp/'loaded').exists(),'failed bootstrap restores previous plist and job')
     verify(target.with_suffix('.plist.bak').read_bytes()==prior,'previous plist backup retained')
+    for stage in ('enable','kickstart','list'):
+        (tmp/'fail').write_text(stage);result=run('--hour','8')
+        verify(result.returncode!=0 and target.read_bytes()==prior and (tmp/'loaded').exists(),stage+' failure restores previous plist and job')
+        calls=[json.loads(s)[0] for s in (tmp/'launch.log').read_text().splitlines()]
+        verify(calls[-3:]==['bootout','list','bootstrap'],stage+' rollback first verifies removal of the new job then restores the old job')
+    target.unlink();(tmp/'loaded').unlink(missing_ok=True)
+    (tmp/'fail').write_text('kickstart');result=run('--hour','8')
+    verify(result.returncode!=0 and not target.exists() and not (tmp/'loaded').exists(),'failed first install removes new job and plist')
+    target.write_bytes(prior);(tmp/'loaded').write_text('loaded')
+    for sequence in ('kickstart,bootout','kickstart,bootstrap'):
+        (tmp/'fail').write_text(sequence);result=run('--hour','8')
+        verify(result.returncode!=0 and 'rollback failed' in result.stderr,'rollback failure is explicit for '+sequence)
+        if sequence.endswith('bootout'):
+            verify((tmp/'loaded').exists() and target.exists() and target.with_suffix('.plist.bak').read_bytes()==prior,'unload failure retains definition and backup for recovery')
+        else:
+            verify(not (tmp/'loaded').exists() and target.read_bytes()==prior,'restore-bootstrap failure retains previous definition for recovery')
+        target.write_bytes(prior);(tmp/'loaded').write_text('loaded')
     config=plistlib.loads(prior);config['ProgramArguments'][1]='/different/runner'
     target.write_bytes(plistlib.dumps(config));result=run('--dry-run')
     verify(result.returncode!=0 and 'force' in result.stderr,'different installed runner requires force')

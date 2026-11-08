@@ -105,7 +105,7 @@ def lock(path, wait=0):
         os.close(fd)
 
 
-def load(path, default):
+def load(path, default, strict=False):
     try:
         fd = private_open(path, os.O_RDONLY)
     except FileNotFoundError:
@@ -116,7 +116,9 @@ def load(path, default):
         raise ValueError("state exceeds limit")
     try:
         return json.loads(text)
-    except ValueError:
+    except ValueError as exc:
+        if strict:
+            raise ValueError("invalid JSON state: " + str(path)) from exc
         return default
 
 
@@ -141,7 +143,7 @@ def register(base, root, key, now):
     if main and identity(main)[1] == key:
         root = Path(main)
     with lock(base / "registry.lock", wait=5):
-        registry = load(base / "repos.json", {})
+        registry = load(base / "repos.json", {}, strict=True)
         if not isinstance(registry, dict):
             raise ValueError("invalid repository registry")
         registry[key] = {"path": str(root), "seen": now}
@@ -156,12 +158,14 @@ def configured(base, home, now):
             raise ValueError("repository list exceeds limit")
         return [line for line in explicit.read_text().splitlines()
                 if line.strip() and not line.lstrip().startswith("#")]
-    registry = load(base / "repos.json", {})
+    registry = load(base / "repos.json", {}, strict=True)
     if not isinstance(registry, dict):
         raise ValueError("invalid repository registry")
     # Bootstrap pre-existing sessions using stored absolute paths, never keys.
-    sessions = load(home / ".claude/session-state.json", {})
-    repos = sessions.get("repos", {}) if isinstance(sessions, dict) else {}
+    sessions = load(home / ".claude/session-state.json", {}, strict=True)
+    if not isinstance(sessions, dict) or not isinstance(sessions.get("repos", {}), dict):
+        raise ValueError("invalid session discovery state")
+    repos = sessions.get("repos", {})
     if isinstance(repos, dict):
         for repo in repos.values():
             if not isinstance(repo, dict):
@@ -315,4 +319,13 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    def interrupted(_signal, _frame):
+        # Raise through command() so it kills/reaps its owned process group
+        # before an interrupted adapter can leave cleanup running detached.
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)
