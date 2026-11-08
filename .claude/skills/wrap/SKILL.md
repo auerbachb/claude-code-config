@@ -159,7 +159,7 @@ gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
   --jq '{number, title, headRefName, body, state}'
 ```
 
-If already merged, execute `wrap-post-merge-bookkeeping` below before Phase 3. If closed without a merge, skip to Phase 3 without merged bookkeeping.
+If already merged, execute `wrap-post-merge-bookkeeping` below before Phase 3. If closed without a merge, report that terminal state and stop; do not run merged-work follow-ups.
 
 ### Step 1.2: Scan for unresolved review findings
 
@@ -312,7 +312,7 @@ Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** —
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
 1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → execute `wrap-post-merge-bookkeeping` before Phase 3. `CLOSED` → stop.
-2. **Refresh gate** — run `wrap-capture-gate`, then `wrap-persist-recovery-audit` before routing. Invalid/empty/error or exit/verdict mismatch stops after durable recording. Exit `3` keeps its existing Phase3 route; exit `2`/`4` stops with its raw evidence pointer. Only exit `0` plus `GATE_CLASS=valid_pass` and no pending findings reaches Step2.2; pending findings still dispatch BranchB.
+2. **Refresh gate** — run `wrap-capture-gate`, then `wrap-persist-recovery-audit` before routing. Invalid/empty/error or exit/verdict mismatch stops after durable recording. Exit `3` rechecks the native state with `wrap-confirm-merged-entry`; only `MERGED` reaches Phase 3; exit `2`/`4` stops with its raw evidence pointer. Only exit `0` plus `GATE_CLASS=valid_pass` and no pending findings reaches Step2.2; pending findings still dispatch BranchB.
 3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`). Every B/C/D wait dispatch runs the claim renewal above first; its exit 5 stops here:
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
@@ -435,7 +435,7 @@ fi
 
 A ledger failure never un-merges anything; `NRO_SUFFIX` carries it into the report line (`merged PR #N (no AI review — ledger write failed)`) so the row can be added by hand (`unreviewed-merge-ledger.sh record`).
 
-**Preserve pickup evidence before claim cleanup.** After either confirmed merge path, run the same retryable boundary. It verifies the explicit repo/PR is merged, appends the estimate while renewal `since` and the claim timestamp remain available, then releases every winning-tier linked issue claim. Logging failures warn with the observed pickup timestamp and still attempt cleanup. Repeat invocations deduplicate the estimate and safely retry partial cleanup; foreign-account claims remain protected by the claim helper.
+**Preserve pickup evidence before claim cleanup.** After either confirmed merge path, run the same retryable boundary. It verifies the explicit repo/PR is merged, appends the estimate while renewal `since` and the claim timestamp remain available, then releases every winning-tier linked issue claim only while its pre-log observed comment identity still matches. Logging failures warn with the observed pickup timestamp and still attempt cleanup. Repeat invocations deduplicate the estimate and safely retry partial cleanup; foreign-account claims remain protected by the claim helper.
 
 <!-- test-anchor: wrap-post-merge-bookkeeping -->
 
@@ -530,6 +530,21 @@ See `main-sync.sh --help` and `dirty-main-guard.sh --help` for full contracts.
 Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report.
 
 ## Phase 3: Follow-Up Detection and Full-Session Sweep
+
+**Confirm a real merge on every entry, including recovery.** Run this before bookkeeping or follow-up detection. A closed-unmerged PR stops without creating merged-work tickets; a read failure also stops.
+
+<!-- test-anchor: wrap-confirm-merged-entry -->
+
+```bash
+MERGED_ENTRY_STATE=$(gh pr view "$PR_NUM" --repo "$CURRENT_REPO" --json state --jq '.state') || {
+  echo "WARN: could not verify merged state for PR #$PR_NUM; no merged-work follow-ups" >&2
+  exit 4
+}
+if [[ "$MERGED_ENTRY_STATE" != MERGED ]]; then
+  echo "PR #$PR_NUM is $MERGED_ENTRY_STATE without a confirmed merge; no merged-work follow-ups."
+  exit 3
+fi
+```
 
 **Every merged entry, including resume:** execute `wrap-post-merge-bookkeeping` before the follow-up sweep, even if Step 2.4 already ran it. This also covers terminal recovery exits and interrupted/already-merged runs. Use the explicit `CURRENT_REPO` and `PR_NUM` from Phase 1; restore `POST_MERGE_BOOKKEEPING_SH` through the prelude resolver if needed. A closed-unmerged PR skips it. Never release a claim or append actuals separately here; the shared boundary owns that order.
 

@@ -34,10 +34,11 @@ if ! command -v jq >/dev/null 2>&1 || ! command -v gh >/dev/null 2>&1; then
   exit 0
 fi
 META=$(gh pr view "$PR" --repo "$REPO" --json state,mergedAt 2>/dev/null) || META=""
-if ! printf '%s' "$META" | jq -e 'type == "object" and .state == "MERGED" and (.mergedAt | type == "string" and length > 0)' >/dev/null 2>&1; then
+if ! printf '%s' "$META" | jq -e 'type == "object" and .state == "MERGED" and (.mergedAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") and ((try fromdateiso8601 catch null) | type == "number"))' >/dev/null 2>&1; then
   jq -cn --arg repo "$REPO" --argjson pr "$PR" '{repo:$repo,pr:$pr,status:"not_confirmed_merged",issues:[]}'
   exit 3
 fi
+MERGED_AT=$(printf '%s' "$META" | jq -r ' .mergedAt')
 ISSUES=""; PRIMARY=""; PICKUP="unknown"
 if [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" ]]; then
   REF_RC=0
@@ -50,9 +51,29 @@ if [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" ]]; then
 else
   echo "WARN: post-merge-bookkeeping: PR #$PR issue resolver missing" >&2
 fi
-if [[ "$PRIMARY" =~ ^[1-9][0-9]*$ && -x "$SCRIPT_DIR/issue-claim.sh" ]]; then
-  CLAIM=$("$SCRIPT_DIR/issue-claim.sh" "$PRIMARY" --check --repo "$REPO" --json 2>/dev/null) || true
-  PICKUP=$(printf '%s' "$CLAIM" | jq -er '.claimed_since // .claimed_at // "unknown" | select(type == "string" and length > 0)' 2>/dev/null) || PICKUP="unknown"
+# Capture every linked issue before the logger can wait. Unknown ownership
+# is never permission to release; check receipts carry the exact observed ID.
+OBSERVED='[]'
+if [[ -x "$SCRIPT_DIR/issue-claim.sh" ]]; then
+  while IFS= read -r ISSUE; do
+    [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || continue
+    CLAIM=$("$SCRIPT_DIR/issue-claim.sh" "$ISSUE" --check --repo "$REPO" --json 2>/dev/null) || true
+    if printf '%s' "$CLAIM" | jq -e --arg repo "$REPO" --argjson issue "$ISSUE" --arg merged "$MERGED_AT" '
+      type == "object" and .repo == $repo and .issue == $issue and has("claim_comment_id")
+      and (.verdict as $v | ["unclaimed","mine","claimed","stale"] | index($v) != null)
+      and (.claim_comment_id | . == null or (type == "number" and . > 0 and floor == .))
+      and (if .claim_comment_id == null then true else
+        (.claimed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and (try ((.claimed_at | fromdateiso8601) < ($merged | fromdateiso8601)) catch false)
+      end)
+    ' >/dev/null 2>&1; then
+      OBSERVED_ID=$(printf '%s' "$CLAIM" | jq -c '.claim_comment_id // "none"')
+      OBSERVED=$(printf '%s' "$OBSERVED" | jq -c --argjson issue "$ISSUE" --argjson id "$OBSERVED_ID" '. + [{issue:$issue,id:$id}]')
+      if [[ "$ISSUE" == "$PRIMARY" ]]; then
+        PICKUP=$(printf '%s' "$CLAIM" | jq -er '.claimed_since // .claimed_at // "unknown" | select(type == "string" and length > 0)' 2>/dev/null) || PICKUP="unknown"
+      fi
+    fi
+  done <<< "$ISSUES"
 fi
 APPEND=missing; LOG_RC=0; LOG_OUT=""
 if [[ -x "$SCRIPT_DIR/estimate-log.sh" ]]; then
@@ -72,7 +93,12 @@ while IFS= read -r ISSUE; do
     echo "WARN: post-merge-bookkeeping: invalid linked issue; skipped" >&2
     continue
   fi
-  if [[ ! -x "$SCRIPT_DIR/issue-claim.sh" ]] || ! "$SCRIPT_DIR/issue-claim.sh" "$ISSUE" --release --repo "$REPO" >/dev/null 2>&1; then
+  if ! OBSERVED_ID=$(printf '%s' "$OBSERVED" | jq -er --argjson issue "$ISSUE" '.[] | select(.issue == $issue) | .id'); then
+    FAILED=$(printf '%s' "$FAILED" | jq -c --argjson issue "$ISSUE" '. + [$issue]')
+    echo "WARNING: claim ownership unreadable or not proven before this merge for issue #$ISSUE; cleanup skipped" >&2
+    continue
+  fi
+  if [[ ! -x "$SCRIPT_DIR/issue-claim.sh" ]] || ! "$SCRIPT_DIR/issue-claim.sh" "$ISSUE" --release --repo "$REPO" --expect-claim-id "$OBSERVED_ID" >/dev/null 2>&1; then
     FAILED=$(printf '%s' "$FAILED" | jq -c --argjson issue "$ISSUE" '. + [$issue]')
     echo "WARNING: could not release the claim on issue #$ISSUE — it will expire on its own. Clear it early with: $SCRIPT_DIR/issue-claim.sh $ISSUE --release --repo $REPO" >&2
   fi

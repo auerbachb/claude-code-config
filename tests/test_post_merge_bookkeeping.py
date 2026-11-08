@@ -45,7 +45,9 @@ elif a and a[0]=='api':
    rep,kind,n,suffix=m.groups();key=rep+'#'+n
    if kind=='pulls':
     v=d['prs'][key];result={'state':v['state'].lower(),'merged_at':v['mergedAt'] if v['state']=='MERGED' else None,'created_at':v['createdAt'],'body':v['body'],'commits':1}
-   elif suffix=='comments':result=d['issues'][key]['comments']
+   elif suffix=='comments':
+    if d.get('fail_comments'):p.write_text(json.dumps(d));sys.exit(1)
+    result=d['issues'][key]['comments']
    elif suffix=='timeline':result=[]
    else:result=d['issues'][key]
   else:raise RuntimeError('unexpected endpoint '+str(a))
@@ -67,10 +69,11 @@ class Bookkeeping(unittest.TestCase):
         self.scripts = self.base / ".claude/scripts"
         self.scripts.mkdir(parents=True)
         for name in ("post-merge-bookkeeping.sh", "estimate-log.sh", "pr-issue-ref.sh", "issue-claim.sh", "admin-merge.sh"):
-            shutil.copy2(ROOT / ".claude/scripts" / name, self.scripts / name)
+            shutil.copy2(os.environ.get("BOOKKEEPING_HELPER_TEST_SOURCE", ROOT / ".claude/scripts" / name) if name == "post-merge-bookkeeping.sh" else ROOT / ".claude/scripts" / name, self.scripts / name)
         shutil.copytree(ROOT / ".claude/scripts/lib", self.scripts / "lib")
         self.bin = self.base / "bin"
         self.bin.mkdir()
+        (self.bin / "bash").symlink_to(shutil.which(SHELL))
         (self.bin / "gh").write_text(FAKE_GH)
         (self.bin / "gh").chmod(0o755)
         self.home = self.base / "home"
@@ -223,6 +226,113 @@ class Bookkeeping(unittest.TestCase):
         self.assertEqual(len(self.rows()), 1)
         self.assertIn("If already merged, execute `wrap-post-merge-bookkeeping`", skill)
         self.assertIn("`MERGED` → execute `wrap-post-merge-bookkeeping`", skill)
+
+    def test_claim_replacement_during_real_logger_lock_wait_is_retained(self):
+        self.seed(body="Closes #7\nCloses #8")
+        barrier = self.base / "logger-waiting"
+        gate = self.base / "logger-continue"
+        target = str(self.log) + ".lock"
+        real_mkdir = shutil.which("mkdir")
+        wrapper = self.bin / "mkdir"
+        wrapper.write_text("#!/usr/bin/env python3\nimport os,sys,time\nfrom pathlib import Path\n"
+                           + "if sys.argv[1:]==[" + repr(target) + "]:\n"
+                           + " Path(" + repr(str(barrier)) + ").touch()\n"
+                           + " deadline=time.monotonic()+15\n"
+                           + " while not Path(" + repr(str(gate)) + ").exists():\n"
+                           + "  if time.monotonic()>deadline: sys.exit(98)\n"
+                           + "  time.sleep(0.02)\n"
+                           + "os.execv(" + repr(real_mkdir) + ",[" + repr(real_mkdir) + "]+sys.argv[1:])\n")
+        wrapper.chmod(0o755)
+        process = subprocess.Popen([SHELL, str(self.scripts / "post-merge-bookkeeping.sh"), "41", "--repo", "alice/demo"], cwd=self.base, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            import time
+            deadline = time.monotonic() + 15
+            while not barrier.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(barrier.exists(), "real logger never reached the lock-acquisition boundary")
+            self.load()
+            for n in (7, 8):
+                issue = self.data["issues"]["alice/demo#" + str(n)]
+                issue["state"] = "open"
+                payload = dict(login="alice", holder="new-thread-" + str(n))
+                issue["comments"].append(dict(id=n + 70, created_at="2026-11-08T09:01:00Z", user=dict(login="alice"), body="<!-- claude-claim: " + json.dumps(payload) + " -->"))
+            self.save()
+            gate.touch()
+            stdout, stderr = process.communicate(timeout=20)
+        finally:
+            if process.poll() is None:
+                import signal
+                gate.touch()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(self.rows()[0]["actual_min"], 120)
+        self.load()
+        for n in (7, 8):
+            issue = self.data["issues"]["alice/demo#" + str(n)]
+            self.assertTrue(any(c["id"] == n + 70 for c in issue["comments"]), "new same-account claim " + str(n + 70) + " was removed")
+            self.assertEqual(issue["labels"], [dict(name="in-progress")])
+            self.assertEqual(issue["assignees"], [dict(login="alice")])
+        self.assertEqual(json.loads(stdout)["release_failed"], [7, 8])
+        self.assertFalse(any(c[:2] == ["api", "-X"] and "DELETE" in c for c in self.data["calls"]))
+        original = self.log.read_bytes()
+        replay = self.run_script()
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual(self.log.read_bytes(), original)
+        self.assertEqual(json.loads(replay.stdout)["release_failed"], [7, 8])
+        self.load()
+        for n in (7, 8):
+            self.assertTrue(any(c["id"] == n + 70 for c in self.data["issues"]["alice/demo#" + str(n)]["comments"]), "replay adopted a post-merge claim")
+
+    def test_same_second_marker_is_retained_as_ambiguous(self):
+        self.data["issues"]["alice/demo#7"]["comments"][0]["created_at"] = self.data["prs"]["alice/demo#41"]["mergedAt"]
+        self.save()
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["release_failed"], [7])
+        self.assertTrue(self.load()["issues"]["alice/demo#7"]["comments"])
+        self.assertEqual(self.data["issues"]["alice/demo#7"]["labels"], [dict(name="in-progress")])
+
+    def test_unreadable_claim_snapshot_skips_cleanup(self):
+        self.data["fail_comments"] = True
+        self.save()
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ownership unreadable", r.stderr)
+        self.assertEqual(json.loads(r.stdout)["release_failed"], [7])
+        self.assertTrue(self.load()["issues"]["alice/demo#7"]["comments"])
+        self.assertEqual(self.data["issues"]["alice/demo#7"]["labels"], [dict(name="in-progress")])
+
+    def test_label_only_claim_cleans_up_with_no_marker_expectation(self):
+        self.data["issues"]["alice/demo#7"]["comments"] = []
+        self.save()
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_clean()
+
+    def test_actual_merged_entry_guard_prevents_closed_followups(self):
+        skill = Path(os.environ.get("BOOKKEEPING_ENTRY_GUARD_TEST_SOURCE", ROOT / ".claude/skills/wrap/SKILL.md")).read_text()
+        m = re.search(r'<!-- test-anchor: wrap-confirm-merged-entry -->\s*```bash\n(.*?)\n```', skill, re.S)
+        self.assertIsNotNone(m)
+        followup = self.base / "followup-ran"
+        env = dict(self.env, CURRENT_REPO="alice/demo", PR_NUM="41", GUARD_FOLLOWUP_MARK=str(followup))
+        for state in ("CLOSED", "OPEN", "MERGED"):
+            self.seed(state=state)
+            followup.unlink(missing_ok=True)
+            r = subprocess.run([SHELL, "-c", m[1] + '\nprintf followup > "$GUARD_FOLLOWUP_MARK"\n'], cwd=self.base, env=env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(r.returncode, 0 if state == "MERGED" else 3, r.stdout + r.stderr)
+            self.assertEqual(followup.exists(), state == "MERGED")
+            self.assertFalse(self.log.exists())
+            self.assertTrue(self.load()["issues"]["alice/demo#7"]["comments"])
+        self.data["fail_view"] = True
+        self.save()
+        followup.unlink(missing_ok=True)
+        r = subprocess.run([SHELL, "-c", m[1] + '\nprintf followup > "$GUARD_FOLLOWUP_MARK"\n'], cwd=self.base, env=env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertFalse(followup.exists())
 
     def test_actual_auto_plain_merge_boundary(self):
         self.seed(state="OPEN", renewed=True)
