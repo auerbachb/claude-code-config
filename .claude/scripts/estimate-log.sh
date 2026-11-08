@@ -144,6 +144,38 @@ check_deps() {
 # the caller's bounded wait ends; only a recorded same-host dead PID is reaped.
 # ---------------------------------------------------------------------------
 LOCK_TOKEN=""
+# A shell may die while its append/replace utility still owns a write. Publish
+# pending BEFORE forking; an interrupted PID publication remains unknown.
+lock_mutation_inactive() {
+  local token="$1" operation recorded extra seen rc
+  [[ -e "$LOG_LOCK/writer" ]] || return 0
+  IFS=' ' read -r operation recorded extra < "$LOG_LOCK/writer" || return 1
+  [[ "$recorded" == "$token" && -z "$extra" ]] || return 1
+  [[ "$operation" == "done" ]] && return 0
+  [[ "$operation" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$operation" 2>/dev/null && return 1
+  rc=0
+  seen=$(ps -p "$operation" -o pid= 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 1 && -z "$seen" ]]
+}
+
+run_log_mutation() {
+  local kind="$1" source="$2" writer rc=0 publication=0
+  printf 'pending %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || return 5
+  case "$kind" in
+    append) cat "$source" >> "$LOG_FILE" & ;;
+    replace) mv "$source" "$LOG_FILE" & ;;
+    *) return 5 ;;
+  esac
+  writer=$!
+  printf '%s %s\n' "$writer" "$LOCK_TOKEN" > "$LOG_LOCK/writer" || publication=5
+  wait "$writer" || rc=$?
+  # Once wait completed, this generation cannot write again through this child.
+  printf 'done %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || publication=5
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  return "$publication"
+}
+
 lock_owner_dead() {
   local snapshot="$1" pid host token extra seen rc
   IFS=' ' read -r pid host token extra <<< "$snapshot"
@@ -155,7 +187,7 @@ lock_owner_dead() {
   # ps return 1 with no PID when the process is absent.
   rc=0
   seen=$(ps -p "$pid" -o pid= 2>/dev/null) || rc=$?
-  [[ "$rc" -eq 1 && -z "$seen" ]]
+  [[ "$rc" -eq 1 && -z "$seen" ]] && lock_mutation_inactive "$token"
 }
 
 LOCK_HOST=""
@@ -189,7 +221,10 @@ acquire_lock() {
       if [[ "$current" == "$owner" \
           && "$(cat "$LOG_LOCK/token" 2>/dev/null || true)" == "$stored_token" ]] \
           && lock_owner_dead "$current"; then
-        retired=$(mktemp -d "${LOG_LOCK}.reaped.XXXXXX") || return 5
+        retired=$(mktemp -d "${LOG_LOCK}.reaped.XXXXXX") || {
+          rmdir "$reaper_guard" 2>/dev/null || true
+          return 5
+        }
         if mv "$LOG_LOCK" "$retired/lock" 2>/dev/null; then
           rm -rf "$retired" 2>/dev/null || true
           continue
@@ -212,7 +247,8 @@ acquire_lock() {
 release_lock() {
   local stored_token
   stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || true)
-  if [[ -n "$LOCK_TOKEN" && "$stored_token" == "$LOCK_TOKEN" ]]; then
+  if [[ -n "$LOCK_TOKEN" && "$stored_token" == "$LOCK_TOKEN" ]] \
+      && lock_mutation_inactive "$LOCK_TOKEN"; then
     rm -rf "$LOG_LOCK" 2>/dev/null || true
   fi
 }
@@ -479,7 +515,7 @@ append_row() {
   fi
 
   local cat_rc=0
-  cat "$tmp" >> "$LOG_FILE" || cat_rc=$?
+  run_log_mutation append "$tmp" || cat_rc=$?
   rm -f "$tmp"
 
   if [[ $cat_rc -ne 0 ]]; then
@@ -600,7 +636,7 @@ patch_row_rounds() {
     return 5
   fi
 
-  if ! mv "$tmp" "$LOG_FILE"; then
+  if ! run_log_mutation replace "$tmp"; then
     rm -f "$tmp"; release_lock; trap - EXIT
     echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching PR #$pr_num" >&2
     return 5

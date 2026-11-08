@@ -75,11 +75,11 @@ else: os.execv(os.environ['REAL_DATE'],[os.environ['REAL_DATE']]+sys.argv[1:])
         p.write_text('#!' + sys.executable + '\n' + body)
         p.chmod(0o700)
 
-    def start(self, number, hold=False, fast=False):
+    def start(self, number, hold=False, fast=False, arguments=None):
         env = dict(self.env, LOCK_TEST_HOLD='1' if hold else '0',
                    LOCK_TEST_FAST_TIMEOUT='1' if fast else '0',
                    LOCK_TEST_CLOCK=str(self.root / ('clock-' + str(number))))
-        p = subprocess.Popen([SHELL, str(self.script), '--append', str(number), '--repo', 'acme/widgets'],
+        p = subprocess.Popen([SHELL, str(self.script)] + (arguments or ['--append', str(number), '--repo', 'acme/widgets']),
                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         self.addCleanup(self.stop, p)
         return p
@@ -94,9 +94,9 @@ else: os.execv(os.environ['REAL_DATE'],[os.environ['REAL_DATE']]+sys.argv[1:])
         self.assertEqual(p.returncode, 0, err.decode())  # append remains best-effort
         return err.decode()
 
-    def wait_held(self, p):
+    def wait_held(self, p, name='held'):
         end = time.monotonic() + 10
-        while not (self.root / 'held').exists():
+        while not (self.root / name).exists():
             self.assertIsNone(p.poll(), 'holder exited before append boundary')
             self.assertLess(time.monotonic(), end, 'holder did not reach append boundary')
             time.sleep(.02)
@@ -186,6 +186,71 @@ os.execv(os.environ['REAL_MKDIR'],[os.environ['REAL_MKDIR']]+sys.argv[1:])
         self.finish(self.start(103))
         self.assertEqual(self.rows(), [103])
         self.assertFalse(self.lock.exists())
+
+    def test_failed_recovery_allocation_does_not_strand_guard(self):
+        self.dead_holder()
+        real_mktemp = shutil.which('mktemp')
+        self.tool('mktemp', 'import os,sys\nif any(".reaped." in a for a in sys.argv[1:]): sys.exit(88)\nos.execv('+repr(real_mktemp)+',['+repr(real_mktemp)+']+sys.argv[1:])\n')
+        self.assertIn('could not acquire', self.finish(self.start(102)))
+        self.assertEqual(list(self.lock.glob('reaper*')), [])
+        self.assertEqual(self.rows(), [])
+        (self.bin / 'mktemp').unlink()
+        self.finish(self.start(103))
+        self.assertEqual(self.rows(), [103])
+
+    def test_orphaned_append_child_keeps_generation_locked(self):
+        p = self.start(101, hold=True)
+        self.addCleanup((self.root / 'go').touch)
+        self.wait_held(p)
+        os.kill(p.pid, signal.SIGKILL)  # deliberately leave its cat child alive
+        p.wait(timeout=5)
+        before = (self.lock / 'token').read_bytes()
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertEqual((self.lock / 'token').read_bytes(), before)
+        self.assertEqual(self.rows(), [])
+        (self.root / 'go').touch()
+        p.communicate(timeout=8)
+        self.assertEqual(self.rows(), [101])
+        self.finish(self.start(103))
+        self.assertEqual(self.rows(), [101, 103])
+
+    def test_orphaned_rewrite_child_cannot_overwrite_new_append(self):
+        self.finish(self.start(101))
+        row = json.loads(self.log.read_text()); row['rounds'] = None
+        self.log.write_text(json.dumps(row, separators=(',', ':'))+'\n')
+        self.env['REAL_MV'] = shutil.which('mv')
+        self.tool('mv', '''import os,sys,time
+from pathlib import Path
+r=Path(os.environ['LOCK_FIXTURE'])
+if sys.argv[-1]==os.environ['ESTIMATE_LOG_FILE']:
+ (r/'held-mv').touch()
+ deadline=time.monotonic()+20
+ while not (r/'go-mv').exists():
+  if time.monotonic()>deadline: sys.exit(98)
+  time.sleep(.02)
+os.execv(os.environ['REAL_MV'],[os.environ['REAL_MV']]+sys.argv[1:])
+''')
+        p = self.start(102, arguments=['--backfill', '--repo', 'acme/widgets', '--limit', '2'])
+        self.addCleanup((self.root / 'go-mv').touch)
+        self.wait_held(p, 'held-mv')
+        os.kill(p.pid, signal.SIGKILL)
+        p.wait(timeout=5)
+        before = self.log.read_bytes()
+        self.assertIn('could not acquire', self.finish(self.start(103, fast=True)))
+        self.assertEqual(self.log.read_bytes(), before)
+        (self.root / 'go-mv').touch()
+        p.communicate(timeout=8)
+        self.finish(self.start(104))
+        self.assertEqual(self.rows(), [101, 102, 104])
+        self.assertTrue(all(row['rounds']==2 for row in map(json.loads,self.log.read_text().splitlines())))
+
+    def test_unpublished_writer_pid_remains_unknown(self):
+        self.dead_holder()
+        token = (self.lock / 'token').read_text().strip()
+        (self.lock / 'writer').write_text('pending '+token+'\n')
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertTrue(self.lock.exists())
+        self.assertEqual(self.rows(), [])
 
     def test_release_does_not_remove_successor_token(self):
         p = self.start(101, hold=True)
