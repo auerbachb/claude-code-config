@@ -964,7 +964,11 @@ mode_backfill() {
 # MODE: --rollup
 # ===========================================================================
 mode_rollup() {
-  local output_file="$1"
+  local output_display="$1"
+  local output_file="$output_display"
+  # Keep a relative leading dash out of stat/dirname option parsing without
+  # changing the exact directory entry selected by the caller.
+  case "$output_file" in -*) output_file="./$output_file" ;; esac
   local repo="$2"
 
   if ! command -v python3 >/dev/null 2>&1; then
@@ -972,7 +976,7 @@ mode_rollup() {
     return 4
   fi
   if [[ -d "$output_file" ]]; then
-    echo "estimate-log.sh: rollup output is a directory: $output_file" >&2
+    echo "estimate-log.sh: rollup output is a directory: $output_display" >&2
     return 5
   fi
   if [[ ! -e "$LOG_FILE" ]]; then
@@ -984,7 +988,7 @@ mode_rollup() {
     return 5
   fi
   if [[ "$output_file" -ef "$LOG_FILE" ]]; then
-    echo "estimate-log.sh: rollup output aliases the input ledger: $output_file" >&2
+    echo "estimate-log.sh: rollup output aliases the input ledger: $output_display" >&2
     return 5
   fi
   if [[ ! -s "$LOG_FILE" ]]; then
@@ -1058,9 +1062,11 @@ mode_rollup() {
 
   # A redirect preserved an existing report's mode, or used 0666 & umask for
   # a new report. Preserve that contract when publishing a private temp file.
+  # BSD's low portion alone omits setuid/setgid/sticky bits. Include the
+  # middle portion and pad the low portion so mode 1001 cannot become 11.
   local report_mode report_umask
   if [[ -e "$output_file" ]]; then
-    if ! report_mode=$(stat -L -c '%a' "$output_file" 2>/dev/null || stat -L -f '%Lp' "$output_file" 2>/dev/null); then
+    if ! report_mode=$(stat -L -c '%a' "$output_file" 2>/dev/null || stat -L -f '%Mp%03Lp' "$output_file" 2>/dev/null); then
       echo "estimate-log.sh: could not read rollup output permissions" >&2
       return 5
     fi
@@ -1072,7 +1078,7 @@ mode_rollup() {
     fi
     printf -v report_mode '%03o' "$((0666 & ~(8#$report_umask)))"
   fi
-  if [[ ! "$report_mode" =~ ^[0-7]{3,4}$ ]]; then
+  if [[ ! "$report_mode" =~ ^[0-7]{1,4}$ ]]; then
     echo "estimate-log.sh: invalid rollup output permissions" >&2
     return 5
   fi
@@ -1177,7 +1183,7 @@ mode_rollup() {
     return 5
   fi
 
-  echo "estimate-log.sh: rollup written to $output_file ($row_count rows)" >&2
+  echo "estimate-log.sh: rollup written to $output_display ($row_count rows)" >&2
   return 0
 }
 
