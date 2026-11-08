@@ -12,6 +12,11 @@
 #   the watchdogs, also drop HUMAN_QUEUE_DATABASE_URL itself, so no child this
 #   library starts inherits the raw URL.
 #
+# APPLICATION VALUES
+#   hq_* variable bindings are removed from exec argv and assigned via psql
+#   15+ \getenv from exports scoped to the psql child. SQL still quotes them
+#   through psql variables; no text is interpolated into SQL or meta-commands.
+#
 # TWO-SECOND BOUND
 #   libpq's connect_timeout has a 2 s floor and applies per resolved address,
 #   so it cannot bound a call by itself. hq_db_connect runs a `SELECT 1` probe
@@ -65,10 +70,18 @@ hq__find_psql() {
     fi
     hq_die_unavailable "HUMAN_QUEUE_PSQL is not an executable file — database unavailable"
   fi
-  if [ -x /opt/homebrew/bin/psql ]; then
-    HQ_PSQL=/opt/homebrew/bin/psql
-    return 0
-  fi
+  # Prefer an installed compatible keg over an older globally linked client.
+  # Explicit HUMAN_QUEUE_PSQL always wins and is validated by the probe below.
+  for p in /opt/homebrew/opt/postgresql@17/bin/psql \
+           /opt/homebrew/opt/postgresql@16/bin/psql \
+           /opt/homebrew/opt/postgresql@15/bin/psql \
+           /usr/local/opt/postgresql@17/bin/psql \
+           /usr/local/opt/postgresql@16/bin/psql \
+           /usr/local/opt/postgresql@15/bin/psql \
+           /opt/homebrew/opt/libpq/bin/psql /usr/local/opt/libpq/bin/psql \
+           /opt/homebrew/bin/psql; do
+    if [ -x "$p" ] && [ ! -d "$p" ]; then HQ_PSQL="$p"; return 0; fi
+  done
   if p=$(command -v psql 2>/dev/null) && [ -n "$p" ]; then
     HQ_PSQL="$p"
     return 0
@@ -245,14 +258,53 @@ hq__child_env() {
 # still empty at HQ_CONNECT_DEADLINE and otherwise does nothing. stdin is
 # passed through explicitly: bash 3.2 gives a background job /dev/null.
 hq_psql() {
-  local hq__pid hq__wd hq__rc=0
+  local hq__pid hq__wd hq__rc=0 hq__binding hq__name hq__take hq__i
+  local hq__name_re='^hq_[a-z0-9_]+$'
+  local -a hq__args hq__values hq__getenv
+  hq__args=(); hq__values=(); hq__getenv=()
+  # Keep the Bash call interface, but strip application values before exec.
+  # All hq_* bindings move, so a future prose field cannot silently leak by
+  # being misclassified as an identifier. Option order/last assignment wins.
+  while [ "$#" -gt 0 ]; do
+    hq__binding=""; hq__take=1
+    case "$1" in
+      -v|--set|--variable)
+        if [ "$#" -ge 2 ]; then
+          case "$2" in hq_*=*) hq__binding="$2"; hq__take=2 ;; esac
+        fi ;;
+      -vhq_*=*) hq__binding="${1#-v}" ;;
+      --set=hq_*=*) hq__binding="${1#--set=}" ;;
+      --variable=hq_*=*) hq__binding="${1#--variable=}" ;;
+      --) hq__args+=("$@"); break ;;
+    esac
+    if [ -n "$hq__binding" ]; then
+      hq__name="${hq__binding%%=*}"
+      if ! [[ "$hq__name" =~ $hq__name_re ]] || [ "$hq__name" = hq_marker ]; then
+        printf '%s\n' 'hq_psql: invalid or reserved application variable name' >&2
+        return 1
+      fi
+      hq__i=${#hq__values[@]}
+      hq__values+=("${hq__binding#*=}")
+      hq__getenv+=(-c "\getenv $hq__name HQ_PSQL_TEXT_$hq__i")
+      shift "$hq__take"
+    else
+      hq__args+=("$1"); shift
+    fi
+  done
   if [ -z "$HQ_CONN_MARKER" ] || ! : 2>/dev/null >"$HQ_CONN_MARKER"; then
     hq_die_error "hq_psql: no connect marker (call hq_db_connect first)"
   fi
   (
     hq__child_env
+    hq__i=0
+    while [ "$hq__i" -lt "${#hq__values[@]}" ]; do
+      # export is a shell builtin; no external env argv ever carries the value.
+      export "HQ_PSQL_TEXT_$hq__i=${hq__values[$hq__i]}"
+      hq__i=$((hq__i + 1))
+    done
     exec "$HQ_PSQL" -X -w -q -v ON_ERROR_STOP=1 -v "hq_marker=$HQ_CONN_MARKER" \
-      -c '\o :hq_marker' -c '\qecho connected' -c '\o' "$@"
+      -c '\o :hq_marker' -c '\qecho connected' -c '\o' \
+      ${hq__getenv[@]+"${hq__getenv[@]}"} ${hq__args[@]+"${hq__args[@]}"}
   ) <&0 &
   hq__pid=$!
   (
@@ -270,7 +322,7 @@ hq_psql() {
 # hq_db_connect — exits 4 on a bad HUMAN_QUEUE_SCHEMA, 7 on anything that
 # makes the database unusable; returns 0 once a probe query has succeeded.
 hq_db_connect() {
-  local rc pid wd
+  local rc pid wd version_file
 
   HQ_SCHEMA=$(hq_schema) || exit "$?"
 
@@ -287,10 +339,38 @@ hq_db_connect() {
     hq_die_unavailable "HUMAN_QUEUE_DATABASE_URL is not a valid postgres:// URL — database unavailable"
   fi
   hq__find_psql
+  hq_mktemp version_file
 
   # Probe under a watchdog. Both background jobs get /dev/null for every stdio
   # stream, so neither can hold a caller's $(...) pipe open after we return.
-  ( hq__child_env; exec "$HQ_PSQL" -X -w -q -At -c 'SELECT 1' ) </dev/null >/dev/null 2>&1 &
+  (
+    hq__child_env
+    # Version and connection share ONE deadline. A TERM during wait must also
+    # reap the owned metadata child, before the probe switches to exec/psql.
+    hq__version_timed_out=0
+    trap 'hq__version_timed_out=1' TERM
+    "$HQ_PSQL" --version >"$version_file" 2>/dev/null &
+    hq__version_pid=$!
+    if [ "$hq__version_timed_out" -eq 1 ]; then
+      kill -KILL "$hq__version_pid" 2>/dev/null || true
+      wait "$hq__version_pid" 2>/dev/null || true
+      exit 68
+    fi
+    hq__version_rc=0
+    wait "$hq__version_pid" || hq__version_rc=$?
+    trap - TERM
+    if [ "$hq__version_timed_out" -eq 1 ]; then
+      kill -KILL "$hq__version_pid" 2>/dev/null || true
+      wait "$hq__version_pid" 2>/dev/null || true
+      exit 68
+    fi
+    hq__version=""
+    IFS= read -r -n 256 hq__version <"$version_file" || true
+    hq__version_re='^psql[[:space:]]+[(]PostgreSQL[)][[:space:]]+([0-9]{1,3})([.[:space:]]|$)'
+    if [ "$hq__version_rc" -ne 0 ] || ! [[ "$hq__version" =~ $hq__version_re ]]; then exit 69; fi
+    if [ "${BASH_REMATCH[1]}" -lt 15 ]; then exit 69; fi
+    exec "$HQ_PSQL" -X -w -q -At -c 'SELECT 1'
+  ) </dev/null >/dev/null 2>&1 &
   pid=$!
   ( unset HUMAN_QUEUE_DATABASE_URL; sleep "$HQ_CONNECT_DEADLINE"; kill -TERM "$pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
   wd=$!
@@ -306,6 +386,8 @@ hq_db_connect() {
       ;;
     143) hq_die_unavailable "database unreachable (no connection within ${HQ_CONNECT_DEADLINE}s)" ;;
     2) hq_die_unavailable "database unreachable (connection refused, failed, or rejected)" ;;
+    68) hq_die_unavailable "psql client version check timed out — database unavailable" ;;
+    69) hq_die_unavailable "psql 15 or newer is required (client version unavailable or unsupported)" ;;
     *) hq_die_unavailable "database unreachable (probe failed with psql status $rc)" ;;
   esac
 }
