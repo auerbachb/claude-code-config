@@ -522,7 +522,7 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
 
   Set `SUCCESSOR_KIND` afresh before each invocation: `review` for A→B/B→B,
   `merge` for B→C only after fresh merge-gate verification, and empty for every
-  new/queued pipeline or A→A. Never inherit the preceding launch's kind. Reviews
+  new/queued pipeline; use `retry` for A→A (still full-bound). Never inherit the preceding launch's kind. Reviews
   use elapsed pipeline time with a 40-minute floor capped at the full bound;
   merges skip the estimate. Every launch still respects the pause point and
   the other launch controls. See `leave-time.md` for timestamp fallback details.
@@ -535,7 +535,7 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     || DEADLINE_RC=$?
   LAUNCH_DECLINED=false
   DECLINE_REASON=""
-  if [[ -n "${SUCCESSOR_KIND:-}" && "$SUCCESSOR_KIND" != review && "$SUCCESSOR_KIND" != merge ]]; then
+  if [[ -n "${SUCCESSOR_KIND:-}" && "$SUCCESSOR_KIND" != review && "$SUCCESSOR_KIND" != merge && "$SUCCESSOR_KIND" != retry ]]; then
     LAUNCH_DECLINED=true; DECLINE_REASON="successor kind malformed"
   elif [[ "$DEADLINE_RC" -ne 0 && "$DEADLINE_RC" -ne 3 ]]; then
     # Unreadable is NOT absent. A lock timeout or parse failure can hide an armed
@@ -1136,7 +1136,9 @@ queued view to the running view. `members` describes the round, not what has sta
 
 ### 7.1: Record each pipeline's launch time (once, at spawn)
 
-The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards — **including on a respawn**, since a replacement Phase A re-enters this path (Step 9) and must inherit the original pipeline's Start rather than restart its clock. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn.
+The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards — **including on a respawn**, since a replacement Phase A re-enters this path (Step 9) and must inherit the original pipeline's Start rather than restart its clock. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn. A fresh dispatch uses an empty `SUCCESSOR_KIND` and stamps a new Start even when an old terminal record remains; only an explicit A→A `retry` reuses it.
+
+<!-- test-anchor: subagent-spawn-record -->
 
 ```bash
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
@@ -1151,14 +1153,14 @@ AGENT_ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "$TASK" \
   '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}')
 AGENT_SET=(--set ".active_agents[\"$AGENT_ID\"]=$AGENT_ENTRY")
 
-# Stamp the launch record ONCE per issue. A replacement Phase A (exhaustion
-# respawn — Step 9) re-enters this same spawn path, so an unconditional write
-# would reset Start / Projected end / Remaining for a pipeline that began
-# earlier and hide the very overrun this table exists to surface. Read first;
-# a value already on disk wins over the clock.
-LAUNCHED_AT=$("$SESSION_STATE_SH" \
-  --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at")
-[[ "$LAUNCHED_AT" == "null" ]] && LAUNCHED_AT=""
+# A fresh pipeline replaces any terminal lifecycle's timestamp and PR link.
+# Only an explicitly identified retry preserves this pipeline's original Start.
+LAUNCHED_AT=""
+if [[ "${SUCCESSOR_KIND:-}" == retry ]]; then
+  LAUNCHED_AT=$("$SESSION_STATE_SH" \
+    --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at")
+  [[ "$LAUNCHED_AT" == "null" ]] && LAUNCHED_AT=""
+fi
 if [[ -z "$LAUNCHED_AT" ]]; then
   LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   # ONE invocation carries every piece of spawn-time state — the pipeline
@@ -1333,7 +1335,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    this list came to omit the deadline. When any one is closed or declined,
    persist the pending transition and continue without launching it.
    Reset `SUCCESSOR_KIND` on each invocation: `review` for A→B/B→B, `merge`
-   for gate-verified B→C, empty for A→A/new/queued work; never reuse a prior kind.
+   for gate-verified B→C, `retry` for A→A, empty for new/queued work; never reuse a prior kind.
    **Apply a recorded overrun decision silently** (issue #1679): re-applying Step 7's
    gate to a successor or a queued head reads `window.launch_decisions[<issue>]` and
    honours a record matching the current `deadline_epoch` — `skip` keeps it queued,
@@ -1656,7 +1658,7 @@ When a Phase A subagent returns:
    - If no exit report: classify the failure per `subagent-thread-limit-park.md` §1 **before** calling it a crash. A confirmed usage-limit signal parks (that document's §2–§4) and never asks; anything else is a silent failure — report to user and check GitHub API.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` -> proceed to step 3.
-   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user. The replacement re-enters Step 7.1, which reuses the recorded `started_at` — the pipeline's Start does not restart just because the agent did.
+   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user. Set `SUCCESSOR_KIND=retry` before re-entering Step 7/7.1; this reuses the recorded `started_at` — the pipeline's Start does not restart just because the agent did.
 3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
 4. **Verify handoff file:** resolve path with `handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.

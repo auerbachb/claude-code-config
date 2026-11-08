@@ -180,16 +180,17 @@ things depending on who wrote it.
 
 Successor launches use the same deadline and pause point. Before every invocation,
 the caller explicitly resets `SUCCESSOR_KIND`: `review` for A→B/B→B, `merge` for
-B→C after fresh merge-gate verification, or empty for a new/queued pipeline or
-A→A. An unknown kind declines. The other refill and execution-pause gates still
+B→C after fresh merge-gate verification, `retry` for A→A with the full bound, or
+empty for a new/queued pipeline. An unknown kind declines. The other refill and execution-pause gates still
 apply; a predecessor finishing never authorizes skipping them.
 
 Reviews compare `max(full_bound - elapsed_whole_minutes, min(40, full_bound))`.
 The 40-minute floor reserves a review/CI cycle without making a shorter original
 bound longer. Only the same issue's persisted UTC `pipelines[issue].started_at`
 (`YYYY-MM-DDTHH:MM:SSZ`) earns elapsed credit. Missing, unreadable, malformed,
-future, pre-epoch or unparseable timestamps retain the full bound. No clock or
-start timestamp is rewritten. Merge successors skip the estimate lookup and
+future, pre-epoch or unparseable timestamps retain the full bound. The deadline gate rewrites no clock or start timestamp. At spawn, a fresh
+dispatch stamps a new `started_at` and clears the old PR link even if a terminal
+record survives; only explicit A→A `retry` preserves the current lifecycle’s start. Merge successors skip the estimate lookup and
 original bound entirely, but decline at or after the pause point. Thus a merge
 with 30 minutes of usable runway is allowed even with a 90-minute original bound;
 a passed pause point remains a stop regardless of the original estimate.

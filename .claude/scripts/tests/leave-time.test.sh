@@ -358,7 +358,8 @@ run_decline() {
     set -euo pipefail
     export STUB_DEADLINE="$1" STUB_STATE_RC="$2" STUB_EST="$3" STUB_EST_RC="${5:-0}"
     export STUB_LEAD="${7-30}" STUB_LEAD_RC="${8:-0}"
-    export SUCCESSOR_KIND="${9-}"
+    local SUCCESSOR_KIND="${9-}"
+    export SUCCESSOR_KIND
     export STUB_START="${10-null}" STUB_START_RC="${11:-0}"
     export STUB_STATE_ARGS_FILE="$STUB_STATE_ARGS" STUB_EST_ARGS_FILE="$STUB_EST_ARGS"
     # Freeze the clock when asked, so a boundary case tests the boundary rather than
@@ -613,11 +614,58 @@ PY
     "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 4 "$FIXED_NOW" 30 0 review "$START_60"
   successor_case 'true|unestimated' 'review cannot waive missing estimate' \
     "$RUNWAY_45" 0 unestimated "$STUB_EST_SH" 2 "$FIXED_NOW" 30 0 review "$START_60"
-  successor_case 'true|plan on 90 min' 'reset kind preserves new/queued and A-to-A full bound' \
+  successor_case 'true|plan on 90 min' 'empty kind preserves new/queued full bound' \
     "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 '' "$START_60"
+  successor_case 'true|plan on 90 min' 'A-to-A retry retains the full original bound' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 retry "$START_60"
   successor_case 'true|successor kind malformed' 'unknown kind fails closed' \
     "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 typo "$START_60"
   ok_group 'successor deadline: remaining review work, verified merge, unchanged first launch and hard stops'
+fi
+
+# Run the real spawn-time write against the actual state helper in a private HOME.
+# A terminal record may survive a previous lifecycle of the same issue.
+SPAWN_BLOCK=$(extract_skill_bash "${LEAVE_TIME_SPAWN_TEST_SOURCE:-$ROOT/$SUBAGENT_SKILL}" subagent-spawn-record) \
+  || { fail 'could not extract the spawn record block'; SPAWN_BLOCK=""; }
+if [ -n "$SPAWN_BLOCK" ]; then
+  group_start
+  SPAWN_BLOCK=$(printf '%s\n' "$SPAWN_BLOCK" | sed 's/{ISSUE_NUMBER}/61/g')
+  run_spawn() (
+    set -euo pipefail
+    export HOME="$TMP/spawn-home" CLAUDE_SESSION_REPO=org/repo
+    mkdir -p "$HOME/.claude"
+    jq -cn --arg old "$2" --argjson pr "$3" \
+      '{repos:{"org/repo":{pipelines:{"61":{started_at:$old,pr:$pr}}}},active_agents:{}}' \
+      >"$HOME/.claude/session-state.json"
+    date() {
+      if [ "${1:-}" = -u ] && [ "${2:-}" = '+%Y-%m-%dT%H:%M:%SZ' ]; then
+        printf '%s\n' '2026-08-22T23:00:00Z'
+      else command date "$@"; fi
+    }
+    [ "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" = '2026-08-22T23:00:00Z' ]
+    local SUCCESSOR_KIND="$1"
+    export SUCCESSOR_KIND
+    SESSION_STATE_SH="$ROOT/.claude/scripts/session-state.sh"
+    export AGENT_ID=fixture-agent TASK=synthetic CLAIM_HOLDER=''
+    eval "$SPAWN_BLOCK" >/dev/null
+    jq -r '[.repos["org/repo"].pipelines["61"].started_at,
+             (.repos["org/repo"].pipelines["61"].pr|tostring),
+             .active_agents["fixture-agent"].status,
+             (.monitoring_active|tostring)]|join("|")' "$HOME/.claude/session-state.json"
+  )
+  OUT=$(run_spawn '' "$START_60" 777)
+  [ "$OUT" = '2026-08-22T23:00:00Z|null|spawned|true' ] \
+    || fail "fresh dispatch must replace the old lifecycle timestamp and PR link (got: $OUT)"
+  FRESH_START=${OUT%%|*}
+  successor_case 'true|plan on 90 min' 'review of the freshly spawned lifecycle earns no old elapsed credit' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$FRESH_START"
+  OUT=$(run_spawn retry "$START_60" 777)
+  [ "$OUT" = "$START_60|777|spawned|true" ] \
+    || fail "A-to-A retry must preserve the current pipeline timestamp and PR link (got: $OUT)"
+  OUT=$(run_spawn retry null null)
+  [ "$OUT" = '2026-08-22T23:00:00Z|null|spawned|true' ] \
+    || fail "retry without a launch record must initialize it (got: $OUT)"
+  ok_group 'spawn lifecycle: fresh dispatch resets stale elapsed credit; retry preserves current work'
 fi
 
 # ---------------------------------------------------------------------------

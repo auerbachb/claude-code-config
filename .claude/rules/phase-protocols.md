@@ -13,7 +13,7 @@ explicit clear value: repo `refill.paused` false/null,
 `inactive`, and the armed-deadline gate (`/subagent` Step 7's
 `subagent-step7-deadline-decline` block) returning `LAUNCH_DECLINED=false`. A
 caller resets `SUCCESSOR_KIND`: A→B/B→B `review` uses remaining work; verified
-B→C `merge` skips the original bound; A→A/new/queued uses empty/full-bound.
+B→C `merge` skips the original bound; A→A uses full-bound `retry`, new/queued empty.
 Pause points still apply. Anything else — paused, `active`, declined, a missing helper,
 a non-zero read, any other output — **fails closed**: persist the pending
 transition, report which control was unreadable, launch nothing. A launch the
