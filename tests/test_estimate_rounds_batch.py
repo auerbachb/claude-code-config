@@ -65,7 +65,10 @@ if name=='mv' and args[-1:]==[str(log)]:
  event('replace')
  if fault=='rename':sys.exit(1)
 if name=='mktemp' and any('.estimate-log-tmp-' in a for a in args) and fault=='allocate':sys.exit(1)
-if name=='jq' and '--argjson' in args and 'batch' in args and fault=='render':sys.exit(4)
+if name=='mktemp' and any('.estimate-rounds-batch-' in a for a in args) and fault=='allocate-map':sys.exit(1)
+if name=='mktemp' and any('.estimate-rounds-matched-' in a for a in args) and fault=='allocate-matched':sys.exit(1)
+if name=='jq' and '--slurpfile' in args and 'patches' in args:event('transform')
+if name=='jq' and '--slurpfile' in args and 'patches' in args and fault=='render':sys.exit(4)
 if name=='cksum':
  counter=root/'checksum-count';n=int(counter.read_text())+1 if counter.exists() else 1;counter.write_text(str(n))
  if n==2:
@@ -86,9 +89,12 @@ os.execv(os.environ['BATCH_REAL_'+name.upper()],[os.environ['BATCH_REAL_'+name.u
 
     def run_cli(self, **env):
         command = [SHELL, str(self.script), '--backfill', '--repo', 'acme/widgets', '--limit', '1']
-        if env.get('BATCH_FAULT') == 'write':
+        if env.get('BATCH_FAULT') in ('write', 'map-write'):
             command = [SHELL, '-c', r'''printf() {
-  if [[ "$1" == '%s\n' && "${2:-}" == *'"rounds":2'* && "${2:-}" == *'"keep":'* ]]; then
+  if [[ "$BATCH_FAULT" == map-write && "$1" == '%s' && "${2:-}" == '{"101":'* ]]; then
+    return 99
+  fi
+  if [[ "$BATCH_FAULT" == write && "$1" == '%s\n' && "${2:-}" == *'"rounds":2'* && "${2:-}" == *'"keep":'* ]]; then
     return 99
   fi
   builtin printf "$@"
@@ -100,7 +106,7 @@ exec "$@"
                            env=dict(self.env, **env), cwd=self.root, capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout, '')
-        self.assertEqual(list(self.root.glob('.estimate-log-tmp-*')), [])
+        self.assertEqual(list(self.root.glob('.estimate-*-*')), [])
         return p.stderr
 
     def event_count(self, value):
@@ -113,6 +119,7 @@ exec "$@"
         self.assertEqual([r['rounds'] for r in map(json.loads, self.log.read_text().splitlines())], [2, 3, 4])
         self.assertEqual(self.event_count('lock'), 1)
         self.assertEqual(self.event_count('replace'), 1)
+        self.assertEqual(self.event_count('transform'), 1)
         self.assertEqual(self.events.read_text().splitlines()[:3], ['api 101', 'api 102', 'api 103'])
 
     def test_large_batch_is_one_replacement(self):
@@ -181,7 +188,7 @@ exec "$@"
         self.assertEqual(self.event_count('lock'), 0)
 
     def test_fences_and_failures_leave_all_candidates_uncommitted(self):
-        for fault in ('allocate', 'render', 'write', 'row-count', 'unreadable', 'rename'):
+        for fault in ('allocate', 'allocate-map', 'allocate-matched', 'map-write', 'render', 'write', 'row-count', 'unreadable', 'rename'):
             with self.subTest(fault=fault):
                 self.rows()
                 before = self.log.read_bytes()
@@ -221,6 +228,44 @@ exec "$@"
                 if mode in ('measured', 'all-measured'):self.assertEqual(rows[0]['rounds'], 88)
                 if mode == 'removed':self.assertNotIn(101, [r['pr'] for r in rows])
                 if mode == 'append':self.assertEqual(rows[-1]['pr'], 999)
+
+    def test_unselected_invalid_utf8_bytes_are_preserved(self):
+        self.rows()
+        suffix = b'bad-\xff-record\n{"repo":"foreign/repo","pr":88,"rounds":null,"note":"\xff"}\n' + b'null\nfalse\n[]\n"string"\n'
+        with self.log.open('ab') as f:f.write(suffix)
+        out = self.run_cli()
+        self.assertIn('patched=3 patch_failed=0', out)
+        self.assertTrue(self.log.read_bytes().endswith(suffix), self.log.read_bytes())
+
+    def test_large_native_writer_map_does_not_become_an_os_argument(self):
+        self.rows()
+        # Execute the actual published function definitions, stopping before
+        # argument parsing. No replica of the writer or its safety checks.
+        source = self.script.read_text()
+        marker = '# Argument parsing'
+        self.assertEqual(source.count(marker), 1)
+        definitions = self.root / 'writer-definitions.sh'
+        definitions.write_text(source[:source.index(marker)])
+        batch = self.root / 'large-batch.json'
+        argument_limit = os.sysconf('SC_ARG_MAX')
+        self.assertGreater(argument_limit, 0)
+        count = argument_limit // 8 + 10000
+        batch.write_text(json.dumps({str(n): 2 for n in range(1, count + 1)}, separators=(',', ':')))
+        self.assertGreater(batch.stat().st_size, argument_limit)
+        command = [SHELL, '-c', r'''source "$1"
+batch=$(cat "$2")
+rc=0
+patch_rows_rounds acme/widgets "$batch" || rc=$?
+printf 'BATCH_RESULT=%s\n' "$rc"
+exit "$rc"
+''', '_', str(definitions), str(batch)]
+        p = subprocess.run(command, env=self.env, cwd=self.root, capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('BATCH_RESULT=0', p.stdout)
+        self.assertEqual([r['rounds'] for r in map(json.loads, self.log.read_text().splitlines())], [2, 2, 2])
+        self.assertEqual(self.event_count('lock'), 1)
+        self.assertEqual(self.event_count('replace'), 1)
+        self.assertEqual(list(self.root.glob('.estimate-*-*')), [])
 
 
 if __name__ == '__main__':

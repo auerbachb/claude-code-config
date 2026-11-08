@@ -571,14 +571,22 @@ patch_rows_rounds() {
     return 5
   fi
 
-  local tmp
-  if ! tmp=$(mktemp "$(dirname "$LOG_FILE")/.estimate-log-tmp-XXXXXX"); then
+  local tmp="" batch_file="" matched_file=""
+  if ! tmp=$(mktemp "$(dirname "$LOG_FILE")/.estimate-log-tmp-XXXXXX") \
+     || ! batch_file=$(mktemp "$(dirname "$LOG_FILE")/.estimate-rounds-batch-XXXXXX") \
+     || ! matched_file=$(mktemp "$(dirname "$LOG_FILE")/.estimate-rounds-matched-XXXXXX"); then
+    rm -f -- "$tmp" "$batch_file" "$matched_file"
     release_lock
-    echo "estimate-log.sh: WARN: could not create temp file to patch rounds batch" >&2
+    echo "estimate-log.sh: WARN: could not create temporary rounds batch files" >&2
     return 5
   fi
-  # shellcheck disable=SC2064
-  trap "release_lock; rm -f '$tmp'" EXIT
+  trap 'release_lock; rm -f -- "$tmp" "$batch_file" "$matched_file"' EXIT
+  # A builtin writes the map; no unbounded JSON value becomes an OS argument.
+  if ! printf '%s' "$batch" > "$batch_file"; then
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: could not write rounds patch map; log left unmodified" >&2
+    return 5
+  fi
 
   # Fence the read-modify-write independently of the holder-liveness lock. This
   # path REPLACES the whole file, so any lost ownership or changed snapshot
@@ -588,41 +596,55 @@ patch_rows_rounds() {
   local fence_before
   fence_before=$(cksum < "$LOG_FILE" 2>/dev/null || echo "unreadable")
 
-  local patched=0 write_rc=0 line result updated changed_pr
-  # Read the ledger once, retaining unselected raw lines (including malformed
-  # ones). One batch lookup replaces the old per-PR whole-ledger rewrite.
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if ! result=$(printf '%s\n' "$line" | jq -Rr --arg repo "$repo" --argjson batch "$batch" '
-      . as $raw | (try fromjson catch null) as $row |
+  local patched=0 write_rc=0
+  local -a transform_status=(5 5)
+  # One jq process loads the map once and emits one selector per physical line.
+  # Read the original bytes alongside that stream: jq must never echo unchanged
+  # raw text, since its UTF-8 decoder can alter malformed/unselected bytes.
+  if exec 3< "$LOG_FILE"; then
+    jq -Rr --arg repo "$repo" --slurpfile patches "$batch_file" '
+      (try fromjson catch null) as $row |
       if ($row | type) == "object" and ($row.pr | type) == "number"
          and $row.repo == $repo and ($row.rounds // null) == null
-         and $batch[($row.pr | tostring)] != null
+         and $patches[0][($row.pr | tostring)] != null
       then ($row.pr | tostring) + "\t" +
-           ($row | .rounds = $batch[($row.pr | tostring)] | tojson)
-      else "\t" + $raw end' 2>/dev/null); then
-      write_rc=5
-      break
-    fi
-    changed_pr=${result%%$'\t'*}
-    updated=${result#*$'\t'}
-    printf '%s\n' "$updated" >> "$tmp" || { write_rc=5; break; }
-    if [[ -n "$changed_pr" ]]; then
-      case $'\n'"$PATCHED_PRS"$'\n' in
-        *$'\n'"$changed_pr"$'\n'*) ;;
-        *) PATCHED_PRS="${PATCHED_PRS}${PATCHED_PRS:+$'\n'}$changed_pr" ;;
-      esac
-      patched=1
-    fi
-  done < "$LOG_FILE" || write_rc=5
+           ($row | .rounds = $patches[0][($row.pr | tostring)] | tojson)
+      else "" end' "$LOG_FILE" 2>/dev/null | {
+        local line result changed_pr updated
+        while IFS= read -r result; do
+          line=""
+          IFS= read -r line <&3 || [[ -n "$line" ]] || exit 5
+          if [[ -n "$result" ]]; then
+            changed_pr=${result%%$'\t'*}
+            updated=${result#*$'\t'}
+            printf '%s\n' "$changed_pr" >> "$matched_file" || exit 5
+          else
+            updated=$line
+          fi
+          printf '%s\n' "$updated" >> "$tmp" || exit 5
+        done
+      }
+    transform_status=("${PIPESTATUS[@]}")
+    exec 3<&-
+  else
+    write_rc=5
+  fi
+  if [[ "${transform_status[0]}" -ne 0 || "${transform_status[1]}" -ne 0 ]]; then
+    write_rc=5
+  elif ! PATCHED_PRS=$(sort -un "$matched_file"); then
+    write_rc=5
+  elif [[ -n "$PATCHED_PRS" ]]; then
+    patched=1
+  fi
 
   if [[ $write_rc -ne 0 ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
     echo "estimate-log.sh: WARN: write failed while patching rounds batch; log left unmodified" >&2
     return 5
   fi
 
   if [[ $patched -eq 0 ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
     return 1
   fi
 
@@ -632,7 +654,7 @@ patch_rows_rounds() {
   before=$(grep -c '' "$LOG_FILE" 2>/dev/null || echo 0)
   after=$(grep -c '' "$tmp" 2>/dev/null || echo 0)
   if [[ "$before" -ne "$after" ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
     echo "estimate-log.sh: WARN: rounds batch would change the row count ($before -> $after); log left unmodified" >&2
     return 5
   fi
@@ -652,17 +674,18 @@ patch_rows_rounds() {
   held_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
   if [[ "$fence_before" == "unreadable" || "$fence_after" != "$fence_before" \
         || "$held_token" != "$LOCK_TOKEN" ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
     echo "estimate-log.sh: WARN: log changed or lock ownership lost while patching rounds batch; log left unmodified" >&2
     return 5
   fi
 
   if ! run_log_mutation replace "$tmp"; then
-    rm -f "$tmp"; release_lock; trap - EXIT
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
     echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching rounds batch" >&2
     return 5
   fi
 
+  rm -f -- "$batch_file" "$matched_file"
   release_lock
   trap - EXIT
   return 0
@@ -901,7 +924,7 @@ mode_backfill() {
       if existing_rounds=$(gh api "repos/$repo/pulls/$stale_pr" --jq '.commits // empty' 2>/dev/null) \
          && [[ "$existing_rounds" =~ ^[1-9][0-9]*$ ]]; then
         batch="$batch\"$stale_pr\":$existing_rounds,"
-        candidates="${candidates}${candidates:+$'\n'}$stale_pr"
+        candidates="${candidates}${candidates:+$'\n'}$stale_pr"$'\t'"$existing_rounds"
       else
         (( patch_failed++ )) || true
         echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
@@ -912,16 +935,22 @@ mode_backfill() {
       batch="${batch%,}}"
       local batch_rc=0 PATCHED_PRS=""
       patch_rows_rounds "$repo" "$batch" || batch_rc=$?
-      while IFS= read -r stale_pr; do
-        if [[ "$batch_rc" -eq 0 ]] && grep -Fxq -- "$stale_pr" <<< "$PATCHED_PRS"; then
-          (( patched++ )) || true
-          existing_rounds=$(printf '%s' "$batch" | jq -r --arg pr "$stale_pr" '.[$pr]')
-          echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
-        else
-          (( patch_failed++ )) || true
-          echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
-        fi
-      done <<< "$candidates"
+      # Both candidate and committed IDs are sorted numerically. Merge them
+      # with one cursor instead of parsing/scanning the full map per candidate.
+      local next_patched=""
+      {
+        IFS= read -r next_patched <&5 || next_patched=""
+        while IFS=$'\t' read -r stale_pr existing_rounds; do
+          if [[ "$batch_rc" -eq 0 && "$stale_pr" == "$next_patched" ]]; then
+            (( patched++ )) || true
+            echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
+            IFS= read -r next_patched <&5 || next_patched=""
+          else
+            (( patch_failed++ )) || true
+            echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
+          fi
+        done <<< "$candidates"
+      } 5<<< "$PATCHED_PRS"
     fi
   fi
 
