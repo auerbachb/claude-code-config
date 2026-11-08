@@ -76,6 +76,23 @@ class Ledger(unittest.TestCase):
         self.process([row(status='ok')])
         self.assertIsNone(json.loads(Path(self.ledger).read_text().splitlines()[-1])['error_class'])
 
+    def test_browser_classes_round_trip_without_new_statuses_or_fields(self):
+        classes = ['browser_launch_failed','browser_connection_unavailable','browser_tool_denied',
+                   'browser_tab_create_failed','browser_destination_unverified','browser_observation_rejected',
+                   'browser_timeout','browser_stage_unknown','browser_unavailable']
+        records = []
+        for name in classes:
+            item = row(status='timeout' if name == 'browser_timeout' else 'unreadable')
+            item.update(provider='cursor',source='browser',error_class=name)
+            records.append(item)
+        stats = self.process(records)[0]
+        self.assertEqual(stats['failures_7d'],len(classes))
+        retained = [json.loads(line) for line in Path(self.ledger).read_text().splitlines()]
+        self.assertEqual([item['error_class'] for item in retained],classes)
+        self.process([row(status='ok')])  # Existing rewrites preserve legacy browser rows.
+        retained = [json.loads(line) for line in Path(self.ledger).read_text().splitlines()]
+        self.assertEqual([item['error_class'] for item in retained[:len(classes)]],classes)
+
     def test_symlink_refused_and_stats_survive(self):
         """Refuse a ledger symlink while still reporting the current attempt."""
         target = Path(self.tmp.name) / 'target'

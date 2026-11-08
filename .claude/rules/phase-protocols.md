@@ -72,7 +72,7 @@ A missing exit report is a crash **only** when the runtime's own structured clas
 2. **Branch on OUTCOME:**
    - `merged` → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md), then clean up.
    - `blocked` → report blocker details to user. Do NOT merge.
-After a verified `merged` outcome, the parent runs the [finished-only sweep](../reference/workspace-sweep-cadence.md) from its own checkout:
+After verified merge, the parent runs the [finished-only sweep](../reference/workspace-sweep-cadence.md) from its checkout:
 
 <!-- test-anchor: workspace-sweep-post-merge -->
 ```bash
@@ -88,4 +88,4 @@ fi
 
 ## `/wrap` → `/fixpr` Delegation Contract
 
-`/wrap` Step 2.1 delegates recovery to the **full** `/fixpr` workflow — including when unresolved review threads are the only blocker. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+`/wrap` Step 2.1 delegates **full** `/fixpr` recovery, including threads-only blockers. Handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.

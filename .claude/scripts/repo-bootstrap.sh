@@ -93,6 +93,7 @@ BOOTSTRAP_FILES=(
   ".github/workflows/cr-plan-on-issue.yml|644"
   ".github/workflows/ac-gate.yml|644"
   ".claude/scripts/ac-gate.sh|644"
+  ".claude/scripts/lib/ac-checkbox-markers.sh|644"
   ".claude/scripts/pr-issue-ref.sh|755"
 )
 
@@ -169,18 +170,54 @@ jobs:
           bash .claude/scripts/ac-gate.sh ${{ github.event.pull_request.number }}
 REPO_BOOTSTRAP_FILE_EOF
       ;;
+    ".claude/scripts/lib/ac-checkbox-markers.sh")
+      cat <<'REPO_BOOTSTRAP_FILE_EOF'
+# Shared list-marker alternation for POSIX ERE and Python re consumers.
+# Keep this group-free so each caller controls its own capture groups.
+# CommonMark ordered markers contain one to nine digits, followed by . or ).
+AC_LIST_MARKER_RE='[-*+]|[0-9]{1,9}[.)]'
+AC_FENCE_RE='^ {0,3}(`{3,}|~{3,})(.*)$'
+AC_FENCE_CHAR=""
+AC_FENCE_LENGTH=0
+
+# Return success for fence boundaries and contents, without inspecting them as
+# criteria. Root fences follow CommonMark 4.5: same kind, long-enough closing
+# run and whitespace-only closer; a backtick info string cannot contain `.
+ac_skip_fenced_line() {
+  local ac__line="$1" ac__mark ac__rest
+  if [[ -n "$AC_FENCE_CHAR" ]]; then
+    if [[ "$ac__line" =~ $AC_FENCE_RE ]]; then
+      ac__mark="${BASH_REMATCH[1]}"; ac__rest="${BASH_REMATCH[2]}"
+      ac__rest="${ac__rest// /}"; ac__rest="${ac__rest//$'\t'/}"
+      if [[ "${ac__mark:0:1}" == "$AC_FENCE_CHAR" && "${#ac__mark}" -ge "$AC_FENCE_LENGTH" && -z "$ac__rest" ]]; then
+        AC_FENCE_CHAR=""; AC_FENCE_LENGTH=0
+      fi
+    fi
+    return 0
+  fi
+  if [[ "$ac__line" =~ $AC_FENCE_RE ]]; then
+    ac__mark="${BASH_REMATCH[1]}"; ac__rest="${BASH_REMATCH[2]}"
+    if [[ "${ac__mark:0:1}" == '`' && "$ac__rest" == *'`'* ]]; then return 1; fi
+    AC_FENCE_CHAR="${ac__mark:0:1}"; AC_FENCE_LENGTH=${#ac__mark}
+    return 0
+  fi
+  return 1
+}
+REPO_BOOTSTRAP_FILE_EOF
+      ;;
     ".claude/scripts/ac-gate.sh")
       cat <<'REPO_BOOTSTRAP_FILE_EOF'
 #!/usr/bin/env bash
 # ac-gate.sh — CI gate: fail a PR that has unchecked acceptance-criteria boxes.
-# catalog: merge-gate-sequencing — CI gate: fail a PR with unchecked AC boxes; enforce the Post-merge verification exemption
+# catalog: merge-gate-sequencing — CI gate: require checked AC lists and enforce the Post-merge verification exemption
 #
 # Reads the PR body and applies a two-stage check:
 #
 #   Stage 1 — unchecked boxes in scope
 #     Scans the `## Acceptance Criteria` and `## Test plan` / `## Test Plan`
 #     sections (case-insensitive, matching the ac-checkboxes.sh convention).
-#     Any unchecked `- [ ]` outside the exemption section is a hard failure.
+#     Any unchecked supported checkbox outside the exemption is a hard failure.
+#     Every AC/Test Plan section must contain a recognized checkbox item.
 #     Near-miss headings (case-insensitive match to "post-merge verification"
 #     but wrong case) are NOT treated as exemption regions — their unchecked
 #     boxes are in-scope failures, not invisible.
@@ -198,7 +235,9 @@ REPO_BOOTSTRAP_FILE_EOF
 #       3. Issue #N is OPEN (not CLOSED).
 #     A `Tracking issue:` line outside the section grants no exemption.
 #
-# A PR with no unchecked boxes in scope, or with an empty body, passes.
+# Empty bodies and bodies without AC/Test Plan sections retain their pass.
+# Supported markers are -, *, +, N. and N), with one-to-nine digits and a
+# whitespace separator; checked markers may use x or X.
 #
 # USAGE:
 #   ac-gate.sh <pr_number>
@@ -209,17 +248,17 @@ REPO_BOOTSTRAP_FILE_EOF
 #
 # EXIT CODES:
 #   0    gate passed (no unchecked in-scope boxes, or exemption checks passed)
-#   1    unchecked box outside Post-merge verification section
+#   1    unchecked box outside exemption, or checkbox-free AC/Test Plan section
 #   2    usage error (missing/invalid args, unknown flag)
 #   3    PR not found
-#   4    gh / GitHub API error, or pr-issue-ref.sh not found
+#   4    gh / GitHub API error, or required helper/library unavailable
 #   5    exemption section has no Tracking issue: #N line
 #   6    tracking issue is one this PR closes (self-referential — PR #588 case)
 #   7    tracking issue is CLOSED
 #
 # DEPENDENCIES:
 #   - gh (authenticated)
-#   - pr-issue-ref.sh (sibling script; resolved from same directory)
+#   - pr-issue-ref.sh and lib/ac-checkbox-markers.sh (sibling payload)
 #
 # EXAMPLES:
 #   ac-gate.sh 1234    # exits 0 (pass) or non-zero (fail, message on stderr)
@@ -229,6 +268,15 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_ISSUE_REF_SH="$SCRIPT_DIR/pr-issue-ref.sh"
+AC_LIST_MARKER_RE=""
+AC_FENCE_RE=""
+if [[ ! -r "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" ]] ||
+   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" || -z "$AC_FENCE_RE" ]] ||
+   ! declare -F ac_skip_fenced_line >/dev/null; then
+  echo "Error: shared checkbox marker library unavailable: $SCRIPT_DIR/lib/ac-checkbox-markers.sh" >&2
+  exit 4
+fi
+CHECKBOX_RE="^[[:space:]]*(${AC_LIST_MARKER_RE})[[:space:]]+\[([ xX])\]"
 
 print_usage() {
   cat <<'EOF'
@@ -236,16 +284,18 @@ Usage: ac-gate.sh <pr_number>
        ac-gate.sh --help | -h
 
 Gate a PR on unchecked acceptance-criteria boxes. Scans the Acceptance
-Criteria and Test Plan sections for unchecked `- [ ]` items. Unchecked
+Criteria and Test Plan sections for unchecked list items, and rejects
+sections with no recognized checkboxes. Markers: -, *, +, N. or N)
+(one-to-nine digits; whitespace before [ ]; x/X means checked). Unchecked
 items under `## Post-merge verification` (exact heading) may be deferred
 when a valid open tracking issue is named inside the section.
 
 Exit codes:
   0  gate passed
-  1  unchecked box outside Post-merge verification section
+  1  unchecked box outside exemption, or checkbox-free AC/Test Plan section
   2  usage error
   3  PR not found
-  4  gh / API error, or pr-issue-ref.sh not found
+  4  gh / API error, or required helper/library unavailable
   5  exemption section missing Tracking issue: #N line
   6  tracking issue is one this PR closes (self-referential)
   7  tracking issue is CLOSED
@@ -348,6 +398,8 @@ fi
 
 STATE="other"
 HAS_UNCHECKED_INSCOPE=0
+HAS_EMPTY_INSCOPE=0
+SECTION_CHECKBOXES=0
 HAS_UNCHECKED_EXEMPT=0
 TRACKING_ISSUE=""
 PENDING_SECTIONS=""
@@ -366,9 +418,16 @@ _commit_postmerge() {
   fi
 }
 
+_commit_inscope() {
+  if [[ ( "$STATE" == "ac" || "$STATE" == "testplan" ) && "$SECTION_CHECKBOXES" -eq 0 ]]; then
+    HAS_EMPTY_INSCOPE=1
+  fi
+}
+
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # Strip CRLF (defensive: body from gh may carry Windows line endings)
   line="${raw_line%$'\r'}"
+  if ac_skip_fenced_line "$line"; then continue; fi
 
   # --- level-2 heading detection ---
   # Markdown allows up to three leading spaces before the marker and arbitrary
@@ -376,6 +435,8 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # go unrecognised, so its unchecked boxes bypassed the gate entirely — and it
   # diverged from ac-checkboxes.sh, which accepts the indented forms.
   if grep -qE '^[[:space:]]{0,3}##[[:space:]]' <<<"$line"; then
+    _commit_inscope
+    SECTION_CHECKBOXES=0
     # Strip leading indent, the '##' marker, surrounding whitespace. Case is
     # preserved: the exemption heading is matched case-sensitively below.
     heading="$(printf '%s' "$line" | sed -E 's/^[[:space:]]{0,3}##[[:space:]]+//; s/[[:space:]]*$//')"
@@ -414,14 +475,19 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     continue
   fi
 
-  # --- unchecked box detection (`- [ ]` with optional leading whitespace) ---
-  if grep -qE '^[[:space:]]*-[[:space:]]\[ \]' <<<"$line"; then
+  # Count checked and unchecked items with the same shared marker predicate.
+  if [[ "$line" =~ $CHECKBOX_RE ]]; then
+    checked="${BASH_REMATCH[2]}"
     case "$STATE" in
-      ac|testplan|malformed_postmerge)
-        HAS_UNCHECKED_INSCOPE=1
+      ac|testplan)
+        SECTION_CHECKBOXES=$((SECTION_CHECKBOXES + 1))
+        [[ "$checked" != " " ]] || HAS_UNCHECKED_INSCOPE=1
+        ;;
+      malformed_postmerge)
+        [[ "$checked" != " " ]] || HAS_UNCHECKED_INSCOPE=1
         ;;
       postmerge)
-        HAS_UNCHECKED_EXEMPT=1
+        [[ "$checked" != " " ]] || HAS_UNCHECKED_EXEMPT=1
         ;;
     esac
   fi
@@ -436,11 +502,18 @@ done <<< "$BODY"
 
 # Validate the final postmerge section (if any) after all lines are consumed.
 _commit_postmerge
+_commit_inscope
 
 # --- Stage 1: unchecked boxes in scope ---
 if [[ "$HAS_UNCHECKED_INSCOPE" -eq 1 ]]; then
   echo "AC gate: FAIL — PR #$PR_NUM has unchecked acceptance-criteria box(es) outside the Post-merge verification section." >&2
   echo "Fix: check off every item in the Acceptance Criteria / Test Plan sections before merging, or move deferred work under '## Post-merge verification' with a Tracking issue: #N line." >&2
+  exit 1
+fi
+
+if [[ "$HAS_EMPTY_INSCOPE" -eq 1 ]]; then
+  echo "AC gate: FAIL — PR #$PR_NUM has an Acceptance Criteria / Test Plan section with no recognized checkbox items." >&2
+  echo "Fix: add verifiable checkbox items to each section, or remove an unintended empty section." >&2
   exit 1
 fi
 
