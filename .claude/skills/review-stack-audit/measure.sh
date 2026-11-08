@@ -807,6 +807,10 @@ def fetch_prs(repo):
                                 "updated_at": c.get("updated_at")} for c in issue_comments],
         }
         if ledger is not None:
+            # REST conversation identities/types attribute inline-404 fallbacks.
+            for norm, raw in zip(pr["issue_comments"], issue_comments):
+                norm["id"] = ledger.review_comment_id(raw.get("id"))
+                norm["user_type"] = (raw.get("user") or {}).get("type") or ""
             # The commit each review and inline comment was posted against
             # (rounds per PR, issue #1844); ledger only, like everything below.
             for norm, raw in zip(pr["reviews"], reviews):
@@ -834,7 +838,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
         nodes {
           comments(first: 100) {
             totalCount
-            nodes { author { __typename login } body createdAt }
+            nodes { fullDatabaseId author { __typename login } body createdAt }
           }
         }
       }
@@ -880,7 +884,8 @@ def fetch_threads(repo, num):
                 kind = author.get("__typename") or ""
                 if kind == "Bot" and login and not login.endswith("[bot]"):
                     login += "[bot]"
-                comments.append({"user": login, "user_type": kind,
+                comments.append({"id": ledger.review_comment_id((c or {}).get("fullDatabaseId")),
+                                 "user": login, "user_type": kind,
                                  "body": (c or {}).get("body") or "",
                                  "created_at": (c or {}).get("createdAt")})
             total = block.get("totalCount")
