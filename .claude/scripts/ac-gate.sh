@@ -60,8 +60,10 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_ISSUE_REF_SH="$SCRIPT_DIR/pr-issue-ref.sh"
 AC_LIST_MARKER_RE=""
+AC_FENCE_RE=""
 if [[ ! -r "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" ]] ||
-   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" ]]; then
+   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" || -z "$AC_FENCE_RE" ]] ||
+   ! declare -F ac_skip_fenced_line >/dev/null; then
   echo "Error: shared checkbox marker library unavailable: $SCRIPT_DIR/lib/ac-checkbox-markers.sh" >&2
   exit 4
 fi
@@ -216,6 +218,7 @@ _commit_inscope() {
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # Strip CRLF (defensive: body from gh may carry Windows line endings)
   line="${raw_line%$'\r'}"
+  if ac_skip_fenced_line "$line"; then continue; fi
 
   # --- level-2 heading detection ---
   # Markdown allows up to three leading spaces before the marker and arbitrary

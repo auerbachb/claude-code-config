@@ -176,6 +176,33 @@ REPO_BOOTSTRAP_FILE_EOF
 # Keep this group-free so each caller controls its own capture groups.
 # CommonMark ordered markers contain one to nine digits, followed by . or ).
 AC_LIST_MARKER_RE='[-*+]|[0-9]{1,9}[.)]'
+AC_FENCE_RE='^ {0,3}(`{3,}|~{3,})(.*)$'
+AC_FENCE_CHAR=""
+AC_FENCE_LENGTH=0
+
+# Return success for fence boundaries and contents, without inspecting them as
+# criteria. Root fences follow CommonMark 4.5: same kind, long-enough closing
+# run and whitespace-only closer; a backtick info string cannot contain `.
+ac_skip_fenced_line() {
+  local ac__line="$1" ac__mark ac__rest
+  if [[ -n "$AC_FENCE_CHAR" ]]; then
+    if [[ "$ac__line" =~ $AC_FENCE_RE ]]; then
+      ac__mark="${BASH_REMATCH[1]}"; ac__rest="${BASH_REMATCH[2]}"
+      ac__rest="${ac__rest// /}"; ac__rest="${ac__rest//$'\t'/}"
+      if [[ "${ac__mark:0:1}" == "$AC_FENCE_CHAR" && "${#ac__mark}" -ge "$AC_FENCE_LENGTH" && -z "$ac__rest" ]]; then
+        AC_FENCE_CHAR=""; AC_FENCE_LENGTH=0
+      fi
+    fi
+    return 0
+  fi
+  if [[ "$ac__line" =~ $AC_FENCE_RE ]]; then
+    ac__mark="${BASH_REMATCH[1]}"; ac__rest="${BASH_REMATCH[2]}"
+    if [[ "${ac__mark:0:1}" == '`' && "$ac__rest" == *'`'* ]]; then return 1; fi
+    AC_FENCE_CHAR="${ac__mark:0:1}"; AC_FENCE_LENGTH=${#ac__mark}
+    return 0
+  fi
+  return 1
+}
 REPO_BOOTSTRAP_FILE_EOF
       ;;
     ".claude/scripts/ac-gate.sh")
@@ -242,8 +269,10 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_ISSUE_REF_SH="$SCRIPT_DIR/pr-issue-ref.sh"
 AC_LIST_MARKER_RE=""
+AC_FENCE_RE=""
 if [[ ! -r "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" ]] ||
-   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" ]]; then
+   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" || -z "$AC_FENCE_RE" ]] ||
+   ! declare -F ac_skip_fenced_line >/dev/null; then
   echo "Error: shared checkbox marker library unavailable: $SCRIPT_DIR/lib/ac-checkbox-markers.sh" >&2
   exit 4
 fi
@@ -398,6 +427,7 @@ _commit_inscope() {
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # Strip CRLF (defensive: body from gh may carry Windows line endings)
   line="${raw_line%$'\r'}"
+  if ac_skip_fenced_line "$line"; then continue; fi
 
   # --- level-2 heading detection ---
   # Markdown allows up to three leading spaces before the marker and arbitrary

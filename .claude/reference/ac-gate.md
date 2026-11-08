@@ -28,6 +28,11 @@ bodies without these sections retain their current pass. The extractor still
 selects only the first matching section and preserves markers and newline bytes
 when ticking.
 
+Root backtick/tilde fenced examples (up to three leading spaces) are skipped
+by both parsers, including example headings, checkbox items and tracking lines.
+Closing fences use the same character and at least the opening length; unclosed
+fences consume the remainder. See [CommonMark 4.5](https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
+
 ## Exemption Logic (`## Post-merge verification`)
 
 Unchecked boxes inside the exemption section are allowed when **all three ordered

@@ -72,8 +72,10 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AC_LIST_MARKER_RE=""
+AC_FENCE_RE=""
 if [[ ! -r "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" ]] ||
-   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" ]]; then
+   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" || -z "$AC_FENCE_RE" ]] ||
+   ! declare -F ac_skip_fenced_line >/dev/null; then
   echo "ERROR: shared checkbox marker library unavailable: $SCRIPT_DIR/lib/ac-checkbox-markers.sh" >&2
   exit 2
 fi
@@ -231,7 +233,7 @@ fi
 PY_OUT="$TMPDIR_AC/py-out"
 PY_ERR="$TMPDIR_AC/py-err"
 
-python3 - "$MODE" "$TICK_SPEC" "$BODY_FILE" "$PY_OUT" "$AC_LIST_MARKER_RE" <<'PY' 2>"$PY_ERR"
+python3 - "$MODE" "$TICK_SPEC" "$BODY_FILE" "$PY_OUT" "$AC_LIST_MARKER_RE" "$AC_FENCE_RE" <<'PY' 2>"$PY_ERR"
 import json
 import os
 import re
@@ -246,6 +248,20 @@ with open(body_path, "r", encoding="utf-8", newline="") as fh:
     body = fh.read()
 
 lines = body.splitlines(keepends=True)
+fence_re = re.compile(sys.argv[6])
+visible = []
+fence_char, fence_length = '', 0
+for line in lines:
+    match = fence_re.match(line.rstrip('\r\n'))
+    if fence_char:
+        if match and match[1][0] == fence_char and len(match[1]) >= fence_length and not match[2].strip(' \t'):
+            fence_char, fence_length = '', 0
+        visible.append(False)
+    elif match and not (match[1][0] == '`' and '`' in match[2]):
+        fence_char, fence_length = match[1][0], len(match[1])
+        visible.append(False)
+    else:
+        visible.append(True)
 
 # Section detection. Match the first heading line (level 2) whose text is
 # "test plan" or "acceptance criteria" (case-insensitive). Content runs until
@@ -261,6 +277,8 @@ section_start = None  # index of first line *after* the section heading
 section_end = None    # exclusive end (index of next heading or len(lines))
 
 for i, line in enumerate(lines):
+    if not visible[i]:
+        continue
     if section_start is None and SECTION_RE.match(line):
         section_start = i + 1
         continue
@@ -280,6 +298,8 @@ if section_end is None:
 # Collect checkbox items in document order.
 items = []  # list of (line_index, checked_bool, text)
 for idx in range(section_start, section_end):
+    if not visible[idx]:
+        continue
     m = CHECKBOX_RE.match(lines[idx])
     if not m:
         continue

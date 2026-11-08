@@ -92,6 +92,31 @@ else:sys.exit(90)
     verify(run(gate).returncode==1,'empty in-scope section blocks before missing-tracking exemption')
     body.write_text('## Test Plan\n- [ ] alpha\n');before=patches()
     verify(run(extractor,'--tick','[').returncode==2 and patches()==before,'invalid regex refuses without PATCH')
+    # Headings, boxes and tracking lines in fenced examples are data.
+    for opener,closer in [('```md','```'),('   ~~~~example','  ~~~~~'),('````','`````')]:
+        sample=opener+'\n## Test Plan\n- [x] sample\n'+closer+'\n'
+        body.write_text(sample)
+        result=run(gate);verify(result.returncode==0,'fenced-only heading does not create a required section')
+        result=run(extractor,'--extract');verify(result.returncode==1 and 'No Test Plan section' in result.stderr,'extractor ignores fenced-only heading')
+        body.write_text('## Test Plan\nProse only.\n'+sample)
+        verify(run(gate).returncode==1,'fenced checked example cannot satisfy real criteria section')
+        verify(run(extractor,'--extract').returncode==1,'fenced checked sample is not an extractable item')
+        body.write_text(sample+'## Test Plan\n1) [x] real\n')
+        result=run(extractor,'--extract');verify(result.returncode==0 and json.loads(result.stdout)==[dict(index=0,checked=True,text='real')],'first real section wins after a fenced sample')
+        verify(run(gate).returncode==0,'real checked section after fenced sample passes')
+    for content,gate_rc,extract_rc in [
+        ('```md\n## Test Plan\n- [x] sample\n',0,1),
+        ('## Test Plan\n~~~\n- [x] sample\n',1,1),
+        ('## Test Plan\n````\n- [x] sample\n```\n+ [x] still sample\n`````\n1. [ ] real\n',1,0),
+        ('```bad`info\n## Test Plan\n- [ ] real\n',1,0),
+        ('\t```\n## Test Plan\n- [ ] real\n',1,0)]:
+        body.write_text(content);verify(run(gate).returncode==gate_rc,'fence length/EOF/info/indent gate control')
+        verify(run(extractor,'--extract').returncode==extract_rc,'fence length/EOF/info/indent extractor control')
+    content='## Test Plan\n- [ ] actual\n```md\n## Other\n+ [ ] sample\n```\n1) [ ] actual2\n'
+    body.write_text(content);result=run(extractor,'--all-pass')
+    verify(result.returncode==0 and capture.read_text()==content.replace('- [ ] actual','- [x] actual').replace('1) [ ] actual2','1) [x] actual2'),'ticking preserves fenced headings and unchecked samples byte-for-byte')
+    body.write_text('## Test Plan\n- [x] ready\n## Post-merge verification\n1) [ ] later\n```\nTracking issue: #777\n```\n')
+    verify(run(gate).returncode==5,'fenced tracking line grants no exemption')
     for script,expected in ((extractor,2),(gate,4)):
         isolated=tmp/('isolated-'+script.stem);isolated.mkdir();copied=isolated/script.name;shutil.copyfile(script,copied)
         result=run(copied,'--extract') if script==extractor else run(copied)
@@ -101,5 +126,8 @@ else:sys.exit(90)
         result=run(copied,'--extract') if script==extractor else run(copied)
         verify(result.returncode==expected,'empty shared library cannot inherit an environment pattern')
         env.pop('AC_LIST_MARKER_RE')
+        (isolated/'lib/ac-checkbox-markers.sh').write_text("AC_LIST_MARKER_RE='[-*+]|[0-9]{1,9}[.)]'\n")
+        result=run(copied,'--extract') if script==extractor else run(copied)
+        verify(result.returncode==expected,'older marker-only library cannot silently skip fence safety')
     print(str(checks)+' actual AC extractor/mutation/gate checks passed (offline)')
 PY
