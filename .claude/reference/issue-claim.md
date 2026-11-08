@@ -177,3 +177,10 @@ Adoption, when the sweep finds a dead owner, reuses the **existing** stale-takeo
 - **#636** — `/wave`'s launch-time filtering, whose dedup this strengthens.
 - **#732** — authorship scope. A collaborator's claim is context, never something to overwrite.
 - The same-machine `git worktree list` guard in `/start-issue` stays as a backstop. It only covers one entry path, on one machine, and only after the worktree stage — it is not a substitute for a claim other threads can see.
+
+
+## Observed-claim cleanup after merge (issue #2019)
+
+`--check --json` includes `claim_comment_id`: the exact winning comment ID observed by that read, or null when no readable marker ID exists. Other modes leave this receipt field null. A delayed cleanup can pass `--release --expect-claim-id ID` (or `none` for an observed absence). This opt-in precondition is release-only; invalid usage exits 2. A changed winning identity exits 5 without releasing anything. Post-merge cleanup additionally requires a marker timestamp strictly before the verified merge timestamp, so replay cannot adopt post-merge or same-second ambiguous work. No-marker receipts retain the absence precondition. Capture every linked issue before waiting on another operation; an unreadable ownership receipt is a reason to skip cleanup, never permission to release the current account's newer claim.
+
+The default account-owned release remains unchanged. An expected-ID release deletes only the account-owned comment IDs in its initial read, then checks for remaining markers before removing metadata. If another marker is observed, or that verification fails, it retains the label/assignee index and reports incomplete cleanup. This uses the existing claim/metadata ordering and retains the documented residual metadata race above; it does not provide an atomic issue-state close.

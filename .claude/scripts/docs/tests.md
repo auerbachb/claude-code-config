@@ -134,6 +134,7 @@ opt-in of issue #1544.
 | [portable-handoff-context.test.sh](../tests/portable-handoff-context.test.sh) | Tests for `portable-handoff-context.sh` |
 | [portable-handoff-lint.test.sh](../tests/portable-handoff-lint.test.sh) | Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff |
 | [portable-handoff-publish.test.sh](../tests/portable-handoff-publish.test.sh) | Tests canonical `/end` handoff publication |
+| [post-merge-bookkeeping.test.sh](../tests/post-merge-bookkeeping.test.sh) | Exercise actual merge bookkeeping, logger, claim cleanup and resumed workflow boundaries with isolated stateful GitHub fixtures |
 | [pr-authorship.test.sh](../tests/pr-authorship.test.sh) | Tests for `pr-authorship.sh` |
 | [pr-body-review-note.test.sh](../tests/pr-body-review-note.test.sh) | Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, CommonMark ATX headings, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors |
 | [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
