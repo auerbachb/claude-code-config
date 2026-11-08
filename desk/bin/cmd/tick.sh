@@ -91,8 +91,8 @@ EOF
 # a different row of the same table, for control-status (issue #1755).
 #
 # hq__tick_sql GUARD [HOLD] — GUARD 1 (tick --session) first takes
-# register-control's own advisory lock, after the tick lock (register-control
-# never takes the tick lock, so the order cannot deadlock), then compares
+# register-control's own advisory lock, after the tick lock. Registration takes
+# both in this same tick-then-control order to avoid deadlock, then compares
 # control_session with :'hq_session'. Holding that lock until commit, no
 # registration can land between the check and the read: either it committed
 # before (the check sees it) or it waits for this tick to commit (issue
