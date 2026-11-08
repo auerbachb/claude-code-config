@@ -443,6 +443,12 @@ use the labelled no-record fallbacks. Unknown or malformed state degrades rather
 than becoming a fabricated empty round. These repo siblings are not lifted by
 `--session-view`; no migration or new generic CAS interface is needed.
 
+
+Membership selection requires an explicit valid session ID. An empty, default,
+null or malformed identity is a usage error; `/board` labels the degradation and
+uses its no-record fallbacks. A distinct identified observer can still read the
+recorded-round union. The table-freshness default clock remains unchanged.
+
 ### Usage by surface
 
 | Surface | When to emit |

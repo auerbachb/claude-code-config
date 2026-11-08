@@ -6,6 +6,7 @@ ROUND_TEST_SHELL="${ROUND_TEST_SHELL:-$BASH}" python3 - "$ROOT" "$@" <<'PY'
 import copy,json,os,re,shlex,subprocess,sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(sys.argv[1]);SHELL=os.environ['ROUND_TEST_SHELL'];REPO='auerbachb/claude-code-config';STAMP='2026-09-02T18:38:00Z'
+READER=Path(os.environ.get('ROUND_TEST_READER_SOURCE',ROOT/'.claude/scripts/round-membership.sh'))
 SUBAGENT=Path(os.environ.get('ROUND_TEST_SUBAGENT_SOURCE',ROOT/'.claude/skills/subagent/SKILL.md')).read_text();BOARD=(ROOT/'.claude/skills/board/SKILL.md').read_text()
 def fence(source,name):
     # Use the shipped extractor: list-indented closing fences are Markdown too.
@@ -45,9 +46,9 @@ exec "$REAL_STATE" "$@"
         env.update(extra or {});return subprocess.run([SHELL,'-u','-c',block],cwd=ROOT,env=env,capture_output=True,text=True,timeout=20)
     def write(self,session,members,extra=None):return self.run_block(issues(WRITE,'ROUND_ISSUES',members),session,extra)
     def clear(self,session,members,extra=None):return self.run_block(issues(CLEAR,'ENDED_ROUND_ISSUES',members),session,extra)
-    def read(self,session='',repo=REPO,extra=None):
-        env=self.env.copy();env.update(extra or {});return subprocess.run([SHELL,str(ROOT/'.claude/scripts/round-membership.sh'),'--repo',repo,'--session',session,'--state-helper',str(self.helper)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=20)
-    def members(self,session='',repo=REPO):
+    def read(self,session='observer',repo=REPO,extra=None):
+        env=self.env.copy();env.update(extra or {});return subprocess.run([SHELL,str(READER),'--repo',repo,'--session',session,'--state-helper',str(self.helper)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=20)
+    def members(self,session='observer',repo=REPO):
         p=self.read(session,repo);self.assertEqual(p.returncode,0,p.stderr);return json.loads(p.stdout)
     def seed(self,rounds=None,legacy=None):
         data=copy.deepcopy(self.data)
@@ -84,11 +85,11 @@ exec "$REAL_STATE" "$@"
     def test_foreign_same_members_are_never_cleared(self):
         self.seed({'sess-b':record('sess-b',['1'])});before=self.state.read_bytes();p=self.clear('sess-a',['1']);self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(self.state.read_bytes(),before)
     def test_unknown_identity_repo_or_empty_issue_list_degrades_without_writing(self):
-        for session,members,extra in [(None,['1'],{}),('default',['1'],{}),('bad"key',['1'],{}),('sess-a',[],{}),('sess-a',['0'],{}),('sess-a',['1'],{'UNRESOLVED':'true'})]:
+        for session,members,extra in [(None,['1'],{}),('default',['1'],{}),('null',['1'],{}),('bad"key',['1'],{}),('sess-a',[],{}),('sess-a',['0'],{}),('sess-a',['1'],{'UNRESOLVED':'true'})]:
             with self.subTest(session=session,members=members,extra=extra):
                 self.save(self.data);before=self.state.read_bytes();p=self.write(session,members,extra);self.assertEqual(p.returncode,0,p.stderr);self.assertIn('DEGRADED',p.stdout);self.assertEqual(self.state.read_bytes(),before)
     def test_missing_ended_list_or_identity_never_clears(self):
-        for session,members in [('sess-a',[]),(None,['1']),('default',['1'])]:
+        for session,members in [('sess-a',[]),(None,['1']),('default',['1']),('null',['1'])]:
             with self.subTest(session=session,members=members):
                 self.seed({'sess-a':record('sess-a',['1'])});before=self.state.read_bytes();p=self.clear(session,members);self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(self.state.read_bytes(),before);self.assertIn('DEGRADED',p.stdout)
     def test_read_failure_or_malformed_own_slot_is_retained(self):
@@ -125,5 +126,12 @@ exec "$REAL_STATE" "$@"
         self.assertNotIn('rounds',json.dumps(schema.get('_field_types',{})));self.assertIn('read_round_membership "$EFFECTIVE_REPO"',BOARD);self.assertIn('read_round_membership "$RK"',BOARD);self.assertIn('ROUND_MEMBERSHIP_SH=$(resolve_script round-membership.sh',BOARD);self.assertIn('Recorded rounds (observer view)',' '.join(BOARD.split()));self.assertIn('liveness unconfirmed',' '.join(BOARD.split()));self.assertIn('A recorded queue does not, by itself, open a round',BOARD);self.assertIn('Only when that repo has no round record',BOARD);self.assertIn('TF_SESSION="${CLAUDE_SESSION_ID:-default}"',BOARD)
         self.assertLess(SUBAGENT.index('subagent-step7-round-membership-write'),SUBAGENT.index('### 7.1:'))
         self.assertIn("Only the round's END clears it",SUBAGENT);wave=(ROOT/'.claude/skills/wave/SKILL.md').read_text();self.assertIn('/wave` writes no round-membership record',wave);self.assertNotRegex(wave,r'--(?:set|cas) [^\n]*\.round(?:s|\.)?=')
+    def test_unidentified_dispatcher_cannot_read_another_round_as_observer(self):
+        self.seed({'sess-b':record('sess-b',['99'])});before=self.state.read_bytes()
+        for session in ['', 'default', 'null', 'bad"key']:
+            with self.subTest(session=session):
+                p=self.read(session);self.assertEqual(p.returncode,2,'unidentified session read another owner membership');self.assertEqual(p.stdout,'');self.assertEqual(self.state.read_bytes(),before)
+    def test_unidentified_board_uses_the_labelled_no_record_fallback(self):
+        self.seed({'sess-b':record('sess-b',['99'])});before=self.state.read_bytes();code=fence(BOARD,'board-step2-round-state')+'\nprintf "MEMBERS=%s\\nSCOPE=%s\\n" "$ROUND_MEMBERS" "$ROUND_SCOPE"';p=self.run_block(code,extra=dict(TF_SESSION='default',ROUND_MEMBERSHIP_SH=str(READER)));self.assertEqual(p.returncode,0,p.stderr);self.assertIn('SCOPE=none',p.stdout,'unidentified board selected another owner membership');self.assertIn('MEMBERS=\n',p.stdout);self.assertIn('DEGRADED',p.stdout);self.assertEqual(self.state.read_bytes(),before)
 if __name__=='__main__':unittest.main(argv=[sys.argv[0],*sys.argv[2:]],verbosity=2)
 PY

@@ -1012,7 +1012,7 @@ ROUND_NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 ROUND_SESSION="${CLAUDE_SESSION_ID:-}"
 if [[ -z "$REPO_KEY" ]]; then
   echo 'DEGRADED: repo key unresolved — round membership not recorded'
-elif [[ ! "$ROUND_SESSION" =~ ^[A-Za-z0-9_.:-]+$ || "$ROUND_SESSION" == default ]]; then
+elif [[ ! "$ROUND_SESSION" =~ ^[A-Za-z0-9_.:-]+$ || "$ROUND_SESSION" == default || "$ROUND_SESSION" == null ]]; then
   echo 'DEGRADED: unique dispatch session unavailable — round membership not recorded; no shared default slot written'
 elif ! printf '%s' "$ROUND_MEMBERS" | jq -e 'length > 0 and all(.[]; test("^[1-9][0-9]*$"))' >/dev/null; then
   echo 'DEGRADED: round issue list unavailable — round membership not recorded'
@@ -1501,7 +1501,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      ENDED_MEMBERS=$(printf '%s\n' "${ENDED_ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
    fi
    ROUND_SESSION="${CLAUDE_SESSION_ID:-}"
-   if [[ -n "$REPO_KEY" && "$ROUND_SESSION" =~ ^[A-Za-z0-9_.:-]+$ && "$ROUND_SESSION" != default && "$ENDED_MEMBERS" != '[]' ]]; then
+   if [[ -n "$REPO_KEY" && "$ROUND_SESSION" =~ ^[A-Za-z0-9_.:-]+$ && "$ROUND_SESSION" != default && "$ROUND_SESSION" != null && "$ENDED_MEMBERS" != '[]' ]]; then
      ROUND_PATH=".repos[\"$REPO_KEY\"].rounds[\"$ROUND_SESSION\"]"
      CLEAR_READ_RC=0
      ON_DISK=$("$SESSION_STATE_SH" --get-json "$ROUND_PATH") || CLEAR_READ_RC=$?

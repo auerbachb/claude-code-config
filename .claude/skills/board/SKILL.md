@@ -118,6 +118,9 @@ REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
 # session" describes. If sharing `default` across concurrent threads is worth
 # fixing, it is a change to table-freshness.sh and all of its call sites at once.
 TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+# This fallback belongs only to freshness. Membership requires an explicit valid
+# session; default/null/unidentified reads degrade to no-record fallbacks, never
+# to another session's observer union.
 ```
 
 An empty `REPO_KEY` does not stop the board, but it cannot be left empty either.
@@ -132,6 +135,8 @@ skipped and says so.
 ---
 
 ## Step 2: Gather round state, read-only
+
+<!-- test-anchor: board-step2-round-state -->
 
 ```bash
 # `--get` prints the literal string `null` and exits 0 for an absent path, so a
@@ -169,7 +174,7 @@ read_round_membership() {
   ROUND_READ_SCOPE=none
   if [[ -z "$ROUND_MEMBERSHIP_SH" ]]; then return 0; fi
   if ! result=$("$ROUND_MEMBERSHIP_SH" --repo "$repo" --session "$TF_SESSION" --state-helper "$SESSION_STATE_SH"); then
-    echo 'DEGRADED: round membership unreadable — using labelled no-record fallbacks'
+    echo 'DEGRADED: round membership unavailable — using labelled no-record fallbacks'
     return 0
   fi
   ROUND_READ_MEMBERS=$(printf '%s' "$result" | jq -c '.members')

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # catalog: scheduling-monitoring — Reads a session's ordered round or an observer union without replacing another dispatch
-# Usage: round-membership.sh --repo OWNER/REPO [--session ID] [--state-helper PATH]
+# Usage: round-membership.sh --repo OWNER/REPO --session ID [--state-helper PATH]
 # Output: {members: [issue strings] | null, scope: own|observer|legacy|none}.
 # Read-only state access; null tombstones shadow attributed legacy singletons.
 # Exit 0: typed result (including known absence); 2: usage; 4: missing dependency;
@@ -13,11 +13,13 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || exit 2
       case "$1" in --repo) repo="$2" ;; --session) session="$2" ;; --state-helper) state_helper="$2" ;; esac
       shift 2 ;;
-    --help|-h) echo 'Usage: round-membership.sh --repo OWNER/REPO [--session ID] [--state-helper PATH]'; exit 0 ;;
+    --help|-h) echo 'Usage: round-membership.sh --repo OWNER/REPO --session ID [--state-helper PATH]'; exit 0 ;;
     *) exit 2 ;;
   esac
 done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 2
+# A freshness default is not a dispatch identity or an observer opt-in.
+[[ "$session" =~ ^[A-Za-z0-9_.:-]+$ && "$session" != default && "$session" != null ]] || exit 2
 command -v jq >/dev/null 2>&1 && [[ -x "$state_helper" ]] || exit 4
 repo=$("$state_helper" --repo "$repo" --repo-key) || exit 5
 [[ "$repo" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || exit 5

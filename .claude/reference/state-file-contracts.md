@@ -229,6 +229,12 @@ The representative schema carries both forms. Native controls execute the real
 writer/clear fences and locked state writer with two sessions, and verify own,
 observer, legacy, tombstone and repo-isolation reads. Generic CAS is unchanged.
 
+
+Membership selection requires an explicit valid session ID. An empty, default,
+null or malformed identity is a usage error; `/board` labels the degradation and
+uses its no-record fallbacks. A distinct identified observer can still read the
+recorded-round union. The table-freshness default clock remains unchanged.
+
 ## Handoff file migration
 
 The legacy flat layout `~/.claude/handoffs/pr-{N}-handoff.json` is preserved for compatibility. `handoff-migrate.sh --apply` moves flat files into the scoped `{owner}/{repo}/` layout.
