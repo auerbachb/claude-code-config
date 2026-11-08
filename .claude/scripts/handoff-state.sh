@@ -62,7 +62,7 @@
 #   Scope flags (optional, any order, before the mode flag):
 #     --owner-repo <owner/repo>   scope explicitly — preferred at every call site
 #     --legacy-flat               target the legacy flat path instead
-#     --require-existing          --set/--append update only; exit 3 (nothing
+#     --require-existing          --set/--append/--delete existing only; exit 3 (nothing
 #                                 written) instead of seeding a new record from
 #                                 `{}` when the target is absent. Checked under
 #                                 the lock, so it is race-free where a caller's
@@ -465,8 +465,8 @@ fi
 # Legacy flat (explicit only)  : ~/.claude/handoffs/pr-{N}-handoff.json
 # ---------------------------------------------------------------------------
 if [[ -n "$EXPECTED_PR$EXPECTED_OWNER$EXPECTED_HEAD" ]]; then
-  if [[ "$REQUIRE_EXISTING" != 1 || "$EXPECTED_PR" != "$PR_NUMBER" || -z "$EXPECTED_OWNER" || -z "$EXPECTED_HEAD" || ( "$MODE" != set && "$MODE" != append ) ]]; then
-    echo "handoff-state.sh: identity guards require matching --expect-pr, --expect-owner, --expect-head and --require-existing before --set/--append; nothing written" >&2
+  if [[ "$REQUIRE_EXISTING" != 1 || "$EXPECTED_PR" != "$PR_NUMBER" || -z "$EXPECTED_OWNER" || -z "$EXPECTED_HEAD" || ( "$MODE" != set && "$MODE" != append && "$MODE" != delete ) ]]; then
+    echo "handoff-state.sh: identity guards require matching --expect-pr, --expect-owner, --expect-head and --require-existing before --set/--append/--delete; nothing written" >&2
     exit 2
   fi
 fi
@@ -671,7 +671,7 @@ state_lock_acquire "$HANDOFF_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
 #
 # Scoped to the seeding modes: --create and --init are meant to create, and
 # --delete already tolerates an absent target.
-if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" ) && ! -f "$HANDOFF_FILE" ]]; then
+if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" || "$MODE" == "delete" ) && ! -f "$HANDOFF_FILE" ]]; then
   echo "handoff-state.sh: --${MODE} on PR #${PR_NUMBER} requires an existing handoff, but none is at $HANDOFF_FILE (--require-existing). Nothing was written; the record was never created, or was deleted/migrated after the caller checked." >&2
   state_lock_release
   exit 3
