@@ -425,7 +425,8 @@ done
 # EOF on the pipe is the reader closing it, which normally ends this stub. In
 # ignore-term mode it lingers instead, so the reader's cleanup has something
 # that outlives SIGTERM to reap.
-[[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]] && sleep 30
+# Replace this owned fake process so no separate sleep child can escape cleanup.
+[[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]] && exec sleep 30
 exit 0
 EOF
 

@@ -16,7 +16,23 @@ SOURCE = (ROOT / '.claude/scripts/ai-quotas.sh').read_text()
 FUNCTIONS = '\n'.join(re.search(r'^' + name + r'\(\).*?^}', SOURCE,
                                 re.M | re.S)[0]
                       for name in ('codex_stop_server', 'codex_app_server_read'))
-SHELLS = list(dict.fromkeys(filter(None, ('/bin/bash', shutil.which('bash')))))
+def supported_shells():
+    candidates = ('/bin/bash', os.environ.get('QUOTAS_WAITS_CURRENT_BASH'),
+                  shutil.which('bash'), '/opt/homebrew/bin/bash', '/usr/local/bin/bash')
+    shells = []
+    for candidate in filter(None, candidates):
+        path = Path(candidate)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            continue
+        resolved = str(path.resolve())
+        if resolved not in shells:
+            shells.append(resolved)
+    if not shells:
+        raise RuntimeError('no executable Bash fixture shell')
+    return shells
+
+
+SHELLS = supported_shells()
 
 
 class QuotaWaits(unittest.TestCase):
@@ -42,7 +58,7 @@ class QuotaWaits(unittest.TestCase):
                       if server_mode == 'ignore-term' else '')
             answer = ('case "$request" in *account/rateLimits/read*) '
                       'printf \'{"id" : 2,"result":{}}\\n\'; ' + linger + ';; esac\n')
-            server.write_text('#!/bin/bash\n'
+            server.write_text('#!/bin/bash\nprintf \'%s\\n\' \"$$\" > \"$SERVER_PID_FILE\"\n'
                               + ('trap "" TERM\n' if server_mode == 'ignore-term' else '')
                               + 'while IFS= read -r request; do\n'
                               + (answer if server_mode != 'silent' else ':\n')
@@ -52,7 +68,8 @@ class QuotaWaits(unittest.TestCase):
                    if not k.startswith(('AI_QUOTAS_', 'CLAUDE_QUOTAS_', 'STUB_'))
                    and k not in ('BASH_ENV', 'ENV', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME')}
             env.update(HOME=str(home), PATH=str(binary) + ':/usr/bin:/bin',
-                       FORBIDDEN_HITS=str(hits), AI_QUOTAS_NOTIFY_BIN='/usr/bin/true')
+                       FORBIDDEN_HITS=str(hits), SERVER_PID_FILE=str(tmp / 'server.pid'),
+                       AI_QUOTAS_NOTIFY_BIN='/usr/bin/true')
             for name in ('CURL', 'SECURITY', 'CLAUDE', 'CODEX'):
                 env['AI_QUOTAS_' + name + '_BIN'] = str(binary / name.lower())
             command = ('set -uo pipefail\n' + FUNCTIONS
@@ -64,6 +81,16 @@ class QuotaWaits(unittest.TestCase):
                                     start_new_session=True)
             try:
                 stdout, stderr = proc.communicate(timeout=12)
+                # Check the reader's cleanup before our unconditional safety teardown.
+                pid_file = tmp / 'server.pid'
+                if pid_file.exists():
+                    server_pid = int(pid_file.read_text().strip())
+                    try:
+                        os.kill(server_pid, 0)
+                    except ProcessLookupError:
+                        pass
+                    else:
+                        self.fail('reader left its app-server PID alive before fixture teardown')
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()

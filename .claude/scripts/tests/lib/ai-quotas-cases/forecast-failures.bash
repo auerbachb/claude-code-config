@@ -157,8 +157,14 @@ cat > "$TMP/overwriting-forecast.sh" <<'OVERWRITING_FORECAST'
 jq '.rows |= map(.used_pct = 99 | . + {pct_per_day: 7.5})'
 OVERWRITING_FORECAST
 chmod +x "$TMP/overwriting-forecast.sh"
+overage_case 40 50
 FORECAST_BIN_OVERRIDE="$TMP/overwriting-forecast.sh"
 run
+check_eq "$RC" "0" "a helper that rewrites a figure it was given does not fail the report"
+check_contains "$ERR" "DEGRADED" "that rewrite is a degradation too"
+check_contains "$OUT" "40%" "and the figure this run actually read is what prints"
+check_not_contains "$OUT" "99%" "never the one the helper substituted"
+
 FORECAST_BIN_OVERRIDE=""
 
 # A blank may be filled only with the DOCUMENTED type. A helper that answers

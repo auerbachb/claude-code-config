@@ -36,8 +36,3 @@ check_eq "$(table_only "$OUT" | awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i 
                                      c { print $c }' | sort -u | tr -d '\n')" "-" \
   "and the START column carries no d0"
 FORECAST_BIN_OVERRIDE=""
-check_eq "$RC" "0" "a helper that rewrites a figure it was given does not fail the report"
-check_contains "$ERR" "DEGRADED" "that rewrite is a degradation too"
-check_contains "$OUT" "40%" "and the figure this run actually read is what prints"
-check_not_contains "$OUT" "99%" "never the one the helper substituted"
-
