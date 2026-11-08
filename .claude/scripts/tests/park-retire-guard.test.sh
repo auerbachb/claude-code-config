@@ -433,6 +433,126 @@ check_eq "an unreadable record makes D5 fail closed" "error rc=8" "$(field "$OUT
 check_eq "  leaving the file as found" "not json at all" "$(cat "$STATE_FILE")"
 
 # ---------------------------------------------------------------------------
+echo "== #1715 durable generation: ABA and legacy-to-generated replacement =="
+# ---------------------------------------------------------------------------
+OLD_RETIRE=$(extract_skill_bash "$TEST_DIR/fixtures/park-retire-pre1715.md" old-retire) || exit 1
+OLD_D5=$(extract_skill_bash "$TEST_DIR/fixtures/park-retire-pre1715.md" old-d5) || exit 1
+OLD_D5_PREFIX=$(printf '%s\n' "$OLD_D5" | awk -v seam="$D5_SEAM" 'index($0, seam) { exit } { print }')
+OLD_D5_SUFFIX=$(printf '%s\n' "$OLD_D5" | awk -v seam="$D5_SEAM" 'found { print } index($0, seam) { found = 1; print }')
+run_old_retire() { local BLOCK_RETIRE="$OLD_RETIRE"; run_retire "$1"; }
+run_old_d5() { local BLOCK_D5_PREFIX="$OLD_D5_PREFIX" BLOCK_D5_SUFFIX="$OLD_D5_SUFFIX"; run_d5 "$1"; }
+aba_interleave() {
+  case "$1" in
+    *cause) cat <<'ABA_CAUSE'
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_cause=null" >/dev/null
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" --expect null --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-replacement\"" >/dev/null
+ABA_CAUSE
+      ;;
+    *bound) cat <<'ABA_BOUND'
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.parked_until=null" >/dev/null
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"2026-09-11T22:00:00Z\"" --expect null --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-replacement\"" >/dev/null
+ABA_BOUND
+      ;;
+  esac
+}
+for SITE in retire d5; do
+  for SHAPE in generated-cause generated-bound legacy-cause legacy-bound; do
+    case "$SHAPE" in
+      *cause) seed_complete_park reactive 2026-09-11T22:00:00Z task-original ;;
+      *bound) seed_no_identity_park 2026-09-11T22:00:00Z ;;
+    esac
+    if [[ "$SHAPE" == generated-* ]]; then
+      "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-original\"" >/dev/null
+    fi
+    HITS_BEFORE=$(day_get consecutive_limit_hits)
+    TASK_BEFORE=$(day_get limit_resume_task_id); WAKE_BEFORE=$(day_get limit_resume_generation)
+    KIND_BEFORE=$(day_get limit_kind)
+    ABA_CMD=$(aba_interleave "$SHAPE")
+    if [[ "$SITE" == retire ]]; then
+      OUT=$(run_retire "$ABA_CMD")
+      check_eq "$SITE $SHAPE: loses original snapshot" 7 "$(field "$OUT" RETIRE_RC)"
+    else
+      OUT=$(run_d5 "$ABA_CMD")
+      check_eq "$SITE $SHAPE: loses original snapshot" superseded "$(field "$OUT" RESUME_CLEAR)"
+    fi
+    check_eq "$SITE $SHAPE: new generation preserved" generation-replacement "$(day_get park_generation)"
+    check_eq "$SITE $SHAPE: same timestamp preserved" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+    check_eq "$SITE $SHAPE: hits unchanged" "$HITS_BEFORE" "$(day_get consecutive_limit_hits)"
+    check_eq "$SITE $SHAPE: wake task unchanged" "$TASK_BEFORE" "$(day_get limit_resume_task_id)"
+    check_eq "$SITE $SHAPE: wake generation unchanged" "$WAKE_BEFORE" "$(day_get limit_resume_generation)"
+    check_eq "$SITE $SHAPE: kind unchanged" "$KIND_BEFORE" "$(day_get limit_kind)"
+  done
+  for SHAPE in cause bound; do
+    case "$SHAPE" in
+      cause) seed_complete_park reactive 2026-09-11T22:00:00Z task-original ;;
+      bound) seed_no_identity_park 2026-09-11T22:00:00Z ;;
+    esac
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-original\"" >/dev/null
+    ABA_CMD=$(aba_interleave "$SHAPE")
+    if [[ "$SITE" == retire ]]; then
+      OUT=$(run_old_retire "$ABA_CMD")
+      check_eq "negative $SITE $SHAPE: old anchor wrongly clears" 0 "$(field "$OUT" RETIRE_RC)"
+    else
+      OUT=$(run_old_d5 "$ABA_CMD")
+      check_eq "negative $SITE $SHAPE: old anchor wrongly clears" cleared "$(field "$OUT" RESUME_CLEAR)"
+    fi
+    check_eq "negative $SITE $SHAPE: replacement bound destroyed" null "$(day_get parked_until)"
+  done
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-original\"" \
+    --set ".repos[\"$REPO_KEY\"].day.unrelated={\"flag\":false,\"counter\":0}" >/dev/null
+  if [[ "$SITE" == retire ]]; then OUT=$(run_retire); else OUT=$(run_d5); fi
+  check_eq "$SITE: owned durable generation retired" null "$(day_get park_generation)"
+  check_eq "$SITE: unrelated metadata retained" '{"flag":false,"counter":0}' \
+    "$(jq -c --arg k "$REPO_KEY" '.repos[$k].day.unrelated' "$STATE_FILE")"
+  for INVALID in false 0 '""' '"null"' '{}' '[]'; do
+    seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=$INVALID" >/dev/null
+    BEFORE=$(cat "$STATE_FILE")
+    if [[ "$SITE" == retire ]]; then
+      OUT=$(run_retire)
+      check_eq "$SITE: malformed generation $INVALID refuses" 8 "$(field "$OUT" RETIRE_RC)"
+    else
+      OUT=$(run_d5)
+      check_eq "$SITE: malformed generation $INVALID refuses" 'error rc=8' "$(field "$OUT" RESUME_CLEAR)"
+    fi
+    check_eq "$SITE: malformed generation leaves state untouched" "$BEFORE" "$(cat "$STATE_FILE")"
+  done
+ done
+
+# Minting is real OS entropy, not clock/PID/RANDOM fallback. An entropy failure
+# must be visible before any of the three actual producer fences can claim.
+GENERATOR="$REPO_ROOT/.claude/scripts/park-generation.sh"
+G1=$(bash "$GENERATOR"); G2=$(bash "$GENERATOR")
+check_ne 'successive OS-entropy generations differ' "$G1" "$G2"
+if [[ "$G1" =~ ^parkgen-[0-9a-f]{32}$ && "$G2" =~ ^parkgen-[0-9a-f]{32}$ ]]; then
+  PASS=$((PASS + 1)); echo 'ok   — durable generation has 128 entropy bits'
+else FAIL=$((FAIL + 1)); echo 'FAIL — durable generation shape'; fi
+mkdir -p "$TMP_HOME/entropy-fail"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$TMP_HOME/entropy-fail/od"
+chmod +x "$TMP_HOME/entropy-fail/od"
+BLOCK_REACTIVE=$(extract_skill_bash "$PM_SKILL" pm-day-2d6-park-claim) || exit 1
+BLOCK_PREEMPTIVE=$(extract_skill_bash "$PM_SKILL" pm-day-2d7-park-claim) || exit 1
+BLOCK_SUBAGENT=$(extract_skill_bash "$LIMIT_PARK_DOC" subagent-limit-park-claim) || exit 1
+for PRODUCER in reactive preemptive subagent; do
+  seed_empty_slot
+  BEFORE=$(cat "$STATE_FILE")
+  case "$PRODUCER" in reactive) CLAIM_BLOCK="$BLOCK_REACTIVE" ;; preemptive) CLAIM_BLOCK="$BLOCK_PREEMPTIVE" ;; subagent) CLAIM_BLOCK="$BLOCK_SUBAGENT" ;; esac
+  OUT=$(PATH="$TMP_HOME/entropy-fail:$PATH" NEW_HITS=1 PARKED_UNTIL=2026-12-01T23:00:00Z \
+    LIMIT_KIND=rolling_window HORIZON_RESET_EPOCH="$(( $(date -u +%s) + 3600 ))" \
+    PROBE_CADENCE_MIN=30 PROBE_MAX_FIRES=12 bash -c "$CLAIM_BLOCK" 2>&1)
+  check_eq "$PRODUCER: entropy failure claims nothing" error "$(printf '%s' "$OUT" | sed -n 's/^PARK_CLAIM=\([^ ]*\).*/\1/p')"
+  check_eq "$PRODUCER: entropy failure writes nothing" "$BEFORE" "$(cat "$STATE_FILE")"
+done
+
+# Even successful entropy utilities must provide the full expected shape.
+printf '%s\n' '#!/bin/sh' 'echo abcd' > "$TMP_HOME/entropy-fail/od"
+MINT_RC=0
+MINT_OUT=$(PATH="$TMP_HOME/entropy-fail:$PATH" bash "$GENERATOR" 2>/dev/null) || MINT_RC=$?
+check_eq 'short entropy is refused' 5 "$MINT_RC"
+check_eq 'failed mint prints no identity' '' "$MINT_OUT"
+
+# ---------------------------------------------------------------------------
 echo "== One documented contract, pointed at from both sites (AC 7) =="
 # ---------------------------------------------------------------------------
 require_text "pm-day-mode.md defines the shared contract" "$DAY_MODE_DOC" \

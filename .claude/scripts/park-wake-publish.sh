@@ -9,19 +9,20 @@
 # preemptive wakes; JSON-or-string (session-state's rule) for reactive wakes.
 set -euo pipefail
 
-repo=""; cause=""; task=""; generation=""; encoding=string; state_helper=""
+repo=""; cause=""; task=""; generation=""; encoding=string; state_helper=""; park_generation=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo|--cause|--task-id|--generation|--task-encoding|--state-helper)
+    --repo|--cause|--task-id|--generation|--task-encoding|--state-helper|--park-generation)
       [[ $# -ge 2 ]] || exit 2
       case "$1" in
         --repo) repo="$2" ;; --cause) cause="$2" ;;
         --task-id) task="$2" ;; --generation) generation="$2" ;;
         --task-encoding) encoding="$2" ;; --state-helper) state_helper="$2" ;;
+        --park-generation) park_generation="$2" ;;
       esac
       shift 2 ;;
     --help|-h)
-      echo 'Usage: park-wake-publish.sh --repo OWNER/REPO|_unknown --cause reactive|preemptive --task-id ID --generation GEN --state-helper PATH [--task-encoding string|json-or-string]'
+      echo 'Usage: park-wake-publish.sh --repo OWNER/REPO|_unknown --cause reactive|preemptive --task-id ID --generation GEN --state-helper PATH [--task-encoding string|json-or-string] [--park-generation ID]'
       exit 0 ;;
     *) exit 2 ;;
   esac
@@ -43,7 +44,7 @@ day=$("$state_helper" --repo "$repo" --get-json "$day_path") || read_rc=$?
 # Unknown fields are retained. Only the fields needed to identify a completed
 # park and an unoccupied identity pair authorize publication.
 classify() {
-  jq -r --arg cause "$cause" '
+  jq -r --arg cause "$cause" --arg park_generation "$park_generation" '
     def id: (type == "string" and length > 0) or
       (type == "number" and . >= 0 and floor == .);
     def bound:
@@ -52,6 +53,10 @@ classify() {
       (try ((fromdateiso8601 | todateiso8601) == .) catch false);
     if . == null then "lost"
     elif type != "object" then "failed"
+    elif .park_generation != null and
+         ((.park_generation | type) != "string" or (.park_generation | length) == 0 or .park_generation == "null") then "failed"
+    elif (if $park_generation == "" then .park_generation != null
+          else .park_generation != $park_generation end) then "lost"
     elif (.limit_cause != null and .limit_cause != "reactive" and .limit_cause != "preemptive")
       or (.park_claim_token != null and
           ((.park_claim_token | type) != "string" or (.park_claim_token | length) == 0)) then "failed"
@@ -101,7 +106,7 @@ case "$classification" in
 esac
 if printf '%s' "$current" | jq -e --argjson previous "$day" '
   def identity: {parked_until, limit_kind, limit_cause,
-                 park_claim_token, limit_probe_fires_remaining};
+                 park_claim_token, park_generation, limit_probe_fires_remaining};
   identity == ($previous | identity)' >/dev/null; then
   exit 5
 fi

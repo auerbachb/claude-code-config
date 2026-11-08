@@ -171,6 +171,8 @@ Read the thrash counter before the claim — the claim carries it — and fail
 closed when it cannot be read, exactly as 2D.6 does. A corrupt or lock-timed
 count cannot be reset to 0 without handing a hot loop a free pass.
 
+A winning claim emits `PARK_GENERATION` (#1715). Retain it across tool calls and pass it into publication; never obtain authority by reading a later replacement. Generation minting failure claims nothing.
+
 <!-- test-anchor: subagent-limit-park-claim -->
 
 ```bash
@@ -182,6 +184,11 @@ count cannot be reset to 0 without handing a hot loop a free pass.
 #               positive fire count when it is not. Same three-valued field
 #               every recovery reader already branches on (#1445).
 # Outputs: PARK_CLAIM=won|adopted|error, NEW_HITS.
+PARK_GENERATION_SH=""
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}" ".claude/scripts/park-generation.sh"; do
+  if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
+done
+PARK_GENERATION=""
 PARK_CAUSE="${PARK_CAUSE:-reactive}"
 CLAIM_FIRES="${CLAIM_FIRES:-null}"
 HITS_RC=0
@@ -196,6 +203,8 @@ elif [[ -n "$PRIOR_HITS" && "$PRIOR_HITS" != "null" && ! "$PRIOR_HITS" =~ ^[0-9]
   # silently reset the thrash guard on exactly the corrupted state that guard
   # exists to survive, so it fails closed like an unreadable count.
   echo "PARK_CLAIM=error rc=hits:malformed"
+elif [ -z "$PARK_GENERATION_SH" ] || ! PARK_GENERATION=$("$PARK_GENERATION_SH"); then
+  echo "PARK_CLAIM=error rc=generation"
 else
   # The EMPTY string keeps 2D.6's normalisation, deliberately: 2D.7 Step 3's
   # claim writes one while the record is still being assembled, and both paths
@@ -219,9 +228,10 @@ else
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=$CLAIM_FIRES" \
     --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
     --set ".repos[\"$REPO_KEY\"].day.park_claim_token=null" \
+    --set ".repos[\"$REPO_KEY\"].day.park_generation=\"$PARK_GENERATION\"" \
     >/dev/null 2>&1 || PARK_CLAIM_RC=$?
   case "$PARK_CLAIM_RC" in
-    0) echo "PARK_CLAIM=won" ;;
+    0) echo "PARK_GENERATION=$PARK_GENERATION"; echo "PARK_CLAIM=won" ;;
     7) echo "PARK_CLAIM=adopted" ;;  # day mode or a sibling thread parked first
     *) echo "PARK_CLAIM=error rc=$PARK_CLAIM_RC" ;;
   esac
@@ -445,39 +455,32 @@ command string and nothing else.
 <!-- test-anchor: subagent-limit-wake-publish -->
 
 ```bash
-# Publish the identity pair as ONE compare-and-set from null (#1445), so the
-# publication is itself the last mutual-exclusion point: a kill or a day-mode
-# park that armed a wake inside the shutdown window takes this to exit 7 and
-# this thread stands down instead of registering a second wake over its ID.
-PUBLISH_RC=0
-"$SESSION_STATE_SH" \
-  --cas ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=$LIMIT_MONITOR_TASK_ID" --expect null \
-  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"$WAKE_GENERATION\"" \
-  >/dev/null 2>&1 || PUBLISH_RC=$?
+# The original winning claim's durable generation is an input, not re-read here.
+WAKE_PUBLISH_SH=""
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}" ".claude/scripts/park-wake-publish.sh"; do
+  if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
+done
+PUBLISH_RC=4
+if [ -n "$WAKE_PUBLISH_SH" ]; then
+  PUBLISH_RC=0
+  "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause "${PARK_CAUSE:-reactive}" \
+    --task-id "$LIMIT_MONITOR_TASK_ID" --generation "$WAKE_GENERATION" \
+    --park-generation "${PARK_GENERATION:-}" --task-encoding json-or-string \
+    --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+fi
 case "$PUBLISH_RC" in
   0) echo "WAKE_PUBLISH=ok" ;;
-  7) echo "WAKE_PUBLISH=superseded" ;;  # another wake owns the slot — stop ours
+  7) echo "WAKE_PUBLISH=superseded" ;;  # retired/replaced/occupied — stop only ours
   *) echo "WAKE_PUBLISH=error rc=$PUBLISH_RC" ;;
 esac
+
 ```
 
 - **`ok`** → done. One line: `parked until {PARKED_UNTIL} — usage window; N pipeline(s) resume automatically`.
 - **`superseded`** → `TaskStop` the Monitor just armed, using the ID in hand, and
   say nothing further. The other wake is in charge and the per-PR records from
   §3 are what it will resume.
-- **`error`** → `TaskStop` the Monitor with the ID in hand, then **release the
-  whole claim in one write, gated on still owning it** —
-  `--cas '.repos["<key>"].day.limit_cause=null' --expect '"<PARK_CAUSE>"'` composed
-  with `--set` writes nulling `parked_until`, `limit_kind`, and
-  `limit_probe_fires_remaining`. Clearing `parked_until` alone is not enough:
-  `limit_cause` is the compare-and-set field every parker claims through, so a
-  cause left standing means no future park — this thread's, day mode's, or a
-  sibling's — can ever win the compare again, and the board is permanently
-  unparkable while reading as unparked. Gating on the cause **this leg claimed**
-  — `"reactive"` from §1, `"preemptive"` from §7 — is what keeps the release from
-  clearing a park that landed meanwhile: exit 7 means someone else owns the
-  record now, so clear nothing and stand down. Name the unrecorded task
-  ID in the message, exactly as 2D.6 does.
+- **`error`** → `TaskStop` only the Monitor this invocation armed. Registration is unverified: leave the park record standing and say `parked (usage window) — could not register a wake; resume with /pause-resume.` Do not clear by reusable cause or read a replacement generation to authorize cleanup. If the stop fails, name the unrecorded task ID and require it to be stopped manually. This is the same fail-closed publication discipline as the PM paths.
 
 ---
 
@@ -582,7 +585,7 @@ read_day() {  # read_day <field> -> DAY_VALUE, DAY_RC, from this snapshot only
         elif $value < -1 or $value > 9007199254740991 or ($value | floor) != $value
         then error("probe counter must be an exact integer") else $value end
       elif $field == "limit_kind" or $field == "limit_cause"
-           or $field == "park_claim_token" or $field == "limit_resume_generation" then
+           or $field == "park_claim_token" or $field == "park_generation" or $field == "limit_resume_generation" then
         if ($value | type) == "string" and ($value | length) > 0 and $value != "null"
         then $value else error("invalid nullable park identifier") end
       else $value end' 2>/dev/null) || { DAY_RC=4; DAY_VALUE=null; }
@@ -599,9 +602,12 @@ read_day limit_kind;   PARK_KIND="$DAY_VALUE";   LK_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_FIRES="$DAY_VALUE"; PF_RC="$DAY_RC"
 read_day limit_cause; PC_RC="$DAY_RC"
 read_day park_claim_token; CT_RC="$DAY_RC"
+read_day park_generation; PG_RC="$DAY_RC"
+PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; RG_RC="$DAY_RC"
 if [[ ( "$PU_RC" -ne 0 && "$PU_RC" -ne 3 ) || ( "$LK_RC" -ne 0 && "$LK_RC" -ne 3 ) \
       || ( "$PF_RC" -ne 0 && "$PF_RC" -ne 3 ) || ( "$PC_RC" -ne 0 && "$PC_RC" -ne 3 ) \
+      || ( "$PG_RC" -ne 0 && "$PG_RC" -ne 3 ) \
       || ( "$CT_RC" -ne 0 && "$CT_RC" -ne 3 ) || ( "$RG_RC" -ne 0 && "$RG_RC" -ne 3 ) ]]; then
   echo "PARK_RECOVERY=unreadable"      # fail closed: re-arm nothing, dispatch nothing
 elif [[ -z "$PARKED_UNTIL" || "$PARKED_UNTIL" == null ]]; then

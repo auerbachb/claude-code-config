@@ -70,12 +70,13 @@ if '--cas' in args:
   while not (root/'go').exists():
    if time.monotonic()>end: sys.exit(98)
    time.sleep(.02)
- if mode in ('retire','replace','metadata','occupy') and not marker.exists():
+ if mode in ('retire','replace','metadata','occupy','replace-generation') and not marker.exists():
   marker.touch(); prefix='.repos["owner/repo"].day.'
   if mode=='retire':
    values={k:None for k in ['parked_until','limit_kind','limit_cause','park_claim_token','limit_probe_fires_remaining','limit_resume_task_id','limit_resume_generation']}
   elif mode=='replace':
    values={'parked_until':'2026-11-09T17:00:00Z','limit_kind':'rolling_window','limit_cause':'reactive','park_claim_token':None,'limit_resume_task_id':'foreign-task','limit_resume_generation':'foreign-generation'}
+  elif mode=='replace-generation': values={'park_generation':'park-replacement'}
   elif mode=='metadata': values={'other_metadata':'new'}
   else: values={'limit_resume_task_id':'foreign-task','limit_resume_generation':'foreign-generation'}
   cmd=[shell,real,'--repo','owner/repo']
@@ -90,6 +91,8 @@ os.execv(shell,[shell,real]+args)
             match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```', text, re.S)
             self.assertIsNotNone(match, anchor)
             self.blocks[cause] = match.group(1)
+        shutil.copyfile(ROOT / '.claude/scripts/park-generation.sh', installed / 'park-generation.sh')
+        (installed / 'park-generation.sh').chmod(0o700)
         self.seed('preemptive')
 
     def tool(self, name, body):
@@ -126,11 +129,11 @@ os.execv(shell,[shell,real]+args)
             except ProcessLookupError: pass
         p.communicate(timeout=5)
 
-    def start(self, cause, task='own-task', generation='own-generation', mode='none', stop_rc=0, call_id='one', cwd=None, path=None, repo_key=REPO, unset_home=False):
+    def start(self, cause, task='own-task', generation='own-generation', mode='none', stop_rc=0, call_id='one', cwd=None, path=None, repo_key=REPO, unset_home=False, park_generation=''):
         env=dict(self.env,TEST_MODE=mode,STOP_RC=str(stop_rc),TEST_CALL_ID=call_id,
                  SESSION_STATE_SH=str(self.proxy),REPO_KEY=repo_key,
                  WAKE_TASK_ID=task,WAKE_GENERATION=generation,
-                 LIMIT_MONITOR_TASK_ID=task,LIMIT_GENERATION=generation)
+                 LIMIT_MONITOR_TASK_ID=task,LIMIT_GENERATION=generation,PARK_GENERATION=park_generation)
         if path is not None:env['PATH']=path
         if unset_home:env.pop('HOME',None)
         p=subprocess.Popen([SHELL,'-u','-c',self.blocks[cause]],cwd=cwd or ROOT,env=env,
@@ -325,6 +328,59 @@ os.execv(shell,[shell,real]+args)
             self.seed(cause);self.state.unlink()
             self.assertEqual(self.run_block(cause),'WAKE_PUBLISH=lost')
             self.assertFalse(self.state.exists());self.assertEqual(self.stopped(),['own-task'])
+
+    def test_generated_park_requires_the_original_claim_binding(self):
+        for cause in ['reactive','preemptive']:
+            for supplied, wanted in [('park-original','armed'),('', 'lost'),('park-older','lost')]:
+                with self.subTest(cause=cause, supplied=supplied):
+                    self.seed(cause);self.set_day(park_generation='park-original');before=self.data()
+                    self.assertEqual(self.run_block(cause,park_generation=supplied),'WAKE_PUBLISH='+wanted)
+                    self.assertEqual(self.day()['park_generation'],'park-original')
+                    if wanted=='lost':
+                        self.assertEqual(self.data(),before);self.assertEqual(self.stopped(),['own-task'])
+
+    def test_generation_replaced_before_read_is_never_adopted(self):
+        for cause in ['reactive','preemptive']:
+            self.seed(cause);self.set_day(park_generation='park-replacement');before=self.data()
+            self.assertEqual(self.run_block(cause,park_generation='park-original'),'WAKE_PUBLISH=lost')
+            self.assertEqual(self.data(),before);self.assertEqual(self.stopped(),['own-task'])
+            self.assertFalse(any('--cas' in json.loads(x) for x in self.calls.read_text().splitlines()))
+
+    def test_same_metadata_generation_change_after_snapshot_is_lost(self):
+        for cause in ['reactive','preemptive']:
+            self.seed(cause);self.set_day(park_generation='park-original')
+            self.assertEqual(self.run_block(cause,park_generation='park-original',mode='replace-generation'),'WAKE_PUBLISH=lost')
+            self.assertEqual(self.day()['park_generation'],'park-replacement')
+            self.assertIsNone(self.day()['limit_resume_task_id']);self.assertEqual(self.stopped(),['own-task'])
+
+    def test_invalid_durable_generation_fails_closed(self):
+        for cause in ['reactive','preemptive']:
+            for value in [False,0,'','null',{},[]]:
+                with self.subTest(cause=cause,value=value):
+                    self.seed(cause);self.set_day(park_generation=value);before=self.data()
+                    self.assertEqual(self.run_block(cause),'WAKE_PUBLISH=failed')
+                    self.assertEqual(self.data(),before);self.assertEqual(self.stopped(),['own-task'])
+
+    def test_real_claim_completion_and_publication_keep_one_generation(self):
+        for cause in ['reactive','preemptive']:
+            self.seed(cause);self.set_day(parked_until=None,limit_cause=None,limit_probe_fires_remaining=None)
+            def fence(anchor):
+                match=re.search(r'<!-- test-anchor: '+re.escape(anchor)+r' -->\s*```bash\n(.*?)\n```',SKILL.read_text(),re.S)
+                self.assertIsNotNone(match,anchor);return match.group(1)
+            code=fence('pm-day-2d6-park-claim' if cause=='reactive' else 'pm-day-2d7-park-claim')
+            if cause=='preemptive':code+='\n'+fence('pm-day-2d7-park-record')
+            code+='\n'+self.blocks[cause]
+            env=dict(self.env,SESSION_STATE_SH=str(self.proxy),REPO_KEY=REPO,NEW_HITS='1',
+                     PARKED_UNTIL='2026-12-01T23:00:00Z',LIMIT_KIND='rolling_window',
+                     HORIZON_RESET_EPOCH=str(int(time.time())+3600),PROBE_CADENCE_MIN='30',
+                     PROBE_MAX_FIRES='12',PARK_RESET_KNOWN='true',WAKE_TASK_ID='own-task',
+                     WAKE_GENERATION='own-generation',LIMIT_MONITOR_TASK_ID='own-task',
+                     LIMIT_GENERATION='own-generation')
+            p=subprocess.run([SHELL,'-c',code],cwd=ROOT,env=env,capture_output=True,text=True,timeout=20)
+            self.assertEqual(p.returncode,0,p.stderr);self.assertIn('WAKE_PUBLISH=armed',p.stdout)
+            generation=re.search(r'^PARK_GENERATION=(parkgen-[0-9a-f]{32})$',p.stdout,re.M)
+            self.assertIsNotNone(generation,p.stdout);self.assertEqual(self.day()['park_generation'],generation[1])
+            self.assertIsNone(self.day()['park_claim_token']);self.assertEqual(self.day()['limit_resume_task_id'],'own-task')
 
 unittest.main(argv=[sys.argv[0]]+sys.argv[2:])
 PY

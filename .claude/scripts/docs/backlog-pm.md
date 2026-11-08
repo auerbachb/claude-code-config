@@ -24,6 +24,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [issue-deps.sh](../issue-deps.sh) | Parse issue dependency markers (`Depends on #N`, `blocked by`, `unblocks`, …) from bodies and comments — the one reading `/pm` 1B.3, `/wave` 5.1, and the desk's derived impact share; `edges` and transitive `dependents` |
 | [issue-file.sh](../issue-file.sh) | Validate a seven-section issue body and file it with checked labels: the one create path for /issue-maker and the desk's idea: intent |
 | [makespan.sh](../makespan.sh) | Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput |
+| [park-generation.sh](../park-generation.sh) | Mints a durable usage-limit park identity from OS entropy |
 | [park-wake-publish.sh](../park-wake-publish.sh) | Publishes a wake identity only onto its completed, unoccupied park |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |

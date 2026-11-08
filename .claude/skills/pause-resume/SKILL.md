@@ -640,7 +640,7 @@ fi
 
 Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is the idle exemption, not a gap.
 
-**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind`, `park_claim_token` and the bound in one write. The token goes with them (#1596): it is non-null only while a 2D.7 claim is mid-assembly, and this resume ends the park that claim belongs to. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes.
+**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind`, `park_claim_token`, `park_generation` and the bound in one write. The token goes with them (#1596): it is non-null only while a 2D.7 claim is mid-assembly, and this resume ends the park that claim belongs to. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes.
 
 **The retirement is guarded on the identity it read (#1663).** Clearing the record
 with plain `--set`s erases whatever is in the slot at write time, and the slot can
@@ -664,9 +664,7 @@ LIMIT_WAKE_RESOLVED=false
 # other never saw — the same one-read discipline the leave-time CAS below keeps.
 PARK_READ_RC=0
 PARK_IDENTITY_READ=false
-PARK_TOKEN_EXPECT=null
-PARK_CAUSE_EXPECT=null
-PARK_UNTIL_EXPECT=null
+PARK_DAY_EXPECT=null
 LIMIT_TASK_ID=""
 PARKED_UNTIL=""
 PARK_KIND=""
@@ -677,16 +675,19 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   if [[ "$PARK_READ_RC" -eq 3 ]]; then
     PARK_IDENTITY_READ=true          # no state file has ever been written: no park to guard
   elif [[ "$PARK_READ_RC" -eq 0 ]] \
-    && PARK_TOKEN_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.park_claim_token // null' 2>/dev/null) \
-    && PARK_CAUSE_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.limit_cause // null' 2>/dev/null) \
-    && PARK_UNTIL_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.parked_until // null' 2>/dev/null) \
+    && PARK_DAY_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '
+if (. == null or type == "object") and
+  (.park_generation == null or
+   ((.park_generation | type) == "string" and (.park_generation | length) > 0 and .park_generation != "null"))
+then . else error("invalid durable park identity") end
+' 2>/dev/null) \
     && LIMIT_TASK_ID=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_resume_task_id // ""' 2>/dev/null) \
     && PARKED_UNTIL=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.parked_until // ""' 2>/dev/null) \
     && PARK_KIND=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_kind // ""' 2>/dev/null) \
     && PARK_RECORD_PRESENT=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '
          [.limit_resume_task_id, .limit_resume_generation,
           .limit_probe_fires_remaining, .limit_cause, .limit_kind,
-          .park_claim_token, .parked_until]
+          .park_claim_token, .park_generation, .parked_until]
          | any(. != null) | tostring' 2>/dev/null); then
     PARK_IDENTITY_READ=true
   elif [[ "$PARK_READ_RC" -eq 0 ]]; then
@@ -699,52 +700,36 @@ fi
 # /pm 2D.1(b+) and 2D.5 stay parked *regardless of parked_until* and stop recovery
 # before 2D.2's init write ever clears it.
 #
-# Anchor precedence — token, then cause, then bound:
-#   * `park_claim_token` non-null: a 2D.7 claim is mid-assembly. The token is unique
-#     per claim, so it is the strongest identity available — stronger than the cause,
-#     which is a two-valued enum two different parks can share.
-#   * else `limit_cause` non-null: a completed record. Coarser than the token by
-#     construction; the residual it leaves is named in the reference contract.
-#   * else `parked_until` at the value just read (null included): the no-identity
-#     record. It still clears — that is the #1595 manual-resume escape hatch, which a
-#     guard that refused a no-identity record would deadlock shut — and `parked_until`
-#     is the one field EVERY claim shape writes, so the clear is refused only when the
-#     slot has actually changed hands, never on the record this step read.
+# Every new claim has a durable park_generation that survives completion. The
+# full original day snapshot compares it AND the absence of a legacy generation:
+# a legacy reader cannot erase a newly generated replacement with the same cause.
+# Token/cause/bound still identify legacy records, including #1595 no-identity
+# records; they clear only while their exact observed snapshot remains current.
+# Unknown metadata is retained, and any changed snapshot loses without writes.
 #
 # Exit contract: 0 cleared · 7 superseded (a newer park owns the slot; nothing was
 # written, so its bound, kind and wake identity are untouched) · 8 identity
 # unreadable, fail closed · anything else a write error. Composition is #1445: the
 # --cas gates the whole batch, so a lost compare writes none of the --set clears.
 retire_limit_park() {
-  local anchor_path anchor_expect field rc=0
+  local field rc=0
   local -a clears=()
-  # Fail closed: an unreadable identity can hide a live park, exactly as the
-  # parked_until and limit_kind reads below fail closed (#1595).
   [[ "$PARK_IDENTITY_READ" == true ]] || return 8
-  if [[ "$PARK_TOKEN_EXPECT" != null ]]; then
-    anchor_path=".repos[\"$REPO_KEY\"].day.park_claim_token"; anchor_expect="$PARK_TOKEN_EXPECT"
-  elif [[ "$PARK_CAUSE_EXPECT" != null ]]; then
-    anchor_path=".repos[\"$REPO_KEY\"].day.limit_cause";      anchor_expect="$PARK_CAUSE_EXPECT"
-  else
-    anchor_path=".repos[\"$REPO_KEY\"].day.parked_until";     anchor_expect="$PARK_UNTIL_EXPECT"
-  fi
-  # Every field still clears; the anchor is dropped from the --set list because the
-  # CAS target already writes it null. All of them are SIBLINGS under `.day` — a --set
-  # naming a strict ancestor of the CAS path is a usage error (exit 2), not a write.
   for field in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
-               limit_cause limit_kind park_claim_token parked_until; do
-    [[ ".repos[\"$REPO_KEY\"].day.$field" == "$anchor_path" ]] && continue
+               limit_cause limit_kind park_claim_token park_generation parked_until; do
     clears+=(--set ".repos[\"$REPO_KEY\"].day.$field=null")
   done
-  "$SESSION_STATE_SH" --cas "$anchor_path=null" --expect "$anchor_expect" \
+  # Self-CAS plus descendant assignments preserves unrelated day metadata.
+  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$PARK_DAY_EXPECT" --expect "$PARK_DAY_EXPECT" \
     "${clears[@]}" >/dev/null 2>&1 || rc=$?
-  if [[ "$rc" -eq 6 ]]; then   # lock timeout — retry once, as the leave-time CAS does
+  if [[ "$rc" -eq 6 ]]; then
     rc=0
-    "$SESSION_STATE_SH" --cas "$anchor_path=null" --expect "$anchor_expect" \
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$PARK_DAY_EXPECT" --expect "$PARK_DAY_EXPECT" \
       "${clears[@]}" >/dev/null 2>&1 || rc=$?
   fi
   return "$rc"
 }
+
 ```
 
 Both call sites below go through that one guarded path and read its three-way
