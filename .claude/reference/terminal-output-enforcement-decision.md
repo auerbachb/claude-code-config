@@ -10,7 +10,7 @@ At the terminal state of the requested work, provide the minimal useful outcome.
 
 ## Evidence and rationale
 
-Issue #1665 followed a review of PR #1662 and its older fixed-slot wrap-up format. Issue #1873 replaced that template and ceremony-only timestamp with decision-only output. The current end-of-task reference already delegates to that policy and permits a host-required terminal reply. The historical12603-word corpus count is context for the earlier deferral, not a current measurement or a reason to restore the old format.
+Issue #1665 followed a review of PR #1662 and its older fixed-slot wrap-up format. Issue #1873 replaced that template and ceremony-only timestamp with decision-only output. The current end-of-task reference already delegates to that policy and permits a host-required terminal reply. The historical 12,603-word corpus count is context for the earlier deferral, not a current measurement or a reason to restore the old format.
 
 Existing machine state is useful evidence, but no single existing field establishes delivery of one human terminal reply for an arbitrarily scoped user request. A request may span multiple issues, survive compaction or resume after a blocked state. PR/pipeline terminal states do not by themselves identify that larger boundary or record whether the host displayed a reply. Marking an emission before delivery can suppress a missing outcome; marking it afterward can still permit duplicates after interruption.
 
