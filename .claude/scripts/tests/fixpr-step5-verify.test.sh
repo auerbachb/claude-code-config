@@ -104,6 +104,8 @@ if '/pulls/' in path:
   if count>1:sha='b'*40
  print(json.dumps({'head':{'sha':sha,'ref':'feature','repo':{'full_name':'o/r'}},'created_at':'2026-11-01T00:00:00Z'}))
 elif path.endswith('/comments'):
+ if page>int(os.environ.get('GH_COMMENTS_MAX_PAGE','3')):
+  print('[]');sys.exit(0)
  if os.environ.get('GH_LATE_COMMENT'):
   marker=Path(os.environ['GH_LATE_COMMENT']);count=int(marker.read_text())+1 if marker.exists() else 1;marker.write_text(str(count))
   if count>1:
@@ -172,8 +174,49 @@ check_eq "no trigger but an unused owner grant for this HEAD: awaited" 1 \
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'LGTM')]" 0 0)"
 check_eq "no trigger and grant state unreadable (exit 3): fails closed, awaited" 1 \
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'LGTM')]" 0 3)"
-check_eq "paginated pages are all read" 1 \
-  "$(run_5d "$(jq -nc --argjson c "$(c 2026-11-06T14:00:00Z x)" '[range(100) | $c]')[$(c 2026-11-06T15:05:00Z '@cursor review')]")"
+# All 100 fillers survive the since filter, so the invitation is row 101.
+pagination_fillers="$(jq -nc --argjson c "$(c 2026-11-06T15:01:00Z x)" '[range(100) | $c]')"
+pagination_invited="$pagination_fillers[$(c 2026-11-06T15:05:00Z '@cursor review')]"
+pagination_start=$(wc -l <"$GH_CALL_LOG")
+check_eq "page-two invitation is awaited" 1 "$(run_5d "$pagination_invited")"
+pagination_requests() {
+  python3 - "$GH_CALL_LOG" "$1" <<'PAGES'
+import json,sys
+from pathlib import Path
+from urllib.parse import urlsplit,parse_qs
+pages=[]
+for line in Path(sys.argv[1]).read_text().splitlines()[int(sys.argv[2]):]:
+    endpoint=json.loads(line)[1]
+    if '/comments?' in endpoint:
+        query=parse_qs(urlsplit(endpoint).query)
+        assert query['since']==['2026-11-06T14:59:59Z']
+        pages.append(int(query['page'][0]))
+assert 1 in pages and 2 in pages and 3 not in pages, pages
+PAGES
+}
+pagination_requests "$pagination_start"
+check_eq "invitation required filtered pages one and two, never three" 0 "$?"
+# A typed known result prevents a fail-closed error from satisfying the test.
+pagination_decision=$(PATH="$TMP/bin:$PATH" GH_STUB_FILE="$TMP/comments.json" GRANT_LOG="$TMP/grant.log" \
+  "$REPO_ROOT/.claude/scripts/bugbot-invitation.sh" --repo o/r --pr 7 \
+  --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --pushed-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --pushed-at "$PUSHED" --grant-helper "$TMP/grant")
+check_eq "page-two invitation is a known current-head invitation" 'true known current_head_invited' \
+  "$(jq -r '[.awaited,.certainty,.reason] | map(tostring) | join(" ")' <<<"$pagination_decision")"
+pagination_start=$(wc -l <"$GH_CALL_LOG")
+check_eq "two pages without invitation produce a clean negative" 0 "$(run_5d "$pagination_fillers[$(c 2026-11-06T15:05:00Z x)]")"
+pagination_requests "$pagination_start"
+check_eq "negative control really read page two" 0 "$?"
+check_eq "negative control checked the exact-head grant" "--check 7 --vendor cursor --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --repo o/r" "$(cat "$TMP/grant.log")"
+# An isolated page-one-only stub must lose the invitation, rather than pass
+# through an unknown/awaited error. This discriminates the original fixture.
+export GH_COMMENTS_MAX_PAGE=1
+pagination_start=$(wc -l <"$GH_CALL_LOG")
+check_eq "page-one-only control misses the invitation and returns negative" 0 "$(run_5d "$pagination_invited")"
+pagination_requests "$pagination_start"
+check_eq "page-one-only control attempted page two" 0 "$?"
+check_eq "page-one-only control reached the grant check" "--check 7 --vendor cursor --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --repo o/r" "$(cat "$TMP/grant.log")"
+unset GH_COMMENTS_MAX_PAGE
 check_eq "gh failure fails closed: awaited" 1 "$(run_5d '[]' 1)"
 check_eq "unparseable comment list fails closed: awaited" 1 "$(run_5d 'not json' 0)"
 check_eq "grant helper missing: unknown is awaited, reported degraded" 1 \
