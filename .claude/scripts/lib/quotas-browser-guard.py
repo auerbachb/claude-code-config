@@ -1,12 +1,107 @@
 #!/usr/bin/env python3
 """Bind a read-only browser bridge to its own freshly created usage tab."""
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import sys
+import tempfile
 
 PREFIX = 'mcp__claude-in-chrome__'
 URL = 'https://cursor.com/dashboard?tab=usage'
+FAILURES = {'connection', 'denied', 'create', 'destination'}
+
+
+def context_available(response):
+    """Recognize native context metadata, without using it as URL authorization."""
+    if tool_failed(response):
+        return False
+    if isinstance(response, dict):
+        if isinstance(response.get('availableTabs'), list):
+            return True
+        return any(context_available(response[key]) for key in
+                   ('content', 'text', 'result', 'structuredContent', 'output', 'tabContext') if key in response)
+    if isinstance(response, list):
+        return any(context_available(value) for value in response)
+    if isinstance(response, str):
+        try:
+            value = json.loads(response)
+        except (ValueError, TypeError):
+            return False
+        return context_available(value)
+    return False
+
+
+def read_evidence(path):
+    """Read fixed observational facts only; they never authorize a tool."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_size > 1024):
+                return None
+            raw = stream.read(1025)
+            if len(raw) > 1024:
+                return None
+            value = json.loads(raw)
+        if (not isinstance(value, dict)
+                or set(value) != {'last_failure', 'owned_tab', 'read_authorized'}
+                or value['last_failure'] not in FAILURES | {None}
+                or type(value['owned_tab']) is not bool
+                or type(value['read_authorized']) is not bool):
+            return None
+        return value
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
+
+
+def record_evidence(path, event, prior, allowed, failed=False):
+    """Publish allowlisted stage facts after a decision, without changing it."""
+    if not path:
+        return
+    temporary = None
+    try:
+        facts = read_evidence(path) or dict(last_failure=None, owned_tab=False, read_authorized=False)
+        name, phase = event.get('tool_name'), event.get('hook_event_name')
+        if phase != 'PostToolUse' and not allowed:
+            facts['last_failure'] = 'denied'
+        elif not failed and phase == 'PostToolUse':
+            response = event.get('tool_response')
+            if name == PREFIX + 'tabs_create_mcp':
+                facts.update(owned_tab=created_tab(response) is not None, read_authorized=False)
+                facts['last_failure'] = None if facts['owned_tab'] else 'create'
+            elif name == PREFIX + 'tabs_context_mcp':
+                if not prior.get('tab'):
+                    if tool_failed(response):
+                        facts['last_failure'] = 'connection'
+                    elif context_available(response) and facts['last_failure'] == 'connection':
+                        facts['last_failure'] = None
+                elif prior.get('navigation_ack'):
+                    facts['last_failure'] = None if context_destination(response, prior['tab']) else 'destination'
+            elif name == PREFIX + 'navigate':
+                params = event.get('tool_input') or {}
+                if (isinstance(params, dict) and prior.get('tab')
+                        and tab_id(params.get('tabId', params.get('tab_id'))) == prior['tab']
+                        and params.get('url') == URL and not navigation_acknowledged(response)):
+                    facts['last_failure'] = 'destination'
+        elif phase == 'PreToolUse' and allowed and name in (PREFIX + 'read_page', PREFIX + 'get_page_text'):
+            facts.update(last_failure=None, read_authorized=True)
+        # Never serialize the event, prior authorization state, error text, URL
+        # or tab identity. Diagnostics are expendable if publication fails.
+        fd, temporary = tempfile.mkstemp(prefix='.stage-', dir=Path(path).parent)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(facts, stream)
+        os.replace(temporary, path)
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def tab_id(value):
@@ -185,16 +280,21 @@ def decide(event, state):
 
 def main():
     """Persist only private tab metadata and return a fixed permission decision."""
+    observed, prior, failed = {}, {}, False
     try:
         event = json.load(sys.stdin)
+        observed = event if isinstance(event, dict) else {}
         path = Path(sys.argv[1])
         state = json.loads(path.read_text()) if path.exists() else {}
+        prior = dict(state) if isinstance(state, dict) else {}
         allowed = decide(event, state)
         path.write_text(json.dumps(state))
         path.chmod(0o600)
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RecursionError):
+        failed = True
         allowed = False
         event = {}
+    record_evidence(sys.argv[2] if len(sys.argv) > 2 else '', observed, prior, allowed, failed)
     if event.get('hook_event_name') == 'PostToolUse':
         print('{}')
     else:

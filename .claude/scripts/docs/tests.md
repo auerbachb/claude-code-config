@@ -15,6 +15,7 @@ opt-in of issue #1544.
 | Test | What it covers |
 |------|----------------|
 <!-- catalog:rows:begin -->
+| [ac-checkboxes.test.sh](../tests/ac-checkboxes.test.sh) | Exercise CommonMark AC extraction, exact REST mutation and gate parity with offline fixtures |
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
@@ -30,6 +31,7 @@ opt-in of issue #1544.
 | [bgwork-ceiling.test.sh](../tests/bgwork-ceiling.test.sh) | Tests for `bgwork-ceiling.sh` |
 | [board-round-membership.test.sh](../tests/board-round-membership.test.sh) | Runs the real skill-embedded bash for `/subagent` Step 7.0's round-membership write and `/board` Step 3's queued-row derivation (issue #1604), plus the cross-file contracts they depend on: the schema block, the teardown clear, `/wave`'s deliberate non-write, and the reconciled "no durable field" rationale |
 | [bounded-run.test.sh](../tests/bounded-run.test.sh) | Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract |
+| [bugbot-invitation-process.test.sh](../tests/bugbot-invitation-process.test.sh) | Verify real BugBot invitation process cleanup and direct-child-only negative controls |
 | [bugbot-tier-excluded.test.sh](../tests/bugbot-tier-excluded.test.sh) | Tests the gate-to-exit-code contract of `bugbot-tier-excluded.sh` |
 | [candidate-ownership.test.sh](../tests/candidate-ownership.test.sh) | Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee |
 | [ccusage-baseline.test.sh](../tests/ccusage-baseline.test.sh) | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
@@ -81,6 +83,7 @@ opt-in of issue #1544.
 | [infer-pr.test.sh](../tests/infer-pr.test.sh) | Tests for `infer-pr.sh` |
 | [install-backfill-review.test.sh](../tests/install-backfill-review.test.sh) | Tests `install-backfill-review.sh` / `uninstall-backfill-review.sh` against `launchctl` and `uname` stubs — placeholder and PATH rendering, `--interval`/`--repo-dir` validation, runner selection, lifecycle order and rollback, ledger-preserving teardown, and the non-Darwin guard |
 | [install-config-sync.test.sh](../tests/install-config-sync.test.sh) | Tests `install-config-sync.sh` / `uninstall-config-sync.sh` against `launchctl` and `uname` stubs — plist rendering, worktree-copy preference, `--interval` validation, teardown, and the non-Darwin guard |
+| [install-workspace-sweep.test.sh](../tests/install-workspace-sweep.test.sh) | Validate daily workspace LaunchAgent dry-run, install rollback, escaping and retained-state uninstall offline |
 | [issue-claim.test.sh](../tests/issue-claim.test.sh) | Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next |
 | [issue-dedup.test.sh](../tests/issue-dedup.test.sh) | Tests for `issue-dedup.sh` |
 | [issue-deps.test.sh](../tests/issue-deps.test.sh) | Tests for `issue-deps.sh`: the `/pm` 1B.3 marker set in bodies and comments (any case), edge direction, chains, diamonds, cycles, cross-repo and self references, closed issues, and a failing read that never reads as zero |
@@ -180,6 +183,7 @@ opt-in of issue #1544.
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
+| [workspace-sweep.test.sh](../tests/workspace-sweep.test.sh) | Exercise finished-worktree cadence with real disposable Git cleanup and extracted orchestration commands |
 | [worktree-isolation-shapes.test.sh](../tests/worktree-isolation-shapes.test.sh) | Tests `worktree-status.sh` and `wait-until.sh` — the issue #1470 command shapes |
 <!-- catalog:rows:end -->
 

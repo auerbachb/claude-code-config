@@ -707,7 +707,7 @@ field_of() { # <label> <window> <field>
 }
 
 reset_state() {
-  unset BROWSER_STUB_RESET BROWSER_STUB_STATUS
+  unset BROWSER_STUB_RESET BROWSER_STUB_STATUS BROWSER_STUB_STAGE BROWSER_STUB_FAIL
   : > "$STUB_CALL_LOG"; : > "$STUB_CURL_LOG"; : > "$STUB_SECURITY_LOG"
   : > "$STUB_KEYCHAIN_DB"; : > "$STUB_CURL_STDIN"
   rm -rf "$PROFILES"; mkdir -p "$PROFILES"
@@ -3111,10 +3111,17 @@ export BROWSER_STUB_NOW="$NOW"
 : > "$BROWSER_STUB_LOG"
 cat > "$AI_QUOTAS_BROWSER_CLI" <<'BROWSER_STUB'
 #!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, shlex
 with open(os.environ['BROWSER_STUB_LOG'], 'a') as log: log.write('read\n')
 sys.stdin.read()  # A CLI that reads stdin must not consume remaining source names.
 assert '--chrome' in sys.argv and '--settings' in sys.argv
+if os.environ.get('BROWSER_STUB_STAGE'):
+ from pathlib import Path
+ settings=json.loads(sys.argv[sys.argv.index('--settings')+1])
+ evidence=Path(shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])[-1])
+ evidence.write_text(json.dumps(dict(last_failure=os.environ['BROWSER_STUB_STAGE'],owned_tab=False,read_authorized=False)));evidence.chmod(0o600)
+if os.environ.get('BROWSER_STUB_FAIL'):
+ print('BROWSER-RAW-SECRET-SENTINEL',file=sys.stderr);sys.exit(1)
 print(json.dumps({'structured_output': {'schema_version':1, 'provider':'cursor',
   'label':os.environ['BROWSER_STUB_LABEL'], 'email':'cursor-fixture@example.com',
   'status':os.environ.get('BROWSER_STUB_STATUS','ok'), 'observed_at_epoch':int(os.environ['BROWSER_STUB_NOW']),
@@ -3158,6 +3165,15 @@ run --json --browser
 check_eq "$(printf '%s' "$OUT" | jq -r '.[0].source')" "ide-token" "stdin-reading failed browser cannot consume the next source"
 check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.source')" "ide-token" "fallback after browser failure is recorded in ledger"
 unset BROWSER_STUB_STATUS
+export BROWSER_STUB_STAGE=denied BROWSER_STUB_FAIL=1
+run --json --browser
+check_eq "$(jq -r 'select(.source == "browser") | .error_class' "$OUTCOMES_LEDGER" | tail -n 1)" "browser_tool_denied" "guard denial survives failed CLI as fixed browser diagnostic"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].source')" "ide-token" "stage diagnostics preserve fallback after browser failure"
+check_not_contains "$OUT$ERR$(cat "$OUTCOMES_LEDGER")" "BROWSER-RAW-SECRET-SENTINEL" "CLI stderr never reaches report or outcome ledger"
+unset BROWSER_STUB_STAGE
+run --json --browser
+check_eq "$(jq -r 'select(.source == "browser") | .error_class' "$OUTCOMES_LEDGER" | tail -n 1)" "browser_stage_unknown" "failed CLI without guard evidence does not invent bootstrap cause"
+unset BROWSER_STUB_FAIL
 printf 'ratelimit' > "$STUB_CURSOR_MODE"
 run --browser-results "" --json
 check_eq "$RC" "3" "empty browser-results filename is refused before enabling browser mode"

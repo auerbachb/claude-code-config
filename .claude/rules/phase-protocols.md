@@ -72,9 +72,20 @@ A missing exit report is a crash **only** when the runtime's own structured clas
 2. **Branch on OUTCOME:**
    - `merged` → verify `gh pr view N --json state --jq '.state'` is `MERGED`, then clean up.
    - `blocked` → report blocker details to user. Do NOT merge.
+After verified merge, the parent runs the [finished-only sweep](../reference/workspace-sweep-cadence.md) from its checkout:
+
+<!-- test-anchor: workspace-sweep-post-merge -->
+```bash
+# workspace-sweep-post-merge
+SWEEP_SH=$(resolve_script workspace-sweep.sh || true)
+if [[ -n "$SWEEP_SH" ]]; then
+  "$SWEEP_SH" --trigger post-merge --repo-dir "$(git rev-parse --show-toplevel)" || true
+fi
+```
+
 3. **Update `session-state.json`.** Mark Phase C complete; `session-state.sh --remove-agent <id>`.
-4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh --owner-repo owner/repo --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. Emit one line — `merged PR #N` — after a clean merge.
+4. **Handoff cleanup.** After GitHub confirms `OUTCOME: merged`, delete the handoff with `handoff-state.sh --owner-repo owner/repo --delete N`. Never delete after a failed/aborted merge. After clean merge, emit `merged PR #N`.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 
-`/wrap` Step 2.1 delegates recovery to the **full** `/fixpr` workflow — including when unresolved review threads are the only blocker. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+`/wrap` Step 2.1 delegates **full** `/fixpr` recovery, including threads-only blockers. Handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.

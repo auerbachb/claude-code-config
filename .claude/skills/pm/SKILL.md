@@ -1096,6 +1096,17 @@ Six sub-steps, in order. This is the entry point for `DAY_TICK=true`.
 2. `day.active == true`.
 3. `day.stop_requested != true`.
 
+After D0 accepts the tick, run the [finished-only cadence](../../reference/workspace-sweep-cadence.md); ticks still skip Step 1 and `/pm-clean`:
+
+<!-- test-anchor: workspace-sweep-pm-day -->
+```bash
+# workspace-sweep-pm-day
+SWEEP_SH=$(resolve_script workspace-sweep.sh || true)
+if [[ -n "$SWEEP_SH" ]]; then
+  "$SWEEP_SH" --trigger pm-day --repo-dir "$(git rev-parse --show-toplevel)" --min-interval "${CLAUDE_WORKSPACE_SWEEP_INTERVAL_S:-3600}" || true
+fi
+```
+
 **D1 — Reconcile and transition.** Run items 1–3 of `monitor-mode.md`'s per-cycle checklist verbatim: process completed subagents and parse exit reports, execute phase transitions per `phase-protocols.md` (including any stalled in `session-state.json`), and run the reviewer-escalation gate for every session PR still on `reviewer == cr`. That checklist owns each step's exact invocation; day mode adds nothing here — this is the same in-turn loop the on-demand path already runs.
 
 Then update the failure streak from this tick's terminal outcomes, in completion order: `merged` resets `failure_streak` to `0`; `blocked` increments it. Only terminal outcomes count — a pipeline still in Phase B is neither.

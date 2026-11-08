@@ -21,6 +21,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [repo-bootstrap.sh](../repo-bootstrap.sh) | Check and optionally install required repo configuration (provisioned file set, branch protection) |
 | [repo-root.sh](../repo-root.sh) | Resolve the absolute path of the root (main) worktree (every git call wall-clock bounded; exit 3 on timeout) |
 | [stale-cleanup.sh](../stale-cleanup.sh) | Detect stale/finished worktrees, branches and orphaned registrations; finished-only apply rechecks ownership, pushed work and session liveness |
+| [workspace-sweep.sh](../workspace-sweep.sh) | Run finished-worktree cleanup after merges, on PM ticks, and daily across configured repositories |
 | [worktree-status.sh](../worktree-status.sh) | Report one worktree's own HEAD SHA, branch, detached state and root in a single call — the non-refused replacement for a `git -C <wt> …; git -C <wt> …` pair (`.claude/reference/worktree-isolation-command-shapes.md`); every git call wall-clock bounded |
 <!-- catalog:rows:end -->
 

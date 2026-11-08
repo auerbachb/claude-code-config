@@ -711,6 +711,8 @@ check_msg  "Test15: message names the missing-line condition" "no 'Tracking issu
 AC_GATE_TMP="$TMP/ac_gate_issue2"
 mkdir -p "$AC_GATE_TMP"
 cp "$SCRIPT" "$AC_GATE_TMP/ac-gate.sh"
+mkdir -p "$AC_GATE_TMP/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/ac-checkbox-markers.sh" "$AC_GATE_TMP/lib/"
 cat > "$AC_GATE_TMP/pr-issue-ref.sh" <<'FAILING_REF'
 #!/usr/bin/env bash
 echo "Error: simulated gh API failure" >&2

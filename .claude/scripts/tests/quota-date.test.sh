@@ -148,19 +148,21 @@ except (ValueError,IndexError,OSError):sys.exit(1)
     state = tmp/'quota-state'
     state.mkdir()
     watermark = state/'codex-reset.json'
-    original = json.dumps({'month':'2026-09','used_on':'2026-09-08'})
+    original = json.dumps({'schema_version':'2.0','accounts':{'c':{'month':'2026-09','used_on':'2026-09-08'}}})
     watermark.write_text(original)
     consumer = root/'.claude/scripts/quotas-cheapest-next.sh'
-    consumer_env = dict(env, AI_QUOTAS_NOW='1788897600', CLAUDE_QUOTAS_STATE_DIR=str(state))
+    registry = tmp/'reset-registry.json'
+    registry.write_text(json.dumps({'schema_version':'1.0','accounts':[{'provider':'codex','label':'c','profile_dir':'/fixture/c'}]}))
+    consumer_env = dict(env, AI_QUOTAS_CONFIG=str(registry), AI_QUOTAS_NOW='1788897600', CLAUDE_QUOTAS_STATE_DIR=str(state))
     result = subprocess.run(['bash',str(consumer),'--codex-reset-status'],cwd=tmp,
         env=dict(consumer_env,QUOTA_DATE_FIXTURE_KIND='uutils'),text=True,capture_output=True)
     doc = json.loads(result.stdout)
-    verify(result.returncode==0 and doc['month']=='2026-09' and not doc['free_reset_available'], 'real consumer honors supported uutils watermark')
+    verify(result.returncode==0 and doc['month']=='2026-09' and not doc['accounts']['c']['free_reset_available'], 'real consumer honors supported uutils watermark')
     for kind,failure in [('unsupported',''),('uutils','month')]:
         result = subprocess.run(['bash',str(consumer),'--codex-reset-status'],cwd=tmp,
             env=dict(consumer_env,QUOTA_DATE_FIXTURE_KIND=kind,QUOTA_DATE_FIXTURE_FAIL=failure),text=True,capture_output=True)
         doc = json.loads(result.stdout)
-        verify(result.returncode==0 and doc['month']=='' and doc['free_reset_available'] and doc['figure_source']=='assumed', kind+' failed frozen month stays unknown and assumed-free')
+        verify(result.returncode==0 and doc['month']=='' and doc['accounts']['c']['free_reset_available'] and doc['accounts']['c']['figure_source']=='assumed', kind+' failed frozen month stays unknown and assumed-free')
         verify('month unavailable' in result.stderr,kind+' month failure is visible')
     result = subprocess.run(['bash',str(consumer),'--record-codex-reset','2026-09-08'],cwd=tmp,
         env=dict(consumer_env,QUOTA_DATE_FIXTURE_KIND='unsupported'),text=True,capture_output=True)
