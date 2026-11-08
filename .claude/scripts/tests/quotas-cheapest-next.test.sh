@@ -69,6 +69,7 @@ FROZEN_MONTH="2026-09"
 
 CASE_HOME="$TMP/home"
 STATE_DIR="$CASE_HOME/.claude/quotas"
+export AI_QUOTAS_CONFIG="$CASE_HOME/.claude/ai-quotas.json"
 
 reset_state() {
   rm -rf "$CASE_HOME"
@@ -562,6 +563,46 @@ run_mode --record-codex-reset "2026-09-08"
 check_eq "$RC" 5 "a world-writable state directory remains refused"
 check_eq "$(cat "$STATE_DIR/codex-reset.json")" "$BEFORE" "unsafe-directory refusal preserves the prior record"
 chmod 775 "$STATE_DIR"
+
+# Registry compatibility follows the existing 1.x reader, independently of
+# the strict reset-state file checks. No fixture consults an inherited registry.
+reset_state
+for VERSION in '"1.7"' null false; do
+  jq --argjson version "$VERSION" '.schema_version=$version' "$AI_QUOTAS_CONFIG" > "$TMP/registry-version"
+  mv "$TMP/registry-version" "$AI_QUOTAS_CONFIG"
+  run_mode --record-codex-reset "2026-09-07"
+  check_eq "$RC" 0 "supported registry version $VERSION can record"
+  run_mode --codex-reset-status
+  check_eq "$RC" 0 "supported registry version $VERSION can report status"
+  check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" false "registry version $VERSION keeps the account verdict"
+done
+jq 'del(.schema_version)' "$AI_QUOTAS_CONFIG" > "$TMP/registry-version"
+mv "$TMP/registry-version" "$AI_QUOTAS_CONFIG"
+run_mode --codex-reset-status
+check_eq "$RC" 0 "missing registry version defaults to major1"
+
+mv "$AI_QUOTAS_CONFIG" "$CASE_HOME/.claude/registry-target.json"
+REGISTRY_BEFORE=$(cat "$CASE_HOME/.claude/registry-target.json")
+ln -s "$CASE_HOME/.claude/registry-target.json" "$AI_QUOTAS_CONFIG"
+run_mode --record-codex-reset "2026-09-08"
+check_eq "$RC" 0 "a readable registry symlink can record"
+run_mode --codex-reset-status
+check_eq "$RC" 0 "a readable registry symlink can report status"
+check_eq "$(cat "$CASE_HOME/.claude/registry-target.json")" "$REGISTRY_BEFORE" "registry aliases are read only"
+check_eq "$([[ -L "$AI_QUOTAS_CONFIG" ]] && echo yes || echo no)" yes "the registry symlink is preserved"
+
+rm "$AI_QUOTAS_CONFIG"
+printf '%s\n' '{"schema_version":"2.0","accounts":[]}' > "$AI_QUOTAS_CONFIG"
+BEFORE=$(cat "$STATE_DIR/codex-reset.json")
+run_mode --record-codex-reset "2026-09-08"
+check_eq "$RC" 5 "a future registry major refuses recording"
+check_eq "$(cat "$STATE_DIR/codex-reset.json")" "$BEFORE" "future-major refusal preserves reset records"
+rm "$AI_QUOTAS_CONFIG"
+mkfifo "$AI_QUOTAS_CONFIG"
+run_mode --codex-reset-status
+check_eq "$RC" 5 "a registry FIFO refuses without blocking"
+rm "$AI_QUOTAS_CONFIG"
+reset_state
 
 # --- 11. unknown providers are never priced ----------------------------------
 

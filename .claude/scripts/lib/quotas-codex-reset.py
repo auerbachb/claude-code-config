@@ -35,6 +35,21 @@ def load(path):
         return json.loads(data)
 
 
+def load_registry(path):
+    """Match existing read-only registry aliases; reset files remain strict."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ResetError("unreadable account registry")
+        data = stream.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            raise ResetError("account registry exceeds size bound")
+        return json.loads(data)
+
+
 def valid_record(record):
     if not isinstance(record, dict):
         return False
@@ -74,10 +89,13 @@ def verdict(record, month):
 
 
 def labels(path):
-    document = load(path)
+    document = load_registry(path)
     if document is None:
         return []
-    if (not isinstance(document, dict) or document.get("schema_version") != "1.0"
+    version = document.get("schema_version") if isinstance(document, dict) else None
+    if version is None or version is False:
+        version = "1.0"
+    if (not isinstance(document, dict) or str(version).split(".")[0] != "1"
             or not isinstance(document.get("accounts"), list)):
         raise ResetError("unreadable account registry")
     result = []
