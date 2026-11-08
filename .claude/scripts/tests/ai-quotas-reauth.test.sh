@@ -60,7 +60,7 @@ svc='Claude Code-credentials-'+hashlib.sha256(unicodedata.normalize('NFC',str(p)
 rows.append({'provider':'claude','label':'alpha','profile_dir':str(p),'credential_ref':{'kind':'macos-keychain','service':svc}})
 (p.parent/'.keychain-service-claude').write_text(svc+'\n')
 (p/'identity').write_text('original-alpha')
-data[svc]={'identity':'original-alpha','value':'original-secret-fixture','acl':'original-acl-fixture'}
+data[svc]={'identity':'expected-subscription-fixture','value':'original-secret-fixture','acl':'original-acl-fixture'}
 if sys.argv[5]=='mixed':
  q=root/'alpha'/'claude';q.mkdir(parents=True)
  (q/'.credentials.json').write_text('{"claudeAiOauth":{"accessToken":"original-file-secret-fixture"}}')
@@ -111,6 +111,13 @@ row=json.load(open(sys.argv[1]))[sys.argv[2]]
 assert row['identity']=='expected-subscription-fixture' and row['logins']==2
 IDENTITY
   check_eq "$?" 0 'second provider write preserves independently checked identity'
+  python3 - "$REAUTH_PAYLOAD_DB" "$CASE_DIR/original-payload" "$(service_of recovered)" <<'SAME_ACCOUNT'
+import json,sys
+now,old=(json.load(open(p)) for p in sys.argv[1:3])
+assert len(old)==1
+assert now[sys.argv[3]]['identity']==next(iter(old.values()))['identity']
+SAME_ACCOUNT
+  check_eq "$?" 0 'replacement and both relogins use the original subscription identity'
   original_intact
   run add claude recovered --no-login
   check_eq "$RC" 3 'duplicate label refuses before another provider write'
