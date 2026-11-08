@@ -1453,7 +1453,7 @@ Record the task ID immediately — an unrecorded Monitor cannot be stopped. The 
 ```bash
 # TaskStop is the harness tool; stop only the Monitor this invocation armed.
 WAKE_PUBLISH_SH=""
-for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh" ".claude/scripts/park-wake-publish.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}" ".claude/scripts/park-wake-publish.sh"; do
   if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
 done
 PUBLISH_RC=4
@@ -1806,7 +1806,7 @@ Either way, publish the identity pair **immediately** into the same fields `/pau
 ```bash
 # TaskStop is the harness tool; stop only the Monitor this invocation armed.
 WAKE_PUBLISH_SH=""
-for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh" ".claude/scripts/park-wake-publish.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}" ".claude/scripts/park-wake-publish.sh"; do
   if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
 done
 PUBLISH_RC=4

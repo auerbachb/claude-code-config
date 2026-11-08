@@ -126,13 +126,14 @@ os.execv(shell,[shell,real]+args)
             except ProcessLookupError: pass
         p.communicate(timeout=5)
 
-    def start(self, cause, task='own-task', generation='own-generation', mode='none', stop_rc=0, call_id='one', cwd=None, path=None, repo_key=REPO):
+    def start(self, cause, task='own-task', generation='own-generation', mode='none', stop_rc=0, call_id='one', cwd=None, path=None, repo_key=REPO, unset_home=False):
         env=dict(self.env,TEST_MODE=mode,STOP_RC=str(stop_rc),TEST_CALL_ID=call_id,
                  SESSION_STATE_SH=str(self.proxy),REPO_KEY=repo_key,
                  WAKE_TASK_ID=task,WAKE_GENERATION=generation,
                  LIMIT_MONITOR_TASK_ID=task,LIMIT_GENERATION=generation)
         if path is not None:env['PATH']=path
-        p=subprocess.Popen([SHELL,'-c',self.blocks[cause]],cwd=cwd or ROOT,env=env,
+        if unset_home:env.pop('HOME',None)
+        p=subprocess.Popen([SHELL,'-u','-c',self.blocks[cause]],cwd=cwd or ROOT,env=env,
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
         self.addCleanup(self.stop,p)
         return p
@@ -275,6 +276,14 @@ os.execv(shell,[shell,real]+args)
             self.stop_log.unlink()
             self.assertEqual(self.run_block(cause,path=str(self.bin)),'WAKE_PUBLISH=failed')
             self.assertEqual(self.state.read_bytes(),before);self.assertEqual(self.stopped(),['own-task'])
+
+    def test_unset_home_cannot_abort_before_stopping_the_armed_monitor(self):
+        for cause in ['reactive','preemptive']:
+            with self.subTest(cause=cause):
+                self.seed(cause);before=self.state.read_bytes()
+                self.assertEqual(self.run_block(cause,unset_home=True),'WAKE_PUBLISH=failed')
+                self.assertEqual(self.stopped(),['own-task'])
+                self.assertEqual(self.state.read_bytes(),before)
 
     def test_missing_day_is_lost_and_absent_state_is_not_created(self):
         for cause in ['reactive','preemptive']:
