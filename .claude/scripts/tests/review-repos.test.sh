@@ -181,6 +181,11 @@ printf '## Review repos\n\n- acme/one\n-   \n* \t \n+ \t\n- acme/two\n' > "$EMPT
 run "CLAUDE_ACCOUNT_CONFIG=$EMPTY_BULLET_CONFIG" --
 expect_list "config: whitespace-only bullets between valid repos are ignored" $'acme/one\nacme/two'
 
+NORMALIZED_EMPTY_CONFIG="$TMP_DIR/backtick-bullet-account-config.md"
+printf '## Review repos\n\n- acme/one\n- `` ignored note\n- acme/two\n' > "$NORMALIZED_EMPTY_CONFIG"
+run "CLAUDE_ACCOUNT_CONFIG=$NORMALIZED_EMPTY_CONFIG" --
+expect_list "config: a first token empty after backtick removal is ignored" $'acme/one\nacme/two'
+
 mkdir -p "$TMP_DIR/config-is-a-dir"
 run "CLAUDE_ACCOUNT_CONFIG=$TMP_DIR/config-is-a-dir" --
 expect_fail_closed "config: a config path that is not a readable file fails rather than falling to discovery"
@@ -296,6 +301,11 @@ EMPTY_ONLY_CONFIG="$TMP_DIR/empty-only-account-config.md"
 printf '## Review repos\n\nowner = acme\n-   \n* \t\n+ \t \n' > "$EMPTY_ONLY_CONFIG"
 run "CLAUDE_ACCOUNT_CONFIG=$EMPTY_ONLY_CONFIG" -- --fixture "$DISC"
 expect_list "config: empty-only bullets preserve discovery fallback" $'acme/live\nacme/page-two'
+
+NORMALIZED_EMPTY_ONLY="$TMP_DIR/backtick-only-account-config.md"
+printf '## Review repos\n\nowner = acme\n- ``\n' > "$NORMALIZED_EMPTY_ONLY"
+run "CLAUDE_ACCOUNT_CONFIG=$NORMALIZED_EMPTY_ONLY" -- --fixture "$DISC"
+expect_list "config: backtick-only tokens preserve discovery fallback" $'acme/live\nacme/page-two'
 
 # Steps 1 and 2 still win when they resolve; the fixture feeds step 3 only.
 run "CLAUDE_ACCOUNT_CONFIG=$CONFIG" -- --fixture "$DISC"
