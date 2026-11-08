@@ -121,8 +121,10 @@ literal() { FROM="$2" TO="$3" perl -pe 's/\Q$ENV{FROM}\E/$ENV{TO}/g' "$1"; }
 # run_block FILE [SID] — the block as the desk session SID (default desk-1),
 # with the repo's own policy.
 run_block() {
-  (cd "$TMP" && env -u HUMAN_QUEUE_POLICY DESK="$HQ_T_DESK_DIR" HQ="$HQ_BIN_DIR/desk-cli.sh" \
-     SID="${2:-desk-1}" HUMAN_QUEUE_SCHEMA="$S" bash "$1") 2>&1
+  local rendered="$TMP/run-default.sh"
+  literal "$1" "<DEFAULT>" "${3:-everything}" > "$rendered"
+  (cd "$TMP" && env HUMAN_QUEUE_POLICY="${4:-$HQ_T_DESK_DIR/policy.json}" DESK="$HQ_T_DESK_DIR" HQ="$HQ_BIN_DIR/desk-cli.sh" \
+     SID="${2:-desk-1}" HUMAN_QUEUE_SCHEMA="$S" bash "$rendered") 2>&1
 }
 
 block decisions.md desk-split
@@ -155,6 +157,21 @@ add() {
 
 hq register-control desk-1
 check "register-control desk-1" "$RC:$OUT" "0:control session desk-1"
+
+# Capture once, edit the file, then run the actual query block against this DB.
+printf '{"interrupt_rule":"away"}\n' > "$TMP/start-policy.json"
+START_RULE=$(HUMAN_QUEUE_POLICY="$TMP/start-policy.json" "$HQ_BIN_DIR/desk-policy.sh" | jq -r '.interrupt_rule')
+printf '{"interrupt_rule":"everything"}\n' > "$TMP/start-policy.json"
+OUT=$(run_block "$TMP/block-desk-interrupt-get.sh" desk-1 "$START_RULE" "$TMP/start-policy.json")
+check "startup away remains the query default after policy edit" "$OUT" "$(printf 'away (default)\nexit=0')"
+desk --session desk-1 --generation captured-away --interrupts "$START_RULE" --once
+check "loop accepts the same captured away default" "$RC:$OUT:$ERR" "0::"
+FRESH_RULE=$(HUMAN_QUEUE_POLICY="$TMP/start-policy.json" "$HQ_BIN_DIR/desk-policy.sh" | jq -r '.interrupt_rule')
+OUT=$(run_block "$TMP/block-desk-interrupt-get.sh" desk-1 "$FRESH_RULE" "$TMP/start-policy.json")
+check "fresh desk captures edited everything for its query" "$OUT" "$(printf 'everything (default)\nexit=0')"
+desk --session desk-1 --generation fresh-everything --interrupts "$FRESH_RULE" --once
+check "fresh loop accepts edited everything" "$RC:$OUT:$ERR" "0::"
+
 desk --session desk-1 --generation g1 --once
 check "the first desk tick on an empty store prints nothing" "$RC:$OUT:$ERR" "0::"
 

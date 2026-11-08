@@ -85,7 +85,7 @@ After `available`, `back`, or `focus off`, run one tick now, so what was held re
 <!-- test-anchor: desk-release -->
 
 ```bash
-"$DESK/bin/desk-tick.sh" --session "$SID" --generation "<GEN>" --once
+"$DESK/bin/desk-tick.sh" --session "$SID" --generation "<GEN>" --interrupts "<DEFAULT>" --once
 ```
 
 Handle each line it prints exactly as the Monitor's (`SKILL.md`, "Monitor events"): a `new` line goes to `decisions.md`, "Showing items". No line means nothing arrived during the hold (or the Monitor's own tick got there first, and its `new` event arrives as a notification). A focus ends on its own, back in the policy's rule: when that is `everything`, the first tick after its time reports what was held, as a `new` event like any other; when it is `away`, the hold goes on until `available`.
@@ -99,11 +99,12 @@ A parked notice (`wakeups.md`) that arrives during a hold is held too: keep it i
 <!-- test-anchor: desk-interrupt-get -->
 
 ```bash
-RULE=$("$DESK/bin/desk-policy.sh" 2>/dev/null | jq -r '.interrupt_rule' 2>/dev/null); case "$RULE" in everything|away) ;; *) RULE=everything ;; esac
+RULE="<DEFAULT>"
+case "$RULE" in everything|away) ;; *) echo "Desk start default unknown — run /desk again." >&2; exit 4 ;; esac
 "$HQ" interrupt get --session "$SID" --default "$RULE"; echo "exit=$?"
 ```
 
-It prints one line, `everything`, `away`, or `focus until 15:30 ET (2026-10-07 19:30 UTC)`, ending ` (default)` when no rule was set at this desk and the policy's applies. Print that line, `Interrupts: <it>`, and nothing else. The default it names is the policy file as it is now; the running loop keeps the `interrupt_rule` it started with, so after `interrupt_rule` is edited while the desk runs, run `/desk` again to bring the two back together. `exit=7` → `Can't reach the store — can't read the interrupt rule right now.`
+It prints one line, `everything`, `away`, or `focus until 15:30 ET (2026-10-07 19:30 UTC)`, ending ` (default)` when no rule was set at this desk and the policy's applies. Print that line, `Interrupts: <it>`, and nothing else. Fill `<DEFAULT>` with this desk’s captured startup default, using the same-session recovery rule in `SKILL.md`; unknown means stop and require a fresh `/desk`, never reread policy or guess. The default it names is the one the running desk started with; an `interrupt_rule` edit takes effect at the next `/desk`, including for re-arms and release ticks. `exit=7` → `Can't reach the store — can't read the interrupt rule right now.`
 
 ## Feedback tags
 
