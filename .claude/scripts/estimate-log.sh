@@ -148,7 +148,7 @@ lock_owner_dead() {
   local snapshot="$1" pid host token extra seen rc
   IFS=' ' read -r pid host token extra <<< "$snapshot"
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$host" == "$LOCK_HOST" \
-      && -n "$token" && -z "$extra" \
+      && "$token" =~ ^[0-9]+-[0-9]+N?-[0-9]+$ && -z "$extra" \
       && "$snapshot" == "$pid $host $token" ]] || return 1
   kill -0 "$pid" 2>/dev/null && return 1
   # Permission or inspection failures are not proof of death. Both BSD and GNU
@@ -161,7 +161,7 @@ lock_owner_dead() {
 LOCK_HOST=""
 acquire_lock() {
   local deadline=$(( $(date +%s) + LOCK_STALE_SECS ))
-  local owner stored_token current retired
+  local owner stored_token current retired reaper_guard
   LOCK_HOST=$(hostname 2>/dev/null) || return 5
   [[ "$LOCK_HOST" =~ ^[a-zA-Z0-9._-]+$ ]] || return 5
   LOCK_TOKEN="$$-$(date +%s%N 2>/dev/null || date +%s)-$RANDOM"
@@ -179,9 +179,10 @@ acquire_lock() {
     fi
     owner=$(cat "$LOG_LOCK/owner" 2>/dev/null || true)
     stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || true)
+    reaper_guard="$LOG_LOCK/reaper-$stored_token"
     if [[ -n "$stored_token" && "$owner" == *" $stored_token" ]] \
         && lock_owner_dead "$owner" \
-        && mkdir "$LOG_LOCK/reaper" 2>/dev/null; then
+        && mkdir "$reaper_guard" 2>/dev/null; then
       # Only one reaper may move this dead generation. Recheck after obtaining
       # the guard so a second contender cannot remove a new writer's lock.
       current=$(cat "$LOG_LOCK/owner" 2>/dev/null || true)
@@ -195,11 +196,11 @@ acquire_lock() {
         fi
         rmdir "$retired" 2>/dev/null || true
       fi
-      # A changed owner is unknown: leave its directory alone. A reaper crash
-      # also retains the guard; bounded callers fail closed rather than steal.
-      if [[ "$(cat "$LOG_LOCK/owner" 2>/dev/null || true)" == "$owner" ]]; then
-        rmdir "$LOG_LOCK/reaper" 2>/dev/null || true
-      fi
+      # Always release our guard, including when it landed in a successor's
+      # directory. Its name is tied to the observed acquisition token, so an
+      # obsolete/crashed guard can never block a different generation's reaper.
+      # A crash while guarding this same generation still fails closed.
+      rmdir "$reaper_guard" 2>/dev/null || true
     fi
     if [[ $(date +%s) -gt $deadline ]]; then
       return 5

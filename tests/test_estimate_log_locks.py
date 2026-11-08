@@ -152,10 +152,40 @@ else: os.execv(os.environ['REAL_DATE'],[os.environ['REAL_DATE']]+sys.argv[1:])
 
     def test_abandoned_recovery_guard_is_retained(self):
         self.dead_holder()
-        (self.lock / 'reaper').mkdir()
+        guard = self.lock / ('reaper-' + (self.lock / 'token').read_text().strip())
+        guard.mkdir()
         self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
-        self.assertTrue((self.lock / 'reaper').is_dir())
+        self.assertTrue(guard.is_dir())
         self.assertEqual(self.rows(), [])
+
+    def test_generation_replaced_before_recovery_guard_is_not_wedged(self):
+        dead = self.dead_holder()
+        real_mkdir = shutil.which('mkdir')
+        self.env['REAL_MKDIR'] = real_mkdir
+        self.env['LOCK_TEST_SUCCESSOR_PID'] = str(os.getpid())
+        self.env['LOCK_TEST_SUCCESSOR_HOST'] = socket.gethostname()
+        self.tool('mkdir', '''import os,shutil,sys
+from pathlib import Path
+if len(sys.argv)==2 and Path(sys.argv[1]).name.startswith('reaper'):
+ lock=Path(sys.argv[1]).parent
+ marker=Path(os.environ['LOCK_FIXTURE'])/'generation-replaced'
+ if not marker.exists():
+  shutil.rmtree(lock);lock.mkdir()
+  (lock/'token').write_text('999-123456789-3\\n')
+  (lock/'owner').write_text(os.environ['LOCK_TEST_SUCCESSOR_PID']+' '+os.environ['LOCK_TEST_SUCCESSOR_HOST']+' 999-123456789-3\\n')
+  marker.touch()
+os.execv(os.environ['REAL_MKDIR'],[os.environ['REAL_MKDIR']]+sys.argv[1:])
+''')
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertTrue((self.root / 'generation-replaced').exists())
+        self.assertEqual((self.lock / 'token').read_text(), '999-123456789-3\n')
+        self.assertEqual(list(self.lock.glob('reaper*')), [])
+        self.assertEqual(self.rows(), [])
+        # The replacement later dies: its own acquisition can still recover.
+        (self.lock / 'owner').write_text(str(dead.pid)+' '+socket.gethostname()+' 999-123456789-3\n')
+        self.finish(self.start(103))
+        self.assertEqual(self.rows(), [103])
+        self.assertFalse(self.lock.exists())
 
     def test_release_does_not_remove_successor_token(self):
         p = self.start(101, hold=True)
