@@ -25,6 +25,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [issue-file.sh](../issue-file.sh) | Validate a seven-section issue body and file it with checked labels: the one create path for /issue-maker and the desk's idea: intent |
 | [makespan.sh](../makespan.sh) | Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput |
 | [park-generation.sh](../park-generation.sh) | Mints a durable usage-limit park identity from OS entropy |
+| [park-retire.sh](../park-retire.sh) | Retires a bound park snapshot without adopting a replacement |
 | [park-wake-publish.sh](../park-wake-publish.sh) | Publishes a wake identity only onto its completed, unoccupied park |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |

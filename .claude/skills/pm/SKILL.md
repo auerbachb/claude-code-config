@@ -1401,7 +1401,7 @@ elif [ -z "$PARK_GENERATION_SH" ] || ! PARK_GENERATION=$("$PARK_GENERATION_SH");
   echo "PARK_CLAIM=error rc=generation"
 else
   # ONE invocation, one lock hold, all-or-nothing (#1445): the cause CAS gates the
-  # seven metadata writes riding with it, so a competing park either loses this
+  # eight metadata writes riding with it, so a competing park either loses this
   # compare (exit 7, nothing written) or already owns the record. There is no
   # interleaving that leaves half of ours mixed into half of theirs. Every --set
   # path is a SIBLING of the CAS path under `.day`; naming an ancestor of it is a
@@ -1526,25 +1526,18 @@ then . else error("invalid durable park identity") end
 ' 2>/dev/null) || D5_CLEAR_RC=8
 fi
 if [[ "$D5_CLEAR_RC" -eq 0 ]]; then
-  # Durable generation plus exact snapshot protects new and legacy records.
-  # A changed generation, wake, token, cause, bound or metadata loses the compare.
-  D5_CLEARS=()
-  for D5_FIELD in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
-                  limit_cause limit_kind park_claim_token park_generation parked_until; do
-    D5_CLEARS+=(--set ".repos[\"$REPO_KEY\"].day.$D5_FIELD=null")
+  PARK_RETIRE_SH=""
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh}" "${HOME:+$HOME/.claude/scripts/park-retire.sh}" ".claude/scripts/park-retire.sh"; do
+    if [ -x "$candidate" ]; then PARK_RETIRE_SH="$candidate"; break; fi
   done
-  # The thrash counter rides the same atomic batch (#1445): a superseded compare must
-  # leave it alone too, or a brand-new park would resume with its hit count reset.
-  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$D5_EXPECT" --expect "$D5_EXPECT" \
-    "${D5_CLEARS[@]}" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=0" \
-    >/dev/null 2>&1 || D5_CLEAR_RC=$?
-  if [[ "$D5_CLEAR_RC" -eq 6 ]]; then   # lock timeout — retry once, then judge
+  D5_CLEAR_RC=4
+  if [[ -n "$PARK_RETIRE_SH" ]]; then
     D5_CLEAR_RC=0
-    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$D5_EXPECT" --expect "$D5_EXPECT" \
-      "${D5_CLEARS[@]}" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=0" \
-      >/dev/null 2>&1 || D5_CLEAR_RC=$?
+    "$PARK_RETIRE_SH" --repo "$REPO_KEY" --snapshot "$D5_EXPECT" \
+      --state-helper "$SESSION_STATE_SH" --reset-hits || D5_CLEAR_RC=$?
   fi
 fi
+
 case "$D5_CLEAR_RC" in
   0) echo "RESUME_CLEAR=cleared" ;;
   7) echo "RESUME_CLEAR=superseded" ;;   # a newer park owns the slot — nothing written

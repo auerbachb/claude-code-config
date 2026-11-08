@@ -711,23 +711,15 @@ fi
 # written, so its bound, kind and wake identity are untouched) · 8 identity
 # unreadable, fail closed · anything else a write error. Composition is #1445: the
 # --cas gates the whole batch, so a lost compare writes none of the --set clears.
+PARK_RETIRE_SH=""
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh}" "${HOME:+$HOME/.claude/scripts/park-retire.sh}" ".claude/scripts/park-retire.sh"; do
+  if [ -x "$candidate" ]; then PARK_RETIRE_SH="$candidate"; break; fi
+done
 retire_limit_park() {
-  local field rc=0
-  local -a clears=()
   [[ "$PARK_IDENTITY_READ" == true ]] || return 8
-  for field in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
-               limit_cause limit_kind park_claim_token park_generation parked_until; do
-    clears+=(--set ".repos[\"$REPO_KEY\"].day.$field=null")
-  done
-  # Self-CAS plus descendant assignments preserves unrelated day metadata.
-  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$PARK_DAY_EXPECT" --expect "$PARK_DAY_EXPECT" \
-    "${clears[@]}" >/dev/null 2>&1 || rc=$?
-  if [[ "$rc" -eq 6 ]]; then
-    rc=0
-    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$PARK_DAY_EXPECT" --expect "$PARK_DAY_EXPECT" \
-      "${clears[@]}" >/dev/null 2>&1 || rc=$?
-  fi
-  return "$rc"
+  [[ -n "$PARK_RETIRE_SH" ]] || return 4
+  "$PARK_RETIRE_SH" --repo "$REPO_KEY" --snapshot "$PARK_DAY_EXPECT" \
+    --state-helper "$SESSION_STATE_SH"
 }
 
 ```
@@ -776,7 +768,7 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
           echo "(stopped usage-limit auto-wake $LIMIT_TASK_ID; a newer usage-limit park now owns the slot — its own wake is left running and nothing was cleared)"
           ;;
         *)
-          echo "(DEGRADED: auto-wake stopped but its state could not be cleared (rc=$RETIRE_RC) — recovery remains active)"
+          echo "(DEGRADED: auto-wake stopped but park retirement could not be confirmed (rc=$RETIRE_RC) — park left standing; retry /pause-resume)"
           ;;
       esac
     else

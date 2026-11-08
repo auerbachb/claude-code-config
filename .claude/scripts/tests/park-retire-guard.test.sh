@@ -520,6 +520,119 @@ for SITE in retire d5; do
   done
  done
 
+# Metadata-only losses must not masquerade as a new owner after TaskStop.
+# The shim interleaves through the REAL state writer before the actual CAS,
+# including a second race after the helper's bounded metadata refresh.
+REAL_SESSION_STATE_SH="$SESSION_STATE_SH"
+export REAL_SESSION_STATE_SH
+RACE_SH="$TMP_HOME/retire-race.sh"
+RACE_COUNT="$TMP_HOME/retire-cas-count"
+export RACE_COUNT RACE_MODE
+cat > "$RACE_SH" <<'RACE_HELPER'
+#!/usr/bin/env bash
+set -uo pipefail
+path=".repos[\"$REPO_KEY\"].day"
+case " $* " in
+  *' --cas '*)
+    count=0; [[ ! -f "$RACE_COUNT" ]] || read -r count < "$RACE_COUNT"
+    count=$((count + 1)); printf '%s\n' "$count" > "$RACE_COUNT"
+    case "$RACE_MODE:$count" in
+      single:1|churn:*|replacement:1|tuple:1|hits:1|legacy:1|read-error:1|read-lock:1|malformed:1)
+        "$REAL_SESSION_STATE_SH" --set "$path.unrelated_counter=$count" >/dev/null || exit 9 ;;
+    esac
+    case "$RACE_MODE:$count" in
+      replacement:2)
+        "$REAL_SESSION_STATE_SH" --set "$path.park_generation=\"replacement\"" \
+          --set "$path.limit_kind=\"weekly\"" --set "$path.parked_until=\"new-bound\"" \
+          --set "$path.limit_resume_generation=\"new-wake\"" \
+          --set "$path.consecutive_limit_hits=9" >/dev/null || exit 9 ;;
+      tuple:1)
+        "$REAL_SESSION_STATE_SH" --set "$path.limit_resume_generation=\"changed-same-owner\"" >/dev/null || exit 9 ;;
+      hits:1)
+        "$REAL_SESSION_STATE_SH" --set "$path.consecutive_limit_hits=8" >/dev/null || exit 9 ;;
+      lock:1) exit 6 ;;
+    esac ;;
+  *' --get-json '*)
+    if [[ -f "$RACE_COUNT" ]]; then
+      case "$RACE_MODE" in
+        read-error) exit 4 ;;
+        malformed) printf '%s\n' '{"park_generation":false}'; exit 0 ;;
+        read-lock)
+          if [[ ! -f "$RACE_COUNT.read" ]]; then touch "$RACE_COUNT.read"; exit 6; fi ;;
+      esac
+    fi ;;
+esac
+exec "$REAL_SESSION_STATE_SH" "$@"
+RACE_HELPER
+chmod +x "$RACE_SH"
+INITIAL_FIXTURE="$TEST_DIR/fixtures/park-retire-initial1715.md"
+INITIAL_RETIRE=$(extract_skill_bash "$INITIAL_FIXTURE" pause-resume-retire-limit-park) || exit 1
+INITIAL_D5=$(extract_skill_bash "$INITIAL_FIXTURE" pm-day-d5-resume-clear) || exit 1
+INITIAL_D5_PREFIX=$(printf '%s\n' "$INITIAL_D5" | awk -v seam="$D5_SEAM" 'index($0, seam) { exit } { print }')
+INITIAL_D5_SUFFIX=$(printf '%s\n' "$INITIAL_D5" | awk -v seam="$D5_SEAM" 'found { print } index($0, seam) { found = 1; print }')
+for SITE in disarm d5; do
+  for RACE_MODE in single churn replacement tuple hits legacy read-error read-lock malformed lock; do
+    seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+    if [[ "$RACE_MODE" != legacy ]]; then
+      "$REAL_SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+    fi
+    rm -f "$RACE_COUNT" "$RACE_COUNT.read"
+    SESSION_STATE_SH="$RACE_SH"
+    if [[ "$SITE" == disarm ]]; then OUT=$(run_disarm); else OUT=$(run_d5); fi
+    SESSION_STATE_SH="$REAL_SESSION_STATE_SH"
+    case "$RACE_MODE" in
+      single|read-lock|lock)
+        check_eq "$SITE $RACE_MODE: original park cleared" null "$(day_get parked_until)"
+        check_eq "$SITE $RACE_MODE: generation retired" null "$(day_get park_generation)"
+        if [[ "$SITE" == disarm ]]; then
+          check_eq "$SITE $RACE_MODE: resolved only after clear" true "$(field "$OUT" RESOLVED)"
+        else
+          check_eq "$SITE $RACE_MODE: reports clear" cleared "$(field "$OUT" RESUME_CLEAR)"
+          check_eq "$SITE $RACE_MODE: hit reset committed" 0 "$(day_get consecutive_limit_hits)"
+        fi
+        if [[ "$RACE_MODE" != lock ]]; then
+          check_eq "$SITE $RACE_MODE: updated metadata preserved" 1 "$(day_get unrelated_counter)"
+        fi ;;
+      replacement)
+        for pair in 'park_generation replacement' 'parked_until new-bound' 'limit_kind weekly' 'limit_resume_generation new-wake' 'consecutive_limit_hits 9'; do
+          check_eq "$SITE replacement: ${pair%% *} preserved" "${pair#* }" "$(day_get "${pair%% *}")"
+        done
+        if [[ "$SITE" == d5 ]]; then check_eq 'D5 replacement: honest supersession' superseded "$(field "$OUT" RESUME_CLEAR)"; fi ;;
+      *)
+        check_eq "$SITE $RACE_MODE: original bound retained" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+        check_eq "$SITE $RACE_MODE: hit count retained" "$(if [[ "$RACE_MODE" == hits ]]; then echo 8; else echo 1; fi)" "$(day_get consecutive_limit_hits)"
+        if [[ "$SITE" == disarm ]]; then
+          check_eq "$SITE $RACE_MODE: unresolved after stopped wake" false "$(field "$OUT" RESOLVED)"
+          require_text "$SITE $RACE_MODE: reports uncertainty" <(printf '%s\n' "$OUT") 'DEGRADED'
+        else
+          EXPECT_RC=5
+          case "$RACE_MODE" in read-error|malformed) EXPECT_RC=8 ;; esac
+          check_eq "$SITE $RACE_MODE: honest failure status" "error rc=$EXPECT_RC" "$(field "$OUT" RESUME_CLEAR)"
+        fi
+        if [[ "$RACE_MODE" == tuple ]]; then
+          check_eq "$SITE: same-generation new wake untouched" changed-same-owner "$(day_get limit_resume_generation)"
+        fi ;;
+    esac
+    EXPECT_CAS_COUNT=1
+    case "$RACE_MODE" in single|churn|replacement|read-lock|lock) EXPECT_CAS_COUNT=2 ;; esac
+    check_eq "$SITE $RACE_MODE: bounded CAS count" "$EXPECT_CAS_COUNT" "$(cat "$RACE_COUNT")"
+  done
+  # Published initial fences actually return a misleading superseded outcome.
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  "$REAL_SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+  RACE_MODE=single; rm -f "$RACE_COUNT"
+  SESSION_STATE_SH="$RACE_SH"
+  if [[ "$SITE" == disarm ]]; then
+    OUT=$(BLOCK_RETIRE="$INITIAL_RETIRE" run_disarm)
+    check_eq 'negative published initial resume: falsely resolved' true "$(field "$OUT" RESOLVED)"
+  else
+    OUT=$(BLOCK_D5_PREFIX="$INITIAL_D5_PREFIX" BLOCK_D5_SUFFIX="$INITIAL_D5_SUFFIX" run_d5)
+    check_eq 'negative published initial D5: false supersession' superseded "$(field "$OUT" RESUME_CLEAR)"
+  fi
+  SESSION_STATE_SH="$REAL_SESSION_STATE_SH"
+  check_eq "$SITE negative: initial fence stranded original park" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+done
+
 # Minting is real OS entropy, not clock/PID/RANDOM fallback. An entropy failure
 # must be visible before any of the three actual producer fences can claim.
 GENERATOR="$REPO_ROOT/.claude/scripts/park-generation.sh"

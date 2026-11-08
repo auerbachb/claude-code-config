@@ -769,15 +769,14 @@ require_text "pause-resume disarm covers the probe" "$PAUSE_RESUME" 'One registr
 # manual-resume escape hatch those branches name in their own message.
 refute_text  "pause-resume never restamps the -1 sentinel" "$PAUSE_RESUME" \
   'day\.limit_probe_fires_remaining=-1'
-# Since #1663 the retire enumerates the fields it clears and generates the
-# `--set …=null` flags from that list, so the literal assignments these three
-# assertions used to match no longer appear as text. The property is unchanged —
-# the enumeration IS the clear list — and that each field actually ends up null is
-# proved functionally in `park-retire-guard.test.sh`, which runs the block.
-require_text "pause-resume clears the probe bound"  "$PAUSE_RESUME" \
+# Retirement now delegates to the shared helper. Its real state effects and
+# metadata/replacement interleavings are exercised by park-retire-guard.test.sh.
+require_text "pause-resume invokes guarded retirement" "$PAUSE_RESUME" \
+  '"[$]PARK_RETIRE_SH" --repo "[$]REPO_KEY" --snapshot'
+require_text "shared retire clears the probe bound" "$REPO_ROOT/.claude/scripts/park-retire.sh" \
   'for field in .*limit_probe_fires_remaining'
-require_text "pause-resume clears limit_cause"      "$PAUSE_RESUME" '^ +limit_cause limit_kind'
-require_text "pause-resume clears parked_until"     "$PAUSE_RESUME" 'park_claim_token park_generation parked_until'
+require_text "shared retire clears the cause and generation" "$REPO_ROOT/.claude/scripts/park-retire.sh" \
+  'limit_cause limit_kind park_claim_token park_generation parked_until'
 require_text "pause-resume states why it retires"   "$PAUSE_RESUME" 'never restamp the .-1. sentinel'
 # The no-armed-wake branch matters on its own: /pause already nulled the task id,
 # so only this path can lift the park it left standing.
