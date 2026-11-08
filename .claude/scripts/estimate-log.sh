@@ -161,17 +161,25 @@ lock_mutation_inactive() {
 
 run_log_mutation() {
   local kind="$1" source="$2" writer rc=0 publication=0
-  printf 'pending %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || return 5
+  [[ "$kind" == append || "$kind" == replace ]] || return 5
+  printf 'pending %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || {
+    # No child was started: an empty/truncated marker is ours to remove.
+    rm -f "$LOG_LOCK/writer" 2>/dev/null || true
+    return 5
+  }
   case "$kind" in
     append) cat "$source" >> "$LOG_FILE" & ;;
     replace) mv "$source" "$LOG_FILE" & ;;
-    *) return 5 ;;
   esac
   writer=$!
   printf '%s %s\n' "$writer" "$LOCK_TOKEN" > "$LOG_LOCK/writer" || publication=5
   wait "$writer" || rc=$?
   # Once wait completed, this generation cannot write again through this child.
-  printf 'done %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || publication=5
+  printf 'done %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || {
+    # wait has reaped the child, so removing our marker cannot expose a writer.
+    rm -f "$LOG_LOCK/writer" 2>/dev/null || true
+    publication=5
+  }
   [[ "$rc" -eq 0 ]] || return "$rc"
   return "$publication"
 }

@@ -79,8 +79,20 @@ else: os.execv(os.environ['REAL_DATE'],[os.environ['REAL_DATE']]+sys.argv[1:])
         env = dict(self.env, LOCK_TEST_HOLD='1' if hold else '0',
                    LOCK_TEST_FAST_TIMEOUT='1' if fast else '0',
                    LOCK_TEST_CLOCK=str(self.root / ('clock-' + str(number))))
-        p = subprocess.Popen([SHELL, str(self.script)] + (arguments or ['--append', str(number), '--repo', 'acme/widgets']),
-                             env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        command = [SHELL, str(self.script)] + (arguments or ['--append', str(number), '--repo', 'acme/widgets'])
+        if env.get('LOCK_TEST_PRINTF_FORMAT'):
+            command = [SHELL, '-c', r'''printf() {
+  if [[ "$1" == "$LOCK_TEST_PRINTF_FORMAT" && ! -e "$LOCK_TEST_PRINTF_FAILED" ]]; then
+    : > "$LOCK_TEST_PRINTF_FAILED"
+    return 99
+  fi
+  builtin printf "$@"
+}
+export -f printf
+exec "$@"
+''', '_'] + command
+        p = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
         self.addCleanup(self.stop, p)
         return p
 
@@ -186,6 +198,26 @@ os.execv(os.environ['REAL_MKDIR'],[os.environ['REAL_MKDIR']]+sys.argv[1:])
         self.finish(self.start(103))
         self.assertEqual(self.rows(), [103])
         self.assertFalse(self.lock.exists())
+
+    def test_failed_pending_marker_publication_does_not_wedge_lock(self):
+        self.env['LOCK_TEST_PRINTF_FORMAT'] = r'pending %s\n'
+        self.env['LOCK_TEST_PRINTF_FAILED'] = str(self.root / 'printf-failed')
+        self.assertIn('failed to append', self.finish(self.start(101)))
+        self.assertTrue((self.root / 'printf-failed').exists())
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(self.lock.exists())
+        self.finish(self.start(102))
+        self.assertEqual(self.rows(), [102])
+
+    def test_failed_done_marker_publication_does_not_wedge_lock(self):
+        self.env['LOCK_TEST_PRINTF_FORMAT'] = r'done %s\n'
+        self.env['LOCK_TEST_PRINTF_FAILED'] = str(self.root / 'printf-failed')
+        self.assertIn('failed to append', self.finish(self.start(101)))
+        self.assertTrue((self.root / 'printf-failed').exists())
+        self.assertEqual(self.rows(), [101])
+        self.assertFalse(self.lock.exists())
+        self.finish(self.start(102))
+        self.assertEqual(self.rows(), [101, 102])
 
     def test_failed_recovery_allocation_does_not_strand_guard(self):
         self.dead_holder()
