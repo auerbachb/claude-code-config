@@ -457,7 +457,7 @@ command string and nothing else.
 ```bash
 # The original winning claim's durable generation is an input, not re-read here.
 WAKE_PUBLISH_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}" ".claude/scripts/park-wake-publish.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}"; do
   if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
 done
 PUBLISH_RC=4

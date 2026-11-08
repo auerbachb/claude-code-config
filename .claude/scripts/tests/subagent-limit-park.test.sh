@@ -62,6 +62,7 @@ export HOME="$TMP_HOME"
 mkdir -p "$HOME/.claude/scripts"
 # Fixtures install the same trusted helper locations as production.
 ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh"
 ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$HOME/.claude/scripts/park-retire.sh"
 STATE_FILE="$HOME/.claude/session-state.json"
 BREADCRUMB="$HOME/.claude/usage-limit-last.json"

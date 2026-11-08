@@ -91,6 +91,10 @@ os.execv(shell,[shell,real]+args)
             match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```', text, re.S)
             self.assertIsNotNone(match, anchor)
             self.blocks[cause] = match.group(1)
+        subagent=(ROOT / '.claude/reference/subagent-thread-limit-park.md').read_text()
+        m=re.search(r'<!-- test-anchor: subagent-limit-wake-publish -->\s*```bash\n(.*?)\n```',subagent,re.S)
+        self.assertIsNotNone(m)
+        self.blocks['subagent']=m.group(1)
         shutil.copyfile(ROOT / '.claude/scripts/park-generation.sh', installed / 'park-generation.sh')
         (installed / 'park-generation.sh').chmod(0o700)
         self.seed('preemptive')
@@ -314,6 +318,46 @@ os.execv(shell,[shell,real]+args)
             self.stop_log.unlink()
             self.assertEqual(self.run_block(cause,path=str(self.bin)),'WAKE_PUBLISH=failed')
             self.assertEqual(self.state.read_bytes(),before);self.assertEqual(self.stopped(),['own-task'])
+
+    def test_all_publishers_refuse_untrusted_checkout_and_allow_installed_locations(self):
+        untrusted=self.root/'untrusted';scripts=untrusted/'.claude/scripts';scripts.mkdir(parents=True)
+        sentinel=self.root/'untrusted-executed';self.env['PUBLISH_SENTINEL']=str(sentinel)
+        fake=scripts/'park-wake-publish.sh';fake.write_text('#!/bin/sh\n: > "$PUBLISH_SENTINEL"\nexit 0\n');fake.chmod(0o700)
+        installed=self.home/'.claude/scripts/park-wake-publish.sh';saved=installed.with_suffix('.saved')
+        installed.rename(saved)
+        try:
+            for cause in ['reactive','preemptive','subagent']:
+                self.seed('reactive' if cause=='subagent' else cause);before=self.state.read_bytes()
+                expected='WAKE_PUBLISH=error rc=4' if cause=='subagent' else 'WAKE_PUBLISH=failed'
+                self.assertEqual(self.run_block(cause,cwd=untrusted),expected)
+                self.assertFalse(sentinel.exists());self.assertEqual(self.state.read_bytes(),before)
+                self.assertEqual(self.stopped(),[] if cause=='subagent' else ['own-task'])
+        finally:saved.rename(installed)
+        first=self.home/'.claude/skills-worktree/.claude/scripts/park-wake-publish.sh';first.parent.mkdir(parents=True)
+        for helper in [first,installed]:
+            if helper==first:installed.rename(first)
+            try:
+                for cause in ['reactive','preemptive','subagent']:
+                    self.seed('reactive' if cause=='subagent' else cause)
+                    expected='WAKE_PUBLISH=ok' if cause=='subagent' else 'WAKE_PUBLISH=armed'
+                    self.assertEqual(self.run_block(cause,cwd=untrusted),expected)
+                    self.assertEqual(self.day()['limit_resume_task_id'],'own-task')
+                    self.assertFalse(sentinel.exists());self.assertEqual(self.stopped(),[])
+            finally:
+                if helper==first:first.rename(installed)
+
+    def test_published_r3_false_success_executes_checkout_helper(self):
+        untrusted=self.root/'old-untrusted';scripts=untrusted/'.claude/scripts';scripts.mkdir(parents=True)
+        sentinel=self.root/'old-executed';self.env['PUBLISH_SENTINEL']=str(sentinel)
+        fake=scripts/'park-wake-publish.sh';fake.write_text('#!/bin/sh\n: > "$PUBLISH_SENTINEL"\nexit 0\n');fake.chmod(0o700)
+        installed=self.home/'.claude/scripts/park-wake-publish.sh';installed.unlink()
+        text=(ROOT/'.claude/scripts/tests/fixtures/park-wake-review3-1715.md').read_text()
+        for cause,anchor in [('reactive','pm-day-2d6-wake-publish'),('preemptive','pm-day-2d7-wake-publish'),('subagent','subagent-limit-wake-publish')]:
+            self.seed('reactive' if cause=='subagent' else cause);before=self.state.read_bytes();sentinel.unlink(missing_ok=True)
+            m=re.search(r'<!-- test-anchor: '+anchor+r' -->\s*```bash\n(.*?)\n```',text,re.S);self.assertIsNotNone(m)
+            self.blocks[cause]=m.group(1)
+            self.assertEqual(self.run_block(cause,cwd=untrusted),'WAKE_PUBLISH=ok' if cause=='subagent' else 'WAKE_PUBLISH=armed')
+            self.assertTrue(sentinel.exists());self.assertEqual(self.state.read_bytes(),before);self.assertEqual(self.stopped(),[])
 
     def test_unset_home_cannot_abort_before_stopping_the_armed_monitor(self):
         for cause in ['reactive','preemptive']:
