@@ -619,7 +619,7 @@ REVALIDATED="$(jq -c -n \
             | ($d | has($f)) and ($d[$f] != null) and (($d[$f] | type) != $want) )
         elif .pr == null then
           ( .scope as $s | .want as $want
-            | (($d.repos // {}) | has($s)) and ($d.repos[$s] != null)
+            | (($d.repos // {}) | has($s))
               and (($d.repos[$s] | type) != $want) )
         else
           ( (.path | split(".") | last) as $f | .want as $want
@@ -707,6 +707,7 @@ if ! LOST="$(jq -r -n \
   --slurpfile before "$STATE_FILE" --slurpfile after "$OUT_TMP" \
   --argjson prunes "$PRUNE_SET" --arg unknown "$UNKNOWN_REPO_KEY" '
   def pairs($d): [ ($d.repos // {}) | to_entries[] as $r
+                   | select(($r.value | type) == "object")
                    | ($r.value.prs // {}) | keys[] | { scope: $r.key, pr: . } ];
   ( $prunes | map("\(.scope)#\(.pr)") ) as $expected_gone
   # A re-attributed entry legitimately changes scope, so identity for this
