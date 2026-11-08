@@ -564,12 +564,48 @@ fi
 # last step of the chain, so those reasons keep their precedence.
 APPROVAL_SKIP_JSON='{"reason":"approval_required","gate":null}'
 
+# BugBot spend-refusal suppression (issue #1199). BugBot is metered against a
+# Cursor usage/spend limit, and it refused 64% of PRs in the 2026-08 audit window
+# while this script kept nudging: 469 `@cursor review` comments across 244 PRs.
+# A nudge cannot clear a usage limit. Once cursor[bot] has refused on THIS HEAD,
+# every later nudge on the same HEAD is PR noise, so skip it — the next push is a
+# new HEAD and starts clean, so this suppresses repetition, never the tool.
+#
+# FAILS OPEN in every uncertain case (unreadable comments, missing HEAD
+# timestamp, malformed JSON): post the nudge. bugbot.md calls a duplicate
+# `@cursor review` harmless, whereas a wrongly-suppressed nudge costs a whole
+# review — the same cost asymmetry escalate-review.sh applies to this tool
+# (issue #956). Returns 0 ONLY on a positively-identified refusal.
+# Declining refusal suppression never bypasses tier, cap or paid approval.
+#
+# Timestamps are ordered with norm_ts() from lib/ts-normalizer.sh — the one
+# canonical bash form of the #836/#885 rule — rather than a new jq mirror, so
+# this file adds no second definition to keep in step.
+bugbot_refused_head() {
+  # Delegates to the shared implementation so this file and /fixpr Step 3b ask
+  # one question with one answer (CodeRabbit review, PR #1203). A missing helper
+  # declines to suppress — the same fail-open direction the helper itself takes.
+  local helper="${SCRIPT_DIR}/bugbot-refused-head.sh"
+  [[ -x "$helper" ]] || return 1
+  "$helper" "$PR_NUM" "$HEAD_SHA" >/dev/null 2>&1
+}
+
+
 if (( DRY_RUN )); then
-  # A dry run never reaches the refused-HEAD guard (Issue #1735), so the cap is
-  # the only skip it can add to the tier's.
+  # Match live skip precedence without posting, spending a grant or writing
+  # trigger state. A non-refusal never bypasses the paid-approval boundary.
   DRY_SKIPPED_JSON="$BUGBOT_SKIPPED_JSON"
-  [[ "$BUGBOT_CAP_STATUS" == "over" ]] && DRY_SKIPPED_JSON="$(cap_skip_json)"
-  [[ "$DRY_SKIPPED_JSON" == "null" ]] && DRY_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
+  DRY_BUGBOT_REFUSED=0
+  if [[ -z "$BUGBOT_TIER_GATE" ]]; then
+    if bugbot_refused_head; then
+      DRY_SKIPPED_JSON='{"reason":"refused_head","gate":null}'
+      DRY_BUGBOT_REFUSED=1
+    elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
+      DRY_SKIPPED_JSON="$(cap_skip_json)"
+    else
+      DRY_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
+    fi
+  fi
   if (( JSON_OUT )); then
     jq -n \
       --arg status dry_run \
@@ -594,6 +630,8 @@ if (( DRY_RUN )); then
       }'
   elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
     echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
+  elif (( DRY_BUGBOT_REFUSED )); then
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — BugBot already refused this HEAD for a Cursor usage/spend limit) cr_rounds=$CR_ROUNDS score=$SCORE"
   elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
     echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
   else
@@ -653,30 +691,6 @@ post_one() {
   fi
 }
 
-# BugBot spend-refusal suppression (issue #1199). BugBot is metered against a
-# Cursor usage/spend limit, and it refused 64% of PRs in the 2026-08 audit window
-# while this script kept nudging: 469 `@cursor review` comments across 244 PRs.
-# A nudge cannot clear a usage limit. Once cursor[bot] has refused on THIS HEAD,
-# every later nudge on the same HEAD is PR noise, so skip it — the next push is a
-# new HEAD and starts clean, so this suppresses repetition, never the tool.
-#
-# FAILS OPEN in every uncertain case (unreadable comments, missing HEAD
-# timestamp, malformed JSON): post the nudge. bugbot.md calls a duplicate
-# `@cursor review` harmless, whereas a wrongly-suppressed nudge costs a whole
-# review — the same cost asymmetry escalate-review.sh applies to this tool
-# (issue #956). Returns 0 ONLY on a positively-identified refusal.
-#
-# Timestamps are ordered with norm_ts() from lib/ts-normalizer.sh — the one
-# canonical bash form of the #836/#885 rule — rather than a new jq mirror, so
-# this file adds no second definition to keep in step.
-bugbot_refused_head() {
-  # Delegates to the shared implementation so this file and /fixpr Step 3b ask
-  # one question with one answer (CodeRabbit review, PR #1203). A missing helper
-  # declines to suppress — the same fail-open direction the helper itself takes.
-  local helper="${SCRIPT_DIR}/bugbot-refused-head.sh"
-  [[ -x "$helper" ]] || return 1
-  "$helper" "$PR_NUM" "$HEAD_SHA" >/dev/null 2>&1
-}
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
 if [[ -n "$BUGBOT_TIER_GATE" ]]; then
