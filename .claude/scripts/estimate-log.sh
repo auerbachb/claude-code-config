@@ -457,15 +457,12 @@ pr_in_log() {
   local repo="${2:-}"
   [[ -f "$LOG_FILE" ]] || return 1
   if [[ -n "$repo" ]]; then
-    # Match rows with both the pr number and repo fields.
-    # jq is the authoritative check; grep is a fast pre-filter.
-    # -R + fromjson? tolerates malformed lines the same way mode_rollup does,
-    # so a corrupt line never causes pr_in_log to false-report a miss and
-    # insert a duplicate row.
-    grep -q "\"pr\":${pr_num}[^0-9]" "$LOG_FILE" 2>/dev/null \
-      && jq -e -R --argjson pr "$pr_num" --arg repo "$repo" \
-           'fromjson? | select(.pr == $pr and .repo == $repo)' \
-           "$LOG_FILE" >/dev/null 2>&1
+    # One aggregate predicate over parsed object rows, independent of JSON
+    # whitespace or row position. Malformed/non-object siblings are ignored.
+    # Stream raw lines rather than slurping the whole ledger into memory.
+    jq -e -Rn --argjson pr "$pr_num" --arg repo "$repo" \
+      'any(inputs | fromjson? | objects; .pr == $pr and .repo == $repo)' \
+      "$LOG_FILE" >/dev/null 2>&1
   else
     # Legacy: pr number only (no repo filter)
     grep -q "\"pr\":${pr_num}[^0-9]" "$LOG_FILE" 2>/dev/null
