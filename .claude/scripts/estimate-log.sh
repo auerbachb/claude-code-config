@@ -18,8 +18,8 @@
 #       timestamp as the start time; falls back to PR createdAt with
 #       start_source flagged. Idempotent: skips PRs already in the log.
 #       Then sweeps the log for rows missing the "rounds" field (written before
-#       that field existed) and patches each in place with the fetched round
-#       count. The sweep is driven off the log, not off --limit, because the
+#       that field existed) and patches them in one locked rewrite with the fetched round
+#       counts. The sweep is driven off the log, not off --limit, because the
 #       rows needing it are the oldest ones — outside any newest-first window.
 #       Default: the current repo; default limit: 50.
 #
@@ -553,28 +553,28 @@ append_row() {
 }
 
 # ---------------------------------------------------------------------------
-# Patch the "rounds" field into an existing row, in place, under the lock.
+# Patch all collected rounds in one pass over the latest ledger, under one lock.
 # Only rows whose rounds is absent/null are touched, so a re-run is a no-op and
 # a measured value is never overwritten.
-# Returns 0 on a successful patch, 1 when there was nothing to patch, 5 on error.
+# PATCHED_PRS records distinct PRs changed by the committed batch.
+# Returns 0 on a successful batch, 1 when there was nothing to patch, 5 on error.
 # ---------------------------------------------------------------------------
-patch_row_rounds() {
-  local pr_num="$1"
-  local repo="$2"
-  local rounds="$3"
+patch_rows_rounds() {
+  local repo="$1"
+  local batch="$2"
+  PATCHED_PRS=""
 
   [[ -f "$LOG_FILE" ]] || return 1
-  [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || return 1
 
   if ! acquire_lock; then
-    echo "estimate-log.sh: WARN: could not acquire log lock to patch PR #$pr_num" >&2
+    echo "estimate-log.sh: WARN: could not acquire log lock to patch rounds batch" >&2
     return 5
   fi
 
   local tmp
   if ! tmp=$(mktemp "$(dirname "$LOG_FILE")/.estimate-log-tmp-XXXXXX"); then
     release_lock
-    echo "estimate-log.sh: WARN: could not create temp file to patch PR #$pr_num" >&2
+    echo "estimate-log.sh: WARN: could not create temp file to patch rounds batch" >&2
     return 5
   fi
   # shellcheck disable=SC2064
@@ -588,26 +588,36 @@ patch_row_rounds() {
   local fence_before
   fence_before=$(cksum < "$LOG_FILE" 2>/dev/null || echo "unreadable")
 
-  local patched=0 write_rc=0 line updated
-  # `|| [[ -n "$line" ]]` so a final line with no trailing newline is still read.
+  local patched=0 write_rc=0 line result updated changed_pr
+  # Read the ledger once, retaining unselected raw lines (including malformed
+  # ones). One batch lookup replaces the old per-PR whole-ledger rewrite.
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if printf '%s' "$line" \
-         | jq -e --argjson pr "$pr_num" --arg repo "$repo" \
-              'select(.pr == $pr and .repo == $repo and (.rounds // null) == null)' \
-              >/dev/null 2>&1 \
-       && updated=$(printf '%s' "$line" | jq -c --argjson r "$rounds" '.rounds = $r' 2>/dev/null); then
-      printf '%s\n' "$updated" >> "$tmp" || { write_rc=5; break; }
-      patched=1
-      continue
+    if ! result=$(printf '%s\n' "$line" | jq -Rr --arg repo "$repo" --argjson batch "$batch" '
+      . as $raw | (try fromjson catch null) as $row |
+      if ($row | type) == "object" and ($row.pr | type) == "number"
+         and $row.repo == $repo and ($row.rounds // null) == null
+         and $batch[($row.pr | tostring)] != null
+      then ($row.pr | tostring) + "\t" +
+           ($row | .rounds = $batch[($row.pr | tostring)] | tojson)
+      else "\t" + $raw end' 2>/dev/null); then
+      write_rc=5
+      break
     fi
-    # Every other line is copied through byte-for-byte — including malformed
-    # ones, which this mode must preserve rather than quietly drop.
-    printf '%s\n' "$line" >> "$tmp" || { write_rc=5; break; }
-  done < "$LOG_FILE"
+    changed_pr=${result%%$'\t'*}
+    updated=${result#*$'\t'}
+    printf '%s\n' "$updated" >> "$tmp" || { write_rc=5; break; }
+    if [[ -n "$changed_pr" ]]; then
+      case $'\n'"$PATCHED_PRS"$'\n' in
+        *$'\n'"$changed_pr"$'\n'*) ;;
+        *) PATCHED_PRS="${PATCHED_PRS}${PATCHED_PRS:+$'\n'}$changed_pr" ;;
+      esac
+      patched=1
+    fi
+  done < "$LOG_FILE" || write_rc=5
 
   if [[ $write_rc -ne 0 ]]; then
     rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: write failed while patching PR #$pr_num; log left unmodified" >&2
+    echo "estimate-log.sh: WARN: write failed while patching rounds batch; log left unmodified" >&2
     return 5
   fi
 
@@ -623,7 +633,7 @@ patch_row_rounds() {
   after=$(grep -c '' "$tmp" 2>/dev/null || echo 0)
   if [[ "$before" -ne "$after" ]]; then
     rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: rounds patch for PR #$pr_num would change the row count ($before -> $after); log left unmodified" >&2
+    echo "estimate-log.sh: WARN: rounds batch would change the row count ($before -> $after); log left unmodified" >&2
     return 5
   fi
 
@@ -643,13 +653,13 @@ patch_row_rounds() {
   if [[ "$fence_before" == "unreadable" || "$fence_after" != "$fence_before" \
         || "$held_token" != "$LOCK_TOKEN" ]]; then
     rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: log changed or lock ownership lost while patching PR #$pr_num; log left unmodified" >&2
+    echo "estimate-log.sh: WARN: log changed or lock ownership lost while patching rounds batch; log left unmodified" >&2
     return 5
   fi
 
   if ! run_log_mutation replace "$tmp"; then
     rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching PR #$pr_num" >&2
+    echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching rounds batch" >&2
     return 5
   fi
 
@@ -885,20 +895,34 @@ mode_backfill() {
     local stale_count
     stale_count=$(printf '%s\n' "$stale_prs" | grep -c '' || true)
     echo "estimate-log.sh: patching rounds for $stale_count row(s) missing it ..." >&2
-    local stale_pr existing_rounds
+    local stale_pr existing_rounds batch="{" candidates=""
     while IFS= read -r stale_pr; do
       [[ "$stale_pr" =~ ^[0-9]+$ ]] || continue
-      existing_rounds=$(gh api "repos/$repo/pulls/$stale_pr" --jq '.commits // empty' \
-        2>/dev/null || true)
-      if [[ "$existing_rounds" =~ ^[1-9][0-9]*$ ]] \
-         && patch_row_rounds "$stale_pr" "$repo" "$existing_rounds"; then
-        (( patched++ )) || true
-        echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
+      if existing_rounds=$(gh api "repos/$repo/pulls/$stale_pr" --jq '.commits // empty' 2>/dev/null) \
+         && [[ "$existing_rounds" =~ ^[1-9][0-9]*$ ]]; then
+        batch="$batch\"$stale_pr\":$existing_rounds,"
+        candidates="${candidates}${candidates:+$'\n'}$stale_pr"
       else
         (( patch_failed++ )) || true
         echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
       fi
     done <<< "$stale_prs"
+
+    if [[ -n "$candidates" ]]; then
+      batch="${batch%,}}"
+      local batch_rc=0 PATCHED_PRS=""
+      patch_rows_rounds "$repo" "$batch" || batch_rc=$?
+      while IFS= read -r stale_pr; do
+        if [[ "$batch_rc" -eq 0 ]] && grep -Fxq -- "$stale_pr" <<< "$PATCHED_PRS"; then
+          (( patched++ )) || true
+          existing_rounds=$(printf '%s' "$batch" | jq -r --arg pr "$stale_pr" '.[$pr]')
+          echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
+        else
+          (( patch_failed++ )) || true
+          echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
+        fi
+      done <<< "$candidates"
+    fi
   fi
 
   echo "estimate-log.sh: backfill done — appended=$appended skipped=$skipped patched=$patched patch_failed=$patch_failed failed=$failed" >&2
