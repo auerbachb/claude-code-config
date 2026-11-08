@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [claude-config-sync.sh](../claude-config-sync.sh) | One idempotent per-machine freshen pass — fast-forward the skills worktree, publish every symlink, verify links, re-run hook registration and trust repair, and record the restart/failure signal; never touches the root repo checkout |
+| [config-sync-tail.sh](../config-sync-tail.sh) | Runs link verification or resolves and executes hook/trust setup inside the caller's bounded child |
 | [dirty-main-guard.sh](../dirty-main-guard.sh) | Detect and quarantine dirty tracked state on the root repo's main branch |
 | [main-sync.sh](../main-sync.sh) | Sync a repo's local main branch with `origin/main` |
 | [publish-agent-symlinks.sh](../publish-agent-symlinks.sh) | Publish the `~/.claude/agents/` symlinks from the skills worktree; idempotent, re-run on every session start |

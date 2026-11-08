@@ -158,7 +158,10 @@ _sync_bound_secs=8
 # as the git calls.
 _publish_bound_secs=5
 _root_sync_bound_secs=6
+_register_bound_secs=3
+_HOOK_REGISTER_RESERVE_SECS=8
 if (( _bound_available == 1 )); then
+  _register_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_REGISTER_BOUND:-}" 3)"
   _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 8)"
   _setup_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_SETUP_BOUND:-}" 18)"
   _publish_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND:-}" 5)"
@@ -223,15 +226,23 @@ _bounded_out=""
 # scheduling reconcile, the JSON emission. That is what makes the 9s honest
 # arithmetic rather than a guess: it now covers calls that bound themselves.
 #
-# Falls back to the full budget when the clock is unusable — an unreadable clock
-# must not silently collapse every bound to zero and disable the sync outright.
-_budget_remaining() { # _budget_remaining [reserve-secs]
-  local now elapsed remaining budget reserve="${1:-$_HOOK_GIT_RESERVE_SECS}"
+# Legacy callers retain the full-budget fallback for an unusable clock.
+# Registration opts into strict mode: an unknown/backward clock declines.
+_budget_remaining() { # _budget_remaining [reserve-secs] [strict-clock=0|1]
+  local now elapsed remaining budget reserve="${1:-$_HOOK_GIT_RESERVE_SECS}" strict="${2:-0}"
   budget=$(( _HOOK_TIMEOUT_SECS - reserve ))
   (( budget > 0 )) || budget=1
+  if [[ "$strict" == 1 ]]; then
+    [[ "$_hook_t0" =~ ^[0-9]{1,12}$ ]] || return 1
+    now="$(date -u +%s 2>/dev/null)" || return 1
+    [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+    (( 10#$now >= 10#$_hook_t0 )) || return 1
+  fi
   [[ -n "$_hook_t0" ]] || { printf '%s' "$budget"; return 0; }
-  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
-  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
+  if [[ "$strict" != 1 ]]; then
+    now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
+    [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
+  fi
   elapsed=$(( now - _hook_t0 ))
   remaining=$(( budget - elapsed ))
   (( remaining < 0 )) && remaining=0
@@ -245,7 +256,11 @@ _bound_trip_reason() {
   if (( _bound_declined == 1 )); then
     printf 'declined: %s' "$_bounded_out"
   else
-    printf 'exceeded its %ss bound' "$_last_bound"
+    if [[ "${BOUNDED_CLOCK_UNREADABLE:-0}" == 1 ]]; then
+      printf 'aborted: clock became unreadable during the bounded call'
+    else
+      printf 'exceeded its %ss bound' "$_last_bound"
+    fi
   fi
 }
 
@@ -253,7 +268,7 @@ _bound_trip_reason() {
 # the root-repo sync leg deliberately runs after the release and still has to
 # finish inside the same registered 30s.
 _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] <cap-seconds> <command…>
-  local reserve="$_HOOK_GIT_RESERVE_SECS"
+  local reserve="$_HOOK_GIT_RESERVE_SECS" strict_clock=0
   # Why running this particular call unbounded would be unsafe. Named by the
   # caller because it is NOT the same everywhere: most calls are lock-held and
   # the hazard is dispossession, but the root-repo sync leg runs after the
@@ -263,13 +278,14 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
   local context="while holding the config-sync lock"
   while :; do
     case "${1:-}" in
+      --strict-clock) strict_clock=1; shift ;;
       --reserve) reserve="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
       *) break ;;
     esac
   done
   local cap="$1"; shift
-  local rc=0
+  local rc=0 capture_failed=0
   BOUNDED_TIMED_OUT=0
   _bound_declined=0
   if (( _bound_available == 0 )); then
@@ -289,7 +305,11 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
     return 124
   fi
   local budget_left
-  budget_left="$(_budget_remaining "$reserve")"
+  if ! budget_left="$(_budget_remaining "$reserve" "$strict_clock")"; then
+    BOUNDED_TIMED_OUT=1; _bound_declined=1; _last_bound=0
+    _bounded_out="shared hook clock unavailable or moved backwards"
+    return 124
+  fi
   # Ceiling and floor applied to different things on purpose — see
   # _budget_remaining.
   _last_bound="$budget_left"
@@ -321,14 +341,28 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
     _bound_available=0
     _bound_unavailable_reason="capture handover could not allocate a replacement temp file"
     BOUNDED_TIMED_OUT=1
-    _bound_declined=1
+    _bounded_out="output capture unavailable after the bounded call ran"
+    return 124
+  fi
+  _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || capture_failed=1
+  if [[ -z "$_bounded_out" ]]; then
+    _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || capture_failed=1
+  fi
+  if (( capture_failed == 1 )); then
+    _bound_available=0
+    _bound_unavailable_reason="output capture unreadable after the bounded call ran"
     _bounded_out="$_bound_unavailable_reason"
     return 124
   fi
-  _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bounded_out=""
-  [[ -n "$_bounded_out" ]] || _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || _bounded_out=""
   return "$rc"
 }
+
+_pending_available=0
+if [[ -n "$_scripts_dir" && -r "$_scripts_dir/lib/config-sync-pending.sh" ]]; then
+  # shellcheck source=../scripts/lib/config-sync-pending.sh
+  source "$_scripts_dir/lib/config-sync-pending.sh"
+  _pending_available=1
+fi
 
 _lock_held=0
 _lock_available=0
@@ -655,30 +689,20 @@ fi
 # its last-good checkout.
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
    ! [[ "$errors" == *"reset failed"* || "$errors" == *"setup failed"* ]]; then
-  register_script="${_hook_dir}/register-hooks.py"
-  if [[ -f "$register_script" ]]; then
-    # MANAGED_LEGACY_HOOKS_DIR names the pre-worktree root-repo hooks directory
-    # as a SECOND managed root, exactly as setup-skills-worktree.sh Step 6 does.
-    # register-hooks.py only migrates a settings.json entry to the canonical
-    # worktree path, or prunes a decommissioned one, when the path it currently
-    # points at sits inside a managed root; everything else is treated as the
-    # user's own hook and left untouched. Omitting the variable here therefore
-    # made this session-start path — and the scheduled sync in
-    # claude-config-sync.sh — permanently unable to finish the migration that
-    # install-time performs, which is the opposite of this hook's purpose
-    # (keeping existing installs current without a manual setup re-run).
-    # Unset when the root repo could not be resolved: an empty value is dropped
-    # by register-hooks.py, but not exporting it at all is the honest spelling.
-    if [[ -n "$_root_repo" ]]; then
-      err=$(MANAGED_LEGACY_HOOKS_DIR="$_root_repo/.claude/hooks" \
-              python3 "$register_script" "$skills_wt" 2>&1) || \
-        errors="${errors:+$errors; }hook sync failed: $err"
-    else
-      err=$(python3 "$register_script" "$skills_wt" 2>&1) || \
-        errors="${errors:+$errors; }hook sync failed: $err"
+  if (( _pending_available == 0 )); then
+    errors="${errors:+$errors; }hook sync failed: declined: pending setup state helper unavailable"
+  elif ! config_sync_pending_set "$_sync_lock_base" hooks true; then
+    errors="${errors:+$errors; }hook sync failed: declined: pending setup intent not persisted (${CONFIG_SYNC_PENDING_ERROR:-unknown})"
+  elif _run_hook_bounded --reserve "$_HOOK_REGISTER_RESERVE_SECS" --strict-clock "$_register_bound_secs" \
+      bash "$_scripts_dir/config-sync-tail.sh" hooks --skills-worktree "$skills_wt" \
+      --root-repo-hint "$_root_repo" --hooks-script "$_hook_dir/register-hooks.py" --state-file "$_sync_lock_base"; then
+    if ! config_sync_pending_set "$_sync_lock_base" hooks false; then
+      errors="${errors:+$errors; }hook sync failed: operation succeeded but completion state not persisted (${CONFIG_SYNC_PENDING_ERROR:-unknown})"
     fi
+  elif [[ "${BOUNDED_TIMED_OUT:-0}" == 1 ]]; then
+    errors="${errors:+$errors; }hook sync failed: $(_bound_trip_reason)"
   else
-    errors="${errors:+$errors; }hook sync helper missing: $register_script"
+    errors="${errors:+$errors; }hook sync failed: $_bounded_out"
   fi
 fi
 
@@ -743,8 +767,7 @@ if [[ "$session_source" != "startup" && "$_lock_held" == 1 ]]; then
   if [[ -n "$_resume_cats" ]]; then
     _resume_marker="$(cat "$_marker_file" 2>/dev/null)" || _resume_marker=""
     [[ -n "$_resume_marker" ]] || _resume_marker="{}"
-    # shellcheck disable=SC2086 — word-splitting $_resume_cats is the point.
-    _resume_cats_json="$(printf '%s\n' $_resume_cats | jq -R . | jq -sc .)" || _resume_cats_json=""
+    _resume_cats_json="$(printf '%s' "$_resume_cats" | jq -Rsc 'split(" ") | map(select(length > 0))')" || _resume_cats_json=""
     _resume_new=""
     if [[ -n "$_resume_cats_json" ]]; then
       _resume_new="$(jq -c \

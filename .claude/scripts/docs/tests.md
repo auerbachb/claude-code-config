@@ -48,6 +48,7 @@ opt-in of issue #1544.
 | [claude-config-sync.test.sh](../tests/claude-config-sync.test.sh) | Tests `claude-config-sync.sh` against a real local origin + clone — stale-machine catch-up, the restart marker and its startup clear, the failure counter/threshold/recovery, the lock-contention skip, and the root-repo scope guard |
 | [clean-behind-check.test.sh](../tests/clean-behind-check.test.sh) | Tests for `clean-behind-check.sh` |
 | [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
+| [config-sync-tail.test.sh](../tests/config-sync-tail.test.sh) | Private-home integration checks for bounded config-sync setup, pending recovery, and ownership |
 | [cr-plan.test.sh](../tests/cr-plan.test.sh) | Tests for `cr-plan.sh` |
 | [credit-budget.test.sh](../tests/credit-budget.test.sh) | Tests `credit-budget.sh` and `lib/usage-limit-classify.sh` — the plan-window vs credit-overage classifier matrix, reset-clause parsing and its refusals, plan-window events yielding `ok` with the pre-fix predicate as a negative control (#1633), a genuine overage still yielding `reached`, a reopened window never gating, and the fail-closed paths |
 | [cursor-review-workflow-suppression.test.sh](../tests/cursor-review-workflow-suppression.test.sh) | Asserts `.github/workflows/cursor-review-pr-comment.yml` can never post `@cursor review` (issue #1897) |

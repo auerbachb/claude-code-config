@@ -68,7 +68,7 @@
 #     --help    Print this usage and exit 0.
 #
 # EXIT CODES
-#   0  Success — including a no-op run and a clean `skipped` on lock contention
+#   0  Core sync completed (ok, incomplete setup tail, or clean lock skip)
 #   1  Sync failure (fetch, reset, bootstrap, or symlink publish failed)
 #   2  Usage error
 #
@@ -120,7 +120,7 @@ OPTIONS
   --help    Print this usage and exit 0
 
 EXIT CODES
-  0  success, including a no-op run and a clean skip on lock contention
+  0  core sync completed (ok, incomplete setup tail, or clean lock skip)
   1  sync failure (fetch, reset, bootstrap, or symlink publish failed)
   2  usage error
 
@@ -244,6 +244,13 @@ if [[ ! -f "$LOCK_LIB" ]]; then
 fi
 # shellcheck source=state-lock.sh
 source "$LOCK_LIB"
+SETUP_PENDING_AVAILABLE=0
+SETUP_PENDING_LIB="$SCRIPT_DIR/lib/config-sync-pending.sh"
+if [[ -r "$SETUP_PENDING_LIB" ]]; then
+  # shellcheck source=lib/config-sync-pending.sh
+  source "$SETUP_PENDING_LIB" && SETUP_PENDING_AVAILABLE=1
+fi
+
 
 # ---------------------------------------------------------------------------
 # Bounded git — the locked region must never outlive the lock's own staleness
@@ -532,7 +539,12 @@ json_array() {
 emit_summary() {
   local consecutive="$1" restart_flag="$2"
   if (( OPT_JSON == 1 )); then
+    local pending_summary='{"hooks":null,"trust":null}'
+    if (( SETUP_PENDING_AVAILABLE == 1 )); then
+      pending_summary=$(config_sync_pending_view "$STATE_FILE") || pending_summary='{"hooks":null,"trust":null}'
+    fi
     jq -cn \
+      --argjson pending_setup "$pending_summary" \
       --arg outcome "$OUTCOME" \
       --arg old_sha "$OLD_SHA" \
       --arg new_sha "$NEW_SHA" \
@@ -546,7 +558,7 @@ emit_summary() {
       --arg log_path "$LOG_FILE" \
       '{outcome: $outcome, head_changed: $head_changed, bootstrapped: $bootstrapped,
         old_sha: $old_sha, new_sha: $new_sha, restart_recommended: $restart_recommended,
-        restart_categories: $categories, warnings: $warnings,
+        restart_categories: $categories, warnings: $warnings, pending_setup: $pending_setup,
         consecutive_failures: $consecutive_failures, error: $error, log_path: $log_path}'
   fi
 }
@@ -1068,68 +1080,134 @@ fi
 : "${agents_out:-}"
 
 # ---------------------------------------------------------------------------
-# Step 3 — verify the managed links resolve. Warnings only: a dangling link is
-# worth reporting but is not a reason to fail the whole pass.
+# Tail scheduling (#1641): all three operations share the original acquire
+# clock. Leave eight seconds for bounded-run's kill/reap grace and state/report
+# finalization. Parent filesystem I/O itself cannot have a hard kernel deadline.
+# Helper lookup and the whole link walk live INSIDE the bounded child.
 # ---------------------------------------------------------------------------
-verify_link() {
-  local link="$1"
-  [[ -L "$link" ]] || return 0
-  [[ -e "$link" ]] && return 0
-  warn "dangling symlink: $link -> $(readlink "$link" 2>/dev/null)"
+_TAIL_FINALIZE_RESERVE_SECS=8
+_tail_region_budget=$(( _stale_age - _TAIL_FINALIZE_RESERVE_SECS ))
+(( _tail_region_budget >= 0 )) || _tail_region_budget=0
+_tail_default_bound=$(( _PUBLISH_TAIL_RESERVE_SECS / 3 ))
+(( _tail_default_bound > 0 )) || _tail_default_bound=1
+TAIL_BOUND_SECS="$_tail_default_bound"
+if (( GIT_BOUND_AVAILABLE == 1 )); then
+  TAIL_BOUND_SECS=$(normalize_bound "${CLAUDE_CONFIG_SYNC_TAIL_BOUND:-}" "$_tail_default_bound")
+fi
+TAIL_DECLINED=0; TAIL_TIMED_OUT=0; TAIL_CLOCK_FAILED=0; TAIL_LAST_BOUND=0; TAIL_LAST_RC=0
+TAIL_STDOUT=""; TAIL_STDERR=""
+SETUP_STATE_WRITABLE=1
+_tail_remaining() {
+  local now elapsed remaining
+  [[ "$_git_region_t0" =~ ^[0-9]{1,12}$ ]] || return 1
+  now=$(date -u +%s 2>/dev/null) || return 1
+  [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+  elapsed=$(( 10#$now - 10#$_git_region_t0 ))
+  (( elapsed >= 0 )) || return 1
+  remaining=$(( _tail_region_budget - elapsed ))
+  (( remaining >= 0 )) || remaining=0
+  printf '%s' "$remaining"
+}
+run_tail() { # mode; runs at statement level, never in command substitution
+  local mode="$1" remaining rc=0 capture_failed=0
+  TAIL_DECLINED=0; TAIL_TIMED_OUT=0; TAIL_CLOCK_FAILED=0; TAIL_LAST_BOUND=0; TAIL_LAST_RC=0
+  TAIL_STDOUT=""; TAIL_STDERR=""
+  if (( GIT_BOUND_AVAILABLE == 0 )) || [[ -z "${CAPTURE:-}" || -z "${CAPTURE_ERR:-}" ]]; then
+    TAIL_DECLINED=1; TAIL_LAST_RC=124
+    TAIL_STDERR='declined: bounded-run.sh unavailable or capture unavailable — refusing to run an unbounded tail'
+    return 124
+  fi
+  if ! state_lock_assert_held; then
+    TAIL_DECLINED=1; TAIL_LAST_RC=6; TAIL_STDERR='declined: config-sync lock ownership lost'
+    return 6
+  fi
+  if ! remaining=$(_tail_remaining); then
+    TAIL_DECLINED=1; TAIL_LAST_RC=124
+    TAIL_STDERR='declined: shared acquire clock unavailable or moved backwards'
+    return 124
+  fi
+  if (( remaining < 1 )); then
+    TAIL_DECLINED=1; TAIL_LAST_RC=124
+    TAIL_STDERR="declined: only ${remaining}s left of the ${_tail_region_budget}s lock-held tail deadline"
+    return 124
+  fi
+  TAIL_LAST_BOUND="$remaining"
+  (( TAIL_LAST_BOUND <= TAIL_BOUND_SECS )) || TAIL_LAST_BOUND="$TAIL_BOUND_SECS"
+  run_bounded "$TAIL_LAST_BOUND" bash "$SCRIPT_DIR/config-sync-tail.sh" "$mode" \
+    --skills-worktree "$SKILLS_WT" --root-repo-hint "$ROOT_REPO_HINT" --state-file "$STATE_FILE" || rc=$?
+  TAIL_LAST_RC="$rc"
+  [[ "${BOUNDED_TIMED_OUT:-0}" -ne 1 ]] || TAIL_TIMED_OUT=1
+  [[ "${BOUNDED_CLOCK_UNREADABLE:-0}" -ne 1 ]] || TAIL_CLOCK_FAILED=1
+  if [[ -z "${CAPTURE:-}" || -z "${CAPTURE_ERR:-}" ]]; then
+    # This attempt DID run. Keep its timeout/clock classification; only the
+    # NEXT operation declines because capture handover is unavailable.
+    GIT_BOUND_AVAILABLE=0
+    TAIL_STDERR='output capture unavailable after the bounded tail ran'
+    [[ "$rc" -ne 0 ]] || { rc=124; TAIL_LAST_RC=124; }
+  else
+    TAIL_STDOUT=$(cat "$CAPTURE" 2>/dev/null) || capture_failed=1
+    TAIL_STDERR=$(cat "$CAPTURE_ERR" 2>/dev/null) || capture_failed=1
+    if (( capture_failed == 1 )); then
+      GIT_BOUND_AVAILABLE=0; rc=124; TAIL_LAST_RC=124
+      TAIL_STDERR='output capture unreadable after the bounded tail ran'
+    fi
+  fi
+  return "$rc"
+}
+_tail_failure_reason() {
+  if (( TAIL_DECLINED == 1 )); then printf '%s' "$TAIL_STDERR"
+  elif (( TAIL_CLOCK_FAILED == 1 )); then printf 'aborted: clock became unreadable during the bounded tail'
+  elif (( TAIL_TIMED_OUT == 1 )); then printf 'exceeded its %ss bound' "$TAIL_LAST_BOUND"
+  else printf 'failed (rc=%s): %s' "$TAIL_LAST_RC" "$(printf '%s\n' "$TAIL_STDERR" | tail -3 | tr '\n' ' ')"
+  fi
+}
+_setup_incomplete() {
+  local operation="$1" reason="$2"
+  OUTCOME=incomplete
+  warn "$operation incomplete: $reason"
+  append_event "$(jq -cn --arg at "$NOW_ISO" --arg operation "$operation" --arg reason "$reason" \
+    '{at:$at,event:"setup_incomplete",operation:$operation,reason:$reason}')"
+}
+run_setup_tail() { # pending-key mode success-message
+  local operation="$1" mode="$2" message="$3"
+  if (( SETUP_PENDING_AVAILABLE == 0 )); then
+    _setup_incomplete "$operation" 'declined: pending setup state helper unavailable'
+    return 0
+  fi
+  if ! config_sync_pending_set "$STATE_FILE" "$operation" true; then
+    SETUP_STATE_WRITABLE=0
+    warn "pending setup state not persisted — $operation declined; success state retained"
+    append_event "$(jq -cn --arg at "$NOW_ISO" --arg operation "$operation" \
+      '{at:$at,event:"state_commit_failed",phase:"pending_setup",operation:$operation}')"
+    _setup_incomplete "$operation" "declined: pending setup intent not persisted (${CONFIG_SYNC_PENDING_ERROR:-unknown})"
+    return 0
+  fi
+  if run_tail "$mode"; then
+    if config_sync_pending_set "$STATE_FILE" "$operation" false; then
+      log info "$message"
+    else
+      _setup_incomplete "$operation" "operation succeeded but completion state not persisted (${CONFIG_SYNC_PENDING_ERROR:-unknown})"
+    fi
+  else
+    _setup_incomplete "$operation" "$(_tail_failure_reason)"
+  fi
+  return 0
 }
 
-verify_link "$HOME/.claude/CLAUDE.md"
-verify_link "$HOME/.claude/rules"
-for _dir in "$HOME/.claude/skills" "$HOME/.claude/agents"; do
-  [[ -d "$_dir" ]] || continue
-  for _link in "$_dir"/*; do
-    [[ -L "$_link" ]] || continue
-    verify_link "$_link"
-  done
-done
-
-# ---------------------------------------------------------------------------
-# Step 4 — the other idempotent setup steps.
-# ---------------------------------------------------------------------------
-register_hooks="$(resolve_helper register-hooks.py hooks)" || register_hooks=""
-if [[ -n "$register_hooks" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    # MANAGED_LEGACY_HOOKS_DIR mirrors setup-skills-worktree.sh Step 6 and the
-    # session-start hook: it names the pre-worktree root-repo hooks directory as
-    # a second managed root. register-hooks.py repoints or prunes a settings.json
-    # entry only when the path it currently names lives inside a managed root —
-    # anything else is the user's own hook. Without it this scheduled tick could
-    # never finish the legacy migration, so a machine whose only sync is this
-    # LaunchAgent would keep stale root-repo hook paths indefinitely.
-    hooks_rc=0
-    if [[ -n "$ROOT_REPO_HINT" ]]; then
-      hooks_out="$(MANAGED_LEGACY_HOOKS_DIR="$ROOT_REPO_HINT/.claude/hooks" \
-                   python3 "$register_hooks" "$SKILLS_WT" 2>&1)" || hooks_rc=$?
-    else
-      hooks_out="$(python3 "$register_hooks" "$SKILLS_WT" 2>&1)" || hooks_rc=$?
-    fi
-    if (( hooks_rc != 0 )); then
-      warn "register-hooks.py reported errors: $(printf '%s' "$hooks_out" | tail -3 | tr '\n' ' ')"
-    else
-      log info "hooks and statusLine registered"
-    fi
-  else
-    warn "python3 not found — hook registration skipped"
-  fi
+# Step 3 — readonly verification; every stat/readlink and the whole walk is bounded.
+if run_tail verify; then
+  while IFS= read -r verification_warning; do
+    [[ -z "$verification_warning" ]] || warn "$verification_warning"
+  done <<< "$TAIL_STDOUT"
 else
-  warn "register-hooks.py not found — hook registration skipped"
+  _setup_incomplete verification "$(_tail_failure_reason)"
 fi
 
-trust_repair="$(resolve_helper repair-trust-all.sh)" || trust_repair=""
-if [[ -n "$trust_repair" ]]; then
-  if ! trust_out="$(bash "$trust_repair" 2>&1)"; then
-    warn "repair-trust-all.sh reported errors: $(printf '%s' "$trust_out" | tail -3 | tr '\n' ' ')"
-  else
-    log info "trust flags repaired"
-  fi
-else
-  warn "repair-trust-all.sh not found — trust-flag repair skipped"
-fi
+# Step 4 — durable pending state precedes either mutator. Both already run on
+# every eligible tick, even when HEAD and links are unchanged; pending work is
+# therefore retried without a separate reconciliation service.
+run_setup_tail hooks hooks 'hooks and statusLine registered'
+run_setup_tail trust trust 'trust flags repaired'
 
 # ---------------------------------------------------------------------------
 # Step 5 — change detection across the fast-forward.
@@ -1167,7 +1245,9 @@ new_state="$(printf '%s' "$state" | jq \
   '. + {schema_version: 1, last_run_at: $now, last_success_at: $now,
         consecutive_failures: 0, first_failure_at: null, last_error: null,
         last_head_sha: $sha}' 2>/dev/null)" || new_state=""
-if [[ -n "$new_state" ]]; then
+if (( SETUP_STATE_WRITABLE == 0 )); then
+  warn "success state retained because pending setup persistence was unverified"
+elif [[ -n "$new_state" ]]; then
   # Same reasoning as the failure path: report the consequence, not just the
   # cause. A success that fails to commit leaves the PREVIOUS failure streak on
   # disk, so a recovered job keeps looking broken and can still trip the
@@ -1227,7 +1307,7 @@ else
   warn "could not build the marker document"
 fi
 
-log info "config sync finished (outcome ok, ${#WARNINGS[@]} warning(s))"
+log info "config sync finished (outcome $OUTCOME, ${#WARNINGS[@]} warning(s))"
 
 state_lock_release
 emit_summary 0 "$RESTART_FLAG"
