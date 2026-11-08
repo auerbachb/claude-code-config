@@ -10,8 +10,8 @@
 . "$HQ_BIN_DIR/lib/secrets.sh"
 
 HQ_STATE_VALUE_MAX=65536
-# The value reaches psql as one argument, `hq_value=VALUE`, and Linux caps one
-# argument at 131072 bytes (MAX_ARG_STRLEN). 65536 characters of multi-byte
+# The value reaches psql as one child environment entry, and Linux caps one
+# entry at 131072 bytes (MAX_ARG_STRLEN). 65536 characters of multi-byte
 # text can exceed that, so the UTF-8 size is capped too, with room to spare.
 HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
@@ -175,7 +175,7 @@ cmd_run() {
       hq_die_validation "state set: the value is larger than $HQ_STATE_VALUE_MAX_BYTES bytes"
     fi
   fi
-  # Both actions hand the key to psql's argv, so `get` checks it too.
+  # Both actions hand the key to psql, so `get` checks it too.
   hq_refuse_secret "state $action: the key" "$key"
   if [ "$action" = set ]; then
     hq_refuse_secret "state set: the value" "$value"

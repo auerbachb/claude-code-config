@@ -86,7 +86,7 @@ URL, is refused with exit 7 rather than silently dropped.
 |----------|---------|
 | `HUMAN_QUEUE_DATABASE_URL` | `postgres://` URL of the store. Required; secret |
 | `HUMAN_QUEUE_SCHEMA` | Schema every statement runs in (default `public`), applied with `SET LOCAL search_path` inside each transaction. Tests set it to a throwaway schema |
-| `HUMAN_QUEUE_PSQL` | `psql` binary to use (default `/opt/homebrew/bin/psql`, else `psql` on `PATH`) |
+| `HUMAN_QUEUE_PSQL` | `psql` 15+ binary to use (installed Homebrew PostgreSQL 17/16/15 kegs preferred, then `PATH`, libpq kegs and linked Homebrew; explicit override wins) |
 
 ## Exit codes
 
@@ -234,7 +234,7 @@ full contract.
 
 | Subcommand | What it does |
 |------------|--------------|
-| `state get KEY` / `state set KEY VALUE` | One key of operator state (the desk's bookkeeping; the day plan has `plan`). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
+| `state get KEY` / `state set KEY VALUE` | One key of operator state (the desk's bookkeeping; the day plan has `plan`). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one child environment entry, and Linux caps one at 128 KiB) |
 | `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
 | `tick [--session SESSION [--interrupts RULE]]` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick. With `--session`, only as the registered control session: checked inside the tick's transaction under `register-control`'s lock; any other session exits 4 with nothing read, the watermark unmoved, and no `tick_at` stamped. With `--interrupts`, honors the desk's interrupt rule: while it holds items back, prints `[]`, stamps `tick_at`, and leaves the watermark (see "Interrupts, policy, and feedback tags") |
 | `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
@@ -362,7 +362,7 @@ not edit `human-queue.sh`. The file:
   selected schema) or `hq_psql`, mapping failures with `hq_db_fail`;
 - sources `lib/items.sh` for ids, input checks, and the item renderer, and
   `lib/secrets.sh` (`hq_refuse_secret`) for any free text it stores; values
-  reach SQL only as psql variables (`-v name=value`, used as `:'name'`).
+  reach SQL only as quoted psql variables (`:'name'`). Pass application bindings as `-v hq_name=value` to `hq_db_script`/`hq_psql`; the shared boundary removes them from argv and uses psql 15+ `\getenv` with exports scoped to the psql child. Never interpolate text into SQL. The client version check shares the connection probe's deadline and fails with exit 7 for older or unreadable clients. The server still requires PostgreSQL 16+.
 
 ## Tests
 
@@ -375,6 +375,8 @@ bash desk/tests/run.sh
   installed, an `.invalid` host and a TEST-NET address), and that the URL never
   reaches `psql`'s argv or any output. Each case runs under `bash` and, on
   macOS, under `/bin/bash` 3.2.
+- `psql-discovery.test.sh` checks isolated installed-client layouts, including a compatible PATH client beside an old linked/libpq client, explicit overrides and versioned kegs.
+- `psql-bindings.test.sh` inspects only its own running stub psql PID and verifies that multiline, Unicode, empty and large application values travel through the child environment, with none on argv or exported back to the parent.
 - `lifecycle-cli.test.sh` is offline: `human-queue.sh --help` lists all 18
   subcommands, every lifecycle, set, state, and control validation rule exits
   4 (and every secret 5) without a connection attempt, and the `set-resolve`
