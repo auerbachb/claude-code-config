@@ -143,6 +143,37 @@ runs completion recovery; it must not launch another code/review/merge pipeline
 for the already-merged PR. Delete the handoff only after reconciliation or after
 recording an explicitly justified retained issue with its remaining work.
 
+After the full wrap is finished, Phase C publishes its final completion report
+into the existing scoped handoff before returning merged. The report must match
+the verified repo/PR/HEAD. Retained scope requires recorded remaining work and
+no API/error result; it cannot disguise an unknown closure failure. Publish the
+disposition first and Phase C last, so interruption leaves an incomplete handoff.
+Do not stamp completion at the start of wrap or merely when the close API returns.
+Parent cleanup and artifact sweeps retain pending, legacy and active handoffs;
+the workspace sweep independently verifies owner inactivity.
+
+<!-- test-anchor: issue-completion-publish -->
+```bash
+publish_completed_handoff() {
+  local completion_handoff
+  [[ "$PR_NUM" =~ ^[1-9][0-9]*$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 2
+  if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" --arg head "$HEAD_SHA" \
+      '.owner_repo == $repo and .pr == $pr and .head_sha == $head and .error_class == null and
+       (.outcome == "verified" or (.outcome == "retained" and (.retained_scope | type) == "object" and (.retained_scope | length) > 0))' >/dev/null; then
+    echo 'ERROR: final completion disposition unverified — handoff retained' >&2
+    return 3
+  fi
+  completion_handoff=$(resolve_script handoff-state.sh || true)
+  [[ -n "$completion_handoff" ]] || return 6
+  "$completion_handoff" --owner-repo "$OWNER_REPO" --require-existing \
+    --expect-pr "$PR_NUM" --expect-owner "$OWNER_REPO" --expect-head "$HEAD_SHA" \
+    --set "$PR_NUM" ".issue_completion=$COMPLETION_JSON" || return $?
+  "$completion_handoff" --owner-repo "$OWNER_REPO" --require-existing \
+    --expect-pr "$PR_NUM" --expect-owner "$OWNER_REPO" --expect-head "$HEAD_SHA" \
+    --set "$PR_NUM" '.phase_completed="C"'
+}
+```
+
 An intentionally partial issue is not an error to "repair": record its retained
 scope and outstanding delivery, release only the exact completed PR's owned
 claim when appropriate, and preserve the remaining issue in the backlog. Do not

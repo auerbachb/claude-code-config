@@ -183,6 +183,29 @@ exit "$result"
         self.assertEqual(result.returncode,3)
         self.assertEqual((self.home/'.claude/session-state.json').read_bytes(),before)
 
+    def test_final_handoff_publication_is_guarded_and_keeps_pending_work(self):
+        rc,report=self.complete();self.assertEqual(rc,0)
+        scripts=HELPER.parents[1];helper=scripts/'handoff-state.sh'
+        initial=dict(pr_number=20,owner_repo='owner/consumer',head_sha='b'*40,phase_completed='B',worktree=str(self.root/'checkout'))
+        subprocess.run([str(helper),'--owner-repo','owner/consumer','--init','20',json.dumps(initial)],env=self.env,check=True,capture_output=True)
+        handoff=self.home/'.claude/handoffs/owner/consumer/pr-20-handoff.json'
+        source=(HELPER.parents[2]/'reference/issue-completion.md').read_text()
+        fence=source.split('<!-- test-anchor: issue-completion-publish -->',1)[1].split(chr(96)*3+'bash\n',1)[1].split(chr(96)*3,1)[0]
+        harness="""resolve_script() { printf '%s/%s\\n' "$COMPLETION_SCRIPT_DIR" "$1"; }
+""" + fence + '\npublish_completed_handoff\n'
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),PR_NUM='20',OWNER_REPO='owner/consumer',HEAD_SHA='b'*40)
+        before=handoff.read_bytes()
+        for invalid in [dict(report,outcome='pending'),dict(report,head_sha='c'*40),dict(report,outcome='retained',retained_scope={}),dict(report,error_class='github_unavailable')]:
+            p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(invalid)),text=True,capture_output=True,timeout=15)
+            self.assertEqual(p.returncode,3);self.assertEqual(handoff.read_bytes(),before)
+        p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
+        self.assertEqual(p.returncode,0,p.stderr)
+        recorded=json.loads(handoff.read_text());self.assertEqual(recorded['phase_completed'],'C')
+        self.assertEqual(recorded['issue_completion']['outcome'],'verified')
+        handoff.unlink()
+        p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
+        self.assertNotEqual(p.returncode,0);self.assertFalse(handoff.exists())
+
     def test_unsafe_receipt_lock_is_refused_without_github_calls(self):
         directory=self.home/'.claude/issue-completion/github.com/owner/consumer'
         directory.mkdir(parents=True,mode=0o700)

@@ -529,6 +529,8 @@ Step 2.4 owns that script's semantics; all this table adds is the Phase C
 
 ## Step 4: Print Exit Report and EXIT
 
+After all wrap phases finish and completion is verified or justifiably retained, run the canonical publish_completed_handoff adapter in [issue completion](../reference/issue-completion.md). Only then report OUTCOME merged. A guarded publication failure is blocked with PR already merged, completion pending; preserve the handoff and receipt for recovery.
+
 Print this as your FINAL output:
 
 ```text
