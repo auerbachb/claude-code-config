@@ -265,7 +265,8 @@ done
 ESTIMATE_REAL_MKDIR=$(command -v mkdir)
 ESTIMATE_REAL_MKTEMP=$(command -v mktemp)
 ESTIMATE_REAL_MV=$(command -v mv)
-export ESTIMATE_REAL_MKDIR ESTIMATE_REAL_MKTEMP ESTIMATE_REAL_MV
+ESTIMATE_REAL_PYTHON=$(command -v python3)
+export ESTIMATE_REAL_MKDIR ESTIMATE_REAL_MKTEMP ESTIMATE_REAL_MV ESTIMATE_REAL_PYTHON
 export ESTIMATE_RACE_OUTPUT="$ROLLUP_DIR/race.md"
 export ESTIMATE_RACE_LEDGER="$ROLLUP_DIR/native.jsonl"
 export ESTIMATE_RACE_MARKER="$TMP/race-fired"
@@ -276,16 +277,28 @@ if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == race && "$*" == "-p $(dirname "$ESTIM
   ln -sf "$ESTIMATE_RACE_LEDGER" "$ESTIMATE_RACE_OUTPUT"
   : > "$ESTIMATE_RACE_MARKER"
 fi
+if [[ "$*" == "-p $(dirname "$ESTIMATE_RACE_OUTPUT")" ]]; then
+  case "${ESTIMATE_PUBLICATION_FAULT:-}" in
+    directory-race)
+      rm -f "$ESTIMATE_RACE_OUTPUT"
+      "$ESTIMATE_REAL_MKDIR" "$ESTIMATE_RACE_OUTPUT"
+      : > "$ESTIMATE_RACE_MARKER" ;;
+    directory-link-race)
+      rm -f "$ESTIMATE_RACE_OUTPUT"
+      ln -s "$ESTIMATE_RACE_TARGET" "$ESTIMATE_RACE_OUTPUT"
+      : > "$ESTIMATE_RACE_MARKER" ;;
+  esac
+fi
 STUB
 cat > "$TMP/bin/mktemp" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == allocate && "$*" == *'.estimate-rollup-'* ]]; then exit 91; fi
 exec "$ESTIMATE_REAL_MKTEMP" "$@"
 STUB
-cat > "$TMP/bin/mv" <<'STUB'
+cat > "$TMP/bin/python3" <<'STUB'
 #!/usr/bin/env bash
-if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == rename && "$*" == *'.estimate-rollup-'* ]]; then exit 92; fi
-exec "$ESTIMATE_REAL_MV" "$@"
+if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == rename && "$*" == *'os.replace('* ]]; then exit 92; fi
+exec "$ESTIMATE_REAL_PYTHON" "$@"
 STUB
 # Keep the existing selection-failure fixture intact; layer rendering failure
 # on its exact jq table-render filter, after selection and temp allocation.
@@ -295,7 +308,7 @@ cat > "$TMP/bin/jq" <<'STUB'
 if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == render && "$*" == *'def fmt(x)'* ]]; then exit 93; fi
 exec "$(dirname "$0")/jq-selection" "$@"
 STUB
-chmod +x "$TMP/bin/mkdir" "$TMP/bin/mktemp" "$TMP/bin/mv" "$TMP/bin/jq"
+chmod +x "$TMP/bin/mkdir" "$TMP/bin/mktemp" "$TMP/bin/python3" "$TMP/bin/jq"
 cp "$ESTIMATE_RACE_LEDGER" "$TMP/input-before"
 for publication_case in race allocate render rename; do
   rm -f "$ESTIMATE_RACE_OUTPUT"
@@ -341,6 +354,41 @@ for output_mode in 600 640 644 664; do
   run_rollup "$ROLLUP_DIR/native.jsonl" "$MODE_REPORT"
   check_eq "rollup existing mode $output_mode: status" 0 "$ROLLUP_RC"
   check_eq "rollup existing mode $output_mode: permissions" "$output_mode" "$(file_mode "$MODE_REPORT")"
+done
+
+# Directory operands must never acquire mv's "move into this directory"
+# semantics. A directory created after preflight must also fail safely.
+DIRECTORY_TARGET="$ROLLUP_DIR/directory-target"
+mkdir "$DIRECTORY_TARGET"
+ln -s "$DIRECTORY_TARGET" "$ROLLUP_DIR/directory-link"
+for directory_kind in directory-target directory-link; do
+  run_rollup "$ROLLUP_DIR/native.jsonl" "$ROLLUP_DIR/$directory_kind"
+  check_eq "rollup $directory_kind output: file-error exit" 5 "$ROLLUP_RC"
+  check_eq "rollup $directory_kind output: directory stays empty" 0 "$(find "$DIRECTORY_TARGET" -type f | wc -l | tr -d ' ')"
+  check_eq "rollup $directory_kind output: ledger preserved" yes "$(unchanged_file "$ROLLUP_DIR/native.jsonl" "$TMP/input-before")"
+  check_eq "rollup $directory_kind output: no temporary artifact" 0 "$(find "$ROLLUP_DIR" -name '.estimate-rollup-*' | wc -l | tr -d ' ')"
+done
+export ESTIMATE_RACE_TARGET="$ROLLUP_DIR/race-directory-target"
+mkdir "$ESTIMATE_RACE_TARGET"
+for directory_race in directory-race directory-link-race; do
+  rm -f "$ESTIMATE_RACE_MARKER"
+  export ESTIMATE_RACE_OUTPUT="$ROLLUP_DIR/$directory_race.md"
+  printf 'previous-report\n' > "$ESTIMATE_RACE_OUTPUT"
+  export ESTIMATE_PUBLICATION_FAULT="$directory_race"
+  run_rollup "$ESTIMATE_RACE_LEDGER" "$ESTIMATE_RACE_OUTPUT"
+  unset ESTIMATE_PUBLICATION_FAULT
+  check_eq "rollup $directory_race: boundary reached" yes "$([[ -f "$ESTIMATE_RACE_MARKER" ]] && echo yes)"
+  check_eq "rollup $directory_race: ledger preserved" yes "$(unchanged_file "$ESTIMATE_RACE_LEDGER" "$TMP/input-before")"
+  check_eq "rollup $directory_race: target stays empty" 0 "$(find "$ESTIMATE_RACE_TARGET" -type f | wc -l | tr -d ' ')"
+  check_eq "rollup $directory_race: no temporary artifact" 0 "$(find "$ROLLUP_DIR" -name '.estimate-rollup-*' | wc -l | tr -d ' ')"
+  if [[ "$directory_race" == directory-race ]]; then
+    check_eq 'rollup real-directory race: file-error exit' 5 "$ROLLUP_RC"
+    check_eq 'rollup real-directory race: directory stays empty' 0 "$(find "$ESTIMATE_RACE_OUTPUT" -type f | wc -l | tr -d ' ')"
+  else
+    check_eq 'rollup directory-link race: exact path published' 0 "$ROLLUP_RC"
+    check_eq 'rollup directory-link race: output is a regular non-link file' yes "$([[ -f "$ESTIMATE_RACE_OUTPUT" && ! -L "$ESTIMATE_RACE_OUTPUT" ]] && echo yes)"
+    check_eq 'rollup directory-link race: report complete' yes "$(report_line "$EXPECTED_SOURCE" "$ESTIMATE_RACE_OUTPUT")"
+  fi
 done
 
 if [[ -s "$TMP/fix/unexpected.log" ]]; then
