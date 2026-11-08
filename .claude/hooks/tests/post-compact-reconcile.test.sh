@@ -65,6 +65,11 @@ PY
 out=$(echo '{}' | bash "$HOOK" 2>/dev/null)
 [[ $? -eq 0 ]] || fail "hook must exit 0"
 [[ -n "$out" ]] || fail "hook must produce output on empty input"
+for payload in '{}' '{"compact_summary":"fixture summary"}'; do
+  decision_context=$(printf '%s' "$payload" | bash "$HOOK" | jq -r '.hookSpecificOutput.additionalContext')
+  [[ "$decision_context" == *"monitoring silently"* && "$decision_context" == *"explicit status request"* && "$decision_context" == *"exhausted recovery"* && "$decision_context" == *"safety event"* ]] || fail 'both branches must preserve required notices'
+  [[ "$decision_context" != *"one heartbeat line"* && "$decision_context" != *"Timestamp and rerun"* ]] || fail 'routine recovery must not demand narration'
+done
 
 # --- 5. Output must be valid JSON containing hookEventName: "PostCompact" ---
 HOOK_OUT="$out" python3 - <<'PY' || fail "hook output is not valid JSON with hookEventName PostCompact; got: $out"

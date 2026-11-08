@@ -32,7 +32,7 @@ Respawn permissions: crash asks, exhaustion auto, limit-parked neither — it pa
 
 ## Liveness
 
-Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Drain-time closing message: `final-wrapup-format.md`.
+Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Parent freshness is not child progress. The ceiling tick independently checks exact-session Agent artifacts; `CHILD STALL SUSPECT` requests investigation, never proves a crash or authorizes stop/respawn. Missing evidence remains `CHILD PROGRESS UNKNOWN`. Coverage/limits: `bgwork-ceiling.md`. Drain-time closing message: `final-wrapup-format.md`.
 
 ## File-Write Status
 
