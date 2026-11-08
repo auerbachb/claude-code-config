@@ -347,6 +347,7 @@ case "$1" in
     else cat "$STUB_DIR/status"; fi ;;
   tick) cat "$STUB_DIR/tick" ;;
   wake-due) cat "$STUB_DIR/due" ;;
+  interrupt) echo '{"held":false}' ;;
   checkin)
     rc=$(cat "$STUB_DIR/checkin-rc" 2>/dev/null || echo 0)
     if [ "$rc" -ne 0 ]; then

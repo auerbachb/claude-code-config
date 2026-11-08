@@ -89,10 +89,26 @@ done
    ```
 
    An `error` line → the same "not started" report as step 3, and stop. Exit 4 → the cadence (or another argument) was refused: report its one stderr line as "not started", and stop. Nothing is armed. An `eod` line (a desk started after `eod_time` that has not swept today) → after the start report, show the sweep (`sweep.md`). A `morning` line (the day's first desk, from 04:00 until `eod_time`) → after the start report, show the morning check-in (`checkin.md`) before the backlog of step 8.
-6. **Arm the Monitor** with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Its command, with `DESK`, `SID`, `GEN`, and the cadence written in literally:
+6. **Resolve the initial hold, then arm the Monitor.** Read it with the captured startup default before arming, so a focus that expires before the first persistent cycle still has an evidenced held start:
+
+   <!-- test-anchor: desk-start-held -->
 
    ```bash
-   "<DESK>/bin/desk-tick.sh" --session "<SID>" --generation "<GEN>" --cadence <N> --interrupts "<DEFAULT>"
+   START_HOLD=$("$HQ" interrupt get --session "$SID" --default "<DEFAULT>" --json) || exit "$?"
+   HELD_FLAG=$(printf '%s' "$START_HOLD" | jq -er 'if type == "object" and (.held | type) == "boolean" then (if .held then "--held" else "" end) else error("invalid held") end' 2>/dev/null) || {
+     printf '%s\n' 'Desk not started: interrupt state is unreadable.' >&2
+     exit 4
+   }
+   printf '%s\nHELD_FLAG=%s\n' "$START_HOLD" "$HELD_FLAG"
+   ```
+
+   A failed read or malformed result → the same not-started report as step 3; arm nothing. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from the block:
+
+   <!-- test-anchor: desk-monitor -->
+
+   ```bash
+   HELD_FLAG="<HELD_FLAG>"
+   exec "<DESK>/bin/desk-tick.sh" --session "<SID>" --generation "<GEN>" --cadence <N> --interrupts "<DEFAULT>" ${HELD_FLAG:+"$HELD_FLAG"}
    ```
 
    The loop sleeps first (the inline tick was this cycle). Each cadence it confirms this session is still the control session, runs `tick` and `wake-due`, and prints a line only when there is something to do (see "Monitor events").
@@ -107,9 +123,11 @@ done
    - Arming failed (no task id) → `Desk not started: the Monitor did not arm.` Leave `.desk` unwritten.
    - `SESSION_STATE_SH` empty (the prelude's DEGRADED line) → skip this write and keep `TASK_ID`, `GEN`, the cadence, and the captured interrupt default in this conversation. That is the degraded mode, not a failure: the desk starts.
    - Arming worked but this write failed → `TaskStop` the task id you hold now, then report the desk as not started. If that `TaskStop` also fails, name the task id in the message so the operator can stop it.
-8. **Show what is already waiting.** The first tick reports only what changed since the last desk ticked, so read the whole backlog once: `"$HQ" list --kind decision --status open --json`, and hand it to `decisions.md` ("Showing items"); it covers any `new` line the step 5 tick printed. This read can also see a write that tick could not, which the next tick reports again, so keep each id it showed with its `updated_at` in this conversation: the first `new` event after it drops any of those ids whose `updated_at` is unchanged (a later write, such as a bump, changes it, and that item shows again). With nothing waiting, the start report is one line: `Desk live — nothing waiting; ticking every <N> min.` When the interrupt rule in force holds items (`interrupts.md`, block `desk-interrupt-get`: the policy's `interrupt_rule` is `away`, or this session set `away` or a focus before a second `/desk`), show nothing yet: `Desk live — holding new Decisions (<the rule>); "available" shows them.` This read then waits for the hold to end, and happens there (`interrupts.md`, "The release").
+8. **Show what is already waiting.** The first tick reports only what changed since the last desk ticked, so read the whole backlog once: `"$HQ" list --kind decision --status open --json`, and hand it to `decisions.md` ("Showing items"); it covers any `new` line the step 5 tick printed. This read can also see a write that tick could not, which the next tick reports again, so keep each id it showed with its `updated_at` in this conversation: the first `new` event after it drops any of those ids whose `updated_at` is unchanged (a later write, such as a bump, changes it, and that item shows again). With nothing waiting, the start report is one line: `Desk live — nothing waiting; ticking every <N> min.` When the current interrupt rule holds items (`interrupts.md`, block `desk-interrupt-get`, using the captured startup default), show nothing yet: `Desk live — holding new Decisions (<the rule>); "available" shows them.` This read then waits for the hold to end, and happens there (`interrupts.md`, "The release").
 
 **Every re-arm and release retains the start default.** Fill `<DEFAULT>` from this conversation. If absent, read `.desk` once with `session-state.sh --get-json .desk` and recover `interrupt_default` only when its `session` equals `SID` and its value is `everything` or `away`. Carry it forward in the new whole-object write. Never reread `policy.json` for a re-arm, release or `interrupts?`. If neither source supplies a valid default (including a legacy desk), say `Desk start default unknown — run /desk again.` and do not launch or query with a guessed default. With session state unavailable, retain the value in this conversation. Only an explicit fresh `/desk` captures the edited policy.
+
+For a re-arm, fill `HELD_FLAG` with `--held` while this conversation's known held-start backlog read still waits; once that read has happened, use empty. An unknown initial state is not evidence for a seed. The inline first/release `--once` ticks never carry `--held`.
 
 ## Monitor events
 
@@ -118,6 +136,7 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 | Line | Do |
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
+| `desk-tick <GEN> released` | A known hold ended. If step 8's initial backlog read still waits, do that read once, even when nothing changed in the store; apply the existing held/longform rules and shown-item deduplication. If it was already read, do nothing |
 | `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
 | `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep", then "Friday" (the weekly report's offer); during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
 | `desk-tick <GEN> morning` | The first tick of the day (from 04:00 until `eod_time`), once a day. Load `checkin.md` and show the card; during a hold, or while a long-form prompt waits, keep it and show it after (`checkin.md`, "Held like a Decision") |

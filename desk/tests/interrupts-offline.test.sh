@@ -195,6 +195,7 @@ printf '%s\n' "$*" >> "$STUB_DIR/args"
 case "$1" in
   control-status) echo '{"session": "desk-1", "last_tick_at": null, "tick_age_seconds": null}' ;;
   tick|wake-due) echo '[]' ;;
+  interrupt) echo '{"held":false}' ;;
 esac
 EOF
 chmod +x "$TSTUB"
@@ -543,7 +544,11 @@ cat > "$HSTUB" <<'EOF'
 #!/usr/bin/env bash
 : > "$STUB_DIR/hq-args"
 for a in "$@"; do printf '%s\n' "$a" >> "$STUB_DIR/hq-args"; done
-echo '{"stub": true}'
+if [ -f "$STUB_DIR/held-rc" ]; then
+  echo 'human-queue: store unavailable (fixture)' >&2
+  exit "$(cat "$STUB_DIR/held-rc")"
+fi
+if [ -f "$STUB_DIR/held-json" ]; then cat "$STUB_DIR/held-json"; else echo '{"stub": true}'; fi
 EOF
 chmod +x "$HSTUB"
 
@@ -586,6 +591,14 @@ hq_t_skill_block "$SKILL" desk-record > "$TMP/record-raw.sh"
 literal "$TMP/record-raw.sh" "<DEFAULT>" "away" > "$TMP/record-default.sh"
 literal "$TMP/record-default.sh" "<N>" "5" > "$TMP/record-cadence.sh"
 literal "$TMP/record-cadence.sh" "<TASK_ID>" "monitor-1" > "$TMP/record.sh"
+hq_t_skill_block "$SKILL" desk-start-held > "$TMP/start-held-raw.sh"
+literal "$TMP/start-held-raw.sh" "<DEFAULT>" "away" > "$TMP/start-held.sh"
+hq_t_skill_block "$SKILL" desk-monitor > "$TMP/monitor-raw.sh"
+literal "$TMP/monitor-raw.sh" "<DESK>" "$HQ_T_DESK_DIR" > "$TMP/monitor-desk.sh"
+literal "$TMP/monitor-desk.sh" "<SID>" "desk-1" > "$TMP/monitor-session.sh"
+literal "$TMP/monitor-session.sh" "<GEN>" "seed" > "$TMP/monitor-gen.sh"
+literal "$TMP/monitor-gen.sh" "<N>" "5" > "$TMP/monitor-cadence.sh"
+literal "$TMP/monitor-cadence.sh" "<DEFAULT>" "away" > "$TMP/monitor-default.sh"
 cat > "$TMP/state-stub" <<'STATE_STUB'
 #!/bin/sh
 printf '%s\n' "$@" > "$STATE_CAPTURE"
@@ -655,6 +668,39 @@ for SH in $BLOCK_SHELLS; do
   check "[$SH] release tick retains captured away despite invalid edited policy" \
     "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
 
+  for initial_held in true false; do
+    printf '{"rule":"focus","held":%s}\n' "$initial_held" > "$STUB_DIR/held-json"
+    RC=0
+    OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
+    if [ "$initial_held" = true ]; then expected_flag=--held; else expected_flag=""; fi
+    seed_flag=$(printf '%s\n' "$OUT" | sed -n 's/^HELD_FLAG=//p')
+    check "[$SH] startup observes hold with captured default" "$(args)" \
+      'interrupt get --session desk-1 --default away --json'
+    check "[$SH] boolean $initial_held produces a typed seed" "$RC:$seed_flag" "0:$expected_flag"
+    literal "$TMP/monitor-default.sh" "<HELD_FLAG>" "$seed_flag" > "$TMP/monitor.sh"
+    rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
+    RC=0
+    OUT=$(PATH="$TMP/sleepbin:$PATH" HUMAN_QUEUE_TICK_SECONDS=1 run_block "$SH" "$TMP/monitor.sh") || RC=$?
+    if [ "$initial_held" = true ]; then expected_release='desk-tick seed released'; else expected_release=""; fi
+    check "[$SH] actual Monitor command carries or omits the seed" "$RC:$OUT" "0:$expected_release"
+    check "[$SH] Monitor observation retains the captured default" \
+      "$(grep '^interrupt ' "$STUB_DIR/args")" 'interrupt get --session desk-1 --default away --json'
+  done
+  for invalid_held in '[]' '{}' '{"held":0}' '{"held":"--held; touch seed-pwned"}'; do
+    printf '%s\n' "$invalid_held" > "$STUB_DIR/held-json"
+    RC=0
+    OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
+    check "[$SH] invalid startup hold is refused: $invalid_held" "$RC" 4
+    check_absent "[$SH] invalid startup hold creates no seed" "$OUT" 'HELD_FLAG='
+  done
+  printf '7\n' > "$STUB_DIR/held-rc"
+  RC=0
+  OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
+  check "[$SH] failed startup hold read retains its exit" "$RC" 7
+  check_absent "[$SH] failed startup hold read creates no seed" "$OUT" 'HELD_FLAG='
+  check "[$SH] hostile hold text was never executed" "$(find "$TMP/run" -name 'seed-pwned' | wc -l | tr -d ' ')" 0
+  rm -f "$STUB_DIR/held-json" "$STUB_DIR/held-rc"
+
   # The release is one desk-tick cycle with the recorded generation.
   check_contains "[$SH] desk-release block: one tick, now" "$(cat "$TMP/release.sh")" \
     '"$DESK/bin/desk-tick.sh" --session "$SID" --generation "g7" --interrupts "away" --once'
@@ -674,6 +720,9 @@ contract SKILL.md "$(cat "$SKILL")" <<'NEEDLES'
 `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?`
 → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
 block `desk-policy`
+`desk-tick <GEN> released`
+The seed records an evidenced held start
+If it was already read, do nothing
 .desk.interrupt_default
 recover `interrupt_default` only when its `session` equals `SID`
 --cadence <N> --interrupts "<DEFAULT>"
