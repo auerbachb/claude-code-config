@@ -26,6 +26,11 @@ _scripts_dir="$(cd "$_hook_dir/../scripts" 2>/dev/null && pwd)"
 # overlap this hook tolerates), and an assignment left inside the locked region
 # leaves this unset there — a false "root repo could not be resolved" error and
 # a skipped main pull on every login overlap.
+# Metadata-only registration; never sweeps or changes SessionStart output.
+if [[ -x "${_scripts_dir}/workspace-sweep.sh" ]]; then
+  "${_scripts_dir}/workspace-sweep.sh" --register-repo "$(pwd -P)" >/dev/null 2>&1 &
+fi
+
 _repo_root_helper="${_scripts_dir}/repo-root.sh"
 setup_script="$(cd "$_hook_dir/../.." 2>/dev/null && pwd)/setup-skills-worktree.sh"
 errors=""

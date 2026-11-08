@@ -1810,6 +1810,17 @@ When a Phase C subagent returns:
 2. **Branch on OUTCOME:**
    - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
    - `blocked` -> report blocker details to user. Do NOT merge.
+After GitHub confirms `merged`, run the parent-checkout [finished-only cadence](../../reference/workspace-sweep-cadence.md), including Phase B/C worktrees; never call age cleanup here:
+
+<!-- test-anchor: workspace-sweep-subagent-merged -->
+```bash
+# workspace-sweep-subagent-merged
+SWEEP_SH=$(resolve_script workspace-sweep.sh || true)
+if [[ -n "$SWEEP_SH" ]]; then
+  "$SWEEP_SH" --trigger post-merge --repo-dir "$(git rev-parse --show-toplevel)" || true
+fi
+```
+
 3. **Update `session-state.json`** — mark PR as Phase C complete and drop the agent record with `session-state.sh --remove-agent <AGENT_ID>` (batch it with the same `--set` call). Never filter the map and write it back whole (issue #1631).
 4. **Advance the parent, if this issue was a decomposition child** (Step 5.1). `/wrap` closes the *child* via its `Closes #N`; the parent carries no closing keyword and is this step's job.
 
