@@ -12,6 +12,8 @@ mkdir -p "$HOME/.claude"
 export OWNER_REPO="$CLAUDE_SESSION_REPO" PR_NUMBER=1972
 export HANDOFF_STATE_SH="$REPO_ROOT/.claude/scripts/handoff-state.sh"
 export SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
+export RECOVERY_EVIDENCE_SH="$REPO_ROOT/.claude/scripts/recovery-evidence.sh"
+export WAIT_EVAL_RC=0 WAIT_FETCH_RC=0 GATE_RC=1
 WAIT_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/skills/fixpr/SKILL.md" fixpr-persist-wait-evidence)
 POSTURE_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" pmm-persist-watch-posture)
 printf '%s\n' "$WAIT_BLOCK" > "$TMP_TEST/wait.sh"
