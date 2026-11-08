@@ -33,7 +33,7 @@ printf '%s' "$snapshot" | valid_snapshot || exit 8
 path=".repos[\"$repo\"].day"
 sets=()
 for field in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
-             limit_cause limit_kind park_claim_token park_generation parked_until; do
+             limit_cause limit_kind park_claim_token park_generation parked_until limit_resume_stop_proofs; do
   sets+=(--set "$path.$field=null")
 done
 [[ "$reset_hits" -eq 0 ]] || sets+=(--set "$path.consecutive_limit_hits=0")

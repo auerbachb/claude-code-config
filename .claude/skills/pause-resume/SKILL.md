@@ -18,7 +18,9 @@ Running this when no pause state exists is a clean no-op: `No parked session fou
 
 ## Step 0: Resolve helpers
 
-`/pause-resume` is invocable from any thread — including one whose cwd is a different worktree than the one `/pause` ran in. The three-candidate resolution order is identical to every other stop-style command:
+`/pause-resume` is invocable from any thread — including one whose cwd is a different worktree than the one `/pause` ran in. Use only the two installed helper locations, as with the other stop-style commands:
+
+<!-- test-anchor: pause-resume-installed-helpers -->
 
 ```bash
 resolve_script() {
@@ -31,6 +33,7 @@ resolve_script() {
   return 1
 }
 SESSION_STATE_SH=$(resolve_script session-state.sh) || SESSION_STATE_SH=""
+PARK_RETIRE_SH=$(resolve_script park-retire.sh) || PARK_RETIRE_SH=""
 EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
 TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 ```
@@ -711,18 +714,78 @@ fi
 # written, so its bound, kind and wake identity are untouched) · 8 identity
 # unreadable, fail closed · anything else a write error. Composition is #1445: the
 # --cas gates the whole batch, so a lost compare writes none of the --set clears.
-PARK_RETIRE_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh}" "${HOME:+$HOME/.claude/scripts/park-retire.sh}" ".claude/scripts/park-retire.sh"; do
-  if [ -x "$candidate" ]; then PARK_RETIRE_SH="$candidate"; break; fi
-done
 retire_limit_park() {
   [[ "$PARK_IDENTITY_READ" == true ]] || return 8
-  [[ -n "$PARK_RETIRE_SH" ]] || return 4
+  [[ -n "${PARK_RETIRE_SH:-}" && -x "$PARK_RETIRE_SH" ]] || return 4
   "$PARK_RETIRE_SH" --repo "$REPO_KEY" --snapshot "$PARK_DAY_EXPECT" \
     --state-helper "$SESSION_STATE_SH"
 }
 
+# A successful native TaskStop is a fact about this exact wake, not a generic
+# failed-stop exception. Retain it if retirement fails. The write only
+# adds tagged evidence; it never changes a wake ID, bound, policy or hit count.
+PARK_STOP_PROOF_JQ='
+  def legacy: {park_claim_token, limit_cause, parked_until, limit_kind, limit_probe_fires_remaining};
+  def stop_key:
+    [ .park_generation, .limit_resume_task_id, .limit_resume_generation,
+      (if .park_generation == null then legacy else null end) ] | tojson | @uri;
+'
+PARK_STOP_PROOF_KEY=""
+PARK_STOP_PROOF_MATCH=false
+if [[ "$PARK_IDENTITY_READ" == true ]]; then
+  PARK_STOP_PROOF_KEY=$(printf '%s' "$PARK_DAY_EXPECT" | jq -r "$PARK_STOP_PROOF_JQ stop_key" 2>/dev/null) || PARK_STOP_PROOF_KEY=""
+  if [[ -n "$PARK_STOP_PROOF_KEY" ]] && printf '%s' "$PARK_DAY_EXPECT" | jq -e --arg key "$PARK_STOP_PROOF_KEY" "$PARK_STOP_PROOF_JQ"'
+    . as $day | .limit_resume_stop_proofs[$key] as $proof |
+    ($proof | type) == "object" and $proof.stopped == true and
+    ($proof.task_id | type == "string" and length > 0) and
+    ($proof.wake_generation == null or ($proof.wake_generation | type == "string" and length > 0)) and
+    $proof.park_generation == $day.park_generation and
+    $proof.task_id == $day.limit_resume_task_id and
+    $proof.wake_generation == $day.limit_resume_generation and
+    ($day.park_generation != null or $proof.legacy_identity == ($day | legacy))
+  ' >/dev/null 2>&1; then PARK_STOP_PROOF_MATCH=true; fi
+fi
+
+record_limit_stop_proof() {
+  local rc=0 cas_field cas_value updated
+  PARK_STOP_PROOF_JSON=""
+  [[ "$PARK_IDENTITY_READ" == true ]] || return 8
+  PARK_STOP_PROOF_KEY=$(printf '%s' "$PARK_DAY_EXPECT" | jq -r "$PARK_STOP_PROOF_JQ stop_key" 2>/dev/null) || return 8
+  [[ -n "$PARK_STOP_PROOF_KEY" ]] || return 8
+  PARK_STOP_PROOF_JSON=$(printf '%s' "$PARK_DAY_EXPECT" | jq -c "$PARK_STOP_PROOF_JQ"'
+    if (.limit_resume_task_id | type == "string" and length > 0) and
+       (.limit_resume_generation == null or (.limit_resume_generation | type == "string" and length > 0)) then
+      {stopped: true, park_generation, task_id: .limit_resume_task_id,
+       wake_generation: .limit_resume_generation, legacy_identity: legacy}
+    else error("invalid stopped wake identity") end') || return 8
+  # Generated parks retain their generation. A legacy record instead binds the
+  # observed task ID; the proof also names its wake generation and legacy tuple.
+  cas_field=park_generation
+  if [[ $(printf '%s' "$PARK_DAY_EXPECT" | jq -r '.park_generation == null') == true ]]; then
+    cas_field=limit_resume_task_id
+  fi
+  cas_value=$(printf '%s' "$PARK_DAY_EXPECT" | jq -c --arg key "$cas_field" '.[$key]') || return 8
+  "$SESSION_STATE_SH" --repo "$REPO_KEY" \
+    --cas ".repos[\"$REPO_KEY\"].day.$cas_field=$cas_value" --expect "$cas_value" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_resume_stop_proofs[\"$PARK_STOP_PROOF_KEY\"]=$PARK_STOP_PROOF_JSON" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 6 ]]; then
+    rc=0
+    "$SESSION_STATE_SH" --repo "$REPO_KEY" \
+      --cas ".repos[\"$REPO_KEY\"].day.$cas_field=$cas_value" --expect "$cas_value" \
+      --set ".repos[\"$REPO_KEY\"].day.limit_resume_stop_proofs[\"$PARK_STOP_PROOF_KEY\"]=$PARK_STOP_PROOF_JSON" >/dev/null 2>&1 || rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    # Reflect ONLY our own proof write in the original snapshot. Never adopt a
+    # fresh read's authority. A concurrent park/wake change still loses retirement.
+    updated=$(printf '%s' "$PARK_DAY_EXPECT" | jq -c --arg key "$PARK_STOP_PROOF_KEY" --argjson proof "$PARK_STOP_PROOF_JSON" '.limit_resume_stop_proofs[$key]=$proof') || return 8
+    PARK_DAY_EXPECT="$updated"
+  fi
+  return "$rc"
+}
+
 ```
+
+If retirement fails after a confirmed native `TaskStop`, retain a `limit_resume_stop_proofs` entry, tagged with the original durable park generation, task ID and wake generation (plus the legacy identity when no durable generation exists). A retry may skip `TaskStop` only when that typed proof matches its one current snapshot; a failed stop, missing task, arbitrary supplied assertion or mismatched proof is never evidence of a successful stop. Entries use an encoded generation/task/wake key (including the legacy tuple for legacy records), so concurrent confirmed stops cannot overwrite one another. Retirement clears the map with the park. If proof persistence fails, retain the successful native TaskStop result, original bound snapshot and `STOP_PROOF_PENDING` in this chat's resumable evidence; retry that exact proof write when storage recovers before retrying the stopped ID. Never reconstruct proof from a fresh record or replay it onto a replacement. If no trusted stop receipt survives, keep the park unresolved rather than guessing that the task is stopped.
 
 Both call sites below go through that one guarded path and read its three-way
 outcome. **Exit 7 is not a failure**: it says a newer park owns the slot, so this
@@ -747,9 +810,18 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     # No state file has ever been written: no wake, and no park to retire.
     LIMIT_WAKE_RESOLVED=true
   elif [[ -n "$LIMIT_TASK_ID" && "$LIMIT_TASK_ID" != "null" ]]; then
-    # Only act when the field is readable and non-null
-    # Stop the auto-wake before we re-arm day mode below; a successful stop clears the fields.
-    if TaskStop "$LIMIT_TASK_ID" 2>/dev/null; then
+    # Missing retirement machinery must not stop a Monitor we cannot retire.
+    STOP_CONFIRMED=false
+    if [[ -z "${PARK_RETIRE_SH:-}" || ! -x "$PARK_RETIRE_SH" ]]; then
+      echo "(DEGRADED: installed park-retire.sh unavailable — auto-wake left running; retry /pause-resume after restoring it)"
+    elif [[ "$PARK_STOP_PROOF_MATCH" == true ]]; then
+      STOP_CONFIRMED=true             # this exact wake was already confirmed stopped
+    elif TaskStop "$LIMIT_TASK_ID" 2>/dev/null; then
+      STOP_CONFIRMED=true
+    else
+      echo "(WARNING: could not stop usage-limit auto-wake $LIMIT_TASK_ID — recovery remains active)"
+    fi
+    if [[ "$STOP_CONFIRMED" == true ]]; then
       # The stop stays FIRST and the retire second (#1663): a claim landing in
       # between armed its own, differently-named wake, so the ID stopped here and
       # the ID left running are distinct — and the CAS below refuses to clear the
@@ -768,11 +840,16 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
           echo "(stopped usage-limit auto-wake $LIMIT_TASK_ID; a newer usage-limit park now owns the slot — its own wake is left running and nothing was cleared)"
           ;;
         *)
+          if [[ "$PARK_STOP_PROOF_MATCH" != true ]]; then
+            STOP_PROOF_RC=0
+            record_limit_stop_proof || STOP_PROOF_RC=$?
+            if [[ "$STOP_PROOF_RC" -ne 0 && "$STOP_PROOF_RC" -ne 7 ]]; then
+              echo "STOP_PROOF_PENDING=${PARK_STOP_PROOF_JSON:-unavailable} rc=$STOP_PROOF_RC"
+            fi
+          fi
           echo "(DEGRADED: auto-wake stopped but park retirement could not be confirmed (rc=$RETIRE_RC) — park left standing; retry /pause-resume)"
           ;;
       esac
-    else
-      echo "(WARNING: could not stop usage-limit auto-wake $LIMIT_TASK_ID — recovery remains active)"
     fi
   else
     # No armed wake, but a park record can still stand: /pause stops the wake and
