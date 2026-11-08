@@ -25,6 +25,7 @@ MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
 CI_STATUS_SH=$(resolve_script ci-status.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+MERGE_TARGET_ROOT_SH=$(resolve_script merge-target-root.sh || true)
 PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — merge authorship gate unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
@@ -66,6 +67,31 @@ fi
 ```
 
 If running in a worktree, stop here and use the message from the Worktree check above.
+
+### Bind the physical clone before merge work
+
+Use the absolute invocation/worktree path from this chat's workspace context, an explicit caller path, or a validated delegated handoff that matches this PR, repository, HEAD and holder. Set `MERGE_SOURCE_PATH` from that trusted context; never recover it from a later `pwd` or a shared per-repository/per-PR `.root_repo` hint. A remote identity cannot distinguish two clones of the same repository. Resolve `MERGE_PR_URL` from the identified PR's native `url` field, using that exact PR/repository rather than a later current-branch lookup.
+
+<!-- test-anchor: merge-merge-root-binding -->
+
+```bash
+MERGE_BOUND_ROOT=""
+MERGE_BOUND_PR_URL="${MERGE_PR_URL:-}"
+MERGE_ROOT_BINDING_STATUS="failed: explicit clone binding unavailable"
+if [[ -n "$MERGE_TARGET_ROOT_SH" ]]; then
+  MERGE_BIND_RC=0
+  MERGE_BOUND_ROOT=$("$MERGE_TARGET_ROOT_SH" --repo-path "${MERGE_SOURCE_PATH:-}" \
+    --pr-url "${MERGE_BOUND_PR_URL:-}" 2>/dev/null) || MERGE_BIND_RC=$?
+  if [[ "$MERGE_BIND_RC" -eq 0 && -n "$MERGE_BOUND_ROOT" ]]; then
+    MERGE_ROOT_BINDING_STATUS="bound"
+  else
+    MERGE_BOUND_ROOT=""
+    MERGE_ROOT_BINDING_STATUS="failed: explicit clone binding invalid or unreadable (rc=$MERGE_BIND_RC)"
+  fi
+fi
+```
+
+Carry `MERGE_BOUND_ROOT` and `MERGE_BOUND_PR_URL` unchanged across later tool calls and delegated `/fixpr` work; persist them in the validated run handoff when handing off this invocation. On resume without that binding, keep local mutations skipped. Never repopulate it from whatever clone the tool happens to enter. Binding failure does not undo or bypass the remote merge gate; it makes post-merge local cleanup/sync report a failure without mutating a guessed clone.
 
 ### Step 2: Verify the merge gate
 
@@ -146,47 +172,71 @@ Do NOT use `--delete-branch`. That flag attempts local branch deletion immediate
 
 ### Step 5a: Delete the branches
 
-```bash
-BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
-BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
-```
+The branch metadata comes from the exact bound PR URL, never a current-branch lookup after a cwd change. Require its native state to be `MERGED`. Run local checkout/deletion and the existing remote deletion only in the physical root bound above, in the same Bash call as the guard; a changed cwd skips cleanup. A skipped cleanup leaves the branch for `/pm-clean`.
 
-**Local branch** — must use `-D` (force), not `-d`. Squash merges rewrite history so the branch commits are not reachable from `main` and `-d` always fails post-squash.
-
-If currently on the feature branch, check out the base branch first (can't delete the branch you're on):
+<!-- test-anchor: merge-bound-branch-cleanup -->
 
 ```bash
-CURRENT_BRANCH=$(git branch --show-current)
-if [ "$CURRENT_BRANCH" = "$BRANCH_NAME" ]; then
-  git checkout "$BASE_BRANCH"
+MERGE_CLEANUP_ROOT=""
+if [[ -n "$MERGE_TARGET_ROOT_SH" && -n "${MERGE_BOUND_ROOT:-}" && -n "${MERGE_BOUND_PR_URL:-}" ]]; then
+  MERGE_CLEANUP_ROOT=$("$MERGE_TARGET_ROOT_SH" --repo-path "$MERGE_BOUND_ROOT" \
+    --pr-url "$MERGE_BOUND_PR_URL" 2>/dev/null) || MERGE_CLEANUP_ROOT=""
 fi
-git branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
-```
-
-**Remote branch** — treat failure as non-fatal (branch may already be deleted by GitHub's auto-delete-on-merge, by `/wrap` if run previously, or due to permissions/network):
-
-```bash
-git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
+if [[ -n "$MERGE_CLEANUP_ROOT" && "$MERGE_CLEANUP_ROOT" == "${MERGE_BOUND_ROOT:-}" \
+      && "$(pwd -P)" == "$MERGE_CLEANUP_ROOT" ]]; then
+  MERGED_BRANCH_JSON=$(gh pr view "$MERGE_BOUND_PR_URL" --json state,headRefName,baseRefName 2>/dev/null) || MERGED_BRANCH_JSON=""
+  if printf '%s' "$MERGED_BRANCH_JSON" | jq -e '
+    type == "object" and .state == "MERGED" and
+    (.headRefName | type == "string" and length > 0) and
+    (.baseRefName | type == "string" and length > 0)
+  ' >/dev/null 2>&1; then
+    BRANCH_NAME=$(printf '%s' "$MERGED_BRANCH_JSON" | jq -r '.headRefName')
+    BASE_BRANCH=$(printf '%s' "$MERGED_BRANCH_JSON" | jq -r '.baseRefName')
+    CURRENT_BRANCH=$(git branch --show-current)
+    CLEANUP_CHECKOUT_OK=1
+    if [[ "$CURRENT_BRANCH" == "$BRANCH_NAME" ]]; then
+      git checkout "$BASE_BRANCH" -- || CLEANUP_CHECKOUT_OK=0
+    fi
+    if [[ "$CLEANUP_CHECKOUT_OK" -eq 1 && -n "$BRANCH_NAME" && "$BRANCH_NAME" != "$BASE_BRANCH" ]]; then
+      git branch -D -- "$BRANCH_NAME" || echo "Warning: local branch deletion failed — skipping"
+      git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed — skipping"
+    fi
+  else
+    echo "Warning: bound PR is not confirmed merged — branch cleanup skipped"
+  fi
+else
+  echo "Warning: physical cwd differs from bound clone or binding invalid — branch cleanup skipped"
+fi
 ```
 
 ### Step 5b: Sync local main
 
 After merging, update the local `main` so subsequent sessions branch from the latest code. **Capture the result for the completion report in Step 6.**
 
+<!-- test-anchor: merge-bound-main-sync -->
+
 ```bash
-# .claude/scripts/main-sync.sh writes the status line to stdout and exits
-# 0 OK / 1 skipped (uncommitted) / 2 failed (checkout/pull). All three
-# outcomes are captured here for the completion report — a non-zero exit
-# is not a hard error for /merge, just a report-worthy condition.
-if [[ -z "$MAIN_SYNC_SH" ]]; then
+MERGE_SYNC_ROOT=""
+if [[ -n "$MERGE_TARGET_ROOT_SH" && -n "${MERGE_BOUND_ROOT:-}" && -n "${MERGE_BOUND_PR_URL:-}" ]]; then
+  MERGE_SYNC_ROOT=$("$MERGE_TARGET_ROOT_SH" --repo-path "$MERGE_BOUND_ROOT" \
+    --pr-url "$MERGE_BOUND_PR_URL" 2>/dev/null) || MERGE_SYNC_ROOT=""
+  [[ "$MERGE_SYNC_ROOT" == "$MERGE_BOUND_ROOT" ]] || MERGE_SYNC_ROOT=""
+fi
+if [[ -z "$MERGE_SYNC_ROOT" ]]; then
+  MAIN_SYNC_STATUS="failed: bound clone unavailable or identity changed; local mutation skipped"
+elif [[ -z "$MAIN_SYNC_SH" ]]; then
   MAIN_SYNC_STATUS="DEGRADED: main-sync.sh not found (checked all three paths) — post-merge main sync unavailable"
 else
-  MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" 2>&1 || true)
+  MAIN_SYNC_RC=0
+  MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" --repo "$MERGE_SYNC_ROOT" 2>&1) || MAIN_SYNC_RC=$?
+  if [[ "$MAIN_SYNC_RC" -ne 0 ]] && ! [[ "$MAIN_SYNC_STATUS" == aborted:* || "$MAIN_SYNC_STATUS" == skipped:* ]]; then
+    MAIN_SYNC_STATUS="failed(rc=$MAIN_SYNC_RC): $MAIN_SYNC_STATUS"
+  fi
 fi
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```
 
-Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The helper's internal checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting. See `main-sync.sh --help` for the full contract.
+`/merge` only runs outside worktrees. A cwd change may skip Step 5a, so Step 5b revalidates and passes the original physical root explicitly; it never relies on that checkout or current cwd. The helper's internal checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting. See `main-sync.sh --help` for the full contract.
 
 ### Step 6: Report completion
 

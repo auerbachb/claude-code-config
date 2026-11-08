@@ -53,3 +53,12 @@ Two corollaries:
 ## Why this file exists rather than more prose per call site
 
 Issue #1411 fixed one instance by adding `--repo` flags so `/wrap` Step 2.5 stopped needing a `cd`, and left a paragraph in `wrap/SKILL.md` warning future editors not to reintroduce it. That does not scale: each new call site would grow its own paragraph, and the underlying classifier is not ours to fix. The convention lives here once; call sites link to it.
+
+
+### Physical clone binding after a merge (#1646)
+
+`/wrap` and `/merge` bind an explicit absolute invocation/worktree path to the identified PR's canonical URL before merge work, using `merge-target-root.sh`. Carry the returned physical main root and PR URL unchanged across tool calls and validated delegated handoffs. Two clones with the same origin are distinct targets: a shared `.root_repo` hint keyed only by repository or PR cannot authorize one of them.
+
+Before local quarantine or main sync, validate that original path again and pass it through `--repo`. Missing paths, changed repository identity, helper/read failures and lost bindings skip local mutation and retain a diagnostic; a valid current cwd supplies no fallback authority. `/merge` also keeps local branch cleanup in one call with a physical-cwd guard and retrieves branch metadata from the exact bound PR URL. Cwd drift skips that cleanup, leaving it to `/pm-clean`; it does not redirect cleanup to a second clone.
+
+The generic `repo-root.sh [path]` contract remains unchanged for other callers. The binding helper accepts canonical HTTPS PR URLs and ordinary HTTPS/SSH/scp Git remotes with matching host and owner/repository. Unverifiable SSH host aliases are declined. This guards workflow cwd drift; it does not promise atomic filesystem identity across a path being replaced concurrently. Remote merge gates, quarantine policy and main-sync safety checks still apply.
