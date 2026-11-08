@@ -632,7 +632,7 @@ SKILL=$(cat "$HQ_T_DESK_DIR/skill/SKILL.md")
 DECISIONS=$(cat "$HQ_T_DESK_DIR/skill/decisions.md")
 check "SKILL.md frontmatter names the skill desk" "$(sed -n '2p' "$HQ_T_DESK_DIR/skill/SKILL.md")" "name: desk"
 for needle in "register-control \"\$SID\"" 'desk-tick.sh' 'persistent: true' 'decisions.md' 'control-status --json' \
-              'CLAUDE_CODE_SESSION_ID' '#1780' '#1781' 'shorter than the live-desk bound' '--cadence <N> --once'; do
+              'CLAUDE_CODE_SESSION_ID' '#1780' '#1781' 'shorter than the live-desk bound' '--cadence <N> --interrupts "<DEFAULT>" --once'; do
   check_contains "SKILL.md: $needle" "$SKILL" "$needle"
 done
 # The reply reaches set-resolve through a quoted here-document, never inside

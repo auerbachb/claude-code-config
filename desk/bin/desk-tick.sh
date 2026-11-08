@@ -4,7 +4,7 @@
 # catalog: utilities — Human-queue desk tick loop (`desk/bin/desk-tick.sh`): the /desk Monitor command; ticks the store and prints a line only when the desk has something to do
 #
 # USAGE
-#   desk-tick.sh --session SESSION --generation GEN [--cadence MIN] [--once]
+#   desk-tick.sh --session SESSION --generation GEN [--cadence MIN] [--interrupts RULE] [--once]
 #   desk-tick.sh --help
 #
 # ARGUMENTS
@@ -19,6 +19,8 @@
 #                      read with the hook's own parser): a desk that ticks less
 #                      often goes stale between ticks, and worker menus stop
 #                      being queued
+#   --interrupts RULE  start-time default, everything or away; overrides policy
+#                      so re-arms and release ticks retain this desk's default
 #   --once             one cycle now, no sleep (tests, and a manual tick)
 #
 # BEHAVIOR
@@ -35,8 +37,8 @@
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
 #        never both tick, because each tick consumes the change feed.
-#     2. `tick --session SESSION --interrupts RULE` (RULE: the policy's
-#        interrupt_rule, issue #1783). It stamps tick_at, which is what keeps
+#     2. `tick --session SESSION --interrupts RULE` (RULE: explicit --interrupts,
+#        otherwise the startup policy's interrupt_rule). It stamps tick_at, which is what keeps
 #        the desk live for the capture hook, and prints the items new or
 #        changed since the last tick. While the operator's interrupt rule
 #        holds items (`away`, or `focus` until a time not yet reached), it
@@ -138,6 +140,8 @@ dt_session=""
 dt_gen=""
 dt_cadence=""
 dt_cadence_given=0
+dt_rule=""
+dt_rule_given=0
 dt_once=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -145,11 +149,12 @@ while [ "$#" -gt 0 ]; do
       dt_usage
       exit 0
       ;;
-    --session|--generation|--cadence)
+    --session|--generation|--cadence|--interrupts)
       if [ "$#" -lt 2 ]; then dt_die "$1 needs a value"; fi
       case "$1" in
         --session) dt_session="$2" ;;
         --generation) dt_gen="$2" ;;
+        --interrupts) dt_rule="$2"; dt_rule_given=1 ;;
         *)
           dt_cadence="$2"
           dt_cadence_given=1
@@ -163,6 +168,12 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ "$dt_rule_given" -eq 1 ]; then
+  case "$dt_rule" in
+    everything|away) ;;
+    *) dt_die "--interrupts must be everything or away" ;;
+  esac
+fi
 case "$dt_session" in
   *$'\n'*|*$'\r'*) dt_die "--session must be a single line" ;;
   *[![:space:]]*) ;;
@@ -263,7 +274,7 @@ EOF
     *) eod=17:30 ;;
   esac
   dt_policy_cadence="$cadence"
-  dt_rule="$rule"
+  if [ "$dt_rule_given" -eq 0 ]; then dt_rule="$rule"; fi
   dt_eod="$eod"
 }
 
