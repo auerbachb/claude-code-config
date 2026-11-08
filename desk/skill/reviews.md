@@ -236,7 +236,7 @@ fi
 
 ### 2. Draft the issue
 
-From the item (its title, `link`, and `repo`) and the flag's `note`, in `/issue-maker`'s seven-section body: `## Background` (what landed, with its link), `## Problem` (the note, in the operator's words first), `## Proposed solution`, `## Acceptance Criteria` (numbered `4.1 [ ]` items), `## Test Plan` (`5.1 [ ]`), `## Notes / Open questions`, and `## Estimate` (the tier and estimated duration). Keep the source PR or issue link in Background or Notes. End with the line `_Captured via /issue-maker._`, so the next sync brings it back as a Review to check (`desk/DESIGN.md` 2.7). The title is at most 70 characters and says what to fix, not that something was flagged. Say only what the note and the item support.
+From the item (its title, `link`, and `repo`) and the flag's `note`, in `/issue-maker`'s seven-section body: `## Background` (what landed, with its link), `## Problem` (the note, in the operator's words first), `## Proposed solution`, `## Acceptance Criteria` (`- [ ] 4.1 …` task-list items), `## Test Plan` (`- [ ] 5.1 …`), `## Notes / Open questions`, and `## Estimate` (the tier and estimated duration). Keep the source PR or issue link in Background or Notes. End with the line `_Captured via /issue-maker._`, so the next sync brings it back as a Review to check (`desk/DESIGN.md` 2.7). The title is at most 70 characters and says what to fix, not that something was flagged. Say only what the note and the item support.
 
 ### 3. File it and record it
 
@@ -271,9 +271,8 @@ DESK_BODY
         fi
         echo "create-exit=$rc url=$URL"
         if [ "$rc" -eq 0 ]; then
-          case "$URL" in
-            https://github.com/*/issues/[0-9]*) "$HQ" comment R-2 "follow-up: $URL"; echo "comment-exit=$?" ;;
-          esac
+          # The shared helper validated the repo/issue URL, including Enterprise.
+          "$HQ" comment R-2 "follow-up: $URL"; echo "comment-exit=$?"
         fi
       fi
     fi

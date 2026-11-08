@@ -331,11 +331,11 @@ Measure contrast.
 
 ## Acceptance Criteria
 
-4.1 [ ] Contrast meets the requirement.
+- [ ] 4.1 Contrast meets the requirement.
 
 ## Test Plan
 
-5.1 [ ] Verify the colors.
+- [ ] 5.1 Verify the colors.
 
 ## Notes / Open questions
 
@@ -349,7 +349,7 @@ _Captured via /issue-maker._'
   hq_t_skill_block "$SKILL_DIR/reviews.md" desk-follow-up > "$FU_DIR/template.sh"
   fu_literal() { FROM="$2" TO="$3" perl -pe 's/\Q$ENV{FROM}\E/$ENV{TO}/g' "$1"; }
   for FU_SHELL in $SHELLS; do
-    for FU_MODE in success invalid-body long-title create-failed mark-failed record-failed; do
+    for FU_MODE in success enterprise invalid-body long-title create-failed mark-failed record-failed; do
       body="$FU_BODY"; title='Check widget contrast'
       [ "$FU_MODE" != invalid-body ] || body='## Background'
       [ "$FU_MODE" != long-title ] || title='This title deliberately exceeds the seventy character limit for a follow-up issue'
@@ -358,6 +358,9 @@ _Captured via /issue-maker._'
       : > "$FU_DIR/events"
       : > "$FU_DIR/stub/calls.log"
       printf 'https://github.com/acme/widgets/issues/999\n' > "$FU_DIR/stub/issue-create.txt"
+      if [ "$FU_MODE" = enterprise ]; then
+        printf 'https://github.example.test/acme/widgets/issues/999\n' > "$FU_DIR/stub/issue-create.txt"
+      fi
       rm -f "$FU_DIR/stub/issue-create.rc" "$FU_DIR/stub/issue-create.err"
       if [ "$FU_MODE" = create-failed ]; then
         printf '1\n' > "$FU_DIR/stub/issue-create.rc"
@@ -387,6 +390,11 @@ _Captured via /issue-maker._'
           check_contains "[$FU_SHELL] successful create uses JSON URL" "$OUT" 'create-exit=0 url=https://github.com/acme/widgets/issues/999'
           check_contains "[$FU_SHELL] missing recording is reported" "$OUT" 'comment-exit=7'
           check "[$FU_SHELL] missing recording keeps the marker" "$EVENTS" 'follow-up: filing'
+          ;;
+        enterprise)
+          check_contains "[$FU_SHELL] Enterprise JSON URL is returned" "$OUT" 'create-exit=0 url=https://github.example.test/acme/widgets/issues/999'
+          check_contains "[$FU_SHELL] Enterprise URL is recorded" "$EVENTS" 'follow-up: https://github.example.test/acme/widgets/issues/999'
+          check_contains "[$FU_SHELL] Enterprise recording status is reported" "$OUT" 'comment-exit=0'
           ;;
         success)
           check_contains "[$FU_SHELL] success uses shared JSON URL" "$OUT" 'create-exit=0 url=https://github.com/acme/widgets/issues/999'

@@ -383,11 +383,11 @@ Check contrast.
 
 ## Acceptance Criteria
 
-4.1 [ ] Colors meet the contrast requirement.
+- [ ] 4.1 Colors meet the contrast requirement.
 
 ## Test Plan
 
-5.1 [ ] Check the rendered colors.
+- [ ] 5.1 Check the rendered colors.
 
 ## Notes / Open questions
 
