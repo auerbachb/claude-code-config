@@ -1,4 +1,4 @@
-"""Cadence adapter only: stale-cleanup owns every destructive decision."""
+"""Cadence adapter for finished-worktree and artifact safety passes."""
 import argparse
 import contextlib
 from datetime import datetime, timezone
@@ -11,6 +11,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+import sys
 import time
 
 
@@ -260,7 +261,51 @@ def sweep(base, path, args, now):
             action += [r.get("reason", "unknown") for r in applied if r.get("outcome") == "failed"]
             if rc not in (0, 1, 2):
                 raise ValueError("cleanup could not complete")
-            save(stamp, {"attempted_at": now})
+            sizes = [r.get("logical_bytes_reclaimed") for r in applied if r.get("worktree_removed") is True]
+            row["worktree_logical_bytes_reclaimed"] = sum(sizes) if all(type(n) is int and n >= 0 for n in sizes) else None
+            row["artifact_removed"] = None
+            artifact_evidence = {}
+            row["artifact_capture"] = artifact_evidence
+            artifact_helper = os.environ.get("WORKSPACE_SWEEP_ARTIFACTS_PY") or str(Path(__file__).with_name("workspace_artifacts.py"))
+            cursor = previous.get("artifact_cursor", 0) if isinstance(previous, dict) else 0
+            if type(cursor) is not int or cursor < 0:
+                cursor = 0
+            artifact_rc, artifact_raw = command([sys.executable, artifact_helper, "--root", str(root), "--apply",
+                                                  "--now", str(now), "--cursor", str(cursor)],
+                                                 cwd=root, timeout=300, evidence=base, record_row=artifact_evidence)
+            row["artifact_evidence"] = artifact_evidence.get("evidence")
+            artifacts = json.loads(artifact_raw)
+            if (artifact_rc != 0 or not isinstance(artifacts, dict) or not isinstance(artifacts.get("artifacts"), list)
+                    or "removed" not in artifacts or "logical_bytes_reclaimed" not in artifacts
+                    or (artifacts["removed"] is not None and (type(artifacts["removed"]) is not int or artifacts["removed"] < 0))
+                    or (artifacts["logical_bytes_reclaimed"] is not None and (type(artifacts["logical_bytes_reclaimed"]) is not int or artifacts["logical_bytes_reclaimed"] < 0))
+                    or type(artifacts.get("known_removed")) is not int or artifacts["known_removed"] < 0
+                    or type(artifacts.get("known_logical_bytes_reclaimed")) is not int or artifacts["known_logical_bytes_reclaimed"] < 0
+                    or type(artifacts.get("next_cursor")) is not int or artifacts["next_cursor"] < 0):
+                raise ValueError("artifact cleanup report unavailable")
+            if any(not isinstance(r, dict) or not isinstance(r.get("path"), str) or not isinstance(r.get("reason"), str)
+                   or r.get("outcome") not in ("candidate", "removed", "retained", "unknown")
+                   or "removed" not in r or (r["removed"] is not None and type(r["removed"]) is not bool)
+                   or (r["removed"] is None and r.get("removal_attempted") is not True)
+                   or type(r.get("logical_bytes_reclaimed")) is not int or r["logical_bytes_reclaimed"] < 0 for r in artifacts["artifacts"]):
+                raise ValueError("invalid artifact outcome")
+            known = sum(r["removed"] is True for r in artifacts["artifacts"])
+            unknown_removal = any(r["removed"] is None for r in artifacts["artifacts"])
+            if artifacts["known_removed"] != known or artifacts["removed"] != (None if unknown_removal else known):
+                raise ValueError("inconsistent artifact removal counts")
+            if artifacts["known_logical_bytes_reclaimed"] != sum(r["logical_bytes_reclaimed"] for r in artifacts["artifacts"]):
+                raise ValueError("inconsistent artifact byte counts")
+            row["artifact_known_removed"] = known
+            row["artifact_known_logical_bytes_reclaimed"] = artifacts["known_logical_bytes_reclaimed"]
+            row["artifact_removed"] = artifacts["removed"]
+            row["artifact_logical_bytes_reclaimed"] = artifacts["logical_bytes_reclaimed"]
+            row["artifact_outcomes"] = artifacts["artifacts"]
+            row["artifact_batch_truncated"] = artifacts.get("truncated") is True
+            ordinary_artifacts = {"scratch_owner_unknown", "artifact_evidence_unknown", "desktop_session_liveness_unknown",
+                                  "orphan_checkout_work_state_unverifiable"}
+            action += [r["reason"] for r in artifacts["artifacts"] if r["outcome"] == "unknown" and r["reason"] not in ordinary_artifacts]
+            save(stamp, {"attempted_at": now, "artifact_cursor": artifacts["next_cursor"]})
+
             row["action"] = sorted(set(action))
             record(base, row)
             if action:
@@ -287,13 +332,65 @@ def main():
     group.add_argument("--register-repo")
     parser.add_argument("--min-interval", type=int, default=3600)
     parser.add_argument("--now", type=int, help="offline fixture clock")
+    parser.add_argument("--report", action="store_true", help="show persisted latest-run counts and logical bytes; never sweep")
+    parser.add_argument("--register-scratch", metavar="DIR")
+    parser.add_argument("--pr", type=int)
+    parser.add_argument("--owner-pid", type=int)
     args = parser.parse_args()
     if args.min_interval < 0:
         parser.error("interval must be nonnegative")
+    if (args.pr is not None or args.owner_pid is not None) and not args.register_scratch:
+        parser.error("--pr and --owner-pid require --register-scratch")
+    if args.register_scratch and (not args.repo_dir or args.report or not args.pr or not args.owner_pid):
+        parser.error("scratch registration requires --repo-dir, --pr and --owner-pid; never --report")
     now = int(time.time()) if args.now is None else args.now
     home = Path.home()
     base = home / ".claude/workspace-sweep"
     try:
+        if args.report:
+            if args.register_repo:
+                parser.error("--report requires --repo-dir or --configured")
+            rows, invalid, truncated = [], 0, False
+            selected = str(identity(args.repo_dir)[0]) if args.repo_dir else None
+            log = base / "runs.jsonl"
+            if log.exists():
+                with os.fdopen(private_open(log, os.O_RDONLY), "rb") as reader:
+                    reader.seek(0, os.SEEK_END)
+                    size = reader.tell()
+                    truncated = size > LIMIT
+                    reader.seek(max(0, size - LIMIT))
+                    raw = reader.read(LIMIT)
+                for line in raw.splitlines():
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict) and isinstance(row.get("repo"), str): rows.append(row)
+                        else: invalid += 1
+                    except ValueError:
+                        invalid += 1
+            latest = {}
+            for row in rows:
+                if args.configured or row.get("repo") == selected:
+                    latest[row["repo"]] = {key: row.get(key) for key in
+                        ("repo", "at", "trigger", "removed", "skipped_with_reason", "reasons", "action",
+                         "worktree_logical_bytes_reclaimed", "artifact_removed", "artifact_known_removed",
+                         "artifact_logical_bytes_reclaimed", "artifact_known_logical_bytes_reclaimed",
+                         "artifact_batch_truncated", "evidence", "artifact_evidence")}
+            print(json.dumps({"scope": "latest_retained_run_per_repository", "byte_basis": "logical file bytes, not physical blocks",
+                              "report_incomplete": bool(invalid or truncated), "invalid_lines": invalid,
+                              "repositories": list(latest.values())}))
+            return 0
+        if args.register_scratch:
+            if not args.repo_dir or args.report or not args.pr or not args.owner_pid:
+                parser.error("scratch registration requires --repo-dir, --pr and --owner-pid; never --report")
+            import workspace_artifacts as artifacts
+            try:
+                artifact = artifacts.Artifacts(args.repo_dir, home, now)
+                artifact.register_scratch(args.register_scratch, args.pr, args.owner_pid)
+            except (artifacts.finished.Unknown, artifacts.finished.Skip) as exc:
+                reason = str(exc)
+                if not reason.replace("_", "").isalpha() or len(reason) > 80: reason = "scratch_registration_unknown"
+                raise ValueError(reason) from None
+            return 0
         private_dir(base)
         if args.register_repo:
             root, key = identity(args.register_repo)

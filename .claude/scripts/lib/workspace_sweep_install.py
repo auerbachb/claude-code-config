@@ -64,7 +64,8 @@ def main():
     stable = home / ".claude/skills-worktree/.claude/scripts"
     scripts = stable if all((stable / p).is_file() for p in
                             ("workspace-sweep.sh", "lib/workspace_sweep.py",
-                             "stale-cleanup.sh", "lib/stale-cleanup-finished.py")) else local
+                             "stale-cleanup.sh", "lib/stale-cleanup-finished.py", "lib/workspace_artifacts.py",
+                             "handoff-state.sh", "state-lock.sh")) else local
     runner = scripts / "workspace-sweep.sh"
     if not runner.is_file():
         raise RuntimeError("workspace-sweep runner missing")

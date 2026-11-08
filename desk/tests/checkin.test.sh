@@ -129,7 +129,12 @@ item() {
 }
 # ev ITEM KIND 'YYYY-MM-DD HH:MM' — one event at that America/New_York time.
 ev() {
-  sql_in "INSERT INTO events (item_id, kind, at) VALUES ('$1', '$2', ('$3'::timestamp AT TIME ZONE 'America/New_York'))" >/dev/null
+  local out rc=0
+  out=$(sql_in "INSERT INTO events (item_id, kind, at) VALUES ('$1', '$2', ('$3'::timestamp AT TIME ZONE 'America/New_York'))" 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    bad "fixture event $2 for $1 at $3 failed (rc=$rc: $out)"
+  fi
+  return "$rc"
 }
 
 hq register-control desk-1
