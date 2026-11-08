@@ -15,6 +15,7 @@ opt-in of issue #1544.
 | Test | What it covers |
 |------|----------------|
 <!-- catalog:rows:begin -->
+| [ac-checkboxes.test.sh](../tests/ac-checkboxes.test.sh) | Exercise CommonMark AC extraction, exact REST mutation and gate parity with offline fixtures |
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
