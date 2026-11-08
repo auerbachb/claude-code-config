@@ -2183,7 +2183,7 @@ cursor_cached_email() { # <state-db>
 }
 
 cursor_token_for() { # <state-db>
-  local db="$1" payload pad
+  local db="$1" payload pad identity_result identity_reason
   CURSOR_TOKEN=""
   CURSOR_EMAIL=""
   CURSOR_USER_ID=""
@@ -2221,6 +2221,31 @@ cursor_token_for() { # <state-db>
   # readable account, so a missing email falls back to the label in emit_row.
   CURSOR_EMAIL="$(cursor_cached_email "$db")"
 
+  # Distinguish format changes from a missing subject without echoing any
+  # token/claim value. Do not guess identities from unrelated fields.
+  # Cursor 3.29.9's installed auth-storage codec seals these database values
+  # through Electron safeStorage; direct SQLite ciphertext is not a JWT.
+  case "$CURSOR_TOKEN" in
+    cursor-safe-storage:v1:*)
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+      CURSOR_TOKEN_DETAIL="the Cursor IDE stores this access token encrypted; use --browser with an already signed-in Chrome profile"
+      return 1
+      ;;
+  esac
+  if [[ ! "$CURSOR_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    CURSOR_TOKEN=""
+    CURSOR_USER_ID=""
+    CURSOR_TOKEN_STATUS="unreadable"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE state store holds an access token that is not shaped like a JWT"
+    return 1
+  fi
+  local jwt_shape='^[^.]+[.][^.]+[.][^.]+$'
+  if ! [[ "$CURSOR_TOKEN" =~ $jwt_shape ]]; then
+    CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE access token has an unsupported structure (expected three JWT parts)"
+    return 1
+  fi
+
   # The user id is the token's `sub` claim. Decoding a claim is not reading a
   # secret — the same reasoning codex_email_for documents — but the token
   # itself still never leaves these globals.
@@ -2233,9 +2258,47 @@ cursor_token_for() { # <state-db>
     elif [[ "$pad" -eq 1 ]]; then payload=""
     fi
   fi
+  # Payload travels only through stdin, never jq argv. Failure objects contain
+  # fixed reasons only; validate a string subject before shell newline trimming.
+  identity_result='{"reason":"payload_base64_invalid"}'
   if [[ -n "$payload" ]]; then
-    CURSOR_USER_ID="$(jq -rn --arg p "$payload" '($p | @base64d | fromjson | .sub // empty)' 2>/dev/null || true)"
+    identity_result="$(printf '%s' "$payload" | jq -Rsc '
+      (try {decoded: @base64d} catch {reason:"payload_base64_invalid"})
+      | if has("reason") then .
+        else (try {claim:(.decoded | fromjson)} catch {reason:"payload_json_invalid"}) end
+      | if has("reason") then .
+        elif (.claim | type) != "object" then {reason:"payload_not_object"}
+        elif (.claim | has("sub") | not) then {reason:"subject_missing"}
+        elif (.claim.sub | type) != "string" then {reason:"subject_not_string"}
+        elif .claim.sub == "" then {reason:"subject_empty"}
+        elif (.claim.sub | test("[^A-Za-z0-9._@|-]")) then {reason:"subject_unsafe"}
+        else {reason:"ok",subject:.claim.sub} end
+    ' 2>/dev/null)" || identity_result='{"reason":"decoder_unavailable"}'
   fi
+  identity_reason="$(printf '%s' "$identity_result" | jq -r '.reason // "decoder_unavailable"' 2>/dev/null)"
+  case "$identity_reason" in
+    ok)
+      CURSOR_USER_ID="$(printf '%s' "$identity_result" | jq -r '.subject' 2>/dev/null)" || {
+        CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+        CURSOR_TOKEN_DETAIL="the Cursor IDE JWT subject decoder could not run"
+        return 1
+      }
+      ;;
+    *)
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+      case "$identity_reason" in
+        payload_base64_invalid) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not valid base64url" ;;
+        payload_json_invalid) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not valid JSON" ;;
+        payload_not_object) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not an object" ;;
+        subject_missing) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload has no sub claim" ;;
+        subject_not_string) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is not a string" ;;
+        subject_empty) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is empty" ;;
+        subject_unsafe) CURSOR_TOKEN_DETAIL="the token's sub claim carries characters this reader will not put in a request header" ;;
+        *) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT subject decoder could not run" ;;
+      esac
+      return 1
+      ;;
+  esac
   # Only a LEADING `auth0|` comes off. Taking the segment after the final `|`
   # instead — the obvious-looking reading of "strip the provider prefix" — is
   # wrong and was measured wrong: this account's `sub` is
@@ -2245,7 +2308,7 @@ cursor_token_for() { # <state-db>
   if [[ -z "$CURSOR_USER_ID" ]]; then
     CURSOR_TOKEN=""
     CURSOR_TOKEN_STATUS="unreadable"
-    CURSOR_TOKEN_DETAIL="the Cursor IDE holds an access token this reader cannot read a user id out of (no decodable JWT sub claim)"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is empty after its auth0 prefix"
     return 1
   fi
 
@@ -2265,13 +2328,6 @@ cursor_token_for() { # <state-db>
     CURSOR_USER_ID=""
     CURSOR_TOKEN_STATUS="unreadable"
     CURSOR_TOKEN_DETAIL="the token's sub claim carries characters this reader will not put in a request header"
-    return 1
-  fi
-  if [[ ! "$CURSOR_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    CURSOR_TOKEN=""
-    CURSOR_USER_ID=""
-    CURSOR_TOKEN_STATUS="unreadable"
-    CURSOR_TOKEN_DETAIL="the Cursor IDE state store holds an access token that is not shaped like a JWT"
     return 1
   fi
   return 0
@@ -3186,6 +3242,7 @@ jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the r
 # Build actions from registered identity, never endpoint prose. The nullable
 # field is present on every final row, including successful fallback rows.
 jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001f\u007f]")) then null
+  elif .provider == "cursor" and .source == "browser" then "open the Cursor dashboard in Chrome and sign in"
   elif .provider == "cursor" then "open the Cursor IDE and sign in"
   elif .provider == "claude" or .provider == "codex" then
     "/quotas-setup relogin " + (if (.label|startswith("-")) then "-- " else "" end) + (.label | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end) + " " + .provider
