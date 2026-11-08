@@ -176,7 +176,7 @@ check_eq "no trigger and grant state unreadable (exit 3): fails closed, awaited"
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'LGTM')]" 0 3)"
 # All 100 fillers survive the since filter, so the invitation is row 101.
 pagination_fillers="$(jq -nc --argjson c "$(c 2026-11-06T15:01:00Z x)" '[range(100) | $c]')"
-pagination_invited="$pagination_fillers[$(c 2026-11-06T15:05:00Z '@cursor review')]"
+pagination_invited="${pagination_fillers}[$(c 2026-11-06T15:05:00Z '@cursor review')]"
 pagination_start=$(wc -l <"$GH_CALL_LOG")
 check_eq "page-two invitation is awaited" 1 "$(run_5d "$pagination_invited")"
 pagination_requests() {
@@ -204,7 +204,7 @@ pagination_decision=$(PATH="$TMP/bin:$PATH" GH_STUB_FILE="$TMP/comments.json" GR
 check_eq "page-two invitation is a known current-head invitation" 'true known current_head_invited' \
   "$(jq -r '[.awaited,.certainty,.reason] | map(tostring) | join(" ")' <<<"$pagination_decision")"
 pagination_start=$(wc -l <"$GH_CALL_LOG")
-check_eq "two pages without invitation produce a clean negative" 0 "$(run_5d "$pagination_fillers[$(c 2026-11-06T15:05:00Z x)]")"
+check_eq "two pages without invitation produce a clean negative" 0 "$(run_5d "${pagination_fillers}[$(c 2026-11-06T15:05:00Z x)]")"
 pagination_requests "$pagination_start"
 check_eq "negative control really read page two" 0 "$?"
 check_eq "negative control checked the exact-head grant" "--check 7 --vendor cursor --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --repo o/r" "$(cat "$TMP/grant.log")"
