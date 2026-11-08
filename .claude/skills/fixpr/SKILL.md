@@ -854,31 +854,35 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 - `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
 - `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop. Not for a retired Graphite check-run: Step 5c already excludes it from CI and nothing waits on it.
 - No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a CodeRabbit or CodeAnt that Step 3b logged as `skipping … — review tier …` (kind `excluded`) was never invited, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
-- **BugBot silence** is decided by invitation, not by Step 3b's wording (#1953): BugBot is paid, so a `deferring @cursor review` (CI pending) or a daily-cap skip does not mean anyone will invite it. It is awaited — `REVIEW_PENDING` — only when a `@cursor review` trigger was posted after the push by any author (Step 3b's grant, `maybe-trigger-ai-review.sh`, a person), or an unused owner grant for this HEAD is still waiting to be spent. Otherwise it was never invited and its silence is not `REVIEW_PENDING`. An unreadable comment list fails closed (awaited):
+- **BugBot silence** is decided by invitation, not by Step 3b's wording (#1953): BugBot is paid, so a `deferring @cursor review` (CI pending) or a daily-cap skip does not mean anyone will invite it. It is awaited — `REVIEW_PENDING` — only when a `@cursor review` trigger was posted after the push by any author (Step 3b's grant, `maybe-trigger-ai-review.sh`, a person), or an unused owner grant for this HEAD is still waiting to be spent. Otherwise it was never invited and its silence is not `REVIEW_PENDING`. On no-push reruns, ignore inherited `PUSHED_AT`/`PUSHED_SHA`; the helper verifies the live current HEAD and uses server push/force-push history bound to that SHA/ref. It retains invitations issued before the rerun and never substitutes the rerun start, commit date or another head's workflow time. History can lag or expire; missing, truncated or inconsistent evidence is explicitly unknown/awaited. Empty invitation history still requires a readable exact-HEAD grant check. All reads are bounded (at most three 100-row pages per endpoint, 10 seconds per command). The result's private evidence file contains only heads/timestamps/counts and fixed failure classes, not comment bodies or credentials. Retain `BUGBOT_INVITATION_RESULT` with the existing Step 5 recovery evidence; no new state file is an authority for future decisions. This helper only reads and checks grants; it never posts a trigger or consumes one. An unreadable source fails closed (awaited):
 
 <!-- test-anchor: fixpr-step-5d-bugbot-invited -->
 ```bash
-BUGBOT_AWAITED=1   # fail closed until the evidence says otherwise
-if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-    --jq '[.[] | {created_at, body}]'); then
-  INVITED_RC=0
-  jq -s -e --arg since "$PUSHED_AT" '[.[][]? | select((.created_at // "") >= $since)
-      | select((.body // "") | test("^\\s*@cursor\\s+review\\b"))] | length > 0' \
-    <<<"$CURSOR_TRIGGER_COMMENTS" >/dev/null 2>&1 || INVITED_RC=$?
-  if (( INVITED_RC == 0 )); then
-    BUGBOT_AWAITED=1   # invited on this HEAD
-  elif (( INVITED_RC == 1 )); then
+BUGBOT_AWAITED=1   # unknown/missing tooling never means "not invited"
+BUGBOT_INVITATION_SH=""
+for _candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-invitation.sh" \
+  "$HOME/.claude/scripts/bugbot-invitation.sh" \
+  ".claude/scripts/bugbot-invitation.sh"; do
+  if [[ -x "$_candidate" ]]; then BUGBOT_INVITATION_SH="$_candidate"; break; fi
+done
+INVITATION_HEAD="${HEAD_SHA:-}"
+INVITATION_ARGS=(--repo "$OWNER/$REPO" --pr "$PR_NUMBER" --head "$INVITATION_HEAD" --grant-helper "${PAID_GRANT_SH:-}")
+if [[ "${DID_PUSH:-0}" == 1 ]]; then
+  INVITATION_HEAD="${PUSHED_SHA:-}"
+  INVITATION_ARGS=(--repo "$OWNER/$REPO" --pr "$PR_NUMBER" --head "$INVITATION_HEAD" --grant-helper "${PAID_GRANT_SH:-}" --pushed-sha "${PUSHED_SHA:-}" --pushed-at "${PUSHED_AT:-}")
+fi
+if [[ -z "$BUGBOT_INVITATION_SH" ]]; then
+  echo "DEGRADED: bugbot-invitation.sh not found (checked all three paths) — invitation verdict unknown"
+elif BUGBOT_INVITATION_RESULT=$("$BUGBOT_INVITATION_SH" "${INVITATION_ARGS[@]}") && \
+  jq -s -e --arg sha "$INVITATION_HEAD" 'length == 1 and (.[0] | type == "object" and .head_sha == $sha and (.awaited|type == "boolean") and (.certainty == "known" or .certainty == "unknown"))' <<<"$BUGBOT_INVITATION_RESULT" >/dev/null; then
+  if jq -e '.certainty == "known" and .awaited == false' <<<"$BUGBOT_INVITATION_RESULT" >/dev/null; then
     BUGBOT_AWAITED=0
-    if [[ -z "$PAID_GRANT_SH" ]]; then
-      echo "DEGRADED: paid-review-grant.sh not found (checked all three paths) — an approved, not-yet-spent BugBot grant cannot be seen"
-    else
-      # Exit 0 = an unused grant (awaited); exit 1 = no grant (not awaited). Any
-      # other exit — 3 grant_unreadable included — fails closed (awaited).
-      GRANT_CHECK_RC=0
-      "$PAID_GRANT_SH" --check "$PR_NUMBER" --vendor cursor --head "${PUSHED_SHA:-$HEAD_SHA}" --repo "$OWNER/$REPO" >/dev/null 2>&1 || GRANT_CHECK_RC=$?
-      (( GRANT_CHECK_RC == 1 )) || BUGBOT_AWAITED=1
-    fi
+  elif jq -e '.certainty == "unknown"' <<<"$BUGBOT_INVITATION_RESULT" >/dev/null; then
+    jq -r '"DEGRADED: BugBot invitation unknown (" + .reason + "); evidence: " + .evidence_path' <<<"$BUGBOT_INVITATION_RESULT"
   fi
+else
+  echo "DEGRADED: BugBot invitation reader failed — retain pending state and recovery evidence"
 fi
 echo "BUGBOT_AWAITED=$BUGBOT_AWAITED"
 ```
