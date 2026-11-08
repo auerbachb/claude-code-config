@@ -3111,17 +3111,36 @@ export BROWSER_STUB_NOW="$NOW"
 : > "$BROWSER_STUB_LOG"
 cat > "$AI_QUOTAS_BROWSER_CLI" <<'BROWSER_STUB'
 #!/usr/bin/env python3
-import json, os, sys, shlex
+import json, os, sys, shlex, subprocess
 with open(os.environ['BROWSER_STUB_LOG'], 'a') as log: log.write('read\n')
 sys.stdin.read()  # A CLI that reads stdin must not consume remaining source names.
 assert '--chrome' in sys.argv and '--settings' in sys.argv
 if os.environ.get('BROWSER_STUB_STAGE'):
  from pathlib import Path
  settings=json.loads(sys.argv[sys.argv.index('--settings')+1])
- evidence=Path(shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])[-1])
+ evidence=Path(shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])[3])
  evidence.write_text(json.dumps(dict(last_failure=os.environ['BROWSER_STUB_STAGE'],owned_tab=False,read_authorized=False)));evidence.chmod(0o600)
 if os.environ.get('BROWSER_STUB_FAIL'):
  print('BROWSER-RAW-SECRET-SENTINEL',file=sys.stderr);sys.exit(1)
+# Successful fixtures exercise the actual private hook path rather than minting
+# a receipt or treating plausible model JSON as a completed native read.
+if not os.environ.get('BROWSER_STUB_STATUS'):
+ settings=json.loads(sys.argv[sys.argv.index('--settings')+1])
+ command=shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])
+ tab=42;url='https://cursor.com/dashboard?tab=usage'
+ def event(name,params,phase='PreToolUse',response=None):
+  data=dict(hook_event_name=phase,tool_name='mcp__claude-in-chrome__'+name,
+            tool_input=params,tool_response=response,tool_use_id='toolu_quota_fixture_'+name)
+  result=subprocess.run(command,input=json.dumps(data),text=True,capture_output=True,check=True)
+  if phase=='PreToolUse':assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision']=='allow'
+ event('tabs_create_mcp',{})
+ event('tabs_create_mcp',{},'PostToolUse',[{'type':'text','text':'Created new tab. Tab ID: 42'}])
+ event('navigate',dict(tabId=tab,url=url))
+ event('navigate',dict(tabId=tab,url=url),'PostToolUse',[{'type':'text','text':'Navigated to '+url}])
+ event('tabs_context_mcp',{})
+ event('tabs_context_mcp',{},'PostToolUse',[{'type':'text','text':json.dumps({'availableTabs':[dict(tabId=tab,url=url)]})}])
+ event('read_page',dict(tabId=tab))
+ event('read_page',dict(tabId=tab),'PostToolUse',[{'type':'text','text':'Synthetic quota fixture usage: 37%'}])
 print(json.dumps({'structured_output': {'schema_version':1, 'provider':'cursor',
   'label':os.environ['BROWSER_STUB_LABEL'], 'email':'cursor-fixture@example.com',
   'status':os.environ.get('BROWSER_STUB_STATUS','ok'), 'observed_at_epoch':int(os.environ['BROWSER_STUB_NOW']),

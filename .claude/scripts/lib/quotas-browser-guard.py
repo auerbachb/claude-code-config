@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Bind a read-only browser bridge to its own freshly created usage tab."""
 import json
+import contextlib
+import fcntl
+import hashlib
 import os
 from pathlib import Path
 import re
 import stat
 import sys
 import tempfile
+import time
 
 PREFIX = 'mcp__claude-in-chrome__'
 URL = 'https://cursor.com/dashboard?tab=usage'
@@ -278,24 +282,162 @@ def decide(event, state):
     return allowed
 
 
+def private_write(path, value):
+    """Publish bounded controller state before exposing its private pathname."""
+    temporary = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix='.quota-proof-', dir=path.parent)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+@contextlib.contextmanager
+def state_lock(path):
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, 'a') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o077:
+            raise ValueError('unsafe_lock')
+        deadline = time.monotonic() + 4
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ValueError('busy_lock')
+                time.sleep(.02)
+        yield
+
+
+def private_state(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {}
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_size > 16384:
+            raise ValueError('unsafe_state')
+        value = json.loads(stream.read(16385))
+    if not isinstance(value, dict):
+        raise ValueError('state_shape')
+    return value
+
+
+def fail_proof(path):
+    """A denial/failure cannot race a later post event back into success."""
+    try:
+        fd = os.open(str(path) + '.failed', os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+
+
+def read_key(event, state, attempt):
+    identity = event.get('tool_use_id')
+    params = event.get('tool_input')
+    if not isinstance(identity, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', identity) or not isinstance(params, dict):
+        return None
+    requested = tab_id(params.get('tabId', params.get('tab_id')))
+    if requested is None or requested != state.get('tab'):
+        return None
+    # Persist no tool ID, input payload or tab identifier in the new proof.
+    return hashlib.sha256((attempt + '\0' + identity + '\0' + event['tool_name'] + '\0' + str(requested)).encode()).hexdigest()
+
+
+def supported_read(response):
+    """Observed Claude2.1.312 native MCP PostToolUse content-block list only."""
+    return (isinstance(response, list) and 0 < len(response) <= 64 and not tool_failed(response)
+            and all(isinstance(block, dict) and block.get('type') == 'text' and isinstance(block.get('text'), str)
+                    for block in response)
+            and any(block['text'].strip() for block in response))
+
+
+def bind_proof(path, attempt, event, prior, state, allowed, failed=False):
+    phase, name = event.get('hook_event_name'), event.get('tool_name', '')
+    reads = (PREFIX + 'read_page', PREFIX + 'get_page_text')
+    state['proof_attempt'] = attempt
+    used = prior.get('proof_used_ids', [])
+    if isinstance(used, list) and len(used) <= 32 and all(isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key) for key in used):
+        state['proof_used_ids'] = used
+    else:
+        allowed, failed = False, True
+    if failed or phase == 'PostToolUseFailure' or (phase == 'PreToolUse' and not allowed):
+        fail_proof(path)
+        state.pop('proof_pending', None)
+        private_write(path, dict(schema_version='1.0', attempt=attempt, completed_reads=0))
+        return allowed
+    if phase == 'PreToolUse' and name in reads:
+        key = read_key(event, state, attempt)
+        if not key or key in used or len(used) >= 32:
+            fail_proof(path)
+            allowed = False
+            key = None
+        else:
+            state['proof_used_ids'] = used + [key]
+        state['proof_pending'] = key
+        private_write(path, dict(schema_version='1.0', attempt=attempt, completed_reads=0))
+    elif phase == 'PostToolUse' and name in reads:
+        key = read_key(event, state, attempt)
+        complete = bool(key and key == prior.get('proof_pending') and supported_read(event.get('tool_response')))
+        state.pop('proof_pending', None)
+        if not complete:
+            fail_proof(path)
+        complete = complete and not os.path.lexists(str(path) + '.failed')
+        private_write(path, dict(schema_version='1.0', attempt=attempt, completed_reads=int(complete)))
+    elif name.startswith(PREFIX):
+        state.pop('proof_pending', None)
+        private_write(path, dict(schema_version='1.0', attempt=attempt, completed_reads=0))
+    return allowed
+
+
 def main():
     """Persist only private tab metadata and return a fixed permission decision."""
-    observed, prior, failed = {}, {}, False
+    observed, prior, failed, proof, attempt = {}, {}, False, None, None
     try:
-        event = json.load(sys.stdin)
-        observed = event if isinstance(event, dict) else {}
+        # Resolve the controller's fixed proof destination before parsing an event,
+        # so malformed/oversized input also revokes any earlier completion.
         path = Path(sys.argv[1])
-        state = json.loads(path.read_text()) if path.exists() else {}
-        prior = dict(state) if isinstance(state, dict) else {}
-        allowed = decide(event, state)
-        path.write_text(json.dumps(state))
-        path.chmod(0o600)
+        if len(sys.argv) > 3:
+            proof, attempt = Path(sys.argv[3]), sys.argv[4]
+            if not re.fullmatch(r'[0-9a-f]{64}', attempt):
+                raise ValueError('attempt')
+        raw = sys.stdin.buffer.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise ValueError('event_limit')
+        event = json.loads(raw)
+        observed = event if isinstance(event, dict) else {}
+        if not observed or observed.get('hook_event_name') not in ('PreToolUse', 'PostToolUse', 'PostToolUseFailure'):
+            raise ValueError('event_shape')
+        with state_lock(path):
+            state = private_state(path)
+            prior = dict(state)
+            if proof and prior.get('proof_attempt') != attempt:
+                allowed, failed = False, True
+                state.clear()
+            elif observed['hook_event_name'] == 'PostToolUseFailure':
+                allowed = False
+                state['navigated'] = False
+            else:
+                allowed = decide(event, state)
+            if proof:
+                allowed = bind_proof(proof, attempt, event, prior, state, allowed, failed)
+            private_write(path, state)
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RecursionError):
         failed = True
         allowed = False
-        event = {}
-    record_evidence(sys.argv[2] if len(sys.argv) > 2 else '', observed, prior, allowed, failed)
-    if event.get('hook_event_name') == 'PostToolUse':
+        if proof:
+            with contextlib.suppress(OSError, ValueError):
+                fail_proof(proof)
+                private_write(proof, dict(schema_version='1.0', attempt=attempt, completed_reads=0))
+    if observed.get('hook_event_name') != 'PostToolUseFailure':
+        record_evidence(sys.argv[2] if len(sys.argv) > 2 else '', observed, prior, allowed, failed)
+    if observed.get('hook_event_name') in ('PostToolUse', 'PostToolUseFailure'):
         print('{}')
     else:
         print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse',
