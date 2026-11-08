@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
+import sys
 import tempfile
 import time
 import unittest
@@ -186,6 +188,82 @@ class ChildProgressTest(unittest.TestCase):
         self.assertEqual(self.command('--tick'), '')
         self.command('--clear')
         self.assertFalse(self.cache.exists())
+
+
+    def test_unicode_runtime_notices_fit_without_losing_dedup(self):
+        rows = [dict(self.row, task_id='界'*250+('%06d'%n)) for n in range(200)]
+        self.inventory['repos']['fixture/repo']['background_tasks'] = rows
+        self.publish()
+        self.assertEqual(self.command('--tick'), '')
+        self.age_observation()
+        notice = self.command('--tick')
+        self.assertEqual(notice.count('CHILD STALL SUSPECT'), 200)
+        self.assertLessEqual(len(notice.encode()), 256*1024)
+        self.assertEqual(self.command('--tick'), '')
+        self.assertFalse((self.private/'pending-cache.json').exists())
+
+    def observer_process(self, code):
+        helper = self.script.parent/'lib/bgwork-child-progress.py'
+        setup = "import importlib.util,os,signal,sys\nfrom pathlib import Path\nspec=importlib.util.spec_from_file_location('observer_fixture',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\n"
+        return subprocess.run([sys.executable,'-c',setup+code,str(helper),self.session,
+                               str(self.root/('claude-bgprogress-'+self.session)),str(self.cache)],
+                              env=self.env,capture_output=True,timeout=8,start_new_session=True)
+
+    def test_failed_caller_delivery_does_not_commit_notice_dedup(self):
+        self.command('--tick')
+        self.age_observation()
+        before = self.cache.read_bytes()
+        result = self.observer_process("""
+class BrokenBuffer:
+ def write(self,value): raise OSError('fixture delivery failed')
+ def flush(self): pass
+class Sink:
+ buffer=BrokenBuffer()
+ def write(self,value): return len(value)
+ def flush(self): pass
+m.sys.stdout=Sink()
+m.main(sys.argv[2],sys.argv[3])
+""")
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.cache.read_bytes(),before)
+        self.assertTrue((self.private/'pending-cache.json').exists())
+        self.assertIn('CHILD STALL SUSPECT',self.command('--tick'))
+        self.assertEqual(self.command('--tick'),'')
+
+    def test_observer_killed_after_pending_write_retries_notice(self):
+        self.command('--tick')
+        self.age_observation()
+        before = self.cache.read_bytes()
+        result = self.observer_process("""
+original=m.private_write
+def interrupted_write(path,body):
+ original(path,body)
+ if path.name=='pending-cache.json':os.kill(os.getpid(),signal.SIGKILL)
+m.private_write=interrupted_write
+m.observe(sys.argv[2],Path(sys.argv[4]))
+""")
+        self.assertEqual(result.returncode,-signal.SIGKILL,result.stderr)
+        self.assertEqual(self.cache.read_bytes(),before)
+        self.assertTrue((self.private/'pending-cache.json').exists())
+        self.assertIn('CHILD STALL SUSPECT',self.command('--tick'))
+        self.assertEqual(self.command('--tick'),'')
+        self.command('--clear')
+        self.assertFalse((self.private/'pending-cache.json').exists())
+
+    def test_output_overflow_leaves_prior_dedup_until_recoverable(self):
+        repo='o'*100+'/'+('r'*100)
+        rows=[dict(self.row,repo_key=repo,task_id='😀'*250+('%06d'%n)) for n in range(200)]
+        self.inventory={'repos':{repo:{'background_tasks':rows}}}
+        self.publish()
+        self.assertEqual(self.command('--tick'),'')
+        self.age_observation()
+        before=self.cache.read_bytes()
+        self.assertIn('CHILD PROGRESS UNKNOWN',self.command('--tick'))
+        self.assertEqual(self.cache.read_bytes(),before)
+        self.inventory['repos'][repo]['background_tasks']=rows[:1]
+        self.publish()
+        self.assertIn('CHILD STALL SUSPECT',self.command('--tick'))
+        self.assertEqual(self.command('--tick'),'')
 
 
 if __name__ == '__main__':

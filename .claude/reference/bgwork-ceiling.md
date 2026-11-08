@@ -116,3 +116,16 @@ An Agent's declared output/checkpoint files must be readable regular files. Stat
 | Missing/corrupt inventory, artifact or observation | Unknown notice, retained diagnostic and existing gate refusal | Silence is not a passing result |
 
 No scheduler, new persistent watch, runtime stopping, summarizer or unchanged-tick inference gate is introduced. Issue #1878 owns inference filtering. Other historical narration consumers (such as older table-floor and unrelated skill examples) remain subject to the canonical policy; this change does not claim every installed prompt has been reconciled. Tests cover emitted instructions through real hooks, not model-side semantic classification or measured token savings.
+
+### Child notice delivery and dedup publication
+
+The observer stages private `pending-cache.json` and bounded UTF-8 notices. The
+parent verifies the output and candidate state, writes and flushes notices to
+its immediate caller, then publishes the dedup cache. Oversized output, an
+interrupted observer or failed delivery cannot record an undelivered notice as
+already emitted. Later ticks retry from the previous cache; a failure after
+delivery but before publication may repeat a notice. This is at-least-once
+delivery at the caller boundary, not an acknowledgment from the ultimate UI.
+Pending state is not authoritative; `--clear` removes it. The existing200-child,
+256KiB notice,1MiB cache and3-second probe bounds remain. Overflow stays unknown
+and retains previous dedup state; it does not certify progress or stop a child.

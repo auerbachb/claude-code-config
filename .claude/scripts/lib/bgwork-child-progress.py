@@ -198,16 +198,21 @@ def observe(session, cache_path):
             if notice and notice != old.get('notice'):
                 label = 'CHILD STALL SUSPECT' if condition == 'suspect' else 'CHILD PROGRESS UNKNOWN'
                 detail = ('no changed child artifact for %ds' % (now-last)) if condition == 'suspect' else condition
-                notices.append(label + ': repo=' + json.dumps(repo) + ' runtime=' + json.dumps(task)
+                notices.append(label + ': repo=' + json.dumps(repo, ensure_ascii=False) + ' runtime=' + json.dumps(task, ensure_ascii=False)
                                + ' ' + detail + '. Investigate child evidence; parent heartbeats do not prove progress. Do not stop or respawn from this notice.')
     # Exact runtime/generation keys disappear when terminal or absent; a later
     # runtime never inherits an earlier task's inactivity or notification.
     raw_cache = json.dumps(dict(session=session, tasks=current, observed_at=now)).encode()
     if len(raw_cache) > 1024 * 1024:
         raise Unknown('cache_publish_limit')
-    private_write(cache_path, raw_cache)
-    for line in notices:
-        print(line)
+    raw_output = ''.join(line + '\n' for line in notices).encode('utf-8')
+    if len(raw_output) > 256 * 1024:
+        raise Unknown('progress_output_limit')
+    # Pending state never suppresses a notice. The parent owns promotion after
+    # successful bounded delivery; a killed observer leaves the old dedup live.
+    private_write(cache_path.with_name('pending-cache.json'), raw_cache)
+    sys.stdout.buffer.write(raw_output)
+    sys.stdout.buffer.flush()
 
 
 def main(session, prefix, clear=False):
@@ -223,7 +228,7 @@ def main(session, prefix, clear=False):
         cache, failure = directory/'cache.json', directory/'unknown'
         with private_lock(directory/'lock'):
             if clear:
-                for name in ('cache.json', 'unknown', 'diagnostic'):
+                for name in ('cache.json', 'pending-cache.json', 'unknown', 'diagnostic'):
                     (directory/name).unlink(missing_ok=True)
                 return
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
@@ -249,8 +254,20 @@ def main(session, prefix, clear=False):
                     raise Unknown('progress_probe_failed')
                 if output.tell() > 256 * 1024:
                     raise Unknown('progress_output_limit')
+                pending = directory/'pending-cache.json'
+                raw_cache = private_read(pending, 1024 * 1024)
+                try:
+                    candidate = json.loads(raw_cache)
+                except ValueError as exc:
+                    raise Unknown('cache_publish_shape_invalid') from exc
+                if (not isinstance(candidate, dict) or candidate.get('session') != session
+                        or not isinstance(candidate.get('tasks'), dict)):
+                    raise Unknown('cache_publish_shape_invalid')
                 output.seek(0)
                 sys.stdout.buffer.write(output.read())
+                sys.stdout.buffer.flush()
+                private_write(cache, raw_cache)
+                pending.unlink(missing_ok=True)
                 failure.unlink(missing_ok=True)
     except (Unknown, OSError, subprocess.SubprocessError) as exc:
         reason = str(exc) if isinstance(exc, Unknown) else 'progress_probe_unavailable'
