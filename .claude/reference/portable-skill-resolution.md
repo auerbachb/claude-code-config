@@ -211,7 +211,7 @@ routing or safety behavior rather than merely reducing output quality.
 | `issue-dedup.sh` | issue-maker, start-issue, pm-worker | fallback | optional | Already resolved before #1189. |
 | `pr-preflight.sh`, `release-sweep.sh` | pr-monitor-and-manage | fallback | optional | Already resolved before #1189. |
 | `cr-plan.sh` | subagent, start-issue | fallback | optional | Absence means no CR plan poll; the issue-body merge is still required. |
-| `ac-checkboxes.sh` | subagent | fallback | optional | |
+| `ac-checkboxes.sh` | subagent | fallback | optional | Requires sibling `lib/ac-checkbox-markers.sh`; bootstrap ships the same library for the CI gate. |
 | `escalate-review.sh` | subagent | fallback | required | Drives the reviewer escalation chain. |
 | `bugbot-invitation.sh` | fixpr | fallback | required | Missing/unreadable → unknown and awaited, with a visible diagnostic; reads only, never triggers or consumes a grant. |
 | `local-review.sh` | pm, subagent, prompt (chip text) | fallback | optional | Missing → self-review fallback per `cr-local-review.md`. |
