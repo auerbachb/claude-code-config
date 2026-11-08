@@ -1448,6 +1448,87 @@ case "$LIB_PROBE" in
   *) ok "ledger: library sum/allocate/prorate/receipt rules hold ($LIB_PROBE)" ;;
 esac
 
+# Inline-404 fallback verdicts (Issue #1829). Use actual ledger and collector
+# functions; all account identities, bodies, API pages and timestamps are fake.
+FALLBACK_F="$TMP_DIR/fallback-verdicts.json"
+FALLBACK_EXPECTED="$TMP_DIR/fallback-expected.json"
+FALLBACK_PROBE=$(python3 - "$REPO_ROOT" "$FALLBACK_F" "$FALLBACK_EXPECTED" <<'PY'
+import ast, copy, json, pathlib, sys
+root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root/'.claude/scripts/lib'))
+import review_ledger as L
+checks=[];prs=[];expected={'findings':0,'valid':0,'real_defects':0,'declined':0,'unanswered':0}
+identity='4504967588'
+def marker(verdict,real=False):
+    return '<!-- review-verdict: %s defect=%s agent=codex fix=adapted -->'%(verdict,'real' if real else 'not')
+def reply(body,at='2025-10-02T02:00:00Z',kind='User',login='fixture-owner'):
+    return dict(user=login,user_type=kind,body=body,created_at=at)
+def fallback(body,**kw):return reply('<!-- review-comment-id:'+identity+' -->\n'+body,**kw)
+def case(name,inline,conversation,verdict,real=False,root_id=identity):
+    pr=dict(number=len(prs)+1,merged_at='2025-10-03T00:00:00Z',threads=[dict(comments=[dict(id=root_id,user='codeant-ai[bot]',user_type='Bot',body='finding')]+inline)],issue_comments=conversation)
+    tally=L.measure_value([pr],'fixture/fallback',{'codeant-ai[bot]':'codeant'},['codeant'])[0]['codeant']
+    result='valid' if verdict in ('fixed','deferred') else verdict
+    checks.append((name,tally[result]==1 and tally['real_defects']==int(real)))
+    expected['findings']+=1;expected[result]+=1;expected['real_defects']+=int(real);prs.append(pr)
+case('matched-64bit-id',[],[fallback(marker('fixed',True))],'fixed',True)
+case('unmatched-id',[],[reply('<!-- review-comment-id:999 -->\n'+marker('fixed'))],'unanswered')
+case('bot-account',[],[fallback(marker('fixed'),kind='Bot')],'unanswered')
+case('bot-login-despite-type',[],[fallback(marker('fixed'),login='impostor[bot]')],'unanswered')
+case('later-inline-marker',[reply(marker('fixed',True),'2025-10-02T03:00:00Z')],[fallback(marker('declined'))],'fixed',True)
+case('later-fallback-marker',[reply(marker('fixed'),'2025-10-02T01:00:00Z')],[fallback(marker('declined'))],'declined')
+case('marker-beats-later-wording',[reply(marker('fixed'),'2025-10-02T01:00:00Z')],[fallback('Declined: deliberate behavior')],'fixed')
+case('latest-wording',[reply('Fixed in the implementation','2025-10-02T01:00:00Z')],[fallback('Declined: deliberate behavior')],'declined')
+for name,body in [('quoted','> <!-- review-comment-id:'+identity+' -->\n'),('later-line','Discussion\n<!-- review-comment-id:'+identity+' -->\n'),('fenced','```html\n<!-- review-comment-id:'+identity+' -->\n```\n')]:
+    case(name,[],[reply(body+marker('fixed'))],'unanswered')
+case('missing-author-type',[],[fallback(marker('fixed'),kind='')],'unanswered')
+case('non-numeric-root',[],[fallback(marker('fixed'))],'unanswered',root_id='PRRC_node')
+case('integer-root-id',[],[fallback(marker('fixed'))],'fixed',root_id=4504967588)
+case('unordered-fallbacks',[],[fallback(marker('declined'),at='2025-10-02T03:00:00Z'),fallback(marker('fixed'),at='2025-10-02T01:00:00Z')],'declined')
+case('whitespace-first-line',[],[reply('\n  <!-- review-comment-id: '+identity+' -->  \n'+marker('fixed'))],'fixed')
+case('undated-legacy-replies',[reply(marker('fixed'),None)],[fallback(marker('declined'),at=None)],'declined')
+# Identity cannot cross PRs, and duplicate roots within one PR are ambiguous.
+case('other-pr-no-fallback',[],[],'unanswered')
+ambiguous=copy.deepcopy(prs[0]);ambiguous['threads']*=2
+result=L.measure_value([ambiguous],'fixture/fallback',{'codeant-ai[bot]':'codeant'},['codeant'])[0]['codeant']
+checks.append(('ambiguous-roots',result['unanswered']==2 and result['valid']==0))
+checks.append(('invalid-identities',all(L.review_comment_id(x) is None for x in (True,None,0,-1,1.5,'1.0','01','PRRC_x','9'*20))))
+# Execute the actual collector functions with fake raw REST/GraphQL boundaries.
+source=(root/'.claude/skills/review-stack-audit/measure.sh').read_text().split("python3 - <<'PY'\n",1)[1].rsplit('\nPY',1)[0]
+tree=ast.parse(source);parts=[]
+for node in tree.body:
+    if isinstance(node,ast.FunctionDef) and node.name in ('fetch_prs','fetch_threads'):parts.append(node)
+    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='THREADS_QUERY' for t in node.targets):parts.append(node)
+ns=dict(ledger=L,search_range='merged:fixture',limit=10,fail=lambda text:(_ for _ in ()).throw(RuntimeError(text)))
+raw=[{'id':4504967588,'user':{'login':'fixture-owner','type':'User'},'body':'body','created_at':'2025-10-02T00:00:00Z'}]
+page={'data':{'repository':{'pullRequest':{'createdAt':'2025-10-01T00:00:00Z','headRefOid':'a'*40,'reviewThreads':{'nodes':[{'comments':{'totalCount':1,'nodes':[{'fullDatabaseId':identity,'author':{'__typename':'Bot','login':'codeant-ai'},'body':'finding','createdAt':'2025-10-01T01:00:00Z'}]}}]}}}}}
+def api(args):
+    if args[:2]==['pr','list']:return [{'number':1,'mergedAt':'2025-10-03T00:00:00Z'}]
+    if args[:2]==['api','graphql']:
+        assert any('fullDatabaseId' in x for x in args);return page
+    return raw
+ns.update(run_gh=api,fetch_bugbot_runs=lambda repo,num:([],[]))
+exec(compile(ast.Module(body=parts,type_ignores=[]),'<actual collector>','exec'),ns)
+collected=ns['fetch_prs']('fixture/fallback')[0]
+checks.append(('collector-rest-type-id',collected['issue_comments'][0]['id']==identity and collected['issue_comments'][0]['user_type']=='User'))
+checks.append(('collector-graphql-bigint',collected['threads'][0]['comments'][0]['id']==identity and collected['threads'][0]['comments'][0]['user']=='codeant-ai[bot]'))
+pathlib.Path(sys.argv[2]).write_text(json.dumps(dict(repo='fixture/fallback',prs=prs)))
+pathlib.Path(sys.argv[3]).write_text(json.dumps(expected))
+print(';'.join('%s=%s'%(name,'ok' if value else 'BAD') for name,value in checks))
+PY
+)
+case "$FALLBACK_PROBE" in
+  *BAD*|"") fail "fallback: attribution/order/collector probe failed: $FALLBACK_PROBE" ;;
+  *) ok "fallback: matched, unmatched, bot, chronology, identity and actual collector controls ($FALLBACK_PROBE)" ;;
+esac
+"$MEASURE" --fixture "$FALLBACK_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/fallback.out.json" \
+  || fail 'fallback: actual measure fixture failed'
+if python3 - "$TMP_DIR/fallback.out.json" "$FALLBACK_EXPECTED" <<'PY'
+import json,sys
+actual=next(t for t in json.load(open(sys.argv[1]))['tools'] if t['key']=='codeant')
+expected=json.load(open(sys.argv[2]))
+assert all(actual[k]==v for k,v in expected.items()),(actual,expected)
+PY
+then ok 'fallback: actual ledger CLI tallies every fixture verdict'; else fail 'fallback: actual ledger CLI disagrees with expected tallies'; fi
+
 # The real pricing matrix: one well-formed block covering all five tools, every
 # figure (rates AND caps) carrying unit, source and retrieved; unknown values
 # null, never 0; Greptile's flex cap recorded.

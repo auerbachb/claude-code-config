@@ -42,7 +42,8 @@ MONEY IS DECIMAL
 WHAT A FINDING WAS WORTH (issue #1810, increment 3/5)
   Every review thread a tool opens is one finding, and the replies to it carry
   its verdict: `fixed`, `deferred`, `declined`, or `unanswered`. Only replies
-  after the first comment, from a GitHub `User` account, count. An explicit
+  after the first comment, or attributed PR-level fallbacks, from a GitHub
+  `User` account, count. An explicit
   `<!-- review-verdict: ... -->` marker beats wording, and only a marker can
   say a finding was a real defect. The per-tool value fields (precision, cost
   per real defect, median response time) are derived here; the rules are
@@ -660,6 +661,56 @@ def is_user_reply(comment):
     return comment.get("user_type") == "User" and not login.lower().endswith("[bot]")
 
 
+def review_comment_id(value):
+    """Canonical positive REST/GraphQL BigInt identity; never an opaque node ID."""
+    if type(value) is int:
+        value = str(value)
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,18}", value):
+        return None
+    return value if int(value) <= 9223372036854775807 else None
+
+
+def fallback_replies(pr):
+    """Index attributed conversation replies by a unique finding ID in this PR."""
+    counts = {}
+    for thread in _as_list(pr.get("threads")):
+        comments = _as_list(thread.get("comments")) if isinstance(thread, dict) else []
+        identity = review_comment_id(comments[0].get("id")) if comments and isinstance(comments[0], dict) else None
+        if identity:
+            counts[identity] = counts.get(identity, 0) + 1
+    result = {}
+    for comment in _as_list(pr.get("issue_comments")):
+        if not isinstance(comment, dict) or not is_user_reply(comment):
+            continue
+        first = next((line.strip() for line in _text(comment.get("body")).splitlines() if line.strip()), "")
+        match = re.fullmatch(r"<!--[ \t]*review-comment-id[ \t]*:[ \t]*([1-9][0-9]{0,18})[ \t]*-->", first)
+        identity = review_comment_id(match[1]) if match else None
+        if identity and counts.get(identity) == 1:
+            result.setdefault(identity, []).append(comment)
+    return result
+
+
+def merge_thread_replies(inline, fallback):
+    """Keep legacy inline order; stably insert fallbacks by available timestamps.
+
+    GitHub supplies timestamps. Historical undated fixtures keep their original
+    order; an undated fallback is appended, rather than reordering inline data.
+    """
+    result = list(inline)
+    latest = datetime.max.replace(tzinfo=timezone.utc)
+    for comment in sorted(fallback, key=lambda c: _parse_ts(c.get("created_at")) or latest):
+        at = _parse_ts(comment.get("created_at"))
+        position = len(result)
+        if at is not None:
+            for i, existing in enumerate(result):
+                other = _parse_ts(existing.get("created_at"))
+                if other is not None and other > at:
+                    position = i
+                    break
+        result.insert(position, comment)
+    return result
+
+
 def parse_bodies(items, lib_dir=None):
     """Run the shared parser over many bodies in ONE jq call.
 
@@ -797,6 +848,7 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
     pr_triggers = []  # per PR: [(item index, created_at)]
     truncated = 0
     for pr in prs:
+        fallbacks = fallback_replies(pr)
         for thread in _as_list(pr.get("threads")):
             if not isinstance(thread, dict):
                 continue
@@ -812,10 +864,11 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
             if thread.get("comments_truncated") is True:
                 truncated += 1
             indexes = []
-            for comment in comments[1:]:
-                if isinstance(comment, dict) and is_user_reply(comment):
-                    indexes.append(len(items))
-                    items.append({"repo": repo, "body": _text(comment.get("body"))})
+            inline = [c for c in comments[1:] if isinstance(c, dict) and is_user_reply(c)]
+            identity = review_comment_id(comments[0].get("id"))
+            for comment in merge_thread_replies(inline, fallbacks.get(identity, [])):
+                indexes.append(len(items))
+                items.append({"repo": repo, "body": _text(comment.get("body"))})
             threads.append((key, indexes))
         candidates = []
         for comment in _as_list(pr.get("issue_comments")):
