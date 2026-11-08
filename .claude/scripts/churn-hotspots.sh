@@ -1743,11 +1743,10 @@ fi
 # GitHub tokenizes paths in `in:title`, so a server-side path query can match a
 # sibling file. When the lookup fails, callers must not file (duplicate risk).
 #
-# Search both states, NOT only open (issue #915). An open-only search hid every
-# hotspot issue the owner had already reviewed and closed, so the caller read the
-# path as never-ticketed and re-filed it on every run. Closed hits now come back
-# labelled (see the merge below) and the caller decides. `--state all` enlarges
-# the candidate set, which is exactly why the cap guard below stays.
+# Search both open and closed issues (issue #915). Hiding closed decisions made
+# previously ticketed paths look new and caused repeat filings. The complete
+# candidate set retains those decisions for the caller; the page-completeness
+# checks below replace the old fixed-limit guard and still block unsafe filing.
 # Explicit page reads expose completion evidence. Search is not a snapshot:
 # stable creation order and consistency checks detect some concurrent changes.
 lookup_existing_hotspot_issues() {
