@@ -1876,7 +1876,7 @@ fi
 - `PROBE=exhausted` / `PROBE=fail-closed` → `TaskStop` the recorded Monitor, null `limit_resume_task_id` and `limit_resume_generation`, leave the park in place, and surface one line: `probe wake exhausted after {N} checks — still parked; resume manually with /pause-resume`. Silence here would be a board that never comes back and never says so.
 - `PROBE=stale` → exit silently, exactly as D0 does for a superseded tick.
 
-**Step 6 — Chat surfacing (always-emit).** Two lines on park, one on resume; nothing else:
+**Step 6 — Chat surfacing.** Two lines on park, one on resume. On park, emit the two lines below only after `WAKE_PUBLISH=armed`. For `failed` or `stranded`, use the Step 4 diagnostic instead; for `lost`, say nothing. An absent or unreadable publication result is failure, never permission to promise automatic resume. On resume, use the resume line below.
 
 ```
 parked pre-emptively (usage horizon) — landed #1421, checkpointed #1430 (Phase B), 2 queued

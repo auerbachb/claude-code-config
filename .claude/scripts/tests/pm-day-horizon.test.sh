@@ -177,7 +177,8 @@ seed_completed_park() {
   jq --arg k "$REPO_KEY" --arg cause "${1:-preemptive}" '
     .repos[$k].day.parked_until="2026-11-08T17:00:00Z" |
     .repos[$k].day.limit_cause=$cause |
-    .repos[$k].day.limit_kind="probe"' "$STATE_FILE" > "$STATE_FILE.seed" && mv "$STATE_FILE.seed" "$STATE_FILE"
+    .repos[$k].day.limit_kind="rolling_window" |
+    .repos[$k].day.limit_probe_fires_remaining=(if $cause=="preemptive" then 12 else null end)' "$STATE_FILE" > "$STATE_FILE.seed" && mv "$STATE_FILE.seed" "$STATE_FILE"
 }
 
 

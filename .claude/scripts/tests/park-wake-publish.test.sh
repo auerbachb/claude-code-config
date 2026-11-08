@@ -101,7 +101,7 @@ os.execv(shell,[shell,real]+args)
 
     def seed(self, cause):
         day = dict(active=True, parked_until='2026-11-08T17:00:00Z',
-                   limit_kind='probe' if cause=='preemptive' else 'rolling_window',
+                   limit_kind='rolling_window',
                    limit_cause=cause, park_claim_token=None,
                    limit_resume_task_id=None, limit_resume_generation=None,
                    limit_probe_fires_remaining=12 if cause=='preemptive' else None,
@@ -173,6 +173,41 @@ os.execv(shell,[shell,real]+args)
             self.assertEqual(set(self.data()['repos']),{REPO,'foreign/repo'})
             self.assertEqual(self.day()['limit_resume_task_id'],'own-task')
             self.assert_foreign()
+
+    def test_explicit_unknown_scope_is_preserved_without_adopting_the_checkout(self):
+        for cause in ['reactive','preemptive']:
+            with self.subTest(cause=cause):
+                self.seed(cause);data=self.data();known=json.loads(json.dumps(data['repos'][REPO]))
+                data['repos']['_unknown']=json.loads(json.dumps(known));self.state.write_text(json.dumps(data))
+                self.assertEqual(self.run_block(cause,repo_key='_unknown'),'WAKE_PUBLISH=armed')
+                result=self.data();self.assertEqual(result['repos'][REPO],known)
+                self.assertEqual(result['repos']['_unknown']['day']['limit_resume_task_id'],'own-task')
+                result['repos']['_unknown']['day'].update(limit_cause=None,parked_until=None,
+                    limit_resume_task_id=None,limit_resume_generation=None)
+                self.state.write_text(json.dumps(result));before=self.state.read_bytes()
+                self.assertEqual(self.run_block(cause,repo_key='_unknown'),'WAKE_PUBLISH=lost')
+                self.assertEqual(self.state.read_bytes(),before);self.assertEqual(self.stopped(),['own-task'])
+                self.assert_foreign()
+
+    def test_manual_only_or_unreadable_parks_cannot_publish(self):
+        cases=[(dict(limit_kind='weekly'),'lost'),(dict(limit_kind='unexpected'),'failed'),
+               (dict(limit_kind=None),'failed'),(dict(limit_probe_fires_remaining=0),'lost'),
+               (dict(limit_probe_fires_remaining=-1),'lost'),
+               (dict(limit_probe_fires_remaining='null'),'failed'),
+               (dict(limit_probe_fires_remaining=1.5),'failed'),
+               (dict(limit_probe_fires_remaining=9007199254740992),'failed')]
+        for cause in ['reactive','preemptive']:
+            for fields,outcome in cases:
+                with self.subTest(cause=cause,fields=fields):
+                    self.seed(cause);self.set_day(**fields);before=self.state.read_bytes()
+                    self.assertEqual(self.run_block(cause),'WAKE_PUBLISH='+outcome)
+                    self.assertEqual(self.state.read_bytes(),before);self.assertEqual(self.stopped(),['own-task'])
+
+    def test_known_reset_preemptive_park_retains_the_null_bound_contract(self):
+        self.seed('preemptive');self.set_day(limit_probe_fires_remaining=None)
+        self.assertEqual(self.run_block('preemptive'),'WAKE_PUBLISH=armed')
+        self.assertIsNone(self.day()['limit_probe_fires_remaining'])
+        self.assertEqual(self.stopped(),[])
 
     def test_retired_after_arm_at_both_sites_writes_no_identity(self):
         for cause in ['reactive','preemptive']:
