@@ -498,6 +498,8 @@ After Step 1 and Step 2 both pass:
    - Phase 4: lessons/final report
 3. Treat every `/wrap` stop condition as `OUTCOME: blocked` and include the missing gate, failed AC, CI, unresolved finding, or command error details before the exit report.
 
+**Issue completion is part of terminal success.** Before `OUTCOME: merged`, record [completion reconciliation](../reference/issue-completion.md): independently CLOSED issues or justified retained partial scope. If the PR merged but closure verification/recovery is pending, report `OUTCOME: blocked`, explicitly `PR already merged; completion pending`, and its scoped receipt path. Preserve the handoff and retry completion; do not restart code/review/merge for an already-merged PR.
+
 A no-review-override merge (issue #1899) is still `OUTCOME: merged`; relay `/wrap`'s suffixed line unchanged — `merged PR #N (no AI review — logged)`, or `merged PR #N (no AI review — ledger write failed)` when the recorder failed (report that one so the row is added by hand).
 
 Do not duplicate the merge, main-sync, follow-up, or stale-cleanup rules here. `.claude/skills/wrap/SKILL.md` is the canonical source; Phase C only gates entry to that shared flow and reports the result.

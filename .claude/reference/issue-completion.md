@@ -1,0 +1,194 @@
+# Verified issue completion after merge
+
+A merged PR and a released claim do not prove that an issue is complete or CLOSED.
+This procedure belongs to the shared workflow and runs from consumer repositories
+as well as claude-code-config. It is completion reconciliation, separate from
+`/pm-clean`'s confirmation-gated age/staleness cleanup.
+
+## Entry points and evidence
+
+Run after a normal or clean-BEHIND merge, on `/wrap`'s already-merged entry,
+after Phase C returns, and when PM resumes or a day tick observes a tracked PR
+has merged. Resolve `issue-completion.sh` through the usual installed-skills,
+user-scripts, local-scripts order. Keep the working directory in the consumer
+repo. Bind `OWNER_REPO`, PR and issue identities from the current task and the
+verified GitHub PR; never infer them from the helper's checkout, a bare foreign
+issue number, or the shared session state's flat numeric keys.
+
+The helper is GitHub.com-specific. An explicit repository is mandatory; no default
+repository is read from its own checkout. It emits JSON and writes private,
+repo/PR-scoped receipts under `~/.claude/issue-completion/`. It performs no close
+by default:
+
+```bash
+"$ISSUE_COMPLETION_SH" --repo "$OWNER_REPO" --pr "$PR_NUM"
+```
+
+Check the exit status and JSON together. Exit 0 means the assessment's linked
+issues were independently observed CLOSED. Exit 1 is pending completion; 3 is
+unverified or ineligible identity/scope; 4 is an API/response failure; 6 is unsafe
+or unavailable local receipt state. Usage errors exit 2. Missing helper or any
+unreadable/unknown state is pending, never an empty successful assessment.
+The receipt records fixed status and public identities; raw issue bodies,
+credentials, and private task content are not copied into it.
+
+## Verify scope before closing
+
+For each OPEN same-repo candidate, independently read the issue's current body,
+acceptance criteria and comments, the associated PRs and final merged code.
+Record the criterion-by-criterion source/evidence and the disposition in the
+current task's scoped completion/handoff evidence. A checked PR Test Plan alone
+is insufficient: a PR may deliver only a slice of the issue.
+
+Keep an issue OPEN when any acceptance scope remains, another associated PR is
+outstanding, an owner decision is unresolved, or completion cannot be verified.
+A finished child does not close its parent/tracker. `Refs #N` and title mentions
+are context, not closing instructions. Foreign references are retained as foreign;
+do not strip their repository qualifier or act on the same number locally.
+A deliberately reopened issue is retained when its reopen event is at or after
+the merge; use a subsequent verified fix rather than replaying an old closure.
+
+After *full* scope verification, reconcile only that explicit issue, bound to the
+independently fetched merge commit:
+
+```bash
+"$ISSUE_COMPLETION_SH" --repo "$OWNER_REPO" --pr "$PR_NUM" \
+  --complete-issue "$ISSUE_NUM" --expected-merge "$MERGE_SHA" --scope-verified
+```
+
+`--scope-verified` is an assertion that the agent has performed and recorded all
+checks above. It is never synthesized from PR MERGED, claim release, a title,
+a closing trailer or a passing PR Test Plan. Do not loop this write over audit
+candidates without individual scope verification. The helper also requires the
+PR to be authored by the authenticated account and merged into the repo's current
+default branch. Non-default merges remain pending for default-branch delivery.
+
+A missing or malformed closing trailer does not justify guessing. If the explicit
+primary task/handoff proves the issue belongs to this delivery, verify the full
+scope and record the association evidence. Only then add
+`--association-verified` to the same command. This does not discover arbitrary
+issues. A foreign issue or an issue mentioned only as related work is never that
+same-repo primary association.
+
+The helper saves closure intent before requesting the single issue closure,
+then independently reads the typed issue back. A write response alone is not
+success. Already-CLOSED issues are idempotent and receive no duplicate close.
+Other OPEN/foreign linked issues remain pending even when the selected issue
+closes successfully. API failures, delayed visibility and interrupted requests
+retain a retryable receipt and never become verified completion.
+
+## State, resume and handoff
+
+Use this canonical adapter for each assessment or individually verified write.
+It preserves the helper receipt and scopes PM bookkeeping to the invoking repo;
+a failed state write cannot clear a pending action. `PR_NUM` and `OWNER_REPO`
+come from the verified task identity, never from shared numeric-key inference.
+Call it without extra arguments for assessment, or pass the explicitly verified
+single-issue flags shown above. Its JSON remains in `COMPLETION_JSON` for scope
+review and retained-work disposition.
+
+<!-- test-anchor: issue-completion-record -->
+```bash
+reconcile_issue_completion() {
+  local completion_helper completion_state completion_repo completion_write_rc=0
+  COMPLETION_JSON=''; COMPLETION_RC=1
+  [[ "$PR_NUM" =~ ^[1-9][0-9]*$ ]] || return 2
+  completion_helper=$(resolve_script issue-completion.sh || true)
+  completion_state=$(resolve_script session-state.sh || true)
+  if [[ -z "$completion_helper" || -z "$completion_state" ]]; then
+    echo 'ERROR: completion helper/state unavailable — issue completion pending' >&2
+    return 6
+  fi
+  completion_repo=$("$completion_state" --repo-key) || return 6
+  if [[ "$completion_repo" != "$OWNER_REPO" ]]; then
+    echo 'ERROR: completion repository mismatch — state unchanged' >&2
+    return 3
+  fi
+  COMPLETION_RC=0
+  COMPLETION_JSON=$("$completion_helper" --repo "$OWNER_REPO" --pr "$PR_NUM" "$@") || COMPLETION_RC=$?
+  if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" \
+      'type == "object" and .owner_repo == $repo and .pr == $pr and (.outcome == "verified" or .outcome == "pending")' >/dev/null; then
+    COMPLETION_JSON=$(jq -cn --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" \
+      '{owner_repo:$repo,pr:$pr,outcome:"pending",error_class:"completion_report_unreadable"}')
+    COMPLETION_RC=4
+  fi
+  "$completion_state" --set ".prs[\"$PR_NUM\"].issue_completion=$COMPLETION_JSON" || completion_write_rc=$?
+  if [[ "$completion_write_rc" -ne 0 ]]; then
+    echo 'ERROR: completion state write failed — preserve receipt and handoff' >&2
+    return 6
+  fi
+  return "$COMPLETION_RC"
+}
+```
+
+
+Keep the merged PR identity separate from issue completion. A merged PR must not
+return to code dispatch or be merged again merely because closure is pending.
+Record the receipt path and exact pending issue/reason in the current repo's
+scoped PR/task state, using `session-state.sh`'s normal repo scoping. When GitHub
+is already CLOSED, reconcile only the matching task's status/queue entry and
+exact owned claim. Do not rewrite unrelated tasks or another repo's same number.
+
+Retry the assessment and any individually verified completion on resume/day tick,
+including a session interrupted after merge or after the close request. A stale
+scope assertion is not authorization to close newly added work: reread current
+criteria/comments and open associated work before retrying a write. A confirmed
+CLOSED issue needs no second close, only scoped state reconciliation.
+
+Phase C reports `OUTCOME: merged` only after both GitHub merge verification and
+completion reconciliation are recorded. A merged PR with unresolved closure is
+`OUTCOME: blocked`, with an explicit `PR already merged; completion pending`
+reason and receipt path. The parent preserves the handoff/retry evidence and
+runs completion recovery; it must not launch another code/review/merge pipeline
+for the already-merged PR. Delete the handoff only after reconciliation or after
+recording an explicitly justified retained issue with its remaining work.
+
+An intentionally partial issue is not an error to "repair": record its retained
+scope and outstanding delivery, release only the exact completed PR's owned
+claim when appropriate, and preserve the remaining issue in the backlog. Do not
+silently mark the whole issue done. An API/verification error stays actionable;
+never relabel it as an intentional partial disposition to clear the workflow.
+
+## Investigation and consumer audit
+
+Issue #1973 concerns consumer repos using the shared skill, especially sales-kit.
+The config repo's bounded control sample (100 merged PRs, 101 closing-linked
+issues, all CLOSED) did not reproduce the report. The consumer audit examined
+100 merged sales-kit PRs and 98 distinct typed closing/title references. Eight
+referenced issues remained OPEN. Several are expressly partial deliveries;
+merged association alone must not close them.
+
+Additional consumer controls: 50 merged inventory PRs yielded 32 typed references,
+and 50 merged still-point PRs yielded 50; all referenced actual issues were
+CLOSED. No foreign closing references occurred in these three samples.
+
+The concrete mismatch is sales-kit Issue #2214 and PR #2239. The PR merged to
+default `main` on 2026-11-04T21:22:58Z, merge commit
+`07c2821fdd1cded81b8d135c0c99015a3afab071`. Its current body carries a recognized
+`Closes #2214`, but the issue remained OPEN with no closed/reopened timeline
+event. The exact body at merge time is not independently captured. Later
+Issue #2398/PR #2400 delivered additional timing scope, so live recovery requires
+current full-scope verification, not retrospective trust in the first PR.
+
+The supported workflow cause is missing independent post-merge verification and
+recovery: `/wrap` released claims without reading CLOSED, already-merged entry
+skipped post-merge work, and PM hygiene only flagged missed closure as shared
+state drift. These gaps permit the observed mismatch to survive. They do not
+prove why GitHub itself failed to auto-close that issue.
+
+No recent removal of a deterministic closure step was found: the initial wrap
+commit `6a317595` (2026-03-29) already lacked it. An earlier successful manual/API
+fallback control is config PR #1750 / Issue #1748: PR merged without closing
+references on 2026-10-01T21:05:40Z, issue closed 189 seconds later. The actor/path
+of that fallback is unknown. Therefore the supported observation window is
+working fallback on October 1 to a missed consumer closure on November 4;
+repository/path differences prevent claiming a causal regression commit.
+
+Audit dispositions must remain explicit. Partial sales-kit Issues #2373, #860,
+#859, #2321, #2322, #2159 and owner-maintained #13 remain open until their own
+criteria/decisions are satisfied. Issue #2214 remains pending full current coverage verification: its criterion6
+requires documentation that current authority §7.2 does not provide. That section
+still dedicates the control-change credential to control changes; the merge
+comment explicitly said it was untouched under the owner’s decision. Reconcile
+that criterion/decision in the consumer chat before claiming full completion. No consumer code or issue state was changed
+by the read-only investigation.

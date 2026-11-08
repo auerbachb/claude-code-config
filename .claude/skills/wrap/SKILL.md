@@ -100,6 +100,7 @@ CI_STATUS_SH=$(resolve_script ci-status.sh || true)
 RELEASE_DECIDE=$(resolve_script release-decide.sh || true)
 RELEASE_SWEEP=$(resolve_script release-sweep.sh || true)
 PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
+ISSUE_COMPLETION_SH=$(resolve_script issue-completion.sh || true)
 ISSUE_CLAIM_SH=$(resolve_script issue-claim.sh || true)
 SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
@@ -158,7 +159,7 @@ gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
   --jq '{number, title, headRefName, body, state}'
 ```
 
-If already merged or closed, skip to Phase 3.
+If already MERGED, run the [completion reconciliation](../../reference/issue-completion.md) before Phase 3, including retries after an interrupted wrap. A CLOSED-but-unmerged PR does not authorize issue closure; skip to Phase 3 without completion writes.
 
 ### Step 1.2: Scan for unresolved review findings
 
@@ -433,6 +434,8 @@ fi
 ```
 
 A ledger failure never un-merges anything; `NRO_SUFFIX` carries it into the report line (`merged PR #N (no AI review — ledger write failed)`) so the row can be added by hand (`unreviewed-merge-ledger.sh record`).
+
+**Reconcile issue completion first.** Run [verified issue completion](../../reference/issue-completion.md) on both merge paths, before releasing claims or clearing handoffs. Independently verify CLOSED, or record why the issue intentionally retains unfinished scope. A pending API/closure failure keeps a durable scoped retry action; a merged PR never returns to code dispatch. PR Test Plan success and claim release are not full-issue completion proof.
 
 **Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
 
@@ -797,7 +800,7 @@ Memory writes are owned by **Phase 4**. Category 4 only *flags* as `SWEEP_MEMORY
 
 #### Step 3.10: Category 5 — PM hygiene (all touched issues/PRs)
 
-Build the set of issues/PRs touched this session — session-state `.prs` keys, the merging PR + its linked issue, any issue/PR numbers from tool-call history. For each, check and flag drift under `SWEEP_NEEDS_DECISION` (do not auto-edit — shared state):
+Build the repo-qualified set of issues/PRs touched this session — scoped session-state PRs, the merging PR and its linked issue, and in-scope tool history. For a missed closure or interrupted completion, run [completion reconciliation](../../reference/issue-completion.md): verify full scope before closing a single eligible issue and update only its matching repo/task state. This authorized completion repair is distinct from stale-backlog cleanup. Preserve partial/parent work and unresolved retry evidence. For other shared-state drift, flag `SWEEP_NEEDS_DECISION` without auto-editing:
 
 - **Status accuracy** — issue still open but its work merged? PR merged but linked issue not auto-closed?
 - **Linkage** — PR missing `Closes #N` for work that clearly resolves an issue?

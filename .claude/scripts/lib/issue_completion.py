@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Assess and reconcile one explicitly verified, merged PR's issue completion."""
+import argparse
+import contextlib
+import datetime
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+REPO = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
+SHA = re.compile(r'[0-9a-f]{40}\Z')
+QUERY = '''query($owner:String!,$name:String!,$number:Int!){
+ viewer{login} repository(owner:$owner,name:$name){nameWithOwner defaultBranchRef{name}
+ pullRequest(number:$number){number state mergedAt headRefOid baseRefName url author{login}
+ mergeCommit{oid} closingIssuesReferences(first:100){pageInfo{hasNextPage}
+ nodes{__typename number state closedAt url repository{nameWithOwner}}}}}}'''
+ISSUE_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
+ repository(owner:$owner,name:$name){nameWithOwner issueOrPullRequest(number:$number){
+ __typename ... on Issue{number state closedAt url repository{nameWithOwner}
+ timelineItems(last:1,itemTypes:[REOPENED_EVENT]){nodes{... on ReopenedEvent{createdAt}}}}}}}'''
+
+
+class CompletionError(Exception):
+    """A fixed, recoverable failure with no fabricated successful completion."""
+    def __init__(self, reason, code=4):
+        super().__init__(reason)
+        self.code = code
+
+
+def gh(args):
+    """Keep diagnostics private and never turn an API error into absent work."""
+    try:
+        proc = subprocess.run(['gh', 'api', '--hostname', 'github.com'] + args[1:], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CompletionError('github_unavailable') from exc
+    if proc.returncode:
+        raise CompletionError('github_request_failed')
+    if len(proc.stdout) > 1024 * 1024:
+        raise CompletionError('github_response_limit')
+    try:
+        value = json.loads(proc.stdout)
+    except (TypeError, ValueError) as exc:
+        raise CompletionError('github_response_invalid') from exc
+    if not isinstance(value, dict) or value.get('errors'):
+        raise CompletionError('github_response_invalid')
+    return value
+
+
+def graphql(query, repo, number):
+    owner, name = repo.split('/')
+    return gh(['api', 'graphql', '-f', 'query=' + query, '-f', 'owner=' + owner,
+               '-f', 'name=' + name, '-F', 'number=' + str(number)])['data']
+
+
+def private_directory(path):
+    """Reject aliases and unsafe existing state, including ancestor components."""
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise CompletionError('unsafe_completion_directory', 6)
+        if current == path and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+            raise CompletionError('unsafe_completion_directory', 6)
+
+
+def save(path, report):
+    """Atomic bounded receipts contain public identities and fixed status only."""
+    temporary = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix='.completion-', dir=path.parent)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(report, stream, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+@contextlib.contextmanager
+def locked(path):
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, 'a') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o077:
+            raise CompletionError('unsafe_completion_lock', 6)
+        deadline = time.monotonic() + 4
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise CompletionError('completion_lock_busy', 6)
+                time.sleep(.02)
+        yield
+
+
+def issue(repo, number):
+    data = graphql(ISSUE_QUERY, repo, number)['repository']
+    node = data['issueOrPullRequest']
+    if (data['nameWithOwner'].lower() != repo.lower() or not isinstance(node, dict)
+            or node.get('__typename') != 'Issue' or node.get('number') != number
+            or node.get('repository', {}).get('nameWithOwner', '').lower() != repo.lower()
+            or node.get('state') not in ('OPEN', 'CLOSED')):
+        raise CompletionError('issue_identity_unverified', 3)
+    return node
+
+
+def assess(args, report):
+    data = graphql(QUERY, args.repo, args.pr)
+    repository = data['repository']
+    pr = repository['pullRequest']
+    if (repository['nameWithOwner'].lower() != args.repo.lower() or not isinstance(pr, dict)
+            or pr.get('number') != args.pr or pr.get('state') != 'MERGED'
+            or not pr.get('mergedAt') or not SHA.fullmatch((pr.get('mergeCommit') or {}).get('oid', ''))):
+        raise CompletionError('merged_pr_unverified', 3)
+    report.update(merge_sha=pr['mergeCommit']['oid'], head_sha=pr['headRefOid'], merged_at=pr['mergedAt'])
+    if pr.get('baseRefName') != (repository.get('defaultBranchRef') or {}).get('name'):
+        raise CompletionError('non_default_merge_target', 3)
+    links = pr['closingIssuesReferences']
+    if links['pageInfo']['hasNextPage']:
+        raise CompletionError('closing_reference_limit', 3)
+    candidates = []
+    for linked in links['nodes']:
+        owner_repo = linked.get('repository', {}).get('nameWithOwner', '')
+        if (linked.get('__typename') != 'Issue' or type(linked.get('number')) is not int
+                or not REPO.fullmatch(owner_repo) or linked.get('state') not in ('OPEN', 'CLOSED')):
+            raise CompletionError('closing_reference_invalid', 3)
+        candidates.append(dict(owner_repo=owner_repo, issue=linked['number'],
+                               state=linked['state'], disposition='foreign_retained' if owner_repo.lower() != args.repo.lower()
+                               else 'closed' if linked['state'] == 'CLOSED' else 'scope_verification_required'))
+    report['issues'] = candidates
+    if args.complete_issue is None:
+        report['outcome'] = 'pending' if not candidates or any(x['disposition'] != 'closed' for x in candidates) else 'verified'
+        return 1 if report['outcome'] == 'pending' else 0
+    if not args.scope_verified or not args.expected_merge or args.expected_merge != report['merge_sha']:
+        raise CompletionError('scope_or_merge_verification_required', 3)
+    if (pr.get('author') or {}).get('login', '').lower() != data['viewer']['login'].lower():
+        raise CompletionError('pr_authorship_unverified', 3)
+    target = next((x for x in candidates if x['owner_repo'].lower() == args.repo.lower() and x['issue'] == args.complete_issue), None)
+    if target is None:
+        # A task issue omitted from PR trailers must be bound explicitly after
+        # full-scope/source verification; never infer from titles or prose.
+        if not args.association_verified:
+            raise CompletionError('issue_association_unverified', 3)
+        target = dict(owner_repo=args.repo, issue=args.complete_issue, disposition='scope_verification_required')
+        candidates.append(target)
+    current = issue(args.repo, args.complete_issue)
+    events = current.get('timelineItems', {}).get('nodes')
+    if not isinstance(events, list):
+        raise CompletionError('reopen_history_unverified', 3)
+    try:
+        merged_at = datetime.datetime.fromisoformat(pr['mergedAt'].replace('Z', '+00:00'))
+        reopened = any(datetime.datetime.fromisoformat(event['createdAt'].replace('Z', '+00:00')) >= merged_at for event in events)
+    except (ValueError, TypeError, KeyError):
+        raise CompletionError('reopen_history_unverified', 3)
+    if current['state'] == 'OPEN' and reopened:
+        raise CompletionError('issue_reopened_after_merge', 3)
+    target['state'] = current['state']
+    if current['state'] == 'CLOSED':
+        target['disposition'] = 'closed'
+        report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+        return 0 if report['outcome'] == 'verified' else 1
+    # Durable intent precedes the write; an interrupted request is retryable.
+    target['disposition'] = 'closure_pending'
+    report['outcome'] = 'pending'
+    save(args.receipt, report)
+    gh(['api', '--method', 'PATCH', 'repos/' + args.repo + '/issues/' + str(args.complete_issue),
+        '-f', 'state=closed', '-f', 'state_reason=completed'])
+    after = issue(args.repo, args.complete_issue)
+    target['state'] = after['state']
+    if after['state'] != 'CLOSED':
+        raise CompletionError('closure_visibility_pending', 1)
+    target['disposition'] = 'closed'
+    report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+    return 0 if report['outcome'] == 'verified' else 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repo', required=True)
+    parser.add_argument('--pr', required=True, type=int)
+    parser.add_argument('--complete-issue', type=int)
+    parser.add_argument('--expected-merge')
+    parser.add_argument('--scope-verified', action='store_true')
+    parser.add_argument('--association-verified', action='store_true')
+    args = parser.parse_args()
+    if (not REPO.fullmatch(args.repo) or args.pr <= 0 or args.repo.split('/')[1] in ('.', '..')
+            or (args.complete_issue is not None and args.complete_issue <= 0)
+            or (args.expected_merge and not SHA.fullmatch(args.expected_merge))):
+        parser.error('invalid repository, issue, PR or merge identity')
+    directory = Path.home().resolve() / '.claude' / 'issue-completion' / 'github.com' / args.repo
+    suffix = '.issue-' + str(args.complete_issue) if args.complete_issue else '.assessment'
+    args.receipt = directory / ('pr-' + str(args.pr) + suffix + '.json')
+    report = dict(schema_version='1.0', owner_host='github.com', owner_repo=args.repo, pr=args.pr, outcome='pending',
+                  recorded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(), issues=[],
+                  scope_verified=bool(args.scope_verified), association_verified=bool(args.association_verified),
+                  expected_merge=args.expected_merge)
+    code = 4
+    try:
+        private_directory(directory)
+        with locked(args.receipt):
+            try:
+                code = assess(args, report)
+            except CompletionError as exc:
+                report['error_class'] = str(exc)
+                code = exc.code
+            except (KeyError, TypeError, AttributeError, ValueError):
+                report['error_class'] = 'github_response_invalid'
+                code = 4
+            save(args.receipt, report)
+    except (OSError, CompletionError) as exc:
+        report.update(outcome='pending', error_class=str(exc) if isinstance(exc, CompletionError) else 'completion_receipt_failed')
+        code = exc.code if isinstance(exc, CompletionError) else 6
+    report['receipt_path'] = str(args.receipt)
+    print(json.dumps(report, sort_keys=True))
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

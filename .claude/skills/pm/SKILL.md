@@ -330,6 +330,8 @@ Parse any found state into an assignments table:
 
 ### 1A.3: Verify against live GitHub
 
+For tracked merged PRs, run [completion reconciliation](../../reference/issue-completion.md) before re-ranking or relaunching their issues. Preserve pending closure evidence, distinguish partial scope from completed work, and update only the invoking repo’s matching task.
+
 State files may be stale. Cross-reference with live data. When `$GH_USER` is set (Step 0a), also fetch the user-scoped views so resumed state can be annotated with "yours" vs. "others":
 
 ```bash
@@ -837,7 +839,7 @@ Running the full flow means both of `/pm-clean`'s scans and both of its independ
 - **Issue-staleness scan** — `backlog-staleness.sh` (`/pm-clean` Step 1), presented then gated by its **Step 4.1 close gate** before any `gh issue close`.
 - **Workspace sweep** — `stale-cleanup.sh --check` (`/pm-clean` Step 2), then `--apply` only after its **Step 4.2 delete gate**.
 
-The two scans are independent — one finding nothing never suppresses the other — and each keeps its **own** confirmation. `/pm` still **NEVER auto-closes an issue or auto-deletes a worktree/branch**: every closure and every deletion waits on the user's explicit confirmation inside `/pm-clean`'s gates.
+The two scans are independent — one finding nothing never suppresses the other — and each keeps its **own** confirmation. For age/staleness cleanup, `/pm` still **never auto-closes an issue or auto-deletes an old workspace**: each action waits on `/pm-clean`'s explicit confirmation gates. [Verified completion reconciliation](../../reference/issue-completion.md) is separate: an individually verified finished issue may close after merge; partial/parent/ambiguous scope stays open. The finished-only workspace exception is defined by its own cadence contract.
 
 **No double-scan.** Because only `/pm-clean`'s single pass runs, `backlog-staleness.sh` and `stale-cleanup.sh` each execute **exactly once** per `/pm` invocation. `/pm` no longer calls `backlog-health.sh` on this default path — the count-only "Backlog health" summary it used to print (issue #598) is now subsumed by `/pm-clean`'s fuller, actionable report.
 
@@ -1095,6 +1097,8 @@ Six sub-steps, in order. This is the entry point for `DAY_TICK=true`.
 1. `TICK_GENERATION` equals the recorded `day.monitor_generation` (a tick from a superseded Monitor is stale).
 2. `day.active == true`.
 3. `day.stop_requested != true`.
+
+After D0 accepts the tick, reconcile tracked merged deliveries through [issue completion](../../reference/issue-completion.md) before refill. Never relaunch code for an already-merged delivery because closure is pending.
 
 After D0 accepts the tick, run the [finished-only cadence](../../reference/workspace-sweep-cadence.md); ticks still skip Step 1 and `/pm-clean`:
 
@@ -1976,7 +1980,7 @@ A mid-session "re-prioritize" or "rank the backlog" request runs the same rankin
 
 Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
-- Mark issues as "PR open" or "Merged" accordingly
+- Record PR state separately from issue completion. For merged tracked work, run [completion reconciliation](../../reference/issue-completion.md); only verified CLOSED or an explicitly justified retained-scope disposition completes that action. Pending closure remains retryable and does not relaunch code.
 - Flag stale threads: if an issue was assigned > 30 minutes ago with no PR, note it
 - **Dismiss stale chips:** any issue sitting at `Chip offered` that now has an open PR is being worked already — withdraw its chip via `dismiss_task` (see `.claude/reference/chip-launching.md`). Reuse the open-PR result already fetched above and the same closing-keyword predicate — no extra API call. Only clear the tracked `task_id` after the dismiss succeeds.
 

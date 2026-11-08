@@ -14,6 +14,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [execution-pause.sh](../execution-pause.sh) | Arm, inspect, or explicitly clear a repo/session-scoped background-launch gate |
 | [handoff-migrate.sh](../handoff-migrate.sh) | One-time migration of flat handoff files to per-repo scoped paths |
 | [handoff-state.sh](../handoff-state.sh) | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
+| [issue-completion.sh](../issue-completion.sh) | Independently verify merged-issue completion and reconcile one explicitly scope-verified issue |
 | [recovery-evidence.sh](../recovery-evidence.sh) | Capture and classify raw recovery verdict evidence without turning parse/execution failure into success |
 | [session-state-audit.sh](../session-state-audit.sh) | Audit and guarded repair of `~/.claude/session-state.json` |
 | [session-state.sh](../session-state.sh) | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
