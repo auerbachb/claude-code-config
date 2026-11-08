@@ -4,7 +4,7 @@
 # catalog: utilities — Human-queue desk tick loop (`desk/bin/desk-tick.sh`): the /desk Monitor command; ticks the store and prints a line only when the desk has something to do
 #
 # USAGE
-#   desk-tick.sh --session SESSION --generation GEN [--cadence MIN] [--interrupts RULE] [--once]
+#   desk-tick.sh --session SESSION --generation GEN [--cadence MIN] [--interrupts RULE] [--held] [--once]
 #   desk-tick.sh --help
 #
 # ARGUMENTS
@@ -21,6 +21,8 @@
 #                      being queued
 #   --interrupts RULE  start-time default, everything or away; overrides policy
 #                      so re-arms and release ticks retain this desk's default
+#   --held             seed a known held start so its expiry prints `released`,
+#                      even before the first observation; not with --once
 #   --once             one cycle now, no sleep (tests, and a manual tick)
 #
 # BEHAVIOR
@@ -62,6 +64,11 @@
 #        When this call fails after the tick succeeded, the `new` line is
 #        still printed (that tick already moved the watermark) after the
 #        error line.
+#     3b. In persistent mode only, read `interrupt get --session SESSION
+#         --default RULE --json`. An evidenced held-to-unheld transition prints
+#         `desk-tick GEN released` after new/retry, even with no new items. A
+#         --held seed covers expiry before the first observation. Unknown
+#         initial state is silent; failed observations retain the prior state.
 #     4. The end-of-day sweep (issue #1784). Once this machine's clock in
 #        America/New_York reads the policy's eod_time or later, `sweep due
 #        --session SESSION --at EOD_TIME` asks the store, whose clock and
@@ -143,6 +150,7 @@ dt_cadence_given=0
 dt_rule=""
 dt_rule_given=0
 dt_once=0
+dt_held_state=unknown
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help)
@@ -167,11 +175,18 @@ while [ "$#" -gt 0 ]; do
       shift 2
       continue
       ;;
+    --held)
+      if [ "$dt_held_state" != unknown ]; then dt_die "--held given more than once"; fi
+      dt_held_state=held
+      ;;
     --once) dt_once=1 ;;
     *) dt_die "unknown argument (run desk-tick.sh --help)" ;;
   esac
   shift
 done
+if [ "$dt_once" -eq 1 ] && [ "$dt_held_state" = held ]; then
+  dt_die "--held cannot be combined with --once"
+fi
 if [ "$dt_rule_given" -eq 1 ]; then
   case "$dt_rule" in
     everything|away) ;;
@@ -353,6 +368,20 @@ sys.stdout.write(s if isinstance(s, str) else "")
 '
 }
 
+# dt_held JSON — the effective hold; unknown or malformed values are not releases.
+dt_held() {
+  printf '%s' "$1" | "$dt_py" -I -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except ValueError:
+    sys.exit(1)
+if not isinstance(data, dict) or type(data.get("held")) is not bool:
+    sys.exit(1)
+sys.stdout.write("held" if data["held"] else "unheld")
+'
+}
+
 # dt_open_ids JSON — the ids of the open Decisions in a tick's array, in order,
 # space-separated; exits 1 when the array is unreadable.
 dt_open_ids() {
@@ -515,8 +544,14 @@ dt_retry() {
   fi
 }
 
+dt_released() {
+  if [ -n "$1" ]; then printf 'desk-tick %s released\n' "$dt_gen"; fi
+}
+
 dt_cycle() {
-  local out rc control ids due
+  local out rc control ids due held released hold_ok
+  released=""
+  hold_ok=1
   rc=0
   out=$("$dt_cli" control-status --json 2>"$dt_err") || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -567,9 +602,32 @@ dt_cycle() {
     dt_new "$ids"
     return 0
   fi
+  if [ "$dt_once" -eq 0 ]; then
+    rc=0
+    out=$("$dt_cli" interrupt get --session "$dt_session" --default "$dt_rule" --json 2>"$dt_err") || rc=$?
+    if [ "$rc" -eq 4 ]; then dt_still_ours; fi
+    if [ "$rc" -ne 0 ]; then
+      dt_fail interrupt "$rc"
+      hold_ok=0
+    else
+      rc=0
+      held=$(dt_held "$out") || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf 'interrupt get printed something other than a JSON object with boolean held\n' >"$dt_err"
+        dt_fail interrupt 1
+        hold_ok=0
+      else
+        if [ "$dt_held_state" = held ] && [ "$held" = unheld ]; then released=yes; fi
+        dt_held_state="$held"
+      fi
+    fi
+    # A failed hold read must not suppress independent daily checks. Keep
+    # the error streak and prior hold until a fully successful cycle.
+  fi
   if ! dt_morning; then
     dt_new "$ids"
     dt_retry "$due"
+    dt_released "$released"
     return 0
   fi
   if ! dt_sweep; then
@@ -581,14 +639,16 @@ dt_cycle() {
     fi
     dt_new "$ids"
     dt_retry "$due"
+    dt_released "$released"
     return 0
   fi
-  dt_ok
+  if [ "$hold_ok" -eq 1 ]; then dt_ok; fi
   if [ -n "$dt_morning_line" ]; then
     printf '%s\n' "$dt_morning_line"
   fi
   dt_new "$ids"
   dt_retry "$due"
+  dt_released "$released"
   if [ -n "$dt_sweep_line" ]; then
     printf '%s\n' "$dt_sweep_line"
   fi
