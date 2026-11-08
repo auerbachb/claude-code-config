@@ -31,6 +31,7 @@
 #     failures included, so an ordinary git error never arrives dressed as a
 #     hang. The exception to the exception is a status that is our own kill
 #     (143/137), which means the bound genuinely did cut the call short.
+#     Successful calls may leave descendants running; callers own them (Issue #1649).
 #     <secs> must be a positive integer; normalize_bound() produces one.
 #     Backward wall-clock corrections re-anchor start at the elapsed high-water
 #     mark, so later samples keep advancing instead of extending the call by
@@ -257,6 +258,7 @@ run_bounded() { # bound_secs, command...
     return 124
   fi
 
+  # Success has no descendant-reaping guarantee; see CONTRACT (Issue #1649).
   # The child finished on its own, so `wait` returns its real exit status
   # rather than a zombie plus a guess.
   wait "$pid" 2>/dev/null || rc=$?
