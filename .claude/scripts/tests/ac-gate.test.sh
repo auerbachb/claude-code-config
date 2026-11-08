@@ -57,6 +57,7 @@ check_msg() {
 # #1723: inspect the event node, not a word that could appear in a comment.
 # BaseLoader preserves GitHub's string key "on" (YAML1.1 otherwise makes it true).
 if python3 - "${AC_GATE_WORKFLOW_TEST_SOURCE:-$REPO_ROOT/.github/workflows/ac-gate.yml}" <<'WORKFLOW_CONTRACT'
+import re
 import sys
 import yaml
 with open(sys.argv[1]) as f:
@@ -67,7 +68,9 @@ assert {'opened', 'synchronize', 'reopened', 'edited'} <= set(events['types']), 
 job = workflow['jobs']['ac-gate']
 assert 'name' not in job, 'required ac-gate check identity must stay stable'
 assert workflow['permissions'] == {'contents': 'read', 'pull-requests': 'read', 'issues': 'read'}, 'body edits need no additional permission'
+assert job.get('permissions', workflow['permissions']) == workflow['permissions'], 'job must preserve effective read-only permissions'
 checkout = next(s for s in job['steps'] if s.get('name') == 'Checkout')
+assert re.fullmatch(r'actions/checkout@[0-9a-f]{40}', checkout['uses']), 'checkout action must stay pinned to a full commit SHA'
 assert checkout['with']['ref'] == '${{ github.event.pull_request.base.sha }}', 'gate must execute trusted base code'
 assert checkout['with']['persist-credentials'] == 'false', 'checkout must not persist credentials'
 WORKFLOW_CONTRACT
