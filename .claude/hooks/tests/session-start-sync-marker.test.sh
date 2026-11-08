@@ -332,14 +332,13 @@ SHIM
 chmod +x "$SKIP_BIN/jq"
 
 # Supervise the entire hook process group with a monotonic timeout. The EXIT
-# cleanup releases the shim, stops/reaps this supervisor on a failed premise,
+# cleanup releases the shim and reaps this bounded supervisor on failure,
 # and only then removes private directories.
 skip_hook=""
 skip_case_cleanup() {
   local rc=$?
   : > "$SKIP_HAND/go"
   if [[ -n "$skip_hook" ]]; then
-    kill -TERM "$skip_hook" 2>/dev/null || true
     wait "$skip_hook" 2>/dev/null || true
   fi
   ssync_cleanup
@@ -387,8 +386,10 @@ bash -c 'source "$1"; state_lock_acquire "$2" 1 || exit 6; state_lock_release' \
   _ "$REPO_ROOT/.claude/scripts/state-lock.sh" "${SKIP_LOCK%.lock}" \
   || fail "(12 premise) released lock is not available for a clear"
 : > "$SKIP_HAND/go"
-wait "$skip_hook" || fail "(12 premise) supervised hook failed or exceeded its bound"
+skip_rc=0
+wait "$skip_hook" || skip_rc=$?
 skip_hook=""
+[ "$skip_rc" -eq 0 ] || fail "(12 premise) supervised hook failed or exceeded its bound"
 trap ssync_cleanup EXIT
 skip_out="$(cat "$SKIP_HAND/out")"
 
