@@ -49,6 +49,22 @@ git -C "$HOME/parallel-repo" -c user.name=Test -c user.email=test@example.test c
 cat > "$HOME/parallel-bin/date" <<'PARALLEL_DATE'
 #!/bin/sh
 [ "$#" = 2 ] && [ "$1" = -u ] && [ "$2" = +%FT%TZ ] || exit 97
+# Both capture processes must reach timestamp creation before either proceeds.
+# This barrier is private fixture state, never a production hook input.
+case "${CAPTURE_FIXTURE_SLOT:-}" in
+  work|personal)
+    mkdir -p "$HOME/capture-barrier" || exit 96
+    : > "$HOME/capture-barrier/$CAPTURE_FIXTURE_SLOT" || exit 96
+    ticks=0
+    while [ ! -f "$HOME/capture-barrier/work" ] || [ ! -f "$HOME/capture-barrier/personal" ]; do
+      [ "$ticks" -lt 100 ] || exit 96
+      /bin/sleep 0.05
+      ticks=$((ticks + 1))
+    done
+    ;;
+  "") : ;;
+  *) exit 96 ;;
+esac
 printf '%s\n' '2026-11-08T22:00:00Z'
 PARALLEL_DATE
 chmod +x "$HOME/parallel-bin/date"
@@ -72,15 +88,17 @@ parallel_payload() {
 }
 parallel_ledger="$HOME/parallel-ledger.jsonl"
 parallel_payload parallel-work | PATH="$HOME/parallel-bin:$PATH" \
-  AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/personal/claude" \
+  CAPTURE_FIXTURE_SLOT=work AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/personal/claude" \
   "$BASH" "$HOOK" > "$HOME/parallel-work.out" &
 parallel_work_pid=$!
 parallel_payload parallel-personal | PATH="$HOME/parallel-bin:$PATH" \
-  AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/work/claude" \
+  CAPTURE_FIXTURE_SLOT=personal AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/work/claude" \
   "$BASH" "$HOOK" > "$HOME/parallel-personal.out" &
 parallel_personal_pid=$!
 wait "$parallel_work_pid"
 wait "$parallel_personal_pid"
+[ -f "$HOME/capture-barrier/work" ]
+[ -f "$HOME/capture-barrier/personal" ]
 [ "$(cat "$HOME/parallel-work.out")" = '{}' ]
 [ "$(cat "$HOME/parallel-personal.out")" = '{}' ]
 jq -se 'length==2 and ([.[].label]|sort)==["personal","work"]
