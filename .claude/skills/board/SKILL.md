@@ -32,8 +32,10 @@ repo differently from `/subagent` would write a record nothing reads.
 
 **Round membership is durable, and where it is missing `/board` says so rather than
 implying it.** The dispatcher records the whole round — launched and queued alike —
-at dispatch (`/subagent` Step 7.0 → `.repos["<key>"].round.members`), so all three
-row classes reconstruct from state for **any** thread: **Running** rows from
+at dispatch (`/subagent` Step 7.0 → `.repos["<key>"].rounds["<session>"].members`).
+This dispatcher's board selects its own ordered queue and completed membership;
+a separate observer reads the deduplicated recorded-round union. Running rows
+retain their existing repo scope as capacity context. Row classes reconstruct from state: **Running** rows from
 `pipelines`, **Queued** rows as members with no recorded `started_at`, and
 **Completed this round** rows as members whose PR merged (Step 3). No queue in
 memory, no timestamp inference, and a compaction costs nothing.
@@ -77,6 +79,7 @@ SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
+ROUND_MEMBERSHIP_SH=$(resolve_script round-membership.sh || true)
 ```
 
 Read `time-estimates.md` through the matching `.claude/reference/` candidate order.
@@ -85,6 +88,7 @@ Read `time-estimates.md` through the matching `.claude/reference/` candidate ord
 silently.**
 
 - `SESSION_STATE_SH` empty → **required**. Print `ERROR: session-state.sh not found (checked all three paths) — /board cannot read round state` and stop. Every row on this board comes from that file; there is no degraded board without it, and inventing rows from the current clock is the one failure the recorded starts exist to prevent.
+- `ROUND_MEMBERSHIP_SH` empty → **optional**. Print `DEGRADED: round-membership.sh not found — queued/completed membership uses the no-record fallbacks` and continue; never substitute another session's singleton as this session's own round.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — Est column renders as unestimated` and continue.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — clock columns render as —` and continue. Still print the table: it carries the round's shape and run order even with three empty columns, and the line above already said why they are empty.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — this render is not recorded against the hourly table-freshness floor` and continue. The board is still correct; only the clock in Step 5 is lost.
@@ -114,6 +118,9 @@ REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
 # session" describes. If sharing `default` across concurrent threads is worth
 # fixing, it is a change to table-freshness.sh and all of its call sites at once.
 TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+# This fallback belongs only to freshness. Membership requires an explicit valid
+# session; default/null/unidentified reads degrade to no-record fallbacks, never
+# to another session's observer union.
 ```
 
 An empty `REPO_KEY` does not stop the board, but it cannot be left empty either.
@@ -128,6 +135,8 @@ skipped and says so.
 ---
 
 ## Step 2: Gather round state, read-only
+
+<!-- test-anchor: board-step2-round-state -->
 
 ```bash
 # `--get` prints the literal string `null` and exits 0 for an absent path, so a
@@ -158,20 +167,27 @@ fi
 # address it by its full path. Never `--get .` — that leaks every repo.
 PIPELINES=""
 ROUND_MEMBERS=""
+ROUND_SCOPE=none
+read_round_membership() {
+  local repo="$1" result
+  ROUND_READ_MEMBERS=""
+  ROUND_READ_SCOPE=none
+  if [[ -z "$ROUND_MEMBERSHIP_SH" ]]; then return 0; fi
+  if ! result=$("$ROUND_MEMBERSHIP_SH" --repo "$repo" --session "$TF_SESSION" --state-helper "$SESSION_STATE_SH"); then
+    echo 'DEGRADED: round membership unavailable — using labelled no-record fallbacks'
+    return 0
+  fi
+  ROUND_READ_MEMBERS=$(printf '%s' "$result" | jq -c '.members')
+  ROUND_READ_SCOPE=$(printf '%s' "$result" | jq -r '.scope')
+  [[ "$ROUND_READ_MEMBERS" != null ]] || ROUND_READ_MEMBERS=""
+}
 if [[ -n "$EFFECTIVE_REPO" ]]; then
   PIPELINES=$(sget ".repos[\"$EFFECTIVE_REPO\"].pipelines")
-  # The durable round record (issue #1604), written once at dispatch by
-  # `/subagent` Step 7.0 and cleared at round teardown. Same invisibility as
-  # `pipelines` — not in --session-view — so spell the path out. EMPTY IS A
-  # REAL ANSWER, and the one Step 3 branches on: a round dispatched before this
-  # field existed has none, and that is what selects the fallbacks there.
-  # --get-json, not sget: this value is an ARRAY, and `--get`'s raw mode
-  # pretty-prints it across lines, which is not something `jq` can read back.
-  ROUND_MEMBERS=$("$SESSION_STATE_SH" \
-    --get-json ".repos[\"$EFFECTIVE_REPO\"].round.members" 2>/dev/null) || ROUND_MEMBERS=""
-  # An absent path and a stored null both print `null` — both mean "no recorded
-  # round", so normalise to empty exactly as sget does for scalars.
-  [[ "$ROUND_MEMBERS" == "null" ]] && ROUND_MEMBERS=""
+  # One repo-scoped read selects our slot, or an explicitly labelled observer
+  # union. Legacy singleton evidence is read-only and shadowed by owner slots.
+  read_round_membership "$EFFECTIVE_REPO"
+  ROUND_MEMBERS="$ROUND_READ_MEMBERS"
+  ROUND_SCOPE="$ROUND_READ_SCOPE"
 fi
 ```
 
@@ -187,16 +203,24 @@ STATE=$("$SESSION_STATE_SH" --session-view --all-repos 2>/dev/null) || STATE=""
 BOARD_REPOS=$(printf '%s' "$STATE" | jq -r '.repos // {} | keys[]' 2>/dev/null)
 for RK in $BOARD_REPOS; do
   RK_PIPELINES=$(sget ".repos[\"$RK\"].pipelines")
-  # The round record is repo-scoped like everything else here, so each repo
-  # brings its OWN membership — or none, independently of its neighbours.
-  RK_ROUND_MEMBERS=$("$SESSION_STATE_SH" \
-    --get-json ".repos[\"$RK\"].round.members" 2>/dev/null) || RK_ROUND_MEMBERS=""
-  [[ "$RK_ROUND_MEMBERS" == "null" ]] && RK_ROUND_MEMBERS=""
-  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS) triples; `_unknown` carries no
+  # Select membership independently for each repo; retain its own scope label.
+  read_round_membership "$RK"
+  RK_ROUND_MEMBERS="$ROUND_READ_MEMBERS"
+  RK_ROUND_SCOPE="$ROUND_READ_SCOPE"
+  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS, RK_ROUND_SCOPE); `_unknown` carries no
   # usable repo for the `gh` and estimate lookups below, so skip it rather than
   # guessing one.
 done
 ```
+
+**Membership scope must be visible.** With `ROUND_SCOPE=own`, label queue and
+delivery as this session's recorded round. With `observer`, label them `Recorded
+rounds (observer view)`: the union is durable membership, never proof that each
+record's owner is still alive, and its queued rows are `Recorded queue (liveness
+unconfirmed)`. Do not present union counts or elapsed time as one dispatch. `legacy`
+uses the old singleton with a legacy label; `none` uses the existing approximate
+fallbacks. Under `--all-repos`, apply each repo's scope separately. Keep the running
+and pre-PR evidence checks below: a recorded queue alone still cannot open a round.
 
 **Under `--all-repos`, every repo-scoped value becomes per-row, not per-board.**
 Carry each pipeline's own repo key alongside it and use *that* key — never the
@@ -402,8 +426,8 @@ board. Three row classes make up the round:
   pre-PR row (above), never *membership*.
 
   **A recorded queue does not, by itself, open a round.** The record is durable, so
-  a thread that died mid-round leaves one behind until the next dispatch replaces
-  it or a teardown clears it — and queued members alone would then render a dead
+  a thread that died mid-round leaves its own slot behind until its owner
+  re-enters or tears it down — and queued members alone would then render a dead
   round as the current one forever. Same answer as the abandoned pre-PR dispatch
   above, and for the same reason: evidence decides. Queued rows render only when
   that repo also shows **at least one running row or evidenced pre-PR row**; with
