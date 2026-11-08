@@ -206,6 +206,7 @@ routing or safety behavior rather than merely reducing output quality.
 | ★ `session-state.sh` | pm, subagent, pr-monitor-and-manage | fallback | required | Repo-keyed state; see repo-scoped state below. |
 | `handoff-state.sh` | subagent, phase agents | fallback | required | Already resolved before #1189. |
 | `recovery-evidence.sh` | wrap, fixpr | fallback | required | Missing helper stops gate/wait recovery; private raw captures and typed errors survive parser failure (Issue #1974). |
+| `lib/fixpr-wait-evidence.sh` | fixpr | fallback | required | Sourced wait functions beside the resolved recovery helper, then standard three roots; missing stops the wait. Legacy selection remains verified and guarded (Issue #1975). |
 | `model-route.sh` | subagent, phase agents, PM and fleet/forgotten-PR launchers | fallback | required | Cost-first routing/submission; missing helper blocks dispatch or push (Issue #1875). |
 | `issue-dedup.sh` | issue-maker, start-issue, pm-worker | fallback | optional | Already resolved before #1189. |
 | `pr-preflight.sh`, `release-sweep.sh` | pr-monitor-and-manage | fallback | optional | Already resolved before #1189. |
