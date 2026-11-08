@@ -15,7 +15,11 @@
 #   `"escalation":"off"`, and BugBot is then never invited on any gate.
 #
 # USAGE
-#   bugbot-tier-excluded.sh <pr_number> [--repo <owner/name>] [--base <ref>]
+#   bugbot-tier-excluded.sh <pr_number> [--repo <owner/name>] [--base <ref>] [--why]
+#
+#   --why opts into <gate> TAB <reason> output, where reason is
+#   tier_excluded, escalation_off, or invited. Default stdout is unchanged.
+#   Narrow review tiers keep tier_excluded even when escalation is off.
 #
 #   --repo and --base are forwarded to review-tier.sh unchanged. Pass --base
 #   when the PR's base branch is already known; it saves a `gh pr view`.
@@ -60,8 +64,10 @@ die_usage() { warn "$1"; exit 2; }
 PR_NUMBER=""
 REPO=""
 BASE_REF=""
+WHY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --why) WHY=true; shift ;;
     --repo) [[ -n "${2-}" ]] || die_usage "--repo requires a value"; REPO="$2"; shift 2 ;;
     --base) [[ -n "${2-}" ]] || die_usage "--base requires a value"; BASE_REF="$2"; shift 2 ;;
     -*) die_usage "unknown flag: $1" ;;
@@ -92,18 +98,25 @@ fi
 GATE="$(printf '%s' "$OUT" | jq -r 'if type == "object" then (.gate // "") else "" end' 2>/dev/null)" || GATE=""
 ESCALATION="$(printf '%s' "$OUT" | jq -r 'if type == "object" then (.escalation // "" | tostring) else "" end' 2>/dev/null)" || ESCALATION=""
 
+emit_gate() {
+  if [[ "$WHY" == true ]]; then printf '%s\t%s\n' "$GATE" "$1"; else printf '%s\n' "$GATE"; fi
+}
+
 case "$GATE" in
   ci-only|ci+codeant-one-round|full|legacy)
     if [[ "$ESCALATION" == "off" ]]; then
       warn "escalation off — BugBot not invited (REVIEW_ESCALATION=off in ## Review policy, gate $GATE, issue #1807)"
-      printf '%s\n' "$GATE"
+      case "$GATE" in
+        ci-only|ci+codeant-one-round) emit_gate tier_excluded ;;
+        *) emit_gate escalation_off ;;
+      esac
       exit 0
     fi
     ;;
 esac
 case "$GATE" in
-  ci-only|ci+codeant-one-round) printf '%s\n' "$GATE"; exit 0 ;;
-  full|legacy)                  printf '%s\n' "$GATE"; exit 1 ;;
+  ci-only|ci+codeant-one-round) emit_gate tier_excluded; exit 0 ;;
+  full|legacy)                  emit_gate invited; exit 1 ;;
 esac
 warn "review-tier.sh returned no recognised gate for PR #$PR_NUMBER (got: '${GATE}') — tier unresolved, BugBot not skipped"
 exit 2

@@ -44,7 +44,7 @@ check_eq "the legacy block was located" "yes" "$( [[ -n "$LEGACY" && "$LEGACY" =
 
 echo "== static: the cap is the LAST gate and the note names the pushed HEAD =="
 ln_of() { grep -nF -- "$1" <<<"$LEGACY" | head -1 | cut -d: -f1; }
-TIER_LN="$(ln_of 'TIER_GATE=$("$BUGBOT_TIER_SH"')"
+TIER_LN="$(ln_of 'TIER_RESULT=$("$BUGBOT_TIER_SH"')"
 REFUSED_LN="$(ln_of '"$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA"')"
 CAP_LN="$(ln_of 'elif bugbot_cap_over; then')"
 check_eq "tier, then refused-HEAD, then the cap" "yes" \
@@ -182,7 +182,7 @@ step3b "$SHA_A"
 check_eq "no @cursor review" "0" "$(cursor_posts)"
 check_eq "no cap call" "0" "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
 check_eq "no note (the tier, not the cap, skipped)" "0" "$(note_lines)"
-check_eq "the tier helper was asked about this repo" "$PR_NUMBER --repo acme/one" "$(grep -v '^refused\|^cap' "$CALLS" | head -1)"
+check_eq "the tier helper was asked about this repo" "$PR_NUMBER --repo acme/one --why" "$(grep -v '^refused\|^cap' "$CALLS" | head -1)"
 echo "== precedence: a refused HEAD wins; the cap is never asked =="
 reset "$over" 1
 export FIXTURE_REFUSED=1
@@ -190,6 +190,15 @@ step3b "$SHA_A"
 check_eq "no @cursor review" "0" "$(cursor_posts)"
 check_eq "no cap call" "0" "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
 check_eq "the refusal guard was asked about the PUSHED SHA" "refused $PR_NUMBER $SHA_A" "$(grep '^refused ' "$CALLS")"
+
+for gate in full legacy; do
+  reset "$over" 1
+  export FIXTURE_TIER="$gate"$'\t'escalation_off
+  step3b "$SHA_A"
+  check_eq "fixpr names escalation off: $gate" yes "$( [[ "$STDOUT" == *'REVIEW_ESCALATION=off'* && "$STDOUT" != *'excludes BugBot'* ]] && echo yes || echo no )"
+  check_eq "fixpr skip posts no paid review: $gate" 0 "$(cursor_posts)"
+  check_eq "fixpr escalation skip does not consult cap: $gate" 0 "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
+done
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

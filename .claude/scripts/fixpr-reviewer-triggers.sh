@@ -242,8 +242,13 @@ if [[ "$TRIGGER_MODE" == "legacy" ]]; then
       || echo "[REVIEWERS] BugBot daily cap unknown (rc=$rc) — posting; the vendor cap stays the hard stop"
     return 1
   }
-  if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_GATE=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$REPO_FULL" 2>/dev/null); then
-    echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
+  if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_RESULT=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$REPO_FULL" --why 2>/dev/null); then
+    TIER_GATE="${TIER_RESULT%%$'\t'*}"
+    if [[ "$TIER_RESULT" == *$'\t'escalation_off ]]; then
+      echo "[REVIEWERS] skipping @cursor review — REVIEW_ESCALATION=off (repo turned escalation off; gate $TIER_GATE)"
+    else
+      echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
+    fi
   elif [[ -n "$BUGBOT_REFUSED_SH" ]] && GH_REPO="$REPO_FULL" "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
     echo "[REVIEWERS] skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1204)"
   elif bugbot_cap_over; then

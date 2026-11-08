@@ -214,6 +214,23 @@ setup "$(tier_json full)"
 run_script --dry-run
 check_eq "dry-run --json on full reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 
+for gate in full legacy; do
+  tier_off=$(tier_json "$gate" | jq -c '. + {escalation:"off"}')
+  setup "$tier_off"
+  run_script
+  check_eq "escalation off JSON: $gate" "{\"reason\":\"escalation_off\",\"gate\":\"$gate\"}" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+  check_eq "escalation off never posts paid review: $gate" 0 "$(posted_cursor)"
+  setup "$tier_off"
+  run_script --dry-run
+  check_eq "dry JSON escalation off: $gate" escalation_off "$(jq -r '.bugbot_skipped.reason' <<<"$JSON_OUT")"
+  setup "$tier_off"
+  TEXT_OUT=$(cd "$REPO_ROOT" && bash "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" --dry-run 2>&1)
+  check_eq "dry text names escalation off: $gate" yes "$( [[ "$TEXT_OUT" == *'REVIEW_ESCALATION=off'* && "$TEXT_OUT" != *'excludes BugBot'* ]] && echo yes || echo no )"
+  setup "$tier_off"
+  TEXT_OUT=$(cd "$REPO_ROOT" && bash "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" 2>&1)
+  check_eq "real text names escalation off: $gate" yes "$( [[ "$TEXT_OUT" == *'REVIEW_ESCALATION=off'* && "$TEXT_OUT" != *'excludes BugBot'* ]] && echo yes || echo no )"
+done
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
