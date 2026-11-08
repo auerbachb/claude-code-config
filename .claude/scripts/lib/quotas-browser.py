@@ -20,6 +20,46 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['schema_
                                       'window': {'enum': ['cursor-models', 'other-models']},
                                       'used_pct': {'type': ['number', 'null'], 'minimum': 0},
                                       'resets_at_epoch': {'type': ['number', 'null'], 'minimum': 0}}}}}}
+STAGE_CLASSES = {'connection': 'browser_connection_unavailable', 'denied': 'browser_tool_denied',
+                 'create': 'browser_tab_create_failed', 'destination': 'browser_destination_unverified'}
+ERROR_CLASSES = set(STAGE_CLASSES.values()) | {'browser_launch_failed', 'browser_observation_rejected',
+                                              'browser_timeout', 'browser_stage_unknown'}
+
+
+def guard_evidence(path):
+    """Unknown/private-format failures never become affirmative stage evidence."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_size > 1024):
+                return None
+            raw = stream.read(1025)
+            if len(raw) > 1024:
+                return None
+            value = json.loads(raw)
+        if (not isinstance(value, dict) or set(value) != {'last_failure', 'owned_tab', 'read_authorized'}
+                or value['last_failure'] not in set(STAGE_CLASSES) | {None}
+                or type(value['owned_tab']) is not bool or type(value['read_authorized']) is not bool):
+            return None
+        return value
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
+
+
+def failure_class(error, facts):
+    """Use proven boundaries only, never stderr, arbitrary messages or model guesses."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return 'browser_timeout'
+    if isinstance(error, OSError) and facts.get('launch') and not facts.get('completed'):
+        return 'browser_launch_failed'
+    stage = (facts.get('guard') or {}).get('last_failure')
+    if stage in STAGE_CLASSES and (error is None or isinstance(error, subprocess.CalledProcessError)):
+        return STAGE_CLASSES[stage]
+    if facts.get('completed') or facts.get('result_file'):
+        return 'browser_observation_rejected' if error is not None else 'browser_stage_unknown'
+    return 'browser_stage_unknown'
 
 
 def number(value):
@@ -59,9 +99,12 @@ def validate(doc, label, expected_email, now):
     return doc
 
 
-def read_observation(path, label, email, now, cli):
+def read_observation(path, label, email, now, cli, facts=None):
     """Read a private fixture/result or invoke the supported explicit Chrome CLI."""
+    if facts is None:
+        facts = {}
     if path:
+        facts['result_file'] = True
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd) as stream:
             info = os.fstat(stream.fileno())
@@ -82,14 +125,20 @@ def read_observation(path, label, email, now, cli):
                   '. Pool identifiers: cursor-models and other-models. Do not include raw page text or credentials.')
         guard = Path(__file__).with_name('quotas-browser-guard.py')
         with tempfile.TemporaryDirectory(prefix='quotas-browser-') as tmp:
-            command = shlex.join([sys.executable, str(guard.resolve()), str(Path(tmp) / 'tab-state.json')])
+            evidence = Path(tmp) / 'stage.json'
+            command = shlex.join([sys.executable, str(guard.resolve()), str(Path(tmp) / 'tab-state.json'), str(evidence)])
             hook = [{'matcher': '*', 'hooks': [{'type': 'command', 'command': command}]}]
             settings = {'hooks': {'PreToolUse': hook, 'PostToolUse': hook}}
-            result = subprocess.run([cli, '--restricted', '--chrome', '--print', '--no-session-persistence', '--tools', 'ToolSearch',
+            facts['launch'] = True
+            try:
+                result = subprocess.run([cli, '--restricted', '--chrome', '--print', '--no-session-persistence', '--tools', 'ToolSearch',
                                      '--allowedTools', tools, '--permission-mode', 'dontAsk', '--settings', json.dumps(settings),
                                      '--max-turns', '8', '--output-format', 'json',
                                      '--json-schema', json.dumps(SCHEMA), prompt],
-                                    capture_output=True, text=True, timeout=90, check=True, stdin=subprocess.DEVNULL)
+                                        capture_output=True, text=True, timeout=90, check=True, stdin=subprocess.DEVNULL)
+                facts['completed'] = True
+            finally:
+                facts['guard'] = guard_evidence(evidence)
         envelope = json.loads(result.stdout)
         if not isinstance(envelope, dict):
             raise ValueError('envelope')
@@ -97,9 +146,19 @@ def read_observation(path, label, email, now, cli):
     return validate(payload, label, email, now)
 
 
-if __name__ == '__main__':
+def main(args=None):
+    facts = {}
+    args = sys.argv[1:] if args is None else args
     try:
-        print(json.dumps(read_observation(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5])))
-    except (OSError, ValueError, TypeError, RecursionError, subprocess.SubprocessError):
-        # Exceptions and CLI stderr may contain paths or page data; never repeat them.
-        print('{"status":"unreadable","rows":[],"email":""}')
+        result = read_observation(args[0], args[1], args[2], int(args[3]), args[4], facts)
+        if result['status'] == 'unreadable':
+            result = dict(status='unreadable', rows=[], email='', error_class=failure_class(None, facts))
+    except Exception as exc:
+        # No traceback: even launch/validation exceptions can contain private
+        # paths, account identity, CLI output or tool responses.
+        result = dict(status='unreadable', rows=[], email='', error_class=failure_class(exc, facts))
+    print(json.dumps(result))
+
+
+if __name__ == '__main__':
+    main()
