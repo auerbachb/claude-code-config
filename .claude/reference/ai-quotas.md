@@ -921,41 +921,37 @@ OpenAI renames the balance again, add it in `codex_live_overage` and here.
 ### The Codex reset watermark
 
 `~/.claude/quotas/codex-reset.json` (override the directory with
-`CLAUDE_QUOTAS_STATE_DIR`), written **only** by an explicit
-`quotas-cheapest-next.sh --record-codex-reset [YYYY-MM-DD]`:
+`CLAUDE_QUOTAS_STATE_DIR`) records resets **per registered Codex label**. Write only
+explicitly after using a reset:
 
-```json
-{"schema_version": "1.0", "month": "2026-09", "used_on": "2026-09-07",
- "recorded_at": "2026-09-09T18:41:02Z"}
+```bash
+quotas-cheapest-next.sh --record-codex-reset --account my-codex [YYYY-MM-DD]
 ```
 
-A `month` equal to the current **Eastern** month means the free reset is spent, and the
-row prices the next one at `~$90/reset`. Any other month, or no file, means one is
-available. `--codex-reset-status` prints the verdict; `AI_QUOTAS_NOW` freezes the month
-for tests.
+The date defaults to today in Eastern time. The label must exist as a Codex account
+in `~/.claude/ai-quotas.json` (`AI_QUOTAS_CONFIG` overrides that registry). Schema 2.0
+stores an `accounts` object keyed by label, each with `month`, `used_on` and
+`recorded_at`. Only that label's current-Eastern-month record marks its free reset
+spent. Other accounts retain their own verdict; account renaming does not transfer
+a watermark. Live per-row reset figures still take precedence.
 
-**The read fails soft, in the safe direction.** A missing, unreadable, or malformed file
-degrades to "one free reset assumed" (`figure_source: "assumed"`) with a warning — never
-to an error, and never to "already spent". The latter is the reading that steers the hint
-toward a $90 purchase, and it must not come from a parse failure.
+`--codex-reset-status` returns `{month, accounts, watermark_file}` with one verdict
+per registered Codex label. Each verdict has `free_reset_available`, `figure_source`
+and `used_on`. It has no aggregate spent/free verdict. `AI_QUOTAS_NOW` freezes the
+month in tests.
 
-**One record, not one per account.** The file carries no account dimension, so recording a
-reset marks the free reset spent for *every* Codex account that falls back to the
-watermark. Accounts reporting a live free-reset figure are unaffected — a live figure is
-preferred over the watermark, and since #1862 an account whose reply includes the
-reset-credit section reports one, provided that section supplies a valid number. The
-watermark still answers for any reply without the section, or whose count is not a number,
-so it remains the fallback it was. The measured keys outrank the older guessed ones. With more than one Codex account registered, read the
-verdict as "a reset was used somewhere this month", not as a per-account balance. Keying
-it by account is issue #1696.
+Missing or unreadable records assume a free reset for that account. A corrupt
+individual entry does not discard valid siblings. Legacy global schema-1 records
+belong to no account, so they never mark every account spent; an explicit account
+recording replaces that legacy shape. Unknown schemas or corrupt top-level files
+must be repaired or moved aside before writing. A missing/broken registry prevents
+recording; it never invents an account association.
 
-**Backfilling an older month is refused.** The file holds one slot, so recording an August
-reset over a September record would erase the only evidence September's reset was spent
-and the next report would offer one that is gone. `--record-codex-reset` reads the
-existing record first and exits 5 rather than replacing it with a strictly older month,
-naming the file to remove if the overwrite is deliberate. The date is also round-tripped
-through `date`, so `2026-99-99` and `2026-02-31` are rejected: a banked `2026-99` sorts
-after every real month and would otherwise block every later recording permanently.
+Writes use a bounded shared OS lock and private atomic replacement, preserving other
+accounts. Backfilling an older month over the selected account's newer record is
+refused (exit 5); another account's newer month does not block it. Invalid calendar
+dates are refused (exit 3). These records remain advisory: no purchases, logins or
+dispatch decisions occur.
 
 ### The threshold knob
 
