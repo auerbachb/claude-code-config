@@ -21,6 +21,44 @@ Shared code that hooks source (rather than run) lives in `lib/` and is deliberat
 
 `register-hooks.py` — the helper `session-start-sync.sh` calls — also syncs the top-level **`statusLine`** key by the same rules (issue #779). That key is not a hook event, but its `command` carries the same path placeholder and must resolve to the skills worktree the same way. It is seeded when absent, path-repaired when it points at our own `statusline.sh`, and left completely alone when the user has pointed it at their own script. `--statusline-only` runs that sync without touching hooks; `setup-skills-worktree.sh` Step 6b uses it so install-time and session-start behavior share one implementation. See [ARCHITECTURE.md](../../ARCHITECTURE.md#status-line).
 
+
+### Session-start test ownership (Issue #1834)
+
+The former 1,172-line session-start suite mixed independent registration,
+marker, resume and deadline contracts. Local commit diffs confirm the three
+reported touches: PR #1709 added deadline controls, PR #1752 changed lock
+eligibility, and PR #1817 added publisher-category coverage. Seven cumulative
+cleanup traps also required each new fixture to edit earlier ownership lists.
+This is evidence for separating test concerns, not measured conflict cost or
+proof of faster CI.
+
+| Suite | Original sections | Owns |
+|---|---|---|
+| [session-start-sync.test.sh](tests/session-start-sync.test.sh) | 1–10, 16–17 | Registration, migration and capture structure |
+| [session-start-sync-marker.test.sh](tests/session-start-sync-marker.test.sh) | 11–13b | Restart marker and lock eligibility |
+| [session-start-sync-resume.test.sh](tests/session-start-sync-resume.test.sh) | 14 | Fast-forward notices and publisher categories |
+| [session-start-sync-publish-bounds.test.sh](tests/session-start-sync-publish-bounds.test.sh) | 15 | Publisher/root-sync bounds and healthy controls |
+
+The split preserves all **20 scenario headings and 81 assertion sites**. The
+five moved scenario chunks remain byte-identical after excluding only cleanup
+registration and the old cumulative traps. Timeouts, sleeps, environment knobs,
+sentinels and child release/wait ordering are unchanged. Production hook logic, workflow configuration and the independent reconcile
+suite are unchanged; hook/workflow comments and the timing reference point at
+the concern suites.
+
+Shared setup and the single EXIT trap live in
+[the source-only fixture](tests/lib/session-start-sync-fixtures.sh). Register
+only freshly allocated private directories through `ssync_register_tmp`;
+suites retain their explicit process handoffs and teardown. `ctx_has`,
+`marker_state`, `build_ok_home` and `wait_for` stay local to the marker suite;
+`build_publish_fixture` stays local to publisher bounds. Add cases to their
+concern suite, create another suite for a new concern, and keep scenario logic
+out of the fixture. Do not add competing suite EXIT traps. The existing runner
+discovers every `*.test.sh`; the source-only `.sh` fixture is not a suite.
+
+No churn baseline or exemption is added. This changes test ownership while
+preserving coverage; it makes no claim about future recurrence or saved time.
+
 ---
 
 ## post-merge-pull.sh
