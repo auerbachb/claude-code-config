@@ -1650,3 +1650,24 @@ Supported CLI integration: [Claude Code Chrome documentation](https://code.claud
 ## Session attribution
 
 For account × project history, see [ai-account-ledger.md](ai-account-ledger.md). The dedicated ledger report is separate from live quota output.
+
+### Captured Codex HTTP wire format (Issue #1864)
+
+The 2026-11-07 fixture in `scripts/tests/fixtures/codex-wham-usage-2026-11-07.json`
+was captured at 23:29:58 UTC through the existing authenticated HTTP reader
+(HTTP 200, reader revision `dabd51bf`). The original reader rejected this body
+as an unrecognized shape. Identifiers, wallet balance, and opaque model metadata
+were redacted; reported window values and types are unchanged. No credentials
+or request headers are stored in the fixture. Later mutated test bodies are
+synthetic controls, not additional provider captures.
+
+The HTTP boundary maps `rate_limit.primary_window` and `secondary_window` to
+the shared renderer: `used_percent`, `limit_window_seconds` (seconds to minutes),
+and absolute `reset_at`, falling back to `reset_after_seconds` on the reader's
+clock. Invalid percentages or explicit unsupported durations fail closed. The shared
+renderer labels whole hours, so a present fractional-hour wire window refuses
+the response rather than truncating its label or presenting it as absent. An
+omitted duration remains an honestly labelled generic window. Weekly selection
+still follows duration rather than slot position. The app-server path and older
+HTTP camelCase bodies retain their existing behavior. An unlabelled
+`credits.balance` is not evidence of a USD amount and is not converted.

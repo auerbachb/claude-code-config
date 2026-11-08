@@ -1818,6 +1818,48 @@ check_contains "$(field_of codex-one@example.com "7-day" detail)" "exited withou
 check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not answer within" \
   "control(-): the timeout wording is not used for a server that exited"
 
+# The HTTP 200 body below was captured through the existing reader on
+# 2026-11-07, then stripped of identifiers and opaque account metadata.
+# Only this first case is a real wire fixture; mutations below are controls.
+HTTP_WIRE_FIXTURE="$ROOT/.claude/scripts/tests/fixtures/codex-wham-usage-2026-11-07.json"
+cp "$HTTP_WIRE_FIXTURE" "$STUB_CHATGPT_BODY"
+run --json --five-hour
+check_eq "$(field_of codex-one@example.com "7-day" source)" "http" "captured snake_case body renders through HTTP"
+check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "30" "captured weekly usage survives wire normalization"
+check_eq "$(field_of codex-one@example.com "7-day" resets_at_epoch)" "1794531249" "absolute wire reset wins over relative reset"
+check_eq "$(field_of codex-one@example.com "5-hour" used_pct)" "null" "absent secondary window does not invent short-window usage"
+check_eq "$(field_of codex-one@example.com "7-day" credits_remaining_usd)" "null" "unlabelled wallet balance never becomes USD"
+
+jq 'del(.rate_limit.primary_window.reset_at)' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+run --json
+check_eq "$(field_of codex-one@example.com "7-day" resets_at_epoch)" "$(( NOW + 437052 ))" "relative wire reset uses the reader clock"
+jq '.rate_limit.primary_window.used_percent="0" | .rate_limit.primary_window.reset_at=null | .rate_limit.primary_window.reset_after_seconds=0' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+run --json
+check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "0" "zero numeric-string usage is a valid reported value"
+check_eq "$(field_of codex-one@example.com "7-day" resets_at_epoch)" "$NOW" "zero relative reset is immediate rather than missing"
+jq 'del(.rate_limit.primary_window.limit_window_seconds)' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+run --json
+check_eq "$(field_of codex-one@example.com "window" used_pct)" "30" "missing duration keeps usage under an honest generic label"
+for wire_bad in 'true' 'null' '-1' '"unknown"'; do
+  jq --argjson bad "$wire_bad" '.rate_limit.primary_window.used_percent=$bad' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+  run --json --five-hour
+  check_eq "$(rows_for codex-one@example.com)" "unreachable" "invalid wire usage $wire_bad cannot become a successful empty report"
+done
+for wire_bad in '0' '-60' '60' '61' '1800' '5400' 'true' '"one week"'; do
+  jq --argjson bad "$wire_bad" '.rate_limit.primary_window.limit_window_seconds=$bad' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+  run --json
+  check_eq "$(rows_for codex-one@example.com)" "unreachable" "invalid wire duration $wire_bad cannot invent a window unit"
+done
+# A present unsupported short window must not become a claim that the plan
+# reports no short window merely because a separate weekly window is valid.
+jq '.rate_limit.secondary_window={used_percent:12,limit_window_seconds:5400,reset_after_seconds:600}' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+run --json --five-hour
+check_eq "$(rows_for codex-one@example.com)" "unreachable" "present unsupported window cannot be silently presented as absent"
+jq '.rate_limit.secondary_window=.rate_limit.primary_window | .rate_limit.primary_window={used_percent:12,limit_window_seconds:18000,reset_after_seconds:600}' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
+run --json --five-hour
+check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "30" "weekly wire window is selected from secondary by duration"
+check_eq "$(field_of codex-one@example.com "5-hour" used_pct)" "12" "short wire window is selected from primary by duration"
+
 # --- 14a. a spaced `"id" : 2` is the same response, not a timeout ------------
 # JSON puts no constraint on whitespace around the name separator, so a server
 # is free to answer `"id" : 2`. A reader that matches only the compact form
