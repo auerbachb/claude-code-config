@@ -129,7 +129,7 @@ BLOCK_PIPELINE="$(extract_skill_bash "$DOC" subagent-limit-pipeline-record)" || 
 BLOCK_WAKE="$(extract_skill_bash     "$DOC" subagent-limit-wake-arm)"        || exit 1
 BLOCK_PUBLISH="$(extract_skill_bash  "$DOC" subagent-limit-wake-publish)"    || exit 1
 BLOCK_RECOVERY="$(extract_skill_bash "${PARK_SNAPSHOT_RECOVERY_TEST_SOURCE:-$DOC}" subagent-limit-park-recovery)"   || exit 1
-BLOCK_PM_SNAPSHOT="$(extract_skill_bash "$PM_SKILL" pm-day-park-snapshot)" || exit 1
+BLOCK_PM_SNAPSHOT="$(extract_skill_bash "${PARK_SNAPSHOT_PM_TEST_SOURCE:-$PM_SKILL}" pm-day-park-snapshot)" || exit 1
 BLOCK_GEN="$(extract_skill_bash    "$GO_ON" go-on-limit-generation-gate)"    || exit 1
 BLOCK_PROBE="$(extract_skill_bash  "$GO_ON" go-on-limit-park-probe)"         || exit 1
 
@@ -403,7 +403,7 @@ check_true "  sleeps until reset + 2 min ($SLEEP)" \
   "$( [ "$SLEEP" -ge 1860 ] && [ "$SLEEP" -le 1921 ] && echo true || echo false )"
 GEN=$(field "$OUT" WAKE_GENERATION)
 check_true "  mints a limit- generation ($GEN)" \
-  "$( case "$GEN" in limit-*) echo true ;; *) echo false ;; esac )"
+  "$( [[ "$GEN" == limit-* ]] && echo true || echo false )"
 
 BASE=$(date -u +%s); RESET=$(( BASE + 1800 ))
 OUT=$(run_wake 2 rolling_window "$RESET")
@@ -747,6 +747,11 @@ run_pm_snapshot() (
     "$PARKED_UNTIL" "$PARK_LIMIT_KIND" "$PARK_LIMIT_CAUSE" "$PARK_LIMIT_FIRES" "$PARK_CLAIM_TOKEN" \
     "$PARK_RC" "$LIMIT_KIND_RC" "$LIMIT_CAUSE_RC" "$LIMIT_FIRES_RC" "$CLAIM_TOKEN_RC"
 )
+run_snapshot_field() (
+  eval "$BLOCK_PM_SNAPSHOT"
+  read_day "$1"
+  printf '%s|%s\n' "$DAY_VALUE" "$DAY_RC"
+)
 run_recovery_record() (
   eval "$BLOCK_RECOVERY"
   printf 'SELECTED_UNTIL=%s\n' "$PARKED_UNTIL"
@@ -777,13 +782,65 @@ for payload in null '{}'; do
   printf '%s\n' "$payload" >"$SNAPSHOT_PAYLOAD"; : >"$SNAPSHOT_ARGS"
   check_eq "readable $payload yields absent fields at rc0" 'null|null|null|null|null|0,0,0,0,0' \
     "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_pm_snapshot)"
-  check_eq "one whole-day read for all five fields" \
+  check_eq "one whole-day read for all recovery fields" \
     "--get-json .repos[\"$REPO_KEY\"].day" "$(cat "$SNAPSHOT_ARGS")"
 done
-printf '%s\n' '{"parked_until":false,"limit_kind":0,"limit_cause":"","limit_probe_fires_remaining":null,"park_claim_token":"fixture"}' >"$SNAPSHOT_PAYLOAD"
+printf '%s\n' '{"active":false,"counter":0,"label":""}' >"$SNAPSHOT_PAYLOAD"
 : >"$SNAPSHOT_ARGS"
-check_eq "field extraction preserves false, zero and empty strings" 'false|0||null|fixture|0,0,0,0,0' \
-  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_pm_snapshot)"
+check_eq "ordinary boolean metadata is preserved" 'false|0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field active)"
+check_eq "ordinary numeric metadata is preserved" '0|0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field counter)"
+check_eq "ordinary empty-string metadata is preserved" '|0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field label)"
+
+VALID_PARK=$(jq -cn --arg until "$(epoch_to_iso $(( $(date -u +%s) + 3600 )))" \
+  '{parked_until:$until,limit_kind:"rolling_window",limit_cause:"reactive",
+    limit_probe_fires_remaining:null,park_claim_token:null,limit_resume_generation:"limit-fixture"}')
+for critical_field in parked_until limit_kind limit_cause park_claim_token limit_resume_generation; do
+  for invalid in '"null"' '""' false 0 '[]' '{}'; do
+    printf '%s\n' "$VALID_PARK" | jq --arg field "$critical_field" --argjson invalid "$invalid" \
+      '.[$field]=$invalid' >"$SNAPSHOT_PAYLOAD"
+    check_eq "PM refuses corrupt nullable $critical_field: $invalid" 'null|4' \
+      "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field "$critical_field")"
+    check_eq "subagent refuses corrupt nullable $critical_field: $invalid" PARK_RECOVERY=unreadable \
+      "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+  done
+  printf '%s\n' "$VALID_PARK" | jq --arg field "$critical_field" '.[$field]=null' >"$SNAPSHOT_PAYLOAD"
+  check_eq "actual JSON null remains absence for $critical_field" 'null|0' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field "$critical_field")"
+done
+for invalid_time in '2026-02-30T12:00:00Z' '2026-13-01T12:00:00Z' '2026-11-01T25:00:00Z' \
+    '2026-1-01T12:00:00Z' 'tomorrow'; do
+  printf '%s\n' "$VALID_PARK" | jq --arg until "$invalid_time" '.parked_until=$until' >"$SNAPSHOT_PAYLOAD"
+  check_eq "invalid calendar/format is unreadable: $invalid_time" 'null|4' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field parked_until)"
+  check_eq "invalid calendar/format never dispatches: $invalid_time" PARK_RECOVERY=unreadable \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+done
+for invalid in false true '"0"' '"7"' '"null"' '""' 1.5 -2 '[]' '{}' 9007199254740992 1e100; do
+  printf '%s\n' "$VALID_PARK" | jq --argjson invalid "$invalid" '.limit_probe_fires_remaining=$invalid' >"$SNAPSHOT_PAYLOAD"
+  check_eq "PM rejects a corrupt probe bound: $invalid" 'null|4' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field limit_probe_fires_remaining)"
+  check_eq "a corrupt probe bound never becomes a known-reset wake: $invalid" PARK_RECOVERY=unreadable \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+done
+for valid_count in null -1 0 1 12 9007199254740991; do
+  printf '%s\n' "$VALID_PARK" | jq --argjson count "$valid_count" '.limit_probe_fires_remaining=$count' >"$SNAPSHOT_PAYLOAD"
+  check_eq "valid probe count retains its value: $valid_count" "$valid_count|0" \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field limit_probe_fires_remaining)"
+done
+printf '%s\n' "$VALID_PARK" | jq '.parked_until=null | .limit_probe_fires_remaining=false' >"$SNAPSHOT_PAYLOAD"
+check_eq "an absent timestamp cannot conceal another corrupt wake field" PARK_RECOVERY=unreadable \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+
+# Native state-helper controls: these are stored strings, not missing values.
+for string_null_field in parked_until limit_probe_fires_remaining; do
+  seed_existing_park reactive "$(epoch_to_iso $(( $(date -u +%s) + 3600 )))" null
+  jq --arg k "$REPO_KEY" --arg field "$string_null_field" '.repos[$k].day[$field]="null"' "$STATE_FILE" \
+    >"$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+  check_eq "native stored string-null $string_null_field fails closed" PARK_RECOVERY=unreadable "$(run_recovery)"
+done
 for payload in '' '[' '[]' false 0 '"text"' '{} {}'; do
   printf '%s\n' "$payload" >"$SNAPSHOT_PAYLOAD"; : >"$SNAPSHOT_ARGS"
   check_eq "invalid or wrong-shaped snapshot stays unreadable: $payload" 'null|null|null|null|null|4,4,4,4,4' \
@@ -1178,7 +1235,7 @@ OUT=$(NEW_HITS=1 LIMIT_KIND=rolling_window PARK_RESET_KNOWN=false \
 check_eq "an unknown reset arms the bounded probe" "probe" "$(field "$OUT" WAKE)"
 check_eq "  at the cadence, in seconds"            "1800"  "$(field "$OUT" WAKE_SLEEP)"
 check_true "  with a probe- generation, not a limit- one" \
-  "$( case "$(field "$OUT" WAKE_GENERATION)" in probe-*) echo true ;; *) echo false ;; esac )"
+  "$( [[ "$(field "$OUT" WAKE_GENERATION)" == probe-* ]] && echo true || echo false )"
 # A known reset still takes the reactive one-shot — the probe is the exception,
 # not the new default.
 RESET_KNOWN=$(( $(date -u +%s) + 3600 ))

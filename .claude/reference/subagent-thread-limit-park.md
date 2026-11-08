@@ -565,18 +565,44 @@ if [ "$DAY_SNAPSHOT_RC" -eq 0 ] && ! printf '%s\n' "$DAY_SNAPSHOT" \
   DAY_SNAPSHOT_RC=4
 fi
 read_day() {  # read_day <field> -> DAY_VALUE, DAY_RC, from this snapshot only
+  local parsed_time
   DAY_RC=$DAY_SNAPSHOT_RC
   DAY_VALUE=null
   if [ "$DAY_RC" -eq 0 ]; then
-    DAY_VALUE=$(printf '%s\n' "$DAY_SNAPSHOT" | jq -r --arg field "$1" '.[$field]' 2>/dev/null) || DAY_RC=4
+    # Validate nullable wake fields BEFORE raw rendering can erase JSON types.
+    DAY_VALUE=$(printf '%s\n' "$DAY_SNAPSHOT" | jq -r --arg field "$1" '
+      .[$field] as $value |
+      if $value == null then null
+      elif $field == "parked_until" then
+        if ($value | type) == "string" and ($value | length) == 20
+           and ($value | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        then $value else error("invalid park timestamp") end
+      elif $field == "limit_probe_fires_remaining" then
+        if ($value | type) != "number" then error("invalid probe counter")
+        elif $value < -1 or $value > 9007199254740991 or ($value | floor) != $value
+        then error("probe counter must be an exact integer") else $value end
+      elif $field == "limit_kind" or $field == "limit_cause"
+           or $field == "park_claim_token" or $field == "limit_resume_generation" then
+        if ($value | type) == "string" and ($value | length) > 0 and $value != "null"
+        then $value else error("invalid nullable park identifier") end
+      else $value end' 2>/dev/null) || { DAY_RC=4; DAY_VALUE=null; }
+    if [ "$DAY_RC" -eq 0 ] && [ "$1" = parked_until ] && [ "$DAY_VALUE" != null ]; then
+      parsed_time=$(date -u -d "$DAY_VALUE" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+        || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$DAY_VALUE" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || parsed_time=""
+      if [ "$parsed_time" != "$DAY_VALUE" ]; then DAY_RC=4; DAY_VALUE=null; fi
+    fi
   fi
   return 0
 }
 read_day parked_until; PARKED_UNTIL="$DAY_VALUE"; PU_RC="$DAY_RC"
 read_day limit_kind;   PARK_KIND="$DAY_VALUE";   LK_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_FIRES="$DAY_VALUE"; PF_RC="$DAY_RC"
+read_day limit_cause; PC_RC="$DAY_RC"
+read_day park_claim_token; CT_RC="$DAY_RC"
+read_day limit_resume_generation; RG_RC="$DAY_RC"
 if [[ ( "$PU_RC" -ne 0 && "$PU_RC" -ne 3 ) || ( "$LK_RC" -ne 0 && "$LK_RC" -ne 3 ) \
-      || ( "$PF_RC" -ne 0 && "$PF_RC" -ne 3 ) ]]; then
+      || ( "$PF_RC" -ne 0 && "$PF_RC" -ne 3 ) || ( "$PC_RC" -ne 0 && "$PC_RC" -ne 3 ) \
+      || ( "$CT_RC" -ne 0 && "$CT_RC" -ne 3 ) || ( "$RG_RC" -ne 0 && "$RG_RC" -ne 3 ) ]]; then
   echo "PARK_RECOVERY=unreadable"      # fail closed: re-arm nothing, dispatch nothing
 elif [[ -z "$PARKED_UNTIL" || "$PARKED_UNTIL" == null ]]; then
   echo "PARK_RECOVERY=none"            # no park — continue session start normally
@@ -610,6 +636,11 @@ same `DAY_SNAPSHOT`; never call the state helper separately for those fields.
 Retry a snapshot rc6 once. A readable object/null preserves each field's value
 or null with rc0; absent state stays rc3. Invalid JSON, multiple values or any
 other shape is unreadable (rc4), and other failures retain their original rc.
+Critical nullable values retain their JSON type until validation: actual null
+means absent; the string "null", empty identifiers, invalid UTC timestamps and
+nonintegral/unsafe probe counters are unreadable. Ordinary metadata still
+preserves false, zero and empty strings. Validate every wake field's status
+before choosing a wake, even when the timestamp itself is absent.
 The fresh identity revalidation before publication remains a separate ownership
 check; it does not retroactively change this attempt's wake-selection snapshot.
 
