@@ -736,9 +736,36 @@ else
 fi
 ```
 
-Persist all non-cadence counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
+Persist all eight non-cadence bookkeeping fields atomically under the generation that authorized this tick. Re-read the whole watcher and self-compare that snapshot, so a stop, replacement or other revision between read and write discards the entire batch without refreshing a newer watcher or continuing to cadence/T6. A failed read/write is an error, never a clean supersession. Then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
+
+<!-- test-anchor: babysit-pr-t5-persist -->
 
 ```bash
+# Keep the generation that authorized this tick; never adopt a fresh one here.
+if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then
+  GATE_GENERATION="${TICK_GENERATION:-}"
+else
+  GATE_GENERATION="${MONITOR_GENERATION:-}"
+fi
+if [[ -z "$GATE_GENERATION" || "$GATE_GENERATION" == null ]]; then
+  echo 'ERROR: bookkeeping has no authorizing Monitor generation.' >&2
+  exit 1
+fi
+T5_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: could not read the watcher before bookkeeping.' >&2; exit 1; }
+if ! printf '%s' "$T5_SNAPSHOT" | jq -e '
+  . == null or (type == "object" and (.active | type == "boolean")
+  and (.stop_requested == null or (.stop_requested | type == "boolean"))
+  and (.monitor_generation == null or (.monitor_generation | type == "string" and length > 0)))' >/dev/null; then
+  echo 'ERROR: watcher bookkeeping snapshot is malformed.' >&2
+  exit 1
+fi
+if ! printf '%s' "$T5_SNAPSHOT" | jq -e --arg gen "$GATE_GENERATION" '
+  type == "object" and .monitor_generation == $gen and .active == true
+  and .stop_requested != true' >/dev/null; then
+  echo '[babysit] Watcher changed or stopped; discarding this tick.'
+  exit 0
+fi
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # HORIZON_HELD_SINCE is the JSON value the write below stores: the stamp is set
@@ -746,7 +773,10 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # after it, and cleared the moment the verdict leaves `critical`. Compute it
 # here rather than describing it — an unassigned variable under `set -u` aborts
 # the tick, and without `set -u` it silently stores nothing (#1444, #1653).
-PREV_HELD=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.horizon_held_since" 2>/dev/null || echo "")
+PREV_HELD=$(printf '%s' "$T5_SNAPSHOT" | jq -r '
+  .horizon_held_since | if . == null then "" elif type == "string" then .
+  else error("invalid held-since stamp") end') || {
+  echo 'ERROR: watcher held-since stamp is unreadable.' >&2; exit 1; }
 if [[ "${HORIZON_STATUS:-unknown}" != "critical" ]]; then
   HELD_RAW=""                                   # any non-critical verdict clears it
 elif [[ -n "$PREV_HELD" && "$PREV_HELD" != "null" ]]; then
@@ -762,7 +792,9 @@ else
   HORIZON_HELD_SINCE=null
 fi
 
+PERSIST_RC=0
 "$SESSION_STATE_SH" \
+  --cas ".prs[\"$PR\"].babysit=$T5_SNAPSHOT" --expect "$T5_SNAPSHOT" \
   --set ".prs[\"$PR\"].digest=$DIGEST" \
   --set ".prs[\"$PR\"].digest_streak=$STREAK" \
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
@@ -770,51 +802,141 @@ fi
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
   --set ".prs[\"$PR\"].babysit.horizon_status=\"${HORIZON_STATUS:-unknown}\"" \
   --set ".prs[\"$PR\"].babysit.horizon_held_since=$HORIZON_HELD_SINCE" \
-  --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
+  --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW" || PERSIST_RC=$?
+if [[ "$PERSIST_RC" -eq 7 ]]; then
+  echo '[babysit] Watcher changed during bookkeeping; discarding this tick.'
+  exit 0
+elif [[ "$PERSIST_RC" -ne 0 ]]; then
+  echo "ERROR: watcher bookkeeping failed (rc=$PERSIST_RC); not re-arming." >&2
+  exit 1
+fi
 ```
 
 `HORIZON_HELD_SINCE` is computed by the block above rather than assumed: on a `critical` tick it reuses the existing `.prs["<PR>"].babysit.horizon_held_since` when that is already a non-null string and stamps `"$NOW"` otherwise, and on every other verdict it is the literal `null`. Both fields are this watcher's own bookkeeping — nothing outside `.prs["<PR>"].babysit` is written on any verdict (#1444).
 
-**Re-arm cadence only when it crosses a tier boundary.** Before comparing cadences, read the exact
-current `babysit.monitor_task_id` on every tick. A missing ID while active is degraded teardown: set
-`stop_requested=true`, report it, and terminate without retaining or arming a task. Then compare the
-computed `$EFFECTIVE_MIN` to the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on
-every tick. When they are equal, retain the identified Monitor and cadence. When they differ, stop
-the exact current Monitor. Before that stop, atomically set `stop_requested=true`; this makes every
-already-emitted old-generation event exit at T0 throughout the stop-to-publication gap. In other
-words, cadence changes must **guard, then stop the exact current Monitor** and complete this transaction:
+**Re-arm cadence only when it crosses a tier boundary.** Compare `$EFFECTIVE_MIN` to
+`$PREV_EFFECTIVE_MIN` on every tick. If equal, retain the current Monitor. Otherwise,
+first capture the exact watcher this tick is authorized to stop and atomically guard it.
+A lost compare exits this tick without stopping any task or running T6. Never adopt a
+replacement generation observed after T0/T5.
 
-1. Publish `stop_requested=true`, then stop the exact current Monitor task with `TaskStop`. A failed
-   old-task stop retains its complete ID+generation pair, `$PREV_EFFECTIVE_MIN`, and the stop guard
-   in state and aborts the re-arm as incomplete teardown.
-2. Generate a fresh `$NEW_MONITOR_GENERATION`, then arm a replacement whose sleep and emitted
-   `--cadence` use `$EFFECTIVE_MIN` and whose event includes
-   `--monitor-generation $NEW_MONITOR_GENERATION`.
-3. Publish the replacement ID, generation, cadence, and cleared stop guard in one atomic state write:
-
-   ```bash
-   "$SESSION_STATE_SH" \
-     --set ".prs[\"$PR\"].babysit.monitor_task_id=$NEW_MONITOR_TASK_ID" \
-     --set ".prs[\"$PR\"].babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"" \
-     --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
-     --set ".prs[\"$PR\"].babysit.stop_requested=false"
-   ```
-
-If replacement arming fails, the old task is already stopped: atomically set `active=false`,
-`stop_requested=false`, `monitor_task_id=null`, `monitor_generation=null`, and restore
-`cadence_effective_minutes=$PREV_EFFECTIVE_MIN`, then report that the watcher terminated. If the
-publication write fails, stop the exact replacement task. After a successful rollback stop, clear
-the known-stopped old identity and set `active=false`, `stop_requested=false`; after a failed rollback stop, best-effort
-publish `stop_requested=true`, `active=true`, and the exact `$NEW_MONITOR_TASK_ID` plus
-`$NEW_MONITOR_GENERATION` so a later `/babysit-pr-stop` can retry the potentially-live task. Never
-retain the already-stopped old identity as if it were the replacement, and never claim the cadence
-changed until the ID+generation+cadence publication succeeds. A queued event from the stopped old
-generation is rejected at T0 before it can classify, dispatch, terminate, or re-arm the replacement.
-
-On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
+<!-- test-anchor: babysit-pr-t5-cadence-guard -->
 
 ```bash
-"$SESSION_STATE_SH" --set ".prs[\"$PR\"].last_cron_action={\"type\":\"update\",\"interval\":\"${WIDE_MIN}m\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+if [[ -z "${GATE_GENERATION:-}" || "$GATE_GENERATION" == null ]]; then
+  echo 'ERROR: cadence teardown has no authorizing generation; stopping no task.' >&2; exit 1
+fi
+CADENCE_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: cannot read the watcher before cadence teardown.' >&2; exit 1; }
+if ! printf '%s' "$CADENCE_SNAPSHOT" | jq -e '
+  type == "object" and (.active | type == "boolean")
+  and (.stop_requested == null or (.stop_requested | type == "boolean"))
+  and (.monitor_generation == null or (.monitor_generation | type == "string"))' >/dev/null; then
+  echo 'ERROR: malformed cadence watcher; stopping no task.' >&2; exit 1
+fi
+if ! printf '%s' "$CADENCE_SNAPSHOT" | jq -e --arg gen "$GATE_GENERATION" '
+  .active == true and .stop_requested != true and .monitor_generation == $gen' >/dev/null; then
+  echo '[babysit] Watcher changed before cadence teardown; discarding this tick.'
+  exit 0
+fi
+CADENCE_GUARDED_JSON=$(printf '%s' "$CADENCE_SNAPSHOT" | jq -c '.stop_requested=true') || exit 1
+GUARD_RC=0
+"$SESSION_STATE_SH" --cas ".prs[\"$PR\"].babysit=$CADENCE_GUARDED_JSON" \
+  --expect "$CADENCE_SNAPSHOT" || GUARD_RC=$?
+if [[ "$GUARD_RC" -eq 7 ]]; then
+  echo '[babysit] Watcher changed while guarding cadence; discarding this tick.'
+  exit 0
+elif [[ "$GUARD_RC" -ne 0 ]]; then
+  echo "ERROR: cadence guard failed (rc=$GUARD_RC); stopping no task." >&2; exit 1
+fi
+CADENCE_TASK_ID=$(printf '%s' "$CADENCE_SNAPSHOT" | jq -er '
+  .monitor_task_id | select((type == "string" and length > 0) or
+  (type == "number" and . >= 0 and floor == .))') || {
+  echo 'ERROR: current Monitor identity is missing; stopping and arming nothing.' >&2; exit 1; }
+```
+
+Call `TaskStop` only for the captured `$CADENCE_TASK_ID`. If that exact stop fails,
+retain the guarded identity and old cadence, report incomplete teardown, and abort;
+never arm beside it. After success, mint a fresh `$NEW_MONITOR_GENERATION` and arm a
+replacement whose sleep and emitted `--cadence` use `$EFFECTIVE_MIN`, and whose event
+includes `--monitor-generation $NEW_MONITOR_GENERATION`. Then publish through the
+same captured ownership compare. An actual widen's advisory record joins this
+transaction, so a stale tick cannot publish a false cadence action separately.
+
+<!-- test-anchor: babysit-pr-t5-cadence-publish -->
+
+```bash
+NEW_TASK_JSON=$(jq -cn --arg v "$NEW_MONITOR_TASK_ID" '$v | try fromjson catch $v') || exit 1
+if ! printf '%s' "$NEW_TASK_JSON" | jq -e '
+  (type == "string" and length > 0) or (type == "number" and . >= 0 and floor == .)' >/dev/null; then
+  echo 'ERROR: replacement Monitor identity is invalid; stop the returned task.' >&2
+  exit 1
+fi
+if [[ -z "${NEW_MONITOR_GENERATION:-}" || "$NEW_MONITOR_GENERATION" == null || "$NEW_MONITOR_GENERATION" == "$GATE_GENERATION" ]]; then
+  echo 'ERROR: replacement generation is not fresh; stop the owned replacement task.' >&2
+  exit 1
+fi
+PROPOSED_PUBLISH_JSON=$(printf '%s' "$CADENCE_GUARDED_JSON" | jq -c \
+  --argjson task "$NEW_TASK_JSON" --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" \
+  '.monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence | .stop_requested=false') || exit 1
+PUBLISH_ARGS=(--cas ".prs[\"$PR\"].babysit=$PROPOSED_PUBLISH_JSON" --expect "$CADENCE_GUARDED_JSON")
+if [[ "$EFFECTIVE_MIN" -gt "$PREV_EFFECTIVE_MIN" ]]; then
+  CADENCE_ACTION=$(jq -cn --arg interval "${EFFECTIVE_MIN}m" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{type:"update",interval:$interval,at:$at}') || exit 1
+  PUBLISH_ARGS+=(--set ".prs[\"$PR\"].last_cron_action=$CADENCE_ACTION")
+fi
+PUBLISH_RC=0
+"$SESSION_STATE_SH" "${PUBLISH_ARGS[@]}" || PUBLISH_RC=$?
+if [[ "$PUBLISH_RC" -eq 0 ]]; then
+  echo 'CADENCE_PUBLISH=armed'
+elif [[ "$PUBLISH_RC" -eq 7 ]]; then
+  echo 'CADENCE_PUBLISH=lost'
+else
+  echo "CADENCE_PUBLISH=failed rc=$PUBLISH_RC"
+fi
+```
+
+Only `armed` continues to T6. A nonzero block exit or absent/unreadable result is `failed`, never armed. On `lost` or `failed`, stop only this tick's exact
+`$NEW_MONITOR_TASK_ID`, bind `REPLACEMENT_STOP_SUCCEEDED` to that tool result, and run
+the rollback below. If arming itself failed before a task existed, set that binding
+to true and run the same owned cleanup. Never call a successful stop from silence.
+An unknown publication can have committed, so cleanup accepts either the exact old
+guarded snapshot or this tick's exact proposed publication; any other state is
+retained. A failed replacement stop records the potentially live owned identity
+only while that ownership still compares, otherwise reports it without overwriting
+the winning watcher. Neither outcome claims a successful cadence change.
+
+<!-- test-anchor: babysit-pr-t5-cadence-rollback -->
+
+```bash
+ROLLBACK_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: rollback state unknown; retain state and report the owned replacement task.' >&2; exit 1; }
+if ! printf '%s' "$ROLLBACK_SNAPSHOT" | jq -e --argjson old "$CADENCE_GUARDED_JSON" \
+  --argjson published "${PROPOSED_PUBLISH_JSON:-null}" \
+  'type == "object" and (. == $old or ($published != null and . == $published))' >/dev/null; then
+  echo 'ERROR: rollback lost ownership; retained the winning watcher. Report any unstopped owned replacement task.' >&2
+  exit 1
+fi
+if [[ "${REPLACEMENT_STOP_SUCCEEDED:-false}" == true ]]; then
+  ROLLBACK_VALUE=$(printf '%s' "$ROLLBACK_SNAPSHOT" | jq -c --argjson cadence "$PREV_EFFECTIVE_MIN" \
+    '.active=false | .stop_requested=false | .monitor_task_id=null | .monitor_generation=null | .cadence_effective_minutes=$cadence') || exit 1
+else
+  if [[ -z "${NEW_MONITOR_GENERATION:-}" || "$NEW_MONITOR_GENERATION" == null || "$NEW_MONITOR_GENERATION" == "$GATE_GENERATION" ]]; then
+    echo 'ERROR: cannot register the stranded replacement generation; retain state and report its exact task ID.' >&2
+    exit 1
+  fi
+  ROLLBACK_VALUE=$(printf '%s' "$ROLLBACK_SNAPSHOT" | jq -c --argjson task "$NEW_TASK_JSON" \
+    --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" \
+    '.active=true | .stop_requested=true | .monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence') || exit 1
+fi
+ROLLBACK_RC=0
+"$SESSION_STATE_SH" --cas ".prs[\"$PR\"].babysit=$ROLLBACK_VALUE" \
+  --expect "$ROLLBACK_SNAPSHOT" || ROLLBACK_RC=$?
+if [[ "$ROLLBACK_RC" -ne 0 ]]; then
+  echo "ERROR: rollback not verified (rc=$ROLLBACK_RC); retain state and report the owned task." >&2
+fi
+# A failed re-arm is terminal even when owned cleanup succeeds.
+exit 1
 ```
 
 ### T6. Termination check
