@@ -334,8 +334,14 @@ Codex repair requires non-empty file-backed `auth.json`. Claude Keychain repair
 supports only fully observed homogeneous cycles with verified Claude Code 2.1.312
 service binding, matching refs/sidecars and no secure-storage override. It needs
 macOS Swift/Python 3 and accessible item metadata; no password is requested or
-replayed. Report a refusal and stop. Unsupported mixed/non-cycle migrations
-remain in Issue #1887. Doctor reports a journal but does not reconstruct rename
+replayed. Report a refusal; do not retry in-place repair. For mixed/non-cycle
+cases, the owner can use the fresh-profile reauthentication runbook in
+`.claude/reference/ai-quotas.md#fresh-profile-reauthentication`: preserve the old
+profile, verify a new canonical profile independently, then retire only the old
+registry row. This is an explicit owner sign-in; do not launch it from a diagnostic
+or treat this fallback as authorization to bypass managed authentication policy.
+Unknown client bindings and secure-storage overrides still refuse metadata repair.
+Doctor reports a journal but does not reconstruct rename
 steps. If exit 9 or `interrupted-repair` appears, preserve
 `.layout-repair/plan.json` and any recovery instructions printed by the failed
 repair; report the situation to the user and stop; never delete or automatically retry

@@ -1605,8 +1605,9 @@ production Keychain item was migrated during testing or development.
 
 No password is stored or replayed. The adapter disables interactive prompts;
 locked or inaccessible Keychain metadata fails before moves. Non-cycle and
-mixed-store migrations remain unsupported (Issue #1887). Use the supported
-diagnostic and repair commands rather than hand-editing the registry.
+mixed-store profiles use the explicit fresh-profile reauthentication alternative
+below (Issue #1887); in-place migration remains refused. Use supported commands
+rather than hand-editing the registry.
 
 Stored-path semantics: `add` alone derives `<root>/<label>/<provider>`;
 `relogin` uses the stored path, and `remove` retains the directory. Supported
@@ -1632,6 +1633,101 @@ directory. After a full rollback, the original label-mismatch findings are
 expected; there must be no new missing/shared findings. After completed repair,
 only the journal finding should remain. If publication or identity cannot be established, preserve
 everything for manual recovery; never guess or rerun repair over the journal.
+
+### Fresh-profile reauthentication
+
+When a non-cycle or mixed-store Claude layout cannot be rebound safely, the
+supported alternative is a **new permanent label and canonical profile**, with
+an owner-completed subscription login. This replaces the registry entry; it
+does not relocate an existing credential. Complete homogeneous observed cycles
+still use the repair above. No additional client version is admitted to that
+metadata repair. Unknown bindings, locked/inaccessible metadata, secure-storage
+overrides and managed authentication policies are reasons to stop and establish
+a supported login context, never to guess a service name or bypass a policy.
+
+Before starting, stop affected quota readers, setup processes and Claude sessions.
+If this chat uses an affected profile, exit it and work from an unaffected owner
+shell. Keep readers paused until the old row is retired, so the same account is
+not counted twice. Resolve the installed setup helper as `SETUP`, the actual
+registry and physical profile root using the configured `AI_QUOTAS_CONFIG` and
+`AI_QUOTAS_PROFILE_ROOT` (defaults are `~/.claude/ai-quotas.json` and
+`~/.claude/ai-quotas/profiles`). Record privately the original label, path,
+credential-ref service, sidecar and expected subscription email/account. Keep a
+private registry metadata snapshot for comparison; do not dump credential files,
+security password values, tokens or cookies. Preserve any interrupted-repair
+journal and finish its recovery before this procedure.
+
+1. Choose a new unused label, for example `work-recovered`, and its canonical
+   `<profile-root>/work-recovered/claude` path. Confirm the label is absent from
+   the registry and that neither that path nor its path-owned
+   `<profile-root>/work-recovered/.keychain-service-claude` sidecar exists
+   (including dangling links). `add` can reuse a directory, so these checks are
+   required; do not use the original label, a symlink or an existing path.
+   On macOS, for the verified 2.1.312 binding, also check **attributes only** that
+   the predicted `Claude Code-credentials-<SHA256(NFC(config-dir))[:8]>` service
+   is absent, using the exact physical config-dir string the CLI will receive.
+   An existing service, ambiguous result, locked store or access error requires
+   another verified unused destination or manual diagnosis. Do not interpret an
+   arbitrary command failure as absence. For an unverified client binding, first
+   establish the client's documented store/isolation behavior; this runbook
+   supplies no new-version binding guarantee.
+2. In that unaffected owner shell, reserve only the fresh slot:
+
+   ```bash
+   "$SETUP" add claude work-recovered --no-login
+   ```
+
+   Re-read the registry to verify the new canonical path and unchanged original
+   row. No login has run. Keep original directories, services, refs, sidecars and
+   ACLs untouched. Do not copy credentials, rename services or hand-edit paths.
+3. For the verified Claude Code 2.1.312 auth-only subscription flow, the owner runs:
+
+   ```bash
+   AI_QUOTAS_CLAUDE_LOGIN_ARGS='auth login --claudeai' \
+     "$SETUP" relogin work-recovered claude
+   ```
+
+   Use an ordinary subscription-login environment. Credential/API-key/cloud auth
+   overrides or `CLAUDE_SECURESTORAGE_CONFIG_DIR` can redirect the store or hide
+   which login is used; resolve them before continuing without changing managed
+   policy. This command does not clear such overrides for you. Do not substitute
+   `setup-token`: its documented one-year token is for model requests and does
+   not establish supported subscription usage-endpoint permission. Console OAuth
+   without an API key is stored outside the config directory and is not evidence
+   of an isolated subscription profile. See the official [authentication
+   guidance](https://code.claude.com/docs/en/authentication) and [CLI
+   reference](https://code.claude.com/docs/en/cli-reference).
+4. Confirm the new registry ref and path-owned sidecar agree with the newly
+   observed service. `list --json` reporting `ok` proves credential presence,
+   **not account identity**. Independently verify the expected subscription account
+   through the CLI's authenticated account display in the exact new config-dir;
+   `auth status` provides method/config context, and the owner must confirm the
+   expected email/account. Check the original account/path/binding stayed intact.
+   Run the same auth-only `relogin` once more and repeat identity, ref/sidecar and
+   original-binding checks. A mismatch or unreadable identity stops cutover.
+5. Only after both logins are independently verified, retire the original registry
+   row using `"$SETUP" remove OLD_LABEL claude`. This leaves its directory and
+   Keychain item on disk. Re-read the registry: the original row is absent and
+   the new verified row remains. Keep the originals for recovery. Update owner
+   aliases/nicknames or regenerate launchers for the new permanent label, then
+   resume readers. Historical ledger entries keep their old label; do not rewrite
+   them to imply the replacement was used historically.
+
+Failure/recovery boundaries: before final retirement, the original registry row
+and credential remain the recovery endpoint. Failed reservation/publication may
+leave a fresh directory but must not replace the original row. A canceled login,
+missing credential, ambiguous new service, failed relogin publication or failed
+identity check means **do not remove the original row**. Preserve the new path,
+sidecar and any newly created service for manual inspection; the provider may have
+written a credential even when setup failed. A retry at that existing destination
+must explicitly reconcile its actual service/ref/identity first; otherwise choose
+another unused destination. To abandon staging, remove only the replacement's
+registry row if it exists; retain its files/items. Do not delete arbitrary items
+or restore a whole stale registry snapshot over concurrent changes. Failed old-row
+retirement leaves both rows for inspection; readers stay paused. If retirement
+succeeds but alias updates fail, the verified replacement is the active endpoint
+and originals remain preserved. No secret-store rollback is promised because this
+procedure never rewrites the original store.
 
 ### Ordered usage sources (#1884)
 

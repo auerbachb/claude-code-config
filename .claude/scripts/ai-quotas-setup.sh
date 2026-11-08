@@ -111,9 +111,10 @@
 #
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
-#             against it (the documented flow; `claude auth login` does not
-#             exist, and `setup-token` prints a credential instead of storing
-#             one). Credential lands in the macOS
+#             against it. Verified Claude Code 2.1.312 also supports auth-only
+#             login via AI_QUOTAS_CLAUDE_LOGIN_ARGS='auth login --claudeai'.
+#             `setup-token` prints a model-request token, not a profile login.
+#             Credential lands in the macOS
 #             Keychain (service `Claude Code-credentials-<suffix>`, whose
 #             suffix this script learns by observing which item the login
 #             created; verified cycle repair additionally checks the binding) or, on other
@@ -797,17 +798,11 @@ run_login() { # <provider> <profile_dir>
   fi
   case "$provider" in
     claude)
-      # The DOCUMENTED way to authenticate a specific CLAUDE_CONFIG_DIR is to
-      # run `claude` against it with no arguments: an unauthenticated config
-      # dir opens the browser login, and Claude Code persists the credential
-      # scoped to that directory. Two rejected alternatives, so nobody
-      # "fixes" this back:
-      #   * `claude auth login` — no such subcommand exists.
-      #   * `claude setup-token` — real, but it PRINTS a one-year token to
-      #     stdout instead of persisting it. This tool must never have a
-      #     credential value pass through it.
-      # `/login` as an argument is widely used but undocumented, so it is
-      # available through AI_QUOTAS_CLAUDE_LOGIN_ARGS rather than hard-coded.
+      # Preserve the existing interactive default. Verified Claude Code 2.1.312
+      # also supports `auth login --claudeai` through the argument-list override
+      # below; the owner-run replacement runbook uses that auth-only flow.
+      # `setup-token` prints a model-request token instead of storing this login
+      # and must never be substituted here. Never capture a credential value.
       echo "${SELF_NAME}: when the login finishes, exit the session (/exit or Ctrl-D) to continue."
       local -a claude_args=()
       if [[ -n "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ]]; then
