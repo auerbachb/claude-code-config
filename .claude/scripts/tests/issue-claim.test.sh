@@ -13,6 +13,8 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/issue-claim.sh"
+# Exercise the actual helper with the selected outer Bash, including macOS 3.2.
+CLAIM_TEST_SHELL="${CLAIM_TEST_SHELL:-$BASH}"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -72,9 +74,9 @@ reset_issue() {
   export FAKE_COMMENTS_MODE="json"
   echo 0 > "$STATE/comment_reads"
   echo 0 > "$STATE/edit_calls"
-  rm -f "$STATE/hook_done" "$STATE/issue_state" "$STATE/edit_hook_done" "$STATE/read_hook_done"
+  rm -f "$STATE/delete_hook_done" "$STATE/hook_done" "$STATE/issue_state" "$STATE/edit_hook_done" "$STATE/read_hook_done"
   unset CLAIM_STALE_HOURS CLAIM_RENEW_MINUTES
-  unset FAKE_COMMENT_POST_MODE FAKE_COMMENT_DELETE_MODE
+  unset FAKE_COMMENT_POST_MODE FAKE_COMMENT_DELETE_MODE FAKE_AFTER_DELETE_HOOK
   unset FAKE_COMMENTS_FAIL_AFTER FAKE_AFTER_POST_HOOK
   unset FAKE_EDIT_FAIL_AT FAKE_AFTER_EDIT_HOOK FAKE_AFTER_EDIT_AT
   unset FAKE_AFTER_COMMENTS_READ_HOOK FAKE_AFTER_COMMENTS_READ_AT
@@ -121,6 +123,10 @@ case "${1:-}" in
         CID="${ENDPOINT##*/}"
         jq --argjson id "$CID" '[ .[] | select(.id != $id) ]' "$S/comments.json" > "$S/c.tmp" \
           && mv "$S/c.tmp" "$S/comments.json"
+        if [[ -n "${FAKE_AFTER_DELETE_HOOK:-}" && ! -e "$S/delete_hook_done" ]]; then
+          : > "$S/delete_hook_done"
+          bash "$FAKE_AFTER_DELETE_HOOK"
+        fi
         echo '{}'
         ;;
       */comments*)
@@ -268,7 +274,7 @@ export PATH="$STUB_BIN:$PATH"
 run() {
   # run <args...> ; sets OUT (stdout), ERR (stderr), RC (exit code)
   local errfile="$TMP/err"
-  OUT="$(bash "$SCRIPT" "$@" 2>"$errfile")"; RC=$?
+  OUT="$("$CLAIM_TEST_SHELL" "$SCRIPT" "$@" 2>"$errfile")"; RC=$?
   ERR="$(cat "$errfile")"
 }
 
@@ -1079,6 +1085,71 @@ run 873 --check --claim
 check_eq "two action flags" 2 "$RC"
 run 873 --check --repo not-a-repo
 check_eq "malformed --repo" 2 "$RC"
+
+# Scoped cleanup observes a concrete comment ID before a potentially long wait.
+reset_issue
+run 873 --claim --holder threadA
+run 873 --check --holder threadA --json
+OBSERVED_CLAIM_ID=$(jq -r .claim_comment_id <<<"$OUT")
+check_eq "scoped receipt exposes the actual marker ID" "$(jq -r '.[-1].id' "$STATE/comments.json")" "$OBSERVED_CLAIM_ID"
+run 873 --release --expect-claim-id "$((OBSERVED_CLAIM_ID + 1))"
+check_eq "changed observed ID refuses release" 5 "$RC"
+check_eq "changed observed ID retains marker" 1 "$(claim_comment_count)"
+check_eq "changed observed ID retains label" in-progress "$(cat "$STATE/labels")"
+check_eq "changed observed ID retains assignee" alice "$(cat "$STATE/assignees")"
+run 873 --release --expect-claim-id none
+check_eq "observed absence cannot release a present marker" 5 "$RC"
+check_eq "absence mismatch still retains marker" 1 "$(claim_comment_count)"
+run 873 --release --expect-claim-id "$OBSERVED_CLAIM_ID"
+check_eq "matching observed ID permits cleanup" 0 "$RC"
+check_eq "matching observed ID deletes observed marker" 0 "$(claim_comment_count)"
+check_eq "matching observed ID removes label" "" "$(cat "$STATE/labels")"
+check_eq "matching observed ID removes assignee" "" "$(cat "$STATE/assignees")"
+run 873 --check --expect-claim-id none
+check_eq "expected marker precondition is release-only" 2 "$RC"
+run 873 --release --expect-claim-id bogus
+check_eq "invalid expected marker ID is usage error" 2 "$RC"
+
+reset_issue
+printf 'in-progress\n' > "$STATE/labels"
+printf 'alice\n' > "$STATE/assignees"
+run 873 --release --expect-claim-id none
+check_eq "observed label-only claim can be released" 0 "$RC"
+check_eq "label-only cleanup clears index" "" "$(cat "$STATE/labels")"
+check_eq "label-only cleanup clears assignee" "" "$(cat "$STATE/assignees")"
+
+# A new marker appearing after deletion is never in the captured deletion set.
+reset_issue
+run 873 --claim --holder threadA
+run 873 --check --holder threadA --json
+OBSERVED_CLAIM_ID=$(jq -r .claim_comment_id <<<"$OUT")
+cat > "$TMP/publish-after-delete.sh" <<'AFTER_DELETE'
+#!/usr/bin/env bash
+jq -n --arg at "$(date -u +%FT%TZ)" \
+  '[{id:123,created_at:$at,user:{login:"alice"},body:"<!-- claude-claim: {\"holder\":\"threadB\",\"login\":\"alice\"} -->"}]' \
+  > "$FAKE_STATE/comments.json"
+AFTER_DELETE
+export FAKE_AFTER_DELETE_HOOK="$TMP/publish-after-delete.sh"
+run 873 --release --expect-claim-id "$OBSERVED_CLAIM_ID"
+check_eq "late marker stops scoped metadata cleanup" 5 "$RC"
+check_eq "late marker survives the captured delete set" 123 "$(jq -r '.[0].id' "$STATE/comments.json")"
+check_eq "late marker keeps its label index" in-progress "$(cat "$STATE/labels")"
+check_eq "late marker keeps its assignee" alice "$(cat "$STATE/assignees")"
+
+# A failed final read preserves metadata and can be retried as label-only.
+reset_issue
+run 873 --claim --holder threadA
+run 873 --check --holder threadA --json
+OBSERVED_CLAIM_ID=$(jq -r .claim_comment_id <<<"$OUT")
+export FAKE_COMMENTS_FAIL_AFTER=$(( $(cat "$STATE/comment_reads") + 1 ))
+run 873 --release --expect-claim-id "$OBSERVED_CLAIM_ID"
+check_eq "unreadable scoped verification reports unknown" 4 "$RC"
+check_eq "unreadable scoped verification already removed only its marker" 0 "$(claim_comment_count)"
+check_eq "unreadable scoped verification retains the index" in-progress "$(cat "$STATE/labels")"
+unset FAKE_COMMENTS_FAIL_AFTER
+run 873 --release --expect-claim-id none
+check_eq "scoped cleanup retry completes" 0 "$RC"
+check_eq "scoped cleanup retry clears the index" "" "$(cat "$STATE/labels")"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

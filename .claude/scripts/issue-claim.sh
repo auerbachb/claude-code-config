@@ -104,6 +104,7 @@
 #   issue-claim.sh <issue_number> --check   [--repo owner/repo] [--holder ID] [--json]
 #   issue-claim.sh <issue_number> --claim   [--repo owner/repo] [--holder ID] [--json] [--allow-claimed]
 #   issue-claim.sh <issue_number> --release [--repo owner/repo] [--holder ID] [--json]
+#                    [--expect-claim-id ID|none]
 #   issue-claim.sh <issue_number> --renew   [--repo owner/repo] [--holder ID] [--json]
 #   issue-claim.sh --help | -h
 #
@@ -113,6 +114,8 @@
 #   --renew          Renew this holder's own claim when due; never acquires.
 #   --repo           Act on a named repo instead of the current checkout's.
 #   --holder ID      Override the holder token (see above).
+#   --expect-claim-id ID|none  Release only the observed winner (exit 5 if changed).
+#                    --check --json exposes claim_comment_id; none means no marker.
 #   --json           Machine-readable object on stdout instead of the verdict word.
 #   --allow-claimed  Explicit user override; only valid with --claim.
 #
@@ -128,7 +131,7 @@
 #            Human-readable refusal / warning / override lines go to stderr, so a
 #            caller reading only the exit code still surfaces a clear message.
 #   --json:  {"issue":N,"repo":...,"viewer":...,"holder":...,"verdict":...,
-#             "claimant":...,"claimant_holder":...,"claimed_at":...,
+#             "claimant":...,"claimant_holder":...,"claim_comment_id":...,"claimed_at":...,
 #             "claimed_since":...,"previous_claimed_at":...,"renewed":true|false,
 #             "stale":true|false,"overridden":true|false,"reason":"..."}
 #            claimed_at is the GitHub created_at of the live marker (after a
@@ -149,6 +152,8 @@
 #                  newer foreign marker (`superseded`) or released under it /
 #                  the issue closed (`released`). Stop and report lost
 #                  ownership; nothing of anyone else's was touched.
+#                  Also: --release --expect-claim-id observed a changed winner
+#                  or remaining markers; their metadata is retained.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
@@ -190,6 +195,8 @@ ACTION=""
 HOLDER_ARG=""
 JSON=0
 ALLOW_CLAIMED=0
+EXPECT_CLAIM_ID_SET=0
+EXPECTED_CLAIM_ID=""
 
 set_action() {
   [[ -n "$ACTION" ]] && die_usage "only one of --check / --claim / --release / --renew may be given (got --$ACTION and $1)"
@@ -209,6 +216,11 @@ while [[ $# -gt 0 ]]; do
       REPO="${1#--repo=}"
       [[ -z "$REPO" ]] && die_usage "--repo requires a value (owner/repo)"
       shift ;;
+    --expect-claim-id)
+      [[ $# -ge 2 ]] || die_usage "--expect-claim-id requires an ID or none"
+      EXPECTED_CLAIM_ID="$2"; EXPECT_CLAIM_ID_SET=1; shift 2 ;;
+    --expect-claim-id=*)
+      EXPECTED_CLAIM_ID="${1#--expect-claim-id=}"; EXPECT_CLAIM_ID_SET=1; shift ;;
     --holder)
       [[ $# -lt 2 || -z "${2-}" ]] && die_usage "--holder requires a value"
       HOLDER_ARG="$2"; shift 2 ;;
@@ -227,6 +239,10 @@ done
 [[ -z "$ISSUE_NUMBER" ]] && die_usage "<issue_number> is required"
 [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] || die_usage "<issue_number> must be a positive integer, got: $ISSUE_NUMBER"
 [[ -z "$ACTION" ]] && die_usage "one of --check / --claim / --release / --renew is required"
+if (( EXPECT_CLAIM_ID_SET )); then
+  [[ "$ACTION" == release ]] || die_usage "--expect-claim-id is release-only"
+  [[ "$EXPECTED_CLAIM_ID" == none || "$EXPECTED_CLAIM_ID" =~ ^[1-9][0-9]*$ ]] || die_usage "--expect-claim-id requires a positive ID or none"
+fi
 if [[ -n "$REPO" ]] && ! [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   die_usage "--repo must be owner/repo, got: $REPO"
 fi
@@ -307,7 +323,10 @@ OVERRIDDEN="false"
 
 # emit <verdict> <exit_code> <reason>
 emit() {
-  local verdict="$1" code="$2" reason="$3"
+  local verdict="$1" code="$2" reason="$3" observed_claim_id=null
+  if [[ "$ACTION" == check && "${W_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+    observed_claim_id="$W_ID"
+  fi
   if [[ "$JSON" -eq 1 ]]; then
     jq -cn \
       --argjson issue "$ISSUE_NUMBER" \
@@ -317,6 +336,7 @@ emit() {
       --arg verdict "$verdict" \
       --arg claimant "$CLAIMANT" \
       --arg claimant_holder "$CLAIMANT_HOLDER" \
+      --argjson claim_comment_id "$observed_claim_id" \
       --arg claimed_at "$CLAIMED_AT" \
       --arg claimed_since "$CLAIMED_SINCE" \
       --arg previous_claimed_at "$PREVIOUS_CLAIMED_AT" \
@@ -331,6 +351,7 @@ emit() {
         verdict: $verdict,
         claimant: (if $claimant == "" then null else $claimant end),
         claimant_holder: (if $claimant_holder == "" then null else $claimant_holder end),
+        claim_comment_id: $claim_comment_id,
         claimed_at: (if $claimed_at == "" then null else $claimed_at end),
         claimed_since: (if $claimed_since == "" then null else $claimed_since end),
         previous_claimed_at: (if $previous_claimed_at == "" then null else $previous_claimed_at end),
@@ -544,6 +565,12 @@ if [[ "$ACTION" == "release" ]]; then
   if (( ! CLAIM_EXISTS )); then
     emit unclaimed 0 "issue #$ISSUE_NUMBER holds no claim — nothing to release"
   fi
+  if (( EXPECT_CLAIM_ID_SET )); then
+    if [[ ( "$EXPECTED_CLAIM_ID" == none && "$HAS_CLAIM_COMMENT" -ne 0 ) \
+          || ( "$EXPECTED_CLAIM_ID" != none && "${W_ID:-}" != "$EXPECTED_CLAIM_ID" ) ]]; then
+      emit "$VERDICT" 5 "claim identity changed on issue #$ISSUE_NUMBER — observed claim $EXPECTED_CLAIM_ID is no longer current; nothing released"
+    fi
+  fi
   if ! viewer_owns_claim; then
     # Never touch a collaborator's claim (issue #732). Not an error: releasing
     # what isn't yours was never the job.
@@ -568,6 +595,15 @@ if [[ "$ACTION" == "release" ]]; then
     gh api -X DELETE "$REPO_PREFIX/issues/comments/$cid" >/dev/null 2>"$ERR_FILE" || RELEASE_ERRORS=1
   done < <(printf '%s' "$CLAIM_COMMENTS" | jq -r --arg v "$VIEWER" \
     '.[] | select((.user.login // "") == $v) | .id' 2>/dev/null || true)
+
+  # A scoped cleanup deletes only the IDs captured above. If a later marker
+  # appeared meanwhile, retain the index metadata for its owner.
+  if (( EXPECT_CLAIM_ID_SET && ! RELEASE_ERRORS )); then
+    REMAINING_CLAIMS=$(read_claim_comments) || fail_closed "could not verify scoped release on issue #$ISSUE_NUMBER; metadata retained"
+    if ! printf '%s' "$REMAINING_CLAIMS" | jq -e 'length == 0' >/dev/null 2>&1; then
+      emit unknown 5 "claim markers remain after scoped release on issue #$ISSUE_NUMBER; metadata retained"
+    fi
+  fi
 
   # Ordering alone is not enough — the label must also be WITHHELD when a comment
   # delete failed. Dropping it anyway would produce exactly the comment-without-

@@ -150,30 +150,15 @@ if [[ -r "$BOUNDED_RUN_LIB" ]]; then
   if source "$BOUNDED_RUN_LIB"; then BOUNDED_RUN_OK=1; fi
 fi
 
-# release_issue_claim — drop the pick-time claim on the PR's linked issue once
-# the merge is confirmed (issue #873). A merged PR is a terminal state, so the
-# issue becomes startable again.
-#
-# BEST-EFFORT BY DESIGN: this only ever runs AFTER a merge has already landed,
-# so it must never change the exit status. An unreleased claim ages out on its
-# own within CLAIM_STALE_HOURS; failing an already-completed merge would be the
-# far worse outcome. Every failure path here is a warning.
-# SET-VALUED BY DESIGN (issue #1492): pr-issue-ref.sh prints every issue this PR
-# closes, one per line. A PR with two `Closes` trailers must release BOTH claims —
-# taking a single value here stranded #1541 after PR #1546 merged. Releasing an
-# issue we do not hold is safe: issue-claim.sh --release compares logins and drops
-# only our own claim, never a collaborator's.
+# Post-merge only: preserve pickup evidence before any claim deletion.
+# Keep all three merge shapes on one retryable bookkeeping boundary.
 release_issue_claim() {
-  local issues issue
-  [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" && -x "$SCRIPT_DIR/issue-claim.sh" ]] || return 0
-  issues="$("$SCRIPT_DIR/pr-issue-ref.sh" "$PR_NUMBER" 2>/dev/null || true)"
-  [[ -n "$issues" ]] || return 0
-  while IFS= read -r issue; do
-    [[ -n "$issue" ]] || continue
-    if ! "$SCRIPT_DIR/issue-claim.sh" "$issue" --release >/dev/null 2>&1; then
-      echo "WARNING: could not release the claim on issue #$issue — it will expire on its own. Clear it early with: $SCRIPT_DIR/issue-claim.sh $issue --release" >&2
-    fi
-  done <<< "$issues"
+  if [[ -x "$SCRIPT_DIR/post-merge-bookkeeping.sh" ]]; then
+    "$SCRIPT_DIR/post-merge-bookkeeping.sh" "$PR_NUMBER" --repo "$OWNER_REPO" >/dev/null || \
+      echo "WARN: post-merge bookkeeping not confirmed for PR #$PR_NUMBER; retry /wrap" >&2
+  else
+    echo "WARN: post-merge-bookkeeping.sh missing for PR #$PR_NUMBER; retry /wrap after restoring helpers" >&2
+  fi
   return 0
 }
 

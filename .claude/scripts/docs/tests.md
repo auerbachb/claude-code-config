@@ -68,6 +68,7 @@ opt-in of issue #1544.
 | [escalate-review-paid-denied.test.sh](../tests/escalate-review-paid-denied.test.sh) | No-paid-review verdict tests for `escalate-review.sh`: no_reviewer, never switch_bugbot/trigger_greptile |
 | [escalate-review-silent-exit.test.sh](../tests/escalate-review-silent-exit.test.sh) | Loud-exit contract tests for `escalate-review.sh` — every non-zero exit emits exactly one `escalate-review.sh: …` stderr diagnostic, the `EXIT` trap normalizes a raw 126/127 to exit 4 without fabricating a `STATUS=` verdict, and a negative control reproduces the pre-fix zero-output 126 on a copy with only the trap line removed |
 | [escalate-review-tier-gate.test.sh](../tests/escalate-review-tier-gate.test.sh) | Review-tier `tier_gate` verdict tests for `escalate-review.sh` |
+| [estimate-log-locks-bash.test.sh](../tests/estimate-log-locks-bash.test.sh) | Runs actual estimate lock controls under current Bash and macOS Bash 3.2 |
 | [estimate-log.test.sh](../tests/estimate-log.test.sh) | Tests claim timestamps, parsed repo rollups, empty/error paths and preservation of the input ledger |
 | [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
 | [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
@@ -134,6 +135,7 @@ opt-in of issue #1544.
 | [portable-handoff-context.test.sh](../tests/portable-handoff-context.test.sh) | Tests for `portable-handoff-context.sh` |
 | [portable-handoff-lint.test.sh](../tests/portable-handoff-lint.test.sh) | Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff |
 | [portable-handoff-publish.test.sh](../tests/portable-handoff-publish.test.sh) | Tests canonical `/end` handoff publication |
+| [post-merge-bookkeeping.test.sh](../tests/post-merge-bookkeeping.test.sh) | Exercise actual merge bookkeeping, logger, claim cleanup and resumed workflow boundaries with isolated stateful GitHub fixtures |
 | [pr-authorship.test.sh](../tests/pr-authorship.test.sh) | Tests for `pr-authorship.sh` |
 | [pr-body-review-note.test.sh](../tests/pr-body-review-note.test.sh) | Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, CommonMark ATX headings, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors |
 | [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |

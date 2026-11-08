@@ -27,6 +27,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |
 | [pm-rank-cache.sh](../pm-rank-cache.sh) | `/pm`'s latest backlog ranking cache (`~/.claude/pm-rank/<owner>-<repo>.json`): `/pm` 1B.4c writes the order it presents, the desk's derived impact reads an issue's rank while the cache is under 24 hours old (else rank unknown) |
+| [post-merge-bookkeeping.sh](../post-merge-bookkeeping.sh) | Retry confirmed-merge estimate logging and issue-claim cleanup in evidence-preserving order |
 | [split-thresholds.sh](../split-thresholds.sh) | Resolve `SPLIT_OVER_MIN` / `INCREMENT_BOUND_MIN` (env → pm-config.md `## Budget` → shipped defaults) so every capture- and pick-time sizing surface reads one figure |
 | [window-plan.sh](../window-plan.sh) | Parse a user-stated planning window ("until 5:00 PM", "overnight") into canonical machine values |
 <!-- catalog:rows:end -->
