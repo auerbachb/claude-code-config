@@ -95,7 +95,7 @@ URL, is refused with exit 7 rather than silently dropped.
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
 | `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, an item id that does not exist, or a write the item's state refuses (for example `ack` of an item with no answer) |
-| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `note`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session, repo, and key) |
+| `5` | secret refused: credential-shaped text is rejected before database access. Stored-text checks cover `add`, `bump --note`, `wake --note`, `answer`, `flag`’s positional note or `--note`, `comment`, `note`, `set-resolve`, `state set`, `register-control`, `review --comment`, `summary set`, `checkin set` (`--session` and `--planned`), `plan set` (plan text and `--session`), and `interrupt set --session`; lookup-only checks also cover `state get`’s key, `pending-for`’s session/repo/key, and `--session` for `tick`, `sweep due`, `checkin due`, `plan clear`, and `interrupt get`. |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
