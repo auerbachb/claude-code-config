@@ -77,16 +77,20 @@ hq__find_psql() {
            /opt/homebrew/opt/postgresql@15/bin/psql \
            /usr/local/opt/postgresql@17/bin/psql \
            /usr/local/opt/postgresql@16/bin/psql \
-           /usr/local/opt/postgresql@15/bin/psql \
-           /opt/homebrew/opt/libpq/bin/psql /usr/local/opt/libpq/bin/psql \
-           /opt/homebrew/bin/psql; do
+           /usr/local/opt/postgresql@15/bin/psql; do
     if [ -x "$p" ] && [ ! -d "$p" ]; then HQ_PSQL="$p"; return 0; fi
   done
   if p=$(command -v psql 2>/dev/null) && [ -n "$p" ]; then
     HQ_PSQL="$p"
     return 0
   fi
-  hq_die_unavailable "psql not found (/opt/homebrew/bin/psql or PATH) — database unavailable"
+  # A compatible PATH client must not be hidden by an older linked Homebrew
+  # or libpq client. The selected client is checked under the one probe deadline.
+  for p in /opt/homebrew/opt/libpq/bin/psql /usr/local/opt/libpq/bin/psql \
+           /opt/homebrew/bin/psql; do
+    if [ -x "$p" ] && [ ! -d "$p" ]; then HQ_PSQL="$p"; return 0; fi
+  done
+  hq_die_unavailable "psql not found (installed Homebrew keg or PATH) — database unavailable"
 }
 
 # hq__urldecode VAR VALUE — percent-decodes VALUE into VAR. Returns 1 on a

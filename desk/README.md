@@ -86,7 +86,7 @@ URL, is refused with exit 7 rather than silently dropped.
 |----------|---------|
 | `HUMAN_QUEUE_DATABASE_URL` | `postgres://` URL of the store. Required; secret |
 | `HUMAN_QUEUE_SCHEMA` | Schema every statement runs in (default `public`), applied with `SET LOCAL search_path` inside each transaction. Tests set it to a throwaway schema |
-| `HUMAN_QUEUE_PSQL` | `psql` 15+ binary to use (installed Homebrew PostgreSQL 17/16/15 or libpq kegs preferred, then linked Homebrew or `PATH`; explicit override wins) |
+| `HUMAN_QUEUE_PSQL` | `psql` 15+ binary to use (installed Homebrew PostgreSQL 17/16/15 kegs preferred, then `PATH`, libpq kegs and linked Homebrew; explicit override wins) |
 
 ## Exit codes
 
@@ -375,6 +375,7 @@ bash desk/tests/run.sh
   installed, an `.invalid` host and a TEST-NET address), and that the URL never
   reaches `psql`'s argv or any output. Each case runs under `bash` and, on
   macOS, under `/bin/bash` 3.2.
+- `psql-discovery.test.sh` checks isolated installed-client layouts, including a compatible PATH client beside an old linked/libpq client, explicit overrides and versioned kegs.
 - `psql-bindings.test.sh` inspects only its own running stub psql PID and verifies that multiline, Unicode, empty and large application values travel through the child environment, with none on argv or exported back to the parent.
 - `lifecycle-cli.test.sh` is offline: `human-queue.sh --help` lists all 18
   subcommands, every lifecycle, set, state, and control validation rule exits
