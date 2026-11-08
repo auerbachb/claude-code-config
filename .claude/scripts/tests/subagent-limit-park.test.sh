@@ -128,7 +128,8 @@ BLOCK_CLAIM="$(extract_skill_bash    "$DOC" subagent-limit-park-claim)"      || 
 BLOCK_PIPELINE="$(extract_skill_bash "$DOC" subagent-limit-pipeline-record)" || exit 1
 BLOCK_WAKE="$(extract_skill_bash     "$DOC" subagent-limit-wake-arm)"        || exit 1
 BLOCK_PUBLISH="$(extract_skill_bash  "$DOC" subagent-limit-wake-publish)"    || exit 1
-BLOCK_RECOVERY="$(extract_skill_bash "$DOC" subagent-limit-park-recovery)"   || exit 1
+BLOCK_RECOVERY="$(extract_skill_bash "${PARK_SNAPSHOT_RECOVERY_TEST_SOURCE:-$DOC}" subagent-limit-park-recovery)"   || exit 1
+BLOCK_PM_SNAPSHOT="$(extract_skill_bash "${PARK_SNAPSHOT_PM_TEST_SOURCE:-$PM_SKILL}" pm-day-park-snapshot)" || exit 1
 BLOCK_GEN="$(extract_skill_bash    "$GO_ON" go-on-limit-generation-gate)"    || exit 1
 BLOCK_PROBE="$(extract_skill_bash  "$GO_ON" go-on-limit-park-probe)"         || exit 1
 
@@ -402,7 +403,7 @@ check_true "  sleeps until reset + 2 min ($SLEEP)" \
   "$( [ "$SLEEP" -ge 1860 ] && [ "$SLEEP" -le 1921 ] && echo true || echo false )"
 GEN=$(field "$OUT" WAKE_GENERATION)
 check_true "  mints a limit- generation ($GEN)" \
-  "$( case "$GEN" in limit-*) echo true ;; *) echo false ;; esac )"
+  "$( [[ "$GEN" == limit-* ]] && echo true || echo false )"
 
 BASE=$(date -u +%s); RESET=$(( BASE + 1800 ))
 OUT=$(run_wake 2 rolling_window "$RESET")
@@ -695,7 +696,7 @@ require_text "  and ranks 2 only on a readable probe F" \
 echo "== Recovery: an interrupted session re-arms the wake (AC 8) =="
 # ---------------------------------------------------------------------------
 
-run_recovery() { bash -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1; }
+run_recovery() { "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1; }
 
 seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" '"task-dead"'
 check_eq "unexpired rolling-window park re-arms" "PARK_RECOVERY=rearm" "$(run_recovery)"
@@ -738,6 +739,188 @@ seed_existing_park reactive "not-a-timestamp" 'null'
 check_eq "a malformed parked_until fails closed" "PARK_RECOVERY=unreadable" "$(run_recovery)"
 
 # ---------------------------------------------------------------------------
+echo "== Recovery snapshots: coherent fields, typed outcomes and a competing claim (#1661) =="
+
+run_pm_snapshot() (
+  eval "$BLOCK_PM_SNAPSHOT"
+  printf '%s|%s|%s|%s|%s|%s,%s,%s,%s,%s\n' \
+    "$PARKED_UNTIL" "$PARK_LIMIT_KIND" "$PARK_LIMIT_CAUSE" "$PARK_LIMIT_FIRES" "$PARK_CLAIM_TOKEN" \
+    "$PARK_RC" "$LIMIT_KIND_RC" "$LIMIT_CAUSE_RC" "$LIMIT_FIRES_RC" "$CLAIM_TOKEN_RC"
+)
+run_snapshot_field() (
+  eval "$BLOCK_PM_SNAPSHOT"
+  read_day "$1"
+  printf '%s|%s\n' "$DAY_VALUE" "$DAY_RC"
+)
+run_recovery_record() (
+  eval "$BLOCK_RECOVERY"
+  printf 'SELECTED_UNTIL=%s\n' "$PARKED_UNTIL"
+)
+snapshot_prefix() {
+  printf '%s\n' "$1" | sed -n '/^# One lock-protected record/,/^read_day parked_until/p' | sed '$d'
+}
+check_eq "PM and subagent use the identical snapshot mechanism" \
+  "$(snapshot_prefix "$BLOCK_PM_SNAPSHOT")" "$(snapshot_prefix "$BLOCK_RECOVERY")"
+
+SNAPSHOT_STUB="$STUB_DIR/snapshot-state.sh"
+SNAPSHOT_ARGS="$STUB_DIR/snapshot-args"
+SNAPSHOT_PAYLOAD="$STUB_DIR/snapshot-payload"
+export SNAPSHOT_ARGS SNAPSHOT_PAYLOAD
+cat >"$SNAPSHOT_STUB" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$SNAPSHOT_ARGS"
+calls=$(wc -l <"$SNAPSHOT_ARGS" | tr -d ' ')
+case "${SNAPSHOT_MODE:-ok}:$calls" in
+  retry:1|exhaust:*) exit 6 ;;
+  absent:*) exit 3 ;;
+  error:*) exit 4 ;;
+esac
+cat "$SNAPSHOT_PAYLOAD"
+STUB
+chmod +x "$SNAPSHOT_STUB"
+for payload in null '{}'; do
+  printf '%s\n' "$payload" >"$SNAPSHOT_PAYLOAD"; : >"$SNAPSHOT_ARGS"
+  check_eq "readable $payload yields absent fields at rc0" 'null|null|null|null|null|0,0,0,0,0' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_pm_snapshot)"
+  check_eq "one whole-day read for all recovery fields" \
+    "--get-json .repos[\"$REPO_KEY\"].day" "$(cat "$SNAPSHOT_ARGS")"
+done
+printf '%s\n' '{"active":false,"counter":0,"label":""}' >"$SNAPSHOT_PAYLOAD"
+: >"$SNAPSHOT_ARGS"
+check_eq "ordinary boolean metadata is preserved" 'false|0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field active)"
+check_eq "ordinary numeric metadata is preserved" '0|0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field counter)"
+check_eq "ordinary empty-string metadata is preserved" '|0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field label)"
+
+VALID_PARK=$(jq -cn --arg until "$(epoch_to_iso $(( $(date -u +%s) + 3600 )))" \
+  '{parked_until:$until,limit_kind:"rolling_window",limit_cause:"reactive",
+    limit_probe_fires_remaining:null,park_claim_token:null,limit_resume_generation:"limit-fixture"}')
+for critical_field in parked_until limit_kind limit_cause park_claim_token limit_resume_generation; do
+  for invalid in '"null"' '""' false 0 '[]' '{}'; do
+    printf '%s\n' "$VALID_PARK" | jq --arg field "$critical_field" --argjson invalid "$invalid" \
+      '.[$field]=$invalid' >"$SNAPSHOT_PAYLOAD"
+    check_eq "PM refuses corrupt nullable $critical_field: $invalid" 'null|4' \
+      "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field "$critical_field")"
+    check_eq "subagent refuses corrupt nullable $critical_field: $invalid" PARK_RECOVERY=unreadable \
+      "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+  done
+  printf '%s\n' "$VALID_PARK" | jq --arg field "$critical_field" '.[$field]=null' >"$SNAPSHOT_PAYLOAD"
+  check_eq "actual JSON null remains absence for $critical_field" 'null|0' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field "$critical_field")"
+done
+for invalid_time in '2026-02-30T12:00:00Z' '2026-13-01T12:00:00Z' '2026-11-01T25:00:00Z' \
+    '2026-1-01T12:00:00Z' 'tomorrow'; do
+  printf '%s\n' "$VALID_PARK" | jq --arg until "$invalid_time" '.parked_until=$until' >"$SNAPSHOT_PAYLOAD"
+  check_eq "invalid calendar/format is unreadable: $invalid_time" 'null|4' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field parked_until)"
+  check_eq "invalid calendar/format never dispatches: $invalid_time" PARK_RECOVERY=unreadable \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+done
+for invalid in false true '"0"' '"7"' '"null"' '""' 1.5 -2 '[]' '{}' 9007199254740992 1e100; do
+  printf '%s\n' "$VALID_PARK" | jq --argjson invalid "$invalid" '.limit_probe_fires_remaining=$invalid' >"$SNAPSHOT_PAYLOAD"
+  check_eq "PM rejects a corrupt probe bound: $invalid" 'null|4' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field limit_probe_fires_remaining)"
+  check_eq "a corrupt probe bound never becomes a known-reset wake: $invalid" PARK_RECOVERY=unreadable \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+done
+for valid_count in null -1 0 1 12 9007199254740991; do
+  printf '%s\n' "$VALID_PARK" | jq --argjson count "$valid_count" '.limit_probe_fires_remaining=$count' >"$SNAPSHOT_PAYLOAD"
+  check_eq "valid probe count retains its value: $valid_count" "$valid_count|0" \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_snapshot_field limit_probe_fires_remaining)"
+done
+printf '%s\n' "$VALID_PARK" | jq '.parked_until=null | .limit_probe_fires_remaining=false' >"$SNAPSHOT_PAYLOAD"
+check_eq "an absent timestamp cannot conceal another corrupt wake field" PARK_RECOVERY=unreadable \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+
+# Native state-helper controls: these are stored strings, not missing values.
+for string_null_field in parked_until limit_probe_fires_remaining; do
+  seed_existing_park reactive "$(epoch_to_iso $(( $(date -u +%s) + 3600 )))" null
+  jq --arg k "$REPO_KEY" --arg field "$string_null_field" '.repos[$k].day[$field]="null"' "$STATE_FILE" \
+    >"$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+  check_eq "native stored string-null $string_null_field fails closed" PARK_RECOVERY=unreadable "$(run_recovery)"
+done
+for payload in '' '[' '[]' false 0 '"text"' '{} {}'; do
+  printf '%s\n' "$payload" >"$SNAPSHOT_PAYLOAD"; : >"$SNAPSHOT_ARGS"
+  check_eq "invalid or wrong-shaped snapshot stays unreadable: $payload" 'null|null|null|null|null|4,4,4,4,4' \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_pm_snapshot)"
+  check_eq "bad snapshot never selects a wake: $payload" PARK_RECOVERY=unreadable \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" run_recovery)"
+done
+printf '%s\n' '{}' >"$SNAPSHOT_PAYLOAD"
+for mode in absent error exhaust; do
+  case "$mode" in absent) expected=3 ;; error) expected=4 ;; exhaust) expected=6 ;; esac
+  : >"$SNAPSHOT_ARGS"
+  check_eq "snapshot $mode retains its status for every field" \
+    "null|null|null|null|null|$expected,$expected,$expected,$expected,$expected" \
+    "$(SESSION_STATE_SH="$SNAPSHOT_STUB" SNAPSHOT_MODE="$mode" run_pm_snapshot)"
+  calls=$(wc -l <"$SNAPSHOT_ARGS" | tr -d ' ')
+  if [ "$mode" = exhaust ]; then
+    check_eq "lock timeout is retried only once" 2 "$calls"
+  else
+    check_eq "absence and nonretryable errors need one read" 1 "$calls"
+  fi
+done
+: >"$SNAPSHOT_ARGS"
+check_eq "retry success produces a readable snapshot" 'null|null|null|null|null|0,0,0,0,0' \
+  "$(SESSION_STATE_SH="$SNAPSHOT_STUB" SNAPSHOT_MODE=retry run_pm_snapshot)"
+check_eq "successful retry performs two whole-record reads" 2 "$(wc -l <"$SNAPSHOT_ARGS" | tr -d ' ')"
+
+# The wrapper captures a real reader result, then a real competing CAS replaces
+# the entire park before that result is returned. Old per-field recovery mixes
+# A's deadline with B's probe bound; one immutable snapshot always selects A.
+REAL_SNAPSHOT_STATE_SH="$SESSION_STATE_SH"
+SNAPSHOT_PREVIOUS="$STUB_DIR/park-before.json"
+SNAPSHOT_NEXT="$STUB_DIR/park-after.json"
+SNAPSHOT_REPLACED="$STUB_DIR/park-replaced"
+SNAPSHOT_RACE_ARGS="$STUB_DIR/park-race-args"
+export REAL_SNAPSHOT_STATE_SH SNAPSHOT_PREVIOUS SNAPSHOT_NEXT SNAPSHOT_REPLACED SNAPSHOT_RACE_ARGS
+SNAPSHOT_RACE_SH="$STUB_DIR/snapshot-interleave.sh"
+cat >"$SNAPSHOT_RACE_SH" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$SNAPSHOT_RACE_ARGS"
+rc=0
+captured=$("$REAL_SNAPSHOT_STATE_SH" "$@") || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$SNAPSHOT_REPLACED" ]; then
+  "$REAL_SNAPSHOT_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day=$(cat "$SNAPSHOT_NEXT")" \
+    --expect "$(cat "$SNAPSHOT_PREVIOUS")" >/dev/null || exit 99
+  : >"$SNAPSHOT_REPLACED"
+fi
+printf '%s\n' "$captured"
+exit "$rc"
+STUB
+chmod +x "$SNAPSHOT_RACE_SH"
+for lane in subagent pm; do
+  seed_existing_park reactive "$(epoch_to_iso $(( $(date -u +%s) + 1800 )))" 'null'
+  jq --arg k "$REPO_KEY" '.repos[$k].day' "$STATE_FILE" >"$SNAPSHOT_PREVIOUS"
+  next_until=$(epoch_to_iso $(( $(date -u +%s) + 7200 )))
+  jq --arg until "$next_until" '.parked_until=$until | .limit_cause="preemptive" | .limit_probe_fires_remaining=7 | .park_claim_token="claim-new"' \
+    "$SNAPSHOT_PREVIOUS" >"$SNAPSHOT_NEXT"
+  # Only fixture markers are removed; the real home and worktrees are untouched.
+  rm -f "$SNAPSHOT_REPLACED"
+  : >"$SNAPSHOT_RACE_ARGS"
+  if [ "$lane" = subagent ]; then
+    OUT=$(SESSION_STATE_SH="$SNAPSHOT_RACE_SH" run_recovery_record)
+    check_eq "competing claim cannot change the snapshotted wake selection" PARK_RECOVERY=rearm \
+      "$(field "$OUT" PARK_RECOVERY | sed 's/^/PARK_RECOVERY=/')"
+    check_eq "wake selection keeps the old deadline, not the new claim's deadline" \
+      "$(jq -r .parked_until "$SNAPSHOT_PREVIOUS")" "$(field "$OUT" SELECTED_UNTIL)"
+  else
+    expected_until=$(jq -r .parked_until "$SNAPSHOT_PREVIOUS")
+    expected_token=$(jq -r .park_claim_token "$SNAPSHOT_PREVIOUS")
+    check_eq "PM's five fields also stay in the captured generation" \
+      "$expected_until|rolling_window|reactive|null|$expected_token|0,0,0,0,0" \
+      "$(SESSION_STATE_SH="$SNAPSHOT_RACE_SH" run_pm_snapshot)"
+  fi
+  check_eq "$lane read exactly one full day object" \
+    "--get-json .repos[\"$REPO_KEY\"].day" "$(cat "$SNAPSHOT_RACE_ARGS")"
+  check_true "$lane control: competing CAS really committed" "$(test -f "$SNAPSHOT_REPLACED" && echo true || echo false)"
+  check_eq "$lane control: durable state now belongs to the new claim" claim-new "$(day_get park_claim_token)"
+  check_eq "$lane control: new claim has its different probe bound" 7 "$(day_get limit_probe_fires_remaining)"
+  check_eq "$lane control: new claim has its different deadline" "$next_until" "$(day_get parked_until)"
+done
+
 echo "== Wiring: the rules route limit deaths away from the crash path (AC 2, AC 9) =="
 # ---------------------------------------------------------------------------
 
@@ -1052,7 +1235,7 @@ OUT=$(NEW_HITS=1 LIMIT_KIND=rolling_window PARK_RESET_KNOWN=false \
 check_eq "an unknown reset arms the bounded probe" "probe" "$(field "$OUT" WAKE)"
 check_eq "  at the cadence, in seconds"            "1800"  "$(field "$OUT" WAKE_SLEEP)"
 check_true "  with a probe- generation, not a limit- one" \
-  "$( case "$(field "$OUT" WAKE_GENERATION)" in probe-*) echo true ;; *) echo false ;; esac )"
+  "$( [[ "$(field "$OUT" WAKE_GENERATION)" == probe-* ]] && echo true || echo false )"
 # A known reset still takes the reactive one-shot — the probe is the exception,
 # not the new default.
 RESET_KNOWN=$(( $(date -u +%s) + 3600 ))
