@@ -17,17 +17,22 @@ import sys
 import unittest
 
 root, current = Path(sys.argv[1]), sys.argv[2]
-assert sys.version_info >= (3, 9), 'Python >=3.9 required'
-assert shutil.which('jq'), 'jq required'
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+require(sys.version_info >= (3, 9), 'Python >=3.9 required')
+require(shutil.which('jq'), 'jq required')
 version = subprocess.check_output(['jq', '--version'], text=True).strip()
 match = re.match(r'jq-(\d+)\.(\d+)', version)
-assert match and tuple(map(int, match.groups())) >= (1, 5), version
+require(match and tuple(map(int, match.groups())) >= (1, 5), version)
 for shell, minimum, legacy in ((current, 4, False), ('/bin/bash', 3, True)):
     version = subprocess.check_output([shell, '--version'], text=True)
     match = re.search(r'version (\d+)\.(\d+)', version)
-    assert match, version
+    require(match, version)
     major, minor = map(int, match.groups())
-    assert (major, minor) == (3, 2) if legacy else major >= minimum, version
+    require((major, minor) == (3, 2) if legacy else major >= minimum, version)
     for key in list(os.environ):
         if key.startswith('LOCK_TEST_') or key == 'ESTIMATE_LOCK_TEST_SOURCE':
             os.environ.pop(key)
@@ -36,5 +41,6 @@ for shell, minimum, legacy in ((current, 4, False), ('/bin/bash', 3, True)):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromModule(module))
-    assert result.testsRun > 0 and result.wasSuccessful() and not result.skipped, shell
+    require(result.testsRun > 0 and result.wasSuccessful() and not result.skipped,
+            f'Lock controls failed or did not run under {shell}')
 PY

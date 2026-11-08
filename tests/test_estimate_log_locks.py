@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get('ESTIMATE_LOCK_TEST_SOURCE', ROOT / '.claude/scripts/estimate-log.sh'))
@@ -122,6 +123,10 @@ exec "$@"
             except ProcessLookupError:
                 pass
         else:
+            # A parent already killed by an orphan control cannot release its
+            # private held stubs. Let them drain even if ps is unavailable.
+            (self.root / 'go').touch()
+            (self.root / 'go-mv').touch()
             # Only this fixture's independently identified surviving children
             # authorize killing an orphaned private process group.
             for record in self.root.glob('held*.pid'):
@@ -133,7 +138,7 @@ exec "$@"
                             and str(self.bin) + os.sep in command.stdout):
                         os.killpg(p.pid, signal.SIGKILL)
                         break
-                except (ValueError, ProcessLookupError, FileNotFoundError):
+                except (ValueError, OSError, subprocess.TimeoutExpired):
                     continue
         p.communicate(timeout=5)
 
@@ -364,6 +369,24 @@ os.execv(os.environ['REAL_MV'],[os.environ['REAL_MV']]+sys.argv[1:])
         self.finish(self.start(104))
         self.assertEqual(self.rows(), [101, 102, 104])
         self.assertTrue(all(row['rounds']==2 for row in map(json.loads,self.log.read_text().splitlines())))
+
+    def test_orphan_cleanup_drains_private_child_when_inspection_fails(self):
+        faults = (OSError('ps missing'), PermissionError('ps denied'),
+                  subprocess.TimeoutExpired(['ps'], 2))
+        for index, fault in enumerate(faults):
+            with self.subTest(fault=type(fault).__name__):
+                (self.root / 'go').unlink(missing_ok=True)
+                (self.root / 'held').unlink(missing_ok=True)
+                (self.root / 'held.pid').unlink(missing_ok=True)
+                p = self.start(120 + index, hold=True)
+                child = self.wait_held(p)
+                self.wait_writer_published(p, child)
+                os.kill(p.pid, signal.SIGKILL)
+                p.wait(timeout=5)
+                with mock.patch('subprocess.run', side_effect=fault) as inspect:
+                    self.stop(p)
+                    self.assertTrue(inspect.called)
+                self.assertIn(120 + index, self.rows())
 
     def test_publication_waiter_rejects_incomplete_or_mismatched_identity(self):
         class LiveParent:
