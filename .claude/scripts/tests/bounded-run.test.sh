@@ -437,6 +437,46 @@ CLOCK_WITNESS
   check_eq "T12/$CLOCK_MODE: fixture witnessed the intended progressing clock shape" "yes" "$CLOCK_WITNESS"
 done
 
+
+# T13: forward clock progress remains chargeable, including a correction after
+# a backward step. Ignoring that positive delta would also ignore genuine time
+# while the sampler was descheduled. These are clock-policy controls; T12 above
+# independently measures the real-duration bound on a sustained backward step.
+echo "== T13: forward corrections retain conservative wall-clock expiry =="
+CLOCK_POLICY_INDEX="$TMP/clock-policy-index"
+CLOCK_POLICY_SEQUENCE="$TMP/clock-policy-sequence"
+CLOCK_POLICY_SAMPLES="$TMP/clock-policy-samples"
+for CLOCK_POLICY in forward recovery; do
+  rm -f "$CLOCK_READY"
+  printf '0\n' > "$CLOCK_POLICY_INDEX"
+  : > "$CLOCK_POLICY_SAMPLES"
+  if [[ "$CLOCK_POLICY" == forward ]]; then
+    printf '%s\n' 100 100 101 109 > "$CLOCK_POLICY_SEQUENCE"
+    CLOCK_EXPECTED_LAST=109
+  else
+    printf '%s\n' 100 100 101 95 102 103 104 > "$CLOCK_POLICY_SEQUENCE"
+    CLOCK_EXPECTED_LAST=102
+  fi
+  date() {
+    local n value
+    if [[ ! -e "$CLOCK_READY" ]]; then printf '100\n'; return 0; fi
+    n="$(cat "$CLOCK_POLICY_INDEX")"; n=$((n + 1))
+    printf '%s\n' "$n" > "$CLOCK_POLICY_INDEX"
+    value="$(sed -n "${n}p" "$CLOCK_POLICY_SEQUENCE")"
+    [[ -n "$value" ]] || value=120
+    printf '%s\n' "$value" >> "$CLOCK_POLICY_SAMPLES"
+    printf '%s\n' "$value"
+  }
+  check_eq "T13/$CLOCK_POLICY: fixture starts at the expected epoch" "100" "$(date -u +%s)"
+  CLOCK_RC=0
+  run_bounded 4 "$TMP/stub-clock-stall" || CLOCK_RC=$?
+  unset -f date
+  check_eq "T13/$CLOCK_POLICY: wall-clock budget expires" "124" "$CLOCK_RC"
+  check_eq "T13/$CLOCK_POLICY: timeout flag remains set" "1" "$BOUNDED_TIMED_OUT"
+  check_eq "T13/$CLOCK_POLICY: clock was readable" "0" "$BOUNDED_CLOCK_UNREADABLE"
+  check_eq "T13/$CLOCK_POLICY: positive clock delta is charged once" "$CLOCK_EXPECTED_LAST" "$(tail -n 1 "$CLOCK_POLICY_SAMPLES")"
+done
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 if (( FAIL > 0 )); then

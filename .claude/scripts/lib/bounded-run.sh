@@ -34,7 +34,9 @@
 #     <secs> must be a positive integer; normalize_bound() produces one.
 #     Backward wall-clock corrections re-anchor start at the elapsed high-water
 #     mark, so later samples keep advancing instead of extending the call by
-#     the jump (Issue #1651, bounded-run.test.sh T12). Poll/clock granularity
+#     the jump (Issue #1651, bounded-run.test.sh T12). Forward steps still count
+#     as wall-clock progress and may expire a call conservatively (T13); this
+#     does not promise a monotonic time allowance. Poll/clock granularity
 #     and termination grace still apply. A clock that stops or rewinds forever
 #     cannot measure elapsed time; this portable wall-clock design does not
 #     claim a bound in that case. Unreadable clocks still stop the child.
