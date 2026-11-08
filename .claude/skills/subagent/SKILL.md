@@ -1090,56 +1090,106 @@ The Start column must survive every later tick **and a context compaction**, so 
 <!-- test-anchor: subagent-spawn-record -->
 
 ```bash
-REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+SPAWN_STATE_RC=0
+SPAWN_STATE_ERROR=""
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key) || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=repo_key; }
+[[ "$REPO_KEY" == _unknown || "$REPO_KEY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=repo_key; }
+[[ -n "${AGENT_ID:-}" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_id; }
+SPAWN_ENTRY_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+[[ -n "$SPAWN_ENTRY_AT" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+[[ -n "${TASK:-}" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=task; }
+SPAWN_STATE_AGENT_KEYS=("${AGENT_ID:-}")
+AGENT_ENTRY=$(jq -n -c --arg id "${AGENT_ID:-}" --arg task "${TASK:-}" \
+  --argjson issue "{ISSUE_NUMBER}" --arg launched "$SPAWN_ENTRY_AT" \
+  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}') \
+  || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_entry; }
+AGENT_KEY=$(jq -cn --arg id "${AGENT_ID:-}" '$id') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_id; }
+AGENT_SET=(--set ".active_agents[$AGENT_KEY]=$AGENT_ENTRY")
 
-# This spawn's active_agents entry, built FIRST so it can ride along in the one
-# invocation below. -c is load-bearing: the entry is interpolated into a --set
-# argument, and jq's default pretty-print would embed newlines in it. Details
-# and the field contract are in 7.2 — it is built here only so that nothing
-# about this launch reaches disk in two separate writes.
-AGENT_ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "$TASK" \
-  --argjson issue "{ISSUE_NUMBER}" --arg launched "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}')
-AGENT_SET=(--set ".active_agents[\"$AGENT_ID\"]=$AGENT_ENTRY")
-
-# A fresh pipeline replaces any terminal lifecycle's timestamp and PR link.
-# Only an explicitly identified retry preserves this pipeline's original Start.
+# Fresh lifecycle vs explicit retry: decide ONCE, before either write attempt.
 LAUNCHED_AT=""
 if [[ "${SUCCESSOR_KIND:-}" == retry ]]; then
+  SPAWN_READ_RC=0
   LAUNCHED_AT=$("$SESSION_STATE_SH" \
-    --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at")
-  [[ "$LAUNCHED_AT" == "null" ]] && LAUNCHED_AT=""
+    --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at") || SPAWN_READ_RC=$?
+  if [[ "$SPAWN_READ_RC" -ne 0 && "$SPAWN_READ_RC" -ne 3 ]]; then
+    SPAWN_STATE_RC="$SPAWN_READ_RC"; SPAWN_STATE_ERROR=pipeline_read
+  fi
+  [[ "$LAUNCHED_AT" == null ]] && LAUNCHED_AT=""
 fi
-if [[ -z "$LAUNCHED_AT" ]]; then
-  LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-  # ONE invocation carries every piece of spawn-time state — the pipeline
-  # record, monitoring_active, AND this spawn's agent entry. A second call for
-  # the agent would leave the pipeline active with no active_agents record
-  # whenever that second call failed.
-  # The claim holder from Step 6.0 rides in the same write (Step 8.1 renews with
-  # it). Omitted when unknown — no claim helper, or no .holder in the JSON — and
-  # a pipeline without one is simply never renewed.
-  # Step 6.0 normally recorded both already; never reset a recorded
-  # claim_renewed_at — that would hide a queued claim's real age.
-  CLAIM_SET=()
-  [[ -n "$CLAIM_HOLDER" ]] && CLAIM_SET=(
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')")
-  C_PREV=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at" 2>/dev/null) || C_PREV=""
-  [[ -n "$CLAIM_HOLDER" && ( -z "$C_PREV" || "$C_PREV" == "null" ) ]] && CLAIM_SET+=(
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
-  "$SESSION_STATE_SH" \
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
-    ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} \
-    --set '.monitoring_active=true' \
-    "${AGENT_SET[@]}"
+SPAWN_WRITE_ARGS=()
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  if [[ -z "$LAUNCHED_AT" ]]; then
+    LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+    [[ -n "$LAUNCHED_AT" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+    CLAIM_SET=()
+    if [[ -n "${CLAIM_HOLDER:-}" ]]; then
+      CLAIM_HOLDER_JSON=$(jq -cn --arg h "$CLAIM_HOLDER" '$h') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=claim_holder; }
+      CLAIM_SET+=(--set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$CLAIM_HOLDER_JSON")
+      SPAWN_READ_RC=0
+      C_PREV=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at" 2>/dev/null) || SPAWN_READ_RC=$?
+      if [[ "$SPAWN_READ_RC" -ne 0 && "$SPAWN_READ_RC" -ne 3 ]]; then
+        SPAWN_STATE_RC="$SPAWN_READ_RC"; SPAWN_STATE_ERROR=claim_read
+      fi
+      if [[ ( "$SPAWN_READ_RC" -eq 0 || "$SPAWN_READ_RC" -eq 3 ) && ( -z "$C_PREV" || "$C_PREV" == null ) ]]; then
+        CLAIM_SET+=(--set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
+      fi
+    fi
+    SPAWN_WRITE_ARGS=(
+      --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT"
+      --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null"
+      ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} --set '.monitoring_active=true'
+      ${AGENT_SET[@]+"${AGENT_SET[@]}"})
+  else
+    # A retry never resets its existing pipeline Start or PR link.
+    SPAWN_WRITE_ARGS=(--set '.monitoring_active=true' ${AGENT_SET[@]+"${AGENT_SET[@]}"})
+  fi
+fi
+SPAWN_STATE_OUTCOME=recorded
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  SPAWN_STATE_ERROR=write
+  "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  if [[ "$SPAWN_STATE_RC" -eq 6 ]]; then
+    SPAWN_STATE_RC=0
+    "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  fi
+fi
+
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  echo "SPAWN_STATE=$SPAWN_STATE_OUTCOME"
 else
-  # Respawn: the launch record stands. Never re-null `.pr` either — that link is
-  # the heartbeat's fallback to `pipeline_started_at` (Step 8). The agent entry
-  # still rides along — a replacement agent needs its own record.
-  "$SESSION_STATE_SH" --set '.monitoring_active=true' "${AGENT_SET[@]}"
+  echo "SPAWN_STATE=failed rc=$SPAWN_STATE_RC reason=$SPAWN_STATE_ERROR"
+  # This is checkpoint DATA, never a shell command to eval or an unconditional
+  # retry instruction: children may have advanced before a later recovery.
+  SPAWN_STATE_PENDING=$(jq -cn --arg reason "$SPAWN_STATE_ERROR" \
+    --argjson key_count "${#SPAWN_STATE_AGENT_KEYS[@]}" --args \
+    '{registration:"unconfirmed",reason:$reason,requires_task_observation:true,
+      agent_keys:$ARGS.positional[:$key_count],args:$ARGS.positional[$key_count:]}' \
+    -- ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"} \
+       ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}) || SPAWN_STATE_PENDING=""
+  if [[ -n "$SPAWN_STATE_PENDING" ]]; then
+    echo "SPAWN_STATE_PENDING=$SPAWN_STATE_PENDING"
+  else
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_BEGIN'
+    if [[ "${#SPAWN_STATE_AGENT_KEYS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_END'
+    echo 'SPAWN_STATE_PENDING_ARGV_BEGIN'
+    if [[ "${#SPAWN_WRITE_ARGS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_ARGV_END'
+  fi
 fi
+# Preserve the failure status for the Bash tool as well as the explicit footer.
+(exit "$SPAWN_STATE_RC")
 ```
+
+**Atomicity and recovery (#1642).** All pipeline, monitoring and agent assignments in one attempt render into one candidate, pass the writer's type/ownership checks, then commit in a single rename (`session-state.sh`: `add_write_assignment`, final jq render, `enforce_field_type_contract`, ownership fence and final `mv`). A failure applies no partial batch. Entry construction is checked because malformed JSON values otherwise become plain strings. Required metadata read failures decline the write; only an actual write's exit6 retries once, using the same captured argv and original timestamps.
+
+On `SPAWN_STATE=failed`, the child is already running and its registration is unconfirmed. Retain its exact native Task/Agent ID, claim holder, original batch and footer in the existing resumable handoff; keep observing that task directly. Do not respawn, blindly stop it, release its claim, or treat missing state as permission to merge/rebase/dispatch an overlapping task. Checkpoint raw diagnostics and fallback quoted argv when JSON serialization is unavailable; they are data and must never be `eval`ed. Before later recovery, observe the actual task and use terminal completion/drain if it already finished, instead of replaying stale `spawned` status. A successful write needs no extra read-back to reinterpret its atomic result.
 
 **Do not add `--raw-path`.** It is a per-invocation flag, not a per-`--set` one, and a fully-spelled `.repos[...]` path already reaches the repo scope without it; passing it would send any `.prs[...]` write batched into the same call to the top level instead. Phase A Completion later fills `.pr` and copies `started_at` into `.prs["{PR_NUMBER}"].pipeline_started_at` (Step 9). Field contract: `.claude/reference/session-state-schema.json`.
 
