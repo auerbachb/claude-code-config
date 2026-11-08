@@ -148,7 +148,7 @@ every `--json` row as `status` — that is the field to branch on:
 | `needs-login` | No usable credential for that profile | Lead with its JSON `action` or the command printed before the table: `/quotas-setup relogin <label> <provider>`. Preserve quoting. Cursor's action names the IDE or Chrome surface that needs sign-in. The human completes login; never type a password or finish OAuth for them. |
 | `rate-limited` | The provider answered 429 | when to retry; the note carries the window |
 | `unreachable` | Nothing answered: a network failure, a missing runtime, a store that could not be read, or a probe that hit its time bound | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
-| `unreadable` | The response arrived but changed shape; the note names the keys seen | that the figure is unknown, and that the reader needs updating |
+| `unreadable` | The source could not be interpreted; the note names the specific cause | The figure is unknown. Follow the note: encrypted Cursor IDE storage uses the configured browser fallback; changed response formats may need a reader update. |
 | `unsupported` | A provider this reader does not know | that it is not covered |
 
 A `needs-login`, `rate-limited`, `unreachable`, or `unreadable` row is **not** a reason
@@ -301,8 +301,12 @@ Cursor 3.29.9's auth-storage codec encrypts IDE access/refresh tokens through
 Electron `safeStorage`. A `cursor-safe-storage:v1:` database value is ciphertext;
 the direct IDE reader reports `unreadable` with an encrypted-store hint. That
 format alone does not establish expired login. Keep the store unchanged and use
-`--browser` with an already signed-in Chrome profile. If that source is logged
-out, its action names the Cursor dashboard in Chrome; the owner completes that
+`--browser` with an already signed-in Chrome profile. This flag permits a
+configured browser source; it does not add one omitted from the account's
+`sources`. If browser is excluded, explain the limitation and obtain the
+owner's approval before using `/quotas-setup sources <label> <comma-separated order> cursor`
+to include it in the intended order. Do not change source preferences silently.
+If that source is logged out, its action names the Cursor dashboard in Chrome; the owner completes that
 login. An IDE re-login does not make the encrypted store plaintext. Scheduled
 runs retain unknown usage and the existing browser-unattended skip.
 
