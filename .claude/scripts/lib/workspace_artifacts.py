@@ -40,6 +40,15 @@ class Artifacts:
             raise finished.Skip("open_pr")
         if row.get("state") not in ("MERGED", "CLOSED"):
             raise finished.Unknown("pr_state_unknown")
+        # Numbered handoff/scratch references need the same independently
+        # verified author boundary as branch-derived finished worktrees.
+        guard = str(Path(__file__).parents[1] / "pr-authorship.sh")
+        code, _, _ = finished.run([guard, str(number), "--repo", self.sweep.repo],
+                                  str(self.root), finished.GH_TIMEOUT, env)
+        if code == 1:
+            raise finished.Skip("not_authored")
+        if code:
+            raise finished.Unknown("authorship_unknown")
         return row
 
     @staticmethod

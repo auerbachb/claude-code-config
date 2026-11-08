@@ -78,6 +78,11 @@ os.execv('/bin/bash',['/bin/bash',*a])
     reaped_row=next(r for r in db['rows'] if r['headRefName']=='handoff-reaped')
     reaped_handoff=handoff(reaped_row);doc=json.loads(reaped_handoff.read_text());doc['worktree']=str(reaped);reaped_handoff.write_text(json.dumps(doc))
     git('worktree','remove',str(reaped))
+    for author in ['another-contributor',None]:
+        reaped_row['author']=author;write_db()
+        result=artifacts()
+        verify(reaped_handoff.exists() and outcome(result,reaped_handoff)['reason'] in ('not_authored','authorship_unknown'),'foreign/unknown author cannot authorize reaped handoff cleanup')
+    reaped_row.pop('author',None);write_db()
     result=artifacts()
     verify(not reaped_handoff.exists() and outcome(result,reaped_handoff)['removed'],'completed handoff of already reaped inactive checkout removed')
 
@@ -114,6 +119,12 @@ os.execv('/bin/bash',['/bin/bash',*a])
         for entry in path.rglob('*'):os.utime(entry,(now-8*86400,now-8*86400),follow_symlinks=False)
         os.utime(path,(now-8*86400,now-8*86400));return path
     finished_scratch=scratch('finished')
+    for author in ['another-contributor',None]:
+        merged_row['author']=author;write_db()
+        result=artifacts()
+        verify(finished_scratch.exists() and outcome(result,finished_scratch)['reason'] in ('not_authored','authorship_unknown'),'foreign/unknown author cannot authorize owned scratch cleanup')
+    merged_row.pop('author',None);write_db()
+
     live_owner=scratch('live-owner',pid=os.getpid())
     live_cwd=scratch('live-cwd')
     open_scratch=scratch('open-pr',number=open_row['number'])
