@@ -1700,3 +1700,42 @@ omitted duration remains an honestly labelled generic window. Weekly selection
 still follows duration rather than slot position. The app-server path and older
 HTTP camelCase bodies retain their existing behavior. An unlabelled
 `credits.balance` is not evidence of a USD amount and is not converted.
+
+### Completed native browser reads
+
+Internal Chrome-CLI `ok` observations require a private per-attempt completion
+receipt, separate from diagnostics and permission booleans. The guard correlates a
+read's allowed `PreToolUse` with successful `PostToolUse` using its tool-use ID,
+owned tab and attempt nonce. Fresh native actual-URL metadata is still required
+before every read. Missing, mismatched, reused, denied, failed, interrupted or
+unknown read evidence cannot produce an `ok` quota row. A fixed
+`browser_read_unverified` class reports unreadable provenance; the six ledger
+statuses and source fallback order are unchanged.
+
+The native MCP boundary was exercised with installed Claude Code2.1.312, a private
+configuration, a synthetic stdio MCP tool and a loopback model stub, with no live
+browser, production credential or paid request. Successful MCP reads emitted
+`tool_response` as a nonempty text content-block list with `tool_use_id`; an
+`isError:true` tool emitted no successful post event. The committed synthetic
+fixture records that generic boundary, not a live Chrome capture. Other shapes
+remain unsupported. [Claude's hook reference](https://code.claude.com/docs/en/hooks#posttooluse-input)
+documents tool-specific responses and correlation IDs.
+
+Receipt files contain only schema version, attempt nonce and bounded completion
+count. They retain no page/error/tool payload, URL, tab ID, email or credential.
+Authorization state stays separate and private; diagnostics never grant access.
+This relies on the native CLI/hook boundary and preserves the existing identity,
+freshness and observation-schema checks. Independently mediated
+`--browser-results` files keep their separate explicit/private validation boundary
+and do not require internal-hook receipts. Sign-in is never automated.
+
+API-first assessment (2026-11-08 UTC): Cursor documents usage/spending endpoints in
+its [Admin API](https://cursor.com/docs/account/teams/admin-api). Its current
+[API overview](https://cursor.com/docs/api) lists Admin/Analytics availability for
+Enterprise teams and administrator-managed keys; the
+[Analytics documentation](https://cursor.com/docs/account/teams/analytics-api)
+also states Enterprise-only availability. No documented individual-subscription
+self-service usage endpoint was found in those references. This is a documentation
+finding, not a claim about private endpoints or this owner's eligibility. An
+eligible existing provider API remains preferable; this fix mints no key, changes
+no provider acquisition order and performs no sign-in or live verification.

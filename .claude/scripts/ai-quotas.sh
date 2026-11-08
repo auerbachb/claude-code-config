@@ -2573,6 +2573,7 @@ read_cursor_browser() { # <label>
         browser_tab_create_failed) detail="browser owned-tab creation failed" ;;
         browser_destination_unverified) detail="browser owned-tab destination could not be verified" ;;
         browser_observation_rejected) detail="browser observation rejected" ;;
+        browser_read_unverified) detail="browser page read could not be verified" ;;
         browser_timeout) detail="browser bridge reached its outer timeout"; outcome_status=timeout ;;
         *) error_class=browser_stage_unknown; detail="browser unavailable; failure stage unknown" ;;
       esac

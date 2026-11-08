@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import secrets
 import re
 from pathlib import Path
 import stat
@@ -23,7 +24,31 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['schema_
 STAGE_CLASSES = {'connection': 'browser_connection_unavailable', 'denied': 'browser_tool_denied',
                  'create': 'browser_tab_create_failed', 'destination': 'browser_destination_unverified'}
 ERROR_CLASSES = set(STAGE_CLASSES.values()) | {'browser_launch_failed', 'browser_observation_rejected',
-                                              'browser_timeout', 'browser_stage_unknown'}
+                                              'browser_timeout', 'browser_stage_unknown', 'browser_read_unverified'}
+
+
+class ReadProvenanceError(ValueError):
+    """A valid model observation has no completed native read behind it."""
+
+
+def completed_read(path, attempt):
+    """Validate private, attempt-bound completion evidence independently."""
+    try:
+        if os.path.lexists(str(path) + '.failed'):
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                    or info.st_mode & 0o077 or info.st_size > 512):
+                return False
+            value = json.loads(stream.read(513))
+        return (isinstance(value, dict) and set(value) == {'schema_version', 'attempt', 'completed_reads'}
+                and value['schema_version'] == '1.0' and value['attempt'] == attempt
+                and type(value['completed_reads']) is int and value['completed_reads'] == 1
+                and not os.path.lexists(str(path) + '.failed'))
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def guard_evidence(path):
@@ -52,6 +77,8 @@ def failure_class(error, facts):
     """Use proven boundaries only, never stderr, arbitrary messages or model guesses."""
     if isinstance(error, subprocess.TimeoutExpired):
         return 'browser_timeout'
+    if isinstance(error, ReadProvenanceError):
+        return 'browser_read_unverified'
     if isinstance(error, OSError) and facts.get('launch') and not facts.get('completed'):
         return 'browser_launch_failed'
     stage = (facts.get('guard') or {}).get('last_failure')
@@ -126,9 +153,15 @@ def read_observation(path, label, email, now, cli, facts=None):
         guard = Path(__file__).with_name('quotas-browser-guard.py')
         with tempfile.TemporaryDirectory(prefix='quotas-browser-') as tmp:
             evidence = Path(tmp) / 'stage.json'
-            command = shlex.join([sys.executable, str(guard.resolve()), str(Path(tmp) / 'tab-state.json'), str(evidence)])
+            proof, state, attempt = Path(tmp) / 'read-proof.json', Path(tmp) / 'tab-state.json', secrets.token_hex(32)
+            for path_, value in ((state, dict(proof_attempt=attempt)),
+                                 (proof, dict(schema_version='1.0', attempt=attempt, completed_reads=0))):
+                fd = os.open(path_, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, 'w') as stream:
+                    json.dump(value, stream)
+            command = shlex.join([sys.executable, str(guard.resolve()), str(state), str(evidence), str(proof), attempt])
             hook = [{'matcher': '*', 'hooks': [{'type': 'command', 'command': command}]}]
-            settings = {'hooks': {'PreToolUse': hook, 'PostToolUse': hook}}
+            settings = {'hooks': {'PreToolUse': hook, 'PostToolUse': hook, 'PostToolUseFailure': hook}}
             facts['launch'] = True
             try:
                 result = subprocess.run([cli, '--restricted', '--chrome', '--print', '--no-session-persistence', '--tools', 'ToolSearch',
@@ -139,11 +172,15 @@ def read_observation(path, label, email, now, cli, facts=None):
                 facts['completed'] = True
             finally:
                 facts['guard'] = guard_evidence(evidence)
+                facts['completed_read'] = completed_read(proof, attempt)
         envelope = json.loads(result.stdout)
         if not isinstance(envelope, dict):
             raise ValueError('envelope')
         payload = envelope.get('structured_output')
-    return validate(payload, label, email, now)
+    validated = validate(payload, label, email, now)
+    if not path and validated['status'] == 'ok' and not facts.get('completed_read'):
+        raise ReadProvenanceError('completed_read_unverified')
+    return validated
 
 
 def main(args=None):
