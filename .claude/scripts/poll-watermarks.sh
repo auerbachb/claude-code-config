@@ -129,9 +129,9 @@ run_pr_state() {
 read_watermarks() {
   local wm=""
   if [[ -n "$ROOT_REPO_ARG" ]]; then
-    wm="$(cd "$ROOT_REPO_ARG" && "$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks" 2>/dev/null || true)"
+    wm="$(cd "$ROOT_REPO_ARG" && "$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks")" || return 1
   else
-    wm="$("$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks" 2>/dev/null || true)"
+    wm="$("$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks")" || return 1
   fi
   if [[ -z "$wm" || "$wm" == "null" ]]; then
     wm='{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'

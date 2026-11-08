@@ -346,6 +346,45 @@ LEFT=no
 compgen -G "$TMP/scratch/poll-watermarks.*" >/dev/null && LEFT=yes
 check_eq "failure paths clean private scratch" "no" "$LEFT"
 
+
+echo "== Scenario 9: stored-state read failure cannot invent a zero baseline =="
+cp "$REPO_ROOT/.claude/scripts/lib/pr-state-classify.jq" "$STUB_DIR/lib/pr-state-classify.jq"
+mv "$SESSION" "$STUB_DIR/session-state-real.sh"
+cat > "$SESSION" <<'FAILED_STATE_READ'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == --get ]]; then
+    printf 'fixture stored-state read failed\n' >&2
+    exit 17
+  fi
+done
+exec "$(dirname "$0")/session-state-real.sh" "$@"
+FAILED_STATE_READ
+chmod +x "$SESSION"
+# Preserve a nonzero baseline. A swallowed read failure would reset this to 0.
+for mode in --reset --check --init; do
+  for root_mode in implicit explicit; do
+    cp "$HOME/.claude/session-state.json" "$TMP/before-stored-read.json"
+    RC=0
+    if [[ "$root_mode" == explicit ]]; then
+      OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" "$mode" --root-repo "$REPO_ROOT" 2>"$TMP/stored-read.err")" || RC=$?
+    else
+      OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" "$mode" 2>"$TMP/stored-read.err")" || RC=$?
+    fi
+    check_eq "stored read failure/$mode/$root_mode returns exit4" "4" "$RC"
+    check_eq "stored read failure/$mode/$root_mode emits no result" "" "$OUT"
+    SAME=no
+    cmp -s "$TMP/before-stored-read.json" "$HOME/.claude/session-state.json" && SAME=yes
+    check_eq "stored read failure/$mode/$root_mode preserves state bytes" "yes" "$SAME"
+    DIAGNOSTIC=no
+    grep -q 'fixture stored-state read failed' "$TMP/stored-read.err" && DIAGNOSTIC=yes
+    check_eq "stored read failure/$mode/$root_mode keeps original diagnostic" "yes" "$DIAGNOSTIC"
+  done
+done
+LEFT=no
+compgen -G "$TMP/scratch/poll-watermarks.*" >/dev/null && LEFT=yes
+check_eq "stored-state read failures clean scratch" "no" "$LEFT"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
