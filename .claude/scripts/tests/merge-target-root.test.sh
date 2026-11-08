@@ -40,9 +40,15 @@ check 'clone A remains selected from clone B' "$A" "$OUT"
 check 'linked worktree resolves to its physical main clone' "$A" "$("$HELPER" --repo-path "$LINKED" --pr-url "$URL")"
 ln -s "$A" "$TMP/alias"
 check 'symlink input becomes physical root' "$A" "$("$HELPER" --repo-path "$TMP/alias" --pr-url "$URL")"
-for remote in git@github.com:Fixture/Project.git ssh://git@github.com/fixture/project.git https://github.com/fixture/project.git/; do
+for remote in git@github.com:Fixture/Project.git ssh://git@github.com/fixture/project.git https://github.com/fixture/project.git/ https://github.com:443/fixture/project.git ssh://git@github.com:22/fixture/project.git; do
   git -C "$A" remote set-url origin "$remote"
   check 'normal remote spellings identify the same repository' "$A" "$("$HELPER" --repo-path "$A" --pr-url "$URL")"
+done
+for remote in http://github.com/fixture/project.git git://github.com/fixture/project.git \
+    https://github.com:444/fixture/project.git ssh://git@github.com:2222/fixture/project.git \
+    https://github.com:abc/fixture/project.git https://github.com:443.evil/fixture/project.git; do
+  git -C "$A" remote set-url origin "$remote"
+  check_fail --repo-path "$A" --pr-url "$URL"
 done
 git -C "$A" remote set-url origin "$REMOTE"
 check_fail --repo-path '' --pr-url "$URL"
@@ -92,8 +98,8 @@ cat > "$TMP/bin/sync" <<'MOCK'
 #!/usr/bin/env bash
 printf 'sync' >> "$CALLS"; for arg do printf '|%s' "$arg" >> "$CALLS"; done; printf '\n' >> "$CALLS"
 if [[ $# -eq 0 ]]; then "$REAL_GIT" rev-parse --show-toplevel > "$CALLS.effective-root"; fi
-echo 'up to date (fixture)' 
-exit 0
+echo "${SYNC_FAKE_STATUS:-up to date (fixture)}"
+exit "${SYNC_FAKE_RC:-0}"
 MOCK
 cat > "$TMP/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
@@ -136,6 +142,12 @@ for SITE in wrap merge; do
     EXPECTED=$(printf 'guard|--check|--repo|%s\nsync|--reset|--repo|%s' "$A" "$A")
   else EXPECTED="sync|--repo|$A"; fi
   check "$SITE: actual late fence targets only A despite cwd B" "$EXPECTED" "$(cat "$CALLS")"
+  for STATUS in 'skipped: fixture' 'aborted: fixture'; do
+    OUT=$(SYNC_FAKE_STATUS="$STATUS" SYNC_FAKE_RC=1 bash -c "$SYNC"$'\n''echo "STATUS=$MAIN_SYNC_STATUS"' 2>&1)
+    case "$OUT" in *"STATUS=$STATUS") check "$SITE: benign status is preserved" yes yes ;; *) check "$SITE: benign status is preserved" "$STATUS" "$OUT" ;; esac
+  done
+  OUT=$(SYNC_FAKE_STATUS='fixture error' SYNC_FAKE_RC=2 bash -c "$SYNC"$'\n''echo "STATUS=$MAIN_SYNC_STATUS"' 2>&1)
+  case "$OUT" in *'STATUS=failed(rc=2): fixture error') check "$SITE: real sync failure stays a failure" yes yes ;; *) check "$SITE: real sync failure stays a failure" 'failed(rc=2)' "$OUT" ;; esac
   for BAD in empty missing wrong-repo missing-helper; do
     : > "$CALLS"
     case "$BAD" in

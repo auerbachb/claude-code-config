@@ -229,7 +229,9 @@ elif [[ -z "$MAIN_SYNC_SH" ]]; then
 else
   MAIN_SYNC_RC=0
   MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" --repo "$MERGE_SYNC_ROOT" 2>&1) || MAIN_SYNC_RC=$?
-  if [[ "$MAIN_SYNC_RC" -ne 0 ]]; then MAIN_SYNC_STATUS="failed(rc=$MAIN_SYNC_RC): $MAIN_SYNC_STATUS"; fi
+  if [[ "$MAIN_SYNC_RC" -ne 0 ]] && ! [[ "$MAIN_SYNC_STATUS" == aborted:* || "$MAIN_SYNC_STATUS" == skipped:* ]]; then
+    MAIN_SYNC_STATUS="failed(rc=$MAIN_SYNC_RC): $MAIN_SYNC_STATUS"
+  fi
 fi
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```

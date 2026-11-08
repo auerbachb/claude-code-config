@@ -49,12 +49,19 @@ run_bounded 10 git -C "$root" remote get-url origin || rc=$?
 [[ "$rc" -eq 0 ]] || refuse 'clone identity unreadable' 4
 remote=$(cat "$CAPTURE") || refuse 'clone identity capture unreadable' 4
 [[ "$remote" != *$'\n'* ]] || refuse 'ambiguous clone identity'
-# Accept ordinary URL and scp-style Git remotes, without printing credentials.
+# Only authenticated transport spellings at their ordinary endpoint can bind a
+# clone to the canonical PR host. Nondefault ports and cleartext are unknown.
 case "$remote" in
-  https://*|http://*|ssh://*|git://*)
+  https://*|ssh://*)
+    scheme="${remote%%://*}"
     address="${remote#*://}"; address="${address##*@}"
-    host="${address%%/*}"; remote_repo="${address#*/}"
-    host="${host%%:*}" ;;
+    authority="${address%%/*}"; remote_repo="${address#*/}"
+    case "$scheme:$authority" in
+      https:*:443) host="${authority%:443}" ;;
+      ssh:*:22) host="${authority%:22}" ;;
+      *:*:*) refuse 'unsupported clone remote endpoint' ;;
+      *) host="$authority" ;;
+    esac ;;
   *@*:*|*:*/*)
     address="${remote##*@}"; host="${address%%:*}"; remote_repo="${address#*:}" ;;
   *) refuse 'unsupported clone remote identity' ;;
