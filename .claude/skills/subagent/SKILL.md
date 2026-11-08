@@ -520,6 +520,13 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   window-fit trim (`makespan.sh`, `/pm` Step 3.3) is a different gate at a different moment, and
   `makespan.sh` is not used here:
 
+  Set `SUCCESSOR_KIND` afresh before each invocation: `review` for A→B/B→B,
+  `merge` for B→C only after fresh merge-gate verification, and empty for every
+  new/queued pipeline or A→A. Never inherit the preceding launch's kind. Reviews
+  use elapsed pipeline time with a 40-minute floor capped at the full bound;
+  merges skip the estimate. Every launch still respects the pause point and
+  the other launch controls. See `leave-time.md` for timestamp fallback details.
+
   <!-- test-anchor: subagent-step7-deadline-decline -->
 
   ```bash
@@ -528,7 +535,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     || DEADLINE_RC=$?
   LAUNCH_DECLINED=false
   DECLINE_REASON=""
-  if [[ "$DEADLINE_RC" -ne 0 && "$DEADLINE_RC" -ne 3 ]]; then
+  if [[ -n "${SUCCESSOR_KIND:-}" && "$SUCCESSOR_KIND" != review && "$SUCCESSOR_KIND" != merge ]]; then
+    LAUNCH_DECLINED=true; DECLINE_REASON="successor kind malformed"
+  elif [[ "$DEADLINE_RC" -ne 0 && "$DEADLINE_RC" -ne 3 ]]; then
     # Unreadable is NOT absent. A lock timeout or parse failure can hide an armed
     # deadline, and launching through one is the failure this gate exists to stop —
     # the same fail-closed reading the refill and execution gates above use.
@@ -586,29 +595,57 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     PAUSE_POINT_EPOCH=$(( DEADLINE_EPOCH - LEAD_MIN * 60 ))
     # Compare in SECONDS. Truncating the remainder to whole minutes first would make
     # the comparison drift by up to 59 s in whichever direction the truncation fell.
-    REMAINING_SEC=$(( PAUSE_POINT_EPOCH - $(date -u +%s) ))
-    BOUND_MIN=""; EST_RC=0
-    if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
-      EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
-      # rc 0 (body) and 1 (tier fallback) are real estimates; 2 is genuinely
-      # unestimated; 3/4 are the TOOL failing, which is a different problem and gets
-      # its own reason rather than being laundered into "this issue has no estimate".
-      if (( EST_RC <= 2 )); then
-        BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' \
-          | grep -E '^[0-9]{1,6}$' || true)   # bounded: see the epoch note above
+    NOW_EPOCH=$(date -u +%s)
+    REMAINING_SEC=$(( PAUSE_POINT_EPOCH - NOW_EPOCH ))
+    if [[ "${SUCCESSOR_KIND:-}" == merge ]]; then
+      # A verified merge has no original-estimate hurdle, but no launch may
+      # cross the pause point merely because wind-down has not armed yet.
+      if (( REMAINING_SEC <= 0 )); then
+        LAUNCH_DECLINED=true; DECLINE_REASON="pause point reached"
       fi
-    fi
-    # An unresolvable bound is NOT a pass, whatever caused it. Near a deadline, "we
-    # don't know how long this takes" is exactly the pipeline that runs past it.
-    if (( EST_RC >= 3 )); then
-      LAUNCH_DECLINED=true; DECLINE_REASON="estimate lookup failed (rc=$EST_RC)"
-    elif [[ -z "$BOUND_MIN" ]]; then
-      LAUNCH_DECLINED=true; DECLINE_REASON="unestimated"
-    elif (( BOUND_MIN * 60 >= REMAINING_SEC )); then
-      # `>=`, not `>`: an exact fit lands ON the pause point, leaving zero slack for the
-      # wind-down that starts there. The rule is unchanged — only what it is measured
-      # against moved from the deadline to `deadline - lead`.
-      LAUNCH_DECLINED=true; DECLINE_REASON="plan on ${BOUND_MIN} min"
+    else
+      BOUND_MIN=""; EST_RC=0
+      if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
+        EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
+        # rc 0 (body) and 1 (tier fallback) are real estimates; 2 is genuinely
+        # unestimated; 3/4 are the TOOL failing, which is a different problem and gets
+        # its own reason rather than being laundered into "this issue has no estimate".
+        if (( EST_RC <= 2 )); then
+          BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' \
+            | grep -E '^[0-9]{1,6}$' || true)   # bounded: see the epoch note above
+        fi
+      fi
+      if [[ "${SUCCESSOR_KIND:-}" == review && -n "$BOUND_MIN" && "$EST_RC" -le 2 ]]; then
+        START_RC=0
+        PIPELINE_START=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"$ISSUE_NUM\"].started_at" 2>/dev/null) \
+          || START_RC=$?
+        # Only the actual persisted UTC timestamp earns credit. Failed reads,
+        # malformed/future timestamps and parse failures retain the full bound.
+        START_EPOCH=""
+        if [[ "$START_RC" -eq 0 ]]; then
+          START_EPOCH=$(python3 -c 'import datetime, sys; start = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ"); epoch = int(start.replace(tzinfo=datetime.timezone.utc).timestamp()); print(epoch if 0 <= epoch <= int(sys.argv[2]) and start.strftime("%Y-%m-%dT%H:%M:%SZ") == sys.argv[1] else "")' \
+            "$PIPELINE_START" "$NOW_EPOCH" 2>/dev/null) || START_EPOCH=""
+        fi
+        if [[ "$START_EPOCH" =~ ^[0-9]{1,11}$ ]]; then
+          FULL_BOUND_MIN=$((10#$BOUND_MIN))
+          REVIEW_FLOOR_MIN=40
+          (( FULL_BOUND_MIN >= REVIEW_FLOOR_MIN )) || REVIEW_FLOOR_MIN=$FULL_BOUND_MIN
+          BOUND_MIN=$(( FULL_BOUND_MIN - (NOW_EPOCH - START_EPOCH) / 60 ))
+          (( BOUND_MIN >= REVIEW_FLOOR_MIN )) || BOUND_MIN=$REVIEW_FLOOR_MIN
+        fi
+      fi
+      # An unresolvable bound is NOT a pass, whatever caused it. Near a deadline, "we
+      # don't know how long this takes" is exactly the pipeline that runs past it.
+      if (( EST_RC >= 3 )); then
+        LAUNCH_DECLINED=true; DECLINE_REASON="estimate lookup failed (rc=$EST_RC)"
+      elif [[ -z "$BOUND_MIN" ]]; then
+        LAUNCH_DECLINED=true; DECLINE_REASON="unestimated"
+      elif (( BOUND_MIN * 60 >= REMAINING_SEC )); then
+        # `>=`, not `>`: an exact fit lands ON the pause point, leaving zero slack for the
+        # wind-down that starts there. The rule is unchanged — only what it is measured
+        # against moved from the deadline to `deadline - lead`.
+        LAUNCH_DECLINED=true; DECLINE_REASON="plan on ${BOUND_MIN} min"
+      fi
     fi
   fi
   ```
@@ -1295,6 +1332,8 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    rather than counting them here, since a fixed count in a second place is how
    this list came to omit the deadline. When any one is closed or declined,
    persist the pending transition and continue without launching it.
+   Reset `SUCCESSOR_KIND` on each invocation: `review` for A→B/B→B, `merge`
+   for gate-verified B→C, empty for A→A/new/queued work; never reuse a prior kind.
    **Apply a recorded overrun decision silently** (issue #1679): re-applying Step 7's
    gate to a successor or a queued head reads `window.launch_decisions[<issue>]` and
    honours a record matching the current `deadline_epoch` — `skip` keeps it queued,

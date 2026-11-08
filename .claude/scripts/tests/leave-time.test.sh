@@ -306,7 +306,7 @@ fi
 # ---------------------------------------------------------------------------
 # Part 1b — the per-launch deadline decline, executed
 # ---------------------------------------------------------------------------
-DECLINE_BLOCK="$(extract_skill_bash "$ROOT/$SUBAGENT_SKILL" subagent-step7-deadline-decline)" \
+DECLINE_BLOCK="$(extract_skill_bash "${LEAVE_TIME_DECLINE_TEST_SOURCE:-$ROOT/$SUBAGENT_SKILL}" subagent-step7-deadline-decline)" \
   || { fail 'could not extract the /subagent Step 7 deadline decline block'; DECLINE_BLOCK=""; }
 
 # Stub session-state.sh: emits STUB_DEADLINE, exits STUB_STATE_RC, and records its argv.
@@ -329,6 +329,7 @@ case "$*" in
   # the absent case and passing the assertion vacuously.
   *window.deadline_epoch) printf '%s\n' "${STUB_DEADLINE-null}"; exit "${STUB_STATE_RC:-0}" ;;
   *leave.lead_minutes)    printf '%s\n' "${STUB_LEAD-null}";     exit "${STUB_LEAD_RC:-0}" ;;
+  *'.pipelines["61"].started_at') printf '%s\n' "${STUB_START-null}"; exit "${STUB_START_RC:-0}" ;;
 esac
 printf 'session-state stub: unexpected argv: %s\n' "$*" >&2
 exit 99
@@ -351,11 +352,14 @@ run_decline() {
   # $1 = deadline value, $2 = state rc, $3 = estimate string, $4 = estimate helper path,
   # $5 = optional estimate-resolver exit code, $6 = optional fixed `now` epoch,
   # $7 = optional persisted lead_minutes (default 30 — the value /leave-by Step 2's
-  #      cascade falls back to), $8 = optional lead-read exit code
+  #      cascade falls back to), $8 = optional lead-read exit code,
+  # $9 = successor kind, $10 = persisted start, $11 = start-read exit code
   (
     set -euo pipefail
     export STUB_DEADLINE="$1" STUB_STATE_RC="$2" STUB_EST="$3" STUB_EST_RC="${5:-0}"
     export STUB_LEAD="${7-30}" STUB_LEAD_RC="${8:-0}"
+    export SUCCESSOR_KIND="${9-}"
+    export STUB_START="${10-null}" STUB_START_RC="${11:-0}"
     export STUB_STATE_ARGS_FILE="$STUB_STATE_ARGS" STUB_EST_ARGS_FILE="$STUB_EST_ARGS"
     # Freeze the clock when asked, so a boundary case tests the boundary rather than
     # however many milliseconds elapsed between the fixture and the block.
@@ -543,6 +547,77 @@ BADLEADS
   fi
 
   ok_group 'deadline decline: fits launches, overruns declines, unknown duration/deadline fail closed'
+fi
+
+# #1738: execute the same production block for successors, on a fixed clock.
+if [ -n "$DECLINE_BLOCK" ]; then
+  group_start
+  FIXED_NOW=1787439600
+  START_60=$(python3 - "$FIXED_NOW" <<'PY'
+import datetime, sys
+print(datetime.datetime.fromtimestamp(int(sys.argv[1]) - 3600, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+  )
+  START_30=$(python3 - "$FIXED_NOW" <<'PY'
+import datetime, sys
+print(datetime.datetime.fromtimestamp(int(sys.argv[1]) - 1800, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+  )
+  # Remaining useful runway excludes the unchanged 30-minute lead.
+  RUNWAY_30=$((FIXED_NOW + (30 + 30) * 60))
+  RUNWAY_45=$((FIXED_NOW + (45 + 30) * 60))
+  successor_case() {
+    local expected="$1" label="$2" actual
+    shift 2
+    actual=$(run_decline "$@")
+    [ "$actual" = "$expected" ] || fail "$label (got: $actual; expected: $expected)"
+  }
+  : >"$STUB_EST_ARGS"
+  successor_case 'false|' 'verified merge skips a 90-min original bound' \
+    "$RUNWAY_30" 0 'Est: 60–90 min · plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 merge
+  [ ! -s "$STUB_EST_ARGS" ] || fail 'merge must not call estimate resolution'
+  successor_case 'false|' 'merge does not require a working estimate helper' \
+    "$RUNWAY_30" 0 unestimated /does/not/exist 4 "$FIXED_NOW" 30 0 merge
+  successor_case 'true|pause point reached' 'merge cannot launch at pause point' \
+    "$((FIXED_NOW + 30 * 60))" 0 unestimated '' 0 "$FIXED_NOW" 30 0 merge
+  successor_case 'true|pause point reached' 'merge cannot launch after pause point' \
+    "$((FIXED_NOW - 1))" 0 unestimated '' 0 "$FIXED_NOW" 30 0 merge
+  successor_case 'true|deadline unreadable (rc=6)' 'merge preserves failed deadline stop' \
+    "$RUNWAY_30" 6 unestimated '' 0 "$FIXED_NOW" 30 0 merge
+  successor_case 'true|deadline malformed' 'merge preserves malformed deadline stop' \
+    bad 0 unestimated '' 0 "$FIXED_NOW" 30 0 merge
+
+  successor_case 'false|' 'review earns 60 elapsed minutes from a 90-min bound' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_60"
+  grep -qxF -- '--get .repos["org/repo"].pipelines["61"].started_at' "$STUB_STATE_ARGS" \
+    || fail 'review must read this issue and repo pipeline timestamp'
+  successor_case 'true|plan on 40 min' 'review keeps a 40-minute floor after elapsed credit' \
+    "$RUNWAY_30" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_60"
+  successor_case 'true|plan on 60 min' 'review subtracts actual elapsed time before the floor' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_30"
+  successor_case 'true|plan on 90 min' 'a just-started review receives no elapsed credit' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$(python3 -c 'import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$FIXED_NOW")"
+  successor_case 'false|' 'a shorter original bound is not raised to 40 minutes' \
+    "$RUNWAY_30" 0 'plan on 20' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_60"
+  successor_case 'true|plan on 40 min' 'review exactly fitting its floor still declines' \
+    "$((FIXED_NOW + (40 + 30) * 60))" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_60"
+  successor_case 'false|' 'review with one second of floor slack launches' \
+    "$((FIXED_NOW + (40 + 30) * 60 + 1))" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_60"
+  for bad in null '' invalid 1787436000 2026-08-23T00:00:00Z 2026-02-30T12:00:00Z 2026-8-22T00:00:00Z 1969-12-31T23:00:00Z; do
+    successor_case 'true|plan on 90 min' 'unproven elapsed time retains full review bound' \
+      "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$bad"
+  done
+  successor_case 'true|plan on 90 min' 'failed start read earns no elapsed credit' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 review "$START_60" 6
+  successor_case 'true|estimate lookup failed (rc=4)' 'review cannot waive failed estimate lookup' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 4 "$FIXED_NOW" 30 0 review "$START_60"
+  successor_case 'true|unestimated' 'review cannot waive missing estimate' \
+    "$RUNWAY_45" 0 unestimated "$STUB_EST_SH" 2 "$FIXED_NOW" 30 0 review "$START_60"
+  successor_case 'true|plan on 90 min' 'reset kind preserves new/queued and A-to-A full bound' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 '' "$START_60"
+  successor_case 'true|successor kind malformed' 'unknown kind fails closed' \
+    "$RUNWAY_45" 0 'plan on 90' "$STUB_EST_SH" 0 "$FIXED_NOW" 30 0 typo "$START_60"
+  ok_group 'successor deadline: remaining review work, verified merge, unchanged first launch and hard stops'
 fi
 
 # ---------------------------------------------------------------------------
