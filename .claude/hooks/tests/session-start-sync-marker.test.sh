@@ -298,22 +298,99 @@ mkdir -p "$SKIP_LOCK"
   printf 'token=%s\n' "test-token"
 } > "$SKIP_LOCK/owner"
 
-# The lock must be RELEASED partway through the run, not held for the whole of
-# it. Holding it throughout makes even the buggy code look correct: the clear
-# block takes the same lock, so a still-held lock blocks the deletion for the
-# wrong reason and the test passes vacuously (verified — it did).
-#
-# The real login race is: the scheduled sync holds the lock while the hook tries
-# to sync (hook skips), then the scheduled sync FINISHES — writing the marker
-# and releasing — and only then does the hook reach its clear, which now
-# succeeds. Releasing after ~2s lands inside that window: past the 1s
-# sync-region timeout, inside the 5s clear timeout.
-( sleep 2; rm -rf "$SKIP_LOCK" ) &
-_skip_releaser=$!
+# Park at the lock-free marker read, AFTER the sync acquire has timed out.
+# Releasing on a failed mkdir would be too early: the hook could still acquire
+# on its next retry. The parked read is before the clear, so releasing here
+# also gives a regressed clear a real opportunity to delete the marker.
+SKIP_HAND="$SKIP_HOME/handoff"
+SKIP_BIN="$SKIP_HOME/bin"
+mkdir -p "$SKIP_HAND" "$SKIP_BIN"
+REAL_JQ="$(command -v jq)"
+cat > "$SKIP_BIN/jq" <<'SHIM'
+#!/bin/sh
+# Optional startup delay reproduces the old releaser window on a slow runner.
+if [ "$#" -eq 2 ] && [ "$1" = -r ] && [ "$2" = '.source // empty' ]; then
+  case "${SSYNC_TEST_SKIP_START_DELAY:-0}" in
+    0) ;; 3) sleep 3 ;; *) exit 94 ;;
+  esac
+fi
+if [ "$#" -eq 3 ] && [ "$1" = -r ] && [ "$3" = "$SKIP_MARKER" ]; then
+  case "$2" in
+    *'RESTART RECOMMENDED:'*)
+      : > "$SHIM_SKIP_HAND/parked"
+      tries=400
+      while [ ! -e "$SHIM_SKIP_HAND/go" ]; do
+        tries=$((tries - 1))
+        [ "$tries" -gt 0 ] || exit 95
+        sleep 0.05
+      done
+      ;;
+  esac
+fi
+exec "$SHIM_REAL_JQ" "$@"
+SHIM
+chmod +x "$SKIP_BIN/jq"
 
-skip_out=$(printf '{"source":"startup"}' \
-  | HOME="$SKIP_HOME" CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT=1 bash "$HOOK" 2>/dev/null || true)
-wait "$_skip_releaser" 2>/dev/null || true
+# Supervise the entire hook process group with a monotonic timeout. The EXIT
+# cleanup releases the shim, stops/reaps this supervisor on a failed premise,
+# and only then removes private directories.
+skip_hook=""
+skip_case_cleanup() {
+  local rc=$?
+  : > "$SKIP_HAND/go"
+  if [[ -n "$skip_hook" ]]; then
+    kill -TERM "$skip_hook" 2>/dev/null || true
+    wait "$skip_hook" 2>/dev/null || true
+  fi
+  ssync_cleanup
+  return "$rc"
+}
+trap skip_case_cleanup EXIT
+HOME="$SKIP_HOME" PATH="$SKIP_BIN:$PATH" SHIM_REAL_JQ="$REAL_JQ" \
+  SKIP_MARKER="$SKIP_HOME/.claude/sync-restart-recommended.json" \
+  SHIM_SKIP_HAND="$SKIP_HAND" CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT=1 \
+  python3 - "$HOOK" "$SKIP_HAND" <<'SUPERVISOR' &
+import os
+import signal
+import subprocess
+import sys
+
+proc = None
+
+def stop(signum, frame):
+    if proc is not None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGTERM, stop)
+with open(sys.argv[2] + '/out', 'wb') as out, open(sys.argv[2] + '/err', 'wb') as err:
+    proc = subprocess.Popen(['bash', sys.argv[1]], stdin=subprocess.PIPE,
+                            stdout=out, stderr=err, start_new_session=True)
+    try:
+        proc.communicate(b'{"source":"startup"}\n', timeout=45)
+    except subprocess.TimeoutExpired:
+        stop(signal.SIGTERM, None)
+    sys.exit(proc.returncode)
+SUPERVISOR
+skip_hook=$!
+wait_for "$SKIP_HAND/parked" \
+  || fail "(12 premise) hook never parked after the sync timeout"
+[ -d "$SKIP_LOCK" ] \
+  || fail "(12 premise) live-holder lock disappeared before marker read"
+rm -rf "$SKIP_LOCK"
+# Prove the lock is now acquirable; otherwise marker survival is vacuous.
+bash -c 'source "$1"; state_lock_acquire "$2" 1 || exit 6; state_lock_release' \
+  _ "$REPO_ROOT/.claude/scripts/state-lock.sh" "${SKIP_LOCK%.lock}" \
+  || fail "(12 premise) released lock is not available for a clear"
+: > "$SKIP_HAND/go"
+wait "$skip_hook" || fail "(12 premise) supervised hook failed or exceeded its bound"
+skip_hook=""
+trap ssync_cleanup EXIT
+skip_out="$(cat "$SKIP_HAND/out")"
 
 # Control: the run must actually have taken the skip path, or the assertion
 # below would pass for the wrong reason.
