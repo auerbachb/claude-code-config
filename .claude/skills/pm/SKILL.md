@@ -1446,15 +1446,33 @@ while sleep "$WAKE_SLEEP"; do
 done
 ```
 
-Record the task ID immediately — an unrecorded Monitor cannot be stopped:
+Record the task ID immediately — an unrecorded Monitor cannot be stopped. The shared helper checks the completed park and the empty identity pair, then publishes both fields in one full-day compare-and-set (#1713):
+
+<!-- test-anchor: pm-day-2d6-wake-publish -->
 
 ```bash
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=$LIMIT_MONITOR_TASK_ID" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"$LIMIT_GENERATION\""
+# TaskStop is the harness tool; stop only the Monitor this invocation armed.
+WAKE_PUBLISH_SH=""
+for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh" ".claude/scripts/park-wake-publish.sh"; do
+  if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
+done
+PUBLISH_RC=4
+if [ -n "$WAKE_PUBLISH_SH" ]; then
+  PUBLISH_RC=0
+  "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause reactive \
+    --task-id "$LIMIT_MONITOR_TASK_ID" --generation "$LIMIT_GENERATION" \
+    --task-encoding json-or-string --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+fi
+if [ "$PUBLISH_RC" -eq 0 ]; then
+  echo "WAKE_PUBLISH=armed"
+elif TaskStop "$LIMIT_MONITOR_TASK_ID"; then
+  if [ "$PUBLISH_RC" -eq 7 ]; then echo "WAKE_PUBLISH=lost"; else echo "WAKE_PUBLISH=failed"; fi
+else
+  echo "WAKE_PUBLISH=stranded"
+fi
 ```
 
-If the task ID publish fails: `TaskStop` the Monitor using the ID you hold in hand, then clear `parked_until` so the loop does not appear parked when no wake is armed. Name the unrecorded task ID in the message.
+Only `armed` permits the automatic-resume promise below. `lost` means the park was retired/replaced or another wake won; ours is stopped, so say nothing. On `failed`, ours was stopped but registration is unverified: `parked (usage window) — could not register a wake; resume with /pause-resume.` On `stranded`, surface the ID: `parked (usage window) — could not stop the unrecorded wake {LIMIT_MONITOR_TASK_ID}; stop it manually.` Do not unconditionally clear park metadata after a failed publication; it may belong to a newer writer.
 
 **Weekly/long horizon — no auto-wake.** Do not invoke the user-only `/end`
 command. Instead, execute `/end/SKILL.md` Steps 0–6 inline as the internal
@@ -1468,7 +1486,7 @@ invoked the command or estimating quota. Write `parked_until` and
 > Stopped — weekly cap reached; continuing would incur overage charges. Window reopens at {PARKED_UNTIL}. Resume manually with `/end-resume --resume-refill` when ready.
 
 **Heartbeat lines (always the last output from this section):**
-- Rolling window: `parked until {PARKED_UNTIL} — usage window; resuming automatically`
+- Rolling window, only after `WAKE_PUBLISH=armed`: `parked until {PARKED_UNTIL} — usage window; resuming automatically`. Use the failure/stranded diagnostic above otherwise; a lost publication stays silent.
 - Weekly: `stopped — weekly cap reached; awaiting manual resume`
 
 **On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_cause`, `limit_probe_fires_remaining`, `park_claim_token`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires. Clearing the cause and the probe bound together with the rest is what stops a later recovery from re-arming a probe wake for a park that has already ended; clearing the token with them is what returns the slot to a state a fresh claim can win, and leaving a spent one behind would make the next claim's token indistinguishable from a stale predecessor's.
@@ -1781,39 +1799,36 @@ Both branches bind the same two variables — `WAKE_GENERATION` (minted here) an
   done
   ```
 
-Either way, publish the identity pair **immediately** into the same fields `/pause` Step 2 item 4 and 2D.6 already read — as **one** compare-and-set from null carrying the generation with it (#1445), not a plain write and not a CAS followed by a second write, so publication is itself the last mutual-exclusion point rather than a read-before-arm check that a kill can land inside:
+Either way, publish the identity pair **immediately** into the same fields `/pause` Step 2 item 4 and 2D.6 already read — through the shared publication helper (#1713). It requires the expected completed park and an empty identity pair, then self-compares the whole captured day while composing both identity writes in the same lock hold (#1445). A retired record cannot pass merely because its wake slot is null; competing publishers cannot overwrite each other. The remaining durable-identity limitation is tracked by #1715:
 
 <!-- test-anchor: pm-day-2d7-wake-publish -->
 
 ```bash
-# `TaskStop` below is the harness tool, not a binary — the one non-shell call here.
-# The generation is half the identity pair, so it must land with the id or not at
-# all: a task id published against a null generation makes every one of the 12
-# fires read that null, exit `stale`, spend no fire, and say nothing — a board that
-# never resumes while Step 6 has already promised probing. Composing the two into
-# one lock hold is what makes that pair impossible to half-write.
-PUBLISH_RC=0
-"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"$WAKE_TASK_ID\"" \
-  --expect null \
-  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"$WAKE_GENERATION\"" \
-  >/dev/null 2>&1 || PUBLISH_RC=$?
+# TaskStop is the harness tool; stop only the Monitor this invocation armed.
+WAKE_PUBLISH_SH=""
+for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh" ".claude/scripts/park-wake-publish.sh"; do
+  if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
+done
+PUBLISH_RC=4
+if [ -n "$WAKE_PUBLISH_SH" ]; then
+  PUBLISH_RC=0
+  "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause preemptive \
+    --task-id "$WAKE_TASK_ID" --generation "$WAKE_GENERATION" \
+    --task-encoding string --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+fi
 if [ "$PUBLISH_RC" -eq 0 ]; then
   echo "WAKE_PUBLISH=armed"
+elif TaskStop "$WAKE_TASK_ID"; then
+  if [ "$PUBLISH_RC" -eq 7 ]; then echo "WAKE_PUBLISH=lost"; else echo "WAKE_PUBLISH=failed"; fi
 else
-  # Nothing was published on any non-zero — the compare gates the pair — so there
-  # is no slot of ours to take back, only a Monitor to stop.
-  if TaskStop "$WAKE_TASK_ID"; then
-    if [ "$PUBLISH_RC" -eq 7 ]; then echo "WAKE_PUBLISH=lost"; else echo "WAKE_PUBLISH=failed"; fi
-  else
-    echo "WAKE_PUBLISH=stranded"
-  fi
+  echo "WAKE_PUBLISH=stranded"
 fi
 ```
 
 The three non-`armed` outcomes are not interchangeable, and only one of them is silent:
 
-- **`lost`** (rc 7) — another path published its wake first and ours is stopped. Exactly one wake is armed, which is the contract; say nothing.
-- **`failed`** — nobody owns the slot and ours is stopped, so the board is parked with **no** wake. Surface it: `parked pre-emptively (usage horizon) — could not register a wake; resume with /pause-resume.`
+- **`lost`** (rc 7) — the park was retired/replaced or another path published its wake first; ours is stopped and nothing was written. Say nothing.
+- **`failed`** — publication failed or could not be verified and ours is stopped. A metadata-only compare loss while the same park still lacks a wake is failure too, so it cannot leave an unarmed park silently. Surface it: `parked pre-emptively (usage horizon) — could not register a wake; resume with /pause-resume.`
 - **`stranded`** — the stop itself failed, so a Monitor is live that nothing can name. Surface the ID: `parked pre-emptively (usage horizon) — could not stop the unrecorded wake {WAKE_TASK_ID}; stop it manually.`
 
 That is the whole teardown story: the probe wake is not a new monitor class, it is the existing one with a different sleep, so manual `/pause` stops it, `/pause-resume` disarms it, and a stale fire is rejected by the same generation check.

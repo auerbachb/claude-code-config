@@ -172,6 +172,14 @@ seed_day_state() {
       limit_resume_generation: null, consecutive_limit_hits: 0}}}}' > "$STATE_FILE"
 }
 day_get() { jq -r --arg k "$REPO_KEY" ".repos[\$k].day.$1" "$STATE_FILE"; }
+seed_completed_park() {
+  seed_day_state
+  jq --arg k "$REPO_KEY" --arg cause "${1:-preemptive}" '
+    .repos[$k].day.parked_until="2026-11-08T17:00:00Z" |
+    .repos[$k].day.limit_cause=$cause |
+    .repos[$k].day.limit_kind="probe"' "$STATE_FILE" > "$STATE_FILE.seed" && mv "$STATE_FILE.seed" "$STATE_FILE"
+}
+
 
 # ---------------------------------------------------------------------------
 echo "== D2 tick-branch matrix (AC 1) =="
@@ -907,6 +915,8 @@ SET_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --get) op=get; get_arg="$2"; shift 2 ;;
+    --get-json) op=getjson; get_arg="$2"; shift 2 ;;
+    --repo-key) op=repokey; shift ;;
     --set) SET_ARGS+=("$2"); [ "$op" = cas ] || op=set; shift 2 ;;
     --cas) op=cas; cas_arg="$2"; shift 2 ;;
     --expect) expect="$2"; shift 2 ;;
@@ -924,6 +934,8 @@ apply_sets() {   # every --set in one pass, like the real single pipeline
 }
 case "$op" in
   get) jq -r "$get_arg" "$STATE_FILE" ;;
+  getjson) jq -c "$get_arg" "$STATE_FILE" ;;
+  repokey) printf '%s\n' "$REPO_KEY" ;;
   set) apply_sets ;;
   cas)
     cas_path="${cas_arg%%=*}"; cas_value="${cas_arg#*=}"
@@ -1091,14 +1103,14 @@ run_wake() {   # run_wake <task-id> <generation>
 }
 
 make_taskstop_stub 0
-seed_day_state
+seed_completed_park
 check_eq "wake: publishes on a free slot" "WAKE_PUBLISH=armed" "$(run_wake probe-task probe-gen-1)"
 check_eq "wake: task id written"   "probe-task"  "$(day_get limit_resume_task_id)"
 check_eq "wake: generation written with it" "probe-gen-1" "$(day_get limit_resume_generation)"
 
 # A wake already armed by the reactive path: our publish loses, our Monitor is
 # stopped, and — the atomicity half — our generation never lands beside their id.
-seed_day_state
+seed_completed_park reactive
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" \
   --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"limit-gen-1\"" >/dev/null
 check_eq "wake: loses to an armed wake" "WAKE_PUBLISH=lost" "$(run_wake probe-task probe-gen-2)"
@@ -1108,7 +1120,7 @@ check_eq "wake: the loser's generation was NOT written" "limit-gen-1" \
 
 # A write failure is not a lost race: the board is parked with no wake at all,
 # which the block must surface rather than report as armed.
-seed_day_state
+seed_completed_park
 check_eq "wake: a failed publish reports failed, not lost" "WAKE_PUBLISH=failed" \
   "$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
      WAKE_TASK_ID=probe-task WAKE_GENERATION=probe-gen-3 FAULT_ON=cas FAULT_RC=6 \
@@ -1117,7 +1129,7 @@ check_eq "wake: a failed publish wrote no generation" "null" "$(day_get limit_re
 
 # ...and when the orphaned Monitor cannot be stopped, the ID has to be surfaced.
 make_taskstop_stub 1
-seed_day_state
+seed_completed_park
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" >/dev/null
 check_eq "wake: an unstoppable orphan reports stranded" "WAKE_PUBLISH=stranded" \
   "$(run_wake probe-task probe-gen-4)"
@@ -1335,7 +1347,7 @@ if [[ -n "$CTRL_DIR" ]]; then
     "PARK_CLAIM=error rc=2" "$CTRL_2D6_OUT"
   check_eq "control: and it claimed no reactive cause" "null" "$(day_get limit_cause)"
 
-  seed_day_state
+  seed_completed_park
   CTRL_WAKE_OUT=$(SESSION_STATE_SH="$CTRL_SS" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
     WAKE_TASK_ID=probe-task WAKE_GENERATION=probe-gen-ctl \
     bash -c "$BLOCK_WAKE" 2>/dev/null | tail -1)
