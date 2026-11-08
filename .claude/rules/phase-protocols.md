@@ -70,7 +70,7 @@ A missing exit report is a crash **only** when the runtime's own structured clas
 
 1. **Parse the exit report.** None: classify first (§Limit-parked), else silent failure — check GitHub API.
 2. **Branch on OUTCOME:**
-   - `merged` → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md), then clean up.
+   - `merged` → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md); pending → preserve evidence and recover.
    - `blocked` → report blocker details to user. Do NOT merge.
 After verified merge, the parent runs the [finished-only sweep](../reference/workspace-sweep-cadence.md) from its checkout:
 
@@ -83,7 +83,7 @@ if [[ -n "$SWEEP_SH" ]]; then
 fi
 ```
 
-3. **Update `session-state.json`.** Mark Phase C complete; `session-state.sh --remove-agent <id>`.
+3. **State:** Phase C completes only after verified merge and verified/justified-retained completion. Every outcome removes its returned agent: `session-state.sh --remove-agent <id>`.
 4. **Handoff cleanup.** Delete scoped handoff (`handoff-state.sh --owner-repo owner/repo --delete N`) only after verified merge and [completion reconciliation](../reference/issue-completion.md). Keep pending recovery evidence. Emit one line — `merged PR #N` — after a clean merge.
 
 ## `/wrap` → `/fixpr` Delegation Contract

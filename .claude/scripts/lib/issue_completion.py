@@ -122,6 +122,56 @@ def issue(repo, number):
     return node
 
 
+def reopened_after_merge(node, merged_at):
+    events = node.get('timelineItems', {}).get('nodes')
+    if not isinstance(events, list):
+        raise CompletionError('reopen_history_unverified', 3)
+    try:
+        merged = datetime.datetime.fromisoformat(merged_at.replace('Z', '+00:00'))
+        return any(datetime.datetime.fromisoformat(event['createdAt'].replace('Z', '+00:00')) >= merged for event in events)
+    except (ValueError, TypeError, KeyError):
+        raise CompletionError('reopen_history_unverified', 3)
+
+
+def check_race_hold(args, report):
+    """Every disposition honors the PR-scoped guard, including read-only audits."""
+    try:
+        fd = os.open(args.race_hold, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
+            raise CompletionError('unsafe_completion_hold', 6)
+        try:
+            raw = stream.read(65537)
+            if len(raw) > 65536:
+                raise CompletionError('unsafe_completion_hold', 6)
+            hold = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise CompletionError('unsafe_completion_hold', 6)
+    expected = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'], head_sha=report['head_sha'])
+    if (not isinstance(hold, dict) or set(hold) != set(expected) | {'issue', 'phase'}
+            or type(hold.get('pr')) is not int or any(hold.get(k) != v for k, v in expected.items())
+            or type(hold.get('issue')) is not int or hold['issue'] <= 0
+            or hold.get('phase') not in ('closure_inflight', 'reopen_detected')):
+        raise CompletionError('unsafe_completion_hold', 6)
+    report['reopen_race_hold'] = hold
+    if hold['phase'] == 'reopen_detected':
+        raise CompletionError('concurrent_reopen_detected', 1)
+    current = issue(args.repo, hold['issue'])
+    if reopened_after_merge(current, report['merged_at']):
+        hold['phase'] = 'reopen_detected'
+        save(args.race_hold, hold)
+        raise CompletionError('concurrent_reopen_detected', 1)
+    if current['state'] == 'CLOSED':
+        args.race_hold.unlink()
+        report.pop('reopen_race_hold', None)
+    elif args.complete_issue != hold['issue']:
+        raise CompletionError('closure_visibility_pending', 1)
+
+
 def assess(args, report):
     data = graphql(QUERY, args.repo, args.pr)
     repository = data['repository']
@@ -133,6 +183,7 @@ def assess(args, report):
     report.update(merge_sha=pr['mergeCommit']['oid'], head_sha=pr['headRefOid'], merged_at=pr['mergedAt'])
     if pr.get('baseRefName') != (repository.get('defaultBranchRef') or {}).get('name'):
         raise CompletionError('non_default_merge_target', 3)
+    check_race_hold(args, report)
     links = pr['closingIssuesReferences']
     if links['pageInfo']['hasNextPage']:
         raise CompletionError('closing_reference_limit', 3)
@@ -190,14 +241,7 @@ def assess(args, report):
         target = dict(owner_repo=args.repo, issue=args.complete_issue, disposition='scope_verification_required')
         candidates.append(target)
     current = issue(args.repo, args.complete_issue)
-    events = current.get('timelineItems', {}).get('nodes')
-    if not isinstance(events, list):
-        raise CompletionError('reopen_history_unverified', 3)
-    try:
-        merged_at = datetime.datetime.fromisoformat(pr['mergedAt'].replace('Z', '+00:00'))
-        reopened = any(datetime.datetime.fromisoformat(event['createdAt'].replace('Z', '+00:00')) >= merged_at for event in events)
-    except (ValueError, TypeError, KeyError):
-        raise CompletionError('reopen_history_unverified', 3)
+    reopened = reopened_after_merge(current, pr['mergedAt'])
     if current['state'] == 'OPEN' and reopened:
         raise CompletionError('issue_reopened_after_merge', 3)
     target['state'] = current['state']
@@ -218,14 +262,23 @@ def assess(args, report):
         return 0 if report['outcome'] == 'verified' else 1
     if preflight.get('updatedAt') != current.get('updatedAt') or preflight.get('timelineItems') != current.get('timelineItems'):
         raise CompletionError('issue_changed_before_close', 3)
+    # Arm before the external write: process/disk failure after the write must
+    # not erase the need to recheck reopen history on any later assessment.
+    hold = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'],
+                head_sha=report['head_sha'], issue=args.complete_issue, phase='closure_inflight')
+    save(args.race_hold, hold)
     gh(['api', '--method', 'PATCH', 'repos/' + args.repo + '/issues/' + str(args.complete_issue),
         '-f', 'state=closed', '-f', 'state_reason=completed'])
     after = issue(args.repo, args.complete_issue)
     target['state'] = after['state']
     if after.get('timelineItems') != preflight.get('timelineItems'):
+        hold['phase'] = 'reopen_detected'
+        report['reopen_race_hold'] = hold
+        save(args.race_hold, hold)
         raise CompletionError('concurrent_reopen_detected', 1)
     if after['state'] != 'CLOSED':
         raise CompletionError('closure_visibility_pending', 1)
+    args.race_hold.unlink()
     target['disposition'] = 'closed'
     report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
     return 0 if report['outcome'] == 'verified' else 1
@@ -249,6 +302,7 @@ def main():
     directory = Path.home().resolve() / '.claude' / 'issue-completion' / 'github.com' / args.repo
     suffix = '.issue-' + str(args.complete_issue) if args.complete_issue else '.assessment'
     args.receipt = directory / ('pr-' + str(args.pr) + suffix + '.json')
+    args.race_hold = directory / ('pr-' + str(args.pr) + '.race-hold.json')
     report = dict(schema_version='1.0', owner_host='github.com', owner_repo=args.repo, pr=args.pr, outcome='pending',
                   recorded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(), issues=[],
                   scope_verified=bool(args.scope_verified), association_verified=bool(args.association_verified),
@@ -256,7 +310,8 @@ def main():
     code = 4
     try:
         private_directory(directory)
-        with locked(args.receipt):
+        # Serialize assessment/retention/close modes before their receipt locks.
+        with locked(directory / ('pr-' + str(args.pr))), locked(args.receipt):
             try:
                 code = assess(args, report)
             except CompletionError as exc:

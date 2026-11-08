@@ -86,6 +86,17 @@ Other OPEN/foreign linked issues remain pending even when the selected issue
 closes successfully. API failures, delayed visibility and interrupted requests
 retain a retryable receipt and never become verified completion.
 
+A PR-scoped private race guard is armed before each close request. All assessment,
+retention and close modes share the PR lock and honor that guard. After an
+interruption, a typed CLOSED read with no post-merge reopen can recover an
+in-flight write without another close. A detected reopen becomes a sticky
+`reopen_detected` hold: retries and ordinary assessments remain pending even if
+the close request overwrote the owner's OPEN state. A malformed/unsafe guard is
+also pending. Do not delete or rewrite that evidence to clear Phase C; preserve
+it for an explicit owner decision or a separately verified subsequent fix.
+These guards do not make GitHub's external issue-state update atomic. The owner
+policy choice on automatic corrective closes remains unresolved for this PR.
+
 ## Deliberately retained issue scope
 
 A partial delivery, owner-held decision or intentionally reopened issue can

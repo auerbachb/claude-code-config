@@ -191,13 +191,34 @@ class Completion(unittest.TestCase):
     def test_postwrite_reopen_race_never_reports_verified_completion(self):
         for mode in ['reopen-during-close','reopen-after-close']:
             with self.subTest(mode=mode):
+                # A new private home isolates the sticky guard between modes.
+                self.home=self.root/('home-'+mode);self.home.mkdir(mode=0o700);self.env['HOME']=str(self.home)
                 self.state.update(state='OPEN',writes=0,reads=0,reopen_seen=False);self.write_state();self.mode(mode)
                 rc,x=self.complete();self.assertEqual(rc,1)
                 self.assertEqual(x['error_class'],'concurrent_reopen_detected');self.assertEqual(x['outcome'],'pending')
                 self.assertEqual(self.writes(),1)
-                if mode=='reopen-after-close':
-                    self.assertEqual(json.loads((self.root/'state').read_text())['state'],'OPEN')
-                    rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),1)
+                for flags in [(),('--complete-issue','7','--scope-verified','--expected-merge',MERGE),
+                              ('--retain-issue','7=owner_decision','--expected-merge',MERGE)]:
+                    rc,x=self.run_helper(*flags)
+                    self.assertEqual(rc,1);self.assertEqual(x['error_class'],'concurrent_reopen_detected')
+                    self.assertEqual(x['outcome'],'pending');self.assertEqual(self.writes(),1)
+                self.assertTrue(next(self.home.rglob('pr-20.race-hold.json')).is_file())
+
+    def test_unsafe_or_malformed_race_hold_cannot_clear_completion(self):
+        rc,x=self.complete();self.assertEqual(rc,0)
+        path=next(self.home.rglob('pr-20.issue-7.json')).parent/'pr-20.race-hold.json'
+        for content in ['{}','{', '"not an object"']:
+            path.write_text(content);path.chmod(0o600)
+            rc,x=self.run_helper();self.assertEqual(rc,6);self.assertEqual(x['outcome'],'pending')
+        path.unlink();victim=self.root/'hold-victim';victim.write_text('preserve');path.symlink_to(victim)
+        rc,x=self.run_helper();self.assertEqual(rc,6);self.assertEqual(victim.read_text(),'preserve')
+
+    def test_inflight_hold_survives_failed_write_and_recovers_without_duplicate(self):
+        self.mode('write-error');rc,x=self.complete();self.assertEqual(rc,4)
+        hold=next(self.home.rglob('pr-20.race-hold.json'))
+        self.assertEqual(json.loads(hold.read_text())['phase'],'closure_inflight')
+        self.mode('normal');rc,x=self.run_helper();self.assertEqual(rc,1);self.assertEqual(self.writes(),0)
+        rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1);self.assertFalse(hold.exists())
 
     def test_intentionally_reopened_issue_is_not_reclosed(self):
         self.mode('reopened');rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
@@ -282,6 +303,14 @@ exit "$result"
         handoff.unlink()
         p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
         self.assertNotEqual(p.returncode,0);self.assertFalse(handoff.exists())
+
+    def test_parent_phase_c_completion_is_conditional_and_agent_cleanup_unconditional(self):
+        rules=(HELPER.parents[2]/'rules/phase-protocols.md').read_text()
+        section=rules.split('## Phase C Completion Protocol',1)[1].split('## `/wrap`',1)[0]
+        step=section.split('3. **State:**',1)[1].split('4.',1)[0]
+        self.assertIn('only after verified merge and verified/justified-retained completion',step)
+        self.assertIn('Every outcome removes its returned agent',step)
+        self.assertIn('pending → preserve evidence and recover',section)
 
     def test_unsafe_receipt_lock_is_refused_without_github_calls(self):
         directory=self.home/'.claude/issue-completion/github.com/owner/consumer'
