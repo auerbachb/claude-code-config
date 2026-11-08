@@ -298,4 +298,108 @@ done
 check "the diff block's only file is the path's own temp file" \
   "$(printf '%s\n' "$DIFF_BLOCK" | grep -c '> "')" "1"
 
+# Run the real follow-up fence and shared issue-file helper against private
+# store/GitHub stubs. The two entry paths share the same GitHub boundary.
+if [ -n "$JQ" ]; then
+  FU_DIR="$TMP/follow-up"
+  mkdir -p "$FU_DIR/tmp" "$FU_DIR/home" "$FU_DIR/stub"
+  cat > "$FU_DIR/hq" <<'FU_HQ'
+#!/usr/bin/env bash
+case "$1" in
+  get) printf '%s\n' '{"id":"R-2","repo":"acme/widgets","kind":"review","status":"flagged"}' ;;
+  comment)
+    if [[ "${FU_MODE:-}" = mark-failed && "$3" = 'follow-up: filing' ]]; then exit 7; fi
+    if [[ "${FU_MODE:-}" = record-failed && "$3" != 'follow-up: filing' ]]; then exit 7; fi
+    printf '%s\n' "$3" >> "$FU_EVENTS"
+    printf 'R-2\n'
+    ;;
+  *) exit 99 ;;
+esac
+FU_HQ
+  chmod +x "$FU_DIR/hq"
+  FU_BODY='## Background
+
+Follow up https://github.com/acme/widgets/pull/103.
+
+## Problem
+
+Check contrast.
+
+## Proposed solution
+
+Measure contrast.
+
+## Acceptance Criteria
+
+4.1 [ ] Contrast meets the requirement.
+
+## Test Plan
+
+5.1 [ ] Verify the colors.
+
+## Notes / Open questions
+
+None.
+
+## Estimate
+
+Light.
+
+_Captured via /issue-maker._'
+  hq_t_skill_block "$SKILL_DIR/reviews.md" desk-follow-up > "$FU_DIR/template.sh"
+  fu_literal() { FROM="$2" TO="$3" perl -pe 's/\Q$ENV{FROM}\E/$ENV{TO}/g' "$1"; }
+  for FU_SHELL in $SHELLS; do
+    for FU_MODE in success invalid-body long-title create-failed mark-failed record-failed; do
+      body="$FU_BODY"; title='Check widget contrast'
+      [ "$FU_MODE" != invalid-body ] || body='## Background'
+      [ "$FU_MODE" != long-title ] || title='This title deliberately exceeds the seventy character limit for a follow-up issue'
+      fu_literal "$FU_DIR/template.sh" '<the title>' "$title" \
+        | fu_literal /dev/stdin '<the body>' "$body" > "$FU_DIR/run.sh"
+      : > "$FU_DIR/events"
+      : > "$FU_DIR/stub/calls.log"
+      printf 'https://github.com/acme/widgets/issues/999\n' > "$FU_DIR/stub/issue-create.txt"
+      rm -f "$FU_DIR/stub/issue-create.rc" "$FU_DIR/stub/issue-create.err"
+      if [ "$FU_MODE" = create-failed ]; then
+        printf '1\n' > "$FU_DIR/stub/issue-create.rc"
+        printf 'HTTP 502\n' > "$FU_DIR/stub/issue-create.err"
+      fi
+      OUT=$(cd "$FU_DIR" && env HOME="$FU_DIR/home" TMPDIR="$FU_DIR/tmp" \
+        DESK="$HQ_T_DESK_DIR" HQ="$FU_DIR/hq" FU_MODE="$FU_MODE" FU_EVENTS="$FU_DIR/events" \
+        HUMAN_QUEUE_GH="$HQ_T_TESTS_DIR/lib/gh-stub.sh" ISSUE_FILE_GH="$HQ_T_TESTS_DIR/lib/gh-stub.sh" \
+        HQ_GH_STUB_DIR="$FU_DIR/stub" "$FU_SHELL" "$FU_DIR/run.sh" 2>&1)
+      EVENTS=$(cat "$FU_DIR/events"); CALLS=$(cat "$FU_DIR/stub/calls.log")
+      case "$FU_MODE" in
+        invalid-body|long-title)
+          check_contains "[$FU_SHELL] $FU_MODE is refused before marking" "$OUT" 'validate-exit=3'
+          check "[$FU_SHELL] $FU_MODE has no marker" "$EVENTS" ''
+          check_absent "[$FU_SHELL] $FU_MODE never creates" "$CALLS" 'issue create'
+          ;;
+        mark-failed)
+          check_contains "[$FU_SHELL] failed marker is reported" "$OUT" 'mark-exit=7'
+          check "[$FU_SHELL] failed marker creates no event" "$EVENTS" ''
+          check_absent "[$FU_SHELL] failed marker never creates" "$CALLS" 'issue create'
+          ;;
+        create-failed)
+          check_contains "[$FU_SHELL] uncertain create is exit4" "$OUT" 'create-exit=4 url='
+          check "[$FU_SHELL] uncertain create keeps the marker" "$EVENTS" 'follow-up: filing'
+          ;;
+        record-failed)
+          check_contains "[$FU_SHELL] successful create uses JSON URL" "$OUT" 'create-exit=0 url=https://github.com/acme/widgets/issues/999'
+          check_contains "[$FU_SHELL] missing recording is reported" "$OUT" 'comment-exit=7'
+          check "[$FU_SHELL] missing recording keeps the marker" "$EVENTS" 'follow-up: filing'
+          ;;
+        success)
+          check_contains "[$FU_SHELL] success uses shared JSON URL" "$OUT" 'create-exit=0 url=https://github.com/acme/widgets/issues/999'
+          check "[$FU_SHELL] success marks then records" "$EVENTS" 'follow-up: filing
+follow-up: https://github.com/acme/widgets/issues/999'
+          check_contains "[$FU_SHELL] success targets the item repo" "$CALLS" 'issue create --repo acme/widgets '
+          check_contains "[$FU_SHELL] success validates the capture footer" "$(cat "$FU_DIR/stub/issue-create.body")" '_Captured via /issue-maker._'
+          ;;
+      esac
+      check "[$FU_SHELL] $FU_MODE leaves no temporary files" "$(ls -A "$FU_DIR/tmp")" ''
+    done
+  done
+  check_absent 'follow-up has no direct GitHub issue create' "$REVIEWS" 'gh issue create'
+fi
+
 hq_t_finish "reviews-view-offline.test.sh"

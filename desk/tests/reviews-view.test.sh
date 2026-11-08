@@ -86,7 +86,7 @@ STUB_DIR="$TMP/stub"
 WORK="$TMP/work"
 mkdir -p "$STUB_DIR" "$WORK"
 cp "$HQ_T_TESTS_DIR"/fixtures/github/* "$STUB_DIR"/
-export HUMAN_QUEUE_GH="$TESTS_DIR/lib/gh-stub.sh" HQ_GH_STUB_DIR="$STUB_DIR"
+export HUMAN_QUEUE_GH="$TESTS_DIR/lib/gh-stub.sh" ISSUE_FILE_GH="$TESTS_DIR/lib/gh-stub.sh" HQ_GH_STUB_DIR="$STUB_DIR"
 
 admin_sql() { hq_psql -At -c "$1"; }
 cleanup() {
@@ -377,9 +377,38 @@ R-5 (https://github.com/acme/widgets/pull/103) added widget colors.
 
 check the colors
 
+## Proposed solution
+
+Check contrast.
+
+## Acceptance Criteria
+
+4.1 [ ] Colors meet the contrast requirement.
+
+## Test Plan
+
+5.1 [ ] Check the rendered colors.
+
+## Notes / Open questions
+
+None.
+
+## Estimate
+
+Light.
+
 _Captured via /issue-maker._'
 literal "$TMP/block-desk-follow-up.sh" '<the title>' 'Widget colors need a contrast check' \
   | literal /dev/stdin '<the body>' "$BODY" | literal /dev/stdin 'R-2' 'R-5' >"$TMP/fu.sh"
+# Shared validation precedes the marker: omit the required final footer.
+literal "$TMP/block-desk-follow-up.sh" '<the title>' 'Widget colors need a contrast check' \
+  | literal /dev/stdin '<the body>' '## Background' | literal /dev/stdin 'R-2' 'R-5' >"$TMP/fu-invalid.sh"
+: >"$STUB_DIR/calls.log"
+run_block "$TMP/fu-invalid.sh"
+check_contains "4.4 invalid draft exits 3 before marking" "$OUT" "validate-exit=3"
+check_absent "4.4 invalid draft never creates an issue" "$(gh_calls)" "issue create"
+check "4.4 invalid draft leaves no filing marker" \
+  "$(sql_in "SELECT count(*) FROM events WHERE item_id = 'R-5' AND kind = 'commented' AND note = 'follow-up: filing'")" "0"
 # A filing GitHub answers without an issue URL: R-5 stays marked as filing, and
 # the check stops the next `follow up` instead of filing a second issue.
 : >"$STUB_DIR/issue-create.txt"
@@ -387,8 +416,8 @@ printf '1\n' >"$STUB_DIR/issue-create.rc"
 printf 'HTTP 502: Bad Gateway\n' >"$STUB_DIR/issue-create.err"
 : >"$STUB_DIR/calls.log"
 run_block "$TMP/fu.sh"
-check "4.4 a failed filing records no URL" "$OUT" "HTTP 502: Bad Gateway
-create-exit=1 url="
+check_contains "4.4 a failed filing names the helper error" "$OUT" "issue-file.sh: gh issue create failed (exit 1): HTTP 502: Bad Gateway"
+check_contains "4.4 a failed filing records no URL" "$OUT" "create-exit=4 url="
 check "4.4 ... but R-5 is marked as filing" \
   "$(sql_in "SELECT string_agg(note, ',' ORDER BY id) FROM events WHERE item_id = 'R-5' AND kind = 'commented'")" \
   "follow-up: filing"
@@ -403,7 +432,7 @@ run_block "$TMP/fu.sh"
 check "4.4 the follow-up is filed and recorded" "$OUT" "create-exit=0 url=https://github.com/acme/widgets/issues/999
 R-5
 comment-exit=0"
-check_contains "4.4 filed in the item's own repo" "$(gh_calls)" "issue create --repo acme/widgets --title Widget colors need a contrast check --body-file "
+check_contains "4.4 filed in the item's own repo" "$(gh_calls)" "issue create --repo acme/widgets --title=Widget colors need a contrast check --body-file="
 check_contains "4.4 the body carries the capture footer" "$(cat "$STUB_DIR/issue-create.body")" "_Captured via /issue-maker._"
 check "4.4 the filing marks come first, the URL last" \
   "$(sql_in "SELECT string_agg(note, ',' ORDER BY id) FROM events WHERE item_id = 'R-5' AND kind = 'commented'")" \

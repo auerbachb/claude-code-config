@@ -236,7 +236,7 @@ fi
 
 ### 2. Draft the issue
 
-From the item (its title, `link`, and `repo`) and the flag's `note`, in `/issue-maker`'s seven-section body: `## Background` (what landed, with its link), `## Problem` (the note, in the operator's words first), `## Proposed solution`, `## Acceptance Criteria` (numbered `4.1 [ ]` items), `## Test Plan` (`5.1 [ ]`), `## Notes / Open questions`, and `## Related Issues` (the source PR or issue), ending with the line `_Captured via /issue-maker._`, so the next sync brings it back as a Review to check (`desk/DESIGN.md` 2.7). The title is at most 70 characters and says what to fix, not that something was flagged. Say only what the note and the item support.
+From the item (its title, `link`, and `repo`) and the flag's `note`, in `/issue-maker`'s seven-section body: `## Background` (what landed, with its link), `## Problem` (the note, in the operator's words first), `## Proposed solution`, `## Acceptance Criteria` (numbered `4.1 [ ]` items), `## Test Plan` (`5.1 [ ]`), `## Notes / Open questions`, and `## Estimate` (the tier and estimated duration). Keep the source PR or issue link in Background or Notes. End with the line `_Captured via /issue-maker._`, so the next sync brings it back as a Review to check (`desk/DESIGN.md` 2.7). The title is at most 70 characters and says what to fix, not that something was flagged. Say only what the note and the item support.
 
 ### 3. File it and record it
 
@@ -246,9 +246,9 @@ From the item (its title, `link`, and `repo`) and the flag's `note`, in `/issue-
 ITEM=$("$HQ" get R-2 --json); rc=$?
 if [ "$rc" -ne 0 ]; then echo "exit=$rc"; else
   REPO=$(printf '%s\n' "$ITEM" | jq -r .repo)
-  GH=""
-  for c in "${HUMAN_QUEUE_GH:-}" /opt/homebrew/bin/gh "$(command -v gh 2>/dev/null)"; do
-    if [ -n "$c" ] && [ -x "$c" ]; then GH="$c"; break; fi
+  ISSUE_FILE=""
+  for c in "$DESK/../.claude/scripts/issue-file.sh" "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh}" "${HOME:+$HOME/.claude/scripts/issue-file.sh}"; do
+    if [ -x "$c" ]; then ISSUE_FILE="$c"; break; fi
   done
   TITLE_FILE=$(mktemp "${TMPDIR:-/tmp}/desk-issue-title.XXXXXX")
   BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/desk-issue-body.XXXXXX")
@@ -258,16 +258,23 @@ DESK_TITLE
   cat > "$BODY_FILE" <<'DESK_BODY'
 <the body>
 DESK_BODY
-  if [ -z "$GH" ]; then echo "exit=gh-missing"; else
-    "$HQ" comment R-2 "follow-up: filing" >/dev/null; rc=$?
-    if [ "$rc" -ne 0 ]; then echo "mark-exit=$rc"; else
-      CREATED=$("$GH" issue create --repo "$REPO" --title "$(cat "$TITLE_FILE")" --body-file "$BODY_FILE" </dev/null); rc=$?
-      URL=$(printf '%s\n' "$CREATED" | tail -n 1)
-      echo "create-exit=$rc url=$URL"
-      if [ "$rc" -eq 0 ]; then
-        case "$URL" in
-          https://github.com/*/issues/[0-9]*) "$HQ" comment R-2 "follow-up: $URL"; echo "comment-exit=$?" ;;
-        esac
+  if [ -z "$ISSUE_FILE" ]; then echo "exit=issue-file-missing"; else
+    # Validate before marking: a bad draft must not become an uncertain filing.
+    "$ISSUE_FILE" --repo "$REPO" --title "$(cat "$TITLE_FILE")" --body-file "$BODY_FILE" --dry-run --json >/dev/null; rc=$?
+    if [ "$rc" -ne 0 ]; then echo "validate-exit=$rc"; else
+      "$HQ" comment R-2 "follow-up: filing" >/dev/null; rc=$?
+      if [ "$rc" -ne 0 ]; then echo "mark-exit=$rc"; else
+        CREATED=$("$ISSUE_FILE" --repo "$REPO" --title "$(cat "$TITLE_FILE")" --body-file "$BODY_FILE" --json </dev/null); rc=$?
+        URL=""
+        if [ "$rc" -eq 0 ]; then
+          URL=$(printf '%s\n' "$CREATED" | jq -er '.url | select(type == "string" and length > 0)') || rc=4
+        fi
+        echo "create-exit=$rc url=$URL"
+        if [ "$rc" -eq 0 ]; then
+          case "$URL" in
+            https://github.com/*/issues/[0-9]*) "$HQ" comment R-2 "follow-up: $URL"; echo "comment-exit=$?" ;;
+          esac
+        fi
       fi
     fi
   fi
@@ -277,9 +284,10 @@ fi
 
 The issue body is the text most likely to hold a delimiter-shaped line: check it against `DESK_BODY`, and the title against `DESK_TITLE`, before running the block ("Rules for every verb").
 
-The `follow-up: filing` comment is written **before** the issue is created, so a filing that never gets its URL recorded (the block interrupted, or GitHub's answer holding no issue URL) leaves R-2 marked, and step 1 stops the next `follow up R-2` instead of filing a second issue.
+The draft goes through `issue-file.sh --dry-run` **before** any filing marker is written. A rejected title, missing/out-of-order section or missing final footer leaves the Review unmarked. The `follow-up: filing` comment is then written **before** the issue is created, so a filing that never gets its URL recorded (the block interrupted, or GitHub's answer holding no issue URL) leaves R-2 marked, and step 1 stops the next `follow up R-2` instead of filing a second issue.
 
 - `create-exit=0` with an issue URL and `comment-exit=0` → the URL as the closing line: `Filed: <url>`. The comment puts the link in R-2's history (`show R-2`), which is how step 1 knows it was filed.
 - Created but `comment-exit` is not 0 (or missing) → `Filed: <url> — but the store didn't record it on R-2; run: comment R-2 "follow-up: <url>"` with the exact command. Never say it is recorded when it is not.
 - `create-exit` not 0, or no issue URL → one line naming it. R-2 stays marked as filing, because GitHub may have created the issue anyway: say `R-2 is marked as filing; check <repo>'s issues before "follow up R-2 again".`
-- `exit=gh-missing`, or `mark-exit=<n>` (the CLI's own stderr line says why; `7` is the store-unreachable line above) → one line naming it; nothing was filed and nothing recorded.
+- `validate-exit=3` → the named draft check failed; fix it and try again. Nothing was filed and no filing marker was written. Other `validate-exit` values mean validation was unavailable; show the error and leave the Review unmarked.
+- `exit=issue-file-missing`, or `mark-exit=<n>` (the CLI's own stderr line says why; `7` is the store-unreachable line above) → one line naming it; nothing was filed and nothing recorded.
