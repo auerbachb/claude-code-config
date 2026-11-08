@@ -1647,6 +1647,39 @@ Every source attempt uses the bounded sibling outcomes ledger introduced in #188
 
 Supported CLI integration: [Claude Code Chrome documentation](https://code.claude.com/docs/en/chrome) and [CLI reference](https://code.claude.com/docs/en/cli-reference). The live Chrome extension may be unavailable in a given runtime; synthetic bridge tests verify support independently of live login availability.
 
+#### Browser failure diagnostics (Issue #1906)
+
+The outcomes ledger retains fixed classes, without raw CLI errors, tool payloads,
+page text, tab IDs, URLs, paths, credentials or email in diagnostic evidence.
+The separate private guard record contains only an allowlisted last failure and
+two booleans (owned tab proved; read authorized). It is observational and never
+changes tool permission or substitutes for fresh URL proof. Recovered failures
+clear on positive proof; missing/invalid records are unknown.
+
+| `error_class` | Proven boundary and recovery |
+|---|---|
+| `browser_launch_failed` | OS failure launching the bridge; check the installed CLI. |
+| `browser_connection_unavailable` | Native context query failed before ownership; check the existing extension connection. |
+| `browser_tool_denied` | The read-only guard denied a tool; inspect its allowed workflow. |
+| `browser_tab_create_failed` | The owned-tab creation response failed or did not prove creation. |
+| `browser_destination_unverified` | An owned navigation acknowledgment or applicable fresh destination check failed. |
+| `browser_observation_rejected` | The completed envelope/result file failed schema, privacy, identity or freshness validation. |
+| `browser_timeout` | The actual outer subprocess raised its 90-second timeout; ledger status is `timeout`. |
+| `browser_stage_unknown` | Available facts cannot establish a stage; retain the fallback without guessing a login cause. |
+
+Other failures retain `unreadable`; validated signed-out observations retain
+`logged_out` / `browser_logged_out`. A model's valid `unreadable` result alone
+does not prove a stage. Missing post events or CLI-side permission rejection may
+therefore remain unknown. Invalid/private-format result files can prove only
+observation rejection, not which browser operation failed. Unknown helper classes
+become `browser_stage_unknown` before logging or display. The ledger's existing
+sanitizer checks class syntax only; older `browser_unavailable` rows remain intact.
+
+No diagnostic reruns a probe. A future bounded live read requires an existing
+Chrome connection, independent expected account identity and explicit owner
+authorization. Never automate sign-in or repeat a failed probe without a
+concrete new reason. These diagnostics were validated with synthetic fixtures.
+
 ## Session attribution
 
 For account × project history, see [ai-account-ledger.md](ai-account-ledger.md). The dedicated ledger report is separate from live quota output.
