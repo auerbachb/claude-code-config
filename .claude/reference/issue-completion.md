@@ -32,6 +32,15 @@ unreadable/unknown state is pending, never an empty successful assessment.
 The receipt records fixed status and public identities; raw issue bodies,
 credentials, and private task content are not copied into it.
 
+A merged delivery with genuinely no associated issue is distinct from an unknown
+or malformed association. Verify its task/handoff, title, body and related work;
+only when none names a primary/partial issue, assess with --no-issue-verified and
+--expected-merge bound to the verified merge SHA. This read-only explicit
+disposition emits verified with no_associated_issues and allows final publication.
+It refuses any linked issue or a simultaneous explicit primary-issue assertion.
+An empty closing-reference list alone remains pending; it never proves there is
+no issue, and does not authorize silently skipping a missing trailer.
+
 ## Verify scope before closing
 
 For each OPEN same-repo candidate, independently read the issue's current body,

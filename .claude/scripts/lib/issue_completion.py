@@ -23,7 +23,7 @@ QUERY = '''query($owner:String!,$name:String!,$number:Int!){
  nodes{__typename number state closedAt url repository{nameWithOwner}}}}}}'''
 ISSUE_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
  repository(owner:$owner,name:$name){nameWithOwner issueOrPullRequest(number:$number){
- __typename ... on Issue{number state closedAt url repository{nameWithOwner}
+ __typename ... on Issue{number state closedAt updatedAt url repository{nameWithOwner}
  timelineItems(last:1,itemTypes:[REOPENED_EVENT]){nodes{... on ReopenedEvent{createdAt}}}}}}}'''
 
 
@@ -116,7 +116,8 @@ def issue(repo, number):
     if (data['nameWithOwner'].lower() != repo.lower() or not isinstance(node, dict)
             or node.get('__typename') != 'Issue' or node.get('number') != number
             or node.get('repository', {}).get('nameWithOwner', '').lower() != repo.lower()
-            or node.get('state') not in ('OPEN', 'CLOSED')):
+            or node.get('state') not in ('OPEN', 'CLOSED')
+            or not isinstance(node.get('updatedAt'), str) or not node['updatedAt']):
         raise CompletionError('issue_identity_unverified', 3)
     return node
 
@@ -145,6 +146,11 @@ def assess(args, report):
                                state=linked['state'], disposition='foreign_retained' if owner_repo.lower() != args.repo.lower()
                                else 'closed' if linked['state'] == 'CLOSED' else 'scope_verification_required'))
     report['issues'] = candidates
+    if args.no_issue_verified:
+        if candidates or args.complete_issue is not None or args.association_verified or args.expected_merge != report["merge_sha"]:
+            raise CompletionError("no_issue_scope_unverified", 3)
+        report.update(outcome="verified", no_associated_issues=True)
+        return 0
     if args.complete_issue is None:
         report['outcome'] = 'pending' if not candidates or any(x['disposition'] != 'closed' for x in candidates) else 'verified'
         return 1 if report['outcome'] == 'pending' else 0
@@ -180,10 +186,21 @@ def assess(args, report):
     target['disposition'] = 'closure_pending'
     report['outcome'] = 'pending'
     save(args.receipt, report)
+    # GitHub offers no conditional issue-state write. Recheck immediately
+    # before the request, and never call a changed preflight verified.
+    preflight = issue(args.repo, args.complete_issue)
+    if preflight['state'] == 'CLOSED':
+        target.update(state='CLOSED', disposition='closed')
+        report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+        return 0 if report['outcome'] == 'verified' else 1
+    if preflight.get('updatedAt') != current.get('updatedAt') or preflight.get('timelineItems') != current.get('timelineItems'):
+        raise CompletionError('issue_changed_before_close', 3)
     gh(['api', '--method', 'PATCH', 'repos/' + args.repo + '/issues/' + str(args.complete_issue),
         '-f', 'state=closed', '-f', 'state_reason=completed'])
     after = issue(args.repo, args.complete_issue)
     target['state'] = after['state']
+    if after.get('timelineItems') != preflight.get('timelineItems'):
+        raise CompletionError('concurrent_reopen_detected', 1)
     if after['state'] != 'CLOSED':
         raise CompletionError('closure_visibility_pending', 1)
     target['disposition'] = 'closed'
@@ -199,6 +216,7 @@ def main():
     parser.add_argument('--expected-merge')
     parser.add_argument('--scope-verified', action='store_true')
     parser.add_argument('--association-verified', action='store_true')
+    parser.add_argument('--no-issue-verified', action='store_true')
     args = parser.parse_args()
     if (not REPO.fullmatch(args.repo) or args.pr <= 0 or args.repo.split('/')[1] in ('.', '..')
             or (args.complete_issue is not None and args.complete_issue <= 0)

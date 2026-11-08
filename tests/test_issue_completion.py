@@ -15,11 +15,16 @@ from pathlib import Path
 root=Path(os.environ['COMPLETION_FIXTURE']); args=sys.argv[1:]
 with (root/'calls').open('a') as f:f.write(json.dumps(args)+'\n')
 mode=(root/'mode').read_text(); state=json.loads((root/'state').read_text())
+def save():
+ (root/'state').write_text(json.dumps(state))
 if mode=='api-error':sys.exit(1)
 if mode=='invalid-json':print('{');sys.exit(0)
 if '--method' in args:
  if mode=='write-error':sys.exit(1)
- state['state']='CLOSED';state['writes']+=1;(root/'state').write_text(json.dumps(state))
+ state['state']='CLOSED';state['writes']+=1
+ if mode in ('reopen-during-close','reopen-after-close'):state['reopen_seen']=True
+ if mode=='reopen-after-close':state['state']='OPEN'
+ save()
  if mode=='interrupted':os.kill(os.getppid(),signal.SIGKILL)
  print(json.dumps({'state':'closed'}));sys.exit(0)
 query=next(a[6:] for a in args if a.startswith('query='))
@@ -31,7 +36,17 @@ if 'pullRequest(number:' in query:
  print(json.dumps(d))
 else:
  number=int(next(a[7:] for a in args if a.startswith('number=')))
- print(json.dumps({'data':{'repository':{'nameWithOwner':'owner/consumer','issueOrPullRequest':dict(__typename='PullRequest' if mode=='wrong-type' else 'Issue',number=number,state='OPEN' if mode=='delayed' else state['state'],closedAt=None,url='https://github.com/owner/consumer/issues/'+str(number),repository={'nameWithOwner':'owner/consumer'},timelineItems={'nodes':[{'createdAt':'2026-11-05T00:00:00Z'}] if mode=='reopened' else []})}}}))
+ state['reads']=state.get('reads',0)+1
+ if mode=='closed-at-preflight' and state['reads']>=2:state['state']='CLOSED'
+ reopened=mode=='reopened' or state.get('reopen_seen') or (mode=='reopen-at-preflight' and state['reads']>=2)
+ save()
+ node=dict(__typename='PullRequest' if mode=='wrong-type' else 'Issue',number=number,
+           state='OPEN' if mode=='delayed' else state['state'],closedAt=None,
+           updatedAt='2026-11-05T00:00:00Z' if reopened else '2026-11-04T20:00:00Z',
+           url='https://github.com/owner/consumer/issues/'+str(number),
+           repository={'nameWithOwner':'owner/consumer'},
+           timelineItems={'nodes':[{'createdAt':'2026-11-05T00:00:00Z'}] if reopened else []})
+ print(json.dumps({'data':{'repository':{'nameWithOwner':'owner/consumer','issueOrPullRequest':node}}}))
 '''
 
 
@@ -115,6 +130,17 @@ class Completion(unittest.TestCase):
         rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
         self.assertEqual(x['issues'][0]['disposition'],'foreign_retained')
 
+    def test_no_issue_delivery_requires_explicit_pinned_disposition(self):
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[];self.write_pr()
+        rc,x=self.run_helper();self.assertEqual(rc,1)
+        rc,x=self.run_helper('--no-issue-verified');self.assertEqual(rc,3)
+        rc,x=self.run_helper('--no-issue-verified','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertTrue(x['no_associated_issues']);self.assertEqual(self.writes(),0)
+        rc,x=self.complete('--no-issue-verified');self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[self.node(7)];self.write_pr()
+        rc,x=self.run_helper('--no-issue-verified','--expected-merge',MERGE)
+        self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+
     def test_missing_trailer_requires_explicit_association(self):
         self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[];self.write_pr()
         rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
@@ -134,6 +160,24 @@ class Completion(unittest.TestCase):
         receipts=list(self.home.rglob('pr-20.issue-7.json'));self.assertEqual(len(receipts),1)
         self.assertEqual(json.loads(receipts[0].read_text())['issues'][0]['disposition'],'closure_pending')
         self.mode('normal');rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1)
+
+    def test_final_preflight_retains_new_reopen_and_accepts_other_closer(self):
+        self.mode('reopen-at-preflight');rc,x=self.complete()
+        self.assertEqual(rc,3);self.assertEqual(x['error_class'],'issue_changed_before_close')
+        self.assertEqual(self.writes(),0);self.assertEqual(json.loads((self.root/'state').read_text())['state'],'OPEN')
+        self.state.update(state='OPEN',writes=0,reads=0);self.write_state();self.mode('closed-at-preflight')
+        rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),0)
+
+    def test_postwrite_reopen_race_never_reports_verified_completion(self):
+        for mode in ['reopen-during-close','reopen-after-close']:
+            with self.subTest(mode=mode):
+                self.state.update(state='OPEN',writes=0,reads=0,reopen_seen=False);self.write_state();self.mode(mode)
+                rc,x=self.complete();self.assertEqual(rc,1)
+                self.assertEqual(x['error_class'],'concurrent_reopen_detected');self.assertEqual(x['outcome'],'pending')
+                self.assertEqual(self.writes(),1)
+                if mode=='reopen-after-close':
+                    self.assertEqual(json.loads((self.root/'state').read_text())['state'],'OPEN')
+                    rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),1)
 
     def test_intentionally_reopened_issue_is_not_reclosed(self):
         self.mode('reopened');rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
