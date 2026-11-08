@@ -260,6 +260,63 @@ for alias_kind in direct symbolic hard; do
   check_eq "rollup $alias_kind output alias: no stdout" "" "$ROLLUP_STDOUT"
 done
 
+# Swap the destination to a ledger link after the alias check, at the real
+# output-directory creation boundary. Publication must replace the link entry.
+ESTIMATE_REAL_MKDIR=$(command -v mkdir)
+ESTIMATE_REAL_MKTEMP=$(command -v mktemp)
+ESTIMATE_REAL_MV=$(command -v mv)
+export ESTIMATE_REAL_MKDIR ESTIMATE_REAL_MKTEMP ESTIMATE_REAL_MV
+export ESTIMATE_RACE_OUTPUT="$ROLLUP_DIR/race.md"
+export ESTIMATE_RACE_LEDGER="$ROLLUP_DIR/native.jsonl"
+export ESTIMATE_RACE_MARKER="$TMP/race-fired"
+cat > "$TMP/bin/mkdir" <<'STUB'
+#!/usr/bin/env bash
+"$ESTIMATE_REAL_MKDIR" "$@" || exit "$?"
+if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == race && "$*" == "-p $(dirname "$ESTIMATE_RACE_OUTPUT")" ]]; then
+  ln -sf "$ESTIMATE_RACE_LEDGER" "$ESTIMATE_RACE_OUTPUT"
+  : > "$ESTIMATE_RACE_MARKER"
+fi
+STUB
+cat > "$TMP/bin/mktemp" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == allocate && "$*" == *'.estimate-rollup-'* ]]; then exit 91; fi
+exec "$ESTIMATE_REAL_MKTEMP" "$@"
+STUB
+cat > "$TMP/bin/mv" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == rename && "$*" == *'.estimate-rollup-'* ]]; then exit 92; fi
+exec "$ESTIMATE_REAL_MV" "$@"
+STUB
+# Keep the existing selection-failure fixture intact; layer rendering failure
+# on its exact jq table-render filter, after selection and temp allocation.
+mv "$TMP/bin/jq" "$TMP/bin/jq-selection"
+cat > "$TMP/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${ESTIMATE_PUBLICATION_FAULT:-}" == render && "$*" == *'def fmt(x)'* ]]; then exit 93; fi
+exec "$(dirname "$0")/jq-selection" "$@"
+STUB
+chmod +x "$TMP/bin/mkdir" "$TMP/bin/mktemp" "$TMP/bin/mv" "$TMP/bin/jq"
+cp "$ESTIMATE_RACE_LEDGER" "$TMP/input-before"
+for publication_case in race allocate render rename; do
+  rm -f "$ESTIMATE_RACE_OUTPUT"
+  printf 'existing-report\n' > "$ESTIMATE_RACE_OUTPUT"
+  cp "$ESTIMATE_RACE_OUTPUT" "$TMP/report-before"
+  export ESTIMATE_PUBLICATION_FAULT="$publication_case"
+  run_rollup "$ESTIMATE_RACE_LEDGER" "$ESTIMATE_RACE_OUTPUT"
+  unset ESTIMATE_PUBLICATION_FAULT
+  check_eq "rollup $publication_case publication: ledger preserved" yes "$(unchanged_file "$ESTIMATE_RACE_LEDGER" "$TMP/input-before")"
+  check_eq "rollup $publication_case publication: temp removed" 0 "$(find "$ROLLUP_DIR" -name '.estimate-rollup-*' | wc -l | tr -d ' ')"
+  if [[ "$publication_case" == race ]]; then
+    check_eq 'rollup publication race: boundary reached' yes "$([[ -f "$ESTIMATE_RACE_MARKER" ]] && echo yes)"
+    check_eq 'rollup publication race: status' 0 "$ROLLUP_RC"
+    check_eq 'rollup publication race: output no longer a link' yes "$([[ ! -L "$ESTIMATE_RACE_OUTPUT" ]] && echo yes)"
+    check_eq 'rollup publication race: report complete' yes "$(report_line "$EXPECTED_SOURCE" "$ESTIMATE_RACE_OUTPUT")"
+  else
+    check_eq "rollup $publication_case publication: file-error exit" 5 "$ROLLUP_RC"
+    check_eq "rollup $publication_case publication: old report preserved" yes "$(unchanged_file "$ESTIMATE_RACE_OUTPUT" "$TMP/report-before")"
+  fi
+done
+
 if [[ -s "$TMP/fix/unexpected.log" ]]; then
   FAIL=$((FAIL + 1)); echo "FAIL — unexpected gh calls:"; sed 's/^/       /' "$TMP/fix/unexpected.log"
 fi
