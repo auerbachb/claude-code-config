@@ -140,6 +140,13 @@ f() { jq -r "$1" <<<"$OUT" 2>/dev/null; }
 ledger() { ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get-json ".prs[\"$PR\"].review_trigger_ledger.$1.count" 2>/dev/null ) || echo null; }
 
 ############################################################################
+gate=full
+reset "$(tier_json present "$gate" | jq -c '. + {escalation:"off"}')"
+run
+check_eq "tiered escalation skip reason: $gate" escalation_off "$(f .bugbot_skipped.reason)"
+check_eq "tiered escalation skip gate: $gate" "$gate" "$(f .bugbot_skipped.gate)"
+check_eq "tiered escalation skip has no paid post: $gate" 0 "$(grep -cFx '@cursor review' "$POSTED")"
+
 echo "== no ## Review policy: the legacy path, unchanged, with the helper present =="
 reset "$(tier_json absent legacy)"
 run

@@ -344,7 +344,8 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       | if $r == "" then null
         elif $r == "refused_head" then {reason: "refused_head", gate: null}
         elif $r == "daily_cap" then {reason: "daily_cap", gate: null, tally: ($c.daily_cap // null)}
-        elif $r == "tier_excluded" or $r == "escalation_off" then {reason: "review_tier", gate: $g}
+        elif $r == "tier_excluded" then {reason: "review_tier", gate: $g}
+        elif $r == "escalation_off" then {reason: "escalation_off", gate: $g}
         else {reason: $r, gate: $g} end' <<<"$1" 2>/dev/null)"
     [[ -n "$BUGBOT_CAP_JSON" ]] || BUGBOT_CAP_JSON="null"
     if [[ -z "$BUGBOT_SKIPPED_JSON" ]]; then
@@ -496,15 +497,17 @@ fi
 # tier, or any exit but 0 posts the nudge — `legacy` behaviour is to post.
 # Asked once, here, so a dry run reports the same answer a real run acts on.
 BUGBOT_TIER_GATE=""
+BUGBOT_TIER_REASON="review_tier"
 bugbot_tier_excluded() {
   local helper="${SCRIPT_DIR}/bugbot-tier-excluded.sh" gate
   [[ -x "$helper" ]] || return 1
-  gate="$("$helper" "$PR_NUM")" || return 1
-  BUGBOT_TIER_GATE="$gate"
+  gate="$("$helper" "$PR_NUM" --why)" || return 1
+  BUGBOT_TIER_GATE="${gate%%$'\t'*}"
+  if [[ "$gate" == *$'\t'escalation_off ]]; then BUGBOT_TIER_REASON="escalation_off"; fi
 }
 BUGBOT_SKIPPED_JSON="null"
 if bugbot_tier_excluded; then
-  BUGBOT_SKIPPED_JSON="$(jq -cn --arg g "$BUGBOT_TIER_GATE" '{reason: "review_tier", gate: $g}')"
+  BUGBOT_SKIPPED_JSON="$(jq -cn --arg g "$BUGBOT_TIER_GATE" --arg r "$BUGBOT_TIER_REASON" '{reason: $r, gate: $g}')"
 fi
 
 # Account-level daily cap (issue #1812). One BugBot review at the ledger's
@@ -628,6 +631,8 @@ if (( DRY_RUN )); then
         bugbot_skipped: $bugbot_skipped,
         bugbot_daily_cap: $bugbot_daily_cap
       }'
+  elif [[ "$BUGBOT_TIER_REASON" == "escalation_off" && -n "$BUGBOT_TIER_GATE" ]]; then
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — REVIEW_ESCALATION=off; gate $BUGBOT_TIER_GATE) cr_rounds=$CR_ROUNDS score=$SCORE"
   elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
     echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
   elif (( DRY_BUGBOT_REFUSED )); then
@@ -699,7 +704,11 @@ if [[ -n "$BUGBOT_TIER_GATE" ]]; then
   # label flip, a base-branch policy edit). A resumed run re-asks the tier
   # above, so it skips again while the tier still excludes BugBot and posts
   # once the tier invites it. A completed run clears the record either way.
-  echo "maybe-trigger-ai-review.sh: skipping @cursor review — review tier gate '$BUGBOT_TIER_GATE' excludes BugBot (#1728)" >&2
+  if [[ "$BUGBOT_TIER_REASON" == "escalation_off" ]]; then
+    echo "maybe-trigger-ai-review.sh: skipping @cursor review — REVIEW_ESCALATION=off (repo turned escalation off; gate $BUGBOT_TIER_GATE)" >&2
+  else
+    echo "maybe-trigger-ai-review.sh: skipping @cursor review — review tier gate '$BUGBOT_TIER_GATE' excludes BugBot (#1728)" >&2
+  fi
 elif bugbot_refused_head; then
   # Mark the step handled rather than leaving it false. A run that completes
   # clears the whole record (`ai_review_trigger_steps=null` below), but a run
@@ -748,6 +757,8 @@ if (( JSON_OUT )); then
     --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" \
     --argjson bugbot_daily_cap "$BUGBOT_CAP_JSON" \
     '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap}'
+elif [[ "$BUGBOT_TIER_REASON" == "escalation_off" && -n "$BUGBOT_TIER_GATE" ]]; then
+  echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — REVIEW_ESCALATION=off; gate $BUGBOT_TIER_GATE)"
 elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — review tier $BUGBOT_TIER_GATE)"
 elif [[ "$(jq -r '.reason // ""' <<<"$BUGBOT_SKIPPED_JSON")" == "daily_cap" ]]; then
