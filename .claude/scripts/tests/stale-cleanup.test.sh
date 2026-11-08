@@ -102,6 +102,8 @@ cp "$REPO_ROOT/.claude/scripts/stale-cleanup.sh" \
 # refuse to run git unbounded without it, so the copy includes lib/ too.
 mkdir -p "$REPO_A/.claude/scripts/lib"
 cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$REPO_A/.claude/scripts/lib/"
+cp "$REPO_ROOT/.claude/scripts/lib/stale-cleanup-finished.py" "$REPO_A/.claude/scripts/lib/"
+cp "$REPO_ROOT/.claude/scripts/pr-authorship.sh" "$REPO_A/.claude/scripts/"
 SUT="$REPO_A/.claude/scripts/stale-cleanup.sh"
 GUARD="$REPO_A/.claude/scripts/dirty-main-guard.sh"
 

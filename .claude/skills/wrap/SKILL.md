@@ -93,6 +93,7 @@ INFER_PR=$(resolve_script infer-pr.sh || true)
 DISMISS=$(resolve_script dismiss-stale-bot-changes.sh || true)
 PR_STATE_SH=$(resolve_script pr-state.sh || true)
 MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+RECOVERY_EVIDENCE_SH=$(resolve_script recovery-evidence.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
 WRAP_AUDIT_STATE_SH=$(resolve_script session-state.sh || true)
 CI_STATUS_SH=$(resolve_script ci-status.sh || true)
@@ -112,6 +113,7 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 
 [[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — wrap PR state unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — wrap merge gate unavailable" >&2; exit 1; }
+[[ -n "$RECOVERY_EVIDENCE_SH" ]] || { echo "ERROR: recovery-evidence.sh not found (checked all three paths) — recovery capture unavailable; no gate accepted" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
 [[ -n "$CI_STATUS_SH" ]] || { echo "ERROR: ci-status.sh not found (checked all three paths) — CI diagnosis unavailable" >&2; exit 1; }
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — wrap authorship gate unavailable" >&2; exit 1; }
@@ -232,18 +234,47 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 
 <!-- test-anchor: wrap-persist-recovery-audit -->
 ```bash
-[[ -n "$WRAP_AUDIT_STATE_SH" ]] || { echo "ERROR: recovery audit storage unavailable" >&2; exit 1; }
+[[ -n "${WRAP_AUDIT_STATE_SH:-}" ]] || { echo "ERROR: recovery audit storage unavailable" >&2; exit 1; }
 [[ -n "${CURRENT_REPO:-}" ]] || { echo "ERROR: verified PR repository unavailable; audit not saved" >&2; exit 1; }
-WRAP_AUDIT_JSON=$(jq -cn --arg cycles "$WRAP_RECOVERY_AUDIT" --argjson gate "$GATE_JSON" \
-  --arg at "$(date -u +%FT%TZ)" \
-  '{cycles:$cycles, last_gate:$gate, observed_at:$at}') || exit 1
-"$WRAP_AUDIT_STATE_SH" --repo "$CURRENT_REPO" --set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_audit=$WRAP_AUDIT_JSON" || {
-  echo "ERROR: recovery audit not saved; stopping recovery" >&2
+[[ -n "${RECOVERY_EVIDENCE_SH:-}" ]] || { echo "ERROR: raw recovery capture unavailable; no gate accepted" >&2; exit 1; }
+if [[ -z "${WRAP_GATE_CAPTURE:-}" ]]; then
+  WRAP_GATE_CAPTURE=$("$RECOVERY_EVIDENCE_SH" new --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM") || exit 1
+  printf '%s' "${GATE_JSON:-}" > "$WRAP_GATE_CAPTURE/stdout" || exit 1
+  printf '%s' "${GATE_STDERR:-}" > "$WRAP_GATE_CAPTURE/stderr" || exit 1
+fi
+"$RECOVERY_EVIDENCE_SH" check --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM" --directory "$WRAP_GATE_CAPTURE" || exit 1
+printf '%s' "${WRAP_RECOVERY_AUDIT:-}" > "$WRAP_GATE_CAPTURE/audit" || exit 1
+WRAP_AUDIT_JSON=$("$RECOVERY_EVIDENCE_SH" record --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM" \
+  --directory "$WRAP_GATE_CAPTURE" --exit-code "${GATE_RC:--1}") || exit 1
+GATE_CLASS=$(jq -r '.classification' <<<"$WRAP_AUDIT_JSON") || exit 1
+GATE_JSON=$(jq -c '.last_gate // empty' <<<"$WRAP_AUDIT_JSON") || exit 1
+WRAP_SAVE_ARGS=(--repo "$CURRENT_REPO" --set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_audit=$WRAP_AUDIT_JSON")
+if [[ "$(jq -r '.failure' <<<"$WRAP_AUDIT_JSON")" == true ]]; then
+  WRAP_CAPTURE_ID=$(jq -r '.capture_id' <<<"$WRAP_AUDIT_JSON") || exit 1
+  WRAP_SAVE_ARGS+=(--set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_failures[\"$WRAP_CAPTURE_ID\"]=$WRAP_AUDIT_JSON")
+fi
+"$WRAP_AUDIT_STATE_SH" "${WRAP_SAVE_ARGS[@]}" || {
+  echo "ERROR: recovery audit not saved; stopping; raw capture: $WRAP_GATE_CAPTURE" >&2
   exit 1
 }
+case "$GATE_CLASS" in
+  valid_pass|valid_blocked|not_open) ;;
+  *) echo "ERROR: gate $GATE_CLASS; recovery stopped; evidence: $WRAP_GATE_CAPTURE" >&2; exit 1 ;;
+esac
 ```
 
-**Merge-ready shortcut:** Run `merge-gate.sh` once before the loop, capturing its stdout into `GATE_JSON` exactly as the loop does. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2. Capturing is not optional — Step 2.4 reads `merge_state` out of `GATE_JSON`, so a shortcut that discarded the output would leave it unset there.
+Capture every gate execution with this block, including the merge-ready shortcut. Then execute the audit block above **before any routing or early exit**. A malformed/empty/error result is recorded and stops recovery; it can never reach AC/merge merely because a prior `GATE_JSON` was valid. Full raw captures and failure indexes survive later clean snapshots; retrieval/lifecycle: `recovery-evidence.md`.
+
+<!-- test-anchor: wrap-capture-gate -->
+```bash
+[[ -n "${CURRENT_REPO:-}" && -n "${RECOVERY_EVIDENCE_SH:-}" ]] || { echo "ERROR: verified recovery capture unavailable" >&2; exit 1; }
+WRAP_GATE_CAPTURE=$("$RECOVERY_EVIDENCE_SH" new --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM") || exit 1
+GATE_RC=0
+"$MERGE_GATE_SH" "$PR_NUM" > "$WRAP_GATE_CAPTURE/stdout" 2> "$WRAP_GATE_CAPTURE/stderr" || GATE_RC=$?
+GATE_JSON=""  # filled only from the newly classified record, never stale memory
+```
+
+**Merge-ready shortcut:** Use the capture and audit blocks once before the loop. Only `GATE_RC=0` **and** `GATE_CLASS=valid_pass`, with no pending findings or half-applied recovery, reaches Step 2.2. `GATE_JSON` is the complete parsed current verdict; Step 2.4 reads its merge state.
 
 **Claim renewal before every wait (issue #1927).** A `/fixpr` wait can outlast the claim's stale window, so before **each** Branch B/C/D dispatch below — the first and every later one, including the iterations Step 2.4's `BEHIND` re-entry adds — renew every linked issue whose holder this run was **handed**: the Phase C prompt (`/subagent`) or the `/start-issue` Form B handoff names the issue and its holder. Keep holders per issue; never apply one to every linked issue, never adopt a `claimant_holder` read off GitHub, never use `--claim` as a check.
 
@@ -280,7 +311,7 @@ Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** —
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
 1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → exit for Phase 3. `CLOSED` → stop.
-2. **Refresh gate** — `GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")`. Exit `3` → Phase 3. Exit `2`/`4` → surface stderr, stop. Exit `0` with no pending `WRAP_PHASE1_FINDINGS` → proceed to Step 2.2. Exit `0` with `WRAP_PHASE1_FINDINGS` pending → treat as Branch B dispatch (findings still unresolved despite clean gate — delegate to `/fixpr`).
+2. **Refresh gate** — run `wrap-capture-gate`, then `wrap-persist-recovery-audit` before routing. Invalid/empty/error or exit/verdict mismatch stops after durable recording. Exit `3` keeps its existing Phase3 route; exit `2`/`4` stops with its raw evidence pointer. Only exit `0` plus `GATE_CLASS=valid_pass` and no pending findings reaches Step2.2; pending findings still dispatch BranchB.
 3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`). Every B/C/D wait dispatch runs the claim renewal above first; its exit 5 stops here:
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.

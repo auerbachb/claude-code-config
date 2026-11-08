@@ -29,6 +29,7 @@ resolve_script() {
 }
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
 HANDOFF_STATE_SH=$(resolve_script handoff-state.sh || true)
+RECOVERY_EVIDENCE_SH=$(resolve_script recovery-evidence.sh || true)
 REPLY_THREAD_SH=$(resolve_script reply-thread.sh || true)
 RESOLVE_REVIEW_THREADS_SH=$(resolve_script resolve-review-threads.sh || true)
 DIFF_SURVIVAL_SH=$(resolve_script diff-survival-check.sh || true)
@@ -45,6 +46,7 @@ MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
 [[ -n "$CLEAN_BEHIND_SH" ]] || { echo "ERROR: clean-behind-check.sh not found (checked all three paths) — clean-BEHIND verification unavailable" >&2; exit 1; }
 [[ -n "$ADMIN_MERGE_SH" ]] || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND recovery unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — residual merge verification unavailable" >&2; exit 1; }
+[[ -n "$RECOVERY_EVIDENCE_SH" ]] || { echo "ERROR: recovery-evidence.sh not found (checked all three paths) — wait capture unavailable; no clean verdict" >&2; exit 1; }
 if [[ -z "$HANDOFF_STATE_SH" ]]; then
   echo "DEGRADED: handoff-state.sh not found (checked all three paths) — namespaced handoff path unavailable, continuing with legacy flat path" >&2
 fi
@@ -595,19 +597,69 @@ Wait — bounded — for the bots and CI to deliver a verdict on the **current H
 
 **Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Set `WATCH_SHA` / `WAIT_BASELINE` from the entry path above (`PUSHED_SHA`/`PUSHED_AT` when `DID_PUSH=1`, else `HEAD_SHA`/`RUN_STARTED_AT`). Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
 
-Persist the latest snapshot before classifying it, including the zero-wait pre-check. The per-PR handoff must already exist (initialize it through `polling-state-gate.sh --ensure-session`); an unavailable helper or failed write stops this wait without a clean verdict. Raw bundle diagnostics remain at the recorded path; prior CI/review failures retain their original logs.
+Persist the latest snapshot before classifying it, including the zero-wait pre-check. The per-PR handoff must already exist (initialize it through `polling-state-gate.sh --ensure-session`); an unavailable helper or failed write stops this wait without a clean verdict. Raw stdout/stderr and a private copy of each readable bundle remain at recorded paths. Failed snapshots are indexed separately from the latest status, so a later clean tick cannot erase them. A failed evaluator/fetch or malformed verdict stops after recording, never becomes clean. Lifecycle and read-only retrieval: `recovery-evidence.md`.
 
 <!-- test-anchor: fixpr-persist-wait-evidence -->
 ```bash
 persist_fixpr_wait_evidence() {
-  [[ -n "$HANDOFF_STATE_SH" ]] || { echo "ERROR: wait evidence helper unavailable" >&2; return 1; }
-  local wait_record
-  wait_record=$(jq -cn --argjson verdict "$WAIT_STATE" --arg sha "$WATCH_SHA" \
-    --arg baseline "$WAIT_BASELINE" --arg bundle "$TICK" \
-    --arg at "$(date -u +%FT%TZ)" \
-    '{head_sha:$sha, baseline:$baseline, bundle_path:$bundle, observed_at:$at, verdict:$verdict}') || return 1
+  [[ -n "${HANDOFF_STATE_SH:-}" && -n "${OWNER_REPO:-}" ]] || { echo "ERROR: scoped wait evidence unavailable" >&2; return 1; }
+  resolve_fixpr_evidence || return 1
+  local wait_record wait_class failure_id bundle_arg
+  if [[ -z "${WAIT_CAPTURE_DIR:-}" ]]; then
+    WAIT_CAPTURE_DIR=$("$RECOVERY_EVIDENCE_SH" new --kind wait --repo "$OWNER_REPO" --pr "$PR_NUMBER") || return 1
+    printf '%s' "${WAIT_STATE:-}" > "$WAIT_CAPTURE_DIR/stdout" || return 1
+    printf '%s' "${WAIT_EVAL_STDERR:-}" > "$WAIT_CAPTURE_DIR/stderr" || return 1
+  fi
+  bundle_arg=""
+  [[ "${WAIT_FETCH_RC:--1}" == 0 ]] && bundle_arg="${TICK:-}"
+  wait_record=$("$RECOVERY_EVIDENCE_SH" record --kind wait --repo "$OWNER_REPO" --pr "$PR_NUMBER" \
+    --directory "$WAIT_CAPTURE_DIR" --exit-code "${WAIT_EVAL_RC:--1}" --fetch-exit-code "${WAIT_FETCH_RC:--1}" \
+    --head "$WATCH_SHA" --baseline "$WAIT_BASELINE" --bundle "$bundle_arg") || return 1
+  wait_class=$(jq -r '.classification' <<<"$wait_record") || return 1
+  # Independent unique map keys use the existing locked literal setter: no
+  # read/modify/write race or whole-history replacement. Archive first, so a
+  # failed latest write cannot erase either the prior status or this failure.
+  if [[ "$(jq -r '.failure' <<<"$wait_record")" == true ]]; then
+    failure_id=$(jq -r '.capture_id' <<<"$wait_record") || return 1
+    "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing \
+      --set "$PR_NUMBER" ".fixpr_wait_failures[\"$failure_id\"]=$wait_record" >/dev/null || return 1
+  fi
   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing \
-    --set "$PR_NUMBER" ".fixpr_wait=$wait_record" >/dev/null
+    --set "$PR_NUMBER" ".fixpr_wait=$wait_record" >/dev/null || return 1
+  case "$wait_class" in
+    valid_clean|valid_pending) return 0 ;;
+    *) echo "ERROR: wait evaluation $wait_class; stopped; evidence: $WAIT_CAPTURE_DIR" >&2; return 1 ;;
+  esac
+}
+
+resolve_fixpr_evidence() {
+  if [[ -z "${RECOVERY_EVIDENCE_SH:-}" ]]; then
+    local candidate
+    for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/recovery-evidence.sh" \
+      "$HOME/.claude/scripts/recovery-evidence.sh" ".claude/scripts/recovery-evidence.sh"; do
+      if [[ -x "$candidate" ]]; then RECOVERY_EVIDENCE_SH="$candidate"; break; fi
+    done
+  fi
+  [[ -n "${RECOVERY_EVIDENCE_SH:-}" ]] || { echo "ERROR: raw wait capture unavailable; no clean verdict" >&2; return 1; }
+}
+
+capture_fixpr_wait_evidence() {
+  [[ -n "${OWNER_REPO:-}" ]] || { echo "ERROR: verified wait repository unavailable" >&2; return 1; }
+  resolve_fixpr_evidence || return 1
+  WAIT_CAPTURE_DIR=$("$RECOVERY_EVIDENCE_SH" new --kind wait --repo "$OWNER_REPO" --pr "$PR_NUMBER") || return 1
+  WAIT_FETCH_RC=0
+  "$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE" > "$WAIT_CAPTURE_DIR/fetch.stdout" \
+    2> "$WAIT_CAPTURE_DIR/fetch.stderr" || WAIT_FETCH_RC=$?
+  TICK=$(cat "$WAIT_CAPTURE_DIR/fetch.stdout") || return 1
+  WAIT_EVAL_RC=0
+  if [[ "$WAIT_FETCH_RC" == 0 ]]; then
+    "$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK" > "$WAIT_CAPTURE_DIR/stdout" \
+      2> "$WAIT_CAPTURE_DIR/stderr" || WAIT_EVAL_RC=$?
+  else
+    WAIT_EVAL_RC="$WAIT_FETCH_RC"
+  fi
+  WAIT_STATE=$(cat "$WAIT_CAPTURE_DIR/stdout") || return 1
+  persist_fixpr_wait_evidence
 }
 ```
 
@@ -617,9 +669,7 @@ SKIP_WAIT_LOOP=0
 if [[ "${DID_PUSH:-0}" -eq 0 ]]; then
   WATCH_SHA=$HEAD_SHA
   WAIT_BASELINE=$RUN_STARTED_AT
-  TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
-  WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
-  persist_fixpr_wait_evidence || { echo "ERROR: wait evidence not saved; no clean verdict" >&2; exit 1; }
+  capture_fixpr_wait_evidence || { echo "ERROR: wait snapshot failed; no clean verdict" >&2; exit 1; }
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   if [[ "$BOTS_PENDING" == "none" && "$CI_PENDING" == "none"
@@ -645,9 +695,7 @@ if [[ "$SKIP_WAIT_LOOP" -eq 0 ]]; then
   WAIT_OUTCOME=""          # clean | cap-exhausted | new-findings | ci-failing | head-moved
   RETRIGGERED_THIS_WAIT=0
   while :; do
-  TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
-  WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
-  persist_fixpr_wait_evidence || { echo "ERROR: wait evidence not saved; no clean verdict" >&2; exit 1; }
+  capture_fixpr_wait_evidence || { echo "ERROR: wait snapshot failed; no clean verdict" >&2; exit 1; }
 
   ELAPSED=$(( $(date +%s) - WAIT_STARTED ))
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
@@ -682,7 +730,7 @@ fi   # end SKIP_WAIT_LOOP
 
 **Running this block as a worktree-isolated subagent.** The block above is a multi-line loop, which the harness's worktree-isolation guard refuses when pasted directly — it classifies by command shape, and the refusal names git operations that are not in it (issue #1470). Write the block to a file in the session scratchpad and run `bash <file>`: a single plain call is an allowed shape, and everything inside it then runs in a child process the guard does not gate.
 
-**Include the persistence helper in the child file.** Copy the `persist_fixpr_wait_evidence` definition above into that same file before the pre-check/loop, and pass `HANDOFF_STATE_SH` plus the verified `OWNER_REPO` alongside the inputs below. Neither a parent-shell function nor unexported helper/scope variables exist in `bash <file>`. Keep `WAIT_BASELINE` and the entry-path inputs (`DID_PUSH`, `HEAD_SHA`, `PUSHED_SHA`, `PUSHED_AT`) available there too; the snapshots assign `TICK` and `WAIT_STATE` inside the child. Missing helper/scope or failed evidence writes must stop, never fabricate a clean wait.
+**Include the persistence helper in the child file.** Copy the **entire** `fixpr-persist-wait-evidence` fenced block (all three function definitions) into that same file before the pre-check/loop, and pass `HANDOFF_STATE_SH` plus the verified `OWNER_REPO` alongside the inputs below. Neither a parent-shell function nor unexported helper/scope variables exist in `bash <file>`. Keep `WAIT_BASELINE` and the entry-path inputs (`DID_PUSH`, `HEAD_SHA`, `PUSHED_SHA`, `PUSHED_AT`) available there too; the snapshots assign `TICK` and `WAIT_STATE` inside the child. Missing helper/scope or failed evidence writes must stop, never fabricate a clean wait.
 
 **`bash <file>` is a FRESH shell — it inherits nothing you set in earlier steps.** `PR_NUMBER`, `WATCH_SHA`, `SCRIPT`, `RUN_STARTED_AT`, `FIXPR_WAIT_ITER`, `FIXPR_MAX_ITERATIONS`, `FIXPR_WAIT_CAP_SECS`, `FIXPR_WAIT_POLL_SECS` and `FIXPR_TOTAL_WAIT_SECS` are plain shell variables, so every one of them arrives empty. Under `set -u` that aborts; without it the loop watches an empty PR, compares against an empty cap, and reports a verdict it never measured. So write their current values into the top of the file (or pass them on the command line as `PR_NUMBER=… WATCH_SHA=… bash <file>`) — and read the outcome back out of the child, which cannot assign your variables: have the file print `WAIT_OUTCOME` and `ELAPSED` on its last line and capture that, rather than expecting the assignments above to survive. That includes the accumulator: `FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))` runs in the child and is discarded with it, so the CALLER must re-apply it to the `ELAPSED` it captured — otherwise every summary that quotes total wait under-reports it by exactly the time this loop spent.
 
