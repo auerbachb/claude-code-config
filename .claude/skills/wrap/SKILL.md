@@ -107,6 +107,7 @@ REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 DIRTY_MAIN_GUARD_SH=$(resolve_script dirty-main-guard.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+MERGE_TARGET_ROOT_SH=$(resolve_script merge-target-root.sh || true)
 HHG_STATE_SH=$(resolve_script hhg-state.sh || true)
 CYCLE_COUNT_SH=$(resolve_script cycle-count.sh || true)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
@@ -207,6 +208,31 @@ WRAP_UNRESOLVED_THREADS=$(jq -r '.threads.unresolved_count // 0' < "$BUNDLE")
 If `> 0`, record it. In `--verbose` mode also emit a timestamped detection heartbeat. Do **not** assert threads are the sole blocker — that is Branch B's call once the gate's full `missing` set is known. Do **not** invoke `/fixpr` from Phase 1 — the single delegation point is Step 2.1 Branch B.
 
 Proceed immediately to Phase 2 — do not ask.
+
+### Bind the physical clone before merge work
+
+Use the absolute invocation/worktree path from this chat's workspace context, an explicit caller path, or a validated delegated handoff that matches this PR, repository, HEAD and holder. Set `WRAP_SOURCE_PATH` from that trusted context; never recover it from a later `pwd` or a shared per-repository/per-PR `.root_repo` hint. A remote identity cannot distinguish two clones of the same repository. Resolve `WRAP_PR_URL` from the identified PR's native `url` field, using that exact PR/repository rather than a later current-branch lookup.
+
+<!-- test-anchor: wrap-merge-root-binding -->
+
+```bash
+WRAP_BOUND_ROOT=""
+WRAP_BOUND_PR_URL="${WRAP_PR_URL:-}"
+WRAP_ROOT_BINDING_STATUS="failed: explicit clone binding unavailable"
+if [[ -n "$MERGE_TARGET_ROOT_SH" ]]; then
+  WRAP_BIND_RC=0
+  WRAP_BOUND_ROOT=$("$MERGE_TARGET_ROOT_SH" --repo-path "${WRAP_SOURCE_PATH:-}" \
+    --pr-url "${WRAP_BOUND_PR_URL:-}" 2>/dev/null) || WRAP_BIND_RC=$?
+  if [[ "$WRAP_BIND_RC" -eq 0 && -n "$WRAP_BOUND_ROOT" ]]; then
+    WRAP_ROOT_BINDING_STATUS="bound"
+  else
+    WRAP_BOUND_ROOT=""
+    WRAP_ROOT_BINDING_STATUS="failed: explicit clone binding invalid or unreadable (rc=$WRAP_BIND_RC)"
+  fi
+fi
+```
+
+Carry `WRAP_BOUND_ROOT` and `WRAP_BOUND_PR_URL` unchanged across later tool calls and delegated `/fixpr` work; persist them in the validated run handoff when handing off this invocation. On resume without that binding, keep local mutations skipped. Never repopulate it from whatever clone the tool happens to enter. Binding failure does not undo or bypass the remote merge gate; it makes post-merge local cleanup/sync report a failure without mutating a guessed clone.
 
 ## Phase 2: Merge
 
@@ -477,17 +503,24 @@ fi
 
 Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-clean` via `stale-cleanup.sh`.
 
-### Step 2.5: Sync root repo main (aggressive reset)
+### Step 2.5: Sync the bound root repo main (aggressive reset)
 
 **Both helpers take `--repo "$ROOT_REPO"`; neither may be wrapped in a `cd`.** A worktree-isolated Phase C agent — the caller on the normal A/B/C merge path — is refused both `(cd "$ROOT_REPO" && …)` ("too complex to verify that it stays inside the worktree") and `git -C "$ROOT_REPO" …`. A plain script call is an allowed shape, so passing the path as a flag is what makes this step reachable at all; the earlier `cd` form made every Phase C merge take the degraded branch below and leave root `main` unsynced (issue #1411). Keep the two calls symmetric — do not reintroduce a `cd`. Full catalog of refused vs allowed shapes, and the wrapper for each recurring case: `.claude/reference/worktree-isolation-command-shapes.md` (issue #1470).
 
+<!-- test-anchor: wrap-bound-main-sync -->
+
 ```bash
-ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
+ROOT_REPO=""
+if [[ -n "$MERGE_TARGET_ROOT_SH" && -n "${WRAP_BOUND_ROOT:-}" && -n "${WRAP_BOUND_PR_URL:-}" ]]; then
+  ROOT_REPO=$("$MERGE_TARGET_ROOT_SH" --repo-path "$WRAP_BOUND_ROOT" \
+    --pr-url "$WRAP_BOUND_PR_URL" 2>/dev/null) || ROOT_REPO=""
+  [[ "$ROOT_REPO" == "$WRAP_BOUND_ROOT" ]] || ROOT_REPO=""
+fi
 MAIN_SYNC_STATUS=""
 QUARANTINE_STATUS=""
 QUARANTINE_OK=0
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
-  MAIN_SYNC_STATUS="failed: could not determine root repo path"
+  MAIN_SYNC_STATUS="failed: bound clone unavailable or identity changed; local mutation skipped"
 else
   if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --check --repo "$ROOT_REPO" >/dev/null 2>&1; then
     QUARANTINE_STATUS="clean"
