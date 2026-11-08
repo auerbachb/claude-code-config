@@ -332,7 +332,7 @@
 #   guard — a deleted file is not a refactor candidate regardless of its score).
 #
 # EXISTING-ISSUE LOOKUP:
-#   For each hotspot, issues in BOTH states (`--state all`) are searched for
+#   For each hotspot, issues in BOTH states are searched for
 #   `Refactor hotspot in:title` and matched CLIENT-SIDE on an exact title
 #   (`Refactor hotspot: <path>`) or an exact body marker
 #   (`<!-- churn-hotspot: <path> -->`). GitHub tokenizes paths in `in:title`
@@ -351,9 +351,12 @@
 #   chosen match on the next run. This detector still decides nothing — it only
 #   stops hiding the closed hit.
 #
-#   `--state all` enlarges the candidate set, so the ISSUE_LOOKUP_CAP guard below
-#   matters MORE, not less. It is unchanged: a capped lookup still sets
-#   `existing_lookup_failed` and blocks filing.
+#   Repo-scoped REST search reads creation-ascending pages of 100, at most 10
+#   pages. Stable totals, unique numbers, validated candidates and a short/empty
+#   final page prove completion; exactly 200 is complete after page 3. Totals
+#   >=1000 retain the conservative search ceiling and set both lookup-failed
+#   and truncated. Any page/matcher failure blocks filing. Closed matches are
+#   retained; do not close old tickets to fit the bound.
 #
 # OUTPUT:
 #   Default: one TSV row per hotspot, no header —
@@ -454,7 +457,10 @@ TOP=0
 AS_JSON=0
 SWEEP_THRESHOLD=20
 INCLUDE_CREATION=0
-ISSUE_LOOKUP_CAP=200
+# GitHub search is bounded to 1000 results; stop conservatively at that ceiling.
+ISSUE_SEARCH_PER_PAGE=100
+ISSUE_SEARCH_MAX_PAGES=10
+ISSUE_SEARCH_CEILING=$((ISSUE_SEARCH_PER_PAGE * ISSUE_SEARCH_MAX_PAGES))
 EXEMPTIONS_FILE=""
 NO_EXEMPTIONS=0
 
@@ -1737,30 +1743,88 @@ fi
 # GitHub tokenizes paths in `in:title`, so a server-side path query can match a
 # sibling file. When the lookup fails, callers must not file (duplicate risk).
 #
-# `--state all`, NOT `--state open` (issue #915). An open-only search hid every
-# hotspot issue the owner had already reviewed and closed, so the caller read the
-# path as never-ticketed and re-filed it on every run. Closed hits now come back
-# labelled (see the merge below) and the caller decides. `--state all` enlarges
-# the candidate set, which is exactly why the cap guard below stays.
+# Search both open and closed issues (issue #915). Hiding closed decisions made
+# previously ticketed paths look new and caused repeat filings. The complete
+# candidate set retains those decisions for the caller; the page-completeness
+# checks below replace the old fixed-limit guard and still block unsafe filing.
+# Explicit page reads expose completion evidence. Search is not a snapshot:
+# stable creation order and consistency checks detect some concurrent changes.
+lookup_existing_hotspot_issues() {
+  local page=1 response total=-1 page_total count items combined actual
+  local query="repo:$REPO is:issue Refactor hotspot in:title"
+  CANDIDATE_ISSUES='[]'
+  if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    err "issue lookup repository unresolved — not safe to file"
+    return 1
+  fi
+  while [ "$page" -le "$ISSUE_SEARCH_MAX_PAGES" ]; do
+    response=$(gh api --method GET search/issues \
+      -f "q=$query" -f "per_page=$ISSUE_SEARCH_PER_PAGE" -f "page=$page" \
+      -f sort=created -f order=asc 2>/dev/null) || {
+        err "issue lookup page $page failed — not safe to file"
+        return 1
+      }
+    # Slurp validates ONE JSON response, not a stream whose last object passed.
+    if ! printf '%s' "$response" | jq -e -s --argjson bound "$ISSUE_SEARCH_PER_PAGE" '
+      length == 1 and (.[0] |
+        type == "object"
+        and (.total_count | type == "number" and . >= 0 and floor == .)
+        and .incomplete_results == false
+        and (.items | type == "array" and length <= $bound)
+        and all(.items[];
+          type == "object"
+          and (.number | type == "number" and . > 0 and . <= 9007199254740991 and floor == .)
+          and (.title | type == "string")
+          and (.body | . == null or type == "string")
+          and (has("pull_request") | not)))
+    ' >/dev/null 2>&1; then
+      err "issue lookup page $page invalid or incomplete — not safe to file"
+      return 1
+    fi
+    if printf '%s' "$response" | jq -e --argjson ceiling "$ISSUE_SEARCH_CEILING" \
+      '.total_count >= $ceiling' >/dev/null; then
+      TRUNCATED=true
+      err "issue lookup page $page reaches the $ISSUE_SEARCH_CEILING-result search ceiling — not safe to file"
+      return 1
+    fi
+    page_total=$(printf '%s' "$response" | jq -r '.total_count') || return 1
+    if [ "$total" -eq -1 ]; then total=$page_total; fi
+    if [ "$page_total" -ne "$total" ]; then
+      err "issue lookup page $page changed total_count — not safe to file"
+      return 1
+    fi
+    items=$(printf '%s' "$response" | jq -c '[.items[] | {number,title,body,state}]') || return 1
+    count=$(printf '%s' "$items" | jq 'length') || return 1
+    combined=$(printf '%s\n%s\n' "$CANDIDATE_ISSUES" "$items" | jq -sc '.[0] + .[1]') || return 1
+    if ! printf '%s' "$combined" | jq -e 'length == (unique_by(.number) | length)' >/dev/null; then
+      err "issue lookup page $page repeated an issue number — not safe to file"
+      return 1
+    fi
+    CANDIDATE_ISSUES="$combined"
+    actual=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length') || return 1
+    if [ "$actual" -gt "$total" ]; then
+      err "issue lookup page $page exceeds total_count — not safe to file"
+      return 1
+    fi
+    if [ "$count" -lt "$ISSUE_SEARCH_PER_PAGE" ]; then
+      if [ "$actual" -ne "$total" ]; then
+        err "issue lookup page $page ended before total_count — not safe to file"
+        return 1
+      fi
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  TRUNCATED=true
+  err "issue lookup exhausted $ISSUE_SEARCH_MAX_PAGES pages — not safe to file"
+  return 1
+}
+
 CANDIDATE_ISSUES='[]'
 if command -v gh >/dev/null 2>&1; then
-  ISSUES_RAW=$(gh issue list --state all --search "Refactor hotspot in:title" \
-                 --limit "$ISSUE_LOOKUP_CAP" --json number,title,body,state $REPO_ARGS 2>/dev/null) || ISSUES_RAW=""
-  if [ -z "$ISSUES_RAW" ]; then
+  if ! lookup_existing_hotspot_issues; then
     LOOKUP_FAILED=true
-  else
-    CANDIDATE_ISSUES=$(printf '%s' "$ISSUES_RAW" | jq -c '.' 2>/dev/null) || { CANDIDATE_ISSUES='[]'; LOOKUP_FAILED=true; }
-    ISSUE_HITS=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length' 2>/dev/null || echo 0)
-    if [ "$ISSUE_HITS" -ge "$ISSUE_LOOKUP_CAP" ]; then
-      # A capped lookup is an INCOMPLETE lookup: an existing hotspot issue may
-      # sit beyond the cap, so absence of a match no longer proves absence of an
-      # issue. Callers gate filing on existing_lookup_failed, so it must be set
-      # here too — reporting only `truncated` would let a caller file a
-      # duplicate for a hotspot that already has one.
-      err "issue lookup hit the ${ISSUE_LOOKUP_CAP}-issue cap — an existing hotspot issue may have been missed; not safe to file"
-      TRUNCATED=true
-      LOOKUP_FAILED=true
-    fi
+    CANDIDATE_ISSUES='[]'
   fi
 else
   LOOKUP_FAILED=true
@@ -1780,7 +1844,9 @@ fi
 # norm_state type-checks instead of calling ascii_downcase blind: on a
 # non-string the whole program would abort, and this jq's failure mode is an
 # EMPTY hotspot list emitted under exit 0 — every hotspot lost, not just one.
-HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" '
+# Candidate bodies can exceed argv limits; both arrays travel on stdin.
+MATCHED_HOTSPOTS=$(printf '%s\n%s\n' "$CANDIDATE_ISSUES" "$HOTSPOTS" | jq -cs '
+  .[0] as $issues | .[1] |
   def norm_state: (if type == "string" then ascii_downcase else "" end);
   map(
     . as $h
@@ -1801,7 +1867,16 @@ HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" 
         end
       )
   )
-' 2>/dev/null) || HOTSPOTS='[]'
+' 2>/dev/null)
+MATCH_RC=$?
+if [ "$MATCH_RC" -eq 0 ]; then
+  HOTSPOTS="$MATCHED_HOTSPOTS"
+else
+  LOOKUP_FAILED=true
+  err "issue matching failed — not safe to file"
+  HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c \
+    'map(.existing_hotspot_issue = null | .existing_hotspot_issue_state = null)') || exit 4
+fi
 
 case "$HOTSPOTS" in ''|null) HOTSPOTS='[]' ;; esac
 
