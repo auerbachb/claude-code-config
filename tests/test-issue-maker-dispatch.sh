@@ -548,8 +548,90 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     # Both phase changes contain this prefix; later cleanup writes cannot reach
     # the barrier until the parent has released its first two arrivals.
     codes,outputs=race([launch,cleanup],'.handoff_checkpoint.state =')
-    d=json.loads(log.read_text());assert sorted(codes)==[0,1],(codes,outputs,d)
-    assert (d.get('handoff_checkpoint') is None and offers()[0]['state']=='retracted') or (d['handoff_checkpoint']['spawn_status']=='unknown' and offers()[0]['state']=='offered'),(d,offers())
+    def assert_launch_cleanup_result(codes,outputs):
+        d=json.loads(log.read_text())
+        if d.get('handoff_checkpoint') is None:
+            assert d.get('reg_tid') is None and d['delivery_mode']=='inline' and offers()[0]['state']=='retracted',(d,offers())
+            assert codes in ([1,0],[1,1]),(codes,outputs,d)
+            if codes==[1,1]:
+                assert 'launch intent failed; no spawn attempted' in outputs[0][1],outputs
+                assert 'stale handoff receipt' in outputs[1][1] and 'reservation released but session cleanup could not be persisted' in outputs[1][1],outputs
+                assert all(row['chip_task_id'] is None for row in d['issues']),d
+        else:
+            assert codes==[0,1] and d['handoff_checkpoint']['spawn_status']=='unknown' and offers()[0]['state']=='offered',(codes,outputs,d,offers())
+        return d
+    d=assert_launch_cleanup_result(codes,outputs)
+
+    # Force all three real write orderings. Public launch failure stays failure
+    # even when its rollback completes cleanup before the other final clear.
+    def scheduled_launch_cleanup(schedule):
+        barrier=pathlib.Path(tempfile.mkdtemp(prefix='scheduled-',dir=td))
+        attempt=json.loads(log.read_text())['handoff_checkpoint']['attempt_id']
+        expected_replays=json.loads(log.read_text())['handoff_replays']
+        stage=r'''stage_wait() {
+  local tick
+  for tick in {1..500}; do [[ ! -f "$1" ]] || return 0; sleep .02; done
+  echo "fixture stage timed out: $1" >&2; return 98
+}
+set_log() {
+  local change="$1" result=0
+  if [[ "$ROLE" == launch && "$change" == *'state = "spawn-uncertain"'* ]]; then
+    : > "$STAGES/intent-ready"
+    stage_wait "$STAGES/cleanup-ready" || return 98
+    case "$SCHEDULE" in
+      rollback) stage_wait "$STAGES/cleanup-claimed" || return 98 ;;
+      cleanup) stage_wait "$STAGES/cleanup-done" || return 98 ;;
+    esac
+  fi
+  if [[ "$ROLE" == cleanup && "$change" == *'.handoff_checkpoint.state = "cleanup-pending"'* ]]; then
+    : > "$STAGES/cleanup-ready"
+    stage_wait "$STAGES/intent-ready" || return 98
+    if [[ "$SCHEDULE" == launch ]]; then stage_wait "$STAGES/intent-committed" || return 98; fi
+  fi
+  if [[ "$ROLE" == cleanup && "$SCHEDULE" == rollback && "$change" == *'.reg_tid = null | .delivery_mode = "inline"'* ]]; then
+    stage_wait "$STAGES/rollback-done" || return 98
+  fi
+  "$REAL_SET_LOG" "$LOG" "$@" || result=$?
+  if [[ $result -eq 0 ]]; then
+    if [[ "$ROLE" == launch && "$change" == *'state = "spawn-uncertain"'* ]]; then : > "$STAGES/intent-committed"; fi
+    if [[ "$ROLE" == cleanup && "$change" == *'.handoff_checkpoint.state = "cleanup-pending"'* ]]; then : > "$STAGES/cleanup-claimed"; fi
+    if [[ "$change" == *'.reg_tid = null | .delivery_mode = "inline"'* ]]; then
+      if [[ "$ROLE" == launch ]]; then : > "$STAGES/rollback-done"; else : > "$STAGES/cleanup-done"; fi
+    fi
+  fi
+  return "$result"
+}
+'''
+        procs=[]
+        try:
+            for role,body in [('launch',launch),('cleanup',cleanup)]:
+                prefix=setup+env_setup+release_block+'\nHANDOFF_ATTEMPT_ID='+shlex.quote(attempt)+'\nSTAGES='+shlex.quote(str(barrier))+'\nROLE='+role+'\nSCHEDULE='+schedule+'\nREAL_SET_LOG='+shlex.quote(str(skill/'scripts/set-log.sh'))+'\n'
+                procs.append(subprocess.Popen(['bash','-eu','-c',prefix+stage+body],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=root))
+            outputs=[proc.communicate(timeout=20) for proc in procs]
+            codes=[proc.returncode for proc in procs]
+            assert all('fixture stage timed out' not in err for out,err in outputs),outputs
+            d=assert_launch_cleanup_result(codes,outputs)
+            assert d['handoff_replays']==expected_replays,d
+            expected_codes={'launch':[0,1],'cleanup':[1,0],'rollback':[1,1]}[schedule]
+            assert codes==expected_codes,(schedule,codes,outputs)
+            if schedule=='launch':
+                assert d['handoff_checkpoint']['state']=='spawn-uncertain' and not (barrier/'rollback-done').exists(),d
+                before=log.read_bytes();r=invoke('',launch)
+                assert r.returncode==1 and log.read_bytes()==before,r.stderr
+            else:
+                assert d['issues'][0]['chip_task_id']==(None if schedule=='rollback' else json.loads(concurrent_state)['issues'][0]['chip_task_id']),d
+                # A subsequent fresh attempt can reserve once; no receipt or
+                # retracted reservation wedges bounded restart.
+                before_count=len(offers());r=invoke();after=json.loads(log.read_text())
+                assert r.returncode==0 and len(offers())==before_count+1 and after['handoff_checkpoint']['state']=='reserved',(r.stderr,after,offers())
+            print('ok workflow: deterministic launch/cleanup '+schedule+' ordering preserves fenced state and bounded recovery')
+        finally:
+            for proc in procs:
+                if proc.poll() is None:proc.kill()
+                proc.communicate(timeout=5)
+    for schedule in ('launch','cleanup','rollback'):
+        log.write_bytes(concurrent_state);state_file.write_bytes(concurrent_registry)
+        scheduled_launch_cleanup(schedule)
     # Explicit acceptance still needs one atomic invocation claim; concurrent
     # accepted callers cannot both proceed to the separate skill action.
     seed([dict(row(1,origin='create'),chip_task_id='inline-offer')])
