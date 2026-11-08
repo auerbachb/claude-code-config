@@ -176,6 +176,7 @@ opt-in of issue #1544.
 | [session-state.test.sh](../tests/session-state.test.sh) | Tests for `session-state.sh` |
 | [skill-conventions-audit.test.sh](../tests/skill-conventions-audit.test.sh) | Tests for `skill-conventions-audit.sh` |
 | [skill-usage-merge.test.sh](../tests/skill-usage-merge.test.sh) | Tests for `skill-usage-merge.sh` |
+| [spawn-state-write.test.sh](../tests/spawn-state-write.test.sh) | Exercises real PMM/subagent spawn batches, atomic failure, exact lock retry and unconfirmed-registration recovery evidence |
 | [spend-telemetry-report.test.sh](../tests/spend-telemetry-report.test.sh) | Tests for `spend-telemetry-report.sh` against a stub log in a temp `HOME` |
 | [split-thresholds.test.sh](../tests/split-thresholds.test.sh) | Tests for `split-thresholds.sh`: the env → pm-config.md → default cascade per knob, reject-and-fall-back (never clamp) on out-of-range and non-integer values, the incoherent-pair rule that resets BOTH knobs, exact-key config matching, and the output modes |
 | [stale-cleanup-finished.test.sh](../tests/stale-cleanup-finished.test.sh) | Finished-only worktree cleanup against disposable repos, remote proof, liveness and removal-race controls |
