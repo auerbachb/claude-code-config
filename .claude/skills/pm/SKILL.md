@@ -1386,7 +1386,7 @@ The winning claim emits `PARK_GENERATION`. Carry that exact binding into wake pu
 
 ```bash
 PARK_GENERATION_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}" ".claude/scripts/park-generation.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}"; do
   if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
 done
 PARK_GENERATION=""
@@ -1527,7 +1527,7 @@ then . else error("invalid durable park identity") end
 fi
 if [[ "$D5_CLEAR_RC" -eq 0 ]]; then
   PARK_RETIRE_SH=""
-  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh}" "${HOME:+$HOME/.claude/scripts/park-retire.sh}" ".claude/scripts/park-retire.sh"; do
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh}" "${HOME:+$HOME/.claude/scripts/park-retire.sh}"; do
     if [ -x "$candidate" ]; then PARK_RETIRE_SH="$candidate"; break; fi
   done
   D5_CLEAR_RC=4
@@ -1655,7 +1655,7 @@ PARK_CLAIM_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 PARK_CLAIM_TOKEN="park-$(date -u +%Y%m%dT%H%M%SZ)-$$-$PARK_CLAIM_NONCE"
 
 PARK_GENERATION_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}" ".claude/scripts/park-generation.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}"; do
   if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
 done
 PARK_GENERATION=""

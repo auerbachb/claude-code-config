@@ -51,7 +51,10 @@ TMP_HOME="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_HOME"; }
 trap cleanup EXIT
 export HOME="$TMP_HOME"
-mkdir -p "$HOME/.claude"
+mkdir -p "$HOME/.claude/scripts"
+# Fixtures install the same trusted helper locations as production.
+ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$HOME/.claude/scripts/park-retire.sh"
 STATE_FILE="$HOME/.claude/session-state.json"
 REPO_KEY="auerbachb/claude-code-config"
 PARK_RETIRE_SH="$REPO_ROOT/.claude/scripts/park-retire.sh"
@@ -671,6 +674,7 @@ check_eq 'failed mint prints no identity' '' "$MINT_OUT"
 
 # Installed-only resolution is exercised from a deliberately untrusted cwd.
 # Its benign sentinel would falsely report retirement success if executed.
+rm -f "$HOME/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-retire.sh"
 STOP_CALLS="$TMP_HOME/native-stop-calls"
 SENTINEL="$TMP_HOME/untrusted-executed"
 export STOP_CALLS SENTINEL STOP_RESULT
@@ -701,6 +705,36 @@ cat > "$UNTRUSTED/.claude/scripts/park-retire.sh" <<'UNTRUSTED_HELPER'
 exit 0
 UNTRUSTED_HELPER
 chmod +x "$UNTRUSTED/.claude/scripts/park-retire.sh"
+cat > "$UNTRUSTED/.claude/scripts/park-generation.sh" <<'UNTRUSTED_GENERATOR'
+#!/bin/sh
+: > "$SENTINEL"
+printf 'park-benign-untrusted\n'
+UNTRUSTED_GENERATOR
+chmod +x "$UNTRUSTED/.claude/scripts/park-generation.sh"
+seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+BEFORE=$(cat "$STATE_FILE")
+OUT=$(cd "$UNTRUSTED" && bash -c "$BLOCK_D5" 2>&1)
+check_eq 'D5 missing installed helper reports error 4' 'RESUME_CLEAR=error rc=4' "$OUT"
+check_eq 'D5 missing installed helper preserves state bytes' "$BEFORE" "$(cat "$STATE_FILE")"
+check_eq 'D5 never executes an untrusted retirement helper' false "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
+for CLAIM_ANCHOR in pm-day-2d6-park-claim pm-day-2d7-park-claim subagent-limit-park-claim; do
+  CLAIM_DOC="$PM_SKILL"
+  [[ "$CLAIM_ANCHOR" != subagent-limit-park-claim ]] || CLAIM_DOC="$LIMIT_PARK_DOC"
+  CLAIM_BLOCK=$(extract_skill_bash "$CLAIM_DOC" "$CLAIM_ANCHOR") || exit 1
+  RESOLVE_BLOCK=$(printf '%s\n' "$CLAIM_BLOCK" | awk '/^PARK_GENERATION_SH=""$/ {on=1} on {print} on && /^done$/ {exit}')
+  [[ -n "$RESOLVE_BLOCK" ]] || exit 1
+  OUT=$(cd "$UNTRUSTED" && bash -c "$RESOLVE_BLOCK"$'\n''echo "SELECTED=$PARK_GENERATION_SH"; if [[ -n "$PARK_GENERATION_SH" ]]; then "$PARK_GENERATION_SH"; fi')
+  check_eq "$CLAIM_ANCHOR: no cwd generation authority" 'SELECTED=' "$OUT"
+  check_eq "$CLAIM_ANCHOR: no untrusted execution" false "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
+  for LOCATION in "$HOME/.claude/skills-worktree/.claude/scripts" "$HOME/.claude/scripts"; do
+    mkdir -p "$LOCATION"
+    ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$LOCATION/park-generation.sh"
+    OUT=$(cd "$UNTRUSTED" && bash -c "$RESOLVE_BLOCK"$'\n''echo "$PARK_GENERATION_SH"')
+    check_eq "$CLAIM_ANCHOR: trusted location is selected" "$LOCATION/park-generation.sh" "$OUT"
+    rm -f "$LOCATION/park-generation.sh"
+  done
+done
+ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
 seed_complete_park reactive 2026-09-11T22:00:00Z task-original
 BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
 OUT=$(cd "$UNTRUSTED" && bash -c "$TOP_RESOLVE"$'\n''SESSION_STATE_SH="$REAL_SESSION_STATE_SH"'$'\n'"$STOP_FUNC"$'\n'"$BLOCK_RETIRE"$'\n'"$BLOCK_DISARM"$'\n''echo "RESOLVED=$LIMIT_WAKE_RESOLVED"' 2>&1)
