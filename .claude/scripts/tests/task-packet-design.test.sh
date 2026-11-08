@@ -110,25 +110,51 @@ def index_for_fixture(source):
 
 
 def freshness(packet, live, age=0):
-    required = ('issue', 'handoff', 'session', 'module')
-    for stamps in (packet.get('sources'), live.get('sources')):
-        if not isinstance(stamps, dict) or any(not isinstance(stamps.get(key), str)
-                or not stamps[key].strip() for key in required):
-            return 'unknown'
-    if live['claim']['status'] != 'mine':
+    # This is a design oracle, not a runtime validator or ownership service.
+    # Compare known typed bindings first; missing data is not a mismatch.
+    def at(value, *keys):
+        for key in keys:
+            value = value.get(key) if isinstance(value, dict) else None
+        return value
+
+    def text(value):
+        return isinstance(value, str) and bool(value.strip())
+
+    def positive_id(value):
+        return type(value) is int and value > 0
+
+    def sha(value):
+        return text(value) and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', value) is not None
+
+    pairs = []
+    for key in ('repo', 'issue', 'worktree', 'branch', 'head'):
+        valid = positive_id if key == 'issue' else sha if key == 'head' else text
+        pairs.append((at(packet, 'identity', key), at(live, key), valid))
+    for key in ('holder', 'author', 'marker_id', 'created_at'):
+        pairs.append((at(packet, 'ownership', key), at(live, 'claim', key),
+                      positive_id if key == 'marker_id' else text))
+    phase = at(live, 'phase')
+    pairs += [(at(packet, 'phase'), phase, lambda p: p in ('A', 'B', 'C')),
+              (at(packet, 'active_module'), at(at(live, 'modules'), phase) if isinstance(phase, str) else None, text)]
+    for key in ('issue', 'handoff', 'session', 'module'):
+        pairs.append((at(packet, 'sources', key), at(live, 'sources', key), text))
+    pairs.append((at(packet, 'spec', 'revision'), at(live, 'spec', 'revision'), text))
+    body = at(live, 'spec', 'body')
+    pairs.append((at(packet, 'spec', 'body_sha256'), digest(body) if text(body) else None,
+                  lambda p: text(p) and re.fullmatch(r'[0-9a-f]{64}', p) is not None))
+    missing = False
+    for old, new, valid in pairs:
+        if valid(old) and valid(new):
+            if old != new:
+                return 'stale'
+        else:
+            missing = True
+    if type(age) not in (int, float) or not 0 <= age < float('inf'):
+        missing = True
+    elif age > fixture['max_age_seconds']:
+        return 'stale'
+    if missing or at(live, 'claim', 'status') != 'mine':
         return 'unknown'
-    if age > fixture['max_age_seconds']:
-        return 'stale'
-    if any(packet['identity'][k] != live[k] for k in packet['identity']):
-        return 'stale'
-    if packet['phase'] != live['phase'] or packet['active_module'] != live['modules'][live['phase']]:
-        return 'stale'
-    if any(packet['ownership'][k] != live['claim'][k] for k in ('holder', 'author', 'marker_id', 'created_at')):
-        return 'stale'
-    if packet['sources'] != live['sources'] or packet['spec']['revision'] != live['spec']['revision']:
-        return 'stale'
-    if packet['spec']['body_sha256'] != digest(live['spec']['body']):
-        return 'stale'
     return 'current'
 
 
@@ -138,6 +164,8 @@ for case in fixture['pairs']:
 for case in fixture['freshness_cases']:
     live = merge(copy.deepcopy(base), case['change'])
     verify(freshness(packet, live, case.get('age_seconds', 0)) == case['expected'], case['name'])
+    if case['expected'] != 'current':
+        verify(freshness(packet, live, case.get('age_seconds', 0)) != 'current' and 'merge_ready' not in packet and 'work_authorized' not in packet, case['name'] + ': blocking verdict grants no work/merge authority')
 verify(packet['spec']['ac_count'] == 2, 'all acceptance criteria counted')
 verify('body' not in packet['spec'], 'full body remains at canonical pointer')
 verify(packet['active_module'] == 'fixture://phase-a', 'active module only')

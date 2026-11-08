@@ -259,6 +259,99 @@
       "change": {},
       "age_seconds": 901,
       "expected": "stale"
+    },
+    {
+      "name": "unknown-claim-plus-known-repo-mismatch",
+      "change": {
+        "repo": "fixture/other",
+        "claim": {
+          "status": "unknown"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "unknown-claim-plus-known-head-mismatch",
+      "change": {
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "claim": {
+          "status": "unknown"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "unknown-claim-plus-known-owner-mismatch",
+      "change": {
+        "claim": {
+          "holder": "another-holder",
+          "marker_id": 502,
+          "status": "unknown"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "unknown-claim-plus-known-issue-mismatch",
+      "change": {
+        "issue": 102,
+        "claim": {
+          "status": "unknown"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "unknown-claim-plus-known-issue-source-mismatch",
+      "change": {
+        "sources": {
+          "issue": "issue101-v2"
+        },
+        "claim": {
+          "status": "unknown"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "missing-stamp-plus-known-head-mismatch",
+      "change": {
+        "sources": {
+          "issue": null
+        },
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "missing-claim-holder-only",
+      "change": {
+        "claim": {
+          "holder": null
+        }
+      },
+      "expected": "unknown"
+    },
+    {
+      "name": "blank-head-is-missing-not-mismatch",
+      "change": {
+        "head": "  "
+      },
+      "expected": "unknown"
+    },
+    {
+      "name": "malformed-head-is-unknown",
+      "change": {
+        "head": "not-a-sha"
+      },
+      "expected": "unknown"
+    },
+    {
+      "name": "malformed-issue-is-unknown",
+      "change": {
+        "issue": true
+      },
+      "expected": "unknown"
     }
   ]
 }
