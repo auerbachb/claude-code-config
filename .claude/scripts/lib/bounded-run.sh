@@ -32,6 +32,12 @@
 #     hang. The exception to the exception is a status that is our own kill
 #     (143/137), which means the bound genuinely did cut the call short.
 #     <secs> must be a positive integer; normalize_bound() produces one.
+#     Backward wall-clock corrections re-anchor start at the elapsed high-water
+#     mark, so later samples keep advancing instead of extending the call by
+#     the jump (Issue #1651, bounded-run.test.sh T12). Poll/clock granularity
+#     and termination grace still apply. A clock that stops or rewinds forever
+#     cannot measure elapsed time; this portable wall-clock design does not
+#     claim a bound in that case. Unreadable clocks still stop the child.
 #
 #     Never call this inside `$( )`. Command substitution runs the whole
 #     function in a subshell, which discards BOUNDED_TIMED_OUT, the capture
@@ -154,7 +160,7 @@ run_bounded() { # bound_secs, command...
   local pid=$!
   set +m 2>/dev/null || true
 
-  local start now rc=0 killed=0 waited=0 reaped=0
+  local start now measured elapsed=0 rc=0 killed=0 waited=0 reaped=0
   start="$(now_epoch)" || start=""
   # The bound reads the clock every pass, never a tick count: a tick is a sleep
   # plus a fork, so counting iterations drifts past the requested bound under
@@ -165,8 +171,15 @@ run_bounded() { # bound_secs, command...
     # stop the call and say why, rather than running it unbounded.
     if [[ -z "$start" || -z "$now" ]]; then
       BOUNDED_CLOCK_UNREADABLE=1
+    else
+      measured=$((now - start))
+      if (( measured < elapsed )); then
+        start=$((now - elapsed))
+      else
+        elapsed="$measured"
+      fi
     fi
-    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( now - start >= bound )); then
+    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( elapsed >= bound )); then
       killed=1
       kill_child TERM "$pid"
       # Polled grace so a child that dies at once does not hold the wrapper

@@ -3,7 +3,7 @@
 # wall-clock bound extracted in issue #1404 from repo-root.sh (issue #1363).
 # catalog: tests — Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract
 #
-# The library is the one definition four scripts now rely on to never hang, so
+# The library is the shared definition its callers rely on to never hang, so
 # this suite locks its contract directly rather than only through its consumers:
 # a fast command comes back with its REAL status and no timeout flag, a wedged
 # one is killed at the bound with 124, the kill reaches the whole process group,
@@ -17,11 +17,11 @@
 # still running when the bounded call had already returned. Without it T4 could
 # pass against a command that simply exits quickly on its own.
 #
-# Requires bash. Run from repo root: bash .claude/scripts/tests/bounded-run.test.sh
+# Requires bash and Python3 (independent monotonic timing). Run from repo root: bash .claude/scripts/tests/bounded-run.test.sh
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-LIB="$REPO_ROOT/.claude/scripts/lib/bounded-run.sh"
+LIB="${BOUNDED_RUN_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/lib/bounded-run.sh}"
 
 TMP="$(mktemp -d)"
 cleanup() {
@@ -29,6 +29,7 @@ cleanup() {
   # process-group test cannot leak sleepers into the runner.
   pkill -f "$TMP/stub-sleeper" >/dev/null 2>&1 || true
   pkill -f "$TMP/stub-wedged" >/dev/null 2>&1 || true
+  pkill -f "$TMP/stub-clock-stall" >/dev/null 2>&1 || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -361,6 +362,80 @@ check_eq "T11g control: with every helper present, still nothing on stderr" "0" 
 run_kill_case "ps"
 check_eq "T11h control: a missing ps still times out (124)" "124" "$KILL_RC"
 check_eq "T11i control: a missing ps still emits nothing on stderr" "0" "$KILL_LINES"
+
+
+# T12: the real wall clock keeps advancing, but one sampler gets a six-second
+# correction after the child is ready and the first second has been sampled.
+# Duration is measured independently by Python's monotonic clock. The child
+# self-limits at ~12s even if the library regresses, so the fixture cannot hang.
+echo "== T12: a backward clock correction preserves a single-call bound (#1651) =="
+CLOCK_REAL_DATE="$(command -v date)"
+CLOCK_READY="$TMP/clock-ready"
+CLOCK_BASE="$TMP/clock-base"
+CLOCK_SAMPLES="$TMP/clock-samples"
+CLOCK_MOVED="$TMP/clock-moved"
+export CLOCK_READY
+cat > "$TMP/stub-clock-stall" <<'CLOCK_CHILD'
+#!/usr/bin/env bash
+: > "$CLOCK_READY"
+for ((i=0; i<60; i++)); do sleep 0.2; done
+CLOCK_CHILD
+chmod +x "$TMP/stub-clock-stall"
+monotonic_ms() { python3 -c 'import time; print(int(time.monotonic()*1000))'; }
+for CLOCK_MODE in backward forward; do
+  rm -f "$CLOCK_READY" "$CLOCK_BASE" "$CLOCK_MOVED"
+  : > "$CLOCK_SAMPLES"
+  CAPTURE="$TMP/clock-out"
+  CAPTURE_ERR="$TMP/clock-err"
+  date() {
+    local real base value
+    real="$("$CLOCK_REAL_DATE" "$@")" || return 1
+    if [[ ! -f "$CLOCK_BASE" ]]; then printf '%s\n' "$real" > "$CLOCK_BASE"; fi
+    base="$(cat "$CLOCK_BASE")"
+    value="$real"
+    if [[ "$CLOCK_MODE" == backward && -f "$CLOCK_READY" ]] && (( real - base >= 2 )); then
+      value=$((real - 6))
+      : > "$CLOCK_MOVED"
+    fi
+    printf '%s\n' "$value" >> "$CLOCK_SAMPLES"
+    printf '%s\n' "$value"
+  }
+  # Establish that the fixture callback itself supplies a usable clock before
+  # timing the library. Reset its private trace so the witness below contains
+  # only samples from the actual bounded call.
+  CLOCK_PROBE="$(date -u +%s)"
+  if [[ "$CLOCK_PROBE" =~ ^[0-9]+$ ]]; then
+    pass "T12/$CLOCK_MODE: fixture clock is readable before the measured call"
+  else
+    fail "T12/$CLOCK_MODE: fixture clock probe was unreadable"
+  fi
+  rm -f "$CLOCK_BASE"
+  : > "$CLOCK_SAMPLES"
+  CLOCK_START="$(monotonic_ms)"
+  CLOCK_RC=0
+  run_bounded 4 "$TMP/stub-clock-stall" || CLOCK_RC=$?
+  CLOCK_ELAPSED=$(( $(monotonic_ms) - CLOCK_START ))
+  unset -f date
+  check_eq "T12/$CLOCK_MODE: stalled child is stopped at the bound" "124" "$CLOCK_RC"
+  check_eq "T12/$CLOCK_MODE: timeout flag remains the existing contract" "1" "$BOUNDED_TIMED_OUT"
+  check_eq "T12/$CLOCK_MODE: clock remains readable" "0" "$BOUNDED_CLOCK_UNREADABLE"
+  if (( CLOCK_ELAPSED >= 1000 && CLOCK_ELAPSED <= 7000 )); then
+    pass "T12/$CLOCK_MODE: independent monotonic duration ${CLOCK_ELAPSED}ms stays within the 4s bound plus sampling/termination headroom"
+  else
+    fail "T12/$CLOCK_MODE: ${CLOCK_ELAPSED}ms exceeds the 7s envelope (a 6s backward correction must not extend the call)"
+  fi
+  CLOCK_WITNESS="$(python3 - "$CLOCK_SAMPLES" "$CLOCK_MODE" <<'CLOCK_WITNESS'
+import sys
+with open(sys.argv[1]) as f:values=[int(v) for v in f]
+drops=[i for i in range(1,len(values)) if values[i]<values[i-1]]
+if sys.argv[2]=='backward':
+    print('yes' if drops and max(values[:drops[0]])>values[0] else 'no')
+else:
+    print('yes' if len(values)>1 and not drops and max(values)>values[0] else 'no')
+CLOCK_WITNESS
+)"
+  check_eq "T12/$CLOCK_MODE: fixture witnessed the intended progressing clock shape" "yes" "$CLOCK_WITNESS"
+done
 
 echo
 echo "Results: $PASS passed, $FAIL failed"
