@@ -1,6 +1,7 @@
 """Finished artifact pass for the workspace cadence; ambiguity retains data."""
 import argparse
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,7 +43,7 @@ class Artifacts:
         return row
 
     @staticmethod
-    def private_json(path):
+    def private_json(path, include_digest=False):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
             meta = os.fstat(stream.fileno())
@@ -51,7 +52,8 @@ class Artifacts:
             raw = stream.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:
                 raise finished.Unknown("artifact_output_limit")
-            return json.loads(raw), meta
+            value = json.loads(raw)
+            return (value, meta, hashlib.sha256(raw).hexdigest()) if include_digest else (value, meta)
 
     def item(self, kind, path, operation):
         self.operations.append((kind, path, operation))
@@ -110,7 +112,7 @@ class Artifacts:
 
     def handoff(self, path, row):
         number = int(re.fullmatch(r"pr-([1-9][0-9]*)-handoff\.json", path.name)[1])
-        doc, meta = self.private_json(path)
+        doc, meta, digest = self.private_json(path, include_digest=True)
         if (not isinstance(doc, dict) or type(doc.get("pr_number")) is not int or doc.get("pr_number") != number
                 or str(doc.get("owner_repo", "")).lower() != self.sweep.repo.lower()
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(doc.get("head_sha", "")))):
@@ -128,7 +130,7 @@ class Artifacts:
             row["removal_attempted"] = True
             code, _, _ = finished.run([helper, "--owner-repo", self.sweep.repo, "--require-existing",
                                        "--expect-pr", str(number), "--expect-owner", self.sweep.repo,
-                                       "--expect-head", doc["head_sha"], "--delete", str(number)],
+                                       "--expect-head", doc["head_sha"], "--expect-content-sha", digest, "--delete", str(number)],
                                       str(self.root), env=env)
             if code or path.exists():
                 raise finished.Unknown("handoff_delete_refused")

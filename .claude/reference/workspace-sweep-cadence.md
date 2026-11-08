@@ -191,3 +191,8 @@ managed desktop bindings remain unknown. A completed already-reaped checkout can
 release its metadata only after the same liveness checks. Completion writers publish the guarded
 disposition before Phase C is marked finished; ordinary wrap deletes its own
 scoped handoff after successful reconciliation.
+
+Artifact handoff deletion also supplies the selected file's SHA256 revision to
+handoff-state. The helper verifies it under the writer lock in addition to
+PR/repo/HEAD, so a resumed owner changing completion state at the same HEAD
+cannot lose its newer handoff. Unknown or changed content is retained.

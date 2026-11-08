@@ -55,6 +55,24 @@ cases=r'''
     verify(not finished_handoff.exists() and outcome(result,finished_handoff)['removed'],'terminal scoped handoff is removed through guarded helper')
     verify(open_handoff.exists() and outcome(result,open_handoff)['reason']=='open_pr','open PR handoff retained')
     verify(outcome(result,finished_handoff)['logical_bytes_reclaimed']>0,'handoff bytes count only after actual deletion')
+    raced_handoff=handoff(merged_row)
+    bashshim=bin_dir/'bash'
+    bashshim.write_text(r"""#!/usr/bin/env python3
+import json,os,subprocess,sys
+a=sys.argv[1:];target=os.environ.get('FINISHED_TEST_HANDOFF_RACE')
+if target and a and a[0].endswith('/handoff-state.sh') and '--delete' in a:
+ from pathlib import Path
+ doc=json.loads(Path(target).read_text())
+ subprocess.run(['/bin/bash',a[0],'--owner-repo','fixture/repo','--set',str(doc['pr_number']),'.phase_completed="B"'],check=True)
+os.execv('/bin/bash',['/bin/bash',*a])
+""")
+    bashshim.chmod(0o700)
+    result=artifacts(extra={'FINISHED_TEST_HANDOFF_RACE':str(raced_handoff)})
+    bashshim.unlink()
+    verify(raced_handoff.exists() and json.loads(raced_handoff.read_text())['phase_completed']=='B','resumed same-HEAD owner survives selection-to-delete race')
+    verify(outcome(result,raced_handoff)['reason']=='handoff_delete_refused','under-lock revision mismatch refuses artifact deletion')
+    raced_handoff.unlink()
+
 
     reaped=worktree('handoff-reaped')
     reaped_row=next(r for r in db['rows'] if r['headRefName']=='handoff-reaped')
