@@ -21,6 +21,13 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [reviewer-of.sh](../reviewer-of.sh) | Determine which reviewer (cr/bugbot/greptile) owns a PR; reads session-state then GitHub history |
 <!-- catalog:rows:end -->
 
+Large snapshot payloads use private scratch files and `jq --slurpfile`/stdin,
+including paginated thread accumulation, baseline classification and final
+assembly. The returned output file survives scratch cleanup; bodies are kept
+in full. Issue #1565 covers this producer; Issues #1557 / #1562 cover the
+separate downstream watermark consumer. Reuse file inputs rather than passing
+endpoint JSON through argv.
+
 ---
 
 [← back to the index](../README.md)
