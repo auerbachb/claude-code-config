@@ -11,13 +11,6 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/ac-gate.sh"
 PR_ISSUE_REF_SH="$REPO_ROOT/.claude/scripts/pr-issue-ref.sh"
 
-TMP="$(mktemp -d)"
-TMP_HOME="$(mktemp -d)"
-cleanup() { rm -rf "$TMP" "$TMP_HOME"; }
-trap cleanup EXIT
-export HOME="$TMP_HOME"
-mkdir -p "$HOME/.claude"
-
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); echo "ok   — $1"; }
@@ -59,6 +52,37 @@ check_msg() {
     fail "$desc (missing '$needle' in message)"
   fi
 }
+
+# Read installed Python dependencies before fixture HOME hides user-site packages.
+# #1723: inspect the event node, not a word that could appear in a comment.
+# BaseLoader preserves GitHub's string key "on" (YAML1.1 otherwise makes it true).
+if python3 - "${AC_GATE_WORKFLOW_TEST_SOURCE:-$REPO_ROOT/.github/workflows/ac-gate.yml}" <<'WORKFLOW_CONTRACT'
+import sys
+import yaml
+with open(sys.argv[1]) as f:
+    workflow = yaml.load(f, Loader=yaml.BaseLoader)
+events = workflow['on']['pull_request']
+assert isinstance(events, dict), 'pull_request needs explicit activity types'
+assert {'opened', 'synchronize', 'reopened', 'edited'} <= set(events['types']), 'body edits must rerun AC gate; retain default events'
+job = workflow['jobs']['ac-gate']
+assert 'name' not in job, 'required ac-gate check identity must stay stable'
+assert workflow['permissions'] == {'contents': 'read', 'pull-requests': 'read', 'issues': 'read'}, 'body edits need no additional permission'
+checkout = next(s for s in job['steps'] if s.get('name') == 'Checkout')
+assert checkout['with']['ref'] == '${{ github.event.pull_request.base.sha }}', 'gate must execute trusted base code'
+assert checkout['with']['persist-credentials'] == 'false', 'checkout must not persist credentials'
+WORKFLOW_CONTRACT
+then
+  pass "AC workflow structurally includes edited/default events and preserves required trusted check"
+else
+  fail "AC workflow edited-event/required-check contract"
+fi
+
+TMP="$(mktemp -d)"
+TMP_HOME="$(mktemp -d)"
+cleanup() { rm -rf "$TMP" "$TMP_HOME"; }
+trap cleanup EXIT
+export HOME="$TMP_HOME"
+mkdir -p "$HOME/.claude"
 
 # ---------------------------------------------------------------------------
 # Fixtures: PR bodies and issue states
@@ -725,28 +749,6 @@ check_msg  "Test16: message names the pr-issue-ref failure" "pr-issue-ref.sh" "$
 
 echo ""
 
-# #1723: inspect the event node, not a word that could appear in a comment.
-# BaseLoader preserves GitHub's string key "on" (YAML1.1 otherwise makes it true).
-if python3 - "${AC_GATE_WORKFLOW_TEST_SOURCE:-$REPO_ROOT/.github/workflows/ac-gate.yml}" <<'WORKFLOW_CONTRACT'
-import sys
-import yaml
-with open(sys.argv[1]) as f:
-    workflow = yaml.load(f, Loader=yaml.BaseLoader)
-events = workflow['on']['pull_request']
-assert isinstance(events, dict), 'pull_request needs explicit activity types'
-assert {'opened', 'synchronize', 'reopened', 'edited'} <= set(events['types']), 'body edits must rerun AC gate; retain default events'
-job = workflow['jobs']['ac-gate']
-assert 'name' not in job, 'required ac-gate check identity must stay stable'
-assert workflow['permissions'] == {'contents': 'read', 'pull-requests': 'read', 'issues': 'read'}, 'body edits need no additional permission'
-checkout = next(s for s in job['steps'] if s.get('name') == 'Checkout')
-assert checkout['with']['ref'] == '${{ github.event.pull_request.base.sha }}', 'gate must execute trusted base code'
-assert checkout['with']['persist-credentials'] == 'false', 'checkout must not persist credentials'
-WORKFLOW_CONTRACT
-then
-  pass "AC workflow structurally includes edited/default events and preserves required trusted check"
-else
-  fail "AC workflow edited-event/required-check contract"
-fi
 
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
