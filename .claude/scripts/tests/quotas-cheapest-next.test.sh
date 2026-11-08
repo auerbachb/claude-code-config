@@ -73,6 +73,7 @@ STATE_DIR="$CASE_HOME/.claude/quotas"
 reset_state() {
   rm -rf "$CASE_HOME"
   mkdir -p "$CASE_HOME/.claude"
+  printf '%s\n' '{"schema_version":"1.0","accounts":[{"provider":"codex","label":"c","profile_dir":"/fixture/c"},{"provider":"codex","label":"d","profile_dir":"/fixture/d"}]}' > "$CASE_HOME/.claude/ai-quotas.json"
 }
 
 # Never aborts the suite; sets OUT, ERR, RC.
@@ -91,6 +92,7 @@ run() { # <rows-json> [args…]
 
 # Runs a non-annotate mode (no stdin rows).
 run_mode() { # <args…>
+  if [[ "${1:-}" == --record-codex-reset ]]; then set -- "$@" --account c; fi
   local errf="$TMP/run.err"
   OUT="$(HOME="$CASE_HOME" \
         CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" \
@@ -321,7 +323,7 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label')" "a" \
   "with the free reset spent, metered overage beats a flat-fee reset"
 check_contains "$(printf '%s' "$OUT" | jq -r '.cheapest_next.reason')" "metered per unit of work" \
   "and the reason says the charge is metered"
-check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" '~$90/reset' \
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "~\$90/reset" \
   "the codex row now prices the next reset instead of offering a free one"
 
 # Restore the unspent-reset state: the banked reset now beats metered money,
@@ -399,31 +401,31 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.figure_source')" "assum
 reset_state
 run_mode --codex-reset-status
 check_eq "$RC" "0" "--codex-reset-status exits 0 with no watermark on disk"
-check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "true" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" "true" \
   "and reports a free reset available"
-check_eq "$(printf '%s' "$OUT" | jq -r '.figure_source')" "assumed" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.figure_source')" "assumed" \
   "marked as assumed, because nothing was read"
 
 run_mode --record-codex-reset "2026-09-07"
 check_eq "$RC" "0" "--record-codex-reset exits 0"
-check_eq "$(jq -r '.month' "$STATE_DIR/codex-reset.json")" "$FROZEN_MONTH" \
+check_eq "$(jq -r '.accounts.c.month' "$STATE_DIR/codex-reset.json")" "$FROZEN_MONTH" \
   "and writes the month it was used in"
 run_mode --codex-reset-status
-check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "false" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" "false" \
   "a reset recorded this month means no free one is left"
-check_eq "$(printf '%s' "$OUT" | jq -r '.figure_source')" "watermark" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.figure_source')" "watermark" \
   "and the verdict is attributed to the watermark"
-check_eq "$(printf '%s' "$OUT" | jq -r '.used_on')" "2026-09-07" "with the date it was used"
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.used_on')" "2026-09-07" "with the date it was used"
 
 # Backfilling an older month must not erase a newer record: this month's reset
 # really was spent, and forgetting it would offer a free one that is gone.
 run_mode --record-codex-reset "2026-08-30"
 check_eq "$RC" "5" "backfilling an older month over a newer record is refused"
 check_contains "$ERR" "refusing to replace" "saying what it refused"
-check_eq "$(jq -r '.month' "$STATE_DIR/codex-reset.json")" "$FROZEN_MONTH" \
+check_eq "$(jq -r '.accounts.c.month' "$STATE_DIR/codex-reset.json")" "$FROZEN_MONTH" \
   "and the newer month's watermark is still the one on disk"
 run_mode --codex-reset-status
-check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "false" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" "false" \
   "so the spent reset stays spent"
 
 # A watermark from a PREVIOUS month is spent history, not this month's answer.
@@ -431,7 +433,7 @@ reset_state
 run_mode --record-codex-reset "2026-08-30"
 check_eq "$RC" "0" "recording an earlier month with nothing newer on disk succeeds"
 run_mode --codex-reset-status
-check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "true" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" "true" \
   "a reset recorded in an earlier month leaves this month's free one available"
 
 run_mode --record-codex-reset "not-a-date"
@@ -459,9 +461,92 @@ mkdir -p "$STATE_DIR"
 printf 'not json at all\n' > "$STATE_DIR/codex-reset.json"
 run_mode --codex-reset-status
 check_eq "$RC" "0" "a corrupt watermark does not fail the run"
-check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "true" \
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" "true" \
   "and degrades to 'one free reset available', never to 'already spent'"
 check_contains "$ERR" "unreadable" "saying so on stderr"
+
+# Account isolation is the public behavior, including a mixed-good/bad file.
+reset_state
+run_mode --record-codex-reset "2026-09-07"
+run "$(rows "$(row codex c 7-day 2 ok)" "$(row codex d 7-day 2 ok)")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "~\$90/reset" "only the recorded label is spent"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[1].overage.label')" '1 free reset' "the other Codex account retains its free reset"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label')" d "the independent free account wins the ranking"
+run_mode --codex-reset-status
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.d.free_reset_available')" true "status includes the other registered account"
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" false "status identifies the recorded account"
+
+jq '.accounts.d={month:"2026-09",used_on:"2026-99-99"}' "$STATE_DIR/codex-reset.json" > "$TMP/bad-account"
+mv "$TMP/bad-account" "$STATE_DIR/codex-reset.json"
+run_mode --codex-reset-status
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.c.free_reset_available')" false "a malformed sibling preserves the valid spent record"
+check_eq "$(printf '%s' "$OUT" | jq -r '.accounts.d.free_reset_available')" true "a malformed individual record assumes free"
+check_contains "$ERR" unreadable "the per-account degradation is visible"
+
+printf '%s\n' '{"schema_version":"1.0","month":"2026-09","used_on":"2026-09-07"}' > "$STATE_DIR/codex-reset.json"
+run_mode --codex-reset-status
+check_eq "$(printf '%s' "$OUT" | jq -r '[.accounts[].free_reset_available]|all')" true "legacy global record belongs to no account"
+check_contains "$ERR" legacy "legacy ownership ambiguity is explicit"
+run_mode --record-codex-reset "2026-09-07"
+check_eq "$(jq -r '.schema_version' "$STATE_DIR/codex-reset.json")" '2.0' "an explicit account write replaces legacy with scoped schema"
+
+reset_state
+mkdir -p "$STATE_DIR"
+for LABEL in c d; do
+  HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
+    "$SCRIPT" --record-codex-reset "2026-09-07" --account "$LABEL" > "$TMP/concurrent-$LABEL.out" 2> "$TMP/concurrent-$LABEL.err" &
+  if [[ "$LABEL" == c ]]; then PID_C=$!; else PID_D=$!; fi
+done
+wait "$PID_C"; C_RC=$?
+wait "$PID_D"; D_RC=$?
+check_eq "$C_RC:$D_RC" '0:0' "concurrent account recordings both succeed"
+check_eq "$(jq -r '.accounts|keys|join(",")' "$STATE_DIR/codex-reset.json")" 'c,d' "locked publication preserves both account updates"
+check_eq "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$STATE_DIR/codex-reset.json")" '600' "new watermark is private"
+
+HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
+  "$SCRIPT" --record-codex-reset "2026-09-07" > "$TMP/unscoped.out" 2> "$TMP/unscoped.err"
+check_eq "$?" 3 "unscoped recording is a usage error"
+BEFORE=$(cat "$STATE_DIR/codex-reset.json")
+HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
+  "$SCRIPT" --record-codex-reset "2026-09-07" --account unknown > "$TMP/unknown.out" 2> "$TMP/unknown.err"
+check_eq "$?" 5 "an unregistered account cannot receive a watermark"
+check_eq "$(cat "$STATE_DIR/codex-reset.json")" "$BEFORE" "rejected account recording preserves existing records"
+
+# Both documented flag/date orders name exactly the same scoped account.
+reset_state
+HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
+  "$SCRIPT" --record-codex-reset --account c "2026-09-07" > "$TMP/order.out" 2> "$TMP/order.err"
+check_eq "$?" 0 "documented account-before-date order records"
+check_eq "$(jq -r '.accounts.c.used_on' "$STATE_DIR/codex-reset.json")" '2026-09-07' "the optional date remains exact after --account"
+HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
+  "$SCRIPT" --account d --record-codex-reset "2026-09-08" > "$TMP/order.out" 2> "$TMP/order.err"
+check_eq "$?" 0 "account-before-action order also records"
+check_eq "$(jq -r '.accounts.d.used_on' "$STATE_DIR/codex-reset.json")" '2026-09-08' "the other account receives its own date"
+
+# Unknown/corrupt formats cannot silently destroy existing ownership evidence.
+printf '%s\n' '{"schema_version":"99.0","accounts":{}}' > "$STATE_DIR/codex-reset.json"
+BEFORE=$(cat "$STATE_DIR/codex-reset.json")
+run_mode --codex-reset-status
+check_eq "$(printf '%s' "$OUT" | jq -r '[.accounts[].free_reset_available]|all')" true "unknown schema assumes free per account"
+run_mode --record-codex-reset "2026-09-07"
+check_eq "$RC" 5 "unknown schema refuses replacement"
+check_eq "$(cat "$STATE_DIR/codex-reset.json")" "$BEFORE" "unknown schema bytes are preserved"
+
+rm -f "$STATE_DIR/codex-reset.json"
+printf '%s\n' '{"schema_version":"2.0","accounts":{}}' > "$TMP/external-record"
+ln -s "$TMP/external-record" "$STATE_DIR/codex-reset.json"
+run_mode --codex-reset-status
+check_eq "$(printf '%s' "$OUT" | jq -r '[.accounts[].free_reset_available]|all')" true "a symlink watermark is unreadable, never spent"
+run_mode --record-codex-reset "2026-09-07"
+check_eq "$RC" 5 "writing refuses a symlink watermark"
+check_eq "$(cat "$TMP/external-record")" '{"schema_version":"2.0","accounts":{}}' "the symlink target remains untouched"
+
+reset_state
+run_mode --record-codex-reset "2026-10-07"
+HOME="$CASE_HOME" CLAUDE_QUOTAS_STATE_DIR="$STATE_DIR" AI_QUOTAS_NOW="$NOW" \
+  "$SCRIPT" --record-codex-reset "2026-09-07" --account d > "$TMP/backfill.out" 2> "$TMP/backfill.err"
+check_eq "$?" 0 "another account's newer record does not block a backfill"
+check_eq "$(jq -r '.accounts.c.month+":"+.accounts.d.month' "$STATE_DIR/codex-reset.json")" '2026-10:2026-09' "independent account months remain distinct"
 
 # --- 11. unknown providers are never priced ----------------------------------
 
