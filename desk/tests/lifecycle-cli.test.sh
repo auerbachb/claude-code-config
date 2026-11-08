@@ -18,8 +18,8 @@
 #     repeats, every malformed set-resolve reply, state actions and keys, and
 #     the reserved state keys
 #   - secret-shaped free text exits 5 without connecting and is never echoed,
-#     including the values that only reach psql's argv (a state get key, a
-#     pending-for session id); a state value too large for one Linux argument
+#     including values passed to psql (a state get key, a
+#     pending-for session id); a state value too large for one Linux environment entry
 #     exits 4; --set accepts any bigint set id and nothing past it; a reply
 #     over 8000 characters exits 4, and one at the cap (thousands of leading
 #     zeros or separators) still parses quickly
@@ -338,9 +338,9 @@ for SH in $SHELLS; do
   expect_rc "$SH" 5 "state get with a token for a key" "state get: the key looks like" state get "$FAKE_GH"
   check_absent "[$SH] the state get key is not echoed" "$OUT$ERR" "$FAKE_GH"
   # 43688 three-byte characters and one more byte: under 65536 characters, but
-  # 131065 bytes — one argument still fits Linux's 131072, `hq_value=` + it
+  # 131065 bytes — one entry still fits Linux's 131072, `HQ_PSQL_TEXT_0=` + it
   # would not. (A C-locale shell counts bytes and stops at the character cap.)
-  expect_rc "$SH" 4 "state set of a value too large for one psql argument" "state set: the value is l" \
+  expect_rc "$SH" 4 "state set of a value too large for one psql environment entry" "state set: the value is l" \
     state set k "$(repeat_str '€' 43688)a"
   expect_db "$SH" "state get" state get day_plan:2026-10-05
   expect_db "$SH" "state get of a reserved key" state get tick_watermark
