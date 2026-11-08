@@ -268,6 +268,11 @@ for DTICK_SHELL in $SHELLS; do
   done
   dtick "" --interrupts
   check "[$DTICK_SHELL] missing --interrupts value exits 4" "$RC" "4"
+  for repeat_rule in away everything; do
+    dtick "" --interrupts away --interrupts "$repeat_rule" --once
+    check "[$DTICK_SHELL] duplicate --interrupts $repeat_rule exits 4" "$RC" "4"
+    check "[$DTICK_SHELL] duplicate --interrupts never reaches CLI" "$(cat "$STUB_DIR/args" 2>/dev/null)" ""
+  done
 done
 unset DTICK_SHELL
 

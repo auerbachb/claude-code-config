@@ -154,7 +154,11 @@ while [ "$#" -gt 0 ]; do
       case "$1" in
         --session) dt_session="$2" ;;
         --generation) dt_gen="$2" ;;
-        --interrupts) dt_rule="$2"; dt_rule_given=1 ;;
+        --interrupts)
+          if [ "$dt_rule_given" -eq 1 ]; then dt_die "--interrupts given more than once"; fi
+          dt_rule="$2"
+          dt_rule_given=1
+          ;;
         *)
           dt_cadence="$2"
           dt_cadence_given=1
