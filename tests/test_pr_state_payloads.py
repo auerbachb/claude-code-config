@@ -29,10 +29,12 @@ class PrStatePayloadTests(unittest.TestCase):
         self.bin.mkdir()
         self.fixture = self.root / "fixture"
         self.fixture.mkdir()
+        self.scratch = self.root / "scratch"
+        self.scratch.mkdir()
         self.home = self.root / "home"
         (self.home / ".claude").mkdir(parents=True)
         self.env = dict(os.environ, HOME=str(self.home), FIXTURE=str(self.fixture),
-                        PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                        PATH=str(self.bin) + os.pathsep + os.environ["PATH"], TMPDIR=str(self.scratch),
                         JQ_REAL=shutil.which("jq"), ARGV_LOG=str(self.root / "argv.jsonl"))
         for key in ("GH_REPO", "CLAUDE_SESSION_REPO"):
             self.env.pop(key, None)
@@ -69,7 +71,16 @@ if (root/'fail-api').exists() and args[0]=='api':raise SystemExit(17)
 sys.stdout.write(path.read_text())
 """)
         self.executable("jq", r"""import json,os,sys
-with open(os.environ['ARGV_LOG'],'a') as f:f.write(json.dumps([len(a.encode()) for a in sys.argv[1:]])+'\n')
+from pathlib import Path
+scratch=[]
+for arg in sys.argv[1:]:
+ for parent in Path(arg).parents:
+  if parent.name.startswith('pr-state-work-'):
+   scratch.append(str(parent));break
+sizes=[sum(p.stat().st_size for p in Path(d).iterdir() if p.is_file()) for d in set(scratch)]
+with open(os.environ['ARGV_LOG'],'a') as f:f.write(json.dumps({'argv_sizes':[len(a.encode()) for a in sys.argv[1:]],'scratch':scratch,'scratch_bytes':max(sizes,default=0)})+'\n')
+if max(sizes,default=0)>int(os.environ.get('SCRATCH_BYTE_LIMIT','1000000000')):
+ raise SystemExit('private fixture scratch byte budget exceeded')
 os.execv(os.environ['JQ_REAL'],[os.environ['JQ_REAL']]+sys.argv[1:])
 """)
 
@@ -92,12 +103,12 @@ os.execv(os.environ['JQ_REAL'],[os.environ['JQ_REAL']]+sys.argv[1:])
                 "body": body, "submitted_at": "2026-11-01T00:00:00Z", "created_at": "2026-11-01T00:00:00Z"}
 
     def run_snapshot(self, shell, since=False, success=True):
-        before = set(Path("/tmp").glob("pr-state-work-987654-*"))
+        before = set(self.scratch.glob("pr-state-work-987654-*"))
         cmd = [shell, str(self.scripts / "pr-state.sh"), "--pr", "987654"]
         if since:
             cmd += ["--since", "2026-10-01T00:00:00Z"]
         result = subprocess.run(cmd, env=self.env, text=True, capture_output=True, timeout=60)
-        self.assertEqual(set(Path("/tmp").glob("pr-state-work-987654-*")), before, "scratch leaked")
+        self.assertEqual(set(self.scratch.glob("pr-state-work-987654-*")), before, "scratch leaked")
         if not success:
             self.assertEqual(result.returncode, 5, result.stderr[-2000:])
             self.assertEqual(result.stdout, "")
@@ -108,7 +119,10 @@ os.execv(os.environ['JQ_REAL'],[os.environ['JQ_REAL']]+sys.argv[1:])
         self.assertTrue(out.is_file(), "only the surviving output path is published")
         data = json.loads(out.read_text())
         for line in (self.root / "argv.jsonl").read_text().splitlines():
-            self.assertLess(max(json.loads(line), default=0), 65536, "endpoint data reached argv")
+            observed = json.loads(line)
+            self.assertLess(max(observed["argv_sizes"], default=0), 65536, "endpoint data reached argv")
+            for scratch in observed["scratch"]:
+                self.assertEqual(Path(scratch).parent, self.scratch, "invocation scratch escaped private TMPDIR")
         return data
 
     def shells(self):
@@ -138,6 +152,21 @@ os.execv(os.environ['JQ_REAL'],[os.environ['JQ_REAL']]+sys.argv[1:])
                     self.assertEqual(d["new_since_baseline"] is None, not since)
                     if since:
                         self.assertEqual(d["new_since_baseline"]["finding_count"], 3)
+
+    def test_mostly_unresolved_history_with_bounded_scratch(self):
+        # Two >1MiB pages fit within this private 4MiB capacity, including a
+        # transient current page. Additional complete history copies do not.
+        text = "x" * (1100 * 1024)
+        for page in (0, 1):
+            self.thread_page(page, page == 0, [{"id": str(page), "isResolved": False,
+                                             "comments": {"nodes": [{"body": text}]}}])
+        self.env["SCRATCH_BYTE_LIMIT"] = str(4 * 1024 * 1024)
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                d = self.run_snapshot(shell)
+                self.assertEqual(d["threads"]["total"], 2)
+                self.assertEqual(d["threads"]["unresolved_count"], 2)
+                self.assertEqual(d["threads"]["all"], d["threads"]["unresolved"])
 
     def test_small_schema_and_values(self):
         for shell in self.shells():

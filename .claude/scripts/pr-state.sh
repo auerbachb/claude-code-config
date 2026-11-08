@@ -452,7 +452,7 @@ mv "$OUT_BASE" "$OUT"
 # Endpoint bodies must never travel through argv (Issue #1565; downstream
 # poll-watermarks has the same requirement in Issues #1557/#1562). Keep each
 # value inside one private scratch directory; the published OUT survives it.
-WORKDIR=$(mktemp -d "/tmp/pr-state-work-${PR_NUMBER}-XXXXXX")
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-state-work-${PR_NUMBER}-XXXXXX")
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ----------------------------------------------------------------------
@@ -496,8 +496,9 @@ while :; do
   CURSOR=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' "$WORKDIR/thread-page.json")
 done
 
-jq -s 'add // []' "$THREAD_PAGES" > "$WORKDIR/threads-all.json"
-jq '[.[] | select(.isResolved == false)]' "$WORKDIR/threads-all.json" > "$WORKDIR/threads-unresolved.json"
+# Retain one history representation. Final assembly combines pages and derives
+# unresolved threads in memory; scratch must not hold two more full copies.
+rm -f "$WORKDIR/thread-page.json"
 
 # ----------------------------------------------------------------------
 # 3. CI check-runs (paginated)
@@ -627,8 +628,7 @@ jq -n \
   --arg review_decision "$REVIEW_DECISION" \
   --arg run_started_at "$RUN_STARTED_AT" \
   --arg since "$SINCE" \
-  --slurpfile threads_all_file "$WORKDIR/threads-all.json" \
-  --slurpfile threads_unresolved_file "$WORKDIR/threads-unresolved.json" \
+  --slurpfile thread_pages_file "$THREAD_PAGES" \
   --slurpfile cr_split_file "$WORKDIR/cr-split.json" \
   --slurpfile statuses_file "$WORKDIR/statuses.json" \
   --slurpfile bot_statuses_file "$WORKDIR/bot-statuses.json" \
@@ -637,8 +637,8 @@ jq -n \
   --slurpfile conversation_file "$WORKDIR/convo.json" \
   --slurpfile new_since_file "$WORKDIR/new-since.json" \
   --argjson unmarked_replies "$UNMARKED_REPLIES" \
-  '$threads_all_file[0] as $threads_all |
-    $threads_unresolved_file[0] as $threads_unresolved |
+  '($thread_pages_file | add // []) as $threads_all |
+    ($threads_all | map(select(.isResolved == false))) as $threads_unresolved |
     $cr_split_file[0] as $cr_split |
     $statuses_file[0] as $statuses |
     $bot_statuses_file[0] as $bot_statuses |
