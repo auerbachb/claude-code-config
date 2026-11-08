@@ -16,6 +16,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [install-backfill-review.sh](../install-backfill-review.sh) | Register the overnight backfill review (`backfill-review.sh --repo-dir <checkout>`) as a macOS launchd LaunchAgent — every `--interval` seconds (default 1800); the runner gates on its own quiet window |
 | [install-config-sync.sh](../install-config-sync.sh) | Register the per-machine config sync (`claude-config-sync.sh`) as a macOS launchd LaunchAgent — one run at login, then every `--interval` seconds |
 | [install-silence-watchdog.sh](../install-silence-watchdog.sh) | Install the macOS launchd watchdog that monitors Claude heartbeat files |
+| [install-workspace-sweep.sh](../install-workspace-sweep.sh) | Install the daily finished-worktree LaunchAgent, with a side-effect-free dry run |
 | [off-peak-minute.sh](../off-peak-minute.sh) | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
 | [overrun-check.sh](../overrun-check.sh) | Per-pipeline planning-bound breach check for the monitor loop; emits one alert line on the first breach only |
 | [session-scheduling-reconcile.sh](../session-scheduling-reconcile.sh) | Session-start reconciliation of durable scheduling state — purge dead in-memory job bookkeeping, surface the on-disk records that survived |
@@ -25,6 +26,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [uninstall-backfill-review.sh](../uninstall-backfill-review.sh) | Unload and remove the backfill-review LaunchAgent; always keeps the ledger (`~/.claude/unreviewed-merges.json`), locks and logs |
 | [uninstall-config-sync.sh](../uninstall-config-sync.sh) | Unload and remove the config-sync LaunchAgent; `--remove-state` also drops its state, logs and marker |
 | [uninstall-silence-watchdog.sh](../uninstall-silence-watchdog.sh) | Uninstall the macOS launchd silence watchdog |
+| [uninstall-workspace-sweep.sh](../uninstall-workspace-sweep.sh) | Uninstall the finished-worktree LaunchAgent while retaining logs and registry |
 | [wait-until.sh](../wait-until.sh) | In-turn poll loop with a hard cap — the non-refused equivalent of `until <check>; do sleep <n>; done` for a worktree-isolated agent (`.claude/reference/worktree-isolation-command-shapes.md`); blocks the calling turn only, never a substitute for a persistent `Monitor` |
 | [workday.sh](../workday.sh) | US business-day calculator (ET-anchored, macOS + GNU date) |
 <!-- catalog:rows:end -->

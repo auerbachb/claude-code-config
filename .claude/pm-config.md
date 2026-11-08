@@ -123,3 +123,7 @@ No hosting/deployment infrastructure detected (no Railway, Vercel, Fly.io, Rende
 ## Notes
 
 <!-- Free-form. -->
+
+<!-- workspace-sweep cadence -->
+`CLAUDE_WORKSPACE_SWEEP_INTERVAL_S` overrides the finished-only `/pm day`
+sweep interval (seconds, default `3600`). It does not rerun age-based cleanup.
