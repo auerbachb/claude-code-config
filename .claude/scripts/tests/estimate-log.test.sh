@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Offline tests for estimate-log.sh claim start-time selection (issue #1927).
-# catalog: tests — Tests for `estimate-log.sh`: a renewed claim marker's payload `since` sets the start time; invalid values fall back to `created_at`
+# Offline tests for estimate claim timestamps and rollup reporting (#1927, #2027).
+# catalog: tests — Tests claim timestamps, parsed repo rollups, empty/error paths and preservation of the input ledger
 #
 # A renewed claim (issue #1914) posts a NEW marker whose GitHub `created_at` is
 # the renewal time, and carries the original pickup time as payload `since`.
@@ -13,7 +13,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.claude/scripts/estimate-log.sh"
+SCRIPT="${ESTIMATE_LOG_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/estimate-log.sh}"
+ESTIMATE_TEST_SHELL="${ESTIMATE_TEST_SHELL:-$BASH}"
 REPO="acme/widgets"
 
 TMP="$(mktemp -d)"
@@ -33,6 +34,22 @@ check_eq() {
     FAIL=$((FAIL + 1)); echo "FAIL — $desc (expected '$expected', got '$actual')"
   fi
 }
+
+# The fault hits the selection process in both old and new implementations.
+ESTIMATE_TEST_REAL_JQ=$(command -v jq)
+cat > "$TMP/bin/jq" <<JQ_STUB
+#!/usr/bin/env bash
+if [ "\${ESTIMATE_TEST_JQ_FAIL:-0}" = 1 ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+      *".actual_min"*)
+        case "\$arg" in *".outlier"*) echo 'injected selection process failure' >&2; exit 7 ;; esac ;;
+    esac
+  done
+fi
+exec "$ESTIMATE_TEST_REAL_JQ" "\$@"
+JQ_STUB
+chmod +x "$TMP/bin/jq"
 
 # --- stubs ------------------------------------------------------------------
 # gh: serves fixtures for the three calls build_row makes; anything else is
@@ -76,18 +93,21 @@ run_case() {
   local page
   for page in "$@"; do printf '%s\n' "$page" >> "$TMP/fix/comments.json"; done
   export ESTIMATE_LOG_FILE="$TMP/log-$N.jsonl"
-  bash "$SCRIPT" --append "$((100 + N))" --repo "$REPO" >/dev/null 2>&1
+  "$ESTIMATE_TEST_SHELL" "$SCRIPT" --append "$((100 + N))" --repo "$REPO" >/dev/null 2>&1
   jq -r '"\(.actual_min | floor) \(.start_source)"' "$ESTIMATE_LOG_FILE" 2>/dev/null || echo "no-row"
 }
 
 RENEWED_AT="2026-09-01T13:00:00Z"   # renewal marker created 1h before merge
 SINCE="2026-09-01T12:00:00Z"        # original pickup 2h before merge
 
+PAYLOAD_WITH_SINCE=$(jq -cn --arg since "$SINCE" '{holder:"h",login:"me",since:$since}')
+PAYLOAD_POST_MERGE=$(jq -cn --arg since "$SINCE" '{holder:"h",since:$since}')
+
 # 1. Renewed marker with a valid earlier `since` -> duration from `since`.
 #    Two pages, the first holding an unrelated comment, to exercise --paginate.
 got=$(run_case \
   '[{"id":9,"created_at":"2026-09-01T11:30:00Z","body":"unrelated"}]' \
-  "[$(marker "$RENEWED_AT" "{\"holder\":\"h\",\"login\":\"me\",\"since\":\"$SINCE\"}")]")
+  "[$(marker "$RENEWED_AT" "$PAYLOAD_WITH_SINCE")]")
 check_eq "renewed marker: start from payload since" "120 claim_comment" "$got"
 
 # 2. Marker without `since` -> created_at.
@@ -111,7 +131,7 @@ got=$(run_case "[$(marker "$RENEWED_AT" '{"holder":')]")
 check_eq "malformed marker JSON: falls back to created_at" "60 claim_comment" "$got"
 
 # 7. A marker created after merge is excluded -> pr_created fallback.
-got=$(run_case "[$(marker "2026-09-01T15:00:00Z" "{\"holder\":\"h\",\"since\":\"$SINCE\"}")]")
+got=$(run_case "[$(marker "2026-09-01T15:00:00Z" "$PAYLOAD_POST_MERGE")]")
 check_eq "post-merge marker excluded: pr_created" "180 pr_created" "$got"
 
 # 8. No marker at all -> pr_created.
@@ -120,7 +140,7 @@ check_eq "no marker: pr_created" "180 pr_created" "$got"
 
 # 9. Rollup output carries the start-time sentence.
 OUT="$TMP/actuals.md"
-ESTIMATE_LOG_FILE="$TMP/log-1.jsonl" bash "$SCRIPT" --rollup --repo "$REPO" --output "$OUT" >/dev/null 2>&1
+ESTIMATE_LOG_FILE="$TMP/log-1.jsonl" "$ESTIMATE_TEST_SHELL" "$SCRIPT" --rollup --repo "$REPO" --output "$OUT" >/dev/null 2>&1
 if grep -q "payload \`since\` when valid" "$OUT" 2>/dev/null; then
   PASS=$((PASS + 1)); echo "ok   — rollup documents the since start-time rule"
 else
@@ -133,6 +153,112 @@ if grep -q "payload \`since\` when valid" "$REPO_ROOT/.claude/reference/estimate
 else
   FAIL=$((FAIL + 1)); echo "FAIL — estimate-actuals.md lacks the since sentence"
 fi
+
+# Parsed rollups preserve the ledger and are independent of JSON whitespace.
+ROLLUP_DIR="$TMP/rollup"
+mkdir -p "$ROLLUP_DIR"
+python3 - "$ROLLUP_DIR" "$REPO" <<'ROLLUP_FIXTURES'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);repo=sys.argv[2]
+def row(pr,actual,rounds,tier='Light',outlier=False):
+    return dict(pr=pr,issue=77,tier=tier,est_lo=60 if tier=='Light' else 120,est_hi=90 if tier=='Light' else 180,est_bound=90 if tier=='Light' else 180,claim_ts='2026-11-08T07:00:00Z',merge_ts='2026-11-08T12:%02d:00Z'%(pr*10),actual_min=actual,rounds=rounds,start_source='claim_comment',repo=repo,outlier=outlier)
+valid=[row(1,10,1),row(2,400,3,outlier=True),row(3,60,None,tier='Standard')]
+foreign=dict(valid[0],repo='other/repo',metadata={'repo':repo})
+invalid=[None,[],False,42,'not an object',dict(valid[0],actual_min='10'),dict(valid[0],outlier='false'),dict(valid[0],repo=repo.upper()),foreign]
+for layout in ('compact','spaced','tabs','crlf','escaped','sorted','no-newline'):
+    separators=(',',':') if layout in ('compact','escaped','no-newline') else (',\t',':\t') if layout=='tabs' else (', ',': ')
+    def encode(v):
+        text=json.dumps(v,separators=separators,sort_keys=layout=='sorted')
+        return text.replace(repo,repo.replace('/',r'\u002f')) if layout=='escaped' else text
+    lines=['{"repo":"'+repo+'","actual_min":']+[encode(x) for x in invalid]
+    lines += [encode(valid[0])+' '+encode(valid[1])]+[encode(x) for x in valid]
+    ending='\r\n' if layout=='crlf' else '\n'
+    text=ending.join(lines)+('' if layout=='no-newline' else ending)
+    (root/(layout+'.jsonl')).write_bytes(text.encode())
+(root/'empty.jsonl').write_bytes(b'')
+(root/'blank.jsonl').write_bytes(b'\r\n\t \n')
+(root/'foreign.jsonl').write_text(json.dumps(foreign,separators=(',',':'))+'\n')
+(root/'malformed.jsonl').write_text('{bad\nnull\n[]\nfalse\n42\n')
+(root/'native.jsonl').write_text(''.join(json.dumps(x,separators=(',',':'))+'\n' for x in valid))
+ROLLUP_FIXTURES
+
+run_rollup() {
+  ROLLUP_RC=0
+  ROLLUP_STDOUT=$(ESTIMATE_LOG_FILE="$1" "$ESTIMATE_TEST_SHELL" "$SCRIPT" --rollup --repo "$REPO" --output "$2" 2>"$TMP/rollup.err") || ROLLUP_RC=$?
+  ROLLUP_ERR=$(cat "$TMP/rollup.err")
+}
+report_line() {
+  if grep -Fqx -- "$1" "$2"; then printf 'yes\n'; else printf 'no\n'; fi
+}
+unchanged_file() {
+  if cmp -s "$1" "$2"; then printf 'yes\n'; else printf 'no\n'; fi
+}
+REPORT="$TMP/parsed-actuals.md"
+EXPECTED_SOURCE=$(cat <<'ROLLUP_SOURCE'
+> Source: `~/.claude/estimate-log.jsonl` (3 rows for `acme/widgets`).
+ROLLUP_SOURCE
+)
+for layout in compact spaced tabs crlf escaped sorted no-newline; do
+  LEDGER="$ROLLUP_DIR/$layout.jsonl"
+  cp "$LEDGER" "$TMP/input-before"
+  run_rollup "$LEDGER" "$REPORT"
+  check_eq "rollup $layout: status" 0 "$ROLLUP_RC"
+  check_eq "rollup $layout: stdout is empty" "" "$ROLLUP_STDOUT"
+  check_eq "rollup $layout: ledger bytes preserved" yes "$(unchanged_file "$LEDGER" "$TMP/input-before")"
+  check_eq "rollup $layout: exactly three matching valid rows" yes "$(report_line "$EXPECTED_SOURCE" "$REPORT")"
+  check_eq "rollup $layout: Light statistics and rounds" yes "$(report_line '| Light | 205 min | 361 min | 2 | 2.8 | 2 | 2 | 1 |' "$REPORT")"
+  check_eq "rollup $layout: legacy rows keep minute counts without rounds" yes "$(report_line '| Standard | 60 min | 60 min | — | — | 1 | 0 | 0 |' "$REPORT")"
+  grep -v '^> Auto-generated by' "$REPORT" > "$TMP/normalized-report"
+  if [ "$layout" = compact ]; then cp "$TMP/normalized-report" "$TMP/expected-report"; fi
+  check_eq "rollup $layout: equivalent report statistics" yes "$(unchanged_file "$TMP/normalized-report" "$TMP/expected-report")"
+  run_rollup "$LEDGER" "$REPORT"
+  check_eq "rollup $layout: repeat status" 0 "$ROLLUP_RC"
+  check_eq "rollup $layout: repeat preserves ledger bytes" yes "$(unchanged_file "$LEDGER" "$TMP/input-before")"
+done
+
+for empty_case in empty blank foreign malformed missing; do
+  printf 'existing-report\n' > "$REPORT"
+  cp "$REPORT" "$TMP/report-before"
+  run_rollup "$ROLLUP_DIR/$empty_case.jsonl" "$REPORT"
+  check_eq "rollup $empty_case: single no-row exit" 1 "$ROLLUP_RC"
+  check_eq "rollup $empty_case: no stdout fallback arrays" "" "$ROLLUP_STDOUT"
+  check_eq "rollup $empty_case: existing report preserved" yes "$(unchanged_file "$REPORT" "$TMP/report-before")"
+  check_eq "rollup $empty_case: no arithmetic diagnostics" 0 "$(printf '%s' "$ROLLUP_ERR" | grep -Eic 'syntax error|integer expression|arithmetic|too many arguments' || true)"
+done
+
+# Genuine selection/IO failures remain errors and cannot replace a report.
+printf 'existing-report\n' > "$REPORT"
+cp "$REPORT" "$TMP/report-before"
+cp "$ROLLUP_DIR/native.jsonl" "$TMP/input-before"
+export ESTIMATE_TEST_JQ_FAIL=1
+run_rollup "$ROLLUP_DIR/native.jsonl" "$REPORT"
+unset ESTIMATE_TEST_JQ_FAIL
+check_eq "rollup selection process failure: file-error exit" 5 "$ROLLUP_RC"
+check_eq "rollup selection process failure: report preserved" yes "$(unchanged_file "$REPORT" "$TMP/report-before")"
+check_eq "rollup selection process failure: ledger preserved" yes "$(unchanged_file "$ROLLUP_DIR/native.jsonl" "$TMP/input-before")"
+mkdir -p "$ROLLUP_DIR/directory-input"
+run_rollup "$ROLLUP_DIR/directory-input" "$REPORT"
+check_eq "rollup directory input: file-error exit" 5 "$ROLLUP_RC"
+check_eq "rollup directory input: report preserved" yes "$(unchanged_file "$REPORT" "$TMP/report-before")"
+
+# Reject direct, symbolic-link and hard-link aliases before opening output.
+LEDGER="$ROLLUP_DIR/alias-input.jsonl"
+cp "$ROLLUP_DIR/native.jsonl" "$LEDGER"
+ln -s "$LEDGER" "$ROLLUP_DIR/alias-symbolic.md"
+ln "$LEDGER" "$ROLLUP_DIR/alias-hard.md"
+for alias_kind in direct symbolic hard; do
+  cp "$ROLLUP_DIR/native.jsonl" "$LEDGER"
+  cp "$LEDGER" "$TMP/input-before"
+  case "$alias_kind" in
+    direct) ALIAS="$LEDGER" ;;
+    symbolic) ALIAS="$ROLLUP_DIR/alias-symbolic.md" ;;
+    hard) ALIAS="$ROLLUP_DIR/alias-hard.md" ;;
+  esac
+  run_rollup "$LEDGER" "$ALIAS"
+  check_eq "rollup $alias_kind output alias: refused as file error" 5 "$ROLLUP_RC"
+  check_eq "rollup $alias_kind output alias: ledger bytes preserved" yes "$(unchanged_file "$LEDGER" "$TMP/input-before")"
+  check_eq "rollup $alias_kind output alias: no stdout" "" "$ROLLUP_STDOUT"
+done
 
 if [[ -s "$TMP/fix/unexpected.log" ]]; then
   FAIL=$((FAIL + 1)); echo "FAIL — unexpected gh calls:"; sed 's/^/       /' "$TMP/fix/unexpected.log"

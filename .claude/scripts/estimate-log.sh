@@ -28,6 +28,11 @@
 #       rounds; render a reference doc.
 #       Default output: .claude/reference/estimate-actuals.md (in cwd repo).
 #
+# Rollup reads one JSON object per physical line, skipping malformed or
+# non-schema rows; repo identity is parsed, never matched by text formatting.
+# Empty/nonmatching input exits 1; read/selection errors and detected output
+# aliases of the input ledger exit 5 before report publication.
+#
 # LOG FILE: ~/.claude/estimate-log.jsonl  (one JSON object per line)
 #
 # ROW SCHEMA
@@ -908,24 +913,33 @@ mode_rollup() {
   local output_file="$1"
   local repo="$2"
 
-  if [[ ! -f "$LOG_FILE" ]] || [[ ! -s "$LOG_FILE" ]]; then
+  if [[ ! -e "$LOG_FILE" ]]; then
+    echo "estimate-log.sh: log is empty or missing at $LOG_FILE — no rollup to generate" >&2
+    return 1
+  fi
+  if [[ ! -f "$LOG_FILE" ]]; then
+    echo "estimate-log.sh: rollup input is not a regular file: $LOG_FILE" >&2
+    return 5
+  fi
+  if [[ "$output_file" -ef "$LOG_FILE" ]]; then
+    echo "estimate-log.sh: rollup output aliases the input ledger: $output_file" >&2
+    return 5
+  fi
+  if [[ ! -s "$LOG_FILE" ]]; then
     echo "estimate-log.sh: log is empty or missing at $LOG_FILE — no rollup to generate" >&2
     return 1
   fi
 
-  # Collect only schema-valid JSON rows for this repo, skipping malformed lines.
-  # Checks: (1) valid JSON, (2) required numeric actual_min, (3) boolean outlier.
-  # Parse each line individually so a single corrupt row doesn't drop the rest.
+  # One JSON object per physical line. Parse before comparing top-level repo
+  # identity; malformed/non-schema siblings must not hide the valid rows.
   local repo_rows
-  repo_rows=$(grep -F "\"repo\":\"$repo\"" "$LOG_FILE" 2>/dev/null \
-    | while IFS= read -r line; do
-        if printf '%s' "$line" \
-            | jq -e '((.actual_min | type) == "number") and
-                     ((.outlier   | type) == "boolean")' >/dev/null 2>&1; then
-          printf '%s\n' "$line"
-        fi
-      done \
-    | jq -sc '.' 2>/dev/null || echo "[]")
+  if ! repo_rows=$(jq -Rnc --arg repo "$repo" '
+    [inputs | fromjson? | objects | select(.repo == $repo)
+     | select((.actual_min | type) == "number" and (.outlier | type) == "boolean")]
+  ' "$LOG_FILE"); then
+    echo "estimate-log.sh: failed to select rollup rows from $LOG_FILE" >&2
+    return 5
+  fi
 
   local row_count
   row_count=$(printf '%s' "$repo_rows" | jq 'length')
