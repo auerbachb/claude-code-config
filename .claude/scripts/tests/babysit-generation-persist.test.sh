@@ -6,19 +6,18 @@ BABYSIT_TEST_SHELL="${BABYSIT_TEST_SHELL:-$BASH}" python3 - "$ROOT" "$@" <<'PY'
 import copy,json,os,re,subprocess,sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(sys.argv[1]);SHELL=os.environ['BABYSIT_TEST_SHELL'];REPO='auerbachb/claude-code-config';PR='123'
-SOURCE=Path(os.environ.get('BABYSIT_TEST_SKILL_SOURCE',ROOT/'.claude/skills/babysit-pr/SKILL.md')).read_text()
+SKILL=Path(os.environ.get('BABYSIT_TEST_SKILL_SOURCE',ROOT/'.claude/skills/babysit-pr/SKILL.md'))
 def fence(name):
-    match=re.search(r'<!-- test-anchor: '+re.escape(name)+r' -->\s*```bash\n(.*?)\n```',SOURCE,re.S)
-    if not match:raise AssertionError('missing executable fence: '+name)
-    return match.group(1)
+    return subprocess.check_output([SHELL,'-c','source "$1"; extract_skill_bash "$2" "$3"','--',str(ROOT/'.claude/scripts/tests/lib/skill-bash.sh'),str(SKILL),name],text=True).rstrip('\n')
 PERSIST=fence('babysit-pr-t5-persist')
 # Old-source controls run just the persist case, whose old fence is annotated
 # privately. Resolve the additional fences only in cases that execute them.
 def cadence(name):return fence('babysit-pr-t5-cadence-'+name)
+def terminal(name):return fence('babysit-pr-terminal-owner-'+name)
 class Persist(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='babysit-cas-');self.addCleanup(self.tmp.cleanup);self.home=Path(self.tmp.name);(self.home/'.claude').mkdir();self.state=self.home/'.claude/session-state.json'
-        self.watch=dict(active=True,stop_requested=False,monitor_generation='old',monitor_task_id='old-task',cadence_effective_minutes=5,tick_count=1,blocker_streak=1,conflict_streak=1,horizon_status='critical',horizon_held_since='2026-11-01T00:00:00Z',last_tick_at='2026-11-01T00:00:00Z',unknown={'keep':False})
+        self.watch=dict(active=True,stop_requested=False,cadence_transition=False,monitor_generation='old',monitor_task_id='old-task',cadence_effective_minutes=5,tick_count=1,blocker_streak=1,conflict_streak=1,horizon_status='critical',horizon_held_since='2026-11-01T00:00:00Z',last_tick_at='2026-11-01T00:00:00Z',unknown={'keep':False})
         self.entry=dict(babysit=self.watch,digest='sha256:before',digest_streak=1,last_cron_action={'type':'original'})
         self.state.write_text(json.dumps({'repos':{REPO:{'prs':{PR:self.entry}},'foreign/repo':{'sentinel':False}}}));self.initial=self.state.read_bytes()
         self.helper=self.home/'state-wrapper.sh';self.helper.write_text('''#!/usr/bin/env bash
@@ -94,14 +93,38 @@ exec "$REAL_STATE" "$@"
         data=json.loads(self.initial);data['repos'][REPO]['prs'][PR]['babysit']['monitor_task_id']=None;self.state.write_text(json.dumps(data))
         p=self.run_block(PERSIST+'\n'+cadence('guard')+'\necho ARMED_TASK');self.assertEqual(p.returncode,1,p.stderr);self.assertNotIn('ARMED_TASK',p.stdout);v=self.current()['babysit'];self.assertTrue(v['active']);self.assertTrue(v['stop_requested']);self.assertIsNone(v['monitor_task_id']);self.assertEqual(v['monitor_generation'],'old');self.assertEqual(v['cadence_effective_minutes'],5)
     def test_cadence_publish_retains_metadata_and_commits_action(self):
-        code=PERSIST+'\n'+cadence('guard')+'\nprintf "STOP=%s\\n" "$CADENCE_TASK_ID"\n'+cadence('publish');p=self.run_block(code);self.assertEqual(p.returncode,0,p.stderr);self.assertIn('STOP=old-task',p.stdout);self.assertIn('CADENCE_PUBLISH=armed',p.stdout);v=self.current();self.assertEqual(v['babysit']['monitor_task_id'],'replacement-task');self.assertEqual(v['babysit']['monitor_generation'],'new');self.assertEqual(v['babysit']['cadence_effective_minutes'],10);self.assertFalse(v['babysit']['stop_requested']);self.assertEqual(v['babysit']['unknown'],{'keep':False});self.assertEqual(v['last_cron_action']['interval'],'10m')
+        code=PERSIST+'\n'+cadence('guard')+'\nprintf "STOP=%s\\n" "$CADENCE_TASK_ID"\n'+cadence('publish');p=self.run_block(code);self.assertEqual(p.returncode,0,p.stderr);self.assertIn('STOP=old-task',p.stdout);self.assertIn('CADENCE_PUBLISH=armed',p.stdout);v=self.current();self.assertEqual(v['babysit']['monitor_task_id'],'replacement-task');self.assertEqual(v['babysit']['monitor_generation'],'new');self.assertEqual(v['babysit']['cadence_effective_minutes'],10);self.assertFalse(v['babysit']['stop_requested']);self.assertFalse(v['babysit']['cadence_transition']);self.assertEqual(v['babysit']['unknown'],{'keep':False});self.assertEqual(v['last_cron_action']['interval'],'10m')
     def test_publication_loss_and_rollback_retain_foreign_watcher(self):
         code=PERSIST+'\n'+cadence('guard')+'\n'+self.mutate_command(self.foreign())+cadence('publish')+'\nREPLACEMENT_STOP_SUCCEEDED=true\n'+cadence('rollback');p=self.run_block(code);self.assertEqual(p.returncode,1,p.stderr);self.assertIn('CADENCE_PUBLISH=lost',p.stdout);self.assertEqual(self.current()['babysit'],self.foreign());self.assertEqual(self.current()['last_cron_action'],{'type':'original'})
     def test_arm_failure_owned_cleanup_clears_only_its_watcher(self):
         code=PERSIST+'\n'+cadence('guard')+'\nREPLACEMENT_STOP_SUCCEEDED=true\n'+cadence('rollback');p=self.run_block(code);self.assertEqual(p.returncode,1,p.stderr);v=self.current()['babysit'];self.assertFalse(v['active']);self.assertIsNone(v['monitor_task_id']);self.assertIsNone(v['monitor_generation']);self.assertEqual(v['unknown'],{'keep':False})
     def test_unknown_publication_after_commit_is_reconciled_by_owned_cleanup(self):
-        code=PERSIST+'\n'+cadence('guard')+'\n'+cadence('publish')+'\nREPLACEMENT_STOP_SUCCEEDED=true\n'+cadence('rollback');p=self.run_block(code,dict(AFTER_COMMIT_FAIL='true'));self.assertEqual(p.returncode,1,p.stderr);self.assertIn('CADENCE_PUBLISH=failed rc=5',p.stdout);self.assertFalse(self.current()['babysit']['active']);self.assertIsNone(self.current()['babysit']['monitor_task_id'])
+        code=PERSIST+'\n'+cadence('guard')+'\n'+cadence('publish')+'\nREPLACEMENT_STOP_SUCCEEDED=true\n'+cadence('rollback');p=self.run_block(code,dict(AFTER_COMMIT_FAIL='true'));self.assertEqual(p.returncode,1,p.stderr);self.assertIn('CADENCE_PUBLISH=failed rc=5',p.stdout);self.assertFalse(self.current()['babysit']['active']);self.assertIsNone(self.current()['babysit']['monitor_task_id']);self.assertEqual(self.current()['last_cron_action']['type'],'delete','rollback left a false widen acknowledgement');self.assertEqual(self.current()['last_cron_action']['interval'],'paused')
     def test_unstoppable_owned_replacement_is_retained_with_stop_guard(self):
         code=PERSIST+'\n'+cadence('guard')+'\n'+cadence('publish')+'\nREPLACEMENT_STOP_SUCCEEDED=false\n'+cadence('rollback');p=self.run_block(code,dict(AFTER_COMMIT_FAIL='true'));self.assertEqual(p.returncode,1,p.stderr);v=self.current()['babysit'];self.assertTrue(v['active']);self.assertTrue(v['stop_requested']);self.assertEqual(v['monitor_task_id'],'replacement-task');self.assertEqual(v['monitor_generation'],'new')
+    def set_watch(self,watch):
+        data=json.loads(self.initial);data['repos'][REPO]['prs'][PR]['babysit']=watch;self.state.write_text(json.dumps(data))
+    def test_tick_gate_discards_cadence_transition_in_both_modes(self):
+        for internal in ['true','false']:
+            with self.subTest(internal=internal):
+                self.set_watch(dict(self.watch,cadence_transition=True));before=self.state.read_bytes();p=self.run_block(fence('babysit-pr-t0-owner-gate')+'\necho REACHED_T5',dict(BABYSIT_INTERNAL_TICK=internal));self.assertEqual(p.returncode,0,p.stderr);self.assertIn('TICK_GATE=cadence-transition',p.stdout);self.assertNotIn('REACHED_T5',p.stdout);self.assertEqual(self.state.read_bytes(),before)
+    def test_tick_gate_keeps_user_stop_distinct(self):
+        self.set_watch(dict(self.watch,stop_requested=True));before=self.state.read_bytes();p=self.run_block(fence('babysit-pr-t0-owner-gate')+'\necho REACHED_T5');self.assertEqual(p.returncode,0,p.stderr);self.assertIn('TICK_GATE=user-stop',p.stdout);self.assertNotIn('REACHED_T5',p.stdout);self.assertEqual(self.state.read_bytes(),before)
+    def test_tick_gate_rejects_foreign_generation_in_immediate_arm_mode(self):
+        self.set_watch(self.foreign());before=self.state.read_bytes();p=self.run_block(fence('babysit-pr-t0-owner-gate')+'\necho REACHED_T5',dict(BABYSIT_INTERNAL_TICK='false'));self.assertEqual(p.returncode,0,p.stderr);self.assertIn('TICK_GATE=lost',p.stdout);self.assertNotIn('REACHED_T5',p.stdout);self.assertEqual(self.state.read_bytes(),before)
+    def test_terminal_old_tick_never_touches_a_replacement(self):
+        self.set_watch(self.foreign());before=self.state.read_bytes();p=self.run_block(terminal('guard')+'\nprintf "STOP=%s\\n" "$TERMINAL_TASK_ID"');self.assertEqual(self.state.read_bytes(),before,'old terminal tick touched foreign watcher');self.assertEqual(p.returncode,0,p.stderr);self.assertNotIn('STOP=',p.stdout)
+    def test_terminal_guard_cas_loss_exposes_no_foreign_task(self):
+        p=self.run_block(terminal('guard')+'\nprintf "STOP=%s\\n" "$TERMINAL_TASK_ID"',self.race('before-cas'));self.assertEqual(p.returncode,0,p.stderr);self.assertIn('TERMINAL_GUARD=lost',p.stdout);self.assertNotIn('STOP=',p.stdout);self.assertEqual(self.current()['babysit'],self.foreign())
+    def test_terminal_cleanup_after_rearm_retains_the_new_watcher(self):
+        code=terminal('guard')+'\nprintf "STOP=%s\\n" "$TERMINAL_TASK_ID"\n'+self.mutate_command(self.foreign())+'TERMINAL_STOP_SUCCEEDED=true\n'+terminal('cleanup');p=self.run_block(code);self.assertEqual(p.returncode,1,p.stderr);self.assertIn('STOP=old-task',p.stdout);self.assertEqual(self.current()['babysit'],self.foreign());self.assertEqual(self.current()['last_cron_action'],{'type':'original'})
+    def test_terminal_cleanup_is_owned_and_records_delete(self):
+        code=terminal('guard')+'\nprintf "STOP=%s\\n" "$TERMINAL_TASK_ID"\nTERMINAL_STOP_SUCCEEDED=true\n'+terminal('cleanup');p=self.run_block(code);self.assertEqual(p.returncode,0,p.stderr);self.assertIn('STOP=old-task',p.stdout);self.assertIn('TERMINAL_CLEANUP=cleared',p.stdout);v=self.current();self.assertFalse(v['babysit']['active']);self.assertIsNone(v['babysit']['monitor_task_id']);self.assertIsNone(v['babysit']['monitor_generation']);self.assertFalse(v['babysit']['cadence_transition']);self.assertEqual(v['last_cron_action']['type'],'delete');self.assert_foreign_bucket()
+    def test_failed_terminal_stop_retains_guard_and_original_action(self):
+        code=terminal('guard')+'\nTERMINAL_STOP_SUCCEEDED=false\n'+terminal('cleanup');p=self.run_block(code);self.assertEqual(p.returncode,1,p.stderr);v=self.current();self.assertTrue(v['babysit']['active']);self.assertTrue(v['babysit']['stop_requested']);self.assertEqual(v['babysit']['monitor_task_id'],'old-task');self.assertEqual(v['last_cron_action'],{'type':'original'})
+    def test_terminal_transition_is_held_not_a_user_stop(self):
+        self.set_watch(dict(self.watch,cadence_transition=True));before=self.state.read_bytes();p=self.run_block(terminal('guard')+'\nprintf "STOP=%s\\n" "$TERMINAL_TASK_ID"');self.assertEqual(p.returncode,0,p.stderr);self.assertIn('TERMINAL_GUARD=cadence-transition',p.stdout);self.assertNotIn('STOP=',p.stdout);self.assertEqual(self.state.read_bytes(),before)
+    def test_missing_identity_even_at_unchanged_cadence_cannot_refresh(self):
+        self.set_watch(dict(self.watch,monitor_task_id=None));p=self.run_block(PERSIST+'\nif [[ "$EFFECTIVE_MIN" == "$PREV_EFFECTIVE_MIN" ]]; then echo HEALTHY_RETAIN; fi',dict(EFFECTIVE_MIN='5'));self.assertEqual(p.returncode,1,p.stderr);self.assertNotIn('HEALTHY_RETAIN',p.stdout);v=self.current();self.assertTrue(v['babysit']['stop_requested'],'unchanged cadence retained a watcher without identity');self.assertFalse(v['babysit']['cadence_transition']);self.assertEqual(v['babysit']['last_tick_at'],self.watch['last_tick_at']);self.assertEqual(v['digest'],'sha256:before')
 if __name__=='__main__':unittest.main(argv=[sys.argv[0],*sys.argv[2:]],verbosity=2)
 PY
