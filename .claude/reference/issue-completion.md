@@ -86,6 +86,30 @@ Other OPEN/foreign linked issues remain pending even when the selected issue
 closes successfully. API failures, delayed visibility and interrupted requests
 retain a retryable receipt and never become verified completion.
 
+## Deliberately retained issue scope
+
+A partial delivery, owner-held decision or intentionally reopened issue can
+finish its PR wrap while the issue stays OPEN. After independently reading the
+current issue/PR/task scope, record remaining work in scoped task evidence and
+explicitly assess that disposition, pinned to the verified merge:
+
+```bash
+"$ISSUE_COMPLETION_SH" --repo "$OWNER_REPO" --pr "$PR_NUM" \
+  --expected-merge "$MERGE_SHA" --retain-issue "$ISSUE_NUM=partial_scope"
+```
+
+Allowed fixed reasons are `partial_scope`, `owner_decision` and `reopened`.
+Repeat `--retain-issue` for each deliberately retained same-repo issue; every
+other linked issue must already be CLOSED or the result stays pending. A missing
+trailer requires explicit `--association-verified` after verifying the task's
+primary association. Foreign references stay pending for separate scoped
+reconciliation. This read-only mode independently verifies each selected typed
+issue and produces `outcome: retained` with public `retained_scope` identities
+and fixed reasons. It never closes an issue or treats API failures, malformed
+associations or incomplete assertions as retained. Do not use it merely to clear
+a failed automatic closure. Pass these flags through the canonical adapter;
+its successful report can then be published by the guarded handoff function.
+
 ## State, resume and handoff
 
 Use this canonical adapter for each assessment or individually verified write.
@@ -116,7 +140,8 @@ reconcile_issue_completion() {
   COMPLETION_RC=0
   COMPLETION_JSON=$("$completion_helper" --repo "$OWNER_REPO" --pr "$PR_NUM" "$@") || COMPLETION_RC=$?
   if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" \
-      'type == "object" and .owner_repo == $repo and .pr == $pr and (.outcome == "verified" or .outcome == "pending")' >/dev/null; then
+      'type == "object" and .owner_repo == $repo and .pr == $pr and (.outcome == "verified" or .outcome == "pending" or
+       (.outcome == "retained" and .error_class == null and (.retained_scope | type == "object" and length > 0)))' >/dev/null; then
     COMPLETION_JSON=$(jq -cn --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" \
       '{owner_repo:$repo,pr:$pr,outcome:"pending",error_class:"completion_report_unreadable"}')
     COMPLETION_RC=4
@@ -226,7 +251,7 @@ repository/path differences prevent claiming a causal regression commit.
 
 Audit dispositions must remain explicit. Partial sales-kit Issues #2373, #860,
 #859, #2321, #2322, #2159 and owner-maintained #13 remain open until their own
-criteria/decisions are satisfied. Issue #2214 remains pending full current coverage verification: its criterion6
+criteria/decisions are satisfied. Issue #2214 remains pending full current coverage verification: its criterion 6
 requires documentation that current authority §7.2 does not provide. That section
 still dedicates the control-change credential to control changes; the merge
 comment explicitly said it was untouched under the owner’s decision. Reconcile

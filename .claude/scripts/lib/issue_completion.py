@@ -146,6 +146,29 @@ def assess(args, report):
                                state=linked['state'], disposition='foreign_retained' if owner_repo.lower() != args.repo.lower()
                                else 'closed' if linked['state'] == 'CLOSED' else 'scope_verification_required'))
     report['issues'] = candidates
+    if args.retain_issue:
+        if (args.complete_issue is not None or args.no_issue_verified
+                or args.expected_merge != report['merge_sha']
+                or (pr.get('author') or {}).get('login', '').lower() != data['viewer']['login'].lower()):
+            raise CompletionError('retained_scope_unverified', 3)
+        retained = {}
+        for assertion in args.retain_issue:
+            match = re.fullmatch(r'([1-9][0-9]*)=(partial_scope|owner_decision|reopened)', assertion)
+            if not match or match[1] in retained:
+                raise CompletionError('retained_scope_unverified', 3)
+            number = int(match[1])
+            target = next((x for x in candidates if x['owner_repo'].lower() == args.repo.lower() and x['issue'] == number), None)
+            if target is None:
+                if not args.association_verified:
+                    raise CompletionError('issue_association_unverified', 3)
+                target = dict(owner_repo=args.repo, issue=number)
+                candidates.append(target)
+            current = issue(args.repo, number)
+            target.update(state=current['state'], disposition='closed' if current['state'] == 'CLOSED' else 'retained')
+            retained[str(number)] = dict(owner_repo=args.repo, issue=number, reason=match[2])
+        report['retained_scope'] = retained
+        report['outcome'] = 'retained' if all(x['disposition'] in ('closed', 'retained') for x in candidates) else 'pending'
+        return 0 if report['outcome'] == 'retained' else 1
     if args.no_issue_verified:
         if candidates or args.complete_issue is not None or args.association_verified or args.expected_merge != report["merge_sha"]:
             raise CompletionError("no_issue_scope_unverified", 3)
@@ -217,6 +240,7 @@ def main():
     parser.add_argument('--scope-verified', action='store_true')
     parser.add_argument('--association-verified', action='store_true')
     parser.add_argument('--no-issue-verified', action='store_true')
+    parser.add_argument('--retain-issue', action='append', default=[], metavar='NUMBER=REASON')
     args = parser.parse_args()
     if (not REPO.fullmatch(args.repo) or args.pr <= 0 or args.repo.split('/')[1] in ('.', '..')
             or (args.complete_issue is not None and args.complete_issue <= 0)

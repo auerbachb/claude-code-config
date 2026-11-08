@@ -141,6 +141,26 @@ class Completion(unittest.TestCase):
         rc,x=self.run_helper('--no-issue-verified','--expected-merge',MERGE)
         self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
 
+    def test_retained_scope_is_explicit_readonly_and_pinned(self):
+        rc,x=self.run_helper('--retain-issue','7=partial_scope');self.assertEqual(rc,3)
+        rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertEqual(x['outcome'],'retained');self.assertEqual(self.writes(),0)
+        self.assertEqual(x['retained_scope']['7']['reason'],'partial_scope')
+        for invalid in ['7=unknown','7=', '0=partial_scope']:
+            rc,x=self.run_helper('--retain-issue',invalid,'--expected-merge',MERGE)
+            self.assertEqual(rc,3);self.assertEqual(x['outcome'],'pending')
+        rc,x=self.complete('--retain-issue','7=partial_scope');self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+
+    def test_retention_does_not_disguise_unknown_or_unselected_work(self):
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes'].append(self.node(8));self.write_pr()
+        rc,x=self.run_helper('--retain-issue','7=owner_decision','--expected-merge',MERGE)
+        self.assertEqual(rc,1);self.assertEqual(x['outcome'],'pending')
+        rc,x=self.run_helper('--retain-issue','7=owner_decision','--retain-issue','8=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertEqual(x['outcome'],'retained');self.assertEqual(self.writes(),0)
+        self.mode('api-error')
+        rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,4);self.assertEqual(x['outcome'],'pending')
+
     def test_missing_trailer_requires_explicit_association(self):
         self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[];self.write_pr()
         rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
@@ -221,6 +241,12 @@ exit "$result"
         state=json.loads((self.home/'.claude/session-state.json').read_text())
         self.assertEqual(state['repos']['owner/consumer']['prs']['20']['issue_completion']['outcome'],'verified')
         self.assertEqual(self.writes(),0)
+        self.state['state']='OPEN';self.write_state()
+        result=subprocess.run(['bash','-c',harness,'completion','--retain-issue','7=partial_scope','--expected-merge',MERGE],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        state=json.loads((self.home/'.claude/session-state.json').read_text())
+        self.assertEqual(state['repos']['owner/consumer']['prs']['20']['issue_completion']['outcome'],'retained')
+        self.assertEqual(self.writes(),0)
         before=(self.home/'.claude/session-state.json').read_bytes()
         result=subprocess.run(['bash','-c',harness,'completion'],cwd=repo,
                               env=dict(env,OWNER_REPO='other/repo'),text=True,capture_output=True,timeout=15)
@@ -246,6 +272,13 @@ exit "$result"
         self.assertEqual(p.returncode,0,p.stderr)
         recorded=json.loads(handoff.read_text());self.assertEqual(recorded['phase_completed'],'C')
         self.assertEqual(recorded['issue_completion']['outcome'],'verified')
+        self.state.update(state='OPEN',writes=0);self.write_state()
+        rc,retained=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(retained['issues'][0]['state'],'OPEN');self.assertEqual(self.writes(),0)
+        self.assertEqual(rc,0)
+        p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(retained)),text=True,capture_output=True,timeout=15)
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertEqual(json.loads(handoff.read_text())['issue_completion']['outcome'],'retained')
         handoff.unlink()
         p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
         self.assertNotEqual(p.returncode,0);self.assertFalse(handoff.exists())
