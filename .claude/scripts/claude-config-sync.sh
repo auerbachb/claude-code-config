@@ -1097,15 +1097,24 @@ fi
 TAIL_DECLINED=0; TAIL_TIMED_OUT=0; TAIL_CLOCK_FAILED=0; TAIL_LAST_BOUND=0; TAIL_LAST_RC=0
 TAIL_STDOUT=""; TAIL_STDERR=""
 SETUP_STATE_WRITABLE=1
+_tail_clock_last="$_git_region_t0"
+_tail_clock_bad=0
+TAIL_REMAINING=0
 _tail_remaining() {
-  local now elapsed remaining
-  [[ "$_git_region_t0" =~ ^[0-9]{1,12}$ ]] || return 1
-  now=$(date -u +%s 2>/dev/null) || return 1
-  [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+  local now elapsed remaining last="${_tail_clock_last:-$_git_region_t0}"
+  TAIL_REMAINING=0
+  [[ "${_tail_clock_bad:-0}" == 0 ]] || return 1
+  now=$(date -u +%s 2>/dev/null) || now=""
+  if [[ ! "$_git_region_t0" =~ ^[0-9]{1,12}$ || ! "$now" =~ ^[0-9]{1,12}$ \
+     || ! "$last" =~ ^[0-9]{1,12}$ ]] || (( 10#$now < 10#$last || 10#$now < 10#$_git_region_t0 )); then
+    _tail_clock_bad=1
+    return 1
+  fi
+  _tail_clock_last="$now"
   elapsed=$(( 10#$now - 10#$_git_region_t0 ))
-  (( elapsed >= 0 )) || return 1
   remaining=$(( _tail_region_budget - elapsed ))
   (( remaining >= 0 )) || remaining=0
+  TAIL_REMAINING="$remaining"
   printf '%s' "$remaining"
 }
 run_tail() { # mode; runs at statement level, never in command substitution
@@ -1121,11 +1130,12 @@ run_tail() { # mode; runs at statement level, never in command substitution
     TAIL_DECLINED=1; TAIL_LAST_RC=6; TAIL_STDERR='declined: config-sync lock ownership lost'
     return 6
   fi
-  if ! remaining=$(_tail_remaining); then
+  if ! _tail_remaining >/dev/null; then
     TAIL_DECLINED=1; TAIL_LAST_RC=124
     TAIL_STDERR='declined: shared acquire clock unavailable or moved backwards'
     return 124
   fi
+  remaining="$TAIL_REMAINING"
   if (( remaining < 1 )); then
     TAIL_DECLINED=1; TAIL_LAST_RC=124
     TAIL_STDERR="declined: only ${remaining}s left of the ${_tail_region_budget}s lock-held tail deadline"
@@ -1137,7 +1147,9 @@ run_tail() { # mode; runs at statement level, never in command substitution
     --skills-worktree "$SKILLS_WT" --root-repo-hint "$ROOT_REPO_HINT" --state-file "$STATE_FILE" || rc=$?
   TAIL_LAST_RC="$rc"
   [[ "${BOUNDED_TIMED_OUT:-0}" -ne 1 ]] || TAIL_TIMED_OUT=1
-  [[ "${BOUNDED_CLOCK_UNREADABLE:-0}" -ne 1 ]] || TAIL_CLOCK_FAILED=1
+  if [[ "${BOUNDED_CLOCK_UNREADABLE:-0}" == 1 ]]; then
+    TAIL_CLOCK_FAILED=1; _tail_clock_bad=1
+  fi
   if [[ -z "${CAPTURE:-}" || -z "${CAPTURE_ERR:-}" ]]; then
     # This attempt DID run. Keep its timeout/clock classification; only the
     # NEXT operation declines because capture handover is unavailable.
@@ -1152,6 +1164,9 @@ run_tail() { # mode; runs at statement level, never in command substitution
       TAIL_STDERR='output capture unreadable after the bounded tail ran'
     fi
   fi
+  # Preserve the observed clock watermark across later children. A failure
+  # here declines the next operation without changing this child's exit.
+  _tail_remaining >/dev/null || true
   return "$rc"
 }
 _tail_failure_reason() {

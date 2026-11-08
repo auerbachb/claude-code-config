@@ -228,24 +228,28 @@ _bounded_out=""
 #
 # Legacy callers retain the full-budget fallback for an unusable clock.
 # Registration opts into strict mode: an unknown/backward clock declines.
+_hook_clock_last="$_hook_t0"
+_hook_clock_bad=0
+_hook_budget_left=0
 _budget_remaining() { # _budget_remaining [reserve-secs] [strict-clock=0|1]
   local now elapsed remaining budget reserve="${1:-$_HOOK_GIT_RESERVE_SECS}" strict="${2:-0}"
+  local last="${_hook_clock_last:-$_hook_t0}"
   budget=$(( _HOOK_TIMEOUT_SECS - reserve ))
   (( budget > 0 )) || budget=1
-  if [[ "$strict" == 1 ]]; then
-    [[ "$_hook_t0" =~ ^[0-9]{1,12}$ ]] || return 1
-    now="$(date -u +%s 2>/dev/null)" || return 1
-    [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
-    (( 10#$now >= 10#$_hook_t0 )) || return 1
+  _hook_budget_left="$budget"
+  if [[ "$strict" == 1 && "${_hook_clock_bad:-0}" != 0 ]]; then return 1; fi
+  now="$(date -u +%s 2>/dev/null)" || now=""
+  if [[ ! "$_hook_t0" =~ ^[0-9]{1,12}$ || ! "$now" =~ ^[0-9]{1,12}$ \
+     || ! "$last" =~ ^[0-9]{1,12}$ ]] || (( 10#$now < 10#$last || 10#$now < 10#$_hook_t0 )); then
+    _hook_clock_bad=1
+    [[ "$strict" != 1 ]] || return 1
+    printf '%s' "$budget"; return 0
   fi
-  [[ -n "$_hook_t0" ]] || { printf '%s' "$budget"; return 0; }
-  if [[ "$strict" != 1 ]]; then
-    now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
-    [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
-  fi
-  elapsed=$(( now - _hook_t0 ))
+  _hook_clock_last="$now"
+  elapsed=$(( 10#$now - 10#$_hook_t0 ))
   remaining=$(( budget - elapsed ))
   (( remaining < 0 )) && remaining=0
+  _hook_budget_left="$remaining"
   printf '%s' "$remaining"
 }
 
@@ -255,6 +259,8 @@ _budget_remaining() { # _budget_remaining [reserve-secs] [strict-clock=0|1]
 _bound_trip_reason() {
   if (( _bound_declined == 1 )); then
     printf 'declined: %s' "$_bounded_out"
+  elif [[ "${_bound_output_unknown:-0}" == 1 ]]; then
+    printf 'completion output unavailable: %s' "$_bounded_out"
   else
     if [[ "${BOUNDED_CLOCK_UNREADABLE:-0}" == 1 ]]; then
       printf 'aborted: clock became unreadable during the bounded call'
@@ -286,6 +292,7 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
   done
   local cap="$1"; shift
   local rc=0 capture_failed=0
+  _bounded_stdout=""; _bounded_stderr=""; _bound_output_unknown=0
   BOUNDED_TIMED_OUT=0
   _bound_declined=0
   if (( _bound_available == 0 )); then
@@ -305,11 +312,12 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
     return 124
   fi
   local budget_left
-  if ! budget_left="$(_budget_remaining "$reserve" "$strict_clock")"; then
+  if ! _budget_remaining "$reserve" "$strict_clock" >/dev/null; then
     BOUNDED_TIMED_OUT=1; _bound_declined=1; _last_bound=0
     _bounded_out="shared hook clock unavailable or moved backwards"
     return 124
   fi
+  budget_left="$_hook_budget_left"
   # Ceiling and floor applied to different things on purpose — see
   # _budget_remaining.
   _last_bound="$budget_left"
@@ -329,6 +337,7 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
     return 124
   fi
   run_bounded "$_last_bound" "$@" || rc=$?
+  [[ "${BOUNDED_CLOCK_UNREADABLE:-0}" != 1 ]] || _hook_clock_bad=1
   # The library rotates CAPTURE/CAPTURE_ERR away from a child left alive after
   # SIGKILL (the handover opted into above). Its two mktemp calls are NOT
   # checked, so a full or read-only $TMPDIR leaves the paths empty — and the
@@ -340,20 +349,20 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
   if [[ -z "${CAPTURE:-}" || -z "${CAPTURE_ERR:-}" ]]; then
     _bound_available=0
     _bound_unavailable_reason="capture handover could not allocate a replacement temp file"
-    BOUNDED_TIMED_OUT=1
+    _bound_output_unknown=1
     _bounded_out="output capture unavailable after the bounded call ran"
     return 124
   fi
-  _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || capture_failed=1
-  if [[ -z "$_bounded_out" ]]; then
-    _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || capture_failed=1
-  fi
+  _bounded_stderr="$(cat "$CAPTURE_ERR" 2>/dev/null)" || capture_failed=1
+  _bounded_stdout="$(cat "$CAPTURE" 2>/dev/null)" || capture_failed=1
+  _bounded_out="${_bounded_stderr:-$_bounded_stdout}"
   if (( capture_failed == 1 )); then
-    _bound_available=0
+    _bound_available=0; _bound_output_unknown=1
     _bound_unavailable_reason="output capture unreadable after the bounded call ran"
     _bounded_out="$_bound_unavailable_reason"
     return 124
   fi
+  _budget_remaining "$reserve" "$strict_clock" >/dev/null || true
   return "$rc"
 }
 
@@ -575,14 +584,14 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
     # BOUNDED_TIMED_OUT (bounded-run.sh contract).
     _run_hook_bounded --reserve "$_HOOK_TAIL_RESERVE_SECS" "$_publish_bound_secs" \
       bash "$script" "$skills_wt" "${_root_repo}" || rc=$?
-    if (( rc != 0 )) && [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+    if (( rc != 0 )) && [[ "${BOUNDED_TIMED_OUT:-0}" == 1 || "${_bound_output_unknown:-0}" == 1 ]]; then
       # A bound trip carries the same "<label> symlink publish failed" token the
       # rc branch below uses, because that substring is what the publish guard
       # and the marker clear read. _publish_incomplete is set for the same
       # reason a MISSING publisher sets it: a publisher that was cut short
       # refreshed an unknown subset of its links, and the marker's categories
       # cover exactly those links.
-      errors="${errors:+$errors; }${label} symlink publish failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
+      errors="${errors:+$errors; }${label} symlink publish failed: $(_bound_trip_reason) — completion unverified; preserving the restart signal"
       _publish_incomplete=1
       # That unknown subset still owes the resume-path restart signal (leg 3),
       # which is the ONLY thing that ever reports links repointed under an
@@ -600,8 +609,8 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
       esac
       return 0
     fi
-    out="$(cat "$CAPTURE" 2>/dev/null)" || out=""
-    err="$(cat "$CAPTURE_ERR" 2>/dev/null)" || err=""
+    out="$_bounded_stdout"
+    err="$_bounded_stderr"
     # Harvest change categories BEFORE branching on rc: a publisher can land
     # links and then exit non-zero (e.g. a failed prune), and those landed
     # changes still owe the restart signal. The skill publisher also owns the
