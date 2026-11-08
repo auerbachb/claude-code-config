@@ -276,35 +276,89 @@ run_in_background: true
 
 **Record all of this tick's spawns in ONE single write, after every Agent call has been issued.** `.active_agents` is a map keyed by agent id (issue #1631), so each spawn writes only its own key — a sibling thread's entries are structurally untouchable, and the old `--get` → append → `--set`-the-whole-array idiom that lost them is gone. Batching is still the rule: one call per tick is one atomic write and one lock acquisition instead of N. Build every entry first, then issue exactly one `session-state.sh` call for the whole batch:
 
+<!-- test-anchor: pmm-spawn-record -->
+
 ```bash
-NOW=$(date -u +%FT%TZ)
+SPAWN_STATE_RC=0
+SPAWN_STATE_ERROR=""
+NOW=$(date -u +%FT%TZ) || SPAWN_STATE_RC=4
+[[ -n "$NOW" ]] || SPAWN_STATE_RC=4
+[[ "$SPAWN_STATE_RC" -eq 0 ]] || SPAWN_STATE_ERROR=clock
 AGENT_SETS=()
 IN_FLIGHT_SETS=()
-# ONE loop per spawned PR — build that PR's entry AND its --set argument together,
-# each using ONLY that PR's own head_sha. Never hoist head_sha into a shared
-# variable reused across iterations or across a second loop — the last PR's SHA
-# would silently overwrite every earlier PR's lock.
-for N in $SPAWNED_PR_NUMS; do
-  N_HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")   # that PR's own tick-scoped $GATE
-  # --first: one primary issue per agent entry. Default mode is set-valued
-  # (issue #1492) and a two-line value would break the `jq --argjson` below.
-  ISSUE_N=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null || echo null)
+SPAWNED_COUNT=0
+SPAWN_STATE_AGENT_KEYS=()
+# Each entry uses ONLY its own PR's head, never a shared last-loop head.
+for N in ${SPAWNED_PR_NUMS:-}; do
+  SPAWNED_COUNT=$((SPAWNED_COUNT + 1))
+  SPAWN_STATE_AGENT_KEYS+=("pmm-fix-$N")
+  if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then
+    SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=pr_metadata; continue
+  fi
+  N_HEAD_SHA=$(jq -er '.head_sha | select(type == "string" and length > 0)' \
+    <<<"${GATE_BY_PR[$N]:-}") || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=head_metadata; }
+  ISSUE_N=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null) || ISSUE_N=null
   AGENT_ID="pmm-fix-$N"
-  # -c is load-bearing: the entry is interpolated into a --set argument below,
-  # and jq's default pretty-print would embed newlines in it.
   ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
     --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \
-    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}')
-  # Targeted per-key write — never a whole-map `--set '.active_agents=...'`.
+    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}') \
+    || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_entry; }
+  FLIGHT_ENTRY=$(jq -cn --arg now "$NOW" --arg head "$N_HEAD_SHA" --arg agent "$AGENT_ID" \
+    '{skill:"phase-a-fixer",status:"active",dispatched_at:$now,head_sha:$head,agent_id:$agent}') \
+    || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=flight_entry; }
   AGENT_SETS+=(--set ".active_agents[\"$AGENT_ID\"]=$ENTRY")
-  IN_FLIGHT_SETS+=(--set ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$N_HEAD_SHA\",\"agent_id\":\"$AGENT_ID\"}")
+  IN_FLIGHT_SETS+=(--set ".pmm_in_flight[\"$N\"]=$FLIGHT_ENTRY")
 done
+# One complete, fixed batch per attempt: no entry can land without its siblings.
+SPAWN_WRITE_ARGS=(${AGENT_SETS[@]+"${AGENT_SETS[@]}"} ${IN_FLIGHT_SETS[@]+"${IN_FLIGHT_SETS[@]}"})
+SPAWN_STATE_OUTCOME=recorded
+if [[ "$SPAWNED_COUNT" -eq 0 ]]; then
+  SPAWN_STATE_RC=0; SPAWN_STATE_OUTCOME=none
+elif [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  SPAWN_STATE_ERROR=write
+  "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  if [[ "$SPAWN_STATE_RC" -eq 6 ]]; then
+    SPAWN_STATE_RC=0
+    "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  fi
+fi
 
-# After the loop — ONE write carrying every per-key agent assignment plus the locks.
-"$SESSION_STATE_SH" ${AGENT_SETS[@]+"${AGENT_SETS[@]}"} ${IN_FLIGHT_SETS[@]+"${IN_FLIGHT_SETS[@]}"}
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  echo "SPAWN_STATE=$SPAWN_STATE_OUTCOME"
+else
+  echo "SPAWN_STATE=failed rc=$SPAWN_STATE_RC reason=$SPAWN_STATE_ERROR"
+  # This is checkpoint DATA, never a shell command to eval or an unconditional
+  # retry instruction: children may have advanced before a later recovery.
+  SPAWN_STATE_PENDING=$(jq -cn --arg reason "$SPAWN_STATE_ERROR" \
+    --argjson key_count "${#SPAWN_STATE_AGENT_KEYS[@]}" --args \
+    '{registration:"unconfirmed",reason:$reason,requires_task_observation:true,
+      agent_keys:$ARGS.positional[:$key_count],args:$ARGS.positional[$key_count:]}' \
+    -- ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"} \
+       ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}) || SPAWN_STATE_PENDING=""
+  if [[ -n "$SPAWN_STATE_PENDING" ]]; then
+    echo "SPAWN_STATE_PENDING=$SPAWN_STATE_PENDING"
+  else
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_BEGIN'
+    if [[ "${#SPAWN_STATE_AGENT_KEYS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_END'
+    echo 'SPAWN_STATE_PENDING_ARGV_BEGIN'
+    if [[ "${#SPAWN_WRITE_ARGS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_ARGV_END'
+  fi
+fi
+# Preserve the failure status for the Bash tool as well as the explicit footer.
+(exit "$SPAWN_STATE_RC")
 ```
 
-Set Subagent column to `spawned` immediately for every PR in this batch; transition to `working` once each subagent reports activity (first tool call or ~30s elapsed).
+**Atomicity and recovery (#1642).** `session-state.sh` builds all assignments into one jq candidate, validates its field types and lock ownership, then commits with one rename. A failed batch cannot apply only some keys. Malformed JSON values deliberately fall back to strings, so build both agent and in-flight entries as real JSON and decline the whole record batch when construction fails. Only an actual write exit6 retries once; the original timestamps, IDs and argv stay fixed.
+
+`SPAWN_STATE=failed` means the tasks are already spawned but registration is unconfirmed. Retain their exact native Task/Agent IDs, original batch and this footer in the parent's resumable handoff, and observe those tasks directly. Do not redispatch, blindly stop them, release their claims, or make state-based merge/rebase/dispatch decisions for affected PRs while registration is pending. Preserve raw diagnostics and checkpoint data even if JSON serialization failed. Reconcile against current native task results before any later replay; if a child completed, use its terminal report/drain path rather than overwriting it with stale `spawned` state. No read-back is needed to reinterpret a successful atomic write.
+
+Set the Subagent column to `spawned` when registration is confirmed; qualify it as `spawned (registration unconfirmed)` on failure. Transition to `working` on actual activity, retaining the qualifier until reconciled.
 
 **Safety boundaries for every subagent (non-negotiable):**
 - Never modify branch protection

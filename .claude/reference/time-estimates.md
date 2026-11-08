@@ -411,43 +411,43 @@ or from "when this tick noticed the pipeline" — would move Start on every rebu
 after a context compaction, which is precisely what the recorded value prevents.
 `createdAt` stays a last-resort fallback for pipelines that predate the record.
 
-### Round membership comes from state too (issue #1604)
+### Round membership comes from state too (issues #1604, #1712)
 
-`pipelines` answers "when did this start"; it cannot answer "which issues are in this
-round" — it is append-only across sessions, and a **queued** issue has no entry there
-at all until its turn. So the round itself is recorded once, at dispatch:
+`pipelines` records launches, not queued members or round boundaries. Dispatch
+records the ordered whole round in `.repos["<key>"].rounds["<session>"]`:
 
 | Field | Value |
 |-------|-------|
-| `.repos["<key>"].round.members` | Every issue in the round, in execution order, as issue-number **strings** — launched now and queued alike. The key type matches `pipelines`, so the two join directly |
-| `.repos["<key>"].round.dispatched_at` | ISO-8601 UTC, stamped once at dispatch and never refreshed |
-| `.repos["<key>"].round.session` | The dispatching thread's session id — attribution, so a sibling's round is never torn down by the wrong thread. Not a lock and not a key: the block stays repo-keyed, or the `/board` in another thread could not find it |
+| `members` | Issue-number strings in execution order, including queued members |
+| `dispatched_at` | ISO-8601 UTC, retained on same-round re-entry and reordering |
+| `session` | The stable dispatch owner, matching the slot key |
 
-**Written by the dispatcher, read by every renderer.** `/subagent` Step 7.0 writes it
-after Step 6.0b assembles the round and before the first spawn; `/wave` writes
-nothing — it dispatches nothing, and a second writer would be a double-write.
-`/subagent` Step 8 item 6 clears it to `null` at round teardown, in the same breath as
-the `--active 0` terminal board, so a finished round can never be rendered as the
-current one.
+`/subagent` Step 7.0 writes only its own slot before the first spawn; `/wave`
+writes nothing. Whole-record CAS protects the read/write gap. Step 8 teardown
+checks the ended membership and session before storing null, and never clears a
+sibling. Unidentified sessions degrade without writing a shared default slot.
+No heartbeat age supplies permission to overwrite another owner.
 
-**One slot per repo, so both ends compare before they write.** Two orchestration
-threads can dispatch into the same repo at once — the reason `table_render` is
-session-keyed — and a bare `--set` at either end would let one thread take the other's
-round or clear a record it never owned. The write is a `session-state.sh --cas`
-against the block as read (a loss means a sibling recorded first: report it, never
-retry into an overwrite), and the clear is a CAS that additionally fires only while
-`members` is still the round that just ended. Re-entry — the same round re-running the
-step — is decided by **set equality** of `members`, never containment: a stale
-superset left by a dead round would otherwise be adopted as a new, smaller round's
-identity.
+`round-membership.sh` selects the invoking session's own ordered queue/completed
+membership. A separate observer reads a deterministic, deduplicated union labelled
+`Recorded rounds (observer view)`, with queued liveness unconfirmed; union counts
+are not one dispatch clock. Running rows keep their repo scope as capacity
+context, and the existing running/pre-PR evidence rule still opens the board.
+Membership alone never proves a live round. `--all-repos` retains each repo's own
+selection and scope label.
 
-Two of the table's three row classes fall out of it, for **any** thread: a member with
-no recorded `started_at` is a **queued** row, and a member whose PR merged is a
-**completed-this-round** row. A **refill never rewrites `members`** — promoting a
-queued member writes that issue's `started_at`, and the row moves from the queued view
-to the running view because of that write alone. An absent block means no recorded
-round, which is the legacy state and the state between rounds; renderers fall back
-rather than inventing membership.
+Old `.round` records are read-only compatibility evidence. An attributed legacy
+record is shadowed whenever its owner has a new slot key, including a null
+teardown tombstone; unattributed legacy evidence is retained. Known absent records
+use the labelled no-record fallbacks. Unknown or malformed state degrades rather
+than becoming a fabricated empty round. These repo siblings are not lifted by
+`--session-view`; no migration or new generic CAS interface is needed.
+
+
+Membership selection requires an explicit valid session ID. An empty, default,
+null or malformed identity is a usage error; `/board` labels the degradation and
+uses its no-record fallbacks. A distinct identified observer can still read the
+recorded-round union. The table-freshness default clock remains unchanged.
 
 ### Usage by surface
 
