@@ -35,9 +35,9 @@ require_text .claude/reference/scheduling-failure-modes.md \
 
 require_text .claude/skills/babysit-pr/SKILL.md 'babysit.monitor_task_id' \
   'babysit-pr must persist its Monitor task ID'
-require_text .claude/skills/babysit-pr/SKILL.md 'stop the exact current Monitor' \
+require_text .claude/skills/babysit-pr/SKILL.md "Call \`TaskStop\` only for the captured \`\$CADENCE_TASK_ID\`." \
   'babysit-pr cadence changes must stop the prior Monitor'
-require_text .claude/skills/babysit-pr/SKILL.md 'Run that atomic cleanup only after `TaskStop` succeeds.' \
+require_text .claude/skills/babysit-pr/SKILL.md 'TERMINAL_STOP_SUCCEEDED:-false' \
   'babysit-pr terminal cleanup must retain a failed Monitor task ID'
 reject_text .claude/skills/babysit-pr/SKILL.md 'arm_loop ' \
   'babysit-pr must not retain the dynamic-loop arm path'
@@ -54,7 +54,7 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   'a stale reclaim **must stop the exact `$RETAINED_TASK_ID` with `TaskStop`**' \
   'babysit-pr stale reclaim must stop the identified silent Monitor before re-arming'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'Before comparing cadences, read the exact' \
+  'T5_MISSING_GUARD_JSON' \
   'babysit-pr must validate Monitor identity even when the cadence is unchanged'
 require_text .claude/skills/babysit-pr/SKILL.md 'If that task-ID publication fails' \
   'babysit-pr initial Monitor arm must handle task-ID publication failure'
@@ -62,7 +62,7 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   'if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi' \
   'babysit-pr must derive the effective cadence before persisting or re-arming it'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'monitor_task_id=$NEW_MONITOR_TASK_ID' \
+  ".cadence_effective_minutes=\$cadence | .stop_requested=false | .cadence_transition=false" \
   'babysit-pr must publish replacement identity with its effective cadence'
 require_text .claude/skills/babysit-pr/SKILL.md \
   '--monitor-generation $MONITOR_GENERATION' \
@@ -71,19 +71,25 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   '"$TICK_GENERATION" != "$RECORDED_GENERATION"' \
   'babysit-pr must reject queued events from an older Monitor generation'
 require_text .claude/skills/babysit-pr/SKILL.md \
+  "--expect \"\$TERMINAL_SNAPSHOT\"" \
+  'babysit-pr must compare tick ownership before terminal TaskStop'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  "--expect \"\$TERMINAL_GUARDED_JSON\"" \
+  'babysit-pr must compare ownership again before terminal cleanup'
+require_text .claude/skills/babysit-pr/SKILL.md \
   'TICK_GENERATION="$_BABYSIT_ARG"' \
   'babysit-pr must parse the generation carried by Monitor-emitted ticks'
 require_text .claude/skills/babysit-pr/SKILL.md \
   'if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then' \
   'babysit-pr must apply generation validation to the parsed internal tick mode'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"' \
+  '.monitor_task_id=$task | .monitor_generation=$gen' \
   'babysit-pr must publish replacement task ID and generation together'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'Before that stop, atomically set `stop_requested=true`' \
+  'cadence_transition=true' \
   'babysit-pr cadence re-arm must guard against queued old-generation events before TaskStop'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'known-stopped old identity and set `active=false`, `stop_requested=false`' \
+  'ROLLBACK_ARGS+=(--set' \
   'babysit-pr must clear its cadence guard after verified rollback teardown'
 require_text .claude/skills/babysit-pr/SKILL.md \
   'TASK_STOP_SUCCEEDED=true only when that exact tool call succeeds' \
