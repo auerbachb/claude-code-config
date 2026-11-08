@@ -318,6 +318,17 @@ for SH in $SHELLS; do
   check "[$SH] parse drops leading zeros" "$(parse "$SH" "02: B")" "2=B|"
   check "[$SH] parse drops blank segments" "$(parse "$SH" "1: A,, 2: B,")" "1=A|2=B|"
   check "[$SH] parse trims each answer" "$(parse "$SH" "  3 :   spaced out   ")" "3=spaced out|"
+  check "[$SH] parse drops leading separator runs" "$(parse "$SH" "$(printf ',;\n'; repeat , 2000; printf '2: B')")" "2=B|"
+  check "[$SH] parse drops trailing mixed separator runs" "$(parse "$SH" "$(printf '1:A,;\n'; repeat ';' 2000)")" "1=A|"
+  check "[$SH] continuation keeps the last separator in a run" "$(parse "$SH" "1:A,;continued")" "1=A;continued|"
+  check "[$SH] continuation keeps the final newline in a run" \
+    "$(parse "$SH" "$(printf '1:A,;\ncontinued')")" '1=A\ncontinued|'
+  check "[$SH] whitespace-bearing empty segments keep continuation semantics" \
+    "$(parse "$SH" "$(printf '1:A,  ; \ncontinued')")" '1=A\ncontinued|'
+  check "[$SH] long mixed runs keep the final continuation separator" \
+    "$(parse "$SH" "$(printf '1:A'; repeat_str $',;\n' 1500; printf 'continued')")" '1=A\ncontinued|'
+  check "[$SH] a pair after a run starts a new answer" "$(parse "$SH" "1:A,;$(repeat , 2000)2:B")" "1=A|2=B|"
+  check_contains "[$SH] a separator-only reply still has no answer" "$(parse "$SH" ",;$(repeat , 2000)")" "expected a reply such as"
   check "[$SH] parse keeps a time inside an answer" "$(parse "$SH" "1: at 10:30 please")" "1=at 10:30 please|"
   check_contains "[$SH] parse refuses free text first" "$(parse "$SH" "B, 2: C")" "expected a reply such as"
 
