@@ -360,7 +360,7 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   # of the acquire. The stamps were the harmful one. A SLOW but uncontended
   # acquire that straddled a second boundary read as contended, so the marker
   # was kept on a startup that had loaded everything — the macOS CI flake in
-  # session-start-sync.test.sh case 11b (issue #1751). The other two only ever
+  # session-start-sync-marker.test.sh case 11b (issue #1751). The other two only ever
   # approximated what the library now reports directly.
   #
   # Captured HERE, immediately: the marker clear below re-acquires the lock,
