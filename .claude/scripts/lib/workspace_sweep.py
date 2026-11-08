@@ -140,7 +140,7 @@ def register(base, root, key, now):
     main = next((line[9:] for line in listed.splitlines() if line.startswith("worktree ")), None)
     if main and identity(main)[1] == key:
         root = Path(main)
-    with lock(base / "registry.lock"):
+    with lock(base / "registry.lock", wait=5):
         registry = load(base / "repos.json", {})
         if not isinstance(registry, dict):
             raise ValueError("invalid repository registry")

@@ -46,6 +46,17 @@ cases = r'''
     base=Path(env['HOME'])/'.claude/workspace-sweep'
     state=next(base.glob('*.json'))
     state=next(p for p in base.glob('*.json') if p.name!='repos.json')
+    # Routine SessionStart registration must survive a short registry writer.
+    import fcntl
+    fd=os.open(base/'registry.lock',os.O_RDWR);fcntl.flock(fd,fcntl.LOCK_EX)
+    try:
+        pending=subprocess.Popen(['bash',str(runner),'--register-repo',str(root),'--now',str(now+1)],cwd=root,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        time.sleep(0.5)
+        verify(pending.poll() is None,'registry registration waits for a routine concurrent writer')
+    finally:
+        os.close(fd)
+    stdout,stderr=pending.communicate(timeout=10)
+    verify(pending.returncode==0 and not stdout and all(v['seen']==now+1 for v in json.loads((base/'repos.json').read_text()).values()),'registration publishes after the short lock holder releases')
     state.write_text(json.dumps({'attempted_at':now-3600}));state.chmod(0o600)
     result=cadence('--trigger','pm-day','--repo-dir',str(root),'--now',str(now))
     verify(result.returncode==0 and len(calls())==2,'exact interval boundary permits sweep')
