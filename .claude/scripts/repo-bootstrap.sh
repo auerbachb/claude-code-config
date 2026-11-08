@@ -135,7 +135,9 @@ REPO_BOOTSTRAP_FILE_EOF
     ".github/workflows/ac-gate.yml")
       cat <<'REPO_BOOTSTRAP_FILE_EOF'
 on:
-  pull_request: {}
+  pull_request:
+    # The gate reads the PR body, so checking AC boxes must rerun it.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
