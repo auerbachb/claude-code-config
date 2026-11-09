@@ -76,6 +76,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3, `/harness-audit` Step 7); strong/weak/none classification, exact-artifact dedup, and the comment-vs-file rule
 - `harness-audit.md` — `/harness-audit` design record: two-pass split, the step-up chip that preserves the top-tier spawn invariant, the model-fleet resolver, dual watermarks, and the out-of-repo report default (#770)
 - `review-stack-audit.md` — `/review-stack-audit` rationale and contracts: measured versus declared billing state, roles and deduplication, reply verdict and fallback attribution, value and velocity fields, scorecard, and study limits (Issues #1201 and #1949).
+- `infra-cost-audit.md` — advisory Vercel, GitHub Actions, and Railway audit: provider coverage, private snapshots, and opt-in issue filing (#2134)
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
 - `final-wrapup-format.md` — minimal terminal outcome or actionable blocker; explicit summaries and machine reports retain their formats (Issue #1396, Issue #1873)
