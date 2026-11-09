@@ -9,6 +9,7 @@
   },
   "hotspots": {
     ".claude/agents/README.md": {"issue": 973, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/hooks/session-start-sync.sh": {"issue": 1821, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-11-09", "note": "KEEP, three counted PRs and zero recorded conflicts. Rationale: .claude/reference/session-start-sync-hotspot-decision.md."},
     ".claude/hooks/README.md": {"issue": 998, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
     ".claude/reference/README.md": {"issue": 816, "score_at_decision": 24, "pr_count_at_decision": 24, "as_of": "2026-08-25"},
     ".claude/reference/ai-review-billing-dashboard-2026-08.md": {"issue": 1273, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
