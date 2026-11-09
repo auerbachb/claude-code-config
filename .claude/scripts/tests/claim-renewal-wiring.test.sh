@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Textual regression checks for issue-claim renewal wiring (issue #1927).
+# Regression checks for issue-claim renewal and tracking-parent wiring (issue #1927).
 # catalog: tests — Asserts /subagent, /start-issue and /wrap renew the claim at their documented points, stop on exit 5, and that Form B stays identical in both copies
 #
 # The renewal mechanism (#1914) only keeps live work claimed if the long-running
@@ -45,6 +45,35 @@ has "/subagent 30-minute cadence"                        "$SUBAGENT" '**≥30 mi
 has "/subagent never renews on every tick"               "$SUBAGENT" 'Never renew on every tick'
 has "/subagent exit 5 blocks the successor"              "$SUBAGENT" 'Exit 5 → launch nothing for that issue'
 has "/subagent Phase C prompt hands the pair to /wrap"   "$SUBAGENT" 'CLAIM_PAIRS="{ISSUE_NUMBER} {CLAIM_HOLDER}"'
+
+# Run the real parent-state gate after its surrounding claim check succeeded.
+# shellcheck source=lib/skill-bash.sh
+source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
+PARENT_GATE=$(extract_skill_bash "$SUBAGENT" subagent-decomposition-parent-open)
+run_parent_gate() {
+  local state="$1" native_rc="$2" expected_rc="$3" name="$4" out rc=0 fixture
+  fixture='
+    gh() {
+      [[ "$*" == "issue view 873 --json state --jq .state" ]] || return 99
+      printf "%s\n" "$NATIVE_STATE"
+      return "$NATIVE_RC"
+    }'
+  out=$(
+    PARENT=873 NATIVE_STATE="$state" NATIVE_RC="$native_rc" \
+      "$BASH" -c "$fixture"$'\n'"$PARENT_GATE"$'\n''printf "%s\n" CREATE' 2>&1
+  ) || rc=$?
+  if [[ "$rc" == "$expected_rc" ]] &&
+     { [[ "$rc" == 0 && "$out" == CREATE ]] ||
+       [[ "$rc" != 0 && "$out" != *CREATE* && "$out" == *"not confirmed open"* ]]; }; then
+    ok "$name"
+  else
+    bad "$name (rc=$rc; output=$out)"
+  fi
+}
+run_parent_gate OPEN   0 0 "native OPEN parent permits child filing"
+run_parent_gate CLOSED 0 5 "closed tracking parent blocks child filing"
+run_parent_gate OPEN   1 5 "failed native read blocks filing even if it printed OPEN"
+run_parent_gate ''     0 5 "missing native state blocks child filing"
 
 # --- /wrap -------------------------------------------------------------------
 has "/wrap renews with a handed-over holder"   "$WRAP" '--renew --holder "$C_HOLDER"'
