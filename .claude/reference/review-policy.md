@@ -448,6 +448,8 @@ A consumer of `no_reviewer` posts nothing, changes no reviewer state (the PR sta
 
 ### Gated trigger inventory
 
+A change to the review tier on the same commit does not automatically invite BugBot (#1737). A label or policy change can make the PR eligible for BugBot; starting a paid review still needs the owner's explicit approval in chat. Once the tier permits it and the owner approves, the agent can spend that grant with `paid-review-grant.sh --trigger` on the live HEAD without pushing a new commit.
+
 | Path | Behaviour now |
 |---|---|
 | `escalate-review.sh` | `no_reviewer` in place of `switch_bugbot` / `trigger_greptile`; see above. |
