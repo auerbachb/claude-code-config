@@ -43,6 +43,7 @@ PAUSE="$REPO_ROOT/.claude/skills/pause/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
 DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
+WAKE_RECOVERY_DOC="$REPO_ROOT/.claude/reference/pm-day-wake-recovery.md"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
 
 # shellcheck source=lib/skill-bash.sh
@@ -119,9 +120,9 @@ BLOCK_2D6="$(extract_skill_bash "$SKILL" pm-day-2d6-park-claim)" || exit 1
 BLOCK_RELEASE="$(extract_skill_bash "$SKILL" pm-day-2d7-park-release)" || exit 1
 BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
 BLOCK_REC_SNAPSHOT="$(extract_skill_bash "$SKILL" pm-day-park-snapshot)" || exit 1
-BLOCK_REC_PREP="$(extract_skill_bash "$DAY_MODE_DOC" pm-day-wake-recovery-prepare)" || exit 1
-BLOCK_REC_AUTH="$(extract_skill_bash "$DAY_MODE_DOC" pm-day-wake-recovery-authorize)" || exit 1
-BLOCK_REC_PUBLISH="$(extract_skill_bash "$DAY_MODE_DOC" pm-day-wake-recovery-publish)" || exit 1
+BLOCK_REC_PREP="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-prepare)" || exit 1
+BLOCK_REC_AUTH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-authorize)" || exit 1
+BLOCK_REC_PUBLISH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-publish)" || exit 1
 BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
 
 # `TaskStop` is a harness tool, not a binary, so the wake-publish block cannot

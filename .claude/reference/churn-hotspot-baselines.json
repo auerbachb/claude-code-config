@@ -17,6 +17,7 @@
     ".claude/reference/ai-review-chain-roles-decision.md": {"issue": 1223, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
     ".claude/reference/background-task-shutdown.md": {"issue": 1317, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
     ".claude/reference/chip-launching.md": {"issue": 916, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
+    ".claude/reference/pm-day-mode.md": {"issue": 1314, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-11-09", "note": "Extract only captured-wake recovery. The current pre-extraction window counted four merges and zero conflicts. See pm-day-mode-hotspot-decision.md."},
     ".claude/reference/review-stack-audit.md": {"issue": 1949, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-11-08", "note": "KEEP assessment: four counted PRs (1845, 1908, 1911, 2005), zero recorded conflict rounds. The 82-file PR 1951 sweep is excluded by the detector. Rationale: .claude/reference/review-stack-audit-hotspot-decision.md."},
     ".claude/reference/session-state-schema.json": {"issue": 964, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
     ".claude/reference/subagent-phase-guardrails.md": {"issue": 1033, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
