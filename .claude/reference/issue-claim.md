@@ -41,7 +41,7 @@ A deliberate asymmetry:
 - **`--check` / `--claim` compare holders**, so a sibling thread of yours is blocked. That is the whole point.
 - **`--release` compares logins**, so a terminal state reached by a *different* thread of yours — a Phase C merger, a `/wrap` run from another worktree — still clears the claim instead of leaking it.
 
-Releasing your own account's claim is always safe. #732 protects a *collaborator's* claim, and no action here ever touches one: `--release` removes only the viewer's own assignment and only the viewer's own claim comments, and leaves a collaborator's label in place.
+Account-scoped release protects collaborators (#732), but a matching login does not prove a claim belongs to the completed task. Delayed cleanup pins the observed winning marker as described below. The helper removes only the viewer's own assignment and claim comments and preserves a collaborator's label.
 
 ## Verdicts and exit codes
 
@@ -52,11 +52,11 @@ Releasing your own account's claim is always safe. #732 protects a *collaborator
 | `stale` | foreign holder, older than `CLAIM_STALE_HOURS` | 0 | **warn** and proceed; `--claim` takes it over |
 | `claimed` | foreign holder, fresh | 1 | skip, naming the claim |
 | `unknown` | any indeterminate `gh` result, or a renewal that could not be written or verified | 4 | skip — treat exactly as `claimed` |
-| *(any)* | `--renew` found no claim of this holder's, the issue is closed, or a renewal was superseded or released under it | 5 | stop the work and report lost ownership |
+| *(any)* | Renewal lost ownership or found a closed issue, or guarded release found a changed marker | 5 | stop the affected operation and report the failed ownership precondition |
 
-Exit codes mirror `pr-authorship.sh` (`2` usage, `3` not found) so the two guards read the same way at a call site. Exit `5` is only ever returned by a renewal (`--renew`, or a due `--claim` renewal that lost a race); it keeps "blocked before any write" (`1`) distinct from "ownership lost" (`5`), the same split `session-state.sh` makes for a lost compare.
+Exit codes mirror `pr-authorship.sh` (`2` usage, `3` not found) so the two guards read the same way at a call site. Exit `5` also covers a guarded `--release` whose observed marker no longer matches. It keeps ordinary claim blocking (`1`) distinct from lost ownership or a failed cleanup precondition (`5`).
 
-**Fail-closed** is the rule that matters most: a `gh` failure, an unparseable issue, or a claim with no readable timestamp all resolve to a live claim, never to "startable". An `unknown` verdict never reads as permission.
+**Fail-closed:** GitHub read failures, unreadable issue data, and an unreadable winning claim marker produce `unknown`. A holder must be a nonempty string; control characters cannot be accepted as part of a marker or a requested holder because Bash can drop or split them. An unreadable newest marker does not become absence or hand authority to an older marker. This also applies after posting: if a re-read finds an unreadable winner, stop further cleanup and return `unknown`. An unparseable timestamp cannot age a claim out. A real label-only issue still uses the label timeline. An `unknown` verdict never authorizes a write or launch.
 
 ## Staleness
 
@@ -74,7 +74,7 @@ A claim is aged from its marker's GitHub `created_at`, so before #1914 a live th
 
 **Order — create, verify, then clean up.** A new marker is POSTed (via `gh api`, so the response carries its comment id); the comments and then the issue are re-read and the winner selected (newest `created_at`, ties broken by id); only once the winner is this run's marker — or another viewer-authored marker of this holder, newer than the one replaced — is the label and assignee re-asserted and are the holder's **other viewer-authored** markers deleted. One final re-read of comments and issue then follows (#1933, below). The label and the old marker stay until the new marker is verified, so there is never an unclaimed interval, and older helpers (which read the newest `created_at`) see the renewal with no change. Editing the marker in place was rejected: a PATCH does not move `created_at`, and GitHub's comment PATCH has no `If-Match` compare.
 
-**When.** Only once the marker is older than `CLAIM_RENEW_MINUTES` (default: half the stale window, 120 min at the default 4h). A value at or past the stale window is rejected with a stderr warning and the default is used instead — otherwise another holder could read live work as stale before renewal is ever due. Inside the threshold a same-holder call writes nothing, so routine resumes and post-compaction re-claims never spam comments, while active work renews well before any other holder can classify the claim as stale.
+**When.** Only once the marker is older than `CLAIM_RENEW_MINUTES` (default: half the stale window, 120 min at the default 4h). A value at or past the stale window is rejected with a stderr warning and the default is used instead — otherwise another holder could read live work as stale before renewal is ever due. Inside the threshold a same-holder call posts no new marker and keeps its timestamp. It may repair a missing label or viewer assignment. This avoids repeat markers while active work still renews before staleness.
 
 **Actions.**
 
@@ -139,7 +139,7 @@ Wired callers (#1927):
 
 `--allow-claimed` proceeds past a fresh foreign claim **and says so** on stderr.
 
-It is only ever an explicit per-issue, per-session instruction from the user in chat ("start it anyway") — never a config default, never inferred from context, never carried forward to the next issue. The same shape as the authorship override in `.claude/rules/safety.md`. The flag is rejected with a usage error on `--check` and `--release`, where it would otherwise sit silently inert; a silently-inert override flag is how an override becomes a default.
+It is only ever an explicit per-issue, per-session instruction from the user in chat ("start it anyway") — never a config default, never inferred from context, never carried forward to the next issue. The same shape as the authorship override in `.claude/rules/safety.md`. The flag is valid only with `--claim`; other modes reject it with a usage error. An override of a fresh foreign claim does not resolve unreadable ownership.
 
 ## Call sites
 
@@ -169,7 +169,7 @@ Adoption, when the sweep finds a dead owner, reuses the **existing** stale-takeo
 
 ### Release is best-effort at merge time
 
-`/wrap` and `admin-merge.sh` release **after** the merge has already succeeded. A failed release is a warning there, never a non-zero exit — an unreleased claim ages out on its own within `CLAIM_STALE_HOURS`, whereas failing an already-completed merge would be a much worse outcome.
+`/wrap` and `admin-merge.sh` use `post-merge-bookkeeping.sh` after a confirmed merge. It captures the linked issue markers before recording pickup evidence, then tries the guarded releases. An unreadable or unproven marker is retained with a warning. Cleanup failures do not undo the completed merge; inspect current ownership before retrying.
 
 ## Relationship to neighbouring issues
 
