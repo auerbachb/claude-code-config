@@ -298,7 +298,11 @@ Each account reports as:
 | Status | Meaning | What to do |
 |--------|---------|------------|
 | `ok` | A credential is present for that profile | nothing |
-| `needs-login` | No credential is visible | `relogin <label>` |
+| `needs-login` | The helper could not verify credential presence | Read the note first |
+
+If the note says the credential is missing or the Cursor IDE is signed out, offer
+`relogin <label> [<provider>]`. If it names a missing probe tool or unreadable store,
+report that problem before suggesting sign-in.
 
 On a readable config `list` exits `0` whatever the statuses say. It is a report, never a
 gate: a `needs-login` row does not block anything, and you must not treat it as a reason
@@ -308,8 +312,8 @@ account.
 
 Never paste the config file's raw contents when a table will do, and never run a
 command that reads a credential value out of the keychain or a profile directory. The
-statuses above are derived from the *presence* of the artifact the provider's own tool
-wrote, which is all anyone needs.
+helper probes for the credential without reading its value. The note distinguishes
+a missing credential from a probe the helper could not complete.
 
 ## Reference
 

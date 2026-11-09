@@ -243,7 +243,10 @@ ceiling that would then let another writer break it mid-login anyway.
 | Status | Meaning |
 |--------|---------|
 | `ok` | The provider's own credential artifact is present for that profile. |
-| `needs-login` | The provider's credential artifact is not visible — run `relogin`. |
+| `needs-login` | Credential presence could not be verified. Check the note, or `detail` in JSON. |
+
+Use `relogin` when the note identifies a missing credential or a signed-out IDE. A
+missing probe tool or unreadable store must be resolved before retrying sign-in.
 
 `--no-login` skips the login during registration. A reserved slot can still report `ok`
 if the registered profile or Cursor IDE already holds a credential.
@@ -255,13 +258,16 @@ different schema major); that is a broken tool, not a verdict about an account.
 
 ## Re-login commands (exact)
 
-`/quotas-setup relogin <label> [<provider>]` runs these for you against the account's
-existing profile directory, then re-verifies. To run one by hand for Claude or Codex,
-set `profile_dir` to the exact `profile_dir` from `ai-quotas-setup.sh list --json` for
-the selected label and provider. The label alone does not determine the directory.
+`/quotas-setup relogin <label> [<provider>]` uses the registered profile and re-verifies
+it. Use that action for Claude on macOS: it discovers and records the Keychain service,
+which a manual login can leave unregistered.
+
+For a manual Codex login or a file-backed Claude login off macOS, set `profile_dir`
+to the exact value from `ai-quotas-setup.sh list --json` for the selected label and
+provider. The label alone does not determine the directory.
 
 ```bash
-# claude
+# claude, off macOS
 # A bare `claude` against an unauthenticated CLAUDE_CONFIG_DIR opens the browser
 # login and persists the credential scoped to that directory. Exit the session
 # (/exit or Ctrl-D) once the login completes.
