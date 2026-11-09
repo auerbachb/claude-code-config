@@ -144,7 +144,7 @@ a recovery wake. Run this block immediately instead:
 
 ```bash
 pm_wake_publish_recovery() {
-  local helper candidate binding cause park_gen dead_task dead_gen encoding
+  local helper candidate binding cause park_gen dead_task dead_gen
   helper=""
   for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}"; do
     if [ -x "$candidate" ]; then helper="$candidate"; break; fi
@@ -156,10 +156,12 @@ pm_wake_publish_recovery() {
   park_gen=$(printf '%s\n' "$binding" | jq -er '(.park_generation // "") | strings') || return 5
   dead_task=$(printf '%s\n' "$PM_WAKE_AUTHORIZED" | jq -c '.dead_task') || return 5
   dead_gen=$(printf '%s\n' "$PM_WAKE_AUTHORIZED" | jq -er '(.dead_generation // "") | strings') || return 5
-  encoding=$(printf '%s\n' "$PM_WAKE_AUTHORIZED" | jq -er '
-    if .shape == "one-shot" then "json-or-string" elif .shape == "probe" then "string" else empty end') || return 5
+  printf '%s\n' "$PM_WAKE_AUTHORIZED" | jq -e '
+    .shape == "one-shot" or .shape == "probe"' >/dev/null || return 5
+  # New Monitor IDs are opaque strings, even when their text is a number.
+  [[ -n "${PM_WAKE_NEW_TASK:-}" && "$PM_WAKE_NEW_TASK" != null ]] || return 5
   "$helper" --repo "$REPO_KEY" --cause "$cause" --park-generation "$park_gen" \
-    --task-id "$PM_WAKE_NEW_TASK" --generation "$PM_WAKE_NEW_GENERATION" --task-encoding "$encoding" \
+    --task-id "$PM_WAKE_NEW_TASK" --generation "$PM_WAKE_NEW_GENERATION" --task-encoding string \
     --recovery-binding "$binding" --dead-task-json "$dead_task" --dead-generation "$dead_gen" \
     --state-helper "$SESSION_STATE_SH" >/dev/null
 }

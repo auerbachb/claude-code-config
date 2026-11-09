@@ -1196,8 +1196,18 @@ check_eq "known-reset preemptive park uses the one-shot shape" one-shot "$(recov
 REC_PUB=$(recovery_publish "$REC_AUTH" '11' new-oneshot)
 check_eq "one-shot registers with the captured preemptive owner" armed "$(recovery_json "$REC_PUB" .status)"
 check_eq "successful publication needs no cleanup" null "$(recovery_json "$REC_PUB" .stop_new_task)"
-check_eq "one-shot preserves the typed new pair and cause" '[11,"new-oneshot","preemptive"]' \
+check_eq "one-shot preserves an opaque Monitor ID and the captured cause" '["11","new-oneshot","preemptive"]' \
   "$(recovery_read | jq -c '[.limit_resume_task_id,.limit_resume_generation,.limit_cause]')"
+record_recovery_candidate 11 native-owner || exit 1
+check_eq "a subsequent recovery can find the published Monitor in its owning session" stop \
+  "$(recovery_json "$(recovery_prepare native-owner)" .route)"
+
+seed_recovery preemptive null null
+REC_ORIGINAL=$(recovery_read)
+REC_AUTH=$(recovery_authorize "$(recovery_prepare "")" "" null)
+REC_PUB=$(recovery_publish "$REC_AUTH" null missing-id-wake)
+check_eq "a missing Monitor ID cannot be published as an opaque string" failed "$(recovery_json "$REC_PUB" .status)"
+check_eq "a missing Monitor ID leaves the empty park unchanged" "$REC_ORIGINAL" "$(recovery_read)"
 
 seed_recovery preemptive 3 '"7"'
 record_recovery_candidate 7 native-owner || exit 1
