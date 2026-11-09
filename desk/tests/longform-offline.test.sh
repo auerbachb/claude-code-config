@@ -138,10 +138,13 @@ for J in $JQS; do
   check "[$J] options missing: long-form" "$(shape '{}')" "false"
   check "[$J] three options, no cost: menu" "$(shape '{"options":["A","B","C"]}')" "true"
   for c in '~10 min' '45 minutes' '5m' 'no deep focus' 'before Thursday' 'after the holidays'; do
-    check "[$J] two options, cost '$c': menu" "$(shape "{\"options\":[\"A\",\"B\"],\"cost\":\"$c\"}")" "true"
+    # Bash3.2 misparses escaped JSON nested inside this command substitution.
+    shape_payload=$("$J" -cn --arg cost "$c" "{options:[\"A\",\"B\"],cost:\$cost}")
+    check "[$J] two options, cost '$c': menu" "$(shape "$shape_payload")" "true"
   done
   for c in '2h' '1h30' '2 hrs' '2hrs' 'an hour' '~3 hours' 'half a day' '3 days' '2days' 'a week' '3 weeks' '2 wks'; do
-    check "[$J] two options, cost '$c': long-form" "$(shape "{\"options\":[\"A\",\"B\"],\"cost\":\"$c\"}")" "false"
+    shape_payload=$("$J" -cn --arg cost "$c" "{options:[\"A\",\"B\"],cost:\$cost}")
+    check "[$J] two options, cost '$c': long-form" "$(shape "$shape_payload")" "false"
   done
 
   # --- split -------------------------------------------------------------------
