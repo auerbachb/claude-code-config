@@ -383,7 +383,7 @@ new_case "share-claude"
 mkdir -p "$WORK_DIR/plugins/own"
 printf '{"theme":"light"}\n' > "$WORK_DIR/settings.json"
 printf '{"userID":"work-user","oauthAccount":{"emailAddress":"%s"},"hasCompletedOnboarding":true,"mcpServers":{"local":{"command":"local-mcp"},"alpha":{"command":"old-alpha"}}}\n' "$WORK_LABEL" > "$WORK_DIR/.claude.json"
-chmod 600 "$WORK_DIR/.claude.json"
+chmod 640 "$WORK_DIR/.claude.json"
 run share-config "$WORK_LABEL" claude
 check_eq "$RC" "0" "share-config on a claude profile exits 0"
 check_contains "$OUT" "share-config claude '$WORK_LABEL' ($WORK_DIR) from $PRIMARY" "the header names the profile and the primary"
@@ -402,7 +402,8 @@ check_eq "$(jq -r '.mcpServers | keys | join(",")' "$WORK_DIR/.claude.json")" "a
 check_eq "$(jq -r '.mcpServers.alpha.command' "$WORK_DIR/.claude.json")" "alpha-mcp" "the primary wins on a shared server name"
 check_eq "$(jq -r 'has("projects")' "$WORK_DIR/.claude.json")" "false" "the primary's other keys (projects) did not come across"
 check_eq "$(jq -r '.mcpServers.alpha' "$WORK_DIR/.claude.json.pre-share" | jq -r .command)" "old-alpha" "the old .claude.json is the keepsake"
-check_eq "$(mode_of "$WORK_DIR/.claude.json")" "600" "the merged file keeps the profile file's mode"
+check_eq "$(mode_of "$WORK_DIR/.claude.json")" "640" "the merged file keeps the profile file's mode"
+check_eq "$(mode_of "$WORK_DIR/.claude.json.pre-share")" "600" "the keepsake has no group or other access bits"
 check_contains "$OUT" "merged  2 primary mcpServers into .claude.json" "the merge reports a count"
 check_not_contains "$OUT" "alpha-mcp" "and never an entry"
 check_not_contains "$OUT" "primary-alpha" "nor an env value"
@@ -564,7 +565,7 @@ check_eq "$(link_target "$WORK_DIR/rules")" "$PRIMARY/rules" "against the overri
 printf '%s\n' "$NOHOME_OUT" >> "$ALL_OUTPUT"
 
 # Inject writers at the exact copy boundary using only private profile paths.
-for race_kind in update directory backup-file backup-link backup-directory; do
+for race_kind in update directory backup-file backup-link backup-directory mode-before mode-after; do
   new_case "share-profile-json-backup-race-$race_kind"
   race_bin="$CASE_DIR/cp-bin"
   mkdir -p "$race_bin"
@@ -574,13 +575,14 @@ for race_kind in update directory backup-file backup-link backup-directory; do
   printf '%s\n' '{"userID":"old-profile","mcpServers":{"keep":{"command":"old"}}}' > "$race_before"
   printf '%s\n' '{"userID":"new-profile","mcpServers":{"keep":{"command":"new"}}}' > "$race_new"
   cp "$race_before" "$race_target"
+  chmod 640 "$race_target"
   cat > "$race_bin/cp" <<'RACE_CP'
 #!/bin/sh
 if [ "$#" -ne 3 ] || [ "$1" != -p ] || [ "$2" != "$SHARE_RACE_TARGET" ]; then
   exec "$SHARE_REAL_CP" "$@"
 fi
 case "$3" in
-  "$SHARE_RACE_TARGET.pre-share"|"$SHARE_RACE_TARGET".backup.??????) ;;
+  "$SHARE_RACE_TARGET.pre-share"|"$SHARE_RACE_TARGET".backup.??????|"$SHARE_RACE_TARGET".share.??????/backup) ;;
   *) exec "$SHARE_REAL_CP" "$@" ;;
 esac
 # These names appear after pre_share_dest chose the previously empty path.
@@ -588,12 +590,14 @@ case "$SHARE_RACE_KIND" in
   backup-file) "$SHARE_REAL_CP" "$SHARE_RACE_NEW" "$SHARE_RACE_TARGET.pre-share" || exit 93 ;;
   backup-link) /bin/ln -s "$SHARE_RACE_NEW" "$SHARE_RACE_TARGET.pre-share" || exit 94 ;;
   backup-directory) /bin/mkdir "$SHARE_RACE_TARGET.pre-share" || exit 95 ;;
+  mode-before) /bin/chmod 600 "$SHARE_RACE_TARGET" || exit 96 ;;
 esac
 : > "$SHARE_RACE_MARKER"
 "$SHARE_REAL_CP" "$@" || exit $?
 case "$SHARE_RACE_KIND" in
   update) /bin/mv "$SHARE_RACE_NEW" "$SHARE_RACE_TARGET" || exit 91 ;;
   directory) /bin/rm "$SHARE_RACE_TARGET" && /bin/mkdir "$SHARE_RACE_TARGET" || exit 92 ;;
+  mode-after) /bin/chmod 600 "$SHARE_RACE_TARGET" || exit 97 ;;
 esac
 RACE_CP
   chmod 700 "$race_bin/cp"
@@ -617,6 +621,18 @@ RACE_CP
           empty "nothing is installed inside the replacement directory"
       fi
       ;;
+    mode-*)
+      check_contains "$OUT" "changed during backup" "$race_kind: the mode change is refused"
+      check_eq "$(cmp -s "$race_before" "$race_target" && echo exact || echo changed)" exact \
+        "$race_kind: the live contents remain unchanged"
+      check_eq "$(mode_of "$race_target")" 600 "$race_kind: the newer restrictive mode is retained"
+      if [[ "$race_kind" == mode-after ]]; then
+        check_eq "$(mode_of "$race_target.pre-share")" 600 "the backup does not expose the older group mode"
+      else
+        check_eq "$(test -e "$race_target.pre-share" && echo published || echo absent)" absent \
+          "a backup of the changed mode is not published"
+      fi
+      ;;
     backup-*)
       check_contains "$OUT" "could not publish backup" "$race_kind: the refusal names backup publication"
       check_eq "$(cmp -s "$race_before" "$race_target" && echo exact || echo changed)" exact \
@@ -637,7 +653,7 @@ RACE_CP
       esac
       ;;
   esac
-  check_eq "$(find "$WORK_DIR" -maxdepth 1 \( -name '.claude.json.??????' -o -name '.claude.json.backup.??????' \) | wc -l | tr -d ' ')" 0 \
+  check_eq "$(find "$WORK_DIR" -maxdepth 1 \( -name '.claude.json.??????' -o -name '.claude.json.backup.??????' -o -name '.claude.json.share.??????' \) | wc -l | tr -d ' ')" 0 \
     "$race_kind: the refused operation leaves no temporary file"
 done
 
