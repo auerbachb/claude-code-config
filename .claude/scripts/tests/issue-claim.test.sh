@@ -413,7 +413,7 @@ jq -n --arg at "$(iso_ago 1)" '[
   {id:1,created_at:$at,user:{login:"bob"},body:"<!-- claude-claim: {\"holder\":\"threadBob\",\"login\":\"bob\"} -->"},
   {id:2,created_at:$at,user:{login:"alice"},body:"<!-- claude-claim: {\"holder\":broken} -->"}
 ]' > "$STATE/comments.json"
-MALFORMED_BEFORE=$(cat "$STATE/comments.json")
+cp "$STATE/comments.json" "$STATE/comments-before-malformed.json"
 LABELS_BEFORE=$(cat "$STATE/repo_labels")
 for MODE in --check --claim --renew --release; do
   if [[ "$MODE" == --release ]]; then
@@ -426,7 +426,8 @@ for MODE in --check --claim --renew --release; do
 done
 run 873 --claim --holder threadA --allow-claimed --json
 check_eq "explicit foreign-claim override cannot interpret corrupt ownership" 4 "$RC"
-check_eq "the markers remain byte-for-byte intact" "$MALFORMED_BEFORE" "$(cat "$STATE/comments.json")"
+cmp -s "$STATE/comments-before-malformed.json" "$STATE/comments.json"
+check_eq "the markers remain byte-for-byte intact" 0 "$?"
 check_eq "no label/assignee edit" 0 "$(cat "$STATE/edit_calls")"
 check_eq "no new comment was posted" 0 "$(cat "$STATE/next_id")"
 check_eq "no repository label was created" "$LABELS_BEFORE" "$(cat "$STATE/repo_labels")"
