@@ -417,8 +417,8 @@ CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | jq -s --arg m "$CLAIM_MARKER" \
 # created_at break on the comment id, so "which marker wins" is deterministic —
 # renewal verification compares winners by id. One jq pass emits the winner's
 # fields separated by US (0x1f): a non-whitespace IFS keeps empty fields
-# positional, which a tab would not. An unparseable winner yields nothing (no
-# claim comment), exactly as before.
+# positional, which a tab would not. An unparseable winner yields no fields.
+# A present but unreadable winner is not an empty marker list.
 #
 # parse_winner <claim-comments-json> -> sets W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT
 parse_winner() {
@@ -429,6 +429,7 @@ parse_winner() {
     else
       (sort_by(.created_at, .id) | last) as $c
       | ($c.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson) as $p
+      | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
       | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
          ($p.since // ""), ($c.created_at // "")]
       | map(tostring) | join("\u001f")
@@ -449,6 +450,9 @@ read_claim_comments() {
 }
 
 parse_winner "$CLAIM_COMMENTS"
+if [[ "$CLAIM_COMMENTS" != '[]' && -z "$W_HOLDER" ]]; then
+  fail_closed "newest claim marker for issue #$ISSUE_NUMBER has no readable holder"
+fi
 MARKER_ID="$W_ID"
 MARKER_AUTHOR="$W_AUTHOR"
 CLAIMANT_HOLDER="$W_HOLDER"

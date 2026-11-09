@@ -407,6 +407,41 @@ FAKE_ISSUE_MODE=error run 873 --claim --holder threadA
 check_eq "claim fails closed too" 4 "$RC"
 
 ############################################################################
+echo "== (8b) an unreadable winning marker is not an absent claim =="
+reset_issue
+jq -n --arg at "$(iso_ago 1)" '[
+  {id:1,created_at:$at,user:{login:"bob"},body:"<!-- claude-claim: {\"holder\":\"threadBob\",\"login\":\"bob\"} -->"},
+  {id:2,created_at:$at,user:{login:"alice"},body:"<!-- claude-claim: {\"holder\":broken} -->"}
+]' > "$STATE/comments.json"
+MALFORMED_BEFORE=$(cat "$STATE/comments.json")
+LABELS_BEFORE=$(cat "$STATE/repo_labels")
+for MODE in --check --claim --renew --release; do
+  if [[ "$MODE" == --release ]]; then
+    run 873 "$MODE" --holder threadA --expect-claim-id none --json
+  else
+    run 873 "$MODE" --holder threadA --json
+  fi
+  check_eq "$MODE refuses an unreadable newest marker" 4 "$RC"
+  check_eq "$MODE reports unknown, not an older or absent claim" unknown "$(jq -r .verdict <<<"$OUT")"
+done
+run 873 --claim --holder threadA --allow-claimed --json
+check_eq "explicit foreign-claim override cannot interpret corrupt ownership" 4 "$RC"
+check_eq "the markers remain byte-for-byte intact" "$MALFORMED_BEFORE" "$(cat "$STATE/comments.json")"
+check_eq "no label/assignee edit" 0 "$(cat "$STATE/edit_calls")"
+check_eq "no new comment was posted" 0 "$(cat "$STATE/next_id")"
+check_eq "no repository label was created" "$LABELS_BEFORE" "$(cat "$STATE/repo_labels")"
+
+jq '.[1].body="<!-- claude-claim: {\"holder\":[],\"login\":\"alice\"} -->"' \
+  "$STATE/comments.json" > "$STATE/comments.tmp" && mv "$STATE/comments.tmp" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "a parsed payload with a non-string holder also fails closed" 4 "$RC"
+# Same timestamp: id ordering still allows the newest readable winner.
+jq '.[0].id=3' "$STATE/comments.json" > "$STATE/comments.tmp" && mv "$STATE/comments.tmp" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "an older malformed marker does not hide the newer valid claim" claimed "$(jq -r .verdict <<<"$OUT")"
+check_eq "the newer foreign claim still blocks normally" 1 "$RC"
+
+############################################################################
 echo "== (9) a collaborator's claim is never released or overwritten (#732) =="
 reset_issue
 export FAKE_VIEWER="bob"
