@@ -295,6 +295,20 @@ check_eq "in-progress label written" "in-progress" "$(cat "$STATE/labels")"
 check_eq "assignee written" "alice" "$(cat "$STATE/assignees")"
 check_eq "one claim comment" 1 "$(claim_comment_count)"
 check_eq "label created in repo" "true" "$(grep -qxF in-progress "$STATE/repo_labels" && echo true)"
+
+# A repo-relative helper can run without a home. The optional usage ledger
+# must not prevent the actual check, write or independent read-back.
+reset_issue
+OUT=$(env -u HOME "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --check --repo acme/widgets --holder no-home 2>"$TMP/no-home.err"); RC=$?
+check_eq "unset HOME: check reaches the native stub" 0 "$RC"
+check_eq "unset HOME: unclaimed issue is still startable" unclaimed "$OUT"
+check_eq "unset HOME: no unbound-variable error" "" "$(cat "$TMP/no-home.err")"
+OUT=$(env -u HOME "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --repo acme/widgets --holder no-home 2>"$TMP/no-home.err"); RC=$?
+check_eq "unset HOME: claim succeeds" 0 "$RC"
+check_eq "unset HOME: exactly one marker is written" 1 "$(claim_comment_count)"
+OUT=$(env -u HOME "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --check --repo acme/widgets --holder no-home 2>"$TMP/no-home.err"); RC=$?
+check_eq "unset HOME: claim reads back as mine" "0|mine" "$RC|$OUT"
+check_eq "set HOME: usage ledger remains available" true "$(if grep -Fq issue-claim.sh "$HOME/.claude/script-usage.log"; then echo true; else echo false; fi)"
 # claimed_at/claimed_since come from the marker's GitHub created_at, not the
 # local clock, so they match what every later --check reports.
 reset_issue

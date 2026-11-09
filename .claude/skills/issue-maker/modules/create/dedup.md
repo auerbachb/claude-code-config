@@ -13,8 +13,8 @@ Before creating, search open and recently-closed issues for likely duplicates an
 KEYWORDS="<significant words from the title and problem statement>"
 ISSUE_DEDUP=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-  "$HOME/.claude/scripts/issue-dedup.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+  "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
   ".claude/scripts/issue-dedup.sh"; do
   if [ -x "$candidate" ]; then ISSUE_DEDUP="$candidate"; break; fi
 done

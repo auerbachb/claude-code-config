@@ -157,7 +157,7 @@ plant_truncated_candidate_list() {
   {
     printf '\n```bash\n'
     printf 'for c in \\\n'
-    printf '  "$HOME/.claude/scripts/session-state.sh" \\\n'
+    printf '  "${HOME:+$HOME/.claude/scripts/session-state.sh}" \\\n'
     printf '  ".claude/scripts/session-state.sh"; do\n'
     printf '  [[ -x "$c" ]] && break\n'
     printf 'done\n'
@@ -258,6 +258,36 @@ expect "four-space pseudo-close cannot end a real fence" 1 \
   'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
   plant_overindented_pseudo_close
 
+plant_bare_home_candidate() {
+  local candidate="$1"
+  {
+    printf '\n```bash\n'
+    printf 'for c in "%s" "${HOME:+$HOME/.claude/scripts/example.sh}"; do\n' "$candidate"
+    printf '  [[ -x "$c" ]] && break\ndone\n'
+    printf '```\n'
+  } >> ".claude/skills/wave/SKILL.md"
+}
+
+expect "bare HOME abort in an inline candidate list is rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '$HOME/.claude/skills-worktree/.claude/scripts/example.sh'
+
+expect "braced bare HOME in an inline candidate list is also rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '${HOME}/.claude/skills-worktree/.claude/reference/example.md'
+
+expect "nested installed skill helper still needs the HOME guard" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/dispatch-module.sh'
+
+plant_array_home_candidate() {
+  printf '\n```bash\ncandidates=("$HOME/.claude/scripts/example.sh")\n```\n' \
+    >> ".claude/skills/wave/SKILL.md"
+}
+expect "bare HOME in the first array candidate is rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_array_home_candidate
+
 expect "candidate list missing the skills-worktree entry" 1 \
   'candidate list for session-state\.sh has no' \
   plant_truncated_candidate_list
@@ -302,6 +332,57 @@ expect "unterminated RESOLVE blocks do not compare equal" 1 \
 expect "unreadable guarded surface is exit 3, never a pass" 3 \
   'exists but is unreadable' \
   make_surface_unreadable
+
+# Exercise the actual portable and installed-only skill resolvers, not a copy.
+extract_resolver() {
+  awk '/^resolve_script\(\) \{/ {active=1} active {print} active && /^}/ {exit}' "$1"
+}
+RESOLVE_PORTABLE=$(extract_resolver "$REPO_ROOT/.claude/reference/portable-skill-resolution.md")
+RESOLVE_INSTALLED_ONLY=$(extract_resolver "$REPO_ROOT/.claude/skills/pause-resume/SKILL.md")
+[[ -n "$RESOLVE_PORTABLE" && -n "$RESOLVE_INSTALLED_ONLY" ]]
+RESOLVE_ROOT="$TMP_ROOT/resolve"
+RESOLVE_HOME="$RESOLVE_ROOT/home"
+RESOLVE_REPO="$RESOLVE_ROOT/repo"
+RESOLVE_FIRST="$RESOLVE_HOME/.claude/skills-worktree/.claude/scripts/probe.sh"
+RESOLVE_SECOND="$RESOLVE_HOME/.claude/scripts/probe.sh"
+RESOLVE_LOCAL="$RESOLVE_REPO/.claude/scripts/probe.sh"
+for fixture in "$RESOLVE_FIRST" "$RESOLVE_SECOND" "$RESOLVE_LOCAL"; do
+  mkdir -p "$(dirname "$fixture")"
+  printf '#!/bin/sh\nexit 0\n' > "$fixture"
+  chmod +x "$fixture"
+done
+check_resolution() { # description, resolver, HOME or unset, rc, output
+  local description="$1" code="$2" home="$3" want_rc="$4" want_out="$5" rc out
+  case_num=$((case_num + 1))
+  if [[ "$home" == unset ]]; then
+    out=$(cd "$RESOLVE_REPO" && env -u HOME -u BASH_ENV "$BASH" -uc \
+      "$code"$'\n''resolve_script probe.sh' 2>&1) && rc=0 || rc=$?
+  else
+    out=$(cd "$RESOLVE_REPO" && env -u BASH_ENV HOME="$home" "$BASH" -uc \
+      "$code"$'\n''resolve_script probe.sh' 2>&1) && rc=0 || rc=$?
+  fi
+  if [[ "$rc" == "$want_rc" && "$out" == "$want_out" ]]; then
+    echo "ok   — $description"
+  else
+    echo "FAIL — $description: expected rc=$want_rc output='$want_out', got rc=$rc output='$out'"
+    failures=$((failures + 1))
+  fi
+}
+check_resolution "installed skills worktree still wins" "$RESOLVE_PORTABLE" "$RESOLVE_HOME" 0 "$RESOLVE_FIRST"
+rm -f "$RESOLVE_FIRST"
+check_resolution "installed scripts are still second" "$RESOLVE_PORTABLE" "$RESOLVE_HOME" 0 "$RESOLVE_SECOND"
+check_resolution "unset HOME reaches the relative fallback under set -u" "$RESOLVE_PORTABLE" unset 0 '.claude/scripts/probe.sh'
+check_resolution "empty HOME reaches the relative fallback under set -u" "$RESOLVE_PORTABLE" '' 0 '.claude/scripts/probe.sh'
+check_resolution "installed-only pause-resume does not trust the checkout" "$RESOLVE_INSTALLED_ONLY" unset 1 ''
+FIXPR_LOOP=$(awk '/^Locate `pr-state.sh`/ {wanted=1}
+  wanted && /^SCRIPT=""$/ {active=1} active {print} active && /^done$/ {exit}' "$REPO_ROOT/.claude/skills/fixpr/SKILL.md")
+[[ -n "$FIXPR_LOOP" ]]
+RESOLVE_FIXPR='resolve_script() {'$'\n'"$FIXPR_LOOP"$'\n''printf "%s\n" "$SCRIPT"; }'
+cp "$RESOLVE_LOCAL" "$RESOLVE_REPO/.claude/scripts/pr-state.sh"
+check_resolution "fixpr finds repo pr-state before the installed legacy wrapper with HOME unset" \
+  "$RESOLVE_FIXPR" unset 0 '.claude/scripts/pr-state.sh'
+rm -f "$RESOLVE_LOCAL"
+check_resolution "unset HOME without a fallback fails cleanly" "$RESOLVE_PORTABLE" unset 1 ''
 
 # --- Result ----------------------------------------------------------------
 

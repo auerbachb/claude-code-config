@@ -31,8 +31,8 @@ Parent/subagent scope, prohibited actions, refusal template, and common misreads
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -438,8 +438,8 @@ Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. 
 
 ```bash
 PREFLIGHT_SH=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh" \
-         "$HOME/.claude/scripts/pr-preflight.sh" ".claude/scripts/pr-preflight.sh"; do
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh}" \
+         "${HOME:+$HOME/.claude/scripts/pr-preflight.sh}" ".claude/scripts/pr-preflight.sh"; do
   [ -x "$c" ] && { PREFLIGHT_SH="$c"; break; }
 done
 for N in $PR_NUMS; do
@@ -491,8 +491,8 @@ PMM's persistent `Monitor` is the one genuinely periodic surface in this system,
 # config repo; everywhere else the -x gate would silently skip the sweep, which
 # is indistinguishable from "nothing to release".
 RELEASE_SWEEP=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/release-sweep.sh" \
-         "$HOME/.claude/scripts/release-sweep.sh" \
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/release-sweep.sh}" \
+         "${HOME:+$HOME/.claude/scripts/release-sweep.sh}" \
          ".claude/scripts/release-sweep.sh"; do
   [ -x "$c" ] && { RELEASE_SWEEP="$c"; break; }
 done
