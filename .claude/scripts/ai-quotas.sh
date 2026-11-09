@@ -1722,9 +1722,40 @@ codex_email_for() { # <profile_dir>
 # rather than the whole bound.
 CODEX_RESULT_FILE=""
 CODEX_FAIL_REASON=""
+# A finite fine-grained reap keeps the healthy path fast without shortening the
+# one-second TERM grace or four-second polling allowance. The elapsed guard has
+# one clock quantum of slack; the finite tick fuse also bounds a frozen clock.
+codex_stop_server() { # pid; never wait on a process not confirmed gone
+  local pid="$1" ticks=0 killed=0 started="${SECONDS:-}" last now
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" ]] || return 1
+  kill "$pid" 2>/dev/null || true
+  if [[ ! "$started" =~ ^[0-9]{1,10}$ ]]; then kill -9 "$pid" 2>/dev/null || true; return 0; fi
+  last="$started"
+  while kill -0 "$pid" 2>/dev/null; do
+    now="${SECONDS:-}"
+    if [[ ! "$now" =~ ^[0-9]{1,10}$ ]] || (( 10#$now < 10#$last )); then
+      kill -9 "$pid" 2>/dev/null || true
+      return 0
+    fi
+    last="$now"
+    if (( ticks >= 80 || 10#$now - 10#$started >= 5 )); then
+      kill -9 "$pid" 2>/dev/null || true
+      return 0
+    fi
+    if (( killed == 0 && (ticks >= 20 || 10#$now - 10#$started >= 2) )); then
+      kill -9 "$pid" 2>/dev/null || true
+      killed=1
+    fi
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  wait "$pid" 2>/dev/null || true
+}
+
 codex_app_server_read() { # <profile_dir> <codex_bin>
   local dir="$1" bin="$2"
-  local fifo="$TMP/codex.fifo" out="$TMP/codex.out" waited=0 srv=0
+  local fifo="$TMP/codex.fifo" out="$TMP/codex.out" poll_ticks=0 srv=0
+  local started="${SECONDS:-}" last now max_ticks
   # JSON permits whitespace on BOTH sides of the name separator, so a server
   # that writes `"id" : 2` is as valid as the compact `"id":2` we send. Matching
   # only the compact form makes a healthy account look like a timeout and sends
@@ -1736,6 +1767,16 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   # answer within Ns" for all of them sends the reader after a timeout that
   # never happened. Recorded here, reported in the row's note.
   CODEX_FAIL_REASON="app-server did not answer within ${CODEX_TIMEOUT}s"
+  if [[ ! "$started" =~ ^[0-9]{1,10}$ ]]; then
+    CODEX_FAIL_REASON="app-server response clock unavailable"
+    return 1
+  fi
+  last="$started"
+  max_ticks=$(( CODEX_TIMEOUT * 20 ))
+  if (( max_ticks <= 0 || max_ticks / 20 != CODEX_TIMEOUT )); then
+    CODEX_FAIL_REASON="app-server response timeout out of range"
+    return 1
+  fi
   rm -f "$fifo" "$out"
   if ! mkfifo "$fifo" 2>/dev/null; then
     CODEX_FAIL_REASON="could not create the app-server pipe in ${TMP}"
@@ -1751,7 +1792,7 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   srv=$!
   if ! exec 3<> "$fifo"; then
     CODEX_FAIL_REASON="could not open the app-server pipe"
-    kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+    codex_stop_server "$srv"
     return 1
   fi
   printf '%s\n' \
@@ -1760,32 +1801,25 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
     '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}' >&3
 
   local exited_early=0
-  while [[ "$waited" -lt "$CODEX_TIMEOUT" ]]; do
+  # Twenty short sleeps retain a second of waiting. The elapsed deadline has
+  # one whole-second clock quantum of slack to avoid timing out early; the
+  # finite tick budget remains effective if SECONDS stops advancing.
+  while (( poll_ticks < max_ticks )); do
     if grep -q "$id2_re" "$out" 2>/dev/null; then break; fi
     if ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
-    sleep 1
-    waited=$(( waited + 1 ))
+    now="${SECONDS:-}"
+    if [[ ! "$now" =~ ^[0-9]{1,10}$ ]] || (( 10#$now < 10#$last )); then
+      CODEX_FAIL_REASON="app-server response clock unavailable or moved backwards"
+      break
+    fi
+    last="$now"
+    (( 10#$now - 10#$started < CODEX_TIMEOUT + 1 )) || break
+    if sleep 0.05 2>/dev/null; then poll_ticks=$((poll_ticks + 1))
+    else sleep 1; poll_ticks=$((poll_ticks + 20)); fi
   done
 
   exec 3>&-
-  # Bounded reap, same reasoning as lib/bounded-run.sh's: SIGTERM is a request
-  # the real `codex app-server` is free to ignore, and SIGKILL is QUEUED rather
-  # than effective against a process wedged in uninterruptible I/O. An
-  # unconditional `wait` would then block forever HERE — at cleanup, after the
-  # answer is already in hand — and hang a report whose whole contract is that
-  # it comes back. So escalate TERM to KILL, poll a finite window for the exit,
-  # and give up on the status rather than the report. init reaps the orphan.
-  kill "$srv" 2>/dev/null || true
-  local reap=0 gone=0
-  while [[ "$reap" -lt 4 ]]; do
-    if ! kill -0 "$srv" 2>/dev/null; then gone=1; break; fi
-    [[ "$reap" -eq 1 ]] && kill -9 "$srv" 2>/dev/null
-    sleep 1
-    reap=$(( reap + 1 ))
-  done
-  # `kill -0` succeeds on a zombie, so only wait once the process is really
-  # gone — that call returns immediately and reaps it.
-  [[ "$gone" -eq 1 ]] && wait "$srv" 2>/dev/null
+  codex_stop_server "$srv"
 
   if grep -q "$id2_re" "$out" 2>/dev/null; then
     CODEX_FAIL_REASON=""
