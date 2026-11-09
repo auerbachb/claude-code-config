@@ -303,6 +303,6 @@ check_contains "todo.md: my list is unnumbered on purpose" "$TODO" "unnumbered o
 SKILL=$(cat "$SKILL_DIR/SKILL.md")
 check_contains "SKILL.md: routes to todo.md" "$SKILL" "| \`todo.md\` |"
 check_contains "SKILL.md: the reply order names the to-do verbs" "$SKILL" "**A to-do verb** as the whole message"
-check_contains "skill README lists todo.md" "$(cat "$SKILL_DIR/README.md")" "| \`todo.md\` |"
+check_contains "skill README links to the router inventory" "$(cat "$SKILL_DIR/README.md")" "](SKILL.md)"
 
 hq_t_finish "todo-offline.test.sh"

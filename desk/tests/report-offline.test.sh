@@ -364,8 +364,6 @@ contract sweep.md "$(cat "$SWEEP_MD")" <<'NEEDLES'
 `It's Friday: say report for this week's attention report.`
 so the offer comes once a week
 NEEDLES
-contract "skill README" "$(cat "$SKILL_DIR/README.md")" <<'NEEDLES'
-| `attention.md` |
-NEEDLES
+check_contains "skill README links to the router inventory" "$(cat "$SKILL_DIR/README.md")" "](SKILL.md)"
 
 hq_t_finish "report-offline.test.sh"
