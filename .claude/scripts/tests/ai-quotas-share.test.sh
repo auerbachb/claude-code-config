@@ -563,6 +563,52 @@ check_eq "$NOHOME_RC" "0" "with both overrides it runs HOME-less"
 check_eq "$(link_target "$WORK_DIR/rules")" "$PRIMARY/rules" "against the overridden primary"
 printf '%s\n' "$NOHOME_OUT" >> "$ALL_OUTPUT"
 
+# A writer can finish after the backup copy but before the merged rename.
+# Replace only the fake profile path, at that exact boundary.
+for race_kind in update directory; do
+  new_case "share-profile-json-backup-race-$race_kind"
+  race_bin="$CASE_DIR/cp-bin"
+  mkdir -p "$race_bin"
+  race_target="$WORK_DIR/.claude.json"
+  race_before="$CASE_DIR/original.json"
+  race_new="$CASE_DIR/writer.json"
+  printf '%s\n' '{"userID":"old-profile","mcpServers":{"keep":{"command":"old"}}}' > "$race_before"
+  printf '%s\n' '{"userID":"new-profile","mcpServers":{"keep":{"command":"new"}}}' > "$race_new"
+  cp "$race_before" "$race_target"
+  cat > "$race_bin/cp" <<'RACE_CP'
+#!/bin/sh
+"$SHARE_REAL_CP" "$@" || exit $?
+if [ "$#" -eq 3 ] && [ "$1" = -p ] && [ "$2" = "$SHARE_RACE_TARGET" ] &&
+   [ "$3" = "$SHARE_RACE_TARGET.pre-share" ]; then
+  case "$SHARE_RACE_KIND" in
+    update) /bin/mv "$SHARE_RACE_NEW" "$SHARE_RACE_TARGET" || exit 91 ;;
+    directory) /bin/rm "$SHARE_RACE_TARGET" && /bin/mkdir "$SHARE_RACE_TARGET" || exit 92 ;;
+  esac
+  : > "$SHARE_RACE_MARKER"
+fi
+RACE_CP
+  chmod 700 "$race_bin/cp"
+  SHARE_REAL_CP="$(command -v cp)" SHARE_RACE_TARGET="$race_target" \
+    SHARE_RACE_NEW="$race_new" SHARE_RACE_KIND="$race_kind" \
+    SHARE_RACE_MARKER="$CASE_DIR/writer-finished" PATH="$race_bin:$PATH" \
+    run share-config "$WORK_LABEL" claude
+  check_eq "$(test -e "$CASE_DIR/writer-finished" && echo ran || echo missing)" ran \
+    "$race_kind: the synthetic writer ran after the real backup"
+  check_eq "$RC" 5 "$race_kind: share refuses to replace the changed target"
+  check_contains "$OUT" "changed during backup" "$race_kind: the refusal names the backup window"
+  check_eq "$(cmp -s "$race_before" "$race_target.pre-share" && echo exact || echo changed)" exact \
+    "$race_kind: the backup still contains the exact pre-merge file"
+  if [[ "$race_kind" == update ]]; then
+    check_eq "$(jq -r '[.userID,.mcpServers.keep.command,(.mcpServers|keys|join(","))]|join(":")' "$race_target")" \
+      "new-profile:new:keep" "the concurrent writer's file remains intact without primary entries"
+  else
+    check_eq "$(test -d "$race_target" && [[ -z $(find "$race_target" -mindepth 1 -print) ]] && echo empty || echo changed)" \
+      empty "nothing is installed inside the replacement directory"
+  fi
+  check_eq "$(find "$WORK_DIR" -maxdepth 1 -name '.claude.json.??????' | wc -l | tr -d ' ')" 0 \
+    "$race_kind: the discarded merge leaves no temporary file"
+done
+
 # --- 8. no case, anywhere, leaked a credential --------------------------------
 
 check_eq "$(grep -c "$FIXTURE_SECRET" "$ALL_OUTPUT" || true)" "0" \

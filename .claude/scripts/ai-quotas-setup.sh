@@ -2307,8 +2307,9 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     dest="$(move_aside "$path")"
     share_note_moved ".claude.json" "$dest"
   fi
-  local snapshot=""
-  if [[ -f "$path" ]]; then
+  local snapshot="" had_original=false
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    had_original=true
     snapshot="$(cat "$path")" || die 5 "could not read $path"
     existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
       || die 5 "$path is not a JSON object — refusing to touch it"
@@ -2327,28 +2328,28 @@ share_merge_mcp() { # <profile_dir> <primary_json>
   tmp="$(mktemp "$1/.claude.json.XXXXXX")" || die 5 "could not create a temp file in $1"
   chmod "$mode" "$tmp" 2>/dev/null || chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
   printf '%s\n' "$merged" | jq . > "$tmp" || { rm -f "$tmp"; die 5 "could not serialize $path"; }
-  if [[ -f "$path" ]]; then
-    # Claude Code rewrites its own .claude.json while a session runs, and it
-    # does not honour any lock this script could take. So the file is re-read
-    # right before it is replaced: a change since the snapshot means a live
-    # session wrote login or onboarding state the merge would overwrite with
-    # a stale copy — refused, nothing moved, re-run when the session is idle
-    # (CodeAnt). The window between this read and the rename is as small as
-    # it can be made without a lock the other writer would respect.
-    if [[ "$(cat "$path")" != "$snapshot" ]]; then
+  if [[ "$had_original" == true ]]; then
+    if [[ ! -f "$path" || -L "$path" ]] || [[ "$(cat "$path")" != "$snapshot" ]]; then
       rm -f "$tmp"
-      die 5 "$path changed while the merge was computed (a Claude Code session on this profile is writing it) — nothing was replaced; re-run share-config when that session is idle"
+      die 5 "$path changed before backup — this path was left alone; re-run share-config when the profile is idle"
     fi
-    # The keepsake is a COPY, and the merged file is then renamed over the
-    # original: the path never disappears, so a session that recreates the
-    # file in a move-then-install gap has no gap to hit, and a failed rename
-    # leaves the original in place rather than only under .pre-share
-    # (CodeRabbit).
+    # Keep a copy without moving the live name. Check both sides of the copy:
+    # the keepsake must represent the observed JSON and the live bytes must
+    # still match it immediately before installation. Another writer can
+    # still race the comparison and rename, so the profile must be idle.
     dest="$(pre_share_dest "$path")"
     cp -p "$path" "$dest" || { rm -f "$tmp"; die 5 "could not keep $path as $dest"; }
-    share_note_moved ".claude.json" "$dest"
+    if [[ ! -f "$dest" || -L "$dest" || "$(cat "$dest")" != "$snapshot" ||
+          ! -f "$path" || -L "$path" ]] || ! cmp -s "$dest" "$path"; then
+      rm -f "$tmp"
+      die 5 "$path changed during backup — live path and backup retained; re-run share-config when the profile is idle"
+    fi
+  elif [[ -e "$path" || -L "$path" ]]; then
+    rm -f "$tmp"
+    die 5 "$path appeared while the merge was computed — this path was left alone; re-run share-config when the profile is idle"
   fi
   mv -f "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
+  if [[ "$had_original" == true ]]; then share_note_moved ".claude.json" "$dest"; fi
   SHARE_MERGED=$((SHARE_MERGED + 1))
   echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
 }
