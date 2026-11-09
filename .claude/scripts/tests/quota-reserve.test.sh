@@ -268,6 +268,20 @@ printf '{"accounts":["invalid old entry"]}\n' > "$QUOTA_RESERVE_DIR/marker.json"
 rows "$(a_week 90)" "$(b_week 25)" "$(d_week 45)"
 "$SCRIPT" --refresh --force
 check_eq "$(state_of "$CLAUDE_A")" ok "malformed old notice data cannot block a new guard reading"
+# A renderer failure is visible, but the installed reading still guards.
+QUOTA_TEST_REAL_JQ="$(command -v jq)"
+export QUOTA_TEST_REAL_JQ
+mkdir -p "$TMP/render-failure"
+cat > "$TMP/render-failure/jq" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == -nc && "$*" == *'--slurpfile n '* ]]; then exit 9; fi
+exec "$QUOTA_TEST_REAL_JQ" "$@"
+EOF
+chmod +x "$TMP/render-failure/jq"
+rows "$(a_week 98)" "$(b_week 25)" "$(d_week 45)"
+render_failure=$(PATH="$TMP/render-failure:$PATH" "$SCRIPT" --refresh --force 2>&1)
+check_contains "$render_failure" "could not prepare the reserve crossing notification" "notification renderer failure is visible"
+check_eq "$(state_of "$CLAUDE_A")" reserve "renderer failure does not discard the new guard state"
 
 # ------------------------------------------------------------------------------
 # 4. --decide

@@ -182,7 +182,7 @@ next_account_notice() {
 
 # ---------------------------------------------------------------- --refresh ---
 do_refresh() {
-  local force="$1" now age reader rows thr lock tmp prev on line message source
+  local force="$1" now age reader rows thr lock tmp prev on line message source notices
   need_jq
   mkdir -p "$DIR" 2>/dev/null || { warn "cannot create $DIR"; return 3; }
   now="$(now_epoch)"
@@ -248,7 +248,7 @@ do_refresh() {
 
   # Deduplicate using the last confirmed notice state, never the launch guard.
   if [[ "$prev" != null ]]; then
-    jq -nc --argjson p "$prev" --slurpfile n "$MARKER" '
+    notices="$(jq -nc --argjson p "$prev" --slurpfile n "$MARKER" '
       ($p.accounts // []) as $pa | $n[0].accounts[]
       | . as $a | ($pa | map(select(.provider == $a.provider and .label == $a.label))) as $matches
       | select($matches | length == 1)
@@ -257,15 +257,19 @@ do_refresh() {
       | {provider, label, state, message: ((.nickname // .label) as $who
          | if .state == "reserve"
            then "\($who) is at \(.used_pct)% of its weekly limit. Autonomous work on it is paused; your own turns still work."
-           else "\($who) is back under the limit. Autonomous work can resume." end)}' 2>/dev/null \
-    | while IFS= read -r line; do
-        message="$(jq -er '.message' <<<"$line")" || continue
-        if jq -e '.provider == "claude" and .state == "reserve"' <<<"$line" >/dev/null; then
-          source="$(jq -er '.label | strings' <<<"$line")" || continue
-          message+="$(next_account_notice "$rows" "$source" "$thr" "$now")"
-        fi
-        notify "$message"
-      done
+           else "\($who) is back under the limit. Autonomous work can resume." end)}' 2>/dev/null)" || {
+      warn 'could not prepare the reserve crossing notification'
+      return 0
+    }
+    printf '%s\n' "$notices" | while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      message="$(jq -er '.message' <<<"$line")" || continue
+      if jq -e '.provider == "claude" and .state == "reserve"' <<<"$line" >/dev/null; then
+        source="$(jq -er '.label | strings' <<<"$line")" || continue
+        message+="$(next_account_notice "$rows" "$source" "$thr" "$now")"
+      fi
+      notify "$message"
+    done
   fi
   return 0
 }

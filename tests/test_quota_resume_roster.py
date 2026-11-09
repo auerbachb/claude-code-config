@@ -251,7 +251,8 @@ class QuotaResumeRosterTests(unittest.TestCase):
         env["QUOTA_RESUME_TARGET"] = "claude-work"
         self.assertEqual(run().stdout.splitlines(), ["list", "--target", "claude-work"])
         env["QUOTA_RESUME_TARGET"] = "claude-work; echo bad"
-        self.assertEqual((run().returncode, run().stdout), (1, ""))
+        rejected = run()
+        self.assertEqual((rejected.returncode, rejected.stdout), (1, ""))
         del env["QUOTA_RESUME_TARGET"]
         executable(self.home / ".claude/skills-worktree" / relative, 'printf "worktree %s\\n" "$1"; exit 5')
         broken = run()
