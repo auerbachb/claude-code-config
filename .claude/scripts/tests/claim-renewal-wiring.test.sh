@@ -10,7 +10,7 @@
 #     cadence and says never on every tick;
 #   * /wrap renews before its /fixpr wait dispatch, not after it;
 #   * the Form B claim bullet is byte-identical in chip-launching.md and
-#     /start-issue, and the canonical Form A bullet still claims (unrenewed).
+#     /start-issue, and the canonical Form A bullet keeps direct and delegated pickup separate.
 #
 # Run from repo root: bash .claude/scripts/tests/claim-renewal-wiring.test.sh
 set -uo pipefail
@@ -112,10 +112,19 @@ FORMA=$(grep -F -- '- Claim the issue before anything else.' "$CHIP")
 if [[ "$FORMA" == *'--check --holder "$CLAIM_HOLDER"'* &&
       "$FORMA" == *'--claim --holder "$CLAIM_HOLDER" --json'* &&
       "$FORMA" == *'--renew --holder "$CLAIM_HOLDER"'* &&
-      "$FORMA" == *"this launch's checkpoint"* ]]; then
-  ok "Form A carries its acquired holder into renewal and recovery"
+      "$FORMA" == *'chip-claim-receipt.sh save WORKTREE OWNER/REPO N "$CLAIM_HOLDER"'* &&
+      "$FORMA" == *'chip-claim-receipt.sh read WORKTREE OWNER/REPO N'* &&
+      "$FORMA" == *'at least every 30 minutes of long coding'* &&
+      "$FORMA" == *'as `CLAIM_PAIRS`'* ]]; then
+  ok "Form A carries its acquired holder into periodic renewal, recovery and wrap"
 else
-  bad "Form A does not preserve the holder across checkouts"
+  bad "Form A does not preserve the holder through the pipeline"
+fi
+if [[ "$FORMA" == *'only check ownership read-only for each issue'* &&
+      "$FORMA" == *'let `/subagent` Step 6.0 acquire each eligible claim'* ]]; then
+  ok "Form A leaves delegated acquisition to /subagent Step 6.0"
+else
+  bad "Form A can claim on behalf of a delegated pipeline"
 fi
 
 # --- rule --------------------------------------------------------------------

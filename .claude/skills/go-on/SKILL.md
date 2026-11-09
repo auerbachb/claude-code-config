@@ -63,6 +63,8 @@ Every stoppage leaves evidence. Read it, decide which class this is, and continu
 
 Evidence sources, the precedence table, the newest-wins tie-break, and the degradation contract: `.claude/reference/universal-resume.md`.
 
+**Direct Form A chip recovery.** When the recorded resume context identifies this launch's own issue and assigned worktree, recover its holder with `chip-claim-receipt.sh read WORKTREE OWNER/REPO ISSUE` and confirm it with `issue-claim.sh ISSUE --renew --holder HOLDER --repo OWNER/REPO` before resuming issue work. Resolve both helpers in the portable order below. Stop on missing or ambiguous launch context, a missing receipt, or failed renewal. A receipt alone cannot identify this launch; never search other worktrees, copy a GitHub marker, or acquire a fresh claim during recovery. The chip's original instructions also apply if resuming without `/go-on`.
+
 ### 0.1 Parse arguments
 
 - `--resume-refill` — forwarded **verbatim** to the delegated resume command. `/go-on` never writes `refill.paused` itself. Without the flag the refill pause stands on every lane and is reported, and on a lane with no planned-stop record the flag is reported as having had no effect (naming the command that clears it) — never acted on directly.

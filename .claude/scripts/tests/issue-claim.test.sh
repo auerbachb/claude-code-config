@@ -1367,19 +1367,33 @@ check_eq "two standalone records in one comment are ambiguous" 4 "$RC"
 check_eq "ambiguous standalone records remain fail closed" unknown "$(jq -r .verdict <<<"$OUT")"
 
 echo
-echo "== Form A launch keeps one holder across a checkout change =="
+echo "== Form A launch keeps one holder across a checkout change and resume =="
 # shellcheck source=lib/skill-bash.sh
 source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
 FORM_A_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/reference/chip-launching.md" chip-form-a-claim)
+RECEIPT="$REPO_ROOT/.claude/scripts/chip-claim-receipt.sh"
+ORIGINAL_CHECKOUT="$TMP/form-a-original"
+ALT_CHECKOUT="$TMP/form-a-assigned"
+SIBLING_CHECKOUT="$TMP/form-a-sibling"
+git init -q "$ORIGINAL_CHECKOUT"
+git -C "$ORIGINAL_CHECKOUT" -c user.name=Fixture -c user.email=fixture@example.test \
+  -c commit.gpgsign=false commit --allow-empty -qm seed
 run_form_a() {
   RC=0
-  OUT=$(CLAIM="$SCRIPT" ISSUE=873 "$CLAIM_TEST_SHELL" -u -c \
-    "$FORM_A_BLOCK"$'\n''printf "HOLDER=%s\n" "$CLAIM_HOLDER"' 2>"$TMP/form-a.err") || RC=$?
+  OUT=$(cd "$ORIGINAL_CHECKOUT" && CLAIM="$SCRIPT" ISSUE=873 ISSUE_REPO=acme/widgets \
+    "$CLAIM_TEST_SHELL" -u -c \
+    "$FORM_A_BLOCK"$'\n''printf "CLAIM_RESULT=%s\n" "$CLAIM_JSON"' 2>"$TMP/form-a.err") || RC=$?
 }
+receipt_run() {
+  RECEIPT_RC=0
+  RECEIPT_OUT=$("$CLAIM_TEST_SHELL" "$RECEIPT" "$@" 2>"$TMP/form-a-receipt.err") || RECEIPT_RC=$?
+}
+
 reset_issue
 run_form_a
 check_eq "fresh Form A acquisition succeeds" 0 "$RC"
-FORM_A_HOLDER="${OUT##*$'\nHOLDER='}"
+FORM_A_JSON="${OUT##*$'\nCLAIM_RESULT='}"
+FORM_A_HOLDER=$(jq -er .holder <<<"$FORM_A_JSON")
 check_contains "fresh Form A uses an explicit launch holder" chip: "$FORM_A_HOLDER"
 check_eq "the acquired marker has the saved holder" "$FORM_A_HOLDER" \
   "$(newest_marker_field '.body | capture("claude-claim: (?<p>.*) -->").p | fromjson | .holder')"
@@ -1388,20 +1402,63 @@ run_form_a
 check_eq "a sibling launch in the same checkout cannot take the claim" 1 "$RC"
 check_eq "the sibling did not replace the marker" "$FORM_A_IDS" "$(marker_ids)"
 
-ALT_CHECKOUT="$TMP/form-a-checkout"
-mkdir -p "$ALT_CHECKOUT"
-git -C "$ALT_CHECKOUT" init -q || exit 1
+git -C "$ORIGINAL_CHECKOUT" worktree add -qb issue-873 "$ALT_CHECKOUT"
+git -C "$ORIGINAL_CHECKOUT" worktree add -qb other-issue-873 "$SIBLING_CHECKOUT"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "missing receipt fails closed before acquisition is bound" 4 "$RECEIPT_RC"
+receipt_run save "$ORIGINAL_CHECKOUT" acme/widgets 873 "$FORM_A_HOLDER" <<<"$FORM_A_JSON"
+check_eq "primary checkout cannot store a launch receipt" 4 "$RECEIPT_RC"
+receipt_run save "$ALT_CHECKOUT" acme/other 873 "$FORM_A_HOLDER" <<<"$FORM_A_JSON"
+check_eq "cannot bind acquisition from the wrong repo" 4 "$RECEIPT_RC"
+OTHER_HOLDER=chip:fixture:1:2:3:4
+receipt_run save "$ALT_CHECKOUT" acme/widgets 873 "$OTHER_HOLDER" <<<"$FORM_A_JSON"
+check_eq "a remote result does not authorize a different holder" 4 "$RECEIPT_RC"
+receipt_run save "$ALT_CHECKOUT" acme/widgets 873 "$FORM_A_HOLDER" <<<"$FORM_A_JSON"
+check_eq "verified acquisition saves before changing checkouts" 0 "$RECEIPT_RC"
+check_eq "saving does not print the holder" "" "$RECEIPT_OUT"
+RECEIPT_PATH="$(git -C "$ALT_CHECKOUT" rev-parse --absolute-git-dir)/claude-chip-claim.json"
+check_eq "receipt is private in Git metadata" "$RECEIPT_PATH" "$(find "$RECEIPT_PATH" -perm 600)"
+check_eq "no receipt appears in the worktree status" "" "$(git -C "$ALT_CHECKOUT" status --porcelain)"
+receipt_run save "$ALT_CHECKOUT" acme/widgets 873 "$OTHER_HOLDER" \
+  <<<"$(jq --arg h "$OTHER_HOLDER" '.holder = $h | .claimant_holder = $h' <<<"$FORM_A_JSON")"
+check_eq "another successful result cannot overwrite the receipt" 4 "$RECEIPT_RC"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 874
+check_eq "wrong issue cannot load a receipt" 4 "$RECEIPT_RC"
+receipt_run read "$ALT_CHECKOUT" acme/other 873
+check_eq "wrong repo cannot load a receipt" 4 "$RECEIPT_RC"
+receipt_run read "$SIBLING_CHECKOUT" acme/widgets 873
+check_eq "sibling worktree cannot load a receipt from shared metadata" 4 "$RECEIPT_RC"
+cp "$RECEIPT_PATH" "$(git -C "$SIBLING_CHECKOUT" rev-parse --absolute-git-dir)/claude-chip-claim.json"
+receipt_run read "$SIBLING_CHECKOUT" acme/widgets 873
+check_eq "a copied receipt is bound to its original worktree" 4 "$RECEIPT_RC"
+git -C "$ALT_CHECKOUT" switch -qc another-branch
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "a different branch cannot load the old receipt" 4 "$RECEIPT_RC"
+git -C "$ALT_CHECKOUT" switch -q issue-873
+mv "$RECEIPT_PATH" "$RECEIPT_PATH.saved"
+ln -s "$RECEIPT_PATH.saved" "$RECEIPT_PATH"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "a symlink is not a valid receipt" 4 "$RECEIPT_RC"
+mv -f "$RECEIPT_PATH.saved" "$RECEIPT_PATH"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "a fresh process can reload the exact launch holder" "$FORM_A_HOLDER" "$RECEIPT_OUT"
+
 FORM_A_RENEW=$(
   cd "$ALT_CHECKOUT" || exit 1
-  unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_ID
+  unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_ID FORM_A_HOLDER FORM_A_JSON
   run 873 --renew --repo acme/widgets
   printf '%s|%s\n' "$RC" "$OUT"
-  run 873 --renew --repo acme/widgets --holder "$FORM_A_HOLDER"
+  restored=$("$CLAIM_TEST_SHELL" "$RECEIPT" read "$PWD" acme/widgets 873) || exit 1
+  run 873 --renew --repo acme/widgets --holder "$restored"
   printf '%s|%s\n' "$RC" "$OUT"
 )
-check_eq "new checkout default loses ownership; recorded holder renews" \
+check_eq "new checkout default loses ownership; recovered holder renews" \
   $'5|claimed\n0|mine' "$FORM_A_RENEW"
 check_eq "renewal before due leaves one original marker" "$FORM_A_IDS" "$(marker_ids)"
+run 873 --release --repo acme/widgets --holder "$FORM_A_HOLDER"
+run 873 --claim --repo acme/widgets --holder "$OTHER_HOLDER"
+run 873 --renew --repo acme/widgets --holder "$RECEIPT_OUT"
+check_eq "a valid receipt cannot re-acquire a lost claim on resume" 5 "$RC"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
