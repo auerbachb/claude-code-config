@@ -1270,11 +1270,22 @@ seed_claim_examples() {
     {id:902,created_at:$at,user:{login:"alice"},body:("Example:\n\n````markdown\n```\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n````")},
     {id:903,created_at:$at,user:{login:"alice"},body:("> <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")},
     {id:904,created_at:$at,user:{login:"alice"},body:("    <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")},
-    {id:905,created_at:$at,user:{login:"alice"},body:("   ~~~\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n   ~~~~")}
+    {id:905,created_at:$at,user:{login:"alice"},body:("   ~~~\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n   ~~~~")},
+    {id:906,created_at:$at,user:{login:"alice"},body:("- ```markdown\n  <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n  ```")},
+    {id:907,created_at:$at,user:{login:"alice"},body:("An example `opens\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\nand closes`.")}
   ]' "$STATE/comments.json" > "$TMP/with-examples.json"
   mv "$TMP/with-examples.json" "$STATE/comments.json"
 }
 claim_examples() { jq -c '[.[] | select(.id >= 901)]' "$STATE/comments.json"; }
+
+for example_id in 906 907; do
+  reset_issue
+  seed_claim_examples "$(date -u +%FT%TZ)"
+  jq --argjson id "$example_id" '[.[] | select(.id == $id)]' "$STATE/comments.json" > "$TMP/nested-example.json"
+  mv "$TMP/nested-example.json" "$STATE/comments.json"
+  run 873 --check --holder threadA --json
+  check_eq "nested code example $example_id never becomes a claim" unclaimed "$(jq -r .verdict <<<"$OUT")"
+done
 
 reset_issue
 seed_claim_examples "$(date -u +%FT%TZ)"
@@ -1326,12 +1337,14 @@ check_eq "genuine unreadable candidate does not expose older owner" unknown "$(j
 
 reset_issue
 jq -n --arg at "$(date -u +%FT%TZ)" '[{id:901,created_at:$at,user:{login:"alice"},
-  body:("```markdown\n<!-- claude-claim: {\"holder\":\"threadWrong\",\"login\":\"alice\"} -->\n```\n\n" +
-        "<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")}]' > "$STATE/comments.json"
+  body:("🔒 Claimed by `alice` for active work. It will be released when this issue\u0027s PR merges, when the issue closes, or automatically after 4h of no activity.\r\n\r\n" +
+        "<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\r\n")}]' > "$STATE/comments.json"
 run 873 --check --holder threadA --json
-check_eq "unquoted marker after a fence wins over fenced example" mine "$(jq -r .verdict <<<"$OUT")"
-check_eq "the decoded holder comes from the unquoted record" threadA "$(jq -r .claimant_holder <<<"$OUT")"
+check_eq "historic claim notice with CRLF still identifies the owner" mine "$(jq -r .verdict <<<"$OUT")"
+check_eq "historic notice preserves exact marker identity" 901 "$(jq -r .claim_comment_id <<<"$OUT")"
 
+reset_issue
+run 873 --claim --holder threadA
 jq '.[0].body = (.[0].body + "\n<!-- claude-claim: {\"holder\":\"threadB\",\"login\":\"alice\"} -->")' \
   "$STATE/comments.json" > "$TMP/ambiguous-standalone.json"
 mv "$TMP/ambiguous-standalone.json" "$STATE/comments.json"

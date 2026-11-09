@@ -404,42 +404,34 @@ HAS_LABEL="$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$CLAIM_LABEL" '[.labels[
 ASSIGNEES="$(printf '%s' "$ISSUE_JSON" | jq -r '[.assignees[]?.login] | join(" ")' 2>/dev/null || echo "ERR")"
 [[ "$ASSIGNEES" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER assignees"
 
-# Candidate recognition comes before decoding. An inline quotation, blockquote,
-# or fenced/indented code example is not a record. A standalone marker outside
-# code is a candidate even without a closing delimiter or readable payload.
-# Keep it in the array so an unreadable newest record still blocks the claim.
+# Classify the two protocol envelopes, not arbitrary Markdown. The writer has
+# always used the claim notice, a blank line, then the hidden marker; a bare
+# marker comment is also accepted. Quoted examples cannot enter either form.
+# No output means "not a record". A null line is a recognized but damaged
+# envelope and must remain a candidate so the newest unreadable record blocks.
 filter_claim_comments() {
   jq -s --arg m "$CLAIM_MARKER" '
-    def fence_head:
-      capture("^[ ]{0,3}(?<token>`{3,}|~{3,})(?<tail>.*)$") // null;
-    def marker_lines($prefix):
-      reduce (split("\n")[] | sub("\r$"; "")) as $line
-        ({fence: null, lines: []};
-         ($line | fence_head) as $f
-         | if .fence != null then
-             if $f != null
-                and $f.token[0:1] == .fence[0:1]
-                and ($f.token | length) >= (.fence | length)
-                and ($f.tail | test("^[ \t]*$"))
-             then .fence = null else . end
-           elif $f != null and ($f.token[0:1] == "~" or ($f.tail | contains("`") | not)) then
-             .fence = $f.token
-           elif ($line | test("^[ ]{0,3}" + $prefix)) then
-             .lines += [$line]
-           else . end)
-      | .lines;
-    def decode($lines; $prefix):
-      if ($lines | length) != 1 then null
+    def marker_start($prefix): test("^[ ]{0,3}" + $prefix);
+    def record_line($prefix):
+      (gsub("\r\n"; "\n") | sub("^\n+"; "") | sub("\n+$"; "") | split("\n")) as $lines
+      | if ($lines[0] | test("^🔒 Claimed by `[^`]+` for active work[.]")) then
+          if ($lines | length) == 3 and $lines[1] == ""
+             and ($lines[2] | marker_start($prefix))
+          then $lines[2] else null end
+        elif ($lines[0] | marker_start($prefix)) then
+          if ($lines | length) == 1 then $lines[0] else null end
+        else empty end;
+    def decode($line; $prefix):
+      if $line == null then null
       else
-        (try ($lines[0] | capture("^[ ]{0,3}" + $prefix + " *(?<p>.*)-->[ \t]*$") | .p | fromjson)
+        (try ($line | capture("^[ ]{0,3}" + $prefix + " *(?<p>.*)-->[ \t]*$") | .p | fromjson)
          catch null) // null
       end
       | if type == "object" then . else null end;
     ("<!-- " + $m + ":") as $prefix
-    | [ .[] | .[]? | select(.body != null and (.body | contains($prefix)))
-        | (.body | marker_lines($prefix)) as $lines
-        | select(($lines | length) > 0)
-        | ._claim_payload = decode($lines; $prefix) ]'
+    | [ .[] | .[]? | select(.body != null and (.body | contains($prefix) or contains("🔒 Claimed by ")))
+        | (.body | record_line($prefix)) as $line
+        | ._claim_payload = decode($line; $prefix) ]'
 }
 
 # --- read the claim comment ----------------------------------------------------
