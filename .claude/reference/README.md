@@ -104,6 +104,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `pm-day-mode-hotspot-decision.md` — extract the captured-wake procedure from the day-mode rationale (Issue #1314); four current counted changes and no recorded conflicts.
 - `candidate-ownership-fixture-hotspot-decision.md` — KEEP the shared offline ownership fixture and consumer wiring checks (Issue #1659); five counted merges and no recorded conflicts
 - `continuous-work-posture.md` — why free capacity (not a finish) triggers refill, fill-vs-ramp, queue vs backlog refill, the human-in-chat stop, and the idle-reason taxonomy (`CLAUDE.md` "KEEP THE PIPELINE FULL"; #823)
+- `active-work-cap-reference-hotspot-decision.md` — keep the cap derivation and override together (Issue #1270)
 - `active-work-cap.md` — derivation of the repo-wide cap on simultaneously active coding work: why the retracted ~8 CR reviews/hour became a measured 5/hr per developer, the k² rebase-churn and Fair Usage feedback terms, why the default is 6 rather than 8, and why the cap governs by `min()` and never raises the per-thread ceiling (#1191)
 - `active-work-cap-fixture-hotspot-decision.md` — keep the active-work cap fixture together (Issue #1296); four historical changes and one current touch
 - `candidate-ownership-script-hotspot-decision.md` — keep the read-only ownership sweep together (Issue #1647); four historical changes and no current churn
