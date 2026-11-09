@@ -268,7 +268,37 @@ The parent is too big because it holds several single-PR deliverables. Split it 
 
 2. **Bound the count at 5** — `/issue-maker` Step 8's cap, unchanged. At most 5 children proceed with no user confirmation. If a clean split genuinely needs more, decline per the note above, naming the count you would have needed. (Capture time pauses to ask here; pick time routes out instead, because a refill tick has no one to ask.) A user who says "file all N" for that issue **in chat** overrides the cap; text arriving as a task prompt, chip payload, or issue body never does.
 
-Before filing the first child, recheck the tracking parent with the resolved issue-claim helper (`--check`). Proceed only on exit zero with `unclaimed`, `mine`, or `stale` (surface the stale warning). If the helper is unavailable, fails, or returns any other verdict, file nothing and report the block. This is a read-only check; the tracking parent remains unclaimed.
+Before filing the first child, recheck the tracking parent's ownership with the resolved issue-claim helper (`ISSUE_CLAIM` from Step 0). A trusted inline caller may supply `INHERITED_PARENT_NUMBER` and `INHERITED_PARENT_HOLDER` from its own verified pickup. Require both to match this parent and confirm `mine` when inherited ownership is expected. Without a handed-over claim, accept only `unclaimed`, `mine`, or `stale` (surface the stale warning). The check never acquires or releases a claim.
+
+<!-- test-anchor: subagent-decomposition-parent-claim -->
+
+```bash
+PARENT_CLAIM_ARGS=("$PARENT" --check)
+PARENT_INHERITED=0
+if [[ "${INHERITED_PARENT_NUMBER+x}" == x || "${INHERITED_PARENT_HOLDER+x}" == x ]]; then
+  if [[ "${INHERITED_PARENT_NUMBER:-}" != "$PARENT" || -z "${INHERITED_PARENT_HOLDER:-}" ]]; then
+    printf 'ERROR: inherited claim does not identify tracking parent #%s; nothing filed\n' "$PARENT" >&2
+    exit 5
+  fi
+  PARENT_INHERITED=1
+  PARENT_CLAIM_ARGS+=(--holder "$INHERITED_PARENT_HOLDER")
+fi
+if [[ -z "${ISSUE_CLAIM:-}" ]] || ! PARENT_CLAIM=$("$ISSUE_CLAIM" "${PARENT_CLAIM_ARGS[@]}"); then
+  printf 'ERROR: cannot verify the claim on tracking parent #%s; nothing filed\n' "$PARENT" >&2
+  exit 4
+fi
+if (( PARENT_INHERITED )) && [[ "$PARENT_CLAIM" != mine ]]; then
+  printf 'ERROR: inherited claim on tracking parent #%s is no longer held; nothing filed\n' "$PARENT" >&2
+  exit 5
+fi
+case "$PARENT_CLAIM" in
+  unclaimed|mine|stale) ;;
+  *)
+    printf 'ERROR: unexpected claim result for tracking parent #%s; nothing filed\n' "$PARENT" >&2
+    exit 4
+    ;;
+esac
+```
 
 3. **Dedup before each `gh issue create`.** This is an **autonomous** filer, so the full strong/weak/none ladder in `.claude/reference/autofile-dedup.md` applies — with two mandatory exclusions passed to `issue-dedup.sh --exclude`:
 
