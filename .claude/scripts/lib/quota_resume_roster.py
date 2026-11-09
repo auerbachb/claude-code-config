@@ -83,15 +83,27 @@ def source_account(accounts, path, primary_email=None):
     return labels[0], source
 
 
-def roster_path(home):
+def roster_path(home, write=False):
     # Never follow a custom symlink into a checkout or a consumer repository.
     path = home
     for component in (".claude", "handoffs", "claude-resume-roster"):
         path = path / component
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ValueError("the local resume roster directory is not safe")
-    if any((path / ".git").exists() for path in (path, *path.parents)):
-        raise ValueError("the local resume roster must stay outside a repository")
+        if write and ((path / ".git").exists() or (path / ".git").is_symlink()):
+            raise ValueError("the local resume roster must stay outside a project checkout")
+    if write and ((home / ".git").exists() or (home / ".git").is_symlink()):
+        # A home dotfiles repository is common. Its private state may be
+        # written only when the roster is ignored and nothing in it is tracked.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        prefix = ["git", "-C", str(home)]
+        relative = str(path.relative_to(home))
+        tracked = subprocess.run([*prefix, "ls-files", "--", relative], capture_output=True,
+                                 timeout=5, check=True, env=env).stdout
+        ignored = subprocess.run([*prefix, "check-ignore", "--quiet", "--", relative + "/"],
+                                 capture_output=True, timeout=5, env=env).returncode
+        if tracked or ignored != 0:
+            raise ValueError("the resume roster must be ignored by the home dotfiles repository")
     return path
 
 
@@ -261,7 +273,7 @@ def main():
     args = parser.parse_args()
     try:
         home = Path.home().resolve(strict=True)
-        root = roster_path(home)
+        root = roster_path(home, write=args.action == "record")
         setup = Path(__file__).resolve().parents[1] / "ai-quotas-setup.sh"
         accounts = registered_accounts(metadata(setup))
         primary = home / ".claude"

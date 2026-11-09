@@ -90,6 +90,20 @@ class QuotaResumeRosterTests(unittest.TestCase):
         self.assertEqual(value["unreadable_records"], 1)
         self.assertTrue(all("command" not in x for x in value["entries"][0]["options"]))
 
+    def test_home_dotfiles_checkout_only_writes_ignored_untracked_roster(self):
+        subprocess.run(["git", "init", "--quiet", str(self.home)], check=True)
+        self.assertEqual(roster.roster_path(self.home), self.root)
+        with self.assertRaises(ValueError):
+            roster.roster_path(self.home, write=True)
+        (self.home / ".gitignore").write_text("/.claude/handoffs/claude-resume-roster/\n")
+        self.assertEqual(roster.roster_path(self.home, write=True), self.root)
+        self.root.mkdir()
+        existing = self.root / "already-tracked.json"
+        existing.write_text("{}\n")
+        subprocess.run(["git", "-C", str(self.home), "add", "-f", "--", str(existing)], check=True)
+        with self.assertRaises(ValueError):
+            roster.roster_path(self.home, write=True)
+
     def test_primary_identity_fallback_and_unsafe_roster_path(self):
         external_registry = {self.label: ("claude-personal", self.other), "work@example.com": ("claude-work", self.work)}
         self.assertEqual(roster.source_account(external_registry, str(self.source), "PERSONAL@example.com"), (self.label, self.source))
