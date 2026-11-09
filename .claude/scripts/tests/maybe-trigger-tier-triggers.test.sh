@@ -291,13 +291,6 @@ check_eq "the tier change posts no reviewer comment" "" "$(posted)"
 run
 check_eq "an unchanged full-tier tick is still a duplicate" "duplicate_poll_tick" "$(f .reason)"
 check_eq "the duplicate tick posts nothing" "" "$(posted)"
-grant_for "$HEAD"
-GRANT_TRIGGER_RC=0
-( cd "$WORK" && bash "$S/paid-review-grant.sh" --trigger "$PR" --vendor cursor \
-    --head "$HEAD" --repo acme/one >/dev/null 2>&1 ) || GRANT_TRIGGER_RC=$?
-check_eq "explicit approval can be used without a push" "0" "$GRANT_TRIGGER_RC"
-check_eq "only the approved BugBot invitation posts" "@cursor review;" "$(posted)"
-check_eq "the exact grant is spent once" "consumed" "$(grant_status)"
 
 reset "$(tier_json absent legacy)"
 grant_for "$HEAD"
