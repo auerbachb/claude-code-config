@@ -31,12 +31,26 @@ then `$HOME/.claude`. Do not execute a current-checkout fallback: this command
 may be invoked from an unrelated or untrusted repository. Parse only
 `--resume-refill`.
 
+Bind the same session ID `/end` uses. A native conversation UUID takes
+precedence; only an older runtime without one uses the legacy key.
+
+<!-- test-anchor: end-resume-native-session -->
+
+```bash
+SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+NATIVE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+if [[ "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
+  SESSION_ID="$NATIVE_SESSION_ID"
+fi
+```
+
 Before clearing the gate, require all three helpers to be resolved and readable.
-Use the registry to list the current session and use `session-state.sh` to read
-the repo key/refill state. If either inventory is unavailable or malformed,
-report a degraded resume and leave the execution gate closed. If
-`execution-pause.sh` is missing or cannot clear the current
-`${CLAUDE_SESSION_ID:-default}` gate, likewise stop without re-arming anything.
+Use `--session "$SESSION_ID"` for the registry inventory and use
+`session-state.sh` to read the repo key/refill state. If either inventory is
+unavailable or malformed, report a degraded resume and leave the execution
+gate closed. If `execution-pause.sh` is missing or cannot clear this session's
+gate, likewise stop without re-arming anything. Do not clear a different
+session's gate as a fallback.
 A partial resume behind an unknown or unreadable inventory is worse than a
 visible no-op.
 

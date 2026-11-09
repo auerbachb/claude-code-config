@@ -105,9 +105,18 @@ being claimed as published; retain and name the draft instead.
 Arm the session-scoped execution gate before reading or waiting on background
 work, then pause refilling. The first prevents direct Agent, Workflow, Monitor,
 and background Bash launches; the second prevents pipeline successor launches.
+Use Claude Code's native conversation UUID when present: the launch guard and
+task hooks already key on the native event's session ID. Keep the legacy key
+for runtimes that do not expose that UUID.
+
+<!-- test-anchor: end-native-session-gate -->
 
 ```bash
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+NATIVE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+if [[ "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
+  SESSION_ID="$NATIVE_SESSION_ID"
+fi
 WINDDOWN_PERSISTED=1
 EXECUTION_GATE_PERSISTED=1
 if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
@@ -149,7 +158,9 @@ it is not a substitute for recovering this end handoff.
 
 Read and follow `$SHUTDOWN_DOC` in full with the parsed deadline. Preserve each
 task's output and recovery location in the registry and in the handoff's Open
-work or Local state section. This command owns the current session only; name
+work or Local state section. Use Step 1's `$SESSION_ID` explicitly for every
+task-registry lookup, transition, and the tracking-failure marker. This
+command owns the current session only; name
 separate `claude agents` sessions as out of scope.
 
 Print the initial winding-down line before the cooperative window. After the

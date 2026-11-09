@@ -215,13 +215,30 @@ GATE_AT=$(jq -r '.at // ""' <<<"$GATE_JSON")
 
 `GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — ranks 2 through 5 are all barred outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Rank 3 is barred for the same reason as ranks 4 and 5 and on the same evidence — continuing a recorded phase is a resume like any other, and a token-exhaustion handoff is not evidence that no `pause` or `end` gate is armed. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through. The single exception is a validated `--generation` (0.2a), which names one specific park record rather than inferring the class from the gate.
 
-Also read this session's own gate — it decides whether new launches are blocked right now. The helper prints `active` | `inactive` and exits 0; an unresolved helper or a failed call is `unreadable`, which feeds the unclassifiable rule in 0.4, never `inactive`:
+Also read this session's own gate: `/end` uses the native UUID when available;
+older stop records and `/pause` can still use the existing session key. Either
+key reporting `active` is enough to hold launches. A failed or invalid read
+is `unreadable` unless another key proves an active gate.
+
+<!-- test-anchor: go-on-live-native-session-gate -->
 
 ```bash
 GATE_LIVE=unreadable
 if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
-  GATE_LIVE=$("$EXECUTION_PAUSE_SH" --status --session "$SESSION_ID" 2>/dev/null) || GATE_LIVE=unreadable
-  [[ "$GATE_LIVE" == active || "$GATE_LIVE" == inactive ]] || GATE_LIVE=unreadable
+  GATE_LIVE=inactive
+  NATIVE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+  if [[ ! "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ || "$NATIVE_SESSION_ID" == "$SESSION_ID" ]]; then
+    NATIVE_SESSION_ID=""
+  fi
+  for GATE_SESSION_ID in "$NATIVE_SESSION_ID" "$SESSION_ID"; do
+    [[ -n "$GATE_SESSION_ID" ]] || continue
+    gate_status=$("$EXECUTION_PAUSE_SH" --status --session "$GATE_SESSION_ID" 2>/dev/null) || gate_status=unreadable
+    case "$gate_status" in
+      active) GATE_LIVE=active; break ;;
+      inactive) ;;
+      *) GATE_LIVE=unreadable ;;
+    esac
+  done
 fi
 ```
 

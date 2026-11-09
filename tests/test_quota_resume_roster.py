@@ -94,11 +94,55 @@ class QuotaResumeRosterTests(unittest.TestCase):
         self.assertEqual(value["unreadable_records"], 1)
         self.assertEqual(value["entries"], [])
 
-    def run_skill_block(self, name, anchor, env):
+    def run_skill_block(self, name, anchor, env, trailer=""):
         skill = MODULE.parents[2] / "skills" / name / "SKILL.md"
         block = skill.read_text().split(f"<!-- test-anchor: {anchor} -->", 1)[1]
         block = block.split("```bash\n", 1)[1].split("\n```", 1)[0]
-        return subprocess.run(["bash", "-c", block], cwd=self.wt, env=env, capture_output=True, text=True)
+        return subprocess.run(["bash", "-c", block + "\n" + trailer], cwd=self.wt, env=env,
+                              capture_output=True, text=True)
+
+    def test_end_and_end_resume_use_the_native_session_bound_to_task_hooks(self):
+        gate = self.home / "gate"
+        gate.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+        gate.chmod(0o700)
+        state = self.home / "state"
+        state.write_text('#!/bin/bash\nif [[ "$1" == --repo-key ]]; then echo owner/repo; fi\n')
+        state.chmod(0o700)
+        env = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.sid, CLAUDE_SESSION_ID="legacy",
+                   EXECUTION_PAUSE_SH=str(gate), SESSION_STATE_SH=str(state), WINDOW_MINUTES="0")
+        end = self.run_skill_block("end", "end-native-session-gate", env)
+        self.assertEqual(end.returncode, 0)
+        self.assertEqual(end.stdout.splitlines()[:3], ["--activate", "--session", self.sid])
+        def resume():
+            return self.run_skill_block("end-resume", "end-resume-native-session", env,
+                                        'printf "%s" "$SESSION_ID"').stdout
+        self.assertEqual(resume(), self.sid)
+        env["CLAUDE_CODE_SESSION_ID"] = "not-a-native-uuid"
+        self.assertEqual(resume(), "legacy")
+        del env["CLAUDE_SESSION_ID"]
+        self.assertEqual(resume(), "default")
+
+    def test_go_on_checks_legacy_and_native_gate_without_turning_failures_into_absence(self):
+        gate = self.home / "status"
+        gate.write_text('#!/bin/bash\nprintf "%s\\n" "$3" >> "$GATE_CALLS"\n'
+                        'if [[ "$3" == "$CLAUDE_CODE_SESSION_ID" ]]; then echo "$NATIVE_STATUS"; '
+                        'else echo "$LEGACY_STATUS"; fi\n')
+        gate.chmod(0o700)
+        calls = self.home / "calls"
+        env = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.sid, SESSION_ID="default",
+                   EXECUTION_PAUSE_SH=str(gate), GATE_CALLS=str(calls), NATIVE_STATUS="inactive",
+                   LEGACY_STATUS="active")
+        def probe():
+            return self.run_skill_block("go-on", "go-on-live-native-session-gate", env,
+                                        'printf "%s" "$GATE_LIVE"').stdout
+        self.assertEqual(probe(), "active")
+        self.assertEqual(calls.read_text().splitlines(), [self.sid, "default"])
+        env.update(NATIVE_STATUS="active", LEGACY_STATUS="unreadable")
+        self.assertEqual(probe(), "active")
+        env.update(NATIVE_STATUS="malformed", LEGACY_STATUS="inactive")
+        self.assertEqual(probe(), "unreadable")
+        env.update(NATIVE_STATUS="inactive")
+        self.assertEqual(probe(), "inactive")
 
     def test_resume_options_never_executes_checkout_or_path_fallback(self):
         def executable(path, body):
