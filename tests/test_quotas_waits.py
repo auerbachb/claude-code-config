@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / '.claude/scripts/ai-quotas.sh').read_text()
 FUNCTIONS = '\n'.join(re.search(r'^' + name + r'\(\).*?^}', SOURCE,
                                 re.M | re.S)[0]
-                      for name in ('codex_stop_server', 'codex_app_server_read'))
+                      for name in ('codex_supervise_server', 'codex_stop_server',
+                                   'codex_app_server_read'))
 def supported_shells():
     candidates = ('/bin/bash', os.environ.get('QUOTAS_WAITS_CURRENT_BASH'),
                   shutil.which('bash'), '/opt/homebrew/bin/bash', '/usr/local/bin/bash')
@@ -54,12 +55,21 @@ class QuotaWaits(unittest.TestCase):
                 (binary / name).symlink_to(target)
             (binary / 'bash').symlink_to(shell)
             server = tmp / 'server'
-            linger = ('while :; do /bin/sleep 0.2; done; '
-                      if server_mode == 'ignore-term' else '')
+            linger = ('exec /bin/sleep 10; ' if server_mode == 'ignore-term'
+                      else 'exit 0; ' if server_mode == 'exited-descendant' else '')
             answer = ('case "$request" in *account/rateLimits/read*) '
                       'printf \'{"id" : 2,"result":{}}\\n\'; ' + linger + ';; esac\n')
+            descendant = (
+                '(trap "" TERM; printf "%s\\n" ready > "$DESCENDANT_READY_FILE"; '
+                'exec /bin/sleep 10) </dev/null >/dev/null 2>&1 &\n'
+                'printf "%s\\n" "$!" > "$DESCENDANT_PID_FILE"\n'
+                'for i in {1..60}; do [[ -s "$DESCENDANT_READY_FILE" ]] && break; '
+                '/bin/sleep .02; done\n'
+                if server_mode in ('descendant', 'exited-descendant', 'exited-silent-descendant') else '')
             server.write_text('#!/bin/bash\nprintf \'%s\\n\' \"$$\" > \"$SERVER_PID_FILE\"\n'
                               + ('trap "" TERM\n' if server_mode == 'ignore-term' else '')
+                              + descendant
+                              + ('exit 0\n' if server_mode == 'exited-silent-descendant' else '')
                               + 'while IFS= read -r request; do\n'
                               + (answer if server_mode != 'silent' else ':\n')
                               + 'done\n')
@@ -69,10 +79,12 @@ class QuotaWaits(unittest.TestCase):
                    and k not in ('BASH_ENV', 'ENV', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME')}
             env.update(HOME=str(home), PATH=str(binary) + ':/usr/bin:/bin',
                        FORBIDDEN_HITS=str(hits), SERVER_PID_FILE=str(tmp / 'server.pid'),
+                       DESCENDANT_PID_FILE=str(tmp / 'descendant.pid'),
+                       DESCENDANT_READY_FILE=str(tmp / 'descendant.ready'),
                        AI_QUOTAS_NOTIFY_BIN='/usr/bin/true')
             for name in ('CURL', 'SECURITY', 'CLAUDE', 'CODEX'):
                 env['AI_QUOTAS_' + name + '_BIN'] = str(binary / name.lower())
-            command = ('set -uo pipefail\n' + FUNCTIONS
+            command = ('set -uo pipefail\nwarn() { printf "%s\\n" "$*" >&2; }\n' + FUNCTIONS
                        + '\nTMP="$1"; SERVER="$2"; ROOT="$3"; CODEX_TIMEOUT=1\n' + body)
             started = time.monotonic()
             proc = subprocess.Popen([shell, '-c', command, 'fixture', td, str(server),
@@ -82,21 +94,34 @@ class QuotaWaits(unittest.TestCase):
             try:
                 stdout, stderr = proc.communicate(timeout=12)
                 # Check the reader's cleanup before our unconditional safety teardown.
-                pid_file = tmp / 'server.pid'
-                if pid_file.exists():
-                    server_pid = int(pid_file.read_text().strip())
-                    try:
-                        os.kill(server_pid, 0)
-                    except ProcessLookupError:
-                        pass
-                    else:
-                        self.fail('reader left its app-server PID alive before fixture teardown')
+                for name in ('server.pid', 'descendant.pid'):
+                    pid_file = tmp / name
+                    if not pid_file.exists():
+                        continue
+                    pid = int(pid_file.read_text().strip())
+                    # An orphaned zombie is dead and awaits the OS reaper.
+                    state = subprocess.run(
+                        ['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True,
+                        text=True, check=False).stdout.strip()
+                    self.assertTrue(not state or state.startswith('Z'),
+                                    f'reader left {name} alive before fixture teardown')
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
                 self.fail('private FIFO fixture exceeded its outer deadline')
             finally:
-                # Only our owned process group; never signal an inferred provider PID.
+                # Only touch processes proven to belong to the test session.
+                # The stub records each finite-lived fixture it actually starts.
+                for name in ('server.pid', 'descendant.pid'):
+                    pid_file = tmp / name
+                    if not pid_file.exists():
+                        continue
+                    try:
+                        pid = int(pid_file.read_text().strip())
+                        if os.getsid(pid) == proc.pid:
+                            os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -114,7 +139,46 @@ class QuotaWaits(unittest.TestCase):
                         'cat "$CODEX_RESULT_FILE"; exit "$rc"', mode)
                     self.assertEqual(rc, 0, err)
                     self.assertEqual(json.loads(out)['id'], 2)
+                    self.assertNotIn('Killed', err)
                     self.assertLess(elapsed, 7)
+
+    def test_term_resistant_descendant_and_unrelated_process(self):
+        for shell in SHELLS:
+            for mode in ('descendant', 'exited-descendant'):
+                with self.subTest(shell=shell, mode=mode):
+                    rc, out, err, elapsed = self.run_private(
+                        shell, '/bin/sleep 10 >/dev/null 2>&1 & other=$!; '
+                        'trap \'kill "$other" 2>/dev/null; wait "$other" 2>/dev/null\' EXIT; '
+                        'codex_app_server_read "$HOME" "$SERVER" || exit 91; '
+                        'kill -0 "$other" || exit 92; '
+                        '[[ -s "$DESCENDANT_PID_FILE" && ! -p "$TMP/codex.fifo" ]] || exit 93; '
+                        'cat "$CODEX_RESULT_FILE"', mode)
+                    self.assertEqual(rc, 0, err)
+                    self.assertEqual(json.loads(out)['id'], 2)
+                    self.assertLess(elapsed, 7)
+
+    def test_exited_server_without_reply_leaves_no_descendant(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                rc, out, err, elapsed = self.run_private(
+                    shell, 'if codex_app_server_read "$HOME" "$SERVER"; then exit 91; fi; '
+                    '[[ -s "$DESCENDANT_PID_FILE" && ! -p "$TMP/codex.fifo" ]] || exit 92; '
+                    'printf "%s\\n" "$CODEX_FAIL_REASON"', 'exited-silent-descendant')
+                self.assertEqual(rc, 0, err)
+                self.assertIn('app-server exited without answering', out)
+                self.assertLess(elapsed, 7)
+
+    def test_inherited_group_starts_no_provider(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                rc, out, err, elapsed = self.run_private(
+                    shell, 'set() { [[ "$1" == -m ]] || builtin set "$@"; }; '
+                    'if codex_app_server_read "$HOME" "$SERVER"; then exit 91; fi; '
+                    '[[ ! -e "$SERVER_PID_FILE" && ! -p "$TMP/codex.fifo" ]] || exit 92; '
+                    'printf "%s\\n" "$CODEX_FAIL_REASON"')
+                self.assertEqual(rc, 0, err)
+                self.assertIn('could not establish app-server process ownership', out)
+                self.assertLess(elapsed, 7)
 
     def test_nonresponsive_server_keeps_timeout_allowance(self):
         for shell in SHELLS:
@@ -157,7 +221,8 @@ class QuotaWaits(unittest.TestCase):
                 rc, out, err, _ = self.run_private(
                     shell, 'kill() { echo called; }; '
                     'for pid in 0 -1 invalid "$$"; do '
-                    'codex_stop_server "$pid" && exit 91; done; echo guarded')
+                    'codex_stop_server "$pid" "$TMP" && exit 91; done; '
+                    '[[ ! -e "$TMP/stop" ]] || exit 92; echo guarded')
                 self.assertEqual(rc, 0, err)
                 self.assertEqual(out.strip(), 'guarded')
 

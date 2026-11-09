@@ -1722,30 +1722,95 @@ codex_email_for() { # <profile_dir>
 # rather than the whole bound.
 CODEX_RESULT_FILE=""
 CODEX_FAIL_REASON=""
-# A finite fine-grained reap keeps the healthy path fast without shortening the
-# one-second TERM grace or four-second polling allowance. The elapsed guard has
-# one clock quantum of slack; the finite tick fuse also bounds a frozen clock.
-codex_stop_server() { # pid; never wait on a process not confirmed gone
-  local pid="$1" ticks=0 killed=0 started="${SECONDS:-}" last now
-  [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" ]] || return 1
-  kill "$pid" 2>/dev/null || true
-  if [[ ! "$started" =~ ^[0-9]{1,10}$ ]]; then kill -9 "$pid" 2>/dev/null || true; return 0; fi
+# The background supervisor leads an isolated group for the entire read.
+# Verify that isolation before starting the provider. Cleanup runs in that
+# still-live group, so it never relies on a dead or recycled server PID.
+codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, output, response ticks
+  local control="$1" parent_group="$2" dir="$3" bin="$4" fifo="$5" out="$6" max_ticks="$7"
+  local group expected="" member snap ticks=0 started last now
+  # Disable monitor mode *inside* the new group so subsequent children inherit it.
+  set +m
+  group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  while [[ ! -s "$control/launch" && ! -e "$control/stop" && -d "$control" ]]; do
+    (( ticks < 40 )) || return 1
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  IFS= read -r expected < "$control/launch" || return 1
+  [[ ! -e "$control/stop" ]] || return 1
+  if [[ ! "$group" =~ ^[1-9][0-9]*$ || "$group" != "$expected" || "$group" == "$parent_group" ]]; then
+    : > "$control/unowned"
+    return 1
+  fi
+  started="${SECONDS:-}"
+  [[ "$started" =~ ^[0-9]{1,10}$ ]] || return 1
+  last="$started"
+  CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
+  member=$!
+  # Install the ignore only after the provider has inherited its normal
+  # disposition. This process keeps the group identity live through escalation.
+  trap '' TERM
+  ticks=0
+  while [[ ! -e "$control/stop" && -d "$control" ]]; do
+    if [[ ! -e "$control/exited" ]] && ! kill -0 "$member" 2>/dev/null; then
+      : > "$control/exited" || break
+    fi
+    now="${SECONDS:-}"
+    [[ "$now" =~ ^[0-9]{1,10}$ ]] || break
+    (( 10#$now >= 10#$last && 10#$now - 10#$started < CODEX_TIMEOUT + 3 )) || break
+    # Leave two seconds of slack for the caller's start and polling loop.
+    (( ticks < max_ticks || ticks - max_ticks < 40 )) || break
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  kill -s TERM 0 2>/dev/null || true
+  ticks=0; started="${SECONDS:-}"; last="$started"
+  while [[ "$started" =~ ^[0-9]{1,10}$ && -d "$control" ]]; do
+    # Collect first, then filter. The ps child is in our group too; exclude
+    # its known launch PID as well as the supervisor. Zombies need no signal.
+    ps -axo pid=,pgid=,stat= > "$control/members" &
+    snap=$!
+    while kill -0 "$snap" 2>/dev/null; do
+      now="${SECONDS:-}"
+      [[ "$now" =~ ^[0-9]{1,10}$ ]] || break 2
+      (( 10#$now >= 10#$last && ticks < 20 && 10#$now - 10#$started < 2 )) || break 2
+      last="$now"
+      if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+      else sleep 1; ticks=$((ticks + 20)); fi
+    done
+    wait "$snap" 2>/dev/null || break
+    awk -v g="$group" -v p="$snap" '
+      $2 == g && $1 != g && $1 != p && $3 !~ /^Z/ { live=1 }
+      END { exit !live }
+    ' "$control/members" || break
+    now="${SECONDS:-}"
+    [[ "$now" =~ ^[0-9]{1,10}$ ]] || break
+    (( 10#$now >= 10#$last && ticks < 20 && 10#$now - 10#$started < 2 )) || break
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  # Still inside the verified group. A final signal closes the snapshot race
+  # even if a remaining member forked while the process list was being read.
+  kill -s KILL 0
+}
+
+codex_stop_server() { # owned supervisor PID, private control dir
+  local pid="$1" control="${2:-}" ticks=0 started="${SECONDS:-}" last now
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" && -d "$control" ]] || return 1
+  : > "$control/stop" || return 1
   last="$started"
   while kill -0 "$pid" 2>/dev/null; do
     now="${SECONDS:-}"
-    if [[ ! "$now" =~ ^[0-9]{1,10}$ ]] || (( 10#$now < 10#$last )); then
-      kill -9 "$pid" 2>/dev/null || true
-      return 0
+    # The supervisor has its own finite fuse; a broken caller clock still
+    # permits a bounded wait by tick count.
+    if [[ "$started" =~ ^[0-9]{1,10}$ && "$now" =~ ^[0-9]{1,10}$ &&
+          "$last" =~ ^[0-9]{1,10}$ ]] && (( 10#$now >= 10#$last && 10#$now - 10#$started >= 5 )); then
+      return 1
     fi
+    (( ticks < 80 )) || return 1
     last="$now"
-    if (( ticks >= 80 || 10#$now - 10#$started >= 5 )); then
-      kill -9 "$pid" 2>/dev/null || true
-      return 0
-    fi
-    if (( killed == 0 && (ticks >= 20 || 10#$now - 10#$started >= 2) )); then
-      kill -9 "$pid" 2>/dev/null || true
-      killed=1
-    fi
     if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
     else sleep 1; ticks=$((ticks + 20)); fi
   done
@@ -1755,7 +1820,7 @@ codex_stop_server() { # pid; never wait on a process not confirmed gone
 codex_app_server_read() { # <profile_dir> <codex_bin>
   local dir="$1" bin="$2"
   local fifo="$TMP/codex.fifo" out="$TMP/codex.out" poll_ticks=0 srv=0
-  local started="${SECONDS:-}" last now max_ticks
+  local started="${SECONDS:-}" last now max_ticks control parent_group monitor="$-"
   # JSON permits whitespace on BOTH sides of the name separator, so a server
   # that writes `"id" : 2` is as valid as the compact `"id":2` we send. Matching
   # only the compact form makes a healthy account look like a timeout and sends
@@ -1783,16 +1848,35 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
     return 1
   fi
   : > "$out"
+  parent_group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  if [[ ! "$parent_group" =~ ^[1-9][0-9]*$ ]] ||
+     ! control="$(mktemp -d "$TMP/codex-control.XXXXXX")"; then
+    CODEX_FAIL_REASON="could not establish app-server process ownership"
+    rm -f "$fifo"
+    return 1
+  fi
 
   # The server's read-open of the FIFO blocks until a writer appears; it is
   # the BACKGROUND process that waits, so the parent reaches the open below
   # and releases it. Opening read-write (`<>`) here is what makes that open
   # unable to block in turn, even when the server died on startup.
-  CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
-  srv=$!
+  # The monitor setting is scoped to this launch and restored before the read.
+  {
+    set -m 2>/dev/null || true
+    codex_supervise_server "$control" "$parent_group" "$dir" "$bin" "$fifo" "$out" "$max_ticks" >/dev/null &
+    srv=$!
+    [[ "$monitor" == *m* ]] || set +m
+  } 2>/dev/null
+  if ! printf '%s\n' "$srv" > "$control/launch"; then
+    CODEX_FAIL_REASON="could not bind app-server process ownership"
+    codex_stop_server "$srv" "$control" || true
+    rm -f "$fifo"
+    return 1
+  fi
   if ! exec 3<> "$fifo"; then
     CODEX_FAIL_REASON="could not open the app-server pipe"
-    codex_stop_server "$srv"
+    codex_stop_server "$srv" "$control" || true
+    rm -f "$fifo"
     return 1
   fi
   printf '%s\n' \
@@ -1806,7 +1890,7 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   # finite tick budget remains effective if SECONDS stops advancing.
   while (( poll_ticks < max_ticks )); do
     if grep -q "$id2_re" "$out" 2>/dev/null; then break; fi
-    if ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
+    if [[ -e "$control/exited" ]] || ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
     now="${SECONDS:-}"
     if [[ ! "$now" =~ ^[0-9]{1,10}$ ]] || (( 10#$now < 10#$last )); then
       CODEX_FAIL_REASON="app-server response clock unavailable or moved backwards"
@@ -1819,7 +1903,17 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   done
 
   exec 3>&-
-  codex_stop_server "$srv"
+  if codex_stop_server "$srv" "$control" 2>/dev/null; then
+    if [[ -e "$control/unowned" ]]; then
+      CODEX_FAIL_REASON="could not establish app-server process ownership"
+      exited_early=0
+    fi
+    rm -f "$control/launch" "$control/stop" "$control/exited" "$control/members" "$control/unowned"
+    rmdir "$control" 2>/dev/null || true
+  else
+    warn "app-server supervisor did not stop within its cleanup budget"
+  fi
+  rm -f "$fifo"
 
   if grep -q "$id2_re" "$out" 2>/dev/null; then
     CODEX_FAIL_REASON=""
