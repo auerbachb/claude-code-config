@@ -184,6 +184,11 @@ run_bounded() { # bound_secs, command...
     fi
     if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( elapsed >= bound )); then
       killed=1
+      # Bash 3.2 can print its async termination notice at the next command,
+      # outside kill/wait redirections. Contain only the termination/grace
+      # block; child stderr remains in CAPTURE_ERR and wait retains status.
+      # Do not disown: it discards the status and can turn failure into success.
+      {
       kill_child TERM "$pid"
       # Polled grace so a child that dies at once does not hold the wrapper
       # past the bound it was just held to.
@@ -192,6 +197,7 @@ run_bounded() { # bound_secs, command...
         sleep 1
       done
       kill_child KILL "$pid"
+      } 2>/dev/null
       break
     fi
     # Sub-second polling keeps the healthy path (a few milliseconds) fast; these
