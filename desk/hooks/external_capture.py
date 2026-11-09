@@ -29,12 +29,31 @@ class Invalid(ValueError):
     pass
 
 
-def text(value, limit):
+def symbol_joiner(value, index):
+    # Recognize a joiner between symbols (including the previous symbol's
+    # optional variation selector and skin tone). A joiner inside plain
+    # text could hide a credential pattern or change an identifier.
+    left = index - 1
+    if left >= 0 and "\U0001f3fb" <= value[left] <= "\U0001f3ff":
+        left -= 1
+    if left >= 0 and value[left] == "\ufe0f":
+        left -= 1
+    return (left >= 0 and index + 1 < len(value)
+            and unicodedata.category(value[left]) == "So"
+            and unicodedata.category(value[index + 1]) == "So")
+
+
+def text(value, limit, *, display=False):
     if (not isinstance(value, str) or not 0 < len(value) <= limit
             or value != value.strip()
-            or any(unicodedata.category(ch).startswith("C") or ch in "\u2028\u2029" for ch in value)):
+            or any(ch in "\u2028\u2029" or
+                   (unicodedata.category(ch).startswith("C")
+                    and not (display and ch == "\u200d" and symbol_joiner(value, i)))
+                   for i, ch in enumerate(value))):
         raise Invalid("a Decision field is not a bounded single line")
-    return value
+    # The store refuses format controls. Keep the visible symbols as
+    # separate emoji rather than rejecting the entire Decision.
+    return value.replace("\u200d", "") if display else value
 
 
 def unique_object(pairs):
@@ -61,16 +80,18 @@ def decision_block(message):
     item = json.loads(raw, object_pairs_hook=unique_object)
     if not isinstance(item, dict) or set(item) - {"question", "options", "default", "context"}:
         raise Invalid("the Decision block contains an unknown field")
-    question = text(item.get("question"), 500)
+    question = text(item.get("question"), 500, display=True)
     context = item.get("context", [])
     options = item.get("options", [])
     if not isinstance(context, list) or len(context) > 3:
         raise Invalid("the Decision needs at most three context lines")
     if not isinstance(options, list) or not 2 <= len(options) <= 4:
         raise Invalid("the Decision needs two to four options")
-    context = [text(line, 600) for line in context]
-    options = [text(option, 500) for option in options]
+    context = [text(line, 600, display=True) for line in context]
+    options = [text(option, 500, display=True) for option in options]
     default = item.get("default")
+    if default is not None:
+        default = text(default, 500, display=True)
     if (sum(map(len, context)) > 600 or len(set(options)) != len(options)
             or (default is not None and default not in options)):
         raise Invalid("the Decision context, options or default is invalid")

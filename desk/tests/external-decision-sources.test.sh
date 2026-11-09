@@ -118,4 +118,20 @@ mv "$tmp/ambiguous-registry" "$AI_QUOTAS_CONFIG"
 jq '.generation_id="generation-2"' "$tmp/cursor.json" | adapter cursor
 check "ambiguous account evidence stays unknown and has no return session" \
   "$("$HQ_T_CLI" get D-5 --json | jq -r '[.source_account,.session_id]|join(":")')" 'unknown:'
+cat > "$tmp/joined-emoji" <<'BLOCK'
+```desk-decision
+{"question":"Ship 👩🏽‍💻?","options":["👩🏽‍💻 Ship","Wait"],"default":"👩🏽‍💻 Ship"}
+```
+BLOCK
+check "joined emoji do not prevent Decision capture" \
+  "$(adapter import --repo owner/repo --key issue-1762 < "$tmp/joined-emoji")" D-6
+check "the stored question, option and default keep visible symbols" \
+  "$("$HQ_T_CLI" get D-6 --json | jq -c '[.question,.options[0],.default_option]')" \
+  '["Ship 👩🏽💻?","👩🏽💻 Ship","👩🏽💻 Ship"]'
+sed 's/Ship the fixture?/s\\u200dk-token/' "$tmp/decision" > "$tmp/joiner-in-text"
+rc=0; adapter import --repo owner/repo --key issue-1762 < "$tmp/joiner-in-text" \
+  > "$tmp/joiner-out" 2> "$tmp/joiner-err" || rc=$?
+check "a joiner in ordinary text still refuses the Decision" "$rc" 5
+check "refusal does not store a seventh Decision" \
+  "$("$HQ_T_CLI" list --kind decision --json | jq length)" 6
 hq_t_finish "external-decision-sources.test.sh"
