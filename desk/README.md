@@ -6,6 +6,8 @@ its reasoning are in [`DESIGN.md`](DESIGN.md); this file is the operating
 contract for the code. Everything for the queue lives in this folder so it can
 be spun out as its own project later.
 
+Quick links: [Setup](#provisioning-the-database-once) · [CLI](#items) · [Capture hook](#capture-hook) · [Tests](#tests).
+
 ## Layout
 
 | Path | What it holds |
