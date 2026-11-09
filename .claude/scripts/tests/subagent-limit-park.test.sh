@@ -59,7 +59,11 @@ STUB_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_HOME" "$STUB_DIR"; }
 trap cleanup EXIT
 export HOME="$TMP_HOME"
-mkdir -p "$HOME/.claude"
+mkdir -p "$HOME/.claude/scripts"
+# Fixtures install the same trusted helper locations as production.
+ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$HOME/.claude/scripts/park-retire.sh"
 STATE_FILE="$HOME/.claude/session-state.json"
 BREADCRUMB="$HOME/.claude/usage-limit-last.json"
 REPO_KEY="auerbachb/claude-code-config"
@@ -368,7 +372,8 @@ echo "== Pipeline records: /go-on resumes the phase, not the pipeline (AC 7) =="
 # ---------------------------------------------------------------------------
 
 seed_unparked
-run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
 OUT=$(PR_NUM=1616 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
       PARK_REMAINING='["poll for CR review"]' PARKED_UNTIL="$PARK_UNTIL_FIX" \
       bash -c "$BLOCK_PIPELINE" 2>/dev/null | tail -1)
@@ -425,39 +430,30 @@ check_true "  one line naming the manual resume" \
 # Publication: one CAS from null, so a wake armed inside the shutdown window
 # supersedes ours instead of being overwritten.
 seed_unparked
-run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
 OUT=$(LIMIT_MONITOR_TASK_ID='"task-mine"' WAKE_GENERATION="limit-mine" \
-      bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+      PARK_GENERATION="${OWN_PARK_GENERATION:-}" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
 check_eq "wake identity published"        "WAKE_PUBLISH=ok" "$OUT"
 check_eq "  task id recorded"             "task-mine"       "$(day_get limit_resume_task_id)"
 check_eq "  generation recorded with it"  "limit-mine"      "$(day_get limit_resume_generation)"
 OUT=$(LIMIT_MONITOR_TASK_ID='"task-second"' WAKE_GENERATION="limit-second" \
-      bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+      PARK_GENERATION="${OWN_PARK_GENERATION:-}" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
 check_eq "a second wake is superseded, never registered" "WAKE_PUBLISH=superseded" "$OUT"
 check_eq "  the first wake still owns the slot"          "task-mine" "$(day_get limit_resume_task_id)"
 
-# The documented failure release: clearing `parked_until` alone would leave
-# `limit_cause` standing, and since that is the field every parker compares
-# against null, no future park — this thread's, day mode's, or a sibling's —
-# could ever win the compare again. Assert the documented shape releases the
-# claim and that a park owned by someone else survives the same release.
+# Publication uncertainty is fail-closed; no reusable cause may authorize cleanup.
 seed_unparked
-run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
-release_claim() {
-  "$SESSION_STATE_SH" \
-    --cas ".repos[\"$REPO_KEY\"].day.limit_cause=null" --expect '"reactive"' \
-    --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" >/dev/null 2>&1
-}
-release_claim
-check_eq "publish failure releases the cause, not just parked_until" "null" "$(day_get limit_cause)"
-check_eq "  and the park is fully retired"                           "null" "$(day_get parked_until)"
-OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window | tail -1)
-check_eq "  so a later park can still claim the slot" "PARK_CLAIM=won" "$OUT"
-seed_existing_park preemptive "2026-12-01T10:00:00Z" '"task-daymode"'
-release_claim
-check_eq "the release never clears someone else's park" "preemptive" "$(day_get limit_cause)"
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
+BEFORE_PUBLISH_FAILURE=$(cat "$STATE_FILE")
+printf '%s\n' '#!/bin/sh' 'exit 6' > "$STUB_DIR/failed-state"
+chmod +x "$STUB_DIR/failed-state"
+OUT=$(SESSION_STATE_SH="$STUB_DIR/failed-state" LIMIT_MONITOR_TASK_ID='"task-own"' \
+  WAKE_GENERATION=limit-own PARK_GENERATION="$OWN_PARK_GENERATION" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+check_eq "publication failure is reported" 'WAKE_PUBLISH=error rc=5' "$OUT"
+check_eq "publication uncertainty does not clear a park" "$BEFORE_PUBLISH_FAILURE" "$(cat "$STATE_FILE")"
+require_text "publication failure requires manual recovery" "$DOC" 'leave the park record standing'
 
 # ---------------------------------------------------------------------------
 echo "== #1622: /pm 2D.6 landing between this park's claim and its wake publish =="
@@ -477,8 +473,10 @@ run_pm_2d6() {  # run_pm_2d6 <parked_until> <limit_kind> [new_hits]
 PM_2D6_UNTIL="2026-12-01T10:00:00Z"   # deliberately NOT $PARK_UNTIL_FIX
 
 seed_unparked
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
 check_eq "the thread's §2 claim wins first" "PARK_CLAIM=won" \
-  "$(run_claim "$PARK_UNTIL_FIX" rolling_window | tail -1)"
+  "$(printf '%s\n' "$CLAIM_OUT" | tail -1)"
 check_eq "  and §4 has not published a wake yet" "null" "$(day_get limit_resume_task_id)"
 BEFORE_2D6=$(cat "$STATE_FILE")
 check_eq "2D.6 landing inside that window adopts" "PARK_CLAIM=adopted" \
@@ -492,7 +490,7 @@ check_eq "  a lost 2D.6 claim writes nothing at all" "$BEFORE_2D6" "$(cat "$STAT
 # Now the §2 winner reaches §4. Exactly one wake may exist over this one park,
 # and it must be the owner's — the outcome #1428 / #1445 / #1622 exist for.
 OUT=$(LIMIT_MONITOR_TASK_ID='"task-owner"' WAKE_GENERATION="limit-owner" \
-      bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+      PARK_GENERATION="${OWN_PARK_GENERATION:-}" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
 check_eq "the §2 winner publishes its wake"      "WAKE_PUBLISH=ok" "$OUT"
 check_eq "  exactly one wake over one park"      "task-owner"      "$(day_get limit_resume_task_id)"
 check_eq "  and the generation is the owner's"   "limit-owner"     "$(day_get limit_resume_generation)"
@@ -531,9 +529,10 @@ run_gen() { CALLER_GENERATION="$1" bash -c "$BLOCK_GEN" 2>/dev/null | tail -1; }
 # park record holds, so it seeds its own rather than inheriting whatever the
 # previous section happened to leave behind.
 seed_unparked
-run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
 LIMIT_MONITOR_TASK_ID='"task-mine"' WAKE_GENERATION="limit-mine" \
-  bash -c "$BLOCK_PUBLISH" >/dev/null 2>&1
+  PARK_GENERATION="${OWN_PARK_GENERATION:-}" bash -c "$BLOCK_PUBLISH" >/dev/null 2>&1
 
 check_eq "matching generation is valid"   "GENERATION_VERDICT=valid" "$(run_gen limit-mine)"
 check_eq "mismatched generation is stale" "GENERATION_VERDICT=stale" "$(run_gen limit-other)"
@@ -589,7 +588,8 @@ echo "== /go-on probe F: finds the parked pipelines and their phases (AC 7) =="
 run_probe() { bash -c "$BLOCK_PROBE" 2>/dev/null; }
 
 seed_unparked
-run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
 PR_NUM=1616 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
   PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" bash -c "$BLOCK_PIPELINE" >/dev/null 2>&1
 OUT=$(run_probe)
@@ -628,7 +628,8 @@ check_eq "unparked board: probe F absent" "absent" "$(field "$(run_probe)" PARK_
 # .prs scan on parked_until made that next pass blind — the orphaned record was
 # unreachable by every later /go-on and the promised retry could never happen.
 seed_unparked
-run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
+CLAIM_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+OWN_PARK_GENERATION=$(field "$CLAIM_OUT" PARK_GENERATION)
 PR_NUM=1616 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
   PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" bash -c "$BLOCK_PIPELINE" >/dev/null 2>&1
 # Step 5's retirement: the park fields go, the per-PR record stays.
@@ -700,6 +701,86 @@ run_recovery() { "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1; }
 
 seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" '"task-dead"'
 check_eq "unexpired rolling-window park re-arms" "PARK_RECOVERY=rearm" "$(run_recovery)"
+
+# Carry the actual recovery output into a distinct publication process. The
+# test proof is synthetic; no TaskStop or Monitor is invoked by this suite.
+recovery_day_path=".repos[\"$REPO_KEY\"].day"
+run_recovered_publish() {
+  PARK_RECOVERY_BINDING="$1" PARK_RECOVERY_DEAD_TASK_JSON="${2:-null}" \
+    PARK_RECOVERY_DEAD_GENERATION="${3:-}" WAKE_GENERATION="${4:-limit-recovered}" \
+    LIMIT_MONITOR_TASK_ID=9 "${BASH:-bash}" -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1
+}
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 7
+"$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-A\"" >/dev/null
+RECOVERY_BINDING=$(field "$("${BASH:-bash}" -c "$BLOCK_RECOVERY")" PARK_RECOVERY_BINDING)
+check_eq "recovery carries typed original wake and repository key" "${REPO_KEY}|recovery-A|7|limit-existing" \
+  "$(printf '%s\n' "$RECOVERY_BINDING" | jq -r '[.repo_key,.park_generation,(.limit_resume_task_id | tojson),.limit_resume_generation] | join("|")')"
+check_true "binding does not expose unrelated day metadata" \
+  "$(printf '%s\n' "$RECOVERY_BINDING" | jq -e 'has("active") | not' >/dev/null && echo true || echo false)"
+RECOVERY_BEFORE=$(cat "$STATE_FILE")
+check_eq "occupied recovery without confirmed stop refuses" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING")"
+check_eq "numeric and string old task proofs do not match" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" '"7"' limit-existing)"
+check_eq "recovery refuses reuse of the previous wake generation" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing limit-existing)"
+FOREIGN_BINDING=$(printf '%s\n' "$RECOVERY_BINDING" | jq -c '.repo_key="fixture/other"')
+check_eq "a binding from a different repository is refused" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$FOREIGN_BINDING" 7 limit-existing)"
+check_eq "failed proof checks leave the original state untouched" "$RECOVERY_BEFORE" "$(cat "$STATE_FILE")"
+RECOVERY_LATER=$(epoch_to_iso $(( NOW + 1900 )))
+"$SESSION_STATE_SH" --set "$recovery_day_path.parked_until=\"$RECOVERY_LATER\"" >/dev/null
+RECOVERY_REVISED=$(cat "$STATE_FILE")
+check_eq "same-owner bound revision reports a failed recovery, not supersession" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the same-owner revision is left untouched" "$RECOVERY_REVISED" "$(cat "$STATE_FILE")"
+printf '%s\n' "$RECOVERY_BEFORE" > "$STATE_FILE"
+check_eq "confirmed dead wake can be replaced with a fresh pair" 'WAKE_PUBLISH=ok' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the replacement publishes its task and fresh generation together" '9|limit-recovered' \
+  "$(day_get limit_resume_task_id)|$(day_get limit_resume_generation)"
+check_eq "recovery retains park identity and unrelated metadata" 'recovery-A|1|true' \
+  "$(day_get park_generation)|$(day_get consecutive_limit_hits)|$(day_get active)"
+RECOVERY_AFTER=$(cat "$STATE_FILE")
+check_eq "an old proof cannot replace a newer wake on the same park" 'WAKE_PUBLISH=superseded' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the newer wake stays byte-for-byte intact" "$RECOVERY_AFTER" "$(cat "$STATE_FILE")"
+
+# Same deadline and cause are deliberately reused, just as in the real race.
+"$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-B\"" \
+  --set "$recovery_day_path.limit_resume_task_id=8" \
+  --set "$recovery_day_path.limit_resume_generation=\"limit-replacement\"" >/dev/null
+RECOVERY_AFTER=$(cat "$STATE_FILE")
+check_eq "a replaced park cannot be overwritten by its old re-arm" 'WAKE_PUBLISH=superseded' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the replacement park and wake pair remain untouched" "$RECOVERY_AFTER" "$(cat "$STATE_FILE")"
+
+# Legacy empty-slot recovery still works, with explicit null identity fields.
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" null
+"$SESSION_STATE_SH" --set "$recovery_day_path.limit_resume_generation=null" >/dev/null
+RECOVERY_BINDING=$(field "$("${BASH:-bash}" -c "$BLOCK_RECOVERY")" PARK_RECOVERY_BINDING)
+check_eq "legacy recovery retains explicit absence" 'null|null|null' \
+  "$(printf '%s\n' "$RECOVERY_BINDING" | jq -r '[.park_generation,.limit_resume_task_id,.limit_resume_generation] | map(tojson) | join("|")')"
+check_eq "legacy empty wake slot can be armed without dead proof" 'WAKE_PUBLISH=ok' \
+  "$(run_recovered_publish "$RECOVERY_BINDING")"
+jq --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_task_id=true' "$STATE_FILE" \
+  > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
+check_eq "malformed stored task ID emits no recovery binding" 'PARK_RECOVERY=unreadable' "$RECOVERY_OUT"
+jq --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_task_id=9007199254740992' "$STATE_FILE" \
+  > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
+check_eq "unsafe numeric task ID emits no recovery binding" 'PARK_RECOVERY=unreadable' "$RECOVERY_OUT"
+
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 0
+"$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-probe\"" \
+  --set "$recovery_day_path.limit_probe_fires_remaining=7" >/dev/null
+RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
+check_eq "probe recovery carries its existing bound" 'rearm_probe fires=7' "$(field "$RECOVERY_OUT" PARK_RECOVERY)"
+check_eq "probe recovery accepts exact numeric zero proof" 'WAKE_PUBLISH=ok' \
+  "$(run_recovered_publish "$(field "$RECOVERY_OUT" PARK_RECOVERY_BINDING)" 0 limit-existing)"
+check_eq "probe recovery does not refresh its bound" 'preemptive|7|9|limit-recovered' \
+  "$(day_get limit_cause)|$(day_get limit_probe_fires_remaining)|$(day_get limit_resume_task_id)|$(day_get limit_resume_generation)"
 
 seed_existing_park reactive "$(epoch_to_iso $(( NOW - 1800 )))" '"task-dead"'
 check_eq "an expired park resumes instead"       "PARK_RECOVERY=expired" "$(run_recovery)"
@@ -797,7 +878,7 @@ check_eq "ordinary empty-string metadata is preserved" '|0' \
 VALID_PARK=$(jq -cn --arg until "$(epoch_to_iso $(( $(date -u +%s) + 3600 )))" \
   '{parked_until:$until,limit_kind:"rolling_window",limit_cause:"reactive",
     limit_probe_fires_remaining:null,park_claim_token:null,limit_resume_generation:"limit-fixture"}')
-for critical_field in parked_until limit_kind limit_cause park_claim_token limit_resume_generation; do
+for critical_field in parked_until limit_kind limit_cause park_claim_token park_generation limit_resume_generation; do
   for invalid in '"null"' '""' false 0 '[]' '{}'; do
     printf '%s\n' "$VALID_PARK" | jq --arg field "$critical_field" --argjson invalid "$invalid" \
       '.[$field]=$invalid' >"$SNAPSHOT_PAYLOAD"
@@ -1302,7 +1383,7 @@ check_eq "  and no second bound was written" "null" "$(day_get limit_probe_fires
 # mutual-exclusion point, so an adopted park cannot register a wake even if the
 # thread wrongly reached §4.
 OUT=$(LIMIT_MONITOR_TASK_ID='"task-second"' WAKE_GENERATION="probe-second" \
-      bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+      PARK_GENERATION="${OWN_PARK_GENERATION:-}" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
 check_eq "  a second wake is superseded at publish" "WAKE_PUBLISH=superseded" "$OUT"
 check_eq "  the day-mode wake still owns the slot"  "task-daymode" "$(day_get limit_resume_task_id)"
 # Day mode claims `parked_until` first (2D.7 Step 1) and only takes

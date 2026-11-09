@@ -1011,7 +1011,7 @@ read_day() {  # read_day <field> -> DAY_VALUE, DAY_RC, from this snapshot only
         elif $value < -1 or $value > 9007199254740991 or ($value | floor) != $value
         then error("probe counter must be an exact integer") else $value end
       elif $field == "limit_kind" or $field == "limit_cause"
-           or $field == "park_claim_token" or $field == "limit_resume_generation" then
+           or $field == "park_claim_token" or $field == "park_generation" or $field == "limit_resume_generation" then
         if ($value | type) == "string" and ($value | length) > 0 and $value != "null"
         then $value else error("invalid nullable park identifier") end
       else $value end' 2>/dev/null) || { DAY_RC=4; DAY_VALUE=null; }
@@ -1028,10 +1028,12 @@ read_day limit_kind; PARK_LIMIT_KIND="$DAY_VALUE"; LIMIT_KIND_RC="$DAY_RC"
 read_day limit_cause; PARK_LIMIT_CAUSE="$DAY_VALUE"; LIMIT_CAUSE_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_LIMIT_FIRES="$DAY_VALUE"; LIMIT_FIRES_RC="$DAY_RC"
 read_day park_claim_token; PARK_CLAIM_TOKEN="$DAY_VALUE"; CLAIM_TOKEN_RC="$DAY_RC"
+read_day park_generation; PARK_GENERATION_RC="$DAY_RC"
+PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; PARK_RESUME_GENERATION="$DAY_VALUE"; RESUME_GENERATION_RC="$DAY_RC"
 ```
 
-Validate nullable timestamp/counter/identifier types before raw rendering; actual JSON null alone is absence. The string "null", wrong types and invalid timestamps are unreadable, so stop before normal arming. Apply 3.4's exit-code table to every field derived from this snapshot: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry `6` (a lock timeout; `handoff-files.md`) once at the snapshot boundary, then fail closed; other errors fail closed immediately: report the read failure and stop before normal arming. Do not treat an unreadable `parked_until` as "no park pending" — a lock timeout or parse failure can hide an active park, allowing Steps 1 and 2 to dispatch while the account limit is still active. If `PARKED_UNTIL` is non-null, non-JSON-`"null"`, and in the future (`date -u -d "$PARKED_UNTIL" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" '+%s'` is greater than `$(date -u +%s)` — **`-u` on the BSD fallback too**: without it macOS parses the `Z` timestamp as local time, so an ET machine reads every park as four hours longer than it is): the session restarted while a park was active. Only re-arm the limit-wake Monitor if `PARK_LIMIT_KIND == "rolling_window"` — weekly parks cannot be auto-woken because no in-session Monitor can outlast days. If limit_kind is readable and not "rolling_window" (or is readable and non-"rolling_window"), do not re-arm; print one line (`Session restarted during weekly-cap park; manual resume required when window reopens`) and stop. If limit_kind is unreadable (LIMIT_KIND_RC non-zero and non-3), fail closed: do not re-arm and print one line naming the read failure. For a confirmed rolling_window park: re-arm the limit-wake Monitor and say so in one line, then **stop without running Steps 1 and 2** — but **resolve which wake first**, across this paragraph's reads *and* the `park_claim_token` branch in the next one, and arm nothing until that selection has resolved. **Which wake** depends on how the park was recorded — use the snapshotted `PARK_LIMIT_CAUSE`, `PARK_LIMIT_FIRES`, and `PARK_CLAIM_TOKEN` (next paragraph, #1596), with the same exit-code table (`0` value, `3` no state file, anything else unreadable → fail closed and re-arm nothing): a null/absent `limit_probe_fires_remaining` re-arms 2D.6's sleep-until-reset one-shot using the remaining time from now to `PARKED_UNTIL` (`Session restarted during usage-window park; resuming automatically at {PARKED_UNTIL}`); a `limit_cause == "preemptive"` park with a positive integer fires-remaining re-arms 2D.7's probe Monitor **with that count**, not a fresh bound (`Session restarted during pre-emptive park; probing every {N}m, {F} checks left`). Zero fires left means the bound was already spent — stay parked, manual resume, no re-arm. **`-1` is the third value** (#1445): the park stands but no probe bound is in force and no reset time is known — a claim whose record never completed, or a wake `/pause` / `/pause-resume` deliberately stopped. Handle it exactly as zero — stay parked, re-arm nothing, one line (`Day loop parked (no usable wake bound) — resume manually with /pause-resume`) — never as the null branch above, since re-arming a sleep-until-reset one-shot against a fabricated deadline is precisely the misread `-1` exists to end. Otherwise the board is parked and will resume when the wake fires.
+Validate nullable timestamp/counter/identifier types before raw rendering; actual JSON null alone is absence. The string "null", wrong types and invalid timestamps are unreadable, so stop before normal arming. Apply 3.4's exit-code table to every field derived from this snapshot, including `PARK_GENERATION_RC` (an unreadable generation stops recovery): `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry `6` (a lock timeout; `handoff-files.md`) once at the snapshot boundary, then fail closed; other errors fail closed immediately: report the read failure and stop before normal arming. Do not treat an unreadable `parked_until` as "no park pending" — a lock timeout or parse failure can hide an active park, allowing Steps 1 and 2 to dispatch while the account limit is still active. If `PARKED_UNTIL` is non-null, non-JSON-`"null"`, and in the future (`date -u -d "$PARKED_UNTIL" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" '+%s'` is greater than `$(date -u +%s)` — **`-u` on the BSD fallback too**: without it macOS parses the `Z` timestamp as local time, so an ET machine reads every park as four hours longer than it is): the session restarted while a park was active. Only re-arm the limit-wake Monitor if `PARK_LIMIT_KIND == "rolling_window"` — weekly parks cannot be auto-woken because no in-session Monitor can outlast days. If limit_kind is readable and not "rolling_window" (or is readable and non-"rolling_window"), do not re-arm; print one line (`Session restarted during weekly-cap park; manual resume required when window reopens`) and stop. If limit_kind is unreadable (LIMIT_KIND_RC non-zero and non-3), fail closed: do not re-arm and print one line naming the read failure. For a confirmed rolling_window park: re-arm the limit-wake Monitor and say so in one line, then **stop without running Steps 1 and 2** — but **resolve which wake first**, across this paragraph's reads *and* the `park_claim_token` branch in the next one, and arm nothing until that selection has resolved. **Which wake** depends on how the park was recorded — use the snapshotted `PARK_LIMIT_CAUSE`, `PARK_LIMIT_FIRES`, and `PARK_CLAIM_TOKEN` (next paragraph, #1596), with the same exit-code table (`0` value, `3` no state file, anything else unreadable → fail closed and re-arm nothing): a null/absent `limit_probe_fires_remaining` re-arms 2D.6's sleep-until-reset one-shot using the remaining time from now to `PARKED_UNTIL` (`Session restarted during usage-window park; resuming automatically at {PARKED_UNTIL}`); a `limit_cause == "preemptive"` park with a positive integer fires-remaining re-arms 2D.7's probe Monitor **with that count**, not a fresh bound (`Session restarted during pre-emptive park; probing every {N}m, {F} checks left`). Zero fires left means the bound was already spent — stay parked, manual resume, no re-arm. **`-1` is the third value** (#1445): the park stands but no probe bound is in force and no reset time is known — a claim whose record never completed, or a wake `/pause` / `/pause-resume` deliberately stopped. Handle it exactly as zero — stay parked, re-arm nothing, one line (`Day loop parked (no usable wake bound) — resume manually with /pause-resume`) — never as the null branch above, since re-arming a sleep-until-reset one-shot against a fabricated deadline is precisely the misread `-1` exists to end. Otherwise the board is parked and will resume when the wake fires.
 
 **An in-progress claim is a state, not an anomaly — use the snapshotted `PARK_CLAIM_TOKEN` too (#1596).** Apply the same exit-code table (`0` value, `3` no state file, anything else unreadable → fail closed and re-arm nothing). A **non-null token with a null `limit_cause`** is 2D.7 Step 1's claim caught mid-assembly: the session died inside the landing window, so `parked_until` and the kind are durable but Step 3 never ran and no wake was ever armed. Before the token that state was invisible — indistinguishable from a park whose cause had simply not been readable — and recovery could only refuse it. Now it is nameable, so recover it deliberately, from the fields Step 1 already persists: `limit_kind` is `rolling_window` by construction (Step 1 stamps it), so the weekly branch does not apply, and `limit_probe_fires_remaining` says which wake the claim was going to arm — `null` means the reset time was known, so re-arm 2D.6's sleep-until-reset one-shot with the remaining time to `PARKED_UNTIL` (`Session restarted during an unfinished pre-emptive park claim; resuming automatically at {PARKED_UNTIL}`); `-1` means no bound and no known reset, which takes the existing manual-resume branch below unchanged. A **non-null `limit_cause`** means the record completed and its own branch above owns the decision — ignore any leftover token there rather than treating it as a claim, since finalisation retires the token in the same write that sets the cause and only a legacy or interrupted record can carry both.
 
@@ -1091,7 +1093,7 @@ DAY_JSON=$(jq -cn \
     failure_streak:0, max_pipeline_failures:$maxfail,
     refill_halted:false, halt_reason:null, stop_requested:false,
     monitor_task_id:null, monitor_generation:null, paused_at:null,
-    parked_until:null, limit_kind:null,
+    parked_until:null, limit_kind:null, park_generation:null,
     limit_resume_task_id:null, limit_resume_generation:null,
     consecutive_limit_hits:$phits,
     goal:(if $goal == "" then null else $goal end)}')
@@ -1378,9 +1380,16 @@ MAX_LIMIT_HITS=3  # mirrors max_pipeline_failures range; not currently user-conf
 
 **Claim the park slot rather than overwriting one (#1428, #1622).** A real kill can land while 2D.7 — or a subagent-running thread (`subagent-thread-limit-park.md` §2) — has already parked the board. Every one of those paths writes these same fields, so a plain write here would replace `parked_until` and the cause and null the wake identity pair, stranding a live Monitor that nothing can name to `TaskStop`. So the reactive path does not write a park; it **claims** one, by the same compare-and-set on `limit_cause` that 2D.7 Step 3 and the subagent leg already use. `limit_cause` is null until exactly one path claims it, and the whole record rides that single compare (`--cas` composed with `--set`, #1445), so there is no window between owning the slot and finishing the metadata:
 
+The winning claim emits `PARK_GENERATION`. Carry that exact binding into wake publication; do not fetch it from a later record. Missing entropy/helper fails closed before a claim. Completed parks retain this durable identity until retirement (#1715).
+
 <!-- test-anchor: pm-day-2d6-park-claim -->
 
 ```bash
+PARK_GENERATION_SH=""
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}"; do
+  if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
+done
+PARK_GENERATION=""
 PARK_CLAIM_RC=0
 if ! [[ "${NEW_HITS:-}" =~ ^[0-9]+$ ]]; then
   # The thrash guard is only a guard if the counter is a number. An unset NEW_HITS
@@ -1388,9 +1397,11 @@ if ! [[ "${NEW_HITS:-}" =~ ^[0-9]+$ ]]; then
   # above then reads back as a reset streak — so MAX_LIMIT_HITS could never bite.
   # Same guard, same reason, as 2D.7 Step 3.
   echo "PARK_CLAIM=error rc=hits"
+elif [ -z "$PARK_GENERATION_SH" ] || ! PARK_GENERATION=$("$PARK_GENERATION_SH"); then
+  echo "PARK_CLAIM=error rc=generation"
 else
   # ONE invocation, one lock hold, all-or-nothing (#1445): the cause CAS gates the
-  # seven metadata writes riding with it, so a competing park either loses this
+  # eight metadata writes riding with it, so a competing park either loses this
   # compare (exit 7, nothing written) or already owns the record. There is no
   # interleaving that leaves half of ours mixed into half of theirs. Every --set
   # path is a SIBLING of the CAS path under `.day`; naming an ancestor of it is a
@@ -1406,11 +1417,12 @@ else
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
     --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
     --set ".repos[\"$REPO_KEY\"].day.park_claim_token=null" \
+    --set ".repos[\"$REPO_KEY\"].day.park_generation=\"$PARK_GENERATION\"" \
     --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
     --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" \
     >/dev/null 2>&1 || PARK_CLAIM_RC=$?
   case "$PARK_CLAIM_RC" in
-    0) echo "PARK_CLAIM=won" ;;
+    0) echo "PARK_GENERATION=$PARK_GENERATION"; echo "PARK_CLAIM=won" ;;
     7) echo "PARK_CLAIM=adopted" ;;   # 2D.7, or a subagent thread, parked first
     *) echo "PARK_CLAIM=error rc=$PARK_CLAIM_RC" ;;
   esac
@@ -1453,7 +1465,7 @@ Record the task ID immediately — an unrecorded Monitor cannot be stopped. The 
 ```bash
 # TaskStop is the harness tool; stop only the Monitor this invocation armed.
 WAKE_PUBLISH_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}" ".claude/scripts/park-wake-publish.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}"; do
   if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
 done
 PUBLISH_RC=4
@@ -1461,7 +1473,7 @@ if [ -n "$WAKE_PUBLISH_SH" ]; then
   PUBLISH_RC=0
   "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause reactive \
     --task-id "$LIMIT_MONITOR_TASK_ID" --generation "$LIMIT_GENERATION" \
-    --task-encoding json-or-string --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+    --park-generation "${PARK_GENERATION:-}" --task-encoding json-or-string --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
 fi
 if [ "$PUBLISH_RC" -eq 0 ]; then
   echo "WAKE_PUBLISH=armed"
@@ -1489,7 +1501,7 @@ invoked the command or estimating quota. Write `parked_until` and
 - Rolling window, only after `WAKE_PUBLISH=armed`: `parked until {PARKED_UNTIL} — usage window; resuming automatically`. Use the failure/stranded diagnostic above otherwise; a lost publication stays silent.
 - Weekly: `stopped — weekly cap reached; awaiting manual resume`
 
-**On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_cause`, `limit_probe_fires_remaining`, `park_claim_token`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires. Clearing the cause and the probe bound together with the rest is what stops a later recovery from re-arming a probe wake for a park that has already ended; clearing the token with them is what returns the slot to a state a fresh claim can win, and leaving a spent one behind would make the next claim's token indistinguishable from a stale predecessor's.
+**On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_cause`, `limit_probe_fires_remaining`, `park_claim_token`, `park_generation`, `limit_resume_task_id`, `limit_resume_generation` and `limit_resume_stop_proofs` in one write before D5's heartbeat fires. Clearing the cause and the probe bound together with the rest is what stops a later recovery from re-arming a probe wake for a park that has already ended; clearing the token with them is what returns the slot to a state a fresh claim can win, and leaving a spent one behind would make the next claim's token indistinguishable from a stale predecessor's.
 
 **That clear is compare-and-set on the identity it read (#1663)** — the same contract `/pause-resume` Step 5's `retire_limit_park` keeps, written once in `.claude/reference/pm-day-mode.md` §"The park-retirement contract". The exposure here is the empty slot: by the time this runs `parked_until` is usually null, and a 2D.7 Step 1 claim from a sibling thread (or the subagent leg) wins that slot on `--cas parked_until --expect null` and publishes its token in the window between this step's read and its write. An unconditional clear then erases a park that had just been legitimately opened, along with its bound and its wake identity — leaving a live Monitor nothing can name to `TaskStop`.
 
@@ -1505,41 +1517,27 @@ D5_CLEAR_RC=0
 if [[ "$D5_SNAPSHOT_RC" -ne 0 && "$D5_SNAPSHOT_RC" -ne 3 ]]; then
   D5_CLEAR_RC=8                      # unreadable identity: fail closed, clear nothing
 else
-  [[ "$D5_SNAPSHOT_RC" -eq 3 ]] && D5_SNAPSHOT='{}'
-  D5_TOKEN_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '.park_claim_token // null' 2>/dev/null) || D5_CLEAR_RC=8
-  D5_CAUSE_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '.limit_cause // null' 2>/dev/null)      || D5_CLEAR_RC=8
-  D5_UNTIL_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '.parked_until // null' 2>/dev/null)     || D5_CLEAR_RC=8
+  [[ "$D5_SNAPSHOT_RC" -eq 3 ]] && D5_SNAPSHOT=null
+  D5_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '
+if (. == null or type == "object") and
+  (.park_generation == null or
+   ((.park_generation | type) == "string" and (.park_generation | length) > 0 and .park_generation != "null"))
+then . else error("invalid durable park identity") end
+' 2>/dev/null) || D5_CLEAR_RC=8
 fi
 if [[ "$D5_CLEAR_RC" -eq 0 ]]; then
-  # Anchor precedence — token (a mid-assembly 2D.7 claim, the strongest identity
-  # because it is unique per claim), then limit_cause (a completed record), then
-  # parked_until at the value just read, null included (the no-identity record —
-  # and, here, the empty slot a fresh 2D.7 claim would take).
-  if [[ "$D5_TOKEN_EXPECT" != null ]]; then
-    D5_ANCHOR=".repos[\"$REPO_KEY\"].day.park_claim_token"; D5_EXPECT="$D5_TOKEN_EXPECT"
-  elif [[ "$D5_CAUSE_EXPECT" != null ]]; then
-    D5_ANCHOR=".repos[\"$REPO_KEY\"].day.limit_cause";      D5_EXPECT="$D5_CAUSE_EXPECT"
-  else
-    D5_ANCHOR=".repos[\"$REPO_KEY\"].day.parked_until";     D5_EXPECT="$D5_UNTIL_EXPECT"
-  fi
-  D5_CLEARS=()
-  for D5_FIELD in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
-                  limit_cause limit_kind park_claim_token parked_until; do
-    [[ ".repos[\"$REPO_KEY\"].day.$D5_FIELD" == "$D5_ANCHOR" ]] && continue
-    D5_CLEARS+=(--set ".repos[\"$REPO_KEY\"].day.$D5_FIELD=null")
+  PARK_RETIRE_SH=""
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh}" "${HOME:+$HOME/.claude/scripts/park-retire.sh}"; do
+    if [ -x "$candidate" ]; then PARK_RETIRE_SH="$candidate"; break; fi
   done
-  # The thrash counter rides the same atomic batch (#1445): a superseded compare must
-  # leave it alone too, or a brand-new park would resume with its hit count reset.
-  "$SESSION_STATE_SH" --cas "$D5_ANCHOR=null" --expect "$D5_EXPECT" \
-    "${D5_CLEARS[@]}" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=0" \
-    >/dev/null 2>&1 || D5_CLEAR_RC=$?
-  if [[ "$D5_CLEAR_RC" -eq 6 ]]; then   # lock timeout — retry once, then judge
+  D5_CLEAR_RC=4
+  if [[ -n "$PARK_RETIRE_SH" ]]; then
     D5_CLEAR_RC=0
-    "$SESSION_STATE_SH" --cas "$D5_ANCHOR=null" --expect "$D5_EXPECT" \
-      "${D5_CLEARS[@]}" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=0" \
-      >/dev/null 2>&1 || D5_CLEAR_RC=$?
+    "$PARK_RETIRE_SH" --repo "$REPO_KEY" --snapshot "$D5_EXPECT" \
+      --state-helper "$SESSION_STATE_SH" --reset-hits || D5_CLEAR_RC=$?
   fi
 fi
+
 case "$D5_CLEAR_RC" in
   0) echo "RESUME_CLEAR=cleared" ;;
   7) echo "RESUME_CLEAR=superseded" ;;   # a newer park owns the slot — nothing written
@@ -1551,7 +1549,7 @@ esac
 - **`superseded`** (exit 7) → a park claimed the slot after this step read it. **Nothing was written**, so its bound, kind, token and wake identity are intact and its owner runs its own recovery. Do not retry, do not `TaskStop` anything, and do not reset the counter; the board is parked again, so drop this tick's resume heartbeat and emit the park's own line instead — `Parked (usage limit) — a new park opened while this resume was landing; adopting it and its wake.`
 - **`error`** (any other rc, `8` = unreadable identity included) → fail closed: the park record is left exactly as found, in one line naming the rc — `Resume clear failed (rc={RC}) — park record left standing; resume manually if the board stays parked.`
 
-**Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race. **That same step retires the park** — the six fields above, one write — and has to (#1595): 2D.1(b+) and 2D.5 stay parked on a `preemptive` cause with a `0`/`-1` bound *regardless of* `parked_until` and stop recovery before 2D.2's init write, which is the only other place the park is cleared. A resume that merely restamped the sentinel could therefore never lift the park those branches tell the user to lift exactly this way.
+**Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race. **That same step retires the park** — the park fields and durable generation above, one write — and has to (#1595): 2D.1(b+) and 2D.5 stay parked on a `preemptive` cause with a `0`/`-1` bound *regardless of* `parked_until` and stop recovery before 2D.2's init write, which is the only other place the park is cleared. A resume that merely restamped the sentinel could therefore never lift the park those branches tell the user to lift exactly this way.
 
 ### 2D.7: Usage-horizon pre-emptive park (#1428)
 
@@ -1570,6 +1568,8 @@ The difference from 2D.6 is *when*, not *what*: no error has fired yet, so there
 The two probe knobs reject zero for concrete reasons, not tidiness: a cadence of `0` makes the Monitor's `sleep 0` a hot loop firing a turn as fast as the harness allows — the runaway this whole park exists to avoid, at the worst possible moment — and a bound of `0` arms a wake whose first fire immediately reads the bound as spent, so the board parks with a Monitor that can only ever stop itself. The window knob is the opposite case: `0` is the documented way to ask for 2D.6's exact behavior.
 
 **Step 1 — Claim the park, before shutting anything down.** Exactly one park record may exist. A real kill can already have parked the board through 2D.6 microseconds earlier; claiming first means a lost race costs nothing, while shutting down first and *then* losing would leave a stopped board with no park record and no wake. `session-state.sh --cas` decides it under one lock hold (exit `7` is a clean loss, distinct from I/O failure):
+
+Keep both winning outputs, `PARK_CLAIM_TOKEN` and `PARK_GENERATION`, across tool calls. Completion retires only the transient token; the durable generation remains the authority for wake publication and retirement (#1715).
 
 <!-- test-anchor: pm-day-2d7-park-claim -->
 
@@ -1654,11 +1654,18 @@ PARK_CLAIM_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
   "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}")
 PARK_CLAIM_TOKEN="park-$(date -u +%Y%m%dT%H%M%SZ)-$$-$PARK_CLAIM_NONCE"
 
+PARK_GENERATION_SH=""
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}"; do
+  if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
+done
+PARK_GENERATION=""
 PARK_CLAIM_RC=0
 if [ "$PARK_EPOCH" -le "$NOW_EPOCH" ]; then
   # Refuse rather than claim: a deadline that is not in the future is indistinguishable
   # from no park at all, so claiming one would shut the board down invisibly.
   echo "PARK_CLAIM=error rc=window"
+elif [ -z "$PARK_GENERATION_SH" ] || ! PARK_GENERATION=$("$PARK_GENERATION_SH"); then
+  echo "PARK_CLAIM=error rc=generation"
 else
   # The kind rides the claim too, because the token turns the assembly window
   # into a state recovery can NAME (2D.1(b+)) rather than one it must refuse: a
@@ -1668,11 +1675,12 @@ else
     --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"$PREEMPTIVE_PARKED_UNTIL\"" \
     --expect null \
     --set ".repos[\"$REPO_KEY\"].day.park_claim_token=\"$PARK_CLAIM_TOKEN\"" \
+    --set ".repos[\"$REPO_KEY\"].day.park_generation=\"$PARK_GENERATION\"" \
     --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"rolling_window\"" \
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=$CLAIM_FIRES" \
     >/dev/null 2>&1 || PARK_CLAIM_RC=$?
   case "$PARK_CLAIM_RC" in
-    0) echo "PARK_CLAIM_TOKEN=$PARK_CLAIM_TOKEN"; echo "PARK_CLAIM=won" ;;
+    0) echo "PARK_GENERATION=$PARK_GENERATION"; echo "PARK_CLAIM_TOKEN=$PARK_CLAIM_TOKEN"; echo "PARK_CLAIM=won" ;;
     7) echo "PARK_CLAIM=lost" ;;   # a park record already exists — 2D.6 got there first
     *) echo "PARK_CLAIM=error rc=$PARK_CLAIM_RC" ;;
   esac
@@ -1706,6 +1714,7 @@ else
   "$SESSION_STATE_SH" \
     --cas ".repos[\"$REPO_KEY\"].day.park_claim_token=null" --expect "\"$PARK_CLAIM_TOKEN\"" \
     --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+    --set ".repos[\"$REPO_KEY\"].day.park_generation=null" \
     --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
     >/dev/null 2>&1 || PARK_RELEASE_RC=$?
@@ -1721,6 +1730,7 @@ else
     "$SESSION_STATE_SH" \
       --cas ".repos[\"$REPO_KEY\"].day.park_claim_token=null" --expect "\"$PARK_CLAIM_TOKEN\"" \
       --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+    --set ".repos[\"$REPO_KEY\"].day.park_generation=null" \
       --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
       --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
       >/dev/null 2>&1 || PARK_RELEASE_RC=$?
@@ -1799,14 +1809,14 @@ Both branches bind the same two variables — `WAKE_GENERATION` (minted here) an
   done
   ```
 
-Either way, publish the identity pair **immediately** into the same fields `/pause` Step 2 item 4 and 2D.6 already read — through the shared publication helper (#1713). It requires the expected completed park and an empty identity pair, then self-compares the whole captured day while composing both identity writes in the same lock hold (#1445). A retired record cannot pass merely because its wake slot is null; competing publishers cannot overwrite each other. The remaining durable-identity limitation is tracked by #1715:
+Either way, publish the identity pair **immediately** into the same fields `/pause` Step 2 item 4 and 2D.6 already read — through the shared publication helper (#1713). It requires the expected completed park and an empty identity pair, then self-compares the whole captured day while composing both identity writes in the same lock hold (#1445). A retired record cannot pass merely because its wake slot is null; competing publishers cannot overwrite each other. It also requires the original winning `PARK_GENERATION` (#1715); never fetch a replacement generation after arming:
 
 <!-- test-anchor: pm-day-2d7-wake-publish -->
 
 ```bash
 # TaskStop is the harness tool; stop only the Monitor this invocation armed.
 WAKE_PUBLISH_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}" ".claude/scripts/park-wake-publish.sh"; do
+for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}"; do
   if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
 done
 PUBLISH_RC=4
@@ -1814,7 +1824,7 @@ if [ -n "$WAKE_PUBLISH_SH" ]; then
   PUBLISH_RC=0
   "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause preemptive \
     --task-id "$WAKE_TASK_ID" --generation "$WAKE_GENERATION" \
-    --task-encoding string --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+    --park-generation "${PARK_GENERATION:-}" --task-encoding string --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
 fi
 if [ "$PUBLISH_RC" -eq 0 ]; then
   echo "WAKE_PUBLISH=armed"
