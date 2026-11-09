@@ -258,6 +258,13 @@ cat > "$tmp/race-helper/session-state.sh" <<'INJECT'
 set -euo pipefail
 case " $* " in
   *" --expect-at "*)
+    case "${RACE_MODE:-declaration}" in
+      timeout-always) exit 6 ;;
+      timeout-once)
+        if [[ ! -e "$RACE_MARKER" ]]; then touch "$RACE_MARKER"; exit 6; fi
+        exec "$RACE_STATE" "$@"
+        ;;
+    esac
     if [[ ! -e "$RACE_MARKER" ]]; then
       touch "$RACE_MARKER"
       "$RACE_STATE" --repo org/late --set ".repos[\"org/late\"].window=$RACE_WINDOW" \
@@ -271,6 +278,13 @@ chmod +x "$tmp/race-helper/session-state.sh"
 export RACE_STATE="$state" RACE_WINDOW="$explicit_window" RACE_LEAVE="$explicit_leave" RACE_MARKER="$tmp/injected"
 check 10 "$(write_none org/late "$late_token" "$baseline" "$tmp/race-helper/prompt-reservation.sh")" 'a late direct write wins against the dismissal marker inside the CAS'
 check "$explicit_before" "$(read_schedule org/late)" 'failed conditional dismissal changes neither field'
+
+call "$owner1" claim --repo org/timeout --kind leave
+timeout_token="$out"
+baseline="$(snapshot_leave org/timeout "$timeout_token")"
+check 20 "$(RACE_MODE=timeout-always write_none org/timeout "$timeout_token" "$baseline" "$tmp/race-helper/prompt-reservation.sh")" 'two lock timeouts report unavailable, not a competing declaration'
+check "$baseline" "$(read_schedule org/timeout)" 'exhausted timeout leaves scheduling state unchanged'
+check 0 "$(RACE_MODE=timeout-once RACE_MARKER="$tmp/one-timeout" write_none org/timeout "$timeout_token" "$baseline" "$tmp/race-helper/prompt-reservation.sh")" 'one lock timeout retries and stores the answer'
 
 spent=$(( $(date -u +%s) - 60 ))
 "$state" --repo org/spent --set ".repos[\"org/spent\"].window={\"deadline_epoch\":$spent,\"set_at\":\"spent\"}" \

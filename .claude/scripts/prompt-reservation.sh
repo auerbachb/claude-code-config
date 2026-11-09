@@ -168,7 +168,8 @@ if [[ "$action" == commit-leave ]]; then
       --set "$repo_path.window=$window" --set "$repo_path.leave=$leave" >/dev/null || rc=$?
     case "$rc" in
       0) exit 0 ;;
-      7|6) [[ "$attempt" == 1 ]] || exit 10 ;;
+      7) [[ "$attempt" == 1 ]] || exit 10 ;;
+      6) [[ "$attempt" == 1 ]] || unavailable 'leave answer write timed out twice' ;;
       *) unavailable 'cannot commit the leave answer' ;;
     esac
   done
