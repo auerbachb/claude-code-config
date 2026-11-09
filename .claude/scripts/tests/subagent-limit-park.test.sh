@@ -1379,13 +1379,18 @@ check_eq "a day-mode pre-emptive park is adopted"  "PARK_CLAIM=adopted" "$OUT"
 check_eq "  its deadline is untouched"   "$(epoch_to_iso $(( NOW + 3600 )))" "$(day_get parked_until)"
 check_eq "  its wake still owns the slot" "task-daymode" "$(day_get limit_resume_task_id)"
 check_eq "  and no second bound was written" "null" "$(day_get limit_probe_fires_remaining)"
-# A second Monitor is refused at the identity publish as well — the last
-# mutual-exclusion point, so an adopted park cannot register a wake even if the
-# thread wrongly reached §4.
+# Use the matching legacy generation in both controls. Only the wake slot
+# differs, so a stale park-generation rejection cannot hide a broken fence.
 OUT=$(LIMIT_MONITOR_TASK_ID='"task-second"' WAKE_GENERATION="probe-second" \
-      PARK_GENERATION="${OWN_PARK_GENERATION:-}" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+      PARK_CAUSE=preemptive PARK_GENERATION="" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
 check_eq "  a second wake is superseded at publish" "WAKE_PUBLISH=superseded" "$OUT"
-check_eq "  the day-mode wake still owns the slot"  "task-daymode" "$(day_get limit_resume_task_id)"
+check_eq "  the day-mode wake still owns the slot" "task-daymode" "$(day_get limit_resume_task_id)"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" >/dev/null
+OUT=$(LIMIT_MONITOR_TASK_ID='"task-second"' WAKE_GENERATION="probe-second" \
+      PARK_CAUSE=preemptive PARK_GENERATION="" bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+check_eq "  the matching legacy park allows the otherwise identical empty slot" "WAKE_PUBLISH=ok" "$OUT"
+check_eq "  the empty slot publishes the requested wake" "task-second" "$(day_get limit_resume_task_id)"
 # Day mode claims `parked_until` first (2D.7 Step 1) and only takes
 # `limit_cause` when it finishes the record (Step 3); §2 takes both in one write.
 # BOTH interleavings must leave exactly one record and one wake. This is AC 4's
