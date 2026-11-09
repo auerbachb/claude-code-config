@@ -7,10 +7,23 @@ triggers:
   - pick up where we left off
   - continue the interrupted work
   - what was I doing
-argument-hint: "[--resume-refill] [--again] [--generation <id>] (refill stays paused without --resume-refill)"
+argument-hint: "[--resume-options | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
 ---
 
 Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
+
+## Read-only Claude resume options
+
+If the only argument is `--resume-options`, resolve `quota-resume-roster.sh`
+from the installed skills worktree, the installed scripts directory, or this
+checkout. Run it as `quota-resume-roster.sh list` and show its entries for the
+current registered Claude account: session ID, folder, account, summary, and
+manual resume options. Show each `not portable` option with its handoff path.
+State the returned close-original-session precondition before any commands.
+Distinguish an unavailable park lookup or unreadable record from an empty list.
+If the helper cannot run, say the roster is unavailable. Do not guess a
+launcher or read credentials. Return here: do not classify, resume, clear a
+gate, or launch anything. Do not combine this flag with any resume flag.
 
 ## Portable helper resolution (workflow lane)
 

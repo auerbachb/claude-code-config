@@ -189,7 +189,13 @@ check_eq "$RC" "3" "share-config requires a label"
 run share-config a b c
 check_eq "$RC" "3" "share-config takes at most <label> <provider>"
 run launchers --json
-check_eq "$RC" "3" "--json applies to list only, launchers included"
+check_eq "$RC" "0" "launcher metadata is available without generating launchers"
+check_eq "$(jq -r --arg label "$WORK_LABEL" '.[] | select(.provider == "claude" and .label == $label) | .launcher' <<<"$OUT")" \
+  "claude-work" "metadata uses the generated launcher name for the registered label"
+check_eq "$(jq -r --arg label "$WORK_LABEL" '.[] | select(.provider == "claude" and .label == $label) | .profile_dir' <<<"$OUT")" \
+  "$WORK_DIR" "metadata preserves the swapped physical profile from the registry"
+check_eq "$(test -e "$LAUNCHERS" && echo present || echo absent)" "absent" "metadata mode leaves the launchers file untouched"
+check_not_contains "$OUT" "$FIXTURE_SECRET" "launcher metadata does not expose fixture credentials"
 run --help
 check_contains "$OUT" "launchers" "--help documents launchers"
 check_contains "$OUT" "share-config" "--help documents share-config"

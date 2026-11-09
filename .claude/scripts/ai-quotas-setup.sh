@@ -32,7 +32,7 @@
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
 #   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
-#   ai-quotas-setup.sh launchers
+#   ai-quotas-setup.sh launchers [--json]
 #   ai-quotas-setup.sh ledger-hooks
 #   ai-quotas-setup.sh share-config <label> [<provider>]
 #   ai-quotas-setup.sh --help | -h
@@ -91,6 +91,8 @@
 #             the other. Prints the one `source` line to add to ~/.zshrc —
 #             this script never edits ~/.zshrc. A pre-existing file not
 #             written by this action is moved aside as launchers.zsh.pre-share.
+#             --json prints the validated launcher mapping without generating
+#             the file, probing credential status, or starting a provider.
 #   share-config
 #             Make a profile behave like the primary install. For a claude
 #             profile: symlink skills, agents, rules, hooks, plugins,
@@ -421,8 +423,8 @@ case "$ACTION" in
     ;;
 esac
 
-if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" ]]; then
-  die_usage "--json applies to list or doctor only"
+if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" && "$ACTION" != "launchers" ]]; then
+  die_usage "--json applies to list, doctor, or launchers"
 fi
 if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
   die_usage "--no-login applies to add only"
@@ -2080,8 +2082,8 @@ move_aside() { # <path>
 }
 
 action_launchers() {
-  require_share_home launchers AI_QUOTAS_LAUNCHERS_FILE
-  local config count i provider label nickname name
+  if [[ $JSON -eq 0 ]]; then require_share_home launchers AI_QUOTAS_LAUNCHERS_FILE; fi
+  local config count i provider label nickname name profile metadata="[]"
   config="$(read_config)"
   count="$(printf '%s' "$config" | jq '.accounts | length')"
 
@@ -2113,7 +2115,16 @@ action_launchers() {
       fi
     done
     names+=("$name"); labels+=("$label"); providers+=("$provider"); nicks+=("${nickname:-$name}")
+    if [[ $JSON -eq 1 ]]; then
+      profile="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].profile_dir | if type == "string" then . else "" end')"
+      metadata="$(printf '%s' "$metadata" | jq -c --arg provider "$provider" --arg label "$label" \
+        --arg profile "$profile" --arg launcher "$name" '. + [{provider:$provider, label:$label, profile_dir:$profile, launcher:$launcher}]')"
+    fi
   done
+  if [[ $JSON -eq 1 ]]; then
+    printf '%s\n' "$metadata"
+    return 0
+  fi
 
   # Pass 2: render. Claude functions first, then Codex, registry order within
   # each — grouped so the file reads as two short blocks rather than one

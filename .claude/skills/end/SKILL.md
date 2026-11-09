@@ -37,6 +37,7 @@ EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
 TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh) || HANDOFF_CONTEXT_SH=""
 HANDOFF_PUBLISH_SH=$(resolve_script portable-handoff-publish.sh) || HANDOFF_PUBLISH_SH=""
+QUOTA_RESUME_ROSTER_SH=$(resolve_script quota-resume-roster.sh) || QUOTA_RESUME_ROSTER_SH=""
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 
 # The collector is a document, not a script, so resolve it the same way but
@@ -356,6 +357,32 @@ instead of creating competing handoffs. Naming and format:
 If the `mv` fails, say so and print the temp file's path — never report a write that did not happen.
 
 Then print the **same buffer** in the thread, in one fenced block, so it can be copied without a file read. Do not re-render for display: a second render is a second document, and the reader has no way to tell which one they got.
+
+For a verified Claude `/end`, also record a **local resume roster** alongside
+this handoff. Do this only after both gates persisted, Step 2 proved the owned
+tasks terminal, and Step 5 published the canonical file. Use the exact current
+conversation ID and `working_copy.path` from the verified context snapshot,
+not a managed task ID or a fallback `default` session. `RESUME_SUMMARY` is one
+plain line from the rendered objective, with no secrets or transcript text.
+
+```bash
+# Bind RESUME_STOP_VERIFIED=true only after Step 2's final audit passes.
+# RESUME_CWD is the verified context snapshot's working_copy.path.
+if [[ "${RESUME_STOP_VERIFIED:-}" == true && -n "$QUOTA_RESUME_ROSTER_SH" ]] &&
+   (( PUBLISH_RC == 0 && EXECUTION_GATE_PERSISTED == 1 && WINDDOWN_PERSISTED == 1 )); then
+  "$QUOTA_RESUME_ROSTER_SH" record --kind end --session "$SESSION_ID" \
+    --cwd "$RESUME_CWD" --summary "$RESUME_SUMMARY" --handoff "$OUT"
+fi
+```
+
+If the helper, session identity, or checkpoint is unavailable, say the local
+resume roster was not recorded; never guess a command. On success, show the
+account's recorded sessions, including each ID, folder, account, summary, and
+returned options in the thread **outside** the portable handoff fence. Show
+`not portable` with its handoff path when no command is safe. Say to close the
+original session before copying a command; never run a command from the roster.
+`/go-on --resume-options` reads the same local roster. This does not stop any
+other conversation; its rows are accumulated from their own verified stops.
 
 Close with the file path on its own line, so the next session (and the usage-limit recorder, which points at the most recent one of these) can find it.
 
