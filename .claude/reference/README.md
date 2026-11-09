@@ -114,6 +114,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `session-start-sync-hotspot-decision.md` — KEEP the SessionStart sync hook (Issue #1821); three counted changes, no recorded conflicts, and a shared lock and deadline
 - `skill-symlink-setup.md` — why a dedicated worktree, session-start bootstrap, symlink install, and migration commands (`skill-symlinks.md`)
 - `portable-skill-resolution.md` — how a shared skill reaches its scripts, reference docs, and phase agents from a repo with no `.claude/`: the `resolve_script()`/`resolve_doc()` shapes, the required-vs-optional degraded-mode warning format, and the classified dependency inventory for the seven PM/orchestration skills (#1189)
+- `skill-portability-lint-hotspot-decision.md` — keep the skill portability lint together (Issue #1331); five historical changes and no counted current churn
 - `skill-usage-durability.md` — how skill-usage telemetry records survive machine moves, OS reinstalls, and `~/.claude` cleanups (#572)
 - `skill-first-subagent-delivery.md` — the two delivery paths that carry the skill-first reflex into subagents, the `Skill`-tool precondition matrix, and the borderline-rung adaptation for autonomous agents (`skill-first.md`; #918)
 - `trust-dialog-repair.md` — why `~/.claude.json` re-prompts per worktree, the three flags, and repair-script behavior (`trust-dialog-fix.md`)
