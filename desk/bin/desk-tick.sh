@@ -548,6 +548,29 @@ dt_released() {
   if [ -n "$1" ]; then printf 'desk-tick %s released\n' "$dt_gen"; fi
 }
 
+# The optional mirror cannot disrupt the normal desk. Its stdout is only
+# durable queue IDs; remote bodies and diagnostics never reach the Monitor.
+dt_mobile_error=0
+dt_mobile() {
+  local cfg="${DESK_MOBILE_CONFIG:-${HOME:+$HOME/.config/human-queue/mobile.json}}" out ids rc=0
+  [ -n "$cfg" ] && [ -e "$cfg" ] || return 0
+  out=$("$dt_py" -I "$dt_bin/mobile-sync.py" --session "$dt_session" 2>/dev/null) || rc=$?
+  ids=$(printf '%s' "$out" | "$dt_py" -I -c '
+import json, re, sys
+items = json.load(sys.stdin)
+if not isinstance(items, list) or any(not isinstance(x, str) or not re.fullmatch(r"D-[1-9][0-9]*", x) for x in items):
+    sys.exit(1)
+print(" ".join(items))
+' 2>/dev/null) || { ids=""; rc=1; }
+  if [ "$rc" -eq 0 ]; then
+    dt_mobile_error=0
+  elif [ "$dt_mobile_error" -eq 0 ]; then
+    printf 'desk-tick %s mobile-unavailable\n' "$dt_gen"
+    dt_mobile_error=1
+  fi
+  if [ -n "$ids" ]; then printf 'desk-tick %s mobile %s\n' "$dt_gen" "$ids"; fi
+}
+
 dt_cycle() {
   local out rc control ids due held released hold_ok
   released=""
@@ -587,6 +610,7 @@ dt_cycle() {
     dt_fail tick 1
     return 0
   fi
+  dt_mobile
   rc=0
   out=$("$dt_cli" wake-due --json 2>"$dt_err") || rc=$?
   if [ "$rc" -ne 0 ]; then

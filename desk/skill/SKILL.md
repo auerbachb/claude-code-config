@@ -133,6 +133,8 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
 | `desk-tick <GEN> released` | A known hold ended. If step 8's initial backlog read still waits, do that read once, even when nothing changed in the store; apply the existing held/longform rules and shown-item deduplication. If it was already read, do nothing |
+| `desk-tick <GEN> mobile D-43 D-44` | An [opt-in mobile reply](mobile.md) is already stored. Re-read each exact ID with `get --json`; while it is still `answered`, follow `decisions.md`'s existing first wake path for the current return address. Send only the pointer. |
+| `desk-tick <GEN> mobile-unavailable` | Say once that the phone inbox could not sync. Keep the desktop desk and its normal wake flow running. |
 | `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
 | `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep", then "Friday" (the weekly report's offer); during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
 | `desk-tick <GEN> morning` | The first tick of the day (from 04:00 until `eod_time`), once a day. Load `checkin.md` and show the card; during a hold, or while a long-form prompt waits, keep it and show it after (`checkin.md`, "Held like a Decision") |
