@@ -95,7 +95,8 @@ profile directories drift apart.
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
 is available on `add`: it reserves the profile slot and records the account without
 launching a login, which is what you want when the user cannot complete an interactive
-flow right now. The account then reports `needs-login` until a `relogin`.
+flow right now. `list` reports whether the credential is present: a reserved slot can
+already report `ok` if the registered profile or Cursor IDE holds one.
 
 Providers are `claude`, `codex`, and `cursor`. The label is what the user types — for
 these accounts, the email on the subscription. Ask for it rather than guessing; the
@@ -106,8 +107,8 @@ later.
 
 `add` creates the isolated profile directory, launches that provider's own login
 against it, verifies a credential appeared, and only then records the account. One case
-records without a login: `--no-login`, which reserves the slot on purpose and lists as
-`needs-login` rather than `ok`.
+records without a login: `--no-login` reserves the slot without running the provider
+login. Its status still reflects the credential the helper can see.
 
 - **`claude`** — a per-account `CLAUDE_CONFIG_DIR` under
   `~/.claude/ai-quotas/profiles/<label>/claude`, then `claude` run against it. A bare
@@ -165,8 +166,10 @@ opens, and a second account is not possible.
   did not validate. Nothing was installed; relay the message and stop.
 - Exit `5` — the tool cannot use the config: `jq` is missing, the file is unparseable,
   or it was written by a different schema major. Report the helper's message and stop.
-- Exit `7` — the config write lock timed out or was broken mid-update. The config is
-  unchanged; say so and offer to retry.
+- Exit `7` — a registry write or relogin was blocked by contention, or the registered
+  profile changed during login. This run did not commit its registry update. A login
+  that already ran can have written credentials in its profile; relay the exact helper
+  message and check the current registry before retrying.
 
 On **any** non-zero exit above — 1, 3, 4, 5, 6, or 7 — **do not hand-edit
 `~/.claude/ai-quotas.json`**. A second writer is how
@@ -216,6 +219,9 @@ last unattended reading happened.
 - If `install` warns that it scheduled the reader from a checkout, relay it: the job
   keeps working until that worktree is removed. Re-run `schedule install` once the skills
   worktree is in place.
+- If `install` warns that launchd still holds the previous definition or did not load
+  the job, say that the new plist was written and relay the warning and its recovery
+  command. Do not report the new job as running.
 
 ## Step 3d — Launchers: one shell function per account (#1851)
 
@@ -270,15 +276,17 @@ linked to nowhere. Report the per-item lines as printed; they name paths only.
   install is missing, `HOME` is unset without the `AI_QUOTAS_PRIMARY_*` overrides (on top
   of the `AI_QUOTAS_CONFIG` and `AI_QUOTAS_PROFILE_ROOT` every HOME-less run already
   needs), the profile's `.claude.json` is not parseable JSON — which is never rewritten —
-  or that file changed while the merge was being computed, which means a Claude Code
-  session on that profile is writing it: nothing was replaced, re-run when it is idle.
-  Relay and stop; do not repair the file by hand.
+  or that file changed while the merge was being computed. In the race case, the
+  helper does not replace `.claude.json`; earlier share items may already have
+  changed. Relay the per-item lines and stop; do not repair the file by hand. Share
+  only with an idle profile: the check happens before the backup and replacement,
+  so a write after the check can still race the replacement.
 
 Neither action opens a login credential — `.credentials.json`, `auth.json`, and the
 Keychain are never touched — and nothing from `.claude.json` is printed. One thing the
 merge does carry across is the `mcpServers` block itself, and an MCP server entry can hold
-an API key in its `env` block: it is copied byte for byte into the profile, which is what
-sharing the server means, and the report line gives a count, never a name or a value.
+an API key in its `env` block. Sharing preserves those values in the merged JSON;
+serialization can change formatting. The report line gives a count, never a name or a value.
 
 ## Step 4 — Report the result
 
@@ -290,7 +298,11 @@ Each account reports as:
 | Status | Meaning | What to do |
 |--------|---------|------------|
 | `ok` | A credential is present for that profile | nothing |
-| `needs-login` | No credential is visible | `relogin <label>` |
+| `needs-login` | The helper could not verify credential presence | Read the note first |
+
+If the note says the credential is missing or the Cursor IDE is signed out, offer
+`relogin <label> [<provider>]`. If it names a missing probe tool or unreadable store,
+report that problem before suggesting sign-in.
 
 On a readable config `list` exits `0` whatever the statuses say. It is a report, never a
 gate: a `needs-login` row does not block anything, and you must not treat it as a reason
@@ -300,8 +312,8 @@ account.
 
 Never paste the config file's raw contents when a table will do, and never run a
 command that reads a credential value out of the keychain or a profile directory. The
-statuses above are derived from the *presence* of the artifact the provider's own tool
-wrote, which is all anyone needs.
+helper probes for the credential without reading its value. The note distinguishes
+a missing credential from a probe the helper could not complete.
 
 ## Reference
 

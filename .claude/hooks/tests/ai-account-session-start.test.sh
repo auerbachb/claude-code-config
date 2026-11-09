@@ -39,6 +39,88 @@ for pair in 'work repo-a' 'personal repo-b'; do
   [ "$out" = '{}' ]
 done
 jq -se 'length==2 and .[0].label=="work" and .[1].label=="personal" and .[0].issue=="1885" and .[0].account_email==null' "$AI_ACCOUNT_LEDGER" >/dev/null
+# Commit trailer decision: .claude/reference/ai-account-ledger.md (Issue #1912).
+# Two complete, registered session rows do not identify a committing process.
+# Freeze only these captures' clock so even timestamp ordering cannot select one.
+mkdir -p "$HOME/parallel-bin" "$HOME/existing-git-hooks"
+git init -q "$HOME/parallel-repo"
+git -C "$HOME/parallel-repo" checkout -qb issue-1885-test
+git -C "$HOME/parallel-repo" -c user.name=Test -c user.email=test@example.test commit -qm init --allow-empty
+cat > "$HOME/parallel-bin/date" <<'PARALLEL_DATE'
+#!/bin/sh
+[ "$#" = 2 ] && [ "$1" = -u ] && [ "$2" = +%FT%TZ ] || exit 97
+# Both capture processes must reach timestamp creation before either proceeds.
+# This barrier is private fixture state, never a production hook input.
+case "${CAPTURE_FIXTURE_SLOT:-}" in
+  work|personal)
+    mkdir -p "$HOME/capture-barrier" || exit 96
+    : > "$HOME/capture-barrier/$CAPTURE_FIXTURE_SLOT" || exit 96
+    ticks=0
+    while [ ! -f "$HOME/capture-barrier/work" ] || [ ! -f "$HOME/capture-barrier/personal" ]; do
+      [ "$ticks" -lt 100 ] || exit 96
+      /bin/sleep 0.05
+      ticks=$((ticks + 1))
+    done
+    ;;
+  "") : ;;
+  *) exit 96 ;;
+esac
+printf '%s\n' '2026-11-08T22:00:00Z'
+PARALLEL_DATE
+chmod +x "$HOME/parallel-bin/date"
+cat > "$HOME/existing-git-hooks/prepare-commit-msg" <<'EXISTING_HOOK'
+#!/bin/sh
+exit 23
+EXISTING_HOOK
+chmod +x "$HOME/existing-git-hooks/prepare-commit-msg"
+git -C "$HOME/parallel-repo" config core.hooksPath "$HOME/existing-git-hooks"
+cat > "$HOME/parallel-repo/.git/COMMIT_EDITMSG" <<'EXISTING_MESSAGE'
+Fixture commit
+
+AI-Account: owner-specified
+Signed-off-by: Fixture <fixture@example.test>
+EXISTING_MESSAGE
+cp "$HOME/existing-git-hooks/prepare-commit-msg" "$HOME/hook-before"
+cp "$HOME/parallel-repo/.git/COMMIT_EDITMSG" "$HOME/message-before"
+parallel_payload() {
+  jq -cn --arg cwd "$HOME/parallel-repo" --arg sid "$1" \
+    '{session_id:$sid,cwd:$cwd,source:"startup"}'
+}
+parallel_ledger="$HOME/parallel-ledger.jsonl"
+parallel_payload parallel-work | PATH="$HOME/parallel-bin:$PATH" \
+  CAPTURE_FIXTURE_SLOT=work AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/personal/claude" \
+  "$BASH" "$HOOK" > "$HOME/parallel-work.out" &
+parallel_work_pid=$!
+parallel_payload parallel-personal | PATH="$HOME/parallel-bin:$PATH" \
+  CAPTURE_FIXTURE_SLOT=personal AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/work/claude" \
+  "$BASH" "$HOOK" > "$HOME/parallel-personal.out" &
+parallel_personal_pid=$!
+wait "$parallel_work_pid"
+wait "$parallel_personal_pid"
+[ -f "$HOME/capture-barrier/work" ]
+[ -f "$HOME/capture-barrier/personal" ]
+[ "$(cat "$HOME/parallel-work.out")" = '{}' ]
+[ "$(cat "$HOME/parallel-personal.out")" = '{}' ]
+jq -se 'length==2 and ([.[].label]|sort)==["personal","work"]
+  and ([.[].session_id]|sort)==["parallel-personal","parallel-work"]
+  and ([.[].repo]|unique)==["parallel-repo"]
+  and ([.[].branch]|unique)==["issue-1885-test"]
+  and all(.ts=="2026-11-08T22:00:00Z" and .account_email==null)' \
+  "$parallel_ledger" >/dev/null
+parallel_payload parallel-unknown | PATH="$HOME/parallel-bin:$PATH" \
+  AI_ACCOUNT_LEDGER="$parallel_ledger" CLAUDE_CONFIG_DIR="$HOME/unknown" \
+  "$BASH" "$HOOK" > "$HOME/parallel-unknown.out"
+[ "$(cat "$HOME/parallel-unknown.out")" = '{}' ]
+jq -se 'length==3 and .[2].label=="unknown"
+  and .[2].session_id=="parallel-unknown" and .[2].repo=="parallel-repo"
+  and all(.account_email==null and (keys ==
+    ["account_email","branch","capture","issue","label","profile_dir",
+     "provider","repo","session_id","source","ts"]))' "$parallel_ledger" >/dev/null
+cmp "$HOME/hook-before" "$HOME/existing-git-hooks/prepare-commit-msg"
+[ -x "$HOME/existing-git-hooks/prepare-commit-msg" ]
+cmp "$HOME/message-before" "$HOME/parallel-repo/.git/COMMIT_EDITMSG"
+[ "$(git -C "$HOME/parallel-repo" config --get core.hooksPath)" = "$HOME/existing-git-hooks" ]
+echo 'ok — simultaneous registered sessions stay distinct; unknown stays unknown; Git hook/message untouched'
 payload "$HOME" | CLAUDE_CONFIG_DIR="$HOME/unknown" "$HOOK" >/dev/null
 payload "$HOME" | env -u CLAUDE_CONFIG_DIR "$HOOK" >/dev/null
 jq -se '.[-2].label=="unknown" and .[-1].label=="unknown" and .[-1].repo==null' "$AI_ACCOUNT_LEDGER" >/dev/null

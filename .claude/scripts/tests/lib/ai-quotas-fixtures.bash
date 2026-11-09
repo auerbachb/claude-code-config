@@ -384,6 +384,7 @@ esac
 # mode is a hang cannot report anything.
 if [[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]]; then
   trap '' TERM INT
+  printf '%s\n' "$$" > "$STUB_CODEX_PID_FILE"
 fi
 fixture="${CODEX_HOME}/rate-limits.json"
 if [[ ! -s "$fixture" ]]; then
@@ -425,8 +426,13 @@ done
 # EOF on the pipe is the reader closing it, which normally ends this stub. In
 # ignore-term mode it lingers instead, so the reader's cleanup has something
 # that outlives SIGTERM to reap.
-# Replace this owned fake process so no separate sleep child can escape cleanup.
-[[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]] && exec sleep 30
+# Use a builtin on a private FIFO so the fake process has no separate child.
+# Record a natural exit so an unconditional wait fails the fixture as well.
+if [[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]]; then
+  exec 9<> "$STUB_CODEX_LINGER_FIFO"
+  IFS= read -r -t 30 -u 9 unused || true
+  : > "$STUB_CODEX_LINGER_EXPIRED"
+fi
 exit 0
 EOF
 
