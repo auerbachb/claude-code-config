@@ -68,6 +68,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `authorship-guard.md` — `pr-authorship.sh` exit-code semantics, the three shared-script fail-safes, and `--allow-nonauthor` override plumbing (`safety.md` §Authorship; #733)
 - `issue-claim.md` — `issue-claim.sh` mechanism: the three GitHub claim artifacts, why the holder token is finer-grained than the login, block-at-holder / release-at-account, staleness, the `--allow-claimed` override, and every call site (`issue-planning.md` step 0; #873)
 - `issue-claim-script-hotspot-decision.md` — KEEP claim discovery, renewal and guarded release together (Issue #2072); five counted changes and no recorded conflicts
+- `issue-claim-fixture-hotspot-decision.md` — KEEP the shared claim lifecycle fixture (Issue #2074); six counted changes, no recorded conflicts, and the fixture is unchanged.
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3, `/harness-audit` Step 7); strong/weak/none classification, exact-artifact dedup, and the comment-vs-file rule
 - `harness-audit.md` — `/harness-audit` design record: two-pass split, the step-up chip that preserves the top-tier spawn invariant, the model-fleet resolver, dual watermarks, and the out-of-repo report default (#770)
 - `review-stack-audit.md` — `/review-stack-audit` rationale and contracts: measured versus declared billing state, roles and deduplication, reply verdict and fallback attribution, value and velocity fields, scorecard, and study limits (Issues #1201 and #1949).
