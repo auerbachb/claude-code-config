@@ -10,24 +10,40 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-quotas-fixtures.bash
 # it comes back would hang holding the result. Cleanup must escalate to SIGKILL
 # and give up on the status rather than on the report.
 #
-# The stub lingers 30s in this mode, so the regression shows up as elapsed time.
-# Asserting a ceiling well under that linger is what makes this discriminating:
-# with the bound the run is a few seconds, without it the run inherits the 30.
+# Check the stub itself: a skipped cleanup leaves it running, and an unbounded
+# wait lets it reach its natural exit. Other quota work can take any amount of
+# time without affecting these checks.
 
 reset_state
 X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
 write_config "$(account_json codex codex-one@example.com "$X1")"
-export STUB_CODEX_IGNORE_TERM=1
-term_t0="$(date +%s)"
+if ! term_tmp="$(mktemp -d "$TMP/codex-cleanup.XXXXXXXX")" || ! mkfifo "$term_tmp/linger"; then
+  bad "could not create the SIGTERM-resistant fixture's private FIFO"
+  return 1
+fi
+export STUB_CODEX_IGNORE_TERM=1 STUB_CODEX_PID_FILE="$term_tmp/pid"
+export STUB_CODEX_LINGER_FIFO="$term_tmp/linger" STUB_CODEX_LINGER_EXPIRED="$term_tmp/expired"
 run --json
-term_elapsed=$(( $(date +%s) - term_t0 ))
-unset STUB_CODEX_IGNORE_TERM
+unset STUB_CODEX_IGNORE_TERM STUB_CODEX_PID_FILE STUB_CODEX_LINGER_FIFO STUB_CODEX_LINGER_EXPIRED
+term_pid=
+if [[ -s "$term_tmp/pid" ]]; then
+  IFS= read -r term_pid < "$term_tmp/pid"
+fi
+if [[ ! "$term_pid" =~ ^[1-9][0-9]*$ ]]; then
+  bad "the SIGTERM-resistant fixture did not record its PID"
+elif ! kill -0 "$term_pid" 2>/dev/null ||
+  [[ "$(ps -o stat= -p "$term_pid" 2>/dev/null)" =~ ^[[:space:]]*Z ]] ||
+  ! kill -0 "$term_pid" 2>/dev/null; then
+  ok "the SIGTERM-resistant fixture is no longer running when cleanup returns"
+else
+  bad "the SIGTERM-resistant fixture is still running after cleanup (PID $term_pid)"
+fi
 check_eq "$(field_of codex-one@example.com "7-day" source)" "app-server" \
   "a server that ignores SIGTERM still yields its answer"
-if [[ "$term_elapsed" -lt 15 ]]; then
-  ok "and cleanup is bounded — the run took ${term_elapsed}s, not the stub's 30s linger"
+if [[ -e "$term_tmp/expired" ]]; then
+  bad "cleanup returned only after the fixture reached its natural linger timeout"
 else
-  bad "cleanup was not bounded: the run took ${term_elapsed}s, inheriting the stub's linger"
+  ok "cleanup did not wait for the fixture's natural linger timeout"
 fi
 
 # --- 14c. an unusable timeout is refused, not used --------------------------

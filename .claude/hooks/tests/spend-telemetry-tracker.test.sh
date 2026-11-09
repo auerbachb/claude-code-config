@@ -269,8 +269,12 @@ cat > "$link_transcript" <<'JEOF'
 JEOF
 link_task_payload=$(python3 -c 'import json,sys; print(json.dumps({"session_id":"session-verified","agent_id":"worker-verified","agent_type":"general-purpose","cwd":sys.argv[1],"agent_transcript_path":sys.argv[2]}))' "$CORRELATION_REPO" "$link_transcript")
 run_subagent "$link_task_payload" >/dev/null
-run_task "$(json_payload "{\"hook_event_name\":\"TaskCreated\",\"session_id\":\"session-verified\",\"agent_id\":\"worker-verified\",\"task_id\":\"task-verified\",\"cwd\":\"$CORRELATION_REPO\"}")" >/dev/null
-run_task "$(json_payload "{\"hook_event_name\":\"TaskCompleted\",\"session_id\":\"session-verified\",\"agent_id\":\"worker-verified\",\"task_id\":\"task-verified\",\"cwd\":\"$CORRELATION_REPO\"}")" >/dev/null
+# Build JSON as data before invoking the hook (portable to Bash 3.2).
+verified_task_payload=$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":sys.argv[1],"session_id":"session-verified","agent_id":"worker-verified","task_id":"task-verified","cwd":sys.argv[2]}))' TaskCreated "$CORRELATION_REPO")
+run_task "$verified_task_payload" >/dev/null
+# Build JSON as data before invoking the hook (portable to Bash 3.2).
+verified_task_payload=$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":sys.argv[1],"session_id":"session-verified","agent_id":"worker-verified","task_id":"task-verified","cwd":sys.argv[2]}))' TaskCompleted "$CORRELATION_REPO")
+run_task "$verified_task_payload" >/dev/null
 "$LINK" --session session-verified --repo owner/repo --issue 42 --source start_issue_claim >/dev/null
 "$LINK" --session session-verified --repo owner/repo --issue 42 --pr 7 --task task-verified --agent worker-verified --source wrap_post_merge --gate-passed --gate-head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --gate-result "$PASSING_GATE_JSON" >/dev/null
 # Replayed correlation capture is collapsed by its stable key.
