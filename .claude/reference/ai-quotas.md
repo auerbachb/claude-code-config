@@ -3,6 +3,8 @@
 Reference for `/quotas-setup` and `.claude/scripts/ai-quotas-setup.sh` (issue #1666).
 Not auto-loaded; read it when working on the quota tools.
 
+Quick links: [Configuration](#config-file) · [Provider credentials](#where-each-provider-keeps-its-credential) · [Report rows](#json-row-shape) · [History](#the-history-file) · [Profile recovery](#fresh-profile-reauthentication) · [Browser diagnosis](#browser-failure-diagnostics-issue-1906).
+
 **Display and configuration only.** Nothing in this file — and nothing any tool built on
 it produces — may gate dispatch, pause work, downgrade a model, or feed
 `credit-budget.sh`, with one exception: `quota-reserve.sh` may pause *autonomous* work on
