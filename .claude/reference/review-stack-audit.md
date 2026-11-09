@@ -4,9 +4,9 @@
 
 Mechanism, rationale, and the decision-record contract behind
 `/review-stack-audit` (issue #1201). Not auto-loaded: the operative contract is
-`.claude/skills/review-stack-audit/SKILL.md`, and the two engines document their
-own interfaces under `--help`. This file holds the reasoning that would
-otherwise bloat either.
+`.claude/skills/review-stack-audit/SKILL.md`. `measure.sh`, `drift.sh`, and
+`scorecard.sh` document their interfaces under `--help`. This reference keeps
+the audit rationale, measurement definitions, and report contracts together.
 
 ## Why a recurring audit at all
 

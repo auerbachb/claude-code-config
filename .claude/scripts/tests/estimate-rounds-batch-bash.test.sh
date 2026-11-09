@@ -27,6 +27,25 @@ require(shutil.which('jq'), 'jq required')
 version = subprocess.check_output(['jq', '--version'], text=True).strip()
 match = re.match(r'jq-(\d+)\.(\d+)', version)
 require(match and tuple(map(int, match.groups())) >= (1, 5), version)
+# A native runner can intentionally put Bash 3.2 first on PATH. Locate the
+# modern half independently, while preserving both actual-version checks.
+explicit = os.environ.get('ESTIMATE_MATRIX_CURRENT_BASH')
+candidates = [explicit] if explicit else [current, '/opt/homebrew/bin/bash', '/usr/local/bin/bash']
+selected = None
+for candidate in candidates:
+    if not candidate or not os.access(candidate, os.X_OK):
+        continue
+    try:
+        candidate_version = subprocess.check_output([candidate, '--version'], text=True,
+                                                    stderr=subprocess.STDOUT, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        continue
+    candidate_match = re.search(r'version (\d+)\.(\d+)', candidate_version)
+    if candidate_match and int(candidate_match.group(1)) >= 4:
+        selected = candidate
+        break
+require(selected, 'Current Bash >=4 required; set ESTIMATE_MATRIX_CURRENT_BASH to its executable')
+current = selected
 for shell, minimum, legacy in ((current, 4, False), ('/bin/bash', 3, True)):
     version = subprocess.check_output([shell, '--version'], text=True)
     match = re.search(r'version (\d+)\.(\d+)', version)
