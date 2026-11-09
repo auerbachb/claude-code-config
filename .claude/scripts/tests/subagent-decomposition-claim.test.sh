@@ -5,7 +5,9 @@ set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel) || exit 1
 # shellcheck source=lib/skill-bash.sh
 source "$ROOT/.claude/scripts/tests/lib/skill-bash.sh"
-GATE=$(extract_skill_bash "$ROOT/.claude/skills/subagent/SKILL.md" subagent-decomposition-parent-claim) || exit 1
+SKILL="$ROOT/.claude/skills/subagent/SKILL.md"
+GATE=$(extract_skill_bash "$SKILL" subagent-decomposition-parent-claim) || exit 1
+OPEN_GATE=$(extract_skill_bash "$SKILL" subagent-decomposition-parent-open) || exit 1
 TEST_DIR=$(mktemp -d) || exit 1
 trap 'rm -rf "$TEST_DIR"' EXIT
 mkdir -p "$TEST_DIR/bin" "$TEST_DIR/profile/.claude" "$TEST_DIR/second-checkout"
@@ -30,9 +32,11 @@ case "$*" in
     case "$PARENT_TEST_MODE" in
       empty) printf '[]\n' ;;
       read_error) printf 'fixture: comment read failed\n' >&2; exit 1 ;;
+      takeover) jq '.[0].body |= gsub("verified-original";"replacement-owner")' "$PARENT_TEST_DIR/comments.json" ;;
       *) cat "$PARENT_TEST_DIR/comments.json" ;;
     esac ;;
   'api --paginate repos/{owner}/{repo}/issues/873/timeline?per_page=100') printf '[]\n' ;;
+  'issue view 873 --json state --jq .state') printf 'OPEN\n' ;;
   *) printf '%s\n' "$*" >> "$PARENT_TEST_DIR/unexpected"; exit 99 ;;
 esac
 STUB
@@ -68,6 +72,32 @@ run_case 'an ordinary unclaimed parent stays eligible' empty - - 0
 run_case 'a holder for another issue stops' claimed 999 verified-original 5
 run_case 'an incomplete inherited pair stops' claimed 873 '' 5
 run_case 'an unreadable ownership check stops' read_error 873 verified-original 4
+
+if ! grep -Fq 'after deduplication, re-run the parent ownership check above' "$SKILL"; then
+  printf 'FAIL — each child must repeat the ownership check\n' >&2
+  fail=1
+fi
+
+run_changed_ownership() {
+  local mode="$1" expected="$2" rc=0 out commands
+  commands="$GATE"$'\n'"$OPEN_GATE"$'\n''printf "FIRST_CHILD\n"; export PARENT_TEST_MODE="$1"'
+  commands="$commands"$'\n'"$GATE"$'\n'"$OPEN_GATE"$'\n''printf "SECOND_CHILD\n"'
+  out=$(
+    cd "$TEST_DIR/second-checkout" || exit 1
+    INHERITED_PARENT_NUMBER=873 INHERITED_PARENT_HOLDER=verified-original \
+      PARENT=873 ISSUE_CLAIM="$ROOT/.claude/scripts/issue-claim.sh" PARENT_TEST_MODE=claimed \
+      HOME="$TEST_DIR/profile" PATH="$TEST_DIR/bin:$PATH" \
+      "$BASH" -u -c "$commands" -- "$mode" 2>&1
+  ) || rc=$?
+  if [[ "$rc" == "$expected" && "$out" == *FIRST_CHILD* && "$out" != *SECOND_CHILD* ]]; then
+    printf 'ok — %s between children blocks the second write\n' "$mode"
+  else
+    printf 'FAIL — %s between children (rc=%s, output=%s)\n' "$mode" "$rc" "$out"
+    fail=1
+  fi
+}
+run_changed_ownership empty 5
+run_changed_ownership takeover 4
 
 if [[ -s "$TEST_DIR/unexpected" ]]; then
   printf 'FAIL — fixture received an unexpected or write command:\n' >&2

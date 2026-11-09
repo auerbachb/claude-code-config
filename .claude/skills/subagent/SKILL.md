@@ -313,7 +313,7 @@ esac
 
 4. **File the children in order, head first**, so each can reference the number of the one before it. Every child after the head carries `- Depends on #<previous increment>` in `## Related Issues` — the existing marker, reused deliberately: `/pm` Step 1B.3 collects it and `/wave` Step 5.1 excludes any candidate blocked by an open, unmerged issue, so the chain already reads as serialized everywhere. **Inventing a new marker would leave the chain looking parallelizable.** Add one pick-time line the capture-time shape has no use for — `- Parent: #{PARENT}` — and record each child in the session log with the same `chain_id`/`position`/`total` object `/issue-maker` Step 9 writes.
 
-   Immediately before each child write, after deduplication, require a fresh native state of OPEN for the tracking parent. Do not reuse Step 1's earlier state or treat a claim verdict as issue state.
+   Immediately before each child write, after deduplication, re-run the parent ownership check above with the same caller context. Require it to pass and then require a fresh native state of OPEN. Do not reuse an ownership verdict from a previous child or a state read from Step 1. A claim verdict does not establish issue state.
 
    <!-- test-anchor: subagent-decomposition-parent-open -->
 
@@ -324,7 +324,7 @@ esac
    fi
    ```
 
-   If the check stops filing, report any children already created and their links. Do not create more children or write the checklist.
+   If either check stops filing, report any children already created and their links. Do not create more children or write the checklist.
 
 5. **Write the tracking checklist into the parent body.** `gh issue edit --body` replaces the entire body, so fetch, strip any checklist a previous run wrote, append, then edit — otherwise a re-run stacks a second chain section:
 
