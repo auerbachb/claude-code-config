@@ -157,6 +157,75 @@ class QuotaWaits(unittest.TestCase):
                     self.assertEqual(json.loads(out)['id'], 2)
                     self.assertLess(elapsed, 7)
 
+    def test_supervisor_ignores_only_its_snapshot_poll_children(self):
+        # Take a real private group snapshot while a polling sleep is live.
+        # Keep the poll and the TERM-resistant provider process, when present.
+        # Omit the extra processes the test itself used to observe the group.
+        body = r'''
+export SNAPSHOT_FIXTURE="$TMP/snapshot-fixture"
+mkdir "$SNAPSHOT_FIXTURE" && mkfifo "$SNAPSHOT_FIXTURE/release" || exit 89
+cat > "$TMP/bin/sleep" <<'POLL'
+#!/bin/bash
+owner=
+if [[ "$1" == 0.05 && -s "$SNAPSHOT_FIXTURE/owner" ]] &&
+   IFS= read -r owner < "$SNAPSHOT_FIXTURE/owner" && [[ "$PPID" == "$owner" ]] &&
+   [[ ! -e "$SNAPSHOT_FIXTURE/poll" ]]; then
+  printf '%s\n' "$$" > "$SNAPSHOT_FIXTURE/poll"
+  exec 7<> "$SNAPSHOT_FIXTURE/release"
+  IFS= read -r -t 2 -u 7 released || true
+  exit 0
+fi
+exec /bin/sleep "$@"
+POLL
+chmod 700 "$TMP/bin/sleep" || exit 90
+ps() {
+  if [[ "$1" != -axo || "$2" != pid=,* || -e "$SNAPSHOT_FIXTURE/owner" ]]; then
+    command ps "$@"; return
+  fi
+  local group poll= provider= i
+  group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  printf '%s\n' "$group" > "$SNAPSHOT_FIXTURE/owner"
+  for i in {1..40}; do
+    if [[ -s "$SNAPSHOT_FIXTURE/poll" ]] && IFS= read -r poll < "$SNAPSHOT_FIXTURE/poll"; then break; fi
+    /bin/sleep .01
+  done
+  if [[ -s "$DESCENDANT_PID_FILE" ]]; then IFS= read -r provider < "$DESCENDANT_PID_FILE"
+  elif [[ "$EXPECT_LIVE" == direct ]]; then IFS= read -r provider < "$SERVER_PID_FILE"; fi
+  command ps -axo pid=,ppid=,pgid=,stat= | command awk -v g="$group" -v p="$poll" -v d="$provider" -v fields="$2" '
+    $3 == g && $4 !~ /^Z/ && (($1 == p && $2 == g) || $1 == d) {
+      if ($1 == p) saw_poll=1
+      if ($1 == d) saw_descendant=1
+      if (fields == "pid=,pgid=,stat=") print $1, $3, $4
+      else print $1, $2, $3, $4
+    }
+    END { exit !(saw_poll && (d == "" || saw_descendant)) }
+  '
+  local rc=$?
+  exec 7<> "$SNAPSHOT_FIXTURE/release"
+  printf 'captured\n' >&7
+  return "$rc"
+}
+cat > "$TMP/bin/awk" <<'AWK'
+#!/bin/sh
+for last do :; done
+/usr/bin/awk "$@"; rc=$?
+case "$last" in */members) printf '%s\n' "$rc" >> "$SNAPSHOT_FIXTURE/results";; esac
+exit "$rc"
+AWK
+chmod 700 "$TMP/bin/awk" || exit 90
+codex_app_server_read "$HOME" "$SERVER" || exit 91
+IFS= read -r observed < "$SNAPSHOT_FIXTURE/results" || exit 92
+printf '%s\n' "$observed"
+'''
+        for shell in SHELLS:
+            for mode, kind, expected in (('healthy', 'none', '1'),
+                                         ('ignore-term', 'direct', '0'),
+                                         ('descendant', 'indirect', '0')):
+                with self.subTest(shell=shell, mode=mode):
+                    rc, out, err, _ = self.run_private(shell, f'EXPECT_LIVE={kind}\n' + body, mode)
+                    self.assertEqual(rc, 0, err)
+                    self.assertEqual(out.strip(), expected)
+
     def test_cleanup_observes_members_after_supervisor_exit(self):
         # A finite-lived member in a real isolated group models a signal
         # whose target has not exited yet. The supervisor exits immediately.

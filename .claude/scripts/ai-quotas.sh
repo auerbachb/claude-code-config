@@ -1768,9 +1768,10 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
   kill -s TERM 0 2>/dev/null || true
   ticks=0; started="${SECONDS:-}"; last="$started"
   while [[ "$started" =~ ^[0-9]{1,10}$ && -d "$control" ]]; do
-    # Collect first, then filter. The ps child is in our group too; exclude
-    # its known launch PID as well as the supervisor. Zombies need no signal.
-    ps -axo pid=,pgid=,stat= > "$control/members" &
+    # Only the launched server represents the provider among our direct children.
+    # Other direct children are the snapshot and its polling sleeps. Keep
+    # the provider and all other group members, including reparented ones.
+    ps -axo pid=,ppid=,pgid=,stat= > "$control/members" &
     snap=$!
     while kill -0 "$snap" 2>/dev/null; do
       now="${SECONDS:-}"
@@ -1781,8 +1782,8 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
       else sleep 1; ticks=$((ticks + 20)); fi
     done
     wait "$snap" 2>/dev/null || break
-    awk -v g="$group" -v p="$snap" '
-      $2 == g && $1 != g && $1 != p && $3 !~ /^Z/ { live=1 }
+    awk -v g="$group" -v provider="$member" '
+      $3 == g && $1 != g && $4 !~ /^Z/ && ($2 != g || $1 == provider) { live=1 }
       END { exit !live }
     ' "$control/members" || break
     now="${SECONDS:-}"
