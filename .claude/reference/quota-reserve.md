@@ -65,11 +65,26 @@ Nothing needs to be switched back. When the provider's reset brings the reading 
 
 ## Not covered, on purpose
 
-- **Codex.** The marker holds the Codex accounts and the notification names them, but nothing stops Codex sessions. Codex has lifecycle hooks and a `queue` command; whether a hook can deny work needs a spike. Tracked in #1867.
+- **Codex.** Weekly readings still appear in the marker and notifications. The reserve does not stop Codex turns; see the #1867 experiment below.
 - **Cursor.** The IDE has no hook surface, and its limit is a dollar cap, which `review-daily-cap.sh` already watches.
 - **A turn already running when the line is crossed.** It keeps the kind it started with. Launches and subagent calls stop at once. An automated turn stops at its next tool call; a turn the owner started carries on, by design.
 - **Programs started inside an owner's foreground shell call.** Background Bash means the harness's `run_in_background` flag. The reserve does not parse arbitrary shell programs or prevent their child processes; the owner's foreground shell remains available. Automated-turn and subagent shell calls still require the bookkeeping allowlist.
 - **Profiles created before this shipped.** A profile's `settings.json` is a copy. Re-run `/quotas-setup share-config <label>` so it picks up the two hooks.
+
+## Codex experiment (#1867)
+
+On 2026-11-09, isolated profiles on macOS exercised Codex CLI 0.166.0 and the desktop-bundled 0.167.0-alpha.3.2 binary against a loopback model fixture. The fixture requested a Bash command that wrote a sentinel file. It used no signed-in account or real model traffic.
+
+| Question | Observed result |
+| --- | --- |
+| Can a hook deny a tool call? | Yes. `PreToolUse` exit 2 prevented the sentinel write on both builds. The allow control and malformed-output control wrote the file. The denied turn still made a second model request in the fixture, so blocking one tool does not pause the turn. [OpenAI Docs: hooks](https://learn.chatgpt.com/docs/hooks#pretooluse). |
+| Can the CLI stop a running turn? | `codex queue` delivered text to the isolated server; with `--resume` it could start a queued turn. A queue request during a held turn left that turn active. `codex agents` opens a session browser and rejected a noninteractive `--stop` option. The separate App Server `turn/interrupt` call ended the held turn with `interrupted`. It needs a connection to the server that owns the turn and its thread and turn IDs. [OpenAI Docs: CLI](https://learn.chatgpt.com/docs/cli/reference) and [App Server](https://learn.chatgpt.com/docs/app-server#interrupt-a-turn). |
+| Can a hook know the account? | Both builds passed the fixture's `CODEX_HOME` to the hook. That identifies the profile path when the launcher sets it; it does not identify who started the turn or prove which account is signed in. App Server `account/read` with token refresh disabled returned a null account for the isolated profile. A client of an authenticated server can ask for account metadata via that endpoint without parsing credentials; this spike did not query a live account. [OpenAI Docs: account read](https://learn.chatgpt.com/docs/app-server#1-check-auth-state). |
+| Does this reach the desktop? | The binary shipped with the desktop app reproduced the allow, deny, and error controls. The app provides hook trust controls in Settings > Hooks. The fixture tested the shipped engine with temporary profiles; it did not test a live desktop schedule. [OpenAI Docs: hook trust](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks). |
+
+In the isolated server, a manual turn, a `turn/start` explicitly tagged as automation, and a turn delivered by `codex queue` ran the same input. Both `UserPromptSubmit` and `PreToolUse` ran in all three cases and exposed the same fields. Neither callback received the caller's turn-origin tag. A shared profile or prompt text cannot distinguish the owner's input from queued work.
+
+Keep Codex reported-only. These hook inputs do not identify which turns the reserve can safely block while allowing the owner’s work. A future launcher could withhold work it can prove is autonomous, or interrupt a turn it owns on a connected App Server, after mapping the profile to a verified quota row. Missing origin, missing account mapping, or a read error must allow normal work.
 
 ## Related
 
