@@ -840,7 +840,7 @@ for CHANGE in task-type wake-generation park-generation; do
   check_eq "$CHANGE: the receipt did not skip the separate native stop" 2 "$(wc -l < "$STOP_CALLS" | tr -d ' ')"
 done
 
-for TASK_JSON in -1 7.5 9007199254740992 false '""' '{}'; do
+for TASK_JSON in -1 7.5 9007199254740990.9 9007199254740992 false '""' '{}'; do
   seed_typed_stop generated "$TASK_JSON"
   BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
   OUT=$(run_stop_case)

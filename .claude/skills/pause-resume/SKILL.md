@@ -677,9 +677,11 @@ PARK_RECORD_PRESENT=false
 PARK_STOP_PROOF_JQ='
   def stop_id:
     (type == "string" and length > 0) or
-    (type == "number" and . >= 0 and . <= 9007199254740991 and floor == .);
+    (type == "number" and . <= 9007199254740991 and
+      (tojson | test("^(-?0|[1-9][0-9]*)(\\.0+)?$")));
   def normalized_stop_id:
-    if stop_id then (if type == "number" then floor else . end)
+    if stop_id then
+      (if type != "number" then . elif . == 0 then 0 else floor end)
     else error("invalid stopped wake identity") end;
   def legacy: {park_claim_token, limit_cause, parked_until, limit_kind, limit_probe_fires_remaining};
   def stop_key:
@@ -795,7 +797,7 @@ record_limit_stop_proof() {
 
 ```
 
-If retirement fails after a confirmed native `TaskStop`, retain a `limit_resume_stop_proofs` entry, tagged with the original durable park generation, task ID and wake generation (plus the legacy identity when no durable generation exists). A retry may skip `TaskStop` only when that typed proof matches its one current snapshot; a failed stop, missing task, arbitrary supplied assertion or mismatched proof is never evidence of a successful stop. Entries use an encoded generation/task/wake key (including the legacy tuple for legacy records), so concurrent confirmed stops cannot overwrite one another. JSON numbers and strings have distinct keys; equivalent safe integer encodings share one numeric key. Retirement clears the map with the park. If proof persistence fails, retain the successful native TaskStop result, original bound snapshot and `STOP_PROOF_PENDING` in this chat's resumable evidence; retry that exact proof write when storage recovers before retrying the stopped ID. Never reconstruct proof from a fresh record or replay it onto a replacement. If no trusted stop receipt survives, keep the park unresolved rather than guessing that the task is stopped.
+If retirement fails after a confirmed native `TaskStop`, retain a `limit_resume_stop_proofs` entry, tagged with the original durable park generation, task ID and wake generation (plus the legacy identity when no durable generation exists). A retry may skip `TaskStop` only when that typed proof matches its one current snapshot; a failed stop, missing task, arbitrary supplied assertion or mismatched proof is never evidence of a successful stop. Entries use an encoded generation/task/wake key (including the legacy tuple for legacy records), so concurrent confirmed stops cannot overwrite one another. JSON numbers and strings have distinct keys; equivalent safe integer encodings share one numeric key. Wake publication and stop receipt matching both cap numeric task IDs at the largest safe integer. Larger values are accepted only as actual string IDs; an existing unreadable numeric record stays parked rather than guessing which task to stop. Retirement clears the map with the park. If proof persistence fails, retain the successful native TaskStop result, original bound snapshot and `STOP_PROOF_PENDING` in this chat's resumable evidence; retry that exact proof write when storage recovers before retrying the stopped ID. Never reconstruct proof from a fresh record or replay it onto a replacement. If no trusted stop receipt survives, keep the park unresolved rather than guessing that the task is stopped.
 
 Both call sites below go through that one guarded path and read its three-way
 outcome. **Exit 7 is not a failure**: it says a newer park owns the slot, so this
