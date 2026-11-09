@@ -33,7 +33,7 @@ SH
 chmod +x "$tmp/bin/codex"
 export PATH="$tmp/bin:$PATH" DESK_CODEX_BIN="$tmp/bin/codex"
 git -C "$tmp/work" init -q
-git -C "$tmp/work" symbolic-ref HEAD refs/heads/issue-1762-fixture
+git -C "$tmp/work" symbolic-ref HEAD refs/heads/codex/issue-1762-fixture
 git -C "$tmp/work" remote add origin https://example.invalid/owner/repo.git
 jq -n --arg p "$CODEX_HOME" '{accounts:[
   {provider:"codex",label:"codex@example.invalid",nickname:"Codex Work",profile_dir:$p},
@@ -62,11 +62,16 @@ check "Codex Stop accepts the explicit Decision without continuing" "$(adapter c
 adapter cursor < "$tmp/cursor.json"
 check "local fallback imports just the Decision" \
   "$(adapter import --repo owner/repo --key issue-1762 < "$tmp/decision")" D-3
-"$HQ_T_CLI" add --kind decision --repo owner/repo --key issue-1762 --question 'Ship the fixture?' >/dev/null
+"$HQ_T_CLI" add --kind decision --repo owner/repo --key issue-1762 --question 'Ship the fixture?' --option Ship --option Wait >/dev/null
 rows=$("$HQ_T_CLI" list --kind decision --json)
 check "mixed sources keep independent routing for the same question" \
   "$(jq -r 'sort_by(.id)|map([.id,.source_tool,.source_account,.session_id]|join(":"))|join("|")' <<< "$rows")" \
   "D-1:codex:Codex Work:$sid|D-2:cursor:Cursor Work:|D-3:local:unknown:|D-4:::"
+check "all four questions fit the same desk menu with the canonical issue key" \
+  "$(jq -L "$HQ_T_DESK_DIR/skill" -c 'include "desk"; desk_batch("";4).sets' <<< "$rows")" \
+  '[["D-1","D-2","D-3","D-4"]]'
+check "the Codex branch resolves to the portable issue key" \
+  "$(jq -r '.[] | select(.source_tool=="codex") | .key' <<< "$rows")" issue-1762
 check_absent "surrounding message was not stored" "$rows" 'Private surrounding message'
 check_absent "registry email was not stored" "$rows" '@example.invalid'
 profile_physical=$(cd -P "$CODEX_HOME" && pwd)
