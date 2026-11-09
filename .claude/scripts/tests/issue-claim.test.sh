@@ -436,6 +436,22 @@ jq '.[1].body="<!-- claude-claim: {\"holder\":[],\"login\":\"alice\"} -->"' \
   "$STATE/comments.json" > "$STATE/comments.tmp" && mv "$STATE/comments.tmp" "$STATE/comments.json"
 run 873 --check --holder threadA --json
 check_eq "a parsed payload with a non-string holder also fails closed" 4 "$RC"
+# A well-formed JSON string still must round-trip through the shell without
+# changing the holder. These two values previously read as this thread.
+for INVALID_HOLDER in '"threadA\u001falice"' '"threadA\u0000"'; do
+  jq --argjson holder "$INVALID_HOLDER" \
+    '.[1].body=("<!-- claude-claim: " + ({holder:$holder,login:"alice"}|tojson) + " -->")' \
+    "$STATE/comments.json" > "$STATE/comments.tmp" && mv "$STATE/comments.tmp" "$STATE/comments.json"
+  run 873 --check --holder threadA --json
+  check_eq "$INVALID_HOLDER cannot be mistaken for this thread" 4 "$RC"
+  check_eq "$INVALID_HOLDER is unreadable" unknown "$(jq -r .verdict <<<"$OUT")"
+done
+run 873 --claim --holder $'threadA\n' --json
+check_eq "trailing newline in the requested holder is rejected before trimming" 2 "$RC"
+run 873 --claim --holder $'threadA\x1falice' --json
+check_eq "separator in the requested holder is rejected before writing" 2 "$RC"
+check_eq "invalid requested holders do not post a marker" 0 "$(cat "$STATE/next_id")"
+check_eq "invalid requested holders do not edit ownership" 0 "$(cat "$STATE/edit_calls")"
 # Same timestamp: id ordering still allows the newest readable winner.
 jq '.[0].id=3' "$STATE/comments.json" > "$STATE/comments.tmp" && mv "$STATE/comments.tmp" "$STATE/comments.json"
 run 873 --check --holder threadA --json

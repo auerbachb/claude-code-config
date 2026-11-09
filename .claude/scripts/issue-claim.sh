@@ -292,7 +292,11 @@ resolve_holder() {
   top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   printf '%s:%s' "$host" "$top"
 }
-HOLDER="$(resolve_holder)"
+# Append a sentinel so command substitution cannot silently trim a malformed
+# holder into the identity of a different thread.
+HOLDER="$(resolve_holder; printf '.')"
+HOLDER="${HOLDER%.}"
+[[ "$HOLDER" =~ [[:cntrl:]] ]] && die_usage "holder must not contain control characters"
 
 # --- API path helpers ----------------------------------------------------------
 # {owner}/{repo} resolves from the current checkout unless --repo names one.
@@ -417,8 +421,9 @@ CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | jq -s --arg m "$CLAIM_MARKER" \
 # created_at break on the comment id, so "which marker wins" is deterministic —
 # renewal verification compares winners by id. One jq pass emits the winner's
 # fields separated by US (0x1f): a non-whitespace IFS keeps empty fields
-# positional, which a tab would not. An unparseable winner yields no fields.
-# A present but unreadable winner is not an empty marker list.
+# positional, which a tab would not. Reject control bytes before serialization:
+# a payload separator or NUL can shift or truncate a holder in Bash. A present
+# but unreadable winner is not an empty marker list.
 #
 # parse_winner <claim-comments-json> -> sets W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT
 parse_winner() {
@@ -432,7 +437,9 @@ parse_winner() {
       | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
       | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
          ($p.since // ""), ($c.created_at // "")]
-      | map(tostring) | join("\u001f")
+      | map(tostring)
+      | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
+      | join("\u001f")
     end' 2>/dev/null || printf '')"
   [[ -z "$rec" ]] && return 0
   IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT <<<"$rec"
@@ -451,7 +458,7 @@ read_claim_comments() {
 
 parse_winner "$CLAIM_COMMENTS"
 if [[ "$CLAIM_COMMENTS" != '[]' && -z "$W_HOLDER" ]]; then
-  fail_closed "newest claim marker for issue #$ISSUE_NUMBER has no readable holder"
+  fail_closed "newest claim marker for issue #$ISSUE_NUMBER is unreadable"
 fi
 MARKER_ID="$W_ID"
 MARKER_AUTHOR="$W_AUTHOR"
