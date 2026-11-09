@@ -12,9 +12,10 @@ Verbatim SAFETY/MINDSET/SKILLS/RESOLVE blocks for subagent spawn prompts. Single
 RESOLVE: Never invoke a bare `.claude/scripts/<name>` path — the repo you are
 working in may carry no `.claude/` directory. Resolve every helper script to the
 first executable of, in order:
-  "$HOME/.claude/skills-worktree/.claude/scripts/<name>"
-  "$HOME/.claude/scripts/<name>"
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/<name>}"
+  "${HOME:+$HOME/.claude/scripts/<name>}"
   ".claude/scripts/<name>"
+If `HOME` is unset or empty, skip the two installed paths.
 Read reference docs the same way under `.claude/reference/`. If no candidate
 resolves, say so in ONE visible line naming the file and the paths checked —
 `ERROR: <name> not found (checked all three paths) — <capability> unavailable`

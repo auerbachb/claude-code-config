@@ -234,7 +234,10 @@ if [[ "${1:-}" == --pickup-time ]]; then
   exit $?
 fi
 
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+# The usage ledger is advisory; an unset HOME must not block ownership checks.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 CLAIM_LABEL="in-progress"
 GUARD_REF="the issue-claim guard (.claude/rules/issue-planning.md)"

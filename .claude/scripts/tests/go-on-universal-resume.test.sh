@@ -183,7 +183,7 @@ RESOLVER=$(awk '/^resolve_installed\(\) \{/{flag=1} flag{print} /^\}$/{if(flag)e
 [[ -n "$RESOLVER" ]] || fail "go-on has no resolve_installed() candidate list"
 grep -q 'skills-worktree/.claude/scripts' <<<"$RESOLVER" \
   || fail "stop-state candidate list omits the skills-worktree entry"
-grep -q '"\$HOME/.claude/scripts' <<<"$RESOLVER" \
+grep -Fq '"${HOME:+$HOME/.claude/scripts/' <<<"$RESOLVER" \
   || fail "stop-state candidate list omits the \$HOME install entry"
 # Inspect every candidate rather than matching one source spelling: a
 # checkout-relative fallback written as "./.claude/scripts/…", "$PWD/…", or via

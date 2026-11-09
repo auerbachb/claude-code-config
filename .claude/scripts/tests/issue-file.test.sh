@@ -261,7 +261,7 @@ check_contains "--help prints the usage" "Usage: issue-file.sh --repo" "$OUT"
 # --- 2. /issue-maker's create block ---------------------------------------------
 BLOCK=$(extract_skill_bash "$SKILL_MD" issue-maker-create) || { echo "FATAL: could not extract issue-maker-create" >&2; exit 1; }
 check_contains "issue-maker-create resolves issue-file.sh through the skills worktree" \
-  '"$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh"' "$BLOCK"
+  '"${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh}"' "$BLOCK"
 check_not_contains "issue-maker-create no longer calls gh issue create itself" "gh issue create" "$BLOCK"
 FAKE_HOME="$TMP/home"
 mkdir -p "$FAKE_HOME/.claude/skills-worktree/.claude/scripts"
@@ -341,7 +341,7 @@ check_contains "issue-maker reflection module names the one-shot entry" "referen
 DESK_BLOCK=$(extract_skill_bash "$IDEAS_MD" desk-idea-file) || { echo "FATAL: could not extract desk-idea-file" >&2; exit 1; }
 check_contains "the desk's create block calls the same script" '"$ISSUE_FILE" --repo "$IDEA_REPO"' "$DESK_BLOCK"
 check_contains "the desk's create block resolves issue-file.sh through the skills worktree" \
-  '"$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh"' "$DESK_BLOCK"
+  '"${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh}"' "$DESK_BLOCK"
 check_contains "ideas.md reads the shared one-shot reference" "references/one-shot-filing.md" "$(cat "$IDEAS_MD")"
 
 echo

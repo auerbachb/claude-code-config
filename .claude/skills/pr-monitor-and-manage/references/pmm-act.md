@@ -60,8 +60,8 @@ Run only after Step 5a actually force-pushed. Uses the **shared dismiss helper**
 
 ```bash
 DISMISS=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh" \
-         "$HOME/.claude/scripts/dismiss-stale-bot-changes.sh" \
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh}" \
+         "${HOME:+$HOME/.claude/scripts/dismiss-stale-bot-changes.sh}" \
          ".claude/scripts/dismiss-stale-bot-changes.sh"; do
   [ -x "$c" ] && { DISMISS="$c"; break; }
 done
@@ -130,8 +130,8 @@ fi
 # releases the claim. Mode `legacy` or a missing helper leaves the explicit
 # re-trigger below exactly as it was.
 TRIGGERS_ALLOWED=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/review-triggers-allowed.sh" \
-         "$HOME/.claude/scripts/review-triggers-allowed.sh" \
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/review-triggers-allowed.sh}" \
+         "${HOME:+$HOME/.claude/scripts/review-triggers-allowed.sh}" \
          ".claude/scripts/review-triggers-allowed.sh"; do
   [ -x "$c" ] && { TRIGGERS_ALLOWED="$c"; break; }
 done
@@ -154,8 +154,8 @@ if [ -n "$PF_KEY" ] && [ "$REVIEWER" != "__already_triggered__" ] && [ -n "$TRIG
 fi
 ta_release() { [ -n "$TA_CLAIMED" ] && "$TRIGGERS_ALLOWED" "$N" --release "$TA_CLAIMED" >/dev/null 2>&1; return 0; }
 CR_HOURLY=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
-         "$HOME/.claude/scripts/cr-review-hourly.sh" \
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh}" \
+         "${HOME:+$HOME/.claude/scripts/cr-review-hourly.sh}" \
          ""$CR_HOURLY_SH""; do
   [ -x "$c" ] && { CR_HOURLY="$c"; break; }
 done
@@ -179,8 +179,8 @@ case "$REVIEWER" in
     # BugBot is paid per review (issue #1897): a fleet tick never asks. It only
     # spends a grant the owner already approved for this PR and HEAD (#1898).
     PRG=""
-    for c in "$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh" \
-             "$HOME/.claude/scripts/paid-review-grant.sh" ".claude/scripts/paid-review-grant.sh"; do
+    for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh}" \
+             "${HOME:+$HOME/.claude/scripts/paid-review-grant.sh}" ".claude/scripts/paid-review-grant.sh"; do
       [ -x "$c" ] && { PRG="$c"; break; }
     done
     if [ -n "$PRG" ] && [ "$("$PRG" --trigger "$N" --vendor cursor 2>/dev/null | sed -n 's/^STATUS=//p')" = "triggered" ]; then

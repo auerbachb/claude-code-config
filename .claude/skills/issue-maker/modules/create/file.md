@@ -34,8 +34,8 @@ Before running this block, replace `ISSUE_BODY_7f34d1c9` with a newly generated 
 bash "$DISPATCHER" create postfile >/dev/null || exit $?
 ISSUE_FILE=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh" \
-  "$HOME/.claude/scripts/issue-file.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh}" \
+  "${HOME:+$HOME/.claude/scripts/issue-file.sh}" \
   ".claude/scripts/issue-file.sh"; do
   if [ -x "$candidate" ]; then ISSUE_FILE="$candidate"; break; fi
 done

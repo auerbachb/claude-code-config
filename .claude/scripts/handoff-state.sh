@@ -155,10 +155,11 @@
 #   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
 #      unevaluated jq expression rather than data (issue #1357) — the file is
 #      left unmodified. Evaluate the expression first and pass the result.
-#   5  Cannot complete the operation on disk. Three causes, all leaving the
+#   5  Cannot complete the operation on disk. Causes, all leaving the
 #      handoff file exactly as it was: mktemp / temp-write / mv failure,
-#      rm failure under --delete, or a REQUIRED sibling library missing at
-#      startup (see DEPENDENCIES — that one fails before anything is read).
+#      rm failure under --delete, a REQUIRED sibling library missing at
+#      startup (see DEPENDENCIES), or HOME unset or empty. A missing HOME
+#      or library stops before any handoff is read or written.
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
 #   70  --help header extraction produced no output (internal defect).
 #
@@ -171,12 +172,14 @@
 #     .claude/scripts/lib/pr-scope-resolver.sh  cwd -> owner/repo (issue #1366)
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
-  2>/dev/null >> "${HOME}/.claude/script-usage.log" || true
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
+    2>/dev/null >> "${HOME}/.claude/script-usage.log" || true
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCK_LIB="${SCRIPT_DIR}/state-lock.sh"
-HANDOFF_DIR="${HOME}/.claude/handoffs"
+HANDOFF_DIR="${HOME:+$HOME/.claude/handoffs}"
 
 # Saved before any parsing shifts them, so a read-modify-write whose lock was
 # stolen mid-flight can be retried from scratch (see _rmw_retry_or_fail).
@@ -463,6 +466,11 @@ if [[ $# -gt "$_expected_argc" ]]; then
   echo "handoff-state.sh: unexpected trailing argument(s) after --${MODE} ${PR_NUMBER}: $*" >&2
   echo "handoff-state.sh: leading flags (--owner-repo, --legacy-flat, --require-existing) must come BEFORE the mode flag — e.g. 'handoff-state.sh --legacy-flat --${MODE} ${PR_NUMBER} ...'. Nothing was read or written (issue #1366)." >&2
   exit 2
+fi
+
+if [[ -z "$HANDOFF_DIR" ]]; then
+  echo "handoff-state.sh: HOME is unset or empty; cannot resolve handoff storage. Nothing was read or written." >&2
+  exit 5
 fi
 
 # ---------------------------------------------------------------------------

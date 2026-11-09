@@ -44,7 +44,7 @@ Shell state does not survive between Bash calls, so every block below starts wit
 
 ```bash
 DESK=""
-for c in "${HUMAN_QUEUE_DESK_DIR:-}" "$HOME/.claude/skills-worktree/desk"; do
+for c in "${HUMAN_QUEUE_DESK_DIR:-}" "${HOME:+$HOME/.claude/skills-worktree/desk}"; do
   if [ -n "$c" ] && [ -x "$c/bin/desk-cli.sh" ]; then DESK="$c"; break; fi
 done
 if [ -z "$DESK" ]; then
@@ -54,7 +54,7 @@ HQ="$DESK/bin/desk-cli.sh"
 SKILL_SID="${CLAUDE_SESSION_ID}"
 SID="${SKILL_SID:-${CLAUDE_CODE_SESSION_ID:-}}"
 SESSION_STATE_SH=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/session-state.sh" "$HOME/.claude/scripts/session-state.sh"; do
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/session-state.sh}" "${HOME:+$HOME/.claude/scripts/session-state.sh}"; do
   if [ -x "$c" ]; then SESSION_STATE_SH="$c"; break; fi
 done
 ```

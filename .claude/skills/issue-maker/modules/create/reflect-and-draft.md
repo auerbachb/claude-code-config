@@ -37,8 +37,8 @@ Read both knobs from the one place that owns them rather than typing a number in
 ```bash
 SPLIT_THRESHOLDS=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/split-thresholds.sh" \
-  "$HOME/.claude/scripts/split-thresholds.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/split-thresholds.sh}" \
+  "${HOME:+$HOME/.claude/scripts/split-thresholds.sh}" \
   ".claude/scripts/split-thresholds.sh"; do
   [ -x "$candidate" ] && { SPLIT_THRESHOLDS="$candidate"; break; }
 done
