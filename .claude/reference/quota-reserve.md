@@ -86,6 +86,8 @@ In the isolated server, a manual turn, a `turn/start` explicitly tagged as autom
 
 Keep Codex reported-only. These hook inputs do not identify which turns the reserve can safely block while allowing the owner’s work. A future launcher could withhold work it can prove is autonomous, or interrupt a turn it owns on a connected App Server, after mapping the profile to a verified quota row. Missing origin, missing account mapping, or a read error must allow normal work.
 
+When rechecking on a later build, use identical prompt text for the manual, automation-tagged, and queued cases, and correlate each hook’s `turn_id` with the server’s turn events. Include a queue request during an active manual turn so a future classifier cannot mistake a queued message for permission to stop the owner’s turn.
+
 ## Related
 
 `usage-horizon.sh` (the harness's own token horizon, #1427), `subagent-thread-limit-park.md` (parking work killed by a limit), `ai-quotas.md` (the reader), `review-daily-cap.sh` (review spend). **Tests:** `.claude/scripts/tests/quota-reserve.test.sh`, `.claude/hooks/tests/quota-reserve-hooks.test.sh`.
