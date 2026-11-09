@@ -672,19 +672,35 @@ LIMIT_TASK_ID=""
 PARKED_UNTIL=""
 PARK_KIND=""
 PARK_RECORD_PRESENT=false
+# Match wake publication's exact IDs. Normalize only safe numbers in the
+# key, so 7 and 7.0 share a receipt while string "7" keeps its old key.
+PARK_STOP_PROOF_JQ='
+  def stop_id:
+    (type == "string" and length > 0) or
+    (type == "number" and . >= 0 and . <= 9007199254740991 and floor == .);
+  def normalized_stop_id:
+    if stop_id then (if type == "number" then floor else . end)
+    else error("invalid stopped wake identity") end;
+  def legacy: {park_claim_token, limit_cause, parked_until, limit_kind, limit_probe_fires_remaining};
+  def stop_key:
+    [ .park_generation, (.limit_resume_task_id | normalized_stop_id), .limit_resume_generation,
+      (if .park_generation == null then legacy else null end) ] | tojson | @uri;
+'
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   PARK_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) \
     || PARK_READ_RC=$?
   if [[ "$PARK_READ_RC" -eq 3 ]]; then
     PARK_IDENTITY_READ=true          # no state file has ever been written: no park to guard
   elif [[ "$PARK_READ_RC" -eq 0 ]] \
-    && PARK_DAY_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '
+    && PARK_DAY_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c "$PARK_STOP_PROOF_JQ"'
 if (. == null or type == "object") and
+  (.limit_resume_task_id == null or (.limit_resume_task_id | stop_id)) and
   (.park_generation == null or
    ((.park_generation | type) == "string" and (.park_generation | length) > 0 and .park_generation != "null"))
 then . else error("invalid durable park identity") end
 ' 2>/dev/null) \
-    && LIMIT_TASK_ID=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_resume_task_id // ""' 2>/dev/null) \
+    && LIMIT_TASK_ID=$(printf '%s' "$PARK_DAY_EXPECT" | jq -r "$PARK_STOP_PROOF_JQ"'
+         .limit_resume_task_id | if . == null then "" else normalized_stop_id end' 2>/dev/null) \
     && PARKED_UNTIL=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.parked_until // ""' 2>/dev/null) \
     && PARK_KIND=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_kind // ""' 2>/dev/null) \
     && PARK_RECORD_PRESENT=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '
@@ -724,12 +740,6 @@ retire_limit_park() {
 # A successful native TaskStop is a fact about this exact wake, not a generic
 # failed-stop exception. Retain it if retirement fails. The write only
 # adds tagged evidence; it never changes a wake ID, bound, policy or hit count.
-PARK_STOP_PROOF_JQ='
-  def legacy: {park_claim_token, limit_cause, parked_until, limit_kind, limit_probe_fires_remaining};
-  def stop_key:
-    [ .park_generation, .limit_resume_task_id, .limit_resume_generation,
-      (if .park_generation == null then legacy else null end) ] | tojson | @uri;
-'
 PARK_STOP_PROOF_KEY=""
 PARK_STOP_PROOF_MATCH=false
 if [[ "$PARK_IDENTITY_READ" == true ]]; then
@@ -737,7 +747,7 @@ if [[ "$PARK_IDENTITY_READ" == true ]]; then
   if [[ -n "$PARK_STOP_PROOF_KEY" ]] && printf '%s' "$PARK_DAY_EXPECT" | jq -e --arg key "$PARK_STOP_PROOF_KEY" "$PARK_STOP_PROOF_JQ"'
     . as $day | .limit_resume_stop_proofs[$key] as $proof |
     ($proof | type) == "object" and $proof.stopped == true and
-    ($proof.task_id | type == "string" and length > 0) and
+    ($proof.task_id | stop_id) and
     ($proof.wake_generation == null or ($proof.wake_generation | type == "string" and length > 0)) and
     $proof.park_generation == $day.park_generation and
     $proof.task_id == $day.limit_resume_task_id and
@@ -753,9 +763,9 @@ record_limit_stop_proof() {
   PARK_STOP_PROOF_KEY=$(printf '%s' "$PARK_DAY_EXPECT" | jq -r "$PARK_STOP_PROOF_JQ stop_key" 2>/dev/null) || return 8
   [[ -n "$PARK_STOP_PROOF_KEY" ]] || return 8
   PARK_STOP_PROOF_JSON=$(printf '%s' "$PARK_DAY_EXPECT" | jq -c "$PARK_STOP_PROOF_JQ"'
-    if (.limit_resume_task_id | type == "string" and length > 0) and
+    if (.limit_resume_task_id | stop_id) and
        (.limit_resume_generation == null or (.limit_resume_generation | type == "string" and length > 0)) then
-      {stopped: true, park_generation, task_id: .limit_resume_task_id,
+      {stopped: true, park_generation, task_id: (.limit_resume_task_id | normalized_stop_id),
        wake_generation: .limit_resume_generation, legacy_identity: legacy}
     else error("invalid stopped wake identity") end') || return 8
   # Generated parks retain their generation. A legacy record instead binds the
@@ -785,7 +795,7 @@ record_limit_stop_proof() {
 
 ```
 
-If retirement fails after a confirmed native `TaskStop`, retain a `limit_resume_stop_proofs` entry, tagged with the original durable park generation, task ID and wake generation (plus the legacy identity when no durable generation exists). A retry may skip `TaskStop` only when that typed proof matches its one current snapshot; a failed stop, missing task, arbitrary supplied assertion or mismatched proof is never evidence of a successful stop. Entries use an encoded generation/task/wake key (including the legacy tuple for legacy records), so concurrent confirmed stops cannot overwrite one another. Retirement clears the map with the park. If proof persistence fails, retain the successful native TaskStop result, original bound snapshot and `STOP_PROOF_PENDING` in this chat's resumable evidence; retry that exact proof write when storage recovers before retrying the stopped ID. Never reconstruct proof from a fresh record or replay it onto a replacement. If no trusted stop receipt survives, keep the park unresolved rather than guessing that the task is stopped.
+If retirement fails after a confirmed native `TaskStop`, retain a `limit_resume_stop_proofs` entry, tagged with the original durable park generation, task ID and wake generation (plus the legacy identity when no durable generation exists). A retry may skip `TaskStop` only when that typed proof matches its one current snapshot; a failed stop, missing task, arbitrary supplied assertion or mismatched proof is never evidence of a successful stop. Entries use an encoded generation/task/wake key (including the legacy tuple for legacy records), so concurrent confirmed stops cannot overwrite one another. JSON numbers and strings have distinct keys; equivalent safe integer encodings share one numeric key. Retirement clears the map with the park. If proof persistence fails, retain the successful native TaskStop result, original bound snapshot and `STOP_PROOF_PENDING` in this chat's resumable evidence; retry that exact proof write when storage recovers before retrying the stopped ID. Never reconstruct proof from a fresh record or replay it onto a replacement. If no trusted stop receipt survives, keep the park unresolved rather than guessing that the task is stopped.
 
 Both call sites below go through that one guarded path and read its three-way
 outcome. **Exit 7 is not a failure**: it says a newer park owns the slot, so this
@@ -809,7 +819,7 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   elif [[ "$PARK_READ_RC" -eq 3 ]]; then
     # No state file has ever been written: no wake, and no park to retire.
     LIMIT_WAKE_RESOLVED=true
-  elif [[ -n "$LIMIT_TASK_ID" && "$LIMIT_TASK_ID" != "null" ]]; then
+  elif [[ -n "$LIMIT_TASK_ID" ]]; then
     # Missing retirement machinery must not stop a Monitor we cannot retire.
     STOP_CONFIRMED=false
     if [[ -z "${PARK_RETIRE_SH:-}" || ! -x "$PARK_RETIRE_SH" ]]; then

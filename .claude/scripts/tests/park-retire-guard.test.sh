@@ -794,6 +794,71 @@ for SHAPE in generated legacy; do
   rm -f "$INSTALLED_SECOND"
 done
 
+# Numeric receipts use the same installed reader, retirement helper and
+# synthetic native stop as the string controls above.
+seed_typed_stop() { # park shape, raw JSON task
+  seed_complete_park reactive 2026-09-11T22:00:00Z placeholder
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=$2" >/dev/null
+  if [[ "$1" == generated ]]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"typed-park\"" >/dev/null
+  fi
+}
+for SHAPE in generated legacy; do
+  for TASK_JSON in 0 7 7.0 '"7"' '"null"'; do
+    seed_typed_stop "$SHAPE" "$TASK_JSON"
+    NATIVE_ID=$(printf '%s\n' "$TASK_JSON" | jq -r 'if type == "number" then floor else . end')
+    : > "$STOP_CALLS"
+    OUT=$(PARK_RETIRE_SH="$FAIL_RETIRE" run_stop_case)
+    check_eq "$SHAPE $TASK_JSON: failed retirement remains unresolved" false "$(field "$OUT" RESOLVED)"
+    check_eq "$SHAPE $TASK_JSON: native stop receives exact rendered ID" "$NATIVE_ID" "$(cat "$STOP_CALLS")"
+    RECORDED=$(jq -c --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_stop_proofs | to_entries[0].value.task_id' "$STATE_FILE")
+    EXPECTED=$(printf '%s\n' "$TASK_JSON" | jq -c 'if type == "number" then floor else . end')
+    check_eq "$SHAPE $TASK_JSON: receipt retains the task JSON type" "$EXPECTED" "$RECORDED"
+    if [[ "$TASK_JSON" == 7.0 ]]; then
+      "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=7" >/dev/null
+    fi
+    OUT=$(STOP_RESULT=1 run_stop_case)
+    check_eq "$SHAPE $TASK_JSON: exact receipt permits retry" true "$(field "$OUT" RESOLVED)"
+    check_eq "$SHAPE $TASK_JSON: retry never attempts a second stop" "$NATIVE_ID" "$(cat "$STOP_CALLS")"
+  done
+done
+
+for CHANGE in task-type wake-generation park-generation; do
+  seed_typed_stop generated 7
+  : > "$STOP_CALLS"
+  OUT=$(PARK_RETIRE_SH="$FAIL_RETIRE" run_stop_case)
+  case "$CHANGE" in
+    task-type) FIELD=limit_resume_task_id; REPLACEMENT='"7"' ;;
+    wake-generation) FIELD=limit_resume_generation; REPLACEMENT='"replacement-wake"' ;;
+    park-generation) FIELD=park_generation; REPLACEMENT='"replacement-park"' ;;
+  esac
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.$FIELD=$REPLACEMENT" >/dev/null
+  BEFORE=$(cat "$STATE_FILE")
+  OUT=$(STOP_RESULT=1 run_stop_case)
+  check_eq "$CHANGE: receipt cannot resolve a replacement identity" false "$(field "$OUT" RESOLVED)"
+  check_eq "$CHANGE: replacement and the foreign receipt stay untouched" "$BEFORE" "$(cat "$STATE_FILE")"
+  check_eq "$CHANGE: the receipt did not skip the separate native stop" 2 "$(wc -l < "$STOP_CALLS" | tr -d ' ')"
+done
+
+for TASK_JSON in -1 7.5 9007199254740992 false '""' '{}'; do
+  seed_typed_stop generated "$TASK_JSON"
+  BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
+  OUT=$(run_stop_case)
+  check_eq "$TASK_JSON: invalid stored task ID leaves recovery unresolved" false "$(field "$OUT" RESOLVED)"
+  check_eq "$TASK_JSON: invalid task is neither stopped nor erased" "|$BEFORE" "$(cat "$STOP_CALLS")|$(cat "$STATE_FILE")"
+done
+seed_typed_stop generated null
+BEFORE=$(cat "$STATE_FILE")
+OUT=$(bash -c "$BLOCK_RETIRE"$'\n''record_limit_stop_proof; echo "PROOF_RC=$?"' 2>&1)
+check_eq 'null task cannot make a stop receipt' 8 "$(field "$OUT" PROOF_RC)"
+check_eq 'null receipt attempt does not mutate the park' "$BEFORE" "$(cat "$STATE_FILE")"
+seed_typed_stop generated 0
+BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
+OUT=$(STOP_RESULT=1 run_stop_case)
+check_eq 'failed numeric native stop does not leave a receipt' "$BEFORE" "$(cat "$STATE_FILE")"
+check_eq 'failed numeric native stop leaves recovery unresolved' false "$(field "$OUT" RESOLVED)"
+
+
 # A helper disappearing after the successful stop still cannot erase its proof:
 # proof persistence uses the separate installed state helper, not park-retire.sh.
 seed_complete_park reactive 2026-09-11T22:00:00Z task-original
