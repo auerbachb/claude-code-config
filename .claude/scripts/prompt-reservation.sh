@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # catalog: backlog-pm — Reserve an attended /subagent launch prompt across threads with the session-state CAS writer
-# Usage: prompt-reservation.sh claim|verify|release --repo OWNER/REPO --kind leave|overrun
+# Usage: prompt-reservation.sh claim|verify|release|snapshot-leave|commit-leave --repo OWNER/REPO --kind leave|overrun
 #        [--issue N] [--generation TOKEN]
 # claim prints a generation on success. 10 = occupied/lost; 20 = cannot verify;
 # 2 = bad arguments. Never time out a prompt whose owner might still be alive.
@@ -8,14 +8,15 @@
 set -uo pipefail
 
 usage() {
-  printf '%s\n' 'Usage: prompt-reservation.sh claim|verify|release --repo OWNER/REPO --kind leave|overrun [--issue N] [--generation TOKEN]'
+  printf '%s\n' 'Usage: prompt-reservation.sh claim|verify|release|snapshot-leave|commit-leave --repo OWNER/REPO --kind leave|overrun [--issue N] [--generation TOKEN]' \
+    'commit-leave also requires --baseline JSON --window JSON --leave JSON'
 }
 
 action="${1:-}"
 if [[ "$action" == --help ]]; then usage; exit 0; fi
-case "$action" in claim|verify|release) shift ;; *) usage >&2; exit 2 ;; esac
+case "$action" in claim|verify|release|snapshot-leave|commit-leave) shift ;; *) usage >&2; exit 2 ;; esac
 
-repo="" kind="" issue="" generation=""
+repo="" kind="" issue="" generation="" baseline="" window="" leave=""
 while (( $# > 0 )); do
   (( $# >= 2 )) || { usage >&2; exit 2; }
   case "$1" in
@@ -23,6 +24,9 @@ while (( $# > 0 )); do
     --kind) kind="$2" ;;
     --issue) issue="$2" ;;
     --generation) generation="$2" ;;
+    --baseline) baseline="$2" ;;
+    --window) window="$2" ;;
+    --leave) leave="$2" ;;
     *) usage >&2; exit 2 ;;
   esac
   shift 2
@@ -37,6 +41,14 @@ if [[ "$action" == claim ]]; then
   [[ -z "$generation" ]] || { usage >&2; exit 2; }
 else
   [[ "$generation" =~ ^[0-9a-f]{32}$ ]] || { usage >&2; exit 2; }
+fi
+case "$action" in
+  snapshot-leave|commit-leave) [[ "$kind" == leave ]] || { usage >&2; exit 2; } ;;
+esac
+if [[ "$action" == commit-leave ]]; then
+  [[ -n "$baseline" && -n "$window" && -n "$leave" ]] || { usage >&2; exit 2; }
+else
+  [[ -z "$baseline$window$leave" ]] || { usage >&2; exit 2; }
 fi
 
 unavailable() { printf 'prompt-reservation: %s\n' "$1" >&2; exit 20; }
@@ -104,7 +116,63 @@ owner_gone() {
 owner="$(session_owner)" || unavailable 'cannot verify the Claude session process'
 repo_key="$("$state" --repo "$repo" --repo-key 2>/dev/null)" || unavailable 'cannot resolve repo state key'
 [[ "$repo_key" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || unavailable 'cannot resolve repo state key'
-path=".repos[\"$repo_key\"].prompt_reservations[\"$key\"]"
+repo_path=".repos[\"$repo_key\"]"
+path="$repo_path.prompt_reservations[\"$key\"]"
+
+# Read only these scheduling fields, even in repos with large durable state.
+# Snapshot eligibility rejects an explicit declaration or Monitor already in
+# progress; a spent planning-only record with no Monitor is replaceable.
+read_leave_context() {
+  context="$("$state" --repo "$repo" --get-json \
+    "$repo_path | {window,leave,reservation:.prompt_reservations.leave}" 2>/dev/null)" ||
+    unavailable 'cannot read leave scheduling state'
+  jq -e --arg token "$generation" --argjson owner "$owner" \
+    '.reservation.version == 1 and .reservation.generation == $token and .reservation.owner == $owner' \
+    <<<"$context" >/dev/null || exit 10
+}
+if [[ "$action" == snapshot-leave ]]; then
+  read_leave_context
+  now="$(date -u +%s)" || unavailable 'cannot read current time'
+  jq -e --argjson now "$now" '
+    def slot: . == null or type == "object";
+    def spent: . == null or (type == "number" and floor == . and . <= $now);
+    (.window | slot) and (.leave | slot) and
+    (.window.deadline_epoch | spent) and (.leave.no_deadline_until | spent) and
+    .leave.winddown_task_id == null and .leave.winddown_generation == null and
+    (.leave.active == null or .leave.active == false or
+     (.leave.active == true and .leave.winddown_scheduled == false))' \
+    <<<"$context" >/dev/null || exit 10
+  jq -c '{window,leave}' <<<"$context" || unavailable 'cannot encode leave snapshot'
+  exit 0
+fi
+if [[ "$action" == commit-leave ]]; then
+  jq -en --argjson baseline "$baseline" --argjson window "$window" --argjson leave "$leave" \
+    '$baseline | type == "object" and has("window") and has("leave") and
+      ($window | . == null or type == "object") and ($leave | type == "object")' >/dev/null 2>&1 ||
+    unavailable 'leave write arguments are invalid'
+  for attempt in 1 2; do
+    read_leave_context
+    # An unrelated decision for the same spent window need not discard a reply.
+    # Its latest value still participates in the locked compare, so a concurrent
+    # deadline or Monitor replacement between this read and the write is safe.
+    jq -e --argjson before "$baseline" '
+      def identity: if type == "object" then del(.launch_decisions) else . end;
+      (.window | identity) == ($before.window | identity) and .leave == $before.leave' \
+      <<<"$context" >/dev/null || exit 10
+    current_window="$(jq -c .window <<<"$context")" || unavailable 'cannot encode window'
+    current_leave="$(jq -c .leave <<<"$context")" || unavailable 'cannot encode leave state'
+    record="$(jq -c .reservation <<<"$context")" || unavailable 'cannot encode reservation'
+    rc=0
+    "$state" --repo "$repo" --cas "$path=$record" --expect "$record" \
+      --expect-at "$repo_path.window" "$current_window" --expect-at "$repo_path.leave" "$current_leave" \
+      --set "$repo_path.window=$window" --set "$repo_path.leave=$leave" >/dev/null || rc=$?
+    case "$rc" in
+      0) exit 0 ;;
+      7|6) [[ "$attempt" == 1 ]] || exit 10 ;;
+      *) unavailable 'cannot commit the leave answer' ;;
+    esac
+  done
+fi
 rc=0
 current="$("$state" --repo "$repo" --get-json "$path" 2>/dev/null)" || rc=$?
 if [[ "$rc" == 3 ]]; then current=null

@@ -103,6 +103,10 @@
 #                      0 reporting a won claim that is no longer in the file. An
 #                      exact-path --set keeps the precedence above, and a
 #                      DESCENDANT --set is allowed — it refines the claim.
+#   --expect-at <path> <JSON> adds a typed read guard to --cas, repeatable.
+#                      Every guard must match under the same lock before any
+#                      assignment. Guards use concrete scoped paths; mismatch
+#                      exits 7 and leaves the entire batch untouched.
 #
 #   --get <jq-path>    Read the value at <jq-path> from the state file and
 #                      print it on stdout (raw via `jq -r`). Exits 3 if the
@@ -1450,6 +1454,8 @@ CAS_PATH=""
 CAS_VALUE=""
 CAS_EXPECT=""
 CAS_EXPECT_SET=0
+CAS_GUARD_PATHS=()
+CAS_GUARD_VALUES=()
 # For --remove-agent: agent ids to delete from the `.active_agents` map
 # (issue #1631). Kept as data, never interpolated into a jq program — each id
 # is bound to its own `--arg` at write time.
@@ -1578,8 +1584,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cas)
       # See the --set branch: these two compose (issue #1445). --cas itself is
-      # still at most once — the composition adds --set writes to one compare,
-      # it does not make the compare N-ary.
+      # still at most once. Additional comparisons use --expect-at without
+      # introducing another assignment target.
       if [[ -n "$MODE" && "$MODE" != "cas" && "$MODE" != "set" ]]; then
         die_usage "--cas cannot be combined with --$MODE"
       fi
@@ -1600,6 +1606,12 @@ while [[ $# -gt 0 ]]; do
       CAS_PATH="${cas_arg%%=*}"
       CAS_VALUE="${cas_arg#*=}"
       shift 2
+      ;;
+    --expect-at)
+      [[ $# -ge 3 && -n "$2" ]] || die_usage "--expect-at requires a path and a JSON value"
+      CAS_GUARD_PATHS+=("$2")
+      CAS_GUARD_VALUES+=("$3")
+      shift 3
       ;;
     --expect)
       if [[ $# -lt 2 ]]; then
@@ -1636,9 +1648,19 @@ fi
 if [[ "$MODE" != "cas" && "$CAS_EXPECT_SET" -eq 1 ]]; then
   die_usage "--expect is only valid with --cas"
 fi
+if [[ "$MODE" != "cas" && "${#CAS_GUARD_PATHS[@]}" -gt 0 ]]; then
+  die_usage "--expect-at is only valid with --cas"
+fi
 if [[ "$MODE" == "cas" && "$DRY_RUN" == "1" ]]; then
   die_usage "--dry-run is not supported with --cas (--dry-run is only valid with --migrate)"
 fi
+# Resolve exactly one concrete path for composed writes and extra CAS reads.
+_norm_path() {
+  local expr="$1" collected
+  collected="$(jq -cn "[path($expr)]" 2>/dev/null)" || return 1
+  [[ "$(jq -r 'length' <<<"$collected" 2>/dev/null)" == "1" ]] || return 1
+  jq -c '.[0]' <<<"$collected" 2>/dev/null || return 1
+}
 # A composed --set naming an ANCESTOR of the CAS path is refused (issue #1445).
 # The CAS target is assigned first and companions follow in flag order, so an
 # ancestor write replaces the subtree the claim just landed in — erasing it
@@ -1666,12 +1688,6 @@ if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
   # require — the compare binds one value and the pipeline assigns one target.
   # Refusing here (rather than degrading to a weaker textual test) is what keeps
   # the guard from having a soft edge an unrenderable path could slip through.
-  _norm_path() {
-    local expr="$1" collected
-    collected="$(jq -cn "[path($expr)]" 2>/dev/null)" || return 1
-    [[ "$(jq -r 'length' <<<"$collected" 2>/dev/null)" == "1" ]] || return 1
-    jq -c '.[0]' <<<"$collected" 2>/dev/null || return 1
-  }
   _cas_scoped="$(scope_path "$CAS_PATH")"
   if ! _cas_norm="$(_norm_path "$_cas_scoped")"; then
     die_usage "--cas path '$CAS_PATH' does not name exactly one assignable location; --cas requires a single concrete path (issue #1445)"
@@ -2005,6 +2021,20 @@ if [[ "$MODE" == "cas" ]]; then
     CAS_COMPARE_ARGS+=(--arg __casexpect "$CAS_EXPECT")
   fi
 
+  # Bind optional guard paths as data; they are resolved with the same scope
+  # rules as the CAS target. The expressions are not inserted into this compare.
+  CAS_GUARD_FILTER=""
+  for ((_guard=0; _guard<${#CAS_GUARD_PATHS[@]}; _guard++)); do
+    _guard_scoped="$(scope_path "${CAS_GUARD_PATHS[_guard]}")"
+    _guard_norm="$(_norm_path "$_guard_scoped")" ||
+      die_usage "--expect-at requires one concrete path: ${CAS_GUARD_PATHS[_guard]}"
+    jq -n --argjson value "${CAS_GUARD_VALUES[_guard]}" 'empty' >/dev/null 2>&1 ||
+      die_usage "--expect-at requires a JSON value for ${CAS_GUARD_PATHS[_guard]}"
+    CAS_COMPARE_ARGS+=(--argjson "__guard_path_${_guard}" "$_guard_norm"
+                       --argjson "__guard_value_${_guard}" "${CAS_GUARD_VALUES[_guard]}")
+    CAS_GUARD_FILTER+=" and (getpath(\$__guard_path_${_guard}) == \$__guard_value_${_guard})"
+  done
+
   # Read the current value and compare with the expected value in one jq call
   # (inside the lock), so no concurrent writer can slip in between.
   # Use RC=0; VAR="$(cmd)" || RC=$? to capture jq's exit code under set -e;
@@ -2012,7 +2042,7 @@ if [[ "$MODE" == "cas" ]]; then
   # before CAS_COMPARE_RC=$? is ever evaluated.
   CAS_COMPARE_RC=0
   CAS_COMPARE_RESULT="$(jq -r "${CAS_COMPARE_ARGS[@]}" \
-    "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH as \$cur | if \$cur == \$__casexpect then \"match\" else \"mismatch\" end" \
+    "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH as \$cur | if (\$cur == \$__casexpect $CAS_GUARD_FILTER) then \"match\" else \"mismatch\" end" \
     "$input_file" 2>"$CAS_ERR")" || CAS_COMPARE_RC=$?
 
   if [[ "$CAS_COMPARE_RC" -ne 0 ]]; then

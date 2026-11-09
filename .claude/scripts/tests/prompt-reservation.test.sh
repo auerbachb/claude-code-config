@@ -199,4 +199,97 @@ check 'true|true' "${result%|*}" 'a distinct issue can ask its own overrun quest
 "$state" --repo org/gates --set ".repos[\"org/gates\"].window.launch_decisions[\"88\"]={\"decision\":\"launch_anyway\",\"deadline_epoch\":$deadline}" >/dev/null
 check 'false|false|' "$(overrun_gate "$owner2" 88)" 'later caller honors the published matching decision without asking'
 
+# Exercise the actual leave-by publication blocks with a competing direct
+# declaration, including a write just before the guarded CAS reaches its lock.
+extract_skill_bash "$leaveby" leave-by-elicit-snapshot > "$tmp/leave-snapshot"
+extract_skill_bash "$leaveby" leave-by-arm-state > "$tmp/leave-arm"
+extract_skill_bash "$leaveby" leave-by-no-deadline-until > "$tmp/leave-none"
+
+snapshot_leave() (
+  export FAKE_OWNER="$owner1"
+  REPO_KEY="$1"; LEAVE_PROMPT_GENERATION="$2"; PROMPT_RESERVE_SH="$helper"
+  source "$tmp/leave-snapshot"
+  printf '%s\n' "$ELICIT_BASELINE"
+)
+write_arm() (
+  export FAKE_OWNER="$owner1"
+  REPO_KEY="$1"; LEAVE_PROMPT_GENERATION="$2"; ELICIT_BASELINE="$3"
+  PROMPT_RESERVE_SH="$helper"; SESSION_STATE_SH="$state"
+  LEAVE_ELICIT_MODE=true; WINDDOWN_SCHEDULED=false
+  DEADLINE_EPOCH="$deadline"; WINDOW_MINUTES=20; EFFECTIVE_WINDOW_MIN=15
+  CHECKIN_EPOCH=$((deadline - 1800)); LEAD_MIN=30; WINDOW_STR='20 minutes'
+  source "$tmp/leave-arm"
+  printf '%s\n' "$ARM_RC"
+)
+write_none() (
+  export FAKE_OWNER="$owner1"
+  REPO_KEY="$1"; LEAVE_PROMPT_GENERATION="$2"; ELICIT_BASELINE="$3"; PROMPT_RESERVE_SH="$4"
+  ND_SCOPE=dismissed
+  source "$tmp/leave-none"
+  printf '%s\n' "$NO_DEADLINE_RC"
+)
+read_schedule() {
+  "$state" --repo "$1" --get-json ".repos[\"$1\"] | {window,leave}" | jq -c .
+}
+explicit_window='{"deadline_epoch":2147483000,"set_at":"explicit"}'
+explicit_leave='{"active":true,"winddown_task_id":"monitor-live","winddown_generation":"explicit-gen"}'
+write_explicit() {
+  "$state" --repo "$1" --set ".repos[\"$1\"].window=$explicit_window" \
+    --set ".repos[\"$1\"].leave=$explicit_leave" >/dev/null
+}
+
+call "$owner1" claim --repo org/explicit --kind leave
+explicit_token="$out"
+baseline="$(snapshot_leave org/explicit "$explicit_token")"
+check '{"window":null,"leave":null}' "$baseline" 'capture deadline and leave identity before opening the menu'
+write_explicit org/explicit
+explicit_before="$(read_schedule org/explicit)"
+check 10 "$(write_arm org/explicit "$explicit_token" "$baseline")" 'a timed menu answer cannot overwrite a direct declaration'
+check "$explicit_before" "$(read_schedule org/explicit)" 'direct deadline and Monitor identity remain exact'
+check "" "$(snapshot_leave org/explicit "$explicit_token")" 'an already active explicit Monitor prevents another menu'
+
+call "$owner1" claim --repo org/late --kind leave
+late_token="$out"
+baseline="$(snapshot_leave org/late "$late_token")"
+mkdir -p "$tmp/race-helper"
+cp "$helper" "$tmp/race-helper/prompt-reservation.sh"
+cat > "$tmp/race-helper/session-state.sh" <<'INJECT'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" --expect-at "*)
+    if [[ ! -e "$RACE_MARKER" ]]; then
+      touch "$RACE_MARKER"
+      "$RACE_STATE" --repo org/late --set ".repos[\"org/late\"].window=$RACE_WINDOW" \
+        --set ".repos[\"org/late\"].leave=$RACE_LEAVE" >/dev/null
+    fi
+    ;;
+esac
+exec "$RACE_STATE" "$@"
+INJECT
+chmod +x "$tmp/race-helper/session-state.sh"
+export RACE_STATE="$state" RACE_WINDOW="$explicit_window" RACE_LEAVE="$explicit_leave" RACE_MARKER="$tmp/injected"
+check 10 "$(write_none org/late "$late_token" "$baseline" "$tmp/race-helper/prompt-reservation.sh")" 'a late direct write wins against the dismissal marker inside the CAS'
+check "$explicit_before" "$(read_schedule org/late)" 'failed conditional dismissal changes neither field'
+
+spent=$(( $(date -u +%s) - 60 ))
+"$state" --repo org/spent --set ".repos[\"org/spent\"].window={\"deadline_epoch\":$spent,\"set_at\":\"spent\"}" \
+  --set '.repos["org/spent"].leave={"active":true,"winddown_scheduled":false}' >/dev/null
+call "$owner1" claim --repo org/spent --kind leave
+spent_token="$out"
+baseline="$(snapshot_leave org/spent "$spent_token")"
+check "$spent" "$(jq -r .window.deadline_epoch <<<"$baseline")" 'expired planning-only record without a Monitor can be replaced'
+"$state" --repo org/spent --set '.repos["org/spent"].window.launch_decisions={"12":{"decision":"skip"}}' \
+  --set '.repos["org/spent"].refill={"paused":true}' >/dev/null
+check 0 "$(write_none org/spent "$spent_token" "$baseline" "$helper")" 'same expired deadline can be retired despite an unrelated decision'
+result="$(read_schedule org/spent)"
+check true "$(jq -r '.window==null and .leave.active==false and .leave.no_deadline_until>0' <<<"$result")" 'suppression and old window removal commit together'
+check true "$("$state" --repo org/spent --get-json '.repos["org/spent"].refill.paused')" 'conditional write preserves unrelated state'
+
+call "$owner1" claim --repo org/allow --kind leave
+allow_token="$out"
+baseline="$(snapshot_leave org/allow "$allow_token")"
+check 0 "$(write_arm org/allow "$allow_token" "$baseline")" 'current menu answer writes the deadline and planning-only leave'
+check true "$(read_schedule org/allow | jq -r --argjson d "$deadline" '.window.deadline_epoch==$d and .leave.active==true and .leave.winddown_scheduled==false')" 'timed answer is stored without scheduling a Monitor'
+
 printf '\nPrompt reservation: %s assertions passed\n' "$pass"
