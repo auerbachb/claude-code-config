@@ -167,12 +167,76 @@
 #   issue-claim.sh 873 --claim --allow-claimed # -> mine      (exit 0, override stated)
 #   issue-claim.sh 873 --renew --holder "$H"   # -> mine      (exit 0; renewed when due)
 #   issue-claim.sh 873 --release               # -> unclaimed (exit 0)
+#   issue-claim.sh --pickup-time MERGED_AT < comments.json  # pure pickup-time lookup
 
 set -uo pipefail
+
+CLAIM_MARKER="claude-claim"
+
+# Classify the two protocol envelopes, not arbitrary Markdown. The writer has
+# always used the claim notice, a blank line, then the hidden marker; a bare
+# marker comment is also accepted. Quoted examples cannot enter either form.
+# No output means "not a record". A null line is a recognized but damaged
+# envelope and must remain a candidate so the newest unreadable record blocks.
+filter_claim_comments() {
+  jq -s --arg m "$CLAIM_MARKER" '
+    def marker_start($prefix): test("^[ ]{0,3}" + $prefix);
+    def record_line($prefix):
+      (gsub("\r\n"; "\n") | sub("^\n+"; "") | sub("\n+$"; "") | split("\n")) as $lines
+      | if ($lines[0] | test("^🔒 Claimed by `[^`]+` for active work[.]")) then
+          if ($lines | length) == 3 and $lines[1] == ""
+             and ($lines[2] | marker_start($prefix))
+          then $lines[2] else null end
+        elif ($lines[0] | marker_start($prefix)) then
+          if ($lines | length) == 1 then $lines[0] else null end
+        else empty end;
+    def decode($line; $prefix):
+      if $line == null then null
+      else
+        (try ($line | capture("^[ ]{0,3}" + $prefix + " *(?<p>.*)-->[ \t]*$") | .p | fromjson)
+         catch null) // null
+      end
+      | if type == "object" then . else null end;
+    ("<!-- " + $m + ":") as $prefix
+    | [ .[] | .[]? | select(.body != null and (.body | contains($prefix) or contains("🔒 Claimed by ")))
+        | (.body | record_line($prefix)) as $line
+        | ._claim_payload = decode($line; $prefix) ]'
+}
+
+# Pure input mode for estimate logging. Take paginated GitHub comment arrays
+# on stdin. It does not resolve a repository, log usage, or change ownership.
+estimate_pickup_time() {
+  [[ $# == 1 ]] || { printf '%s\n' 'Usage: issue-claim.sh --pickup-time MERGED_AT < comments.json' >&2; return 2; }
+  local records result
+  records="$(filter_claim_comments)" || return 4
+  result="$(printf '%s' "$records" | jq -r --arg bound "$1" '
+    def utc:
+      . as $text
+      | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+        and ((try (fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch null) == $text);
+    def holder_ok: type == "string" and length > 0 and all(explode[]; . >= 32 and . != 127);
+    if ($bound != "" and ($bound | utc | not)) or any(.[]; (.created_at | utc | not)) then
+      empty
+    else
+      [.[] | select($bound == "" or .created_at <= $bound)]
+      | sort_by(.created_at, .id) | last as $record
+      | $record._claim_payload as $payload
+      | select($payload.holder | holder_ok)
+      | ($payload.since | select(utc and . <= $record.created_at)) // $record.created_at
+    end')" || return 4
+  [[ -n "$result" ]] || return 3
+  printf '%s\n' "$result"
+}
+
+if [[ "${1:-}" == --pickup-time ]]; then
+  shift
+  estimate_pickup_time "$@"
+  exit $?
+fi
+
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 CLAIM_LABEL="in-progress"
-CLAIM_MARKER="claude-claim"
 GUARD_REF="the issue-claim guard (.claude/rules/issue-planning.md)"
 
 print_help() {
@@ -403,36 +467,6 @@ HAS_LABEL="$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$CLAIM_LABEL" '[.labels[
 [[ "$HAS_LABEL" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER labels"
 ASSIGNEES="$(printf '%s' "$ISSUE_JSON" | jq -r '[.assignees[]?.login] | join(" ")' 2>/dev/null || echo "ERR")"
 [[ "$ASSIGNEES" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER assignees"
-
-# Classify the two protocol envelopes, not arbitrary Markdown. The writer has
-# always used the claim notice, a blank line, then the hidden marker; a bare
-# marker comment is also accepted. Quoted examples cannot enter either form.
-# No output means "not a record". A null line is a recognized but damaged
-# envelope and must remain a candidate so the newest unreadable record blocks.
-filter_claim_comments() {
-  jq -s --arg m "$CLAIM_MARKER" '
-    def marker_start($prefix): test("^[ ]{0,3}" + $prefix);
-    def record_line($prefix):
-      (gsub("\r\n"; "\n") | sub("^\n+"; "") | sub("\n+$"; "") | split("\n")) as $lines
-      | if ($lines[0] | test("^🔒 Claimed by `[^`]+` for active work[.]")) then
-          if ($lines | length) == 3 and $lines[1] == ""
-             and ($lines[2] | marker_start($prefix))
-          then $lines[2] else null end
-        elif ($lines[0] | marker_start($prefix)) then
-          if ($lines | length) == 1 then $lines[0] else null end
-        else empty end;
-    def decode($line; $prefix):
-      if $line == null then null
-      else
-        (try ($line | capture("^[ ]{0,3}" + $prefix + " *(?<p>.*)-->[ \t]*$") | .p | fromjson)
-         catch null) // null
-      end
-      | if type == "object" then . else null end;
-    ("<!-- " + $m + ":") as $prefix
-    | [ .[] | .[]? | select(.body != null and (.body | contains($prefix) or contains("🔒 Claimed by ")))
-        | (.body | record_line($prefix)) as $line
-        | ._claim_payload = decode($line; $prefix) ]'
-}
 
 # --- read the claim comment ----------------------------------------------------
 # The marker is an HTML comment so it renders invisibly, and carries the holder

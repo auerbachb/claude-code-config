@@ -14,6 +14,8 @@ for the planning bound but include the coding term the per-round unit
 excludes. That unit is re-derived only from an open → merge measurement.
 The claim start is the claim marker's payload `since` when valid, else the
 marker comment's `created_at`, so a renewed claim does not shorten the duration.
+Quoted examples do not count. An unreadable newest eligible record falls back
+to PR creation.
 The published tier table stays authoritative for tiers with fewer than ~5 rows.
 
 ## Recalibrated Tier → Time Table
