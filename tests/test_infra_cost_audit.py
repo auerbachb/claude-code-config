@@ -33,6 +33,7 @@ class Fixture:
         self.billed_actions = True
         self.old_vercel_cli = False
         self.preview_count = 70
+        self.preview_target = None
         self.merge_count = 5
         self.next_page = None
 
@@ -54,10 +55,10 @@ class Fixture:
             return {"id": "prj_a", "name": "app-web", "resourceConfig": {"buildMachineType": "turbo"},
                     "link": {"type": "github", "org": org, "repo": repo},
                     "commandForIgnoringBuildStep": None}
-        if tool == "vercel" and args[1].startswith("/v6/deployments?"):
+        if tool == "vercel" and args[1].startswith("/v7/deployments?"):
             query = parse_qs(urlsplit(args[1]).query)
             assert query["projectId"] == ["prj_a"] and query["target"] == ["preview"]
-            return {"deployments": [{"uid": f"deploy-{i}"} for i in range(self.preview_count)],
+            return {"deployments": [{"uid": f"deploy-{i}", "target": self.preview_target} for i in range(self.preview_count)],
                     "pagination": {"next": self.next_page}}
         if tool == "gh" and args[:2] == ("repo", "view"):
             return {"nameWithOwner": REPO, "defaultBranchRef": {"name": "main"}, "isPrivate": self.private}
@@ -198,6 +199,14 @@ class AuditTest(unittest.TestCase):
             path.chmod(0o644)
             with self.assertRaises(m.Unavailable):
                 m.private_json(path)
+
+    def test_preview_query_does_not_count_a_production_deployment(self):
+        f = Fixture()
+        f.preview_target = "production"
+        row = self.collect(f)["repositories"][0]
+        self.assertEqual(row["preview_activity"]["status"], "unavailable")
+        self.assertNotIn("vercel_preview_volume", {x["code"] for x in row["findings"]})
+        self.assertIn("vercel_premium_machine", {x["code"] for x in row["findings"]})
 
     def test_older_vercel_cli_and_invalid_cursor(self):
         f = Fixture()

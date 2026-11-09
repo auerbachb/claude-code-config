@@ -301,10 +301,12 @@ def preview_count(run, settings, project_id, start, end):
         params = {**base}
         if next_page is not None:
             params["until"] = next_page
-        path = "/v6/deployments?" + urllib.parse.urlencode(params)
+        path = "/v7/deployments?" + urllib.parse.urlencode(params)
         response = obj(run.json("vercel", "api", path, "-X", "GET", *args))
         for row in seq(response.get("deployments")):
             row = obj(row)
+            if "target" not in row or row["target"] not in (None, "preview"):
+                raise Unavailable("Vercel returned a non-preview deployment")
             deployment_id = row.get("uid")
             if not isinstance(deployment_id, str) or not deployment_id:
                 raise Unavailable("Vercel deployment ID unavailable")
