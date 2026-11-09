@@ -16,6 +16,7 @@
     ".claude/reference/ai-quotas.md": {"issue": 1720, "score_at_decision": 15, "pr_count_at_decision": 15, "as_of": "2026-11-09", "note": "KEEP, 15 counted changes without recorded conflicts. Preserve section links. Rationale: .claude/reference/ai-quotas-reference-hotspot-decision.md."},
     ".claude/reference/ai-review-billing-dashboard-2026-08.md": {"issue": 1273, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
     ".claude/reference/ai-review-chain-roles-decision.md": {"issue": 1223, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
+    ".claude/reference/cr-oss-vs-paid-decision.md": {"issue": 1298,"score_at_decision": 2,"pr_count_at_decision": 2,"as_of": "2026-11-09","provenance": "current-below-detector-minimum","note": "KEEP. Zero current counted touches; #1951 was a sweep. 2/2 is the schema minimum. Rationale: .claude/reference/coderabbit-oss-comparison-hotspot-decision.md."},
     ".claude/reference/background-task-shutdown.md": {"issue": 1317, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
     ".claude/reference/chip-launching.md": {"issue": 916, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
     ".claude/reference/pm-day-mode.md": {"issue": 1314, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-11-09", "note": "Extract only captured-wake recovery. The current pre-extraction window counted four merges and zero conflicts. See pm-day-mode-hotspot-decision.md."},
