@@ -1260,6 +1260,85 @@ run 873 --release --expect-claim-id none
 check_eq "scoped cleanup retry completes" 0 "$RC"
 check_eq "scoped cleanup retry clears the index" "" "$(cat "$STATE/labels")"
 
+# Prose can quote the protocol without publishing a record. These comments
+# sort after the authentic marker and include same-account examples so an
+# overbroad renewal or release would actually try to delete them.
+seed_claim_examples() {
+  local at="$1"
+  jq --arg at "$at" '. + [
+    {id:901,created_at:$at,user:{login:"review-bot"},body:"The helper writes a `<!-- claude-claim: … -->` marker."},
+    {id:902,created_at:$at,user:{login:"alice"},body:("Example:\n\n````markdown\n```\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n````")},
+    {id:903,created_at:$at,user:{login:"alice"},body:("> <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")},
+    {id:904,created_at:$at,user:{login:"alice"},body:("    <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")},
+    {id:905,created_at:$at,user:{login:"alice"},body:("   ~~~\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n   ~~~~")}
+  ]' "$STATE/comments.json" > "$TMP/with-examples.json"
+  mv "$TMP/with-examples.json" "$STATE/comments.json"
+}
+claim_examples() { jq -c '[.[] | select(.id >= 901)]' "$STATE/comments.json"; }
+
+reset_issue
+seed_claim_examples "$(date -u +%FT%TZ)"
+jq '[.[] | select(.id == 901)]' "$STATE/comments.json" > "$TMP/inline-example.json"
+mv "$TMP/inline-example.json" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "inline CodeRabbit-style prose is startable" 0 "$RC"
+check_eq "inline prose does not create a claim" unclaimed "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+seed_claim_examples "$(date -u +%FT%TZ)"
+run 873 --check --holder threadA --json
+check_eq "quoted examples alone are unclaimed" 0 "$RC"
+check_eq "quoted examples alone are not protocol candidates" unclaimed "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+run 873 --claim --holder threadA --json
+check_eq "record-classification fixture claimed" 0 "$RC"
+run 873 --check --holder threadA --json
+AUTHENTIC_ID=$(jq -r .claim_comment_id <<<"$OUT")
+age_newest_marker 3
+seed_claim_examples "$(date -u +%FT%TZ)"
+EXAMPLES_BEFORE=$(claim_examples)
+run 873 --check --holder threadA --json
+check_eq "newer examples do not shadow authentic claim" 0 "$RC"
+check_eq "check returns the authentic claim ID" "$AUTHENTIC_ID" "$(jq -r .claim_comment_id <<<"$OUT")"
+run 873 --renew --holder threadA --json
+check_eq "renewal ignores quoted marker examples" 0 "$RC"
+check_eq "authentic claim is renewed when due" true "$(jq -r .renewed <<<"$OUT")"
+check_eq "renewal cleanup preserves all examples" "$EXAMPLES_BEFORE" "$(claim_examples)"
+run 873 --check --holder threadA --json
+OBSERVED_CLAIM_ID=$(jq -r .claim_comment_id <<<"$OUT")
+[[ "$OBSERVED_CLAIM_ID" != "$AUTHENTIC_ID" ]] || check_eq "renewed claim has new ID" different same
+run 873 --release --holder threadA --expect-claim-id "$OBSERVED_CLAIM_ID" --json
+check_eq "guarded release ignores quoted marker examples" 0 "$RC"
+check_eq "release preserves all examples" "$EXAMPLES_BEFORE" "$(claim_examples)"
+run 873 --check --holder threadA --json
+check_eq "release leaves the issue unclaimed despite prose" unclaimed "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+run 873 --claim --holder threadA
+age_newest_marker 3
+jq --arg at "$(date -u +%FT%TZ)" '. + [{id:901,created_at:$at,user:{login:"alice"},body:"<!-- claude-claim: incomplete"}]' \
+  "$STATE/comments.json" > "$TMP/newest-incomplete.json"
+mv "$TMP/newest-incomplete.json" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "newer standalone incomplete marker remains unreadable" 4 "$RC"
+check_eq "genuine unreadable candidate does not expose older owner" unknown "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+jq -n --arg at "$(date -u +%FT%TZ)" '[{id:901,created_at:$at,user:{login:"alice"},
+  body:("```markdown\n<!-- claude-claim: {\"holder\":\"threadWrong\",\"login\":\"alice\"} -->\n```\n\n" +
+        "<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")}]' > "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "unquoted marker after a fence wins over fenced example" mine "$(jq -r .verdict <<<"$OUT")"
+check_eq "the decoded holder comes from the unquoted record" threadA "$(jq -r .claimant_holder <<<"$OUT")"
+
+jq '.[0].body = (.[0].body + "\n<!-- claude-claim: {\"holder\":\"threadB\",\"login\":\"alice\"} -->")' \
+  "$STATE/comments.json" > "$TMP/ambiguous-standalone.json"
+mv "$TMP/ambiguous-standalone.json" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "two standalone records in one comment are ambiguous" 4 "$RC"
+check_eq "ambiguous standalone records remain fail closed" unknown "$(jq -r .verdict <<<"$OUT")"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

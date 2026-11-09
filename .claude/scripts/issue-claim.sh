@@ -404,6 +404,44 @@ HAS_LABEL="$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$CLAIM_LABEL" '[.labels[
 ASSIGNEES="$(printf '%s' "$ISSUE_JSON" | jq -r '[.assignees[]?.login] | join(" ")' 2>/dev/null || echo "ERR")"
 [[ "$ASSIGNEES" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER assignees"
 
+# Candidate recognition comes before decoding. An inline quotation, blockquote,
+# or fenced/indented code example is not a record. A standalone marker outside
+# code is a candidate even without a closing delimiter or readable payload.
+# Keep it in the array so an unreadable newest record still blocks the claim.
+filter_claim_comments() {
+  jq -s --arg m "$CLAIM_MARKER" '
+    def fence_head:
+      capture("^[ ]{0,3}(?<token>`{3,}|~{3,})(?<tail>.*)$") // null;
+    def marker_lines($prefix):
+      reduce (split("\n")[] | sub("\r$"; "")) as $line
+        ({fence: null, lines: []};
+         ($line | fence_head) as $f
+         | if .fence != null then
+             if $f != null
+                and $f.token[0:1] == .fence[0:1]
+                and ($f.token | length) >= (.fence | length)
+                and ($f.tail | test("^[ \t]*$"))
+             then .fence = null else . end
+           elif $f != null and ($f.token[0:1] == "~" or ($f.tail | contains("`") | not)) then
+             .fence = $f.token
+           elif ($line | test("^[ ]{0,3}" + $prefix)) then
+             .lines += [$line]
+           else . end)
+      | .lines;
+    def decode($lines; $prefix):
+      if ($lines | length) != 1 then null
+      else
+        (try ($lines[0] | capture("^[ ]{0,3}" + $prefix + " *(?<p>.*)-->[ \t]*$") | .p | fromjson)
+         catch null) // null
+      end
+      | if type == "object" then . else null end;
+    ("<!-- " + $m + ":") as $prefix
+    | [ .[] | .[]? | select(.body != null and (.body | contains($prefix)))
+        | (.body | marker_lines($prefix)) as $lines
+        | select(($lines | length) > 0)
+        | ._claim_payload = decode($lines; $prefix) ]'
+}
+
 # --- read the claim comment ----------------------------------------------------
 # The marker is an HTML comment so it renders invisibly, and carries the holder
 # token + claimant login as JSON. Newest matching comment wins.
@@ -412,8 +450,7 @@ if ! COMMENTS_JSON="$(gh api --paginate "$REPO_PREFIX/issues/$ISSUE_NUMBER/comme
 fi
 
 # --paginate concatenates one JSON array per page; -s flattens them into one.
-CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | jq -s --arg m "$CLAIM_MARKER" \
-  '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- " + $m + ":"))) ]' 2>/dev/null || echo "ERR")"
+CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | filter_claim_comments 2>/dev/null || echo "ERR")"
 [[ "$CLAIM_COMMENTS" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER comments"
 
 # Select the winning (newest) claim comment and parse its payload. The payload
@@ -431,9 +468,9 @@ parse_winner() {
   W_ID=""; W_AUTHOR=""; W_HOLDER=""; W_LOGIN=""; W_SINCE=""; W_AT=""
   [[ "$1" == '[]' ]] && return 0
   local rec
-  rec="$(printf '%s' "$1" | jq -r --arg m "$CLAIM_MARKER" '
+  rec="$(printf '%s' "$1" | jq -r '
     (sort_by(.created_at, .id) | last) as $c
-    | ($c.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson) as $p
+    | $c._claim_payload as $p
     | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
     | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
        ($p.since // ""), ($c.created_at // "")]
@@ -451,8 +488,7 @@ parse_winner() {
 read_claim_comments() {
   local raw
   raw="$(gh api --paginate "$REPO_PREFIX/issues/$ISSUE_NUMBER/comments?per_page=100" 2>"$ERR_FILE")" || return 1
-  printf '%s' "$raw" | jq -s --arg m "$CLAIM_MARKER" \
-    '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- " + $m + ":"))) ]' 2>/dev/null
+  printf '%s' "$raw" | filter_claim_comments 2>/dev/null
 }
 
 parse_winner "$CLAIM_COMMENTS" || fail_closed "newest claim marker for issue #$ISSUE_NUMBER is unreadable"
@@ -773,9 +809,8 @@ winner_is_ours() {
 # marker is otherwise indistinguishable, so nothing is ever reconciled or
 # withdrawn by holder or by id order.
 own_run_markers() {
-  printf '%s' "$1" | jq -r --arg v "$VIEWER" --arg r "$RUN_NONCE" --arg m "$CLAIM_MARKER" '
-    .[] | select((.user.login // "") == $v)
-    | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .run) catch "") == $r)
+  printf '%s' "$1" | jq -r --arg v "$VIEWER" --arg r "$RUN_NONCE" '
+    .[] | select((.user.login // "") == $v and ._claim_payload.run == $r)
     | .id' 2>/dev/null || true
 }
 
@@ -877,9 +912,9 @@ do_renew() {
       [[ -z "$cid" ]] && continue
       gh api -X DELETE "$REPO_PREFIX/issues/comments/$cid" >/dev/null 2>&1 || cleanup_failed=1
     done < <(printf '%s' "$verify" | jq -r --arg v "$VIEWER" --arg h "$HOLDER" \
-      --arg keep "$new_id" --arg m "$CLAIM_MARKER" '
+      --arg keep "$new_id" '
       .[] | select((.user.login // "") == $v and ((.id | tostring) != $keep))
-      | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .holder) catch "") == $h)
+      | select(._claim_payload.holder == $h)
       | .id' 2>/dev/null || true)
     (( cleanup_failed )) && echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but could not delete an older marker of this holder; the duplicate is inert (the newest marker wins) and the next renewal or release removes it" >&2
 
