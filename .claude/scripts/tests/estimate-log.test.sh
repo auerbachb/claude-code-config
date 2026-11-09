@@ -347,13 +347,87 @@ for output_mask in 0022 0027 0077 0002; do
   case "$output_mask" in 0022) EXPECTED_MODE=644 ;; 0027) EXPECTED_MODE=640 ;; 0077) EXPECTED_MODE=600 ;; 0002) EXPECTED_MODE=664 ;; esac
   check_eq "rollup new report umask $output_mask: permissions" "$EXPECTED_MODE" "$(file_mode "$MODE_REPORT")"
 done
-for output_mode in 600 640 644 664; do
+for output_mode in 000 001 010 600 640 644 664 1001 1777 7777; do
   MODE_REPORT="$ROLLUP_DIR/mode-existing-$output_mode.md"
   printf 'existing\n' > "$MODE_REPORT"
   chmod "$output_mode" "$MODE_REPORT"
   run_rollup "$ROLLUP_DIR/native.jsonl" "$MODE_REPORT"
   check_eq "rollup existing mode $output_mode: status" 0 "$ROLLUP_RC"
   check_eq "rollup existing mode $output_mode: permissions" "$output_mode" "$(file_mode "$MODE_REPORT")"
+  chmod 600 "$MODE_REPORT"
+  check_eq "rollup existing mode $output_mode: complete report" yes "$(report_line "$EXPECTED_SOURCE" "$MODE_REPORT")"
+done
+
+# Leading-dash relative names retain their exact destination and alias safety.
+ROLLUP_SAVED_CWD=$(pwd)
+cd "$ROLLUP_DIR" || exit 1
+for output_kind in existing new; do
+  DASH_REPORT="-$output_kind-report.md"
+  if [[ "$output_kind" == existing ]]; then
+    printf 'old report\n' > "$DASH_REPORT"
+    chmod 640 "./$DASH_REPORT"
+  fi
+  cp "$ROLLUP_DIR/native.jsonl" "$TMP/input-before"
+  run_rollup "$ROLLUP_DIR/native.jsonl" "$DASH_REPORT"
+  check_eq "rollup $output_kind dash name: status" 0 "$ROLLUP_RC"
+  check_eq "rollup $output_kind dash name: exact report entry" yes "$(report_line "$EXPECTED_SOURCE" "./$DASH_REPORT")"
+  if [[ "$output_kind" == existing ]]; then
+    check_eq 'rollup existing dash name: permissions' 640 "$(file_mode "./$DASH_REPORT")"
+  fi
+  check_eq "rollup $output_kind dash name: ledger preserved" yes "$(unchanged_file "$ROLLUP_DIR/native.jsonl" "$TMP/input-before")"
+  check_eq "rollup $output_kind dash name: no temporary artifact" 0 "$(find "$ROLLUP_DIR" -name '.estimate-rollup-*' | wc -l | tr -d ' ')"
+done
+ln -s "$ROLLUP_DIR/native.jsonl" ./-ledger-alias.md
+run_rollup "$ROLLUP_DIR/native.jsonl" -ledger-alias.md
+check_eq 'rollup dash alias: refused before mutation' 5 "$ROLLUP_RC"
+check_eq 'rollup dash alias: ledger preserved' yes "$(unchanged_file "$ROLLUP_DIR/native.jsonl" "$TMP/input-before")"
+cd "$ROLLUP_SAVED_CWD" || exit 1
+
+# Permission failures must not publish or hide malformed mode output.
+ESTIMATE_REAL_STAT=$(command -v stat)
+ESTIMATE_REAL_CHMOD=$(command -v chmod)
+export ESTIMATE_REAL_STAT ESTIMATE_REAL_CHMOD
+cat > "$TMP/bin/stat" <<'STAT_STUB'
+#!/usr/bin/env bash
+case "${ESTIMATE_STAT_FAULT:-}" in
+  missing) : > "$ESTIMATE_PERMISSION_MARKER"; exit 127 ;;
+  malformed) : > "$ESTIMATE_PERMISSION_MARKER"; printf '%s\n' "$ESTIMATE_BAD_MODE"; exit 0 ;;
+esac
+exec "$ESTIMATE_REAL_STAT" "$@"
+STAT_STUB
+cat > "$TMP/bin/chmod" <<'CHMOD_STUB'
+#!/usr/bin/env bash
+if [[ "${ESTIMATE_CHMOD_FAULT:-}" == missing && "$*" == *'.estimate-rollup-'* ]]; then
+  : > "$ESTIMATE_PERMISSION_MARKER"; exit 127
+fi
+exec "$ESTIMATE_REAL_CHMOD" "$@"
+CHMOD_STUB
+chmod +x "$TMP/bin/stat" "$TMP/bin/chmod"
+export ESTIMATE_PERMISSION_MARKER="$TMP/permission-fault-fired"
+MODE_REPORT="$ROLLUP_DIR/permission-failure.md"
+for permission_fault in stat-missing chmod-missing mode-invalid mode-long mode-space mode-multiple; do
+  printf 'original report\n' > "$MODE_REPORT"
+  cp "$MODE_REPORT" "$TMP/report-before"
+  rm -f "$ESTIMATE_PERMISSION_MARKER"
+  case "$permission_fault" in
+    stat-missing) export ESTIMATE_STAT_FAULT=missing ;;
+    chmod-missing) export ESTIMATE_CHMOD_FAULT=missing ;;
+    *) export ESTIMATE_STAT_FAULT=malformed
+       case "$permission_fault" in
+         mode-invalid) ESTIMATE_BAD_MODE=8 ;;
+         mode-long) ESTIMATE_BAD_MODE=00000 ;;
+         mode-space) ESTIMATE_BAD_MODE=' 600' ;;
+         mode-multiple) ESTIMATE_BAD_MODE=$'600\n640' ;;
+       esac
+       export ESTIMATE_BAD_MODE ;;
+  esac
+  run_rollup "$ROLLUP_DIR/native.jsonl" "$MODE_REPORT"
+  unset ESTIMATE_STAT_FAULT ESTIMATE_CHMOD_FAULT ESTIMATE_BAD_MODE
+  check_eq "rollup $permission_fault: file-error exit" 5 "$ROLLUP_RC"
+  check_eq "rollup $permission_fault: real boundary reached" yes "$([[ -f "$ESTIMATE_PERMISSION_MARKER" ]] && echo yes)"
+  check_eq "rollup $permission_fault: report bytes preserved" yes "$(unchanged_file "$MODE_REPORT" "$TMP/report-before")"
+  check_eq "rollup $permission_fault: ledger bytes preserved" yes "$(unchanged_file "$ROLLUP_DIR/native.jsonl" "$TMP/input-before")"
+  check_eq "rollup $permission_fault: no temporary artifact" 0 "$(find "$ROLLUP_DIR" -name '.estimate-rollup-*' | wc -l | tr -d ' ')"
 done
 
 # Directory operands must never acquire mv's "move into this directory"

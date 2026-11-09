@@ -93,6 +93,8 @@ build_publish_fixture() { # build_publish_fixture <root> <skill-publisher-body>
   cp "$HOOK" "$root/tree/.claude/hooks/session-start-sync.sh"
   cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$REPO_ROOT/.claude/scripts/repo-root.sh" \
      "$root/tree/.claude/scripts/"
+  cp "$REPO_ROOT/.claude/scripts/config-sync-tail.sh" "$root/tree/.claude/scripts/"
+  cp "$REPO_ROOT/.claude/scripts/lib/config-sync-pending.sh" "$root/tree/.claude/scripts/lib/"
   cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$root/tree/.claude/scripts/lib/"
   printf '#!/usr/bin/env python3\nprint("hooks registered (stub)")\n' \
     > "$root/tree/.claude/hooks/register-hooks.py"
