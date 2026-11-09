@@ -1250,6 +1250,15 @@ check_eq "publication race reports lost with only the new cleanup target" '["los
   "$(printf '%s\n' "$REC_PUB" | jq -c '[.status,.stop_new_task]')"
 check_eq "publication never adopts or overwrites the replacement" "$REC_REPLACED" "$(recovery_read)"
 
+for REC_KIND in '"weekly"' null '"unrecognized"' 42; do
+  seed_recovery reactive null null
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_kind=$REC_KIND" >/dev/null
+  REC_ORIGINAL=$(recovery_read)
+  check_eq "future park kind $REC_KIND refuses recovery" manual \
+    "$(recovery_json "$(recovery_prepare "")" .route)"
+  check_eq "future park kind $REC_KIND stays parked" "$REC_ORIGINAL" "$(recovery_read)"
+done
+
 seed_recovery preemptive 0 null
 check_eq "spent probe stays parked" manual "$(recovery_json "$(recovery_prepare "")" .route)"
 seed_recovery preemptive null null
