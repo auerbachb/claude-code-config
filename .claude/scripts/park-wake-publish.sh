@@ -114,11 +114,12 @@ case "$classification" in ready) ;; lost) exit 7 ;; *) exit 5 ;; esac
 
 task_json=$(jq -cn --arg value "$task" --arg encoding "$encoding" '
   if $encoding == "string" then $value else ($value | try fromjson catch $value) end') || exit 5
-if ! printf '%s' "$task_json" | jq -e '
+# Check the original numeric lexeme before any jq build can round a
+# near-boundary fraction into an integer. String IDs keep their original type.
+if ! printf '%s\n' "$task_json" | jq -e --arg raw "$task" '
   (type == "string" and length > 0) or
-  (type == "number" and . >= 0 and floor == .)' >/dev/null; then exit 5; fi
-if [[ "$recovery_binding" != null ]] && ! printf '%s' "$task_json" | jq -e '
-  type != "number" or . <= 9007199254740991' >/dev/null; then exit 5; fi
+  (type == "number" and . <= 9007199254740991 and
+    ($raw | test("^[ \\t\\r\\n]*(-?0|[1-9][0-9]*)(\\.0+)?[ \\t\\r\\n]*$")))' >/dev/null; then exit 5; fi
 generation_json=$(jq -cn --arg gen "$generation" '$gen') || exit 5
 
 # One whole-object CAS retains the park check AND the wake-pair check. The
