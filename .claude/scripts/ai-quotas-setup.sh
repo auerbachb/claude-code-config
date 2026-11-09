@@ -2285,7 +2285,7 @@ share_copy() { # <profile_dir> <name> <source>
 # list are what make it that account's. Nothing from either file is printed:
 # an MCP server entry can carry an API key in its env block.
 share_merge_mcp() { # <profile_dir> <primary_json>
-  local path="$1/.claude.json" primary="$2" servers n existing merged tmp mode dest
+  local path="$1/.claude.json" primary="$2" servers n existing merged tmp mode dest backup=""
   if [[ ! -f "$primary" ]]; then
     SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
     echo "  skipped .claude.json — $primary does not exist in the primary install"
@@ -2333,23 +2333,37 @@ share_merge_mcp() { # <profile_dir> <primary_json>
       rm -f "$tmp"
       die 5 "$path changed before backup — this path was left alone; re-run share-config when the profile is idle"
     fi
-    # Keep a copy without moving the live name. Check both sides of the copy:
-    # the keepsake must represent the observed JSON and the live bytes must
-    # still match it immediately before installation. Another writer can
-    # still race the comparison and rename, so the profile must be idle.
+    # Copy to an owned name. `link` publishes at exactly the chosen name
+    # and refuses an existing entry, even a symlink or directory that
+    # appeared after pre_share_dest checked it.
     dest="$(pre_share_dest "$path")"
-    cp -p "$path" "$dest" || { rm -f "$tmp"; die 5 "could not keep $path as $dest"; }
-    if [[ ! -f "$dest" || -L "$dest" || "$(cat "$dest")" != "$snapshot" ||
-          ! -f "$path" || -L "$path" ]] || ! cmp -s "$dest" "$path"; then
-      rm -f "$tmp"
+    backup="$(mktemp "$path.backup.XXXXXX")" || { rm -f "$tmp"; die 5 "could not stage a backup of $path"; }
+    cp -p "$path" "$backup" || { rm -f "$tmp" "$backup"; die 5 "could not copy backup of $path"; }
+    if [[ ! -f "$backup" || -L "$backup" || "$(cat "$backup")" != "$snapshot" ]]; then
+      rm -f "$tmp" "$backup"
+      die 5 "$path changed during backup — live path retained; re-run share-config when the profile is idle"
+    fi
+    link "$backup" "$dest" || { rm -f "$tmp" "$backup"; die 5 "could not publish backup at $dest — live path retained"; }
+    # Keep the private alias for the final comparison. An unrelated writer
+    # can still race this check and the rename, so the profile must be idle.
+    if [[ ! -f "$dest" || -L "$dest" || ! "$backup" -ef "$dest" ||
+          ! -f "$path" || -L "$path" ]] || ! cmp -s "$backup" "$path"; then
+      rm -f "$tmp" "$backup"
       die 5 "$path changed during backup — live path and backup retained; re-run share-config when the profile is idle"
     fi
   elif [[ -e "$path" || -L "$path" ]]; then
     rm -f "$tmp"
     die 5 "$path appeared while the merge was computed — this path was left alone; re-run share-config when the profile is idle"
   fi
-  mv -f "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
-  if [[ "$had_original" == true ]]; then share_note_moved ".claude.json" "$dest"; fi
+  if ! mv -f "$tmp" "$path"; then
+    rm -f "$tmp"
+    if [[ -n "$backup" ]]; then rm -f "$backup"; fi
+    die 5 "could not install $path"
+  fi
+  if [[ -n "$backup" ]]; then
+    rm -f "$backup"
+    share_note_moved ".claude.json" "$dest"
+  fi
   SHARE_MERGED=$((SHARE_MERGED + 1))
   echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
 }
