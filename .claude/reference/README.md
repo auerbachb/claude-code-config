@@ -97,6 +97,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `pm-day-mode.md` — mechanism and rationale for `/pm day` continuous mode (Issue #1194): tick structure, digest tuple, the exit/pause/halt taxonomy, why the failure halt is a field of its own, and the one-chip-per-tick bound
 - `pm-day-horizon-fixture-hotspot-decision.md` — KEEP the shared PM horizon fixture (Issue #1678); three current counted changes, no recorded conflicts, and executable coverage is unchanged.
 - `pm-monitoring-decision.md` — `/pm` vs `/pr-monitor-and-manage` division of responsibility, including the `/pm day` carve-out and its mutual-exclusion argument
+- `active-work-cap-reader-hotspot-decision.md` — keep the cap command and derive legacy offer count and IDs from one read (Issue #1269)
 - `pm-output-templates.md` — presentation format templates for `/pm` Step 1B.5; extracted from `pm/SKILL.md` to reduce churn surface on formatting-only blocks
 - `pm-ownership-sweep.md` — `candidate-ownership.sh` mechanism behind `/pm`'s pre-dispatch ownership sweep: the unowned / owned-live / owned-dead branch, the shared reader set, the owned-resumable upgrade, liveness failing toward surfacing, adoption entry points, and the degradation contract (Issue #1431)
 - `pm-day-wake-recovery.md` — executable captured-wake recovery for the PM day arm and tick paths; opened when an active usage-limit park needs recovery.

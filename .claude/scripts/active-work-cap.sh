@@ -987,7 +987,8 @@ open_among() {
   return 0
 }
 
-# How many distinct CHIPS are live — not how many log entries are. One
+# Load the count and issue numbers of live legacy offers from the same read.
+# Count distinct chips, not log entries. One
 # /issue-maker capture session offers ONE hand-off covering every issue it
 # filed, so an N-issue session writes N entries carrying one `chip_task_id`.
 # The narrowings below run per ENTRY, and the distinct-chip count is taken over
@@ -1004,7 +1005,7 @@ open_among() {
 #     excluded — it is counted once through active_agents, not also as a chip.
 #     Only attributed chips are subject to this exclusion; guessed chips bypass
 #     it (same rationale as the PR subtraction and open-issue intersection).
-count_live_chips() {
+load_legacy_offers() {
   local slug="$1"
   local excluded_reg="${2:-}"
   local excluded_pipelines="${3:-}"
@@ -1020,8 +1021,7 @@ count_live_chips() {
   chips="$(chip_issue_numbers "$slug" | sort -u)" || rc=$?
   (( rc == 0 )) || return "$rc"
   if [[ -z "$chips" ]]; then
-    printf '0'
-    return
+    return 0
   fi
 
   # Split on the attribution marker written by chip_issue_numbers.
@@ -1120,8 +1120,7 @@ count_live_chips() {
   local surviving
   surviving="$(printf '%s\n%s\n' "$matched" "$guessed" | awk 'NF' | sort -u)"
   if [[ -z "$surviving" ]]; then
-    printf '0'
-    return
+    return 0
   fi
 
   # Source 2a/2b dedup: remove issues the registry already holds.  A chip whose
@@ -1136,8 +1135,7 @@ count_live_chips() {
     (( rc_excl == 0 )) || die_read "comm -23 failed excluding registry issues from legacy chip count (exit $rc_excl)"
   fi
   if [[ -z "$surviving" ]]; then
-    printf '0'
-    return
+    return 0
   fi
 
   # Now collapse issues to CHIPS. Two rules have to hold at once, and they pull
@@ -1180,7 +1178,8 @@ count_live_chips() {
   # grep -c prints 0 and exits 1 on no match, so read the printed value and
   # never substitute a fallback (feedback_grep_c_empty_file_exit1.md).
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  printf '%s' "$n"
+  LOG_CHIP_COUNT="$n"
+  LOG_CHIP_ISSUE_NUMS="$surviving"
 }
 
 # Inline pipelines not yet at PR: active_agents values with no `.pr`. The field
@@ -1412,127 +1411,10 @@ load_pipeline_source || PIPELINE_SRC_RC=$?
 PIPELINES="$_PIPELINE_COUNT_OUT"
 PIPELINE_ISSUE_NUMS="$_PIPELINE_ISSUE_NUMS_OUT"
 
-# Chip count: union of registry (2a) and legacy log (2b), deduped by issue number.
-#
-# Strategy: collect the live issue numbers from each source independently, then
-# take the union. Each source applies its own liveness filter; the union ensures
-# the same issue number from both sources counts as one chip, not two.
-#
-# Registry (2a): issue numbers of entries in offered/running state (TTL-filtered).
-# Legacy log (2b): issue numbers from count_live_chips (open-issue + PR-filtered).
-#   count_live_chips returns a count, not a list, so we re-derive the list from
-#   the same filtering pipeline here for dedup purposes, then count the union.
-#
-# For the legacy side, we get the live numbers from count_live_chips_numbers()
-# which mirrors count_live_chips but emits numbers instead of a count.
-# count_live_chips_numbers: same filtering pipeline as count_live_chips but
-# returns the surviving issue numbers rather than the distinct-chip count.
-# Used in --json mode to populate offered_issue_nums. Accepts the same
-# exclusion sets as count_live_chips for consistency.
-# $1  repo slug
-# $2  (optional) registry-excluded issue numbers (same as count_live_chips $2)
-# $3  (optional) pipeline-excluded issue numbers (same as count_live_chips $3)
-count_live_chips_numbers() {
-  local slug="$1"
-  local excluded_reg="${2:-}"
-  local excluded_pipelines="${3:-}"
-  local chips rc=0
-  chips="$(chip_issue_numbers "$slug" | sort -u)" || rc=$?
-  (( rc == 0 )) || return "$rc"
-  [[ -n "$chips" ]] || return 0
-
-  local sure guessed rc2=0
-  sure="$(printf '%s\n' "$chips" | awk '$2=="." {print $1}' | sort -u)"
-  guessed="$(printf '%s\n' "$chips" | awk '$2=="?" {print $1}' | sort -u)"
-
-  # Dedup across attribution classes: a number attributed in one log and
-  # unattributed in another is known-repo, so drop the guessed duplicate.
-  if [[ -n "$sure" && -n "$guessed" ]]; then
-    local only_guessed rcd=0
-    only_guessed="$(comm -23 \
-                     <(printf '%s\n' "$guessed" | sort -u) \
-                     <(printf '%s\n' "$sure" | sort -u))" || rcd=$?
-    (( rcd == 0 )) || die_read "comm -23 failed deduping guessed against attributed chips for numbers"
-    guessed="$only_guessed"
-  fi
-
-  local chip_nums=()
-  [[ -n "$sure" ]] && \
-    while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
-
-  local covered rc3=0
-  covered="$(chips_covered_by_prs)" || rc3=$?
-  (( rc3 == 0 )) || return "$rc3"
-  if [[ -n "$covered" && -n "$sure" ]]; then
-    local remaining rc4=0
-    remaining="$(comm -23 \
-                  <(printf '%s\n' "$sure" | sort -u) \
-                  <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
-    (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips for numbers"
-    sure="$remaining"
-    chip_nums=()
-    [[ -n "$sure" ]] && \
-      while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
-  fi
-
-  # Also subtract pipeline-claimed issues (#1285 self-referential count fix).
-  if [[ -n "$excluded_pipelines" && -n "$sure" ]]; then
-    local remaining_pipe rc_pipe=0
-    remaining_pipe="$(comm -23 \
-                        <(printf '%s\n' "$sure" | sort -u) \
-                        <(printf '%s\n' "$excluded_pipelines" | awk 'NF' | sort -u))" || rc_pipe=$?
-    (( rc_pipe == 0 )) || die_read "comm -23 failed subtracting pipeline-claimed chips for numbers (exit $rc_pipe)"
-    sure="$remaining_pipe"
-    chip_nums=()
-    [[ -n "$sure" ]] && \
-      while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
-  fi
-
-  local open_issues=""
-  if (( ${#chip_nums[@]} )); then
-    local rc5=0
-    open_issues="$(open_among "$slug" "${chip_nums[@]}")" || rc5=$?
-    (( rc5 == 0 )) || return "$rc5"
-  fi
-
-  local matched=""
-  if [[ -n "$sure" && -n "$open_issues" ]]; then
-    local rc6=0
-    matched="$(comm -12 \
-                <(printf '%s\n' "$sure" | sort -u) \
-                <(printf '%s\n' "$open_issues" | sort -u))" || rc6=$?
-    (( rc6 == 0 )) || die_read "comm -12 failed intersecting log chips with open issues"
-  fi
-
-  # Apply registry exclusion: drop issues the registry already holds (#1285).
-  if [[ -n "$excluded_reg" ]]; then
-    if [[ -n "$matched" ]]; then
-      local rc_excl=0
-      matched="$(comm -23 \
-                  <(printf '%s\n' "$matched" | sort -u) \
-                  <(printf '%s\n' "$excluded_reg" | awk 'NF' | sort -u))" || rc_excl=$?
-      (( rc_excl == 0 )) || die_read "comm -23 failed excluding registry issues from chip numbers (exit $rc_excl)"
-    fi
-  fi
-
-  # Emit matched (attributed, live) and guessed numbers.
-  [[ -n "$matched" ]] && printf '%s\n' "$matched"
-  [[ -n "$guessed" ]] && printf '%s\n' "$guessed"
-  return 0
-}
-
-# Count chips from source 2a (registry) and source 2b (legacy log) separately,
-# then combine.  The registry (2a) uses 1 entry = 1 chip = 1 issue, so the
-# issue count and chip count are the same there.  The legacy log (2b) can have
-# N entries per chip, so count_live_chips counts DISTINCT chip_task_ids rather
-# than issues.  Cross-source dedup: pass the registry issues to count_live_chips
-# so any legacy chip whose surviving issues are ALL already in the registry is
-# excluded from source 2b's count (the registry slot covers it).
-
-# Source 2a: registry — single --list call for atomicity (TOCTOU fix).
-# REG_NUMS: all issue numbers covered by active entries (for dedup against 2b).
-# REG_CHIP_COUNT: count of active ENTRIES (not issues) — one entry = one chip.
-REG_NUMS=""; REG_CHIP_COUNT=0; REG_RC=0
+# Count the registry and legacy log separately, then combine. One registry
+# entry can cover several issues, and one legacy offer can span log entries.
+# The registry issue list lets the legacy loader exclude work already counted.
+REG_CHIP_COUNT=0; REG_RC=0
 load_registry_source || REG_RC=$?
 (( REG_RC == 0 )) || exit "$REG_RC"
 REG_NUMS="$_REG_NUMS_OUT"
@@ -1579,7 +1461,7 @@ if [[ -n "$PIPELINE_ISSUE_NUMS" && $REG_CHIP_COUNT -gt 0 ]]; then
   [[ $REG_NN_RC -ne 0 ]] && die_read "could not extract issue nums from surviving entries: $REG_NEW_NUMS"
   # Exclude pipeline-covered issues from REG_NUMS so that offered_issue_nums
   # (JSON diagnostic) omits issues already counted through inline_pipelines.
-  # REG_CHIP_COUNT is unchanged; the pipeline dedup in count_live_chips still
+  # REG_CHIP_COUNT is unchanged; the pipeline dedup in load_legacy_offers still
   # excludes legacy chips for those issues via excluded_pipelines.
   REG_OFFERED_NUMS=""; REG_ON_RC=0
   REG_OFFERED_NUMS="$(comm -23 \
@@ -1591,10 +1473,9 @@ fi
 
 # Source 2b: legacy log (distinct chips, excluding issues the registry holds
 # AND issues already executed by running pipelines — #1285 self-referential fix).
-LOG_CHIP_COUNT=0; LOG_RC=0
-LOG_CHIP_COUNT="$(count_live_chips "$SLUG" "$REG_NUMS" "$PIPELINE_ISSUE_NUMS")" || LOG_RC=$?
+LOG_CHIP_COUNT=0; LOG_CHIP_ISSUE_NUMS=""; LOG_RC=0
+load_legacy_offers "$SLUG" "$REG_NUMS" "$PIPELINE_ISSUE_NUMS" || LOG_RC=$?
 (( LOG_RC == 0 )) || exit "$LOG_RC"
-[[ "$LOG_CHIP_COUNT" =~ ^[0-9]+$ ]] || LOG_CHIP_COUNT=0
 
 CHIPS=$(( REG_CHIP_COUNT + LOG_CHIP_COUNT ))
 
@@ -1607,18 +1488,8 @@ case "$MODE" in
     printf '%s\n' "$FREE"
     ;;
   json)
-    # Collect the surviving legacy chip issue numbers for the offered_issue_nums
-    # field (AC#3: the JSON output must identify which issues make up the
-    # offered-work term to explain a FREE=0 reading). This extra call to
-    # count_live_chips_numbers reuses the same globals (OPEN_PR_JSON,
-    # MERGED_PR_JSON) — no additional PR-fetch API calls. It does make one
-    # extra open_among GraphQL call; that is acceptable in the diagnostic mode.
-    LOG_CHIP_ISSUE_NUMS=""; LOG_NUMS_RC=0
-    LOG_CHIP_ISSUE_NUMS="$(count_live_chips_numbers \
-      "$SLUG" "$REG_NUMS" "$PIPELINE_ISSUE_NUMS")" || LOG_NUMS_RC=$?
-    (( LOG_NUMS_RC == 0 )) || exit "$LOG_NUMS_RC"
-    # Union of registry issue numbers and surviving legacy chip issue numbers,
-    # deduplicated and sorted, encoded as a JSON array of integers.
+    # Use the same surviving legacy offers that contributed to live_chips.
+    # Merge their issue numbers with the registry's, deduplicated and sorted.
     OFFERED_ISSUE_NUMS_JSON="[]"; OFFERED_NUMS_RC=0
     OFFERED_ISSUE_NUMS_JSON="$(printf '%s\n' "$REG_NUMS" "$LOG_CHIP_ISSUE_NUMS" \
       | awk 'NF && /^[0-9]+$/ {print}' | sort -nu \
