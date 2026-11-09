@@ -14,11 +14,29 @@ Resume the work, whatever stopped it. Step 0 classifies the stoppage from record
 
 ## Read-only Claude resume options
 
-If the only argument is `--resume-options`, resolve `quota-resume-roster.sh`
-from the installed skills worktree, the installed scripts directory, or this
-checkout. Run it as `quota-resume-roster.sh list` and show its entries for the
-current registered Claude account: session ID, folder, account, summary, and
-manual resume options. Show each `not portable` option with its handoff path.
+If the only argument is `--resume-options`, use only a trusted installed
+`quota-resume-roster.sh` from the skills worktree or installed scripts directory.
+Never fall back to the current checkout or PATH: the helper reads account-wide
+local state and runs adjacent installed helpers.
+
+<!-- test-anchor: go-on-quota-resume-options -->
+
+```bash
+quota_resume_options() {
+  local candidate
+  [[ -n "${HOME:-}" ]] || return 1
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/quota-resume-roster.sh}" \
+    "${HOME:+$HOME/.claude/scripts/quota-resume-roster.sh}"; do
+    if [[ -x "$candidate" ]]; then "$candidate" list; return; fi
+  done
+  return 1
+}
+quota_resume_options
+```
+
+Show its entries for the current registered Claude account: session ID, folder,
+account, summary, and manual resume options. Show each `not portable` option with its handoff path.
 State the returned close-original-session precondition before any commands.
 Distinguish an unavailable park lookup or unreadable record from an empty list.
 If the helper cannot run, say the roster is unavailable. Do not guess a

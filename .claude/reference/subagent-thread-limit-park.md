@@ -281,17 +281,19 @@ it from scratch.
 For every pipeline this thread was running, write a per-PR park record in the
 existing token-exhaustion shape, with `handoff_reason: "usage_limit_park"`:
 
-Only the winning park owner may include `PARK_RESUME_JSON` for the local
-Claude resume roster. Set it to `null` unless this conversation's owned work
-is verified stopped and a readable, corroborated handoff exists. Otherwise
+A thread with `PARK_CLAIM=won` or `adopted` may include `PARK_RESUME_JSON` only
+on its own per-PR records for the local Claude resume roster. Set it to `null`
+unless this conversation's owned work is verified stopped and a readable,
+corroborated handoff exists. Never attach the wake owner's session to an
+adopting thread's pipeline. Otherwise
 supply an object with the exact top-level `session_id` (not a task ID),
 absolute `cwd`, `source_profile` from `CLAUDE_CONFIG_DIR` or the primary
 `~/.claude`, a one-line `summary` of the work, and the absolute local `handoff`
 path from the existing scoped handoff. No secrets or transcript text. Carry
 the metadata through the same scoped state write below; do not call a new
 helper while reserve is active. `/go-on --resume-options` resolves the actual
-source account and shows options later. This record never starts or selects
-an account.
+source account and bounds the displayed summary later. This record never
+starts or selects an account.
 
 <!-- test-anchor: subagent-limit-pipeline-record -->
 

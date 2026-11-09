@@ -365,13 +365,20 @@ conversation ID and `working_copy.path` from the verified context snapshot,
 not a managed task ID or a fallback `default` session. `RESUME_SUMMARY` is one
 plain line from the rendered objective, with no secrets or transcript text.
 
+<!-- test-anchor: end-quota-resume-record -->
+
 ```bash
 # Bind RESUME_STOP_VERIFIED=true only after Step 2's final audit passes.
 # RESUME_CWD is the verified context snapshot's working_copy.path.
+resume_uuid='^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
 if [[ "${RESUME_STOP_VERIFIED:-}" == true && -n "$QUOTA_RESUME_ROSTER_SH" ]] &&
    (( PUBLISH_RC == 0 && EXECUTION_GATE_PERSISTED == 1 && WINDDOWN_PERSISTED == 1 )); then
-  "$QUOTA_RESUME_ROSTER_SH" record --kind end --session "$SESSION_ID" \
-    --cwd "$RESUME_CWD" --summary "$RESUME_SUMMARY" --handoff "$OUT"
+  if [[ "$SESSION_ID" =~ $resume_uuid ]]; then
+    "$QUOTA_RESUME_ROSTER_SH" record --kind end --session "$SESSION_ID" \
+      --cwd "$RESUME_CWD" --summary "$RESUME_SUMMARY" --handoff "$OUT"
+  else
+    printf '%s\n' 'Local resume roster not recorded: this shutdown has no verified Claude session UUID.' >&2
+  fi
 fi
 ```
 

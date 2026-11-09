@@ -117,13 +117,17 @@ def local_handoff(value, root):
     return actual
 
 
+def display_summary(summary):
+    return " ".join(summary.split())[:180].rstrip() or "not recorded"
+
+
 def record(root, source, profile, session, cwd, summary, kind, handoff):
     if not SESSION_ID.fullmatch(session) or kind not in KINDS:
         raise ValueError("a verified Claude session ID and checkpoint type are required")
     item = {
         "session_id": session.lower(), "cwd": str(physical_directory(cwd)),
         "source_account": source, "source_profile": str(profile),
-        "summary": " ".join(summary.split())[:180] or "not recorded", "checkpoint": kind,
+        "summary": display_summary(summary), "checkpoint": kind,
         "handoff": str(local_handoff(handoff, root)),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -233,8 +237,11 @@ def list_records(root, accounts, source, profile, parked=(), park_lookup="not re
                     conflicts.add(sid)
                 continue
             summary = item["summary"]
-            if not isinstance(summary, str) or summary != " ".join(summary.split()) or len(summary) > 180:
+            if not isinstance(summary, str):
                 raise ValueError("invalid summary")
+            # Park stores the scoped handoff summary without another helper
+            # call under reserve. Apply the same display bound on either path.
+            summary = display_summary(summary)
             transcript = has_transcript(projects, sid)
             options = []
             for label, (launcher, target) in accounts.items():

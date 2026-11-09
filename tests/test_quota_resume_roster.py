@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -80,6 +81,63 @@ class QuotaResumeRosterTests(unittest.TestCase):
         value = roster.list_records(self.root, self.accounts, self.label, self.source, [park, park, different], "read")
         self.assertEqual([(x["session_id"], x["checkpoint"]) for x in value["entries"]], [(self.sid, "usage-limit-park")])
         self.assertNotIn("Other account", json.dumps(value))
+
+    def test_park_summary_is_normalized_without_hiding_the_checkpoint(self):
+        park = {"checkpoint": "usage-limit-park", "session_id": self.sid, "cwd": str(self.wt),
+                "summary": "  Adopted\n  park " + "a" * 200,
+                "handoff": str(self.handoff), "source_profile": str(self.source)}
+        value = roster.list_records(self.root, self.accounts, self.label, self.source, [park], "read")
+        self.assertEqual(value["unreadable_records"], 0)
+        self.assertEqual(value["entries"][0]["summary"], "Adopted park " + "a" * 167)
+        park["summary"] = {"text": "unexpected"}
+        value = roster.list_records(self.root, self.accounts, self.label, self.source, [park], "read")
+        self.assertEqual(value["unreadable_records"], 1)
+        self.assertEqual(value["entries"], [])
+
+    def run_skill_block(self, name, anchor, env):
+        skill = MODULE.parents[2] / "skills" / name / "SKILL.md"
+        block = skill.read_text().split(f"<!-- test-anchor: {anchor} -->", 1)[1]
+        block = block.split("```bash\n", 1)[1].split("\n```", 1)[0]
+        return subprocess.run(["bash", "-c", block], cwd=self.wt, env=env, capture_output=True, text=True)
+
+    def test_resume_options_never_executes_checkout_or_path_fallback(self):
+        def executable(path, body):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/bash\n" + body + "\n")
+            path.chmod(0o700)
+
+        relative = Path(".claude/scripts/quota-resume-roster.sh")
+        executable(self.wt / relative, 'echo "checkout should not run"')
+        executable(self.wt / relative.name, 'echo "PATH should not run"')
+        env = dict(os.environ, HOME=str(self.home), PATH=str(self.wt) + os.pathsep + os.environ["PATH"])
+        run = lambda: self.run_skill_block("go-on", "go-on-quota-resume-options", env)
+        missing = run()
+        self.assertEqual((missing.returncode, missing.stdout), (1, ""))
+        executable(self.home / relative, 'printf "installed %s\\n" "$1"')
+        self.assertEqual(run().stdout, "installed list\n")
+        executable(self.home / ".claude/skills-worktree" / relative, 'printf "worktree %s\\n" "$1"; exit 5')
+        broken = run()
+        self.assertEqual((broken.returncode, broken.stdout), (5, "worktree list\n"))
+        del env["HOME"]
+        missing = run()
+        self.assertEqual((missing.returncode, missing.stdout), (1, ""))
+
+    def test_end_roster_uses_only_the_audited_conversation(self):
+        helper = self.home / "recorder"
+        helper.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+        helper.chmod(0o700)
+        env = dict(os.environ, RESUME_STOP_VERIFIED="true", QUOTA_RESUME_ROSTER_SH=str(helper),
+                   PUBLISH_RC="0", EXECUTION_GATE_PERSISTED="1", WINDDOWN_PERSISTED="1",
+                   SESSION_ID="default", RESUME_CWD=str(self.wt), RESUME_SUMMARY="Stopped work", OUT=str(self.handoff))
+        run = lambda: self.run_skill_block("end", "end-quota-resume-record", env)
+        missing = run()
+        self.assertEqual(missing.stdout, "")
+        self.assertIn("no verified Claude session UUID", missing.stderr)
+        env["SESSION_ID"] = self.sid
+        self.assertEqual(run().stdout.splitlines(), ["record", "--kind", "end", "--session", self.sid,
+                         "--cwd", str(self.wt), "--summary", "Stopped work", "--handoff", str(self.handoff)])
+        env["RESUME_STOP_VERIFIED"] = "false"
+        self.assertEqual(run().stdout, "")
 
     def test_conflicting_checkpoint_paths_withhold_the_command(self):
         self.put_transcript(self.sid)

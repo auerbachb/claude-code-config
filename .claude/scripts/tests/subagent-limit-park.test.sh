@@ -383,12 +383,15 @@ check_eq "  head sha recorded"              "abc1234"                "$(pr_get 1
 check_eq "  handoff_reason at the PR level" "usage_limit_park"        "$(pr_get 1616 handoff_reason)"
 check_eq "  remaining work carried"         "poll for CR review"      "$(pr_get 1616 'usage_limit_park.remaining_work[0]')"
 
+ADOPT_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window | tail -1)
+check_eq "the second thread adopts the existing park" "PARK_CLAIM=adopted" "$ADOPT_OUT"
 OUT=$(PR_NUM=1617 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
       PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" \
       PARK_RESUME_JSON='{"session_id":"11111111-aaaa-4aaa-8aaa-111111111111","cwd":"/tmp/work","source_profile":"/tmp/account","summary":"Review work","handoff":"/tmp/handoff","ignored":"not serialized"}' \
       bash -c "$BLOCK_PIPELINE" 2>/dev/null | tail -1)
-check_eq "park with resume metadata is still recorded" "PR_PARK=1617:recorded" "$OUT"
+check_eq "adopting thread records its own resume metadata" "PR_PARK=1617:recorded" "$OUT"
 check_eq "  exact conversation ID retained" "11111111-aaaa-4aaa-8aaa-111111111111" "$(pr_get 1617 usage_limit_park.quota_resume.session_id)"
+check_eq "  the original pipeline is not given the adopter identity" "null" "$(pr_get 1616 usage_limit_park.quota_resume)"
 check_eq "  metadata excludes extra fields" "null" "$(pr_get 1617 usage_limit_park.quota_resume.ignored)"
 OUT=$(PR_NUM=1618 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
       PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" PARK_RESUME_JSON='malformed' \
