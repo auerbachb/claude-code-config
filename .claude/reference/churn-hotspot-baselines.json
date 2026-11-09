@@ -43,6 +43,7 @@
     ".claude/skills/subagent/SKILL.md": {"issue": 866, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
     ".claude/skills/wave/SKILL.md": {"issue": 961, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
     ".claude/reference/issue-claim.md": {"issue": 1956, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-11-09", "note": "KEEP assessment: four counted PRs (1928, 1944, 1954, 2035), zero recorded conflict rounds. Rationale: .claude/reference/issue-claim-hotspot-decision.md."},
+    "desk/README.md": {"issue": 1796, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-11-09", "note": "KEEP, three counted PRs and no recorded conflicts. Rationale: .claude/reference/desk-readme-hotspot-decision.md."},
     "README.md": {"issue": 988, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
     "setup-skills-worktree.sh": {"issue": 1063, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"}
   }
