@@ -122,6 +122,30 @@ class QuotaResumeRosterTests(unittest.TestCase):
         del env["CLAUDE_SESSION_ID"]
         self.assertEqual(resume(), "default")
 
+    def test_end_resume_checks_the_other_key_without_clearing_or_guessing_it(self):
+        gate = self.home / "other-gate"
+        gate.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$GATE_CALLS"\n'
+                        'printf "%s\\n" "$LEGACY_STATUS"; exit "$LEGACY_RC"\n')
+        gate.chmod(0o700)
+        calls = self.home / "other-gate-calls"
+        env = dict(os.environ, SESSION_ID=self.sid, CLAUDE_SESSION_ID="legacy:raw/key",
+                   EXECUTION_PAUSE_SH=str(gate), GATE_CALLS=str(calls), LEGACY_RC="0")
+        for status, exit_code, expected in [("active", "0", 1), ("inactive", "4", 1),
+                                             ("unexpected", "0", 1), ("inactive", "0", 0)]:
+            with self.subTest(status=status, exit_code=exit_code):
+                calls.write_text("")
+                env.update(LEGACY_STATUS=status, LEGACY_RC=exit_code)
+                result = self.run_skill_block("end-resume", "end-resume-other-gate", env,
+                                              'printf "can continue"')
+                self.assertEqual(result.returncode, expected)
+                self.assertEqual(result.stdout, "can continue" if expected == 0 else "")
+                self.assertEqual(calls.read_text().splitlines(), ["--status --session legacy:raw/key"])
+        calls.write_text("")
+        env["SESSION_ID"] = ""
+        result = self.run_skill_block("end-resume", "end-resume-other-gate", env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls.read_text(), "")
+
     def test_go_on_checks_legacy_and_native_gate_without_turning_failures_into_absence(self):
         gate = self.home / "status"
         gate.write_text('#!/bin/bash\nprintf "%s\\n" "$3" >> "$GATE_CALLS"\n'

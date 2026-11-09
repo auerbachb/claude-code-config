@@ -37,6 +37,15 @@ run --register --session s2 --task-id bash-2 --type bash --name tests
   fail "checkpoint path was not preserved separately"
 ok "register/list/count are repo- and session-scoped"
 
+# A missing caller binding must not turn a scoped read into a repo-wide one.
+for mode in --list --count; do
+  rc=0
+  result="$(run "$mode" --session "" 2>/dev/null)" || rc=$?
+  [[ "$rc" == 2 && -z "$result" ]] || fail "$mode with an explicit empty session disclosed registry data"
+done
+[[ "$(CLAUDE_SESSION_ID= run --count)" == 3 ]] || fail "explicitly unscoped repo audit stopped working"
+ok "an empty session fails closed without removing the repo-wide audit mode"
+
 # Duplicate registration is an upsert, not a second billable task.
 run --register --session s1 --task-id agent-1 --type agent --name renamed-agent
 [[ "$(run --count --session s1 --live)" == 2 ]] || fail "duplicate register appended"

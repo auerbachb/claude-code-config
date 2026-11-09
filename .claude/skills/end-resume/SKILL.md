@@ -44,21 +44,47 @@ if [[ "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12
 fi
 ```
 
+Bash calls do not share shell variables. Start each later Bash call that uses
+`SESSION_ID` by re-running the binding block above. If it does not match the
+verified scope from this step, stop. Always pass a nonempty `--session` for
+registry reads and transitions and execution-gate reads and writes. Never
+omit the registry's session filter: omission means a repo-wide inventory.
+
 Before clearing the gate, require all three helpers to be resolved and readable.
-Use `--session "$SESSION_ID"` for the registry inventory and use
-`session-state.sh` to read the repo key/refill state. If either inventory is
-unavailable or malformed, report a degraded resume and leave the execution
-gate closed. If `execution-pause.sh` is missing or cannot clear this session's
-gate, likewise stop without re-arming anything. Do not clear a different
-session's gate as a fallback.
-A partial resume behind an unknown or unreadable inventory is worse than a
-visible no-op.
+If the native UUID and raw legacy key differ, check the raw key before any
+inventory, clear, refill write, or launch. `/go-on` classification can recognize
+a stop under that key, but neither it nor a `default` record establishes that
+it belongs to this conversation. Refuse an active or unreadable alternate gate;
+leave both gates untouched and report the ambiguity. Never use the alternate
+key as a fallback clear. Recover such a stop only from its verified original
+session context.
+
+<!-- test-anchor: end-resume-other-gate -->
+
+```bash
+: "${SESSION_ID:?bind the verified resume session in this shell}"
+LEGACY_GATE_SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+if [[ "$SESSION_ID" != "$LEGACY_GATE_SESSION_ID" ]]; then
+  OTHER_GATE_STATUS=$("$EXECUTION_PAUSE_SH" --status --session "$LEGACY_GATE_SESSION_ID" 2>/dev/null) || OTHER_GATE_STATUS=unreadable
+  if [[ "$OTHER_GATE_STATUS" != inactive ]]; then
+    echo 'BLOCKED: an alternate legacy gate is active or unreadable. No gate was cleared; verify the original stopped session before resuming.' >&2
+    exit 1
+  fi
+fi
+```
+
+Then run `background-task-registry.sh --list --session "${SESSION_ID:?missing resume scope}"`
+and use `session-state.sh` to read the repo key and refill state. If either inventory is unavailable or malformed,
+report a degraded resume and leave the execution gate closed. If
+`execution-pause.sh` is missing or cannot clear this session's gate, stop without
+re-arming anything. A partial resume behind an unreadable inventory is worse
+than a visible no-op.
 
 ## Step 1: Clear the execution gate
 
-Call `execution-pause.sh --clear --session "$SESSION_ID"`. This explicit human
-invocation authorizes new background starts again. Do not clear the independent
-`.repos[REPO].refill.paused` gate unless `--resume-refill` was supplied.
+Call `execution-pause.sh --clear --session "${SESSION_ID:?missing resume scope}"`.
+This explicit human invocation authorizes new background starts again. Do not
+clear `.repos[REPO].refill.paused` unless `--resume-refill` was supplied.
 
 When `--resume-refill` is present, set refill to
 `{"paused":false,"reason":null,"scope":null,"at":null}` with
@@ -79,7 +105,7 @@ For a stopped entry that still needs a launch, atomically claim it before the
 runtime check with:
 
 ```bash
-"$TASK_REGISTRY_SH" --transition --session "$SESSION_ID" \
+"$TASK_REGISTRY_SH" --transition --session "${SESSION_ID:?bind the verified resume session}" \
   --task-id "$TASK_ID" --status rearming --from-status stopped
 ```
 
@@ -92,9 +118,10 @@ rearmed`. Because the compare-and-set runs under the registry lock, concurrent
 
 `rearming` is a reservation, not a stoppable runtime identity, and is excluded
 from registry `--live` results. Immediately before launching, re-check the
-execution gate; a concurrent `/end` or `/pause` activation therefore blocks
-the new launch. A successful successor registers its own runtime ID through the
-normal launch hook before the old reservation becomes `rearmed`, so shutdown
+selected execution gate and repeat the alternate-key status check from Step 0.
+If either check blocks launch, return the reservation to `stopped` before
+exiting. A concurrent `/end` or `/pause` activation blocks the new launch.
+A successful successor registers its own runtime ID through the normal launch hook before the old reservation becomes `rearmed`, so shutdown
 audits stop the successor ID rather than racing on the old stopped ID. If launch
 is blocked or fails, compare-and-set the reservation back to `stopped`.
 

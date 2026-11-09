@@ -20,6 +20,7 @@
 #   background-task-registry.sh [--repo owner/name] --count [--session ID]
 #       [--status STATUS] [--live]
 #
+# Omit `--session` for an unfiltered inventory; an explicit empty ID is invalid.
 # `--live` includes running, stopping, and stop_failed entries. A `rearming`
 # entry is a launch reservation, not a runtime identity; the resumed runtime
 # registers its own ID before shutdown audits treat it as stoppable. Stale entries
@@ -126,7 +127,9 @@ while (( $# > 0 )); do
       key="$1"; value="$2"; shift
       case "$key" in
         --repo) REPO_OPT="$value" ;;
-        --session) SESSION_ID="$value" ;;
+        --session)
+          [[ -n "$value" ]] || die_usage "--session cannot be empty"
+          SESSION_ID="$value" ;;
         --task-id) TASK_ID="$value" ;;
         --type) TASK_TYPE="$value" ;;
         --name) TASK_NAME="$value" ;;
