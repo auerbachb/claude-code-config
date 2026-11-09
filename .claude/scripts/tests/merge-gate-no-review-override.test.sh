@@ -105,13 +105,13 @@ j() { printf '%s' "$OUT" | jq -r "$1" 2>/dev/null; }
 has_missing() { printf '%s' "$OUT" | jq -e --arg s "$1" '[.missing[]? | select(contains($s))] | length > 0' >/dev/null 2>&1 && echo yes || echo no; }
 reset() { unset FAKE_REVIEWS FAKE_PR_COMMENTS FAKE_ISSUE_COMMENTS FAKE_PM_CONFIG FAKE_THREADS \
   FAKE_DRAFT FAKE_TIMELINE FAKE_TIMELINE_FAIL FAKE_PULL_FAIL FAKE_PR_OVERRIDE FAKE_PR_FILES_JSON \
-  FAKE_MERGED_STATE FAKE_MERGED_HEAD FAKE_LABEL_FAIL FAKE_RUNS FAKE_PUSH_AT; }
+  FAKE_MERGED_STATE FAKE_MERGED_HEAD FAKE_LABEL_FAIL FAKE_RUNS FAKE_PUSH_AT \
+  FAKE_CREATED_AT FAKE_BRANCH_JSON FAKE_BRANCH_PROTECTED FAKE_REQUIRED_STATUS_CHECKS FAKE_COMMIT_STATUSES; }
 LEDGER_FILE="$HOME/.claude/unreviewed-merges.json"
 ledger_rows() { [[ -s "$LEDGER_FILE" ]] && jq '.entries | length' "$LEDGER_FILE" || echo 0; }
 record() { printf '%s' "$OUT" | PATH="$BIN:$PATH" "$LEDGER_SUT" record --pr 1 --repo solo/repo --gate-json - 2>"$TMP/ledger.err"; }
 
 GREEN_11="$(bundle "$(run 1 build success 660)")"
-GREEN_9="$(bundle "$(run 1 build success 540)")"
 NEED_APPROVAL="need 1 explicit CodeRabbit or CodeAnt APPROVED review"
 
 echo "=== TP1: green CI, no bot review, HEAD 11 min ago -> met via override + ledger row ==="
@@ -139,7 +139,8 @@ check_eq "0" "$(PATH="$BIN:$PATH" "$LEDGER_SUT" list --pending | jq length)" "TP
 
 echo "=== TP2: same at 9 min -> not met ==="
 reset; rm -f "$LEDGER_FILE"
-run_gate "$GREEN_9"
+# Sample this timestamp at the point of use; earlier cases must not age it.
+run_gate "$(bundle "$(run 1 build success 540)")"
 check_eq "1"     "$RC"                                  "TP2 exit 1"
 check_eq "false" "$(j .met)"                            "TP2 not met"
 check_eq "false" "$(j .no_review_override.applied)"     "TP2 not applied"
