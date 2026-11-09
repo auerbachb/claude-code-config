@@ -99,4 +99,37 @@ JSON keeps missing repository keys null, distinct from a project literally named
 
 The report is informational and never gates dispatch or spending.
 
-Cursor capture and an `AI-Account:` commit trailer are follow-ups outside Issue #1885.
+Cursor capture remains outside Issue #1885. The commit-trailer decision follows.
+
+## Commit trailer decision
+
+Issue #1912: leave automatic `AI-Account:` trailers uninstalled. A registered
+label describes the selected profile at session capture; it does not establish
+which session executes a particular Git commit. Rows contain no commit ID or
+validated session-to-commit handoff. Two accounts can append complete rows with
+the same repository, branch and timestamp. Choosing the latest row, the only
+recent row, Git author email, or an inherited config-directory variable would
+guess at commit attribution. Unknown or ambiguous attribution therefore omits
+the automatic trailer. This decision does not modify existing manual trailers.
+
+Reconsider only with a metadata-only binding that is explicitly created for the
+committing invocation, validated against its session, and invalidated when that
+invocation ends or changes context. It must distinguish simultaneous accounts
+without reading credentials, auth files, prompts or transcript bodies. A known
+profile registration alone is insufficient.
+
+A future opt-in installer must preserve and reversibly chain existing hooks,
+respect the effective [`core.hooksPath`](https://git-scm.com/docs/git-config),
+and retain unrelated message bytes and trailers. Git's
+[`prepare-commit-msg`](https://git-scm.com/docs/githooks) hook still runs with
+`--no-verify`, so that flag cannot serve as its opt-out. Trailer handling must
+account for existing entries and configuration using the documented
+[`interpret-trailers`](https://git-scm.com/docs/git-interpret-trailers) rules.
+No Git hook or installer ships here; trailer-editing and installation-idempotency
+tests are conditional on a future supported design.
+
+The SessionStart suite captures two registered profiles concurrently in one
+repository, followed by an unknown profile, and checks the exact row schema.
+It also verifies that capture leaves an existing custom Git hook and commit
+message unchanged. These are capture-boundary checks, not a claim that a
+session-to-commit binding exists.
