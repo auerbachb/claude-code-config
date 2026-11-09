@@ -2036,15 +2036,18 @@ launcher_name() { # <provider> <nickname|""> <label>
 
 # The octal mode of a file, portably. GNU `stat -f` means FILESYSTEM status
 # and exits 0 printing `?p` for the BSD directive, so the BSD-first
-# `stat -f … || stat -c …` chain never reached its fallback on Linux and the
-# merged file was silently forced to 600 there (caught in review). Each answer is
-# checked for shape instead of trusting an exit code.
-file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
+# `stat -f … || stat -c …` chain never reached its fallback on Linux. Check
+# the shape instead of trusting an exit code. An unreadable mode must not
+# authorize replacing a file with permissions from an older snapshot.
+file_mode() { # <path> -> octal mode on stdout, nonzero if unreadable
   local m
-  m="$(stat -c '%a' "$1" 2>/dev/null || true)"
-  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
-  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m=600
-  printf '%s' "$m"
+  if ! m="$(stat -c '%a' "$1" 2>/dev/null)" || [[ ! "$m" =~ ^[0-7]{1,4}$ ]]; then
+    m="$(stat -f '%Lp' "$1" 2>/dev/null)" || return 1
+  fi
+  [[ "$m" =~ ^[0-7]{1,4}$ ]] || return 1
+  # stat omits leading zeroes (064 can be printed as 64). Normalize once
+  # so the mode checks compare permission bits, not their spelling.
+  printf '%03o' "$((8#$m))"
 }
 
 # The keepsake name for <path>: <path>.pre-share, or — when that name is
@@ -2279,13 +2282,18 @@ share_copy() { # <profile_dir> <name> <source>
   echo "  copied  $2 from $source"
 }
 
+share_discard_staging() { # <private staging directory>
+  rm -f "$1/merged" "$1/backup" || return 1
+  rmdir "$1"
+}
+
 # Merges the primary `.claude.json`'s `mcpServers` into the profile's own,
 # primary entries winning on a shared name, and leaves EVERY other key of the
 # profile's file alone — its `oauthAccount`, onboarding flags, and project
 # list are what make it that account's. Nothing from either file is printed:
 # an MCP server entry can carry an API key in its env block.
 share_merge_mcp() { # <profile_dir> <primary_json>
-  local path="$1/.claude.json" primary="$2" servers n existing merged tmp mode dest
+  local path="$1/.claude.json" primary="$2" servers n existing merged staging tmp mode dest backup=""
   if [[ ! -f "$primary" ]]; then
     SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
     echo "  skipped .claude.json — $primary does not exist in the primary install"
@@ -2307,12 +2315,13 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     dest="$(move_aside "$path")"
     share_note_moved ".claude.json" "$dest"
   fi
-  local snapshot=""
-  if [[ -f "$path" ]]; then
+  local snapshot="" had_original=false
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    had_original=true
     snapshot="$(cat "$path")" || die 5 "could not read $path"
     existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
       || die 5 "$path is not a JSON object — refusing to touch it"
-    mode="$(file_mode "$path")"
+    mode="$(file_mode "$path")" || die 5 "could not read the mode of $path — this path was left alone"
   else
     existing='{}'
     mode=600
@@ -2324,31 +2333,54 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     echo "  kept    .claude.json (all $n primary mcpServers already present)"
     return 0
   fi
-  tmp="$(mktemp "$1/.claude.json.XXXXXX")" || die 5 "could not create a temp file in $1"
-  chmod "$mode" "$tmp" 2>/dev/null || chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
-  printf '%s\n' "$merged" | jq . > "$tmp" || { rm -f "$tmp"; die 5 "could not serialize $path"; }
-  if [[ -f "$path" ]]; then
-    # Claude Code rewrites its own .claude.json while a session runs, and it
-    # does not honour any lock this script could take. So the file is re-read
-    # right before it is replaced: a change since the snapshot means a live
-    # session wrote login or onboarding state the merge would overwrite with
-    # a stale copy — refused, nothing moved, re-run when the session is idle
-    # (CodeAnt). The window between this read and the rename is as small as
-    # it can be made without a lock the other writer would respect.
-    if [[ "$(cat "$path")" != "$snapshot" ]]; then
-      rm -f "$tmp"
-      die 5 "$path changed while the merge was computed (a Claude Code session on this profile is writing it) — nothing was replaced; re-run share-config when that session is idle"
-    fi
-    # The keepsake is a COPY, and the merged file is then renamed over the
-    # original: the path never disappears, so a session that recreates the
-    # file in a move-then-install gap has no gap to hit, and a failed rename
-    # leaves the original in place rather than only under .pre-share
-    # (CodeRabbit).
-    dest="$(pre_share_dest "$path")"
-    cp -p "$path" "$dest" || { rm -f "$tmp"; die 5 "could not keep $path as $dest"; }
-    share_note_moved ".claude.json" "$dest"
+  staging="$(mktemp -d "$1/.claude.json.share.XXXXXX")" || die 5 "could not stage a merge in $1"
+  tmp="$staging/merged"
+  printf '%s\n' "$merged" | jq . > "$tmp" || { share_discard_staging "$staging"; die 5 "could not serialize $path"; }
+  if ! chmod "$mode" "$tmp" 2>/dev/null || [[ "$(file_mode "$tmp")" != "$mode" ]]; then
+    share_discard_staging "$staging"
+    die 5 "could not preserve the mode of $path — this path was left alone"
   fi
-  mv -f "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
+  if [[ "$had_original" == true ]]; then
+    if [[ ! -f "$path" || -L "$path" ]] || [[ "$(cat "$path")" != "$snapshot" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed before backup — this path was left alone; re-run share-config when the profile is idle"
+    fi
+    # Copy to an owned name. `link` publishes at exactly the chosen name
+    # and refuses an existing entry, even a symlink or directory that
+    # appeared after pre_share_dest checked it.
+    dest="$(pre_share_dest "$path")" || { share_discard_staging "$staging"; die 5 "could not choose a backup name for $path"; }
+    backup="$staging/backup"
+    cp -p "$path" "$backup" || { share_discard_staging "$staging"; die 5 "could not copy backup of $path"; }
+    if [[ ! -f "$backup" || -L "$backup" || "$(cat "$backup")" != "$snapshot" ||
+          "$(file_mode "$backup")" != "$mode" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed during backup — live path retained; re-run share-config when the profile is idle"
+    fi
+    # The backup may survive a refusal. Do not publish an older, broader
+    # mode if the profile is being tightened while this copy is in flight.
+    if ! chmod go-rwx "$backup" || [[ ! "$(file_mode "$backup")" =~ ^[0-7]{1,2}00$ ]]; then
+      share_discard_staging "$staging"
+      die 5 "could not restrict backup of $path — live path retained"
+    fi
+    link "$backup" "$dest" || { share_discard_staging "$staging"; die 5 "could not publish backup at $dest — live path retained"; }
+    # Keep the private alias for the final comparison. An unrelated writer
+    # can still race this check and the rename, so the profile must be idle.
+    if [[ ! -f "$dest" || -L "$dest" || ! "$backup" -ef "$dest" ||
+          ! -f "$path" || -L "$path" ]] || ! cmp -s "$backup" "$path" ||
+          [[ "$(file_mode "$path")" != "$mode" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed during backup — live path and backup retained; re-run share-config when the profile is idle"
+    fi
+  elif [[ -e "$path" || -L "$path" ]]; then
+    share_discard_staging "$staging"
+    die 5 "$path appeared while the merge was computed — this path was left alone; re-run share-config when the profile is idle"
+  fi
+  if ! mv -f "$tmp" "$path"; then
+    share_discard_staging "$staging"
+    die 5 "could not install $path"
+  fi
+  share_discard_staging "$staging"
+  if [[ -n "$backup" ]]; then share_note_moved ".claude.json" "$dest"; fi
   SHARE_MERGED=$((SHARE_MERGED + 1))
   echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
 }

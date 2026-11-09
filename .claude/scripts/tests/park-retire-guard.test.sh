@@ -51,10 +51,14 @@ TMP_HOME="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_HOME"; }
 trap cleanup EXIT
 export HOME="$TMP_HOME"
-mkdir -p "$HOME/.claude"
+mkdir -p "$HOME/.claude/scripts"
+# Fixtures install the same trusted helper locations as production.
+ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$HOME/.claude/scripts/park-retire.sh"
 STATE_FILE="$HOME/.claude/session-state.json"
 REPO_KEY="auerbachb/claude-code-config"
-export SESSION_STATE_SH REPO_KEY
+PARK_RETIRE_SH="$REPO_ROOT/.claude/scripts/park-retire.sh"
+export SESSION_STATE_SH REPO_KEY PARK_RETIRE_SH
 
 PASS=0
 FAIL=0
@@ -431,6 +435,491 @@ printf '%s' 'not json at all' > "$STATE_FILE"
 OUT="$(run_d5)"
 check_eq "an unreadable record makes D5 fail closed" "error rc=8" "$(field "$OUT" RESUME_CLEAR)"
 check_eq "  leaving the file as found" "not json at all" "$(cat "$STATE_FILE")"
+
+# ---------------------------------------------------------------------------
+echo "== #1715 durable generation: ABA and legacy-to-generated replacement =="
+# ---------------------------------------------------------------------------
+OLD_RETIRE=$(extract_skill_bash "$TEST_DIR/fixtures/park-retire-pre1715.md" old-retire) || exit 1
+OLD_D5=$(extract_skill_bash "$TEST_DIR/fixtures/park-retire-pre1715.md" old-d5) || exit 1
+OLD_D5_PREFIX=$(printf '%s\n' "$OLD_D5" | awk -v seam="$D5_SEAM" 'index($0, seam) { exit } { print }')
+OLD_D5_SUFFIX=$(printf '%s\n' "$OLD_D5" | awk -v seam="$D5_SEAM" 'found { print } index($0, seam) { found = 1; print }')
+run_old_retire() { local BLOCK_RETIRE="$OLD_RETIRE"; run_retire "$1"; }
+run_old_d5() { local BLOCK_D5_PREFIX="$OLD_D5_PREFIX" BLOCK_D5_SUFFIX="$OLD_D5_SUFFIX"; run_d5 "$1"; }
+aba_interleave() {
+  case "$1" in
+    *cause) cat <<'ABA_CAUSE'
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_cause=null" >/dev/null
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" --expect null --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-replacement\"" >/dev/null
+ABA_CAUSE
+      ;;
+    *bound) cat <<'ABA_BOUND'
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.parked_until=null" >/dev/null
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"2026-09-11T22:00:00Z\"" --expect null --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-replacement\"" >/dev/null
+ABA_BOUND
+      ;;
+  esac
+}
+for SITE in retire d5; do
+  for SHAPE in generated-cause generated-bound legacy-cause legacy-bound; do
+    case "$SHAPE" in
+      *cause) seed_complete_park reactive 2026-09-11T22:00:00Z task-original ;;
+      *bound) seed_no_identity_park 2026-09-11T22:00:00Z ;;
+    esac
+    if [[ "$SHAPE" == generated-* ]]; then
+      "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-original\"" >/dev/null
+    fi
+    HITS_BEFORE=$(day_get consecutive_limit_hits)
+    TASK_BEFORE=$(day_get limit_resume_task_id); WAKE_BEFORE=$(day_get limit_resume_generation)
+    KIND_BEFORE=$(day_get limit_kind)
+    ABA_CMD=$(aba_interleave "$SHAPE")
+    if [[ "$SITE" == retire ]]; then
+      OUT=$(run_retire "$ABA_CMD")
+      check_eq "$SITE $SHAPE: loses original snapshot" 7 "$(field "$OUT" RETIRE_RC)"
+    else
+      OUT=$(run_d5 "$ABA_CMD")
+      check_eq "$SITE $SHAPE: loses original snapshot" superseded "$(field "$OUT" RESUME_CLEAR)"
+    fi
+    check_eq "$SITE $SHAPE: new generation preserved" generation-replacement "$(day_get park_generation)"
+    check_eq "$SITE $SHAPE: same timestamp preserved" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+    check_eq "$SITE $SHAPE: hits unchanged" "$HITS_BEFORE" "$(day_get consecutive_limit_hits)"
+    check_eq "$SITE $SHAPE: wake task unchanged" "$TASK_BEFORE" "$(day_get limit_resume_task_id)"
+    check_eq "$SITE $SHAPE: wake generation unchanged" "$WAKE_BEFORE" "$(day_get limit_resume_generation)"
+    check_eq "$SITE $SHAPE: kind unchanged" "$KIND_BEFORE" "$(day_get limit_kind)"
+  done
+  for SHAPE in cause bound; do
+    case "$SHAPE" in
+      cause) seed_complete_park reactive 2026-09-11T22:00:00Z task-original ;;
+      bound) seed_no_identity_park 2026-09-11T22:00:00Z ;;
+    esac
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-original\"" >/dev/null
+    ABA_CMD=$(aba_interleave "$SHAPE")
+    if [[ "$SITE" == retire ]]; then
+      OUT=$(run_old_retire "$ABA_CMD")
+      check_eq "negative $SITE $SHAPE: old anchor wrongly clears" 0 "$(field "$OUT" RETIRE_RC)"
+    else
+      OUT=$(run_old_d5 "$ABA_CMD")
+      check_eq "negative $SITE $SHAPE: old anchor wrongly clears" cleared "$(field "$OUT" RESUME_CLEAR)"
+    fi
+    check_eq "negative $SITE $SHAPE: replacement bound destroyed" null "$(day_get parked_until)"
+  done
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"generation-original\"" \
+    --set ".repos[\"$REPO_KEY\"].day.unrelated={\"flag\":false,\"counter\":0}" >/dev/null
+  if [[ "$SITE" == retire ]]; then OUT=$(run_retire); else OUT=$(run_d5); fi
+  check_eq "$SITE: owned durable generation retired" null "$(day_get park_generation)"
+  check_eq "$SITE: unrelated metadata retained" '{"flag":false,"counter":0}' \
+    "$(jq -c --arg k "$REPO_KEY" '.repos[$k].day.unrelated' "$STATE_FILE")"
+  for INVALID in false 0 '""' '"null"' '{}' '[]'; do
+    seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=$INVALID" >/dev/null
+    BEFORE=$(cat "$STATE_FILE")
+    if [[ "$SITE" == retire ]]; then
+      OUT=$(run_retire)
+      check_eq "$SITE: malformed generation $INVALID refuses" 8 "$(field "$OUT" RETIRE_RC)"
+    else
+      OUT=$(run_d5)
+      check_eq "$SITE: malformed generation $INVALID refuses" 'error rc=8' "$(field "$OUT" RESUME_CLEAR)"
+    fi
+    check_eq "$SITE: malformed generation leaves state untouched" "$BEFORE" "$(cat "$STATE_FILE")"
+  done
+ done
+
+# Metadata-only losses must not masquerade as a new owner after TaskStop.
+# The shim interleaves through the REAL state writer before the actual CAS,
+# including a second race after the helper's bounded metadata refresh.
+REAL_SESSION_STATE_SH="$SESSION_STATE_SH"
+export REAL_SESSION_STATE_SH
+RACE_SH="$TMP_HOME/retire-race.sh"
+RACE_COUNT="$TMP_HOME/retire-cas-count"
+export RACE_COUNT RACE_MODE
+cat > "$RACE_SH" <<'RACE_HELPER'
+#!/usr/bin/env bash
+set -uo pipefail
+path=".repos[\"$REPO_KEY\"].day"
+case " $* " in
+  *' --cas '*)
+    count=0; [[ ! -f "$RACE_COUNT" ]] || read -r count < "$RACE_COUNT"
+    count=$((count + 1)); printf '%s\n' "$count" > "$RACE_COUNT"
+    case "$RACE_MODE:$count" in
+      single:1|churn:*|replacement:1|tuple:1|hits:1|legacy:1|read-error:1|read-lock:1|malformed:1)
+        "$REAL_SESSION_STATE_SH" --set "$path.unrelated_counter=$count" >/dev/null || exit 9 ;;
+    esac
+    case "$RACE_MODE:$count" in
+      replacement:2)
+        "$REAL_SESSION_STATE_SH" --set "$path.park_generation=\"replacement\"" \
+          --set "$path.limit_kind=\"weekly\"" --set "$path.parked_until=\"new-bound\"" \
+          --set "$path.limit_resume_generation=\"new-wake\"" \
+          --set "$path.consecutive_limit_hits=9" >/dev/null || exit 9 ;;
+      tuple:1)
+        "$REAL_SESSION_STATE_SH" --set "$path.limit_resume_generation=\"changed-same-owner\"" >/dev/null || exit 9 ;;
+      hits:1)
+        "$REAL_SESSION_STATE_SH" --set "$path.consecutive_limit_hits=8" >/dev/null || exit 9 ;;
+      lock:1) exit 6 ;;
+    esac ;;
+  *' --get-json '*)
+    if [[ -f "$RACE_COUNT" ]]; then
+      case "$RACE_MODE" in
+        read-error) exit 4 ;;
+        malformed) printf '%s\n' '{"park_generation":false}'; exit 0 ;;
+        read-lock)
+          if [[ ! -f "$RACE_COUNT.read" ]]; then touch "$RACE_COUNT.read"; exit 6; fi ;;
+      esac
+    fi ;;
+esac
+exec "$REAL_SESSION_STATE_SH" "$@"
+RACE_HELPER
+chmod +x "$RACE_SH"
+INITIAL_FIXTURE="$TEST_DIR/fixtures/park-retire-initial1715.md"
+INITIAL_RETIRE=$(extract_skill_bash "$INITIAL_FIXTURE" pause-resume-retire-limit-park) || exit 1
+INITIAL_D5=$(extract_skill_bash "$INITIAL_FIXTURE" pm-day-d5-resume-clear) || exit 1
+INITIAL_D5_PREFIX=$(printf '%s\n' "$INITIAL_D5" | awk -v seam="$D5_SEAM" 'index($0, seam) { exit } { print }')
+INITIAL_D5_SUFFIX=$(printf '%s\n' "$INITIAL_D5" | awk -v seam="$D5_SEAM" 'found { print } index($0, seam) { found = 1; print }')
+for SITE in disarm d5; do
+  for RACE_MODE in single churn replacement tuple hits legacy read-error read-lock malformed lock; do
+    seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+    if [[ "$RACE_MODE" != legacy ]]; then
+      "$REAL_SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+    fi
+    rm -f "$RACE_COUNT" "$RACE_COUNT.read"
+    SESSION_STATE_SH="$RACE_SH"
+    if [[ "$SITE" == disarm ]]; then OUT=$(run_disarm); else OUT=$(run_d5); fi
+    SESSION_STATE_SH="$REAL_SESSION_STATE_SH"
+    case "$RACE_MODE" in
+      single|read-lock|lock)
+        check_eq "$SITE $RACE_MODE: original park cleared" null "$(day_get parked_until)"
+        check_eq "$SITE $RACE_MODE: generation retired" null "$(day_get park_generation)"
+        if [[ "$SITE" == disarm ]]; then
+          check_eq "$SITE $RACE_MODE: resolved only after clear" true "$(field "$OUT" RESOLVED)"
+        else
+          check_eq "$SITE $RACE_MODE: reports clear" cleared "$(field "$OUT" RESUME_CLEAR)"
+          check_eq "$SITE $RACE_MODE: hit reset committed" 0 "$(day_get consecutive_limit_hits)"
+        fi
+        if [[ "$RACE_MODE" != lock ]]; then
+          check_eq "$SITE $RACE_MODE: updated metadata preserved" 1 "$(day_get unrelated_counter)"
+        fi ;;
+      replacement)
+        for pair in 'park_generation replacement' 'parked_until new-bound' 'limit_kind weekly' 'limit_resume_generation new-wake' 'consecutive_limit_hits 9'; do
+          check_eq "$SITE replacement: ${pair%% *} preserved" "${pair#* }" "$(day_get "${pair%% *}")"
+        done
+        if [[ "$SITE" == d5 ]]; then check_eq 'D5 replacement: honest supersession' superseded "$(field "$OUT" RESUME_CLEAR)"; fi ;;
+      *)
+        check_eq "$SITE $RACE_MODE: original bound retained" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+        check_eq "$SITE $RACE_MODE: hit count retained" "$(if [[ "$RACE_MODE" == hits ]]; then echo 8; else echo 1; fi)" "$(day_get consecutive_limit_hits)"
+        if [[ "$SITE" == disarm ]]; then
+          check_eq "$SITE $RACE_MODE: unresolved after stopped wake" false "$(field "$OUT" RESOLVED)"
+          require_text "$SITE $RACE_MODE: reports uncertainty" <(printf '%s\n' "$OUT") 'DEGRADED'
+        else
+          EXPECT_RC=5
+          case "$RACE_MODE" in read-error|malformed) EXPECT_RC=8 ;; esac
+          check_eq "$SITE $RACE_MODE: honest failure status" "error rc=$EXPECT_RC" "$(field "$OUT" RESUME_CLEAR)"
+        fi
+        if [[ "$RACE_MODE" == tuple ]]; then
+          check_eq "$SITE: same-generation new wake untouched" changed-same-owner "$(day_get limit_resume_generation)"
+        fi ;;
+    esac
+    EXPECT_CAS_COUNT=1
+    case "$RACE_MODE" in single|churn|replacement|read-lock|lock) EXPECT_CAS_COUNT=2 ;; esac
+    if [[ "$SITE" == disarm ]]; then
+      case "$RACE_MODE" in churn) EXPECT_CAS_COUNT=3 ;; *) EXPECT_CAS_COUNT=2 ;; esac
+    fi
+    check_eq "$SITE $RACE_MODE: bounded CAS count" "$EXPECT_CAS_COUNT" "$(cat "$RACE_COUNT")"
+  done
+  # Published initial fences actually return a misleading superseded outcome.
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  "$REAL_SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+  RACE_MODE=single; rm -f "$RACE_COUNT"
+  SESSION_STATE_SH="$RACE_SH"
+  if [[ "$SITE" == disarm ]]; then
+    OUT=$(BLOCK_RETIRE="$INITIAL_RETIRE" run_disarm)
+    check_eq 'negative published initial resume: falsely resolved' true "$(field "$OUT" RESOLVED)"
+  else
+    OUT=$(BLOCK_D5_PREFIX="$INITIAL_D5_PREFIX" BLOCK_D5_SUFFIX="$INITIAL_D5_SUFFIX" run_d5)
+    check_eq 'negative published initial D5: false supersession' superseded "$(field "$OUT" RESUME_CLEAR)"
+  fi
+  SESSION_STATE_SH="$REAL_SESSION_STATE_SH"
+  check_eq "$SITE negative: initial fence stranded original park" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+done
+
+# Minting is real OS entropy, not clock/PID/RANDOM fallback. An entropy failure
+# must be visible before any of the three actual producer fences can claim.
+GENERATOR="$REPO_ROOT/.claude/scripts/park-generation.sh"
+G1=$(bash "$GENERATOR"); G2=$(bash "$GENERATOR")
+check_ne 'successive OS-entropy generations differ' "$G1" "$G2"
+if [[ "$G1" =~ ^parkgen-[0-9a-f]{32}$ && "$G2" =~ ^parkgen-[0-9a-f]{32}$ ]]; then
+  PASS=$((PASS + 1)); echo 'ok   — durable generation has 128 entropy bits'
+else FAIL=$((FAIL + 1)); echo 'FAIL — durable generation shape'; fi
+mkdir -p "$TMP_HOME/entropy-fail"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$TMP_HOME/entropy-fail/od"
+chmod +x "$TMP_HOME/entropy-fail/od"
+BLOCK_REACTIVE=$(extract_skill_bash "$PM_SKILL" pm-day-2d6-park-claim) || exit 1
+BLOCK_PREEMPTIVE=$(extract_skill_bash "$PM_SKILL" pm-day-2d7-park-claim) || exit 1
+BLOCK_SUBAGENT=$(extract_skill_bash "$LIMIT_PARK_DOC" subagent-limit-park-claim) || exit 1
+for PRODUCER in reactive preemptive subagent; do
+  seed_empty_slot
+  BEFORE=$(cat "$STATE_FILE")
+  case "$PRODUCER" in reactive) CLAIM_BLOCK="$BLOCK_REACTIVE" ;; preemptive) CLAIM_BLOCK="$BLOCK_PREEMPTIVE" ;; subagent) CLAIM_BLOCK="$BLOCK_SUBAGENT" ;; esac
+  OUT=$(PATH="$TMP_HOME/entropy-fail:$PATH" NEW_HITS=1 PARKED_UNTIL=2026-12-01T23:00:00Z \
+    LIMIT_KIND=rolling_window HORIZON_RESET_EPOCH="$(( $(date -u +%s) + 3600 ))" \
+    PROBE_CADENCE_MIN=30 PROBE_MAX_FIRES=12 bash -c "$CLAIM_BLOCK" 2>&1)
+  check_eq "$PRODUCER: entropy failure claims nothing" 'PARK_CLAIM=error rc=generation' "$(printf '%s\n' "$OUT" | sed -n '/^PARK_CLAIM=/{p;q;}')"
+  check_eq "$PRODUCER: entropy failure writes nothing" "$BEFORE" "$(cat "$STATE_FILE")"
+done
+
+# Even successful entropy utilities must provide the full expected shape.
+printf '%s\n' '#!/bin/sh' 'echo abcd' > "$TMP_HOME/entropy-fail/od"
+MINT_RC=0
+MINT_OUT=$(PATH="$TMP_HOME/entropy-fail:$PATH" bash "$GENERATOR" 2>/dev/null) || MINT_RC=$?
+check_eq 'short entropy is refused' 5 "$MINT_RC"
+check_eq 'failed mint prints no identity' '' "$MINT_OUT"
+
+# Installed-only resolution is exercised from a deliberately untrusted cwd.
+# Its benign sentinel would falsely report retirement success if executed.
+rm -f "$HOME/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-retire.sh"
+STOP_CALLS="$TMP_HOME/native-stop-calls"
+SENTINEL="$TMP_HOME/untrusted-executed"
+export STOP_CALLS SENTINEL STOP_RESULT
+STOP_RESULT=0
+STOP_FUNC=$(cat <<'STOP_FUNCTION'
+TaskStop() {
+  printf '%s\n' "$1" >> "$STOP_CALLS"
+  if [[ -n "${STOP_REMOVE_PATH:-}" ]]; then
+    [[ "$STOP_REMOVE_PATH" == "$HOME/"* ]] || return 99
+    rm -f "$STOP_REMOVE_PATH"
+  fi
+  return "$STOP_RESULT"
+}
+STOP_FUNCTION
+)
+run_stop_case() {
+  bash -c "$STOP_FUNC"$'\n'"$BLOCK_RETIRE"$'\n'"$BLOCK_DISARM"$'\n''echo "RESOLVED=$LIMIT_WAKE_RESOLVED"' 2>&1
+}
+TOP_RESOLVE=$(extract_skill_bash "$PAUSE_RESUME" pause-resume-installed-helpers) || exit 1
+REVIEW1_FIXTURE="$TEST_DIR/fixtures/park-retire-review1-1715.md"
+REVIEW1_RETIRE=$(extract_skill_bash "$REVIEW1_FIXTURE" pause-resume-retire-limit-park) || exit 1
+REVIEW1_DISARM=$(extract_skill_bash "$REVIEW1_FIXTURE" pause-resume-limit-wake-disarm) || exit 1
+UNTRUSTED="$TMP_HOME/untrusted"
+mkdir -p "$UNTRUSTED/.claude/scripts"
+cat > "$UNTRUSTED/.claude/scripts/park-retire.sh" <<'UNTRUSTED_HELPER'
+#!/bin/sh
+: > "$SENTINEL"
+exit 0
+UNTRUSTED_HELPER
+chmod +x "$UNTRUSTED/.claude/scripts/park-retire.sh"
+cat > "$UNTRUSTED/.claude/scripts/park-generation.sh" <<'UNTRUSTED_GENERATOR'
+#!/bin/sh
+: > "$SENTINEL"
+printf 'park-benign-untrusted\n'
+UNTRUSTED_GENERATOR
+chmod +x "$UNTRUSTED/.claude/scripts/park-generation.sh"
+seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+BEFORE=$(cat "$STATE_FILE")
+OUT=$(cd "$UNTRUSTED" && bash -c "$BLOCK_D5" 2>&1)
+check_eq 'D5 missing installed helper reports error 4' 'RESUME_CLEAR=error rc=4' "$OUT"
+check_eq 'D5 missing installed helper preserves state bytes' "$BEFORE" "$(cat "$STATE_FILE")"
+check_eq 'D5 never executes an untrusted retirement helper' false "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
+for CLAIM_ANCHOR in pm-day-2d6-park-claim pm-day-2d7-park-claim subagent-limit-park-claim; do
+  CLAIM_DOC="$PM_SKILL"
+  [[ "$CLAIM_ANCHOR" != subagent-limit-park-claim ]] || CLAIM_DOC="$LIMIT_PARK_DOC"
+  CLAIM_BLOCK=$(extract_skill_bash "$CLAIM_DOC" "$CLAIM_ANCHOR") || exit 1
+  RESOLVE_BLOCK=$(printf '%s\n' "$CLAIM_BLOCK" | awk '/^PARK_GENERATION_SH=""$/ {on=1} on {print} on && /^done$/ {exit}')
+  [[ -n "$RESOLVE_BLOCK" ]] || exit 1
+  OUT=$(cd "$UNTRUSTED" && bash -c "$RESOLVE_BLOCK"$'\n''echo "SELECTED=$PARK_GENERATION_SH"; if [[ -n "$PARK_GENERATION_SH" ]]; then "$PARK_GENERATION_SH"; fi')
+  check_eq "$CLAIM_ANCHOR: no cwd generation authority" 'SELECTED=' "$OUT"
+  check_eq "$CLAIM_ANCHOR: no untrusted execution" false "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
+  for LOCATION in "$HOME/.claude/skills-worktree/.claude/scripts" "$HOME/.claude/scripts"; do
+    mkdir -p "$LOCATION"
+    ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$LOCATION/park-generation.sh"
+    OUT=$(cd "$UNTRUSTED" && bash -c "$RESOLVE_BLOCK"$'\n''echo "$PARK_GENERATION_SH"')
+    check_eq "$CLAIM_ANCHOR: trusted location is selected" "$LOCATION/park-generation.sh" "$OUT"
+    rm -f "$LOCATION/park-generation.sh"
+  done
+done
+ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
+seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
+OUT=$(cd "$UNTRUSTED" && bash -c "$TOP_RESOLVE"$'\n''SESSION_STATE_SH="$REAL_SESSION_STATE_SH"'$'\n'"$STOP_FUNC"$'\n'"$BLOCK_RETIRE"$'\n'"$BLOCK_DISARM"$'\n''echo "RESOLVED=$LIMIT_WAKE_RESOLVED"' 2>&1)
+check_eq 'missing installed helper does not mark resolved' false "$(field "$OUT" RESOLVED)"
+check_eq 'missing installed helper does not stop the Monitor' '' "$(cat "$STOP_CALLS")"
+check_eq 'missing installed helper preserves the park byte-for-byte' "$BEFORE" "$(cat "$STATE_FILE")"
+check_eq 'untrusted checkout helper never executes' false "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
+OUT=$(cd "$UNTRUSTED" && BLOCK_RETIRE="$REVIEW1_RETIRE" BLOCK_DISARM="$REVIEW1_DISARM" run_stop_case)
+check_eq 'negative R1: current-checkout helper was executed' true "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
+check_eq 'negative R1: benign fake could falsely report resolved' true "$(field "$OUT" RESOLVED)"
+rm -f "$SENTINEL"
+INSTALLED_FIRST="$HOME/.claude/skills-worktree/.claude/scripts/park-retire.sh"
+INSTALLED_SECOND="$HOME/.claude/scripts/park-retire.sh"
+mkdir -p "$(dirname "$INSTALLED_FIRST")" "$(dirname "$INSTALLED_SECOND")"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$INSTALLED_FIRST"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$INSTALLED_SECOND"
+OUT=$(cd "$UNTRUSTED" && bash -c "$TOP_RESOLVE"$'\n''echo "$PARK_RETIRE_SH"')
+check_eq 'installed worktree helper has priority' "$INSTALLED_FIRST" "$OUT"
+rm -f "$INSTALLED_FIRST"
+OUT=$(cd "$UNTRUSTED" && bash -c "$TOP_RESOLVE"$'\n''echo "$PARK_RETIRE_SH"')
+check_eq 'second installed location is supported' "$INSTALLED_SECOND" "$OUT"
+rm -f "$INSTALLED_SECOND"
+
+FAIL_RETIRE="$TMP_HOME/retire-fails.sh"
+printf '%s\n' '#!/bin/sh' 'exit 5' > "$FAIL_RETIRE"
+chmod +x "$FAIL_RETIRE"
+for SHAPE in generated legacy; do
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  if [[ "$SHAPE" == generated ]]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+  fi
+  : > "$STOP_CALLS"
+  OUT=$(PARK_RETIRE_SH="$FAIL_RETIRE" run_stop_case)
+  check_eq "$SHAPE: failed retirement remains unresolved" false "$(field "$OUT" RESOLVED)"
+  check_eq "$SHAPE: one confirmed native stop" task-original "$(cat "$STOP_CALLS")"
+  check_eq "$SHAPE: stopped receipt is retained" true "$(jq -r --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_stop_proofs | to_entries[0].value.stopped' "$STATE_FILE")"
+  check_eq "$SHAPE: failed retirement retains bound" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+  OUT=$(STOP_RESULT=1 run_stop_case)
+  check_eq "$SHAPE: retry retires the same stopped wake" true "$(field "$OUT" RESOLVED)"
+  check_eq "$SHAPE: retry never calls a failed second stop" task-original "$(cat "$STOP_CALLS")"
+  check_eq "$SHAPE: retry clears original park" null "$(day_get parked_until)"
+  check_eq "$SHAPE: retirement clears receipt map" null "$(day_get limit_resume_stop_proofs)"
+  # The published R1 caller cannot recover once TaskStop reports already dead.
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  if [[ "$SHAPE" == generated ]]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+  fi
+  ln -s "$FAIL_RETIRE" "$INSTALLED_SECOND"
+  : > "$STOP_CALLS"
+  OUT=$(BLOCK_RETIRE="$REVIEW1_RETIRE" BLOCK_DISARM="$REVIEW1_DISARM" run_stop_case)
+  rm -f "$INSTALLED_SECOND"
+  ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$INSTALLED_SECOND"
+  OUT=$(STOP_RESULT=1 BLOCK_RETIRE="$REVIEW1_RETIRE" BLOCK_DISARM="$REVIEW1_DISARM" run_stop_case)
+  check_eq "$SHAPE negative R1: second stop failure leaves park unresolved" false "$(field "$OUT" RESOLVED)"
+  check_eq "$SHAPE negative R1: restored helper cannot lift standing park" 2026-09-11T22:00:00Z "$(day_get parked_until)"
+  check_eq "$SHAPE negative R1: unnecessarily retried stopped task" 2 "$(wc -l < "$STOP_CALLS" | tr -d ' ')"
+  rm -f "$INSTALLED_SECOND"
+done
+
+# A helper disappearing after the successful stop still cannot erase its proof:
+# proof persistence uses the separate installed state helper, not park-retire.sh.
+seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$INSTALLED_SECOND"
+: > "$STOP_CALLS"
+OUT=$(PARK_RETIRE_SH="$INSTALLED_SECOND" STOP_REMOVE_PATH="$INSTALLED_SECOND" run_stop_case)
+check_eq 'disappearing helper keeps resume unresolved' false "$(field "$OUT" RESOLVED)"
+check_eq 'disappearing helper retains native stop receipt' 1 "$(jq -r --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_stop_proofs | length' "$STATE_FILE")"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$INSTALLED_SECOND"
+OUT=$(STOP_RESULT=1 PARK_RETIRE_SH="$INSTALLED_SECOND" run_stop_case)
+check_eq 'restored installed helper recovers with exact stop proof' true "$(field "$OUT" RESOLVED)"
+check_eq 'restored helper does not stop twice' task-original "$(cat "$STOP_CALLS")"
+rm -f "$INSTALLED_SECOND"
+
+# Produce a receipt through the actual confirmed-stop/error path, then mutate
+# exactly one of its authority fields. None permits a generic failed stop.
+seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+: > "$STOP_CALLS"
+OUT=$(PARK_RETIRE_SH="$FAIL_RETIRE" run_stop_case)
+RECEIPT_DAY=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+for MUTATION in stopped generation task wake map_type proof_type; do
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$RECEIPT_DAY" >/dev/null
+  case "$MUTATION" in
+    stopped) FILTER='(.limit_resume_stop_proofs[] | .stopped) = false' ;;
+    generation) FILTER='(.limit_resume_stop_proofs[] | .park_generation) = "wrong"' ;;
+    task) FILTER='(.limit_resume_stop_proofs[] | .task_id) = "wrong"' ;;
+    wake) FILTER='(.limit_resume_stop_proofs[] | .wake_generation) = "wrong"' ;;
+    map_type) FILTER='.limit_resume_stop_proofs = false' ;;
+    proof_type) FILTER='(.limit_resume_stop_proofs[]) = "stopped"' ;;
+  esac
+  BAD_DAY=$(printf '%s' "$RECEIPT_DAY" | jq -c "$FILTER")
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$BAD_DAY" >/dev/null
+  BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
+  OUT=$(STOP_RESULT=1 run_stop_case)
+  check_eq "$MUTATION: invalid proof cannot resolve a failed stop" false "$(field "$OUT" RESOLVED)"
+  check_eq "$MUTATION: invalid proof cannot skip native stop" task-original "$(cat "$STOP_CALLS")"
+  check_eq "$MUTATION: invalid proof leaves state byte-identical" "$BEFORE" "$(cat "$STATE_FILE")"
+done
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$RECEIPT_DAY" \
+  --set ".repos[\"$REPO_KEY\"].day.park_generation=\"replacement\"" >/dev/null
+BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"
+OUT=$(STOP_RESULT=1 run_stop_case)
+check_eq 'replacement generation cannot reuse old stopped evidence' false "$(field "$OUT" RESOLVED)"
+check_eq 'replacement keeps all state unchanged' "$BEFORE" "$(cat "$STATE_FILE")"
+
+# Per-key proof writes preserve another current wake's stop receipt. The old
+# writer uses its original bound snapshot after the new writer records its own.
+# Legacy keys also distinguish two policies naming the same legacy wake.
+for SHAPE in generated legacy; do
+  seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+  if [[ "$SHAPE" == generated ]]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+    NEW_STOP_FIELDS=$(cat <<'NEW_GENERATED_STOP'
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"task-new\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"wake-new\"" >/dev/null
+NEW_GENERATED_STOP
+)
+  else
+    NEW_STOP_FIELDS=$(cat <<'NEW_LEGACY_STOP'
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.parked_until=\"2026-09-12T22:00:00Z\"" >/dev/null
+NEW_LEGACY_STOP
+)
+  fi
+  INTERLEAVED_RECORD=$(cat <<'RECORD_RACE'
+bash -c "$BLOCK_RETIRE"$'\n''record_limit_stop_proof' || exit 91
+record_limit_stop_proof || exit 92
+RECORD_RACE
+)
+  export BLOCK_RETIRE
+  OUT=$(bash -c "$BLOCK_RETIRE"$'\n'"$NEW_STOP_FIELDS"$'\n'"$INTERLEAVED_RECORD" 2>&1)
+  check_eq "$SHAPE: interleaved stop receipts both survive" 2 "$(jq -r --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_stop_proofs | length' "$STATE_FILE")"
+  : > "$STOP_CALLS"
+  OUT=$(STOP_RESULT=1 run_stop_case)
+  check_eq "$SHAPE: current wake recovers after old proof writer" true "$(field "$OUT" RESOLVED)"
+  check_eq "$SHAPE: recovery never repeats a confirmed stop" '' "$(cat "$STOP_CALLS")"
+  check_eq "$SHAPE: retirement clears all stopped receipts" null "$(day_get limit_resume_stop_proofs)"
+done
+
+# If storage itself cannot retain proof, preserve the native stop receipt and
+# original bound snapshot. A later exact replay of that receipt is still pinned
+# to its old generation; it cannot adopt a replacement from a fresh read.
+PROOF_LOCK_SH="$TMP_HOME/proof-lock.sh"
+PROOF_LOCK_CALLS="$TMP_HOME/proof-lock-calls"
+export PROOF_LOCK_CALLS
+cat > "$PROOF_LOCK_SH" <<'PROOF_LOCK'
+#!/usr/bin/env bash
+case " $* " in *' --cas '*) echo lock >> "$PROOF_LOCK_CALLS"; exit 6 ;; esac
+exec "$REAL_SESSION_STATE_SH" "$@"
+PROOF_LOCK
+chmod +x "$PROOF_LOCK_SH"
+seed_complete_park reactive 2026-09-11T22:00:00Z task-original
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"original\"" >/dev/null
+BEFORE=$(cat "$STATE_FILE"); : > "$STOP_CALLS"; : > "$PROOF_LOCK_CALLS"
+REPORT_RECEIPT=$(cat <<'RECEIPT_REPORT'
+echo "RESOLVED=$LIMIT_WAKE_RESOLVED"
+echo "RECEIPT_DAY=$PARK_DAY_EXPECT"
+RECEIPT_REPORT
+)
+OUT=$(SESSION_STATE_SH="$PROOF_LOCK_SH" PARK_RETIRE_SH="$FAIL_RETIRE" bash -c "$STOP_FUNC"$'\n'"$BLOCK_RETIRE"$'\n'"$BLOCK_DISARM"$'\n'"$REPORT_RECEIPT" 2>&1)
+check_eq 'proof storage failure stays unresolved' false "$(field "$OUT" RESOLVED)"
+check_eq 'proof lock retry is bounded' 2 "$(wc -l < "$PROOF_LOCK_CALLS" | tr -d ' ')"
+check_eq 'proof storage failure leaves original state unchanged' "$BEFORE" "$(cat "$STATE_FILE")"
+require_text 'proof storage failure retains a typed pending receipt' <(printf '%s\n' "$OUT") 'STOP_PROOF_PENDING=\{"stopped":true.*rc=6'
+RETAINED_DAY=$(field "$OUT" RECEIPT_DAY)
+export RETAINED_DAY
+REPLAY_RECEIPT=$(cat <<'REPLAY_NATIVE_RECEIPT'
+# The enclosing control just verified a successful native stop and retained this
+# exact bound snapshot. The production instruction forbids invented receipts.
+PARK_DAY_EXPECT="$RETAINED_DAY"
+record_limit_stop_proof
+echo "PROOF_REPLAY_RC=$?"
+REPLAY_NATIVE_RECEIPT
+)
+OUT=$(bash -c "$BLOCK_RETIRE"$'\n'"$REPLAY_RECEIPT" 2>&1)
+check_eq 'retained native receipt can persist after storage recovers' 0 "$(field "$OUT" PROOF_REPLAY_RC)"
+OUT=$(STOP_RESULT=1 run_stop_case)
+check_eq 'retained native receipt completes retirement without stopping twice' true "$(field "$OUT" RESOLVED)"
+check_eq 'receipt recovery keeps one actual stop' task-original "$(cat "$STOP_CALLS")"
+seed_complete_park reactive 2026-09-12T22:00:00Z task-replacement
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.park_generation=\"replacement\"" >/dev/null
+BEFORE=$(cat "$STATE_FILE")
+OUT=$(bash -c "$BLOCK_RETIRE"$'\n'"$REPLAY_RECEIPT" 2>&1)
+check_eq 'old native receipt cannot adopt a fresh replacement generation' 7 "$(field "$OUT" PROOF_REPLAY_RC)"
+check_eq 'rejected old receipt leaves replacement byte-identical' "$BEFORE" "$(cat "$STATE_FILE")"
 
 # ---------------------------------------------------------------------------
 echo "== One documented contract, pointed at from both sites (AC 7) =="
