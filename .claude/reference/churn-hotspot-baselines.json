@@ -57,6 +57,7 @@
     ".claude/scripts/tests/issue-claim.test.sh": {"issue": 2074, "score_at_decision": 6, "pr_count_at_decision": 6, "as_of": "2026-11-09", "note": "KEEP; six counted changes to the shared claim lifecycle fixture and zero recorded conflicts. See issue-claim-fixture-hotspot-decision.md."},
     ".claude/reference/issue-claim.md": {"issue": 1956, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-11-09", "note": "KEEP assessment: four counted PRs (1928, 1944, 1954, 2035), zero recorded conflict rounds. Rationale: .claude/reference/issue-claim-hotspot-decision.md."},
     "desk/README.md": {"issue": 1796, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-11-09", "note": "KEEP, three counted PRs and no recorded conflicts. Rationale: .claude/reference/desk-readme-hotspot-decision.md."},
+    "desk/skill/SKILL.md": {"issue": 1804,"score_at_decision": 2,"pr_count_at_decision": 2,"as_of": "2026-11-09","note": "KEEP: two counted PRs (#2024, #2032) and zero recorded conflicts. Rationale: .claude/reference/desk-control-skill-hotspot-decision.md."},
     "README.md": {"issue": 988, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
     "setup-skills-worktree.sh": {"issue": 1063, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"}
   }
