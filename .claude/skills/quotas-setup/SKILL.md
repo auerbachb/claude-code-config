@@ -278,8 +278,9 @@ linked to nowhere. Report the per-item lines as printed; they name paths only.
   needs), the profile's `.claude.json` is not parseable JSON — which is never rewritten —
   or that file changed while the merge was being computed. In the race case, the
   helper does not replace `.claude.json`; earlier share items may already have
-  changed. Relay the per-item lines and stop; retry when the profile is idle and do
-  not repair the file by hand.
+  changed. Relay the per-item lines and stop; do not repair the file by hand. Share
+  only with an idle profile: the check happens before the backup and replacement,
+  so a write after the check can still race the replacement.
 
 Neither action opens a login credential — `.credentials.json`, `auth.json`, and the
 Keychain are never touched — and nothing from `.claude.json` is printed. One thing the

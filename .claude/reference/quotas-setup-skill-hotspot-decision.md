@@ -17,7 +17,7 @@ KEEP `/quotas-setup` as a single entry. The capabilities below share a routing t
 
 ## Verified wording corrections
 
-The existing private setup fixtures passed 547 checks on both macOS Bash 3.2 and current Bash. The helper derives status from credential presence, uses stored profile paths, and can retain the old launchd definition after installing a new plist. Its sharing race check protects `.claude.json` at the end of the operation; earlier items can already have changed. MCP values survive JSON reserialization. A refused registry write does not undo an earlier provider login.
+The existing private setup fixtures passed 547 checks on both macOS Bash 3.2 and current Bash. The helper derives status from credential presence, uses stored profile paths, and can retain the old launchd definition after installing a new plist. Its sharing race check runs before backing up and replacing `.claude.json`; earlier items can already have changed. A private fixture wrote after the backup and the replacement overwrote that later value on both Bash versions, so the docs require an idle profile rather than promising that the check prevents all races. MCP values survive JSON reserialization. A refused registry write does not undo an earlier provider login.
 
 Correct those descriptions in the two existing documents while keeping the routing, all safety checks and the helper unchanged. No owner profile or login was touched.
 
