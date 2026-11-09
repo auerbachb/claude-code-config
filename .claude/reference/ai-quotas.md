@@ -243,7 +243,11 @@ ceiling that would then let another writer break it mid-login anyway.
 | Status | Meaning |
 |--------|---------|
 | `ok` | The provider's own credential artifact is present for that profile. |
-| `needs-login` | It is not — run `relogin`. Also what a `--no-login` reserved slot reports. |
+| `needs-login` | The provider's credential artifact is not visible — run `relogin`. |
+
+`--no-login` skips the login during registration. A reserved slot can still report `ok`
+if the registered profile or Cursor IDE already holds a credential.
+
 On a readable config `list` always exits `0` whatever the statuses say — it is a report,
 not a gate, and a `needs-login` row is not a failure. The one way `list` exits non-zero
 is exit `5`, when the config itself cannot be read (missing `jq`, unparseable file, or a
@@ -252,17 +256,19 @@ different schema major); that is a broken tool, not a verdict about an account.
 ## Re-login commands (exact)
 
 `/quotas-setup relogin <label> [<provider>]` runs these for you against the account's
-existing profile directory, then re-verifies. To run one by hand:
+existing profile directory, then re-verifies. To run one by hand for Claude or Codex,
+set `profile_dir` to the exact `profile_dir` from `ai-quotas-setup.sh list --json` for
+the selected label and provider. The label alone does not determine the directory.
 
 ```bash
-# claude — replace <label> with the registered label.
+# claude
 # A bare `claude` against an unauthenticated CLAUDE_CONFIG_DIR opens the browser
 # login and persists the credential scoped to that directory. Exit the session
 # (/exit or Ctrl-D) once the login completes.
-CLAUDE_CONFIG_DIR="$HOME/.claude/ai-quotas/profiles/<label>/claude" claude
+CLAUDE_CONFIG_DIR="$profile_dir" claude
 
 # codex
-CODEX_HOME="$HOME/.claude/ai-quotas/profiles/<label>/codex" codex login
+CODEX_HOME="$profile_dir" codex login
 
 # cursor — there is NO command. Open the Cursor IDE and sign in there.
 ```
@@ -297,7 +303,7 @@ Full flags and exit codes: `ai-quotas-setup.sh --help`. Summary:
 | 4 | No account matches that label. |
 | 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). Also a `repair-layout` preflight refusal: missing/shared sources, collisions, symlinks, unsupported credential backing or an interrupted repair; these refusals leave the registry and profiles unchanged. |
 | 6 | The provider's login CLI was not found — for `cursor`, `sqlite3`, which is what reads the IDE state store; the manual command is printed. |
-| 7 | Contention, refused rather than raced; nothing changed. The config write lock timed out or was broken mid-update, or a `relogin` found another relogin already running for the same account. |
+| 7 | A registry write or relogin was blocked by contention, or the profile changed during login. This run did not commit a registry update. An already-completed login can have written profile credentials; check the helper's exact message before retrying. |
 | 8 | `doctor` found layout problems; diagnostic only, never a dispatch gate. |
 | 9 | Incomplete `repair-layout` rollback; preserve `.layout-repair/` for manual recovery. |
 
@@ -1462,7 +1468,7 @@ Makes a profile behave like the primary install. For a **claude** profile:
 |------|--------|-----|
 | `skills`, `agents`, `rules`, `hooks`, `plugins`, `projects`, `CLAUDE.md`, `account-config.md` | symlink → `~/.claude/<name>` | One copy of the harness config and memory; a profile that lagged the primary would behave differently in ways nobody would think to check. The target is the primary *path* — `~/.claude/rules` is itself a symlink into the skills worktree, and linking to the path rather than its resolution keeps that indirection. |
 | `settings.json` | copy (`cp -p`, mode carried across) | Claude Code rewrites it in place; a symlink would make two installs fight over one file. |
-| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. Claude Code rewrites this file itself while a session runs and honours no lock, so the file is re-read right before it is replaced: if it changed since the snapshot the merge was computed from, the action refuses (exit `5`, nothing moved or replaced) rather than overwrite live login state with a stale copy — re-run when that session is idle. |
+| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. Claude Code rewrites this file itself while a session runs and honours no lock, so the file is re-read right before it is replaced: if it changed since the snapshot the merge was computed from, the action refuses to replace `.claude.json` (exit `5`) rather than overwrite live login state with a stale copy. Earlier share items may already have changed; inspect the per-item lines and re-run when that session is idle. |
 
 For a **codex** profile: `rules` symlinked to `~/.codex/rules`, `config.toml` copied from
 `~/.codex`. The primary locations default from `HOME` and are overridable
@@ -1496,9 +1502,9 @@ object — which is never rewritten.
 **No login credential, no printing.** `.credentials.json`, `auth.json`, and the Keychain
 are never opened. The only JSON parsed is `.claude.json`, and nothing from it is printed.
 What the merge does carry across is the `mcpServers` block, and an MCP server entry can
-hold an API key in its `env` block — that is copied byte for byte into the profile, since
-sharing the server is the point, and the merge line reports a count, never a name or a
-value. The suite plants a login-credential-shaped fixture in every profile and asserts it
+hold an API key in its `env` block. Its value is preserved in the merged JSON, while
+serialization can change formatting. The merge line reports a count, never a name or
+a value. The suite plants a login-credential-shaped fixture in every profile and asserts it
 reaches no output and no file either action writes.
 
 ## Symlink
