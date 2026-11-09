@@ -84,7 +84,7 @@ BLOCK=$(hq_t_skill_block "$SKILL_DIR/priorities.md" desk-priority-run) || {
   exit 1
 }
 ok "anchor desk-priority-run extracts"
-check_contains "the block resolves the skills worktree first" "$BLOCK" '"$HOME/.claude/skills-worktree/.claude/scripts/pm-priority.sh"'
+check_contains "the block resolves the skills worktree first" "$BLOCK" '"${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pm-priority.sh}"'
 
 # A HOME whose skills worktree holds this checkout's scripts, and a repo.
 H_OK="$TMP/home-ok"; H_NONE="$TMP/home-none"

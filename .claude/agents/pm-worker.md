@@ -83,11 +83,21 @@ for DEDUP in \
   [ -x "$DEDUP" ] && break; DEDUP=""; done
 ```
 
-If the helper is found, run it with a 2–6 keyword phrase from the issue title:
+If the helper is found, run it with a 2–6 keyword phrase from the issue title. An error or malformed result is not a no-match result; stop before filing:
+
+<!-- test-anchor: pm-worker-dedup-result -->
 
 ```bash
+DEDUP_RC=0
 if [ -n "$DEDUP" ]; then
   DEDUP_JSON=$("$DEDUP" "<keywords from issue title>" 2>/dev/null) || DEDUP_RC=$?
+  if ! printf '%s\n' "$DEDUP_JSON" | jq -es --arg rc "$DEDUP_RC" '
+    length == 1 and (.[0] | type == "array") and
+    (($rc == "0" and (.[0] | length > 0)) or
+     ($rc == "1" and (.[0] | length == 0)))' >/dev/null; then
+    echo "ERROR: issue deduplication could not be verified; nothing filed" >&2
+    exit 4
+  fi
 fi
 ```
 

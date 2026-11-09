@@ -175,13 +175,14 @@ done
 # Check the quoted shell-candidate shape, including inline lists and the
 # canonical spawn-prompt copies. Inline prose references use Markdown code
 # spans, not quoted shell candidates. Existing relative-path checks stay below.
-BARE_HOME_CANDIDATE='(^|[[:blank:]])"(\$HOME|\$\{HOME\})/\.claude/((skills-worktree/\.claude/)?(scripts|reference)/[^"]+|skills-worktree/desk)"'
+BARE_HOME_CANDIDATE='(^|[[:blank:](])"(\$HOME|\$\{HOME\})/\.claude/((skills-worktree/\.claude/)?(scripts|reference|skills)/[^"]+|skills-worktree/desk)"'
+HOME_CANDIDATE_LINE='^[[:blank:]]*("|([A-Za-z_][A-Za-z0-9_]*=\$\()?for[[:blank:]]+|((local|declare)[[:blank:]]+(-[a-zA-Z]+[[:blank:]]+)?)?[A-Za-z_][A-Za-z0-9_]*=\()'
 for f in ${guarded_files[@]+"${guarded_files[@]}"} "$CANONICAL_RESOLVE" "$GUARDRAILS"; do
   [[ -r "$f" ]] || continue  # the existing canonical-file checks report errors
   while IFS= read -r hit; do
     lineno="${hit%%:*}"
     line="${hit#*:}"
-    [[ "$line" =~ ^[[:blank:]]*# ]] && continue
+    [[ "$line" =~ $HOME_CANDIDATE_LINE ]] || continue
     err "${f}:${lineno}: unguarded HOME helper candidate — skip installed paths when HOME is unset"
   done < <(grep -nE "$BARE_HOME_CANDIDATE" "$f" || true)
 done

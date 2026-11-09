@@ -118,7 +118,7 @@ for candidate in \
   "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-state.sh}" \
   "${HOME:+$HOME/.claude/scripts/pr-state.sh}" \
   ".claude/scripts/pr-state.sh" \
-  "$HOME/.claude/skills/fixpr/audit.sh" \
+  "${HOME:+$HOME/.claude/skills/fixpr/audit.sh}" \
   ".claude/skills/fixpr/audit.sh"; do
   if [[ -x "$candidate" ]]; then
     SCRIPT="$candidate"

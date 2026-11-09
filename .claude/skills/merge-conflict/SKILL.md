@@ -41,7 +41,7 @@ Locate and run the resolver (skills worktree, home copy, or in-repo):
 ```bash
 SCRIPT=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/skills/merge-conflict/resolve_merge_conflicts.py" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/skills/merge-conflict/resolve_merge_conflicts.py}" \
   ".claude/skills/merge-conflict/resolve_merge_conflicts.py"; do
   if [[ -f "$candidate" ]]; then
     SCRIPT="$candidate"

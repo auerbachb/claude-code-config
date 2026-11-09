@@ -276,6 +276,18 @@ expect "braced bare HOME in an inline candidate list is also rejected" 1 \
   'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
   plant_bare_home_candidate '${HOME}/.claude/skills-worktree/.claude/reference/example.md'
 
+expect "nested installed skill helper still needs the HOME guard" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/dispatch-module.sh'
+
+plant_array_home_candidate() {
+  printf '\n```bash\ncandidates=("$HOME/.claude/scripts/example.sh")\n```\n' \
+    >> ".claude/skills/wave/SKILL.md"
+}
+expect "bare HOME in the first array candidate is rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_array_home_candidate
+
 expect "candidate list missing the skills-worktree entry" 1 \
   'candidate list for session-state\.sh has no' \
   plant_truncated_candidate_list
@@ -362,6 +374,13 @@ check_resolution "installed scripts are still second" "$RESOLVE_PORTABLE" "$RESO
 check_resolution "unset HOME reaches the relative fallback under set -u" "$RESOLVE_PORTABLE" unset 0 '.claude/scripts/probe.sh'
 check_resolution "empty HOME reaches the relative fallback under set -u" "$RESOLVE_PORTABLE" '' 0 '.claude/scripts/probe.sh'
 check_resolution "installed-only pause-resume does not trust the checkout" "$RESOLVE_INSTALLED_ONLY" unset 1 ''
+FIXPR_LOOP=$(awk '/^Locate `pr-state.sh`/ {wanted=1}
+  wanted && /^SCRIPT=""$/ {active=1} active {print} active && /^done$/ {exit}' "$REPO_ROOT/.claude/skills/fixpr/SKILL.md")
+[[ -n "$FIXPR_LOOP" ]]
+RESOLVE_FIXPR='resolve_script() {'$'\n'"$FIXPR_LOOP"$'\n''printf "%s\n" "$SCRIPT"; }'
+cp "$RESOLVE_LOCAL" "$RESOLVE_REPO/.claude/scripts/pr-state.sh"
+check_resolution "fixpr finds repo pr-state before the installed legacy wrapper with HOME unset" \
+  "$RESOLVE_FIXPR" unset 0 '.claude/scripts/pr-state.sh'
 rm -f "$RESOLVE_LOCAL"
 check_resolution "unset HOME without a fallback fails cleanly" "$RESOLVE_PORTABLE" unset 1 ''
 
