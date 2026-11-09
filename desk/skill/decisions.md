@@ -40,6 +40,7 @@ Loaded by `SKILL.md` on a `desk-tick … new` event, at start (the backlog), and
 One question per item, in set order. For item `n` with id `D-<k>`:
 
 - **question**: `<n>. [D-<k>] <the item's question>`, then ` — ` and its context lines joined by ` · ` when it has any, then ` (<repo> · <key>)`. The prefix is exact: a number, a dot, a space, the id in square brackets, a space. The capture hook recognises that prefix in the desk's own session as an item being shown again and does not queue it a second time; any other wording would be captured as a brand-new Decision.
+- For a Decision with `source_tool`, add ` · <source_tool> · <source_account>` inside the final parentheses. When `return_route` is null, add ` · store only`. Keep the numbered item prefix unchanged.
 - **header**: at most 12 characters, the tool's limit: `<n> · D-<k>` when that fits (ids up to six digits), else `D-<k>` alone when that fits, else `<n>`. The question's own prefix always carries the full id.
 - **options**: the item's own options, each label `<letter>. <option text>` with `A` for the item's first option, cut to about 60 characters with `…`. The description carries the full option text. The **recommended default first**: move the option equal to `default_option` to the top and end its label with ` (Recommended)`; its description adds `default — taken <default_at> if unanswered` when `default_at` is set. A captured option often already ends in `(Recommended)` (the asking thread's own label, stored as is): drop that suffix from every label first, so the marker appears once and only on the default. The letters stay the item's own, so a moved default may read `B. …` above `A. …`: the letter is what the answer records.
 - **multiSelect**: true when the item's `context` holds the line `More than one option may be chosen.` (the capture hook's note for a multi-select question; `desk/README.md`, "What a Decision carries"), else false. The tool adds "Other" for a free-text answer either way.
@@ -97,7 +98,10 @@ Any other id that is not in the latest set this session opened (one from before 
 
 ## Waking the asking threads
 
-For each answer with `"changed": true` (an unchanged answer was delivered before) whose `session` is not `SID` (the desk's own questions need no wake-up). A `session` of null has no return address: record `failed` (step 3) with note `no return address` and skip steps 1–2.
+For each answer with `"changed": true` (an unchanged answer was delivered before), read the item with `"$HQ" get D-<k> --json` to determine its return channel. If this read fails, report that the answer is stored and the return channel could not be read. Do not guess a channel from the session id.
+
+- **External Decision:** If `source_tool` is `codex` and `return_route` is present, call `python3 "$DESK/hooks/external_capture.py" wake D-<k>`. Exit 0 confirms the pointer was queued to the exact local Codex thread: record `sent` (step 3) with note `Codex: queued`. For a nonzero exit, a missing route, or any other external source, record `store-only` (step 3) with note `external return route unavailable`. It parks the answer immediately without retrying another tool's channel. Say the answer is stored for that work.
+- **Existing Claude Decision:** For the desk's own session (`session == SID`) no wake is needed. A null `session` has no return address: record `failed` (step 3) with note `no return address`. Otherwise use the existing path below.
 
 1. **Find the address** of the session that asked. Items carry the Claude Code session id; messaging needs the running session's address:
 
@@ -119,6 +123,7 @@ For each answer with `"changed": true` (an unchanged answer was delivered before
    ```bash
    "$HQ" wake D-43 --result sent --note "SendMessage to local_…: delivered" --json
    "$HQ" wake D-43 --result failed --note "no running session" --json
+   "$HQ" wake D-43 --result store-only --note "external return route unavailable" --json
    ```
 
    `sent` only when the tool's result confirms the message reached the session (`delivered`, `queued`, or held for that session's approval: say which in the note). An error, a refusal, or no result → `failed`, with the tool's reason in one line (at most 200 characters). Never report a wake-up the tool did not confirm. A note that quotes a tool's own words goes through the same quoted here-document as a reply (`--note "$(cat "$NOTE_FILE")"`), never inside the command's quotes.
