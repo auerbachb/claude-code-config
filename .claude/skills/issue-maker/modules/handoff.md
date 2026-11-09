@@ -33,8 +33,8 @@ Run `/subagent #{a} #{b} …` in this thread. It claims each issue, serializes a
 If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's schema) and track the issues there. Do not open a separate thread per issue.
 
 ## Constraints
-- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
-  - The bullet above applies to **each** issue in the list, one at a time as you pick it up — `/subagent` Step 6.0 performs exactly that per issue, so running the workflow discharges it.
+- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
+  - Run the read-only claim check for **each** listed issue before `/subagent` sizes or decomposes it. Skip a live foreign or unreadable claim. Step 6.0 rechecks and acquires each eligible pipeline before Phase A; it does not replace this earlier check. Tracking parents remain unclaimed.
 - Do NOT work on main — each pipeline works in its own worktree
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
@@ -66,7 +66,7 @@ handoff_restore() {
   OFFER_TOKEN=$(printf '%s' "$EXPECTED_HANDOFF" | jq -r '.offer_token // empty') || return 1
   REGISTRY=""
   if [ -n "$REG_TID" ]; then
-    for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+    for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh}" "${HOME:+$HOME/.claude/scripts/chip-offer-registry.sh}" ".claude/scripts/chip-offer-registry.sh"; do
       [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
     done
     [ -n "$REGISTRY" ] || return 1
@@ -146,10 +146,10 @@ case "${CHIP_TOOL_AVAILABLE:-}" in
      CHIP_TOOL_AVAILABLE=false ;;
 esac
 if [ "$CHIP_TOOL_AVAILABLE" = true ]; then
-  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh" "$HOME/.claude/scripts/active-work-cap.sh" ".claude/scripts/active-work-cap.sh"; do
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh}" "${HOME:+$HOME/.claude/scripts/active-work-cap.sh}" ".claude/scripts/active-work-cap.sh"; do
     [ -x "$candidate" ] && { CAP_SH="$candidate"; break; }
   done
-  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh}" "${HOME:+$HOME/.claude/scripts/chip-offer-registry.sh}" ".claude/scripts/chip-offer-registry.sh"; do
     [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
   done
   if [ -z "$CAP_SH" ]; then

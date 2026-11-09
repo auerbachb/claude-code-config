@@ -47,8 +47,8 @@ When `spawn_task` emits an on-request chip (or a fallback block is printed), the
    : "${PHASE:?select the current phase first}"
 DISPATCHER=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/dispatch-module.sh" \
-  "$HOME/.claude/skills/issue-maker/scripts/dispatch-module.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/dispatch-module.sh}" \
+  "${HOME:+$HOME/.claude/skills/issue-maker/scripts/dispatch-module.sh}" \
   ".claude/skills/issue-maker/scripts/dispatch-module.sh"; do
   [ -x "$candidate" ] && { DISPATCHER="$candidate"; break; }
 done

@@ -19,8 +19,8 @@ through `run_script`:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -111,8 +111,8 @@ if (
 : "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
 MODEL_ROUTE_SH=""
 for ROUTE_CANDIDATE in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh" \
-  "$HOME/.claude/scripts/model-route.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh}" \
+  "${HOME:+$HOME/.claude/scripts/model-route.sh}" \
   ".claude/scripts/model-route.sh"; do
   if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
 done
@@ -354,8 +354,8 @@ under the shared state-lock.sh advisory lock (issue #682). Never write inline wi
 # Resolve handoff-state.sh:
 HANDOFF_STATE_SH=""
 for _candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
-    "$HOME/.claude/scripts/handoff-state.sh" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh}" \
+    "${HOME:+$HOME/.claude/scripts/handoff-state.sh}" \
     ".claude/scripts/handoff-state.sh"; do
   if [[ -x "$_candidate" ]]; then HANDOFF_STATE_SH="$_candidate"; break; fi
 done

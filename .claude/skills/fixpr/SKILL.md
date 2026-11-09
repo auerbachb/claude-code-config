@@ -20,8 +20,8 @@ Resolve the helpers used by executable examples before Step 0. The handoff-path 
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -115,10 +115,10 @@ Locate `pr-state.sh`. Prefer the global install; fall back to the in-repo copy w
 ```bash
 SCRIPT=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/pr-state.sh" \
-  "$HOME/.claude/scripts/pr-state.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-state.sh}" \
+  "${HOME:+$HOME/.claude/scripts/pr-state.sh}" \
   ".claude/scripts/pr-state.sh" \
-  "$HOME/.claude/skills/fixpr/audit.sh" \
+  "${HOME:+$HOME/.claude/skills/fixpr/audit.sh}" \
   ".claude/skills/fixpr/audit.sh"; do
   if [[ -x "$candidate" ]]; then
     SCRIPT="$candidate"
@@ -202,8 +202,8 @@ Run the shared pre-flight **before** the audit so the PR is out of draft and eac
 ```bash
 PREFLIGHT_SH=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh" \
-  "$HOME/.claude/scripts/pr-preflight.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh}" \
+  "${HOME:+$HOME/.claude/scripts/pr-preflight.sh}" \
   ".claude/scripts/pr-preflight.sh"; do
   if [[ -x "$candidate" ]]; then PREFLIGHT_SH="$candidate"; break; fi
 done
@@ -366,8 +366,8 @@ If nothing needed fixing (all already-fixed/outdated, CI all green), skip the co
 ```bash
 CR_HOURLY_SCRIPT=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
-  "$HOME/.claude/scripts/cr-review-hourly.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh}" \
+  "${HOME:+$HOME/.claude/scripts/cr-review-hourly.sh}" \
   ".claude/scripts/cr-review-hourly.sh"; do
   if [[ -x "$candidate" ]]; then
     CR_HOURLY_SCRIPT="$candidate"
@@ -397,8 +397,8 @@ Resolve the helper (same pattern as `pr-state.sh` / `cr-review-hourly.sh`):
 ```bash
 DISMISS_STALE_SCRIPT=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh" \
-  "$HOME/.claude/scripts/dismiss-stale-bot-changes.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh}" \
+  "${HOME:+$HOME/.claude/scripts/dismiss-stale-bot-changes.sh}" \
   ".claude/scripts/dismiss-stale-bot-changes.sh"; do
   if [[ -x "$candidate" ]]; then
     DISMISS_STALE_SCRIPT="$candidate"
@@ -475,8 +475,8 @@ Then run the extracted trigger script once, with the SHA you just pushed (issue 
 ```bash
 FIXPR_TRIGGERS_SH=""
 for _candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/fixpr-reviewer-triggers.sh" \
-  "$HOME/.claude/scripts/fixpr-reviewer-triggers.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/fixpr-reviewer-triggers.sh}" \
+  "${HOME:+$HOME/.claude/scripts/fixpr-reviewer-triggers.sh}" \
   ".claude/scripts/fixpr-reviewer-triggers.sh"; do
   if [[ -x "$_candidate" ]]; then FIXPR_TRIGGERS_SH="$_candidate"; break; fi
 done
@@ -605,8 +605,8 @@ FIXPR_WAIT_LIBRARY=""
 if [[ -n "${RECOVERY_EVIDENCE_SH:-}" && -r "${RECOVERY_EVIDENCE_SH%/*}/lib/fixpr-wait-evidence.sh" ]]; then
   FIXPR_WAIT_LIBRARY="${RECOVERY_EVIDENCE_SH%/*}/lib/fixpr-wait-evidence.sh"
 else
-  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/lib/fixpr-wait-evidence.sh" \
-    "$HOME/.claude/scripts/lib/fixpr-wait-evidence.sh" ".claude/scripts/lib/fixpr-wait-evidence.sh"; do
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/lib/fixpr-wait-evidence.sh}" \
+    "${HOME:+$HOME/.claude/scripts/lib/fixpr-wait-evidence.sh}" ".claude/scripts/lib/fixpr-wait-evidence.sh"; do
     if [[ -r "$candidate" ]]; then FIXPR_WAIT_LIBRARY="$candidate"; break; fi
   done
 fi
@@ -813,8 +813,8 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 BUGBOT_AWAITED=1   # unknown/missing tooling never means "not invited"
 BUGBOT_INVITATION_SH=""
 for _candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-invitation.sh" \
-  "$HOME/.claude/scripts/bugbot-invitation.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/bugbot-invitation.sh}" \
+  "${HOME:+$HOME/.claude/scripts/bugbot-invitation.sh}" \
   ".claude/scripts/bugbot-invitation.sh"; do
   if [[ -x "$_candidate" ]]; then BUGBOT_INVITATION_SH="$_candidate"; break; fi
 done
