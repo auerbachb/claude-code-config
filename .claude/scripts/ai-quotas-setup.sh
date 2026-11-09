@@ -2041,10 +2041,13 @@ launcher_name() { # <provider> <nickname|""> <label>
 # authorize replacing a file with permissions from an older snapshot.
 file_mode() { # <path> -> octal mode on stdout, nonzero if unreadable
   local m
-  m="$(stat -c '%a' "$1" 2>/dev/null || true)"
-  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
-  [[ "$m" =~ ^[0-7]{3,4}$ ]] || return 1
-  printf '%s' "$m"
+  if ! m="$(stat -c '%a' "$1" 2>/dev/null)" || [[ ! "$m" =~ ^[0-7]{1,4}$ ]]; then
+    m="$(stat -f '%Lp' "$1" 2>/dev/null)" || return 1
+  fi
+  [[ "$m" =~ ^[0-7]{1,4}$ ]] || return 1
+  # stat omits leading zeroes (064 can be printed as 64). Normalize once
+  # so the mode checks compare permission bits, not their spelling.
+  printf '%03o' "$((8#$m))"
 }
 
 # The keepsake name for <path>: <path>.pre-share, or — when that name is
