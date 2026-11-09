@@ -173,6 +173,24 @@ os.execv(shell,[shell,real]+args)
                 writes=[a for a in calls if '--cas' in a]
                 self.assertEqual(len(writes),1);self.assertEqual(writes[0].count('--set'),2)
 
+    def test_reactive_publication_uses_the_receipt_numeric_boundary(self):
+        for task in ['9007199254740992', '9007199254740990.9']:
+            with self.subTest(task=task):
+                self.seed('reactive')
+                before = self.data()
+                self.assertEqual(self.run_block('reactive', task=task), 'WAKE_PUBLISH=failed')
+                self.assertEqual(self.data(), before)
+                self.assertEqual(self.stopped(), [task])
+                self.assertFalse(any('--cas' in json.loads(line) for line in self.calls.read_text().splitlines()))
+
+        self.seed('reactive')
+        self.assertEqual(self.run_block('reactive', task='9007199254740991'), 'WAKE_PUBLISH=armed')
+        self.assertEqual(self.day()['limit_resume_task_id'], 9007199254740991)
+        self.seed('reactive')
+        self.assertEqual(self.run_block('reactive', task='"9007199254740992"'), 'WAKE_PUBLISH=armed')
+        self.assertEqual(self.day()['limit_resume_task_id'], '9007199254740992')
+        self.assertEqual(self.stopped(), [])
+
     def test_mixed_case_scope_uses_the_state_writers_canonical_key(self):
         for cause in ['reactive','preemptive']:
             self.seed(cause)
