@@ -455,7 +455,7 @@ command string and nothing else.
 <!-- test-anchor: subagent-limit-wake-publish -->
 
 ```bash
-# The original winning claim's durable generation is an input, not re-read here.
+# Use the winning claim or the original recovery binding, never a later owner.
 WAKE_PUBLISH_SH=""
 for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-wake-publish.sh}" "${HOME:+$HOME/.claude/scripts/park-wake-publish.sh}"; do
   if [ -x "$candidate" ]; then WAKE_PUBLISH_SH="$candidate"; break; fi
@@ -463,10 +463,27 @@ done
 PUBLISH_RC=4
 if [ -n "$WAKE_PUBLISH_SH" ]; then
   PUBLISH_RC=0
-  "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause "${PARK_CAUSE:-reactive}" \
-    --task-id "$LIMIT_MONITOR_TASK_ID" --generation "$WAKE_GENERATION" \
-    --park-generation "${PARK_GENERATION:-}" --task-encoding json-or-string \
-    --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+  PUBLISH_CAUSE="${PARK_CAUSE:-reactive}"
+  PUBLISH_PARK_GENERATION="${PARK_GENERATION:-}"
+  RECOVERY_PUBLISH_ARGS=()
+  if [ -n "${PARK_RECOVERY_BINDING:-}" ]; then
+    PUBLISH_CAUSE=$(printf '%s\n' "$PARK_RECOVERY_BINDING" | jq -er '
+      .limit_cause | select(. == "reactive" or . == "preemptive")') || PUBLISH_RC=5
+    PUBLISH_PARK_GENERATION=$(printf '%s\n' "$PARK_RECOVERY_BINDING" | jq -er '
+      (.park_generation // "") | strings') || PUBLISH_RC=5
+    RECOVERY_PUBLISH_ARGS=(--recovery-binding "$PARK_RECOVERY_BINDING"
+      --dead-task-json "${PARK_RECOVERY_DEAD_TASK_JSON:-null}"
+      --dead-generation "${PARK_RECOVERY_DEAD_GENERATION:-}")
+  elif [ "${PARK_RECOVERY_DEAD_TASK_JSON:-null}" != null ] || [ -n "${PARK_RECOVERY_DEAD_GENERATION:-}" ]; then
+    PUBLISH_RC=5
+  fi
+  if [ "$PUBLISH_RC" -eq 0 ]; then
+    "$WAKE_PUBLISH_SH" --repo "$REPO_KEY" --cause "$PUBLISH_CAUSE" \
+      --task-id "$LIMIT_MONITOR_TASK_ID" --generation "$WAKE_GENERATION" \
+      --park-generation "$PUBLISH_PARK_GENERATION" --task-encoding json-or-string \
+      ${RECOVERY_PUBLISH_ARGS[@]+"${RECOVERY_PUBLISH_ARGS[@]}"} \
+      --state-helper "$SESSION_STATE_SH" >/dev/null || PUBLISH_RC=$?
+  fi
 fi
 case "$PUBLISH_RC" in
   0) echo "WAKE_PUBLISH=ok" ;;
@@ -555,7 +572,8 @@ that is still closed.
 <!-- test-anchor: subagent-limit-park-recovery -->
 
 ```bash
-# Inputs: SESSION_STATE_SH, REPO_KEY. Output: PARK_RECOVERY=<verdict>.
+# Inputs: SESSION_STATE_SH, REPO_KEY. Outputs: PARK_RECOVERY=<verdict>,
+# plus a compact PARK_RECOVERY_BINDING only for rearm/rearm_probe.
 # One lock-protected record per recovery attempt; never mix park generations.
 DAY_SNAPSHOT_RC=0
 DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
@@ -605,9 +623,25 @@ read_day park_claim_token; CT_RC="$DAY_RC"
 read_day park_generation; PG_RC="$DAY_RC"
 PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; RG_RC="$DAY_RC"
+WT_RC=0
+if [ "$DAY_SNAPSHOT_RC" -eq 0 ] && ! printf '%s\n' "$DAY_SNAPSHOT" | jq -e '
+    .limit_resume_task_id as $task | $task == null
+    or ($task | type == "string" and length > 0)
+    or ($task | type == "number" and . >= 0 and . <= 9007199254740991 and floor == .)' >/dev/null 2>&1; then
+  WT_RC=4
+fi
+emit_recovery_rearm() {
+  local binding
+  binding=$(printf '%s\n' "$DAY_SNAPSHOT" | jq -ce --arg repo "$REPO_KEY" '
+    {repo_key: ($repo | ascii_downcase), park_generation, parked_until, limit_kind, limit_cause, park_claim_token,
+     limit_probe_fires_remaining, limit_resume_task_id, limit_resume_generation}') || {
+    echo "PARK_RECOVERY=unreadable"; return
+  }
+  printf 'PARK_RECOVERY_BINDING=%s\nPARK_RECOVERY=%s\n' "$binding" "$1"
+}
 if [[ ( "$PU_RC" -ne 0 && "$PU_RC" -ne 3 ) || ( "$LK_RC" -ne 0 && "$LK_RC" -ne 3 ) \
       || ( "$PF_RC" -ne 0 && "$PF_RC" -ne 3 ) || ( "$PC_RC" -ne 0 && "$PC_RC" -ne 3 ) \
-      || ( "$PG_RC" -ne 0 && "$PG_RC" -ne 3 ) \
+      || ( "$PG_RC" -ne 0 && "$PG_RC" -ne 3 ) || "$WT_RC" -ne 0 \
       || ( "$CT_RC" -ne 0 && "$CT_RC" -ne 3 ) || ( "$RG_RC" -ne 0 && "$RG_RC" -ne 3 ) ]]; then
   echo "PARK_RECOVERY=unreadable"      # fail closed: re-arm nothing, dispatch nothing
 elif [[ -z "$PARKED_UNTIL" || "$PARKED_UNTIL" == null ]]; then
@@ -627,50 +661,54 @@ else
     # A pre-emptive park with fires LEFT (#1445): re-arm 2D.7's probe Monitor
     # with THAT count, never a fresh bound — re-arming twelve on every restart
     # is how a bounded probe becomes an unbounded one.
-    echo "PARK_RECOVERY=rearm_probe fires=$PARK_FIRES"
+    emit_recovery_rearm "rearm_probe fires=$PARK_FIRES"
   elif [[ "$PARK_FIRES" =~ ^-?[0-9]+$ ]]; then
     echo "PARK_RECOVERY=manual"        # 0 or -1: the bound is spent or absent
   else
-    echo "PARK_RECOVERY=rearm"         # null: the reset time is known
+    emit_recovery_rearm rearm        # null: the reset time is known
   fi
 fi
 ```
 
-Read every further park/wake-selection field (including `limit_cause`,
-`park_claim_token` and `limit_resume_generation`) through `read_day` from the
-same `DAY_SNAPSHOT`; never call the state helper separately for those fields.
+Read every further park/wake-selection field through `read_day` from the same
+`DAY_SNAPSHOT`; never call the state helper separately for those fields.
 Retry a snapshot rc6 once. A readable object/null preserves each field's value
 or null with rc0; absent state stays rc3. Invalid JSON, multiple values or any
 other shape is unreadable (rc4), and other failures retain their original rc.
-Critical nullable values retain their JSON type until validation: actual null
-means absent; the string "null", empty identifiers, invalid UTC timestamps and
-nonintegral/unsafe probe counters are unreadable. Ordinary metadata still
-preserves false, zero and empty strings. Validate every wake field's status
-before choosing a wake, even when the timestamp itself is absent.
-The fresh identity revalidation before publication remains a separate ownership
-check; it does not retroactively change this attempt's wake-selection snapshot.
+Validate every wake field's status before choosing a wake. Task IDs retain their
+JSON type, so numeric `7` and string `"7"` are different identities. Numeric
+recovery task IDs must be non-negative safe integers.
 
-- **`rearm_probe`** → this repo's park is 2D.7's pre-emptive one with fires left,
-  not a reactive park at all. Re-arm **that** wake — `/pm` 2D.7's bounded probe
-  `Monitor` with the recorded count — and leave the sleep-until-reset shape
-  alone. Reading a live probe bound as `manual` would strand a board whose own
-  wake was still legitimately re-armable, which is the misread #1445 exists to
-  end; re-arming a *fresh* bound instead would be the unbounded probe it also
-  exists to end.
-- **`rearm`** → re-arm the sleep-until-reset `Monitor` for the time remaining to
-  `parked_until` (plus the 2-minute buffer), firing `/go-on --generation` with
-  the **recorded** `limit_resume_generation`. `/go-on` is the right command for
-  **either** owner's park, which is why recovery needs no route field: it
-  validates the generation against the same `limit_resume_generation` day mode's
-  own wake validates against, then routes on the evidence — with per-PR
-  `usage_limit_park` records it runs the phase-aware lane, and with none it falls
-  to rank 1 and delegates to `/pause-resume`, forwarding the generation. A
-  day-mode park therefore resumes exactly as it always did, and an adopted one
-  resumes its pipelines too; mint and publish a fresh one only
-  when the recorded value is null. Record the new task ID over the dead one with
-  a plain `--set`: the CAS-from-null in §4 guards against a *live* competitor,
-  and the ID being replaced here belongs to a Monitor that provably died with
-  its session. One line: `Session restarted during usage-window park; resuming automatically at {PARKED_UNTIL}`.
+For either re-arm verdict, retain `PARK_RECOVERY_BINDING` from this output
+across tool calls as data, without evaluating the output as shell. It carries
+only the repository key and captured park and wake fields. A missing
+binding, unresolved repository, unfinished claim, or incomplete wake pair is
+not authority to arm or publish. If the captured pair is occupied, first obtain native confirmation
+that **that exact recorded task in its owning session** has stopped. A restart,
+unknown liveness, or an ID absent from a different session does not prove it.
+Without confirmation, retain the park and its wake record, and report that
+recovery could not verify the existing wake. Do not arm or dispatch.
+
+After an empty slot or confirmed stop, arm only the selected wake with a fresh
+`WAKE_GENERATION`. Pass the original `PARK_RECOVERY_BINDING` into §4's
+`subagent-limit-wake-publish` block. For a confirmed stop also pass the proven
+`PARK_RECOVERY_DEAD_TASK_JSON` and `PARK_RECOVERY_DEAD_GENERATION`; leave both
+unset for an empty slot. Clear recovery inputs before later normal claim
+publication. The installed helper checks the fresh record against
+the captured binding and exact typed proof, then publishes the new pair in one
+whole-record compare-and-set. It never adopts a replacement read as authority.
+On any nonzero, follow §4's stop-only-own-new-Monitor handling and do not claim
+an automatic resume. Never overwrite an occupied task with an unconditional
+state write.
+
+- **`rearm_probe`** → select `/pm` 2D.7's bounded probe `Monitor` with the
+  recorded fires left, never a fresh bound. Publish through the guarded §4
+  block above; keep the captured probe count unchanged.
+- **`rearm`** → select the sleep-until-reset `Monitor` for the time remaining
+  to `parked_until` plus the 2-minute buffer. Fire `/go-on --generation` with
+  the fresh wake generation that §4 publishes. It routes either owner's park
+  from the same durable state and delegates through the existing resume gates.
+  Report automatic recovery only after successful guarded publication.
 - **`manual`** → re-arm nothing. One line naming why (`weekly cap` or `no usable
   wake bound`) and that `/go-on` is the manual resume.
 - **`expired`** → the window has reopened. Resume through `/go-on` rather than
@@ -681,7 +719,8 @@ check; it does not retroactively change this attempt's wake-selection snapshot.
 - **`none`** → continue session start unchanged.
 
 **Adoption does not change recovery.** A wake armed by day mode or another
-thread is still the one wake, and recovery re-arms exactly one. The per-PR
+thread is still the one wake. Recovery re-arms at most one, only after the
+empty-slot or confirmed-stop checks above. The per-PR
 records from §3 are what tell `/go-on` which pipelines to relaunch, so the right
 pipelines resume regardless of which owner armed the wake.
 

@@ -702,6 +702,86 @@ run_recovery() { "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1; }
 seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" '"task-dead"'
 check_eq "unexpired rolling-window park re-arms" "PARK_RECOVERY=rearm" "$(run_recovery)"
 
+# Carry the actual recovery output into a distinct publication process. The
+# test proof is synthetic; no TaskStop or Monitor is invoked by this suite.
+recovery_day_path=".repos[\"$REPO_KEY\"].day"
+run_recovered_publish() {
+  PARK_RECOVERY_BINDING="$1" PARK_RECOVERY_DEAD_TASK_JSON="${2:-null}" \
+    PARK_RECOVERY_DEAD_GENERATION="${3:-}" WAKE_GENERATION="${4:-limit-recovered}" \
+    LIMIT_MONITOR_TASK_ID=9 "${BASH:-bash}" -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1
+}
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 7
+"$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-A\"" >/dev/null
+RECOVERY_BINDING=$(field "$("${BASH:-bash}" -c "$BLOCK_RECOVERY")" PARK_RECOVERY_BINDING)
+check_eq "recovery carries typed original wake and repository key" "${REPO_KEY}|recovery-A|7|limit-existing" \
+  "$(printf '%s\n' "$RECOVERY_BINDING" | jq -r '[.repo_key,.park_generation,(.limit_resume_task_id | tojson),.limit_resume_generation] | join("|")')"
+check_true "binding does not expose unrelated day metadata" \
+  "$(printf '%s\n' "$RECOVERY_BINDING" | jq -e 'has("active") | not' >/dev/null && echo true || echo false)"
+RECOVERY_BEFORE=$(cat "$STATE_FILE")
+check_eq "occupied recovery without confirmed stop refuses" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING")"
+check_eq "numeric and string old task proofs do not match" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" '"7"' limit-existing)"
+check_eq "recovery refuses reuse of the previous wake generation" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing limit-existing)"
+FOREIGN_BINDING=$(printf '%s\n' "$RECOVERY_BINDING" | jq -c '.repo_key="fixture/other"')
+check_eq "a binding from a different repository is refused" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$FOREIGN_BINDING" 7 limit-existing)"
+check_eq "failed proof checks leave the original state untouched" "$RECOVERY_BEFORE" "$(cat "$STATE_FILE")"
+RECOVERY_LATER=$(epoch_to_iso $(( NOW + 1900 )))
+"$SESSION_STATE_SH" --set "$recovery_day_path.parked_until=\"$RECOVERY_LATER\"" >/dev/null
+RECOVERY_REVISED=$(cat "$STATE_FILE")
+check_eq "same-owner bound revision reports a failed recovery, not supersession" 'WAKE_PUBLISH=error rc=5' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the same-owner revision is left untouched" "$RECOVERY_REVISED" "$(cat "$STATE_FILE")"
+printf '%s\n' "$RECOVERY_BEFORE" > "$STATE_FILE"
+check_eq "confirmed dead wake can be replaced with a fresh pair" 'WAKE_PUBLISH=ok' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the replacement publishes its task and fresh generation together" '9|limit-recovered' \
+  "$(day_get limit_resume_task_id)|$(day_get limit_resume_generation)"
+check_eq "recovery retains park identity and unrelated metadata" 'recovery-A|1|true' \
+  "$(day_get park_generation)|$(day_get consecutive_limit_hits)|$(day_get active)"
+RECOVERY_AFTER=$(cat "$STATE_FILE")
+check_eq "an old proof cannot replace a newer wake on the same park" 'WAKE_PUBLISH=superseded' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the newer wake stays byte-for-byte intact" "$RECOVERY_AFTER" "$(cat "$STATE_FILE")"
+
+# Same deadline and cause are deliberately reused, just as in the real race.
+"$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-B\"" \
+  --set "$recovery_day_path.limit_resume_task_id=8" \
+  --set "$recovery_day_path.limit_resume_generation=\"limit-replacement\"" >/dev/null
+RECOVERY_AFTER=$(cat "$STATE_FILE")
+check_eq "a replaced park cannot be overwritten by its old re-arm" 'WAKE_PUBLISH=superseded' \
+  "$(run_recovered_publish "$RECOVERY_BINDING" 7 limit-existing)"
+check_eq "the replacement park and wake pair remain untouched" "$RECOVERY_AFTER" "$(cat "$STATE_FILE")"
+
+# Legacy empty-slot recovery still works, with explicit null identity fields.
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" null
+"$SESSION_STATE_SH" --set "$recovery_day_path.limit_resume_generation=null" >/dev/null
+RECOVERY_BINDING=$(field "$("${BASH:-bash}" -c "$BLOCK_RECOVERY")" PARK_RECOVERY_BINDING)
+check_eq "legacy recovery retains explicit absence" 'null|null|null' \
+  "$(printf '%s\n' "$RECOVERY_BINDING" | jq -r '[.park_generation,.limit_resume_task_id,.limit_resume_generation] | map(tojson) | join("|")')"
+check_eq "legacy empty wake slot can be armed without dead proof" 'WAKE_PUBLISH=ok' \
+  "$(run_recovered_publish "$RECOVERY_BINDING")"
+jq --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_task_id=true' "$STATE_FILE" \
+  > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
+check_eq "malformed stored task ID emits no recovery binding" 'PARK_RECOVERY=unreadable' "$RECOVERY_OUT"
+jq --arg k "$REPO_KEY" '.repos[$k].day.limit_resume_task_id=9007199254740992' "$STATE_FILE" \
+  > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
+check_eq "unsafe numeric task ID emits no recovery binding" 'PARK_RECOVERY=unreadable' "$RECOVERY_OUT"
+
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 0
+"$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-probe\"" \
+  --set "$recovery_day_path.limit_probe_fires_remaining=7" >/dev/null
+RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
+check_eq "probe recovery carries its existing bound" 'rearm_probe fires=7' "$(field "$RECOVERY_OUT" PARK_RECOVERY)"
+check_eq "probe recovery accepts exact numeric zero proof" 'WAKE_PUBLISH=ok' \
+  "$(run_recovered_publish "$(field "$RECOVERY_OUT" PARK_RECOVERY_BINDING)" 0 limit-existing)"
+check_eq "probe recovery does not refresh its bound" 'preemptive|7|9|limit-recovered' \
+  "$(day_get limit_cause)|$(day_get limit_probe_fires_remaining)|$(day_get limit_resume_task_id)|$(day_get limit_resume_generation)"
+
 seed_existing_park reactive "$(epoch_to_iso $(( NOW - 1800 )))" '"task-dead"'
 check_eq "an expired park resumes instead"       "PARK_RECOVERY=expired" "$(run_recovery)"
 
