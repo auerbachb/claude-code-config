@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -56,6 +57,58 @@ def registered_accounts(rows):
         accounts[label] = (name, profile)
         launchers.add(name)
     return accounts
+
+
+
+def suggest_account(accounts, source, rows, threshold, observed_at, now, max_age):
+    """Select a compatible launcher using one fresh, complete weekly reading."""
+    unknown = {"decision": "unknown"}
+    if (not isinstance(source, str) or source not in accounts or accounts[source][1] is None
+            or not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows)
+            or type(threshold) is not int or not 1 <= threshold <= 100
+            or type(max_age) is not int or max_age <= 0 or type(now) is not int
+            or type(observed_at) is not int or not 0 <= now - observed_at <= max_age):
+        return unknown
+
+    candidates = []
+    for label, (launcher, profile) in accounts.items():
+        if label == source or profile is None:
+            continue
+        weekly = [r for r in rows if r.get("provider") == "claude" and r.get("label") == label
+                  and isinstance(r.get("window"), str) and r["window"].startswith("7-day")]
+        if weekly and all(r.get("status") == "needs-login" for r in weekly):
+            continue
+        # Missing or ambiguous data can hide the best alternate account.
+        if not weekly:
+            return unknown
+        used = []
+        windows = set()
+        for row in weekly:
+            pct, reset = row.get("used_pct"), row.get("resets_at_epoch")
+            if (row["window"] in windows or row.get("status") != "ok"
+                    or type(pct) not in (int, float) or not 0 <= pct <= 100
+                    or not math.isfinite(pct)
+                    or (reset is not None and (type(reset) is not int or reset <= now))):
+                return unknown
+            windows.add(row["window"])
+            used.append(pct)
+        worst = max(used)
+        if worst < threshold:
+            candidates.append((worst, launcher))
+    if not candidates:
+        return {"decision": "none"}
+    _, launcher = min(candidates)
+    return {"decision": "suggested", "launcher": launcher}
+
+
+def account_for_launcher(accounts, source, launcher):
+    if not LAUNCHER.fullmatch(launcher):
+        raise ValueError("invalid resume target launcher")
+    targets = [label for label, (name, profile) in accounts.items()
+               if label != source and name == launcher and profile is not None]
+    if len(targets) != 1:
+        raise ValueError("resume target is not an available alternative for this account")
+    return targets[0]
 
 
 def primary_account_email(home):
@@ -270,7 +323,12 @@ def list_records(root, accounts, source, profile, parked=(), park_lookup="not re
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("list", help="list recorded sessions for the current registered Claude profile")
+    listing = sub.add_parser("list", help="list recorded sessions for the current registered Claude profile")
+    listing.add_argument("--target", metavar="LAUNCHER", help="show only this registered alternative launcher")
+    suggest = sub.add_parser("suggest", help="rank alternate Claude launchers from a current quota snapshot on stdin")
+    suggest.add_argument("--source", required=True)
+    for name in ("threshold", "observed-at", "now", "max-age"):
+        suggest.add_argument("--" + name, required=True, type=int)
     add = sub.add_parser("record", help="record an already verified end or park checkpoint")
     add.add_argument("--session", required=True)
     add.add_argument("--cwd", required=True)
@@ -279,9 +337,16 @@ def main():
     add.add_argument("--handoff", required=True)
     args = parser.parse_args()
     try:
+        setup = Path(__file__).resolve().parents[1] / "ai-quotas-setup.sh"
+        if args.action == "suggest":
+            accounts = registered_accounts(metadata(setup))
+            raw = sys.stdin.buffer.read(1_000_001)
+            rows = json.loads(raw) if len(raw) <= 1_000_000 else None
+            print(json.dumps(suggest_account(accounts, args.source, rows, args.threshold,
+                                             args.observed_at, args.now, args.max_age)))
+            return 0
         home = Path.home().resolve(strict=True)
         root = roster_path(home, write=args.action == "record")
-        setup = Path(__file__).resolve().parents[1] / "ai-quotas-setup.sh"
         accounts = registered_accounts(metadata(setup))
         primary = home / ".claude"
         configured = os.environ.get("CLAUDE_CONFIG_DIR") or str(primary)
@@ -293,10 +358,13 @@ def main():
             source, profile = source_account(accounts, configured, primary_account_email(home))
         if args.action == "record":
             record(root, source, profile, args.session, args.cwd, args.summary, args.kind, args.handoff)
+        if args.action == "list" and args.target is not None:
+            target = account_for_launcher(accounts, source, args.target)
+            accounts = {target: accounts[target]}
         parked, park_lookup = read_park_records(setup.with_name("session-state.sh"))
         print(json.dumps(list_records(root, accounts, source, profile, parked, park_lookup),
                          ensure_ascii=False))
-    except (OSError, subprocess.SubprocessError, ValueError) as error:
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as error:
         # A failed helper can contain private registry details in stderr.
         detail = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else "metadata unavailable"
         print(f"quota-resume-roster: {detail}", file=sys.stderr)

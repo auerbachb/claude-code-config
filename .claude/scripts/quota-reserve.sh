@@ -157,9 +157,32 @@ notify() { # <message> — best effort, never fatal
   fi
 }
 
+# Use a bounded projection of the same provider read, never another poll.
+next_account_notice() {
+  local rows="$1" source="$2" threshold="$3" observed="$4" helper result launcher
+  helper="${HERE:+$HERE/}quota-resume-roster.sh"
+  if [[ -z "$HERE" || ! -x "$helper" ]]; then
+    printf ' Next account unknown.'; return 0
+  fi
+  result="$(printf '%s' "$rows" | jq -ce '[.rows[] | {provider,label,window,status,used_pct,resets_at_epoch}]' |
+    "$helper" suggest --source "$source" --threshold "$threshold" --observed-at "$observed" \
+      --now "$(now_epoch)" --max-age "$STALE_SECONDS" 2>/dev/null)" || result='{}'
+  case "$(jq -r '.decision // "unknown"' <<<"$result" 2>/dev/null)" in
+    suggested)
+      launcher="$(jq -r '.launcher // ""' <<<"$result" 2>/dev/null)"
+      if [[ "$launcher" =~ ^claude-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        printf ' Next account: %s. From the stopped account, use /go-on --resume-options --target %s.' "$launcher" "$launcher"
+      else
+        printf ' Next account unknown.'
+      fi ;;
+    none) printf ' No other account has room to resume Claude work.' ;;
+    *) printf ' Next account unknown.' ;;
+  esac
+}
+
 # ---------------------------------------------------------------- --refresh ---
 do_refresh() {
-  local force="$1" now age reader rows thr lock tmp prev on
+  local force="$1" now age reader rows thr lock tmp prev on line message source
   need_jq
   mkdir -p "$DIR" 2>/dev/null || { warn "cannot create $DIR"; return 3; }
   now="$(now_epoch)"
@@ -192,9 +215,19 @@ do_refresh() {
 
   thr="$(threshold_pct)"
   if enabled; then on=true; else on=false; fi
+  prev=null
+  if [[ -r "$MARKER" ]]; then
+    prev="$(jq -cs 'if length == 1 and (.[0] | type == "object" and
+                      (.accounts | type == "array" and all(.[]; type == "object")))
+                    then .[0] else null end' "$MARKER" 2>/dev/null)" || prev=null
+  fi
   tmp="$(mktemp "$DIR/marker.XXXXXX")" || { warn "cannot write a marker"; return 3; }
-  printf '%s' "$rows" | jq --argjson thr "$thr" --argjson now "$now" --argjson on "$on" '
+  printf '%s' "$rows" | jq --argjson thr "$thr" --argjson now "$now" --argjson on "$on" --argjson previous "$prev" '
     def weekly: select((.window // "") | test("^7-day"));
+    def previous_notice($provider; $label):
+      [($previous.accounts // [])[] | select(.provider == $provider and .label == $label)
+        | (.notice_state // .state) | select(. == "ok" or . == "reserve")]
+      | if length == 1 then first else null end;
     { schema_version: "1.0", read_at: $now, threshold_pct: $thr, enabled: $on,
       accounts: ([.rows[] | select(.provider == "claude" or .provider == "codex")]
         | group_by(.provider + "|" + .label)
@@ -206,25 +239,33 @@ do_refresh() {
                 resets_at_epoch: (if ($ok | length) > 0 then ($ok | max_by(.used_pct) | .resets_at_epoch) else null end),
                 state: (if ($ok | length) == 0 then "unknown"
                         elif ($ok | map(.used_pct) | max) >= $thr then "reserve" else "ok" end),
-                note: (if ($ok | length) == 0 then ([$rs[] | weekly | .status] | first // "no weekly window") else null end) })) }' \
+                note: (if ($ok | length) == 0 then ([$rs[] | weekly | .status] | first // "no weekly window") else null end) }
+              | .notice_state = (if .state == "unknown" then previous_notice(.provider; .label) else .state end))) }' \
     > "$tmp" 2>/dev/null || { rm -f "$tmp"; warn "could not build the marker"; return 3; }
   chmod 600 "$tmp" 2>/dev/null || true
 
-  prev=""
-  [[ -r "$MARKER" ]] && prev="$(cat "$MARKER" 2>/dev/null)"
   mv -f "$tmp" "$MARKER" || { rm -f "$tmp"; warn "could not install the marker"; return 3; }
 
-  # Tell the owner once per crossing, in either direction.
-  if [[ -n "$prev" ]] && printf '%s' "$prev" | jq -e . >/dev/null 2>&1; then
-    jq -nr --argjson p "$prev" --slurpfile n "$MARKER" '
+  # Deduplicate using the last confirmed notice state, never the launch guard.
+  if [[ "$prev" != null ]]; then
+    jq -nc --argjson p "$prev" --slurpfile n "$MARKER" '
       ($p.accounts // []) as $pa | $n[0].accounts[]
-      | . as $a | ($pa | map(select(.provider == $a.provider and .label == $a.label)) | first // null) as $was
-      | select($was != null and $was.state != $a.state and ($a.state == "reserve" or $was.state == "reserve"))
-      | (($a.nickname // $a.label) as $who
-         | if $a.state == "reserve"
-           then "\($who) is at \($a.used_pct)% of its weekly limit. Autonomous work on it is paused; your own turns still work."
-           else "\($who) is back under the limit. Autonomous work can resume." end)' 2>/dev/null \
-    | while IFS= read -r line; do [[ -n "$line" ]] && notify "$line"; done
+      | . as $a | ($pa | map(select(.provider == $a.provider and .label == $a.label))) as $matches
+      | select($matches | length == 1)
+      | ($matches[0] | .notice_state // .state) as $before
+      | select(($before == "ok" and .state == "reserve") or ($before == "reserve" and .state == "ok"))
+      | {provider, label, state, message: ((.nickname // .label) as $who
+         | if .state == "reserve"
+           then "\($who) is at \(.used_pct)% of its weekly limit. Autonomous work on it is paused; your own turns still work."
+           else "\($who) is back under the limit. Autonomous work can resume." end)}' 2>/dev/null \
+    | while IFS= read -r line; do
+        message="$(jq -er '.message' <<<"$line")" || continue
+        if jq -e '.provider == "claude" and .state == "reserve"' <<<"$line" >/dev/null; then
+          source="$(jq -er '.label | strings' <<<"$line")" || continue
+          message+="$(next_account_notice "$rows" "$source" "$thr" "$now")"
+        fi
+        notify "$message"
+      done
   fi
   return 0
 }
