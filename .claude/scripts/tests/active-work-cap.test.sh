@@ -160,6 +160,13 @@ case "$1 $2" in
         exit 96 ;;
     esac ;;
   "api graphql")
+    if [[ -n "${GH_FAKE_OFFER_SNAPSHOT_READS:-}" ]]; then
+      printf 'read\n' >> "$GH_FAKE_OFFER_SNAPSHOT_READS"
+      # Simulate the issue closing between the first and second query.
+      if [[ $(wc -l < "$GH_FAKE_OFFER_SNAPSHOT_READS") -gt 1 ]]; then
+        GH_FAKE_OPEN_ISSUES=""
+      fi
+    fi
     if [[ "${GH_FAKE_ISSUE_FAIL:-0}" == "1" ]]; then
       echo "fake gh: simulated API failure" >&2; exit 1
     fi
@@ -272,6 +279,21 @@ set_open_prs 0
 set_merged_prs 0
 set_open_issues ""
 set_pipelines '[]'
+
+# The diagnostic list and the count must describe the same legacy offer state.
+# A later read would see issue 401 already closed, disagreeing with the count.
+set_open_issues "401"
+write_chip_log snapshot "[$(chip_entry 401 "$SLUG" open "snapshot-task")]"
+SNAPSHOT_READS="$TMP_DIR/offer-snapshot-reads"
+SNAPSHOT=$(GH_FAKE_OFFER_SNAPSHOT_READS="$SNAPSHOT_READS" CLAUDE_CHIP_OFFER_REGISTRY_SH="" run --json) ||
+  fail "legacy offer snapshot: --json failed"
+printf '%s\n' "$SNAPSHOT" | jq -e '.live_chips == 1 and .offered_issue_nums == [401]' >/dev/null ||
+  fail "legacy offer snapshot: count and issue list disagree: $SNAPSHOT"
+[[ -f "$SNAPSHOT_READS" && $(wc -l < "$SNAPSHOT_READS") -eq 1 ]] ||
+  fail "legacy offer snapshot: expected one issue-state query"
+ok "legacy offer count and issue IDs use one issue-state read"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-snapshot-log.json"
+set_open_issues ""
 
 # --- 1. Default cap when no config and no override ---------------------------
 CAP=$(run --cap) || fail "--cap failed with no config present"
