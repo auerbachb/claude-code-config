@@ -8,7 +8,7 @@ triggers:
   - leaving at
   - I'm out at
   - done for the day at
-argument-hint: "<clock time> (e.g. `7 PM`, `5:30 PM`) [--lead Nm] | cancel | status | --checkin --generation <token> (internal — emitted by the wind-down Monitor) | --elicit (internal — /subagent Step 7 asks the user for the time before the first new-pipeline launch)"
+argument-hint: "<clock time> (e.g. `7 PM`, `5:30 PM`) [--lead Nm] | cancel | status | --checkin --generation <token> (internal — emitted by the wind-down Monitor) | --elicit --reservation <token> (internal — /subagent Step 7 asks the user for the time before the first new-pipeline launch)"
 ---
 
 You say the time once. From then on the thread plans around it: nothing starts that cannot finish
@@ -43,6 +43,7 @@ PM_CONFIG_GET=$(resolve_script pm-config-get.sh)        || PM_CONFIG_GET=""
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh) || ESTIMATE_RESOLVE_SH=""
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh)     || OVERRUN_CHECK_SH=""
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
+PROMPT_RESERVE_SH=$(resolve_script prompt-reservation.sh) || PROMPT_RESERVE_SH=""
 
 REPO_KEY=""
 [[ -n "$SESSION_STATE_SH" ]] && { REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; }
@@ -74,7 +75,7 @@ can never be reinterpreted as a fresh declaration:
 | Invocation | Mode |
 |---|---|
 | `--checkin --generation <token>` | **check-in** (Step 8) — internal; only the Monitor armed in Step 6 emits it |
-| `--elicit` | **elicit** (Step 0e) — internal; `/subagent` Step 7 asks the user for the time, then arms Steps 1–5 only (no Monitor) |
+| `--elicit --reservation <token>` | **elicit** (Step 0e) — internal; `/subagent` Step 7 asks the user for the time, then arms Steps 1–5 only (no Monitor) |
 | `cancel` / `off` / "never mind, I'm staying" | **cancel** (Step 9) |
 | `status` | **status** — print the armed line from Step 7 and stop; write nothing |
 | anything else, or a leave-time phrase recognized in chat | **declare** — **Step 9 first when one is already armed**, then Steps 1–7 |
@@ -128,7 +129,24 @@ that is the source gate defeated through the one door built to honour it.
 
 Reached only from `/subagent` Step 7, before a thread's first new-pipeline launch, when no
 unexpired deadline is armed for the repo and the session is attended. Step 7 owns *when* to ask;
-this step owns the question and everything it writes.
+this step owns the question and everything it writes. Bind the exact `--reservation` argument
+to `LEAVE_PROMPT_GENERATION`. A missing token is an invalid internal invocation: return to Step 7
+without asking or writing.
+
+<!-- test-anchor: leave-by-elicit-verify-reservation -->
+
+```bash
+ELICIT_RESERVATION_VERIFIED=false
+if [[ -n "${PROMPT_RESERVE_SH:-}" && -n "${LEAVE_PROMPT_GENERATION:-}" ]] &&
+   "$PROMPT_RESERVE_SH" verify --repo "$REPO_KEY" --kind leave --generation "$LEAVE_PROMPT_GENERATION"; then
+  ELICIT_RESERVATION_VERIFIED=true
+fi
+```
+
+Require `ELICIT_RESERVATION_VERIFIED=true` immediately before the menu and any follow-up question,
+and repeat this check before the first answer write (including a dismissal marker). If it fails,
+return without writing or acting on the answer; do not take another reservation here. Step 7 owns
+releasing its token after this invocation returns.
 
 **Ask once, with `AskUserQuestion`** (`ask-menu.md`), question text *"When will you likely next
 close your laptop?"*, options in this order:
