@@ -1731,13 +1731,13 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
   # Disable monitor mode *inside* the new group so subsequent children inherit it.
   set +m
   group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
-  while [[ ! -s "$control/launch" && ! -e "$control/stop" && -d "$control" ]]; do
+  while [[ ! -s "$control/launch" && ! -e "$control/shutdown.request" && -d "$control" ]]; do
     (( ticks < 40 )) || return 1
     if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
     else sleep 1; ticks=$((ticks + 20)); fi
   done
   IFS= read -r expected < "$control/launch" || return 1
-  [[ ! -e "$control/stop" ]] || return 1
+  [[ ! -e "$control/shutdown.request" ]] || return 1
   if [[ ! "$group" =~ ^[1-9][0-9]*$ || "$group" != "$expected" || "$group" == "$parent_group" ]]; then
     : > "$control/unowned"
     return 1
@@ -1751,7 +1751,7 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
   # disposition. This process keeps the group identity live through escalation.
   trap '' TERM
   ticks=0
-  while [[ ! -e "$control/stop" && -d "$control" ]]; do
+  while [[ ! -e "$control/shutdown.request" && -d "$control" ]]; do
     if [[ ! -e "$control/exited" ]] && ! kill -0 "$member" 2>/dev/null; then
       : > "$control/exited" || break
     fi
@@ -1799,7 +1799,7 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
 codex_stop_server() { # owned supervisor PID, private control dir
   local pid="$1" control="${2:-}" ticks=0 started="${SECONDS:-}" last now
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" && -d "$control" ]] || return 1
-  : > "$control/stop" || return 1
+  : > "$control/shutdown.request" || return 1
   last="$started"
   while kill -0 "$pid" 2>/dev/null; do
     now="${SECONDS:-}"
@@ -1908,7 +1908,7 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
       CODEX_FAIL_REASON="could not establish app-server process ownership"
       exited_early=0
     fi
-    rm -f "$control/launch" "$control/stop" "$control/exited" "$control/members" "$control/unowned"
+    rm -f "$control/launch" "$control/shutdown.request" "$control/exited" "$control/members" "$control/unowned"
     rmdir "$control" 2>/dev/null || true
   else
     warn "app-server supervisor did not stop within its cleanup budget"

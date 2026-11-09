@@ -222,7 +222,7 @@ class QuotaWaits(unittest.TestCase):
                     shell, 'kill() { echo called; }; '
                     'for pid in 0 -1 invalid "$$"; do '
                     'codex_stop_server "$pid" "$TMP" && exit 91; done; '
-                    '[[ ! -e "$TMP/stop" ]] || exit 92; echo guarded')
+                    '[[ ! -e "$TMP/shutdown.request" ]] || exit 92; echo guarded')
                 self.assertEqual(rc, 0, err)
                 self.assertEqual(out.strip(), 'guarded')
 
