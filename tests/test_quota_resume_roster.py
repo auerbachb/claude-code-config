@@ -132,6 +132,8 @@ class QuotaResumeRosterTests(unittest.TestCase):
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.sid, SESSION_ID="default",
                    EXECUTION_PAUSE_SH=str(gate), GATE_CALLS=str(calls), NATIVE_STATUS="inactive",
                    LEGACY_STATUS="active")
+        env.pop("CLAUDE_SESSION_ID", None)
+
         def probe():
             return self.run_skill_block("go-on", "go-on-live-native-session-gate", env,
                                         'printf "%s" "$GATE_LIVE"').stdout
@@ -143,6 +145,16 @@ class QuotaResumeRosterTests(unittest.TestCase):
         self.assertEqual(probe(), "unreadable")
         env.update(NATIVE_STATUS="inactive")
         self.assertEqual(probe(), "inactive")
+
+        calls.write_text("")
+        env.update(CLAUDE_SESSION_ID="legacy:with/slash", SESSION_ID="legacy_with_slash",
+                   LEGACY_STATUS="active")
+        self.assertEqual(probe(), "active")
+        self.assertEqual(calls.read_text().splitlines(), [self.sid, "legacy:with/slash"])
+        calls.write_text("")
+        env["CLAUDE_SESSION_ID"] = self.sid
+        self.assertEqual(probe(), "inactive")
+        self.assertEqual(calls.read_text().splitlines(), [self.sid])
 
     def test_resume_options_never_executes_checkout_or_path_fallback(self):
         def executable(path, body):
