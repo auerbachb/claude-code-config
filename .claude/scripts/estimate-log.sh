@@ -414,38 +414,14 @@ fetch_claim_ts() {
     return
   fi
 
-  # Fetch issue comments
-  local comments_json
-  comments_json=$(gh api "repos/$repo/issues/$issue_number/comments" \
-    --paginate 2>/dev/null || echo "[]")
-
-  local claim_ts
-  # gh api --paginate emits one JSON array per page, concatenated on stdout.
-  # jq -s (slurp) collects them into an outer array; .[] | .[] iterates all
-  # comment objects across every page.  .[]? guards against an empty page.
-  #
-  # Design note: we pick the LATEST claim comment at or before the merge
-  # timestamp.  Bounding by merge_ts prevents a post-merge re-claim (follow-up
-  # work) from producing a negative actual duration.  If no bound is supplied
-  # the filter is a no-op (empty string never satisfies <=).
-  claim_ts=$(printf '%s' "$comments_json" \
-    | jq -rs --arg merge_ts "$merge_ts" \
-         '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- claude-claim:")))
-                       | select($merge_ts == "" or .created_at <= $merge_ts) ]
-          | if length > 0 then (sort_by(.created_at) | last) as $c
-              # A renewed marker (#1914) carries the original pickup time as its
-              # payload `since`; prefer it so renewals do not shorten durations.
-              # Strict: the exact format compute_actual_min parses (anything
-              # looser would yield a silent 0-minute row), and never later
-              # than the marker itself. Otherwise fall back to created_at.
-              | ((try ($c.body | capture("<!-- claude-claim: *(?<p>.*?) *-->") | .p | fromjson | .since
-                       | select(type == "string"
-                                and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-                                and . <= $c.created_at
-                                and (fromdateiso8601 | type) == "number")) catch null)
-                 // $c.created_at)
-            else "" end' \
-    2>/dev/null || echo "")
+  # Use the same protocol reader as claim checks. With no authentic, bounded
+  # marker, retain the PR-created estimate instead of timing explanatory prose.
+  local claim_ts="" claim_helper
+  claim_helper="$(dirname "${BASH_SOURCE[0]}")/issue-claim.sh"
+  if [[ -x "$claim_helper" ]]; then
+    claim_ts="$(gh api "repos/$repo/issues/$issue_number/comments" --paginate 2>/dev/null \
+      | "$claim_helper" --pickup-time "$merge_ts" 2>/dev/null)" || claim_ts=""
+  fi
 
   if [[ -n "$claim_ts" && "$claim_ts" != "null" && "$claim_ts" != "" ]]; then
     printf '%s claim_comment\n' "$claim_ts"
@@ -1114,6 +1090,8 @@ mode_rollup() {
     printf 'excludes. That unit is re-derived only from an open → merge measurement.\n'
     printf 'The claim start is the claim marker'\''s payload `since` when valid, else the\n'
     printf 'marker comment'\''s `created_at`, so a renewed claim does not shorten the duration.\n'
+    printf 'Quoted examples do not count. An unreadable newest eligible record falls back\n'
+    printf 'to PR creation.\n'
     printf 'The published tier table stays authoritative for tiers with fewer than ~5 rows.\n\n'
 
     printf '## Recalibrated Tier → Time Table\n\n'

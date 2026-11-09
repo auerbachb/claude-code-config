@@ -79,7 +79,7 @@ printf '{"merged_at":"%s","state":"closed","created_at":"%s","commits":2}' \
 # marker <created_at> <payload-json>: one claim comment object.
 marker() {
   jq -cn --arg c "$1" --arg p "$2" \
-    '{id: 1, created_at: $c, body: ("🔒 Claimed\n\n<!-- claude-claim: " + $p + " -->")}'
+    '{id: 1, created_at: $c, body: ("🔒 Claimed by `me` for active work.\n\n<!-- claude-claim: " + $p + " -->")}'
 }
 
 # run_case <comments-json-pages...> ; prints "<actual_min> <start_source>".
@@ -126,9 +126,9 @@ check_eq "non-string since: falls back to created_at" "60 claim_comment" "$got"
 got=$(run_case "[$(marker "$RENEWED_AT" '{"holder":"h","since":"2026-09-01T13:30:00Z"}')]")
 check_eq "since after created_at: falls back to created_at" "60 claim_comment" "$got"
 
-# 6. Malformed marker JSON -> the comment still counts, via created_at.
+# 6. A genuine but unreadable newest record cannot supply a pickup time.
 got=$(run_case "[$(marker "$RENEWED_AT" '{"holder":')]")
-check_eq "malformed marker JSON: falls back to created_at" "60 claim_comment" "$got"
+check_eq "malformed newest marker falls back to PR creation" "180 pr_created" "$got"
 
 # 7. A marker created after merge is excluded -> pr_created fallback.
 got=$(run_case "[$(marker "2026-09-01T15:00:00Z" "$PAYLOAD_POST_MERGE")]")
@@ -137,6 +137,36 @@ check_eq "post-merge marker excluded: pr_created" "180 pr_created" "$got"
 # 8. No marker at all -> pr_created.
 got=$(run_case '[]')
 check_eq "no marker: pr_created" "180 pr_created" "$got"
+
+# Quoted examples are not protocol records, even when newer than the real
+# pickup or when the JSON in the example would otherwise be valid.
+quote='{"id":22,"created_at":"2026-09-01T13:30:00Z","body":"A planning reply describes a `<!-- claude-claim: … -->` marker."}'
+got=$(run_case "[$(marker "$RENEWED_AT" "$PAYLOAD_WITH_SINCE"),$quote]")
+check_eq "newer quoted example cannot replace the renewed pickup" "120 claim_comment" "$got"
+got=$(run_case "[$quote]")
+check_eq "a quote alone is not a claim" "180 pr_created" "$got"
+got=$(run_case "[$(marker "$SINCE" '{"holder":"older"}'),$(marker "$RENEWED_AT" '{"holder":')]")
+check_eq "genuinely unreadable newest record does not borrow an older pickup" "180 pr_created" "$got"
+got=$(run_case "[$(marker "$RENEWED_AT" "$PAYLOAD_WITH_SINCE"),$(marker "2026-09-01T15:00:00Z" "$PAYLOAD_POST_MERGE")]")
+check_eq "post-merge marker does not shadow an earlier eligible record" "120 claim_comment" "$got"
+
+historic=$(jq -cn --arg c "$RENEWED_AT" --arg p "$PAYLOAD_WITH_SINCE" \
+  '{id:2,created_at:$c,body:("🔒 Claimed by `me` for active work. It will be released when this issue\u0027s PR merges, when the issue closes, or automatically after 4h of no activity.\n\n<!-- claude-claim: "+$p+" -->")}')
+got=$(run_case "[$historic]")
+check_eq "historical notice supplies the same renewal provenance" "120 claim_comment" "$got"
+bare=$(jq -cn --arg c "$RENEWED_AT" --arg p "$PAYLOAD_WITH_SINCE" \
+  '{id:3,created_at:$c,body:("<!-- claude-claim: "+$p+" -->")}')
+got=$(run_case "[$bare]")
+check_eq "bare record remains supported" "120 claim_comment" "$got"
+
+# The shared reader is a pure stdin mode: no HOME, issue mutations, or
+# additional authenticated requests are needed to parse these comments.
+pure=$(
+  unset HOME
+  printf '%s\n' "[$bare,$quote]" |
+    "$ESTIMATE_TEST_SHELL" "$REPO_ROOT/.claude/scripts/issue-claim.sh" --pickup-time "$MERGED"
+)
+check_eq "data-only mode works with HOME unset" "$SINCE" "$pure"
 
 # 9. Rollup output carries the start-time sentence.
 OUT="$TMP/actuals.md"
