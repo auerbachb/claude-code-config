@@ -69,6 +69,11 @@ if [[ -n "$FB_CHIP" && "$FB_CHIP" == "$FB_START" ]]; then
 else
   bad "Form B differs between chip-launching.md and /start-issue (or is missing)"
 fi
+if [[ "$FB_CHIP" == *'then run `<N> --renew --holder "{CLAIM_HOLDER}"` on it'* ]]; then
+  ok "Form B confirms the inherited claim without acquiring one"
+else
+  bad "Form B does not start with a renew-only claim check"
+fi
 if [[ "$FB_CHIP" == *"renews the claim when due"* && "$FB_CHIP" != *"It is a no-op"* ]]; then
   ok "Form B says it renews when due"
 else

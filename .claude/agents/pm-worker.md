@@ -91,10 +91,16 @@ If the helper is found, run it with a 2–6 keyword phrase from the issue title.
 DEDUP_RC=0
 if [ -n "$DEDUP" ]; then
   DEDUP_JSON=$("$DEDUP" "<keywords from issue title>" 2>/dev/null) || DEDUP_RC=$?
-  if ! printf '%s\n' "$DEDUP_JSON" | jq -es --arg rc "$DEDUP_RC" '
-    length == 1 and (.[0] | type == "array") and
-    (($rc == "0" and (.[0] | length > 0)) or
-     ($rc == "1" and (.[0] | length == 0)))' >/dev/null; then
+  if ! printf '%s\n' "$DEDUP_JSON" | python3 -c '
+import json, sys
+try:
+    result = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+rc = sys.argv[1]
+valid = isinstance(result, list) and ((rc == "0" and bool(result)) or (rc == "1" and not result))
+sys.exit(0 if valid else 1)
+' "$DEDUP_RC"; then
     echo "ERROR: issue deduplication could not be verified; nothing filed" >&2
     exit 4
   fi
