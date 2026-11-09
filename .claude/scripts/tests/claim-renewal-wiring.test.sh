@@ -109,10 +109,13 @@ else
   bad "Form B still describes the reaffirm as a pure no-op"
 fi
 FORMA=$(grep -F -- '- Claim the issue before anything else.' "$CHIP")
-if [[ -n "$FORMA" && "$FORMA" != *"--renew"* ]]; then
-  ok "canonical Form A bullet present and untouched by renewal"
+if [[ "$FORMA" == *'--check --holder "$CLAIM_HOLDER"'* &&
+      "$FORMA" == *'--claim --holder "$CLAIM_HOLDER" --json'* &&
+      "$FORMA" == *'--renew --holder "$CLAIM_HOLDER"'* &&
+      "$FORMA" == *"this launch's checkpoint"* ]]; then
+  ok "Form A carries its acquired holder into renewal and recovery"
 else
-  bad "canonical Form A bullet missing or changed"
+  bad "Form A does not preserve the holder across checkouts"
 fi
 
 # --- rule --------------------------------------------------------------------

@@ -1367,6 +1367,43 @@ check_eq "two standalone records in one comment are ambiguous" 4 "$RC"
 check_eq "ambiguous standalone records remain fail closed" unknown "$(jq -r .verdict <<<"$OUT")"
 
 echo
+echo "== Form A launch keeps one holder across a checkout change =="
+# shellcheck source=lib/skill-bash.sh
+source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
+FORM_A_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/reference/chip-launching.md" chip-form-a-claim)
+run_form_a() {
+  RC=0
+  OUT=$(CLAIM="$SCRIPT" ISSUE=873 "$CLAIM_TEST_SHELL" -u -c \
+    "$FORM_A_BLOCK"$'\n''printf "HOLDER=%s\n" "$CLAIM_HOLDER"' 2>"$TMP/form-a.err") || RC=$?
+}
+reset_issue
+run_form_a
+check_eq "fresh Form A acquisition succeeds" 0 "$RC"
+FORM_A_HOLDER="${OUT##*$'\nHOLDER='}"
+check_contains "fresh Form A uses an explicit launch holder" chip: "$FORM_A_HOLDER"
+check_eq "the acquired marker has the saved holder" "$FORM_A_HOLDER" \
+  "$(newest_marker_field '.body | capture("claude-claim: (?<p>.*) -->").p | fromjson | .holder')"
+FORM_A_IDS=$(marker_ids)
+run_form_a
+check_eq "a sibling launch in the same checkout cannot take the claim" 1 "$RC"
+check_eq "the sibling did not replace the marker" "$FORM_A_IDS" "$(marker_ids)"
+
+ALT_CHECKOUT="$TMP/form-a-checkout"
+mkdir -p "$ALT_CHECKOUT"
+git -C "$ALT_CHECKOUT" init -q || exit 1
+FORM_A_RENEW=$(
+  cd "$ALT_CHECKOUT" || exit 1
+  unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_ID
+  run 873 --renew --repo acme/widgets
+  printf '%s|%s\n' "$RC" "$OUT"
+  run 873 --renew --repo acme/widgets --holder "$FORM_A_HOLDER"
+  printf '%s|%s\n' "$RC" "$OUT"
+)
+check_eq "new checkout default loses ownership; recorded holder renews" \
+  $'5|claimed\n0|mine' "$FORM_A_RENEW"
+check_eq "renewal before due leaves one original marker" "$FORM_A_IDS" "$(marker_ids)"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
 echo "OK: issue-claim.sh tests passed"

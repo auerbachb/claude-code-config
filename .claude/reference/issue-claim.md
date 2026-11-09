@@ -32,7 +32,7 @@ The failure this feature exists to prevent is **two Claude threads belonging to 
 
 **Holder resolution:** `--holder ID` → `$CLAUDE_CLAIM_HOLDER` → `$CLAUDE_SESSION_ID` → `<hostname>:<git toplevel>`.
 
-The default is honest about its granularity rather than hiding it: two threads sharing one checkout resolve to one holder. That is acceptable because `CLAUDE.md` mandates a worktree per thread, so the mandated workflow always yields distinct holders. A caller holding a real session id should still pass `--holder`.
+The default is honest about its granularity rather than hiding it: two threads sharing one checkout resolve to one holder. That is acceptable because `CLAUDE.md` mandates a worktree per thread, so the mandated workflow always yields distinct holders. A caller holding a real session id should still pass `--holder`. A Form A chip starts before it creates a worktree, so it gives the launch an explicit holder and carries the verified issue/holder pair across checkout changes, renewal, and wrap. See `chip-launching.md`.
 
 ## Block at holder level, release at account level
 

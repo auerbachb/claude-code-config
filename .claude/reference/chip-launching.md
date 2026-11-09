@@ -157,15 +157,32 @@ CLAIM=$(for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-cl
                  ".claude/scripts/issue-claim.sh"; do
           [ -x "$c" ] && { echo "$c"; break; }
         done)
-"$CLAIM" <N> --check      # then, if it clears:
-"$CLAIM" <N> --claim
 ```
+
+For a fresh Form A launch with the helper resolved, run the acquisition together (`ISSUE` is the issue number from the prompt):
+
+<!-- test-anchor: chip-form-a-claim -->
+
+```bash
+CHIP_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf unknown-host)
+CLAIM_HOLDER="chip:$CHIP_HOST:$(date -u +%s):$$:$RANDOM:$RANDOM"
+"$CLAIM" "$ISSUE" --check --holder "$CLAIM_HOLDER" || exit $?
+CLAIM_JSON=$("$CLAIM" "$ISSUE" --claim --holder "$CLAIM_HOLDER" --json) || exit $?
+if ! jq -e --arg h "$CLAIM_HOLDER" \
+     '.verdict == "mine" and .holder == $h and .claimant_holder == $h' \
+     <<<"$CLAIM_JSON" >/dev/null; then
+  printf 'ERROR: issue #%s claim could not be verified for this launch\n' "$ISSUE" >&2
+  exit 4
+fi
+```
+
+Store `ISSUE` and the verified `CLAIM_HOLDER` in the launch checkpoint before creating or switching worktrees. Renewal and wrap use that same pair; on recovery read the launch's own record, not a holder observed on GitHub.
 
 **The path is resolved, never assumed.** A chip lands in whatever repo the issue lives in, and most repos carry no `.claude/` directory — a bare `.claude/scripts/issue-claim.sh` simply fails there, and a failure the thread does not mention is a claim silently skipped (issue #1189). The order is the standard one from `portable-skill-resolution.md`: skills-worktree, then `$HOME/.claude/scripts/`, then repo-relative.
 
 - `claimed` (exit 1) or `unknown` (exit 4) → the thread **stops** and reports the claim instead of proceeding. `unknown` never reads as permission.
 - `stale` (exit 0) → surface the warning and proceed; `--claim` takes the claim over.
-- `mine` (exit 0) → no-op; a resumed or post-compaction thread re-runs this safely.
+- On resume, use `--renew --holder "$CLAIM_HOLDER"` with the holder from this launch’s own checkpoint. Stop on a missing record or failed renewal; never re-run fresh acquisition for a resumed launch.
 
 **Click time, never offer time.** Offering a chip is not launching one (`/start-issue` "Execution boundary"), and a chip may sit unclicked for days — claiming at offer time would park the issue for a thread that never starts. This claims at exactly the moment work begins. It also means two chips for the same issue are harmless: whichever is clicked first holds the claim, and the second stops.
 
@@ -178,7 +195,7 @@ Two forms — pick by whether the emitter already holds the claim:
 **Form A — emitter holds no claim** (`/pm`, `/prompt`, `/wave`, `/issue-maker`): the launched thread takes it.
 
 ```text
-- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
+- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip installed candidates when `HOME` is unset or empty. After the model guard and before any repo read, edit, or planning, give a fresh launch its own `CLAIM_HOLDER` (host, epoch, shell PID, and two Bash random values). Pass it to `<N> --check --holder "$CLAIM_HOLDER"`, then `<N> --claim --holder "$CLAIM_HOLDER" --json` if the check clears. Stop on failure or an unreadable result; report a stale claim before taking it over. Verify the claim returned `mine` for the exact holder. Record the issue and holder in this launch's checkpoint before changing checkouts, reuse them for renewals before waits, and pass the issue and holder to `/wrap` as `CLAIM_PAIRS`. On resume, confirm only with `<N> --renew --holder "$CLAIM_HOLDER"` from your own checkpoint; stop if the holder is missing or renewal fails. Never infer ownership from a GitHub marker. If the helper is unavailable on a fresh launch, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue.
 ```
 
 **Form B — emitter already holds the claim** (`/start-issue`, which claims at its Step 2b): the launched thread **inherits** that holder instead of competing with it.
