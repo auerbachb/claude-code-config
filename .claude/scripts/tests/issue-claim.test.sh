@@ -1075,6 +1075,63 @@ check_contains "late foreign marker: superseded" "superseded" "$(jq -r .reason <
 check_eq "late foreign marker: only the foreign marker remains" "999999" "$(marker_ids)"
 check_eq "late foreign marker: label left for the winner" "in-progress" "$(cat "$STATE/labels")"
 
+# An unreadable winner is not absence at any later claim read either.
+seed_unreadable_claim() {
+  local at="$1"
+  jq -n --arg at "$at" '{id:999999,created_at:$at,user:{login:"alice"},
+    body:("<!-- claude-claim: " + ({holder:"threadA\u001falice",login:"alice"}|tojson) + " -->")}' > "$STATE/inject.json"
+}
+UNREADABLE_APPEND="jq --slurpfile x \"\$S/inject.json\" '. + \$x' \"\$S/comments.json\" > \"\$S/h.tmp\" && mv \"\$S/h.tmp\" \"\$S/comments.json\""
+UNREADABLE_EPOCH=$(( $(date -u +%s) + 300 ))
+UNREADABLE_AT="$(date -u -d "@$UNREADABLE_EPOCH" +%FT%TZ 2>/dev/null || date -u -r "$UNREADABLE_EPOCH" +%FT%TZ)"
+reset_issue
+seed_unreadable_claim "$UNREADABLE_AT"
+FAKE_AFTER_COMMENTS_READ_HOOK="$UNREADABLE_APPEND" run 873 --claim --holder threadA --json
+check_eq "first claim post-read: unreadable winner stops dispatch" 4 "$RC"
+check_eq "first claim post-read: reports unknown" unknown "$(jq -r .verdict <<<"$OUT")"
+check_eq "first claim post-read: preserves both markers" 2 "$(claim_comment_count)"
+check_eq "first claim post-read: preserves index" in-progress "$(cat "$STATE/labels")"
+
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+seed_unreadable_claim "$UNREADABLE_AT"
+arm_counters
+FAKE_AFTER_COMMENTS_READ_HOOK="$UNREADABLE_APPEND" run 873 --renew --holder threadA --json
+check_eq "renewal verification: unreadable winner is unknown" 4 "$RC"
+check_eq "renewal verification: no marker removed" 3 "$(claim_comment_count)"
+check_eq "renewal verification: no metadata edit" 0 "$(cat "$STATE/edit_calls")"
+
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+seed_unreadable_claim "$UNREADABLE_AT"
+arm_counters
+FAKE_AFTER_EDIT_HOOK="$UNREADABLE_APPEND" run 873 --renew --holder threadA --json
+check_eq "final read: unreadable winner stops renewal" 4 "$RC"
+check_eq "final read: reports unknown" unknown "$(jq -r .verdict <<<"$OUT")"
+check_eq "final read: retains the posted renewal and the unreadable marker" 2 "$(claim_comment_count)"
+check_eq "final read: only the verified earlier re-assert edit" 1 "$(cat "$STATE/edit_calls")"
+
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+seed_unreadable_claim "$UNREADABLE_AT"
+: > "$STATE/labels"; : > "$STATE/assignees"
+arm_counters
+FAKE_AFTER_EDIT_HOOK="jq -s '.' \"\$S/inject.json\" > \"\$S/comments.json\"" run 873 --renew --holder threadA --json
+check_eq "final read with only the unreadable marker: stops renewal" 4 "$RC"
+check_eq "final read with only the unreadable marker: reports unknown" unknown "$(jq -r .verdict <<<"$OUT")"
+check_eq "final read with only the unreadable marker: retains index" in-progress "$(cat "$STATE/labels")"
+check_eq "final read with only the unreadable marker: retains assignee" alice "$(cat "$STATE/assignees")"
+
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+seed_unreadable_claim "$(iso_ago 1)"
+: > "$STATE/labels"; : > "$STATE/assignees"
+arm_counters
+FAKE_AFTER_EDIT_HOOK="$UNREADABLE_APPEND; echo closed > \"\$S/issue_state\"" run 873 --renew --holder threadA --json
+check_eq "remaining marker after proven closed: reports unknown" 4 "$RC"
+check_eq "remaining marker after proven closed: retains the unreadable marker" 999999 "$(marker_ids)"
+check_eq "remaining marker after proven closed: retains index" in-progress "$(cat "$STATE/labels")"
+
 # Control: a failed final re-read keeps the verified renewal.
 reset_issue
 FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA

@@ -426,22 +426,21 @@ CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | jq -s --arg m "$CLAIM_MARKER" \
 # but unreadable winner is not an empty marker list.
 #
 # parse_winner <claim-comments-json> -> sets W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT
+# An empty array is a successful read of absence; any unreadable winner is nonzero.
 parse_winner() {
   W_ID=""; W_AUTHOR=""; W_HOLDER=""; W_LOGIN=""; W_SINCE=""; W_AT=""
+  [[ "$1" == '[]' ]] && return 0
   local rec
   rec="$(printf '%s' "$1" | jq -r --arg m "$CLAIM_MARKER" '
-    if length == 0 then ""
-    else
-      (sort_by(.created_at, .id) | last) as $c
-      | ($c.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson) as $p
-      | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
-      | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
-         ($p.since // ""), ($c.created_at // "")]
-      | map(tostring)
-      | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
-      | join("\u001f")
-    end' 2>/dev/null || printf '')"
-  [[ -z "$rec" ]] && return 0
+    (sort_by(.created_at, .id) | last) as $c
+    | ($c.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson) as $p
+    | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
+    | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
+       ($p.since // ""), ($c.created_at // "")]
+    | map(tostring)
+    | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
+    | join("\u001f")' 2>/dev/null)" || return 1
+  [[ -n "$rec" ]] || return 1
   IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT <<<"$rec"
 }
 
@@ -456,10 +455,7 @@ read_claim_comments() {
     '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- " + $m + ":"))) ]' 2>/dev/null
 }
 
-parse_winner "$CLAIM_COMMENTS"
-if [[ "$CLAIM_COMMENTS" != '[]' && -z "$W_HOLDER" ]]; then
-  fail_closed "newest claim marker for issue #$ISSUE_NUMBER is unreadable"
-fi
+parse_winner "$CLAIM_COMMENTS" || fail_closed "newest claim marker for issue #$ISSUE_NUMBER is unreadable"
 MARKER_ID="$W_ID"
 MARKER_AUTHOR="$W_AUTHOR"
 CLAIMANT_HOLDER="$W_HOLDER"
@@ -821,7 +817,7 @@ do_renew() {
     fi
     fail_closed "renew-unverified — posted renewal marker $new_id on issue #$ISSUE_NUMBER but could not re-read to verify it; no older marker was deleted"
   fi
-  parse_winner "$verify"
+  parse_winner "$verify" || fail_closed "renew-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable after posting; no marker was deleted"
 
   if [[ -z "$new_id" ]]; then
     # The POST reported failure but may have landed. Reconcile ONLY by this
@@ -903,7 +899,7 @@ do_renew() {
     if (( ! final_ok )); then
       echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but the final consistency re-read failed; the renewal was already verified, so it stands" >&2
     else
-      parse_winner "$final"
+      parse_winner "$final" || fail_closed "renew-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable on the final re-read; no further marker or metadata cleanup attempted"
       local f_closed=0 f_ours=0 kept_present=0
       issue_is_closed "$final_issue" && f_closed=1
       [[ -n "$W_ID" && "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" \
@@ -937,7 +933,7 @@ do_renew() {
         local rest
         rest="$(printf '%s' "$final" | jq -c --arg ids "$mine_ids" \
           '($ids | split("\n")) as $w | [ .[] | select(((.id | tostring) as $i | $w | index($i)) | not) ]' 2>/dev/null || printf '')"
-        parse_winner "${rest:-[]}"
+        parse_winner "$rest" || fail_closed "renew-unverified — remaining claim markers on issue #$ISSUE_NUMBER could not be interpreted; label and assignee retained"
         local note="the label left as found"
         local undo=()
         if [[ -n "$rest" && -z "$W_ID" ]]; then
@@ -1083,7 +1079,7 @@ CLAIMED_AT="$(date -u +%FT%TZ)"
 # Prefer the marker's GitHub created_at — the timestamp every later --check
 # reads — over the local clock. Best effort: a failed re-read keeps the clock.
 if POSTED_COMMENTS="$(read_claim_comments)"; then
-  parse_winner "$POSTED_COMMENTS"
+  parse_winner "$POSTED_COMMENTS" || fail_closed "claim-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable after posting; marker and metadata retained"
   if [[ "$W_AUTHOR" == "$VIEWER" && "$W_HOLDER" == "$HOLDER" && -n "$(iso_to_epoch "$W_AT")" ]]; then
     CLAIMED_AT="$W_AT"
   fi

@@ -56,7 +56,7 @@ Account-scoped release protects collaborators (#732), but a matching login does 
 
 Exit codes mirror `pr-authorship.sh` (`2` usage, `3` not found) so the two guards read the same way at a call site. Exit `5` also covers a guarded `--release` whose observed marker no longer matches. It keeps ordinary claim blocking (`1`) distinct from lost ownership or a failed cleanup precondition (`5`).
 
-**Fail-closed:** GitHub read failures, unreadable issue data, and an unreadable winning claim marker produce `unknown`. A holder must be a nonempty string; control characters cannot be accepted as part of a marker or a requested holder because Bash can drop or split them. An unreadable newest marker does not become absence or hand authority to an older marker. An unparseable timestamp cannot age a claim out. A real label-only issue still uses the label timeline. An `unknown` verdict never authorizes a write or launch.
+**Fail-closed:** GitHub read failures, unreadable issue data, and an unreadable winning claim marker produce `unknown`. A holder must be a nonempty string; control characters cannot be accepted as part of a marker or a requested holder because Bash can drop or split them. An unreadable newest marker does not become absence or hand authority to an older marker. This also applies after posting: if a re-read finds an unreadable winner, stop further cleanup and return `unknown`. An unparseable timestamp cannot age a claim out. A real label-only issue still uses the label timeline. An `unknown` verdict never authorizes a write or launch.
 
 ## Staleness
 
