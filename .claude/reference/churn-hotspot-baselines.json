@@ -17,6 +17,7 @@
     ".claude/reference/ai-review-billing-dashboard-2026-08.md": {"issue": 1273, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
     ".claude/reference/ai-review-chain-roles-decision.md": {"issue": 1223, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
     ".claude/reference/background-task-shutdown.md": {"issue": 1317, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/reference/ai-review-paid-levers-checklist.md": {"issue": 1242,"score_at_decision": 2,"pr_count_at_decision": 2,"as_of": "2026-11-09","provenance": "current-below-detector-minimum","note": "KEEP. Zero current counted touches; #1951 was a sweep. 2/2 is the schema minimum. Rationale: .claude/reference/paid-review-levers-checklist-hotspot-decision.md."},
     ".claude/reference/chip-launching.md": {"issue": 916, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
     ".claude/reference/pm-day-mode.md": {"issue": 1314, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-11-09", "note": "Extract only captured-wake recovery. The current pre-extraction window counted four merges and zero conflicts. See pm-day-mode-hotspot-decision.md."},
     ".claude/reference/pm-routing-audit-2026-07.md": {"issue": 1300,"score_at_decision": 2,"pr_count_at_decision": 2,"as_of": "2026-11-09","provenance": "current-below-detector-minimum","note": "KEEP. Zero current touches; 2/2 is the schema minimum. Rationale: .claude/reference/pm-routing-audit-hotspot-decision.md."},

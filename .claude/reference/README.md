@@ -108,7 +108,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `active-work-cap-fixture-hotspot-decision.md` — keep the active-work cap fixture together (Issue #1296); four historical changes and one current touch
 - `candidate-ownership-script-hotspot-decision.md` — keep the read-only ownership sweep together (Issue #1647); four historical changes and no current churn
 - `ai-review-chain-roles-decision.md` — decision record: primary/fallback/supplemental role per AI reviewer with cost rationale, the corrected cap assumptions, repo variance, the Graphite-promotion and Greptile-at-zero options rejected on measured evidence (#1199), and the 2026-11-03 Graphite retirement (#1889)
-- `ai-review-paid-levers-checklist.md` — standing tracker (updated in place) for the review stack's owner-only paid decisions: seats, OSS applications, billing cadence, and metered caps, each with its ordering gate and separate `Submitted:`/`Approved:` dates so an in-flight application never moves a budget line; carries the don't-buy and superseded lists (#1213)
+- `ai-review-paid-levers-checklist.md` — terminal record of the paid review decisions, their ordering gates and evidence, and the levers that were declined or waived (#1213, #1228)
+- `paid-review-levers-checklist-hotspot-decision.md` — preserve the terminal paid-review checklist (Issue #1242)
 - `pm-handoff-chips-decision.md` — decision record: `/pm-handoff` intentionally does not offer task chips; its portable prompt text is the deliverable (#562)
 - `chip-model-guard-decision.md` — decision record: the chip model-guard preamble rides in both the chip `prompt` and the fallback block, redefining the fallback baseline (#601)
 - `model-fleet-drift-guard-decision.md` — decision record: build a generational deny-list lint (`model-drift-lint.sh`) that flags enumerated legacy model versions in live surfaces; fails open; auto-discovered by `run-doc-lints.sh` (#752)
