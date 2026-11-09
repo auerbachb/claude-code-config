@@ -93,6 +93,8 @@ check "an edited mirror cannot supply an answer" "$("$HQ_T_CLI" get D-1 --json |
 set_remote '.original_title as $t|(.issues[]|select(.title=="D-1 · edited projection")|.title)=$t'
 out=$("$HQ_BIN_DIR/desk-tick.sh" --session fixture-control --generation fixture-gen --once)
 check_contains "the normal desk tick emits the exact pending wake id" "$out" 'desk-tick fixture-gen mobile D-1'
+notice_order=$(printf '%s\n' "$out" | awk '$3=="new" || $3=="mobile" {print $3}')
+check "ordinary desk notices are emitted before the optional sync result" "$notice_order" $'new\nmobile'
 check "the authorized unedited reply is the stored answer" "$("$HQ_T_CLI" get D-1 --json | jq -r .answer)" Ship
 check "the pending wake is durable across another sync" "$(sync)" '["D-1"]'
 "$HQ_T_CLI" wake D-1 --result sent >/dev/null

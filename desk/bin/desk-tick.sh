@@ -548,8 +548,8 @@ dt_released() {
   if [ -n "$1" ]; then printf 'desk-tick %s released\n' "$dt_gen"; fi
 }
 
-# The optional mirror cannot disrupt the normal desk. Its stdout is only
-# durable queue IDs; remote bodies and diagnostics never reach the Monitor.
+# The optional mirror returns only durable queue IDs. Remote bodies and
+# dependency diagnostics never reach the Monitor.
 dt_mobile_error=0
 dt_mobile() {
   local cfg="${DESK_MOBILE_CONFIG:-${HOME:+$HOME/.config/human-queue/mobile.json}}" out ids rc=0
@@ -610,7 +610,6 @@ dt_cycle() {
     dt_fail tick 1
     return 0
   fi
-  dt_mobile
   rc=0
   out=$("$dt_cli" wake-due --json 2>"$dt_err") || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -676,6 +675,8 @@ dt_cycle() {
   if [ -n "$dt_sweep_line" ]; then
     printf '%s\n' "$dt_sweep_line"
   fi
+  # A slow remote pass must not delay desktop notices from this tick.
+  dt_mobile
 }
 
 if [ "$dt_once" -eq 1 ]; then
