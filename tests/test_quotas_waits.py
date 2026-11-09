@@ -157,6 +157,44 @@ class QuotaWaits(unittest.TestCase):
                     self.assertEqual(json.loads(out)['id'], 2)
                     self.assertLess(elapsed, 7)
 
+    def test_cleanup_observes_members_after_supervisor_exit(self):
+        # A finite-lived member in a real isolated group models a signal
+        # whose target has not exited yet. The supervisor exits immediately.
+        body = r'''
+control="$TMP/group-observation"
+mkdir "$control" || exit 91
+set -m
+(
+  set +m
+  /bin/sleep 1.5 </dev/null >/dev/null 2>&1 &
+  printf '%s\n' "$!" > "$DESCENDANT_PID_FILE"
+  for i in {1..100}; do
+    [[ ! -e "$control/shutdown.request" ]] || exit 0
+    /bin/sleep .02
+  done
+) >/dev/null 2>&1 &
+owner=$!
+set +m
+for i in {1..100}; do
+  [[ ! -s "$DESCENDANT_PID_FILE" ]] || break
+  /bin/sleep .02
+done
+IFS= read -r leaf < "$DESCENDANT_PID_FILE" || exit 92
+group="$(ps -o pgid= -p "$leaf" | tr -d '[:space:]')"
+[[ "$group" == "$owner" ]] || exit 93
+: > "$control/owned" || exit 94
+codex_stop_server "$owner" "$control" 2>/dev/null || exit 95
+state="$(ps -o stat= -p "$leaf" 2>/dev/null | tr -d '[:space:]' || true)"
+[[ -z "$state" || "$state" == Z* ]] || exit 96
+echo group-exited
+'''
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                rc, out, err, elapsed = self.run_private(shell, body)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(out.strip(), 'group-exited')
+                self.assertLess(elapsed, 7)
+
     def test_exited_server_without_reply_leaves_no_descendant(self):
         for shell in SHELLS:
             with self.subTest(shell=shell):

@@ -1745,6 +1745,7 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
   started="${SECONDS:-}"
   [[ "$started" =~ ^[0-9]{1,10}$ ]] || return 1
   last="$started"
+  : > "$control/owned" || return 1
   CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
   member=$!
   # Install the ignore only after the provider has inherited its normal
@@ -1798,10 +1799,32 @@ codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, o
 
 codex_stop_server() { # owned supervisor PID, private control dir
   local pid="$1" control="${2:-}" ticks=0 started="${SECONDS:-}" last now
+  local waited=0 scan=0 live
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" && -d "$control" ]] || return 1
   : > "$control/shutdown.request" || return 1
   last="$started"
-  while kill -0 "$pid" 2>/dev/null; do
+  while :; do
+    if (( ! waited )) && ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      # No provider starts until the supervisor proves it owns the group.
+      [[ -e "$control/owned" ]] || return 0
+      waited=1
+    fi
+    if (( waited )); then
+      # Reaping the leader confirms only its exit. Observe the verified
+      # group's remaining members without sending any signal to that group.
+      # The snapshot child shares the cleanup budget if ps itself stalls.
+      if (( ! scan )); then
+        ps -axo pgid=,stat= > "$control/observed" 2>/dev/null &
+        scan=$!
+      elif ! kill -0 "$scan" 2>/dev/null; then
+        wait "$scan" 2>/dev/null || return 1
+        live="$(awk -v g="$pid" '$1 == g && $2 !~ /^Z/ { live=1 } END { print live+0 }' "$control/observed")" || return 1
+        [[ "$live" == 0 ]] && return 0
+        [[ "$live" == 1 ]] || return 1
+        scan=0
+      fi
+    fi
     now="${SECONDS:-}"
     # The supervisor has its own finite fuse; a broken caller clock still
     # permits a bounded wait by tick count.
@@ -1814,7 +1837,6 @@ codex_stop_server() { # owned supervisor PID, private control dir
     if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
     else sleep 1; ticks=$((ticks + 20)); fi
   done
-  wait "$pid" 2>/dev/null || true
 }
 
 codex_app_server_read() { # <profile_dir> <codex_bin>
@@ -1908,10 +1930,11 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
       CODEX_FAIL_REASON="could not establish app-server process ownership"
       exited_early=0
     fi
-    rm -f "$control/launch" "$control/shutdown.request" "$control/exited" "$control/members" "$control/unowned"
+    rm -f "$control/launch" "$control/shutdown.request" "$control/exited" "$control/members" \
+      "$control/unowned" "$control/owned" "$control/observed"
     rmdir "$control" 2>/dev/null || true
   else
-    warn "app-server supervisor did not stop within its cleanup budget"
+    warn "could not confirm app-server group exit within its cleanup budget"
   fi
   rm -f "$fifo"
 
