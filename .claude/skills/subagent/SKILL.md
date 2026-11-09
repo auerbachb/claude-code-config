@@ -478,6 +478,7 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   ```bash
   read_leave_eligibility() {
     ELICIT_LEAVE_TIME=false
+    ELICIT_STATE_UNKNOWN=false
     ELICIT_SKIP_REASON=""
     ELICIT_NOW=$(date -u +%s)
     ELICIT_WINDOW_RC=0
@@ -493,11 +494,13 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
       # Unreadable is not absent, here as everywhere: a lock timeout can hide an armed
       # deadline, and asking for one the repo already has would overwrite a live plan
       # with a guess. rc 3 (no state file yet) IS absent and does elicit.
+      ELICIT_STATE_UNKNOWN=true
       ELICIT_SKIP_REASON="deadline state unreadable (rc=$ELICIT_WINDOW_RC)"
     elif [[ "$ELICIT_DEADLINE" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_DEADLINE > ELICIT_NOW )); then
       # Armed AND unexpired. A deadline already in the past is spent, not armed, and asks again.
       ELICIT_SKIP_REASON="deadline already armed"
     elif [[ "$ELICIT_ND_RC" -ne 0 && "$ELICIT_ND_RC" -ne 3 ]]; then
+      ELICIT_STATE_UNKNOWN=true
       ELICIT_SKIP_REASON="no-deadline marker unreadable (rc=$ELICIT_ND_RC)"
     elif [[ "$ELICIT_NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_NO_DEADLINE_UNTIL > ELICIT_NOW )); then
       # "No deadline today", still inside the ET day it was written for.
@@ -516,8 +519,8 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
 
   ```bash
   LEAVE_PROMPT_GENERATION=""
-  LEAVE_PROMPT_PENDING=false
-  if [[ "$ELICIT_LEAVE_TIME" == true ]]; then
+  LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
+  if [[ "${ELICIT_LEAVE_TIME:-false}" == true ]]; then
     if [[ -n "${PROMPT_RESERVE_SH:-}" ]]; then
       LEAVE_PROMPT_GENERATION=$("$PROMPT_RESERVE_SH" claim --repo "$REPO_KEY" --kind leave) \
         || LEAVE_PROMPT_GENERATION=""
@@ -526,10 +529,11 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     # Read again even on a win: a sibling may have answered and released
     # between the first read and our claim. A loser can adopt that answer too.
     read_leave_eligibility
-    if [[ "$ELICIT_LEAVE_TIME" == true && -z "$LEAVE_PROMPT_GENERATION" ]]; then
+    if [[ "$ELICIT_STATE_UNKNOWN" == true || ( "$ELICIT_LEAVE_TIME" == true && -z "$LEAVE_PROMPT_GENERATION" ) ]]; then
       ELICIT_LEAVE_TIME=false
       LEAVE_PROMPT_PENDING=true
-    elif [[ "$ELICIT_LEAVE_TIME" != true && -n "$LEAVE_PROMPT_GENERATION" ]]; then
+    fi
+    if [[ "$ELICIT_LEAVE_TIME" != true && -n "$LEAVE_PROMPT_GENERATION" ]]; then
       "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave \
         --generation "$LEAVE_PROMPT_GENERATION" || echo 'Leave question reservation could not be released' >&2
       LEAVE_PROMPT_GENERATION=""
@@ -537,15 +541,17 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   fi
   ```
 
-  On `LEAVE_PROMPT_PENDING`, leave this attempt queued with one line saying the leave question is
-  already pending or its reservation is unavailable. Do not wait on the sibling or guess a deadline.
+  On `LEAVE_PROMPT_PENDING`, leave this attempt queued. Say that scheduling state could not
+  be read, or that the leave question is already pending or unavailable. Do not let a later
+  unrelated read that happens to succeed turn this unreadable decision into permission to launch.
   A later attempt re-reads the published decision. On `ELICIT_LEAVE_TIME`, carry the exact
   `LEAVE_PROMPT_GENERATION` into **`/leave-by --elicit --reservation <token>`** (Step 0e). It owns
   the menu, normalization and writes. After it returns, including dismissal or failure, release that
   exact generation with `"$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave
   --generation "$LEAVE_PROMPT_GENERATION"`. Report a release failure without clearing another
-  generation. Re-read `.window` and `.leave` before the deadline gate; do not parse or write the
-  answer here.
+  generation. Re-run the leave eligibility read before the deadline gate; if it still says the
+  question needs an answer or its state is unreadable, leave this launch queued. Otherwise proceed
+  with the published state. Do not parse or write the answer here.
 
   The reservation is only for an in-flight question; an unexpired deadline or `no_deadline_until`
   remains the record of the answer. A compacted session can continue with its exact token. It

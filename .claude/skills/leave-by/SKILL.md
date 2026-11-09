@@ -200,20 +200,11 @@ Rationale: `.claude/reference/leave-time.md` §"Asking for the time instead of w
 and `/pause-resume` Step 5 both restore a wind-down from `leave.active` plus the two epochs, with
 no way to tell "the Monitor died with its session" from "no Monitor was ever meant to exist".
 
-**Export the marker BEFORE Step 1 runs**, so Step 5's `.leave` literal publishes it in the same
-`--set` as `active:true`:
-
-<!-- test-anchor: leave-by-elicit-planning-only-preset -->
-
-```bash
-WINDDOWN_SCHEDULED=false   # consumed by Step 5's .leave literal; every other path defaults true
-LEAVE_ELICIT_MODE=true     # use the conditional answer write, never the explicit declaration path
-```
-
-That atomic write is the whole mechanism. Set the variable here, as an assignment rather than an
-instruction to remember, because a marker that depends on a later step running is exactly the
-marker that goes missing. Step 5's own `ARM_RC` already reports the write's failure, so **no
-separate re-assertion follows** — and that absence is deliberate.
+Step 5 derives the planning-only flag in the same Bash call that writes it. Bind the write mode
+from this skill's original invocation every time Step 5 runs: `elicited` for `--elicit`, `direct`
+only for an explicit declaration. A new Bash call does not inherit a prior shell's variables.
+For an elicited call carry the original generation and snapshot; missing mode, generation or
+snapshot stops without writing. Never infer a direct declaration from a missing token.
 
 **Do NOT re-assert the flag with a bare `--set` after Step 5.** A follow-up
 `--set …leave.winddown_scheduled=false` is a blind sub-key write, and by the time it runs an
@@ -440,24 +431,34 @@ Step 10's decline check both read `.window.deadline_epoch`, and a second copy is
 go stale. `.leave` carries what is new: the lead time, the computed check-in, and the wind-down
 Monitor's identity.
 
+For this Bash call, set `LEAVE_WRITE_MODE` to the mode from the original invocation as described
+in Step 0e. Only an explicit declaration can select `direct`.
+
 <!-- test-anchor: leave-by-arm-state -->
 
 ```bash
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ARM_RC=0
-WINDOW_VALUE="{\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}"
-LEAVE_VALUE="{\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null,\"winddown_scheduled\":${WINDDOWN_SCHEDULED:-true}}"
-if [[ "${LEAVE_ELICIT_MODE:-false}" == true ]]; then
-  if [[ -n "${PROMPT_RESERVE_SH:-}" && -n "${LEAVE_PROMPT_GENERATION:-}" && -n "${ELICIT_BASELINE:-}" ]]; then
-    "$PROMPT_RESERVE_SH" commit-leave --repo "$REPO_KEY" --kind leave \
-      --generation "$LEAVE_PROMPT_GENERATION" --baseline "$ELICIT_BASELINE" \
-      --window "$WINDOW_VALUE" --leave "$LEAVE_VALUE" || ARM_RC=$?
+case "${LEAVE_WRITE_MODE:-}" in
+  elicited) WINDDOWN_SCHEDULED=false ;;
+  direct) WINDDOWN_SCHEDULED=true ;;
+  *) ARM_RC=20 ;;  # Never fall through to an explicit declaration on a fresh shell.
+esac
+if [[ "$ARM_RC" == 0 ]]; then
+  WINDOW_VALUE="{\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}"
+  LEAVE_VALUE="{\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null,\"winddown_scheduled\":${WINDDOWN_SCHEDULED}}"
+  if [[ "$LEAVE_WRITE_MODE" == elicited ]]; then
+    if [[ -n "${PROMPT_RESERVE_SH:-}" && -n "${LEAVE_PROMPT_GENERATION:-}" && -n "${ELICIT_BASELINE:-}" ]]; then
+      "$PROMPT_RESERVE_SH" commit-leave --repo "$REPO_KEY" --kind leave \
+        --generation "$LEAVE_PROMPT_GENERATION" --baseline "$ELICIT_BASELINE" \
+        --window "$WINDOW_VALUE" --leave "$LEAVE_VALUE" || ARM_RC=$?
+    else
+      ARM_RC=20
+    fi
   else
-    ARM_RC=20
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].window=$WINDOW_VALUE" \
+      --set ".repos[\"$REPO_KEY\"].leave=$LEAVE_VALUE" 2>/dev/null || ARM_RC=$?
   fi
-else
-  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].window=$WINDOW_VALUE" \
-    --set ".repos[\"$REPO_KEY\"].leave=$LEAVE_VALUE" 2>/dev/null || ARM_RC=$?
 fi
 # The window object this declaration just armed, for the Step 6 rollback CAS. Read it back
 # rather than reconstructing it, so the expected value is byte-for-byte what is stored.
@@ -475,8 +476,8 @@ real one lives. `source_window_str` is the only field carrying user text, so it 
 `jq -R`, never interpolated.
 
 **`winddown_scheduled` is written HERE, in the same object as `active:true`** (issue #1679). Step
-0e's elicited branch sets `WINDDOWN_SCHEDULED=false` before reaching this step; every other caller
-leaves it unset and takes the `:-true` default. It has to ride along in this literal rather than
+5 sets it to false for explicit mode `elicited` and true for mode `direct`. It has to ride
+along in this literal rather than
 follow as a second write, because between an `active:true` that says "a wind-down is live" and a
 later marker that says "no Monitor was ever meant to exist", the record reads as the former — and
 Step 11 or `/pause-resume` Step 5 landing in that gap arms a check-in the user never asked for.

@@ -132,7 +132,7 @@ extract_skill_bash "$leaveby" leave-by-elicit-verify-reservation > "$tmp/leave-v
 leave_gate() (
   export FAKE_OWNER="$1"
   REPO_KEY="$2"; ATTENDED="${3:-true}"
-  SESSION_STATE_SH="$state"; PROMPT_RESERVE_SH="${4-$helper}"
+  SESSION_STATE_SH="${5-$state}"; PROMPT_RESERVE_SH="${4-$helper}"
   source "$tmp/leave-read"; source "$tmp/leave-reserve"
   printf '%s|%s|%s\n' "$ELICIT_LEAVE_TIME" "$LEAVE_PROMPT_PENDING" "$LEAVE_PROMPT_GENERATION"
 )
@@ -142,6 +142,33 @@ gate_token="${result##*|}"
 check 'false|true|' "$(leave_gate "$owner2" org/gates)" 'loser queues without opening a second leave menu'
 check 'false|true|' "$(leave_gate "$owner1" org/nohelper true '')" 'missing helper cannot authorize an attended prompt'
 check 'false|false|' "$(leave_gate "$owner1" org/unattended false '')" 'unattended path stays silent and does not reserve'
+cat > "$tmp/transient-state" <<'TRANSIENT'
+#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *window.deadline_epoch*)
+    case "$READ_CASE" in
+      deadline) exit 6 ;;
+      reread)
+        if [[ -f "$READ_MARKER" ]]; then exit 6; else touch "$READ_MARKER"; fi
+        ;;
+      answered) printf '%s\n' "$READ_ARMED"; exit 0 ;;
+    esac
+    ;;
+  *leave.no_deadline_until*)
+    case "$READ_CASE" in no-deadline|answered) exit 6 ;; esac
+    ;;
+esac
+printf 'null\n'
+TRANSIENT
+chmod +x "$tmp/transient-state"
+export READ_MARKER="$tmp/read-marker" READ_ARMED=$(( $(date -u +%s) + 1200 ))
+check 'false|true|' "$(READ_CASE=deadline leave_gate "$owner1" org/read-fail true "$helper" "$tmp/transient-state")" 'unreadable deadline keeps an attended launch pending'
+check 'false|true|' "$(READ_CASE=no-deadline leave_gate "$owner1" org/read-fail true "$helper" "$tmp/transient-state")" 'unreadable suppression marker also keeps an attended launch pending'
+check 'false|false|' "$(READ_CASE=deadline leave_gate "$owner1" org/read-fail false "$helper" "$tmp/transient-state")" 'unattended path does not wait for an interactive decision'
+check 'false|false|' "$(READ_CASE=answered leave_gate "$owner1" org/read-fail true "$helper" "$tmp/transient-state")" 'an already armed deadline needs no question'
+check 'false|true|' "$(READ_CASE=reread leave_gate "$owner1" org/recheck-fail true "$helper" "$tmp/transient-state")" 'failed recheck after claim keeps launch pending'
+check null "$(read_slot org/recheck-fail leave)" 'failed recheck releases only the just-acquired generation'
 leave_verify() (
   export FAKE_OWNER="$1"
   REPO_KEY=org/gates PROMPT_RESERVE_SH="$helper" LEAVE_PROMPT_GENERATION="$gate_token"
@@ -215,7 +242,8 @@ write_arm() (
   export FAKE_OWNER="$owner1"
   REPO_KEY="$1"; LEAVE_PROMPT_GENERATION="$2"; ELICIT_BASELINE="$3"
   PROMPT_RESERVE_SH="$helper"; SESSION_STATE_SH="$state"
-  LEAVE_ELICIT_MODE=true; WINDDOWN_SCHEDULED=false
+  unset LEAVE_WRITE_MODE LEAVE_ELICIT_MODE WINDDOWN_SCHEDULED
+  if [[ -n "${4-elicited}" ]]; then LEAVE_WRITE_MODE="${4-elicited}"; fi
   DEADLINE_EPOCH="$deadline"; WINDOW_MINUTES=20; EFFECTIVE_WINDOW_MIN=15
   CHECKIN_EPOCH=$((deadline - 1800)); LEAD_MIN=30; WINDOW_STR='20 minutes'
   source "$tmp/leave-arm"
@@ -247,6 +275,12 @@ explicit_before="$(read_schedule org/explicit)"
 check 10 "$(write_arm org/explicit "$explicit_token" "$baseline")" 'a timed menu answer cannot overwrite a direct declaration'
 check "$explicit_before" "$(read_schedule org/explicit)" 'direct deadline and Monitor identity remain exact'
 check "" "$(snapshot_leave org/explicit "$explicit_token")" 'an already active explicit Monitor prevents another menu'
+check 20 "$(write_arm org/explicit '' '' '')" 'a fresh shell with no write mode cannot fall through to a direct declaration'
+check "$explicit_before" "$(read_schedule org/explicit)" 'missing mode preserves the newer schedule'
+check 20 "$(write_arm org/explicit '' '' elicited)" 'elicited mode without its carried proof cannot write'
+check "$explicit_before" "$(read_schedule org/explicit)" 'missing elicitation proof preserves the newer schedule'
+check 0 "$(write_arm org/direct '' '' direct)" 'an explicit direct declaration still writes'
+check true "$(read_schedule org/direct | jq -r '.leave.winddown_scheduled')" 'direct declaration keeps Monitor scheduling enabled'
 
 call "$owner1" claim --repo org/late --kind leave
 late_token="$out"
