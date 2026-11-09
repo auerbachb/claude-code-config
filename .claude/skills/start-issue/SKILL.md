@@ -19,8 +19,8 @@ Automate the full issue-to-coding flow: create issue (if needed) → wait for CR
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -69,8 +69,8 @@ Only when a description was provided.
    Run `issue-dedup.sh` with a 2–6 keyword phrase from the draft title (`$ISSUE_DEDUP` from Step 0; the inline form below is the same candidate order):
    ```bash
    for DEDUP in \
-     "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-     "$HOME/.claude/scripts/issue-dedup.sh" \
+     "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+     "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
      ".claude/scripts/issue-dedup.sh"; do
      [ -x "$DEDUP" ] && break; DEDUP=""; done
    ```
@@ -333,7 +333,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 {unchecked checkbox items from the issue body}
 
 ### Constraints
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours; a non-zero exit means you do NOT hold it (exit 5: ownership lost), so stop and report rather than proceeding. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours; a non-zero exit means you do NOT hold it (exit 5: ownership lost), so stop and report rather than proceeding. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 - Do NOT work on main — use the worktree above
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")

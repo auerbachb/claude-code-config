@@ -20,8 +20,8 @@ Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to ge
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -919,8 +919,8 @@ Body:
    # Resolve handoff-state.sh:
    HANDOFF_STATE_SH=""
    for _c in \
-       "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
-       "$HOME/.claude/scripts/handoff-state.sh" \
+       "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh}" \
+       "${HOME:+$HOME/.claude/scripts/handoff-state.sh}" \
        ".claude/scripts/handoff-state.sh"; do
      [[ -x "$_c" ]] && { HANDOFF_STATE_SH="$_c"; break; }
    done
@@ -1777,8 +1777,8 @@ Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this
    ```bash
    # Resolve ac-checkboxes.sh per RESOLVE — this repo may carry no .claude/ directory.
    AC_CHECKBOXES=""
-   for c in "$HOME/.claude/skills-worktree/.claude/scripts/ac-checkboxes.sh" \
-            "$HOME/.claude/scripts/ac-checkboxes.sh" \
+   for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/ac-checkboxes.sh}" \
+            "${HOME:+$HOME/.claude/scripts/ac-checkboxes.sh}" \
             ".claude/scripts/ac-checkboxes.sh"; do
      [[ -x "$c" ]] && { AC_CHECKBOXES="$c"; break; }
    done

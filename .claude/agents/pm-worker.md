@@ -19,8 +19,8 @@ through `run_script`:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -77,8 +77,8 @@ Run `run_script issue-dedup.sh` (try the three standard paths in order):
 
 ```bash
 for DEDUP in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-  "$HOME/.claude/scripts/issue-dedup.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+  "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
   ".claude/scripts/issue-dedup.sh"; do
   [ -x "$DEDUP" ] && break; DEDUP=""; done
 ```

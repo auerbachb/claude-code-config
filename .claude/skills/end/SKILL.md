@@ -25,8 +25,8 @@ Two outputs, in this order: a wind-down that leaves nothing half-finished, and a
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name"; do
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
@@ -42,15 +42,15 @@ TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 # The collector is a document, not a script, so resolve it the same way but
 # test for readability rather than the executable bit.
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/reference/session-state-collector.md" \
-  "$HOME/.claude/reference/session-state-collector.md"; do
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/reference/session-state-collector.md}" \
+  "${HOME:+$HOME/.claude/reference/session-state-collector.md}"; do
   [[ -r "$candidate" ]] && { COLLECTOR_DOC="$candidate"; break; }
 done
 COLLECTOR_DOC="${COLLECTOR_DOC:-}"
 
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/reference/background-task-shutdown.md" \
-  "$HOME/.claude/reference/background-task-shutdown.md"; do
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/reference/background-task-shutdown.md}" \
+  "${HOME:+$HOME/.claude/reference/background-task-shutdown.md}"; do
   [[ -r "$candidate" ]] && { SHUTDOWN_DOC="$candidate"; break; }
 done
 SHUTDOWN_DOC="${SHUTDOWN_DOC:-}"
