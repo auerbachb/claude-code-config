@@ -67,6 +67,7 @@ class Target:
     profile: str
     destination: str
     launcher_proof: str
+    context_proof: str
 
     def __post_init__(self):
         if not isinstance(self.launcher, str) or not LAUNCHER.fullmatch(self.launcher):
@@ -74,8 +75,9 @@ class Target:
         canonical_path(self.profile)
         if not isinstance(self.destination, str) or not DESTINATION.fullmatch(self.destination):
             raise ValueError("invalid approved terminal destination")
-        if not isinstance(self.launcher_proof, str) or not SHA256.fullmatch(self.launcher_proof):
-            raise ValueError("invalid approved launcher proof")
+        if not all(isinstance(proof, str) and SHA256.fullmatch(proof)
+                   for proof in (self.launcher_proof, self.context_proof)):
+            raise ValueError("invalid approved launcher or state proof")
 
 
 @dataclass(frozen=True)

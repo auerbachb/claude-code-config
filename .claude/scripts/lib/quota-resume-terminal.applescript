@@ -12,6 +12,10 @@ on run argv
 	tell application id "com.apple.systemevents"
 		if UI elements enabled is false then error "Terminal tab creation is unavailable."
 		tell process "Terminal"
+			repeat 15 times
+				if frontmost then exit repeat
+				delay 0.05
+			end repeat
 			if frontmost is false then error "Terminal did not become the active application."
 			keystroke "t" using {command down}
 		end tell

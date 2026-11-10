@@ -53,7 +53,8 @@ class QuotaResumeBatchTests(unittest.TestCase):
         self.launcher = batch.launch.snapshot_launcher(self.generated, "claude-target", self.target_label,
                                                        str(self.target_profile), self.cli)
         self.target = batch.approval.Target("claude-target", str(self.target_profile),
-                                            "terminal:" + "b" * 64, self.launcher.proof)
+                                            "terminal:" + "b" * 64, self.launcher.proof,
+                                            batch.approval.digest(batch.selector_values()))
 
     def record(self, session, cwd):
         project = self.projects / "fixture-project"
@@ -66,6 +67,15 @@ class QuotaResumeBatchTests(unittest.TestCase):
 
     def candidates(self):
         return self.state.candidates(self.label, self.source, self.target)
+
+    def test_worker_context_contains_only_exact_local_path_selectors(self):
+        selector = str(self.home / "owner's $state.json")
+        self.assertEqual(batch.selector_values({"CLAUDE_SESSION_STATE_FILE": selector,
+                                                "CLAUDE_CODE_OAUTH_TOKEN": "fixture-token",
+                                                "CLAUDE_CODE_SESSION_ID": self.session}),
+                         {"CLAUDE_SESSION_STATE_FILE": selector})
+        with self.assertRaises(ValueError):
+            batch.selector_values({"AI_QUOTAS_CONFIG": "relative.json"})
 
     def test_replaced_directory_or_changed_gate_never_reuses_old_proof(self):
         self.record(self.session, self.cwd)
@@ -96,7 +106,8 @@ class QuotaResumeBatchTests(unittest.TestCase):
             worker = batch.worker_files(self.state, plan, stop, self.launcher)
             self.assertEqual(worker.stat().st_mode & 0o777, 0o600)
             args = shlex.split(worker.read_text())
-            self.assertEqual(args[:5], ["exec", sys.executable, "-B", str(batch.SCRIPT), "worker"])
+            self.assertEqual(args[:2], ["exec", "/usr/bin/env"])
+            self.assertEqual(args[-5:-1], [sys.executable, "-B", str(batch.SCRIPT), "worker"])
             workers.append((stop, args[-1]))
             return True
 

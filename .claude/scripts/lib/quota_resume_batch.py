@@ -24,6 +24,18 @@ SCRIPT = Path(__file__).resolve()
 SCRIPTS = SCRIPT.parent.parent
 MANIFEST_NAME = re.compile(r"worker-[0-9a-f]{32}\.json\Z")
 PROOF_FIELDS = {"stop", "origin", "handoff", "gate", "directory"}
+STATE_SELECTORS = ("CLAUDE_SESSION_STATE_FILE", "CLAUDE_EXECUTION_PAUSE_MARKER_DIR",
+                   "AI_QUOTAS_CONFIG", "AI_QUOTAS_PROFILE_ROOT")
+
+
+def selector_values(environment=None):
+    environment = os.environ if environment is None else environment
+    values = {}
+    for key in STATE_SELECTORS:
+        value = environment.get(key)
+        if value:
+            values[key] = str(approval.canonical_path(value))
+    return values
 
 
 def private_json(path, limit=65536):
@@ -161,13 +173,22 @@ def worker_files(state, plan, stop, launcher):
     worker = state.receipts / f"{name}.zsh"
     data = dict(target=asdict(plan.target), stops=[asdict(item) for item in plan.stops],
                 approval=plan.approval, session=stop.session, launcher=str(launcher.path))
+    selectors = selector_values()
+    if approval.digest(selectors) != plan.target.context_proof:
+        raise ValueError("the approved state selection changed")
+    # New terminal shells need not inherit the manager's environment. Carry
+    # only the verified local state path selectors, never auth or session data.
+    env = ["/usr/bin/env"]
+    for key in STATE_SELECTORS:
+        env.extend(("-u", key))
+    env.extend(f"{key}={value}" for key, value in selectors.items())
     with approval.receipt_directory(state.receipts, create=False) as descriptor:
         if not approval.write_once(descriptor, manifest.name, data):
             raise ValueError("worker manifest already exists")
         fd = os.open(worker.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=descriptor)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write("exec " + shlex.join([sys.executable, "-B", str(SCRIPT), "worker", str(manifest)]) + "\n")
+            stream.write("exec " + shlex.join([*env, sys.executable, "-B", str(SCRIPT), "worker", str(manifest)]) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.fsync(descriptor)
@@ -183,6 +204,8 @@ def run_worker(state, manifest, execute=launch.exec_launcher, now=None):
     if set(value) != {"target", "stops", "approval", "session", "launcher"}:
         raise ValueError("the approved worker manifest is invalid")
     target = approval.Target(**value["target"])
+    if target.context_proof != approval.digest(selector_values()):
+        raise ValueError("the approved state selection changed")
     stops = [approval.Stop(**item) for item in value["stops"]]
     plan = approval.authorized_plan(target, stops, value["approval"], now)
     selected = next((stop for stop in plan.stops if stop.session == value["session"]), None)
@@ -234,7 +257,8 @@ def main(argv=None):
             return 0
         backend = terminal.discover()
         launcher = choose_launcher(state, source, args.target)
-        target = approval.Target(launcher.name, launcher.profile, backend.approval_destination, launcher.proof)
+        target = approval.Target(launcher.name, launcher.profile, backend.approval_destination, launcher.proof,
+                                 approval.digest(selector_values()))
         stops = state.candidates(source, profile, target)
         if not stops:
             raise ValueError("no verified /end stops are eligible; use the manual roster")
