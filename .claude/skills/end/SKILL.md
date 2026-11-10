@@ -397,6 +397,7 @@ If the helper, session identity, or checkpoint is unavailable, say the local
 resume roster was not recorded; never guess a command. On success, show the
 account's recorded sessions, including each ID, folder, account, summary, and
 returned options in the thread **outside** the portable handoff fence. Show
+all verified `handoffs` once, label unavailable worktrees, and show
 `not portable` with its handoff path when no command is safe. Say to close the
 original session before copying a command; never run a command from the roster.
 `/go-on --resume-options` reads the same local roster. This does not stop any

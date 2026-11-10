@@ -45,8 +45,12 @@ an untargeted invocation bind it empty. Reject a missing target or extra flags
 before invoking any helper; do not interpret `--target` as a resume command.
 
 Show its entries for the current registered Claude account: session ID, folder,
-account, summary, and manual resume options. Show each `not portable` option with its handoff path.
-State the returned close-original-session precondition before any commands.
+account, summary, and manual resume options. Show each verified path in
+`handoffs` once, including handoffs from parked PRs that share a worktree.
+When a handoff has `cwd_available: false`, show its path and say its worktree
+is unavailable. Show a `not portable` option with its handoff path and never
+infer a command from a different record. State the returned
+close-original-session precondition before any commands.
 Distinguish an unavailable park lookup or unreadable record from an empty list.
 If the helper cannot run, say the roster is unavailable. Do not guess a
 launcher or read credentials. Return here: do not classify, resume, clear a
