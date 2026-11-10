@@ -213,6 +213,10 @@ def facts_line:
 
 def link_line: item_link | if . == null then empty else "Link: " + .label + " — " + .url end;
 
+def decision_source_line:
+  if .source_tool == null then empty
+  else "Source: " + .source_tool + " · " + (.source_account // "unknown") end;
+
 def return_line:
   if .session_id == null then
     "Answer goes to: the store only (no return address); the next thread on this work reads it there"
@@ -226,7 +230,7 @@ def return_line:
 # with the default marked, the default and when it is taken, impact and cost,
 # the link, and where the answer goes.
 def item_lines:
-  "**" + .question + "**", context_lines, options_line, default_line, facts_line, link_line, return_line;
+  "**" + .question + "**", context_lines, options_line, default_line, facts_line, link_line, decision_source_line, return_line;
 
 # quote: an array of lines (each may hold line breaks) as one blockquote. The
 # card quotes the asking thread's question. A blockquote is also what #1778's

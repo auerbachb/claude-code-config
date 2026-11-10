@@ -135,7 +135,7 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "wake with no id" "missing item id" wake
   expect_rc "$SH" 4 "wake with no --result" "missing --result" wake D-1
   expect_rc "$SH" 4 "wake on a Review" "is a Review" wake R-3 --result sent
-  expect_rc "$SH" 4 "wake with an unknown result" "must be sent or failed" wake D-1 --result maybe
+  expect_rc "$SH" 4 "wake with an unknown result" "must be sent, failed, or store-only" wake D-1 --result maybe
   expect_rc "$SH" 4 "wake with --result twice" "more than once" wake D-1 --result sent --result failed
   expect_rc "$SH" 4 "wake with a multi-line note" "single line" wake D-1 --result failed --note $'a\nb'
   expect_rc "$SH" 4 "wake with an over-long note" "longer than 200" wake D-1 --result failed --note "$(printf '%201s' '' | tr ' ' x)"

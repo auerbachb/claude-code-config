@@ -330,6 +330,58 @@ registers globally at the next session start.
   (about half a second against Neon); with a live desk, one `add` per
   question as well.
 
+### Decisions from Codex, Cursor, and other tools
+
+The same queue can accept a Decision explicitly marked in a Codex or Cursor
+assistant message. The hook reads the message field supplied by the tool,
+never its transcript. It sends only the Decision's fields to the existing
+queue when the desk is live. Native input dialogs still belong to the tool
+that showed them.
+
+Put one block at the end of the assistant's message. Keep the question and
+each field on one line, give two to four distinct options, and make the
+optional default match one option exactly. Omit credentials, transcript
+excerpts, and private data the desk does not need.
+
+```desk-decision
+{"question":"Ship the compatibility patch this week?","options":["Ship after CI","Wait for the next batch"],"default":"Ship after CI","context":["The existing API stays compatible."]}
+```
+
+Enable each adapter in the tool's **user** hook configuration, alongside
+existing entries. Set `<installed-desk>` to the absolute path of your trusted
+`desk` install. Configure the tool's own instructions to emit the block when
+it needs a Decision from the desk.
+
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks#stop): add a command
+  hook to `Stop` in the profile's `hooks.json` and approve it in Codex.
+  Command: `python3 "<installed-desk>/hooks/external_capture.py" codex`;
+  set a timeout of 15 seconds. To enable same-machine answer pointers, run
+  `python3 "<installed-desk>/hooks/external_capture.py" init-route` once
+  on that machine. Keep the private route file local; do not sync it.
+  Set `DESK_CODEX_BIN` to an absolute trusted launcher path if the control
+  thread's host installs Codex outside the standard locations.
+- [Cursor hooks](https://cursor.com/docs/hooks#afteragentresponse): add a
+  command to `afterAgentResponse` in the user `hooks.json`.
+  Command: `python3 "<installed-desk>/hooks/external_capture.py" cursor`.
+  The hook needs a single workspace root. Cursor answers stay in the queue.
+- **No hook:** Include the same block in a small local handoff file and tell
+  the control thread which repository and work key it belongs to. The control
+  thread can import it with
+  `python3 "$DESK/hooks/external_capture.py" import --repo owner/name --key issue-123 < "$DECISION_FILE"`.
+  Import reads that file only, and the answer stays in the queue.
+
+The item shows the tool and registered nickname; an absent or ambiguous
+match is `unknown`. Codex profile directories and Cursor account emails
+are matched locally and are not stored on the item. The Codex route sends
+only a Decision pointer to an exact thread on the same installation; it
+does not resume or start a thread. If a route cannot be used, the answer
+stays available through `pending-for --repo OWNER/NAME --key KEY`. Add this
+instruction to the Codex profile: on a `human-queue: D-<n> answered` pointer,
+read `human-queue.sh get D-<n> --json` from the installed desk and use the
+stored answer. Confirm the item belongs to the current work before acting.
+Acknowledge the stored answer with the queue's `ack` command; if reading fails,
+leave it parked. Apply the pending database migration before enabling either hook.
+
 ## Migrations
 
 - Name files `NNN_<name>.sql` with a lowercase `[a-z0-9_]` name, for example

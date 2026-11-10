@@ -496,7 +496,7 @@ def repo_and_key(hook, cwd, session):
         repo = cap_bytes("local/" + name, 200)
 
     branch = git_out(hook, cwd, ["branch", "--show-current"])
-    m = re.match(r"^issue-([0-9]+)(?:-|$)", branch)
+    m = re.match(r"^(?:codex/)?issue-([0-9]+)(?:-|$)", branch)
     if m:
         key = "issue-" + m.group(1)
     elif branch and branch not in ("main", "master"):
