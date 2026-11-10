@@ -718,7 +718,7 @@ else
 fi
 ```
 
-Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. Configured base cadence is 1..999999 minutes; derived cadence is at most 2999997 minutes and remains valid for the Monitor, collector and completed-event replay. The derived cadence is always slower than a valid base cadence, including a custom base longer than 15m.
+Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. See [PMM pre-dispatch](references/pmm-pre-dispatch.md#runtime-integration-limits) for the supported cadence bounds.
 
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 

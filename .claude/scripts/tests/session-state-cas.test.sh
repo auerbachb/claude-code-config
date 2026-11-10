@@ -717,6 +717,17 @@ seed();before=state.read_bytes();r=run('--set','.pmm_idle_streak=8','--expect-ro
 # The existing --repo CAS remains scoped while root guards remain literal root.
 seed();assert run('--repo','org/repo','--cas','.prs["7"].claim="owner"','--expect','null','--expect-root','{"pmm_digest":"old"}').returncode==0
 assert json.loads(state.read_text())['repos']['org/repo']['prs']['7']['claim']=='owner'
+# A caller can combine the root and path guard forms in one transaction.
+for root_expected,path_expected,result in [('old',True,0),('stale',True,7),('old',False,7)]:
+ seed();before=state.read_bytes()
+ r=run('--cas','.pmm_pre_dispatch={"ticks":2}','--expect','{"ticks":1}',
+       '--expect-root',json.dumps({'pmm_digest':root_expected}),
+       '--expect-at','.unrelated.preserve',json.dumps(path_expected))
+ assert r.returncode==result,(r.returncode,r.stderr)
+ if result==7:
+  assert state.read_bytes()==before
+ else:
+  assert json.loads(state.read_text())['pmm_pre_dispatch']['ticks']==2
 print('PASS: sparse root-precondition atomicity, all scheduler inputs, data-only keys, JSON types, validation, unrelated writes and repo compatibility')
 PYROOT
 if [[ $? -ne 0 ]]; then FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi
