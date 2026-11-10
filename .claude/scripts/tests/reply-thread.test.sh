@@ -707,7 +707,7 @@ print(L.classify_reply(open(sys.argv[2], encoding="utf-8").read(), [])[1])
 PY
 )"
 check_eq "marker parsed as fixed / real / claude-code" \
-  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code'}" "$readback"
+  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code', 'fix': None}" "$readback"
 
 echo "== (32) verdict flag misuse is a usage error (exit 2) before anything posts =="
 expect_usage() {
@@ -726,12 +726,18 @@ expect_usage "--agent with a space" --verdict fixed --defect real --agent "two w
 expect_usage "--agent that closes the comment" --verdict fixed --defect real --agent "x-->"
 expect_usage "--agent starting with a dash" --verdict fixed --defect real --agent "-x"
 expect_usage "--verdict with an empty value" --verdict "" --defect real
+expect_usage "unknown --fix" --verdict fixed --defect real --fix bogus
+expect_usage "--fix with an empty value" --verdict fixed --defect real --fix ""
+expect_usage "--fix with no value" --verdict fixed --defect real --fix
+expect_usage "--fix without --verdict" --fix as-given
 
 echo "== (33) --help documents the verdict flags =="
 run --help
 check_eq "exit 0" 0 "$RC"
 check_contains "usage line lists the verdict flags" \
-  "[--verdict fixed|deferred|declined --defect real|not [--agent NAME]]" "$OUT"
+  "[--verdict fixed|deferred|declined --defect real|not [--agent NAME]" "$OUT"
+check_contains "usage line lists --fix" "[--fix as-given|adapted|wrong|none]]" "$OUT"
+check_contains "help shows the fix token" "agent=NAME fix=Z -->" "$OUT"
 check_contains "help shows the marker shape" \
   "<!-- review-verdict: X defect=Y agent=NAME -->" "$OUT"
 
@@ -752,7 +758,7 @@ print(L.classify_reply(open(sys.argv[2], encoding="utf-8").read(), [])[1])
 PY
 )"
 check_eq "the ledger still reads the marker" \
-  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code'}" "$readback"
+  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code', 'fix': None}" "$readback"
 
 echo "== (35) closed fences, quoted fences, and indented code add no closing line =="
 # cr, not a stripping reviewer: cr trims no leading whitespace, so the
@@ -764,6 +770,66 @@ for body in $'Log:\n```\nline\n```\nDone.' $'Log:\n~~~\nline\n~~~~~' $'See:\n> `
     > "$TMP/expected_closed"
   check_bytes "no fence added for: $(printf '%q' "$body")" "$TMP/expected_closed" "$TMP/posted_body"
 done
+
+echo "== (37) --fix appends fix=<value> to the one marker line (issue #1843) =="
+export FAKE_INLINE_MODE="success"
+unset FAKE_FALLBACK_MODE
+run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234." --pr 1 \
+  --verdict fixed --defect real --fix as-given
+check_eq "exit 0" 0 "$RC"
+printf '%s\n%s' "@coderabbitai Fixed in abc1234." '<!-- review-verdict: fixed defect=real agent=claude-code fix=as-given -->' \
+  > "$TMP/expected_fix"
+check_bytes "the marker ends agent=claude-code fix=as-given" "$TMP/expected_fix" "$TMP/posted_body"
+check_eq "exactly one marker line" 1 "$(grep -c 'review-verdict:' "$TMP/posted_body")"
+check_eq "exactly one fix= token" 1 "$(grep -c 'fix=as-given' "$TMP/posted_body")"
+readback="$(python3 - "$REPO_ROOT/.claude/scripts/lib" "$TMP/posted_body" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import review_ledger as L
+print(L.classify_reply(open(sys.argv[2], encoding="utf-8").read(), [])[1])
+PY
+)"
+check_eq "the ledger reads fix=as-given back" \
+  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code', 'fix': 'as-given'}" "$readback"
+for f in adapted wrong none; do
+  run_and_capture 1234567 --reviewer bugbot --body "Fixed in abc1234." --pr 1 \
+    --verdict deferred --defect real --agent codex --fix "$f"
+  check_eq "--fix $f: last line" "<!-- review-verdict: deferred defect=real agent=codex fix=$f -->" \
+    "$(tail -n 1 "$TMP/posted_body" 2>/dev/null)"
+done
+# Without --fix the marked body is the pre-#1843 golden, byte for byte.
+run_and_capture 1234567 --reviewer cr --body "Deferred to #12 — not severe." --pr 1 \
+  --verdict deferred --defect not
+check_bytes "without --fix the marked body is unchanged" "$TMP/expected_cr_marked" "$TMP/posted_body"
+
+echo "== (36) the Phase B agent's documented reply step stamps exactly one marker (issue #1842) =="
+# Extract the fenced reply command from phase-b-reviewer.md itself, so the test
+# runs what the agent is told to run — not a hand-copied paraphrase of it.
+# run_script is the agent's resolver; here it runs the script under test.
+run_script() { local _name="$1"; shift; bash "$SCRIPT" "$@"; }
+PHASE_B_DOC="$REPO_ROOT/.claude/agents/phase-b-reviewer.md"
+MARKER_FRC='<!-- review-verdict: fixed defect=real agent=claude-code fix=as-given -->'
+for rev in bugbot greptile; do
+  block="$(awk -v want="run_script reply-thread.sh <comment_id> --reviewer $rev " '
+    /^```/ { if (infence) { if (hit) { printf "%s", buf; exit } infence=0; buf=""; hit=0; next }
+             infence=1; buf=""; next }
+    infence { buf = buf $0 "\n"; if (index($0, want) == 1) hit=1 }
+  ' "$PHASE_B_DOC")"
+  check_contains "phase-b $rev block: found and carries the verdict flags" "--verdict fixed --defect real --fix as-given" "$block"
+  cmd="${block//<comment_id>/1234567}"
+  cmd="${cmd//\{\{PR_NUMBER\}\}/1}"
+  cmd="${cmd//SHA/abc1234}"
+  cmd="${cmd//<what changed>/guarded the index}"
+  reset_recorded
+  OUT="$(eval "$cmd" 2>&1)"; RC=$?
+  read_recorded
+  check_eq "phase-b $rev block: exit 0" 0 "$RC"
+  check_eq "phase-b $rev block: last line is exactly the marker" "$MARKER_FRC" \
+    "$(tail -n 1 "$TMP/posted_body" 2>/dev/null)"
+  check_eq "phase-b $rev block: exactly one marker line" 1 \
+    "$(grep -c 'review-verdict:' "$TMP/posted_body" 2>/dev/null || true)"
+done
+unset -f run_script
 
 ############################################################################
 echo ""

@@ -365,7 +365,9 @@ def main(argv):
     # different event type; (2) decommissioned — script absent from manifest,
     # inside a managed hooks root, and the file no longer exists. Pruning is
     # restricted to managed hook roots so third-party registrations are untouched.
-    script_to_canonical_event = {item["script"]: item["event"] for item in manifest}
+    script_to_canonical_events = {}
+    for item in manifest:
+        script_to_canonical_events.setdefault(item["script"], set()).add(item["event"])
     manifest_scripts = {item["script"] for item in manifest}
 
     def is_managed_path(cmd_path):
@@ -389,15 +391,16 @@ def main(argv):
                     continue
                 exe = command_argv0(h.get("command", ""))
                 basename = os.path.basename(exe)
-                canonical = script_to_canonical_event.get(basename)
+                canonical_events = script_to_canonical_events.get(basename)
 
-                # (1) Script moved to a different event — drop the stale entry.
+                # (1) Event is outside this script's canonical set — drop it.
+                # One script may legitimately serve multiple manifest events.
                 # Restricted to managed roots only, and never placeholder paths
                 # (placeholder migration, not removal, is the repair for those).
                 # This mirrors the guard on case (2) so third-party registrations
                 # and placeholder entries are both preserved.
-                if (canonical is not None
-                        and canonical != event
+                if (canonical_events is not None
+                        and event not in canonical_events
                         and is_managed_path(exe)
                         and not is_placeholder(exe)):
                     removed_stale += 1

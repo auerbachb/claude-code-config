@@ -47,8 +47,8 @@ Separately from Fast mode: for Light-tier work, **Haiku** is a valid cheaper alt
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -353,6 +353,7 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 **Effort:** Extra — rules-adjacent change, many acceptance checks
 {Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 ### Issue #{NUMBER}: {TITLE}
+{Full issue URL}
 
 **Acceptance Criteria:**
 {List all checkbox items from the issue body, preserving the original text}
@@ -414,8 +415,8 @@ These are mandatory verification points. The executing agent MUST follow these:
 
 {ALWAYS include this section, at every tier:}
 ## Constraints
-- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
-- Do NOT work on main — use a worktree or feature branch
+- Claim the issue before anything else. After the model guard, resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`, and resolve `chip-claim-receipt.sh` in the same order (skip installed paths if `HOME` is unset or empty; use absolute helper paths across checkouts). If the workflow delegates the listed issues directly to `/subagent`, only check ownership read-only for each issue before sizing or decomposition; skip live foreign or unreadable claims and let `/subagent` Step 6.0 acquire each eligible claim. For direct execution, give a fresh launch its own `CLAIM_HOLDER` (host, epoch, shell PID and two Bash random values) before any repo read, edit or planning. Run `<N> --check --holder "$CLAIM_HOLDER"` and, if it clears, `<N> --claim --holder "$CLAIM_HOLDER" --json`, both with `--repo <owner/repo>`. Report stale before takeover; stop on failure or unless the result is `mine` for the exact holder. Require the receipt helper before acquiring. Keep that acquisition JSON locally and, as soon as the launch creates its assigned worktree, pipe it to `chip-claim-receipt.sh save WORKTREE OWNER/REPO N "$CLAIM_HOLDER"` before switching or coding; stop if saving fails. On resume of that same launch, get the holder only from `chip-claim-receipt.sh read WORKTREE OWNER/REPO N` for its own known worktree and confirm with `<N> --renew --holder "$CLAIM_HOLDER"` (also pass `--repo`). Stop on missing or failed recovery; never read a receipt on a fresh launch or infer ownership from a GitHub marker. Renew before every review or CI wait and at least every 30 minutes of long coding; stop if renewal fails. Pass the issue and same holder to `/wrap` as `CLAIM_PAIRS`. If the claim helper is unavailable on a fresh direct launch, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue.
+- Do NOT work on main — use the worktree assigned to this launch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
 - At your first status message and whenever the user asks "how far along?" (or equivalent), lead with the progress readout from `time-estimates.md` §"Progress Readout Format": "Est {bound} · {elapsed} elapsed · {verdict} — {outcome}". Derive {bound} from this issue's `## Estimate` section (or your tier's fallback from the table). Derive {elapsed} from the wall-clock time since you claimed the issue. Use `overrun-check.sh --readout --pr {N} --bound-min {M} --started-at {ISO8601}` (resolve per RESOLVE) when available; otherwise compute inline. Do not repeat the readout on every message — only at the first status and on explicit progress questions.

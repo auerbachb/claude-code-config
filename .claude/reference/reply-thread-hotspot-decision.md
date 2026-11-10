@@ -1,5 +1,7 @@
 # `reply-thread.sh` hotspot — diagnosis and KEEP decision
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Reference for Issue #1097 (`.claude/scripts/reply-thread.sh` churn hotspot). Not auto-loaded.
 
 ## The problem being read
@@ -154,4 +156,4 @@ detail of the transformation section.
 - `.claude/reference/greptile-reply-format.md` — reply conventions for Greptile threads (the behavioral spec this script enforces)
 - `.claude/rules/cr-github-review.md` "Processing CR Feedback" step 3 — the CR reply protocol
 - `.claude/rules/bugbot.md` and `.claude/rules/greptile.md` — strip-token rationale for BugBot/Greptile modes
-- `.claude/reference/codeant-graphite-supplemental.md` — CodeAnt reply conventions (plain-text, rate-limited)
+- `.claude/reference/codeant-supplemental.md` — CodeAnt reply conventions (plain-text, rate-limited)

@@ -173,8 +173,10 @@ check_eq "no per-reviewer decisions" "null" "$(f .reviewers)"
 check_eq "no gh call at all" "0" "$(grep -c . "$GH_CALLS" | tr -d ' ')"
 check_eq "the resolver was asked about this PR and repo" "$PR --repo $REPO --json" "$(head -1 "$TIER_CALLS")"
 run --claim cursor
-check_eq "a legacy claim is a no-op that exits 0" "0:true" "$RC:$(f .claim.claimed)"
+check_eq "a legacy cursor claim is denied: BugBot needs owner approval (#1897)" "1:false:approval_required" "$RC:$(f .claim.claimed):$(f .claim.reason)"
 check_eq "  and writes no ledger" "null" "$(ledger cursor)"
+run --claim codeant
+check_eq "a legacy codeant claim (free reviewer) is still a no-op that exits 0" "0:true" "$RC:$(f .claim.claimed)"
 reset "$(tier_json absent legacy off)"
 run
 check_eq "an ini-only (absent) policy is still legacy" "legacy" "$(f .mode)"
@@ -188,9 +190,11 @@ reset "$(tier_json present ci-only)"
 set_checks "$(run_check build null github-actions 30 in_progress)"
 run
 check_eq "mode tiered" "tiered" "$(f .mode)"
-for r in codeant cursor coderabbit graphite; do
+for r in codeant cursor coderabbit; do
   check_eq "$r excluded" "excluded:tier_excluded" "$(dec "$r")"
 done
+# Graphite retired 2026-11-03 (#1889): no key, never allowed.
+check_eq "no graphite key" "false" "$(f '.reviewers | has("graphite")')"
 check_eq "nothing allowed" "[]" "$(f '.allowed | tostring')"
 check_eq "nothing deferred" "[]" "$(f '.deferred | tostring')"
 check_eq "a docs PR costs no PR read at all" "0" "$(grep -c . "$GH_CALLS" | tr -d ' ')"
@@ -202,7 +206,6 @@ run
 check_eq "no round, CI green: codeant allowed" "allowed:tier_allows" "$(dec codeant)"
 check_eq "cursor excluded" "excluded:tier_excluded" "$(dec cursor)"
 check_eq "coderabbit excluded" "excluded:tier_excluded" "$(dec coderabbit)"
-check_eq "graphite excluded" "excluded:tier_excluded" "$(dec graphite)"
 check_eq "allowed list" '["codeant"]' "$(f '.allowed | tostring')"
 
 reset "$(tier_json present ci+codeant-one-round)"
@@ -260,9 +263,9 @@ echo "== full =="
 reset "$(tier_json present full)"
 run
 check_eq "codeant allowed" "allowed:tier_allows" "$(dec codeant)"
-check_eq "cursor allowed (green, settled, 0 invites)" "allowed:tier_allows" "$(dec cursor)"
+check_eq "cursor on green, settled, 0 invites: approval_required, not allowed (#1897)" "excluded:approval_required" "$(dec cursor)"
 check_eq "coderabbit is not needed while CodeAnt is fine" "excluded:not_fallback" "$(dec coderabbit)"
-check_eq "graphite never on a tier-aware repo" "excluded:tier_excluded" "$(dec graphite)"
+check_eq "graphite never allowed (retired, #1889)" "false" "$(f '.allowed | index("graphite") != null')"
 check_eq "settled" "true" "$(f .settled.settled)"
 check_eq "threshold default 600" "600" "$(f .settled.threshold_s)"
 check_eq "the refusal guard was asked about HEAD in this repo" "refused $PR $HEAD GH_REPO=$REPO" "$(grep '^refused' "$GUARD_CALLS")"
@@ -276,7 +279,7 @@ check_eq "an invalid policy is tiered full" "tiered:full" "$(f '"\(.mode):\(.gat
 reset "$(tier_json present full)"
 set_comments "$(comment me "@cursor review" 3600)"
 run
-check_eq "cursor: one prior invitation still allowed" "allowed:1" "$(f '.reviewers.cursor | "\(.kind):\(.invitations)"')"
+check_eq "cursor: one prior invitation is under the cap, so approval decides" "excluded:1:approval_required" "$(f '.reviewers.cursor | "\(.kind):\(.invitations):\(.reason)"')"
 set_comments "$(comment me "@cursor review" 3600)" "$(comment me "@cursor review" 1800)"
 : > "$GUARD_CALLS"
 run
@@ -292,7 +295,7 @@ check_eq "  codeant is not held by settling" "allowed:tier_allows" "$(dec codean
 check_eq "  neither BugBot guard was asked" "0" "$(grep -c . "$GUARD_CALLS" | tr -d ' ')"
 export COMPLEXITY_TRIGGER_SETTLE_SECONDS=30
 run
-check_eq "env override 30s: settled" "allowed:tier_allows" "$(dec cursor)"
+check_eq "env override 30s: settled, so approval decides" "excluded:approval_required" "$(dec cursor)"
 check_eq "  threshold reported" "30" "$(f .settled.threshold_s)"
 export COMPLEXITY_TRIGGER_SETTLE_SECONDS=soon
 run
@@ -326,7 +329,7 @@ run
 check_eq "commit unreadable: never settled either" "deferred:head_not_settled" "$(dec cursor)"
 export FAIL_COMMIT=""
 run
-check_eq "  control — both readable: the same old anchors settle" "allowed:tier_allows" "$(dec cursor)"
+check_eq "  control — both readable: the same old anchors settle (approval decides)" "excluded:approval_required" "$(dec cursor)"
 
 reset "$(tier_json present full)"
 set_checks "$(run_check build null github-actions 30 in_progress)"
@@ -353,15 +356,15 @@ check_eq "  with the tally" "9.5" "$(f .reviewers.cursor.daily_cap.spent_usd)"
 check_eq "  not in allowed" '["codeant"]' "$(f '.allowed | tostring')"
 export FIXTURE_CAP_RC=0
 run
-check_eq "over with a disagreeing exit: unknown, allowed" "allowed:unknown" "$(f '.reviewers.cursor | "\(.kind):\(.daily_cap.status)"')"
+check_eq "over with a disagreeing exit: unknown, then approval_required" "excluded:unknown:approval_required" "$(f '.reviewers.cursor | "\(.kind):\(.daily_cap.status):\(.reason)"')"
 export FIXTURE_CAP_OUT='{"platform":"bugbot","date":"2026-10-08","spent_usd":null,"add_usd":1.58,"cap_usd":10,"status":"unknown"}'
 run
-check_eq "unknown tally: allowed (fail open)" "allowed:tier_allows" "$(dec cursor)"
+check_eq "unknown tally: past the cap, approval decides" "excluded:approval_required" "$(dec cursor)"
 check_eq "  and says so" "yes" "$( [[ "$ERR" == *"daily cap is unknown"* ]] && echo yes || echo no )"
 mv "$S/review-daily-cap.sh" "$TMP/cap.bak"
 run
 mv "$TMP/cap.bak" "$S/review-daily-cap.sh"
-check_eq "cap helper missing: allowed, DEGRADED" "allowed:yes" "$(dec cursor | cut -d: -f1):$( [[ "$ERR" == *"DEGRADED: review-daily-cap.sh not found"* ]] && echo yes || echo no )"
+check_eq "cap helper missing: DEGRADED, approval decides" "excluded:yes" "$(dec cursor | cut -d: -f1):$( [[ "$ERR" == *"DEGRADED: review-daily-cap.sh not found"* ]] && echo yes || echo no )"
 
 echo "== full: CodeRabbit only as the CodeAnt-unavailable fallback =="
 reset "$(tier_json present full)"
@@ -400,7 +403,6 @@ reset "$(tier_json present full)"
 run --head "$OLD"
 check_eq "codeant deferred" "deferred:head_moved" "$(dec codeant)"
 check_eq "cursor deferred" "deferred:head_moved" "$(dec cursor)"
-check_eq "graphite still excluded" "excluded:tier_excluded" "$(dec graphite)"
 run --head "${HEAD:0:7}"
 check_eq "an abbreviated matching HEAD is the same HEAD" "allowed:tier_allows" "$(dec codeant)"
 
@@ -434,7 +436,7 @@ check_eq "  and says why" "yes" "$( [[ "$ERR" == *"declares no ## Review policy"
 export FIXTURE_PROBE_OUT="$(tier_json present full)"
 run
 check_eq "resolver exit 4 + local policy section: fail_closed" "fail_closed" "$(f .mode)"
-for r in codeant cursor coderabbit graphite; do
+for r in codeant cursor coderabbit; do
   check_eq "$r deferred tier_unresolved" "deferred:tier_unresolved" "$(dec "$r")"
 done
 check_eq "  no PR facts read" "0" "$(grep -c . "$GH_CALLS" | tr -d ' ')"
@@ -487,9 +489,9 @@ check_eq "  without spending BugBot's refusal lookup or cap tally" "0" "$(grep -
 reset "$(tier_json present full)"
 set_comments "$(comment me "@cursor review" 3600)"
 run --claim cursor
-check_eq "cursor: comment count 1 -> ledger 2" "0:2" "$RC:$(ledger cursor)"
+check_eq "cursor claim under the cap: denied approval_required, no ledger write" "1:approval_required:null" "$RC:$(f .reviewers.cursor.reason):$(ledger cursor)"
 run --claim cursor
-check_eq "  then the cap" "1:lifetime_cap" "$RC:$(f .reviewers.cursor.reason)"
+check_eq "  a second claim is denied the same way" "1:approval_required:null" "$RC:$(f .reviewers.cursor.reason):$(ledger cursor)"
 reset "$(tier_json present full)"
 export FIXTURE_CAP_OUT='{"platform":"bugbot","date":"2026-10-08","spent_usd":9.5,"add_usd":1.58,"cap_usd":10,"status":"over"}' FIXTURE_CAP_RC=1
 run --claim cursor
@@ -514,15 +516,77 @@ set_comments "$(comment me "@cursor review" 3600)"
 # re-evaluation must see the cap.
 export FIXTURE_BUMP_CURSOR_TO=2
 run --claim cursor
-check_eq "denied at the cap after re-evaluating" "1:lifetime_cap" "$RC:$(f .reviewers.cursor.reason)"
+check_eq "denied approval_required — never reaches the CAS" "1:approval_required" "$RC:$(f .reviewers.cursor.reason)"
 check_eq "  the other claimer's count stands, nothing over it" "2" "$(ledger cursor)"
 check_eq "  the first pass reached the guards; the re-evaluation stopped at the cap before them" "1" "$(grep -c '^refused' "$GUARD_CALLS" | tr -d ' ')"
+
+echo "== CodeAnt lifetime cap on full is policy-configurable (issue #1849) =="
+tier_cap() { # <gate> <raw json value for codeant_lifetime_cap_full>
+  tier_json present "$1" | jq -c --argjson c "$2" '. + {codeant_lifetime_cap_full: $c}'
+}
+reset "$(tier_json present full)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "default (key absent): one invitation is the cap" "excluded:lifetime_cap:1" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+check_eq "  and no warning" "" "$ERR"
+reset "$(tier_cap full 1)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "explicit 1: same as the default" "excluded:lifetime_cap" "$(dec codeant)"
+
+reset "$(tier_cap full 2)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "cap 2, one invitation: a second round is allowed" "allowed:tier_allows:2" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+run --claim codeant
+check_eq "  the second claim lands (comment 1 + this claim)" "0:2" "$RC:$(ledger codeant)"
+run --claim codeant
+check_eq "  a third claim is denied at the cap" "1:lifetime_cap" "$RC:$(f .reviewers.codeant.reason)"
+check_eq "  ledger unchanged" "2" "$(ledger codeant)"
+set_comments "$(comment me "@codeant-ai review" 3600)" "$(comment me "@codeant-ai review" 1800)"
+rm -f "$HOME/.claude/session-state.json"
+run
+check_eq "  two visible invitations reach the cap too" "excluded:lifetime_cap" "$(dec codeant)"
+
+reset "$(tier_cap full 2)"
+run --claim codeant
+run --claim codeant
+check_eq "cap 2 via the ledger alone: two claims land" "0:2" "$RC:$(ledger codeant)"
+run --claim codeant
+check_eq "  the third does not" "1:2" "$RC:$(ledger codeant)"
+
+for bad in 0 6 9 '"abc"' '"2"' 2.5 null -1; do
+  reset "$(tier_cap full "$bad")"
+  set_comments "$(comment me "@codeant-ai review" 3600)"
+  run
+  check_eq "invalid cap $bad: falls back to 1" "excluded:lifetime_cap:1" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+  check_eq "  with a warning" "yes" "$(grep -q 'keeping the CodeAnt lifetime cap at 1' <<<"$ERR" && echo yes || echo no)"
+done
+
+reset "$(tier_cap ci+codeant-one-round 3)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "ci+codeant-one-round ignores the knob: still one round" "excluded:lifetime_cap:1" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+
+reset "$(tier_cap full 5)"
+set_comments "$(comment me "@cursor review" 3600)" "$(comment me "@cursor review" 1800)"
+run
+check_eq "paid cursor is unaffected: two invitations stay its cap" "excluded:lifetime_cap" "$(dec cursor)"
+set_comments
+run
+check_eq "  and with none it is still approval-gated (#1897)" "excluded:approval_required" "$(dec cursor)"
+run --claim cursor
+check_eq "  a cursor claim is still denied, no ledger" "1:null" "$RC:$(ledger cursor)"
+check_eq "coderabbit is unaffected: still only the fallback" "excluded:not_fallback" "$(dec coderabbit)"
+check_eq "coderabbit carries no cap" "null" "$(f '.reviewers.coderabbit.cap')"
 
 echo "== usage =="
 RC=0; bash "$SUT" >/dev/null 2>&1 || RC=$?
 check_eq "no PR: exit 2" "2" "$RC"
 RC=0; bash "$SUT" 12 --claim bugbot >/dev/null 2>&1 || RC=$?
 check_eq "unknown reviewer: exit 2" "2" "$RC"
+RC=0; bash "$SUT" 12 --claim graphite >/dev/null 2>&1 || RC=$?
+check_eq "retired graphite reviewer rejected: exit 2" "2" "$RC"
 RC=0; bash "$SUT" 12 --claim cursor --release cursor >/dev/null 2>&1 || RC=$?
 check_eq "claim + release: exit 2" "2" "$RC"
 RC=0; bash "$SUT" 12 --head 'zz;rm' >/dev/null 2>&1 || RC=$?

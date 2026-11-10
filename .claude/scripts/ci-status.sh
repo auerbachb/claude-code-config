@@ -49,7 +49,8 @@
 #   Opt-in. Drop the AI reviewers' own check-runs before classifying, so the
 #   verdict is BUILD CI only. Matched by exact app slug, never by check name:
 #   codeant-ai, codeant, cursor, cursor-com, coderabbitai, coderabbit,
-#   graphite-app, graphite, greptile-apps, greptile. Without it a reviewer that
+#   graphite-app, graphite (retired 2026-11-03, #1889; kept for leftover runs),
+#   greptile-apps, greptile. Without it a reviewer that
 #   was never invited can hold CI "pending" forever, and one that failed can
 #   hold it "red" — so a trigger gated on green CI would deadlock waiting for
 #   itself (review-triggers-allowed.sh). Applied after the dedup. When no build

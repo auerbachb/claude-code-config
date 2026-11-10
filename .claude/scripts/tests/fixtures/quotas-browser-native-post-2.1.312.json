@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "client": "Claude Code2.1.312",
+    "captured_utc_date": "2026-11-08",
+    "transport": "actual installed CLI; synthetic stdio MCP; loopback model endpoint",
+    "live_chrome": false,
+    "production_credentials": false,
+    "failed_mcp_isError_emitted_success_post": false,
+    "note": "This captures the generic MCP-to-hook boundary, not a live Chrome read."
+  },
+  "success_event": {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "mcp__native-fixture__read_page",
+    "tool_input": {
+      "tabId": 42
+    },
+    "tool_use_id": "toolu_native_fixture",
+    "tool_response": [
+      {
+        "type": "text",
+        "text": "synthetic fixture page content"
+      }
+    ]
+  }
+}

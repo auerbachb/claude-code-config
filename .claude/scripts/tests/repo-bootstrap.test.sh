@@ -172,6 +172,7 @@ check_contains "case2: ac-gate.yml named in output" "ac-gate.yml" "$OUT"
 BEFORE_CR_SUM="$(file_checksum "$REPO2/.github/workflows/cr-plan-on-issue.yml")"
 BEFORE_ACSH_SUM="$(file_checksum "$REPO2/.claude/scripts/ac-gate.sh")"
 BEFORE_PIREF_SUM="$(file_checksum "$REPO2/.claude/scripts/pr-issue-ref.sh")"
+BEFORE_MARKERS_SUM="$(file_checksum "$REPO2/.claude/scripts/lib/ac-checkbox-markers.sh")"
 
 OUT=$(cd "$REPO2" && bash "$SUT" --apply 2>&1)
 RC=$?
@@ -188,9 +189,11 @@ fi
 AFTER_CR_SUM="$(file_checksum "$REPO2/.github/workflows/cr-plan-on-issue.yml")"
 AFTER_ACSH_SUM="$(file_checksum "$REPO2/.claude/scripts/ac-gate.sh")"
 AFTER_PIREF_SUM="$(file_checksum "$REPO2/.claude/scripts/pr-issue-ref.sh")"
+AFTER_MARKERS_SUM="$(file_checksum "$REPO2/.claude/scripts/lib/ac-checkbox-markers.sh")"
 
 check_eq "case2b: cr-plan-on-issue.yml unchanged" "$BEFORE_CR_SUM" "$AFTER_CR_SUM"
 check_eq "case2b: ac-gate.sh unchanged" "$BEFORE_ACSH_SUM" "$AFTER_ACSH_SUM"
+check_eq "case2b: shared marker library unchanged" "$BEFORE_MARKERS_SUM" "$AFTER_MARKERS_SUM"
 check_eq "case2b: pr-issue-ref.sh unchanged" "$BEFORE_PIREF_SUM" "$AFTER_PIREF_SUM"
 
 # pr-issue-ref.sh must remain executable (it was already there as a stub, so
@@ -210,6 +213,10 @@ make_repo "$REPO2C"
 OUT=$(cd "$REPO2C" && bash "$SUT" --apply 2>&1)
 RC=$?
 check_eq "case2c: install all, exits 1 (BP gap remains)" "1" "$RC"
+
+HELP_OUT="$(bash "$REPO2C/.claude/scripts/ac-gate.sh" --help 2>&1)"
+HELP_RC=$?
+check_eq "case2c: installed gate loads its shared library" "0" "$HELP_RC"
 
 # pr-issue-ref.sh must be mode 755 (executable) after installation
 if [[ -x "$REPO2C/.claude/scripts/pr-issue-ref.sh" ]]; then

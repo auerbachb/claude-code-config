@@ -34,7 +34,7 @@
 # USAGE
 #   ai-quotas.sh --json | quotas-cheapest-next.sh [--threshold <pct>]
 #   quotas-cheapest-next.sh --codex-reset-status
-#   quotas-cheapest-next.sh --record-codex-reset [YYYY-MM-DD]
+#   quotas-cheapest-next.sh --record-codex-reset --account LABEL [YYYY-MM-DD]
 #   quotas-cheapest-next.sh --help | -h
 #
 #   (default)      Read a JSON ARRAY of rows on stdin; write one JSON object
@@ -46,9 +46,9 @@
 #                  the env override, which beats pm-config.md, which beats the
 #                  built-in default of 20.
 #   --codex-reset-status
-#                  Print the reset watermark's verdict as JSON and exit.
-#   --record-codex-reset [YYYY-MM-DD]
-#                  Record that a Codex reset was used (default: today, ET).
+#                  Print per-account verdicts for registered Codex labels.
+#   --record-codex-reset --account LABEL [YYYY-MM-DD]
+#                  Record a reset for registered LABEL (default: today, ET).
 #                  The ONLY writing mode. Run it after buying or spending a
 #                  reset so later reports stop offering a free one.
 #
@@ -97,27 +97,18 @@
 #   never move between the two.
 #
 # THE CODEX RESET WATERMARK
-#   OpenAI's payloads have never been observed to report how many resets an
-#   account has banked, so this script prefers a live figure when a row
-#   carries one and otherwise falls back to a month watermark at
+#   A live per-row reset figure wins; without one, use the account
+#   watermark at
 #   `~/.claude/quotas/codex-reset.json`:
 #
-#     {"schema_version":"1.0","month":"2026-09","used_on":"2026-09-07", …}
+#     {"schema_version":"2.0","accounts":{"label":{"month":"2026-09", …}}}
 #
-#   ONE RECORD, NOT ONE PER ACCOUNT. The file carries no account dimension, so
-#   recording a reset marks the free reset spent for EVERY Codex account that
-#   falls back to the watermark — accounts reporting a live figure are
-#   unaffected, because a live figure is preferred over it. Owners running more
-#   than one Codex account should read the verdict as "a reset was used
-#   somewhere this month", not as a per-account balance. Issue #1696 tracks
-#   keying it by account.
-#
-#   A watermark whose `month` is the current ET month means the free reset is
-#   spent. Any other month, or no file at all, means one is available. The
-#   read FAILS SOFT: a missing, unreadable, or malformed file degrades to "one
-#   free reset assumed" with `figure_source: "assumed"` — never to an error,
-#   and never to a silent "you have already paid", which would push the hint
-#   toward a $90 purchase on the strength of a corrupt file.
+#   Records are keyed by registered Codex label (schema 2.0, accounts object).
+#   A current-ET-month record affects that label only. Missing or unreadable
+#   per-account records assume one free reset; valid sibling records survive.
+#   Legacy global records belong to no account and are never applied to rows.
+#   Status returns an accounts object for the registered Codex labels; recording
+#   requires --account LABEL. Writes lock the full read/modify/atomic-replace.
 #
 # CONFIGURATION (pm-config.md `## Budget`; env override wins; --threshold wins over both)
 #   quotas_cheapest_next_threshold_pct   CLAUDE_QUOTAS_CHEAPEST_NEXT_THRESHOLD_PCT   20
@@ -145,6 +136,9 @@
 #
 # DEPENDENCIES
 #   bash 3.2+, jq
+#   Python 3.9+ and sibling lib/quota-date.sh / quota-date.py for bounded date
+#   operations. Unavailable adapters leave date fields unknown; record mode
+#   refuses unverifiable calendar writes.
 #   .claude/scripts/pm-config-get.sh and repo-root.sh for the config knob —
 #   both optional: absent, the knob falls back to env then to the default.
 #
@@ -182,6 +176,7 @@ warn() { echo "${SELF_NAME}: $1" >&2; }
 MODE="annotate"
 THRESHOLD_OVERRIDE=""
 RECORD_DATE=""
+RECORD_ACCOUNT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -192,11 +187,18 @@ while [[ $# -gt 0 ]]; do
     --threshold=*) THRESHOLD_OVERRIDE="${1#--threshold=}"
       [[ -n "$THRESHOLD_OVERRIDE" ]] || die_usage "--threshold requires a percentage"
       shift ;;
+    --account)
+      [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--account requires a registered Codex label"
+      RECORD_ACCOUNT="$2"; shift 2 ;;
+    --account=*) RECORD_ACCOUNT="${1#--account=}"; shift ;;
     --codex-reset-status) MODE="status"; shift ;;
     --record-codex-reset)
       MODE="record"; shift
       if [[ $# -ge 1 && "$1" != -* ]]; then RECORD_DATE="$1"; shift; fi ;;
-    *) die_usage "unknown argument: $1" ;;
+    *)
+      if [[ "$MODE" == record && -z "$RECORD_DATE" && "$1" != -* ]]; then
+        RECORD_DATE="$1"; shift
+      else die_usage "unknown argument: $1"; fi ;;
   esac
 done
 
@@ -327,73 +329,53 @@ BASIS='Approximate: a Codex reset buys a fixed week at a flat price, while Claud
 STATE_DIR="${CLAUDE_QUOTAS_STATE_DIR:-${HOME:-/tmp}/.claude/quotas}"
 RESET_FILE="$STATE_DIR/codex-reset.json"
 
-# Which date(1) dialect is on PATH, asked ONCE — the same probe, for the same
-# reason, as ai-quotas.sh: `-r` is not safe to try-and-fall-through, because
-# GNU ACCEPTS `-r` and reads its argument as a FILENAME whose mtime to print.
-# A file named for an epoch second almost never exists, so a fallthrough
-# usually recovers; "usually" is the whole problem. Probing with a GNU-only
-# form would be a coincidence of the same kind — it works only as long as BSD
-# keeps rejecting it. Ask the tool what it is.
-DATE_IS_GNU=0
-if grep -qi 'GNU coreutils' <<<"$(date --version 2>/dev/null)"; then
-  DATE_IS_GNU=1
+# Select operation capabilities once; unsupported tools remain explicit unknowns.
+QUOTA_DATE_DIALECT=unavailable
+if [[ -r "$SELF_DIR/lib/quota-date.sh" ]] && source "$SELF_DIR/lib/quota-date.sh"; then
+  QUOTA_DATE_DIALECT=$(quota_date_detect) || QUOTA_DATE_DIALECT=unavailable
+fi
+if [[ "$QUOTA_DATE_DIALECT" == unavailable ]]; then
+  warn "DEGRADED: quota date operations unavailable — reset dates/weekday or calendar validation may be unknown"
 fi
 
 # The ET month, so a watermark written on the 31st in Eastern time is not read
 # as next month's by a UTC clock four hours ahead of it.
 et_month() {
   local now="${AI_QUOTAS_NOW:-}"
-  if [[ "$now" =~ ^[0-9]+$ ]]; then
-    if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-      TZ='America/New_York' date -d "@$now" '+%Y-%m' 2>/dev/null && return 0
-    else
-      TZ='America/New_York' date -r "$now" '+%Y-%m' 2>/dev/null && return 0
-    fi
-  fi
-  TZ='America/New_York' date '+%Y-%m'
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || now=now
+  quota_date_format "$QUOTA_DATE_DIALECT" "$now" '+%Y-%m' America/New_York || true
 }
 
 et_today() {
   local now="${AI_QUOTAS_NOW:-}"
-  if [[ "$now" =~ ^[0-9]+$ ]]; then
-    if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-      TZ='America/New_York' date -d "@$now" '+%Y-%m-%d' 2>/dev/null && return 0
-    else
-      TZ='America/New_York' date -r "$now" '+%Y-%m-%d' 2>/dev/null && return 0
-    fi
-  fi
-  TZ='America/New_York' date '+%Y-%m-%d'
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || now=now
+  quota_date_format "$QUOTA_DATE_DIALECT" "$now" '+%Y-%m-%d' America/New_York || true
 }
 
-# Result in globals, never through `$( )`: the caller needs BOTH the verdict
-# and where it came from, and a subshell would drop one of them.
-CODEX_FREE_RESET=1
-CODEX_RESET_SOURCE="assumed"
-CODEX_RESET_USED_ON=""
+RESET_HELPER="$SELF_DIR/lib/quotas-codex-reset.py"
+RESET_ACCOUNTS='{}'
+REGISTRY_FILE="${AI_QUOTAS_CONFIG:-${HOME:-/tmp}/.claude/ai-quotas.json}"
 
 read_codex_watermark() {
-  local month recorded
+  local month
   month="$(et_month)"
-  CODEX_FREE_RESET=1
-  CODEX_RESET_SOURCE="assumed"
-  CODEX_RESET_USED_ON=""
-  [[ -r "$RESET_FILE" ]] || return 0
-  # Fail soft, deliberately. A corrupt file must not read as "you already
-  # spent this month's free reset": that is the reading that steers the hint
-  # toward a paid reset, and it would be steering on a parse failure.
-  recorded="$(jq -r 'if type == "object" and (.month | type == "string") then .month else empty end' \
-    "$RESET_FILE" 2>/dev/null || true)"
-  [[ -n "$recorded" ]] || { warn "the Codex reset watermark at ${RESET_FILE} is unreadable — assuming one free reset is available"; return 0; }
-  CODEX_RESET_SOURCE="watermark"
-  if [[ "$recorded" == "$month" ]]; then
-    CODEX_FREE_RESET=0
-    CODEX_RESET_USED_ON="$(jq -r '.used_on // empty' "$RESET_FILE" 2>/dev/null || true)"
+  [[ -n "$month" ]] || warn "current ET month unavailable — assuming one free reset is available"
+  if [[ ! -r "$RESET_HELPER" ]] || ! command -v python3 >/dev/null 2>&1; then
+    warn "Codex account reset reader unavailable — assuming free resets available"
+    RESET_ACCOUNTS='{}'
+    return 0
   fi
-  return 0
+  RESET_ACCOUNTS=$(python3 "$RESET_HELPER" read --file "$RESET_FILE" --month "$month") || {
+    warn "Codex account reset reader failed — assuming free resets available"
+    RESET_ACCOUNTS='{}'
+  }
 }
 
 record_codex_reset() {
-  local day="${1:-}" month tmp existing canon
+  local day="${1:-}" month canon
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || die 5 "calendar validation unavailable — watermark not written"
   [[ -n "$day" ]] || day="$(et_today)"
   [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die_usage "--record-codex-reset takes a YYYY-MM-DD date (got '${day}')"
   # The SHAPE is not the date. `2026-99-99` and `2026-02-31` both match the
@@ -403,11 +385,10 @@ record_codex_reset() {
   # `date` instead: GNU rejects an impossible date outright, BSD normalises it
   # (`2026-02-31` comes back `2026-03-03`), and the equality catches both.
   # Noon pins the time-of-day so no zone can move the answer across midnight.
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    canon="$(date -d "${day} 12:00:00" '+%Y-%m-%d' 2>/dev/null || true)"
-  else
-    canon="$(date -j -f '%Y-%m-%d %H:%M:%S' "${day} 12:00:00" '+%Y-%m-%d' 2>/dev/null || true)"
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || die 5 "calendar validation unavailable — watermark not written"
+  local calendar_rc=0
+  canon=$(quota_date_calendar "$QUOTA_DATE_DIALECT" "$day") || calendar_rc=$?
+  [[ "$calendar_rc" != 4 ]] || die 5 "calendar validation unavailable — watermark not written"
   [[ "$canon" == "$day" ]] ||
     die_usage "--record-codex-reset takes a real calendar date (got '${day}')"
   month="${day%-*}"
@@ -421,26 +402,11 @@ record_codex_reset() {
   if [[ "$month" != "$now_month" ]]; then
     warn "recording a reset for ${month}, which is not the current month (${now_month}) — this month's free reset stays available"
   fi
-  # One slot, so a write is a replacement. Backfilling an OLDER month over a
-  # newer record would erase the only evidence that the newer month's free
-  # reset was spent, and the next report would go on offering one — the
-  # expensive direction, arrived at by forgetting. Refuse, keep what is on
-  # disk, and say how to override deliberately.
-  if [[ -r "$RESET_FILE" ]]; then
-    existing="$(jq -r 'if type == "object" and (.month | type == "string") then .month else empty end' \
-      "$RESET_FILE" 2>/dev/null || true)"
-    if [[ -n "$existing" && "$month" < "$existing" ]]; then
-      die 5 "refusing to replace the recorded ${existing} watermark with an older month (${month}) — ${existing}'s reset would read as unspent again; remove ${RESET_FILE} first if that is what you mean"
-    fi
-  fi
-  mkdir -p "$STATE_DIR" 2>/dev/null || die 5 "could not create ${STATE_DIR}"
-  tmp="${RESET_FILE}.tmp.$$"
-  jq -nc --arg month "$month" --arg day "$day" --arg at "$(date -u +%FT%TZ)" \
-    '{schema_version: "1.0", month: $month, used_on: $day, recorded_at: $at}' > "$tmp" 2>/dev/null \
-    || { rm -f "$tmp"; die 5 "could not build the watermark record"; }
-  mv "$tmp" "$RESET_FILE" 2>/dev/null || { rm -f "$tmp"; die 5 "could not write ${RESET_FILE}"; }
-  echo "${SELF_NAME}: recorded a Codex reset used on ${day} (month ${month}) in ${RESET_FILE}"
-  return 0
+  [[ -n "$RECORD_ACCOUNT" ]] || die_usage "--record-codex-reset requires --account LABEL (a registered Codex account)"
+  [[ -r "$RESET_HELPER" ]] || die 5 "Codex account reset helper unavailable — watermark not written"
+  python3 "$RESET_HELPER" record --file "$RESET_FILE" --registry "$REGISTRY_FILE" \
+    --label="$RECORD_ACCOUNT" --day "$day" || exit "$?"
+  echo "${SELF_NAME}: recorded the selected Codex account's reset used on ${day}"
 }
 
 # --- modes -------------------------------------------------------------------
@@ -449,20 +415,16 @@ if [[ "$MODE" == "record" ]]; then
   record_codex_reset "$RECORD_DATE"
   exit 0
 fi
-
-read_codex_watermark
+[[ -z "$RECORD_ACCOUNT" ]] || die_usage "--account is used with --record-codex-reset only"
 
 if [[ "$MODE" == "status" ]]; then
-  jq -nc --arg month "$(et_month)" --arg src "$CODEX_RESET_SOURCE" \
-    --arg used_on "$CODEX_RESET_USED_ON" --arg file "$RESET_FILE" \
-    --argjson free "$CODEX_FREE_RESET" \
-    '{month: $month,
-      free_reset_available: ($free == 1),
-      figure_source: $src,
-      used_on: (if $used_on == "" then null else $used_on end),
-      watermark_file: $file}'
-  exit 0
+  [[ -r "$RESET_HELPER" ]] || die 5 "Codex account reset helper unavailable"
+  MONTH=$(et_month)
+  [[ -n "$MONTH" ]] || warn "current ET month unavailable — assuming free resets available"
+  python3 "$RESET_HELPER" status --file "$RESET_FILE" --registry "$REGISTRY_FILE" --month "$MONTH"
+  exit "$?"
 fi
+read_codex_watermark
 
 # --- annotate ----------------------------------------------------------------
 
@@ -542,15 +504,26 @@ def overage_for($row):
   | if $t == null then null
     elif ($row.provider? // "") == "codex" then
       (field($row; "free_resets_remaining")) as $live
+      # `field` returns numbers only, and the expiry is a date string like "Nov 6".
+      | (if (($row.free_reset_expires_et_short? // null) | type) == "string"
+            and ($row.free_reset_expires_et_short | length) > 0
+         then $row.free_reset_expires_et_short else null end) as $exp
       | (if $live != null then ($live | floor) else null end) as $live_n
       | (if $live_n != null then $live_n
-         elif $ctx.codex_free_reset then 1
+         elif ($ctx.codex_accounts[$row.label // ""] | if . == null then true else .free_reset_available end) then 1
          else 0 end) as $free
-      | (if $live_n != null then "live" else $ctx.codex_reset_source end) as $src
+      | (if $live_n != null then "live" else ($ctx.codex_accounts[$row.label // ""].figure_source // "assumed") end) as $src
       | $t
         + {label: (if $free >= 1
                    then (if $free == 1 then $t.free_label else "\($free) free resets" end)
+                        # A live balance says when the soonest credit lapses (#1862). The cell
+                        # is compact because this column sets the table width: "Nov 6 6:31 PM ET"
+                        # becomes "Nov 6 6:31PM". The full instant stays on the row and in the hint.
+                        + (if $live_n != null and $exp != null
+                           then ", exp \($exp | sub(" ET$"; "") | sub(" (?<ap>[AP]M)$"; "\(.ap)"))"
+                           else "" end)
                    else $t.paid_label end),
+           free_reset_expires_et_short: (if $live_n != null then $exp else null end),
            # The table's own wording, kept beside the rendered one. The column
            # shows the live label ("2 free resets", "on-demand $1007.50 of
            # $1000"); the hint's prose reads better with the generic term, and
@@ -673,7 +646,13 @@ def overage_for($row):
      # week untouched. The tiers order the choice; they do not describe it.
      | (if $w.tier <= 1 then
           "\($rem_text) % \($phrase) left"
-          + (if $w.has_free_reset then ", \($w.overage.free_resets_remaining) free reset\(if $w.overage.free_resets_remaining == 1 then "" else "s" end) this month" else "" end)
+          + (if $w.has_free_reset
+             then ", \($w.overage.free_resets_remaining) free reset\(if $w.overage.free_resets_remaining == 1 then "" else "s" end)"
+                  # A live balance is not a monthly allowance; only the assumed one is (#1862).
+                  + (if ($w.overage.figure_source? // "") == "live"
+                     then (if ($w.overage.free_reset_expires_et_short? // null) != null then ", the soonest expires \($w.overage.free_reset_expires_et_short)" else "" end)
+                     else " this month" end)
+             else "" end)
         elif ($w.overage.kind? // "") == "reset" then
           "\($rem_text) % \($phrase) left; the next reset costs \($w.overage.paid_label // $w.overage.base_label // $w.overage.label)"
         else
@@ -698,8 +677,8 @@ def overage_for($row):
 JQ
 
 CTX="$(jq -nc --argjson threshold "$THRESHOLD_PCT" \
-  --argjson free "$CODEX_FREE_RESET" --arg src "$CODEX_RESET_SOURCE" --arg basis "$BASIS" \
-  '{threshold_pct: $threshold, codex_free_reset: ($free == 1), codex_reset_source: $src, basis: $basis}')" \
+  --argjson accounts "$RESET_ACCOUNTS" --arg basis "$BASIS" \
+  '{threshold_pct: $threshold, codex_accounts: $accounts, basis: $basis}')" \
   || die 5 "could not build the selection context"
 
 OUT="$TMP/out.json"

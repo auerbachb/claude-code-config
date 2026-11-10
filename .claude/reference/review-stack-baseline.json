@@ -53,12 +53,12 @@
     },
     {
       "key": "graphite",
-      "role": "fallback",
-      "billed": "paid",
+      "role": "off",
+      "billed": "cancelled",
       "gates_merge": false,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Supplemental non-gating fallback — re-decided on paid-plan evidence (#1232, 2026-08-22). Window 2026-07-23..2026-08-22 (240 PRs): 10 PRs touched, 10 review objects, 10 inline findings, 2 sole-source PRs (#1104 grammar finding, #1216 markdown-formatting finding). Both sole-source findings were prose/formatting quality. Promoted from `advisory` to `fallback` so D1 no longer fires; gates_merge stays false — Graphite concludes success on ~96% of PRs regardless of code quality, so gating would manufacture approvals (#875). Never in the escalation chain; approves_via stays none. Billing shape is seat-based (committers reviewed, not review volume); the cost question is outside this entry's scope."
+      "notes": "RETIRED 2026-11-03 (#1889): Graphite support (ticket T-J15030) cancelled the Team plan effective immediately with a pro-rated $450 refund. Reason: yield — it reviewed 30 of 620 PRs (2026-08-21..2026-11-01) against 484-620 for CodeAnt, CodeRabbit and BugBot. No longer polled, triggered or measured; the row is kept so the decision stays readable. Superseded history: supplemental non-gating fallback re-decided 2026-08-22 (#1232) on 2 sole-source prose/formatting findings in a 240-PR window."
     },
     {
       "key": "vercel",

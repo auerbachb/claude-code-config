@@ -7,10 +7,58 @@ triggers:
   - pick up where we left off
   - continue the interrupted work
   - what was I doing
-argument-hint: "[--resume-refill] [--again] [--generation <id>] (refill stays paused without --resume-refill)"
+argument-hint: "[--resume-options [--target LAUNCHER] | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
 ---
 
 Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
+
+## Read-only Claude resume options
+
+For `--resume-options` alone or with `--target <launcher>`, use only a trusted installed
+`quota-resume-roster.sh` from the skills worktree or installed scripts directory.
+Never fall back to the current checkout or PATH: the helper reads account-wide
+local state and runs adjacent installed helpers.
+
+<!-- test-anchor: go-on-quota-resume-options -->
+
+```bash
+quota_resume_options() {
+  local candidate target="${1:-}"
+  [[ -n "${HOME:-}" ]] || return 1
+  [[ -z "$target" || "$target" =~ ^claude-[a-z0-9]+(-[a-z0-9]+)*$ ]] || return 1
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/quota-resume-roster.sh}" \
+    "${HOME:+$HOME/.claude/scripts/quota-resume-roster.sh}"; do
+    if [[ -x "$candidate" ]]; then
+      if [[ -n "$target" ]]; then "$candidate" list --target "$target"; else "$candidate" list; fi
+      return
+    fi
+  done
+  return 1
+}
+quota_resume_options "${QUOTA_RESUME_TARGET:-}"
+```
+
+For a targeted invocation, bind `QUOTA_RESUME_TARGET` to the one literal
+registered launcher token from the argument before calling the block. For
+an untargeted invocation bind it empty. Reject a missing target or extra flags
+before invoking any helper; do not interpret `--target` as a resume command.
+
+Show its entries for the current registered Claude account: session ID, folder,
+account, summary, and manual resume options. Show each verified path in
+`handoffs` once, including handoffs from parked PRs that share a worktree.
+When a handoff has `cwd_available: false`, show its path and say its worktree
+is unavailable. Show a `not portable` option with its handoff path and never
+infer a command from a different record. State the returned
+close-original-session precondition before any commands.
+Distinguish an unavailable park lookup or unreadable record from an empty list.
+If the helper cannot run, say the roster is unavailable. Do not guess a
+launcher or read credentials. Return here: do not classify, resume, clear a
+gate, or launch anything. Do not combine this flag with any resume flag.
+
+Beside the manual commands, show the returned `launcher_prerequisite`,
+including its installed setup command. The owner runs setup and uses the
+source line it prints; the roster never creates or sources launchers.
 
 ## Portable helper resolution (workflow lane)
 
@@ -20,8 +68,8 @@ Resolve every lifecycle helper **before entering Steps 0b–10**, not before Ste
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -63,6 +111,8 @@ Every stoppage leaves evidence. Read it, decide which class this is, and continu
 
 Evidence sources, the precedence table, the newest-wins tie-break, and the degradation contract: `.claude/reference/universal-resume.md`.
 
+**Direct Form A chip recovery.** When the recorded resume context identifies this launch's own issue and assigned worktree, recover its holder with `chip-claim-receipt.sh read WORKTREE OWNER/REPO ISSUE` and confirm it with `issue-claim.sh ISSUE --renew --holder HOLDER --repo OWNER/REPO` before resuming issue work. Resolve both helpers in the portable order below. Stop on missing or ambiguous launch context, a missing receipt, or failed renewal. A receipt alone cannot identify this launch; never search other worktrees, copy a GitHub marker, or acquire a fresh claim during recovery. The chip's original instructions also apply if resuming without `/go-on`.
+
 ### 0.1 Parse arguments
 
 - `--resume-refill` — forwarded **verbatim** to the delegated resume command. `/go-on` never writes `refill.paused` itself. Without the flag the refill pause stands on every lane and is reported, and on a lane with no planned-stop record the flag is reported as having had no effect (naming the command that clears it) — never acted on directly.
@@ -77,8 +127,8 @@ These read cross-session stop records, so they resolve from installed locations 
 resolve_installed() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name"; do
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
@@ -182,13 +232,32 @@ GATE_AT=$(jq -r '.at // ""' <<<"$GATE_JSON")
 
 `GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — ranks 2 through 5 are all barred outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Rank 3 is barred for the same reason as ranks 4 and 5 and on the same evidence — continuing a recorded phase is a resume like any other, and a token-exhaustion handoff is not evidence that no `pause` or `end` gate is armed. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through. The single exception is a validated `--generation` (0.2a), which names one specific park record rather than inferring the class from the gate.
 
-Also read this session's own gate — it decides whether new launches are blocked right now. The helper prints `active` | `inactive` and exits 0; an unresolved helper or a failed call is `unreadable`, which feeds the unclassifiable rule in 0.4, never `inactive`:
+Also read this session's own gate: `/end` uses the native UUID when available;
+older stop records and `/pause` use the original session key. Only the
+marker and resume receipt use the sanitized key. Either gate key reporting
+`active` is enough to hold launches. A failed or invalid read is
+`unreadable` unless another key proves an active gate.
+
+<!-- test-anchor: go-on-live-native-session-gate -->
 
 ```bash
 GATE_LIVE=unreadable
 if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
-  GATE_LIVE=$("$EXECUTION_PAUSE_SH" --status --session "$SESSION_ID" 2>/dev/null) || GATE_LIVE=unreadable
-  [[ "$GATE_LIVE" == active || "$GATE_LIVE" == inactive ]] || GATE_LIVE=unreadable
+  GATE_LIVE=inactive
+  NATIVE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+  LEGACY_GATE_SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+  if [[ ! "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ || "$NATIVE_SESSION_ID" == "$LEGACY_GATE_SESSION_ID" ]]; then
+    NATIVE_SESSION_ID=""
+  fi
+  for GATE_SESSION_ID in "$NATIVE_SESSION_ID" "$LEGACY_GATE_SESSION_ID"; do
+    [[ -n "$GATE_SESSION_ID" ]] || continue
+    gate_status=$("$EXECUTION_PAUSE_SH" --status --session "$GATE_SESSION_ID" 2>/dev/null) || gate_status=unreadable
+    case "$gate_status" in
+      active) GATE_LIVE=active; break ;;
+      inactive) ;;
+      *) GATE_LIVE=unreadable ;;
+    esac
+  done
 fi
 ```
 
@@ -730,22 +799,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `description` containing "rate limit" — CodeRabbit reports this status as non-blocking `state: "success"`, so do not gate on `state`:
-- `[ACTION]` — CR is rate-limited. Check BugBot (second-tier reviewer) before falling through to Greptile — BugBot auto-triggers on every push, so it may already have responded while CR was blocked:
-  ```bash
-  gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
-    --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
-  ```
-  - BugBot has posted on `$SHA` → PR is now on **BugBot** (sticky). Persist and go to the BugBot section:
-    ```bash
-    "$REVIEWER_OF_SH" "$PR_NUM" --sticky bugbot
-    ```
-  - BugBot has NOT posted AND <10 min since push → `[ACTION]` — Waiting up to 10 min for BugBot's auto-review. Poll every 60 s.
-  - BugBot has NOT posted AND ≥10 min since push → BugBot timed out. Fall through to Greptile:
-    ```bash
-    gh pr comment "$PR_NUM" --body "@greptileai"
-    "$REVIEWER_OF_SH" "$PR_NUM" --sticky greptile
-    ```
-    Go to the Greptile section below.
+- `[ACTION]` — CR is rate-limited. Do NOT hand-roll a fallback: run `escalate-review.sh "$PR_NUM"` and branch on its `STATUS=`. It now returns `no_reviewer` where it used to hand off to BugBot or Greptile (issue #1897): paid reviews need the owner's explicit approval in chat, so post NO `@cursor review` and NO `@greptileai`, keep `reviewer: cr`, report "paid review requires owner approval", and keep polling — CodeRabbit's free allowance may return, and the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes. If CodeRabbit offers to pay for a review now, decline it (`.claude/reference/cr-rate-limits.md`). A paid review the owner approves is one grant for this PR and HEAD, posted only through `paid-review-grant.sh --trigger` (issue #1898; `.claude/reference/paid-review-approval.md`).
 
 **Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
 - CR has finished reviewing. Check for findings (Step 7).
@@ -754,11 +808,11 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 - `[ACTION]` — CR review is still pending. Polling every 60 seconds (12-minute timeout). A clean CR check-run completion short-circuits the timeout wait — but the merge gate still requires an explicit `APPROVED` review on the current HEAD SHA (per `cr-merge-gate.md` Step 1); completion alone does not satisfy it.
 - Poll all 3 endpoints each cycle for new comments from `coderabbitai[bot]`.
 - Check for rate-limit signals on every poll cycle. Rate-limit signals override the timeout — escalate immediately regardless of elapsed minutes.
-- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Check BugBot (same query as rate-limit path above). If BugBot has posted a review, persist `--sticky bugbot` and go to the BugBot section. If BugBot has also timed out (≥10 min since push), fall through to Greptile.
+- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Run `escalate-review.sh "$PR_NUM"` and follow its verdict; `no_reviewer` means the no-reviewer path above, never a paid trigger (issue #1897).
 
 ### If PR is on BugBot:
 
-BugBot (`cursor[bot]`) is the second-tier free reviewer. Auto-triggers on every push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
+BugBot (`cursor[bot]`) is a PAID reviewer: a PR is here only if it was sticky on BugBot before issue #1897 or the owner approved a BugBot review in chat. Nothing re-invites it on a push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
 
 Check for BugBot reviews on the current HEAD:
 ```bash
@@ -776,11 +830,11 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
   --jq '.check_runs[] | select(.name == "Cursor Bugbot") | {status, conclusion}'
 ```
 
-- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, BugBot auto-reviews the new push; return to this section on the new SHA.
+- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, a re-review is a new paid review — only with the owner's approval in chat; otherwise wait for the no-review override. Any reviewer verdict on the new HEAD (a late CodeRabbit review included) disables that override (`.claude/reference/no-review-override.md`), so once one lands, stop waiting and report the blocker: the BugBot gate needs an owner-approved re-review.
 - BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
 - No BugBot response AND <10 min since push → `[ACTION]` — Polling for BugBot (10-min timeout from push). Poll every 60 s.
-- No BugBot response AND ≥10 min since push → BugBot timed out. Fall through to Greptile immediately (after the Greptile budget gate). Do NOT extend the wait by triggering a manual `@cursor review` retry — the 10-min window from push is the hard timeout.
-- Stay on BugBot — do not switch back to CR. Ignore late CR reviews. Only escalate to Greptile if BugBot also fails.
+- No BugBot response AND ≥10 min since push → BugBot timed out. Do NOT trigger Greptile and do NOT retry `@cursor review` — both are paid and need the owner's approval in chat (issue #1897). Report the blocker and keep polling for the no-review override.
+- Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 
 ### If PR is on Greptile:
 
@@ -802,16 +856,19 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ## Step 7: Check for unresolved findings
 
-Fetch unresolved review threads (first 100 — sufficient for most PRs; if a PR has >100 threads, paginate using `pageInfo.endCursor`):
+Fetch review threads, 100 per page. While `pageInfo.hasNextPage` is `true`, repeat with `-F after=<endCursor>` and collect every page's `nodes` into one array:
 ```bash
-gh api graphql -f query='query {
+gh api graphql -F after=null -f query='query($after: String) {
   repository(owner: "{owner}", name: "{repo}") {
     pullRequest(number: {N}) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           isResolved
           comments(first: 100) {
+            totalCount
+            pageInfo { endCursor }
             nodes {
               body
               author { login }
@@ -825,11 +882,24 @@ gh api graphql -f query='query {
 }'
 ```
 
-Count unresolved threads from reviewers:
-- Filter for threads where any comment is from one of the five review bots — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps` or `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix)
-- Only count threads where `isResolved == false`
+Count unresolved threads from reviewers by piping the collected thread nodes (one JSON array) through this filter. It selects each unresolved thread once when a returned comment is from a review bot — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps`, or the retired `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix) — **or** when the thread has more comments than were returned:
 
-Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the five review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
+<!-- test-anchor: go-on-bot-thread-count -->
+```bash
+jq -c '["coderabbitai","cursor","codeant-ai","greptile-apps","graphite-app"] as $bots
+  | [ .[]
+      | select(.isResolved == false)
+      | ((.comments.nodes // []) | length) as $got
+      | ((.comments.totalCount // $got) > $got) as $truncated
+      | select($truncated
+               or any((.comments.nodes // [])[]; (.author.login // "") as $l | $bots | index($l) != null))
+      | {id, truncated: $truncated} ]
+  | {count: length, threads: .}'
+```
+
+**Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments, starting from that thread's `comments.pageInfo.endCursor` (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks unresolved ones regardless of author (on `ci-only` / `ci+codeant-one-round` a non-severe finding deferred by a human reply's follow-up-issue link is exempt — `review-policy.md`), so this count never decides a merge.
+
+Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, plus the retired `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
 ```bash
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
@@ -842,17 +912,25 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
   2. Verify against actual code before fixing
   3. Fix ALL valid findings in a single commit
   4. Push once
-  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai`/`@graphite-app` for BugBot/Greptile/CodeAnt/Graphite):
+  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai`/`@graphite-app` for BugBot/Greptile/CodeAnt/the retired Graphite):
 
      ```bash
-     # $REVIEWER: cr | bugbot | greptile | codeant | graphite (determined from the finding's author)
+     # $REVIEWER: cr | bugbot | greptile | codeant | graphite (determined from the finding's author;
+     # graphite = the retired graphite-app[bot], kept until its App is uninstalled)
+     # $VERDICT: fixed | deferred | declined; $DEFECT: real | not — mandatory (issue #1842)
+     # $FIX: as-given | adapted | wrong | none — mandatory (issue #1843; scored only when $DEFECT is real)
+     # $REPLY must match $VERDICT: "Fixed in `<sha>`: <what changed>" for fixed,
+     # the follow-up issue link for deferred, the reason for declined
      "$REPLY_THREAD_SH" <comment_id> --reviewer "$REVIEWER" \
-       --body "Fixed in \`$SHA\`: <what changed>" --pr N
+       --body "$REPLY" --pr N \
+       --verdict "$VERDICT" --defect "$DEFECT" --fix "$FIX"
      ```
+
+     Never post "Fixed in" for a deferred or declined finding — that reply claims a resolution that did not happen. The verdict flags stamp the `review-verdict` marker the review-cost ledger reads. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Mapping: `review-stack-audit.md` §The marker.
 
      Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
-  6. Resolve all bot threads with the shared helper (paginated; by default it selects threads whose **first** comment is from one of the five review-bot authors — `coderabbitai`/`cursor`/`greptile-apps`/`graphite-app`/`codeant-ai` — and falls back to `minimizeComment` on failure). The count above also includes a human-opened thread that a bot replied in; the default filter skips it, so pass its thread ID with `--thread-ids`, which bypasses the author filter:
+  6. Resolve all bot threads with the shared helper (paginated; by default it selects threads whose **first** comment is from one of the review-bot authors — `coderabbitai`/`cursor`/`greptile-apps`/`codeant-ai`, plus the retired `graphite-app` — and falls back to `minimizeComment` on failure). The count above also includes a human-opened thread that a bot replied in; the default filter skips it, so pass its thread ID with `--thread-ids`, which bypasses the author filter:
 
      ```bash
      "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM"
@@ -894,7 +972,7 @@ Branch on the exit code:
   - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
   - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
-  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
+  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, a re-trigger is a new paid review: ask the owner, and post `@greptileai` only on their approval in chat (subject to the 3-review cap per `.claude/rules/greptile.md`).
   - **"branch is BEHIND base"**: **probe before prescribing anything** (issue #1564). A *verified clean* `BEHIND` is an auto-merge, not a rebase — canonical in `.claude/rules/cr-merge-gate.md` Step 1d and `CLAUDE.md` "PR MERGE AUTHORIZATION" (issue #754), and encoded the same way in `.claude/agents/phase-c-merger.md` (issue #1563) and `fixpr/SKILL.md` Step 6. Rebasing a clean `BEHIND` moves HEAD, discarding the bot approval that had already satisfied the rest of the gate and restarting CI — the treadmill the carve-out exists to avoid.
 
     **Re-resolve the reviewer before probing — never reuse Step 5's variable.**

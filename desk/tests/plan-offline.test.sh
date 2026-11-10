@@ -485,10 +485,21 @@ cat > "$TSTUB" <<'EOF'
 printf '%s\n' "$*" >> "$STUB_DIR/args"
 case "$1" in
   control-status)
+    if [ -f "$STUB_DIR/control-stop-after" ]; then
+      n=$(( $(cat "$STUB_DIR/control-count" 2>/dev/null || echo 0) + 1 ))
+      printf '%s\n' "$n" > "$STUB_DIR/control-count"
+      if [ "$n" -gt "$(cat "$STUB_DIR/control-stop-after")" ]; then echo '{"session":"desk-2"}'; exit 0; fi
+    fi
     if [ -f "$STUB_DIR/refused" ] && [ -f "$STUB_DIR/status-sweep" ]; then cat "$STUB_DIR/status-sweep"
     else cat "$STUB_DIR/status"; fi ;;
   tick) cat "$STUB_DIR/tick" ;;
   wake-due) cat "$STUB_DIR/due" ;;
+  interrupt)
+    if [ -f "$STUB_DIR/interrupt-rc" ]; then
+      echo 'human-queue: interrupt read failed (stub)' >&2
+      exit "$(cat "$STUB_DIR/interrupt-rc")"
+    fi
+    if [ -f "$STUB_DIR/interrupt-json" ]; then cat "$STUB_DIR/interrupt-json"; else echo '{"held":false}'; fi ;;
   sweep)
     rc=$(cat "$STUB_DIR/sweep-rc" 2>/dev/null || echo 0)
     if [ "$rc" -ne 0 ]; then
@@ -503,6 +514,7 @@ chmod +x "$TSTUB"
 OURS='{"session": "desk-1", "last_tick_at": "2026-10-08T21:00:00Z", "tick_age_seconds": 1}'
 THEIRS='{"session": "desk-2", "last_tick_at": null, "tick_age_seconds": null}'
 treset() {
+  rm -f "$STUB_DIR/interrupt-rc" "$STUB_DIR/interrupt-json" "$STUB_DIR/control-stop-after" "$STUB_DIR/control-count"
   rm -f "$STUB_DIR"/args "$STUB_DIR"/sweep-out "$STUB_DIR"/sweep-rc "$STUB_DIR"/refused "$STUB_DIR"/status-sweep
   printf '%s\n' "$OURS" > "$STUB_DIR/status"
   printf '[]\n' > "$STUB_DIR/tick"
@@ -592,6 +604,30 @@ desk-tick g1 new D-4"
   dtick "$SH" "2026-10-08 17:45" "" --once
   check_contains "[$SH] sweep refused but still the desk: an error line" "$OUT" "desk-tick g1 error sweep exit 4"
   check_absent "[$SH] sweep refused but still the desk: never replaced" "$OUT" "replaced"
+
+  # A hold-read failure cannot suppress an independent daily check.
+  for observation_failure in read malformed; do
+    treset
+    printf 'due 2026-10-08\n' > "$STUB_DIR/sweep-out"
+    printf '2\n' > "$STUB_DIR/control-stop-after"
+    if [ "$observation_failure" = read ]; then
+      printf '7\n' > "$STUB_DIR/interrupt-rc"
+      expected_error='desk-tick independent error interrupt exit 7: human-queue: interrupt read failed (stub)'
+    else
+      printf '{"held":"false"}\n' > "$STUB_DIR/interrupt-json"
+      expected_error='desk-tick independent error interrupt exit 1: interrupt get printed something other than a JSON object with boolean held'
+    fi
+    RC=0
+    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+      HUMAN_QUEUE_CLOCK="2026-10-08 17:40" HUMAN_QUEUE_POLICY="$TMP/no-policy.json" HUMAN_QUEUE_TICK_SECONDS=1 \
+      perl -e 'alarm 20; exec @ARGV' "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation independent \
+        >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+    OUT=$(cat "$TMP/out")
+    check "[$SH] eod survives $observation_failure failure of interrupt observation" "$RC:$OUT" \
+      "0:$(printf '%s\ndesk-tick independent eod\ndesk-tick independent replaced' "$expected_error")"
+    check "[$SH] independent sweep is asked once" "$(sweep_calls)" 1
+    check_absent "[$SH] failed observation never claims full recovery" "$OUT" 'recovered'
+  done
 
   # The loop asks once a day: after `due` no further sweep call that day.
   treset

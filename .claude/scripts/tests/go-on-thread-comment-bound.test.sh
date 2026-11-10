@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# /go-on Step 7 bot-thread count fails closed on a truncated thread (issue #1953).
+# catalog: tests — Runs `/go-on` Step 7's real bot-thread count filter (anchor `go-on-bot-thread-count`) on fixtures — a thread whose comments exceed the 100 returned always counts and is flagged truncated, exact bot-login membership, resolved and human-only threads excluded, null authors safe, one count per thread
+#
+# WHAT IS UNDER TEST
+#   The fenced bash under `<!-- test-anchor: go-on-bot-thread-count -->` in
+#   `.claude/skills/go-on/SKILL.md`, extracted at run time by lib/skill-bash.sh
+#   and fed thread-node arrays on stdin. Nothing here is a transcription.
+#
+# WHY (issue #1953)
+#   Step 7 reads `comments(first: 100)` per thread. A bot comment after the
+#   100th was invisible, so a long human-opened thread a bot later replied in
+#   dropped out of the count. The filter now counts any unresolved thread whose
+#   `totalCount` exceeds the returned nodes. The comment-101 case below fails
+#   against the pre-#1953 any-returned-comment predicate.
+#
+# Requires: bash 3.2+, jq. Offline.
+set -uo pipefail
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
+GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
+# shellcheck source=lib/skill-bash.sh
+source "$TEST_DIR/lib/skill-bash.sh"
+
+PASS=0
+FAIL=0
+check_eq() {
+  if [[ "$3" == "$2" ]]; then
+    PASS=$((PASS + 1)); echo "ok   — $1"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — $1 (expected '$2', got '$3')"
+  fi
+}
+
+BLOCK="$(extract_skill_bash "$GO_ON" go-on-bot-thread-count)" || exit 1
+case "$BLOCK" in
+  *totalCount*) check_eq "premise: extracted block reads totalCount" yes yes ;;
+  *) check_eq "premise: extracted block reads totalCount" yes no ;;
+esac
+
+run() { printf '%s' "$1" | bash -c "$BLOCK"; }
+
+# thread <id> <isResolved> <totalCount> <logins...> — one thread node; a login
+# of "null" writes a comment whose author is null (a deleted account).
+thread() {
+  local id="$1" resolved="$2" total="$3"; shift 3
+  local logins
+  logins=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+  jq -nc --arg id "$id" --argjson r "$resolved" --argjson t "$total" --argjson ls "$logins" \
+    '{id: $id, isResolved: $r,
+      comments: {totalCount: $t,
+                 nodes: [$ls[] | if . == "null" then {body: "x", author: null}
+                                 else {body: "x", author: {login: .}} end]}}'
+}
+
+T_BOT=$(thread T1 false 2 alice coderabbitai)
+T_HUMAN=$(thread T2 false 2 alice bob)
+T_LONG=$(thread T3 false 150 alice bob)
+T_RESOLVED=$(thread T4 true 1 cursor)
+T_NULL=$(thread T5 false 2 null alice)
+T_TWO=$(thread T6 false 2 cursor codeant-ai)
+T_LIKE=$(thread T7 false 1 coderabbitai-fan)
+T_GRAPHITE=$(thread T8 false 1 graphite-app)
+
+out=$(run "[$T_BOT]")
+check_eq "unresolved thread with a returned bot comment counts" 1 "$(jq -r .count <<<"$out")"
+check_eq "  ...and is not flagged truncated" false "$(jq -r '.threads[0].truncated' <<<"$out")"
+
+out=$(run "[$T_HUMAN]")
+check_eq "human-only thread with every comment returned does not count" 0 "$(jq -r .count <<<"$out")"
+
+out=$(run "[$T_LONG]")
+check_eq "comment-101 case: totalCount 150 > 2 returned counts (fail closed)" 1 "$(jq -r .count <<<"$out")"
+check_eq "  ...flagged truncated" true "$(jq -r '.threads[0].truncated' <<<"$out")"
+check_eq "  ...by its thread id" T3 "$(jq -r '.threads[0].id' <<<"$out")"
+
+out=$(run "[$T_RESOLVED]")
+check_eq "resolved thread with a bot comment does not count" 0 "$(jq -r .count <<<"$out")"
+
+out=$(run "[$T_NULL]" 2>&1); rc=$?
+check_eq "null author is not an error" 0 "$rc"
+check_eq "  ...and a null-author human thread does not count" 0 "$(jq -r .count <<<"$out")"
+
+out=$(run "[]")
+check_eq "empty thread list counts 0" 0 "$(jq -r .count <<<"$out")"
+
+out=$(run "[$T_TWO]")
+check_eq "two bot comments in one thread count once" 1 "$(jq -r .count <<<"$out")"
+
+out=$(run "[$T_LIKE]")
+check_eq "login merely containing a bot name does not count (exact membership)" 0 "$(jq -r .count <<<"$out")"
+
+out=$(run "[$T_GRAPHITE]")
+check_eq "retired graphite-app comment still counts (App still posts)" 1 "$(jq -r .count <<<"$out")"
+
+out=$(run "[$T_BOT,$T_HUMAN,$T_LONG,$T_RESOLVED,$T_NULL,$T_TWO]")
+check_eq "mixed set: count and ids derive from one selection" "3 T1,T3,T6" \
+  "$(jq -r '"\(.count) \([.threads[].id] | join(","))"' <<<"$out")"
+
+echo
+echo "== summary: $PASS passed, $FAIL failed =="
+[[ "$FAIL" -eq 0 ]] || exit 1

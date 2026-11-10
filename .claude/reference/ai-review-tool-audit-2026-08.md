@@ -1,5 +1,7 @@
 # AI Review Tool Audit — 2026-08 (subscription + cap reconciliation)
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Issue: [#1199](https://github.com/auerbachb/claude-code-config/issues/1199)
 Prior audits: [`ai-review-tool-audit-2026-06.md`](./ai-review-tool-audit-2026-06.md) (#376) · [`ai-review-tool-audit-2026-04.md`](./ai-review-tool-audit-2026-04.md) (#368 / #377)
 Role assignments derived from this audit: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md)
@@ -238,7 +240,7 @@ in the June window: it is a finder, never an approver. Every other tool is likew
   (`feedback_codeant_approves_before_reviewing.md`). That guard is working as intended; it is also
   the mechanism that pushes PRs down the chain.
 - **Local CLI layer:** `codeant` 0.5.1 is installed but unauthenticated on this machine (rung-5 wall,
-  `codeant-graphite-supplemental.md` §Install state), so local coverage baseline stays `cr-only`.
+  `codeant-supplemental.md` §Install state), so local coverage baseline stays `cr-only`.
   Separately the CLI carries an undocumented ~10 agent-reviews/day cap surfacing as a 403, and a
   15-file cap — both independent of the App (`local-review-cli-failure-modes.md`).
 

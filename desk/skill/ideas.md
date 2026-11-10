@@ -73,7 +73,7 @@ One block per issue (a split or a chain files each member, head first). Fill in 
 
 ```bash
 ISSUE_FILE=""
-for c in "$DESK/../.claude/scripts/issue-file.sh" "$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh" "$HOME/.claude/scripts/issue-file.sh"; do
+for c in "$DESK/../.claude/scripts/issue-file.sh" "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-file.sh}" "${HOME:+$HOME/.claude/scripts/issue-file.sh}"; do
   if [ -x "$c" ]; then ISSUE_FILE="$c"; break; fi
 done
 if [ -z "$ISSUE_FILE" ]; then

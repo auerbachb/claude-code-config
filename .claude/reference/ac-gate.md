@@ -4,9 +4,26 @@ CI gate that reads a PR body and blocks merge when unchecked acceptance-criteria
 boxes remain unresolved. The agent-side check (`cr-merge-gate.md` Step 2) is the
 primary path; this workflow is the CI backstop that catches skipped or rushed reads.
 
+## Workflow triggers
+
+The `ac-gate` workflow runs on PR open, head update, reopen, and body/title
+edits. Checking boxes or adding a valid exemption reruns the gate without an
+empty commit. The required job id remains `ac-gate`; its trusted base checkout
+and read-only permissions are unchanged.
+
+GitHub suppresses edited-triggered runs caused by a workflow's `GITHUB_TOKEN`.
+For that case, rerun the existing AC Gate run with `gh run rerun RUN_ID`
+(or `--failed` for a failed run) so it reads the current body. See the official
+[PR event contract](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
+
 ## Scope
 
-The gate scans two section types for unchecked `- [ ]` boxes:
+The gate recognizes `- [ ]`, `* [ ]`, `+ [ ]`, `N. [ ]` and `N) [ ]`
+items; ordered markers contain one to nine digits. At least one whitespace
+character separates the marker and checkbox. Both scripts share the marker
+alternation in `lib/ac-checkbox-markers.sh`; `x` and `X` are checked.
+
+The gate scans two section types:
 
 - **In-scope** (hard failures): `## Acceptance Criteria` and `## Test plan` /
   `## Test Plan` (case-insensitive heading match, following `ac-checkboxes.sh`).
@@ -15,7 +32,18 @@ The gate scans two section types for unchecked `- [ ]` boxes:
 - **Everything else**: ignored. Unrelated checklists elsewhere in the body do not
   trigger the gate.
 
-A PR with no unchecked in-scope boxes, or with an empty body, passes.
+Each recognized Acceptance Criteria/Test Plan section must contain at least
+one recognized checkbox. A prose-only or empty section fails with exit 1, even
+if another section has checked items. Unchecked items take precedence over this
+empty-section error, and both precede exemption validation. Empty bodies and
+bodies without these sections retain their current pass. The extractor still
+selects only the first matching section and preserves markers and newline bytes
+when ticking.
+
+Root backtick/tilde fenced examples (up to three leading spaces) are skipped
+by both parsers, including example headings, checkbox items and tracking lines.
+Closing fences use the same character and at least the opening length; unclosed
+fences consume the remainder. See [CommonMark 4.5](https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
 
 ## Exemption Logic (`## Post-merge verification`)
 
@@ -52,10 +80,10 @@ The gate calls `gh issue view N --json state --jq '.state'` (following the
 | Code | Meaning |
 |------|---------|
 | 0 | Gate passed |
-| 1 | Unchecked box outside Post-merge verification section |
+| 1 | Unchecked box outside exemption, or checkbox-free AC/Test Plan section |
 | 2 | Usage error |
 | 3 | PR not found |
-| 4 | `gh` / API error, or `pr-issue-ref.sh` not found |
+| 4 | `gh` / API error, or required helper/library unavailable |
 | 5 | Exemption section has no `Tracking issue: #N` line inside it |
 | 6 | Tracking issue is one this PR closes (self-referential) |
 | 7 | Tracking issue is CLOSED |
@@ -85,4 +113,5 @@ Do not rename the job.
 
 - `.claude/scripts/ac-gate.sh` — the gate script
 - `.claude/scripts/pr-issue-ref.sh` — closing-keyword extractor (`--all` mode)
+- `.claude/scripts/lib/ac-checkbox-markers.sh` — shared marker definition, also shipped by `repo-bootstrap.sh`; missing/empty library fails closed (gate 4, extractor 2)
 - `.claude/rules/cr-merge-gate.md` Step 2 — the agent-side AC verification this backstops

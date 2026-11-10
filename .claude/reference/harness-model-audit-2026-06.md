@@ -1,5 +1,7 @@
 # Harness Model-Capability Audit — June 2026
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Issue:** [#49](https://github.com/auerbachb/claude-code-config/issues/49) (audit harness components against current model capabilities)
 
 **Date:** 2026-06-25

@@ -49,7 +49,9 @@ Parse the remainder into a target id plus a repo qualifier:
 
 ```bash
 # REST = $ARGUMENTS with the four flags stripped, whitespace-collapsed.
-REPO_FLAG=""                      # empty = current repo; set only for a URL target
+# REPO_ARGS is an array, not a "--repo X" string: zsh passes that string as one word (issue #1857).
+REPO_ARGS=()                      # empty = current repo; set only for a URL target
+REPO_OWNER_NAME=""                # the URL target's owner/repo; empty for a bare number
 read -r -a TOKENS <<<"$REST"
 TARGET="${TOKENS[0]:-}"           # first non-flag token only — never pass the whole string to gh
 if (( ${#TOKENS[@]} > 1 )); then
@@ -58,7 +60,7 @@ fi
 case "$TARGET" in
   https://github.com/*/pull/*|https://github.com/*/issues/*)
     REPO_OWNER_NAME=$(printf '%s' "$TARGET" | sed -E 's#https://github.com/([^/]+/[^/]+)/(pull|issues)/.*#\1#')
-    REPO_FLAG="--repo $REPO_OWNER_NAME"
+    REPO_ARGS=(--repo "$REPO_OWNER_NAME")
     case "$TARGET" in *"/pull/"*) TYPE=pr ;; *"/issues/"*) TYPE=issue ;; esac
     N=$(printf '%s' "$TARGET" | grep -oE '[0-9]+$')
     ;;
@@ -80,7 +82,7 @@ case "$TARGET" in
 esac
 ```
 
-Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh pr diff` call appends it so a URL target always resolves against its own repo, and a bare number stays in the current repo.
+Carry `REPO_ARGS` through Step 2 — every `gh pr view` / `gh issue view` / `gh pr diff` call appends it as `${REPO_ARGS[@]+"${REPO_ARGS[@]}"}` so a URL target always resolves against its own repo, and a bare number stays in the current repo.
 
 ### Auto-detect when no target is given
 
@@ -104,14 +106,14 @@ Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh 
 **Type resolution:**
 - URL with `/pull/` → PR. URL with `/issues/` → issue.
 - Auto-detected PR (Step 1) → PR. Auto-detected issue → issue.
-- Bare number / URL whose type wasn't already fixed → try PR first, fall back to issue (`$REPO_FLAG` keeps the lookup in the right repo — empty for a bare number, the URL's owner/repo for a URL):
+- Bare number / URL whose type wasn't already fixed → try PR first, fall back to issue (`REPO_ARGS` keeps the lookup in the right repo — empty for a bare number, the URL's owner/repo for a URL):
   ```bash
-  if gh pr view "$N" $REPO_FLAG --json number >/dev/null 2>&1; then
+  if gh pr view "$N" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json number >/dev/null 2>&1; then
     TYPE=pr
-  elif gh issue view "$N" $REPO_FLAG --json number >/dev/null 2>&1; then
+  elif gh issue view "$N" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json number >/dev/null 2>&1; then
     TYPE=issue
   else
-    echo "Could not find PR or issue #$N${REPO_FLAG:+ in ${REPO_FLAG#--repo }} — it may be deleted, private, or in another repo." >&2
+    echo "Could not find PR or issue #$N${REPO_OWNER_NAME:+ in $REPO_OWNER_NAME} — it may be deleted, private, or in another repo." >&2
     exit 1
   fi
   ```
@@ -120,20 +122,20 @@ Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh 
 **For a PR**, fetch state plus a diff stat (the stat is for *your* understanding of scope — it does **not** go in the output):
 
 ```bash
-gh pr view "$N" $REPO_FLAG --json number,title,body,state,mergedAt,isDraft,additions,deletions,changedFiles,headRefName
-gh pr diff "$N" $REPO_FLAG --stat 2>/dev/null || true
+gh pr view "$N" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json number,title,body,state,mergedAt,isDraft,additions,deletions,changedFiles,headRefName
+gh pr diff "$N" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --stat 2>/dev/null || true
 ```
 
-Also scan the PR body for a linked issue (`Closes #N`, `Fixes #N`, `Resolves #N`, case-insensitive). If found, fetch that issue's title + body for additional "why" context (same `$REPO_FLAG`, since a linked issue lives in the PR's repo):
+Also scan the PR body for a linked issue (`Closes #N`, `Fixes #N`, `Resolves #N`, case-insensitive). If found, fetch that issue's title + body for additional "why" context (same `REPO_ARGS`, since a linked issue lives in the PR's repo):
 
 ```bash
-gh issue view "$LINKED_N" $REPO_FLAG --json number,title,body,state 2>/dev/null || true
+gh issue view "$LINKED_N" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json number,title,body,state 2>/dev/null || true
 ```
 
 **For an issue**, fetch state, body, recent comments (comments often carry plan/scope refinements), and the linked PRs that reference it — `closedByPullRequestsReferences` is what powers the "mention the linkage" edge case below, so it must be requested here:
 
 ```bash
-gh issue view "$N" $REPO_FLAG --json number,title,body,state,createdAt,closedByPullRequestsReferences --comments
+gh issue view "$N" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json number,title,body,state,createdAt,closedByPullRequestsReferences --comments
 ```
 
 `closedByPullRequestsReferences` is an array of `{number, title, state}` for each PR that closes/references the issue — use it (and only it) to decide whether to mention linkage. If it is empty, there are no linked PRs to mention.
@@ -223,8 +225,8 @@ Walk the chain in order and stop at the first usable source.
    resolve_script() {
      local name="$1" candidate
      for candidate in \
-       "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-       "$HOME/.claude/scripts/$name" \
+       "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+       "${HOME:+$HOME/.claude/scripts/$name}" \
        ".claude/scripts/$name"; do
        if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
      done
@@ -250,7 +252,7 @@ Walk the chain in order and stop at the first usable source.
    gh label list --limit 50
    ```
 
-   > For a **URL target in another repo**, `$REPO_FLAG` from Step 1 is authoritative — pass that owner/repo instead of `gh repo view`'s, or the lens grades the PR against the wrong repo's goals.
+   > For a **URL target in another repo**, `$REPO_OWNER_NAME` from Step 1 is authoritative — pass that owner/repo instead of `gh repo view`'s, or the lens grades the PR against the wrong repo's goals.
 
 3. **Linked issue bodies** — always, on top of whichever source above was used. Reuse the linked-issue detection Step 2 already performed (`Closes/Fixes/Resolves #N`, plus `closedByPullRequestsReferences` for an issue target); the issue body is what says whether the change *finished the job it was opened for*.
 

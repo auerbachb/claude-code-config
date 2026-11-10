@@ -71,17 +71,17 @@ EOF
 # canonical id as REF. Splits only at `,` `;` or a newline; each segment that
 # starts with `N:` or `D-<n>:` opens a pair, any other segment continues the answer
 # before it (with its separator), and a blank segment is dropped. Parameter
-# expansion, not a per-character loop, so a 4000-character reply stays fast
-# on bash 3.2. Each segment still copies the rest of the reply, so the work
-# grows with (segments x length): the reply is capped at HQ_SR_REPLY_MAX
-# first, which keeps the worst case (thousands of empty segments) under a
-# second on bash 3.2 (about 0.7 s measured; 16000 characters took 3 s). Exits 4 on malformed input; the reply is never echoed.
+# expansion, not a per-character loop. Consecutive separators are consumed
+# together: empty segments are discarded, and only the last separator can
+# join the next nonempty continuation. Other segments still copy the remaining
+# reply, so HQ_SR_REPLY_MAX bounds that work. Exits 4 on malformed input; the
+# reply is never echoed.
 HQ_SR_REPLY_MAX=8000
 HQ_SR_POS=()
 HQ_SR_REF=()
 HQ_SR_ANS=()
 hq__sr_parse() {
-  local rest="$1" seg sep="" next nl=$'\n' more n=0 pos ref k ans
+  local rest="$1" seg sep="" next nl=$'\n' more n=0 pos ref k ans separators
   local re='^[[:space:]]*([0-9]+)[[:space:]]*:(.*)$'
   local re_id='^[[:space:]]*([Dd]-[1-9][0-9]*)[[:space:]]*:(.*)$'
   HQ_SR_POS=()
@@ -91,6 +91,11 @@ hq__sr_parse() {
     hq_die_validation "set-resolve: the reply is longer than $HQ_SR_REPLY_MAX characters"
   fi
   while :; do
+    separators="${rest%%[!,;"$nl"]*}"
+    if [ -n "$separators" ]; then
+      sep="${separators:$((${#separators} - 1)):1}"
+      rest="${rest:${#separators}}"
+    fi
     seg="${rest%%[,;"$nl"]*}"
     if [ "${#seg}" -lt "${#rest}" ]; then
       next="${rest:${#seg}:1}"

@@ -5,8 +5,8 @@
 # PURPOSE
 #   A repo may declare review tiers in its `.claude/pm-config.md` (issue #1724),
 #   and merge-gate.sh enforces them. The trigger paths did not: /fixpr Step 3b,
-#   pr-preflight.sh and maybe-trigger-ai-review.sh still invited CodeRabbit,
-#   CodeAnt and Graphite on every push whatever the tier, and BugBot on every
+#   pr-preflight.sh and maybe-trigger-ai-review.sh still invited CodeRabbit
+#   and CodeAnt on every push whatever the tier, and BugBot on every
 #   intermediate HEAD of a `full` PR. The agent meant to save money spent it
 #   (issue #1749). This is the one place that turns the PR's tier into "which
 #   reviewers may be invited now", so every trigger path asks the same question
@@ -19,7 +19,8 @@
 #   review-triggers-allowed.sh <pr> --release <reviewer> [--repo <o/n>]
 #   review-triggers-allowed.sh --help | -h
 #
-#   <reviewer>    codeant | cursor | coderabbit | graphite
+#   <reviewer>    codeant | cursor | coderabbit
+#                 (graphite retired 2026-11-03, #1889: never a reviewer here)
 #   --repo        Repository (default: gh's current repo). Forwarded to
 #                 review-tier.sh, and the ledger is scoped to it.
 #   --base        The PR's base branch, forwarded to review-tier.sh.
@@ -37,7 +38,8 @@
 #   legacy       The repo has no `## Review policy` (review-tier.sh policy
 #                "absent"). Nothing else is read and `reviewers` is null:
 #                callers run their unchanged pre-#1749 code. A claim or a
-#                release in this mode is a no-op that exits 0.
+#                release in this mode is a no-op that exits 0 — except a
+#                cursor claim, denied `approval_required` (exit 1, issue #1897).
 #   tiered       A policy is present (or invalid, which resolves to `full`).
 #                The per-reviewer decisions below apply.
 #   fail_closed  The tier could not be resolved and the local checkout either
@@ -47,7 +49,6 @@
 #                back to legacy, so an unreadable policy never spends.
 #
 # RULES (mode tiered), first match wins per reviewer
-#   any gate     graphite: excluded `tier_excluded` (never on a tier-aware repo)
 #   ci-only      every reviewer: excluded `tier_excluded`
 #   ci+codeant-one-round
 #                cursor, coderabbit: excluded `tier_excluded`
@@ -55,8 +56,12 @@
 #                round exists on any commit (lib/codeant-round.jq — the merge
 #                gate's own definition); excluded `lifetime_cap` once one
 #                invitation exists; then the CI gate; then allowed.
-#   full         codeant: excluded `lifetime_cap` after one invitation; then
-#                the CI gate; then allowed.
+#   full         codeant: excluded `lifetime_cap` once the invitations reach
+#                the cap — 1, or the policy's CODEANT_LIFETIME_CAP_FULL (1-5,
+#                read by review-tier.sh from the base branch; issue #1849;
+#                reported as reviewers.codeant.cap). A missing or invalid
+#                value keeps 1. Free reviewer only: cursor's cap is fixed.
+#                Then the CI gate; then allowed.
 #                cursor: excluded `escalation_off` when the policy sets
 #                REVIEW_ESCALATION=off; excluded `lifetime_cap` after two
 #                invitations; then the CI gate; deferred `head_not_settled`
@@ -64,7 +69,11 @@
 #                `refused_head` when BugBot already refused this HEAD for a
 #                usage limit (bugbot-refused-head.sh, fail-open); deferred
 #                `daily_cap` when review-daily-cap.sh answers a validated
-#                `over` — asked LAST, `unknown` posts; then allowed.
+#                `over` — asked LAST, `unknown` posts; then excluded
+#                `approval_required` (issue #1897): BugBot is paid, and no
+#                paid review starts without the owner's approval in chat.
+#                Every gate therefore denies cursor; the guards above stay
+#                live for approved spend (issue #1898).
 #                coderabbit: only as the CodeAnt-unavailable fallback —
 #                allowed `codeant_unavailable` once CodeAnt was invited and
 #                no CodeAnt artifact appeared within the timeout (after the CI
@@ -137,7 +146,7 @@
 #      "reviewers":{"codeant":{"allowed":bool,"kind":"..","reason":"..",
 #                              "invitations":N,"ledger":N|null},
 #                   "cursor":{..,"daily_cap":{..}?},
-#                   "coderabbit":{..}, "graphite":{..}}|null,
+#                   "coderabbit":{..}}|null,
 #      "allowed":[..], "deferred":[..]}
 #   --claim adds "claim":{"reviewer":"..","claimed":bool,"count":N|null}.
 #   Diagnostics go to stderr.
@@ -195,7 +204,7 @@ n_modes=0
 [[ -n "$RELEASE" ]] && n_modes=$((n_modes + 1))
 [[ "$n_modes" -le 1 ]] || die_usage "--mode-only, --claim and --release are mutually exclusive"
 for r in "$CLAIM" "$RELEASE"; do
-  case "$r" in ""|codeant|cursor|coderabbit|graphite) ;; *) die_usage "unknown reviewer: $r (codeant | cursor | coderabbit | graphite)" ;; esac
+  case "$r" in ""|codeant|cursor|coderabbit) ;; *) die_usage "unknown reviewer: $r (codeant | cursor | coderabbit)" ;; esac
 done
 command -v jq >/dev/null 2>&1 || { warn "'jq' not found on PATH"; exit 4; }
 
@@ -260,7 +269,7 @@ if [[ "$TIER_RC" -eq 3 ]]; then
 fi
 
 MODE=""
-GATE="null"; TIER="null"; POLICY="null"; ESCALATION="on"
+GATE="null"; TIER="null"; POLICY="null"; ESCALATION="on"; CODEANT_CAP_FULL=1
 if [[ "$TIER_RC" -eq 0 ]] && jq -e 'type == "object"' <<<"$TIER_JSON" >/dev/null 2>&1; then
   P="$(jq -r '.policy // ""' <<<"$TIER_JSON")"
   G="$(jq -r '.gate // ""' <<<"$TIER_JSON")"
@@ -274,6 +283,14 @@ if [[ "$TIER_RC" -eq 0 ]] && jq -e 'type == "object"' <<<"$TIER_JSON" >/dev/null
     POLICY="$(jq -c '.policy' <<<"$TIER_JSON")"
     # Only a literal "off" turns escalation off, as bugbot-tier-excluded.sh reads it.
     [[ "$(jq -r '.escalation // "on" | tostring' <<<"$TIER_JSON")" == "off" ]] && ESCALATION="off"
+    # CodeAnt's lifetime cap on `full` (issue #1849). Re-validated here, so an
+    # older resolver (key absent) or a malformed value keeps the cap at 1.
+    CAP_RAW="$(jq -r 'if has("codeant_lifetime_cap_full") then (.codeant_lifetime_cap_full | if type == "number" then tostring else tojson end) else "" end' <<<"$TIER_JSON" 2>/dev/null)" || CAP_RAW="?"
+    if [[ "$CAP_RAW" =~ ^[1-5]$ ]]; then
+      CODEANT_CAP_FULL="$CAP_RAW"
+    elif [[ -n "$CAP_RAW" ]]; then
+      warn "review-tier.sh reported codeant_lifetime_cap_full='$CAP_RAW', not an integer 1-5 — keeping the CodeAnt lifetime cap at 1 (fail closed)"
+    fi
   fi
 fi
 
@@ -317,6 +334,12 @@ base_json() {
 
 if [[ "$MODE" == "legacy" ]]; then
   OUT="$(base_json)"
+  if [[ "$CLAIM" == "cursor" ]]; then
+    # Paid BugBot needs owner approval in chat (issue #1897) — denied in every
+    # mode, legacy included, and no ledger entry is written.
+    printf '%s\n' "$(jq -c '.claim = {reviewer: "cursor", claimed: false, count: null, reason: "approval_required"}' <<<"$OUT")"
+    exit 1
+  fi
   if [[ -n "$CLAIM" ]]; then
     OUT="$(jq -c --arg r "$CLAIM" '.claim = {reviewer: $r, claimed: true, count: null}' <<<"$OUT")"
   fi
@@ -331,9 +354,9 @@ fi
 
 if [[ "$MODE" == "fail_closed" ]]; then
   OUT="$(base_json | jq -c '
-    .reviewers = ({codeant: 0, cursor: 0, coderabbit: 0, graphite: 0}
+    .reviewers = ({codeant: 0, cursor: 0, coderabbit: 0}
       | with_entries(.value = {allowed: false, kind: "deferred", reason: "tier_unresolved", invitations: null}))
-    | .deferred = ["codeant", "cursor", "coderabbit", "graphite"]')"
+    | .deferred = ["codeant", "cursor", "coderabbit"]')"
   if [[ -n "$CLAIM" ]]; then
     printf '%s\n' "$(jq -c --arg r "$CLAIM" '.claim = {reviewer: $r, claimed: false, count: null}' <<<"$OUT")"
     exit 1
@@ -490,6 +513,7 @@ evaluate() {
     --argjson facts_ok "$( [[ "$FACTS_OK" -eq 1 ]] && echo true || echo false )" \
     --argjson head_moved "$HEAD_MOVED" --argjson pr_open "$PR_OPEN" \
     --argjson settle_s "$SETTLE_S" --argjson codeant_timeout_s "$CODEANT_TIMEOUT_S" \
+    --argjson codeant_cap_full "$CODEANT_CAP_FULL" \
     --argjson anchors "$ANCHOR_TIMES" --argjson settle_read_ok "$SETTLE_READ_OK" \
     --argjson l_codeant "$l_codeant" --argjson l_cursor "$l_cursor" --argjson l_coderabbit "$l_coderabbit" \
     --slurpfile comments "$TMPD/comments.json" --slurpfile reviews "$TMPD/reviews.json" \
@@ -500,9 +524,9 @@ evaluate() {
     | ($checks[0] // {check_runs: []}) as $checks
     | (now | floor) as $now
     | def epoch: if type == "string" and . != "" then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | (try fromdateiso8601 catch null)) else null end;
-      def bots: ["codeant-ai[bot]", "cursor[bot]", "coderabbitai[bot]", "graphite-app[bot]"];
+      def bots: ["codeant-ai[bot]", "cursor[bot]", "coderabbitai[bot]"];
       def trigger($r): {codeant: "@codeant-ai review", cursor: "@cursor review",
-                        coderabbit: "@coderabbitai full review", graphite: "@graphite-app re-review"}[$r];
+                        coderabbit: "@coderabbitai full review"}[$r];
       def invites($r): [ $comments[]?
         | select(((.user.login // "") as $l | bots | any(. == $l)) | not)
         | select(((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == trigger($r)) ];
@@ -516,7 +540,9 @@ evaluate() {
     | count("codeant"; $l_codeant) as $n_codeant
     | count("cursor"; $l_cursor) as $n_cursor
     | count("coderabbit"; $l_coderabbit) as $n_coderabbit
-    | ((invites("graphite") | length)) as $n_graphite
+    # CodeAnt is free: only `full` takes the repo-configured cap (issue #1849);
+    # ci+codeant-one-round is one round by definition.
+    | (if $gate == "full" then $codeant_cap_full else 1 end) as $codeant_cap
     | ((($comments | codeant_round_record_count) + ($reviews | codeant_round_review_count)
         + ($checks | codeant_round_check_count)) > 0) as $round
     # CodeAnt availability, for the CodeRabbit fallback on `full`.
@@ -546,8 +572,7 @@ evaluate() {
        else deny("deferred"; "ci_unknown") end) as $ci_gate
     | def decide($r):
         # Static exclusions: they hold whatever the facts say.
-        if $r == "graphite" then deny("excluded"; "tier_excluded")
-        elif $gate == "ci-only" then deny("excluded"; "tier_excluded")
+        if $gate == "ci-only" then deny("excluded"; "tier_excluded")
         elif $gate == "ci+codeant-one-round" and ($r == "cursor" or $r == "coderabbit") then deny("excluded"; "tier_excluded")
         elif $gate == "full" and $r == "cursor" and $esc == "off" then deny("excluded"; "escalation_off")
         elif ($pr_open | not) then deny("excluded"; "pr_not_open")
@@ -555,7 +580,7 @@ evaluate() {
         elif ($facts_ok | not) then deny("deferred"; "facts_unreadable")
         elif $r == "codeant" then
           if $gate == "ci+codeant-one-round" and $round then deny("excluded"; "round_completed")
-          elif $n_codeant >= 1 then deny("excluded"; "lifetime_cap")
+          elif $n_codeant >= $codeant_cap then deny("excluded"; "lifetime_cap")
           elif $ci_gate != null then $ci_gate
           else {allowed: true, kind: "allowed", reason: "tier_allows"} end
         elif $r == "cursor" then
@@ -575,10 +600,9 @@ evaluate() {
        settled: (if $gate == "full" then {settled: $settled, age_s: $age, threshold_s: $settle_s} else null end),
        codeant: {round_completed: $round, invited: ($n_codeant > 0), available: $codeant_available},
        reviewers: {
-         codeant: (decide("codeant") + {invitations: $n_codeant, ledger: ledger_raw($l_codeant)}),
+         codeant: (decide("codeant") + {invitations: $n_codeant, cap: $codeant_cap, ledger: ledger_raw($l_codeant)}),
          cursor: (decide("cursor") + {invitations: $n_cursor, ledger: ledger_raw($l_cursor)}),
-         coderabbit: (decide("coderabbit") + {invitations: $n_coderabbit, ledger: ledger_raw($l_coderabbit)}),
-         graphite: (decide("graphite") + {invitations: $n_graphite, ledger: null})
+         coderabbit: (decide("coderabbit") + {invitations: $n_coderabbit, ledger: ledger_raw($l_coderabbit)})
        }}
     | .allowed = [ .reviewers | to_entries[] | select(.value.allowed) | .key ]
     | .deferred = [ .reviewers | to_entries[] | select(.value.kind == "deferred") | .key ]'
@@ -623,6 +647,22 @@ bugbot_guards() { # <decision json> -> decision json
   fi
 }
 
+# Owner approval (issue #1897): BugBot is a paid per-review tool, and no paid
+# review starts without the owner's explicit approval in chat — which nothing
+# this script reads can carry. So the LAST step of the cursor chain turns any
+# answer still `allowed` into excluded `approval_required`. Every earlier
+# reason (tier, lifetime cap, CI, settle, refused_head, daily_cap) keeps its
+# precedence and meaning, so the guards stay live for approved spend. An
+# owner grant (issue #1898) is spent by the CALLERS at this reason, through
+# paid-review-grant.sh --trigger — this answer itself never turns allowed, so
+# every earlier reason still wins. No flag or variable bypasses it.
+paid_approval_gate() { # <decision json> -> decision json
+  local d="$1"
+  [[ "$(jq -r '.reviewers.cursor.allowed' <<<"$d")" == "true" ]] || { printf '%s' "$d"; return 0; }
+  printf '%s' "$d" | jq -c '.reviewers.cursor += {allowed: false, kind: "excluded", reason: "approval_required"}
+    | .allowed -= ["cursor"]'
+}
+
 decide_all() {
   local d
   d="$(evaluate)" || return 1
@@ -630,7 +670,7 @@ decide_all() {
   # A claim for another reviewer never reads cursor's answer, so it spends
   # neither the refusal lookup nor the daily-cap tally.
   if [[ -n "$CLAIM" && "$CLAIM" != "cursor" ]]; then printf '%s' "$d"; return 0; fi
-  bugbot_guards "$d"
+  paid_approval_gate "$(bugbot_guards "$d")"
 }
 
 if [[ -z "$CLAIM" ]]; then

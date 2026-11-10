@@ -18,8 +18,18 @@ rules are (`.claude/rules/skill-symlinks.md`). Sections are read with
      under `owner` whose default branch carries .github/workflows/<discovery_marker>.
      Add a repo by hand when we review it without running the harness there —
      it still draws down the account caps, and discovery cannot see it.
-     One Markdown bullet per repo; the first token is owner/name. Every
-     bullet outside a comment is read as a repo, so keep notes in comments. -->
+     One Markdown bullet per repo; its first token, with backticks removed,
+     is owner/name. A token empty after backtick removal is ignored (including
+     whitespace-only and backtick-only tokens). Every other token outside a
+     comment must name a repo; invalid tokens reject the entire list. Keep
+     notes in comments.
+
+     This file is tracked, and may be public. Repos whose names you would rather
+     not publish go in a PRIVATE OVERLAY instead: an untracked file at
+     ~/.claude/account-config.local.md (or the path in CLAUDE_ACCOUNT_CONFIG_LOCAL)
+     with its own `## Review repos` section of bullets. review-repos.sh appends
+     them to this list, de-duplicated, tracked entries first. Only bullets are
+     read from the overlay; owner and discovery_marker stay here (#1860). -->
 
 ```ini
 owner = auerbachb
@@ -46,4 +56,16 @@ discovery_marker = ac-gate.yml
 REVIEW_DAILY_CAP_USD_BUGBOT = 10
 REVIEW_DAILY_CAP_USD_CODERABBIT = 10
 REVIEW_DAILY_CAP_USD_GREPTILE = 10
+```
+
+## Quota reserve
+
+<!-- Read by quota-reserve.sh (#1863). When a Claude account's provider-reported weekly
+     usage reaches threshold_pct, autonomous work on that account pauses and the owner's
+     own turns keep working. The environment variables QUOTA_RESERVE_THRESHOLD_PCT and
+     QUOTA_RESERVE_ENABLED win over these. Set enabled = false to turn the guard off. -->
+
+```ini
+threshold_pct = 95
+enabled = true
 ```

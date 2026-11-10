@@ -42,7 +42,8 @@ MONEY IS DECIMAL
 WHAT A FINDING WAS WORTH (issue #1810, increment 3/5)
   Every review thread a tool opens is one finding, and the replies to it carry
   its verdict: `fixed`, `deferred`, `declined`, or `unanswered`. Only replies
-  after the first comment, from a GitHub `User` account, count. An explicit
+  after the first comment, or attributed PR-level fallbacks, from a GitHub
+  `User` account, count. An explicit
   `<!-- review-verdict: ... -->` marker beats wording, and only a marker can
   say a finding was a real defect. The per-tool value fields (precision, cost
   per real defect, median response time) are derived here; the rules are
@@ -67,7 +68,7 @@ from fractions import Fraction
 SCHEMA = "review-stack-rates/v1"
 FENCE_TAG = "review-stack-rates"
 SPEND_SOURCES = ("receipt", "estimate", "flat", "none")
-TOOL_KEYS = ("coderabbit", "codeant", "bugbot", "greptile", "graphite", "vercel")
+TOOL_KEYS = ("coderabbit", "codeant", "bugbot", "greptile", "vercel")
 CODERABBIT_LOGIN = "coderabbitai[bot]"
 BUGBOT_CHECK_NAME = "Cursor Bugbot"
 # No price, cap, or credit count comes near a billion. Anything at or above it
@@ -91,7 +92,6 @@ TOOL_RULES = {
     "bugbot":     {"method": "per_run", "unit": "review"},
     "greptile":   {"method": "per_trigger", "unit": "credit"},
     "codeant":    {"method": "flat", "unit": "month"},
-    "graphite":   {"method": "flat", "unit": "month"},
     "vercel":     {"method": "flat", "unit": "month"},
 }
 
@@ -602,6 +602,12 @@ def to_decimal(value):
 # reply without one is fixed, not a real defect.
 
 VERDICTS = ("fixed", "deferred", "declined")
+# Fix quality of the reviewer's suggestion (issue #1843), set at reply time with
+# reply-thread.sh --fix. The tally field for each is FIX_FIELDS[value].
+FIX_VALUES = ("as-given", "adapted", "wrong", "none")
+FIX_FIELDS = {"as-given": "fix_as_given", "adapted": "fix_adapted",
+              "wrong": "fix_wrong", "none": "fix_none"}
+FIX_COUNT_FIELDS = ("fix_as_given", "fix_adapted", "fix_wrong", "fix_none", "fix_unknown")
 DEFERRED_REFS_MODULE = "deferred-refs.jq"
 
 _MARKER_RE = re.compile(r"<!--[ \t]*review-verdict[ \t]*:([^\n]*?)-->", re.I)
@@ -633,7 +639,6 @@ TRIGGERS = {
     "coderabbit": re.compile(r"(?<![\w@])@coderabbitai[ \t]+(?:full[ \t]+)?review\b", re.I),
     "bugbot":     re.compile(r"(?<![\w@])@cursor[ \t]+review\b", re.I),
     "codeant":    re.compile(r"(?<![\w@])@codeant-ai[ \t]+review\b", re.I),
-    "graphite":   re.compile(r"(?<![\w@])@graphite-app[ \t]+re-review\b", re.I),
     "greptile":   _GREPTILE_RE,
 }
 
@@ -654,6 +659,56 @@ def is_user_reply(comment):
     """A reply that may decide a verdict: a `User` account, never a bot login."""
     login = _text(comment.get("user"))
     return comment.get("user_type") == "User" and not login.lower().endswith("[bot]")
+
+
+def review_comment_id(value):
+    """Canonical positive REST/GraphQL BigInt identity; never an opaque node ID."""
+    if type(value) is int:
+        value = str(value)
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,18}", value):
+        return None
+    return value if int(value) <= 9223372036854775807 else None
+
+
+def fallback_replies(pr):
+    """Index attributed conversation replies by a unique finding ID in this PR."""
+    counts = {}
+    for thread in _as_list(pr.get("threads")):
+        comments = _as_list(thread.get("comments")) if isinstance(thread, dict) else []
+        identity = review_comment_id(comments[0].get("id")) if comments and isinstance(comments[0], dict) else None
+        if identity:
+            counts[identity] = counts.get(identity, 0) + 1
+    result = {}
+    for comment in _as_list(pr.get("issue_comments")):
+        if not isinstance(comment, dict) or not is_user_reply(comment):
+            continue
+        first = next((line.strip() for line in _text(comment.get("body")).splitlines() if line.strip()), "")
+        match = re.fullmatch(r"<!--[ \t]*review-comment-id[ \t]*:[ \t]*([1-9][0-9]{0,18})[ \t]*-->", first)
+        identity = review_comment_id(match[1]) if match else None
+        if identity and counts.get(identity) == 1:
+            result.setdefault(identity, []).append(comment)
+    return result
+
+
+def merge_thread_replies(inline, fallback):
+    """Keep legacy inline order; stably insert fallbacks by available timestamps.
+
+    GitHub supplies timestamps. Historical undated fixtures keep their original
+    order; an undated fallback is appended, rather than reordering inline data.
+    """
+    result = list(inline)
+    latest = datetime.max.replace(tzinfo=timezone.utc)
+    for comment in sorted(fallback, key=lambda c: _parse_ts(c.get("created_at")) or latest):
+        at = _parse_ts(comment.get("created_at"))
+        position = len(result)
+        if at is not None:
+            for i, existing in enumerate(result):
+                other = _parse_ts(existing.get("created_at"))
+                if other is not None and other > at:
+                    position = i
+                    break
+        result.insert(position, comment)
+    return result
 
 
 def parse_bodies(items, lib_dir=None):
@@ -693,13 +748,15 @@ def parse_bodies(items, lib_dir=None):
 def parse_marker(inner):
     """The fields of one marker's inside text, or None when its verdict is unknown.
 
-    Returns {"verdict", "defect": "real"|"not"|None, "agent": str|None}. Only the
-    verdict is required; an unknown `defect` value reads as not-real, and an
-    agent name outside a conservative token shape reads as unnamed."""
+    Returns {"verdict", "defect": "real"|"not"|None, "agent": str|None,
+    "fix": "as-given"|"adapted"|"wrong"|"none"|None}. Only the verdict is
+    required; an unknown `defect` value reads as not-real, an agent name outside
+    a conservative token shape reads as unnamed, and an absent or unknown `fix`
+    value reads as unknown (None) — never as `none`."""
     fields = inner.split()
     if not fields or fields[0].lower() not in VERDICTS:
         return None
-    marker = {"verdict": fields[0].lower(), "defect": None, "agent": None}
+    marker = {"verdict": fields[0].lower(), "defect": None, "agent": None, "fix": None}
     for field in fields[1:]:
         key, _, value = field.partition("=")
         key = key.lower()
@@ -707,6 +764,8 @@ def parse_marker(inner):
             marker["defect"] = value.lower() if value.lower() in ("real", "not") else None
         elif key == "agent":
             marker["agent"] = value if _AGENT_RE.fullmatch(value) else None
+        elif key == "fix":
+            marker["fix"] = value.lower() if value.lower() in FIX_VALUES else None
     return marker
 
 
@@ -740,22 +799,28 @@ def classify_reply(stripped, refs):
 
 
 def classify_thread(replies):
-    """{"verdict", "real_defect", "agent"} for one thread from its classified
-    replies, oldest first: [(wording, marker), ...]."""
+    """{"verdict", "real_defect", "agent", "fix"} for one thread from its
+    classified replies, oldest first: [(wording, marker), ...]. Every field
+    comes from the deciding (last) marker — `fix` is never borrowed from an
+    older one."""
     markers = [marker for _, marker in replies if marker]
     if markers:
         last = markers[-1]
         return {"verdict": last["verdict"], "real_defect": last["defect"] == "real",
-                "agent": last["agent"]}
+                "agent": last["agent"], "fix": last.get("fix")}
     worded = [wording for wording, _ in replies if wording]
     if worded:
-        return {"verdict": worded[-1], "real_defect": False, "agent": None}
-    return {"verdict": "unanswered", "real_defect": False, "agent": None}
+        return {"verdict": worded[-1], "real_defect": False, "agent": None, "fix": None}
+    return {"verdict": "unanswered", "real_defect": False, "agent": None, "fix": None}
 
 
 def _empty_tally():
-    return {"findings": 0, "valid": 0, "real_defects": 0, "declined": 0,
-            "unanswered": 0, "samples": []}
+    # `rounds`: one integer per PR the tool reviewed — the distinct HEADs its
+    # review objects and inline comments were posted against (issue #1844).
+    tally = {"findings": 0, "valid": 0, "real_defects": 0, "declined": 0,
+             "unanswered": 0, "samples": [], "rounds": []}
+    tally.update((field, 0) for field in FIX_COUNT_FIELDS)
+    return tally
 
 
 def _minutes(delta):
@@ -771,13 +836,19 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
     ([{"comments": [{"user", "user_type", "body", "created_at"}],
     "comments_truncated"}]) and `created_at`. Returns (tallies, notes), where
     tallies[key] = {"findings", "valid", "real_defects", "declined",
-    "unanswered", "samples": [Fraction minutes]} for every key in tool_keys."""
+    "unanswered", "fix_as_given", "fix_adapted", "fix_wrong", "fix_none",
+    "fix_unknown", "samples": [Fraction minutes], "rounds": [int]} for every
+    key in tool_keys. `rounds` holds, per PR the tool posted a review object or
+    inline comment on, the number of distinct commits those were posted against
+    (a review's `commit_id`; an inline comment's `original_commit_id`, else its
+    `commit_id`) — one round per HEAD it looked at (issue #1844)."""
     tallies = {key: _empty_tally() for key in tool_keys}
     items = []
     threads = []      # (tool key, [item index of each qualifying reply])
     pr_triggers = []  # per PR: [(item index, created_at)]
     truncated = 0
     for pr in prs:
+        fallbacks = fallback_replies(pr)
         for thread in _as_list(pr.get("threads")):
             if not isinstance(thread, dict):
                 continue
@@ -793,10 +864,11 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
             if thread.get("comments_truncated") is True:
                 truncated += 1
             indexes = []
-            for comment in comments[1:]:
-                if isinstance(comment, dict) and is_user_reply(comment):
-                    indexes.append(len(items))
-                    items.append({"repo": repo, "body": _text(comment.get("body"))})
+            inline = [c for c in comments[1:] if isinstance(c, dict) and is_user_reply(c)]
+            identity = review_comment_id(comments[0].get("id"))
+            for comment in merge_thread_replies(inline, fallbacks.get(identity, [])):
+                indexes.append(len(items))
+                items.append({"repo": repo, "body": _text(comment.get("body"))})
             threads.append((key, indexes))
         candidates = []
         for comment in _as_list(pr.get("issue_comments")):
@@ -825,6 +897,10 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
         tally["findings"] += 1
         if verdict["verdict"] in ("fixed", "deferred"):
             tally["valid"] += 1
+            # Fix quality is scored only for a real defect that was not
+            # declined (issue #1843); an absent or unknown value is unknown.
+            if verdict["real_defect"]:
+                tally[FIX_FIELDS.get(verdict["fix"], "fix_unknown")] += 1
         elif verdict["verdict"] == "declined":
             tally["declined"] += 1
         else:
@@ -873,7 +949,31 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
                 continue
             tallies[key]["samples"].append(_minutes(first - start))
 
+    uncommitted = 0
+    for pr in prs:
+        heads = {}      # tool key -> distinct commit SHAs it reviewed on this PR
+        posted = set()  # tools with a review object or inline comment here
+        for field, sha_keys in (("reviews", ("commit_id",)),
+                                ("pr_comments", ("original_commit_id", "commit_id"))):
+            for event in _as_list(pr.get(field)):
+                key = key_logins.get(_text(event.get("user"))) if isinstance(event, dict) else None
+                if key is None:
+                    continue
+                posted.add(key)
+                sha = next((_text(event.get(k)).strip() for k in sha_keys
+                            if _text(event.get(k)).strip()), "")
+                if sha:
+                    heads.setdefault(key, set()).add(sha)
+        for key in sorted(posted):
+            if heads.get(key):
+                tallies[key]["rounds"].append(len(heads[key]))
+            else:
+                uncommitted += 1
+
     notes = []
+    if uncommitted:
+        notes.append("%d (tool, PR) pair(s) had review objects or inline comments naming "
+                     "no commit; rounds_per_pr leaves them out." % uncommitted)
     if ignored:
         notes.append("%d review-verdict marker(s) named no known verdict (fixed, deferred, "
                      "declined) and were ignored; those replies were read by their wording."
@@ -893,9 +993,10 @@ def pool_tallies(tallies):
     """One tally from several repos' tallies for the same tool."""
     pooled = _empty_tally()
     for tally in tallies:
-        for field in ("findings", "valid", "real_defects", "declined", "unanswered"):
+        for field in ("findings", "valid", "real_defects", "declined", "unanswered") + FIX_COUNT_FIELDS:
             pooled[field] += tally[field]
         pooled["samples"].extend(tally["samples"])
+        pooled["rounds"].extend(tally.get("rounds") or [])
     return pooled
 
 
@@ -918,6 +1019,8 @@ def value_fields(tally, spend):
     valid = tally["valid"]
     declined = tally["declined"]
     samples = tally["samples"]
+    scored = tally["fix_as_given"] + tally["fix_adapted"] + tally["fix_wrong"]
+    rounds = tally.get("rounds") or []
     return {
         "findings": tally["findings"],
         "valid": valid,
@@ -930,4 +1033,126 @@ def value_fields(tally, spend):
         "cost_per_real_defect_usd": to_number(cost_per_real_defect(spend, tally["real_defects"])),
         "median_response_min": (_round_half_up(Fraction(statistics.median(samples)), 1)
                                 if samples else None),
+        "fix_as_given": tally["fix_as_given"],
+        "fix_adapted": tally["fix_adapted"],
+        "fix_wrong": tally["fix_wrong"],
+        "fix_none": tally["fix_none"],
+        "fix_unknown": tally["fix_unknown"],
+        # `none` and `unknown` are not in the denominator: no suggestion, or no
+        # recorded judgement, is not a verdict on a suggestion's quality.
+        "fix_quality": (_round_half_up(Fraction(tally["fix_as_given"], scored), 3)
+                        if scored else None),
+        # Velocity (issue #1844): rounds are a property of the PR's fix loop, so
+        # these say how many HEADs the tool looked at, never how many it caused.
+        "rounds_per_pr": (_round_half_up(Fraction(statistics.median(rounds)), 1)
+                          if rounds else None),
+        "prs_with_3plus_rounds": sum(1 for n in rounds if n >= 3),
     }
+
+
+# --- push-to-gate velocity (issue #1844) -------------------------------------
+#
+# Per merged PR: minutes from the committer date of its merged HEAD to the
+# earliest gate-satisfying signal on that HEAD. A FIRST CUT of the merge gate's
+# reviewer paths (.claude/reference/merge-gate-reviewer-paths.md): an `APPROVED`
+# review from a gating bot whose `commit_id` is HEAD, or a completed
+# `Cursor Bugbot` check-run from the Cursor app on HEAD with conclusion
+# `success`. Greptile's severity path, a later same-SHA CHANGES_REQUESTED
+# retraction, hollow-approval checks, and relaxed tiers are not modelled; a PR
+# whose only gate was one of them (or an admin merge) has no signal here and is
+# counted in `no_gate_signal`, never timed.
+
+GATING_APPROVERS = ("coderabbitai[bot]", "codeant-ai[bot]")
+
+
+def _gate_signals(pr, head):
+    """Timestamps of every first-cut gate-satisfying signal on `head`."""
+    times = []
+    for review in _as_list(pr.get("reviews")):
+        if (isinstance(review, dict) and _text(review.get("user")) in GATING_APPROVERS
+                and _text(review.get("state")).upper() == "APPROVED"
+                and _text(review.get("commit_id")).strip() == head):
+            times.append(_parse_ts(review.get("submitted_at")))
+    # bugbot_runs re-applies the name and publisher checks, so a fixture's runs
+    # (which skip the live fetch's filter) are held to the same identity rule.
+    for run in bugbot_runs(pr.get("check_runs")):
+        if (_text(run.get("head_sha")).strip() == head
+                and _text(run.get("status")).lower() == "completed"
+                and _text(run.get("conclusion")).lower() == "success"):
+            times.append(_parse_ts(run.get("completed_at") or run.get("started_at")))
+    return [t for t in times if t is not None]
+
+
+def measure_velocity(prs):
+    """Push-to-gate samples for one repo's PRs.
+
+    Each PR may carry `head_sha` (the merged HEAD) and `commits`
+    ([{"sha", "committed_at"}]). Returns {"samples": [Fraction minutes],
+    "prs": [{"number", "push_to_gate_min": Fraction|None, "excluded":
+    None|"no_gate_signal"|"no_head_date"}], "no_gate_signal": int,
+    "no_head_date": int}. A HEAD missing from `commits`, or one with no
+    parseable committer date, cannot be timed and counts in `no_head_date`; a
+    signal dated before the committer date is not a response to that push and
+    is discarded."""
+    out = {"samples": [], "prs": [], "no_gate_signal": 0, "no_head_date": 0}
+    for pr in prs or []:
+        if not isinstance(pr, dict):
+            continue
+        head = _text(pr.get("head_sha")).strip()
+        pushed = None
+        if head:
+            for commit in _as_list(pr.get("commits")):
+                if isinstance(commit, dict) and _text(commit.get("sha")).strip() == head:
+                    pushed = _parse_ts(commit.get("committed_at"))
+                    break
+        record = {"number": pr.get("number"), "push_to_gate_min": None, "excluded": None}
+        if pushed is None:
+            out["no_head_date"] += 1
+            record["excluded"] = "no_head_date"
+        else:
+            signals = [t for t in _gate_signals(pr, head) if t >= pushed]
+            if signals:
+                minutes = _minutes(min(signals) - pushed)
+                out["samples"].append(minutes)
+                record["push_to_gate_min"] = minutes
+            else:
+                out["no_gate_signal"] += 1
+                record["excluded"] = "no_gate_signal"
+        out["prs"].append(record)
+    return out
+
+
+def pool_velocity(parts):
+    """One velocity tally from several repos' tallies; each PR lives in one repo,
+    so concatenating samples pools every PR exactly once."""
+    pooled = {"samples": [], "prs": [], "no_gate_signal": 0, "no_head_date": 0}
+    for part in parts:
+        pooled["samples"].extend(part["samples"])
+        pooled["no_gate_signal"] += part["no_gate_signal"]
+        pooled["no_head_date"] += part["no_head_date"]
+    return pooled
+
+
+def p90(samples):
+    """Nearest-rank 90th percentile: the ceil(0.9 n)-th smallest sample."""
+    ordered = sorted(samples)
+    return ordered[-(-9 * len(ordered) // 10) - 1]
+
+
+def velocity_fields(tally, with_prs=False):
+    """The serialized `velocity` block; minutes round half-up to 1 decimal."""
+    samples = tally["samples"]
+    fields = {
+        "push_to_gate_min_median": (_round_half_up(Fraction(statistics.median(samples)), 1)
+                                    if samples else None),
+        "push_to_gate_min_p90": _round_half_up(Fraction(p90(samples)), 1) if samples else None,
+        "prs_timed": len(samples),
+        "no_gate_signal": tally["no_gate_signal"],
+        "no_head_date": tally["no_head_date"],
+    }
+    if with_prs:
+        fields["prs"] = [{"number": r["number"],
+                          "push_to_gate_min": (None if r["push_to_gate_min"] is None
+                                               else _round_half_up(r["push_to_gate_min"], 1)),
+                          "excluded": r["excluded"]} for r in tally["prs"]]
+    return fields

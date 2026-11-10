@@ -1,5 +1,7 @@
 # fixpr hotspot — diagnosis and extract-not-split decision
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Reference for Issue #788 (`.claude/skills/fixpr/SKILL.md` churn hotspot). Not auto-loaded.
 
 ## The problem being read

@@ -1,6 +1,6 @@
 ---
 name: pr-monitor-and-manage
-description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a status table on the first tick, after a resume, at pause/stop, and whenever a decision is needed or you ask (one-line heartbeat otherwise), and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
+description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, records status each tick, surfaces owner-action blockers, renders a status table on request, and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
 triggers:
   - pr-monitor-and-manage
   - pmm
@@ -10,6 +10,8 @@ triggers:
   - manage my open PRs
 argument-hint: "[--author <login>] [--repo <owner/repo>] [--cadence Nm] [--max-parallel N] [--idle-pause-after N] [--auto-wake] [--auto-wake-cadence Nm] [--confirm-merges] (defaults: author=current gh user, repo=current, cadence=5m, max-parallel=3, idle-pause-after=3, auto-wake=off, auto-wake-cadence=60m, confirm-merges=off)"
 ---
+
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
 
 Thread-level **PR fleet manager**. This skill turns the current thread into a dedicated monitor that watches every open PR you own and drives each one to merge-ready (or a named hard block) by dispatching the per-PR decision tree on a recurring cadence. Fix work (`has-recoverable-blockers` / verdict `fixpr`) is handled by **parallel `phase-a-fixer` subagents** (default cap 3, `--max-parallel N`). Merge-ready PRs get **sequential `/wrap`** dispatch only.
 
@@ -29,8 +31,8 @@ Parent/subagent scope, prohibited actions, refusal template, and common misreads
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -304,7 +306,7 @@ UNRESOLVED=$(gh api graphql ... --jq '[...select(.isResolved==false)]|length' 2>
 
 ### Reviewer engagement scan (per PR — display only, issue #1582)
 
-In the same per-PR pass, call `pr-state.sh` **once** and derive which of the four AI reviewers has actually engaged **on the current HEAD SHA**: CodeRabbit (`coderabbitai[bot]`), CodeAnt (`codeant-ai[bot]`), BugBot (`cursor[bot]`), Graphite (`graphite-app[bot]`). A reviewer counts as engaged when it produced a review object on HEAD, a check-run matching its name, or a **finding-bearing** comment on HEAD — pure acknowledgments ("Actions performed", "Full review triggered", "actionable comments posted: 0", "no actionable comments were generated", rate-limit notices) never count.
+In the same per-PR pass, call `pr-state.sh` **once** and derive which of the three AI reviewers has actually engaged **on the current HEAD SHA**: CodeRabbit (`coderabbitai[bot]`), CodeAnt (`codeant-ai[bot]`), BugBot (`cursor[bot]`). A reviewer counts as engaged when it produced a review object on HEAD, a check-run matching its name, or a **finding-bearing** comment on HEAD — pure acknowledgments ("Actions performed", "Full review triggered", "actionable comments posted: 0", "no actionable comments were generated", rate-limit notices) never count.
 
 ```bash
 ENGAGEMENT_JSON='{}'   # plain init every tick — never a ${VAR:-{}} default (see Step 3 note)
@@ -382,37 +384,41 @@ Carry `WATCH_LAUNCH_OK`, `WATCH_FINISH_OK`, `WATCH_STAND_DOWN`, `WATCH_PARK_SEEN
 
 ---
 
-## Step 4: Heartbeat + status table (EVERY tick, BEFORE any action)
+## Step 4: Persist status; notify only when needed
 
-A heartbeat prints **every tick**, **before** Step 5. Compute two digests (Step 6 reuses and persists them):
+Compute both digests for Step 6 regardless of output:
 
-- `FLEET_TUPLE_SORTED` — `(number, head_sha, merge_state, review_decision, ci_failing_count, unresolved_threads)` per PR, sorted by PR number. Drives backoff and quiet-tick detection.
-- `ROW_TUPLE_SORTED` — everything the table *displays* per PR, **including that PR's four engagement cells**, so a reviewer appearing or dropping off HEAD is itself a display change. Catches display-only changes the state tuple misses.
+- `FLEET_TUPLE_SORTED`: `(number, head_sha, merge_state, review_decision, ci_failing_count, unresolved_threads)` sorted by PR number.
+- `ROW_TUPLE_SORTED`: every displayed field, including reviewer engagement cells.
 
 ```bash
 DIGEST=$(printf '%s' "$FLEET_TUPLE_SORTED" | sha256sum | awk '{print $1}')
 ROW_DIGEST=$(printf '%s' "$ROW_TUPLE_SORTED" | sha256sum | awk '{print $1}')
 PREV=$("$SESSION_STATE_SH" --get '.pmm_digest' 2>/dev/null || echo null)
 ROW_PREV=$("$SESSION_STATE_SH" --get '.pmm_row_digest' 2>/dev/null || echo null)
-TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 ```
 
-Print the **full table** when any of: (a) first tick / post-resume (digests are null), or the user asks for it; (b) a digest change — `DIGEST != PREV` **or** `ROW_DIGEST != ROW_PREV` — **that is also** decision-relevant: a new hard block, a gate failure, a termination, or a PR entering/leaving the fleet. Both halves must hold; a digest change on its own does not fire (b). A purely informational delta (a new bot comment, a CI count, a display-only change) takes the quiet line instead (issue #851); the digests still drive backoff and Step 6 persistence either way. (c) any PR's verdict is actionable (`rebase`, `fixpr`, `wrap`, `batch(#A)`); (d) Step 2.5 processed subagent outcomes or `HARD_BLOCK[]` gained an entry; (e) Step 3.6 held or batched anything.
+Persist the current watch posture before dispatch or withholding work, including `clear` ticks so an old hold cannot survive recovery. A write failure stops the tick before any dispatch; it never publishes success. This is reporting state in PMM's own namespace, not a write to the shared day-mode park.
 
-**Quiet tick** (none of a–e): one line: `[$TS] PMM tick — N PR(s) (author:x) — no change (#N1 #N2; hard-blocked: #N3 human-CR; queued (cap): #N4)`.
+<!-- test-anchor: pmm-persist-watch-posture -->
+```bash
+WATCH_POSTURE=$(jq -cn --arg status "$HORIZON_STATUS" --arg reason "$WATCH_IDLE_REASON" \
+  --argjson launch "$WATCH_LAUNCH_OK" --argjson finish "$WATCH_FINISH_OK" \
+  --arg at "$(date -u +%FT%TZ)" \
+  '{status:$status, reason:$reason, launch_allowed:$launch, finish_allowed:$finish, observed_at:$at}') || exit 1
+"$SESSION_STATE_SH" --set ".pmm.watch_posture=$WATCH_POSTURE" || {
+  echo "ERROR: watch posture not saved; stopping tick before dispatch" >&2
+  exit 1
+}
+```
 
-**Horizon annotation (issue #1444).** When Step 3.7 returned a non-empty `WATCH_IDLE_REASON`, append it to whichever line this tick prints — `… — paused (horizon approaching): 180k tokens left` on the quiet line, or as the line under the table — and mark every PR the verdict held as `held (horizon <status>)` in the Verdict column beside its real verdict. This is the always-emit runway line; it replaces no other output and adds none of its own. A `critical` tick prints the stand-down line from Step 7 instead.
+First/resume ticks, digest changes, dispatch, held work, and unchanged ticks do not require a message. Record horizon holds and `WATCH_IDLE_REASON`; notify only when owner action, a safety event, or stopped recovery requires it. No routine heartbeat. On explicit status/verbose request, render the existing table (Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent) and engagement matrix from recorded state. Column definitions remain in `references/pmm-classify.md`. Decisions need only the relevant PR/evidence, not a mandatory full table.
 
-Table columns: Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent. Full column definitions and merge-sequence annotation: `references/pmm-classify.md`.
+**The round-progress question is answered by `/board`, not by reshaping this table.** When the user asks "where is everything", "how far along",  run the complete `.claude/skills/board/SKILL.md` workflow inline and print its canonical table — the same "run the full SKILL.md, no shortcuts" idiom `/pm` Steps 1C, 1D and 2D.4 use, and the same shape every other surface renders, unaltered. If `/board` does not resolve, print `DEGRADED: /board not available — rendering the "Running now" table inline per time-estimates.md §"Running now Table"` and render it from that spec directly; unlike `/pm`, PMM resolves no table-freshness binding of its own, so state that the render went unrecorded and expect an armed floor to re-fire. PMM records no launch timestamp of its own and **never re-derives a Start**: `/board` Step 2 reads it back from `.prs["<pr>"].pipeline_started_at`, then `.repos["<key>"].pipelines["<issue>"].started_at`, falling back to `gh pr view --json createdAt` only for pipelines that predate the record. A PMM thread that did not dispatch the round gets `/board`'s own partial-board honesty — no queued rows, an approximate delivered count, both stated — which is correct here rather than something to paper over: PMM discovers PRs by author, so it genuinely does not know a round's membership.
 
-**These columns diverge from the canonical "Running now" table deliberately, and the divergence is documented** — `.claude/reference/time-estimates.md` §"Documented divergence: `/pr-monitor-and-manage`" (issue #1527). PMM's table answers *what does each PR need next*; the canonical table answers *when will this round land*. Six of these eight columns are read back by Step 5's dispatch, so they are load-bearing rather than presentational.
+**Reviewer engagement block (issue #1582).** Directly under the status table — and only on the ticks that print it — render the Step 3 engagement scan as a second, narrow matrix (`PR | CodeRabbit | CodeAnt | BugBot`, ✅/❌/`?`), followed by one `Gaps:` line per PR that is missing a reviewer. This is the all-open-PRs view `/monitor` used to own; it lives here so reviewer gaps show up where you already look. A quiet tick prints neither the table nor this block.
 
-**The round-progress question is answered by `/board`, not by reshaping this table.** When the user asks "where is everything", "how far along", or a `TABLE FLOOR:` line arrives from an armed table-freshness watch, run the complete `.claude/skills/board/SKILL.md` workflow inline and print its canonical table — the same "run the full SKILL.md, no shortcuts" idiom `/pm` Steps 1C, 1D and 2D.4 use, and the same shape every other surface renders, unaltered. If `/board` does not resolve, print `DEGRADED: /board not available — rendering the "Running now" table inline per time-estimates.md §"Running now Table"` and render it from that spec directly; unlike `/pm`, PMM resolves no table-freshness binding of its own, so state that the render went unrecorded and expect an armed floor to re-fire. PMM records no launch timestamp of its own and **never re-derives a Start**: `/board` Step 2 reads it back from `.prs["<pr>"].pipeline_started_at`, then `.repos["<key>"].pipelines["<issue>"].started_at`, falling back to `gh pr view --json createdAt` only for pipelines that predate the record. A PMM thread that did not dispatch the round gets `/board`'s own partial-board honesty — no queued rows, an approximate delivered count, both stated — which is correct here rather than something to paper over: PMM discovers PRs by author, so it genuinely does not know a round's membership.
-
-**Reviewer engagement block (issue #1582).** Directly under the status table — and only on the ticks that print it — render the Step 3 engagement scan as a second, narrow matrix (`PR | CodeRabbit | CodeAnt | BugBot | Graphite`, ✅/❌/`?`), followed by one `Gaps:` line per PR that is missing a reviewer. This is the all-open-PRs view `/monitor` used to own; it lives here so reviewer gaps show up where you already look. A quiet tick prints neither the table nor this block.
-
-> **Display-only.** The block changes no verdict and gates no dispatch. Triggers are still posted **only** by Step 5.0's `pr-preflight.sh`, which enforces the CodeRabbit account hourly budget and the per-PR 2-explicit-triggers/hour cap; and Step 2's `READ_ONLY_FLEET` authorship guard (fail-closed) still blocks every dispatch on a PR you did not author, so nothing here can post a trigger on someone else's PR. A ❌ under Graphite may reflect a known outage rather than a fresh gap — `.claude/reference/codeant-graphite-supplemental.md`.
+> **Display-only.** The block changes no verdict and gates no dispatch. Triggers are still posted **only** by Step 5.0's `pr-preflight.sh`, which enforces the CodeRabbit account hourly budget and the per-PR 2-explicit-triggers/hour cap; and Step 2's `READ_ONLY_FLEET` authorship guard (fail-closed) still blocks every dispatch on a PR you did not author, so nothing here can post a trigger on someone else's PR.
 
 Exact block format and the gap-line wording: `references/pmm-classify.md` "Reviewer engagement block".
 
@@ -432,8 +438,8 @@ Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. 
 
 ```bash
 PREFLIGHT_SH=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh" \
-         "$HOME/.claude/scripts/pr-preflight.sh" ".claude/scripts/pr-preflight.sh"; do
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh}" \
+         "${HOME:+$HOME/.claude/scripts/pr-preflight.sh}" ".claude/scripts/pr-preflight.sh"; do
   [ -x "$c" ] && { PREFLIGHT_SH="$c"; break; }
 done
 for N in $PR_NUMS; do
@@ -485,8 +491,8 @@ PMM's persistent `Monitor` is the one genuinely periodic surface in this system,
 # config repo; everywhere else the -x gate would silently skip the sweep, which
 # is indistinguishable from "nothing to release".
 RELEASE_SWEEP=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/release-sweep.sh" \
-         "$HOME/.claude/scripts/release-sweep.sh" \
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/release-sweep.sh}" \
+         "${HOME:+$HOME/.claude/scripts/release-sweep.sh}" \
          ".claude/scripts/release-sweep.sh"; do
   [ -x "$c" ] && { RELEASE_SWEEP="$c"; break; }
 done
@@ -658,7 +664,7 @@ admitting another Monitor while runtime repair is pending.
 
 **Pre-exit checklist (run before ending every polling turn — `scheduling-reliability.md`):**
 1. **Next tick scheduled?** Confirm the recorded Monitor task is active (or stopped/paused per routing above).
-2. **Heartbeat sent?** The Step 4 timestamped line (plus the table when it carried news) is the heartbeat — never end a tick silently.
+2. **Notification needed?** Surface owner-action blockers, safety events or exhausted recovery; otherwise stay silent. Tick/state persistence, not a chat heartbeat, proves liveness.
 3. **State recorded?** `pmm_active`, cadence, watermarks, `pmm_in_flight`, `active_agents`, `pmm_digest(_streak)`, `pmm_row_digest`, `pmm_idle_streak` written to `session-state.json`.
 
 ---

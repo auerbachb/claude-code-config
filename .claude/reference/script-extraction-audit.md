@@ -1,5 +1,7 @@
 # Script Extraction Audit
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Audit of deterministic agent actions that could be extracted from rule/skill/agent prose into `.claude/scripts/` shell utilities for speed, token savings, and testability. Produced for issue #271.
 
 > **Scope of this doc:** Inventory and ranking only. No code is extracted here — each P0 candidate gets its own follow-up implementation issue, and the "Recommended Extraction Order" at the bottom lists them.

@@ -23,7 +23,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.claude/scripts/session-state-audit.sh"
+SCRIPT="${SESSION_STATE_AUDIT_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/session-state-audit.sh}"
 
 TMP_HOME="$(mktemp -d)"
 STUB_DIR="$(mktemp -d)"
@@ -44,7 +44,7 @@ check_eq() {
   fi
 }
 
-run() { bash "$SCRIPT" "$@"; }
+run() { "$BASH" "$SCRIPT" "$@"; }
 
 # --- gh stub ---------------------------------------------------------------
 # repos/<owner>/<name>/commits/<sha>  -> exit 0 iff the pair is in COMMIT_MAP
@@ -269,22 +269,75 @@ run --apply --heal-types --offline >/dev/null 2>&1
 check_eq "--heal-types actually resets a false active_agents to {}" '{}' \
   "$(jq -c '.active_agents' "$STATE_FILE")"
 
-# The `.pr == null` and per-PR branches carry the same `has`-based fix, but a
-# false-valued REPO scope cannot be pinned end-to-end here: the LOST integrity
-# check that runs before the write does `.repos[$r].prs` unguarded and dies with
-# "Cannot index boolean with string" first, so the repair aborts (file left
-# untouched, backup kept) for a reason unrelated to the heal plan. That crash is
-# a separate pre-existing defect in a different code path; tracked separately
-# rather than widened into this issue. What IS pinned is that the abort is loud
-# and non-destructive, which is the property that matters for a repair tool.
+# Repo-scope corruption is repairable, including present null (Issue #1639).
+# Exercise the actual tool and disk state, with valid PR siblings preserved.
+echo "== Every non-object repo scope is explicitly healed (#1639) =="
+for bad_scope in false true '"scope-string"' 17 '[]' null; do
+  write_state
+  jq --argjson bad "$bad_scope" '.repos["org/corrupt"] = $bad' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+  SIBLINGS_BEFORE="$(jq -Sc '.repos | del(.["org/corrupt"])' "$STATE_FILE")"
+  FOUND_TYPE="$(jq -nr --argjson bad "$bad_scope" '$bad | type')"
+  OUT=$(run --offline --json 2>/dev/null); RC=$?
+  check_eq "$bad_scope scope is reported as a finding" "2" "$RC"
+  check_eq "$bad_scope scope has its actual type in detection" "$FOUND_TYPE" \
+    "$(jq -r '[.type_violations[] | select(.scope == "org/corrupt" and .pr == null)][0].found' <<<"$OUT")"
+  OUT=$(run --apply --heal-types --offline --json 2>"$STUB_DIR/heal.err"); RC=$?
+  check_eq "$bad_scope scope heals without aborting" "0" "$RC"
+  check_eq "$bad_scope scope is actually an empty object on disk" '{}' "$(jq -c '.repos["org/corrupt"]' "$STATE_FILE")"
+  check_eq "$bad_scope scope appears in the reported applied heals" "true" \
+    "$(jq -r --arg path '.repos["org/corrupt"]' '.healed | index($path) != null' <<<"$OUT")"
+  BACKUP_PATH="$(jq -r '.backup' <<<"$OUT")"
+  check_eq "$bad_scope backup preserves the original value" "$bad_scope" "$(jq -c '.repos["org/corrupt"]' "$BACKUP_PATH")"
+  check_eq "$bad_scope healing preserves all valid sibling PR state" "$SIBLINGS_BEFORE" "$(jq -Sc '.repos | del(.["org/corrupt"])' "$STATE_FILE")"
+  OUT=$(run --offline --json 2>/dev/null)
+  check_eq "$bad_scope scope no longer has a type violation" "0" \
+    "$(jq '[.type_violations[] | select(.scope == "org/corrupt")] | length' <<<"$OUT")"
+done
 write_state
-jq '.repos["auerbachb/claude-code-config"] = false' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
-BEFORE_FALSE_SCOPE="$(cat "$STATE_FILE")"
+BEFORE="$(jq -Sc '.repos' "$STATE_FILE")"
+OUT=$(run --apply --heal-types --offline --json 2>/dev/null); RC=$?
+check_eq "healthy scopes and an absent scope do not need healing" "0" "$(jq '.counts.healed' <<<"$OUT")"
+check_eq "a missing scope is not synthesized" "false" "$(jq '.repos | has("org/corrupt")' "$STATE_FILE")"
+check_eq "healthy object scopes remain semantically identical" "$BEFORE" "$(jq -Sc '.repos' "$STATE_FILE")"
+rm -f "$HOME"/.claude/session-state.json.bak.*
+
+# Keep the non-destructive-abort property pinned at the actual LOST boundary.
+# A failing dependency must never look like an empty, successful integrity check.
+echo "== LOST dependency failure refuses the write and keeps its backup =="
+write_state
+jq '.repos["org/corrupt"] = false' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+BEFORE="$(cat "$STATE_FILE")"
+REAL_JQ="$(command -v jq)"
+export REAL_JQ
+cat > "$STUB_DIR/jq" <<'FAIL_LOST'
+#!/usr/bin/env bash
+previous=""
+for arg in "$@"; do
+  if [[ "$previous" == --slurpfile && "$arg" == before ]]; then
+    printf 'fixture LOST dependency failed\n' >&2
+    exit 17
+  fi
+  previous="$arg"
+done
+exec "$REAL_JQ" "$@"
+FAIL_LOST
+chmod +x "$STUB_DIR/jq"
 OUT=$(run --apply --heal-types --offline 2>&1); RC=$?
-check_eq "a false repo scope aborts the repair rather than half-writing" \
-  "nonzero" "$([[ "$RC" -ne 0 ]] && echo nonzero || echo "zero($RC)")"
-check_eq "the aborted repair left the file byte-identical" \
-  "$BEFORE_FALSE_SCOPE" "$(cat "$STATE_FILE")"
+check_eq "a LOST dependency failure aborts with documented error" "4" "$RC"
+check_eq "the aborted integrity check is identified" "1" "$(grep -c 'integrity check could not run: fixture LOST dependency failed' <<<"$OUT")"
+check_eq "the aborted repair leaves the actual state byte-identical" "$BEFORE" "$(cat "$STATE_FILE")"
+BACKUP_PATH="$(find "$HOME/.claude" -name 'session-state.json.bak.*' -type f | head -n 1)"
+BACKUP_INTACT=no
+[[ -n "$BACKUP_PATH" ]] && cmp -s "$STATE_FILE" "$BACKUP_PATH" && BACKUP_INTACT=yes
+check_eq "the aborted repair keeps an intact original backup" "yes" "$BACKUP_INTACT"
+LOCK_RELEASED=no
+[[ ! -d "$STATE_FILE.lock" ]] && LOCK_RELEASED=yes
+check_eq "the aborted repair releases its lock" "yes" "$LOCK_RELEASED"
+rm -f "$STUB_DIR/jq"
+unset REAL_JQ
+OUT=$(run --apply --heal-types --offline --json 2>/dev/null); RC=$?
+check_eq "repair succeeds after the dependency recovers" "0" "$RC"
+check_eq "the recovery actually heals the previously refused scope" '{}' "$(jq -c '.repos["org/corrupt"]' "$STATE_FILE")"
 rm -f "$HOME"/.claude/session-state.json.bak.*
 
 echo

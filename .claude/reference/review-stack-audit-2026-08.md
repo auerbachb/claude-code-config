@@ -1,5 +1,7 @@
 # Review stack audit — 2026-08 (cap reconciliations: CodeRabbit + BugBot)
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Issues:** [#1303](https://github.com/auerbachb/claude-code-config/issues/1303) — drift finding `coderabbit/D3`; [#1304](https://github.com/auerbachb/claude-code-config/issues/1304) — drift finding `bugbot/D3`. Both filed by `/review-stack-audit` (built under [#1201](https://github.com/auerbachb/claude-code-config/issues/1201)) against the same audit run, and both reconciled here against one shared re-measurement.
 **Date:** 2026-08-26 ET
 **Window:** 2026-07-25 → 2026-08-26 (32 days, **268 merged PRs, not truncated** — `window.truncated: false` at `--limit 300`)

@@ -23,27 +23,27 @@ Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/
 
 ## Model Selection
 
-**Defaults (set at every spawn site).**
+**Cost-first selection (every spawn).** Resolve `model-route.sh` and execute
+`.claude/reference/task-model-routing.md`'s dispatch block for each task/phase.
+Choose the cheapest available capable tier; preserve explicit owner choices,
+tool/context support, permissions and launch/reserve/budget gates. Persist the
+request and decision through scoped state helpers before dispatch; failed writes
+launch nothing. Pass the returned alias explicitly; frontmatter is only a cheap
+fallback.
 
-| Phase / Agent | Model |
-|---------------|-------|
-| Phase A (`phase-a-fixer`) | `opus` |
-| Phase B (`phase-b-reviewer`) | `opus` |
-| Phase C (`phase-c-merger`) | `sonnet` |
-| `pm-worker` | `sonnet` |
-| Read-only review agents (e.g., `/recap`) | `sonnet` |
-
-Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms. Alias resolution: `.claude/agents/README.md`.
+Keep cheap retries while producing useful evidence. Slow work, one failed test
+or an arbitrary retry count never upgrades a worker. Diagnose equivalent failures
+or poor-patch review/CI churn before task-local escalation. Preserve discoveries,
+local checks, batched changed pushes, independent review and merge gates. Store
+actual cost or unknown; routine retries stay silent.
 
 **Effort is not settable on a spawn** — subagents inherit the parent's effort level; never write an effort instruction into a spawn prompt. **Set model at spawn, never mid-session** — session-scoped caches make tier switches costly (`token-efficiency-audit-2026-07.md` §FU-4).
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
 
 **Ask first only:** respawning a crashed/no-handoff subagent.
-
-> **Anti-pattern:** composing "Should I...?" for any "Always do" row — the answer is always yes (CLAUDE.md); execute immediately.
 
 ## Token/Turn Exhaustion Protocol (MANDATORY)
 
@@ -60,15 +60,10 @@ Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:
 **Orchestration:**
 
 - **Transitions:** parent launches Phase A (parallel across PRs allowed); A complete → cleanup per `phase-protocols.md`, then B; B `merge_ready` → launch C within 60s (C verifies gate + AC before `/wrap`).
-- **Ceiling:** `PIPELINE_CEILING` (default 4) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); at 7+ CR reviews/hour expect Greptile fallback. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
+- **Ceiling:** `PIPELINE_CEILING` (default 4) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
 - **Scope:** counts only PRs you authored (`@me`); a collaborator's or bot's PRs never enter it (contention is context, never a gate).
 - **Overflow:** past-ceiling work **queues inline, never becomes a thread chip** (slots: `.claude/skills/subagent/SKILL.md` Step 7).
 
 ## Subagent Review Protocol
 
 Review protocol lives in its canonical sources — `cr-local-review.md`, `cr-github-review.md`, `cr-merge-gate.md`, `bugbot.md`, `greptile.md`. Do NOT duplicate them.
-
-**Three reminders for subagents:**
-1. **AUTONOMY:** every phase transition is automatic — do NOT ask "should I?" (table above).
-2. **EXIT REPORT:** print a Structured Exit Report as final output (`phase-protocols.md`).
-3. **HANDOFF FILE:** write/update/read `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` per `handoff-files.md`.

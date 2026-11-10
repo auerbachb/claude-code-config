@@ -74,7 +74,7 @@ for gate in full legacy; do
     "shape_$shape"
     OUT=$(run_script 2>/dev/null); RC=$?
     check_eq "exit 0" 0 "$RC"
-    check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+    check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
   done
 done
 
@@ -84,7 +84,7 @@ set_tier "" 4
 shape_never_invited
 OUT=$(run_script 2>/dev/null); RC=$?
 check_eq "exit 0 (an unresolvable tier is not a missing verdict)" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
 
 echo "== (t3b): FAILS OPEN — the helper cannot launch (not executable) -> switch_bugbot =="
@@ -94,7 +94,7 @@ shape_never_invited
 OUT=$(run_script 2>/dev/null); RC=$?
 chmod +x "$STUB_DIR/bugbot-tier-excluded.sh"
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot despite a ci-only resolver" "STATUS=switch_bugbot" "$OUT"
+check_eq "BugBot point (no_reviewer) despite a ci-only resolver" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 # Precedence controls: an excluded tier changes ONLY the switch_bugbot outcome.
@@ -116,7 +116,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[]" "[]" "[]" "[$(failure_comment "$(ts_seconds_ago 3000)")]"
 OUT=$(run_script 2>/dev/null); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 echo "== (t6): gate ci-only + invited but silent -> trigger_greptile (Greptile branch unchanged) =="
 set_tier "$(tier_json ci-only)"
@@ -125,7 +125,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[]" "[]" "[]" "[$(trigger_comment "$(ts_seconds_ago 3000)")]"
 OUT=$(run_script 2>/dev/null); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 echo "== (t7): --help documents the new verdict =="
 HELP="$(bash "$STUB_DIR/escalate-review.sh" --help 2>/dev/null)"
@@ -198,13 +198,18 @@ echo "== (e3): CONTROL — the same shapes with escalation on keep today's verdi
 set_escalation full on
 shape_bugbot_failed
 OUT=$(run_script 2>/dev/null); RC=$?
-check_eq "full + on + BugBot failure -> trigger_greptile" "STATUS=trigger_greptile" "$OUT"
-check_eq "…and the budget stub saw the --check (so its silence above is real)" "--check;" "$(budget_calls)"
+check_eq "full + on + BugBot failure -> no_reviewer at the Greptile point" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
+# Issue #1897: the paid Greptile point is refused BEFORE the budget is read, so
+# even escalation on never touches it now.
+check_eq "…and the budget is never read (refused before the --check)" "" "$(budget_calls)"
 set_escalation full on true
 shape_bugbot_failed
 OUT=$(run_script 2>/dev/null); RC=$?
-check_eq "full + on + exhausted budget -> budget_exhausted" "STATUS=budget_exhausted" "$OUT"
-check_eq "…after one --check" "--check;" "$(budget_calls)"
+check_eq "full + on + exhausted budget -> no_reviewer (budget_exhausted unreachable)" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
+check_eq "…still without a --check" "" "$(budget_calls)"
+# The log really records calls, so every "never called" above is observed.
+"$STUB_DIR/greptile-budget.sh" --check >/dev/null 2>&1 || true
+check_eq "control: the budget stub's log records a direct call" "--check;" "$(budget_calls)"
 
 for shape in never_invited genuine; do
   echo "== (e4): $shape + gate full + escalation off -> tier_gate at the BugBot arm =="
@@ -224,7 +229,7 @@ export FIXTURE_BUDGET_EXHAUSTED=false
 shape_bugbot_failed
 OUT=$(run_script 2>"$TMP/e5-stderr.txt"); RC=$?
 check_eq "exit 0 (an unresolvable switch is not a missing verdict)" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
 check_eq "stderr says the switch read as on" "1" "$(grep -c 'treating escalation as on' "$TMP/e5-stderr.txt" | tr -d ' ')"
 
@@ -234,7 +239,7 @@ mv "$STUB_DIR/review-tier.sh" "$TMP/review-tier.bak"
 shape_bugbot_failed
 OUT=$(run_script 2>/dev/null); RC=$?
 mv "$TMP/review-tier.bak" "$STUB_DIR/review-tier.sh"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 echo "== (e7): a free wait still wins — escalation off inside a CR retry window -> polling_cr =="
 set_escalation full off

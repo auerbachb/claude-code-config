@@ -135,7 +135,7 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "wake with no id" "missing item id" wake
   expect_rc "$SH" 4 "wake with no --result" "missing --result" wake D-1
   expect_rc "$SH" 4 "wake on a Review" "is a Review" wake R-3 --result sent
-  expect_rc "$SH" 4 "wake with an unknown result" "must be sent or failed" wake D-1 --result maybe
+  expect_rc "$SH" 4 "wake with an unknown result" "must be sent, failed, or store-only" wake D-1 --result maybe
   expect_rc "$SH" 4 "wake with --result twice" "more than once" wake D-1 --result sent --result failed
   expect_rc "$SH" 4 "wake with a multi-line note" "single line" wake D-1 --result failed --note $'a\nb'
   expect_rc "$SH" 4 "wake with an over-long note" "longer than 200" wake D-1 --result failed --note "$(printf '%201s' '' | tr ' ' x)"
@@ -239,8 +239,9 @@ dcli() {
   shift
   rm -f "$STUB_DIR/url" "$STUB_DIR/args"
   RC=0
+  # Bash 3.2 with nounset treats an empty array as unset.
   env -i HOME="$H" PATH="$MINPATH" TMPDIR="$TMP" STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$STUB" \
-    "${envs[@]}" bash "$BIN/desk-cli.sh" "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+    ${envs[@]+"${envs[@]}"} bash "$BIN/desk-cli.sh" "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
   URLSEEN=$(cat "$STUB_DIR/url" 2>/dev/null || echo none)
@@ -408,7 +409,13 @@ TSTUB="$STUB_DIR/loopcli.sh"
 # numbers above keep naming the loop's own calls whatever the clock says.
 cat > "$TSTUB" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = sweep ] || [ "$1" = checkin ]; then exit 0; fi
+if [ "$1" = sweep ] || [ "$1" = checkin ]; then
+  if [ -f "$STUB_DIR/fail-$1" ]; then
+    echo "human-queue: database unreachable (stub)" >&2
+    exit 7
+  fi
+  exit 0
+fi
 n=$(( $(cat "$STUB_DIR/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STUB_DIR/calls"
 printf '%s\n' "$*" >> "$STUB_DIR/args"
@@ -422,7 +429,9 @@ if [ -f "$STUB_DIR/refuse-$n" ]; then
 fi
 case "$1" in
   control-status)
-    if [ -f "$STUB_DIR/status-$n" ]; then cat "$STUB_DIR/status-$n"; else cat "$STUB_DIR/status"; fi
+    if [ -f "$STUB_DIR/status-stop-after" ] && [ "$n" -ge "$(cat "$STUB_DIR/status-stop-after")" ]; then
+      echo '{"session":"desk-2"}'
+    elif [ -f "$STUB_DIR/status-$n" ]; then cat "$STUB_DIR/status-$n"; else cat "$STUB_DIR/status"; fi
     ;;
   tick)
     if [ -f "$STUB_DIR/tick-$n" ]; then cat "$STUB_DIR/tick-$n"; else cat "$STUB_DIR/tick-default"; fi
@@ -432,10 +441,15 @@ case "$1" in
     elif [ -f "$STUB_DIR/due-default" ]; then cat "$STUB_DIR/due-default"
     else echo '[]'; fi
     ;;
+  interrupt)
+    if [ -f "$STUB_DIR/interrupt-$n" ]; then cat "$STUB_DIR/interrupt-$n"
+    elif [ -f "$STUB_DIR/interrupt-default" ]; then cat "$STUB_DIR/interrupt-default"
+    else echo '{"rule":"everything","held":false,"source":"default"}'; fi
+    ;;
 esac
 EOF
 chmod +x "$TSTUB"
-treset() { rm -f "$STUB_DIR"/calls "$STUB_DIR"/args "$STUB_DIR"/fail-* "$STUB_DIR"/refuse-* "$STUB_DIR"/status-* "$STUB_DIR"/tick-* "$STUB_DIR"/due-*; }
+treset() { rm -f "$STUB_DIR"/calls "$STUB_DIR"/args "$STUB_DIR"/fail-* "$STUB_DIR"/refuse-* "$STUB_DIR"/status-* "$STUB_DIR"/tick-* "$STUB_DIR"/due-* "$STUB_DIR"/interrupt-*; }
 OURS='{"session": "desk-1", "last_tick_at": "2026-10-07T07:00:00Z", "tick_age_seconds": 1}'
 THEIRS='{"session": "desk-2", "last_tick_at": null, "tick_age_seconds": null}'
 MIXED='[{"id": "R-9", "kind": "review", "status": "open"}, {"id": "D-4", "kind": "decision", "status": "open"}, {"id": "D-2", "kind": "decision", "status": "answered"}, {"id": "D-7", "kind": "decision", "status": "open"}]'
@@ -447,6 +461,25 @@ dtick() {
     >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
+}
+
+# Transition cases use a virtual sleep; existing sleep-first/cadence checks
+# retain real time. A replacement threshold bounds both current and old loops.
+mkdir -p "$TMP/hold-sleepbin"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/hold-sleepbin/sleep"
+chmod +x "$TMP/hold-sleepbin/sleep"
+hold_setup() {
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '[]\n' > "$STUB_DIR/tick-default"
+  printf '13\n' > "$STUB_DIR/status-stop-after"
+}
+hold_tick() {
+  local runner="$1" rule="$2"
+  shift 2
+  dtick perl -e 'alarm 10; exec @ARGV' env PATH="$TMP/hold-sleepbin:$PATH" \
+    HUMAN_QUEUE_CLOCK="${HOLD_CLOCK:-2000-01-01 00:00}" HUMAN_QUEUE_TICK_SECONDS=1 \
+    "$runner" "$BIN/desk-tick.sh" --session desk-1 --generation hold --interrupts "$rule" "$@"
 }
 
 for SH in $SHELLS; do
@@ -544,13 +577,16 @@ desk-tick g1 new D-4 D-7"
   #   cycle 1: control-status(1) fails           -> error line
   #   cycle 2: control-status(2) fails           -> nothing (same streak)
   #   cycle 3: control-status(3) ok, tick(4) new,
-  #            wake-due(5) none                  -> recovered + new D-4 D-7
-  #   cycle 4: control-status(6) replaced        -> replaced, exit 0
+  #            wake-due(5) none, interrupt(6) ok -> recovered + new D-4 D-7
+  #   cycle 4: control-status(7) replaced        -> replaced, exit 0
   treset
   printf '%s\n' "$OURS" > "$STUB_DIR/status"
   printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
   : > "$STUB_DIR/fail-1"
   : > "$STUB_DIR/fail-2"
+  printf '%s\n' "$THEIRS" > "$STUB_DIR/status-7"
+  # Also terminate the preceding loop in the source negative control, which
+  # has no interrupt observation at call 6.
   printf '%s\n' "$THEIRS" > "$STUB_DIR/status-6"
   # perl's alarm bounds the loop, so a regression that never exits fails
   # this case instead of hanging the suite.
@@ -565,6 +601,82 @@ desk-tick g2 replaced"
 
   # A zero-second override would call the store back-to-back: refused.
   # 900 s is the default 15-minute live-desk bound: the override obeys it too.
+  hold_setup
+  printf '{"held":true}\n' > "$STUB_DIR/interrupt-4"
+  hold_tick "$SH" everything
+  check "[$SH] an observed focus expiry emits one release without new items" "$RC:$OUT" \
+    "0:$(printf 'desk-tick hold released\ndesk-tick hold replaced')"
+  check "[$SH] observations use the captured tick default" \
+    "$(grep '^interrupt ' "$STUB_DIR/args" | sort -u)" \
+    'interrupt get --session desk-1 --default everything --json'
+
+  hold_setup
+  hold_tick "$SH" everything --held
+  check "[$SH] seeded hold can expire before its first observation" "$RC:$OUT" \
+    "0:$(printf 'desk-tick hold released\ndesk-tick hold replaced')"
+  hold_setup
+  hold_tick "$SH" everything
+  check "[$SH] unknown-to-unheld is silent" "$RC:$OUT" '0:desk-tick hold replaced'
+
+  hold_setup
+  printf '{"rule":"away","held":true,"source":"default"}\n' > "$STUB_DIR/interrupt-default"
+  hold_tick "$SH" away --held
+  check "[$SH] focus expiry into away never releases" "$RC:$OUT" '0:desk-tick hold replaced'
+  check "[$SH] away observation uses the same captured default as tick" \
+    "$(grep '^interrupt ' "$STUB_DIR/args" | sort -u)" \
+    'interrupt get --session desk-1 --default away --json'
+
+  hold_setup
+  printf '%s\n' "$MIXED" > "$STUB_DIR/tick-2"
+  printf '%s\n' "$DUE" > "$STUB_DIR/due-3"
+  hold_tick "$SH" everything --held
+  check "[$SH] new and retry stay before released" "$RC:$OUT" \
+    "0:$(printf 'desk-tick hold new D-4 D-7\ndesk-tick hold retry D-9 D-2\ndesk-tick hold released\ndesk-tick hold replaced')"
+
+  hold_setup
+  : > "$STUB_DIR/fail-4"
+  printf '%s\n' "$MIXED" > "$STUB_DIR/tick-2"
+  printf '%s\n' "$DUE" > "$STUB_DIR/due-3"
+  hold_tick "$SH" everything --held
+  check "[$SH] failed observation preserves items and held evidence for recovery" "$RC:$OUT" \
+    "0:$(printf 'desk-tick hold error interrupt exit 7: human-queue: database unreachable (stub)\ndesk-tick hold new D-4 D-7\ndesk-tick hold retry D-9 D-2\ndesk-tick hold recovered\ndesk-tick hold released\ndesk-tick hold replaced')"
+
+  hold_setup
+  printf '{"held":"false"}\n' > "$STUB_DIR/interrupt-4"
+  printf '{"held":null}\n' > "$STUB_DIR/interrupt-8"
+  hold_tick "$SH" everything --held
+  check "[$SH] malformed streak emits one error, then recovered and release" "$RC:$OUT" \
+    "0:$(printf 'desk-tick hold error interrupt exit 1: interrupt get printed something other than a JSON object with boolean held\ndesk-tick hold recovered\ndesk-tick hold released\ndesk-tick hold replaced')"
+  for bad_hold in '[]' null '{}' '{"held":0}' '{"held":"false"}' 'not json' '{} {}'; do
+    hold_setup
+    printf '%s\n' "$bad_hold" > "$STUB_DIR/interrupt-default"
+    hold_tick "$SH" everything --held
+    check_contains "[$SH] malformed hold is an observation error: $bad_hold" "$OUT" 'error interrupt exit 1'
+    check_absent "[$SH] malformed hold never fabricates a release: $bad_hold" "$OUT" 'released'
+    check_absent "[$SH] malformed hold never claims recovery: $bad_hold" "$OUT" 'recovered'
+  done
+
+  for stage in checkin sweep; do
+    hold_setup
+    : > "$STUB_DIR/fail-$stage"
+    if [ "$stage" = checkin ]; then HOLD_CLOCK='2000-01-01 08:00'; else HOLD_CLOCK='2000-01-01 17:40'; fi
+    hold_tick "$SH" everything --held
+    unset HOLD_CLOCK
+    check "[$SH] later $stage failure cannot consume an unprinted release" "$RC:$OUT" \
+      "0:$(printf 'desk-tick hold error %s exit 7: human-queue: database unreachable (stub)\ndesk-tick hold released\ndesk-tick hold replaced' "$stage")"
+  done
+
+  treset
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation hold --held --once
+  check "[$SH] held seed with once is refused before CLI" "$RC:$(cat "$STUB_DIR/args" 2>/dev/null)" '4:'
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation hold --once --held
+  check "[$SH] once before held seed is also refused before CLI" "$RC:$(cat "$STUB_DIR/args" 2>/dev/null)" '4:'
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation hold --held --held
+  check "[$SH] repeated held seed is refused before CLI" "$RC:$(cat "$STUB_DIR/args" 2>/dev/null)" '4:'
+  hold_setup
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation hold --once
+  check_absent "[$SH] once still performs no hold observation" "$(cat "$STUB_DIR/args")" 'interrupt get'
+
   for bad_secs in 0 00 3601 x 900; do
     treset
     dtick env HUMAN_QUEUE_TICK_SECONDS="$bad_secs" "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
@@ -632,7 +744,7 @@ SKILL=$(cat "$HQ_T_DESK_DIR/skill/SKILL.md")
 DECISIONS=$(cat "$HQ_T_DESK_DIR/skill/decisions.md")
 check "SKILL.md frontmatter names the skill desk" "$(sed -n '2p' "$HQ_T_DESK_DIR/skill/SKILL.md")" "name: desk"
 for needle in "register-control \"\$SID\"" 'desk-tick.sh' 'persistent: true' 'decisions.md' 'control-status --json' \
-              'CLAUDE_CODE_SESSION_ID' '#1780' '#1781' 'shorter than the live-desk bound' '--cadence <N> --once'; do
+              'CLAUDE_CODE_SESSION_ID' '#1780' '#1781' 'shorter than the live-desk bound' '--cadence <N> --interrupts "<DEFAULT>" --once'; do
   check_contains "SKILL.md: $needle" "$SKILL" "$needle"
 done
 # The reply reaches set-resolve through a quoted here-document, never inside

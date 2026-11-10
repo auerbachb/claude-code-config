@@ -3,12 +3,17 @@
 Reference for `/quotas-setup` and `.claude/scripts/ai-quotas-setup.sh` (issue #1666).
 Not auto-loaded; read it when working on the quota tools.
 
+Quick links: [Configuration](#config-file) · [Provider credentials](#where-each-provider-keeps-its-credential) · [Report rows](#json-row-shape) · [History](#the-history-file) · [Profile recovery](#fresh-profile-reauthentication) · [Browser diagnosis](#browser-failure-diagnostics-issue-1906).
+
 **Display and configuration only.** Nothing in this file — and nothing any tool built on
 it produces — may gate dispatch, pause work, downgrade a model, or feed
-`credit-budget.sh`. Quota and spend authority stays with Anthropic's in-app UI and
-upstream harness signals, per `.claude/rules/safety.md` §"Anthropic Quota & Spend
-Authority". This registry answers "which accounts exist and can I reach them", nothing
-more.
+`credit-budget.sh`, with one exception: `quota-reserve.sh` may pause *autonomous* work on
+an account whose provider-reported weekly used-percent reaches the owner's threshold
+(§"The one consumer that acts on these readings (#1863)" below; [`quota-reserve.md`](./quota-reserve.md)). That carve-out
+is authorized only by `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority",
+which stays the authority on its scope. Otherwise quota and spend authority stays with
+Anthropic's in-app UI and upstream harness signals. This registry answers "which
+accounts exist and can I reach them", nothing more.
 
 **Distinct wallet.** This file governs the owner's **AI coding-assistant subscriptions** —
 Claude Max, ChatGPT Pro / Codex, Cursor Ultra — including what continuing past their caps
@@ -16,6 +21,59 @@ costs (§"Overage — what continuing costs"). `.claude/reference/pricing-matrix
 separate **review-stack** wallet: CodeRabbit, BugBot, Greptile, CodeAnt. The two are never
 mixed, and no price is copied between them — a figure that appears in both files is a
 figure that will be updated in one of them and silently stale in the other.
+
+## Logged-out actions, notifications, and diagnosis (Issue #1886)
+
+Every final report row declares `action`, a string on `needs-login` and null otherwise.
+Claude/Codex actions are `/quotas-setup relogin <label> <provider>` with shell quoting
+when needed; Cursor says `open the Cursor IDE and sign in`. Text prints each account's
+action once before the table. The JSON `detail` is unchanged. Relaying an account must
+lead with its action. Labels with terminal controls have no printable action and are
+excluded from notifications. No path stores/replays a password or completes a human's
+OAuth sign-in.
+
+A scheduled snapshot (`--quiet` or `AI_QUOTAS_SOURCE=scheduled`) attempts a native macOS
+notification for each **final** logged-out account, after source fallback. Interactive
+reads and reserve refreshes do not notify. The local calendar date follows the machine's
+time zone, not the report's UTC/ET display clock. State is private mode 0600 at
+`~/.claude/ai-quotas-notifications.json`, override `AI_QUOTAS_NOTIFY_STATE`. The shared
+state lock serializes claims; a bounded, atomically published `(provider,label,day)`
+claim precedes delivery. Multiple usage windows and simultaneous runs cannot duplicate
+an attempt. At most one **attempt** per account/day: failed/disabled OS delivery is not
+retried that day. The latest seven observed local dates are retained (at most 1000
+claims). A clock rollback before that retained window skips delivery, preserving
+deduplication without unbounded state; returning to a retained date reuses its claim.
+Corrupt, oversized, symlink, special-file or contended state fails open for the report
+and skips delivery. OS notification settings may suppress presentation. The adapter is
+bounded to three seconds per account; lock wait is at most one second. Notifications
+use only provider, registered label and exact action, never endpoint detail, tokens or
+reported-email metadata. The helper owns its cleanup and cannot replace the reader's
+trap. `AI_QUOTAS_NOTIFY_DAY` and `AI_QUOTAS_NOTIFY_BIN` are synthetic-test seams.
+
+**Token scope fallback.** [Official Claude authentication documentation](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)
+states that `setup-token` produces a one-year token for model requests and prints it
+instead of saving it. That scope cannot serve the usage reader; the issue explicitly
+narrows the delivery scope to notification + relogin in this case. The original Codex
+cause investigation is deferred to [Issue #1970](https://github.com/auerbachb/claude-code-config/issues/1970),
+not an additional acceptance gate for that authorized fallback. No long-lived-token installer or reader
+override is shipped, and no token was minted or live credential inspected to verify
+this. Existing OAuth refresh behavior remains in place. Do not run `setup-token` merely
+to inspect its output or store a password to work around expiry.
+
+**Codex diagnosis remains unverified.** On November 6, 2026, a metadata-only audit of
+the actual default/`AI_QUOTAS_HISTORY`, configured LaunchAgent history, and reserve
+reader outcome paths found 317 Codex outcomes across two account labels, all
+`ok`, `app-server`, and null error class. No refresh failure was present. The previous
+two bounded ordinary profile reads also succeeded; there is no basis to claim expiry,
+revocation or reuse caused the reported historical logouts. `credential_unavailable`,
+HTTP 401, or a generic reader failure alone cannot distinguish these causes. Preserve
+sanitized fixed upstream failure codes when they become available and correlate their
+account/source/time before naming a cause. Do not copy response bodies, auth files,
+tokens or passwords into the ledger or a diagnosis. The original diagnosis is not
+claimed completed: [Issue #1970](https://github.com/auerbachb/claude-code-config/issues/1970)
+tracks the actual failure evidence and follow-up work under the original conditional
+scope. Unknown history does not prevent the notification/relogin fallback from shipping
+once its active acceptance criteria and the normal review/CI gates pass.
 
 ## Why per-account profiles at all
 
@@ -146,10 +204,12 @@ must never destroy a working login. Delete it by hand if that is what you mean.
 | `codex` | `<profile_dir>/auth.json` | file present and non-empty; if it is absent, `CODEX_HOME=<profile_dir> codex login status` is consulted and a zero exit counts as logged in. Its output is discarded, so no account detail is printed. |
 | `cursor` | the **Cursor IDE's own login**, in its state store (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, keys `cursorAuth/accessToken` and `cursorAuth/cachedEmail`; Linux and Windows paths in the reader section). No profile directory is created. | `sqlite3 -readonly` asks whether `cursorAuth/accessToken` is a non-empty string and answers with an exit status. **Presence only** — the value is never fetched or printed. A token can be present and expired, so only `/quotas` proves it still works. |
 
-### The Keychain suffix is observed, never derived
+### Keychain services are observed at login
 
 Claude Code appends a suffix to the Keychain service name that is derived from
-`CLAUDE_CONFIG_DIR` by an undocumented function. The tool does **not** reimplement it.
+`CLAUDE_CONFIG_DIR` by an undocumented function. Registration observes names rather
+than reimplementing it; the separately verified cycle-repair guard is described
+in [layout recovery](#diagnose-and-repair-labelpath-layout-issue-1850).
 It lists the `Claude Code-credentials*` service **names** before and after running the
 login and records the one that appeared. Guessing the algorithm would fail silently the
 first time upstream changed it — and a status probe that silently reports `needs-login`
@@ -185,7 +245,14 @@ ceiling that would then let another writer break it mid-login anyway.
 | Status | Meaning |
 |--------|---------|
 | `ok` | The provider's own credential artifact is present for that profile. |
-| `needs-login` | It is not — run `relogin`. Also what a `--no-login` reserved slot reports. |
+| `needs-login` | Credential presence could not be verified. Check the note, or `detail` in JSON. |
+
+Use `relogin` when the note identifies a missing credential or a signed-out IDE. A
+missing probe tool or unreadable store must be resolved before retrying sign-in.
+
+`--no-login` skips the login during registration. A reserved slot can still report `ok`
+if the registered profile or Cursor IDE already holds a credential.
+
 On a readable config `list` always exits `0` whatever the statuses say — it is a report,
 not a gate, and a `needs-login` row is not a failure. The one way `list` exits non-zero
 is exit `5`, when the config itself cannot be read (missing `jq`, unparseable file, or a
@@ -193,18 +260,23 @@ different schema major); that is a broken tool, not a verdict about an account.
 
 ## Re-login commands (exact)
 
-`/quotas-setup relogin <label> [<provider>]` runs these for you against the account's
-existing profile directory, then re-verifies. To run one by hand:
+`/quotas-setup relogin <label> [<provider>]` uses the registered profile and re-verifies
+it. Use that action for Claude on macOS: it discovers and records the Keychain service,
+which a manual login can leave unregistered.
+
+For a manual Codex login or a file-backed Claude login off macOS, set `profile_dir`
+to the exact value from `ai-quotas-setup.sh list --json` for the selected label and
+provider. The label alone does not determine the directory.
 
 ```bash
-# claude — replace <label> with the registered label.
+# claude, off macOS
 # A bare `claude` against an unauthenticated CLAUDE_CONFIG_DIR opens the browser
 # login and persists the credential scoped to that directory. Exit the session
 # (/exit or Ctrl-D) once the login completes.
-CLAUDE_CONFIG_DIR="$HOME/.claude/ai-quotas/profiles/<label>/claude" claude
+CLAUDE_CONFIG_DIR="$profile_dir" claude
 
 # codex
-CODEX_HOME="$HOME/.claude/ai-quotas/profiles/<label>/codex" codex login
+CODEX_HOME="$profile_dir" codex login
 
 # cursor — there is NO command. Open the Cursor IDE and sign in there.
 ```
@@ -237,9 +309,11 @@ Full flags and exit codes: `ai-quotas-setup.sh --help`. Summary:
 | 1 | The login ran but left no visible credential; **nothing was recorded**. |
 | 3 | Usage error — bad action/provider/label, duplicate pair, or an ambiguous label. |
 | 4 | No account matches that label. |
-| 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). |
+| 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). Also a `repair-layout` preflight refusal: missing/shared sources, collisions, symlinks, unsupported credential backing or an interrupted repair; these refusals leave the registry and profiles unchanged. |
 | 6 | The provider's login CLI was not found — for `cursor`, `sqlite3`, which is what reads the IDE state store; the manual command is printed. |
-| 7 | Contention, refused rather than raced; nothing changed. The config write lock timed out or was broken mid-update, or a `relogin` found another relogin already running for the same account. |
+| 7 | A registry write or relogin was blocked by contention, or the profile changed during login. This run did not commit a registry update. An already-completed login can have written profile credentials; check the helper's exact message before retrying. |
+| 8 | `doctor` found layout problems; diagnostic only, never a dispatch gate. |
+| 9 | Incomplete `repair-layout` rollback; preserve `.layout-repair/` for manual recovery. |
 
 Config writes go through the shared `state-lock.sh` advisory lock and
 `state_lock_commit`, so a concurrent `add` cannot lose the other's row.
@@ -249,7 +323,10 @@ Config writes go through the shared `state-lock.sh` advisory lock and
 `AI_QUOTAS_CURSOR_STATE_DB`, and `AI_QUOTAS_PLATFORM` exist so
 `.claude/scripts/tests/ai-quotas-setup.test.sh` can exercise every path — including the
 macOS Keychain probe — against stubs, without touching a real login, keychain, or
-account. They are not meant for normal use.
+account. They are not meant for normal use. `AI_QUOTAS_LAUNCHERS_FILE`,
+`AI_QUOTAS_PRIMARY_CLAUDE_DIR`, `AI_QUOTAS_PRIMARY_CLAUDE_JSON`, and
+`AI_QUOTAS_PRIMARY_CODEX_HOME` (#1851) do the same for `launchers` and `share-config` in
+`ai-quotas-share.test.sh`; their defaults derive from `HOME`, which the suite redirects.
 
 ## The reader — `/quotas` and `ai-quotas.sh` (increment 2, #1667)
 
@@ -844,50 +921,51 @@ live one wins and the row says so in `overage.figure_source`:
 | Row field | Provider source | Renders as |
 |-----------|-----------------|------------|
 | `spend_limit_used_usd`, `spend_limit_usd` | Cursor's `spendLimitUsage.individualUsed` / `.individualLimit`, cents ÷ 100 — the on-demand block of the captured response documented above | `on-demand $1007.50 of $1000`, `figure_source: "live"` |
-| `free_resets_remaining` | Codex — **speculative**. No captured `account/rateLimits/read` payload has ever carried it; the reader looks for `freeResetsRemaining`, `free_resets_remaining`, and `resets.freeRemaining` and contributes **nothing** when none is a plain number | `2 free resets`, `figure_source: "live"` |
+| `free_resets_remaining` | Codex — **measured (#1862)**. `account/rateLimits/read` carries `rateLimitResetCredits.availableCount` as a sibling of `rateLimits`; the HTTP fallback carries `rate_limit_reset_credits.available_count`. The older guessed keys (`freeResetsRemaining`, `free_resets_remaining`, `resets.freeRemaining`) stay as fallbacks. Contributes **nothing** when none is a plain number | `2 free resets`, `figure_source: "live"` |
+| `free_reset_expires_epoch`, `free_reset_expires_et_short` | Codex — the soonest `expiresAt` among `rateLimitResetCredits.credits` whose `status` is `available`, as an epoch and as an Eastern date and time. App-server path only: the HTTP summary carries a count and no credit list. Credits expire, so this is what answers "when must I use it by" | `1 free reset, exp Nov 6 6:31PM` in the table cell (compact, as this column sets the table width); the full `Nov 6 6:31 PM ET` stays on the row and in the hint |
 | `credits_remaining_usd` | Codex — speculative on the same terms (`creditBalanceUsd`, `credits.balanceUsd`) | reported in the `overage` object, not yet in the label |
 
-The Codex lookups are a hook, not an observation, and they are written so that being wrong
-costs nothing: a key that is absent, or present with a value that is not a plain number,
+The count above was a hook until 2026-10-27, when a real payload settled where it lives: the
+reader had been keeping only `.result.rateLimits` and discarding the sibling that holds the
+balance. The lookups are still written so that being wrong costs nothing: a key that is absent, or present with a value that is not a plain number,
 leaves the watermark to answer. A bare `tonumber` there would turn `"n/a"` into `0` and
 render `0 free resets` — a figure nobody sent, pointing straight at a paid reset. If
-OpenAI ships the balance under a third name, add it in `codex_live_overage` and here.
+OpenAI renames the balance again, add it in `codex_live_overage` and here.
 
 ### The Codex reset watermark
 
 `~/.claude/quotas/codex-reset.json` (override the directory with
-`CLAUDE_QUOTAS_STATE_DIR`), written **only** by an explicit
-`quotas-cheapest-next.sh --record-codex-reset [YYYY-MM-DD]`:
+`CLAUDE_QUOTAS_STATE_DIR`) records resets **per registered Codex label**. Write only
+explicitly after using a reset:
 
-```json
-{"schema_version": "1.0", "month": "2026-09", "used_on": "2026-09-07",
- "recorded_at": "2026-09-09T18:41:02Z"}
+```bash
+quotas-cheapest-next.sh --record-codex-reset --account my-codex [YYYY-MM-DD]
 ```
 
-A `month` equal to the current **Eastern** month means the free reset is spent, and the
-row prices the next one at `~$90/reset`. Any other month, or no file, means one is
-available. `--codex-reset-status` prints the verdict; `AI_QUOTAS_NOW` freezes the month
-for tests.
+The date defaults to today in Eastern time. The label must exist as a Codex account
+in `~/.claude/ai-quotas.json` (`AI_QUOTAS_CONFIG` overrides that registry). Schema 2.0
+stores an `accounts` object keyed by label, each with `month`, `used_on` and
+`recorded_at`. Only that label's current-Eastern-month record marks its free reset
+spent. Other accounts retain their own verdict; account renaming does not transfer
+a watermark. Live per-row reset figures still take precedence.
 
-**The read fails soft, in the safe direction.** A missing, unreadable, or malformed file
-degrades to "one free reset assumed" (`figure_source: "assumed"`) with a warning — never
-to an error, and never to "already spent". The latter is the reading that steers the hint
-toward a $90 purchase, and it must not come from a parse failure.
+`--codex-reset-status` returns `{month, accounts, watermark_file}` with one verdict
+per registered Codex label. Each verdict has `free_reset_available`, `figure_source`
+and `used_on`. It has no aggregate spent/free verdict. `AI_QUOTAS_NOW` freezes the
+month in tests.
 
-**One record, not one per account.** The file carries no account dimension, so recording a
-reset marks the free reset spent for *every* Codex account that falls back to the
-watermark. Accounts reporting a live free-reset figure are unaffected — a live figure is
-preferred over the watermark. With more than one Codex account registered, read the
-verdict as "a reset was used somewhere this month", not as a per-account balance. Keying
-it by account is issue #1696.
+Missing or unreadable records assume a free reset for that account. A corrupt
+individual entry does not discard valid siblings. Legacy global schema-1 records
+belong to no account, so they never mark every account spent; an explicit account
+recording replaces that legacy shape. Unknown schemas or corrupt top-level files
+must be repaired or moved aside before writing. A missing/broken registry prevents
+recording; it never invents an account association.
 
-**Backfilling an older month is refused.** The file holds one slot, so recording an August
-reset over a September record would erase the only evidence September's reset was spent
-and the next report would offer one that is gone. `--record-codex-reset` reads the
-existing record first and exits 5 rather than replacing it with a strictly older month,
-naming the file to remove if the overwrite is deliberate. The date is also round-tripped
-through `date`, so `2026-99-99` and `2026-02-31` are rejected: a banked `2026-99` sorts
-after every real month and would otherwise block every later recording permanently.
+Writes use a bounded shared OS lock and private atomic replacement, preserving other
+accounts. Backfilling an older month over the selected account's newer record is
+refused (exit 5); another account's newer month does not block it. Invalid calendar
+dates are refused (exit 3). These records remain advisory: no purchases, logins or
+dispatch decisions occur.
 
 ### The threshold knob
 
@@ -1322,8 +1400,452 @@ as it was, the three projection columns keep their `-`, and stderr says `DEGRADE
 Half a projection is not better than none, because nothing downstream could tell which
 half it got.
 
+## Launchers and shared config (#1851)
+
+The registry alone leaves two gaps: nothing *starts* a CLI against one account's profile,
+and a fresh profile has a login and nothing else. Two actions on `ai-quotas-setup.sh`
+close them. Both are display/config operations like everything else here — they gate
+nothing — and neither opens a login credential or prints anything from `.claude.json`.
+
+### `launchers` — `~/.claude/ai-quotas/launchers.zsh`
+
+One zsh function per registered `claude` and `codex` account (override the path with
+`AI_QUOTAS_LAUNCHERS_FILE`). The file carries a `GENERATED by ai-quotas-setup.sh
+launchers` marker on its second line: a file whose second line is that marker is
+overwritten in place on the next run (the marker anywhere else does not count — a
+hand-written file quoting it is still the owner's), a file without it — the hand-written original — is moved aside as
+`launchers.zsh.pre-share` (a timestamped sibling when that name is taken, numbered when
+the timestamp is taken too) and never
+deleted. The printed `source` line writes the path as `"$HOME/…"` only when the rest of
+the path carries nothing the shell would expand inside double quotes; an override path
+with a `$`, backtick, `"` or `\` in it is single-quoted whole, so the line is safe to
+paste whatever `AI_QUOTAS_LAUNCHERS_FILE` holds. It carries no timestamp, so two runs over the same registry produce the same
+bytes, and it is written mode `600` like the registry whose labels it carries. The action
+ends by printing the one line to add to `~/.zshrc`; the tool never edits `~/.zshrc`.
+
+```zsh
+_ai_profile_dir() { … "$setup" list --json | jq -r '.[] | select(.provider == $p and .label == $l) | .profile_dir' … }
+_ai_launch()      { … [[ -t 1 ]] && printf '\e]1;%s\a\e]2;%s\a' "$nick" "$nick"; CLAUDE_CONFIG_DIR="$dir" command claude "$@" … }
+
+claude-work()     { _ai_launch claude 'work@example.com'     'Claude Work'     "$@"; }
+claude-personal() { _ai_launch claude 'personal@example.com' 'Claude Personal' "$@"; }
+codex-personal()  { _ai_launch codex  'personal@example.com' 'GPT Personal'    "$@"; }
+codex-lm()        { _ai_launch codex  'lm@example.com'       'GPT LM'          "$@"; }
+```
+
+**Names.** `<provider>-<slug>`, where the slug is the nickname lowercased with every run
+of non-alphanumerics collapsed to one `-`, and a leading provider word (`claude`, `codex`,
+`gpt`, `chatgpt`, `openai`) dropped — so `Claude Work` is `claude-work`, not
+`claude-claude-work`, and `GPT Personal` is `codex-personal`. An account with no nickname
+(or one that is only the provider word) uses the local part of its label:
+`someone@example.com` → `claude-someone`. Two accounts that would share a name are
+refused with exit `3` naming both — zsh would not complain, the second definition would
+silently win, and the owner would get the wrong account with no message. So is a
+`(provider, label)` pair the registry holds twice (`add` refuses it, a hand edit can
+produce it): the by-label lookup would return two directories. Claude functions come
+first, then Codex, registry order within each.
+
+**Resolution is by label, at run time.** The function passes its provider and label to
+`_ai_profile_dir`, which runs `ai-quotas-setup.sh list --json` and selects that row's
+`profile_dir`. It never builds `profiles/<label>/<provider>` out of the label: #1850
+records that the two Claude directories on the owner's machine are named backwards
+against their labels, and a path-building launcher would start the wrong account. The
+setup script is found in the order `~/.claude/skills-worktree/.claude/scripts/`,
+`~/.claude/scripts/`, then the absolute path of the script that generated the file — the
+durable locations first, so a file generated from a checkout keeps working after that
+worktree is gone.
+
+**What a function does.** Sets the terminal tab and window title to the nickname (the
+`ESC ] 1 ;` / `ESC ] 2 ;` OSC sequences, so parallel sessions stay distinguishable) —
+only when stdout is a terminal, so `claude-work -p … | jq` is never handed the escape —
+then runs `command claude` or `command codex` with `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+set for that one invocation, forwarding every argument. A label with no
+registry row, or a `profile_dir` that no longer exists, returns `1` with a message naming
+the account; nothing is launched. The CLI finds its own credential inside the profile; the
+launcher never touches one.
+
+A nickname may contain an apostrophe (`O'Brien`); it is single-quoted and escaped for
+zsh, and the suite asserts the generated file parses. A label cannot carry a quote
+(`valid_label`).
+
+### `share-config <label> [<provider>]`
+
+Makes a profile behave like the primary install. For a **claude** profile:
+
+| Item | Action | Why |
+|------|--------|-----|
+| `skills`, `agents`, `rules`, `hooks`, `plugins`, `projects`, `CLAUDE.md`, `account-config.md` | symlink → `~/.claude/<name>` | One copy of the harness config and memory; a profile that lagged the primary would behave differently in ways nobody would think to check. The target is the primary *path* — `~/.claude/rules` is itself a symlink into the skills worktree, and linking to the path rather than its resolution keeps that indirection. |
+| `settings.json` | copy (`cp -p`, mode carried across) | Claude Code rewrites it in place; a symlink would make two installs fight over one file. |
+| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. Claude Code rewrites this file itself while a session runs and honours no lock, so the helper re-reads the file before it makes the backup and installs the merge. If the re-read detects a change, the helper refuses to replace `.claude.json` (exit `5`); earlier share items may already have changed. A write after the check can still race the replacement. Share only with an idle profile, and inspect any per-item lines before retrying. |
+
+For a **codex** profile: `rules` symlinked to `~/.codex/rules`, `config.toml` copied from
+`~/.codex`. The primary locations default from `HOME` and are overridable
+(`AI_QUOTAS_PRIMARY_CLAUDE_DIR`, `AI_QUOTAS_PRIMARY_CLAUDE_JSON`,
+`AI_QUOTAS_PRIMARY_CODEX_HOME`).
+
+Every item reports one line — `linked`, `copied`, `merged`, `kept`, `moved`, `skipped` —
+and the summary gives the counts. **Idempotent:** a symlink already pointing at the
+target, a copy already identical, a `.claude.json` already holding every primary server
+is `kept`, so a re-run changes nothing. **Nothing is deleted:** a directory, file, or
+wrong-pointing symlink in the way is moved to `<name>.pre-share` (timestamped when that
+name is taken), and the old `.claude.json` becomes `.claude.json.pre-share` before the
+merged one is installed at the same mode. That holds for `.claude.json` too: a symlink
+(dangling or not) or a directory at that name is moved aside first, and the merge then
+starts from an empty object — it never writes through a link into another install's
+file. A primary item that does not exist is `skipped` — no dangling symlink is ever
+created.
+
+**Refusals.** Exit `3` for a `cursor` account (no profile directory), for a
+`profile_dir` whose physical path *is* the primary install — compared with `pwd -P`, so a
+symlinked `profile_dir` cannot slip past — because every `linked` step would otherwise
+first move the real `~/.claude/skills` aside and then link it to itself, and for a
+`profile_dir` whose physical path is outside the profile root (every profile `add` creates
+is under it; only a hand-edited row is not). A relative `AI_QUOTAS_PRIMARY_*` directory is
+made absolute before any link is written, since `ln -s` resolves a relative target from
+the link's own directory. Exit `5` when the
+profile directory does not exist yet (`relogin` first), the primary install is missing,
+`HOME` is unset without the overrides, or the profile's `.claude.json` is not a JSON
+object — which is never rewritten.
+
+**No login credential, no printing.** `.credentials.json`, `auth.json`, and the Keychain
+are never opened. The only JSON parsed is `.claude.json`, and nothing from it is printed.
+What the merge does carry across is the `mcpServers` block, and an MCP server entry can
+hold an API key in its `env` block. Its value is preserved in the merged JSON, while
+serialization can change formatting. The merge line reports a count, never a name or
+a value. The suite plants a login-credential-shaped fixture in every profile and asserts it
+reaches no output and no file either action writes.
+
 ## Symlink
 
 Per `.claude/rules/skill-symlinks.md`, `/quotas-setup` and `/quotas` are symlinked into
 `~/.claude/skills/` through the skills worktree **after** their PRs merge — never before,
 and never directly to the root repo.
+
+## The one consumer that acts on these readings (#1863)
+
+The table and projections are display-only. `quota-reserve.sh` is the single exception: it reads the same provider-reported weekly used-percent and, at the owner's threshold (95% default), pauses *autonomous* work on that account, never the owner's own turns. It is an owner-approved carve-out in `.claude/rules/safety.md`, evaluated only against the provider's reading and failing open on anything unreadable or stale. Mechanism, what is blocked, and what is deliberately not covered: [`quota-reserve.md`](./quota-reserve.md).
+
+## Read-outcome ledger (Issue #1883)
+
+Every supported account read records one terminal attempt, independently of how many
+usage windows it produces. Successful window history keeps its existing schema and
+retention; outcomes live in `<history-stem>.outcomes.jsonl` beside `AI_QUOTAS_HISTORY`
+(default `~/.claude/ai-quotas-history.outcomes.jsonl`). This keeps forecast consumers
+and redirected reserve/history reads isolated. No history destination means no
+outcome persistence. Each row has `ts`, `provider`, `label`, `source`, `status`,
+`error_class`, and `trigger` (`manual`/`scheduled`). Unsupported providers and excluded
+accounts are not attempted.
+
+Statuses: `ok`, `logged_out` (the display row remains `needs-login`), `unreadable`
+(transport/tool failure), `rate_limited`, `timeout` (curl exit 28), `parse_error`
+(invalid JSON or unusable response shape). The terminal source reflects the source
+that produced the result, including a successful Codex HTTP fallback. Only fixed
+error classes and numeric HTTP/curl codes are allowed (`[a-z0-9_]{1,40}`); unknown
+classes become `other`, and successful attempts have null error class. Details,
+response bodies, and credentials never enter this ledger.
+
+The Python 3 helper retains 45 days and at most 50,000 rows, tolerates malformed
+lines, refuses symlink/non-regular destinations, and atomically replaces mode-600
+files under a bounded OS advisory lock. Lock files remain in place; process exit
+automatically releases their locks, avoiding stale-lock recovery races. Persistence
+failure warns and leaves the report working. Python 3 is required for this optional
+ledger; missing Python disables outcomes with an explicit warning.
+
+JSON `account_reliability` and the table's RELIABILITY footer show per-account 7d/30d
+attempt counts, failure counts/rates (fractions), and the consecutive failure streak
+(`streak_count`, `streak_status`, `streak_since`). Statistics include the current run
+exactly once, even if persistence fails, and only show accounts attempted this run.
+Same-timestamp attempts retain append order; the streak counts reads, not days.
+Unattended `--quiet` runs still record outcomes but suppress the footer.
+
+A missing Claude/Codex credential is a local `credential-store` preflight outcome,
+not an attempted usage-endpoint request. Existing endpoint source IDs remain
+unchanged once that reader runs. Cursor HTTP 429 uses the existing `rate-limited`
+display status and `rate_limited` ledger status.
+
+## Diagnose and repair label/path layout (Issue #1850)
+
+`ai-quotas-setup.sh doctor [--json]` reads registry metadata and filesystem
+presence only. It reports `match`, `label-mismatch` (including a registered swap
+peer), `custom`, `missing`, `shared`, `skipped`, and `interrupted-repair`. Exit 8
+means at least one `label-mismatch`, `missing`, `shared`, or
+`interrupted-repair` finding. `custom` and `skipped` are informational: exit 0
+means no problem findings. This report never gates dispatch. Text `list` points to
+`doctor` for mismatches; its JSON schema stays unchanged.
+
+Stop all quota reads, setup commands and sessions using affected profiles, then run
+`ai-quotas-setup.sh repair-layout claude` (or `codex`). The helper claims affected
+relogin slots, locks and rechecks the registry, stages directory renames within
+the profile root, and publishes every affected `profile_dir` in one atomic
+registry replacement. Each directory follows its original registry identity;
+swapping only the strings would swap credentials. Failed renames or publication
+roll back the directories. A failed rollback exits 9 and preserves
+`.layout-repair/plan.json` plus remaining-rename instructions: preserve these
+for recovery. Abrupt termination can also leave this journal; doctor reports it
+and further repair refuses. Readers do not take the registry lock: quiescence
+is required throughout the operation, not just at commit.
+
+Missing/shared paths, collisions, symlinks, duplicate identities and interrupted
+transactions are refused. Codex repair requires a non-empty file-backed
+`auth.json`; other Codex credential stores cannot be relocated safely by this helper.
+Custom paths remain untouched.
+
+Claude Keychain repair supports complete, homogeneous cycles such as the two
+reported swapped profiles. Every destination must be another source in the
+same cycle. Service names and path-owned sidecars must match
+`Claude Code-credentials-<SHA256(NFC(config-dir))[:8]>`, hashing the
+NFC-normalized UTF-8 path; no credential files or
+inherited `CLAUDE_SECURESTORAGE_CONFIG_DIR` override may be present. This
+binding was verified against Claude Code **2.1.312** using synthetic config
+directories and a fake security command inside a sandbox denying real
+Keychain access. Other client versions fail closed until verified.
+
+The native macOS adapter requires Swift and Python3. It reads attributes only,
+requires one OAuth item for the current OS account, and refuses ambiguous or
+alternate API-key bindings. `SecItemUpdate` changes only the service attribute;
+it never retrieves or replaces secret bytes or changes ACLs. Services move
+through unique temporary names, directories move through the filesystem
+journal, then registry paths and service references publish together. Failed
+service, directory or registry updates roll both kinds of rename back; failed
+rollback preserves the journal and remaining service/path moves. Handled
+termination is ignored during mutation and rollback to protect those updates.
+
+The `.keychain-service-claude` sidecars live next to the provider directories,
+so a complete cycle leaves these path-owned files unchanged. Each final ref,
+sidecar and harness-derived destination service must agree. Native integration
+tests use only a private temporary Keychain with fixed synthetic credentials;
+they verify byte/ACL preservation and an unchanged user search list. No
+production Keychain item was migrated during testing or development.
+
+No password is stored or replayed. The adapter disables interactive prompts;
+locked or inaccessible Keychain metadata fails before moves. Non-cycle and
+mixed-store profiles use the explicit fresh-profile reauthentication alternative
+below (Issue #1887); in-place migration remains refused. Use supported commands
+rather than hand-editing the registry.
+
+Stored-path semantics: `add` alone derives `<root>/<label>/<provider>`;
+`relogin` uses the stored path, and `remove` retains the directory. Supported
+actions do not swap account paths; the history audit and missing operator
+provenance evidence are recorded in Issue #1850.
+
+For interrupted recovery, numbered staging directory `.layout-repair/N`
+corresponds to zero-based element `N` of `plan.json`: repair iterates that array
+in order. Its `profile_dir` is the original source and `expected_profile_dir`
+is the intended destination. Stop every affected consumer and preserve a copy
+of the journal. Inspect the registry to determine whether its paths are still
+original sources or all intended destinations; absence of numbered entries
+alone does not prove success. If publication did not happen, first restore any journaled Keychain services through
+their temporary names, then evacuate remaining directories into numbered staging
+slots before restoring every original source so swaps cannot collide. Keychain
+entries identify original, temporary and target service names plus OS account;
+these are metadata, never credential values. If publication completed, verify every
+destination and registry row instead. Verify credential file presence and each
+account's retained identity without printing values. Only when all affected
+rows, directories and service identities agree with one verified endpoint and
+no numbered entries remain may an operator remove the journal and empty staging
+directory. After a full rollback, the original label-mismatch findings are
+expected; there must be no new missing/shared findings. After completed repair,
+only the journal finding should remain. If publication or identity cannot be established, preserve
+everything for manual recovery; never guess or rerun repair over the journal.
+
+### Fresh-profile reauthentication
+
+When a non-cycle or mixed-store Claude layout cannot be rebound safely, the
+supported alternative is a **new permanent label and canonical profile**, with
+an owner-completed subscription login. This replaces the registry entry; it
+does not relocate an existing credential. Complete homogeneous observed cycles
+still use the repair above. No additional client version is admitted to that
+metadata repair. Unknown bindings, locked/inaccessible metadata, secure-storage
+overrides and managed authentication policies are reasons to stop and establish
+a supported login context, never to guess a service name or bypass a policy.
+
+Before starting, stop affected quota readers, setup processes and Claude sessions.
+If this chat uses an affected profile, exit it and work from an unaffected owner
+shell. Keep readers paused until the old row is retired, so the same account is
+not counted twice. Resolve the installed setup helper as `SETUP`, the actual
+registry and physical profile root using the configured `AI_QUOTAS_CONFIG` and
+`AI_QUOTAS_PROFILE_ROOT` (defaults are `~/.claude/ai-quotas.json` and
+`~/.claude/ai-quotas/profiles`). Record privately the original label, path,
+credential-ref service, sidecar and expected subscription email/account. Keep a
+private registry metadata snapshot for comparison; do not dump credential files,
+security password values, tokens or cookies. Preserve any interrupted-repair
+journal and finish its recovery before this procedure.
+
+1. Choose a new unused label, for example `work-recovered`, and its canonical
+   `<profile-root>/work-recovered/claude` path. Confirm the label is absent from
+   the registry and that neither that path nor its path-owned
+   `<profile-root>/work-recovered/.keychain-service-claude` sidecar exists
+   (including dangling links). `add` can reuse a directory, so these checks are
+   required; do not use the original label, a symlink or an existing path.
+   On macOS, for the verified 2.1.312 binding, also check **attributes only** that
+   the predicted `Claude Code-credentials-<SHA256(NFC(config-dir))[:8]>` service
+   is absent, using the exact physical config-dir string the CLI will receive.
+   An existing service, ambiguous result, locked store or access error requires
+   another verified unused destination or manual diagnosis. Do not interpret an
+   arbitrary command failure as absence. For an unverified client binding, first
+   establish the client's documented store/isolation behavior; this runbook
+   supplies no new-version binding guarantee.
+2. In that unaffected owner shell, reserve only the fresh slot:
+
+   ```bash
+   "$SETUP" add claude work-recovered --no-login
+   ```
+
+   Re-read the registry to verify the new canonical path and unchanged original
+   row. No login has run. Keep original directories, services, refs, sidecars and
+   ACLs untouched. Do not copy credentials, rename services or hand-edit paths.
+3. For the verified Claude Code 2.1.312 auth-only subscription flow, the owner runs:
+
+   ```bash
+   AI_QUOTAS_CLAUDE_LOGIN_ARGS='auth login --claudeai' \
+     "$SETUP" relogin work-recovered claude
+   ```
+
+   Use an ordinary subscription-login environment. Credential/API-key/cloud auth
+   overrides or `CLAUDE_SECURESTORAGE_CONFIG_DIR` can redirect the store or hide
+   which login is used; resolve them before continuing without changing managed
+   policy. This command does not clear such overrides for you. Do not substitute
+   `setup-token`: its documented one-year token is for model requests and does
+   not establish supported subscription usage-endpoint permission. Console OAuth
+   without an API key is stored outside the config directory and is not evidence
+   of an isolated subscription profile. See the official [authentication
+   guidance](https://code.claude.com/docs/en/authentication) and [CLI
+   reference](https://code.claude.com/docs/en/cli-reference).
+4. Confirm the new registry ref and path-owned sidecar agree with the newly
+   observed service. `list --json` reporting `ok` proves credential presence,
+   **not account identity**. Independently verify the expected subscription account
+   through the CLI's authenticated account display in the exact new config-dir;
+   `auth status` provides method/config context, and the owner must confirm the
+   expected email/account. Check the original account/path/binding stayed intact.
+   Run the same auth-only `relogin` once more and repeat identity, ref/sidecar and
+   original-binding checks. A mismatch or unreadable identity stops cutover.
+5. Only after both logins are independently verified, retire the original registry
+   row using `"$SETUP" remove OLD_LABEL claude`. This leaves its directory and
+   Keychain item on disk. Re-read the registry: the original row is absent and
+   the new verified row remains. Keep the originals for recovery. Update owner
+   aliases/nicknames or regenerate launchers for the new permanent label, then
+   resume readers. Historical ledger entries keep their old label; do not rewrite
+   them to imply the replacement was used historically.
+
+Failure/recovery boundaries: before final retirement, the original registry row
+and credential remain the recovery endpoint. Failed reservation/publication may
+leave a fresh directory but must not replace the original row. A canceled login,
+missing credential, ambiguous new service, failed relogin publication or failed
+identity check means **do not remove the original row**. Preserve the new path,
+sidecar and any newly created service for manual inspection; the provider may have
+written a credential even when setup failed. A retry at that existing destination
+must explicitly reconcile its actual service/ref/identity first; otherwise choose
+another unused destination. To abandon staging, remove only the replacement's
+registry row if it exists; retain its files/items. Do not delete arbitrary items
+or restore a whole stale registry snapshot over concurrent changes. Failed old-row
+retirement leaves both rows for inspection; readers stay paused. If retirement
+succeeds but alias updates fail, the verified replacement is the active endpoint
+and originals remain preserved. No secret-store rollback is promised because this
+procedure never rewrites the original store.
+
+### Ordered usage sources (#1884)
+
+Optional account `sources` arrays select the acquisition order. Defaults are Claude `oauth-usage`, Codex `app-server,http`, Cursor `ide-token,browser`. Configure with `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]`; `default` removes the override. `sources threshold <N>` sets the registry `source_failure_threshold` (default 3). Unknown reader source names produce safe unreadable attempts; setup accepts only known provider sources. Winning rows retain their acquisition `.source` and identify `via <source>` in a compact SOURCE footer.
+
+Every source attempt uses the bounded sibling outcomes ledger introduced in #1883. Its six status values are unchanged. Optional `terminal:false` marks intermediate attempts, preserving account reliability rates/streaks using the terminal result; historical rows without this field remain terminal. `requested_source` preserves adapter selection when acquisition stopped at a credential-store preflight. Per-source consecutive failures remain separate, so fallback success does not hide a broken primary. Browser skips retain `status:unreadable`, `skip_reason:browser-unattended`, and `terminal:false`; the fixed `skipped:browser-unattended` meaning is excluded from both account and source failure streaks. Reserve history redirection also isolates this derived ledger.
+
+`--browser` is explicit interactive authority to invoke the supported Claude CLI v2.1.248-or-later `--chrome` bridge. Only navigation to the Cursor usage dashboard and rendered-page reading are permitted; the bridge enforces its tool boundary with PreToolUse/PostToolUse hooks. It initializes a native tab group and creates a dedicated tab. Navigation acknowledgments never authorize reads: fresh native `tabs_context_mcp` metadata must prove the actual dedicated-tab URL before each page read, and the permission is consumed by that read. Redirects, errors and unknown context remain unavailable. It never signs in, types credentials, executes page JavaScript, or changes settings. Chrome must already have its extension/session connected. Plain shell and quiet/scheduled runs never invoke it. `--browser-results <file>` supports externally mediated observations and resumes at browser; private regular result files, schema, freshness, identity and finite pool numbers are strictly validated. CLI transport failure, missing connection and malformed observations fail closed without echoing diagnostics. See `/quotas` for the exact schema. The previous IDE-only implementation remains the default first source.
+
+Supported CLI integration: [Claude Code Chrome documentation](https://code.claude.com/docs/en/chrome) and [CLI reference](https://code.claude.com/docs/en/cli-reference). The live Chrome extension may be unavailable in a given runtime; synthetic bridge tests verify support independently of live login availability.
+
+#### Browser failure diagnostics (Issue #1906)
+
+The outcomes ledger retains fixed classes, without raw CLI errors, tool payloads,
+page text, tab IDs, URLs, paths, credentials or email in diagnostic evidence.
+The separate private guard record contains only an allowlisted last failure and
+two booleans (owned tab proved; read authorized). It is observational and never
+changes tool permission or substitutes for fresh URL proof. Recovered failures
+clear on positive proof; missing/invalid records are unknown.
+
+| `error_class` | Proven boundary and recovery |
+|---|---|
+| `browser_launch_failed` | OS failure launching the bridge; check the installed CLI. |
+| `browser_connection_unavailable` | Native context query failed before ownership; check the existing extension connection. |
+| `browser_tool_denied` | The read-only guard denied a tool; inspect its allowed workflow. |
+| `browser_tab_create_failed` | The owned-tab creation response failed or did not prove creation. |
+| `browser_destination_unverified` | An owned navigation acknowledgment or applicable fresh destination check failed. |
+| `browser_observation_rejected` | The completed envelope/result file failed schema, privacy, identity or freshness validation. |
+| `browser_timeout` | The actual outer subprocess raised its 90-second timeout; ledger status is `timeout`. |
+| `browser_stage_unknown` | Available facts cannot establish a stage; retain the fallback without guessing a login cause. |
+
+Other failures retain `unreadable`; validated signed-out observations retain
+`logged_out` / `browser_logged_out`. A model's valid `unreadable` result alone
+does not prove a stage. Missing post events or CLI-side permission rejection may
+therefore remain unknown. Invalid/private-format result files can prove only
+observation rejection, not which browser operation failed. Unknown helper classes
+become `browser_stage_unknown` before logging or display. The ledger's existing
+sanitizer checks class syntax only; older `browser_unavailable` rows remain intact.
+
+No diagnostic reruns a probe. A future bounded live read requires an existing
+Chrome connection, independent expected account identity and explicit owner
+authorization. Never automate sign-in or repeat a failed probe without a
+concrete new reason. These diagnostics were validated with synthetic fixtures.
+
+## Session attribution
+
+For account × project history, see [ai-account-ledger.md](ai-account-ledger.md). The dedicated ledger report is separate from live quota output.
+
+### Captured Codex HTTP wire format (Issue #1864)
+
+The 2026-11-07 fixture in `scripts/tests/fixtures/codex-wham-usage-2026-11-07.json`
+was captured at 23:29:58 UTC through the existing authenticated HTTP reader
+(HTTP 200, reader revision `dabd51bf`). The original reader rejected this body
+as an unrecognized shape. Identifiers, wallet balance, and opaque model metadata
+were redacted; reported window values and types are unchanged. No credentials
+or request headers are stored in the fixture. Later mutated test bodies are
+synthetic controls, not additional provider captures.
+
+The HTTP boundary maps `rate_limit.primary_window` and `secondary_window` to
+the shared renderer: `used_percent`, `limit_window_seconds` (seconds to minutes),
+and absolute `reset_at`, falling back to `reset_after_seconds` on the reader's
+clock. Invalid percentages or explicit unsupported durations fail closed. The shared
+renderer labels whole hours, so a present fractional-hour wire window refuses
+the response rather than truncating its label or presenting it as absent. An
+omitted duration remains an honestly labelled generic window. Weekly selection
+still follows duration rather than slot position. The app-server path and older
+HTTP camelCase bodies retain their existing behavior. An unlabelled
+`credits.balance` is not evidence of a USD amount and is not converted.
+
+### Completed native browser reads
+
+Internal Chrome-CLI `ok` observations require a private per-attempt completion
+receipt, separate from diagnostics and permission booleans. The guard correlates a
+read's allowed `PreToolUse` with successful `PostToolUse` using its tool-use ID,
+owned tab and attempt nonce. Fresh native actual-URL metadata is still required
+before every read. Missing, mismatched, reused, denied, failed, interrupted or
+unknown read evidence cannot produce an `ok` quota row. A fixed
+`browser_read_unverified` class reports unreadable provenance; the six ledger
+statuses and source fallback order are unchanged.
+
+The native MCP boundary was exercised with installed Claude Code2.1.312, a private
+configuration, a synthetic stdio MCP tool and a loopback model stub, with no live
+browser, production credential or paid request. Successful MCP reads emitted
+`tool_response` as a nonempty text content-block list with `tool_use_id`; an
+`isError:true` tool emitted no successful post event. The committed synthetic
+fixture records that generic boundary, not a live Chrome capture. Other shapes
+remain unsupported. [Claude's hook reference](https://code.claude.com/docs/en/hooks#posttooluse-input)
+documents tool-specific responses and correlation IDs.
+
+Receipt files contain only schema version, attempt nonce and bounded completion
+count. They retain no page/error/tool payload, URL, tab ID, email or credential.
+Authorization state stays separate and private; diagnostics never grant access.
+This relies on the native CLI/hook boundary and preserves the existing identity,
+freshness and observation-schema checks. Independently mediated
+`--browser-results` files keep their separate explicit/private validation boundary
+and do not require internal-hook receipts. Sign-in is never automated.
+
+API-first assessment (2026-11-08 UTC): Cursor documents usage/spending endpoints in
+its [Admin API](https://cursor.com/docs/account/teams/admin-api). Its current
+[API overview](https://cursor.com/docs/api) lists Admin/Analytics availability for
+Enterprise teams and administrator-managed keys; the
+[Analytics documentation](https://cursor.com/docs/account/teams/analytics-api)
+also states Enterprise-only availability. No documented individual-subscription
+self-service usage endpoint was found in those references. This is a documentation
+finding, not a claim about private endpoints or this owner's eligibility. An
+eligible existing provider API remains preferable; this fix mints no key, changes
+no provider acquisition order and performs no sign-in or live verification.

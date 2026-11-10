@@ -40,6 +40,12 @@ OPTIONS
   --parked                  the asking agent is parked waiting on this item
   --cost TEXT               operator effort to answer, for example "~10 min"
   --focus TEXT              attention it needs, for example "no deep focus"
+  --source-tool codex|cursor|local
+  --source-account NAME     registry nickname, or unknown
+  --capture-key SHA256      stable capture identity; repeat returns the same id
+  --return-route SHA256     local Codex profile route, requires --session UUID
+  Source fields are for the decision adapters. Without a route, an external
+  answer stays in the store and the item carries no return session.
   Every flag except --context and --option may be given once.
 
 DEDUPE
@@ -117,6 +123,7 @@ hq__sql_text_array() {
 # value travels as a psql variable.
 hq__add_sql() {
   local seq="$1" prefix="$2" ctx_sql opt_sql ctx_set="" opt_set="" def_set
+  local source_columns="" source_values=""
   ctx_sql=$(hq__sql_text_array hq_ctx "$3")
   opt_sql=$(hq__sql_text_array hq_opt "$4")
   if [ "$3" -gt 0 ]; then ctx_set="context = $ctx_sql,"; fi
@@ -136,7 +143,17 @@ hq__add_sql() {
     default_at      = coalesce(nullif(:'hq_default_at', '')::timestamptz, default_at),"
   fi
 
-  cat <<'SQL'
+  if [ -n "$5" ]; then
+    source_columns=", source_tool, source_account, capture_key, return_route"
+    source_values=", :'hq_tool', :'hq_account', :'hq_capture', nullif(:'hq_route', '')"
+    cat <<'SQL'
+SET LOCAL lock_timeout TO '30s';
+SELECT pg_advisory_xact_lock(hashtextextended(concat_ws(E'\x1f',
+         'human-queue:capture', :'hq_schema', :'hq_capture'), 0)) AS hq_locked \gset
+SELECT coalesce((SELECT id FROM items WHERE capture_key = :'hq_capture'), '') AS hq_found \gset
+SQL
+  else
+    cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
 SELECT pg_advisory_xact_lock(hashtextextended(concat_ws(E'\x1f',
          'human-queue:add', :'hq_schema', :'hq_kind', :'hq_repo', :'hq_key',
@@ -144,29 +161,42 @@ SELECT pg_advisory_xact_lock(hashtextextended(concat_ws(E'\x1f',
 SELECT coalesce((SELECT id FROM items
                   WHERE kind = :'hq_kind' AND repo = :'hq_repo' AND key = :'hq_key'
                     AND item_question_hash(question) = item_question_hash(:'hq_question')
-                    AND status = 'open'
+                    AND status = 'open' AND to_jsonb(items)->>'capture_key' IS NULL
                   LIMIT 1
                   FOR UPDATE), '') AS hq_found \gset
+SQL
+  fi
+  cat <<'SQL'
 SELECT :'hq_found' = '' AS hq_is_new \gset
 \if :hq_is_new
 WITH new_item AS (
   INSERT INTO items (id, kind, repo, key, session_id, question, context, options,
-                     default_option, default_at, impact_declared, parked, cost, focus)
-  VALUES (
 SQL
+  printf '    default_option, default_at, impact_declared, parked, cost, focus%s)\n  VALUES (\n' "$source_columns"
   printf "    '%s-' || nextval('%s'),\n" "$prefix" "$seq"
   printf '%s\n' "    :'hq_kind', :'hq_repo', :'hq_key', nullif(:'hq_session', ''), :'hq_question',"
   printf '    %s,\n    %s,\n' "$ctx_sql" "$opt_sql"
   cat <<'SQL'
     nullif(:'hq_default', ''), nullif(:'hq_default_at', '')::timestamptz,
     nullif(:'hq_impact', ''), :'hq_parked'::boolean,
-    nullif(:'hq_cost', ''), nullif(:'hq_focus', ''))
+SQL
+  printf "    nullif(:'hq_cost', ''), nullif(:'hq_focus', '')%s)\n" "$source_values"
+  cat <<'SQL'
   RETURNING id
 ), asked AS (
   INSERT INTO events (item_id, kind) SELECT id, 'asked' FROM new_item
 )
 SELECT id FROM new_item;
 \else
+SQL
+  if [ -n "$5" ]; then
+    cat <<'SQL'
+SELECT :'hq_found';
+\endif
+SQL
+    return
+  fi
+  cat <<'SQL'
 WITH bumped AS (
   UPDATE items SET
 SQL
@@ -190,7 +220,7 @@ SQL
 cmd_run() {
   local kind="" repo="" key="" question="" session="" default="" default_at=""
   local impact="" cost="" focus="" parked=false seen=" " flag i j total
-  local seq prefix errf out rc
+  local seq prefix errf out rc tool="" account="" capture="" route=""
   local -a ctx=() opts=() pv=()
 
   while [ "$#" -gt 0 ]; do
@@ -200,7 +230,7 @@ cmd_run() {
         cmd_usage
         exit 0
         ;;
-      --parked|--kind|--repo|--key|--question|--session|--default|--default-at|--impact|--cost|--focus)
+      --parked|--kind|--repo|--key|--question|--session|--default|--default-at|--impact|--cost|--focus|--source-tool|--source-account|--capture-key|--return-route)
         case "$seen" in
           *" $flag "*) hq_die_validation "add: $flag given more than once" ;;
         esac
@@ -230,6 +260,10 @@ cmd_run() {
       --impact)     impact="$2" ;;
       --cost)       cost="$2" ;;
       --focus)      focus="$2" ;;
+      --source-tool) tool="$2" ;;
+      --source-account) account="$2" ;;
+      --capture-key) capture="$2" ;;
+      --return-route) route="$2" ;;
     esac
     shift 2
   done
@@ -306,11 +340,32 @@ cmd_run() {
   if [ -n "$cost" ]; then hq_check_text "add: --cost" "$cost" 200; fi
   if [ -n "$focus" ]; then hq_check_text "add: --focus" "$focus" 200; fi
 
+  case "$seen" in
+    *" --source-tool "*|*" --source-account "*|*" --capture-key "*|*" --return-route "*)
+      if [ "$kind" != decision ] || ! [[ $tool =~ ^(codex|cursor|local)$ && $capture =~ ^[0-9a-f]{64}$ ]]; then
+        hq_die_validation "add: external capture needs a decision, known source tool and a SHA256 capture key"
+      fi
+      hq__add_required --source-account "$account"
+      hq_check_text "add: --source-account" "$account" 32
+      if [[ $account =~ [[:cntrl:]] ]]; then
+        hq_die_validation "add: --source-account must not contain control characters"
+      fi
+      if [ -n "$route" ]; then
+        if [ "$tool" != codex ] || ! [[ $route =~ ^[0-9a-f]{64}$ && $session =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]]; then
+          hq_die_validation "add: a return route needs Codex, a SHA256 route and an exact session UUID"
+        fi
+      elif [ -n "$session" ]; then
+        hq_die_validation "add: a store-only external capture cannot carry a return session"
+      fi
+      ;;
+  esac
+
   # --- secret refusal (exit 5), before any connection -----------------------
   hq_refuse_secret "add: --repo" "$repo"
   hq_refuse_secret "add: --key" "$key"
   hq_refuse_secret "add: --question" "$question"
   hq_refuse_secret "add: --session" "$session"
+  hq_refuse_secret "add: --source-account" "$account"
   i=0
   while [ "$i" -lt "${#ctx[@]}" ]; do
     hq_refuse_secret "add: --context $((i + 1))" "${ctx[i]}"
@@ -330,7 +385,8 @@ cmd_run() {
       -v "hq_question=$question" -v "hq_session=$session"
       -v "hq_default=$default" -v "hq_default_at=$default_at"
       -v "hq_impact=$impact" -v "hq_parked=$parked"
-      -v "hq_cost=$cost" -v "hq_focus=$focus")
+      -v "hq_cost=$cost" -v "hq_focus=$focus"
+      -v "hq_tool=$tool" -v "hq_account=$account" -v "hq_capture=$capture" -v "hq_route=$route")
   i=0
   while [ "$i" -lt "${#ctx[@]}" ]; do
     pv[${#pv[@]}]=-v
@@ -347,11 +403,11 @@ cmd_run() {
   hq_db_connect
   hq_mktemp errf
   rc=0
-  out=$(hq__add_sql "$seq" "$prefix" "${#ctx[@]}" "${#opts[@]}" \
+  out=$(hq__add_sql "$seq" "$prefix" "${#ctx[@]}" "${#opts[@]}" "$capture" \
     | hq_db_script -At "${pv[@]}" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     if [ "$rc" -ne 2 ] && [ "$rc" -ne 143 ] \
-      && grep -qE 'item_question_hash|items_(decision|review)_seq' "$errf" \
+      && grep -qE 'item_question_hash|items_(decision|review)_seq|source_tool|capture_key' "$errf" \
       && grep -q 'does not exist' "$errf"; then
       hq_die_error "add: the store is not migrated (run human-queue.sh migrate)"
     fi

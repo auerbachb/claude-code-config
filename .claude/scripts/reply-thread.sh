@@ -11,7 +11,10 @@
 #   - codeant   : strips any `@codeant-ai` tokens from the body (no auto-mention;
 #                 plain-text reply — triggering CodeAnt is rate-limited)
 #   - graphite  : strips any `@graphite-app` tokens from the body (no auto-mention;
-#                 plain-text reply — `@graphite-app re-review` re-triggers Graphite)
+#                 plain-text reply — `@graphite-app re-review` re-triggers Graphite).
+#                 Graphite was retired 2026-11-03 (#1889), but the App still posts
+#                 until it is uninstalled, so its threads still need a reply path.
+#                 Remove this mode once the App is gone.
 #
 # Each reviewer's strip rule targets ONLY its own @token. A `@codeant-ai` token
 # in a graphite-mode body is left intact, and vice versa — the rules are
@@ -22,7 +25,8 @@
 #
 # Usage:
 #   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body "<text>" [--pr N]
-#                   [--verdict fixed|deferred|declined --defect real|not [--agent NAME]]
+#                   [--verdict fixed|deferred|declined --defect real|not [--agent NAME]
+#                    [--fix as-given|adapted|wrong|none]]
 #   reply-thread.sh --help
 #
 # Arguments:
@@ -41,6 +45,7 @@
 #                    the reply with one hidden marker line, appended after the
 #                    reviewer rules above have run:
 #                      <!-- review-verdict: X defect=Y agent=NAME -->
+#                    (or `... agent=NAME fix=Z -->` when --fix is given)
 #                    /review-stack-audit's ledger reads it back as the thread's
 #                    verdict, ahead of the reply's wording. Requires --defect.
 #   --defect Y       real or not: was the finding a real defect? Only a marker
@@ -49,8 +54,17 @@
 #   --agent NAME     The coding agent replying (default: claude-code), so the
 #                    ledger can split verdicts by agent. Letters, digits, `.`,
 #                    `_`, `-`; at most 64 characters. Valid only with --verdict.
-#                    Without these three flags the posted body is byte-identical
-#                    to what it was before they existed.
+#   --fix Z          Optional (issue #1843): fix quality of the reviewer's
+#                    suggestion — as-given (applied as proposed, or with trivial
+#                    edits), adapted (right direction, code rewritten), wrong
+#                    (the proposed fix was incorrect or harmful), none (no fix
+#                    was suggested). Appends ` fix=Z` to the marker. Required by
+#                    the rules when --defect real; scored by the ledger only for
+#                    real defects that were not declined. Valid only with
+#                    --verdict.
+#                    Without these four flags the posted body is byte-identical
+#                    to what it was before they existed; omitting only --fix
+#                    leaves the marker byte-identical to its pre-#1843 form.
 #
 # Prerequisites:
 #   Must be run from inside a git checkout of the target repository — the
@@ -81,8 +95,8 @@
 #
 # See .claude/rules/cr-github-review.md "Processing CR Feedback" step 3 and
 # .claude/rules/greptile.md / .claude/rules/bugbot.md for the reply conventions
-# this script enforces. For CodeAnt and Graphite reply conventions, see
-# .claude/reference/codeant-graphite-supplemental.md.
+# this script enforces. For CodeAnt reply conventions, see
+# .claude/reference/codeant-supplemental.md.
 
 set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
@@ -96,6 +110,8 @@ VERDICT=""
 DEFECT=""
 AGENT=""
 AGENT_SET=0
+FIX=""
+FIX_SET=0
 
 print_help() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -160,6 +176,15 @@ while [[ $# -gt 0 ]]; do
       AGENT_SET=1
       shift 2
       ;;
+    --fix)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --fix requires a value (as-given|adapted|wrong|none)" >&2
+        exit 2
+      fi
+      FIX="$2"
+      FIX_SET=1
+      shift 2
+      ;;
     --*)
       echo "ERROR: unknown flag: $1" >&2
       exit 2
@@ -177,7 +202,7 @@ done
 
 if [[ -z "$COMMENT_ID" ]]; then
   echo "ERROR: <comment_id> is required" >&2
-  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body \"<text>\" [--pr N] [--verdict fixed|deferred|declined --defect real|not [--agent NAME]]" >&2
+  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body \"<text>\" [--pr N] [--verdict fixed|deferred|declined --defect real|not [--agent NAME] [--fix as-given|adapted|wrong|none]]" >&2
   exit 2
 fi
 
@@ -208,14 +233,14 @@ if [[ -n "$PR_NUMBER" ]] && [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-# Verdict marker flags (issue #1810). All three are validated before anything
+# Verdict marker flags (issues #1810, #1843). All four are validated before anything
 # is posted, and a flag given without --verdict is an error rather than a
 # silent no-op: an agent that thought it had recorded a verdict must find out.
-if [[ -n "$VERDICT" || -n "$DEFECT" || "$AGENT_SET" -eq 1 ]]; then
+if [[ -n "$VERDICT" || -n "$DEFECT" || "$AGENT_SET" -eq 1 || "$FIX_SET" -eq 1 ]]; then
   case "$VERDICT" in
     fixed|deferred|declined) ;;
     "")
-      echo "ERROR: --defect and --agent are valid only with --verdict (fixed|deferred|declined)" >&2
+      echo "ERROR: --defect, --agent and --fix are valid only with --verdict (fixed|deferred|declined)" >&2
       exit 2
       ;;
     *)
@@ -241,6 +266,15 @@ if [[ -n "$VERDICT" || -n "$DEFECT" || "$AGENT_SET" -eq 1 ]]; then
   if [[ ! "$AGENT" =~ $agent_re ]]; then
     echo "ERROR: --agent must be 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit (got: $AGENT)" >&2
     exit 2
+  fi
+  if [[ "$FIX_SET" -eq 1 ]]; then
+    case "$FIX" in
+      as-given|adapted|wrong|none) ;;
+      *)
+        echo "ERROR: --fix must be one of: as-given, adapted, wrong, none (got: $FIX)" >&2
+        exit 2
+        ;;
+    esac
   fi
 fi
 
@@ -362,8 +396,14 @@ if [[ -n "$VERDICT" ]]; then
     BODY="$BODY
 $OPEN_FENCE"
   fi
+  # --fix (issue #1843) adds one trailing token; omitted, the marker line is
+  # byte-identical to its pre-#1843 form.
+  FIX_TOKEN=""
+  if [[ -n "$FIX" ]]; then
+    FIX_TOKEN=" fix=$FIX"
+  fi
   BODY="$BODY
-<!-- review-verdict: $VERDICT defect=$DEFECT agent=$AGENT -->"
+<!-- review-verdict: $VERDICT defect=$DEFECT agent=$AGENT$FIX_TOKEN -->"
 fi
 
 # --------------------------------------------------------------------------

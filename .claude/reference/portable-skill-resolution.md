@@ -81,8 +81,8 @@ They fail/degrade explicitly when neither installed candidate exists.
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -97,8 +97,8 @@ and is used for the contracts a skill must *read* before acting:
 resolve_doc() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/reference/$name" \
-    "$HOME/.claude/reference/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/reference/$name}" \
+    "${HOME:+$HOME/.claude/reference/$name}" \
     ".claude/reference/$name"; do
     if [[ -r "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -144,9 +144,10 @@ the two. Edit here, never there.
 RESOLVE: Never invoke a bare `.claude/scripts/<name>` path — the repo you are
 working in may carry no `.claude/` directory. Resolve every helper script to the
 first executable of, in order:
-  "$HOME/.claude/skills-worktree/.claude/scripts/<name>"
-  "$HOME/.claude/scripts/<name>"
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/<name>}"
+  "${HOME:+$HOME/.claude/scripts/<name>}"
   ".claude/scripts/<name>"
+If `HOME` is unset or empty, skip the two installed paths.
 Read reference docs the same way under `.claude/reference/`. If no candidate
 resolves, say so in ONE visible line naming the file and the paths checked —
 `ERROR: <name> not found (checked all three paths) — <capability> unavailable`
@@ -205,11 +206,15 @@ routing or safety behavior rather than merely reducing output quality.
 | ★ `issue-claim.sh` | pm, subagent, prompt, wave, issue-maker, start-issue, + every generated chip | fallback | optional | Repo-agnostic (`gh`-driven). Also ships inside the chip `### Constraints` bullet — see below. |
 | ★ `session-state.sh` | pm, subagent, pr-monitor-and-manage | fallback | required | Repo-keyed state; see repo-scoped state below. |
 | `handoff-state.sh` | subagent, phase agents | fallback | required | Already resolved before #1189. |
+| `recovery-evidence.sh` | wrap, fixpr | fallback | required | Missing helper stops gate/wait recovery; private raw captures and typed errors survive parser failure (Issue #1974). |
+| `lib/fixpr-wait-evidence.sh` | fixpr | fallback | required | Sourced wait functions beside the resolved recovery helper, then standard three roots; missing stops the wait. Legacy selection remains verified and guarded (Issue #1975). |
+| `model-route.sh` | subagent, phase agents, PM and fleet/forgotten-PR launchers | fallback | required | Cost-first routing/submission; missing helper blocks dispatch or push (Issue #1875). |
 | `issue-dedup.sh` | issue-maker, start-issue, pm-worker | fallback | optional | Already resolved before #1189. |
 | `pr-preflight.sh`, `release-sweep.sh` | pr-monitor-and-manage | fallback | optional | Already resolved before #1189. |
 | `cr-plan.sh` | subagent, start-issue | fallback | optional | Absence means no CR plan poll; the issue-body merge is still required. |
-| `ac-checkboxes.sh` | subagent | fallback | optional | |
+| `ac-checkboxes.sh` | subagent | fallback | optional | Requires sibling `lib/ac-checkbox-markers.sh`; bootstrap ships the same library for the CI gate. |
 | `escalate-review.sh` | subagent | fallback | required | Drives the reviewer escalation chain. |
+| `bugbot-invitation.sh` | fixpr | fallback | required | Missing/unreadable → unknown and awaited, with a visible diagnostic; reads only, never triggers or consumes a grant. |
 | `local-review.sh` | pm, subagent, prompt (chip text) | fallback | optional | Missing → self-review fallback per `cr-local-review.md`. |
 | `backlog-health.sh` | pm | fallback | optional | Missing → omit the staleness block, say so. |
 | `merge-gate.sh`, `merge-sequence.sh` | pr-monitor-and-manage | fallback | required | Merge decisions must never run on a guessed gate. |
@@ -230,6 +235,7 @@ for absent config; emit one only when the script itself cannot be found.
 | ★ `chip-launching.md` (PM-context inline gate) | pm, wave, prompt, issue-maker, start-issue | fallback | **required** |
 | `pm-output-templates.md` | pm | fallback | optional |
 | `subagent-phase-guardrails.md` | subagent | fallback | required |
+| `task-model-routing.md` | worker launchers and phase agents | fallback | required |
 | `issue-claim.md` | subagent, start-issue | fallback | optional |
 | `autofile-dedup.md` | issue-maker, start-issue | fallback | optional |
 | `cr-rate-limits.md` | wave | fallback | optional |

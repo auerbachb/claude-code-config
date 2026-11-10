@@ -1,16 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "claude-code-graphite": {
-      "source": {
-        "source": "github",
-        "repo": "georgeguimaraes/claude-code-graphite"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "graphite@claude-code-graphite": true,
-    "graphite-mcp@claude-code-graphite": true
-  },
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [
@@ -166,6 +154,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/quota-reserve-guard.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -190,6 +187,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/skill-command-tracker.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/quota-reserve-turn.sh",
+            "timeout": 5
           }
         ]
       }
@@ -210,6 +212,26 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/spend-session-tracker.sh",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/ai-account-session-start.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/spend-session-tracker.sh",
+            "timeout": 30
           }
         ]
       }
@@ -284,6 +306,28 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/spend-subagent-tracker.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/spend-task-tracker.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/spend-task-tracker.sh",
             "timeout": 5
           }
         ]

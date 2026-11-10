@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # --help contract coverage for every repo script (issues #1513, #1475).
-# catalog: tests — `--help` contract for every repo script (#1513/#1475/#1528) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 12 scripts whose extraction was BSD-fatal or truncating, fixtures proving the checker rejects both pre-fix forms, and (Part 4) the empty-extraction guard: an extraction that yields nothing must exit non-zero and say so on stderr, asserted end-to-end and at the `END`-block level, with a pre-fix control that still exits 0
+# catalog: tests — `--help` contract for every repo script (#1513/#1475/#1528) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 13 scripts whose extraction was BSD-fatal or truncating, fixtures proving the checker rejects both pre-fix forms, and (Part 4) the empty-extraction guard: an extraction that yields nothing must exit non-zero and say so on stderr, asserted end-to-end and at the `END`-block level, with a pre-fix control that still exits 0
 #
 # WHY THIS SUITE EXISTS
 #
@@ -38,7 +38,7 @@
 #     makes the sweep catch a defect introduced by an implementation nobody has
 #     written yet — it tests the OUTPUT, not the extraction idiom.
 #
-#   Part 2 — content assertions for the 12 fixed scripts: every section HEADING
+#   Part 2 — content assertions for the 13 fixed scripts: every section HEADING
 #     plus at least one known BODY line from each section. Headings alone are
 #     vacuous — family B printed every heading it had and still dropped the
 #     content. Body needles are content substrings, not line counts, so they
@@ -166,7 +166,18 @@ else
 fi
 
 echo
-echo "=== Part 2 — section headings AND body content for the 12 fixed scripts ==="
+# #1654: content alone cannot distinguish a comment header from rendered help.
+for script in ac-checkboxes.sh dismiss-stale-bot-changes.sh escalate-review.sh local-review.sh merge-gate.sh pr-state.sh review-substance.sh; do
+  run_help ".claude/scripts/$script"
+  check "$script stripped help exits successfully" "$RC" "0"
+  if grep -q '^#' "$OUT"; then
+    bad "$script help retains raw comment prefixes"
+  else
+    ok "$script help strips raw comment prefixes"
+  fi
+done
+
+echo "=== Part 2 — section headings AND body content for the 13 fixed scripts ==="
 
 # script :: kind :: expected substring
 #
@@ -366,6 +377,9 @@ usage-horizon.sh :: head :: FILES
 usage-horizon.sh :: body :: observation log, mode 600
 usage-horizon.sh :: head :: DEPENDENCIES
 usage-horizon.sh :: body :: - shasum or sha256sum
+review-substance.sh :: head :: Usage:
+review-substance.sh :: body :: review-substance.sh --help
+review-substance.sh :: body :: represents an actual review, or is a hollow rubber stamp
 CONTENT_EOF
 CONTENT_TABLE="${CONTENT_TABLE%$'\n'}"
 
@@ -401,13 +415,13 @@ if [ -n "$MISSING" ]; then
   bad "all $TABLE_ROWS heading/body needles present; missing:"
   printf '%s' "$MISSING"
 else
-  ok "all $TABLE_ROWS heading/body needles present across the 12 fixed scripts"
+  ok "all $TABLE_ROWS heading/body needles present across the 13 fixed scripts"
 fi
 
-# The table must actually cover all 12 scripts — a typo'd name would silently
+# The table must actually cover all 13 scripts — a typo'd name would silently
 # shrink coverage while the assertion above still reported success.
 COVERED=$(printf '%s\n' "$CONTENT_TABLE" | sed 's/ :: .*//' | sort -u | wc -l | tr -d ' ')
-check "content table covers all 12 fixed scripts" "$COVERED" "12"
+check "content table covers all 13 fixed scripts" "$COVERED" "13"
 
 echo
 echo "=== Part 3 — controls (the checker must reject the pre-fix forms) ==="

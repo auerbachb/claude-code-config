@@ -44,7 +44,10 @@
 #     3. tools whose spend is unknown (null), last.
 #   Precision breaks ties inside each group (higher first, null last), then the
 #   tool key. A multi-repo snapshot adds a collapsed per-repo table ranked the
-#   same way. A null renders as `—`, never as `0`; a real zero renders `0`.
+#   same way. A collapsed `Velocity` fold follows (issue #1844): per tool
+#   `rounds_per_pr` and `prs_with_3plus_rounds`; per repo and in total the
+#   push-to-gate median and p90 with `no_gate_signal` and `no_head_date`.
+#   A null renders as `—`, never as `0`; a real zero renders `0`.
 #   A snapshot without the ledger fields (measured without --ledger, --repos,
 #   or --all-repos) prints one line saying so instead of a table of dashes.
 #
@@ -308,14 +311,18 @@ def ranked(tools):
 
 
 VALUE_HEADER = ["Rank", "Tool", "Spend", "Real defects", "Cost / real defect",
-                "Precision", "Sole-source PRs"]
-VALUE_ALIGN = "|---:|---|---:|---:|---:|---:|---:|"
+                "Precision", "Fix quality", "Sole-source PRs"]
+VALUE_ALIGN = "|---:|---|---:|---:|---:|---:|---:|---:|"
+# The fix-quality counts fold (issue #1843): one column per snapshot field.
+FIX_COUNT_COLUMNS = [("as-given", "fix_as_given"), ("adapted", "fix_adapted"),
+                     ("wrong", "fix_wrong"), ("none", "fix_none"), ("unknown", "fix_unknown")]
 
 
 def value_cells(rank, tool):
     return [rank, tool_name(tool), "%s (%s)" % (money(tool.get("spend_usd")), label(tool)),
             count(tool.get("real_defects")), money(tool.get("cost_per_real_defect_usd")),
-            pct(tool.get("precision")), count(tool.get("sole_provider_on"))]
+            pct(tool.get("precision")), pct(tool.get("fix_quality")),
+            count(tool.get("sole_provider_on"))]
 
 
 def render_value(doc):
@@ -344,6 +351,15 @@ def render_value(doc):
     out.append("Spend labels: `receipt` is CodeRabbit's own charge lines (a floor), "
                "`estimate` a count times a unit rate, `flat` a monthly fee prorated to the "
                "window, `none` no figure. The vendor dashboard, not this table, is the bill.")
+    out.append("Fix quality is the share of scored real-defect findings (not declined) "
+               "whose suggested fix was applied as given; `none` (no suggestion) and "
+               "`unknown` (no `fix=` recorded) are left out of it.")
+    out += ["", "<details><summary>Fix quality counts</summary>", "",
+            row(["Tool"] + [name for name, _ in FIX_COUNT_COLUMNS]),
+            "|---" + "|---:" * len(FIX_COUNT_COLUMNS) + "|"]
+    for t in ranked(tools):
+        out.append(row([tool_name(t)] + [count(t.get(field)) for _, field in FIX_COUNT_COLUMNS]))
+    out += ["", "</details>"]
     per_repo = doc.get("per_repo")
     if isinstance(per_repo, list) and per_repo:
         out += ["", "<details><summary>By repo</summary>", "",
@@ -354,6 +370,49 @@ def render_value(doc):
             for i, t in enumerate(ranked(tool_list(entry)), 1):
                 out.append(row([entry.get("repo") or DASH] + value_cells(i, t)))
         out += ["", "</details>"]
+    out += render_velocity(doc, tools, per_repo)
+    return out
+
+
+def tenths(value):
+    """A figure to 1 decimal, half-up; `—` when there is none."""
+    d = number(value)
+    if d is None:
+        return DASH
+    return str(d.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def velocity_cells(scope, entry):
+    v = entry.get("velocity") if isinstance(entry, dict) else None
+    v = v if isinstance(v, dict) else {}
+    return [scope, tenths(v.get("push_to_gate_min_median")), tenths(v.get("push_to_gate_min_p90")),
+            count(v.get("prs_timed")), count(v.get("no_gate_signal")), count(v.get("no_head_date"))]
+
+
+def render_velocity(doc, tools, per_repo):
+    """The Velocity fold (issue #1844): rounds per tool, push-to-gate per scope.
+    Pure rendering of the snapshot's own figures; a missing one renders `—`."""
+    out = ["", "<details><summary>Velocity</summary>", "",
+           row(["Tool", "Rounds / PR", "PRs with 3+ rounds"]), "|---|---:|---:|"]
+    for t in ranked(tools):
+        out.append(row([tool_name(t), tenths(t.get("rounds_per_pr")),
+                        count(t.get("prs_with_3plus_rounds"))]))
+    out += ["", row(["Scope", "Push-to-gate median (min)", "p90 (min)", "Timed PRs",
+                     "No gate signal", "No HEAD date"]), "|---|---:|---:|---:|---:|---:|"]
+    if isinstance(per_repo, list) and per_repo:
+        for entry in per_repo:
+            if isinstance(entry, dict):
+                out.append(row(velocity_cells(entry.get("repo") or DASH, entry)))
+        out.append(row(velocity_cells("Total", doc)))
+    else:
+        out.append(row(velocity_cells(doc.get("repo") or DASH, doc)))
+    out += ["", "Rounds count the distinct HEADs a tool reviewed on a PR, never the rounds it "
+            "caused. Push-to-gate runs from the merged HEAD's committer date to the first "
+            "CodeRabbit or CodeAnt `APPROVED` on it or clean `Cursor Bugbot` run on it (a "
+            "first cut of the merge gate). The committer date is a proxy for the push (a "
+            "rebase re-dates it), so read the figure as an upper bound after a rebase, "
+            "never as review latency alone. PRs with no such signal (admin "
+            "merge, relaxed tier, Greptile-only) are counted, not timed.", "", "</details>"]
     return out
 
 

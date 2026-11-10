@@ -13,7 +13,6 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [desk-cli.sh](../../../desk/bin/desk-cli.sh) | Human-queue CLI for the desk (`desk/bin/desk-cli.sh`): runs human-queue.sh with the store URL found the way the capture hook finds it |
 | [desk-policy.sh](../../../desk/bin/desk-policy.sh) | Human-queue desk policy (`desk/bin/desk-policy.sh`): prints desk/policy.json's effective values (tick cadence, interrupt rule, end of day, set size, live-desk bound) as JSON; an invalid file is the defaults with one warning |
 | [desk-tick.sh](../../../desk/bin/desk-tick.sh) | Human-queue desk tick loop (`desk/bin/desk-tick.sh`): the /desk Monitor command; ticks the store and prints a line only when the desk has something to do |
-| [graphite-repo-init.sh](../graphite-repo-init.sh) | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
 | [hhg-state.sh](../hhg-state.sh) | Extract a 2-letter USPS state code from HHG-formatted text |
 | [human-queue.sh](../../../desk/bin/human-queue.sh) | Human-queue store CLI (`desk/bin/human-queue.sh`): auto-discovers subcommands in `desk/bin/cmd/`, applies `desk/schema/` migrations, and exits 7 within two seconds when the database is unset or unreachable so callers can fail open |
 | [idea-target.sh](../../../desk/bin/idea-target.sh) | Human-queue idea target (`desk/bin/idea-target.sh`): reads a desk `idea:` / `file:` / `repo:` message on stdin and resolves the repo the idea is filed in: named in the text, else the desk session's default, else a suggestion to ask about once |

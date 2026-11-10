@@ -214,7 +214,7 @@ MG_N_MET="$(primary_met "$MG_N")"
 
 check_eq "(N) merge-gate.sh: primary_review_met == false" "false" "$MG_N_MET"
 check_eq "(N) escalate-review.sh: STATUS=trigger_greptile (not gate_met)" \
-  "STATUS=trigger_greptile" "$ESC_N"
+  "STATUS=no_reviewer paid_route=trigger_greptile" "$ESC_N"
 
 ESC_N_SATISFIED=$([[ "$ESC_N" == "STATUS=gate_met" ]] && echo true || echo false)
 check_eq "(N) both evaluators agree the primary review is NOT satisfied" \
@@ -315,7 +315,7 @@ MG_RN_MET="$(primary_met "$MG_RN")"
 
 check_eq "(Rn) merge-gate.sh: primary_review_met == false" "false" "$MG_RN_MET"
 check_eq "(Rn) escalate-review.sh: STATUS=trigger_greptile (not gate_met)" \
-  "STATUS=trigger_greptile" "$ESC_RN"
+  "STATUS=no_reviewer paid_route=trigger_greptile" "$ESC_RN"
 
 ESC_RN_SATISFIED=$([[ "$ESC_RN" == "STATUS=gate_met" ]] && echo true || echo false)
 check_eq "(Rn) both evaluators agree the primary review is NOT satisfied" \
