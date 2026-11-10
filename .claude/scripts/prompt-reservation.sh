@@ -98,10 +98,22 @@ session_owner() {
   return 1
 }
 
+valid_process_stamp() {
+  [[ "$1" =~ ^darwin-bsd:[1-9][0-9]*:[0-9]{6}$ ||
+     "$1" =~ ^linux-stat:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[1-9][0-9]*$ ]]
+}
+
+read_process_stamp() {
+  local value
+  value="$(python3 "$script_dir/lib/prompt_process_stamp.py" "$1" 2>/dev/null)" || return 1
+  valid_process_stamp "$value" || return 1
+  printf '%s\n' "$value"
+}
+
 # Only a same-host, same-user snapshot can prove that this owner went away.
 # Verify the snapshot includes our own process before interpreting absence.
 owner_gone() {
-  local pid start snapshot row rc
+  local pid start snapshot row rc saved_stamp observed_stamp
   jq -e --arg host "$host" --arg uid "$uid" '.owner.host == $host and .owner.uid == $uid' <<<"$current" >/dev/null || return 1
   pid="$(jq -r '.owner.pid' <<<"$current")" || return 1
   start="$(jq -r '.owner.start' <<<"$current")" || return 1
@@ -110,7 +122,13 @@ owner_gone() {
   rc=0
   row="$(process_row "$pid" <<<"$snapshot")" || rc=$?
   if [[ "$rc" == 3 ]]; then return 0; fi
-  [[ "$rc" == 0 && ( "${row% *}" != "$start" || "${row##* }" == Z* ) ]]
+  [[ "$rc" == 0 ]] || return 1
+  if [[ "${row% *}" != "$start" || "${row##* }" == Z* ]]; then return 0; fi
+  saved_stamp="$(jq -r '.process_stamp // empty' <<<"$current")" || return 1
+  valid_process_stamp "$saved_stamp" || return 1
+  observed_stamp="$(read_process_stamp "$pid")" || return 1
+  # Compare within the same Darwin second or Linux boot.
+  [[ "${saved_stamp%:*}" == "${observed_stamp%:*}" && "$saved_stamp" != "$observed_stamp" ]]
 }
 
 owner="$(session_owner)" || unavailable 'cannot verify the Claude session process'
@@ -198,8 +216,11 @@ if [[ "$action" == claim ]]; then
   if [[ "$current" != null ]] && ! owner_gone; then exit 10; fi
   generation="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || unavailable 'cannot generate a reservation token'
   [[ "$generation" =~ ^[0-9a-f]{32}$ ]] || unavailable 'cannot generate a reservation token'
-  next="$(jq -cn --arg generation "$generation" --argjson owner "$owner" \
-    '{version:1,generation:$generation,owner:$owner}')" || unavailable 'cannot encode reservation'
+  owner_pid="$(jq -er .pid <<<"$owner")" || unavailable 'cannot identify reservation owner'
+  process_stamp="$(read_process_stamp "$owner_pid")" || process_stamp=""
+  next="$(jq -cn --arg generation "$generation" --argjson owner "$owner" --arg stamp "$process_stamp" \
+    '{version:1,generation:$generation,owner:$owner} + (if $stamp == "" then {} else {process_stamp:$stamp} end)')" \
+    || unavailable 'cannot encode reservation'
   cas "$next"
   printf '%s\n' "$generation"
   exit 0

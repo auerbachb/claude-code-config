@@ -120,6 +120,33 @@ call "$owner2" claim --repo org/prompt --kind leave
 check 20 "$rc" 'malformed reservation cannot authorize a prompt'
 check '{"version":1}' "$(read_slot org/prompt leave)" 'malformed state remains untouched'
 
+# Keep the visible PID and coarse ps time fixed while replacing its native stamp.
+cat > "$tmp/bin/python3" <<'PYTHON'
+#!/usr/bin/env bash
+[[ "${1##*/}" == prompt_process_stamp.py ]] || exit 1
+case "$2" in
+  90000001) [[ -n "${PRECISE_STAMP:-}" ]] && printf '%s\n' "$PRECISE_STAMP" ;;
+  90000002) printf '%s\n' 'darwin-bsd:1794204000:000003' ;;
+  *) exit 1 ;;
+esac
+PYTHON
+chmod +x "$tmp/bin/python3"
+PRECISE_STAMP='darwin-bsd:1794204000:000001' call "$owner1" claim --repo org/precise --kind leave
+check 0 "$rc" 'an available native process stamp is saved'
+original_generation="$out"
+check 'darwin-bsd:1794204000:000001' "$(read_slot org/precise leave | jq -r .process_stamp)" 'stored finer process evidence'
+for stamp in '' 'invalid' 'darwin-bsd:1794204000:000001' 'darwin-bsd:1794204001:000001' 'linux-stat:11111111-1111-1111-1111-111111111111:1'; do
+  PRECISE_STAMP="$stamp" call "$owner2" claim --repo org/precise --kind leave
+  check 10 "$rc" 'missing, invalid, equal, or incompatible stamps retain the owner'
+done
+PRECISE_STAMP='darwin-bsd:1794204000:000002' call "$owner2" claim --repo org/precise --kind leave
+check 0 "$rc" 'different native stamp proves same-second PID reuse'
+new_generation="$out"
+call "$owner1" release --repo org/precise --kind leave --generation "$original_generation"
+check 10 "$rc" 'stale generation cannot clear the finer-stamp replacement'
+check "$new_generation" "$(read_slot org/precise leave | jq -r .generation)" 'new reservation survives stale release'
+rm "$tmp/bin/python3"
+
 subagent="$root/.claude/skills/subagent/SKILL.md"
 leaveby="$root/.claude/skills/leave-by/SKILL.md"
 extract_skill_bash "$subagent" subagent-step7-leave-elicitation-gate > "$tmp/leave-read"
