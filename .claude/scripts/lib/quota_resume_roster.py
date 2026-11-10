@@ -18,13 +18,23 @@ ACCOUNT_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+\-]{0,127}\Z")
 KINDS = ("end", "usage-limit-park")
 
 
-def physical_directory(path):
+def absolute_directory(path):
     if not isinstance(path, str) or any(ord(ch) < 32 for ch in path):
         raise ValueError("invalid directory")
     value = Path(path)
-    if not value.is_absolute() or not value.is_dir():
+    if not value.is_absolute():
+        raise ValueError("directory is unavailable")
+    return value
+
+
+def resolve_directory(value):
+    if not value.is_dir():
         raise ValueError("directory is unavailable")
     return value.resolve(strict=True)
+
+
+def physical_directory(path):
+    return resolve_directory(absolute_directory(path))
 
 
 def metadata(setup):
@@ -268,11 +278,13 @@ def end_records(root):
 def list_records(root, accounts, source, profile, parked=(), park_lookup="not requested"):
     projects = shared_projects(profile)
     end, invalid = end_records(root)
-    entries, conflicts = {}, set()
-    # An explicit, verified /end record takes precedence for the same
-    # conversation. A single park can have one record per parked PR.
+    sessions = {}
+    # Read explicit /end first so it remains the preferred handoff. A park
+    # can provide more than one independently verified handoff.
     for item in [*end, *parked]:
         try:
+            if not isinstance(item, dict):
+                raise ValueError("invalid record")
             kind = item.get("checkpoint")
             item_profile = physical_directory(item.get("source_profile"))
             if item_profile != profile:
@@ -283,39 +295,50 @@ def list_records(root, accounts, source, profile, parked=(), park_lookup="not re
             if not isinstance(sid, str) or not SESSION_ID.fullmatch(sid) or kind not in KINDS:
                 raise ValueError("record identity changed")
             sid = sid.lower()
-            cwd = physical_directory(item["cwd"])
-            handoff = local_handoff(item["handoff"], root)
-            if sid in entries:
-                if entries[sid]["cwd"] != str(cwd):
-                    conflicts.add(sid)
-                continue
+            handoff = str(local_handoff(item["handoff"], root))
             summary = item["summary"]
             if not isinstance(summary, str):
                 raise ValueError("invalid summary")
-            # Park stores the scoped handoff summary without another helper
-            # call under reserve. Apply the same display bound on either path.
-            summary = display_summary(summary)
-            transcript = has_transcript(projects, sid)
-            options = []
-            for label, (launcher, target) in accounts.items():
-                if label == source:
-                    continue
-                if transcript and projects == shared_projects(target):
-                    options.append({"target_account": label, "status": "portable",
-                                    "command": f"cd -- {quote(str(cwd))} && {launcher} --resume {quote(sid)}"})
-                else:
-                    options.append({"target_account": label, "status": "not portable", "handoff": str(handoff)})
-            entries[sid] = {"session_id": sid, "cwd": str(cwd), "source_account": source,
-                            "summary": summary, "checkpoint": kind,
-                            "handoff": str(handoff), "options": options}
-        except (KeyError, OSError, TypeError, ValueError):
+            recorded = absolute_directory(item["cwd"])
+            try:
+                cwd = str(resolve_directory(recorded))
+                available = True
+            except (OSError, RuntimeError, ValueError):
+                cwd = str(recorded)
+                available = False
+            if sid not in sessions:
+                sessions[sid] = (
+                    {"session_id": sid, "cwd": cwd, "source_account": source,
+                     "summary": display_summary(summary), "checkpoint": kind, "handoff": handoff},
+                    {},
+                    set(),
+                )
+            _, handoffs, locations = sessions[sid]
+            handoffs.setdefault(handoff, {"path": handoff, "cwd": cwd, "cwd_available": available})
+            locations.add((cwd, available))
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
             invalid += 1
-    for sid in conflicts:
-        entry = entries[sid]
-        entry["options"] = [{"target_account": option["target_account"],
-                             "status": "not portable", "handoff": entry["handoff"]}
-                            for option in entry["options"]]
-    return {"entries": list(entries.values()), "unreadable_records": invalid + len(conflicts),
+
+    entries = []
+    for sid, (entry, handoffs, locations) in sessions.items():
+        if len({cwd for cwd, _ in locations}) > 1:
+            invalid += 1
+        # Missing or conflicting locations still have handoffs, but never
+        # lend a resume command to a different working directory.
+        portable = locations == {(entry["cwd"], True)} and has_transcript(projects, sid)
+        options = []
+        for label, (launcher, target) in accounts.items():
+            if label == source:
+                continue
+            if portable and projects == shared_projects(target):
+                options.append({"target_account": label, "status": "portable",
+                                "command": f"cd -- {quote(entry['cwd'])} && {launcher} --resume {quote(sid)}"})
+            else:
+                options.append({"target_account": label, "status": "not portable", "handoff": entry["handoff"]})
+        entry["handoffs"] = list(handoffs.values())
+        entry["options"] = options
+        entries.append(entry)
+    return {"entries": entries, "unreadable_records": invalid,
             "park_lookup": park_lookup,
             "precondition": "Close the original Claude session before running a resume command."}
 
