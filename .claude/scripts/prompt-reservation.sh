@@ -4,6 +4,8 @@
 #        [--issue N] [--generation TOKEN]
 # claim prints a generation on success. 10 = occupied/lost; 20 = cannot verify;
 # 2 = bad arguments. Never time out a prompt whose owner might still be alive.
+# For release, 0 confirms removal and 10 confirms the exact owner/token is gone.
+# Other results leave the caller responsible for retrying that same token.
 
 set -uo pipefail
 
@@ -174,19 +176,49 @@ if [[ "$action" == commit-leave ]]; then
     esac
   done
 fi
-rc=0
-current="$("$state" --repo "$repo" --get-json "$path" 2>/dev/null)" || rc=$?
-if [[ "$rc" == 3 ]]; then current=null
-elif [[ "$rc" != 0 ]]; then unavailable 'cannot read reservation state'; fi
-jq -e 'type == "null" or
-  (type == "object" and .version == 1 and
-   (.generation | type == "string" and test("^[0-9a-f]{32}$")) and
-   (.owner | type == "object" and
-    (.pid | type == "string" and test("^[1-9][0-9]{0,9}$")) and
-    (.uid | type == "string" and test("^[0-9]{1,10}$")) and
-    (.host | type == "string" and length > 0) and
-    (.start | type == "string" and test("^[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$"))))' <<<"$current" >/dev/null 2>&1 ||
-  unavailable 'reservation state is invalid'
+read_reservation() {
+  local rc=0
+  current="$("$state" --repo "$repo" --get-json "$path" 2>/dev/null)" || rc=$?
+  if [[ "$rc" == 3 ]]; then current=null
+  elif [[ "$rc" != 0 ]]; then unavailable 'cannot read reservation state'; fi
+  jq -e 'type == "null" or
+    (type == "object" and .version == 1 and
+     (.generation | type == "string" and test("^[0-9a-f]{32}$")) and
+     (.owner | type == "object" and
+      (.pid | type == "string" and test("^[1-9][0-9]{0,9}$")) and
+      (.uid | type == "string" and test("^[0-9]{1,10}$")) and
+      (.host | type == "string" and length > 0) and
+      (.start | type == "string" and test("^[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$"))))' <<<"$current" >/dev/null 2>&1 ||
+    unavailable 'reservation state is invalid'
+}
+require_owned_reservation() {
+  local rc=0
+  jq -e --arg token "$generation" --argjson owner "$owner" \
+    '. != null and .generation == $token and .owner == $owner' <<<"$current" >/dev/null || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) exit 10 ;;
+    *) unavailable 'cannot verify reservation ownership' ;;
+  esac
+}
+read_reservation
+
+# A compare loss can leave our token in place; only a conclusive re-read may
+# report it gone. One retry is enough for the common transient lock timeout.
+if [[ "$action" == release ]]; then
+  for attempt in 1 2; do
+    require_owned_reservation
+    release_rc=0
+    "$state" --repo "$repo" --cas "$path=null" --expect "$current" >/dev/null || release_rc=$?
+    case "$release_rc" in
+      0) exit 0 ;;
+      6|7) read_reservation ;;
+      *) unavailable 'cannot release reservation' ;;
+    esac
+  done
+  require_owned_reservation
+  unavailable 'reservation release did not complete'
+fi
 
 cas() {
   local code=0
@@ -205,6 +237,4 @@ if [[ "$action" == claim ]]; then
   exit 0
 fi
 
-jq -e --arg token "$generation" --argjson owner "$owner" \
-  '. != null and .generation == $token and .owner == $owner' <<<"$current" >/dev/null || exit 10
-if [[ "$action" == release ]]; then cas null; fi
+require_owned_reservation
