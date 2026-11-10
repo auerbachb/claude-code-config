@@ -8,7 +8,7 @@ triggers:
   - leaving at
   - I'm out at
   - done for the day at
-argument-hint: "<clock time> (e.g. `7 PM`, `5:30 PM`) [--lead Nm] | cancel | status | --checkin --generation <token> (internal — emitted by the wind-down Monitor) | --elicit (internal — /subagent Step 7 asks the user for the time before the first new-pipeline launch)"
+argument-hint: "<clock time> (e.g. `7 PM`, `5:30 PM`) [--lead Nm] | cancel | status | --checkin --generation <token> (internal — emitted by the wind-down Monitor) | --elicit --reservation <token> (internal — /subagent Step 7 asks the user for the time before the first new-pipeline launch)"
 ---
 
 You say the time once. From then on the thread plans around it: nothing starts that cannot finish
@@ -43,6 +43,7 @@ PM_CONFIG_GET=$(resolve_script pm-config-get.sh)        || PM_CONFIG_GET=""
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh) || ESTIMATE_RESOLVE_SH=""
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh)     || OVERRUN_CHECK_SH=""
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
+PROMPT_RESERVE_SH=$(resolve_script prompt-reservation.sh) || PROMPT_RESERVE_SH=""
 
 REPO_KEY=""
 [[ -n "$SESSION_STATE_SH" ]] && { REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; }
@@ -74,7 +75,7 @@ can never be reinterpreted as a fresh declaration:
 | Invocation | Mode |
 |---|---|
 | `--checkin --generation <token>` | **check-in** (Step 8) — internal; only the Monitor armed in Step 6 emits it |
-| `--elicit` | **elicit** (Step 0e) — internal; `/subagent` Step 7 asks the user for the time, then arms Steps 1–5 only (no Monitor) |
+| `--elicit --reservation <token>` | **elicit** (Step 0e) — internal; `/subagent` Step 7 asks the user for the time, then arms Steps 1–5 only (no Monitor) |
 | `cancel` / `off` / "never mind, I'm staying" | **cancel** (Step 9) |
 | `status` | **status** — print the armed line from Step 7 and stop; write nothing |
 | anything else, or a leave-time phrase recognized in chat | **declare** — **Step 9 first when one is already armed**, then Steps 1–7 |
@@ -128,7 +129,35 @@ that is the source gate defeated through the one door built to honour it.
 
 Reached only from `/subagent` Step 7, before a thread's first new-pipeline launch, when no
 unexpired deadline is armed for the repo and the session is attended. Step 7 owns *when* to ask;
-this step owns the question and everything it writes.
+this step owns the question and everything it writes. Bind the exact `--reservation` argument
+to `LEAVE_PROMPT_GENERATION`. A missing token is an invalid internal invocation: return to Step 7
+without asking or writing.
+
+<!-- test-anchor: leave-by-elicit-verify-reservation -->
+
+```bash
+ELICIT_RESERVATION_VERIFIED=false
+if [[ -n "${PROMPT_RESERVE_SH:-}" && -n "${LEAVE_PROMPT_GENERATION:-}" ]] &&
+   "$PROMPT_RESERVE_SH" verify --repo "$REPO_KEY" --kind leave --generation "$LEAVE_PROMPT_GENERATION"; then
+  ELICIT_RESERVATION_VERIFIED=true
+fi
+```
+
+Require `ELICIT_RESERVATION_VERIFIED=true` before proceeding. Take one snapshot before the first
+question and carry it unchanged through the answer (including a dismissal):
+
+<!-- test-anchor: leave-by-elicit-snapshot -->
+
+```bash
+ELICIT_BASELINE=$("$PROMPT_RESERVE_SH" snapshot-leave --repo "$REPO_KEY" --kind leave \
+  --generation "$LEAVE_PROMPT_GENERATION") || ELICIT_BASELINE=""
+```
+
+An empty baseline means return to Step 7 without asking or writing. A direct leave declaration
+or active Monitor may have arrived since the Step 7 read. Verify ownership before each follow-up
+question, but do not refresh the baseline. The answer write compares the original scheduling
+identity and the exact reservation under the state writer's lock. Step 7 releases its token when
+this invocation returns.
 
 **Ask once, with `AskUserQuestion`** (`ask-menu.md`), question text *"When will you likely next
 close your laptop?"*, options in this order:
@@ -171,19 +200,11 @@ Rationale: `.claude/reference/leave-time.md` §"Asking for the time instead of w
 and `/pause-resume` Step 5 both restore a wind-down from `leave.active` plus the two epochs, with
 no way to tell "the Monitor died with its session" from "no Monitor was ever meant to exist".
 
-**Export the marker BEFORE Step 1 runs**, so Step 5's `.leave` literal publishes it in the same
-`--set` as `active:true`:
-
-<!-- test-anchor: leave-by-elicit-planning-only-preset -->
-
-```bash
-WINDDOWN_SCHEDULED=false   # consumed by Step 5's .leave literal; every other path defaults true
-```
-
-That atomic write is the whole mechanism. Set the variable here, as an assignment rather than an
-instruction to remember, because a marker that depends on a later step running is exactly the
-marker that goes missing. Step 5's own `ARM_RC` already reports the write's failure, so **no
-separate re-assertion follows** — and that absence is deliberate.
+Step 5 derives the planning-only flag in the same Bash call that writes it. Bind the write mode
+from this skill's original invocation every time Step 5 runs: `elicited` for `--elicit`, `direct`
+only for an explicit declaration. A new Bash call does not inherit a prior shell's variables.
+For an elicited call carry the original generation and snapshot; missing mode, generation or
+snapshot stops without writing. Never infer a direct declaration from a missing token.
 
 **Do NOT re-assert the flag with a bare `--set` after Step 5.** A follow-up
 `--set …leave.winddown_scheduled=false` is a blind sub-key write, and by the time it runs an
@@ -200,13 +221,10 @@ it — carries no such field, so the readers' default has to be the historical b
 compaction would start silently cancelling real wind-downs. A non-zero `ARM_RC` is worth one line:
 nothing was armed, so nothing is planning, and the elicited time did not take.
 
-**Step 0's re-declaration guard still applies — to BOTH branches.** If `.leave.active` is true or
-`.leave.winddown_task_id` is non-null, this is a re-declaration like any other: run **Step 9
-first**, and only then Steps 1–5 **or** the `no_deadline_until` write below. The marker branch needs
-the guard just as much as the arming one: it rewrites the whole `.leave` object with a null identity
-pair, so entering it with a live Monitor recorded discards the only record of that task ID — the
-Monitor keeps running, nothing can name it, and it fires a wind-down against a deadline the user has
-just declined. Skipping the guard on either path strands a live Monitor that nothing can name.
+**Elicitation never runs Step 9.** The snapshot only admits a state without an active or pending
+Monitor (a spent planning-only record is safe). If an explicit declaration, a new window, or a
+Monitor identity arrives after that snapshot, keep it and discard the menu answer. Do not stop
+a Monitor or try to re-declare on the menu's behalf.
 
 ### The suppression marker — `no_deadline_until`
 
@@ -258,109 +276,27 @@ if [[ "$NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]]; then
   # to answer — neither is a declaration. A true here would make Step 11 recovery treat a
   # suppression marker as a live wind-down with no deadline behind it, and report an
   # inconsistent record on every session start.
-  # Bound to a variable so the retry below re-sends the IDENTICAL write rather than a
-  # re-interpolated near-copy that could drift from the one that failed.
-  ND_SET=".repos[\"$REPO_KEY\"].leave={\"active\":false,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"no_deadline_until\":${NO_DEADLINE_UNTIL},\"checkin_epoch\":null,\"lead_minutes\":null,\"source_window_str\":null,\"winddown_task_id\":null,\"winddown_generation\":null}"
-  # WHOLE-OBJECT WRITE, SO WHOLE-OBJECT CAS. This replaces `.leave` outright, and Step 0's
-  # re-declaration guard only proves what THIS invocation saw on entry — it says nothing
-  # about a declaration landing between that guard and this write. Unguarded, an explicit
-  # `/leave-by 7 PM` from another thread is erased here: its deadline, its checkin_epoch,
-  # and the winddown_task_id that is the only handle on its live Monitor, which then fires
-  # against a deadline nobody can name. `--expect` the object read on entry so the write
-  # lands only on the record this branch actually decided about.
-  ND_PRIOR_RC=0
-  ND_PRIOR=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave") || ND_PRIOR_RC=$?
-  if [ "$ND_PRIOR_RC" -eq 6 ]; then
-    ND_PRIOR_RC=0
-    ND_PRIOR=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave") || ND_PRIOR_RC=$?
-  fi
-  if [ "$ND_PRIOR_RC" -ne 0 ]; then
-    NO_DEADLINE_RC=5            # unreadable is not absent: write nothing, report
+  ND_VALUE="{\"active\":false,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"no_deadline_until\":${NO_DEADLINE_UNTIL},\"checkin_epoch\":null,\"lead_minutes\":null,\"source_window_str\":null,\"winddown_task_id\":null,\"winddown_generation\":null}"
+  if [[ -n "${PROMPT_RESERVE_SH:-}" && -n "${LEAVE_PROMPT_GENERATION:-}" && -n "${ELICIT_BASELINE:-}" ]]; then
+    "$PROMPT_RESERVE_SH" commit-leave --repo "$REPO_KEY" --kind leave \
+      --generation "$LEAVE_PROMPT_GENERATION" --baseline "$ELICIT_BASELINE" \
+      --window null --leave "$ND_VALUE" || NO_DEADLINE_RC=$?
   else
-    "$SESSION_STATE_SH" --cas "$ND_SET" --expect "$ND_PRIOR" >/dev/null 2>&1 \
-      || NO_DEADLINE_RC=$?
-    # Exit 6 is a retryable lock timeout — retried HERE, not in prose beside the block, or
-    # a moment's contention leaves the marker unwritten and the question fires again on the
-    # very next launch, which is the nag this branch exists to end.
-    if [ "$NO_DEADLINE_RC" -eq 6 ]; then
-      NO_DEADLINE_RC=0
-      "$SESSION_STATE_SH" --cas "$ND_SET" --expect "$ND_PRIOR" >/dev/null 2>&1 \
-        || NO_DEADLINE_RC=$?
-    fi
-    # Exit 7 = a successor replaced `.leave` while we were deciding. Their declaration is
-    # newer and real; suppressing the question is not worth erasing it. Leave it alone and
-    # report — the only cost is that the gate may ask again, which is the safe direction.
-  fi
-  # RETIRE A SPENT WINDOW TOO, or "no deadline today" declines every launch (issue #1679).
-  # This branch is reachable only when the elicitation gate found the deadline ABSENT or
-  # EXPIRED — an unexpired one takes that gate's `deadline already armed` skip and never
-  # asks. So a `.window` still sitting here is spent, and the decline gate cannot tell
-  # spent from live: an expired epoch is still a valid epoch, so `REMAINING_SEC` goes
-  # negative and `BOUND_MIN * 60 >= REMAINING_SEC` declines EVERY pipeline. The user
-  # answered "no deadline today" and would watch the whole board refuse to start.
-  # Re-read and re-check expiry rather than trusting the gate's read: identity is the
-  # deadline, exactly as in Step 8.6, so a window armed by someone else in the gap
-  # carries a future epoch, fails this test, and is left alone.
-  ND_WINDOW_RC=0
-  ND_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || ND_WINDOW_RC=$?
-  if [ "$ND_WINDOW_RC" -eq 6 ]; then
-    ND_WINDOW_RC=0
-    ND_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || ND_WINDOW_RC=$?
-  fi
-  ND_WINDOW_EPOCH=$(printf '%s' "$ND_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
-  if [ "$ND_WINDOW_RC" -eq 0 ] \
-     && printf '%s' "$ND_WINDOW_EPOCH" | grep -Eq '^[1-9][0-9]{0,10}$' \
-     && [ "$ND_WINDOW_EPOCH" -le "$(date -u +%s)" ]; then
-    ND_CAS_RC=0
-    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-      --expect "$ND_WINDOW" >/dev/null 2>&1 || ND_CAS_RC=$?
-    if [ "$ND_CAS_RC" -eq 6 ]; then
-      ND_CAS_RC=0
-      "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-        --expect "$ND_WINDOW" >/dev/null 2>&1 || ND_CAS_RC=$?
-    fi
-    # EXIT 7 IS NOT YET OWNERSHIP LOSS — `--expect` compares the WHOLE object, and
-    # `.window` carries the mutable `launch_decisions` sub-key. A launch gate recording an
-    # overrun answer in the gap changes the object without touching `deadline_epoch`, so
-    # the CAS loses to a write that did not move the deadline at all. Re-read once and
-    # retry when the deadline is still the spent one we decided about; only a CHANGED
-    # deadline means somebody armed a new window and this clear must stand down. Without
-    # this, an unrelated decision write leaves the expired deadline armed and every later
-    # launch declined — the failure this clear exists to prevent, reintroduced by the
-    # guard meant to make it safe. One retry, not a loop: a second loss means real churn.
-    if [ "$ND_CAS_RC" -eq 7 ]; then
-      ND_RECHECK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) || ND_RECHECK=""
-      ND_RECHECK_EPOCH=$(printf '%s' "$ND_RECHECK" | jq -r '.deadline_epoch // empty' 2>/dev/null)
-      if [ -n "$ND_RECHECK_EPOCH" ] && [ "$ND_RECHECK_EPOCH" = "$ND_WINDOW_EPOCH" ]; then
-        ND_CAS_RC=0
-        "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-          --expect "$ND_RECHECK" >/dev/null 2>&1 || ND_CAS_RC=$?
-      fi
-    fi
-    # A surviving rc 7 = a genuinely different deadline is armed, which needs no clearing.
-    # Anything else leaves the spent window in place and is worth one line.
+    NO_DEADLINE_RC=20
   fi
 else
   NO_DEADLINE_RC=9
 fi
 ```
 
-A `NO_DEADLINE_RC` still non-zero after that retry (`9` means the boundary itself would not
-compute) → say so in one line and write nothing. The only cost is that Step 7 asks again
-on the next launch, which is the correct failure: an unwritten "don't ask" must not be reported as
-written.
+A non-zero `NO_DEADLINE_RC` means the answer was not stored. Exit 10 means another scheduling
+change took precedence; re-read it in Step 7. Exit 9 means the boundary could not be computed.
+Say which happened in one line and do not report a marker as written.
 
-`lead_minutes` is `null` here on purpose — no lead was resolved because no deadline was armed, and
-the launch gate's default of 30 covers the field's absence anyway. The marker suppresses **only the
-question**; it declines nothing and gates nothing.
-
-**That last clause is only true because the spent `.window` is retired alongside it.** The marker
-lives in `.leave`, but the thing the launch gate reads is `.window.deadline_epoch` — so leaving a
-spent deadline behind would make "no deadline today" the most restrictive answer on the menu,
-declining every pipeline in the repo for the rest of the day while the user believes they just
-removed the constraint. The clear is narrowed twice over: it fires only on this branch (reached
-only when the gate saw no live deadline), and only when a fresh re-read still shows an epoch in the
-past. A `/pm --window` armed in the gap carries a future epoch and is left untouched.
+`lead_minutes` is null because no deadline was armed. The suppression marker and retirement of
+the spent window commit together. If `/pm --window` or a direct leave declaration replaces the
+window or leave record, neither write lands. A launch decision against the same spent window can
+be retried once because it does not change the scheduling identity.
 
 ## Step 1: Normalize the phrase to a canonical window string
 
@@ -495,15 +431,35 @@ Step 10's decline check both read `.window.deadline_epoch`, and a second copy is
 go stale. `.leave` carries what is new: the lead time, the computed check-in, and the wind-down
 Monitor's identity.
 
+For this Bash call, set `LEAVE_WRITE_MODE` to the mode from the original invocation as described
+in Step 0e. Only an explicit declaration can select `direct`.
+
 <!-- test-anchor: leave-by-arm-state -->
 
 ```bash
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ARM_RC=0
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].window={\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}" \
-  --set ".repos[\"$REPO_KEY\"].leave={\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null,\"winddown_scheduled\":${WINDDOWN_SCHEDULED:-true}}" \
-  2>/dev/null || ARM_RC=$?
+case "${LEAVE_WRITE_MODE:-}" in
+  elicited) WINDDOWN_SCHEDULED=false ;;
+  direct) WINDDOWN_SCHEDULED=true ;;
+  *) ARM_RC=20 ;;  # Never fall through to an explicit declaration on a fresh shell.
+esac
+if [[ "$ARM_RC" == 0 ]]; then
+  WINDOW_VALUE="{\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}"
+  LEAVE_VALUE="{\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null,\"winddown_scheduled\":${WINDDOWN_SCHEDULED}}"
+  if [[ "$LEAVE_WRITE_MODE" == elicited ]]; then
+    if [[ -n "${PROMPT_RESERVE_SH:-}" && -n "${LEAVE_PROMPT_GENERATION:-}" && -n "${ELICIT_BASELINE:-}" ]]; then
+      "$PROMPT_RESERVE_SH" commit-leave --repo "$REPO_KEY" --kind leave \
+        --generation "$LEAVE_PROMPT_GENERATION" --baseline "$ELICIT_BASELINE" \
+        --window "$WINDOW_VALUE" --leave "$LEAVE_VALUE" || ARM_RC=$?
+    else
+      ARM_RC=20
+    fi
+  else
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].window=$WINDOW_VALUE" \
+      --set ".repos[\"$REPO_KEY\"].leave=$LEAVE_VALUE" 2>/dev/null || ARM_RC=$?
+  fi
+fi
 # The window object this declaration just armed, for the Step 6 rollback CAS. Read it back
 # rather than reconstructing it, so the expected value is byte-for-byte what is stored.
 # ARM_WINDOW_RC is what the rollback branches on: an unreadable snapshot is NOT an absent one.
@@ -520,8 +476,8 @@ real one lives. `source_window_str` is the only field carrying user text, so it 
 `jq -R`, never interpolated.
 
 **`winddown_scheduled` is written HERE, in the same object as `active:true`** (issue #1679). Step
-0e's elicited branch sets `WINDDOWN_SCHEDULED=false` before reaching this step; every other caller
-leaves it unset and takes the `:-true` default. It has to ride along in this literal rather than
+5 sets it to false for explicit mode `elicited` and true for mode `direct`. It has to ride
+along in this literal rather than
 follow as a second write, because between an `active:true` that says "a wind-down is live" and a
 later marker that says "no Monitor was ever meant to exist", the record reads as the former — and
 Step 11 or `/pause-resume` Step 5 landing in that gap arms a check-in the user never asked for.
@@ -529,7 +485,9 @@ One `--set` of the whole object leaves no gap to land in. The same reasoning as 
 "publish the generation BEFORE arming": the field a later reader validates against must never be
 absent while the flag that invites the read is already true.
 
-A non-zero `ARM_RC` (retry once on exit `6`, a lock timeout) → arm no Monitor, print
+An elicited `ARM_RC=10` means another scheduling change took precedence; report it and return to
+Step 7 without arming or retiring a Monitor. Other non-zero `ARM_RC` (the direct declaration may
+retry once on exit `6`, a lock timeout) → arm no Monitor, print
 `Leave time not set — state write failed (rc=$ARM_RC).`, and stop. Writing state before arming is
 deliberate: a Monitor with no state behind it fires into nothing, while state with no Monitor is
 visible, correctable, and recovered on the next session start (Step 11).

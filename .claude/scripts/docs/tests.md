@@ -150,6 +150,7 @@ opt-in of issue #1544.
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
 | [pr-state-unmarked-replies.test.sh](../tests/pr-state-unmarked-replies.test.sh) | Tests the advisory `unmarked_replies` count `pr-state.sh` adds to its bundle |
+| [prompt-reservation.test.sh](../tests/prompt-reservation.test.sh) | Proves real state CAS, process recovery, and the two /subagent prompt gates against competing callers |
 | [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
 | [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, the `account-config.md` leg, and the `setup-skills-worktree.sh` delegation guard |
 | [quota-date.test.sh](../tests/quota-date.test.sh) | Discriminating GNU/uutils/BSD/unavailable quota date operations, bounded hangs, partial output and epoch-file decoys |
