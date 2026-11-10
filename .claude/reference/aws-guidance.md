@@ -42,8 +42,8 @@ Full guidance for working with AWS under the new experience. The auto-loaded sum
 Not all AWS services are available. If a service isn't working:
 
 1. Run the command `aws freetier get-account-plan-state`
-2. If `accountPlanType: "FREE"`, check the [Free Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-free-tier). Also check the [Paid Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-paid-plan) — if the service appears there but not on the Free list, it requires upgrading to the paid plan.
-3. If `accountPlanType: "PAID"`, check the [Paid Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-paid-plan).
+2. If `"accountPlanType": "FREE"`, check the [Free Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-free-tier). Also check the [Paid Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-paid-plan) — if the service appears there but not on the Free list, it requires upgrading to the paid plan.
+3. If `"accountPlanType": "PAID"`, check the [Paid Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-paid-plan).
 4. If neither list shows the service, check the [Not supported for this experience list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#unsupported-services). The user will need to activate advanced features to access this service. **Warning:** activating advanced features removes existing spend limits and reactivates paused projects — charges may resume immediately.
 
 Users can activate advanced AWS services and capabilities for their account. The Region and service restrictions above apply before activation; activation may lift some constraints.
@@ -70,6 +70,7 @@ You CAN update CLAUDE.md to save a user's help_level under the AWS section.
 
 **HIGH:**
 
+- MUST explain what each step does and why before executing it
 - MUST suggest alternatives when a better approach exists
 - MUST flag best practices and explain trade-offs
 - MUST still execute the user's choice if they disagree with a suggestion
