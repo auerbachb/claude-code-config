@@ -85,11 +85,14 @@ def stop_generation(repo, session, uid, pid, start):
     return str(uuid.uuid5(STOP_NAMESPACE, f"{repo}/{session}/{uid}/{pid}/{start}"))
 
 
-def capture_origin(session, native_session, repo, parent=None, uid=None, read=read_system):
+def capture_origin(session, native_session, native_pid, repo, parent=None, uid=None, read=read_system):
     """Bind one exact native /end to its originating, same-user Claude process."""
     if (not valid_scope(session, repo)
-            or not isinstance(native_session, str) or native_session.lower() != session):
-        raise EvidenceUnavailable("the native Claude session is not bound")
+            or not isinstance(native_session, str) or native_session.lower() != session
+            or not isinstance(native_pid, str) or not re.fullmatch(r"[1-9][0-9]{0,9}", native_pid)
+            or int(native_pid) <= 1):
+        raise EvidenceUnavailable("the native Claude session and process are not bound")
+    expected_pid = int(native_pid)
     parent = os.getppid() if parent is None else parent
     uid = os.getuid() if uid is None else uid
     table = process_table(read)
@@ -98,6 +101,8 @@ def capture_origin(session, native_session, repo, parent=None, uid=None, read=re
         if item is None or item.uid != uid or item.pid <= 1 or item.parent == item.pid:
             break
         if item.command in NATIVE_COMMANDS:
+            if item.pid != expected_pid:
+                break
             generation = stop_generation(repo, session, uid, item.pid, item.start)
             return {"pid": item.pid, "start": item.start, "generation": generation}
         parent = item.parent

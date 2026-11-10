@@ -46,15 +46,18 @@ class QuotaResumeProcessTests(unittest.TestCase):
     def test_captures_exact_native_origin_and_stable_generation(self):
         table = self.row(21, 10, "/bin/bash") + self.row(10, 1, "/usr/local/bin/claude")
         for native in (self.session, self.session.upper()):
-            result = process.capture_origin(self.session, native, self.repo, parent=21, uid=self.uid,
+            result = process.capture_origin(self.session, native, "10", self.repo, parent=21, uid=self.uid,
                                             read=self.reader([table]))
             self.assertEqual(result, self.origin)
         with self.assertRaises(process.EvidenceUnavailable):
-            process.capture_origin(self.session, "default", self.repo, parent=21, uid=self.uid,
+            process.capture_origin(self.session, self.session, "21", self.repo, parent=21, uid=self.uid,
+                                   read=self.reader([table]))
+        with self.assertRaises(process.EvidenceUnavailable):
+            process.capture_origin(self.session, "default", "10", self.repo, parent=21, uid=self.uid,
                                    read=self.reader([]))
         not_native = self.row(21, 10, "/bin/bash") + self.row(10, 1, "/Applications/Claude")
         with self.assertRaises(process.EvidenceUnavailable):
-            process.capture_origin(self.session, self.session, self.repo, parent=21, uid=self.uid,
+            process.capture_origin(self.session, self.session, "10", self.repo, parent=21, uid=self.uid,
                                    read=self.reader([not_native]))
 
     def check(self, tables, directories=None, origin=None, repo=None):
@@ -88,5 +91,5 @@ class QuotaResumeProcessTests(unittest.TestCase):
     def test_untrusted_pid_owner_cannot_create_stop_proof(self):
         table = self.row(21, 10, "/bin/bash") + self.row(10, 1, "claude", uid=self.uid + 1)
         with self.assertRaises(process.EvidenceUnavailable):
-            process.capture_origin(self.session, self.session, self.repo, parent=21, uid=self.uid,
+            process.capture_origin(self.session, self.session, "10", self.repo, parent=21, uid=self.uid,
                                    read=self.reader([table]))

@@ -67,7 +67,9 @@ A batch requires a verified native `/end` record and an original session that
 has exited. Parked sessions, older stops without this evidence, and ambiguous
 or unavailable folders stay on the manual roster. The approved launcher uses
 the existing generated zsh definitions. Use the setup command's printed
-instructions if they are missing. In tmux, the batch creates new windows in
+instructions if they are missing. The target must be signed in to the exact
+registered Claude subscription; API-key or provider overrides leave the batch
+unavailable. In tmux, the batch creates new windows in
 the current verified session. On macOS outside tmux, it needs an open
 Terminal.app window with tab automation already available. If the terminal
 cannot confirm a dispatch, use the manual roster to inspect the result; do not

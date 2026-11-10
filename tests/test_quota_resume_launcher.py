@@ -1,9 +1,12 @@
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE = Path(__file__).resolve().parents[1] / ".claude/scripts/lib/quota_resume_launcher.py"
@@ -68,6 +71,38 @@ claude-target() { _ai_launch claude 'target@example.test' 'Target' "$@"; }
         self.generated.symlink_to(other)
         with self.assertRaises(OSError):
             self.snapshot()
+
+    def test_subscription_preflight_requires_exact_logged_in_account_and_profile(self):
+        selected = self.snapshot()
+        valid = dict(loggedIn=True, authMethod="claude.ai", apiProvider="firstParty",
+                     email="target@example.test", configDirectory=str(self.profile))
+        calls = []
+
+        def runner(value):
+            def run(args, **kwargs):
+                calls.append((args, kwargs["env"]["CLAUDE_CONFIG_DIR"], kwargs["cwd"]))
+                return types.SimpleNamespace(returncode=0, stdout=json.dumps(value).encode())
+
+            return run
+
+        with patch.dict(os.environ, {key: "" for key in launcher.AUTH_OVERRIDES}):
+            launcher.verify_subscription(selected, self.profile, run=runner(valid))
+            self.assertEqual(calls[-1], ([str(self.cli), "auth", "status"], str(self.profile), self.profile))
+            for change in (dict(email="other@example.test"), dict(authMethod="api_key"),
+                           dict(configDirectory=str(self.worktree)), dict(loggedIn=False)):
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    launcher.verify_subscription(selected, self.profile, run=runner(dict(valid, **change)))
+
+            before = len(calls)
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-not-a-real-key"}):
+                with self.assertRaises(ValueError):
+                    launcher.verify_subscription(selected, self.profile, run=runner(valid))
+            project = self.worktree / ".claude"
+            project.mkdir()
+            (project / "settings.json").write_text('{"apiKeyHelper":"must-not-run"}')
+            with self.assertRaises(ValueError):
+                launcher.verify_subscription(selected, self.worktree, project=True, run=runner(valid))
+            self.assertEqual(len(calls), before)
 
     def test_launcher_proof_changes_with_approved_bytes(self):
         before = self.snapshot()

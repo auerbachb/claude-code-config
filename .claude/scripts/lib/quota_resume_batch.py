@@ -90,7 +90,7 @@ class BatchState:
             raise ValueError("a verified /end roster record is required")
         return row
 
-    def record(self, session, native_session, repo, cwd, handoff, source, profile,
+    def record(self, session, native_session, native_pid, repo, cwd, handoff, source, profile,
                capture=process.capture_origin):
         # /end calls only after both gates, terminal tasks and canonical handoff.
         row = self.end_record(session)
@@ -98,7 +98,7 @@ class BatchState:
         if (row.get("cwd") != cwd or row.get("handoff") != local
                 or row.get("source_account") != source or row.get("source_profile") != str(profile)):
             raise ValueError("the /end handoff does not match the roster")
-        origin = capture(session, native_session, repo)
+        origin = capture(session, native_session, native_pid, repo)
         stop = approval.Stop(source, str(profile), repo, session, origin["generation"], cwd)
         evidence = dict(stop=asdict(stop), origin=origin, handoff=local,
                         gate=self.check_gate(repo, session), directory=directory_identity(cwd))
@@ -195,7 +195,8 @@ def worker_files(state, plan, stop, launcher):
     return worker
 
 
-def run_worker(state, manifest, execute=launch.exec_launcher, now=None):
+def run_worker(state, manifest, execute=launch.exec_launcher, now=None,
+               authenticate=launch.verify_subscription):
     path = Path(manifest)
     if (path.parent != state.receipts or not MANIFEST_NAME.fullmatch(path.name)
             or state.receipts.is_symlink()):
@@ -218,6 +219,7 @@ def run_worker(state, manifest, execute=launch.exec_launcher, now=None):
     try:
         observed = os.fstat(directory_fd)
         exact = [observed.st_dev, observed.st_ino]
+        authenticate(launcher, selected.cwd, project=True)
 
         def verify(stop, target):
             return directory_identity(stop.cwd) == exact and state.verify(stop, target)
@@ -250,10 +252,14 @@ def main(argv=None):
         if args.action == "worker":
             run_worker(state, args.manifest)
             return 0
-        source, profile = state.source(os.environ.get("CLAUDE_CONFIG_DIR") or str(home / ".claude"))
+        launch.require_profile_environment()
+        configured = os.environ.get("CLAUDE_CONFIG_DIR")
+        if not configured and os.environ.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") == "1":
+            raise ValueError("the current Claude profile was not passed to the subprocess")
+        source, profile = state.source(configured or str(home / ".claude"))
         if args.action == "record":
-            state.record(args.session, os.environ.get("CLAUDE_CODE_SESSION_ID"), args.repo,
-                         args.cwd, args.handoff, source, profile)
+            state.record(args.session, os.environ.get("CLAUDE_CODE_SESSION_ID"), os.environ.get("CLAUDE_PID"),
+                         args.repo, args.cwd, args.handoff, source, profile)
             return 0
         backend = terminal.discover()
         launcher = choose_launcher(state, source, args.target)
@@ -270,6 +276,7 @@ def main(argv=None):
                                   approval=plan.approval, expires_in_seconds=approval.APPROVAL_SECONDS)))
             return 0
         plan = approval.authorized_plan(target, stops, args.approval, now)
+        launch.verify_subscription(launcher, launcher.profile)
 
         def dispatch(stop, _target):
             return backend.submit(worker_files(state, plan, stop, launcher))

@@ -62,7 +62,7 @@ class QuotaResumeBatchTests(unittest.TestCase):
         (project / f"{session}.jsonl").touch()
         batch.roster.record(self.state.root, self.label, self.source, session, str(cwd),
                             "Fixture objective", "end", str(self.handoff))
-        self.state.record(session, session, self.repo, str(cwd), str(self.handoff), self.label, self.source,
+        self.state.record(session, session, "42", self.repo, str(cwd), str(self.handoff), self.label, self.source,
                           capture=lambda *_: {"pid": 42, "start": "fixture", "generation": session})
 
     def candidates(self):
@@ -122,9 +122,11 @@ class QuotaResumeBatchTests(unittest.TestCase):
 
         with patch.object(batch.launch, "trusted_cli", return_value=self.cli):
             for stop, manifest in workers:
-                batch.run_worker(self.state, manifest, execute=execute, now=1005)
+                batch.run_worker(self.state, manifest, execute=execute, now=1005,
+                                 authenticate=lambda *_a, **_kw: None)
                 with self.assertRaises(ValueError):
-                    batch.run_worker(self.state, manifest, execute=execute, now=1005)
+                    batch.run_worker(self.state, manifest, execute=execute, now=1005,
+                                 authenticate=lambda *_a, **_kw: None)
         self.assertEqual(set(observed), {(str(self.target_profile), self.session, str(self.cwd)),
                                          (str(self.target_profile), self.second, str(second_dir))})
         self.assertEqual(len(observed), 2)

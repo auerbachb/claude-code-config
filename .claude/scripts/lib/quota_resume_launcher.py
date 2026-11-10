@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,18 @@ LAUNCHER_NAME = re.compile(r"claude-[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 ACCOUNT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\Z")
 SESSION = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 ZSH = "/bin/zsh"
+AUTH_OVERRIDES = {
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_AWS_API_KEY", "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_AWS_WORKSPACE_ID", "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE", "ANTHROPIC_VERTEX_BASE_URL",
+    "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_OAUTH_SCOPES",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+}
 RUN_LAUNCHER = r'''
 setopt noaliases
 typeset -r qr_fd="$1" qr_name="$2" qr_label="$3" qr_profile="$4" qr_session="$5" qr_cli="$6"
@@ -32,6 +45,66 @@ _ai_profile_dir() {
 }
 "$qr_name" --resume "$qr_session"
 '''
+
+
+def require_profile_environment(environment=None):
+    environment = os.environ if environment is None else environment
+    if any(environment.get(name) for name in AUTH_OVERRIDES):
+        raise ValueError("an alternate Claude authentication or provider override is active")
+
+
+def verify_project_auth_settings(cwd):
+    # A project helper must not execute as part of our authentication probe.
+    directory = Path(cwd)
+    for parent in (directory, *directory.parents):
+        if parent == Path.home():
+            break
+        settings_dir = parent / ".claude"
+        if settings_dir.is_symlink():
+            raise ValueError("the project authentication settings cannot be verified")
+        for name in ("settings.json", "settings.local.json"):
+            path = settings_dir / name
+            try:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o022
+                        or info.st_size > 1048576):
+                    raise ValueError("the project authentication settings cannot be verified")
+                raw = stream.read(1048577)
+            if len(raw) > 1048576:
+                raise ValueError("the project authentication settings cannot be verified")
+            value = json.loads(raw)
+            if not isinstance(value, dict) or value.get("apiKeyHelper"):
+                raise ValueError("the project can override the approved Claude account")
+            settings_env = value.get("env", {})
+            if not isinstance(settings_env, dict):
+                raise ValueError("the project authentication settings cannot be verified")
+            require_profile_environment(settings_env)
+
+
+def verify_subscription(launcher, cwd, *, project=False, run=subprocess.run):
+    """Require the exact account's first-party subscription; never log in."""
+    require_profile_environment()
+    if project:
+        verify_project_auth_settings(cwd)
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=launcher.profile)
+    result = run([str(launcher.cli), "auth", "status"], cwd=cwd, env=env,
+                 capture_output=True, timeout=8)
+    if result.returncode != 0 or len(result.stdout) > 65536:
+        raise ValueError("the approved Claude subscription could not be verified")
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("the approved Claude subscription could not be verified")
+    directory, email = value.get("configDirectory"), value.get("email")
+    if (value.get("loggedIn") is not True or value.get("authMethod") != "claude.ai"
+            or value.get("apiProvider") != "firstParty" or not isinstance(email, str)
+            or email.casefold() != launcher.label.casefold() or not isinstance(directory, str)
+            or not Path(directory).is_absolute()
+            or Path(directory).resolve(strict=True) != Path(launcher.profile)):
+        raise ValueError("the approved Claude subscription could not be verified")
 
 
 def identity(info):
@@ -115,6 +188,7 @@ def snapshot_launcher(path, name, label, profile, cli):
 
 def exec_launcher(launcher, session, cwd, directory_fd):
     """Source the verified bytes, rather than reopening a file after the check."""
+    require_profile_environment()
     with tempfile.TemporaryFile(mode="w+b") as script:
         script.write(launcher.contents)
         script.flush()
