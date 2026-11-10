@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for the canonical `pr-state-cr-split.jq` projection invoked by
+# catalog: tests — Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh`
 # `pr-state.sh`
 # (issue #956).
 #
@@ -188,6 +189,42 @@ check_eq "--wait-state-eval does not require full-snapshot filters" "0" "$?"
 check_eq "--wait-state-eval output remains unchanged" \
   '{"head_moved":false,"bots_pending":[],"ci_pending":[],"ci_failing":[],"new_findings":0}' \
   "$(cat "$TMP/wait.out")"
+
+############################################################################
+echo
+echo "== --wait-state-eval: retired Graphite check by app slug, not name (#1953) =="
+# A pending check named after Graphite but published by another app is build CI
+# and must hold ci_pending; the real Graphite App's leftover check (whatever its
+# name) is not CI. Before #1953 a name containing "graphite" was the match, so
+# the first case dropped out of ci_pending and /fixpr Step 4d could exit clean.
+wait_ci() {
+  printf '%s\n' "{\"pr\":{\"head_sha\":\"abc\"},\"comments\":{\"reviews\":[],\"inline\":[],\"conversation\":[]},\"check_runs\":{\"all\":$1},\"bot_statuses\":{},\"new_since_baseline\":{\"finding_count\":0}}" >"$TMP/wait-ci.json"
+  "$SCRIPT" --wait-state-eval abc "$TMP/wait-ci.json" | jq -c '{ci_pending, ci_failing}'
+}
+check_eq "other app's pending 'Graphite integration' check stays CI pending" \
+  '{"ci_pending":["Graphite integration"],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Graphite integration","status":"in_progress","conclusion":null,"app":{"slug":"github-actions","id":15368}}]')"
+check_eq "graphite-app's pending check (any name) is not CI" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"r","status":"queued","conclusion":null,"app":{"slug":"graphite-app","id":158384}}]')"
+check_eq "graphite-app's failed check is not CI failing" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Graphite / mergeability_check","status":"completed","conclusion":"failure","app":{"slug":"graphite-app","id":158384}}]')"
+check_eq "other app's failed 'graphite' check stays CI failing" \
+  '{"ci_pending":[],"ci_failing":["graphite-lint"]}' \
+  "$(wait_ci '[{"name":"graphite-lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
+check_eq "a GitHub Actions job named after a reviewer stays CI pending" \
+  '{"ci_pending":["post-cursor-review"],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"post-cursor-review","status":"in_progress","conclusion":null,"app":{"slug":"github-actions","id":15368}}]')"
+check_eq "another app's failed 'codeant lint' build check stays CI failing" \
+  '{"ci_pending":[],"ci_failing":["codeant lint"]}' \
+  "$(wait_ci '[{"name":"codeant lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
+check_eq "the real CodeRabbit check (by slug) is not CI" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"CodeRabbit","status":"in_progress","conclusion":null,"app":{"slug":"coderabbitai","id":173846}}]')"
+check_eq "no app slug: the name still identifies a reviewer check" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Cursor Bugbot","status":"in_progress","conclusion":null}]')"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

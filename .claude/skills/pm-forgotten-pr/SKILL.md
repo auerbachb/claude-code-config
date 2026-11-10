@@ -10,6 +10,24 @@ argument-hint: "[days] (optional — default 3; PRs idle longer than this are su
 
 One-shot startup triage of open PRs that have gone idle. Does **not** enter a monitoring loop — continuous PR-fleet monitoring remains `/pr-monitor-and-manage`'s job.
 
+Resolve the required detector and merge-order helper before Step 1:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+FORGOTTEN_PR_TRIAGE_SH=$(resolve_script forgotten-pr-triage.sh || true)
+MERGE_SEQUENCE_SH=$(resolve_script merge-sequence.sh || true)
+[[ -n "$FORGOTTEN_PR_TRIAGE_SH" ]] || { echo "ERROR: forgotten-pr-triage.sh not found (checked all three paths) — forgotten PR triage unavailable" >&2; exit 1; }
+```
+
 When invoked by `/pm` Step 1D inline, `$GH_USER` and `$FORGOTTEN_PR_DAYS` are already set from the calling context. When run standalone, parse `$ARGUMENTS` as the days threshold (e.g. `/pm-forgotten-pr 7` → 7-day threshold); non-numeric or absent values fall back to 3 safely.
 
 ## Step 1: Detection
@@ -26,7 +44,9 @@ fi
 # $GH_USER when Step 0 resolved it. The script re-validates --days and falls back
 # to 3 on a non-numeric/non-positive value, so a bad override degrades safely.
 DAYS="${FORGOTTEN_PR_DAYS:-3}"
-.claude/scripts/forgotten-pr-triage.sh --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
+TRIAGE_ARGS=()   # an array: zsh keeps `${X:+--author "$X"}` as one word (issue #1857)
+[[ -n "${GH_USER:-}" ]] && TRIAGE_ARGS=(--author "$GH_USER")
+"$FORGOTTEN_PR_TRIAGE_SH" --json --days "$DAYS" ${TRIAGE_ARGS[@]+"${TRIAGE_ARGS[@]}"}
 ```
 
 `forgotten-pr-triage.sh` (read-only — it never closes, merges, or deletes) enumerates your open PRs, keeps those whose **last activity** (`updatedAt`, the documented age basis) is strictly more than the threshold ago, and classifies each `close` or `merge` using exactly two close signals (first match wins; otherwise `merge`):
@@ -53,20 +73,35 @@ CI/conflict state is **not** a close signal — a red or conflicted PR is surfac
 For every `close`-classified PR, present the PR and its rationale and **ask for explicit confirmation** before touching anything (recommend → confirm → apply, mirroring `/pm-clean`). Declining leaves the PR open.
 
 - On confirmation: `gh pr close <N> --comment "<rationale>"`.
-- **Separately** — a second, independent gate, never bundled with the close confirmation — offer to delete the PR's head branch. When confirmed, delete `<headRefName>` honoring `stale-cleanup.sh`'s branch-deletion safety rules (never a protected name — `main`/`master`/`develop`; never a branch checked out in a worktree), skipping with a one-line note if any check fails. Do **not** reimplement those safety checks — treat `stale-cleanup.sh` as their source of truth; its out-of-band sweep (via `/pm-update`) also reaps the branch later once it ages past the stale threshold.
+- **Separately** — a second, independent gate, never bundled with the close confirmation — offer to delete the PR's head branch. When confirmed, delete `<headRefName>` honoring `stale-cleanup.sh`'s branch-deletion safety rules (never a protected name — `main`/`master`/`develop`; never a branch checked out in a worktree), skipping with a one-line note if any check fails. Do **not** reimplement those safety checks — treat `stale-cleanup.sh` as their source of truth; its out-of-band sweep (via `/pm-clean`) also reaps the branch later once it ages past the stale threshold.
 
 ## Step 4: Merge flow (confirmation-gated, delegated to `/wrap`)
 
 For the `merge`-classified PRs, present them and require an explicit **"yes"** before acting on any of them. This is a **scoped exception** to the global auto-merge default in CLAUDE.md "PR MERGE AUTHORIZATION": these PRs are **triage-discovered** — enumerated by `forgotten-pr-triage.sh`, not created or monitored by PM's own A→B→C pipeline — and have not earned the standing auto-merge authorization that inline pipeline PRs carry. Issue #733's authorship caution reinforces this gate: acting on a PR whose CI and review history PM never tracked warrants an upfront consent step. This confirmation is this step's own triage design (matching the sibling close gate in Step 3), not a paraphrase of the merge-authorization rule. Declining leaves everything unmerged. The "yes" is the authorization; do not add a second per-PR merge prompt.
 
-On confirmation, **dispatch one subagent per approved PR that executes the `/wrap #N` workflow** (the arbitrary-PR form) so the existing merge gate + AC verification + squash-merge run unchanged — **do not reimplement merge logic**. Spawn per `.claude/agents/README.md` and `subagent-orchestration.md`: `subagent_type: "phase-c-merger"`, `mode: "bypassPermissions"`, explicit `model: "sonnet"`, the verbatim SAFETY block, and the handoff path. Respect the **3–4 concurrent-pipeline ceiling** from `subagent-orchestration.md` — launch up to the cap and queue the rest, starting a queued merge as each running one finishes. This is a one-shot hand-off: once the merge subagents are dispatched, this step is done — it does not poll them (polling is monitoring, which belongs to `/pr-monitor-and-manage`).
+Before each authorized dispatch, resolve `model-route.sh` through the shared
+script paths and execute `task-model-routing.md`'s `task-model-route-dispatch`
+block with current task/phase evidence and refreshed launch eligibility. Use
+scoped session state until a selected handoff exists, then its locked writer.
+Only `start`, `retry`, or `escalate` launches; other results and failed writes
+retain pending work without dispatch. The confirmation gate above remains.
+
+On confirmation, **dispatch one subagent per approved PR that executes the `/wrap #N` workflow** (the arbitrary-PR form) so the existing merge gate + AC verification + squash-merge run unchanged — **do not reimplement merge logic**. Spawn per `.claude/agents/README.md` and `subagent-orchestration.md`: `subagent_type: "phase-c-merger"`, `mode: "bypassPermissions"`, explicit `model: ROUTED_MODEL` from the persisted cost-first routing decision, the verbatim SAFETY block, and the handoff path. Respect the **concurrent-pipeline ceiling** from `subagent-orchestration.md` — `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`, read with `"$(resolve_script active-work-cap.sh)" --ceiling` and `--cap` (both network-free; 4 if the script does not resolve; a non-zero exit from either read of a script that did resolve means dispatch nothing new) — launch up to that limit and queue the rest, starting a queued merge as each running one finishes. This is a one-shot hand-off: once the merge subagents are dispatched, this step is done — it does not poll them (polling is monitoring, which belongs to `/pr-monitor-and-manage`).
 
 **Sequence the approved set by file overlap before dispatching (issue #756).** Two approved PRs touching the same file merge in whichever order they finish, and the second inherits a conflict the first created. Run the planner once over the approved numbers and dispatch in its order:
 
 ```bash
-SEQ=$(.claude/scripts/merge-sequence.sh --prs "$APPROVED_CSV" --skip-missing)
+MERGE_SEQUENCE_AVAILABLE=1
+MERGE_SEQUENCE_RC=0
+if [[ -z "$MERGE_SEQUENCE_SH" ]]; then
+  MERGE_SEQUENCE_AVAILABLE=0
+  SEQ=""
+  echo "DEGRADED: merge-sequence.sh not found (checked all three paths) — approved merge ordering unavailable; holding all merge candidates" >&2
+else
+  SEQ=$("$MERGE_SEQUENCE_SH" --prs "$APPROVED_CSV" --skip-missing) || MERGE_SEQUENCE_RC=$?
+fi
 ```
 
-Dispatch `merge` and `batch` PRs; **hold back** anything the plan marks `hold` and say so in one line naming the shared file. A held PR is not dropped: it stays a merge candidate for the next `/pm` run or for `/pr-monitor-and-manage`, which owns the across-tick hold state. A non-zero exit other than `0`/`1` means the planner failed — log one line and dispatch in the original order rather than blocking the merges. Model: `.claude/reference/merge-sequencing.md`.
+When `MERGE_SEQUENCE_AVAILABLE=0`, do not dispatch unsequenced merges; report each approved PR as held for the next `/pm` run or `/pr-monitor-and-manage`. Otherwise branch on `MERGE_SEQUENCE_RC`: `0`/`1` → dispatch `merge` and `batch` PRs and **hold back** anything the plan marks `hold`, saying so in one line naming the shared file; any other value → the resolved planner failed, so log one line and dispatch in the original order rather than treating empty output as a valid plan. A held PR is not dropped: it stays a merge candidate for the next `/pm` run or for `/pr-monitor-and-manage`, which owns the across-tick hold state. Model: `.claude/reference/merge-sequencing.md`.
 
-> **Never run two PRs from the same group concurrently.** The 3–4 parallel `phase-c-merger` dispatch above applies **across** groups, not within one. Members of a group share a file *by construction*, so merging two of them in parallel recreates exactly the conflict the plan just avoided — and `batch` members are always same-group. Dispatch at most one PR per `SEQ` group at a time (`plan[N].group`; `null` = no overlap, always parallel-safe), starting the next member of a group only after the previous one merges or blocks. PRs in different groups still fill the remaining slots in parallel.
+> **Never run two PRs from the same group concurrently.** The up-to-ceiling parallel `phase-c-merger` dispatch above applies **across** groups, not within one. Members of a group share a file *by construction*, so merging two of them in parallel recreates exactly the conflict the plan just avoided — and `batch` members are always same-group. Dispatch at most one PR per `SEQ` group at a time (`plan[N].group`; `null` = no overlap, always parallel-safe), starting the next member of a group only after the previous one merges or blocks. PRs in different groups still fill the remaining slots in parallel.

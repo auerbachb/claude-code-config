@@ -86,10 +86,12 @@ A handoff that says only "I couldn't do it in the browser", or that lists clicks
 
 ## Subagent reachability (evidence)
 
-Subagents reach browser MCP tools exactly when their agent definition does not restrict tools. `allowed-tools` in `.claude/agents/*.md` frontmatter is the whole proof — an agent that declares it gets *only* what it lists, and no MCP browser tool is on any current list.
+Subagents reach browser MCP tools exactly when their agent definition does not restrict tools. `tools` in `.claude/agents/*.md` frontmatter is the whole proof — an agent that declares it gets *only* what it lists, and no MCP browser tool is on any current list.
 
-| Agent | `allowed-tools` frontmatter | Browser MCP? |
-|-------|-----------------------------|--------------|
+> **Key name:** agent frontmatter uses `tools:`. The `allowed-tools:` spelling is the *skill* frontmatter key (`CONTRIBUTING.md`) and is silently ignored on an agent — which is why PR #1131 renamed it in `phase-c-merger.md` and `researcher.md` (issue #1121); until then those restrictions never took effect. `agents-frontmatter-lint.sh` now fails any agent file using the deprecated key.
+
+| Agent | `tools` frontmatter | Browser MCP? |
+|-------|---------------------|--------------|
 | `phase-a-fixer` | *(none declared)* | **Yes** — inherits the full tool set |
 | `phase-b-reviewer` | *(none declared)* | **Yes** — inherits the full tool set |
 | `pm-worker` | *(none declared)* | **Yes** — inherits the full tool set |
@@ -101,7 +103,7 @@ Verify at any time:
 ```bash
 for f in .claude/agents/*.md; do
   printf '%s: ' "$f"
-  awk '/^---$/{c++; next} c==1 && /^allowed-tools:/{print; found=1} c==2{exit} END{if(!found) print "(none — inherits all tools)"}' "$f"
+  awk '/^---$/{c++; next} c==1 && /^tools:/{print; found=1} c==2{exit} END{if(!found) print "(none — inherits all tools)"}' "$f"
 done
 ```
 
@@ -109,7 +111,7 @@ The three unrestricted agents carry the browser rung through the verbatim `MINDS
 
 ## Decision — `phase-c-merger` stays restricted
 
-**Decision: no browser access.** `allowed-tools: Read, Glob, Grep, Bash` is unchanged.
+**Decision: no browser access.** `tools: Read, Glob, Grep, Bash` is unchanged.
 
 Rationale:
 
@@ -117,11 +119,11 @@ Rationale:
 2. **It would widen exactly what the restriction protects.** The merger is deliberately unable to change code; a browser puts the GitHub *web* UI in reach, where merge, branch-protection, and repo settings are all one click away. That routes around the `/wrap`-only contract and the print-only `/admin-merge` rule (`cr-merge-gate.md` Step 3) — the two rails that keep an automated merger from bypassing branch protection.
 3. **A merger that hits a web-only wall should stop, not click.** Its terminal for anything it cannot do is `OUTCOME: blocked`. That is the correct outcome for a web-only blocker too.
 
-**Implemented as:** frontmatter unchanged; `phase-c-merger.md` states the limit explicitly and requires the agent to *report* it — "the browser rung isn't available to me (`allowed-tools`: Read, Glob, Grep, Bash)" — rather than emitting a click-by-click runbook. The `MINDSET:` block carries the same clause ("phase-c … has no browser tools — say so") so it is present in the spawn prompt.
+**Implemented as:** frontmatter unchanged; `phase-c-merger.md` states the limit explicitly and requires the agent to *report* it — "the browser rung isn't available to me (`tools`: Read, Glob, Grep, Bash)" — rather than emitting a click-by-click runbook. The `MINDSET:` block carries the same clause ("phase-c … has no browser tools — say so") so it is present in the spawn prompt.
 
 `researcher` stays restricted for the same shape of reason: its contract is *information, not changes*, and a browser is a write surface.
 
-**Revisit if** Phase C ever acquires a step that genuinely has no CLI path. Grant the two browser tool namespaces explicitly at that point rather than dropping `allowed-tools` wholesale — the read-only-plus-Bash contract is doing real work.
+**Revisit if** Phase C ever acquires a step that genuinely has no CLI path. Grant the two browser tool namespaces explicitly at that point rather than dropping `tools` wholesale — the read-only-plus-Bash contract is doing real work.
 
 ## Related
 

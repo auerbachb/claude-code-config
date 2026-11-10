@@ -5,7 +5,7 @@ The single definition of **what a handoff reads**. Two skills consume it and ren
 | Consumer | Renders into |
 |---|---|
 | `/pm-handoff` | a Claude-native prompt for a fresh PM thread — keeps our vocabulary, because the reader is another thread in this harness |
-| `/pause` | a portable Markdown document for a reader outside this harness — strips our vocabulary entirely (`pause/references/portable-handoff-template.md`) |
+| `/end` | a portable Markdown document for a reader outside this harness — strips our vocabulary entirely (`end/references/portable-handoff-template.md`) |
 
 Collection is identical; only rendering differs. Keeping one collector is the point — two copies drift, and the copy that drifts is always the one used less often.
 
@@ -13,9 +13,12 @@ Not auto-loaded. Read on demand from either skill.
 
 ## Resolving the helper scripts
 
-The snippets below invoke `session-state.sh` as `.claude/scripts/<name>`, which resolves only when the working directory is this repo. (Per-PR handoff payloads are read directly as files in §2, so `handoff-state.sh` is not invoked here — but a consumer that reaches for it should resolve it the same way.) **A consumer that resolved those paths already — `/pause` Step 0 does — must substitute its resolved paths here.** Otherwise a command invoked from another checkout silently fails and the handoff reports an empty category as though it were genuinely empty, which is the one failure mode a handoff must never have.
+The snippets below invoke `session-state.sh` as `.claude/scripts/<name>`, which resolves only when the working directory is this repo. (Per-PR handoff payloads are read directly as files in §2, so `handoff-state.sh` is not invoked here — but a consumer that reaches for it should resolve it the same way.) **A consumer that resolved those paths already — `/end` Step 0 does — must substitute its resolved paths here.** Otherwise a command invoked from another checkout silently fails and the handoff reports an empty category as though it were genuinely empty, which is the one failure mode a handoff must never have.
 
-A consumer with no resolver of its own should use the same three-candidate lookup: `$HOME/.claude/skills-worktree/.claude/scripts/<name>`, then `$HOME/.claude/scripts/<name>`, then `.claude/scripts/<name>`.
+A consumer with no resolver of its own should use the two trusted installed
+candidates: `$HOME/.claude/skills-worktree/.claude/scripts/<name>`, then
+`$HOME/.claude/scripts/<name>`. A stop can run from an unrelated or untrusted
+checkout, so it must never execute that checkout's cwd-relative helper.
 
 ## Invariants
 
@@ -106,6 +109,22 @@ From the session view, extract per tracked PR: which phase it is in, which revie
 
 When nothing is tracked, the category is empty — "No in-flight work detected."
 
+## 2a. Exact background-task identities
+
+For `/end` and `/pause`, also resolve `background-task-registry.sh`. After
+`/end` completes its terminal audit, `portable-handoff-context.sh` reads the
+invoking Claude session's entries with `--list --session
+"${CLAUDE_SESSION_ID:-default}"`. Extract task ID, logical name, type, status,
+work item, output file, checkpoint path, and recovery path. Running,
+stopping, and stop-failed entries are possibly billable even when stale; never
+infer completion from age.
+
+The registry is the recovery inventory, not the sole liveness oracle. Reconcile
+it with Claude Code's runtime task list before reporting a successful shutdown.
+When either source cannot be read, report the category as unreadable rather
+than empty. Separately launched `claude agents` sessions are listed as out of
+scope because the current session does not own their runtime identities.
+
 ## 3. Active polling jobs
 
 Snapshot live scheduled jobs owned by **other** skills via `CronList`, recording `id`, `cron`, `prompt`, and `recurring` for each.
@@ -133,15 +152,15 @@ Each non-empty line of the index is one lesson. When the index is absent, the ca
 
 ## 5. Uncommitted and unpushed local state
 
-Only `/pause` needs this — a fresh PM thread runs on the same machine, but a reader picking the work up in another tool has no other way to learn that work exists outside git.
+Only `/end` needs this — a fresh PM thread runs on the same machine, but a reader picking the work up in another tool has no other way to learn that work exists outside git.
 
-```bash
-git rev-parse --abbrev-ref HEAD
-pwd
-git status --short
-git log --oneline @{upstream}..HEAD 2>/dev/null || echo "NO_UPSTREAM"
-```
+Use the single bounded snapshot from `portable-handoff-context.sh`, taken after
+shutdown outcomes are known. It records sanitized repository identity, absolute
+main root and active checkout, worktree condition, branch/base/full HEAD,
+upstream/unpushed state, linked issue/pull request when unambiguous, and
+separately capped tracked and untracked path arrays.
 
-`git status --short` includes untracked files, which is intended here: an untracked new file is exactly the work most likely to be lost.
+Tracked and untracked arrays stay distinct: an untracked new file is exactly
+the work most likely to be lost, while tracked edits have a recoverable diff.
 
 `NO_UPSTREAM` means **no upstream branch is configured** — which is not the same as "nothing was pushed". A branch pushed without `-u`, or one whose tracking ref was pruned, has no upstream and may well exist on the remote. Report it as "no upstream is configured, so push status is unknown — check the remote before assuming this work exists only locally." Reporting it as unpushed would tell the reader to re-push work that is already there, or worse, to treat local commits as the only copy when they are not.

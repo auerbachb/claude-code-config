@@ -6,6 +6,8 @@ type: feedback
 
 # BugBot auto-trigger unreliable
 
+> **Superseded (issue #1897):** nothing posts `@cursor review` automatically any more — BugBot is a paid review and needs the owner's explicit approval in chat. The CI job and `/fixpr` no longer nudge. Kept as history for why the PAT existed.
+
 BugBot's GitHub "auto-trigger on push" is unreliable on later pushes even when settings suggest it should run every time. Agents used to post `@cursor review` only when no BugBot activity appeared on the new SHA after a wait; that detection frequently missed real gaps.
 
 **Root cause (discovered issue #892):** BugBot silently ignores `@cursor review` comments authored by `github-actions[bot]`. The trigger comment must be authored by a human/non-bot identity. Measured on PR #891 in `auerbachb/claude-code-config` (three bot-authored triggers over 30 minutes: no BugBot response; one human trigger: check-run started in 5 seconds) and independently on `auerbachb/meeting_insights_and_actions` PR #172. The CI workflow `cursor-review-pr-comment.yml` now authenticates with `CURSOR_REVIEW_PAT` (fine-grained PAT, repository owner identity, `Pull requests: Read and write`) instead of `GITHUB_TOKEN`. When the secret is absent the workflow posts nothing and emits a warning — a bot-authored inert comment is worse than silence.

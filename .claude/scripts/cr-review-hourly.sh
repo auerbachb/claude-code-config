@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # cr-review-hourly.sh — CodeRabbit account-level hourly review budget + per-PR explicit triggers.
+# catalog: review-escalation — Track CodeRabbit's rolling hourly review cap and per-PR explicit trigger count
 #
 # PURPOSE
 #   Tracks consumption against CodeRabbit's ~8 PR reviews/hour (Pro) hidden ceiling and
@@ -48,6 +49,7 @@
 #   6  Lock timeout — another writer held the session-state lock past the
 #      acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). No write
 #      is performed; the state file is left unmodified.
+#   70  --help header extraction produced no output (internal defect).
 #
 # LOCKING (issue #639)
 #   Every write path serializes on the shared session-state lock implemented in
@@ -63,14 +65,15 @@
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 DEFAULT_BUDGET=8
 BUDGET="${CR_HOURLY_BUDGET:-$DEFAULT_BUDGET}"
 NOW_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# DEPENDENCIES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

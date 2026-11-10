@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# pr-preflight.sh — PR pre-flight: draft→ready + four-reviewer trigger (issue #493).
+# pr-preflight.sh — PR pre-flight: draft→ready + three-reviewer trigger (issue #493).
+# catalog: pr-state-polling — Flip a draft PR to ready and trigger the three AI reviewers when absent
 #
 # PURPOSE
 #   Single source of truth for the per-PR pre-flight run by /fixpr (Step 0c),
@@ -11,7 +12,7 @@
 #        else, NEVER flip — surface a skip and continue. Author-intentional
 #        draft state is never overridden (safety.md).
 #     2. Reviewer-trigger check — for each of codeant-ai[bot],
-#        coderabbitai[bot], cursor[bot], graphite-app[bot], decide whether that
+#        coderabbitai[bot], cursor[bot], decide whether that
 #        reviewer is engaged ON THE CURRENT HEAD SHA (issue #576). Scans all 3
 #        PR endpoints (pulls/reviews, pulls/comments, issues/comments,
 #        per_page=100) plus the HEAD commit's check-runs and, for the
@@ -31,7 +32,7 @@
 #        rare race it guarded).
 #
 #   Strictly per-PR: no shared mutable accumulator across a fleet. Running it
-#   twice on a clean PR (already ready + all four engaged on HEAD) does nothing
+#   twice on a clean PR (already ready + all three engaged on HEAD) does nothing
 #   and reports "Pre-flight clean — proceeding".
 #
 # HEAD-SHA FRESHNESS (issue #576)
@@ -74,7 +75,7 @@
 #   never a false one.
 #
 # DEGRADATION (deliberately asymmetric — fail toward silence, never toward
-# spamming four bots every tick)
+# spamming three bots every tick)
 #   • Timeline fetch fails, or returns no head_ref_force_pushed/head_ref_pushed
 #     event → falls back to the HEAD commit's committer date (unchanged #576
 #     proxy). A fetch failure is surfaced as a warning; no matching event is
@@ -127,14 +128,39 @@
 #       "reviewers": {
 #         "codeant":   {"trigger":"@codeant-ai review","status":"<status>"},
 #         "coderabbit":{"trigger":"@coderabbitai full review","status":"<status>"},
-#         "cursor":    {"trigger":"@cursor review","status":"<status>"},
-#         "graphite":  {"trigger":"@graphite-app re-review","status":"<status>"}
+#         "cursor":    {"trigger":"@cursor review","status":"<status>"}
 #       },
 #       "actions": <int>,              # draft flip + triggers actually posted
 #       "clean": <bool>                # true ⇒ nothing to do this run
 #     }
 #   reviewer status ∈ already-present | triggered | skipped-rate-cap |
-#                     trigger-failed | dry-run-would-trigger
+#                     trigger-failed | dry-run-would-trigger |
+#                     skipped-tier-excluded | skipped-tier-deferred |
+#                     skipped-approval-required
+#   `skipped-approval-required` (cursor only, issue #1897): BugBot is a paid
+#   review and is never posted without the owner's explicit approval — the
+#   last step of its chain in both modes. Nothing pending: counts as clean.
+#   `skipped-tier-excluded`: the PR's review tier rules this reviewer out —
+#   nothing was posted and nothing is pending, so it counts toward `clean`
+#   like already-present. With no `## Review policy` it is cursor-only
+#   (issue #1728: gate ci-only or ci+codeant-one-round never needs BugBot; an
+#   unresolvable tier posts, fail-open). In a tier-aware repo it can name any
+#   reviewer (issue #1749, below).
+#   `skipped-tier-deferred` (issue #1749, tier-aware repos only): not now —
+#   CI on HEAD is red or pending, HEAD has not settled, the daily cap is
+#   reached, the tier could not be resolved. Something is pending, so it is
+#   NOT clean; a later run asks again.
+#
+# TIER-AWARE REPOS (issue #1749)
+#   The sibling review-triggers-allowed.sh is asked once per run. Mode
+#   `legacy` (no `## Review policy`), or a missing helper, runs the reviewer
+#   loop exactly as before. Otherwise, after the already-present check, each
+#   reviewer posts only when the helper allows it — CodeAnt
+#   once per PR, BugBot on a settled green HEAD at most twice, CodeRabbit only
+#   as the CodeAnt-unavailable fallback (still behind cr-review-hourly.sh) —
+#   and only after `--claim` records it; a failed post `--release`s the claim.
+#   A dry run evaluates but never claims. A helper that answers nothing
+#   usable defers every reviewer this run (fail closed).
 #
 #   Status vocabulary and decision semantics are unchanged by #576 — only the
 #   inputs to the decision became SHA-aware, and the JSON gains the additive
@@ -149,6 +175,7 @@
 #   2  Usage error.
 #   3  PR not found / closed / inaccessible.
 #   4  gh / network / API error while reading PR state.
+#   70  --help header extraction produced no output (internal defect).
 #
 # SAFETY (safety.md — absolute)
 #   - Never modifies branch protection (no .../branches/.../protection calls).
@@ -162,6 +189,8 @@
 #   helper is missing AND no budget can be confirmed — fail-closed on CR only).
 #   Optionally session-state.sh, for the per-SHA trigger dedupe described below;
 #   when missing, the on-PR comment scan alone provides idempotency.
+#   Optionally review-triggers-allowed.sh (sibling first; override
+#   PREFLIGHT_TRIGGERS_ALLOWED_SH), for the tier-aware path above.
 #
 # PER-SHA TRIGGER DEDUPE (issue #576)
 #   After posting a trigger we record `.prs[N].preflight_trigger_head_sha` and
@@ -169,15 +198,16 @@
 #   next tick a reviewer already triggered for THIS HEAD reads back as
 #   `already-present` even if GitHub has not yet surfaced our comment on the
 #   endpoint scan (eventual consistency) — without this, every tick between the
-#   post and its appearance would re-trigger all four bots. The marker is scoped
+#   post and its appearance would re-trigger all three bots. The marker is scoped
 #   to the SHA, so a new HEAD naturally invalidates it. State-write failures are
 #   non-fatal: they can only cost a duplicate trigger, never a missed one.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# DEPENDENCIES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {
@@ -266,6 +296,90 @@ STATE_SH="$(resolve_state_helper || true)"
 # writes. Every access below goes through "$STATE_SH", which returns empty for a
 # missing file or absent path — the same signal we'd get from an -f test.
 
+# --- resolve review-substance.sh (shared substance evaluator; env override for tests) ---
+# Used by review_object_engaged() to detect hollow APPROVED reviews so preflight
+# does not count them as "engaged" — the same evaluator merge-gate.sh uses for
+# the #875 substance check (issue #1226). Sibling path is preferred so tests and
+# production both find the script beside pr-preflight.sh.
+resolve_review_substance() {
+  if [[ -n "${PREFLIGHT_REVIEW_SUBSTANCE_SH:-}" ]]; then
+    # Explicit override (tests): honor it even if non-executable, so a bogus
+    # path degrades to "evaluator unavailable" rather than silently finding the
+    # sibling — mirrors resolve_state_helper()'s contract exactly.
+    [[ -x "${PREFLIGHT_REVIEW_SUBSTANCE_SH}" ]] && { echo "$PREFLIGHT_REVIEW_SUBSTANCE_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/review-substance.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/review-substance.sh" \
+    "$HOME/.claude/scripts/review-substance.sh" \
+    ".claude/scripts/review-substance.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+REVIEW_SUBSTANCE_SH="$(resolve_review_substance || true)"
+
+# --- resolve bugbot-tier-excluded.sh (review-tier BugBot skip; env override for tests) ---
+# Same contract as resolve_review_substance(): sibling first, and an explicit
+# override is honoured even when it names nothing, so a test can make the
+# helper absent. Absent means "not excluded" — the fail-open direction (#1728).
+resolve_bugbot_tier() {
+  if [[ -n "${PREFLIGHT_BUGBOT_TIER_SH:-}" ]]; then
+    [[ -x "${PREFLIGHT_BUGBOT_TIER_SH}" ]] && { echo "$PREFLIGHT_BUGBOT_TIER_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/bugbot-tier-excluded.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-tier-excluded.sh" \
+    "$HOME/.claude/scripts/bugbot-tier-excluded.sh" \
+    ".claude/scripts/bugbot-tier-excluded.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+BUGBOT_TIER_SH="$(resolve_bugbot_tier || true)"
+
+# --- resolve review-triggers-allowed.sh (tier-aware triggers; env override for tests) ---
+# Same contract as resolve_bugbot_tier(). Absent means "legacy": the reviewer
+# loop runs exactly as before (issue #1749), with one stderr line.
+resolve_triggers_allowed() {
+  if [[ -n "${PREFLIGHT_TRIGGERS_ALLOWED_SH:-}" ]]; then
+    [[ -x "${PREFLIGHT_TRIGGERS_ALLOWED_SH}" ]] && { echo "$PREFLIGHT_TRIGGERS_ALLOWED_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/review-triggers-allowed.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/review-triggers-allowed.sh" \
+    "$HOME/.claude/scripts/review-triggers-allowed.sh" \
+    ".claude/scripts/review-triggers-allowed.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+TRIGGERS_ALLOWED_SH="$(resolve_triggers_allowed || true)"
+
+# Owner-approved BugBot (issue #1898): the paid step's one exception.
+resolve_paid_grant() {
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/paid-review-grant.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh" \
+    "$HOME/.claude/scripts/paid-review-grant.sh" \
+    ".claude/scripts/paid-review-grant.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PAID_GRANT_SH="$(resolve_paid_grant || true)"
+
 # --- 1. read PR draft state + author + HEAD sha ---
 PR_VIEW_ERR="$(mktemp)"
 
@@ -298,7 +412,7 @@ CURRENT_USER="$(gh api user --jq .login 2>/dev/null || echo "")"
 # Pre-#576 this collapsed everything into a flat login set and a flat body list,
 # which is exactly why staleness was invisible. Each artifact now keeps the
 # fields needed to decide freshness against HEAD.
-ARTIFACTS_TMP="$(mktemp)"   # login US commit_id US created_at US collapsed_body
+ARTIFACTS_TMP="$(mktemp)"   # login US commit_id US created_at US collapsed_body US type(r/c/i)
 SLUGS_TMP="$(mktemp)"       # app.slug of each check-run on the HEAD commit
 TIMELINE_TMP="$(mktemp)"    # created_at of each head_ref_force_pushed/head_ref_pushed event
 GH_ERR="$(mktemp)"
@@ -327,27 +441,63 @@ trap 'rm -f "$PR_VIEW_ERR" "$ARTIFACTS_TMP" "$SLUGS_TMP" "$TIMELINE_TMP" "$GH_ER
 # SHA-less artifact unparseable. 0x1f is not IFS whitespace, so empty fields
 # survive. It also cannot occur in real GitHub content, unlike tab.
 #
-# `@tsv` would need per-endpoint field lists; a manual join keeps one filter
-# shape across all three endpoints. Body is last, and separators/newlines are
-# stripped from it, so a hostile body cannot forge fields.
+# `@tsv` would need per-endpoint field lists; a manual join keeps a consistent
+# shape across all three endpoints. Body is the 4th field; the 5th is a static
+# endpoint-type tag ("r"/"c"/"i"). Separators/newlines are stripped from the
+# body so a hostile body cannot forge the type tag (issue #1226).
 US=$'\037'
-ARTIFACT_JQ='.[]? | [
+# Per-endpoint jq filters.  Each row has 5 US-separated fields:
+#   login | sha | date | body | type
+# "type" distinguishes the endpoint so login_fresh_on_head() can apply the
+# substance check only to review objects (issue #1226):
+#   "r"  = review object  (pulls/reviews)      - substance-checked for codeant/coderabbit
+#   "c"  = inline comment (pulls/comments)     - always counts as engagement on HEAD
+#   "i"  = issue comment  (issues/PR comments) - SHA-less, freshness checked by date
+ARTIFACT_JQ_REVIEW='.[]? | [
     (.user.login // ""),
     (.original_commit_id // .commit_id // ""),
     (.submitted_at // .created_at // ""),
-    ((.body // "") | gsub("[\r\n\t\u001f]+"; " "))
+    ((.body // "") | gsub("[\r\n\t\u001f]+"; " ")),
+    "r"
+  ] | join("\u001f")'
+ARTIFACT_JQ_INLINE='.[]? | [
+    (.user.login // ""),
+    (.original_commit_id // .commit_id // ""),
+    (.submitted_at // .created_at // ""),
+    ((.body // "") | gsub("[\r\n\t\u001f]+"; " ")),
+    "c"
+  ] | join("\u001f")'
+ARTIFACT_JQ_ISSUE='.[]? | [
+    (.user.login // ""),
+    (.original_commit_id // .commit_id // ""),
+    (.submitted_at // .created_at // ""),
+    ((.body // "") | gsub("[\r\n\t\u001f]+"; " ")),
+    "i"
   ] | join("\u001f")'
 
-for endpoint in \
-  "repos/{owner}/{repo}/pulls/$PR/reviews" \
-  "repos/{owner}/{repo}/pulls/$PR/comments" \
-  "repos/{owner}/{repo}/issues/$PR/comments"; do
-  if ! gh api --paginate "${endpoint}?per_page=100" \
-       --jq "$ARTIFACT_JQ" >>"$ARTIFACTS_TMP" 2>"$GH_ERR"; then
-    echo "pr-preflight.sh: failed to scan $endpoint: $(cat "$GH_ERR")" >&2
-    exit 4
-  fi
-done
+# Fetch all three endpoints as raw JSON so we can both populate ARTIFACTS_TMP
+# and pass the raw payloads to review-substance.sh (issue #1226).
+RAW_REVIEWS_JSON="[]"
+RAW_INLINE_JSON="[]"
+RAW_ISSUE_JSON="[]"
+
+if ! RAW_REVIEWS_JSON="$(gh api --paginate "repos/{owner}/{repo}/pulls/$PR/reviews?per_page=100" 2>"$GH_ERR")"; then
+  echo "pr-preflight.sh: failed to scan pulls reviews: $(cat "$GH_ERR")" >&2
+  exit 4
+fi
+if ! RAW_INLINE_JSON="$(gh api --paginate "repos/{owner}/{repo}/pulls/$PR/comments?per_page=100" 2>"$GH_ERR")"; then
+  echo "pr-preflight.sh: failed to scan pulls comments: $(cat "$GH_ERR")" >&2
+  exit 4
+fi
+if ! RAW_ISSUE_JSON="$(gh api --paginate "repos/{owner}/{repo}/issues/$PR/comments?per_page=100" 2>"$GH_ERR")"; then
+  echo "pr-preflight.sh: failed to scan issue comments: $(cat "$GH_ERR")" >&2
+  exit 4
+fi
+
+printf '%s\n' "$RAW_REVIEWS_JSON" | jq -r "$ARTIFACT_JQ_REVIEW" >>"$ARTIFACTS_TMP"
+printf '%s\n' "$RAW_INLINE_JSON"  | jq -r "$ARTIFACT_JQ_INLINE"  >>"$ARTIFACTS_TMP"
+printf '%s\n' "$RAW_ISSUE_JSON"   | jq -r "$ARTIFACT_JQ_ISSUE"   >>"$ARTIFACTS_TMP"
+
 
 # HEAD freshness anchor for SHA-less issue comments (issue #590). Preferred
 # source: the PR timeline's head_ref_force_pushed/head_ref_pushed event —
@@ -399,6 +549,41 @@ else
   fi
 fi
 
+# --- substance evidence for review objects (issue #1226) ---
+# Evaluate the substantive footprint of codeant-ai[bot] and coderabbitai[bot]
+# reviews using the same evaluator as merge-gate.sh (#875). The result is
+# consumed by review_object_engaged() so that login_fresh_on_head() can skip
+# hollow APPROVED reviews that merge-gate.sh would reject.
+# Degradation: if REVIEW_SUBSTANCE_SH is unavailable or fails, leave
+# PREFLIGHT_REVIEW_EVIDENCE as "{}" — review_object_engaged() degrades to
+# "engaged" (fail toward silence) in that case.
+#
+# `resolved_comment_ids` (issue #1632) is deliberately NOT supplied here. This
+# script fetches no review-thread data, and its only consumer of the verdict is
+# review_object_engaged(), which decides whether to RE-TRIGGER a bot. Omitting
+# the key means an earlier run's resolved findings still count, so a redeemable
+# approval reads as not-coverage and the bot is re-triggered — which is the
+# documented remedy for that state anyway. It fails toward noise, never toward a
+# laundered gate. Add a reviewThreads fetch here if that ever stops being true.
+PREFLIGHT_REVIEW_EVIDENCE="{}"
+if [[ -n "${REVIEW_SUBSTANCE_SH:-}" && -n "$HEAD_SHA" ]]; then
+  # Merge each endpoint's pages explicitly before building the payload (issue #1226).
+  # gh api --paginate can emit multiple JSON arrays when a result spans pages; jq
+  # --argjson with `jq -s 'add // []'` collapses them into one flat array per
+  # endpoint regardless of how many pages the endpoint returned.
+  PREFLIGHT_REVIEW_EVIDENCE="$(
+    jq -n \
+      --arg sha "$HEAD_SHA" \
+      --arg push "${HEAD_DATE:-}" \
+      --argjson reviews "$(printf '%s\n' "$RAW_REVIEWS_JSON" | jq -s 'add // []')" \
+      --argjson pr_comments "$(printf '%s\n' "$RAW_INLINE_JSON" | jq -s 'add // []')" \
+      --argjson issue_comments "$(printf '%s\n' "$RAW_ISSUE_JSON" | jq -s 'add // []')" \
+      '{head_sha: $sha, push_ts: $push, reviews: $reviews, pr_comments: $pr_comments, issue_comments: $issue_comments}' \
+      | "$REVIEW_SUBSTANCE_SH" 2>/dev/null
+  )" || PREFLIGHT_REVIEW_EVIDENCE="{}"
+  [[ -z "$PREFLIGHT_REVIEW_EVIDENCE" ]] && PREFLIGHT_REVIEW_EVIDENCE="{}"
+fi
+
 # Check-runs on the HEAD commit. Keyed by commit, so a matching app slug is a
 # strong HEAD-freshness signal (verified: Cursor posts `Cursor Bugbot` under
 # slug `cursor`). Non-fatal: one signal among several.
@@ -431,16 +616,46 @@ at_or_after_head() {
   [[ ! "$ts" < "$HEAD_DATE" ]]
 }
 
+review_object_engaged() {
+  # $1 = exact bot login. Returns 0 when the reviewer has a substantive
+  # footprint on HEAD (non-empty body, inline comments, or a status comment
+  # naming HEAD). Only applies to codeant-ai[bot] and coderabbitai[bot];
+  # other reviewers' review objects always count as engaged to preserve
+  # pre-#1226 behavior. (issue #1226)
+  local login="$1"
+  case "$login" in
+    "codeant-ai[bot]"|"coderabbitai[bot]") ;;
+    *) return 0 ;;  # outside scope: unconditionally engaged
+  esac
+  # Degrade to "engaged" (fail toward silence) when the evaluator was
+  # unavailable or returned empty/invalid output.
+  [[ -z "${PREFLIGHT_REVIEW_EVIDENCE:-}" || "$PREFLIGHT_REVIEW_EVIDENCE" == "{}" ]] && return 0
+  # For APPROVED reviews: require .counts_as_coverage (substantive + no
+  # disqualifiers — same gate as merge-gate.sh). A disqualified approval
+  # (temporal inversion, capability failure, self-report SHA mismatch) must not
+  # suppress a re-trigger even when the body is long enough.
+  # For non-APPROVED reviews (CHANGES_REQUESTED, COMMENTED): .substantive alone
+  # suffices — the bot already reviewed and posted meaningful findings.
+  printf '%s' "$PREFLIGHT_REVIEW_EVIDENCE" \
+    | jq -e --arg l "$login" '
+        .reviewers[$l] |
+        ((.counts_as_coverage // false)
+         or ((.approved_on_head // false | not) and (.substantive // false)))
+      ' >/dev/null 2>&1
+}
+
 login_fresh_on_head() {
   # $1 = exact bot login (e.g. coderabbitai[bot]); $2 = reviewer key.
   # Engaged on HEAD when ANY signal in the HEAD-SHA FRESHNESS table holds.
-  local login="$1" key="$2" a_login a_sha a_date
+  local login="$1" key="$2" a_login a_sha a_date a_type
 
   # No HEAD SHA (unexpected — headRefOid absent from the PR view): every
-  # freshness test would fail and we would trigger all four bots on every tick.
+  # freshness test would fail and we would trigger all three bots on every tick.
   # Degrade to pre-#576 PR-wide presence instead — fail toward silence.
   if [[ -z "$HEAD_SHA" ]]; then
-    cut -d"$US" -f1 "$ARTIFACTS_TMP" | grep -qxF -- "$login" && return 0
+    local first_col
+    first_col=$(cut -d"$US" -f1 "$ARTIFACTS_TMP") || return 1
+    grep -qxF -- "$login" <<<"$first_col" && return 0
     return 1
   fi
 
@@ -452,10 +667,20 @@ login_fresh_on_head() {
 
   # (b) review / inline comment on HEAD, or (c) SHA-less issue comment at or
   # after the HEAD commit date.
-  while IFS="$US" read -r a_login a_sha a_date _; do
+  while IFS="$US" read -r a_login a_sha a_date _ a_type; do
     [[ "$a_login" == "$login" ]] || continue
     if [[ -n "$a_sha" ]]; then
-      [[ "$a_sha" == "$HEAD_SHA" ]] && return 0
+      if [[ "$a_sha" == "$HEAD_SHA" ]]; then
+        # Review objects (type "r") from codeant/coderabbit must carry a
+        # substantive footprint to count as engaged — catches hollow APPROVED
+        # reviews that merge-gate.sh would reject (issue #1226). Inline diff
+        # comments (type "c") are always substantive by definition.
+        if [[ "${a_type:-}" == "r" ]]; then
+          review_object_engaged "$login" && return 0
+        else
+          return 0
+        fi
+      fi
     else
       # No SHA to compare (issue comment). With no HEAD date to compare
       # against either, fail toward pre-#576 "present" rather than re-trigger.
@@ -477,7 +702,7 @@ trigger_fresh_for_head() {
   # ("I ran @coderabbitai full review earlier") still do not suppress a real
   # trigger post — a trigger comment we posted is exactly that string.
   local trigger="$1" a_sha a_date a_body
-  while IFS="$US" read -r _ a_sha a_date a_body; do
+  while IFS="$US" read -r _ a_sha a_date a_body _; do
     [[ "$a_body" == "$trigger" ]] || continue
     # Only a SHA-less artifact can be one of OUR triggers: post_trigger posts via
     # `gh pr comment`, which creates an issue comment (no commit_id). A
@@ -496,7 +721,7 @@ triggered_for_head_in_state() {
   # $1 = reviewer key. True when a prior run in this session already posted this
   # reviewer's trigger for the CURRENT HEAD. Covers the window where our comment
   # is posted but not yet visible to the endpoint scan (GitHub eventual
-  # consistency), which would otherwise re-trigger all four bots every tick.
+  # consistency), which would otherwise re-trigger all three bots every tick.
   local key="$1"
   [[ -z "$STATE_SH" || -z "$HEAD_SHA" ]] && return 1
   local recorded_sha
@@ -555,11 +780,8 @@ fi
 
 # --- 4. reviewer-trigger check ---
 # Ordered list: key | bot-login | trigger-string. Greptile intentionally absent.
-# Graphite known outage (issue #610, confirmed 2026-07-21): zero engagement (no
-# comments, no check-runs) on every PR since 2026-05-08 — external GitHub App
-# issue, not fixable from this script. Kept in the trigger set anyway (cheap,
-# self-healing) — see .claude/reference/codeant-graphite-supplemental.md.
-REVIEWER_KEYS=(codeant coderabbit cursor graphite)
+# Graphite was a fourth key until its retirement on 2026-11-03 (#1889).
+REVIEWER_KEYS=(codeant coderabbit cursor)
 # Bash 3.2-compatible (macOS default ships Bash 3.2): NO associative arrays.
 # `declare -A` is a syntax error on Bash 3 and, under `set -euo pipefail`, aborts
 # the script immediately (issue #494). Map key->login and key->trigger via case;
@@ -570,7 +792,6 @@ reviewer_login() {
     codeant)    printf '%s' "codeant-ai[bot]" ;;
     coderabbit) printf '%s' "coderabbitai[bot]" ;;
     cursor)     printf '%s' "cursor[bot]" ;;
-    graphite)   printf '%s' "graphite-app[bot]" ;;
   esac
 }
 reviewer_trigger() {
@@ -578,7 +799,6 @@ reviewer_trigger() {
     codeant)    printf '%s' "@codeant-ai review" ;;
     coderabbit) printf '%s' "@coderabbitai full review" ;;
     cursor)     printf '%s' "@cursor review" ;;
-    graphite)   printf '%s' "@graphite-app re-review" ;;
   esac
 }
 reviewer_check_slugs() {
@@ -592,7 +812,6 @@ reviewer_check_slugs() {
     codeant)    printf '%s' "codeant-ai codeant" ;;
     coderabbit) printf '%s' "coderabbitai coderabbit" ;;
     cursor)     printf '%s' "cursor cursor-com" ;;
-    graphite)   printf '%s' "graphite-app graphite" ;;
   esac
 }
 set_status() { printf -v "REVIEWER_STATUS_$1" '%s' "$2"; }
@@ -658,6 +877,122 @@ post_trigger() {
   fi
 }
 
+# BugBot's approval step (issues #1897, #1898): spend an owner grant for this
+# PR and HEAD — paid-review-grant.sh posts `@cursor review` and answers
+# `triggered` only after a successful post — or record the approval skip.
+# A dry run never spends a grant; a missing helper keeps the skip.
+cursor_grant_or_skip() {
+  local st=""
+  if (( ! DRY_RUN )) && [[ -n "$PAID_GRANT_SH" ]]; then
+    # Refusals exit non-zero; keep the STATUS line whatever the exit code.
+    st="$("$PAID_GRANT_SH" --trigger "$PR" --vendor cursor ${HEAD_SHA:+--head "$HEAD_SHA"} 2>/dev/null | sed -n 's/^STATUS=//p')" || true
+  fi
+  if [[ "$st" == "triggered" ]]; then
+    set_status cursor "triggered"
+    ACTIONS=$((ACTIONS + 1))
+    surface "triggered cursor: @cursor review under the owner's grant (now used, #1898)"
+    record_trigger_for_head cursor
+  elif [[ "$st" == "trigger_failed" ]]; then
+    set_status cursor "trigger-failed"
+    surface "WARNING: failed to post @cursor review under the owner's grant (trigger_failed; the grant was released)"
+  else
+    set_status cursor "skipped-approval-required"
+    surface "skipping @cursor review — paid review requires owner approval${st:+ ($st)}"
+  fi
+}
+
+# Prints the gate and returns 0 only when the PR's review tier excludes BugBot.
+# Every other outcome — no helper, full/legacy, an unresolvable tier — returns 1
+# and the nudge posts as before (fail-open, issue #1728). The helper's own stderr
+# line on an unresolvable tier is kept out of --json callers' way.
+bugbot_tier_excluded() {
+  [[ -n "$BUGBOT_TIER_SH" ]] || return 1
+  "$BUGBOT_TIER_SH" "$PR" --why 2>/dev/null
+}
+
+# Tier-aware triggers (issue #1749): ask the shared helper once.
+TRIGGER_MODE="legacy"
+TRIGGER_JSON=""
+if [[ -n "$TRIGGERS_ALLOWED_SH" ]]; then
+  T_RC=0
+  TRIGGER_JSON="$("$TRIGGERS_ALLOWED_SH" "$PR" ${HEAD_SHA:+--head "$HEAD_SHA"} 2>/dev/null)" || T_RC=$?
+  if (( T_RC == 0 )) && jq -e '.mode == "legacy" or .mode == "tiered" or .mode == "fail_closed"' <<<"$TRIGGER_JSON" >/dev/null 2>&1; then
+    TRIGGER_MODE="$(jq -r '.mode' <<<"$TRIGGER_JSON")"
+  else
+    TRIGGER_MODE="fail_closed"
+    TRIGGER_JSON='{"mode":"fail_closed","gate":null}'
+    surface "WARNING: review-triggers-allowed.sh gave no usable answer (rc=$T_RC) — deferring every reviewer trigger this run (fail closed)"
+  fi
+else
+  echo "pr-preflight.sh: DEGRADED: review-triggers-allowed.sh not found (checked beside this script and the three standard paths) — tier-aware triggers unavailable, continuing with the legacy reviewer loop" >&2
+fi
+
+# Prints "<kind> <reason>" for one reviewer from a helper answer; anything
+# unreadable is "deferred helper_unusable" — never allowed.
+tier_decision() { # <helper json> <key>
+  local d
+  d="$(jq -r --arg k "$2" '.reviewers[$k] | select(type == "object") | "\(.kind) \(.reason)"' <<<"$1" 2>/dev/null)" || d=""
+  case "${d%% *}" in
+    allowed|excluded|deferred) printf '%s' "$d" ;;
+    *) printf '%s' "deferred helper_unusable" ;;
+  esac
+}
+
+if [[ "$TRIGGER_MODE" != "legacy" ]]; then
+  TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON" 2>/dev/null || echo unresolved)"
+  for key in "${REVIEWER_KEYS[@]}"; do
+    login="$(reviewer_login "$key")"
+    trigger="$(reviewer_trigger "$key")"
+    # Same HEAD-scoped idempotency as the legacy loop, checked first.
+    if login_fresh_on_head "$login" "$key" \
+       || trigger_fresh_for_head "$trigger" \
+       || triggered_for_head_in_state "$key"; then
+      set_status "$key" "already-present"
+      continue
+    fi
+    decision="$(tier_decision "$TRIGGER_JSON" "$key")"
+    kind="${decision%% *}"; reason="${decision#* }"
+    if [[ "$kind" == "allowed" && "$key" == "coderabbit" ]] && ! cr_budget_allows; then
+      set_status "$key" "skipped-rate-cap"
+      surface "skipping @coderabbitai full review — CR rate cap hit"
+      continue
+    fi
+    if [[ "$kind" == "allowed" ]] && (( ! DRY_RUN )); then
+      # Claim BEFORE posting: the lifetime caps hold across racing runs.
+      C_RC=0
+      CLAIM_JSON="$("$TRIGGERS_ALLOWED_SH" "$PR" ${HEAD_SHA:+--head "$HEAD_SHA"} --claim "$key" 2>/dev/null)" || C_RC=$?
+      if (( C_RC != 0 )); then
+        decision="$(tier_decision "$CLAIM_JSON" "$key")"
+        kind="${decision%% *}"; reason="${decision#* }"
+        [[ "$kind" == "allowed" ]] && { kind="deferred"; reason="claim_failed"; }
+      fi
+    fi
+    case "$kind" in
+      allowed)
+        post_trigger "$key"
+        if [[ "$(get_status "$key")" == "trigger-failed" ]]; then
+          "$TRIGGERS_ALLOWED_SH" "$PR" --release "$key" >/dev/null 2>&1 \
+            || surface "WARNING: could not release the $key claim — its lifetime count may over-read by one"
+        fi
+        ;;
+      excluded)
+        if [[ "$key" == "cursor" && "$reason" == "approval_required" ]]; then
+          cursor_grant_or_skip
+        elif [[ "$reason" == "approval_required" ]]; then
+          set_status "$key" "skipped-approval-required"
+          surface "skipping $trigger — paid review requires owner approval"
+        else
+          set_status "$key" "skipped-tier-excluded"
+          surface "skipping $trigger — review tier $TIER_GATE_TXT: $reason"
+        fi
+        ;;
+      *)
+        set_status "$key" "skipped-tier-deferred"
+        surface "deferring $trigger — review tier $TIER_GATE_TXT: $reason"
+        ;;
+    esac
+  done
+else
 for key in "${REVIEWER_KEYS[@]}"; do
   login="$(reviewer_login "$key")"
   trigger="$(reviewer_trigger "$key")"
@@ -678,22 +1013,42 @@ for key in "${REVIEWER_KEYS[@]}"; do
       set_status "$key" "skipped-rate-cap"
       surface "skipping @coderabbitai full review — CR rate cap hit (posting the other reviewers)"
     fi
+  elif [[ "$key" == "cursor" ]] && tier_gate="$(bugbot_tier_excluded)"; then
+    # The PR's review tier never needs BugBot (issue #1728): nothing to do and
+    # nothing pending, so this status counts as clean below.
+    set_status "$key" "skipped-tier-excluded"
+    if [[ "$tier_gate" == *$'\t'escalation_off ]]; then
+      surface "skipping @cursor review — REVIEW_ESCALATION=off (repo turned escalation off; gate ${tier_gate%%$'\t'*})"
+    else
+      surface "skipping @cursor review — review tier ${tier_gate%%$'\t'*} excludes BugBot"
+    fi
+  elif [[ "$key" == "cursor" ]]; then
+    # Last step of the BugBot chain (issue #1897): paid, so never posted
+    # without the owner's explicit approval — an owner grant (#1898) or the
+    # skip, which leaves nothing pending → clean below.
+    cursor_grant_or_skip
   else
     post_trigger "$key"
   fi
 done
+fi
 
 # --- 5. clean determination + summary ---
 # Clean ⇒ nothing was done and nothing is pending: not flipped, and every
-# reviewer was already-present (no triggers, no skips, no failures).
+# reviewer was already-present (no triggers, no skips, no failures) — or
+# excluded by the PR's review tier, which leaves nothing pending either. A
+# tier-DEFERRED reviewer is pending, so it is not clean (issue #1749).
 CLEAN=true
 # Any draft action other than a genuine "not-draft" means work happened or the PR
 # is still a draft (marked-ready / skipped-not-author / ready-failed) — not clean.
 # ready-failed in particular keeps is_draft true, so clean MUST be false even when
-# all four reviewers are present (issue #494 BugBot — "False clean after ready failure").
+# all three reviewers are present (issue #494 BugBot — "False clean after ready failure").
 [[ "$DRAFT_ACTION" != "not-draft" ]] && CLEAN=false
 for key in "${REVIEWER_KEYS[@]}"; do
-  [[ "$(get_status "$key")" != "already-present" ]] && CLEAN=false
+  case "$(get_status "$key")" in
+    already-present|skipped-tier-excluded|skipped-approval-required) ;;
+    *) CLEAN=false ;;
+  esac
 done
 
 if [[ "$CLEAN" == "true" ]]; then
@@ -712,7 +1067,6 @@ SUMMARY="$(jq -n \
   --arg ca_t "$(reviewer_trigger codeant)"    --arg ca_s "$(get_status codeant)" \
   --arg cr_t "$(reviewer_trigger coderabbit)" --arg cr_s "$(get_status coderabbit)" \
   --arg cu_t "$(reviewer_trigger cursor)"     --arg cu_s "$(get_status cursor)" \
-  --arg gr_t "$(reviewer_trigger graphite)"   --arg gr_s "$(get_status graphite)" \
   '{
     pr: $pr,
     is_draft: $is_draft,
@@ -723,8 +1077,7 @@ SUMMARY="$(jq -n \
     reviewers: {
       codeant:    {trigger: $ca_t, status: $ca_s},
       coderabbit: {trigger: $cr_t, status: $cr_s},
-      cursor:     {trigger: $cu_t, status: $cu_s},
-      graphite:   {trigger: $gr_t, status: $gr_s}
+      cursor:     {trigger: $cu_t, status: $cu_s}
     },
     actions: $actions,
     clean: $clean

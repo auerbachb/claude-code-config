@@ -1,0 +1,240 @@
+# Tests
+
+<!-- catalog:category id=tests order=130 -->
+<!-- catalog:covers Every test under `tests/`, all offline (no network required) -->
+
+All tests live in `tests/` and run offline (no network required). Run from the repo root:
+`bash .claude/scripts/tests/<name>.test.sh`
+
+Rows are generated in `LC_ALL=C sort` order — byte order, not dictionary order,
+so `overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
+0x2D, `.` is 0x2E). Every category doc is ordered the same way now that the rows
+are generated (#1578), which retired the per-doc `<!-- catalog-lint: ordered -->`
+opt-in of issue #1544.
+
+| Test | What it covers |
+|------|----------------|
+<!-- catalog:rows:begin -->
+| [ac-checkboxes.test.sh](../tests/ac-checkboxes.test.sh) | Exercise CommonMark AC extraction, exact REST mutation and gate parity with offline fixtures |
+| [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
+| [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
+| [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
+| [ai-account-ledger.test.sh](../tests/ai-account-ledger.test.sh) | Verify metadata-only Codex backfill, idempotency, historical branch provenance, and rolling account/project reports. |
+| [ai-quotas-keychain-native.test.sh](../tests/ai-quotas-keychain-native.test.sh) | Verify the native service-only Keychain adapter against a private temporary Keychain, preserving fixed synthetic bytes, ACLs and the user search list |
+| [ai-quotas-reauth.test.sh](../tests/ai-quotas-reauth.test.sh) | Exercise owner-run fresh-profile reauthentication with private mixed/non-cycle stores, preserved original identities and publication failures |
+| [ai-quotas-setup.test.sh](../tests/ai-quotas-setup.test.sh) | Tests `ai-quotas-setup.sh` — the add/remove/relogin/list registry contract, two same-provider accounts staying logged in independently, the macOS Keychain probe against a stub `security` that fails loudly if a credential VALUE is ever requested, the leak assertions (no token/password/cookie and no fixture secret in the config), the fail-closed paths where a login runs but leaves no visible credential, and the Cursor IDE-token model against a fixture SQLite state store (`add`/`relogin` create no profile directory and launch nothing, a signed-out IDE registers nothing, and the relogin slot still refuses a concurrent run) |
+| [ai-quotas-share.test.sh](../tests/ai-quotas-share.test.sh) | Tests the `launchers` and `share-config` actions of `ai-quotas-setup.sh` against a fake registry and a fake HOME — one zsh function per claude/codex account named from the nickname, resolution of the profile directory BY LABEL through `list --json` (asserted on a registry whose directories are named backwards, the #1850 shape, and exercised under a real zsh with stub `claude`/`codex` binaries), the tab-title escape, the collision refusal, the `source` line with `~/.zshrc` left untouched, the hand-written file moved to `.pre-share` and a generated one overwritten in place; and for share-config the symlinks, the settings/config copies, the `mcpServers` merge that keeps the profile's own fields, idempotent re-runs, `.pre-share` keepsakes, the skipped-when-primary-missing items, the self-share and cursor refusals, and the leak assertion that no fixture credential reaches any output or generated file |
+| [ai-quotas.test.sh](../tests/ai-quotas.test.sh) | Runs all quota-reader assertions in isolated fixture groups under a whole-suite deadline; missing fakes fail before reader launch |
+| [babysit-generation-persist.test.sh](../tests/babysit-generation-persist.test.sh) | Tests real babysit bookkeeping and cadence fences against supersession and owned rollback |
+| [backfill-review.test.sh](../tests/backfill-review.test.sh) | Exercises backfill-review.sh against a fixture repo, stub review CLIs, and a stub gh: one deduped issue per real bug, rows marked once, fail-closed outages, no paid reviewer |
+| [background-task-registry.test.sh](../tests/background-task-registry.test.sh) | Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes |
+| [backlog-health.test.sh](../tests/backlog-health.test.sh) | Tests for `backlog-health.sh` |
+| [backlog-staleness.test.sh](../tests/backlog-staleness.test.sh) | Tests for `backlog-staleness.sh` |
+| [bgwork-ceiling.test.sh](../tests/bgwork-ceiling.test.sh) | Tests for `bgwork-ceiling.sh` |
+| [board-round-membership.test.sh](../tests/board-round-membership.test.sh) | Tests real per-session round dispatch/teardown, observer/legacy reads and board queue derivation |
+| [bounded-run.test.sh](../tests/bounded-run.test.sh) | Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract |
+| [bugbot-invitation-process.test.sh](../tests/bugbot-invitation-process.test.sh) | Verify real BugBot invitation process cleanup and direct-child-only negative controls |
+| [bugbot-tier-excluded.test.sh](../tests/bugbot-tier-excluded.test.sh) | Tests the gate-to-exit-code contract of `bugbot-tier-excluded.sh` |
+| [candidate-ownership.test.sh](../tests/candidate-ownership.test.sh) | Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee |
+| [ccusage-baseline.test.sh](../tests/ccusage-baseline.test.sh) | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
+| [check-runs-dedup.test.sh](../tests/check-runs-dedup.test.sh) | Tests for `check-runs-dedup.sh` |
+| [checkpoint-handoff-slow-bound.test.sh](../tests/checkpoint-handoff-slow-bound.test.sh) | Pins the ≥420s bound floor for the slow `checkpoint-handoff.test.sh` (#1505) — its banner is emitted before any fixture work and names a floor ≥420, and no runner, CI job, or other file applies a smaller bound that would cover it |
+| [checkpoint-handoff.test.sh](../tests/checkpoint-handoff.test.sh) | Tests the degrade ladder in `checkpoint-handoff.sh` — the emitted document must pass `portable-handoff-lint.sh` in any repository, harness-shaped filenames included. **Slow (~71s idle, ~202s loaded): any bound must be ≥420s** (#1505) |
+| [chip-offer-registry.test.sh](../tests/chip-offer-registry.test.sh) | Tests for `chip-offer-registry.sh` — reservation, cap exhaustion, transitions, counting, concurrent emitters, TTL expiry, and the `--help` / `--emitter` allowlist drift guard |
+| [churn-hotspot-wrap-plan.test.sh](../tests/churn-hotspot-wrap-plan.test.sh) | Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification |
+| [churn-hotspots.test.sh](../tests/churn-hotspots.test.sh) | Tests for `churn-hotspots.sh` |
+| [ci-status.test.sh](../tests/ci-status.test.sh) | Tests for `ci-status.sh` |
+| [claim-renewal-wiring.test.sh](../tests/claim-renewal-wiring.test.sh) | Asserts /subagent, /start-issue and /wrap renew the claim at their documented points, stop on exit 5, and that Form B stays identical in both copies |
+| [claude-config-sync.test.sh](../tests/claude-config-sync.test.sh) | Tests `claude-config-sync.sh` against a real local origin + clone — stale-machine catch-up, the restart marker and its startup clear, the failure counter/threshold/recovery, the lock-contention skip, and the root-repo scope guard |
+| [clean-behind-check.test.sh](../tests/clean-behind-check.test.sh) | Tests for `clean-behind-check.sh` |
+| [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
+| [config-sync-tail.test.sh](../tests/config-sync-tail.test.sh) | Private-home integration checks for bounded config-sync setup, pending recovery, and ownership |
+| [cr-plan.test.sh](../tests/cr-plan.test.sh) | Tests for `cr-plan.sh` |
+| [credit-budget.test.sh](../tests/credit-budget.test.sh) | Tests `credit-budget.sh` and `lib/usage-limit-classify.sh` — the plan-window vs credit-overage classifier matrix, reset-clause parsing and its refusals, plan-window events yielding `ok` with the pre-fix predicate as a negative control (#1633), a genuine overage still yielding `reached`, a reopened window never gating, and the fail-closed paths |
+| [cursor-review-workflow-suppression.test.sh](../tests/cursor-review-workflow-suppression.test.sh) | Asserts `.github/workflows/cursor-review-pr-comment.yml` can never post `@cursor review` (issue #1897) |
+| [date-r-ordering.test.sh](../tests/date-r-ordering.test.sh) | Pins every shipped `date -r` fallback chain GNU-first (#1587) — a GNU-semantics `date` shim plus an epoch-named decoy file prove each fixed site reads the epoch, not a filename, with per-site negative controls, structural order checks on the already-GNU-first sites, and the deliberate BSD-first negative-control fixture in `overrun-check-tzdata.test.sh` pinned as such |
+| [decision-only-evidence.test.sh](../tests/decision-only-evidence.test.sh) | Exercise the real quiet-wait and watch-posture evidence writes, including failed persistence |
+| [diff-survival-check.test.sh](../tests/diff-survival-check.test.sh) | Tests for `diff-survival-check.sh` |
+| [dirty-main-guard.test.sh](../tests/dirty-main-guard.test.sh) | Tests for `dirty-main-guard.sh` |
+| [empty-array-expansion.test.sh](../tests/empty-array-expansion.test.sh) | Sibling-sweep regressions for the empty-array-under-`set -u` abort on bash 3.2 |
+| [end-pause-contract.test.sh](../tests/end-pause-contract.test.sh) | Contract tests binding the `/end` and `/pause` skills, their resume companions, and the hooks and scripts they drive |
+| [escalate-review-app-identity.test.sh](../tests/escalate-review-app-identity.test.sh) | Publishing-app identity and spoof-guard tests for `escalate-review.sh` |
+| [escalate-review-bugbot-classification.test.sh](../tests/escalate-review-bugbot-classification.test.sh) | BugBot failure and response-classification tests for `escalate-review.sh` |
+| [escalate-review-cr-path-stuck.test.sh](../tests/escalate-review-cr-path-stuck.test.sh) | Pins the CR-path stuck-state escalation in `escalate-review.sh` (comment-only CodeRabbit + unredeemable pre-run CodeAnt stub) and its parity with `merge-gate.sh` |
+| [escalate-review-cr-retry-window.test.sh](../tests/escalate-review-cr-retry-window.test.sh) | CodeRabbit retry-window grace tests for `escalate-review.sh` |
+| [escalate-review-evaluator-outage.test.sh](../tests/escalate-review-evaluator-outage.test.sh) | Bounded evaluator-outage suppression in `escalate-review.sh` — a `review-substance.sh` outage caps the verdict at `polling_cr` for an hour instead of authorising a paid review, then resumes escalation. The inclusive 3600 s boundary is both pinned in the source and **executed**: scenario (f2) lands a run on exactly the cap by re-aiming on the overshoot the script itself reports (a fixed exactly-3600 fixture races the clock upward, and a fixed-width sweep would just encode a guess about runner speed) and fails if no probe lands, and (f3) pins the first excluded second |
+| [escalate-review-gate-met.test.sh](../tests/escalate-review-gate-met.test.sh) | Approval freshness and gate short-circuit tests for `escalate-review.sh` |
+| [escalate-review-head-observation-anchor.test.sh](../tests/escalate-review-head-observation-anchor.test.sh) | Head-observation anchor tests for `escalate-review.sh` — a force-pushed older commit must not make a prior-HEAD banner or `@cursor review` trigger read as fresh |
+| [escalate-review-merge-gate-freshness-parity.test.sh](../tests/escalate-review-merge-gate-freshness-parity.test.sh) | Drift guard that `escalate-review.sh` and `merge-gate.sh` reach the same approval-freshness verdict on one PR state, in-place re-reviews included |
+| [escalate-review-never-invited.test.sh](../tests/escalate-review-never-invited.test.sh) | Invitation, grace-window, and cache-state tests for `escalate-review.sh` |
+| [escalate-review-paid-denied.test.sh](../tests/escalate-review-paid-denied.test.sh) | No-paid-review verdict tests for `escalate-review.sh`: no_reviewer, never switch_bugbot/trigger_greptile |
+| [escalate-review-silent-exit.test.sh](../tests/escalate-review-silent-exit.test.sh) | Loud-exit contract tests for `escalate-review.sh` — every non-zero exit emits exactly one `escalate-review.sh: …` stderr diagnostic, the `EXIT` trap normalizes a raw 126/127 to exit 4 without fabricating a `STATUS=` verdict, and a negative control reproduces the pre-fix zero-output 126 on a copy with only the trap line removed |
+| [escalate-review-tier-gate.test.sh](../tests/escalate-review-tier-gate.test.sh) | Review-tier `tier_gate` verdict tests for `escalate-review.sh` |
+| [estimate-log-locks-bash.test.sh](../tests/estimate-log-locks-bash.test.sh) | Runs actual estimate lock controls under current Bash and macOS Bash 3.2 |
+| [estimate-log.test.sh](../tests/estimate-log.test.sh) | Tests claim timestamps, parsed repo rollups, empty/error paths and preservation of the input ledger |
+| [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
+| [estimate-rounds-batch-bash.test.sh](../tests/estimate-rounds-batch-bash.test.sh) | Runs actual estimate rounds batch controls under current Bash and macOS Bash 3.2 |
+| [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
+| [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b hands the post-push `PUSHED_SHA` to `fixpr-reviewer-triggers.sh`, which passes it to `bugbot-refused-head.sh` and the review-tier helper, never the pre-push `HEAD_SHA` |
+| [fixpr-step3b-tier-triggers.test.sh](../tests/fixpr-step3b-tier-triggers.test.sh) | Runs `fixpr-reviewer-triggers.sh` (/fixpr Step 3b) against fixture policies — ci-only posts no reviewer comment after a push, ci+codeant-one-round posts one CodeAnt invitation, full waits for green CI and posts CodeAnt and BugBot only, and a policy-free repo keeps the legacy four-trigger order |
+| [fixpr-step5-verify.test.sh](../tests/fixpr-step5-verify.test.sh) | Runs `/fixpr` Step 5c's real check-bucket block and Step 5d's real BugBot-invited block on fixtures — a check another app names after Graphite stays CI while graphite-app's check is review and never awaited; BugBot silence is awaited only after a `@cursor review` posted since the push or under an unused owner grant, and an unreadable comment list fails closed |
+| [fixpr-step7-preflight-line.test.sh](../tests/fixpr-step7-preflight-line.test.sh) | Runs `/fixpr` Step 7's real Pre-flight-line block on `pr-preflight.sh` summaries — "all N reviewers engaged" only when every reviewer is already-present, a ci-only PR names the tier-excluded reviewers, BugBot awaiting owner approval is named, and an empty or unreadable summary never renders as clean |
+| [forgotten-pr-triage.test.sh](../tests/forgotten-pr-triage.test.sh) | Tests for `forgotten-pr-triage.sh` |
+| [go-on-thread-comment-bound.test.sh](../tests/go-on-thread-comment-bound.test.sh) | Runs `/go-on` Step 7's real bot-thread count filter (anchor `go-on-bot-thread-count`) on fixtures — a thread whose comments exceed the 100 returned always counts and is flagged truncated, exact bot-login membership, resolved and human-only threads excluded, null authors safe, one count per thread |
+| [go-on-universal-resume.test.sh](../tests/go-on-universal-resume.test.sh) | Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety |
+| [handoff-scoping.test.sh](../tests/handoff-scoping.test.sh) | Tests per-repo handoff path scoping in `handoff-state.sh` |
+| [handoff-state.test.sh](../tests/handoff-state.test.sh) | Tests for `handoff-state.sh` |
+| [help-output.test.sh](../tests/help-output.test.sh) | `--help` contract for every repo script (#1513/#1475/#1528) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 13 scripts whose extraction was BSD-fatal or truncating, fixtures proving the checker rejects both pre-fix forms, and (Part 4) the empty-extraction guard: an extraction that yields nothing must exit non-zero and say so on stderr, asserted end-to-end and at the `END`-block level, with a pre-fix control that still exits 0 |
+| [infer-pr.test.sh](../tests/infer-pr.test.sh) | Tests for `infer-pr.sh` |
+| [install-backfill-review.test.sh](../tests/install-backfill-review.test.sh) | Tests `install-backfill-review.sh` / `uninstall-backfill-review.sh` against `launchctl` and `uname` stubs — placeholder and PATH rendering, `--interval`/`--repo-dir` validation, runner selection, lifecycle order and rollback, ledger-preserving teardown, and the non-Darwin guard |
+| [install-config-sync.test.sh](../tests/install-config-sync.test.sh) | Tests `install-config-sync.sh` / `uninstall-config-sync.sh` against `launchctl` and `uname` stubs — plist rendering, worktree-copy preference, `--interval` validation, teardown, and the non-Darwin guard |
+| [install-workspace-sweep.test.sh](../tests/install-workspace-sweep.test.sh) | Validate daily workspace LaunchAgent dry-run, install rollback, escaping and retained-state uninstall offline |
+| [issue-claim.test.sh](../tests/issue-claim.test.sh) | Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next |
+| [issue-dedup.test.sh](../tests/issue-dedup.test.sh) | Tests for `issue-dedup.sh` |
+| [issue-deps.test.sh](../tests/issue-deps.test.sh) | Tests for `issue-deps.sh`: the `/pm` 1B.3 marker set in bodies and comments (any case), edge direction, chains, diamonds, cycles, cross-repo and self references, closed issues, and a failing read that never reads as zero |
+| [issue-file.test.sh](../tests/issue-file.test.sh) | Exercises issue-file.sh's section, footer, title, and label checks against a stubbed gh, and the /issue-maker create block that calls it |
+| [issue-maker-log-scoping.test.sh](../tests/issue-maker-log-scoping.test.sh) | Regression tests for the `/issue-maker` session log colliding across concurrent conversations |
+| [leave-time-elicitation.test.sh](../tests/leave-time-elicitation.test.sh) | Runs the real skill-embedded bash for `/subagent` Step 7's leave-time elicitation gate and overrun decision, and `/leave-by`'s "no deadline today" marker and launch-anyway `parks` override (issue #1679), plus the cross-file contracts those four blocks depend on |
+| [leave-time.test.sh](../tests/leave-time.test.sh) | Runs the real skill-embedded bash for `/leave-by`'s lead-time cascade and `/subagent` Step 7's deadline decline (issue #1525), plus the cross-file contracts: one deadline source, Monitor wake, and teardown on both sides of a pause |
+| [local-review.test.sh](../tests/local-review.test.sh) | Tests for `local-review.sh`; every CLI is a stub, so no network and no dependence on which CLIs are installed |
+| [maybe-trigger-bugbot-daily-cap.test.sh](../tests/maybe-trigger-bugbot-daily-cap.test.sh) | Tests the account daily-cap `@cursor review` skip in `maybe-trigger-ai-review.sh` — over/ok/unknown, dry-run reporting, the open cursor step, and that the tier and refused-HEAD skips still win |
+| [maybe-trigger-bugbot-suppression.test.sh](../tests/maybe-trigger-bugbot-suppression.test.sh) | Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh` |
+| [maybe-trigger-bugbot-tier.test.sh](../tests/maybe-trigger-bugbot-tier.test.sh) | Tests the review-tier `@cursor review` skip in `maybe-trigger-ai-review.sh` |
+| [maybe-trigger-tier-triggers.test.sh](../tests/maybe-trigger-tier-triggers.test.sh) | Tests `maybe-trigger-ai-review.sh` under a review tier — ci-only posts nothing, ci+codeant-one-round posts one CodeAnt invitation for the life of the PR, full defers BugBot until CI is green and HEAD settled, a policy-free repo posts the free reviewers, and an owner grant (#1898) posts BugBot exactly once on its own PR and HEAD |
+| [merge-gate-authorship.test.sh](../tests/merge-gate-authorship.test.sh) | Tests the authorship guard in `merge-gate.sh` |
+| [merge-gate-bugbot.test.sh](../tests/merge-gate-bugbot.test.sh) | Tests the BugBot reviewer path in `merge-gate.sh` (issues #844, #962) |
+| [merge-gate-ci-dedup.test.sh](../tests/merge-gate-ci-dedup.test.sh) | Tests CI check-run deduplication and CodeAnt supplemental gate in `merge-gate.sh` |
+| [merge-gate-codeant-inplace-review.test.sh](../tests/merge-gate-codeant-inplace-review.test.sh) | Tests that a CodeAnt in-place review edit is not read as a stale approval in `merge-gate.sh` |
+| [merge-gate-codeant-run-marker.test.sh](../tests/merge-gate-codeant-run-marker.test.sh) | Tests that CodeAnt pre-analysis approval stubs do not score as review coverage in `merge-gate.sh` |
+| [merge-gate-greptile-comment.test.sh](../tests/merge-gate-greptile-comment.test.sh) | Tests Greptile comment handling in `merge-gate.sh` |
+| [merge-gate-json-escaping.test.sh](../tests/merge-gate-json-escaping.test.sh) | Tests that `merge-gate.sh` emits control-character-free JSON built with jq rather than by string concatenation |
+| [merge-gate-no-review-override.test.sh](../tests/merge-gate-no-review-override.test.sh) | Tests the no-review override in `merge-gate.sh` — window elapsed/running, hard stops, bot verdicts, pending reviewer checks, anchor failures, config, ledger rows |
+| [merge-gate-required-contexts.test.sh](../tests/merge-gate-required-contexts.test.sh) | Tests that `merge-gate.sh` blocks when every branch-protection required context is absent from HEAD |
+| [merge-gate-review-substance.test.sh](../tests/merge-gate-review-substance.test.sh) | Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage |
+| [merge-gate-review-tier.test.sh](../tests/merge-gate-review-tier.test.sh) | Tests per-repo review tiers in `merge-gate.sh` — ci-only, ci+codeant-one-round, full/legacy parity, resolver failure |
+| [merge-gate-stale-approval.test.sh](../tests/merge-gate-stale-approval.test.sh) | Tests stale-approval rejection in `merge-gate.sh` |
+| [merge-gate-sticky-cr-approval.test.sh](../tests/merge-gate-sticky-cr-approval.test.sh) | Tests that a fresh CR-path approval on current HEAD satisfies the gate even when the sticky reviewer is BugBot |
+| [merge-gate-sut-override.test.sh](../tests/merge-gate-sut-override.test.sh) | Tests the `SUT` / `EVAL_SUT` / `MERGE_GATE` override contract for the `merge-gate-*` family — defaults, environment overrides, refusal of a mistyped path, and that no assignment is re-hardcoded |
+| [merge-gate-thread-pagination.test.sh](../tests/merge-gate-thread-pagination.test.sh) | Tests that `merge-gate.sh` paginates `reviewThreads` (#1634) — an unresolved thread on page 2 blocks the gate, the cursor walk is observable, and the Greptile-scoped count sees the accumulated list, with end-to-end and filter-level negative controls proving the un-paginated view passes |
+| [merge-sequence.test.sh](../tests/merge-sequence.test.sh) | Tests for `merge-sequence.sh` |
+| [merge-target-root.test.sh](../tests/merge-target-root.test.sh) | Exercises explicit clone binding and the real wrap/merge fences with two same-remote clones and cwd drift |
+| [model-fleet.test.sh](../tests/model-fleet.test.sh) | Tests for `model-fleet.sh` |
+| [model-route.test.sh](../tests/model-route.test.sh) | Multi-attempt cheap retries, diagnosed escalation, caller wiring and eligibility boundaries for model-route.sh |
+| [overrun-check-tzdata.test.sh](../tests/overrun-check-tzdata.test.sh) | Tests `overrun-check.sh`'s ET clock on a system where `America/New_York` does not resolve (#1529) — a PATH-shim `date` reproduces glibc-without-tzdata (zone falls back to UTC, `date` still exits 0); asserts cell mode and the breach alert render a **labelled** UTC value rather than an unlabelled 12-hour UTC clock under an `(ET)` header, with a negative control pinning unchanged Eastern output and a fidelity control proving the shim reproduces the bug |
+| [overrun-check.test.sh](../tests/overrun-check.test.sh) | Tests `overrun-check.sh --readout-cells` — ET cell rendering, the pace-scaled overrun row, and the negative control proving the projected finish is floored at now |
+| [paid-review-grant.test.sh](../tests/paid-review-grant.test.sh) | Tests `paid-review-grant.sh`: a grant for PR A at HEAD X spends exactly once, never on another HEAD, PR, vendor, or session; an unreadable state file refuses with a visible note; offers above the approved price are refused; --trigger posts once and releases on a failed post |
+| [park-retire-guard.test.sh](../tests/park-retire-guard.test.sh) | Tests the identity-guarded usage-limit park retirement (#1663) against the real fenced bash in `/pause-resume` Step 5 and `/pm` D5 — the reactive claim interleaved between the reads and the retire surviving with its bound and wake intact, each anchor tier actually comparing its own field, the no-identity record still clearing so the #1595 escape hatch cannot deadlock, fail-closed on an unreadable identity, and a negative control proving the pre-fix unconditional clear destroyed the newer park |
+| [park-wake-publish.test.sh](../tests/park-wake-publish.test.sh) | Exercises both PM wake-publication fences with real state CAS and deterministic retirement races |
+| [pause-multisession.test.sh](../tests/pause-multisession.test.sh) | Tests per-session pause records and resume receipts (#1576) — interleaved concurrent pause writes staying independent, the extracted `/pause-resume` Step 1 selection program returning every un-resumed record newest-first, no masking when one is marked resumed, the legacy `.pause` / `.suspend` singletons as union members rather than an empty-map else-branch, and per-session resume receipts |
+| [pipeline-ceiling-consumers.test.sh](../tests/pipeline-ceiling-consumers.test.sh) | Static check that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal |
+| [pm-backlog-new-issue.test.sh](../tests/pm-backlog-new-issue.test.sh) | Runs the real `/pm` Step 1B.2 `pm-1b2-new-issues` block against a stubbed gh and the real session-state.sh, proving a freshly filed issue lands in NEW_ISSUES on the next scan |
+| [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
+| [pm-ownership-sweep-wiring.test.sh](../tests/pm-ownership-sweep-wiring.test.sh) | Executes the real `/pm` Step 1B.5 session-listing and ownership-sweep blocks against the real `candidate-ownership.sh`, proving the `owned_dead -> adopt` branch is reachable through `/pm`'s own wiring |
+| [pm-priority.test.sh](../tests/pm-priority.test.sh) | Tests for `pm-priority.sh` — the issue's tests 5.1 (`top: #c #a` leads, marked override) and 5.2 (`park #b until tomorrow`: absent today, back tomorrow), AC 4.3 (drop restores the ranked place; an absent file passes through), the date grammar, a corrupt file (exit 4, never overwritten), a linked worktree writing the main-root file, `--repo` resolution, concurrent writers, and `/pm`'s anchored read/overlay blocks plus its refill and template contract |
+| [pm-rank-cache.test.sh](../tests/pm-rank-cache.test.sh) | Tests for `pm-rank-cache.sh` and `/pm` 1B.4c: write/read round trip, lowercase file name, the 24-hour boundary, future/malformed/mismatched/missing files, unranked issues, bad input that keeps the old file, no HOME, and the skill's anchored persist block |
+| [pmm-babysit-horizon.test.sh](../tests/pmm-babysit-horizon.test.sh) | Tests the watch-only usage-horizon contract shared by `/pr-monitor-and-manage` and `/babysit-pr` (#1444) — the §8.1 posture block run over all four verdicts, the read-only park-adopt probe proving neither loop writes the shared day slot, and the wiring at each call site |
+| [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
+| [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |
+| [polling-state-gate-multirepo.test.sh](../tests/polling-state-gate-multirepo.test.sh) | Tests multi-repo isolation in `polling-state-gate.sh` |
+| [polling-state-gate.test.sh](../tests/polling-state-gate.test.sh) | Tests for `polling-state-gate.sh` |
+| [portable-handoff-context.test.sh](../tests/portable-handoff-context.test.sh) | Tests for `portable-handoff-context.sh` |
+| [portable-handoff-lint.test.sh](../tests/portable-handoff-lint.test.sh) | Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff |
+| [portable-handoff-publish.test.sh](../tests/portable-handoff-publish.test.sh) | Tests canonical `/end` handoff publication |
+| [post-merge-bookkeeping.test.sh](../tests/post-merge-bookkeeping.test.sh) | Exercise actual merge bookkeeping, logger, claim cleanup and resumed workflow boundaries with isolated stateful GitHub fixtures |
+| [pr-authorship.test.sh](../tests/pr-authorship.test.sh) | Tests for `pr-authorship.sh` |
+| [pr-body-review-note.test.sh](../tests/pr-body-review-note.test.sh) | Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, CommonMark ATX headings, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors |
+| [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
+| [pr-preflight-tier-triggers.test.sh](../tests/pr-preflight-tier-triggers.test.sh) | Tests `pr-preflight.sh` under a review tier — ci-only triggers nothing and is clean, ci+codeant-one-round invites CodeAnt once, full defers BugBot until CI is green and HEAD settled and stops at two, and a policy-free repo still triggers all four |
+| [pr-preflight.test.sh](../tests/pr-preflight.test.sh) | Tests for `pr-preflight.sh` |
+| [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
+| [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
+| [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
+| [pr-state-unmarked-replies.test.sh](../tests/pr-state-unmarked-replies.test.sh) | Tests the advisory `unmarked_replies` count `pr-state.sh` adds to its bundle |
+| [prompt-reservation.test.sh](../tests/prompt-reservation.test.sh) | Proves real state CAS, process recovery, and the two /subagent prompt gates against competing callers |
+| [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
+| [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, the `account-config.md` leg, and the `setup-skills-worktree.sh` delegation guard |
+| [quota-date.test.sh](../tests/quota-date.test.sh) | Discriminating GNU/uutils/BSD/unavailable quota date operations, bounded hangs, partial output and epoch-file decoys |
+| [quota-reserve.test.sh](../tests/quota-reserve.test.sh) | Tests `quota-reserve.sh` offline — marker building from reported weekly usage (threshold, weekly-only, unknown, config and env precedence), refresh freshness/locking/failure handling, once-per-crossing notification, and the `--decide` matrix (launches, subagents, automated vs interactive turns, every fail-open path) plus turn classification |
+| [quotas-cheapest-next.test.sh](../tests/quotas-cheapest-next.test.sh) | Tests `quotas-cheapest-next.sh` — the overage annotation per provider (static table, live Codex reset balance, live Cursor on-demand spend), the threshold knob's `--threshold` → env → pm-config → default precedence and its invalid-value fallback, the at-or-below-threshold trigger with its inclusive boundary, the tier ordering that prefers included quota over a banked free reset over metered overage over a flat-fee reset, the Codex month watermark including its fail-soft read of a corrupt file, and the refusals that keep a broken run from printing as an empty-but-successful document |
+| [quotas-forecast.test.sh](../tests/quotas-forecast.test.sh) | Tests `quotas-forecast.sh` — the burn-rate projection over `ai-quotas-history.jsonl`: where usage started in the current window and the floor marker when the record does not reach back to its start, percent per day, days left and the `resets first` cap, one reading per day with the later one winning, the series filters that keep another account, another pool and a previous window out, the null-everywhere cases (no window, no usage, a row that did not read), and the refusals that keep a broken run from printing an empty-but-successful document |
+| [reference-catalog-lint.test.sh](../tests/reference-catalog-lint.test.sh) | Tests that `reference-catalog-lint.sh` fails on every drift class it claims to catch |
+| [release-decide.test.sh](../tests/release-decide.test.sh) | Tests for `release-decide.sh` |
+| [release-policy.test.sh](../tests/release-policy.test.sh) | Tests for `release-policy.sh` |
+| [release-sweep.test.sh](../tests/release-sweep.test.sh) | Tests for `release-sweep.sh` |
+| [reply-thread.test.sh](../tests/reply-thread.test.sh) | Tests for `reply-thread.sh` |
+| [repo-bootstrap.test.sh](../tests/repo-bootstrap.test.sh) | Tests for `repo-bootstrap.sh` — file-set check/apply/report behavior and the exit-code contract |
+| [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
+| [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control |
+| [review-daily-cap.test.sh](../tests/review-daily-cap.test.sh) | Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh (comments read from both ends, BugBot read limits noted), the bounded concurrent repo fetch (worker peak, registry-order equivalence with the sequential read, one failing repo still `unknown`), and the 5-minute cache |
+| [review-repos.test.sh](../tests/review-repos.test.sh) | Tests `review-repos.sh` offline — `REVIEW_REPOS` env, the account config's explicit list and its private untracked overlay (#1860), `--fixture` discovery (archived/no-marker/foreign-owner filtering), fail-closed discovery and malformed entries, and that the shipped `.claude/account-config.md` resolves |
+| [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path |
+| [review-tier.test.sh](../tests/review-tier.test.sh) | Tests for `review-tier.sh` — policy parsing, strictest-wins resolution, fail-closed invalid policies, PR-mode base-branch reads |
+| [review-triggers-allowed.test.sh](../tests/review-triggers-allowed.test.sh) | Tests `review-triggers-allowed.sh` — legacy pass-through, every tier row, fail-closed probe, settled HEAD, lifetime caps across comments and the ledger, the CodeAnt-unavailable fallback, BugBot's refused-HEAD and daily-cap guards, and racing claims |
+| [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
+| [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |
+| [session-scheduling-reconcile.test.sh](../tests/session-scheduling-reconcile.test.sh) | Tests for `session-scheduling-reconcile.sh` against a redirected `HOME` |
+| [session-state-active-agents.test.sh](../tests/session-state-active-agents.test.sh) | Tests the `.active_agents` keyed-map contract in `session-state.sh` — a negative control proving the old whole-value replace loses a sibling thread's entries, concurrent per-key writes that lose none, the array→map migration, and `--remove-agent` (issue #1631) |
+| [session-state-audit.test.sh](../tests/session-state-audit.test.sh) | Tests for `session-state-audit.sh` |
+| [session-state-cas.test.sh](../tests/session-state-cas.test.sh) | Tests `session-state.sh --cas` — compare-and-set success, loss, a distinct exit code, and concurrent writers |
+| [session-state-migration.test.sh](../tests/session-state-migration.test.sh) | Tests the legacy-flat → per-repo migration in `session-state.sh` |
+| [session-state.test.sh](../tests/session-state.test.sh) | Tests for `session-state.sh` |
+| [skill-conventions-audit.test.sh](../tests/skill-conventions-audit.test.sh) | Tests for `skill-conventions-audit.sh` |
+| [skill-usage-merge.test.sh](../tests/skill-usage-merge.test.sh) | Tests for `skill-usage-merge.sh` |
+| [spawn-state-write.test.sh](../tests/spawn-state-write.test.sh) | Exercises real PMM/subagent spawn batches, atomic failure, exact lock retry and unconfirmed-registration recovery evidence |
+| [spend-telemetry-report.test.sh](../tests/spend-telemetry-report.test.sh) | Tests for `spend-telemetry-report.sh` against a stub log in a temp `HOME` |
+| [split-thresholds.test.sh](../tests/split-thresholds.test.sh) | Tests for `split-thresholds.sh`: the env → pm-config.md → default cascade per knob, reject-and-fall-back (never clamp) on out-of-range and non-integer values, the incoherent-pair rule that resets BOTH knobs, exact-key config matching, and the output modes |
+| [stale-cleanup-finished.test.sh](../tests/stale-cleanup-finished.test.sh) | Finished-only worktree cleanup against disposable repos, remote proof, liveness and removal-race controls |
+| [stale-cleanup.test.sh](../tests/stale-cleanup.test.sh) | Tests for `stale-cleanup.sh` |
+| [state-lock.test.sh](../tests/state-lock.test.sh) | Tests for `state-lock.sh` |
+| [statusline.test.sh](../tests/statusline.test.sh) | Tests for `statusline.sh` |
+| [subagent-decomposition-claim.test.sh](../tests/subagent-decomposition-claim.test.sh) | Check inherited parent ownership in the actual decomposition gate without writing GitHub state |
+| [subagent-limit-park.test.sh](../tests/subagent-limit-park.test.sh) | Tests the reactive subagent-thread usage-limit park (#1618) against the real fenced bash in `.claude/reference/subagent-thread-limit-park.md` and `/go-on` — structured-signal detection with its text-only negative controls, the compare-and-set park claim and its adoption of an existing day-mode or sibling park, per-pipeline phase records, the reset-plus-2-minute wake with its thrash cap and weekly branch, stale-generation rejection, and fail-closed recovery |
+| [table-freshness.test.sh](../tests/table-freshness.test.sh) | Tests for `table-freshness.sh` — the four `--check` verdicts, the tick's firing case with a negative control on each silent one, durability across a simulated compaction, and per-session clock isolation |
+| [task-packet-design.test.sh](../tests/task-packet-design.test.sh) | Offline task-packet design walkthrough: overlap, resume, source drift, unknown evidence and context bounds |
+| [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
+| [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
+| [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
+| [workspace-artifacts.test.sh](../tests/workspace-artifacts.test.sh) | Verify cadence artifact cleanup with disposable Git/files, terminal PRs, liveness, guarded publication and retention races |
+| [workspace-sweep.test.sh](../tests/workspace-sweep.test.sh) | Exercise finished-worktree cadence with real disposable Git cleanup and extracted orchestration commands |
+| [worktree-isolation-shapes.test.sh](../tests/worktree-isolation-shapes.test.sh) | Tests `worktree-status.sh` and `wait-until.sh` — the issue #1470 command shapes |
+<!-- catalog:rows:end -->
+
+## Pointing a merge-gate suite at another checkout
+
+The `merge-gate-*` suites resolve the scripts they exercise through overridable
+variables (issue #1485). Each defaults to this checkout's copy, so a plain
+`bash .claude/scripts/tests/<name>.test.sh` behaves exactly as before:
+
+| Variable | Script | Suites |
+|----------|--------|--------|
+| `SUT` | `merge-gate.sh` | every `merge-gate-*` suite except `merge-gate-authorship` |
+| `EVAL_SUT` | `review-substance.sh` | `merge-gate-codeant-run-marker`, `merge-gate-json-escaping`, `merge-gate-review-substance` |
+| `MERGE_GATE` | `merge-gate.sh` | `merge-gate-authorship` (its own long-standing name) |
+
+Setting one runs the suite's assertions against a different copy of the script.
+That is how you get a **negative control** — evidence that the assertions a PR
+adds genuinely fail against the code being replaced, rather than passing for some
+unrelated reason:
+
+```bash
+# Extract the pre-change evaluator once...
+git show <sha-before-the-change>:.claude/scripts/review-substance.sh > /tmp/eval-main.sh
+chmod +x /tmp/eval-main.sh
+# ...then run the suite against it.
+EVAL_SUT=/tmp/eval-main.sh bash .claude/scripts/tests/merge-gate-codeant-run-marker.test.sh
+```
+
+Two things to know:
+
+- **`merge-gate.sh` resolves `review-substance.sh` as its own sibling.** So
+  `EVAL_SUT` steers only the cases that invoke the evaluator directly; cases that
+  run through `merge-gate.sh` follow whatever sits next to `SUT`. Point both at
+  the same foreign checkout for a whole-suite control.
+- **A mistyped path exits 1** with `FAIL: <VAR> is not an executable file: …`.
+  Without that guard a bad path would empty every invocation, fail every
+  assertion, and look exactly like a successful negative control while proving
+  nothing.
+
+---
+
+[← back to the index](../README.md)

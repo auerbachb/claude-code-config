@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # clean-behind-check.test.sh — Offline unit tests for clean-behind-check.sh (issues #631, #667).
+# catalog: tests — Tests for `clean-behind-check.sh`
 # Stubs `gh`, `merge-gate.sh`, and `ac-checkboxes.sh` so no network / real repo is
 # touched. Run from repo root: bash .claude/scripts/tests/clean-behind-check.test.sh
 set -uo pipefail
@@ -20,13 +21,42 @@ SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
 cp "$SRC" "$SCRIPTS/clean-behind-check.sh"; chmod +x "$SCRIPTS/clean-behind-check.sh"
 SUT="$SCRIPTS/clean-behind-check.sh"
 
-# --- Fake merge-gate.sh: emits {met, missing}; behaviour driven by env vars. --
+# --- Fake merge-gate.sh: emits {met, missing, authorship}; env-var driven. ----
+# FAKE_GATE_LOG (issue #1257) — when set, every invocation's raw argv ("$*") is
+#   appended as a line, so a test can assert --allow-nonauthor actually reached
+#   this nested call rather than merely being accepted by the arg parser.
+# FAKE_GATE_AUTHORSHIP_BLOCK (issue #1257) — when 1, models merge-gate.sh's own
+#   INDEPENDENT issue #733 check: authorship is "not_mine" and the non-author
+#   blocker is appended to missing[] unless --allow-nonauthor is present in argv.
+# FAKE_GATE_OMIT_AUTHORSHIP — when 1, omit the `authorship` key entirely, to
+#   model an older merge-gate.sh that predates the field.
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
-jq -cn \
-  --argjson met "${FAKE_GATE_MET:-false}" \
-  --argjson missing "${FAKE_GATE_MISSING:-[\"branch is BEHIND base — rebase + force-push before merging\"]}" \
-  '{met:$met, missing:$missing}'
+if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
+MISSING="${FAKE_GATE_MISSING:-[\"branch is BEHIND base — rebase + force-push before merging\"]}"
+AUTHORSHIP="${FAKE_GATE_AUTHORSHIP:-mine}"
+if [ "${FAKE_GATE_AUTHORSHIP_BLOCK:-0}" = "1" ]; then
+  AUTHORSHIP="not_mine"
+  SAW_ALLOW_NONAUTHOR=0
+  for a in "$@"; do
+    if [ "$a" = "--allow-nonauthor" ]; then SAW_ALLOW_NONAUTHOR=1; fi
+  done
+  if [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
+    MISSING="$(printf '%s' "$MISSING" | jq -c '. + ["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]')"
+  fi
+fi
+if [ "${FAKE_GATE_OMIT_AUTHORSHIP:-0}" = "1" ]; then
+  jq -cn \
+    --argjson met "${FAKE_GATE_MET:-false}" \
+    --argjson missing "$MISSING" \
+    '{met:$met, missing:$missing}'
+else
+  jq -cn \
+    --argjson met "${FAKE_GATE_MET:-false}" \
+    --argjson missing "$MISSING" \
+    --arg authorship "$AUTHORSHIP" \
+    '{met:$met, missing:$missing, authorship:$authorship}'
+fi
 exit "${FAKE_GATE_EXIT:-1}"
 EOF
 chmod +x "$SCRIPTS/merge-gate.sh"
@@ -61,7 +91,7 @@ case "$ARGS" in
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
   *"pr view "*"headRefOid"*)
     # Reject baseRefOid in the field list (gh 2.48.0 does not support it)
-    if echo "$ARGS" | grep -q 'baseRefOid'; then
+    if grep -q 'baseRefOid' <<<"$ARGS"; then
       echo 'Unknown JSON field: "baseRefOid"' >&2; exit 1
     fi
     # Allow injecting a gh error for error-classification tests
@@ -81,6 +111,14 @@ case "$ARGS" in
     fi
     jq -cn --arg sha "${FAKE_BASE_SHA:-ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e}" \
       '{"object":{"sha":$sha}}'
+    exit 0 ;;
+  *"/pulls/"*"--jq .head.sha"*)
+    # Post-fetch head re-read; FAKE_HEAD_AFTER simulates a concurrent push,
+    # FAKE_HEAD_AFTER_FAIL=1 an unreadable head.
+    if [[ "${FAKE_HEAD_AFTER_FAIL:-0}" == "1" ]]; then
+      echo "ERROR: failed to read PR head" >&2; exit 1
+    fi
+    echo "${FAKE_HEAD_AFTER:-deadbeefcafedeadbeefcafedeadbeefcafedead}"
     exit 0 ;;
   *"pulls/"*"files"*)
     # PR file patches endpoint (pulls/{N}/files --paginate)
@@ -133,10 +171,10 @@ expect_field() {  # expect_field <jq-filter> <want> <desc>
   if [[ "$got" == "$2" ]]; then ok "$3"; else bad "$3 (field $1 = '$got', want '$2'; out: $OUT)"; fi
 }
 grep_ok() {    # grep_ok <pattern> <desc>
-  if printf '%s\n' "$OUT" | grep -q "$1"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
+  if grep -q "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
 }
 grep_absent() {  # grep_absent <pattern> <desc> — asserts pattern is NOT in $OUT
-  if printf '%s\n' "$OUT" | grep -q "$1"; then bad "$2 (pattern '$1' found but should be absent; output: $OUT)"; else ok "$2"; fi
+  if grep -q "$1" <<<"$OUT"; then bad "$2 (pattern '$1' found but should be absent; output: $OUT)"; else ok "$2"; fi
 }
 
 # 1. Green PR, clean BEHIND, base delta does NOT touch PR files → safe (exit 0),
@@ -393,6 +431,219 @@ expect_field '.safe_to_offer' 'false' "safe_to_offer false for oversized base pa
 expect_field '.file_overlap.granularity' 'hunk' "granularity is hunk even with oversized patch"
 expect_field '.file_overlap.fallback_files | length' '1' "oversized patch triggers fallback_files"
 expect_field '.file_overlap.hunk_overlapping_files | length' '1' "hunk_overlapping_files includes fallback file"
+
+# ============================================================================
+# Regression (issue #1257): this script had NO --allow-nonauthor concept — the
+# arg parser rejected it (exit 2) and its NESTED merge-gate.sh call could never
+# receive an authorship override. For a BEHIND + non-author PR the nested gate
+# therefore re-added the issue #733 blocker into missing[]; it is not the BEHIND
+# message, so it landed in residual_blockers, held gate_green_except_behind
+# false, and made admin-merge.sh refuse with a misleading "not safe to skip a
+# rebase". Each test below fails against the pre-fix script.
+# ============================================================================
+
+# 33. The flag is accepted at all (pre-fix: "unknown flag" usage error, exit 2).
+run 0 --allow-nonauthor
+expect_rc 0 "--allow-nonauthor is accepted, not rejected as an unknown flag"
+
+# 34. The flag literally reaches the nested merge-gate.sh invocation. Parser
+#     acceptance alone would leave the real bug in place, so assert on argv.
+GATE_LOG="$TMP/gatecalls.log"; : > "$GATE_LOG"
+FAKE_GATE_LOG="$GATE_LOG" run 0 --allow-nonauthor
+if grep -q -- "--allow-nonauthor" "$GATE_LOG"; then
+  ok "--allow-nonauthor literally appears in the nested merge-gate.sh invocation"
+else
+  bad "--allow-nonauthor was NOT forwarded to merge-gate.sh (logged calls: $(cat "$GATE_LOG"))"
+fi
+
+# 35. Negative control: the flag is never fabricated when it was not passed.
+GATE_LOG2="$TMP/gatecalls2.log"; : > "$GATE_LOG2"
+FAKE_GATE_LOG="$GATE_LOG2" run 0
+if grep -q -- "--allow-nonauthor" "$GATE_LOG2"; then
+  bad "--allow-nonauthor unexpectedly forwarded when not passed (logged: $(cat "$GATE_LOG2"))"
+else
+  ok "no --allow-nonauthor forwarded when the flag was not passed"
+fi
+
+# 36. End-to-end: BEHIND + non-author + --allow-nonauthor → the authorship
+#     blocker never enters residual_blockers, so the clean-BEHIND verdict is
+#     reachable (exit 0). This is the state admin-merge.sh needs to reach the
+#     plain-shape bypass instead of the misleading rebase refusal.
+FAKE_GATE_AUTHORSHIP_BLOCK=1 run 0 --allow-nonauthor
+expect_rc 0 "BEHIND + non-author + --allow-nonauthor → safe_to_offer (exit 0)"
+expect_field '.safe_to_offer' 'true' "override lets safe_to_offer become true for a non-author PR"
+expect_field '.residual_blockers | length' '0' "authorship blocker absent from residual_blockers under override"
+expect_field '.gate_green_except_behind' 'true' "gate_green_except_behind true under the override"
+
+# 37. Negative control — the fail-closed default is PROVABLY unchanged: the same
+#     non-author PR WITHOUT the flag still keeps the authorship blocker, still
+#     reports not-safe, and still exits 1. (Also proves test 36 is not a
+#     tautology: the fixture really does model the blocking behavior.)
+FAKE_GATE_AUTHORSHIP_BLOCK=1 run 1
+expect_rc 1 "BEHIND + non-author WITHOUT the flag still refuses (exit 1)"
+expect_field '.safe_to_offer' 'false' "no override → safe_to_offer stays false"
+expect_field '.gate_green_except_behind' 'false' "no override → gate_green_except_behind stays false"
+expect_field '[.residual_blockers[] | select(test("authorship guard"))] | length' '1' \
+  "no override → authorship blocker retained in residual_blockers"
+expect_field '[.reasons_not_safe[] | select(test("authorship guard"))] | length' '1' \
+  "no override → authorship blocker surfaced in reasons_not_safe"
+
+# 38. The override is never silent: `authorship` mirrors merge-gate.sh's verdict
+#     even when the blocker is suppressed, and `authorship_overridden` records
+#     that a bypass was in effect. A bypass that left no trace in the evidence
+#     JSON is exactly what these fields exist to prevent.
+FAKE_GATE_AUTHORSHIP_BLOCK=1 run 0 --allow-nonauthor
+expect_field '.authorship' 'not_mine' "bypassed non-author PR is still legible as authorship=not_mine"
+expect_field '.authorship_overridden' 'true' "authorship_overridden true when --allow-nonauthor is passed"
+
+run 0
+expect_field '.authorship' 'mine' "authorship mirrored from merge-gate.sh on a normal run"
+expect_field '.authorship_overridden' 'false' "authorship_overridden false by default (opt-in only)"
+
+# 39. Forward compatibility: an older merge-gate.sh with no `authorship` key
+#     degrades to "unknown" rather than reporting a false "mine".
+FAKE_GATE_OMIT_AUTHORSHIP=1 run 0
+expect_field '.authorship' 'unknown' "missing merge-gate authorship field degrades to unknown"
+
+# ============================================================================
+# Issue #1859: zero-context changed-line ranges. GitHub patches carry 3 lines of
+# context, and the pre-fix parser intersected the context-inclusive header
+# spans, so two edits up to ~6 lines apart read as overlapping even when git
+# merges them cleanly. Cases 40, 41 and 45 fail against the pre-fix script
+# (false overlap / insertion-only fallback); 44 and 46 fail there because the
+# insertion-only side fell back instead of producing a real range; 49 and 50
+# fail there because the old header-only parser trusted a malformed patch and
+# called it disjoint (fail-open). The rest are negative controls proving that
+# touching or overlapping edits still block.
+# ============================================================================
+
+# hunk_case <base-patch> <pr-patch> — run the SUT with one shared file whose
+# base-delta and PR patches are the given unified-diff bodies (real newlines).
+hunk_case() {
+  local bp pp
+  bp="$(jq -cn --arg p "$1" '{"shared.md": $p}')"
+  pp="$(jq -cn --arg p "$2" '{"shared.md": $p}')"
+  FAKE_PR_FILES='["shared.md","mine.sh"]' \
+    FAKE_BASE_DELTA_FILES='["shared.md"]' \
+    FAKE_BASE_DELTA_PATCHES="$bp" \
+    FAKE_PR_FILE_PATCHES="$pp" \
+    run 1
+}
+expect_disjoint() {  # expect_disjoint <desc>
+  expect_rc 0 "$1 → exit 0 (safe to offer)"
+  expect_field '.safe_to_offer' 'true' "$1: safe_to_offer true"
+  expect_field '.file_overlap.count' '0' "$1: overlap count 0"
+  expect_field '.file_overlap.granularity' 'hunk' "$1: granularity hunk"
+  expect_field '.file_overlap.fallback_files | length' '0' "$1: no fallback files"
+}
+expect_overlap() {  # expect_overlap <desc>
+  expect_rc 1 "$1 → exit 1 (not safe)"
+  expect_field '.safe_to_offer' 'false' "$1: safe_to_offer false"
+  expect_field '.file_overlap.count' '1' "$1: overlap count 1"
+  expect_field '.file_overlap.granularity' 'hunk' "$1: granularity hunk"
+  expect_field '.file_overlap.fallback_files | length' '0' "$1: a real overlap, not a fallback"
+}
+
+# 40. PR #925 shape (auerbachb/still-point, ios/PARITY_CHECKLIST.md): main
+#     changed lines 3, 14 and 33 and deleted line 42; the PR changed only line
+#     44. Line 43 is untouched by both sides. The -39,7 and -41,7 hunks overlap
+#     on context alone; the changed lines do not.
+PR925_BASE="$(printf '%s\n' \
+  '@@ -1,6 +1,6 @@' ' l1' ' l2' '-l3' '+L3' ' l4' ' l5' ' l6' \
+  '@@ -11,7 +11,7 @@' ' l11' ' l12' ' l13' '-l14' '+L14' ' l15' ' l16' ' l17' \
+  '@@ -30,7 +30,7 @@' ' l30' ' l31' ' l32' '-l33' '+L33' ' l34' ' l35' ' l36' \
+  '@@ -39,7 +39,6 @@ ## Parity' ' l39' ' l40' ' l41' '-l42' ' l43' ' l44' ' l45')"
+PR925_PR="$(printf '%s\n' \
+  '@@ -41,7 +41,7 @@ ## Parity' ' l41' ' l42' ' l43' '-l44' '+L44' ' l45' ' l46' ' l47')"
+hunk_case "$PR925_BASE" "$PR925_PR"
+expect_disjoint "#1859 PR #925 shape (context-padded hunks, disjoint changed lines)"
+
+# 41. Line-separated insertion: base inserts after line 42, PR changes line 44.
+hunk_case "$(printf '%s\n' '@@ -40,3 +40,4 @@' ' l40' ' l41' ' l42' '+new')" \
+  "$(printf '%s\n' '@@ -41,7 +41,7 @@' ' l41' ' l42' ' l43' '-l44' '+L44' ' l45' ' l46' ' l47')"
+expect_disjoint "#1859 insertion after 42 vs change on 44 (line 43 separates)"
+
+# 42. Negative control: adjacent edits (base line 42, PR line 43) still overlap.
+hunk_case "$(printf '%s\n' '@@ -39,7 +39,7 @@' ' l39' ' l40' ' l41' '-l42' '+L42' ' l43' ' l44' ' l45')" \
+  "$(printf '%s\n' '@@ -40,7 +40,7 @@' ' l40' ' l41' ' l42' '-l43' '+L43' ' l44' ' l45' ' l46')"
+expect_overlap "#1859 adjacent edits (42 vs 43)"
+
+# 43. Negative control: both sides change the same line.
+hunk_case "$(printf '%s\n' '@@ -41,3 +41,3 @@' ' l41' '-l42' '+A42' ' l43')" \
+  "$(printf '%s\n' '@@ -41,3 +41,3 @@' ' l41' '-l42' '+B42' ' l43')"
+expect_overlap "#1859 same-line edits"
+
+# 44. Insertion after line 5 (-5,0) vs a PR change on line 6 → touching.
+INS5="$(printf '%s\n' '@@ -5,0 +6,2 @@' '+n1' '+n2')"
+hunk_case "$INS5" "$(printf '%s\n' '@@ -6 +6 @@' '-l6' '+L6')"
+expect_overlap "#1859 insertion after 5 vs change on 6"
+
+# 45. The same insertion vs a PR change on line 7 → line 6 separates them.
+hunk_case "$INS5" "$(printf '%s\n' '@@ -7 +7 @@' '-l7' '+L7')"
+expect_disjoint "#1859 insertion after 5 vs change on 7"
+
+# 46. Insertion vs insertion at the same point → overlap.
+hunk_case "$INS5" "$(printf '%s\n' '@@ -5,0 +6 @@' '+other')"
+expect_overlap "#1859 same-point insertions"
+
+# 47. Omitted-count header (@@ -5 +5 @@) vs a PR change on line 5 → overlap.
+hunk_case "$(printf '%s\n' '@@ -5 +5 @@' '-l5' '+A5')" \
+  "$(printf '%s\n' '@@ -4,3 +4,3 @@' ' l4' '-l5' '+B5' ' l6')"
+expect_overlap "#1859 omitted-count header vs change on the same line"
+
+# 48. Multiple hunks; only the second one touches the PR edit → overlap.
+hunk_case "$(printf '%s\n' '@@ -1,3 +1,3 @@' ' l1' '-l2' '+L2' ' l3' '@@ -20,3 +20,3 @@' ' l20' '-l21' '+L21' ' l22')" \
+  "$(printf '%s\n' '@@ -19,3 +19,3 @@' ' l19' '-l20' '+L20' ' l21')"
+expect_overlap "#1859 second base hunk touches the PR edit"
+
+# 49. Malformed patch (header count disagrees with the body) → fail closed:
+#     fallback to file level, unsafe, with a malformed reason in the note. The
+#     ranges would be disjoint if the patch were trusted, so this discriminates.
+hunk_case "$(printf '%s\n' '@@ -1,5 +1,5 @@' ' l1' '-l2' '+L2' ' l3')" \
+  "$(printf '%s\n' '@@ -40,3 +40,3 @@' ' l40' '-l41' '+L41' ' l42')"
+expect_rc 1 "#1859 malformed patch → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "#1859 malformed patch: safe_to_offer false"
+expect_field '.file_overlap.count' '1' "#1859 malformed patch: counted as overlapping"
+expect_field '.file_overlap.fallback_files | length' '1' "#1859 malformed patch: one fallback file"
+grep_ok "malformed" "#1859 malformed patch: note names the malformed reason"
+
+# 50. Malformed: text before the first hunk header → fail closed.
+hunk_case "$(printf '%s\n' 'garbage' '@@ -1,3 +1,3 @@' ' l1' '-l2' '+L2' ' l3')" \
+  "$(printf '%s\n' '@@ -40,3 +40,3 @@' ' l40' '-l41' '+L41' ' l42')"
+expect_rc 1 "#1859 text before first header → exit 1 (not safe)"
+expect_field '.file_overlap.fallback_files | length' '1' "#1859 text before first header: one fallback file"
+
+# 51. "\ No newline at end of file" is neutral, and a patch without a trailing
+#     newline parses the same as one with it.
+hunk_case "$(printf '%s\n%s\n%s\n%s\n%s' '@@ -9,2 +9,2 @@' ' l9' '-l10' '+L10' '\ No newline at end of file')" \
+  "$(printf '%s\n' '@@ -6,3 +6,3 @@' ' l6' '-l7' '+L7' ' l8')"
+expect_disjoint "#1859 no-newline marker is neutral"
+
+# 52. Any other backslash-prefixed line is malformed → fail closed. The ranges
+#     would be disjoint if the patch were trusted, so this discriminates.
+hunk_case "$(printf '%s\n' '@@ -9,2 +9,2 @@' ' l9' '-l10' '\ something else' '+L10')" \
+  "$(printf '%s\n' '@@ -6,3 +6,3 @@' ' l6' '-l7' '+L7' ' l8')"
+expect_rc 1 "#1859 non-marker backslash line → exit 1 (not safe)"
+expect_field '.file_overlap.fallback_files | length' '1' "#1859 non-marker backslash line: one fallback file"
+
+# 53. PR head moves between the compare and the PR-files fetch → fail closed:
+#     the patches would be in different coordinate spaces. Disjoint ranges, so
+#     trusting them would wrongly report safe — this discriminates.
+DISJ_B="$(printf '%s\n' '@@ -1,3 +1,3 @@' ' l1' '-l2' '+L2' ' l3')"
+DISJ_P="$(printf '%s\n' '@@ -40,3 +40,3 @@' ' l40' '-l41' '+L41' ' l42')"
+FAKE_HEAD_AFTER=0000000000000000000000000000000000000000 hunk_case "$DISJ_B" "$DISJ_P"
+expect_rc 1 "PR head moved after patch fetch → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "PR head moved: safe_to_offer false"
+grep_ok "PR head changed" "PR head moved: note names the reason"
+
+# 54. PR head unreadable after the fetch → fail closed the same way.
+FAKE_HEAD_AFTER_FAIL=1 hunk_case "$DISJ_B" "$DISJ_P"
+expect_rc 1 "PR head unreadable after patch fetch → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "PR head unreadable: safe_to_offer false"
+
+# 55. Control: same patches with the head unchanged → disjoint (safe).
+hunk_case "$DISJ_B" "$DISJ_P"
+expect_disjoint "head unchanged control"
 
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"

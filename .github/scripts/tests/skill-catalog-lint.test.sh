@@ -137,6 +137,29 @@ expect "ambiguous duplicated anchor fails" 1 \
   'matched 2 times.*anchor is ambiguous' \
   bash -c 'printf "%s\n" "All 2 commands are invoked again." >> README.md'
 
+# --- skill directory symlinks (issue #1779) -------------------------------
+# .claude/skills/desk is a symlink to ../../desk/skill. Publication follows
+# such a link, so the catalog must count it; a broken one is an error.
+
+# Moves beta's skill out of .claude/skills/ and links it back, the desk shape.
+link_beta_from_elsewhere() {
+  mkdir -p elsewhere
+  mv .claude/skills/beta elsewhere/beta-skill
+  ln -s ../../elsewhere/beta-skill .claude/skills/beta
+}
+
+expect "a skill directory symlink counts as a skill" 0 \
+  'OK \(2 commands\)' \
+  link_beta_from_elsewhere
+
+expect "a skill directory symlink with no README row fails" 1 \
+  "Skill 'beta' exists in .claude/skills/ but has no row" \
+  bash -c 'mkdir -p elsewhere && mv .claude/skills/beta elsewhere/beta-skill && ln -s ../../elsewhere/beta-skill .claude/skills/beta && grep -v "/beta" README.md > R && mv R README.md'
+
+expect "a broken skill directory symlink fails" 1 \
+  'symlink that does not resolve to a directory' \
+  bash -c 'rm -rf .claude/skills/beta && ln -s ../../nowhere .claude/skills/beta'
+
 # --- CLI contract ---------------------------------------------------------
 case_num=$((case_num + 1))
 help_dir="${TMP_ROOT}/case${case_num}"

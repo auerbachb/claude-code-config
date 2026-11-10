@@ -1,0 +1,7 @@
+{"type":"user","uuid":"u-1","sessionId":"fixture","message":{"role":"user","content":"Status?"}}
+this line is not JSON at all?
+{"type":"assistant","uuid":"a-1","message":{"id":"msg_fixture_01","content":"truncated record
+null
+[1, 2, 3]
+{"type":"assistant","uuid":"a-2","sessionId":"fixture","message":{"id":"msg_fixture_02","role":"assistant","content":[{"type":"text","text":"CI is green on the branch.\n\nOK to merge it now?"}],"stop_reason":"end_turn"}}
+{"type":"summary","summary":"half a line

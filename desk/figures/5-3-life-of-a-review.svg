@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 672 560" xmlns="http://www.w3.org/2000/svg">
+<style>  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10.5px; fill: #111; }
+  svg .box { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .soft { fill: #f3f3f3; stroke: #777; stroke-dasharray: 3 2; }
+  svg .dark { fill: #e3e3e3; stroke: #222; stroke-width: 1.1; }
+  svg .dia { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .human { fill: #fff; stroke: #000; stroke-width: 2.6; }
+  svg .ai { fill: #f7f7f7; stroke: #222; stroke-width: 1.2; }
+  svg .sw { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 6 3; }
+  svg .git { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 1.5 2.5; }
+  svg .ln { stroke: #222; stroke-width: 1.1; fill: none; }
+  svg .dsh { stroke-dasharray: 4 3; }
+  svg .lbl { font-size: 9.4px; fill: #333; }
+  svg .ttl { font-weight: 700; font-size: 11px; }
+  svg .big { font-weight: 700; font-size: 14px; }
+  svg .sm { font-size: 8.8px; fill: #333; }
+  svg .tag { font-size: 8.4px; font-weight: 700; letter-spacing: 0.6px; fill: #333; }
+  svg .mono { font-family: Menlo, Consolas, monospace; font-size: 9.3px; }
+</style>
+<defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker></defs>
+<rect x="10" y="10" width="150" height="40" class="box"/>
+<text x="85" y="26" text-anchor="middle" class="ttl">1a. A PR by you merges</text>
+<text x="85" y="40" text-anchor="middle" class="sm">any repo, any tool</text>
+<rect x="10" y="58" width="150" height="40" class="box"/>
+<text x="85" y="74" text-anchor="middle" class="ttl">1b. An issue is filed</text>
+<text x="85" y="88" text-anchor="middle" class="sm">via the desk or /issue-maker</text>
+<path d="M160,30 L190,52" class="ln" marker-end="url(#ah3)"/>
+<path d="M160,78 L190,60" class="ln" marker-end="url(#ah3)"/>
+<rect x="190" y="26" width="150" height="56" class="box"/>
+<text x="265" y="44" text-anchor="middle" class="ttl">2. Each tick: sync</text>
+<text x="265" y="58" text-anchor="middle" class="sm">pulled from GitHub since</text>
+<text x="265" y="71" text-anchor="middle" class="sm">the watermark; no thread involved</text>
+<path d="M340,54 L370,54" class="ln" marker-end="url(#ah3)"/>
+<rect x="370" y="26" width="140" height="56" class="box"/>
+<text x="440" y="44" text-anchor="middle" class="ttl">3. One item each</text>
+<text x="440" y="58" text-anchor="middle" class="sm">R-n, unreviewed,</text>
+<text x="440" y="71" text-anchor="middle" class="sm">keyed on repo + number</text>
+<path d="M510,54 L540,54" class="ln" marker-end="url(#ah3)"/>
+<rect x="540" y="26" width="122" height="56" class="box"/>
+<text x="601" y="44" text-anchor="middle" class="ttl">4. Level 1</text>
+<text x="601" y="58" text-anchor="middle" class="sm">one line, generated</text>
+<text x="601" y="71" text-anchor="middle" class="sm">once, cached</text>
+<path d="M601,82 V140" class="ln" marker-end="url(#ah3)"/>
+<text x="608" y="114" class="sm">you open it</text>
+<rect x="372" y="140" width="290" height="80" class="box"/>
+<text x="517" y="158" text-anchor="middle" class="ttl">5. Level 2: about twenty lines</text>
+<text x="517" y="173" text-anchor="middle" class="sm">a bold one-line statement, then numbered lines:</text>
+<text x="517" y="186" text-anchor="middle" class="sm">what changed · judgment calls the agent made · deferred</text>
+<text x="517" y="199" text-anchor="middle" class="sm">· tests · links. Generated on request, cached on the item</text>
+<path d="M372,180 L340,180" class="ln" marker-end="url(#ah3)"/>
+<text x="344" y="174" class="sm">drill</text>
+<rect x="10" y="140" width="330" height="80" class="box"/>
+<text x="175" y="158" text-anchor="middle" class="ttl">6. Level 3: outline → hunk → ask</text>
+<text x="175" y="173" text-anchor="middle" class="sm">a numbered tree of files, hunks, and tests; "open 2.3"</text>
+<text x="175" y="186" text-anchor="middle" class="sm">shows that hunk; "ask R-88: why keep both facts?"</text>
+<text x="175" y="199" text-anchor="middle" class="sm">answers from the PR. Fetched live, never stored</text>
+<path d="M110,220 V276" class="ln" marker-end="url(#ah3)"/>
+<path d="M240,220 V254 H336 V276" class="ln" marker-end="url(#ah3)"/>
+<path d="M450,220 V254 H336" class="ln"/>
+<path d="M562,220 V276" class="ln" marker-end="url(#ah3)"/>
+<rect x="10" y="276" width="200" height="60" class="box"/>
+<text x="110" y="296" text-anchor="middle" class="ttl">7a. Reviewed</text>
+<text x="110" y="311" text-anchor="middle" class="sm">one, several, or "all today";</text>
+<text x="110" y="324" text-anchor="middle" class="sm">an event, not a deletion</text>
+<rect x="236" y="276" width="200" height="60" class="box"/>
+<text x="336" y="296" text-anchor="middle" class="ttl">7b. Flagged, with a comment</text>
+<text x="336" y="311" text-anchor="middle" class="sm">"not happy: the test misses X"</text>
+<text x="336" y="324" text-anchor="middle" class="sm">→ a follow-up GitHub issue</text>
+<rect x="462" y="276" width="200" height="60" class="box"/>
+<text x="562" y="296" text-anchor="middle" class="ttl">7c. Exported to paper</text>
+<text x="562" y="311" text-anchor="middle" class="sm">today's unreviewed, numbered;</text>
+<text x="562" y="324" text-anchor="middle" class="sm">dictate "R-87 reviewed" later</text>
+<rect x="10" y="376" width="652" height="168" class="soft"/>
+<text x="20" y="396" class="ttl">Reading budget — measured, not guessed</text>
+<text x="20" y="414" class="lbl">Start at about 30 items × 20 lines a day. Each morning the desk asks hours at the desk and energy, reads yesterday's pace from</text>
+<text x="20" y="429" class="lbl">the events table, and proposes today's number: "22 items in 3 hours yesterday; 4 hours today and 18 queued: plan on 24".</text>
+<text x="20" y="444" class="lbl">The running count stays visible in the Reviews view. Level 1 for everything; level 2 for the ones you choose; level 3 rarely.</text>
+<text x="20" y="468" class="ttl">Your own layer on top</text>
+<text x="20" y="486" class="lbl">Tags, a note, a snooze, and your own priority on any item; "my list" shows them in your order. Nothing heavier than a to-do list.</text>
+<text x="20" y="510" class="ttl">Cost control</text>
+<text x="20" y="528" class="lbl">Level 1 is cheap and happens once; level 2 costs tokens once per item you open; level 3 costs nothing to store and only what you ask.</text>
+</svg>

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# catalog: utilities — Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`)
 """Substantive-plan filter for CodeRabbit issue comments (issue #541).
 
 Reads `gh issue view <N> --json comments` JSON on stdin and prints the body
@@ -128,12 +129,17 @@ def latest_plan(comments: list) -> str | None:
     return None
 
 
+USAGE = "usage: cr-plan-filter.py [comments.json]  (reads stdin when no path is given)"
+
+
 def main(argv: list) -> int:
+    # --help is part of the catalog contract for every script in
+    # .claude/scripts/, so it must not be read as an input filename.
+    if any(arg in ("-h", "--help") for arg in argv[1:]):
+        print(USAGE)
+        return 0
     if len(argv) > 2:
-        print(
-            "usage: cr-plan-filter.py [comments.json]  (reads stdin when no path is given)",
-            file=sys.stderr,
-        )
+        print(USAGE, file=sys.stderr)
         return 2
     source = argv[1] if len(argv) == 2 else None
     try:

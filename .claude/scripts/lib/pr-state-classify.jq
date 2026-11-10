@@ -11,7 +11,7 @@
 #   1. Explicit-resolution / clean-pass overrides (addressed marker, withdrawn marker, "actionable comments posted: 0",
 #      "no actionable comments were generated"; CR rate-limit notices — "rate limit exceeded" /
 #      "rate[- ]limited by coderabbit" / "currently rate limited" / "review limit reached" /
-#      "next review (will be) available in"; BugBot usage-limit notices — "couldn't run - usage limit
+#      "next <=2 words> review [will be] available in"; BugBot usage-limit notices — "couldn't run - usage limit
 #      reached" / "this run hit a usage or spend limit"; "full review triggered", BugBot clean-pass
 #      "found no new issues", BugBot BUGBOT_REVIEW zero-issue summary, CR error stub
 #      "Oops, something went wrong"; CR auto-reply ack marker
@@ -25,6 +25,20 @@
 #      was tried and rejected (#557): it is generic enough that a real finding *quoting* the policy
 #      would classify as an ack. Each observed CR variant is caught by >=2 of the phrases above,
 #      so no single generic phrase has to carry it.
+#      The "next … available in" phrase carries a BOUNDED 0-2 inserted-word allowance (issue #1364):
+#      CodeRabbit reworded it to "Next included review available in N minutes." and the fixed phrase
+#      stopped matching. Redundancy is what saved this branch — the marker alternative still matched
+#      the same bodies — but the same drift zeroed escalate-review.sh's window parser, which had no
+#      second phrase to fall back on. Both are now keyed on the same stable anchors; keep them so.
+#      LOCKSTEP IS THE POINT, and it has already failed once in the other direction (CodeAnt review
+#      of PR #1393): this branch had tolerated the future-tense "next review WILL BE available in"
+#      since #557 — observed verbatim on PR #554 — while the window parser put its inserted-word
+#      allowance between "next" and "review", the wrong side of "review" to reach that copula. The
+#      allowance is therefore two slots, written identically in both files: 0-2 free words before
+#      "review", and an optional literal "will be" after it. The copula slot stays a literal rather
+#      than a second {0,2} because THIS file has no author gate — "available in <number>" is ordinary
+#      prose, and a generic bridge would let a finding saying "the next review is available in the
+#      dashboard" classify as a rate-limit ack, which is the Bug4c hazard by another route.
 #      The withdrawn marker (#611) is safe in this tier-1 group even though the walkthrough marker
 #      (override #6 below) is deliberately not: a withdrawal retracts the single finding in its own
 #      thread — there is no *other* active finding for an early override to mask — so hoisting it
@@ -35,6 +49,16 @@
 #      findings. Keyed on the HTML marker, not the prose "Received — CodeRabbit is reviewing",
 #      so a real finding quoting that phrase cannot be falsely reclassified (#557 discipline).
 #      Case-insensitive "i" flag, consistent with CR-authored boilerplate (subject to casing drift).
+#      The CodeAnt review-status marker (#1207) is also safe in tier 1: CodeAnt posts it only on its
+#      status-table comments (e.g. "✅ Reviewed your PR | …") via the machine-readable HTML comment
+#      <!-- codeant-review-status:[…] -->. This marker never appears in a real finding body.
+#      Keyed on the HTML comment prefix only — case-sensitive, no "i" flag, because the marker is
+#      machine-generated JSON and casing is stable.
+#      The CodeAnt auto-resolve marker (#1748) is CodeAnt's counterpart of the addressed marker:
+#      <!-- codeant-auto-resolve-reply --> rides only on its "CodeAnt verified this suggestion was
+#      addressed in subsequent commits" thread reply, which retracts the finding it answers. The
+#      reply restates the fix, so it can carry finding vocabulary — that is why it sits in tier 1.
+#      Marker-only and case-sensitive, like the review-status marker: the prose is not matched.
 #   2. The specific "actionable comments posted: 0" and "no actionable comments were
 #      generated" checks MUST precede the general "actionable comments posted" finding
 #      check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -61,6 +85,24 @@
 #      phrase if the Greptile branch were any later. The branch requires the summary heading
 #      and either no "issues found" prose or the explicit "no issues found" clean-pass wording,
 #      so a summary that reports N>0 issues still reaches the finding phrase below.
+#      CodeAnt's prose-only boilerplate (#1748) joins this late tier, immediately above the default:
+#      the "Customized review instruction saved!" reply, the "Thanks for using CodeAnt!" footer, the
+#      empty "CodeAnt Nitpicks" summary, the "Skipping CodeAnt AI review" notice and the "does not
+#      have a PR Review subscription" notice. None carries an HTML marker, so each is keyed on
+#      CodeAnt's own wording and placed where every finding pattern is evaluated first — a body
+#      that pairs one of these phrases with finding language stays a finding. A Nitpicks summary
+#      that lists suggestions is deliberately NOT matched: it reaches the default as a finding.
+#      These shapes reach this file only since enrich() admitted every review bot (#1748); before
+#      that only poll-watermarks.sh's array mode classified them.
+#      CodeAnt's "PR Risk" summary (#1853) is the last of these, and the strictest: it is an
+#      acknowledgment ONLY when the body carries all of the "CodeAnt PR Risk" heading text (classify
+#      sees no author, so the heading is CodeAnt's identity), a "Low Risk" header, the explicit
+#      "no actionable issues" statement, and no "Medium Risk"/"High Risk" text. A Low Risk summary
+#      without that statement is NOT matched — the older "The PR appears safe to merge; ..." wording
+#      sometimes carries a real caveat (PR #1799) — so it stays a finding on purpose. Medium/High
+#      summaries carry a 🟡/🔴 badge caught above; the risk-level exclusion covers the badge-less
+#      template too. Late placement keeps a summary that adds finding language a finding, and any
+#      rewording of an anchor fails closed to the default.
 #   7. Default is finding — under-classifying is the failure mode this skill prevents.
 
 def classify:
@@ -69,13 +111,15 @@ def classify:
   elif test("<!--\\s*<review_comment_withdrawn>\\s*-->"; "") then {class: "acknowledgment", reason: "withdrawn marker"}
   elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
   elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
-  elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|next review (will be )?available in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
+  elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+(?:will\\s+be\\s+)?available\\s+in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
   elif test("couldn['’]t run\\s*[-–—]\\s*usage limit reached|this run hit a usage or spend limit"; "i") then {class: "acknowledgment", reason: "BugBot usage limit notice"}
   elif test("full review triggered"; "i") then {class: "acknowledgment", reason: "review-started ack"}
   elif test("found no new issues"; "i") then {class: "acknowledgment", reason: "BugBot clean pass"}
   elif (test("<!--\\s*BUGBOT_REVIEW\\s*-->"; "") and (test("found [1-9][0-9]* potential issue"; "i") | not)) then {class: "acknowledgment", reason: "BugBot zero-issue summary"}
   elif test("Oops, something went wrong"; "i") then {class: "acknowledgment", reason: "CR error stub / transient noise"}
   elif test("<!--\\s*This is an auto-generated reply by CodeRabbit\\s*-->"; "i") then {class: "acknowledgment", reason: "CR auto-reply ack"}
+  elif test("<!--\\s*codeant-review-status:"; "") then {class: "acknowledgment", reason: "CodeAnt review-status table"}
+  elif test("<!--\\s*codeant-auto-resolve-reply\\s*-->"; "") then {class: "acknowledgment", reason: "CodeAnt auto-resolve reply"}
   elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
   elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
   elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
@@ -85,12 +129,30 @@ def classify:
   elif test("```suggestion"; "m") then {class: "finding", reason: "suggestion block"}
   elif test("\\b(lgtm|looks good|approved|confirmed|resolved)\\b"; "i") then {class: "acknowledgment", reason: "lgtm variant"}
   elif test("<!--\\s*This is an auto-generated comment:\\s*summarize by coderabbit\\.ai\\s*-->"; "i") then {class: "acknowledgment", reason: "CR walkthrough summary"}
+  elif test("Customized review instruction saved!"; "i") then {class: "acknowledgment", reason: "CodeAnt saved-instruction reply"}
+  elif test("Thanks for using CodeAnt!"; "i") then {class: "acknowledgment", reason: "CodeAnt promotional footer"}
+  elif (test("CodeAnt Nitpicks"; "i") and test("No threshold-suppressed suggestions found"; "i")) then {class: "acknowledgment", reason: "CodeAnt empty nitpicks summary"}
+  elif test("Skipping CodeAnt AI review"; "i") then {class: "acknowledgment", reason: "CodeAnt review-skipped notice"}
+  elif test("does not have a PR Review subscription"; "i") then {class: "acknowledgment", reason: "CodeAnt subscription notice"}
+  elif (test("CodeAnt PR Risk"; "i") and test("\\blow\\s+risk\\b"; "i") and test("no actionable issues"; "i")
+        and (test("\\b(medium|high)\\s+risk\\b"; "i") | not)) then {class: "acknowledgment", reason: "CodeAnt low-risk summary"}
   else {class: "finding", reason: "default — no pattern matched"}
   end;
 
+# Every review bot whose comments reach new_since_baseline (issue #1748). It
+# must equal pr-state.sh's --wait-state-eval $botlist, which stays a separate
+# literal so that lightweight mode never loads this file; the parity test in
+# tests/pr-state-classify.test.sh parses both lists and fails on any drift.
+# A shorter list here silently zeroes finding_count for the missing bot, and
+# with it --wait-state-eval's new_findings, so /fixpr's wait loop reports clean
+# while that bot's finding sits open on HEAD.
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical comments still classify.
+def review_bots:
+  ["coderabbitai[bot]", "cursor[bot]", "codeant-ai[bot]", "greptile-apps[bot]", "graphite-app[bot]"];
+
 def enrich($since; $tsfield):
   [.[]
-   | select((.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]" or .user.login == "cursor[bot]")
+   | select(((.user.login // "") as $login | any(review_bots[]; . == $login))
             and ((.[$tsfield] // "") > $since))
    | {
        id,

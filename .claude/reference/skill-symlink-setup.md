@@ -25,7 +25,15 @@ if [[ ! -d "$HOME/.claude/skills-worktree/.claude/skills" ]]; then
 fi
 ```
 
+## Where the symlink installation lives
+
+`.claude/scripts/publish-skill-symlinks.sh` owns the skill, `CLAUDE.md`, `rules` and `account-config.md` legs (issues #1524, #1808 — the last links `~/.claude/account-config.md` to the worktree's `.claude/account-config.md`, the account-level settings `review-repos.sh` reads); `publish-agent-symlinks.sh` owns the agents leg (issue #1197). `setup-skills-worktree.sh` delegates to both rather than carrying its own copy of the state machine.
+
+That matters because the publishers no longer run only at setup time. They also run on **every session start** (`session-start-sync.sh`) and on **every scheduled tick** (`claude-config-sync.sh`, hourly under launchd — `skill-sync-hooks.md`), which is what makes a skill merged on another machine appear here without anyone re-running setup. Both are idempotent and silent when nothing changed, and both leave user-owned skill and agent symlinks — any target outside the worktree and outside the legacy root-repo directories they migrate from — alone. `CLAUDE.md`, `rules` and `account-config.md` are different: each has exactly one correct target, so a symlink pointing elsewhere is repointed at the worktree (a regular file at those paths is still never overwritten).
+
 ## Installing a new skill's symlink
+
+The publishers do this on their own. The manual form below is for a link you want immediately, without waiting for the next session start or scheduled tick.
 
 Only after the skill has reached `main`:
 
@@ -41,10 +49,49 @@ Chained deliberately. If the fetch or reset fails, or the skill is not present i
 
 Create `~/.claude/skills/` first with `mkdir -p` if it does not exist.
 
+## Removing a retired skill's symlink
+
+The mirror image of the install. Only after the deletion has reached `main`:
+
+```bash
+git -C "$HOME/.claude/skills-worktree" fetch origin main --quiet \
+  && git -C "$HOME/.claude/skills-worktree" reset --hard origin/main --quiet \
+  && [[ ! -e "$HOME/.claude/skills-worktree/.claude/skills/<name>" ]] \
+  && rm -f "$HOME/.claude/skills/<name>"
+```
+
+Chained for the same reason the install is: the `[[ ! -e ]]` guard confirms the skill is genuinely gone from the refreshed worktree before the link is removed. Run against an unsynced worktree — or a branch where the deletion has not landed — it declines rather than unlinking a skill that still exists.
+
+`rm` on the symlink itself never touches the worktree contents: `~/.claude/skills/<name>` is a link, and removing it deletes the link, not its target. Do not use `rm -r`, which would follow into a directory if the entry turned out to be a copy rather than a symlink.
+
+Ordering matters. Removing the link **before** the deletion merges leaves the publishers free to re-create it on the next session start or scheduled tick, since the skill is still present on `main`. Merge first, sync, then unlink.
+
+## Installing the phase-agent symlinks
+
+`setup-skills-worktree.sh` Step 5b delegates to `publish-agent-symlinks.sh`, which publishes `.claude/agents/*.md` into
+`~/.claude/agents/` so `subagent_type: "phase-a-fixer"` resolves from any repo,
+not just this one. Claude Code discovers agent definitions at both user scope
+(`~/.claude/agents/`) and project scope (`<repo>/.claude/agents/`), with project
+winning on a `name:` collision — so working in this repo still uses the branch's
+own copies, and every other repo gets the `main`-pinned ones.
+
+The leg mirrors **skills**, not **rules**: a real `~/.claude/agents/` directory
+holding one symlink per file, rather than one directory symlink. The docs are
+explicit that `.claude/rules/` resolves symlinks and silent about `agents/`, and
+the per-entry skills topology is already proven on this machine. Reasoning:
+`portable-skill-resolution.md` (issue #1189).
+
+**Restart caveat.** A brand-new `~/.claude/agents/` directory is the one case the
+file watcher cannot pick up mid-session — it does not cover a directory that did
+not exist at session start. The setup script says so when it creates the
+directory. Until the restart, spawn `general-purpose` and paste the verbatim
+SAFETY/MINDSET/SKILLS blocks plus the role procedure, per
+`.claude/rules/subagent-orchestration.md` "Failed custom spawn fallback".
+
 ## Verifying and migrating existing links
 
 ```bash
-ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules
+ls -la ~/.claude/skills/ ~/.claude/agents/ ~/.claude/CLAUDE.md ~/.claude/rules ~/.claude/account-config.md
 ```
 
 Every entry should resolve to `~/.claude/skills-worktree/...`.

@@ -1,10 +1,15 @@
 #!/bin/bash
 # Fix trust flags for a single project in ~/.claude.json.
+# catalog: trust-worktree-repo — Fix trust flags for one project in `~/.claude.json`
 # Usage: bash .claude/scripts/repair-trust-single.sh /absolute/path/to/project
 # See .claude/rules/trust-dialog-fix.md for details.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <absolute-project-path>"

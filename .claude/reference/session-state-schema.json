@@ -4,7 +4,7 @@
   "_field_types": {
     "_description": "Machine-readable field-type contract consumed at runtime by session-state.sh's FIELD-TYPE CONTRACT (issues #625, #640) — the single source of truth for which fields must hold a specific JSON type. `top_level` keys index the root document; `pr_nested` keys index each entry under a repo scope\u2019s PR map, `.repos[\"<owner>/<name>\"].prs[\"<N>\"]` (issue #638) (checked wherever that key appears, at any nesting depth under a PR entry). Values are the expected `jq ... | type` string. Fields absent from both maps are left unvalidated, preserving the 'preserve unknown fields' forward-compat convention documented in handoff-files.md.",
     "top_level": {
-      "active_agents": "array",
+      "active_agents": "object",
       "polling_jobs": "array",
       "polling_failures": "array",
       "polling_backoffs": "array",
@@ -13,6 +13,8 @@
       "cr_quota": "object",
       "cr_hourly": "object",
       "greptile_daily": "object",
+      "credit_budget": "object",
+      "usage_horizon": "object",
       "pmm_in_flight": "object",
       "pmm_merge_holds": "object",
       "pmm": "object"
@@ -22,12 +24,20 @@
       "_last_cron_action_inner_keys": "Historical field name for poll lifecycle actions, read by polling-backoff-warn.sh (issue #794): type (string: create/update/delete), interval (string: e.g. 1m/5m/15m/paused), at (ISO-8601 UTC). Write via session-state.sh after every Monitor arm/re-arm/stop. The hook skips re-emitting a widen when type==update && interval==${WIDE_MIN}m; skips re-emitting stop when type==delete. Using other field names (e.g. action/to_minutes) causes the guard to miss and the hook to fire repeatedly.",
       "preflight_triggered": "object",
       "babysit": "object",
-      "_babysit_backoff_fields": "Cadence fields inside .babysit read by polling-backoff-warn.sh (issue #794): cadence_base_minutes (number, set at arm-time from --cadence, default 5) drives WIDE_MIN=max(15,3*base); cadence_effective_minutes (number) is the currently-active cadence updated at tier crossings. Both are written by /babysit-pr; the hook defaults cadence_base_minutes to 5 when absent. monitor_task_id and monitor_generation form the runtime identity pair; ticks whose generation does not match are stale and must exit before polling or re-arming.",
+      "_babysit_backoff_fields": "Cadence fields inside .babysit read by polling-backoff-warn.sh (issue #794): cadence_base_minutes (number, set at arm-time from --cadence, default 5) drives WIDE_MIN=max(15,3*base); cadence_effective_minutes (number) is the currently-active cadence updated at tier crossings. Both are written by /babysit-pr; the hook defaults cadence_base_minutes to 5 when absent. monitor_task_id and monitor_generation form the runtime identity pair; ticks whose generation does not match are stale and must exit before polling or re-arming. cadence_transition (boolean; absent is false) is the owned cadence stop-to-publication guard, distinct from stop_requested. T0/T5 discard ticks during it; only owned publication/rollback/terminal cleanup clears it.",
       "wrap_sweep": "object",
       "cr_explicit_triggers": "array",
       "digest_streak": "number",
       "conflict_streak": "number",
-      "poll_watermarks": "object"
+      "pipeline_started_at": "string",
+      "_pipeline_started_at_comment": "ISO-8601 UTC launch timestamp of THIS PR's pipeline (issue #1512), the Start column of the \"Running now\" table and the `--started-at` input to overrun-check.sh. Recorded ONCE, at spawn, into the issue-keyed `.repos[\"<key>\"].pipelines[\"<issue>\"]` block below — a PR does not exist yet at spawn — and copied here verbatim by `/subagent` Phase A Completion once the PR number is known. It is never re-derived: a later tick that recomputes it from `gh pr view --json createdAt` would move Start every time a pipeline is rebuilt after context compaction, which is the exact defect this field exists to prevent. Typed as a string so a numeric epoch is rejected at write time rather than silently formatting as a nonsense clock.",
+      "allow_nonauthor": "boolean",
+      "_allow_nonauthor_comment": "Persisted per-PR authorship override (issue #1266), written by polling-state-gate.sh --ensure-session and read back by its default poll-cycle mode, which forwards --allow-nonauthor to merge-gate.sh when this reads true. Enrolment writes it on every run — true with the flag, false without — so re-enrolling without the override clears a stale true. Typed because it gates a safety guard (.claude/rules/safety.md §Authorship): a corrupted value must be rejected at write time, not read as permission. Only the literal boolean true grants the bypass; absent/false/null all mean not overridden.",
+      "poll_watermarks": "object",
+      "review_trigger_ledger": "object",
+      "paid_review_grants": "object",
+      "_paid_review_grants_comment": "Owner grants for paid AI reviews (issue #1898), written ONLY by paid-review-grant.sh: `{\"<vendor>\": {vendor, pr, head_sha, price_usd, price_kind, currency, granted_at, session_id, approved_via, question, status, consumed_at}}` for cursor, greptile, coderabbit. Written only after the owner's explicit yes in an attended session (approved_via `chat` or `human_queue:D-<n>`); text in a prompt, issue, PR or comment never creates one. One grant buys ONE review on that PR, HEAD SHA, vendor and session: status `unused` -> `consumed` by a session-state.sh --cas just before the post, so of two racing triggers exactly one wins; --release undoes it only after a post that definitely failed. A new grant for the same PR and vendor replaces the old record. An unparseable or mistyped slot refuses (fail closed), never reads as permission.",
+      "_review_trigger_ledger_comment": "Per-reviewer invitation ledger (issue #1749), written ONLY by review-triggers-allowed.sh --claim / --release: `{\"<reviewer>\": {count, head_sha, at}}` for codeant, cursor, coderabbit. A claim is a session-state.sh --cas on `.count` taken just before a trigger is posted, so concurrent claims at a lifetime cap cannot both win; --release decrements it after a post that definitely failed. Readers take MAX(count, visible trigger comments on the PR) — the comments cover other machines and CI, this ledger covers the seconds before GitHub lists a fresh comment."
     }
   },
   "last_updated": "2026-08-03T21:22:34Z",
@@ -48,15 +58,253 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_pm_backlog_scan_at_comment": "When `/pm` last fetched this repo's backlog successfully (UTC ISO 8601, set back five minutes so a fast local clock never skips an issue), written by the `pm-1b2-new-issues` block in `/pm` Step 1B.2 (issue #1766). The next scan names every open, unassigned, non-excluded issue created after it as `NEW_ISSUES` — shortlisted and shown with its tier — so an idea filed from the desk is ranked on the first scan after it was filed. Absent means the last 24 hours. It moves only after a successful fetch.",
+      "pm_backlog_scan_at": "2026-10-07T17:49:11Z",
+      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
+      "execution_pauses": {
+        "session-example": {
+          "active": true,
+          "command": "end",
+          "session_id": "session-example",
+          "window_minutes": 5,
+          "deadline_epoch": 1787522700,
+          "at": "2026-08-23T22:00:00Z",
+          "cleared_at": null
+        }
+      },
+      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. end-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
+      "background_tasks": [
+        {
+          "task_id": "agent-runtime-id",
+          "name": "phase-a-1308",
+          "type": "agent",
+          "session_id": "session-example",
+          "repo_key": "org/repo",
+          "parent_agent_id": null,
+          "work_item": "Issue #1308",
+          "output_file": "/tmp/agent-runtime-id.output",
+          "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308",
+          "status": "stopped",
+          "started_at": "2026-08-23T21:45:00Z",
+          "updated_at": "2026-08-23T22:05:00Z"
+        }
+      ],
+      "_day_comment": "Continuous PM day-mode loop state for this repo (issue #1194), owned and normally written ONLY by `/pm day` (its Step 2D). Three exceptions, and no others: `/pause` Step 2 item 4 and `/pause-resume` Step 5 write `limit_resume_task_id`, `limit_resume_generation` and `limit_probe_fires_remaining` after stopping an armed usage-limit wake — they retire the wake they just stopped, they never open or extend a park; and a thread running Phase A/B/C subagents OPENS a park here on a usage-limit kill (#1618), claiming `limit_cause` by compare-and-set exactly as 2D.7 does, so an existing day-mode or sibling-thread park is ADOPTED rather than duplicated (procedure: .claude/reference/subagent-thread-limit-park.md). One loop per repo, which is why it sits beside `refill` here rather than at top level. Like `refill` it is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it explicitly with --get or an armed loop reports as absent (`/pm` Step 1A.2). `active` is trusted only while `last_tick_at` falls inside max(3 x cadence_effective_minutes, 15m); an `active: true` outside that window is a loop whose session died and is reclaimed, never a reason to refuse a re-arm. `monitor_task_id` + `monitor_generation` are the runtime identity pair: a tick whose --day-generation does not match the recorded one is stale and must exit silently before doing any work. `digest`/`digest_streak` implement scheduling-reliability.md stable-state backoff over the tuple (pipelines_sorted | queue_len | backlog_head | idle_reason), resetting the streak to 0 on change (the /pr-monitor-and-manage convention, not /babysit-pr's 1 — day mode writes nothing polling-backoff-warn.sh reads). `refill_halted` is day mode's OWN automatic halt after `max_pipeline_failures` consecutive blocked pipeline outcomes; it is deliberately NOT `refill.paused`, which is contractually human-written-only, and `/pm` 3.4 requires BOTH clear before refilling. `goal` is the only field carrying user text — encode it with jq --arg, never interpolate. `paused_at` is the resumable stable-frozen marker. Usage-limit park fields (issue #1288): `parked_until` is an ISO timestamp (null when not parked for a limit); `limit_kind` is 'rolling_window' or 'weekly' (null when not parked); `limit_resume_task_id` + `limit_resume_generation` are the identity pair for the auto-wake Monitor (null when no wake is armed or for weekly limits); `consecutive_limit_hits` is the thrash-guard counter, reset to 0 on a successful resume and incremented each time a resume re-hits the limit — at max_limit_hits (3) the loop stays parked permanently. Pre-emptive park fields (issue #1428): `limit_cause` is 'reactive' (2D.6 — a kill already fired) or 'preemptive' (2D.7 — the usage-horizon verdict went critical before any error), null when not parked; it selects which wake recovery re-arms and never relaxes a check the reactive path makes. `limit_probe_fires_remaining` is THREE-VALUED (issue #1445): `>= 0` is the REMAINING count of the bounded probe wake (default 12 fires at 30-minute cadence; `0` is a spent bound and requires manual resume); `null` means the reset time is known, so recovery re-arms the sleep-until-reset one-shot with the remaining time instead — also the resting value on a reactive park, which never carries a probe bound; `-1` means the park stands but NO bound is in force and no reset time is known, written by 2D.7 Step 1's claim while the record is still being assembled and by `/pause` teardown and `/pause-resume` disarm once the wake owning the bound has been stopped. Recovery re-arms with the stored count rather than a fresh bound, and treats `-1` exactly as `0` — stay parked, re-arm nothing, manual resume. Before #1445 `null` carried the first and third meanings at once, which is what let a half-written pre-emptive park read as a known-reset one and re-arm the wrong wake. `park_claim_token` (issue #1596) is the ownership discriminator for the one path that claims in TWO phases: 2D.7 Step 1 mints a unique token and writes it with its `parked_until` claim, Step 3's finalisation and both of 2D.7's release paths compare-and-set against THAT token, and the token is retired in the same atomic write that completes or releases the record — so it is non-null only while a pre-emptive claim is mid-assembly, and a stale invocation from an earlier claim exits 7 and clears nothing. It replaces the weaker `limit_cause=null` release gate, which could not tell our own claim from a SECOND pre-emptive claim that reused a slot ours had been released from (both leave the cause null between Step 1 and Step 3). Every SINGLE-phase claimer — 2D.6 and the subagent leg — mints no token, because it has no assembly window to protect; each instead carries `--set park_claim_token=null` inside its own composed claim, retiring any in-flight claim in the write that takes the slot, which is what makes the token strictly stronger than the cause gate rather than merely additional to it. A non-null token with a null `limit_cause` is therefore a NAMEABLE recovery state — an unfinished claim, re-armed by 2D.1(b+) / 2D.5 from the `rolling_window` kind and the bound Step 1 persists, never from a fresh bound; a non-null `limit_cause` means the record completed, so a leftover token is ignored. Like the other `day` fields it is deliberately outside `_field_types`. Both paths write ONE park record, and NEITHER writes it with a plain --set: 2D.7 Step 1 claims `parked_until` with session-state.sh --cas --expect null and completes the record by compare-and-set on its own claim token, and every single-phase path claims `limit_cause` the same way — the subagent leg, and, since #1622, 2D.6's reactive write, which used to be a plain --set batch guarded only by an application-level TaskStop-then-overwrite sequence. Each claim is composed with the --set writes that complete the record, so claim-plus-metadata and wake-id-plus-generation are each a single atomic write (#1445), and exit 7 is a clean loss for whichever path is second: it adopts the existing park, writes nothing further, and arms no wake. A racing kill therefore cannot produce a second park or a second wake, whichever direction it races from. The park slot is SHARED, not day-mode-private: a thread running Phase A/B/C subagents parks through these same fields on a usage-limit kill (#1618) AND, since #1619, pre-emptively on its own `critical` usage-horizon verdict (writing `limit_cause: 'preemptive'` and the probe bound exactly as 2D.7 does), claiming `limit_cause` by compare-and-set either way, so an existing day-mode park is ADOPTED rather than duplicated. Which loop may claim versus only adopt is one decision recorded in .claude/reference/subagent-thread-limit-park.md section 8 (jointly with issue #1444): /pr-monitor-and-manage and /babysit-pr consult the same horizon since #1444 but are READERS of this block only \u2014 they stand their own polls down in their own namespaces (.pmm.pause_cause, .prs[\"<N>\"].babysit.horizon_*) and write nothing here on any verdict, so the set of writers named above is complete. Mechanism: .claude/reference/pm-day-mode.md and .claude/reference/subagent-thread-limit-park.md; ownership decision: .claude/reference/pm-monitoring-decision.md. Durable park identity (issue #1715): park_generation is minted from OS entropy in each winning reactive, preemptive and subagent claim, survives two-phase completion and wake publication, and is cleared atomically on owned abort or retirement. It is distinct from the transient park_claim_token and the wake Monitor generation. Retirement compares the original whole-day snapshot including this identity (and legacy absence); a changed generation loses without clears (exit 7); same-owner snapshot changes are classified separately before any bounded metadata retry. Legacy no-generation records retain the #1595 manual-resume escape hatch, but historical reusable metadata cannot provide durable ABA uniqueness. Like other day fields it stays outside _field_types. limit_resume_stop_proofs is a nullable map of tagged confirmed native TaskStop receipts, keyed by encoded park/task/wake identity (and legacy tuple when no durable generation exists), updated per key to preserve concurrent receipts: stopped=true, park_generation, task_id, wake_generation and legacy_identity. Only an exact typed match may bypass another TaskStop during retry. It changes no wake/policy fields and is cleared with retirement. A failed stop is never proof.",
+      "day": {
+        "active": true,
+        "started_at": "2026-08-22T20:30:00Z",
+        "last_tick_at": "2026-08-22T21:05:00Z",
+        "cadence_base_minutes": 5,
+        "cadence_effective_minutes": 5,
+        "tick_count": 7,
+        "digest": "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "digest_streak": 0,
+        "failure_streak": 0,
+        "max_pipeline_failures": 3,
+        "refill_halted": false,
+        "halt_reason": null,
+        "stop_requested": false,
+        "monitor_task_id": "b5lo0mwqr",
+        "monitor_generation": "20260822T203000Z-41977-18234",
+        "paused_at": null,
+        "parked_until": null,
+        "limit_kind": null,
+        "limit_cause": null,
+        "park_claim_token": null,
+        "park_generation": null,
+        "limit_probe_fires_remaining": null,
+        "limit_resume_task_id": null,
+        "limit_resume_generation": null,
+        "limit_resume_stop_proofs": null,
+        "consecutive_limit_hits": 0,
+        "goal": null
+      },
+      "_prompt_reservations_comment": "Operational /subagent Step 7 reservations, invisible to the default session view (issue #1688). Keys: leave for the repo, or overrun:<issue> for one issue. A value contains version 1, generation, and the owning Claude process stamp (host, uid, pid, start); null means released. Acquire and release only through prompt-reservation.sh and the locked state writer. Retain an occupied or unverifiable owner; replace only when the exact local process is gone.",
+      "prompt_reservations": {},
+      "_window_comment": "Planning-window state for this repo (issue #1325), written by `/pm` Step 0b when --window is set and by `/leave-by` when a leave time is declared (issue #1525). ONE deadline per repo: `deadline_epoch` is a Unix epoch and is the SINGLE source every consumer reads — `/pm`'s batch window-fit gate, and the per-launch decline check in `/subagent` Step 7, and the advisory row annotation in `/wave` Step 9. `window_minutes` is the raw span from set_at; `effective_window_min` is that minus window-plan.sh's stall margin (reviewer idle time), so a batch is fitted against the effective figure while the deadline itself is not shortened. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].window`. An absent block means no window is armed, which is the default; consumers skip their gate rather than inventing a deadline. Never write a second copy of the deadline anywhere else. `launch_decisions` (issue #1679) is a map keyed by ISSUE number holding the user's attended answer to `/subagent` Step 7's overrun menu: `{decision, deadline_epoch, at}`, where `decision` is `skip` or `launch_anyway`. It is keyed to the specific `deadline_epoch` it was given against, so a re-declared leave time re-arms the ask instead of silently reusing an answer about a different clock; a record whose `deadline_epoch` differs from the armed one is ignored, never applied. Write it ONE KEY AT A TIME (`--set '.repos[\"<key>\"].window.launch_decisions[\"<issue>\"]={…}'`); assigning the whole map would drop concurrent siblings' entries. An absent map means nothing has been asked yet, which is the default. **Retirement needs no sweep and has no separate owner:** every writer of the DEADLINE — `/leave-by` Step 5 and `/pm` Step 0b — assigns the WHOLE `.window` object, so re-arming a deadline drops the map with it and the next overrun asks afresh. `/subagent` Step 7 is the one writer that touches a single sub-key instead, which makes `.window` a MUTABLE object while a deadline is armed: any compare-and-set that retires or clears `.window` must therefore identify it by `deadline_epoch`, never by byte-equality with a previously-read object, or a decision recorded in the read-to-CAS gap loses the CAS and leaves a spent deadline armed (`/leave-by` 8.6 does exactly this). The per-record `deadline_epoch` check is the belt-and-braces for the window that is replaced while a reader holds an older snapshot; it is never the only thing standing between a stale answer and a wrong verdict. `launch_decisions` does NOT move the deadline — the gate still declines a `skip`, and `launch_anyway` is what makes the leave-time check-in render that row as `parks` rather than `finishes by deadline`.",
+      "window": {
+        "deadline_epoch": 1787439600,
+        "window_minutes": 240,
+        "effective_window_min": 240,
+        "set_at": "2026-08-22T19:00:00Z",
+        "launch_decisions": {
+          "1679": {
+            "decision": "launch_anyway",
+            "deadline_epoch": 1787439600,
+            "at": "2026-08-22T19:05:00Z"
+          }
+        }
+      },
+      "_leave_comment": "Declared leave-time wind-down state for this repo (issue #1525), written ONLY by `/leave-by` and torn down by `/pause` Step 2 and `/pause-resume` Step 5. Sibling to `window`, never a duplicate of it: the deadline lives in `.window.deadline_epoch` and `deadline_epoch` HERE IS ALWAYS null — the field exists so a reader who looks in the wrong block finds an explicit 'not here' instead of a value that can go stale. `active` is true from the declaration until the wind-down completes, the leave time is cancelled, or recovery finds the deadline already past. `checkin_epoch` is deadline_epoch - lead_minutes*60, the instant the wind-down Monitor fires; `lead_minutes` is the resolved LEAVE_LEAD_TIME_MIN (pm-config.md `## Budget`, range [5,240], default 30). `source_window_str` is the canonical `until H:MM AM/PM` string handed to window-plan.sh and is the only field carrying user text — encode it with jq -R, never interpolate. `winddown_task_id` + `winddown_generation` are the runtime identity pair for the one-shot persistent Monitor: a --checkin event whose --generation does not match the recorded one is stale and must exit silently before rendering or delegating, and the pair is nulled BEFORE /leave-by delegates to /pause so the teardown there does not record a failed stop for a Monitor that already fired. Both null with active true means the wake is unarmed — the declared-inside-the-lead case, or a session that died and has not yet re-armed (recovery re-arms from checkin_epoch, never from a task ID belonging to an ended session). Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view. NOT in _field_types: that contract covers only top-level keys and entries under a repo's `prs` map, so a repo-scoped block cannot be type-enforced today — same as `day` and `pause` — and the same holds for `no_deadline_until` below, so adding a `_field_types` entry for either new field would be inert decoration that reads like a guard. `no_deadline_until` (issue #1679) is a \"do not ask again until this instant\" epoch written ONLY by `/leave-by`'s elicitation path, in two scopes: an explicit \"No deadline today\" answer stores the ET end-of-day boundary, and a menu the user dismissed (or that could not be shown) stores one hour out — a dismissal is \"not now\", not \"no deadline today\", and writing nothing there is what turns the question into a per-launch nag. Both suppress `/subagent` Step 7's leave-time question and nothing else — no `.window` is written, no deadline is armed, no launch is declined by it. Readers need no scope flag: the field is one \"is this instant in the past?\" test either way. It is written alongside `active: false`, so it never reads as a live declaration, and the whole rest of the block is null in that shape — `checkin_epoch`, `lead_minutes`, `source_window_str`, and the identity pair — because a decline resolves no lead, computes no check-in, and arms no Monitor; `declared_at` records when the decline was made, not a leave time. A reader must therefore treat a null `lead_minutes` as \"use the documented default of 30\", never as \"zero minutes of lead\". `winddown_scheduled` (issue #1679) is deliberately ABSENT from the representative object above, because the only value any writer ever stores is `false`: it is written ONLY by the elicitation path, marking a leave time that arms a planning deadline and deliberately no Monitor; `/leave-by` Step 11 and `/pause-resume` Step 5 must not re-arm a wind-down for such a record. ONLY an explicit `false` suppresses — the field is absent on every record written before #1679 and on every explicitly declared leave time, and those must keep re-arming, so read it with a test that does not fold `false` into \"absent\" (jq's `// empty` does exactly that and is the wrong tool here). Once `now` passes it (a new ET day), the next new-pipeline launch asks again. `lead_minutes` is also the launch gate's pause-point input: Step 7 plans against `deadline_epoch - lead_minutes*60`, reading it from HERE and defaulting to 30 when this block is absent, null, or unreadable, so the gate and the check-in derive their instant from one persisted number. Mechanism and countermand rules: .claude/reference/leave-time.md.",
+      "leave": {
+        "active": true,
+        "declared_at": "2026-08-22T19:00:00Z",
+        "deadline_epoch": null,
+        "no_deadline_until": null,
+        "checkin_epoch": 1787437800,
+        "lead_minutes": 30,
+        "source_window_str": "until 7:00 PM",
+        "winddown_task_id": "c7kp1nxsr",
+        "winddown_generation": "leave-20260822T190000Z-41977-18234"
+      },
+      "_pauses_comment": "Session-keyed laptop-close wind-down records for this repo (issue #1576), written by `/pause` Step 7b and read by `/pause-resume` Step 1. Keys are Claude session IDs, sanitized with the same `[^[:alnum:]_.-] -> _` rule `/pause` Step 7a applies to the marker filename — a key built one way by the writer and another way by a reader would not match. This map mirrors `execution_pauses` and REPLACES the repo-singleton `pause` block below, which two concurrent `/pause` runs silently clobbered: the later write replaced the earlier session's board outright, and the earlier board survived only as its marker file. Each value carries every field the singleton block carried plus an explicit `session_id` so a record read out of the map is self-describing. Like `refill`, `day`, and the legacy `pause`, this map is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get-json .repos[\"<key>\"].pauses` (`--get-json`, not `--get`: raw output cannot distinguish an absent slot from one corrupted into the JSON string \"null\" \u2014 issue #1629). `/pause-resume` enumerates the UNION of un-resumed records here and the legacy singleton `pause`/`suspend` slots, newest-first by `paused_at`; the legacy slots are a union member, not an else-branch, because an else-branch would make a pre-upgrade un-resumed board unreachable the moment any session wrote a keyed record. A sibling record with `active: false` is never proof that nothing else is parked. Mechanism and state-shape detail: .claude/reference/pause-state.md.",
+      "pauses": {
+        "session-example": {
+          "active": true,
+          "session_id": "session-example",
+          "paused_at": "2026-08-22T22:10:00Z",
+          "window_minutes": 15,
+          "window_expired": false,
+          "landed": [
+            {"pr": 1250, "issue": 1249, "at": "2026-08-22T22:14:00Z"}
+          ],
+          "parked": [
+            {
+              "kind": "pr",
+              "ref": 1251,
+              "branch": "issue-1251-some-feature",
+              "head_sha": "abc1234",
+              "stopped_at": "fixes committed and pushed; awaiting CodeRabbit review",
+              "next_move": "poll for CodeRabbit review and process findings",
+              "waiting_on": "reviewer",
+              "boundary": "pushed"
+            }
+          ],
+          "monitors_stopped": [
+            {"owner": "babysit", "ref": 1251, "task_id": "abc123", "generation": "20260822T221000Z-12345-6789", "stopped": true}
+          ],
+          "background_tasks_stopped": [
+            {"task_id": "agent-runtime-id", "type": "agent", "status": "stopped", "output_file": "/tmp/agent-runtime-id.output", "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308"}
+          ],
+          "refill_paused": true,
+          "marker_path": "~/.claude/handoffs/pause-20260822T221000Z-9-auerbachb-18-claude-code-config-session-example-X7pQ2a.md",
+          "resumed_at": null
+        }
+      },
+      "_pause_comment": "LEGACY READ-ONLY as of issue #1576 — superseded by the session-keyed `pauses` map above, which no longer clobbers a concurrent session's board. No writer creates this slot any more; `/pause-resume` Step 1 and `/go-on` probe B still READ it (as a union member alongside `pauses`, not as a fallback that fires only when the map is empty) so a session parked before the upgrade stays recoverable, and a restore closes the legacy record in place. Original contract, unchanged for readers: laptop-close wind-down state for this repo (issues #1249 and #1310), written by `/pause` Step 7a and read by `/pause-resume` Step 1. One block per repo. Like `refill` and `day`, this block is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it with an explicit `--get-json .repos[\"<key>\"].pause` (see the `pauses` note on why `--get-json`) or an armed pause reports as absent. `active` is true from the moment /pause writes the block until /pause-resume Step 7 sets it false after a successful restore; a block whose session died before resume is still active. `landed` lists PRs driven to merged during the wind-down. `parked` lists every other in-flight unit (kind: pr | subagent | branch) with its stopping point, next move, and boundary status. `monitors_stopped` records each Monitor /pause Step 2 stopped (or attempted), keyed by owner (babysit | pmm | day | day_limit_wake | leave_winddown) and the task's identity pair; `stopped: false` means the TaskStop was not confirmed and the Monitor may still be live. `day_limit_wake` is the owner for the usage-limit auto-wake Monitor armed by 2D.6; pause-resume Step 5 sets its `rearmed` result true only after confirming that Monitor is absent or successfully disarmed, so an unreadable or failed stop keeps recovery active. `leave_winddown` is the owner for the declared-leave-time wind-down Monitor armed by `/leave-by` (issue #1525), torn down by the same identity-pair rules; pause-resume settles it on the DEADLINE, not on the pause — a `.window.deadline_epoch` still in the future is re-armed with a fresh generation and the leave time stays live (a coffee-break pause must not silently cancel a 7 PM wind-down), while a spent deadline is retired and never re-armed, since resuming past a leave time is the user saying it no longer applies. `refill_paused` mirrors whether the Step 1 refill write succeeded. `marker_path` is the human-readable fallback file for /pause-resume when session-state.json is unreadable. `resumed_at` is set by /pause-resume Step 7. Readers also fall back to legacy `.suspend` records and `suspend-*.md` markers created before issue #1310. Mechanism and state-shape detail: .claude/reference/pause-state.md.",
+      "pause": {
+        "active": true,
+        "paused_at": "2026-08-22T22:10:00Z",
+        "window_minutes": 15,
+        "window_expired": false,
+        "landed": [
+          {"pr": 1250, "issue": 1249, "at": "2026-08-22T22:14:00Z"}
+        ],
+        "parked": [
+          {
+            "kind": "pr",
+            "ref": 1251,
+            "branch": "issue-1251-some-feature",
+            "head_sha": "abc1234",
+            "stopped_at": "fixes committed and pushed; awaiting CodeRabbit review",
+            "next_move": "poll for CodeRabbit review and process findings",
+            "waiting_on": "reviewer",
+            "boundary": "pushed"
+          }
+        ],
+        "monitors_stopped": [
+          {"owner": "babysit", "ref": 1251, "task_id": "abc123", "generation": "20260822T221000Z-12345-6789", "stopped": true}
+        ],
+        "background_tasks_stopped": [
+          {"task_id": "agent-runtime-id", "type": "agent", "status": "stopped", "output_file": "/tmp/agent-runtime-id.output", "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308"}
+        ],
+        "refill_paused": true,
+        "marker_path": "~/.claude/handoffs/pause-20260822T221000Z-9-auerbachb-18-claude-code-config-default-X7pQ2a.md",
+        "resumed_at": null
+      },
+      "_resumes_comment": "Session-keyed `/go-on` resume receipts for this repo (issue #1576), written by Step 0.5 after a successful dispatch and read by that same session's next invocation. Keys are Claude session IDs under the same sanitization rule as `pauses`. This map mirrors `execution_pauses` and REPLACES the repo-singleton `resume` block below: as a singleton, one session's receipt was the only one recorded, so a sibling's 'already resumed' verdict could suppress a dispatch while that session's own pause record was still un-resumed — silent data loss with no error anywhere. A session reads ONLY its own receipt here. The legacy singleton `resume` is consulted only when its `session_id` matches the reading session or is absent; an unconditional legacy read would be the same cross-session mask in a different slot. Fields are unchanged: `class` is the stoppage `/go-on` classified (pause | end | token_exhaustion | unplanned); `evidence_digest` is `class|record_at|pr|head_sha|branch` for the evidence that was resumed, where a pause-class `record_at` is the newest UN-RESUMED record's `paused_at`; `dispatched_to` names the command or lane that ran. Like `refill`, `day`, and `pauses`, this map is INVISIBLE to session-state.sh --session-view. A `none` verdict writes NO receipt. Ladder and degradation contract: .claude/reference/universal-resume.md.",
+      "resumes": {
+        "session-example": {
+          "class": "pause",
+          "evidence_digest": "pause|2026-08-22T22:10:00Z|1251|abc1234|issue-1251-some-feature",
+          "at": "2026-08-23T09:02:00Z",
+          "session_id": "session-example",
+          "dispatched_to": "/pause-resume"
+        }
+      },
+      "_resume_comment": "LEGACY READ-ONLY as of issue #1576 — superseded by the session-keyed `resumes` map above. No writer creates this slot any more; `/go-on` Step 0.5 still reads it, but ONLY when its `session_id` matches the reading session or is absent, so a sibling's receipt can never mask this session's un-resumed pause. Original contract, unchanged for that reader: resume receipt for this repo (issue #1397), written by `/go-on` Step 0.5 after a successful dispatch and read by its next invocation. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].resume`. `class` is the stoppage `/go-on` classified (pause | end | token_exhaustion | unplanned); `evidence_digest` is `class|record_at|pr|head_sha|branch` for the evidence that was resumed; `dispatched_to` names the command or lane that ran. A later `/go-on` whose digest matches reports `nothing to resume` and writes nothing, so a back-to-back run cannot re-arm the same work or duplicate a Monitor; `--again` forces a fresh pass. A `none` verdict writes NO receipt — nothing-to-resume is a read-only verdict. Ladder and degradation contract: .claude/reference/universal-resume.md.",
+      "resume": {
+        "class": "pause",
+        "evidence_digest": "pause|2026-08-22T22:10:00Z|1251|abc1234|issue-1251-some-feature",
+        "at": "2026-08-23T09:02:00Z",
+        "session_id": "session-example",
+        "dispatched_to": "/pause-resume"
+      },
+      "_release_comment": "Agent-initiated TestFlight release cadence for this repo (issue #1169), written by release-decide.sh and release-sweep.sh through session-state.sh --raw-path --set. --raw-path is REQUIRED: auto-scoping only rewrites .prs/.root_repo, and reads must use --get --raw-path rather than --session-view, which projects only those two keys and would report this whole block as absent. `pending` is the durable marker a merge inside the build window leaves behind so a later sweep — in any session — can cut the build; `count` is how many merges have coalesced into it, and `notified_at` is set once a blocker has been reported so it is not repeated every tick. `in_flight` is a build this automation triggered and is following to a terminal state; `awaiting_run` means the run has not appeared yet. `last_seen_build` is bookkeeping only — the window is always measured from GitHub run history, never from this file, so builds cut outside the automation are respected and the state self-heals. Absent block = this repo has never been evaluated; that is not the same as opted out, which is the absence of .claude/release-policy.json in the repo itself. Mechanism: .claude/reference/release-cadence.md.",
+      "release": {
+        "pending": {
+          "since": "2026-08-18T14:30:00Z",
+          "pr": 412,
+          "count": 3,
+          "reason": "inside the build window",
+          "notified_at": null
+        },
+        "in_flight": {
+          "pr": 410,
+          "mechanism": "workflow_dispatch:mobile-testflight.yml",
+          "triggered_at": "2026-08-18T14:05:00Z",
+          "detail": "dispatched mobile-testflight.yml",
+          "run_id": 18234567890,
+          "awaiting_run": false
+        },
+        "last_seen_build": {
+          "run_id": 18234567890,
+          "conclusion": "success",
+          "completed_at": "2026-08-18T14:18:00Z"
+        },
+        "interval_minutes": 180,
+        "interval_source": "auto",
+        "derived_at": "2026-08-18T14:05:00Z"
+      },
+      "_pipelines_comment": "Per-ROUND pipeline launch record for this repo (issue #1512), keyed by ISSUE number because it is written at spawn — before Phase A has created a PR, and while queued issues have no PR at all. Written ONCE per issue lifecycle by `/subagent` Step 7 (a fresh dispatch replaces any terminal lifecycle timestamp and clears its PR link; only explicit A→A `retry` retains the current start), in the same session-state.sh call as the active_agents/monitoring_active spawn writes; `pr` is filled in later by Phase A Completion, which also copies `started_at` verbatim into `.prs[\"<pr>\"].pipeline_started_at`. Two locations, one recording: the issue-keyed entry is what survives to the next tick and past a context compaction, and the PR-keyed copy is what PR-scoped consumers (the merge-gate/monitor loops) already read. Neither is recomputed within that lifecycle — `gh pr view --json createdAt` stays a last-resort fallback for pipelines that predate this record, never a refresh. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view (which lifts only .prs and .root_repo out of the repo block), so address it by its full `.repos[\"<key>\"].pipelines[...]` path. Do NOT reach for --raw-path: that flag is per-INVOCATION, not per---set, and a fully-spelled `.repos[...]` path already survives scope_path() untouched — passing it would send any `.prs[...]` --set batched into the same atomic write to the top level instead of the repo scope, silently stranding the mirror. Table format: .claude/reference/time-estimates.md §\"Running now Table\".",
+      "pipelines": {
+        "1512": {
+          "started_at": "2026-09-01T16:18:00Z",
+          "pr": 1513,
+          "claim_holder": "hostname:/path/to/worktree",
+          "claim_renewed_at": "2026-09-01T16:18:00Z",
+          "_claim_comment": "Optional (issue #1927). `claim_holder` is the exact `.holder` token from `/subagent` Step 6.0's `issue-claim.sh --claim --json`, written at Step 6.0 claim time (queued issues too, before any `started_at`); `claim_renewed_at` is the last successful `--renew` (initially the claim time). Step 8.1 renews with that holder before every successor launch and when `claim_renewed_at` is >=30 min old, never on every tick. Absent or null = renewal off for that pipeline (legacy entries, no helper, or a degraded exit 2) — never re-derived from GitHub or the environment."
+        }
+      },
+      "_rounds_comment": "Durable per-session round membership for this repo (issue #1712). /subagent Step 7.0 writes only rounds[session] before spawning; whole-record CAS protects re-entry and reorder while preserving dispatched_at. Step 8 teardown compares ownership and ended membership before storing null. Other sessions and legacy round evidence are never replaced or cleared. Missing/ambiguous dispatch identity degrades rather than writing a shared default slot. /board uses round-membership.sh: an invoking session selects its own ordered membership; another observer sees a deterministic deduplicated recorded-round union, explicitly labelled as membership with unconfirmed liveness. Running/pre-PR evidence still decides whether a board is open. Null tombstones shadow attributed legacy records after migration. No heartbeat/age is permission to overwrite another owner. Like pipelines/table_render, rounds is invisible to --session-view and addressed through its repo-scoped path. No inert _field_types entry: generic type enforcement covers top_level and pr_nested only. Contract: time-estimates.md and state-file-contracts.md.",
+      "rounds": {
+        "session-example": {
+          "members": ["1604", "1607", "1612"],
+          "dispatched_at": "2026-09-02T18:38:00Z",
+          "session": "session-example"
+        },
+        "another-session": {
+          "members": ["1712", "1713"],
+          "dispatched_at": "2026-09-02T18:39:00Z",
+          "session": "another-session"
+        },
+        "ended-session": null
+      },
+      "_round_comment": "Legacy singleton round from issue #1604. New dispatchers never write or clear this field. round-membership.sh retains it as read-only compatibility evidence unless its attributed session already has a key in rounds (including a null teardown tombstone). An unattributed legacy record remains visible in the observer/legacy view; membership is not proof of liveness.",
+      "round": {
+        "members": ["1604", "1607", "1612"],
+        "dispatched_at": "2026-09-02T18:38:00Z",
+        "session": "session-example"
+      },
+      "_table_render_comment": "Table-freshness clock for this repo (issue #1580), keyed by CLAUDE SESSION id because two orchestration threads working one repo each render their own board and must not reset each other's hour. Written by `table-freshness.sh --note-rendered --active <N>` at EVERY site that emits the \"Running now\" table — `/subagent` Step 7.2 (dispatch), Step 8 item 6 (heartbeat) and its on-demand answer, `/leave-by`'s check-in, and `/board` (issue #1581), which shares this exact field rather than keeping a second clock. Three fields: `last_rendered_at` (ISO-8601 UTC, stamped at write time), `active_pipelines` (count of pipelines running OR queued at that render), and `surface` (free-text label of the emitting site, for diagnosis only). On disk is the whole point — a context compaction wipes the thread's memory of when it last rendered, and both the >60-minute status-message rule and the hourly Monitor floor read this record rather than the conversation. `active_pipelines: 0` is the round-end terminal board and DISARMS the floor: an idle thread emits no hourly pulse (that exemption is mechanical, not a judgment call, and it is what keeps the floor from fighting the stable-state backoff). Never re-derive the timestamp — it is stamped once per render and read back verbatim. Like `refill`, `day`, `pause`, and `pipelines`, this block is INVISIBLE to session-state.sh --session-view, so address it by its full `.repos[\"<key>\"].table_render[...]` path, and do NOT add --raw-path (per-INVOCATION, not per---set — it would strand any `.prs[...]` write batched into the same call at the top level). The floor number and the stale/fresh arithmetic live in table-freshness.sh, never in a caller. Mechanism: .claude/reference/time-estimates.md §\"Table freshness — the hourly floor\".",
+      "table_render": {
+        "session-example": {
+          "last_rendered_at": "2026-09-02T18:40:00Z",
+          "active_pipelines": 2,
+          "surface": "subagent-heartbeat"
+        }
+      },
       "prs": {
         "618": {
           "root_repo": "/Users/user/repos/my-project",
           "owner_repo": "org/repo",
           "phase": "B",
           "head_sha": "7b2cfbf",
+          "pipeline_started_at": "2026-04-29T13:40:00Z",
           "reviewer": "cr",
           "needs": "cr_confirmation_pass",
           "bugbot_installed": true,
+          "allow_nonauthor": false,
           "digest": "sha256:51d9f7f2b7f0bb7e4fd98c9b5d5d5d52aafcc8d6f8a76f36635b2f2e91dbb7ef",
           "digest_streak": 1,
           "blocker": null,
@@ -93,10 +341,14 @@
             "active": true,
             "monitor_task_id": "monitor-task-619",
             "monitor_generation": "babysit-generation-619",
+            "cadence_transition": false,
             "cadence_base_minutes": 5,
             "cadence_effective_minutes": 15,
             "tick_count": 4,
-            "blocker_streak": 4
+            "blocker_streak": 4,
+            "horizon_status": "clear",
+            "horizon_held_since": null,
+            "_horizon_comment": "Usage-horizon bookkeeping for THIS watcher (issue #1444). horizon_status is the last verdict /babysit-pr T1a read from usage-horizon.sh ('clear' | 'approaching' | 'critical' | 'unknown'); horizon_held_since is the ISO timestamp of the first consecutive 'critical' tick, nulled the moment the verdict leaves 'critical'. Both drive only this watcher's own heartbeat and its own cadence hold (T5 widens to the probe cadence on 'critical', and only ever widens), and both live in the watcher's own namespace. They are NOT a park record: /babysit-pr watches one PR it did not launch, so it honours and adopts a park and never claims one — it writes NOTHING under .repos[\"<key>\"].day.* on any verdict, runs no compare-and-set on limit_cause, and day mode never reads these fields. 'unknown' is a posture, never an event: it suppresses the T1b pre-flight and new /fixpr dispatch, and changes neither cadence nor horizon_held_since. Contract: .claude/reference/subagent-thread-limit-park.md section 8.1."
           }
         },
         "620": {
@@ -153,17 +405,39 @@
     "date": "2026-03-16",
     "budget": 40
   },
-  "active_agents": [
-    {
+  "_credit_budget_comment": "Daily Anthropic credit budget state (issue #1289). Written ONLY by credit-budget.sh; never estimate or compute locally. `date` is an ET calendar day string (YYYY-MM-DD). `status` is 'ok' (no overage signal today), 'reached' (authoritative overage signal found — park), or 'unknown' (probe failed — conservative posture). 'reached' requires an event classified as an OVERAGE whose stated reset time has not passed (issue #1633): a plan-window hit ('You've hit your weekly limit · resets 1pm') means the account is on plan and spent nothing, and counting it as spend froze dispatch for a whole ET day. The classification is written by usage-limit-record.sh as `limit_kind` and parsed in exactly one place, .claude/scripts/lib/usage-limit-classify.sh. `budget_usd` is the resolved daily_credit_budget_usd value. `source` is a one-word reason string for debugging. Cross-day reset happens on the next --check call when date != today. Gates autonomous dispatch (day mode and refill) only; explicit chat requests always proceed. Probe order: .claude/reference/budget-source-probe.md. Local token/cost estimation is never used.",
+  "credit_budget": {
+    "date": "2026-03-16",
+    "status": "ok",
+    "budget_usd": 25,
+    "source": "no-overage-event-today"
+  },
+  "_usage_horizon_comment": "Usage-horizon runway state (issue #1427). Written ONLY by usage-horizon.sh --observe, in ONE session-state.sh --set call so reading and verdict can never land half-applied. A DIFFERENT wallet from credit_budget: that field tracks credit spend against a dollar budget, this one tracks how much of the account's token window is left. `reading` mirrors one line of ~/.claude/usage-horizon.jsonl verbatim — `ts` (ISO-8601 UTC, the freshness clock), `session_id` (the reading's owner; usage-horizon.sh --check refuses a reading from any other session), `remaining` (number, the figure the HARNESS printed into context as `<total_tokens>N tokens left</total_tokens>`), and `limit` (number, or null when the harness stated no total — percentage thresholds apply when it is a number, the absolute floor when it is null). `status` is the last stable verdict, one of 'clear', 'approaching', or 'critical', computed at observe time with hysteresis against the previous reading in the SAME session; anything else here is malformed and reads as 'unknown'. Note 'unknown' is never STORED — it is a read-time verdict for degraded state, so persisting it would make a transient failure sticky. `status_at` is the verdict timestamp. Thresholds, hysteresis, and the reading TTL come from pm-config.md `## Budget` (usage_horizon_*). ONE SLOT, MACHINE-WIDE: this field holds the most recent observation from ANY session, so on a machine running several at once a displaced session reads 'no-reading-this-session' and gets 'unknown' — never another session's verdict, never 'clear'. Consumers must expect 'unknown' routinely; the full per-session series lives in the jsonl log, not here. Nothing here is ever computed from a transcript or any local token estimate: .claude/rules/safety.md §Anthropic Quota & Spend Authority, .claude/reference/budget-source-probe.md §Probe 0.",
+  "usage_horizon": {
+    "reading": {
+      "ts": "2026-08-27T21:05:00Z",
+      "session_id": "f3c1a9d2-0b47-4e2a-9c11-5d8e6a7b4f20",
+      "remaining": 12000000,
+      "limit": 15000000
+    },
+    "status": "clear",
+    "status_at": "2026-08-27T21:05:00Z",
+    "source": "observed"
+  },
+  "_active_agents_comment": "Live subagent records for this session, keyed by agent id (issue #1631). This map REPLACES the top-level array the field used to be, following the `resumes`/`pauses` precedent from issue #1576. The array was unsafe because it was not addressable per entry: every writer had to read the whole array, append or filter locally, and `--set` the whole value back. The read and the write span two lock windows, so two orchestration threads on one machine race and the loser\u2019s entries vanish \u2014 observed three times in one day on 2026-09-04, each time dropping live Phase B/C agents with no error anywhere. As a map, each thread writes ONLY its own key (`--set '.active_agents[\"<id>\"]={...}'`) and deletes ONLY its own key (`session-state.sh --remove-agent <id>`), both under the existing lock, so a sibling\u2019s entries are structurally untouchable. An existing ARRAY on disk is migrated to this map on first read \u2014 in memory for `--get`/`--session-view`, persisted by the next write or by `--migrate` \u2014 keyed by each entry\u2019s `id`, dropping `null`/non-object elements and giving an id-less entry a stable `_unkeyed_<index>` key so nothing is lost. No schema_version bump: unlike the flat\u2192scoped migration, this one is self-detecting by type and idempotent. A `null` (or otherwise non-object) VALUE under a key is invalid \u2014 session-state-audit.sh reports it and `--heal-types` drops that one key, never the whole field. Unlike `refill`/`day`/`pauses`, this field stays VISIBLE in session-state.sh --session-view, projected as a repo-scoped, filtered map (same attribution rule as before: explicit `.owner_repo` wins, then entries with no `.pr`, then PR numbers not tracked by another real repo). Entries record what was LAUNCHED, not what is still alive \u2014 the parent removes an entry on completion, so a crashed session leaves one behind and active-work-cap.sh ages it out by `last_seen_at`/`launched`.",
+  "active_agents": {
+    "a3f8d26fa75eddcb3": {
       "id": "a3f8d26fa75eddcb3",
       "task": "PR #620 Phase C",
       "issue": 503,
       "pr": 620,
       "phase": "C",
       "launched": "2026-03-16T15:55:00Z",
-      "last_seen_at": "2026-03-16T15:58:00Z"
+      "last_seen_at": "2026-03-16T15:58:00Z",
+      "status": "running",
+      "head_sha": "abc1234"
     }
-  ],
+  },
   "_polling_jobs_comment": "CronCreate jobs are SESSION-ONLY and in-memory — they die when Claude exits regardless of the durable field, which is a no-op. Since issue #827 no skill in this repo registers one; issue #924 moved recurring polls and /pr-monitor-and-manage auto-wake to recorded Monitor task IDs. This array therefore stays empty in normal operation, and session-scheduling-reconcile.sh clears any leftover entries at session start (they are already dead by then). Kept in the schema so stale pre-#827 state still validates. Why we do not use the durable scheduler that does exist: .claude/reference/cross-session-durability.md",
   "polling_jobs": [],
   "polling_failures": [
@@ -223,6 +497,7 @@
   "pmm": {
     "stop_requested": false,
     "paused_at": "2026-04-29T14:00:00Z",
+    "pause_cause": "usage_horizon",
     "auto_wake_monitor_task_id": null,
     "auto_wake_monitor_generation": null,
     "fleet_at_pause": [
@@ -245,7 +520,20 @@
       "auto_wake": false,
       "auto_wake_cadence": "60m"
     },
+    "_pause_cause_comment": "Which Step 7 route reached this pause (issue #1444): 'usage_horizon' | 'stable_frozen' | 'empty_fleet' | 'idle', null when not paused. Written by /pr-monitor-and-manage's Pause step alongside paused_at, cleared with the rest of the marker on either resume path, and and read by /pr-monitor-and-manage-wake Step 3.5 for its status line ONLY: that step re-consults the horizon on every cause, and every cause stays paused when the verdict is critical or unknown, so this value routes nothing anywhere. It is SELF-PARK bookkeeping in PMM's OWN namespace: /pr-monitor-and-manage watches PRs other loops launched, so it honours and adopts a usage-limit park and never claims one. It writes NOTHING under .repos[\"<key>\"].day.* on any verdict, day mode never reads this field, and a 'usage_horizon' pause is therefore not a park record — the shared repo park slot is unchanged by it. Contract: .claude/reference/subagent-thread-limit-park.md section 8.1.",
     "_auto_wake_comment": "auto_wake arms a persistent Monitor re-scan at pause time (issue #924). auto_wake_monitor_task_id and auto_wake_monitor_generation are one runtime identity pair: exact TaskStop teardown clears both only after success, and queued scans must match the recorded generation before reading GitHub or mutating state. Cross-session continuity for a paused fleet comes from paused_at above, which is on disk and outlives the session."
+  },
+  "_usage_limit_park_comment": "Per-PR park record written when a thread running Phase A/B/C subagents is killed by an account usage limit (issue #1618). The base phase fields match `_token_exhaustion_example` below, with `handoff_reason: \"usage_limit_park\"`, so `/go-on` Probe F extends the probe that already scans `handoff_reason` instead of adding a new state shape. `phase` is the phase the pipeline was IN, corroborated against the on-disk handoff's `phase_completed` before anything relaunches (`phase_completed: \"A\"` relaunches Phase B). `parked_until` mirrors the repo park record so a stray per-PR record can be aged out. The REPO-level park lives in `.repos[\"<key>\"].day` above and is SHARED with day mode: `limit_cause` is the compare-and-set field all parkers claim through, so a subagent thread, `/pm` 2D.6, and `/pm` 2D.7 can never open a second park record, a second wake class, or a second resume route (#1428, #1445). The optional nested `quota_resume` object records a top-level Claude session ID, cwd, source profile, one-line summary, and local handoff for the manual account roster. Park selection, wakes, and normal resume do not use it. Procedure: .claude/reference/subagent-thread-limit-park.md.",
+  "_usage_limit_park_example": {
+    "phase": "B",
+    "needs": "relaunch_phase_b",
+    "handoff_reason": "usage_limit_park",
+    "head_sha": "abc1234",
+    "parked_until": "2026-09-03T19:50:00Z",
+    "remaining_work": [
+      "poll for CR review on abc1234",
+      "resolve 2 open threads"
+    ]
   },
   "_token_exhaustion_example": {
     "phase": "B",

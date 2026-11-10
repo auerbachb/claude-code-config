@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # backlog-health.sh — backlog health aggregator for /pm's always-on summary (issue #598).
+# catalog: backlog-pm — Aggregate backlog health metrics wrapping `backlog-staleness.sh`
 #
 # PURPOSE:
 #   Computes the "Backlog health" data model /pm renders before its ranking
@@ -42,10 +43,11 @@
 #   - .claude/scripts/gh-window.sh, .claude/scripts/backlog-staleness.sh
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {

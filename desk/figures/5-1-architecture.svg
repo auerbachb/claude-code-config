@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 672 640" xmlns="http://www.w3.org/2000/svg">
+<style>  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10.5px; fill: #111; }
+  svg .box { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .soft { fill: #f3f3f3; stroke: #777; stroke-dasharray: 3 2; }
+  svg .dark { fill: #e3e3e3; stroke: #222; stroke-width: 1.1; }
+  svg .dia { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .human { fill: #fff; stroke: #000; stroke-width: 2.6; }
+  svg .ai { fill: #f7f7f7; stroke: #222; stroke-width: 1.2; }
+  svg .sw { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 6 3; }
+  svg .git { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 1.5 2.5; }
+  svg .ln { stroke: #222; stroke-width: 1.1; fill: none; }
+  svg .dsh { stroke-dasharray: 4 3; }
+  svg .lbl { font-size: 9.4px; fill: #333; }
+  svg .ttl { font-weight: 700; font-size: 11px; }
+  svg .big { font-weight: 700; font-size: 14px; }
+  svg .sm { font-size: 8.8px; fill: #333; }
+  svg .tag { font-size: 8.4px; font-weight: 700; letter-spacing: 0.6px; fill: #333; }
+  svg .mono { font-family: Menlo, Consolas, monospace; font-size: 9.3px; }
+</style>
+<defs><marker id="ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker></defs>
+<!-- GitHub -->
+<rect x="448" y="6" width="216" height="44" class="git"/>
+<text x="456" y="20" class="tag">GITHUB</text>
+<text x="456" y="34" class="lbl">merged PRs by you · issues filed via the desk</text>
+<text x="456" y="46" class="sm">any repo, any tool; the source of Reviews</text>
+<path d="M500,50 V84" class="ln" marker-end="url(#ah1)"/>
+<text x="506" y="78" class="sm">pull: sync-reviews</text>
+<!-- AI worker threads -->
+<rect x="8" y="60" width="204" height="250" class="ai"/>
+<text x="16" y="74" class="tag">AI · WORKER THREADS</text>
+<text x="16" y="86" class="sm">any repo; later any tool or machine</text>
+<rect x="20" y="94" width="180" height="60" class="box"/>
+<text x="26" y="108" class="ttl">Thread A · sales-kit PR #318</text>
+<text x="26" y="121" class="sm">asks a question → the hook</text>
+<text x="26" y="133" class="sm">prints: question D-43 sent to human queue</text>
+<text x="26" y="145" class="sm">then proceeds on its default, or parks</text>
+<rect x="20" y="164" width="180" height="60" class="box"/>
+<text x="26" y="178" class="ttl">Thread B · config #1755</text>
+<text x="26" y="191" class="sm">asks a question → the hook</text>
+<text x="26" y="203" class="sm">prints: question D-44 sent to human queue</text>
+<text x="26" y="215" class="sm">then proceeds on its default, or parks</text>
+<rect x="20" y="234" width="180" height="60" class="box"/>
+<text x="26" y="248" class="ttl">Thread C · brainstorm, no repo</text>
+<text x="26" y="261" class="sm">asks a question → the hook</text>
+<text x="26" y="273" class="sm">prints: question D-45 sent to human queue</text>
+<text x="26" y="285" class="sm">then parks: no default possible</text>
+<!-- SOFTWARE -->
+<rect x="232" y="60" width="432" height="250" class="sw"/>
+<text x="240" y="74" class="tag">SOFTWARE · desk/ folder in the harness repo</text>
+<rect x="244" y="84" width="160" height="96" class="box"/>
+<text x="250" y="98" class="ttl">Capture hook</text>
+<text x="250" y="110" class="sm">PreToolUse on the question tool</text>
+<text x="250" y="124" class="lbl">① writes the question as D-n</text>
+<text x="250" y="138" class="lbl">② not the desk? declines the</text>
+<text x="250" y="150" class="lbl">menu and tells the thread to</text>
+<text x="250" y="162" class="lbl">print the receipt and carry on</text>
+<text x="250" y="174" class="sm">fails open if the store is down</text>
+<rect x="420" y="84" width="100" height="96" class="box"/>
+<text x="426" y="98" class="ttl">human-queue.sh</text>
+<text x="426" y="110" class="sm">the only writer</text>
+<text x="426" y="124" class="sm">validate · dedupe</text>
+<text x="426" y="136" class="sm">sets · events</text>
+<text x="426" y="148" class="sm">sync-reviews</text>
+<text x="426" y="160" class="sm">tick · state</text>
+<text x="426" y="172" class="sm">exit 7 when offline</text>
+<rect x="536" y="84" width="120" height="96" class="box"/>
+<text x="542" y="98" class="ttl">Neon Postgres</text>
+<text x="542" y="110" class="sm">items: D-n and R-n</text>
+<text x="542" y="122" class="sm">events: state changes only</text>
+<text x="542" y="134" class="sm">sets: 1..n per batch</text>
+<text x="542" y="146" class="sm">state: day plan, budget</text>
+<text x="542" y="160" class="sm">one store shared by</text>
+<text x="542" y="172" class="sm">both machines</text>
+<path d="M404,132 L420,132" class="ln" marker-end="url(#ah1)"/>
+<path d="M520,132 L536,132" class="ln" marker-start="url(#ah1)" marker-end="url(#ah1)"/>
+<rect x="244" y="196" width="160" height="34" class="soft"/>
+<text x="250" y="210" class="ttl">policy.json</text>
+<text x="250" y="222" class="sm">defaults the conversation overrides</text>
+<rect x="420" y="196" width="236" height="34" class="box"/>
+<text x="426" y="210" class="ttl">question-leak-warn (Stop hook)</text>
+<text x="426" y="222" class="sm">flags a prose question that skipped the queue</text>
+<rect x="244" y="244" width="412" height="52" class="box"/>
+<text x="250" y="258" class="ttl">.claude/rules/human-queue.md — the worker contract</text>
+<text x="250" y="271" class="sm">ask only through the question tool · print the receipt · proceed on the default or park ·</text>
+<text x="250" y="283" class="sm">on a wake-up read the store, never the message · late answer after a merge → GitHub issue</text>
+<!-- thread -> hook arrows -->
+<path d="M200,124 L244,124" class="ln" marker-end="url(#ah1)"/>
+<path d="M200,194 L244,148" class="ln" marker-end="url(#ah1)"/>
+<path d="M200,264 L244,168" class="ln" marker-end="url(#ah1)"/>
+<!-- AI desk -->
+<rect x="232" y="340" width="300" height="200" class="ai"/>
+<text x="240" y="354" class="tag">AI · /desk CONTROL THREAD (one session)</text>
+<text x="240" y="372" class="lbl">tick: pull Reviews, read new items, apply the day plan</text>
+<text x="240" y="388" class="lbl">③ Decisions → menus in sets of ≤4, numbered 1..n;</text>
+<text x="240" y="401" class="lbl">long form one at a time; discuss before answering</text>
+<text x="240" y="417" class="lbl">Reviews → one line; 20 lines; outline → hunk → ask</text>
+<text x="240" y="433" class="lbl">ideas → issues (the PM thread picks them up)</text>
+<text x="240" y="449" class="lbl">priorities → your order overrides the PM ranking</text>
+<text x="240" y="465" class="lbl">day plan in conversation · morning check-in · feedback tags</text>
+<text x="240" y="481" class="lbl">④ answer → store; ⑤ wake the owning thread by pointer</text>
+<text x="240" y="497" class="lbl">export any batch → numbered PDF · EOD sweep · weekly report</text>
+<text x="240" y="513" class="sm">loud by default: every new item at the next tick, in sets</text>
+<text x="240" y="525" class="sm">until you say otherwise, item by item or for the block</text>
+<path d="M470,340 V310" class="ln" marker-start="url(#ah1)" marker-end="url(#ah1)"/>
+<text x="476" y="328" class="sm">read / write via the CLI</text>
+<!-- HUMAN -->
+<rect x="560" y="340" width="104" height="200" class="human"/>
+<text x="568" y="354" class="tag">HUMAN</text>
+<text x="612" y="386" text-anchor="middle" class="big">You</text>
+<text x="612" y="406" text-anchor="middle" class="sm">click a menu,</text>
+<text x="612" y="418" text-anchor="middle" class="sm">type, or dictate</text>
+<text x="612" y="436" text-anchor="middle" class="sm">plan the day with</text>
+<text x="612" y="448" text-anchor="middle" class="sm">the desk in chat</text>
+<text x="612" y="466" text-anchor="middle" class="sm">tag what was not</text>
+<text x="612" y="478" text-anchor="middle" class="sm">worth the interrupt</text>
+<text x="612" y="496" text-anchor="middle" class="sm">file ideas, reorder</text>
+<text x="612" y="508" text-anchor="middle" class="sm">the backlog</text>
+<path d="M532,440 L560,440" class="ln" marker-start="url(#ah1)" marker-end="url(#ah1)"/>
+<path d="M532,400 L560,400" class="ln dsh" marker-end="url(#ah1)"/>
+<text x="534" y="394" class="sm">notify</text>
+<!-- wake -->
+<path d="M250,540 V552 H106 V310" class="ln dsh" marker-end="url(#ah1)"/>
+<text x="114" y="400" class="sm">⑤ wake the owning</text>
+<text x="114" y="412" class="sm">thread: "human-queue:</text>
+<text x="114" y="424" class="sm">D-43 answered"</text>
+<text x="114" y="436" class="sm">a pointer, never</text>
+<text x="114" y="448" class="sm">the answer itself</text>
+<!-- thread reads store -->
+<path d="M212,300 L232,300" class="ln dsh" marker-end="url(#ah1)"/>
+<text x="118" y="326" class="sm">⑥ after a wake, the thread</text>
+<text x="118" y="338" class="sm">reads the answer via the CLI</text>
+<!-- legend -->
+<rect x="8" y="566" width="656" height="68" class="soft"/>
+<text x="16" y="582" class="ttl">Legend</text>
+<rect x="70" y="572" width="30" height="14" class="human"/><text x="106" y="583" class="sm">human</text>
+<rect x="150" y="572" width="30" height="14" class="ai"/><text x="186" y="583" class="sm">AI (a Claude session)</text>
+<rect x="290" y="572" width="30" height="14" class="sw"/><text x="326" y="583" class="sm">software (scripts, hooks, database)</text>
+<rect x="500" y="572" width="30" height="14" class="git"/><text x="536" y="583" class="sm">GitHub</text>
+<text x="16" y="602" class="lbl">solid arrows: calls and data through human-queue.sh · dashed arrows: messages and notifications · ①–⑥: one Decision's path in order</text>
+<text x="16" y="618" class="lbl">Reviews take the top path: GitHub → CLI → store → desk → you. No worker thread has to cooperate for a Review to appear.</text>
+</svg>

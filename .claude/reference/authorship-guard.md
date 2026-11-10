@@ -41,6 +41,41 @@ All three scripts accept `--allow-nonauthor`. It exists solely to implement the 
 
 A skill may pass it only for that named PR, only in that session, and the tool must state in its output that it is operating under an override. It is never a config default, never inferred from context, and never carried forward to the next PR.
 
+### Persisted per-PR override (issue #1266)
+
+`polling-state-gate.sh` is the one place the override outlives the invocation that supplied it, and only for the PR it named.
+
+`--ensure-session` records the decision as the boolean `.prs["<N>"].allow_nonauthor` in `session-state.json`, inside the same atomic write as `root_repo`/`head_sha`/`owner_repo`. Its default poll-cycle mode reads that field back and forwards `--allow-nonauthor` to `merge-gate.sh` when it is `true`. An explicit flag on a cycle invocation still works on its own, so state written before this field existed behaves as it did before.
+
+This exists because the per-cycle contract in `cr-github-review.md` is `polling-state-gate.sh <PR_NUMBER>` with no extra flags. The flag is supplied once, at enrolment. Without read-back, `merge-gate.sh`'s own independent authorship check re-added the blocker on every later tick, so a PR enrolled under the override could never reach "met" — the override bought enrolment and nothing else. The contract itself is unchanged: callers still pass no flags on a cycle tick.
+
+#### What the persisted field does not authorize
+
+It reaches exactly one check: `merge-gate.sh`'s, via the poll-cycle invocation above. `merge-gate.sh` **reports**; it does not write. The two gates that do guard writes are untouched:
+
+- **`--ensure-session`** re-reads `--allow-nonauthor` from its own invocation and never from state, so enrolling a foreign PR still requires the user to name it again.
+- **`admin-merge.sh`** keeps its own independent check, so no merge is authorized by this field.
+
+The persisted value therefore suppresses one blocker line for a PR the user already named in chat in order to enrol it. It cannot enrol a new PR, and it cannot merge one.
+
+#### Properties that keep it narrow
+
+- **Scoped to one PR.** The field lives under that PR's entry in that repo's scope. It is never read for another PR or another repo.
+- **Rewritten on every enrolment.** `--ensure-session` writes `false` when the flag is absent, so re-enrolling without the override clears a stale `true` rather than leaving the bypass latched on.
+- **Affirmative only.** Only the literal boolean `true` grants the bypass; absent, `false`, `null`, and anything else mean not overridden. The field is typed `boolean` in `session-state-schema.json`'s `_field_types.pr_nested`, so `session-state.sh` rejects a wrong-typed write (exit 4) instead of storing a value that might later be read as permission — a stringly-typed `"true"` can never be stored and then compared as if it were the boolean.
+- **Announced on every use.** `safety.md` requires a tool acting under the override to say so. Poll-cycle mode prints a notice to **stderr** naming the PR and which source enabled the bypass — the persisted decision or this invocation's flag. It goes to stderr because `merge-gate.sh`'s stdout is the JSON its callers parse.
+- **Cannot outlive the enrolled HEAD.** Cycle mode reads the field only *after* `require_handoff_and_state … live` has already required that the PR is registered for this checkout, that its handoff file exists, that session-state and the handoff agree on `head_sha`, and that this stored SHA still equals the PR's live HEAD on GitHub. Any push to the PR moves live HEAD, so the next tick exits 4 demanding `--ensure-session` — which re-reads the flag from its own invocation. A stale `true` therefore cannot survive the first commit that lands on the PR it names, and a failed `gh pr view` exits 4 rather than falling through to the bypass.
+
+`merge-gate.sh`'s `authorship` field still reports the truth (`not_mine`) under an override — the override suppresses the *block*, never the *finding*.
+
+#### Why the override is not bound to a session id
+
+The obvious tightening — stamp the enrolling session's id alongside the boolean and refuse to honour it from any other session — is deliberately **not** implemented, because it would not do what it appears to do.
+
+`CLAUDE_SESSION_ID` is not present in the environment these scripts actually run in. Every in-repo consumer treats it as best-effort and falls back: the hooks to the literal string `default` (`silence-detector.sh`, `bgwork-ceiling-arm.sh`, `babysit-tick-watchdog.sh`), `issue-claim.sh` to `<hostname>:<git toplevel>`. A stored-vs-current comparison would therefore compare `default` against `default` — or one hostname against the same hostname — and pass for *every* session, including the foreign one it is meant to stop. That is a guard that passes by not running: it would advertise a session boundary that does not exist, which is worse than documenting the real one. Failing closed instead is no escape either — with no id available the bypass would never fire, silently deleting the behaviour issue #1266 specifies.
+
+The HEAD pin above is the bound that actually holds, and it holds without depending on an ambient variable that may be absent.
+
 ## What counts as a write
 
 Merge, rebase, force-push, close, comment, trigger a review (`@coderabbitai` / `@cursor` / `@greptileai`), resolve a thread, enroll in babysit/polling.

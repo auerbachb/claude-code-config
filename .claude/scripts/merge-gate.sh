@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile / CodeAnt).
+# catalog: merge-gate-sequencing — Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus)
 #
 # Implements the authoritative gate defined in .claude/rules/cr-merge-gate.md:
 #   - CR path       : 1 explicit CodeRabbit OR CodeAnt APPROVED on current HEAD SHA
@@ -38,6 +39,19 @@
 #   consumes. Redemption is announced on stderr and never bypasses the substance
 #   verdict, so a rubber stamp whose status comment names an older SHA still
 #   fails as `self_report_mismatch`.
+#
+# Pre-run-approval redemption (issue #1432): a SEPARATE axis from the above —
+#   #876 asks whether the approval object is fresh, this asks whether anything
+#   actually reviewed the commit. review-substance.sh clears `pre_run_approval`
+#   when that reviewer"s own run marker for the SAME SHA reached `done` with
+#   zero findings on it, which is the only shape a clean pass can take on repos
+#   where CodeAnt emits APPROVED solely as a pre-run stub (still-point PR #696,
+#   this repo PR #1454). The verdict is computed THERE, not here, so
+#   escalate-review.sh — which reads only `.substantive[]` — inherits the same
+#   answer and the two cannot drift. This file only ANNOUNCES it
+#   (announce_clean_run_redemption), keeping every redemption non-silent. The
+#   announcement claims only the substance axis it controls, never merge
+#   coverage — the orthogonal axes are still ahead of it (CodeAnt, PR #1476).
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
 # (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
@@ -54,14 +68,59 @@
 #   reviewer's own "is running the review" marker; a capability-failure notice
 #   ("no PR Review subscription", rate limit, "couldn't run") with no later work;
 #   self-report mismatch — the reviewer's own status comment naming a different
-#   SHA; and finally substance across the reviewer's whole footprint. Body length
-#   alone is deliberately NOT the test: a genuine CodeRabbit APPROVED with
-#   bodylen=0 whose walkthrough named the exact reviewed range must keep passing.
+#   SHA; a pre-run approval (issue #1365) — the reviewer's own machine-readable
+#   run record for HEAD shows the approval landed before that analysis started,
+#   or while it was still in flight; and finally substance across the reviewer's
+#   whole footprint. Body length alone is deliberately NOT the test: a genuine
+#   CodeRabbit APPROVED with bodylen=0 whose walkthrough named the exact reviewed
+#   range must keep passing.
 #   Applied to the CR path only; the full evidence is emitted as `review_evidence`.
+#
+# Required-context gate (issue #1361): branch protection's required status checks
+#   are asserted BY NAME against the current HEAD. Before this, the gate evaluated
+#   only the check-runs that happened to exist — so when a required context never
+#   reported at all there was nothing to fail and the PR scored clean. Observed
+#   during the 2026-08-26 Actions outage: five required contexts absent, four
+#   unrelated non-required checks green, `met:true, missing:[]`. The failure mode
+#   inverts the gate's purpose — the less CI reports, the cleaner the PR looks.
+#   Each required context must now be PRESENT on HEAD (a deduped check-run or a
+#   commit status of that exact name) and not incomplete/blocking; absent counts
+#   as unsatisfied, never as vacuously passing. No protection, or protection with
+#   no required checks, keeps the pre-#1361 behaviour exactly. When the required
+#   list cannot be read at all, the gate says so and BLOCKS rather than scoring
+#   clean — degraded means degraded (`--allow-unverified-required-checks` is the
+#   explicit per-PR user override). Emitted as `required_contexts`.
+#
+# Review tier (issue #1726): a repo may declare review tiers in its own
+#   .claude/pm-config.md `## Review policy` (format: .claude/reference/
+#   review-policy.md). The PR's tier is resolved by the sibling review-tier.sh,
+#   ALWAYS against the PR's base branch — no flag or environment variable here
+#   can re-point it. The tier selects only the reviewer-approval requirement:
+#     legacy / full         — the reviewer paths above, unchanged
+#     ci-only               — no reviewer approval required
+#     ci+codeant-one-round  — one COMPLETED CodeAnt round on any commit of the
+#                             PR: a `done` row in CodeAnt's run record, or a
+#                             COMMENTED / CHANGES_REQUESTED CodeAnt review, or a
+#                             completed CodeAnt check-run on HEAD. An APPROVED
+#                             alone is not a round — CodeAnt posts one before it
+#                             analyses anything (#1365, #1432).
+#   Every merge-wide check — authorship, merge state, CI, required contexts,
+#   unresolved threads, human CHANGES_REQUESTED, CODEOWNERS reviewDecision —
+#   applies to every tier. A resolver failure adds its own `missing` reason and
+#   the full reviewer path still runs: never less strict than legacy.
+#
+# Deferred findings (issue #1727): on `ci-only` and `ci+codeant-one-round` only,
+#   an unresolved thread stops blocking when a human (GraphQL `User`) reply in
+#   it links an existing ISSUE of this repo — `#N`, `<owner>/<repo>#N`, or the
+#   issue URL; a PR number or another repo never counts. Each number is looked
+#   up once; a lookup failure other than 404/410 keeps the thread blocking and
+#   adds its own `missing` reason. Emitted as `deferred_thread_count` and
+#   `deferred_issues`; `full`/`legacy` never defer anything.
 #
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
+#                             [--allow-unverified-required-checks]
 #   merge-gate.sh --help
 #
 # Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
@@ -85,6 +144,9 @@
 #     "reviewer": "cr"|"bugbot"|"greptile"|"unknown",
 #     "path": "cr"|"bugbot"|"greptile",
 #     "missing": ["reason", ...],
+#     "review_tier": {"gate": "legacy|ci-only|ci+codeant-one-round|full",
+#                     "tier": "<name>"|null, "policy": "absent|present|invalid"}
+#                    | null   (null when the tier could not be resolved),
 #     "head_sha": "abc1234...",
 #     "ci_status": {
 #       "total": N, "passing": N, "failing": N, "in_progress": N,
@@ -97,11 +159,45 @@
 #     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"],
 #     "human_changes_requested": ["login", ...],
 #     "stale_bot_changes_requested_count": N,
-#     "unresolved_thread_count": N,
+#     "unresolved_thread_count": N,  # BLOCKING threads — excludes deferred ones
+#     "deferred_thread_count": N,    # issue #1727; always 0 off the deferred tiers
+#     "deferred_issues": [N, ...],   # issue #1727; sorted, unique; [] when none
 #     "primary_review_met": true|false,
 #     "authorship": "mine"|"not_mine"|"unknown",
-#     "review_evidence": { … }   # review-substance.sh output; {} off the cr path
+#     "review_evidence": { … },  # review-substance.sh output; {} off the cr path
+#     "required_contexts": {     # issue #1361
+#       "source": "branch_protection"|"branch_object"|"none"|"unavailable"|"unknown",
+#       "base": "main",
+#       "contexts": ["typecheck", "build", …],
+#       "unsatisfied": [{"context": "build", "state": "absent"}, …],
+#       "error": ""              # populated only when source == "unavailable"
+#     }
 #   }
+#
+# `required_contexts.source` (issue #1361):
+#   branch_protection — read from branches/{base}/protection/required_status_checks
+#   branch_object     — that endpoint was unreadable, so the list came from the
+#                       branch object's own `.protection.required_status_checks`,
+#                       which any account with repo read access can see
+#   none              — the base branch is unprotected, or is protected with no
+#                       required status checks; pre-#1361 behaviour, nothing added
+#   unavailable       — neither read succeeded; BLOCKS with its own missing[]
+#                       reason (override: --allow-unverified-required-checks)
+#   unknown           — emitted by the early-exit error paths, which never got
+#                       far enough to look
+# `unsatisfied[].state` is `absent` (no check-run and no commit status of that
+# name on HEAD), `wrong_app` (runs of that name exist, but protection pins the
+# context to an `app_id` and none of them came from that app — GitHub would not
+# accept them either), the run's non-`completed` status, its blocking conclusion,
+# or a commit status's `pending`/`failure`/`error`.
+#
+# Reading this output: pipe it with `printf '%s'`, a herestring, or a file —
+# NEVER `echo "$GATE_JSON" | jq`. zsh's `echo` expands backslash escapes by
+# default, so any escape sequence a free-form field carries is expanded into a
+# raw character before jq parses, and jq then rejects the document. Every string
+# emitted here is scrubbed of control characters (issue #1219), which removes the
+# common trigger, but a body containing a literal backslash still ships as `\\`
+# and `echo` would still corrupt it.
 #
 # `authorship` (issue #733): "mine" when the PR author == the authenticated user,
 # "not_mine" when it is someone else (a confirmed foreign author blocks the merge
@@ -113,6 +209,10 @@
 # "N unresolved review thread(s)" entry in `missing` — orchestrators (e.g.
 # /wrap Step 2.1 Branch B) should key the threads-only decision off this field
 # (and `missing | length`) rather than string-matching the prose (#455 / #479).
+# On the deferred tiers it counts only BLOCKING threads — a thread deferred to a
+# follow-up issue is in `deferred_thread_count` instead (issue #1727), so it can
+# never send a merge-ready PR to /fixpr. Elsewhere it counts every unresolved
+# thread, exactly as before.
 #
 # `primary_review_met`: true when CodeRabbit OR CodeAnt has a valid
 # (non-retracted, fresh, and — since issue #875 — SUBSTANTIVE) APPROVED review
@@ -138,7 +238,7 @@
 #   4 — gh / network / jq error
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 # --------------------------------------------------------------------------
 # Shared timestamp normaliser (issue #885)
@@ -175,13 +275,29 @@ ALLOW_NONAUTHOR=false
 # The evidence is still computed, still emitted in `review_evidence`, and the
 # override is announced on stderr, so nothing about the bypass is silent.
 # Scope is deliberately narrow: it covers `no_substantive_footprint` and NOTHING
-# else. Temporal inversion, capability failure and self-report SHA mismatch stay
-# blocking even with the flag — those are not "the bot said nothing", they are
-# the bot's own record contradicting the claim that it reviewed this commit.
+# else. Temporal inversion, capability failure, self-report SHA mismatch and
+# pre-run approval (issue #1365) stay blocking even with the flag — those are not
+# "the bot said nothing", they are the bot's own record contradicting the claim
+# that it reviewed this commit. No code change was needed for #1365 to inherit
+# this: override_eligible() subtracts exactly one disqualifier and requires the
+# remainder to be empty, so a new one is refused by construction. The issue
+# #1432 redemption does not widen this flag either: it removes tags from
+# `disqualified_by` upstream, on evidence, so the override still sees exactly
+# what it always did — and a stub the redemption refused stays refused here.
 ALLOW_HOLLOW=false
+# Required-context guard (issue #1361): --allow-unverified-required-checks lets
+# the gate proceed when branch protection's required list could not be READ at
+# all. Explicit per-PR user override ONLY — an agent must never pass it on its
+# own. Deliberately narrow, and narrower than it may look: it covers ONLY the
+# unreadable-list case. A list that WAS read and contains a context absent from
+# HEAD stays blocking with or without the flag — that is not "we could not
+# check", it is "we checked and the check never ran", which is the entire defect
+# #1361 exists to close.
+ALLOW_UNVERIFIED_REQ=false
 
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 while [[ $# -gt 0 ]]; do
@@ -196,6 +312,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-hollow-approval)
       ALLOW_HOLLOW=true
+      shift
+      ;;
+    --allow-unverified-required-checks)
+      ALLOW_UNVERIFIED_REQ=true
       shift
       ;;
     --reviewer)
@@ -242,14 +362,49 @@ fi
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+# Build a `missing` array with jq so free-form text can never break the JSON.
+# Hand-built literals (`"[\"… $VAR …\"]"`) let an embedded quote or newline make
+# jq reject its own --argjson; jq then emitted NOTHING while the script still
+# exited non-zero, so a caller reading stdout saw an empty string rather than an
+# error (issue #1219). `--` terminates option parsing so a reason starting with
+# `-` is still a positional value, and `select(length > 0)` drops the empty
+# string that `"${MISSING[@]:-}"` produces for an empty array (bash 3.2 + set -u
+# cannot expand a bare `"${MISSING[@]}"`).
+missing_json() { # <reason>...
+  jq -cn --args '$ARGS.positional | map(select(length > 0))' -- "$@"
+}
+
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json]
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json] [required_contexts_json] [review_tier_json] [deferred_thread_count_number] [deferred_issues_json_array]
   local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}" authorship="${15:-unknown}"
   # review_evidence (issue #875) — arg 16. Defaulted separately rather than with
   # ${16:-{}} because a literal `{}` inside brace-default expansion is ambiguous.
   local review_evidence="${16:-}"
   if [[ -z "$review_evidence" ]]; then review_evidence='{}'; fi
+  # required_contexts (issue #1361) — arg 17, defaulted the same way. The early
+  # error paths (die_api / die_local / PR-not-open) never reach the protection
+  # read, so they emit source "unknown" rather than claiming "none": "we never
+  # looked" and "there is nothing to look at" are different answers, and only one
+  # of them is safe to read as a pass.
+  local required_contexts="${17:-}"
+  if [[ -z "$required_contexts" ]]; then
+    required_contexts='{"source":"unknown","base":"","contexts":[],"unsatisfied":[],"error":""}'
+  fi
+  # review_tier (issue #1726) — arg 18. `null` on the early error paths, which
+  # return before the tier is resolved, and when resolution itself failed.
+  local review_tier="${18:-}"
+  if [[ -z "$review_tier" ]]; then review_tier='null'; fi
+  # deferred_thread_count / deferred_issues (issue #1727) — args 19 and 20.
+  # 0 and [] everywhere except a deferred tier that deferred something.
+  local deferred_thread_count="${19:-0}"
+  local deferred_issues="${20:-}"
+  if [[ -z "$deferred_issues" ]]; then deferred_issues='[]'; fi
+  # no_review_override (issue #1899) — arg 21. `null` on the early error paths.
+  local no_review_override="${21:-}"
+  if [[ -z "$no_review_override" ]]; then no_review_override='null'; fi
   jq -cn \
+    --arg pr_number "$PR_NUMBER" \
+    --arg owner_repo "${OWNER_REPO:-}" \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
     --arg path "$path" \
@@ -266,7 +421,14 @@ emit_json() {
     --argjson primary_review_met "$primary_review_met" \
     --arg authorship "$authorship" \
     --argjson review_evidence "$review_evidence" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence}'
+    --argjson required_contexts "$required_contexts" \
+    --argjson review_tier "$review_tier" \
+    --argjson deferred_thread_count "$deferred_thread_count" \
+    --argjson deferred_issues "$deferred_issues" \
+    --argjson no_review_override "$no_review_override" \
+    'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
+     {pr_number: ($pr_number | tonumber), owner_repo: $owner_repo, met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
+     | scrub'
 }
 
 emit_empty_ci() {
@@ -282,7 +444,7 @@ emit_empty_code_owner_bots() {
 # --------------------------------------------------------------------------
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
 if [[ -z "$OWNER_REPO" ]]; then
-  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "gh repo view failed — not in a git repo or no remote")" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 fi
 OWNER="${OWNER_REPO%/*}"
@@ -290,7 +452,7 @@ REPO="${OWNER_REPO#*/}"
 
 PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "PR #$PR_NUMBER not found")" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
 fi
 
@@ -303,13 +465,45 @@ REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "PR #$PR_NUMBER is $PR_STATE — not open")" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
 fi
 
 if [[ -z "$HEAD_SHA" ]]; then
-  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "could not determine HEAD SHA")" "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
+fi
+
+# Review tier (issue #1726) — resolved once, here, by the sibling resolver and
+# always against the base branch: this call passes no --config, and nothing in
+# this script lets a flag or the environment supply one, so a PR can never pick
+# the policy it is judged by. Any failure (missing resolver, non-zero exit,
+# unparseable output, an unknown gate) leaves REVIEW_TIER_GATE empty — the full
+# reviewer path then runs — and records a reason the gate adds to `missing`.
+REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
+REVIEW_TIER_GATE=""
+REVIEW_TIER_JSON="null"
+REVIEW_TIER_FAILURE=""
+NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
+if [[ ! -x "$REVIEW_TIER_SH" ]]; then
+  REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
+else
+  REVIEW_TIER_RC=0
+  REVIEW_TIER_OUT=$("$REVIEW_TIER_SH" "$PR_NUMBER" --repo "$OWNER_REPO" ${BASE_REF:+--base "$BASE_REF"} --json) || REVIEW_TIER_RC=$?
+  if [[ "$REVIEW_TIER_RC" -ne 0 ]]; then
+    REVIEW_TIER_FAILURE="review-tier.sh exited $REVIEW_TIER_RC"
+  elif ! REVIEW_TIER_JSON=$(printf '%s' "$REVIEW_TIER_OUT" | jq -ce '
+        select(type == "object" and (.gate | IN("legacy", "ci-only", "ci+codeant-one-round", "full")))
+        | {gate, tier, policy}' 2>/dev/null); then
+    REVIEW_TIER_FAILURE="review-tier.sh returned no usable tier"
+    REVIEW_TIER_JSON="null"
+  else
+    REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
+    # No-review override window (issue #1899), minutes → seconds; read from the
+    # same base-branch policy. Absent, null, or non-integer → disabled.
+    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
+    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
+  fi
 fi
 
 # Fetch last commit timestamp for Greptile freshness gate (issue #723) and the
@@ -327,7 +521,7 @@ LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null |
 # inside a helper function called via $(), because exit inside $() only kills
 # the subshell and the main script continues with garbage data.
 die_api() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "$(missing_json "gh api failed: $1")" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 }
 
@@ -335,7 +529,7 @@ die_api() {
 # GitHub's — blaming "gh api failed" for a missing local helper sends whoever
 # reads `missing` after the wrong problem.
 die_local() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"$1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "$(missing_json "$1")" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 }
 
@@ -403,8 +597,125 @@ if [[ -z "$ISSUE_COMMENTS_JSON" ]] || ! echo "$ISSUE_COMMENTS_JSON" | jq -e . >/
 fi
 
 # Unresolved review threads via GraphQL (covers all bot authors consistently).
-if ! THREADS_JSON=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$REPO\") { pullRequest(number: $PR_NUMBER) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }" 2>/dev/null); then
-  die_api "GraphQL-reviewThreads"
+#
+# PAGINATED (issue #1634). `reviewThreads(first: 100)` alone silently truncates
+# at the 100th thread, and the universal unresolved-thread gate below is
+# PERMISSIVE when truncated: an unresolved thread on page two is invisible, so
+# the gate reads clean on a PR that is not. Every page is accumulated here, before
+# any consumer sees the payload, so all three readers — UNRESOLVED_TOTAL, the
+# Greptile-scoped count, and RESOLVED_COMMENT_IDS — share one complete node list.
+#
+# Thread-level `comments(first: 100)` stays unpaginated on purpose: the readers
+# take only `databaseId`, `author`, and `body`, and truncation there is safe in
+# every direction (a missing comment makes a thread read as non-Greptile, can only
+# WITHHOLD a resolved-comment redemption, and can only withhold a follow-up-issue
+# deferral (issue #1727); the universal gate counts the thread by `isResolved`
+# regardless).
+#
+# The loop is inline in the main script body, not a function called via $(): the
+# fail-closed `die_api` calls `exit`, which inside a command substitution would
+# only kill the subshell and let the script continue on garbage data.
+#
+# The page fold goes through a pipe, never `--argjson`: a long-lived PR's thread
+# list is large enough to blow the jq command line (ARG_MAX — issues #1557/#1565).
+# `printf` is a shell builtin writing to a pipe, so no exec limit applies.
+#
+# Each page's `nodes` array is validated and stashed as its OWN element of
+# THREADS_PAGE_NODES, and the pages are concatenated ONCE after the walk. Folding
+# into a single accumulator variable per page would re-serialize and re-parse the
+# whole thread list on every iteration — quadratic in page count, and the
+# transient shell values grow with it. Here every page is parsed exactly twice
+# (validate, then the single final `add`), so the walk stays linear.
+THREADS_PAGE_NODES=('[]')   # seeded: "${arr[@]}" on an empty array trips `set -u`
+THREADS_CURSOR="null"   # -F (not -f) types this as a real GraphQL null on page 1
+THREADS_PAGES=0
+# Runaway guard: 200 pages is 20,000 threads, orders of magnitude past any real
+# PR. Hitting it means the cursor stopped advancing, so fail closed rather than
+# spin forever against the API.
+THREADS_PAGE_CAP=200
+while :; do
+  if ! THREADS_PAGE=$(gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved comments(first: 100) { nodes { databaseId body author { login __typename } } } }
+        }
+      }
+    }
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$THREADS_CURSOR" 2>/dev/null); then
+    die_api "GraphQL-reviewThreads"
+  fi
+  # `nodes` must BE an array — never defaulted to []. A malformed or partial
+  # 200-OK body (GraphQL `errors` with a null `data`, a renamed field) would
+  # otherwise fold in as zero threads and read as a clean gate, which is the
+  # exact fail-open this issue exists to close. `error` makes jq exit non-zero,
+  # which routes to the same fail-closed die_api as a transport failure.
+  # `pageInfo.hasNextPage` is checked one notch looser: absent or null reads as
+  # "no more pages" (the single-page response shape every merge-gate test stub
+  # in this repo emits), but a PRESENT value that is not a boolean is fatal —
+  # a string "false" would otherwise end the walk on a page that had more.
+  if ! THREADS_PAGE_ARRAY=$(printf '%s' "$THREADS_PAGE" \
+      | jq -c 'if (.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
+               then .data.repository.pullRequest.reviewThreads.nodes
+               else error("reviewThreads.nodes is not an array") end' 2>/dev/null) \
+      || [[ -z "$THREADS_PAGE_ARRAY" ]]; then
+    die_api "GraphQL-reviewThreads page parse"
+  fi
+  THREADS_PAGE_NODES+=("$THREADS_PAGE_ARRAY")
+  THREADS_PAGES=$((THREADS_PAGES + 1))
+  if ! THREADS_HAS_NEXT=$(printf '%s' "$THREADS_PAGE" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage as $h
+               | if $h == null then false
+                 elif ($h | type) == "boolean" then $h
+                 else error("pageInfo.hasNextPage is not a boolean") end' 2>/dev/null); then
+    die_api "GraphQL-reviewThreads pageInfo parse"
+  fi
+  [[ "$THREADS_HAS_NEXT" == "true" ]] || break
+  if [[ "$THREADS_PAGES" -ge "$THREADS_PAGE_CAP" ]]; then
+    die_api "GraphQL-reviewThreads exceeded $THREADS_PAGE_CAP pages"
+  fi
+  THREADS_CURSOR=$(printf '%s' "$THREADS_PAGE" \
+    | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""' 2>/dev/null || echo "")
+  if [[ -z "$THREADS_CURSOR" || "$THREADS_CURSOR" == "null" ]]; then
+    die_api "GraphQL-reviewThreads hasNextPage without endCursor"
+  fi
+done
+# Concatenate every page ONCE, and re-wrap into the single-response shape every
+# consumer already reads, so pagination stays confined to this block. `-s` slurps
+# the page arrays into an array-of-arrays; `add` flattens one level, preserving
+# page order. Still a pipe, never `--argjson`, for the same ARG_MAX reason.
+if ! THREADS_JSON=$(printf '%s\n' "${THREADS_PAGE_NODES[@]}" \
+    | jq -cs '{data: {repository: {pullRequest: {reviewThreads: {nodes: (add // [])}}}}}' 2>/dev/null) \
+    || [[ -z "$THREADS_JSON" ]]; then
+  die_api "GraphQL-reviewThreads assembly"
+fi
+
+# REST ids of every inline comment sitting in a RESOLVED thread (issue #1632).
+# review-substance.sh uses these to keep an earlier run's declined-and-resolved
+# findings from blocking a later clean run on the same SHA. `databaseId` is the
+# REST `id` of the same comment, which is what the pulls/{N}/comments payload
+# carries, so the two join directly.
+#
+# Degrades to [] rather than failing: an empty list makes every inline comment
+# read as unresolved, which is exactly the pre-#1632 behaviour. This must never
+# become a hard error — an unusable thread payload would then block a gate it
+# can only ever make more permissive.
+#
+# The thread list above is now fully paginated (issue #1634), so this set sees
+# every thread. Only the per-thread `comments(first: 100)` bound remains, and it
+# is safe in THIS direction: a comment past the bound is simply absent from the
+# set, reads as unresolved, and therefore still counts as a finding — so
+# truncation can only ever WITHHOLD redemption, never grant one.
+RESOLVED_COMMENT_IDS=$(echo "$THREADS_JSON" | jq -c '
+  [ .data.repository.pullRequest.reviewThreads.nodes[]?
+    | select(.isResolved == true)
+    | .comments.nodes[]?
+    | .databaseId
+    | select(. != null) ]' 2>/dev/null || true)
+if [[ -z "$RESOLVED_COMMENT_IDS" ]] \
+    || ! echo "$RESOLVED_COMMENT_IDS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  RESOLVED_COMMENT_IDS='[]'
 fi
 
 # Runtime CODEOWNERS detection. Branch protection is repo-specific, so only
@@ -452,6 +763,142 @@ CI_STATUS=$(echo "$CI_STATUS_JSON" | jq -c '{
 }')
 
 # --------------------------------------------------------------------------
+# Branch-protection required contexts (issue #1361)
+# --------------------------------------------------------------------------
+# The gate used to aggregate whatever check-runs existed on HEAD and call the
+# absence of failures a pass. Nothing ever asked which checks were SUPPOSED to
+# report. During the 2026-08-26 Actions outage two required workflows ended in
+# `startup_failure` with zero jobs, so they created no check-runs at all; the
+# four surviving non-required checks were green, and every layer above this one
+# (ci-status.sh, merge-gate.sh, escalate-review.sh, polling-state-gate.sh) said
+# merge. GitHub's own `mergeStateStatus: BLOCKED` was the only dissenting voice.
+#
+# Reading the required list is therefore not optional, and neither is failing
+# when it cannot be read: "no required contexts reported" and "no required
+# contexts exist" produce identical check-run payloads, and only one of them is
+# a pass.
+#
+# TWO reads, in this order, because they fail differently:
+#   1. branches/{base}/protection/required_status_checks — authoritative, but
+#      the protection endpoints need admin access, so a collaborator token gets
+#      403 (and sometimes a permission-shaped 404 that is indistinguishable from
+#      "unprotected" by status code alone).
+#   2. the branch object's own `.protection.required_status_checks` — the legacy
+#      v3 shape, visible to any account that can read the repo. It carries the
+#      same `contexts` list (verified live on this repo and on auerbachb/
+#      still-point), so it answers the question read 1 could not.
+# `.protected` from that same object is what separates "unprotected" from
+# "unreadable" — a distinction no HTTP status makes reliably. Only when BOTH
+# reads fail do we report `unavailable`, which blocks.
+REQUIRED_CONTEXTS_JSON='[]'
+REQUIRED_APPS_JSON='{}'
+REQUIRED_SOURCE="none"
+REQUIRED_ERROR=""
+
+# Extract the context list from either shape. Both carry `contexts`; the
+# protection endpoint additionally carries `checks[].context` (the newer
+# app-scoped form, which is what the UI writes today), so union them. `contexts`
+# alone would miss nothing observed so far, but the union costs one line and
+# fails toward listing MORE required checks, never fewer.
+REQ_CTX_FILTER='
+  if type == "object"
+  then ((( .contexts // [] ) + [ ( .checks // [] )[]? | .context // empty ])
+        | map(select(type == "string" and length > 0)) | unique)
+  else [] end'
+
+# The publisher half of the same answer (issue #1383 review). `checks[]` entries
+# carry an `app_id` alongside the context, and GitHub itself will only accept a
+# check from THAT app for that context — this repo pins `rule-lint` to app_id
+# 15368. Matching on name alone would let a same-named check from any other
+# publisher satisfy a required context, so the gate could report a pass that
+# GitHub would refuse: the required app never verified HEAD. That is the same
+# vacuous pass #1361 exists to close, one axis over.
+#
+# Kept as a SEPARATE {context: app_id} map rather than folded into the context
+# list so the emitted `required_contexts.contexts` stays a plain string array.
+# A null `app_id` means "any app" in GitHub's own semantics, and a context that
+# arrives only via the legacy `contexts` array has no publisher to pin, so both
+# are simply absent from this map and stay name-only.
+REQ_APPS_FILTER='
+  if type == "object"
+  then ([ ( .checks // [] )[]?
+          | select((.context | type) == "string" and (.context | length) > 0)
+          | select(.app_id != null)
+          | {key: .context, value: .app_id} ] | from_entries)
+  else {} end'
+
+BRANCH_READABLE=false
+BRANCH_PROTECTED=""
+BRANCH_CONTEXTS='[]'
+BRANCH_APPS='{}'
+if [[ -n "$BASE_REF" ]]; then
+  BRANCH_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF" 2>/dev/null || true)
+  # `has("name")` is the readability sentinel: a 404/403 body is a `{message:…}`
+  # object that would otherwise parse fine and read as an unprotected branch.
+  if [[ -n "$BRANCH_JSON" ]] && echo "$BRANCH_JSON" | jq -e 'type == "object" and has("name")' >/dev/null 2>&1; then
+    BRANCH_READABLE=true
+    BRANCH_PROTECTED=$(echo "$BRANCH_JSON" | jq -r '(.protected // false) | tostring' 2>/dev/null || echo "")
+    BRANCH_CONTEXTS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_CTX_FILTER" 2>/dev/null || echo '[]')
+    if [[ -z "$BRANCH_CONTEXTS" ]]; then BRANCH_CONTEXTS='[]'; fi
+    BRANCH_APPS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_APPS_FILTER" 2>/dev/null || echo '{}')
+    if [[ -z "$BRANCH_APPS" ]]; then BRANCH_APPS='{}'; fi
+  fi
+fi
+
+if [[ -z "$BASE_REF" ]]; then
+  # No base branch name means no protection to look up. Report it rather than
+  # silently skipping — this is the same class of gap #1361 is about.
+  REQUIRED_SOURCE="unavailable"
+  REQUIRED_ERROR="PR base branch name unavailable"
+elif [[ "$BRANCH_READABLE" == true && "$BRANCH_PROTECTED" == "false" ]]; then
+  # Unprotected base — there is nothing to require. Pre-#1361 behaviour, and the
+  # cheap path: no protection call at all.
+  REQUIRED_SOURCE="none"
+else
+  # stdout and stderr are captured together deliberately: on success gh writes
+  # only JSON, on failure only a message, so one capture plus the exit code
+  # classifies both without a temp file.
+  if RSC_RAW=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF/protection/required_status_checks" 2>&1); then
+    RSC_CONTEXTS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_CTX_FILTER" 2>/dev/null || true)
+    RSC_APPS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_APPS_FILTER" 2>/dev/null || true)
+  else
+    RSC_CONTEXTS=""
+    RSC_APPS=""
+  fi
+  if [[ -n "$RSC_CONTEXTS" ]]; then
+    REQUIRED_CONTEXTS_JSON="$RSC_CONTEXTS"
+    if [[ -n "$RSC_APPS" ]]; then REQUIRED_APPS_JSON="$RSC_APPS"; else REQUIRED_APPS_JSON='{}'; fi
+    REQUIRED_SOURCE="branch_protection"
+  elif [[ "$BRANCH_READABLE" == true ]]; then
+    # The protection endpoint refused (403, or a 404 meaning "required status
+    # checks not enabled"), but the branch object answered. An empty list here
+    # is a real answer, not a shrug: the branch is protected by rules that do
+    # not require any status check, which is a common configuration (review-only
+    # protection) and must not wedge every merge in such a repo.
+    REQUIRED_CONTEXTS_JSON="$BRANCH_CONTEXTS"
+    REQUIRED_APPS_JSON="$BRANCH_APPS"
+    if [[ "$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
+      REQUIRED_SOURCE="branch_object"
+    else
+      REQUIRED_SOURCE="none"
+      # Protected branch + refused protection endpoint + an empty fallback list.
+      # Almost always review-only protection, which genuinely requires no status
+      # check — but it is the one shape where "no requirement" and "the
+      # requirement is hidden from this token" look identical, so say so rather
+      # than resolve it silently. Not a blocker: treating it as one would wedge
+      # every merge in a review-only-protected repo, a far larger and more
+      # common cost than the narrow ambiguity it would close.
+      if [[ "$BRANCH_PROTECTED" == "true" ]]; then
+        echo "[merge-gate] base $BASE_REF is protected but exposes no required status checks to this token (protection endpoint refused; branch object lists none). Proceeding as 'no required checks' — if this repo does require checks, the token lacks administration:read and required-context verification is not actually running (issue #1361)." >&2
+      fi
+    fi
+  else
+    REQUIRED_SOURCE="unavailable"
+    REQUIRED_ERROR=$(printf '%s' "${RSC_RAW:-no response}" | tr '\n\r\t' '   ' | cut -c1-200)
+  fi
+fi
+
+# --------------------------------------------------------------------------
 # Reviewer resolution
 # --------------------------------------------------------------------------
 resolve_reviewer() {
@@ -487,15 +934,15 @@ resolve_reviewer() {
     } | sort -u
   )
 
-  if echo "$authors" | grep -q '^greptile-apps\[bot\]$'; then
+  if grep -q '^greptile-apps\[bot\]$' <<<"$authors"; then
     echo "greptile"; return
   fi
   # Only return bugbot when cursor[bot] is the sole AI reviewer — if coderabbitai[bot]
   # or codeant-ai[bot] is present, use the CR path (BugBot auto-triggers on every push).
   # CR→BugBot escalation is tracked via session-state, not the live scan.
-  if echo "$authors" | grep -q '^cursor\[bot\]$' \
-    && ! echo "$authors" | grep -q '^coderabbitai\[bot\]$' \
-    && ! echo "$authors" | grep -q '^codeant-ai\[bot\]$'; then
+  if grep -q '^cursor\[bot\]$' <<<"$authors" \
+    && ! grep -q '^coderabbitai\[bot\]$' <<<"$authors" \
+    && ! grep -q '^codeant-ai\[bot\]$' <<<"$authors"; then
     echo "bugbot"; return
   fi
   echo "cr"
@@ -512,6 +959,27 @@ REVIEWER=$(resolve_reviewer)
 # degradation on the bugbot path: if the evaluator is absent or returns bad JSON,
 # REVIEW_EVIDENCE stays '{}' and CR_PATH_APPROVED_ON_HEAD remains false — the
 # normal BugBot gate runs unchanged. Only the cr path is hard-fatal on failure.
+#
+# THAT HARD FAILURE DIVERGES FROM escalate-review.sh ON PURPOSE (issue #1465;
+# recorded decision 2026-09-02). Both scripts call this one evaluator, and on the
+# same outage this one aborts while the other keeps emitting a verdict. The split
+# follows the question each answers:
+#
+#   here — "may this merge?" Refusing to answer is SAFE. die_local() renders no
+#     merge decision at all, the reason lands in `missing[]`, and a human or
+#     agent sees it at merge time. Nothing merges on a verdict nobody produced.
+#   escalate-review.sh — "who reviews this next?", polled every 60 s. Refusing
+#     there routes NOBODY, and its callers treat an unrecognised STATUS as fatal,
+#     so it degrades to its cheapest verdict (polling_cr) for a bounded hour
+#     instead of aborting, then resumes normal escalation so a permanent outage
+#     cannot strand the PR.
+#
+# So neither script treats a tooling fault as a review verdict; they just have
+# different cheapest-safe answers. Keep both halves in step — silently making
+# this one degrade, or that one abort, re-opens the money path #1465 closed (a
+# broken local script authorising a paid Greptile review) or the stall the
+# escalation gate exists to prevent. The suppression window lives in
+# escalate-review.sh as EVALUATOR_OUTAGE_CAP_SECONDS.
 REVIEW_EVIDENCE='{}'
 if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
@@ -521,13 +989,23 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
     fi
     # On the bugbot path: evaluator absent — REVIEW_EVIDENCE stays '{}'.
   else
-    # The three payloads are piped in, NOT passed as --argjson: a busy PR's comment
-    # JSON runs to ~1 MB and three of those on one command line can exceed ARG_MAX.
+    # The four payloads are piped in, NOT passed as --argjson: a busy PR's comment
+    # JSON runs to ~1 MB and several of those on one command line can exceed ARG_MAX.
     # printf is a shell builtin writing to a pipe, so no exec limit applies; `jq -s`
-    # then slurps the three values in order.
-    REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n' "$REVIEWS_JSON" "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" \
+    # then slurps the four values in order.
+    # resolved_comment_ids joined them when the thread fetch was paginated (issue
+    # #1634): its old bound of 100 threads x 100 comments is gone, so it is no
+    # longer self-evidently too small to matter on the command line.
+    # Each payload carries a `:-[]` default. All four are already validated
+    # non-empty upstream (die_api on a parse failure; RESOLVED_COMMENT_IDS
+    # degrades to []), so the default never fires today — it is there because
+    # `jq -s` skips blank input, and one empty payload would silently SHIFT the
+    # positional reads below rather than fail, handing the evaluator issue
+    # comments as its reviews list.
+    REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n%s\n' "${REVIEWS_JSON:-[]}" "${PR_COMMENTS_JSON:-[]}" "${ISSUE_COMMENTS_JSON:-[]}" "${RESOLVED_COMMENT_IDS:-[]}" \
       | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
-          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
+          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2],
+            resolved_comment_ids: .[3]}' \
           2>/dev/null \
       | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)
     # Structure, not just parseability: substance_ok reads .reviewers[<login>], and
@@ -579,7 +1057,9 @@ if [[ "$MERGE_STATE" == "UNKNOWN" ]]; then
   MISSING+=("mergeStateStatus is UNKNOWN — GitHub still computing mergeability; wait and re-check")
 fi
 
-# CI gate (#270) — applies to all paths.
+# CI gate (#270) — applies to all paths. The index span is kept so the
+# no-review override (issue #1899) can re-read CI without pending reviewer runs.
+CI_MISSING_FROM=${#MISSING[@]}
 CI_INCOMPLETE=$(echo "$CI_STATUS" | jq -r '.in_progress')
 CI_FAILING=$(echo "$CI_STATUS" | jq -r '.failing')
 if [[ "$CI_INCOMPLETE" -gt 0 ]]; then
@@ -590,6 +1070,101 @@ if [[ "$CI_FAILING" -gt 0 ]]; then
   BLOCKING_NAMES=$(echo "$CI_STATUS" | jq -r '.blocking | map("\(.name) (\(.conclusion))") | join(", ")')
   MISSING+=("CI has $CI_FAILING failing check-run(s): $BLOCKING_NAMES")
 fi
+CI_MISSING_TO=${#MISSING[@]}
+
+# Required-context gate (#1361) — applies to all paths; branch protection is a
+# property of the base branch, not of whichever bot happens to own the review.
+#
+# Deliberately NOT folded into the CI gate above. That gate answers "did
+# everything that ran, pass"; this one answers "did everything that was supposed
+# to run, run". The outage that motivated #1361 is precisely the case where the
+# first question returns a confident yes and the second has never been asked.
+REQUIRED_UNSATISFIED_JSON='[]'
+REQUIRED_COUNT=$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)
+if [[ "$REQUIRED_SOURCE" == "unavailable" ]]; then
+  if [[ "$ALLOW_UNVERIFIED_REQ" == true ]]; then
+    echo "[merge-gate] --allow-unverified-required-checks: proceeding without verifying branch-protection required contexts on ${BASE_REF:-<unknown base>} (${REQUIRED_ERROR}) — an absent required check cannot be distinguished from an absent requirement (issue #1361)." >&2
+  else
+    MISSING+=("cannot read branch-protection required status checks for base ${BASE_REF:-<unknown>} — required-context verification unavailable ($REQUIRED_ERROR); a required check that never reported is indistinguishable from no requirement, so this fails closed (issue #1361). Pass --allow-unverified-required-checks only under an explicit per-PR user override")
+  fi
+elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
+  # Legacy commit statuses can satisfy a required context just as check-runs can
+  # (Vercel, CircleCI and friends still post them), so a context absent from the
+  # check-run list is not yet absent. Fetched only when there is something to
+  # check, and non-fatal: an unreadable status list simply contributes nothing,
+  # which can withhold a merge but never grant one. Newest-first per the API, so
+  # `first` per context is that context's current state.
+  COMMIT_STATUSES_JSON='[]'
+  if _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null); then
+    COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sc 'add // []' 2>/dev/null || echo '[]')
+    if [[ -z "$COMMIT_STATUSES_JSON" ]]; then COMMIT_STATUSES_JSON='[]'; fi
+  fi
+
+  # CHECK_RUNS_JSON is already deduped to the newest suite per (app, name), so a
+  # re-run's superseded record cannot mark a required context failed or pending.
+  # ALL runs of the newest suite are retained, which is what makes the two-jobs-
+  # one-name shape work: still-point publishes a `build` from the TestFlight
+  # workflow and a `build` from Web Build, both GitHub Actions, both in the same
+  # suite. They are matched together here, and the context is satisfied because
+  # neither is blocking — `skipped` is non-blocking by the same rule ci-status.sh
+  # uses, so the skipped leg does not veto its successful sibling.
+  # Publisher scoping (issue #1383 review): when protection pins a context to an
+  # `app_id`, only that app's check-runs count. $named is every run carrying the
+  # name; $r narrows to the ones GitHub would actually accept. Runs present under
+  # the name but all from other apps is its own state — `wrong_app`, not `absent`
+  # — because the two have different fixes and "degraded means say so".
+  # Commit statuses stay name-only on purpose: they carry no app_id, and the
+  # app-scoped `checks[]` shape governs check-runs.
+  REQUIRED_STATE_JSON=$(jq -cn \
+    --argjson req "$REQUIRED_CONTEXTS_JSON" \
+    --argjson apps "$REQUIRED_APPS_JSON" \
+    --argjson runs "$CHECK_RUNS_JSON" \
+    --argjson statuses "$COMMIT_STATUSES_JSON" '
+      def is_blocking: . == "failure" or . == "timed_out" or . == "action_required"
+                       or . == "startup_failure" or . == "stale";
+      $req | map(
+        . as $c
+        | ($apps[$c] // null)                                          as $app
+        | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $named
+        | (if $app == null then $named
+           else [ $named[] | select((.app.id // null) == $app) ] end)  as $r
+        | ( [ $statuses[]? | select((.context // "") == $c) ] | first ) as $s
+        | (if (($r | length) == 0 and $s == null and ($named | length) > 0) then
+             {context: $c, state: "wrong_app", satisfied: false}
+           elif (($r | length) == 0 and $s == null) then
+             {context: $c, state: "absent", satisfied: false}
+           elif any($r[]; (.status // "") != "completed") then
+             {context: $c,
+              state: ([ $r[] | select((.status // "") != "completed")
+                        | ((.status // "") | if . == "" then "incomplete" else . end) ] | first),
+              satisfied: false}
+           elif any($r[]; ((.conclusion // "") | is_blocking)) then
+             {context: $c,
+              state: ([ $r[] | select(((.conclusion // "") | is_blocking)) | .conclusion ] | first),
+              satisfied: false}
+           elif ($r | length) == 0 and (($s.state // "") != "success") then
+             {context: $c,
+              state: (($s.state // "") | if . == "" then "unknown" else . end),
+              satisfied: false}
+           else
+             {context: $c, state: "passing", satisfied: true}
+           end))' 2>/dev/null || echo '[]')
+  if [[ -z "$REQUIRED_STATE_JSON" ]]; then REQUIRED_STATE_JSON='[]'; fi
+  REQUIRED_UNSATISFIED_JSON=$(echo "$REQUIRED_STATE_JSON" | jq -c '[.[] | select(.satisfied | not)]' 2>/dev/null || echo '[]')
+  if [[ -z "$REQUIRED_UNSATISFIED_JSON" ]]; then REQUIRED_UNSATISFIED_JSON='[]'; fi
+  if [[ "$(echo "$REQUIRED_UNSATISFIED_JSON" | jq 'length')" -gt 0 ]]; then
+    REQUIRED_UNSATISFIED_LIST=$(echo "$REQUIRED_UNSATISFIED_JSON" | jq -r 'map("\(.context) (\(.state))") | join(", ")')
+    MISSING+=("branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported is not a pass (issue #1361)")
+  fi
+fi
+
+REQUIRED_CONTEXTS_OUT=$(jq -cn \
+  --arg source "$REQUIRED_SOURCE" \
+  --arg base "$BASE_REF" \
+  --arg error "$REQUIRED_ERROR" \
+  --argjson contexts "$REQUIRED_CONTEXTS_JSON" \
+  --argjson unsatisfied "$REQUIRED_UNSATISFIED_JSON" \
+  '{source: $source, base: $base, contexts: $contexts, unsatisfied: $unsatisfied, error: $error}')
 
 # Universal unresolved-thread gate (#211) — applies to all paths regardless of
 # author. Catches threads from any reviewer (CR, BugBot, Greptile, Copilot,
@@ -598,6 +1173,113 @@ UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
   [.data.repository.pullRequest.reviewThreads.nodes[]?
     | select(.isResolved == false)]
   | length')
+
+# Deferred findings (issue #1727). On the `ci-only` and `ci+codeant-one-round`
+# tiers ONLY, an unresolved thread stops blocking when a human reply in it links
+# a follow-up ISSUE in this repo. It is then counted in DEFERRED_TOTAL instead,
+# and UNRESOLVED_TOTAL becomes the BLOCKING count — so /wrap's threads-only
+# branch, which keys off `unresolved_thread_count`, never sends a deferred
+# thread to /fixpr. `full`, `legacy`, and an unresolved tier skip this block
+# entirely: no lookups, and the count means exactly what it always has.
+#
+# Every doubt keeps the thread blocking. A qualifying reply is a comment AFTER
+# the first (the first is the finding itself) whose GraphQL author is a `User`
+# — a bot's own `#123` never clears its thread, and GraphQL bot logins carry no
+# `[bot]` suffix to test instead. Accepted references: `#N`,
+# `<owner>/<repo>#N` for THIS repo, and `https://github.com/<owner>/<repo>/issues/N`.
+# N is capped at nine digits so `tonumber` stays exact; a longer number simply
+# never matches, which keeps its thread blocking (fail-closed, like the
+# 100-comment read limit above).
+# A PR URL never matches, and a cross-repo reference is dropped before any
+# lookup. Quoted lines (`> …`) are ignored, so a reply that quotes a bot's
+# finding cannot defer the thread on a number the bot wrote. Each distinct number is then looked up once: it must be an issue of
+# this repo (no `pull_request` key; `repository_url` naming this repo, which
+# also rejects a transferred issue). A 404/410 or a PR simply does not qualify.
+# Any OTHER lookup failure also does not qualify, and — so it cannot read as
+# "no such issue" — adds its own `missing` reason when it leaves a thread
+# blocking. Raw THREADS_JSON is untouched: RESOLVED_COMMENT_IDS and the Greptile
+# count still see a deferred thread as unresolved.
+DEFERRED_TOTAL=0
+DEFERRED_ISSUES_JSON='[]'
+DEFER_LOOKUP_CAP=25
+case "$REVIEW_TIER_GATE" in
+  ci-only|ci+codeant-one-round)
+    if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
+      # One array per unresolved thread: the same-repo numbers its human
+      # replies reference. The link parser itself lives in
+      # lib/deferred-refs.jq, shared with the review-stack-audit ledger
+      # (issue #1810) so the two can never disagree on what a follow-up link
+      # is. A jq failure — the module missing included — leaves it empty →
+      # nothing defers.
+      DEFER_REFS_JSON=$(printf '%s' "$THREADS_JSON" | jq -c -L "$SCRIPT_DIR/lib" --arg repo "$OWNER/$REPO" '
+        include "deferred-refs";
+        [ .data.repository.pullRequest.reviewThreads.nodes[]?
+          | select(.isResolved == false)
+          | [ ((.comments.nodes // [])[1:])[]?
+              | select((.author.__typename // "") == "User")
+              | select(((.author.login // "") | endswith("[bot]")) | not)
+              | (.body // "") | strings
+              | deferred_refs($repo)[] ]
+          | unique ]' 2>/dev/null) || DEFER_REFS_JSON=""
+      if [[ -z "$DEFER_REFS_JSON" ]]; then
+        echo "[merge-gate] could not parse review-thread replies for follow-up links — every unresolved thread stays blocking (issue #1727)" >&2
+        DEFER_REFS_JSON='[]'
+      fi
+      DEFER_OK=""      # space-separated numbers verified as issues of this repo
+      DEFER_ERR=""     # numbers whose lookup failed for a reason other than 404/410
+      DEFER_LOOKUPS=0
+      DEFER_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/merge-gate-defer.XXXXXX" 2>/dev/null) || DEFER_ERR_FILE=""
+      for DEFER_N in $(printf '%s' "$DEFER_REFS_JSON" | jq -r '[.[][]] | unique | .[]' 2>/dev/null); do
+        if [[ "$DEFER_LOOKUPS" -ge "$DEFER_LOOKUP_CAP" ]]; then
+          DEFER_ERR="$DEFER_ERR $DEFER_N"   # past the cap: unverified, never assumed
+          continue
+        fi
+        DEFER_LOOKUPS=$((DEFER_LOOKUPS + 1))
+        DEFER_RC=0
+        DEFER_BODY=$(gh api "repos/$OWNER/$REPO/issues/$DEFER_N" 2>"${DEFER_ERR_FILE:-/dev/null}") || DEFER_RC=$?
+        if [[ "$DEFER_RC" -ne 0 ]]; then
+          # Without a stderr capture a 404 cannot be told apart — report it.
+          if [[ -z "$DEFER_ERR_FILE" ]] || ! grep -qE 'HTTP 404|HTTP 410' "$DEFER_ERR_FILE" 2>/dev/null; then
+            DEFER_ERR="$DEFER_ERR $DEFER_N"
+          fi
+          continue
+        fi
+        DEFER_KIND=$(printf '%s' "$DEFER_BODY" | jq -r --argjson n "$DEFER_N" --arg repo "$OWNER/$REPO" '
+          if type != "object" or .number != $n or ((.repository_url // null) | type) != "string" then "error"
+          elif has("pull_request") then "pr"
+          elif (.repository_url | ascii_downcase | endswith("/repos/" + ($repo | ascii_downcase))) then "issue"
+          else "elsewhere" end' 2>/dev/null) || DEFER_KIND="error"
+        case "$DEFER_KIND" in
+          issue) DEFER_OK="$DEFER_OK $DEFER_N" ;;
+          pr|elsewhere) ;;
+          *) DEFER_ERR="$DEFER_ERR $DEFER_N" ;;
+        esac
+      done
+      [[ -n "$DEFER_ERR_FILE" ]] && rm -f "$DEFER_ERR_FILE"
+      DEFER_RESULT=$(printf '%s' "$DEFER_REFS_JSON" | jq -c \
+          --argjson ok "[$(printf '%s' "${DEFER_OK# }" | tr ' ' ',')]" \
+          --argjson err "[$(printf '%s' "${DEFER_ERR# }" | tr ' ' ',')]" '
+        def has_any($set): any(.[]; . as $n | any($set[]; . == $n));
+        { count:  [ .[] | select(has_any($ok)) ] | length,
+          issues: [ .[] | select(has_any($ok)) | .[] | . as $n | select(any($ok[]; . == $n)) ] | unique,
+          unverified: [ .[] | select(has_any($ok) | not) | .[] | . as $n | select(any($err[]; . == $n)) ] | unique }' 2>/dev/null) || DEFER_RESULT=""
+      if [[ -n "$DEFER_RESULT" ]]; then
+        DEFERRED_TOTAL=$(printf '%s' "$DEFER_RESULT" | jq -r '.count')
+        DEFERRED_ISSUES_JSON=$(printf '%s' "$DEFER_RESULT" | jq -c '.issues')
+        UNRESOLVED_TOTAL=$((UNRESOLVED_TOTAL - DEFERRED_TOTAL))
+        for DEFER_N in $(printf '%s' "$DEFER_RESULT" | jq -r '.unverified[]'); do
+          MISSING+=("follow-up issue #$DEFER_N could not be verified — its review thread stays blocking (issue #1727)")
+        done
+        if [[ "$DEFERRED_TOTAL" -gt 0 ]]; then
+          echo "[merge-gate] $DEFERRED_TOTAL unresolved review thread(s) deferred to follow-up issue(s) $(printf '%s' "$DEFERRED_ISSUES_JSON" | jq -r 'map("#\(.)") | join(", ")') on review tier $REVIEW_TIER_GATE (issue #1727)" >&2
+        fi
+      else
+        echo "[merge-gate] could not classify follow-up links — every unresolved thread stays blocking (issue #1727)" >&2
+      fi
+    fi
+    ;;
+esac
+
 if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
   MISSING+=("$UNRESOLVED_TOTAL unresolved review thread(s) — resolve via GraphQL before merge")
 fi
@@ -665,7 +1347,7 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review")
   fi
   if [[ "$GREPTILE_IS_CODE_OWNER" == true ]]; then
-    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai")
+    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, a Greptile re-review is paid: ask the owner to approve it in chat (#1897)")
   fi
   if [[ "$CODEANT_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review")
@@ -693,10 +1375,27 @@ substance_reasons() { # <login> — human-readable, comma-joined
     | [ ($r.disqualified_by // [])[]
         | if . == "temporal_inversion" then
             "approved before \($l) announced it had started reviewing"
+          elif . == "pre_run_approval" then
+            # Issue #1365. Sourced from the machine-readable run record the
+            # reviewer itself published, so the message quotes the timestamps
+            # rather than paraphrasing them: a reader can check the claim against
+            # the payload on the PR. Two distinct shapes — still in flight, or
+            # approved before the run began.
+            # (No apostrophes in this block: the whole jq program is one
+            # single-quoted bash string, and one stray quote ends it.)
+            ( if ($r.run_done == false) then
+                "\($l) approved at \($r.approval_submitted_at // "?") while its own recorded analysis of this commit was still in flight (started \($r.run_started_at // "?"), not finished)"
+              else
+                "\($l) approved at \($r.approval_submitted_at // "?") before its own recorded analysis of this commit started (\($r.run_started_at // "?")) — the approval cannot be a verdict from that run"
+              end )
           elif . == "capability_failure" then
             "\($l) reported it could not review this commit"
           elif . == "self_report_mismatch" then
-            "\($l)'"'"'s own status comment names \(($r.status_comment_shas // []) | join(", ")) — not this SHA"
+            ( ($r.status_comment_shas // []) as $toks
+            | "\($l)'"'"'s own status comment names \($toks | join(", ")) — not this SHA"
+              + ( if ($toks | map(select(length == 8 or length == 12)) | length) > 0
+                  then " (token lengths 8 or 12 may be GUID segments from an unhandled invocation comment shape)"
+                  else "" end ) )
           else
             "no substantive review footprint (body \($r.body_len // 0) chars, \($r.inline_comments_on_head // 0) inline comment(s), no status comment naming this SHA)"
           end ]
@@ -747,6 +1446,33 @@ override_eligible() { # <login>
 external_evidence_ok() { # <login>
   echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
     '.reviewers[$l].external_evidence_on_head // false' >/dev/null 2>&1 && echo true || echo false
+}
+# Pre-run-approval redemption (issue #1432). Reported, never recomputed here:
+# review-substance.sh owns the verdict so escalate-review.sh — which reads only
+# .substantive[] — can never disagree with the gate about the same payload.
+# Announcing it keeps the "redemption is never silent" convention the #876
+# STALE_REDEEMED messages established.
+clean_run_redeemed() { # <login>
+  echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+    '.reviewers[$l].redeemed_by_clean_run // false' >/dev/null 2>&1 && echo true || echo false
+}
+# The wording is deliberately scoped to the ONE term redemption controls — the
+# #875 substance axis (`pre_run_approval` / `no_substantive_footprint`) — and
+# says so, because this fires before the caller derives <P>_APPROVAL_VALID.
+# A redeemed approval can still be rejected on an orthogonal axis it never
+# touches: stale `submitted_at` (#836 <P>_APPROVAL_STALE_BLOCKING, reachable
+# when a rebase re-points a carried-over approval's commit_id onto a HEAD that
+# then gets its own clean run), a newer same-SHA CHANGES_REQUESTED, a missing
+# `submitted_at`, failing CI, or an unresolved thread. Claiming "review
+# coverage" here would announce a merge verdict this function does not decide
+# (CodeAnt, PR #1476). Sibling convention: the #876 STALE_REDEEMED lines below
+# likewise claim only their own axis ("counting it as fresh"), never the gate.
+announce_clean_run_redemption() { # <label> <login>
+  [[ "$(clean_run_redeemed "$2")" == true ]] || return 0
+  local started finished
+  started=$(echo "$REVIEW_EVIDENCE" | jq -r --arg l "$2" '.reviewers[$l].run_started_at // "?"' 2>/dev/null || echo "?")
+  finished=$(echo "$REVIEW_EVIDENCE" | jq -r --arg l "$2" '.reviewers[$l].run_finished_at // "?"' 2>/dev/null || echo "?")
+  echo "[merge-gate] $1 APPROVED on ${HEAD_SHA:0:7} was posted before its own recorded analysis started, but that analysis then COMPLETED on this same SHA (started $started, finished $finished) with zero findings — counting it as substantive review evidence rather than a hollow approval (issue #1432). Freshness, retraction, CI and thread state are separate checks; this line is not a merge verdict." >&2
 }
 
 # Fetch and compute per-bot approval state. Called once per bot for the shared
@@ -909,6 +1635,12 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
     CA_APPROVAL_STALE_BLOCKING=true
   fi
 
+  # Separate axis from the #876 staleness redemption above: that one asks
+  # whether the approval object is FRESH, this one whether anything actually
+  # reviewed the commit. Both are announced; neither substitutes for the other.
+  announce_clean_run_redemption "CodeRabbit" "coderabbitai[bot]"
+  announce_clean_run_redemption "CodeAnt" "codeant-ai[bot]"
+
   # CR_HOLLOW / CA_HOLLOW: the approval cleared every pre-#875 check (present,
   # fresh, not retracted) but nothing evidences that a review happened. Kept
   # distinct from "absent" so callers know to wait for the reviewer's real pass
@@ -947,10 +1679,52 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   fi
 fi
 
+# Review-tier dispatch (issue #1726). Only the reviewer-approval requirement
+# varies by tier; everything above this point applied to every tier. The
+# relaxed tiers dispatch to `none`, which no arm of the case below matches.
+REVIEWER_DISPATCH="$REVIEWER"
+if [[ -n "$REVIEW_TIER_FAILURE" ]]; then
+  MISSING+=("review tier unresolved: $REVIEW_TIER_FAILURE — the full reviewer gate is applied instead (issue #1726)")
+fi
+# Everything appended from here to the override block below is reviewer
+# COVERAGE — the only reasons the no-review override (issue #1899) may waive.
+# Every hard stop was appended above this line.
+REVIEW_BLOCKER_START=${#MISSING[@]}
+case "$REVIEW_TIER_GATE" in
+  ci-only)
+    REVIEWER_DISPATCH="none"
+    ;;
+  ci+codeant-one-round)
+    REVIEWER_DISPATCH="none"
+    # A completed round, on ANY commit of the PR — never an APPROVED alone,
+    # which CodeAnt posts before it has analysed anything (#1365, #1432).
+    #   (a) a `done` row in CodeAnt's structured run record
+    #   (b) a COMMENTED / CHANGES_REQUESTED review: posted only once it ran
+    #   (c) a completed check-run on HEAD that reached a verdict, published by
+    #       the CodeAnt app itself: slug `codeant-ai`, the app behind the
+    #       codeant-ai[bot] login. A check NAME is not identity — any workflow
+    #       in the PR can name a job "CodeAnt", and this signal relaxes a gate.
+    # The three filters live in lib/codeant-round.jq, shared with
+    # review-triggers-allowed.sh (issue #1749), so "a completed round" means
+    # the same thing to the gate and to the trigger that must never re-invite
+    # CodeAnt once a round exists. A jq failure, the module missing included,
+    # counts 0 and the round stays missing: fail closed.
+    CODEANT_ROUND_RECORD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r -L "$SCRIPT_DIR/lib" \
+      'include "codeant-round"; codeant_round_record_count' 2>/dev/null || echo 0)
+    CODEANT_ROUND_REVIEWS=$(echo "$REVIEWS_JSON" | jq -r -L "$SCRIPT_DIR/lib" \
+      'include "codeant-round"; codeant_round_review_count' 2>/dev/null || echo 0)
+    CODEANT_ROUND_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -r -L "$SCRIPT_DIR/lib" \
+      'include "codeant-round"; codeant_round_check_count' 2>/dev/null || echo 0)
+    if [[ "${CODEANT_ROUND_RECORD:-0}" -eq 0 && "${CODEANT_ROUND_REVIEWS:-0}" -eq 0 && "${CODEANT_ROUND_CHECK:-0}" -eq 0 ]]; then
+      MISSING+=("review tier ci+codeant-one-round: no completed CodeAnt round on any commit of this PR — an APPROVED alone is not a round; comment @codeant-ai review")
+    fi
+    ;;
+esac
+
 # Path-specific checks.
 # Default false — the cr) and bugbot) paths set a meaningful value.
 PRIMARY_REVIEW_MET=false
-case "$REVIEWER" in
+case "$REVIEWER_DISPATCH" in
   cr)
 
     # Set PRIMARY_REVIEW_MET from the shared pre-case detection block (issue #865).
@@ -1237,7 +2011,7 @@ case "$REVIEWER" in
               # Checked ahead of freshness because an unattributable run's timestamp
               # is not worth dating. Distinct reason so the block is legible rather
               # than reading as "BugBot never ran".
-              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or post @cursor review")
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or ask the owner to approve a paid BugBot re-review in chat (#1897)")
               BB_CHECK_APP_MISMATCH=true
             elif [[ -z "$LAST_COMMIT_TS" ]]; then
               # Fail-closed: cannot verify freshness without HEAD committer date.
@@ -1254,7 +2028,7 @@ case "$REVIEWER" in
               # check-run completed before the HEAD commit — stale (force-push retargeting
               # or a prior push's run). Report explicitly so callers know to wait for a
               # new run rather than interpret as absent.
-              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run or post @cursor review")
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run, or ask the owner to approve a paid BugBot re-review in chat (#1897)")
               BB_CHECK_FRESHNESS_ERR=true
             else
               # Fresh success check-run, no failure comments — clean silent pass.
@@ -1292,7 +2066,7 @@ case "$REVIEWER" in
             # to compare against; treat as unknown (fail-closed, issue #836).
             MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
           elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
+            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; a BugBot re-review is paid: ask the owner to approve it in chat (#1897)")
           else
             BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
             # Always check for inline findings — BugBot can post inline diff comments
@@ -1316,9 +2090,20 @@ case "$REVIEWER" in
     # unresolved thread. This path adds severity context (P0 vs P1/P2) only.
     #
     # Greptile posts via issue comments (not formal PR review objects). Detection
-    # (issue #723 — observed live on PR #721):
-    #   Clean pass: latest fresh greptile-apps[bot] issue comment with 👍 (+1)
-    #     reaction AND zero greptile-apps[bot] inline diff comments on the PR.
+    # (issue #723 — observed live on PR #721; corrected by issue #1390):
+    #   Clean pass: latest fresh greptile-apps[bot] summary comment whose
+    #     "Last reviewed commit" footer names the current HEAD SHA, AND zero
+    #     greptile-apps[bot] inline diff comments on the PR, AND zero formal P0
+    #     badges in the current review round.
+    #   Why the footer and not the 👍: issue #723 keyed the clean pass on a 👍
+    #     (+1) reaction carried by the bot's own comment, but Greptile reacts to
+    #     the comment it is REPLYING TO — the @greptileai trigger, authored by
+    #     whoever asked for the review — so the bot comment sits at +1 == 0 on a
+    #     genuinely clean pass (measured on PR #1379). The footer SHA is also
+    #     strictly better evidence: it is checkable against HEAD rather than
+    #     merely present, and survives another vendor change to reactions.
+    #   The bot-comment 👍 is retained only as a SUPPLEMENTAL alternative, so a
+    #     reaction that does land on the bot comment still counts.
     #   Freshness: comment.created_at > LAST_COMMIT_TS (mirrors the BugBot
     #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
     #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
@@ -1470,7 +2255,7 @@ case "$REVIEWER" in
         G_ROUND_P0_COUNT=$(echo "$G_ROUND_BODIES" | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
 
         if [[ "$G_ROUND_P0_COUNT" -gt 0 ]]; then
-          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         else
           # A stale zero-P0 verdict is reusable only for a demonstrable fix-only
           # push. Every Greptile inline finding in the retained round must have a
@@ -1551,17 +2336,78 @@ case "$REVIEWER" in
 
       # --- Path A: comment-based clean pass (primary Greptile channel) ---
       G_COMMENT_CLEAN=false
+      # Empty when there is no fresh summary comment, or when that comment
+      # carries no "Last reviewed commit" footer — both mean "no claim about
+      # which commit was reviewed", never "reviewed a different commit".
+      G_FOOTER_SHA=""
+      # True only when the footer positively names some commit other than HEAD.
+      # Declared out here beside G_FOOTER_SHA because Path B reads it whether or
+      # not a summary comment exists, and the script runs under `set -u`.
+      G_FOOTER_CONTRADICTS=false
+      G_HEAD_SHA_LC=$(printf '%s' "$HEAD_SHA" | tr "[:upper:]" "[:lower:]")
       if [[ -n "$LATEST_G_COMMENT" ]]; then
         G_THUMBSUP=$(echo "$LATEST_G_COMMENT" | jq -r '.reactions["+1"] // 0')
-        # Clean = 👍 present, no inline findings, and no formal P0 badge in
-        # any channel of the current review round.
-        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
+
+        # Primary signal (issue #1390): Greptile closes its summary comment with
+        #   Reviews (N): Last reviewed commit: [<title>](<repo-url>/commit/<sha>)
+        # Extract that SHA. The link carries the full 40 characters, so it is
+        # compared against the full HEAD_SHA — never the short form, which any
+        # commit sharing the prefix would satisfy. The pattern is anchored on the
+        # marker and confined to the marker line, so an unrelated commit link
+        # elsewhere in the body cannot be read as the footer. Extraction happens
+        # inside jq against .body, the same idiom as CODEANT_CONVO_ON_HEAD and
+        # G_FIX_PROVENANCE. A body with no footer yields "" and is treated as
+        # having made no claim (older comments, and any future format change).
+        G_FOOTER_SHA=$(echo "$LATEST_G_COMMENT" | jq -r '
+          ((.body // "") | ascii_downcase)
+          | [scan("last reviewed commit:[^\n]*/commit/([0-9a-f]{40})")]
+          | (last // []) | (.[0] // "")')
+        G_FOOTER_ON_HEAD=false
+        if [[ -n "$G_FOOTER_SHA" ]]; then
+          if [[ "$G_FOOTER_SHA" == "$G_HEAD_SHA_LC" ]]; then
+            G_FOOTER_ON_HEAD=true
+          else
+            G_FOOTER_CONTRADICTS=true
+          fi
+        fi
+
+        # Clean = the footer names HEAD (or the supplemental bot-comment 👍),
+        # no inline findings, and no formal P0 badge in any channel of the
+        # current review round.
+        #
+        # A contradicting footer vetoes the whole branch, 👍 included. The
+        # reaction is a weaker signal than the footer and cannot overrule it:
+        # 👍 on a Greptile comment is a routine workflow artifact — greptile.md
+        # makes 👍/👎 the bot's only learning channel — so without this veto a
+        # single feedback reaction on a stale summary would mark the comment
+        # clean, skip Path B entirely, and silently defeat the contradiction
+        # guard below (the guard runs only when G_COMMENT_CLEAN is false).
+        if [[ "$G_FOOTER_CONTRADICTS" != true ]] \
+           && [[ "$G_FOOTER_ON_HEAD" == true || "$G_THUMBSUP" -gt 0 ]] \
+           && [[ "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
           G_COMMENT_CLEAN=true
         fi
       fi
 
       if [[ "$G_COMMENT_CLEAN" != true ]]; then
         # --- Path B: severity gate ---
+        # Footer that positively contradicts HEAD (issue #1390). A summary
+        # comment can be fresh by timestamp and still report on an older commit:
+        # Greptile edits its summary in place (#748), so updated_at moves before
+        # the new round finishes. Timestamp freshness is therefore not evidence
+        # about HEAD — the same lesson #836/#876 taught on the CR path — while
+        # the footer states outright which commit was read. When it names some
+        # commit other than HEAD, the fresh path has no verdict on HEAD to give,
+        # so block and keep polling for the re-review. Only a footer that
+        # disagrees blocks; a missing footer changes nothing.
+        #
+        # Same G_FOOTER_CONTRADICTS the Path A veto reads, so the two sites
+        # cannot drift: whatever Path A refuses to call clean is exactly what
+        # gets reported here.
+        if [[ "$G_FOOTER_CONTRADICTS" == true ]]; then
+          MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
+        fi
+
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
         # whether a re-review is required after fixing.
         UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '
@@ -1576,7 +2422,7 @@ case "$REVIEWER" in
         elif [[ "$UNRESOLVED_G" -eq 0 && "$P0_COUNT" -gt 0 ]]; then
           # Threads are resolved but P0 in latest review body / inline bodies.
           # A clean re-review would supersede this — require one.
-          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         fi
         # Unresolved G > 0 && P0 == 0: universal thread gate already covered.
         # Unresolved G == 0 && P0 == 0: only P1/P2 all resolved — gate met.
@@ -1584,6 +2430,20 @@ case "$REVIEWER" in
     fi
     ;;
 esac
+
+# --------------------------------------------------------------------------
+# No-review override (issue #1899) — decided by no-review-override.sh. It may
+# waive only the reviewer-coverage reasons collected since REVIEW_BLOCKER_START,
+# and only when no reviewer bot has a verdict on HEAD and the window elapsed.
+# Any helper failure leaves missing[] untouched (fail closed: nothing waived).
+# --------------------------------------------------------------------------
+NRO_JSON='null'
+# shellcheck source=./lib/no-review-override-apply.sh
+if [[ -r "$SCRIPT_DIR/lib/no-review-override-apply.sh" ]] && source "$SCRIPT_DIR/lib/no-review-override-apply.sh"; then
+  nro_apply
+else
+  echo "[merge-gate] lib/no-review-override-apply.sh unavailable — no-review override off, gate unchanged (issue #1899)" >&2
+fi
 
 # --------------------------------------------------------------------------
 # Emit result
@@ -1596,6 +2456,7 @@ fi
 
 # Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
 # or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still counts.
 STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
   def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
   [.[]?
@@ -1611,21 +2472,26 @@ fi
 # Discounted approvals (issue #875) — say so on stderr even when the gate passes
 # on another reviewer, so a hollow rubber stamp is never silently absorbed.
 HOLLOW_LOGINS=$(echo "$REVIEW_EVIDENCE" | jq -r '(.hollow // []) | join(", ")' 2>/dev/null || echo "")
-if [[ -n "$HOLLOW_LOGINS" && "$REVIEWER" == "cr" ]]; then
+if [[ -n "$HOLLOW_LOGINS" && "$REVIEWER_DISPATCH" == "cr" ]]; then
   echo "[merge-gate] discounted APPROVED review(s) with no substantive review evidence on HEAD ${HEAD_SHA:0:7}: ${HOLLOW_LOGINS}. See .review_evidence for the per-reviewer detail (issue #875)." >&2
 fi
 
 STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
-MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
+# `jq -R .` read line-by-line, so a reason containing a newline (a check-run name,
+# a reviewer login) silently split into two array elements. Build the array from
+# the shell array instead — one element in, one element out (issue #1219).
+MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 
 # review_evidence is scoped to the cr path in the output (comment at line ~99).
 # The evaluator runs on the bugbot path for bypass computation but must not
 # surface its results in the JSON — a failed evaluator must never block a PR
 # over a guard the bugbot path never consults.
-[[ "$REVIEWER" != "cr" ]] && REVIEW_EVIDENCE='{}'
+[[ "$REVIEWER_DISPATCH" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE"
+GATE_PATH="$REVIEWER"
+[[ "$MET" == true && "$(printf '%s' "$NRO_JSON" | jq -r '.applied' 2>/dev/null)" == true ]] && GATE_PATH="no-review-override"
+emit_json "$MET" "$REVIEWER" "$GATE_PATH" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON" "${DEFERRED_TOTAL:-0}" "${DEFERRED_ISSUES_JSON:-[]}" "$NRO_JSON"
 
 if [[ "$MET" == true ]]; then
   exit 0

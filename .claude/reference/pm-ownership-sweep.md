@@ -1,0 +1,188 @@
+# `/pm`'s Pre-Dispatch Ownership Sweep (issue #1431)
+
+Mechanism behind `candidate-ownership.sh` and the sweep `/pm` runs at Step 1B.5 (cold start) and Step 3.4 (refill). Not auto-loaded; `pm/SKILL.md` carries the binding behavior, this file carries the reasoning and the reader set.
+
+`/wave` Step 2 item 4 runs the **same** sweep over its own candidate pool (issue #1460), so the two skills share one implementation instead of maintaining parallel bookkeeping. `wave/SKILL.md` carries that caller's binding behavior; everything below is common to both.
+
+## The problem
+
+A fresh `/pm` rebuilds the board from GitHub and refills the pipeline without being asked — that is the inline-dispatch default (issue #1190), and it is what makes yesterday's follow-ups get picked up. But GitHub is not the whole board. In-flight work also lives in other conversation threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state still on disk.
+
+The only per-item guard was the claim gate, and `issue-claim.sh` deliberately ages a claim out after `CLAIM_STALE_HOURS` — a stale claim is re-picked with a *warning*, not a block, because a dead thread must not poison an issue forever. That is the right default in isolation and the wrong one when the "dead" thread is merely parked. It is also the exact shape that shipped issue #652 twice, as PR #661 and PR #673.
+
+Even when `/pm` did hold back, it could only say "claimed by someone" — not *which* thread, what state it stopped in, or how to wake it. And when the owning thread was gone for good, its half-done work sat until a stale claim was re-picked and redone from zero, orphaning whatever the dead thread had already pushed.
+
+## Callers
+
+| Caller | Where | What it does with `adopt` |
+|---|---|---|
+| `/pm` | Step 1B.5 (cold start), Step 3.4 (refill) | takes the claim over and dispatches from surviving state |
+| `/wave` | Step 2 item 4 — normally over the `in-progress`-labelled intersection of its candidate pool, widening to the **whole** pool whenever that label index is untrustworthy: the `gh issue list` query failed, or it came back full and may therefore be truncated | **excludes and hands to `/pm`** — a wave admits only work that can start now, and `/wave` never launches, claims, or writes state (its Execution boundary) |
+
+`dispatch` and `skip` mean the same thing in both. `/wave` diverging on `adopt` alone is deliberate: adoption is a claim write plus a resume decision, and `/wave` makes neither. Before #1460 `/wave` ran its own weaker filter — it dropped `claimed`/`unknown` and treated `stale` as warn-and-proceed — so a candidate `/pm` correctly skipped as owned by a live paused thread could still be admitted to a wave. That is the pre-#1431 posture and the shape that shipped issue #652 twice.
+
+## The three-way branch
+
+| Verdict | Owner | `/pm` does | Why |
+|---|---|---|---|
+| `unowned` | nobody | dispatch, exactly as today | The common case must not change, and refill must never stall — `/pm` keeps filling from the unowned candidates |
+| `owned_live` | a thread that is open or paused | skip, surface one line, move on | A human parked it. Resuming the same work in two places is how duplicates get shipped, so `/pm` never un-pauses, messages, or writes another thread's state |
+| `owned_dead` | a thread that is archived or absent | **adopt** — take the claim over and resume from surviving state | Pointing at a thread that no longer exists helps nobody, and redoing the work from zero orphans what the dead thread already pushed |
+
+This generalizes the old hand-maintained carve-out. The paused PR fleet is no longer a special case in the dispatch path — it is one instance of the rule whose `resume_route` happens to be `/pr-monitor-and-manage-wake` instead of `/go-on`.
+
+## Reader set — shared, never a parallel store
+
+The sweep adds **no new registry**. It reads the same sources `/wave` Step 2 and the chip-offer census already read, with the same attribution rules:
+
+| Source | Read | Contributes |
+|---|---|---|
+| `issue-claim.sh <N> --check --json` | per candidate | `verdict`, `claimant`, `claimant_holder`, `claimed_at`, `stale` |
+| `gh issue list --label in-progress` | once, batched | the cheap claim index (`/wave`'s batching pattern) |
+| `active-work-cap.sh --json` | once | `offered_issue_nums` — a first-pass "already spoken for" signal |
+| `gh pr list --state open` | once | open PRs and their closing refs, joining issue → PR → branch |
+| `session-state.sh --get-json .repos[<key>].pauses` | once | the session-keyed pause boards: parked units, their stopping point, the marker path |
+| `session-state.sh --get-json .repos[<key>].pause` | once | the legacy pause singleton, read as a union member alongside `.pauses` |
+| `session-state.sh --get-json .repos[<key>].suspend` | once | the pre-#1310 legacy singleton, same union |
+| `session-state.sh --get .repos[<key>].background_tasks` | once | per-task owner, session id, status, recovery path |
+| `session-state.sh --get .repos[<key>].execution_pauses` | once | session-scoped launch gates — what makes an owner *paused* rather than dead |
+| `session-state.sh --get .pmm_active` / `.pmm` | once | the paused PR fleet and the PRs it held |
+| `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` | per linked PR | the phase the dead thread reached — the adoption entry point |
+| `~/.claude/handoffs/pause-*.md`, `suspend-*.md`, `portable-handoff-*.md` | once, globbed (`*-checkpoint.md` excluded) | resume markers naming the issue, and the session id in the filename |
+| `git for-each-ref` | per candidate, on demand | a surviving `issue-N-*` branch — the adoption source of last resort |
+
+`.pauses`, `.pause`, `.suspend`, `.day`, `.resume`, and `.execution_pauses` are **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo`), so each is fetched by an explicit path read. A sweep built on `--session-view` would report every armed pause as absent.
+
+The three **pause** slots are read with `--get-json`, not `--get` (issue #1629): raw output prints the same bare `null` for an absent slot, a stored JSON `null`, and a slot corrupted into the JSON string `"null"`, so the sweep would report a damaged board as "nothing parked". `--get-json` keeps the JSON type, and the corrupt slot classifies `unreadable` and is named. The non-pause rows stay on `--get`, whose consumers want the raw scalar.
+
+Each of those also has to be addressed at its **repo-scoped** path. `session-state.sh` transparently rewrites only a leading `.prs` or `.root_repo` into the active repo's scope; everything else is read literally. `execution-pause.sh` writes solely to `.repos[<key>].execution_pauses[<session>]`, so a top-level `.execution_pauses` read matches nothing and every `/end` and `/pause` launch gate is invisible to the sweep — the same trap the `.pause` / `.background_tasks` rows above avoid, and one a passing test suite will not catch unless a negative control pins the top-level shape as *not* the contract.
+
+### The chip-offer census is that reader set, not a second one
+
+Issue #1431 asked for the ownership sources to be shared with "`/wave`'s exclusions and the chip-offer registry census". The exclusions half is `/wave` Step 2 item 4, above. The census half is **closed as already covered** (issue #1460): `chip-offer-registry.sh` has no `census` subcommand and nothing consumes one, and the nearest existing thing — `/wave`'s `IN_FLIGHT` count — already reads this same set (Active Work rows, `issue-maker-*-log.json` chips, distinct open PRs) under the same repo-scoping and the same yours-vs-collaborator attribution rule from issue #732, which `active-work-cap.sh` shares byte for byte. Adding a subcommand with no consumer would create the parallel bookkeeping system #1431 was written to prevent, so the correct action was to record the decision rather than build the machinery.
+
+One consequence is worth stating: sweep drops never enter `IN_FLIGHT`. The count measures *your* pipelines competing for reviewer slots, and an issue another thread owns — or a collaborator's claim — consumes none of yours.
+
+## The owned-resumable upgrade
+
+`issue-claim.sh` is not modified. The upgrade is an **external rule layered on top of its verdict**, applied by `candidate-ownership.sh`:
+
+- `stale` **plus** resumable evidence (a parked entry, a background-task entry, an active execution pause, a marker file, a linked open PR, a handoff file, or a surviving branch) → **owned**, `state: stale`, skipped or adopted per liveness.
+- `stale` with **no** evidence behind it → **unowned**. Today's warn-and-proceed survives byte for byte, which is the point: the stale window exists so a genuinely dead thread cannot park an issue forever.
+
+Keeping this outside `issue-claim.sh` matters. That script's contract is "who holds the claim, and is it fresh" — one question, answered from GitHub alone. Teaching it about local markers and handoff files would make every one of its callers depend on local disk state to answer a question about a shared, remote claim.
+
+## Adoption needs a startable claim
+
+Adoption fires only where liveness resolved **dead**, which needs a supplied session listing (§Liveness) — with no listing every owner is `live` and this whole branch is unreachable. Given one, it takes the claim over through the **existing** stale-takeover path — `issue-claim.sh <N> --claim`, which re-stamps a stale claim for the new holder. That path refuses a *fresh* foreign claim without `--allow-claimed`, and `--allow-claimed` is only ever an explicit per-issue instruction from the user in chat.
+
+Adoption is therefore available only where that path would succeed — a claim verdict `issue-claim.sh` already reports startable (`stale`, `unclaimed`, `mine`). Every other verdict is `skip` **even when the owner's session is archived**:
+
+| Claim verdict | Dead owner ⇒ | Why |
+|---|---|---|
+| `stale` / `unclaimed` / `mine` | `adopt` | The takeover path succeeds |
+| `claimed` | `skip` | A fresh foreign claim needs `--allow-claimed`, and it ages out on its own |
+| `unknown` | `skip` | Fail-closed runs in both directions: a claim we could not read is never permission to take it over |
+| `unavailable` | `skip` | With no working claim gate, surfacing beats taking over a claim nobody can read |
+
+The sweep still reports `verdict: owned_dead` in every one of those rows — the reading is accurate — and the `reason` names what is blocking the takeover rather than pretending the claim was not there.
+
+Where adoption does fire, it picks the cheapest resume point rather than always respawning Phase A:
+
+| Surviving state | `adopt.from` | `adopt.phase` |
+|---|---|---|
+| open PR + handoff with `phase_completed: A` | `pr` | `b` |
+| open PR + handoff with `phase_completed: B` or `C` | `pr` | `c` |
+| open PR, no handoff | `pr` | `b` — the PR is already in review; enrolling it in the normal flow beats rebuilding it |
+| branch or worktree only | `branch` | `a` |
+| nothing survived | `null` | `null` — adoption reduces to a fresh dispatch |
+
+## Liveness fails toward surfacing
+
+No CLI enumerates Claude sessions, so liveness is resolved against a **session listing the caller supplies** (`--sessions <path>`, or `CLAUDE_SESSION_LISTING`). The script normalizes the common shapes: a bare array or an object with `sessions` / `data` / `results`, whose entries name their id as `id` / `session_id` / `sessionId` / `uuid`, their state as `status` / `state` or the booleans `isArchived` / `isRunning`, and their title as `title` / `name` / `summary`.
+
+### Where the listing actually comes from (issue #1459)
+
+The concrete source in the Claude desktop app is the **deferred** MCP tool `mcp__ccd_session_mgmt__list_sessions`. Deferred means its schema is not loaded, so a thread loads it once (`ToolSearch` with `select:mcp__ccd_session_mgmt__list_sessions`) and then calls it. `/pm` Step 1B.5 does exactly that, writes the returned array to a temp file, and passes it as `--sessions`; Step 3.4 re-runs the same blocks per sweeping tick, because a listing captured hours ago misclassifies both directions. Until #1459 nothing supplied a listing at all, so liveness was `indeterminate` on every real run and `owned_dead -> adopt` never fired — the sweep shipped as a surface-and-skip guard only.
+
+Each record looks like `{"sessionId","title","cwd","branch"?,"isArchived","isRunning","prNumber"?,"prState"?,"lastActivityAt","group"}`, which differs from the stored owner ids in two ways that both had to be handled:
+
+- **`sessionId` carries a `local_` prefix** (`local_1aa951b8-…`) while every owner id the sweep reads from `session-state.json`, claim records, and marker filenames is the **bare** uuid. Ids are therefore compared with a `local_` / `remote_` / `cloud_` / `session_` scheme prefix normalized away on **both** sides (`norm_session_id`, used by the liveness lookup, the title lookup, and `is_self_session`). Skipping that is not a cosmetic miss: an id that fails to match is *absent*, absent is `dead`, and `dead` is the one classification that adopts — so an unnormalized id turns every live owner into an adoptable one.
+
+  **That normalization is for session ids only** — hence the split between `is_self_session` (background-task and resume-marker owner ids, normalized) and `is_self_holder` (claim holders, exact compare). A claim holder is an arbitrary token: `resolve_holder` fills it from `CLAUDE_CLAIM_HOLDER` or a `host:/path` fallback. Normalizing one strips a prefix *and* folds case, so any two holders that merely normalize alike read as the same thread — and a self-match on the holder path runs the *opposite* risk to the liveness lookup: it sets `CLAIM_IS_SELF`, which skips the foreign-ownership guard and dispatches a stranger's claimed issue. The liveness lookup errs toward finding the session (one surfaced line); the holder check errs toward *not* finding it (`OWNED=1` → surface). Both point at surface.
+- **There is no `status` string.** State is the booleans `isArchived` / `isRunning`, mapped to `archived` / `running`, with a record that carries either key but neither flag set reading `idle` (present, so live).
+
+The call also **excludes the calling session**, and absence classifies dead — so 1B.5 appends this thread's own `$CLAUDE_SESSION_ID` record to the array before writing it. Without that, a `/pm` thread could adopt work its own background tasks are running. It follows that a listing 1B.5 cannot vouch for is not used at all, because a listing the sweep *reads* is authoritative enough to adopt on. Two cases degrade instead of forwarding:
+
+- **`CLAUDE_SESSION_ID` unset.** No self-record can be appended, so forwarding the listing is precisely the self-adoption the append prevents.
+- **The listing filled the limit it was asked for** (`length >= SESSION_LISTING_LIMIT`). A full page is indistinguishable from a page cut at the limit, and a session cut out of it is *absent* → `dead` → adopt. 1B.5 asks for `limit: 500` — a bound on sessions, not on board size, which counts issues — and refuses the result if it still comes back full.
+
+| Listed status | Classified |
+|---|---|
+| `open`, `active`, `running`, `paused`, `idle`, `live`, `suspended`, `waiting`, `isRunning: true` | **live** |
+| `archived`, `deleted`, `closed`, `ended`, `dead`, `terminated`, `gone`, `expired`, `isArchived: true` | **dead** |
+| absent from a listing that was read | **dead** |
+| unrecognized status word | **live** — an unknown word is not evidence of death |
+| no listing supplied, unparseable listing, or no resolvable owner session id | **indeterminate → treated as live** |
+
+The asymmetry is deliberate. Surfacing a thread that turned out to be dead costs one line the user can ignore; adopting work a live thread is still doing costs a duplicate implementation. Headless runs, and any thread where the tool does not resolve, therefore land on surface-only by construction — `/pm` names that with a `DEGRADED:` line rather than letting the sweep look complete.
+
+## Owner naming
+
+Two tiers, and the human-readable one wins however late it is found: session-listing `title` > a title a source supplies (`background_tasks[].name`, the marker filename) > the claim-derived description (`<login> thread <holder>`) > the bare session id > `an unnamed thread`. Claims and state files carry session ids as the join key, so ids are the documented fallback, not a failure.
+
+`pause-*.md` marker filenames encode the session id between the repo fields and `mktemp`'s uniqueness tag (`pause-<stamp>-<len-owner>-<owner>-<len-repo>-<repo>-<session>-<tag>.md`), which is how a marker attributes itself with no state file involved.
+
+**Recover it by walking the length prefixes, never by splitting on dashes.** Session ids are UUIDs and keep their own dashes, so "the field before the tag" yields only the UUID's last group. A truncated id is absent from the session listing, absence reads as `dead`, and `dead` is the one classification that adopts — so the parse bug resumed a *live* paused thread underneath, the exact duplicate-ship failure the sweep exists to prevent. The same walk recovers the repo, which is why both come from one parser.
+
+### Liveness spans every attributed session
+
+The owner *label* is first-write-wins by preference order, but liveness is not. The claim gate always runs before markers, background tasks, and the fleet, so keeping only its session id let a claim whose session is absent — read as `dead` — outrank a marker naming a session the listing shows open, and adopt underneath a thread that was still working.
+
+Liveness is therefore resolved over **every** session id any evidence source attributed to the candidate: one `live` makes the work live; `dead` requires that something resolved dead and nothing resolved live; anything else is `indeterminate`. That ordering is the fail-toward-surfacing rule applied to a set rather than to a single lucky first write.
+
+### A self-held claim confers no ownership
+
+`mine` is the claim gate's own verdict, but a thread can also hold a claim it wrote under a *different* token than `resolve_holder` produces now — a session id where the holder is `CLAUDE_CLAIM_HOLDER`, or the reverse. Self-attribution is therefore decided **before** the claim can set `OWNED`, not appended as evidence afterwards: appending left the flag standing, so a thread skipped its own claimed work as though a stranger held it.
+
+### A holder token is not a session id
+
+`issue-claim.sh` reports `claimant_holder`, and `resolve_holder`'s documented last resort is `<hostname>:<worktree path>` — a token that can never appear in a session listing. Feeding it to the liveness lookup returns "absent", which again reads as `dead` and adopts. Absence is evidence of death only for something that could have been present, so a token carrying `:` or `/` is treated as holder-shaped: liveness `indeterminate`, owner treated as live, and the reason recorded in `degraded[]`.
+
+### Markers must be attributed to this repo first
+
+`~/.claude/handoffs/` is shared across every repository, and a marker is matched on issue or PR **text** — `#1431` exists in all of them. So a marker earns its say only once it is attributed to the repo under sweep, from either of two independent sources: the rendered ``Repository: `owner/repo` `` line (exact, and present in every marker shape — `portable-handoff-*` encodes no repo in its filename at all), or the length-prefixed `<len-owner>-<owner>-<len-repo>-<repo>` filename fields, an encoding that is injective precisely so owners and repos containing `-` survive it.
+
+Three outcomes, and the middle one is the whole point:
+
+- **Matches** the swept repo → full evidence, including its session id.
+- **Names a different repo** → not evidence at all; the marker is skipped. Without this the sweep both skipped unrelated backlog work *and* — with the foreign session archived — carried the candidate into `owned_dead`, adopting another repository's parked work.
+- **Unattributable** (a `/`-less repo key writes the literal `unknown`, and no `Repository:` line) → the candidate is still surfaced, because it may be ours and surfacing is the safe direction. But its session id is withheld from the liveness lookup, where "absent from the listing" means dead — so an unattributable marker can never become an adoption. The ambiguity is named in `degraded[]` rather than passed off as certainty.
+
+## State precedence
+
+`paused` > `active` > `stale`. Explicit parked state outranks an inference of activity — the same precedence `/go-on` uses (`universal-resume.md`). A fresh claim only proves the claim is recent, which is exactly what a thread parked twenty minutes ago also looks like, while a `/pause` record is a deliberate statement that the thread stopped. Reporting that thread as `active` would send the user hunting for work that is not running.
+
+## Degradation contract
+
+Every missing, unreadable, or unparseable source is appended by name to that candidate's `degraded[]`, and the sweep continues:
+
+- A batch-level failure (a `gh` list, a state read) is recorded on **every** candidate — it was not read for any of them.
+- A read failure **never** marks a candidate owned by itself. The failure this contract exists to prevent is a sweep that swallows a whole backlog because one file was corrupt.
+- A degraded candidate falls back to **claim-gate-only** behavior at the caller: exactly what `/pm` did before this feature existed.
+- The one fail-closed input is the claim gate's own `unknown` verdict, which keeps its own meaning — skip, per `.claude/rules/issue-planning.md` step 0. "We failed to look" is never permission.
+
+## Read-only guarantee
+
+`candidate-ownership.sh` never calls `--claim`, `--release`, or any `session-state.sh --set`. It has no write path at all; the only writes in the whole feature are on `/pm`'s adoption branch, and those go through the existing claim takeover and normal dispatch bookkeeping. `.claude/scripts/tests/candidate-ownership.test.sh` pins this by logging every helper invocation the sweep makes and asserting both that helpers were called and that no write flag appears among them.
+
+## Exit status
+
+`0` whenever the sweep ran — every candidate carries a verdict — and `2` for usage errors or a missing `jq`. There is deliberately **no** "something was owned" exit code: a sweep over N candidates has N answers, and collapsing them into one status is how a caller ends up blocking a dispatchable backlog because one item was owned.
+
+## Relationship to neighbouring issues
+
+- **#1190** — the inline-dispatch default this guards. The sweep narrows what gets dispatched; it never turns the default off.
+- **#1397** — `/go-on` stays the universal resume front door a person runs. The live-owner branch points at it; the dead-owner branch applies its crash-recovery semantics proactively, at dispatch time.
+- **#1428** — day mode's pre-emptive park writes exactly the parked state this sweep recognizes.
+- **#873** — the claim gate, which still outranks the sweep in both directions: `claimed`/`unknown` blocks regardless of ownership evidence, and only its startable verdicts permit an adoption takeover.

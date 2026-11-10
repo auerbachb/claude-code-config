@@ -1,28 +1,70 @@
 #!/usr/bin/env bash
 # reply-thread.sh — Post a reviewer-aware reply to a PR review thread.
+# catalog: review-threads-diffs — Post a reviewer-aware reply to a PR review thread (inline endpoint, PR-level fallback)
 #
-# Tries the inline reply endpoint first (pulls/comments/{id}/replies); on 404
-# falls back to a PR-level comment. Applies reviewer-specific @mention rules:
+# Tries the inline reply endpoint first — the PR-scoped route
+# pulls/{pr}/comments/{id}/replies; on 404 falls back to a PR-level comment.
+# Applies reviewer-specific @mention rules:
 #   - cr        : prepends `@coderabbitai ` to the body if not already present
 #   - bugbot    : strips any `@cursor` tokens from the body (may trigger re-review)
 #   - greptile  : strips any `@greptileai` tokens from the body (paid re-review)
 #   - codeant   : strips any `@codeant-ai` tokens from the body (no auto-mention;
 #                 plain-text reply — triggering CodeAnt is rate-limited)
+#   - graphite  : strips any `@graphite-app` tokens from the body (no auto-mention;
+#                 plain-text reply — `@graphite-app re-review` re-triggers Graphite).
+#                 Graphite was retired 2026-11-03 (#1889), but the App still posts
+#                 until it is uninstalled, so its threads still need a reply path.
+#                 Remove this mode once the App is gone.
+#
+# Each reviewer's strip rule targets ONLY its own @token. A `@codeant-ai` token
+# in a graphite-mode body is left intact, and vice versa — the rules are
+# independent, never interchangeable (issue #1374).
 #
 # The strip rules are case-insensitive and match the literal @token only — they
 # do NOT mangle surrounding text. Both strip and prepend are idempotent.
 #
 # Usage:
-#   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant --body "<text>" [--pr N]
+#   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body "<text>" [--pr N]
+#                   [--verdict fixed|deferred|declined --defect real|not [--agent NAME]
+#                    [--fix as-given|adapted|wrong|none]]
 #   reply-thread.sh --help
 #
 # Arguments:
 #   <comment_id>     Numeric databaseId of the review comment to reply to.
-#   --reviewer X     One of: cr, bugbot, greptile, codeant. Controls @mention handling.
+#   --reviewer X     One of: cr, bugbot, greptile, codeant, graphite. Controls
+#                    @mention handling.
 #   --body "<text>"  Reply body (after transformation rules are applied).
-#   --pr N           PR number. Required only for the PR-comment fallback path;
-#                    optional for inline. If omitted and inline returns 404,
-#                    the script cannot fall back — exits 3.
+#   --pr N           PR number. Feeds BOTH the inline attempt (the reply route
+#                    is PR-scoped) and the PR-comment fallback. Optional: when
+#                    omitted the script resolves the PR number from the comment
+#                    itself — one extra GET of
+#                    repos/{owner}/{repo}/pulls/comments/{comment_id}, reading
+#                    the trailing segment of .pull_request_url. A comment that
+#                    cannot be resolved exits 3. Pass --pr to skip that lookup.
+#   --verdict X      Optional (issue #1810): fixed, deferred, or declined. Stamps
+#                    the reply with one hidden marker line, appended after the
+#                    reviewer rules above have run:
+#                      <!-- review-verdict: X defect=Y agent=NAME -->
+#                    (or `... agent=NAME fix=Z -->` when --fix is given)
+#                    /review-stack-audit's ledger reads it back as the thread's
+#                    verdict, ahead of the reply's wording. Requires --defect.
+#   --defect Y       real or not: was the finding a real defect? Only a marker
+#                    saying `real` counts toward the ledger's real defects.
+#                    Valid only with --verdict.
+#   --agent NAME     The coding agent replying (default: claude-code), so the
+#                    ledger can split verdicts by agent. Letters, digits, `.`,
+#                    `_`, `-`; at most 64 characters. Valid only with --verdict.
+#   --fix Z          Optional (issue #1843): fix quality of the reviewer's
+#                    suggestion — as-given (applied as proposed, or with trivial
+#                    edits), adapted (right direction, code rewritten), wrong
+#                    (the proposed fix was incorrect or harmful), none (no fix
+#                    was suggested). Appends ` fix=Z` to the marker. Required by
+#                    the rules when --defect real; scored by the ledger only for
+#                    real defects that were not declined. Valid only with
+#                    --verdict.
+#                    Without these four flags the posted body is byte-identical
+#                    to what it was before they existed; omitting only --fix
+#                    leaves the marker byte-identical to its pre-#1843 form.
 #
 # Prerequisites:
 #   Must be run from inside a git checkout of the target repository — the
@@ -35,9 +77,12 @@
 #      URL printed to stdout. Fallback path also emits a note to stderr.
 #   1  (unused — reserved; was the fallback-success code before issue #884)
 #   2  Usage error
-#   3  Inline returned 404 and no --pr provided OR both endpoints returned 404
+#   3  PR number could not be resolved from the comment (and no --pr supplied)
+#      — the comment 404s, or its pull_request_url is missing/non-numeric —
+#      OR both inline and fallback returned 404
 #   4  Inline returned 404 and fallback failed with a non-404 error
-#   5  gh / network error (unexpected)
+#   5  gh / network error (unexpected), including a non-404 failure of the
+#      PR-number lookup (5xx, auth, network): the PR is unknown, not absent
 #
 # Examples:
 #   reply-thread.sh 2345678901 --reviewer cr \
@@ -51,19 +96,26 @@
 # See .claude/rules/cr-github-review.md "Processing CR Feedback" step 3 and
 # .claude/rules/greptile.md / .claude/rules/bugbot.md for the reply conventions
 # this script enforces. For CodeAnt reply conventions, see
-# .claude/reference/codeant-graphite-supplemental.md.
+# .claude/reference/codeant-supplemental.md.
 
 set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 REVIEWER=""
 BODY=""
 PR_NUMBER=""
 COMMENT_ID=""
+VERDICT=""
+DEFECT=""
+AGENT=""
+AGENT_SET=0
+FIX=""
+FIX_SET=0
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 # --------------------------------------------------------------------------
@@ -77,7 +129,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reviewer)
       if [[ -z "${2:-}" ]]; then
-        echo "ERROR: --reviewer requires a value (cr|bugbot|greptile|codeant)" >&2
+        echo "ERROR: --reviewer requires a value (cr|bugbot|greptile|codeant|graphite)" >&2
         exit 2
       fi
       REVIEWER="$2"
@@ -99,6 +151,40 @@ while [[ $# -gt 0 ]]; do
       PR_NUMBER="$2"
       shift 2
       ;;
+    --verdict)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --verdict requires a value (fixed|deferred|declined)" >&2
+        exit 2
+      fi
+      VERDICT="$2"
+      shift 2
+      ;;
+    --defect)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --defect requires a value (real|not)" >&2
+        exit 2
+      fi
+      DEFECT="$2"
+      shift 2
+      ;;
+    --agent)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --agent requires a value" >&2
+        exit 2
+      fi
+      AGENT="$2"
+      AGENT_SET=1
+      shift 2
+      ;;
+    --fix)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --fix requires a value (as-given|adapted|wrong|none)" >&2
+        exit 2
+      fi
+      FIX="$2"
+      FIX_SET=1
+      shift 2
+      ;;
     --*)
       echo "ERROR: unknown flag: $1" >&2
       exit 2
@@ -116,7 +202,7 @@ done
 
 if [[ -z "$COMMENT_ID" ]]; then
   echo "ERROR: <comment_id> is required" >&2
-  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant --body \"<text>\" [--pr N]" >&2
+  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body \"<text>\" [--pr N] [--verdict fixed|deferred|declined --defect real|not [--agent NAME] [--fix as-given|adapted|wrong|none]]" >&2
   exit 2
 fi
 
@@ -126,13 +212,13 @@ if [[ ! "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 case "$REVIEWER" in
-  cr|bugbot|greptile|codeant) ;;
+  cr|bugbot|greptile|codeant|graphite) ;;
   "")
-    echo "ERROR: --reviewer is required (cr|bugbot|greptile|codeant)" >&2
+    echo "ERROR: --reviewer is required (cr|bugbot|greptile|codeant|graphite)" >&2
     exit 2
     ;;
   *)
-    echo "ERROR: --reviewer must be one of: cr, bugbot, greptile, codeant (got: $REVIEWER)" >&2
+    echo "ERROR: --reviewer must be one of: cr, bugbot, greptile, codeant, graphite (got: $REVIEWER)" >&2
     exit 2
     ;;
 esac
@@ -145,6 +231,51 @@ fi
 if [[ -n "$PR_NUMBER" ]] && [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: --pr must be a positive integer (got: $PR_NUMBER)" >&2
   exit 2
+fi
+
+# Verdict marker flags (issues #1810, #1843). All four are validated before anything
+# is posted, and a flag given without --verdict is an error rather than a
+# silent no-op: an agent that thought it had recorded a verdict must find out.
+if [[ -n "$VERDICT" || -n "$DEFECT" || "$AGENT_SET" -eq 1 || "$FIX_SET" -eq 1 ]]; then
+  case "$VERDICT" in
+    fixed|deferred|declined) ;;
+    "")
+      echo "ERROR: --defect, --agent and --fix are valid only with --verdict (fixed|deferred|declined)" >&2
+      exit 2
+      ;;
+    *)
+      echo "ERROR: --verdict must be one of: fixed, deferred, declined (got: $VERDICT)" >&2
+      exit 2
+      ;;
+  esac
+  case "$DEFECT" in
+    real|not) ;;
+    "")
+      echo "ERROR: --verdict requires --defect (real|not)" >&2
+      exit 2
+      ;;
+    *)
+      echo "ERROR: --defect must be one of: real, not (got: $DEFECT)" >&2
+      exit 2
+      ;;
+  esac
+  [[ "$AGENT_SET" -eq 1 ]] || AGENT="claude-code"
+  # The marker is parsed back by token, so the name may hold no whitespace and
+  # nothing that could close the HTML comment early.
+  agent_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+  if [[ ! "$AGENT" =~ $agent_re ]]; then
+    echo "ERROR: --agent must be 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit (got: $AGENT)" >&2
+    exit 2
+  fi
+  if [[ "$FIX_SET" -eq 1 ]]; then
+    case "$FIX" in
+      as-given|adapted|wrong|none) ;;
+      *)
+        echo "ERROR: --fix must be one of: as-given, adapted, wrong, none (got: $FIX)" >&2
+        exit 2
+        ;;
+    esac
+  fi
 fi
 
 # --------------------------------------------------------------------------
@@ -182,7 +313,7 @@ case "$REVIEWER" in
     # fallback, but we keep it consistent on inline too.
     # Word-boundary-aware match: a substring like `foo@coderabbitaix` must
     # NOT suppress the prepend — only a standalone @mention counts as present.
-    if ! printf '%s' "$BODY" | grep -qiE '(^|[^[:alnum:]_])@coderabbitai([^[:alnum:]_]|$)'; then
+    if ! grep -qiE '(^|[^[:alnum:]_])@coderabbitai([^[:alnum:]_]|$)' <<<"$BODY"; then
       BODY="@coderabbitai $BODY"
     fi
     ;;
@@ -200,6 +331,15 @@ case "$REVIEWER" in
     # hyphen is a literal character in the pattern, not a range separator.
     strip_standalone_token '@[Cc][Oo][Dd][Ee][Aa][Nn][Tt]-[Aa][Ii]'
     ;;
+  graphite)
+    # Strip standalone @graphite-app tokens (`@graphite-app re-review` is the
+    # re-review trigger, so a stray mention would request a fresh review;
+    # plain-text reply mirrors bugbot/greptile/codeant semantics). This pattern
+    # is deliberately NOT shared with the codeant branch — each reviewer strips
+    # only its own token, so a @codeant-ai token in a graphite reply survives
+    # intact (issue #1374). The hyphen is a literal character, not a range.
+    strip_standalone_token '@[Gg][Rr][Aa][Pp][Hh][Ii][Tt][Ee]-[Aa][Pp][Pp]'
+    ;;
 esac
 
 # Collapse only runs of spaces/tabs left by token removal; preserve newlines
@@ -207,13 +347,63 @@ esac
 # whitespace from each line. [[:blank:]] is portable across BSD and GNU sed —
 # [ \t] is NOT: BSD sed's -E treats `\t` as literal `\` + `t` inside a bracket
 # expression, which would eat real `t` characters at line ends.
-if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" || "$REVIEWER" == "codeant" ]]; then
+if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" \
+   || "$REVIEWER" == "codeant" || "$REVIEWER" == "graphite" ]]; then
   BODY=$(printf '%s' "$BODY" | sed -E 's/[[:blank:]]{2,}/ /g; s/^[[:blank:]]+//; s/[[:blank:]]+$//')
 fi
 
-if ! printf '%s' "$BODY" | grep -q '[^[:space:]]'; then
+if ! grep -q '[^[:space:]]' <<<"$BODY"; then
   echo "ERROR: --body is empty or whitespace-only after reviewer transformation" >&2
   exit 2
+fi
+
+# The verdict marker goes on a line of its own AFTER the reviewer rules, so
+# neither a token strip nor the blank-collapse can reach it, and after the
+# empty-body check, so a marker never stands in for a reply. Without --verdict
+# this block never runs and BODY is exactly what it always was. The fallback
+# path below carries it too, behind its review-comment-id line.
+#
+# A body that ends inside an open fenced code block would swallow the marker
+# (an unclosed fence runs to the end of the comment, and the ledger ignores a
+# marker in code), so the open fence is closed first. The scan mirrors the
+# ledger's reading in lib/review_ledger.py: quoted lines are skipped; a fence
+# opens on 0-3 spaces then 3+ backticks or tildes, and closes on a line of the
+# same character at least as long, with nothing after it but blanks. It prints
+# the open fence's run, or nothing when every fence is closed. The awk program
+# lives in a plain variable, not inline in $( ): bash 3.2 mis-scans backticks
+# and quotes inside a command substitution.
+if [[ -n "$VERDICT" ]]; then
+  OPEN_FENCE_AWK='
+    /^[ \t]*>/ { next }
+    {
+      line = $0
+      if (open == "") {
+        if (match(line, /^[ \t]?[ \t]?[ \t]?(```+|~~~+)/)) {
+          run = substr(line, RSTART, RLENGTH)
+          sub(/^[ \t]*/, "", run)
+          open = run
+        }
+      } else if (line ~ /^[ \t]?[ \t]?[ \t]?(```+|~~~+)[ \t]*$/) {
+        run = line
+        sub(/^[ \t]*/, "", run)
+        sub(/[ \t]*$/, "", run)
+        if (substr(run, 1, 1) == substr(open, 1, 1) && length(run) >= length(open)) open = ""
+      }
+    }
+    END { print open }'
+  OPEN_FENCE=$(printf '%s\n' "$BODY" | awk "$OPEN_FENCE_AWK")
+  if [[ -n "$OPEN_FENCE" ]]; then
+    BODY="$BODY
+$OPEN_FENCE"
+  fi
+  # --fix (issue #1843) adds one trailing token; omitted, the marker line is
+  # byte-identical to its pre-#1843 form.
+  FIX_TOKEN=""
+  if [[ -n "$FIX" ]]; then
+    FIX_TOKEN=" fix=$FIX"
+  fi
+  BODY="$BODY
+<!-- review-verdict: $VERDICT defect=$DEFECT agent=$AGENT$FIX_TOKEN -->"
 fi
 
 # --------------------------------------------------------------------------
@@ -236,7 +426,59 @@ if ! OWNER=$(printf '%s' "$REPO_JSON" | jq -er '.owner.login') \
 fi
 
 # --------------------------------------------------------------------------
-# Inline reply attempt — pulls/comments/{id}/replies
+# Resolve the PR number — required by the inline reply route.
+#
+# The reply-creation endpoint is PR-scoped; the PR-less form
+# (pulls/comments/{id}/replies) does not accept POST and always 404s, which
+# made the PR-level fallback the de-facto default on every reply (issue #1446).
+# --pr feeds the inline attempt directly when supplied; otherwise derive the
+# number from the comment's own .pull_request_url so the documented "optional
+# for inline" contract still holds. Either way PR_NUMBER is guaranteed non-empty
+# and positive-integer-validated from here on, so the fallback needs no guard.
+# --------------------------------------------------------------------------
+RESOLVE_ERR=$(mktemp -t reply-thread-resolve-err.XXXXXX)
+# shellcheck disable=SC2064
+trap "rm -f '$REPO_ERR' '$RESOLVE_ERR'" EXIT
+
+if [[ -z "$PR_NUMBER" ]]; then
+  RESOLVE_RC=0
+  COMMENT_JSON=$(gh api "repos/$OWNER/$REPO/pulls/comments/$COMMENT_ID" \
+    2>"$RESOLVE_ERR") || RESOLVE_RC=$?
+  if [[ $RESOLVE_RC -ne 0 ]]; then
+    # Classify exactly as the inline path does: a confirmed 404 means the
+    # comment is missing (a permanent, data-shaped condition the caller can act
+    # on) → exit 3. Anything else (5xx, auth, network) is an unexpected gh
+    # failure → exit 5, which is what that code documents. Collapsing a
+    # transient outage into exit 3 would tell the caller the comment has no
+    # resolvable PR when the API was simply unreachable.
+    RESOLVE_ERR_TEXT=$(cat "$RESOLVE_ERR")
+    if grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)' <<<"$RESOLVE_ERR_TEXT"; then
+      echo "ERROR: could not resolve PR number from comment $COMMENT_ID — comment not found: $RESOLVE_ERR_TEXT" >&2
+      echo "       Pass --pr N to skip the lookup." >&2
+      exit 3
+    fi
+    echo "ERROR: PR-number lookup for comment $COMMENT_ID failed (non-404): $RESOLVE_ERR_TEXT" >&2
+    echo "       Pass --pr N to skip the lookup." >&2
+    exit 5
+  fi
+  # jq -e exits non-zero on null/missing, so a response without the field is
+  # caught here rather than silently yielding an empty PR number.
+  if ! PR_URL=$(printf '%s' "$COMMENT_JSON" | jq -er '.pull_request_url') \
+    || [[ -z "$PR_URL" ]]; then
+    echo "ERROR: could not resolve PR number from comment $COMMENT_ID — response has no pull_request_url" >&2
+    echo "       Pass --pr N to skip the lookup." >&2
+    exit 3
+  fi
+  PR_NUMBER="${PR_URL##*/}"
+  if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: could not resolve PR number from comment $COMMENT_ID — pull_request_url has no numeric PR segment (got: $PR_URL)" >&2
+    echo "       Pass --pr N to skip the lookup." >&2
+    exit 3
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Inline reply attempt — pulls/{pr}/comments/{id}/replies
 #
 # Capture stdout (JSON response body) and stderr (gh error messages) into
 # separate streams. gh api emits the HTTP-error text to stderr — mixing it
@@ -244,10 +486,10 @@ fi
 # --------------------------------------------------------------------------
 INLINE_ERR=$(mktemp -t reply-thread-inline-err.XXXXXX)
 # shellcheck disable=SC2064
-trap "rm -f '$REPO_ERR' '$INLINE_ERR'" EXIT
+trap "rm -f '$REPO_ERR' '$RESOLVE_ERR' '$INLINE_ERR'" EXIT
 
 INLINE_RC=0
-INLINE_RESP=$(gh api "repos/$OWNER/$REPO/pulls/comments/$COMMENT_ID/replies" \
+INLINE_RESP=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
   -f body="$BODY" 2>"$INLINE_ERR") || INLINE_RC=$?
 
 if [[ $INLINE_RC -eq 0 ]]; then
@@ -267,7 +509,7 @@ fi
 # "HTTP 404: Not Found (...)". stdout may be empty or contain a partial body.
 INLINE_ERR_TEXT=$(cat "$INLINE_ERR")
 IS_404=0
-if printf '%s' "$INLINE_ERR_TEXT" | grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)'; then
+if grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)' <<<"$INLINE_ERR_TEXT"; then
   IS_404=1
 fi
 
@@ -278,17 +520,13 @@ if [[ $IS_404 -eq 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# 404 on inline — try PR-comment fallback if --pr was provided.
+# 404 on inline — the comment is outdated or deleted, so it cannot take an
+# inline reply. Fall back to a PR-level comment. PR_NUMBER is always set by
+# this point (--pr or resolution above), so no empty-PR guard is needed.
 # --------------------------------------------------------------------------
-if [[ -z "$PR_NUMBER" ]]; then
-  echo "ERROR: inline returned 404 and --pr not provided — cannot fall back" >&2
-  echo "       Comment $COMMENT_ID is not an inline review comment (or does not exist)." >&2
-  exit 3
-fi
-
 FALLBACK_ERR=$(mktemp -t reply-thread-fallback-err.XXXXXX)
 # shellcheck disable=SC2064
-trap "rm -f '$REPO_ERR' '$INLINE_ERR' '$FALLBACK_ERR'" EXIT
+trap "rm -f '$REPO_ERR' '$RESOLVE_ERR' '$INLINE_ERR' '$FALLBACK_ERR'" EXIT
 
 FALLBACK_RC=0
 # Preserve the review-comment identity when GitHub cannot accept an inline
@@ -320,7 +558,7 @@ fi
 
 # Fallback failed — classify via stderr.
 FALLBACK_ERR_TEXT=$(cat "$FALLBACK_ERR")
-if printf '%s' "$FALLBACK_ERR_TEXT" | grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)'; then
+if grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)' <<<"$FALLBACK_ERR_TEXT"; then
   echo "ERROR: both inline and fallback returned 404 — PR $PR_NUMBER or comment $COMMENT_ID not found" >&2
   exit 3
 fi

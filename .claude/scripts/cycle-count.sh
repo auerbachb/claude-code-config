@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # cycle-count.sh — Reconstruct review-then-fix cycle count for a PR.
+# catalog: review-escalation — Reconstruct per-PR review-then-fix cycle count for round gating
 #
 # A "cycle" is one review followed by at least one commit before the next
 # review (or before merge for the final review). Reviews with no subsequent
@@ -55,7 +56,7 @@
 #      after an actionable review but before a later non-actionable one.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_usage() {
   cat <<'EOF'

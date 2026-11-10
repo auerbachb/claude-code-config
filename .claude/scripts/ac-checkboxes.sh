@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ac-checkboxes.sh — Test-Plan checkbox helper (extract / tick / all-pass).
+# catalog: merge-gate-sequencing — Parse and update the PR body's Test plan checkboxes
 #
 # Parse Markdown checkboxes from the PR body's `## Test plan` section (case-
 # insensitive match; also accepts `## Test Plan` and `## Acceptance Criteria`),
-# then either emit them as JSON or flip `- [ ]` to `- [x]` via
+# then either emit them as JSON or tick their supported list markers via
 # `gh api repos/{owner}/{repo}/pulls/{N} -X PATCH -F body=@file` (using a file
 # argument, not an inline string, preserves the body's exact whitespace and
 # trailing-newline profile). The REST endpoint is used instead of
@@ -33,6 +34,9 @@
 #                        Only unchecked items can be ticked; already-checked items
 #                        in the match set are silently skipped (idempotent).
 #   --all-pass           Tick every unchecked item in the Test Plan section.
+#
+# Supported markers: -, *, +, or one-to-nine digits followed by . or ).
+# At least one separator whitespace character is required before [ ].
 #
 # Section detection:
 #   Matches the first heading line (case-insensitive) of:
@@ -64,10 +68,21 @@
 # precisely — a bare `-e` would let any downstream failure surface as exit 1,
 # colliding with the "no Test Plan section" meaning.
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AC_LIST_MARKER_RE=""
+AC_FENCE_RE=""
+if [[ ! -r "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" ]] ||
+   ! source "$SCRIPT_DIR/lib/ac-checkbox-markers.sh" || [[ -z "$AC_LIST_MARKER_RE" || -z "$AC_FENCE_RE" ]] ||
+   ! declare -F ac_skip_fenced_line >/dev/null; then
+  echo "ERROR: shared checkbox marker library unavailable: $SCRIPT_DIR/lib/ac-checkbox-markers.sh" >&2
+  exit 2
+fi
 
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 # ---------------------------------------------------------------------------
@@ -176,7 +191,7 @@ BODY_JSON_FILE="$TMPDIR_AC/body.json"
 # otherwise silently mutate the body on every `--tick`/`--all-pass` write-back.
 if ! gh pr view "$PR_NUMBER" --json body >"$BODY_JSON_FILE" 2>"$BODY_ERR_FILE"; then
   BODY_ERR=$(cat "$BODY_ERR_FILE")
-  if printf '%s' "$BODY_ERR" | grep -qiE 'could not resolve|not found|no pull request'; then
+  if grep -qiE 'could not resolve|not found|no pull request' <<<"$BODY_ERR"; then
     echo "ERROR: PR #$PR_NUMBER not found" >&2
     exit 3
   fi
@@ -218,7 +233,7 @@ fi
 PY_OUT="$TMPDIR_AC/py-out"
 PY_ERR="$TMPDIR_AC/py-err"
 
-python3 - "$MODE" "$TICK_SPEC" "$BODY_FILE" "$PY_OUT" <<'PY' 2>"$PY_ERR"
+python3 - "$MODE" "$TICK_SPEC" "$BODY_FILE" "$PY_OUT" "$AC_LIST_MARKER_RE" "$AC_FENCE_RE" <<'PY' 2>"$PY_ERR"
 import json
 import os
 import re
@@ -229,10 +244,24 @@ tick_spec = sys.argv[2]
 body_path = sys.argv[3]
 out_path = sys.argv[4]
 
-with open(body_path, "r", encoding="utf-8") as fh:
+with open(body_path, "r", encoding="utf-8", newline="") as fh:
     body = fh.read()
 
 lines = body.splitlines(keepends=True)
+fence_re = re.compile(sys.argv[6])
+visible = []
+fence_char, fence_length = '', 0
+for line in lines:
+    match = fence_re.match(line.rstrip('\r\n'))
+    if fence_char:
+        if match and match[1][0] == fence_char and len(match[1]) >= fence_length and not match[2].strip(' \t'):
+            fence_char, fence_length = '', 0
+        visible.append(False)
+    elif match and not (match[1][0] == '`' and '`' in match[2]):
+        fence_char, fence_length = match[1][0], len(match[1])
+        visible.append(False)
+    else:
+        visible.append(True)
 
 # Section detection. Match the first heading line (level 2) whose text is
 # "test plan" or "acceptance criteria" (case-insensitive). Content runs until
@@ -242,12 +271,14 @@ lines = body.splitlines(keepends=True)
 # (optionally followed by trailing whitespace) select the section.
 SECTION_RE = re.compile(r"^\s*##\s+(test\s+plan|acceptance\s+criteria)\s*$", re.IGNORECASE)
 HEADING_RE = re.compile(r"^\s*##\s+")
-CHECKBOX_RE = re.compile(r"^(\s*-\s*\[)( |x|X)(\]\s*)(.*?)(\s*)$")
+CHECKBOX_RE = re.compile(r"^(\s*(?:" + sys.argv[5] + r")\s+\[)( |x|X)(\]\s*)(.*?)(\s*)$")
 
 section_start = None  # index of first line *after* the section heading
 section_end = None    # exclusive end (index of next heading or len(lines))
 
 for i, line in enumerate(lines):
+    if not visible[i]:
+        continue
     if section_start is None and SECTION_RE.match(line):
         section_start = i + 1
         continue
@@ -267,6 +298,8 @@ if section_end is None:
 # Collect checkbox items in document order.
 items = []  # list of (line_index, checked_bool, text)
 for idx in range(section_start, section_end):
+    if not visible[idx]:
+        continue
     m = CHECKBOX_RE.match(lines[idx])
     if not m:
         continue
@@ -331,7 +364,7 @@ if not target_indexes:
         json.dump({"result": "noop", "ticked": [], "items": len(items)}, fh)
     sys.exit(0)
 
-# Flip - [ ] to - [x] on the matched lines. Preserve original indentation and
+# Tick matched items without changing their list markers. Preserve indentation and
 # any trailing whitespace around the marker — only the ` ` → `x` substitution
 # changes.
 new_lines = list(lines)
@@ -350,7 +383,7 @@ new_body = "".join(new_lines)
 # + join does the right thing here.
 
 body_out_path = out_path + ".body"
-with open(body_out_path, "w", encoding="utf-8") as fh:
+with open(body_out_path, "w", encoding="utf-8", newline="") as fh:
     fh.write(new_body)
 
 with open(out_path, "w", encoding="utf-8") as fh:

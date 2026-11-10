@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # churn-hotspots.sh — Detect multi-PR file churn and surface refactor candidates (issue #755).
+# catalog: backlog-pm — Detect files touched by many distinct merged PRs as refactor candidates
 #
 # PURPOSE:
 #   Some files are magnets: every feature passes through them, and any
@@ -21,15 +22,19 @@
 #   churn-hotspots.sh [--since <date|ref>] [--threshold N] [--repo <owner/repo>]
 #                     [--conflict-weight N] [--exclude <glob,glob>]
 #                     [--no-default-excludes] [--source auto|git|gh]
-#                     [--ref <ref>] [--fetch] [--pr-cap N] [--top N] [--json]
+#                     [--ref <ref>] [--fetch] [--pr-cap N] [--top N]
+#                     [--sweep-threshold N] [--include-creation]
+#                     [--exemptions FILE] [--no-exemptions] [--json]
 #   churn-hotspots.sh --help
 #
 #   --since <date|ref>   Window start. A date (YYYY-MM-DD) is used as-is; any
 #                        other value is resolved as a git ref/SHA via its commit
-#                        date. Default: 14 days back (via gh-window.sh).
+#                        date. Default: 14 days back (via gh-window.sh). An
+#                        EMPTY value exits 2 (see EMPTY VALUES below).
 #   --threshold N        Hotspot score threshold. Default 3.
 #   --repo <owner/repo>  Target repo. Defaults to the current checkout. Naming a
-#                        repo other than the checkout forces --source gh.
+#                        repo other than the checkout forces --source gh. An
+#                        EMPTY value exits 2 (see EMPTY VALUES below).
 #   --ref <ref>          Scan this ref on the git path instead of the
 #                        auto-resolved default branch. Exits 3 when it does not
 #                        resolve — an explicit ref is never silently ignored.
@@ -37,7 +42,9 @@
 #                        Also exits 3 when the ref resolves but carries no
 #                        PR-marked commits under --source auto: the gh fallback
 #                        scans repo-wide and cannot honour a ref, so the run
-#                        refuses rather than measuring something else.
+#                        refuses rather than measuring something else. An EMPTY
+#                        value exits 2 (see EMPTY VALUES below) rather than
+#                        falling back to auto-detection.
 #   --fetch              Best-effort `git fetch origin` before resolving the
 #                        scan ref, so a stale remote-tracking ref cannot narrow
 #                        the window. OFF by default: this script is otherwise
@@ -46,7 +53,9 @@
 #                        fatal); skipped when there is no `origin` remote.
 #   --conflict-weight N  Score added per recorded conflict round. Default 2.
 #   --exclude <globs>    Comma-separated globs to ignore, in addition to the
-#                        defaults below.
+#                        defaults below. An EMPTY value exits 2, as does one
+#                        holding no non-blank pattern (`,` or whitespace) --
+#                        see EMPTY VALUES below.
 #   --no-default-excludes  Drop the built-in exclusion list.
 #   --source auto|git|gh   Enumeration source. Default auto (git, falling back
 #                        to gh when git yields no PR-marked commits).
@@ -55,7 +64,51 @@
 #                        (all). `total_hotspot_count` always reports the full
 #                        pre-truncation count, so a bounded call never hides how
 #                        much it dropped.
+#   --sweep-threshold N  A commit (git path) or PR (gh path) touching N or MORE
+#                        paths is a mechanical SWEEP and contributes nothing to
+#                        any file's score. DEFAULT 20. Pass 0 to disable the rule
+#                        and score sweeps like ordinary touches.
+#   --include-creation   Count the commit that CREATED a file toward its score.
+#                        OFF by default: a file's birth is not churn.
+#   --exemptions FILE    Catalog-exemption list (see CATALOG EXEMPTIONS below).
+#                        Defaults to .claude/reference/churn-hotspot-exemptions.json
+#                        beside this script; an absent DEFAULT leaves the feature
+#                        inactive, an unreadable or invalid EXPLICIT file exits 3,
+#                        and an EMPTY value exits 2 rather than quietly falling
+#                        back to the default the caller did not ask for. It
+#                        replaces the CATALOG kind only: the scanned repo's
+#                        POLICY EXEMPTIONS declaration is still read.
+#   --no-exemptions      Disable BOTH exemption kinds (catalog and policy).
+#                        Previously exempt files score and flag as ordinary
+#                        hotspots — the negative control for the feature. It
+#                        WINS over --exemptions (and neither file is then read);
+#                        the envelope reports `exemptions_file: null` and
+#                        `policy_exemptions_file: null`, so the disabled state
+#                        is observable rather than silent.
 #   --json               Emit a single JSON object. Default emits TSV rows.
+#
+# EMPTY VALUES (issue #1577):
+#   `--ref ''` and `--ref=` both survive the "requires a value" check — the
+#   argument IS present — and then read downstream exactly like no --ref at all,
+#   because resolve_scan_ref() gates on `[ -n "$REF" ]`. The run would silently
+#   fall through to auto-detection and scan a ref the caller never named. The
+#   same shape holds for --since (silently re-computes the default 14-day
+#   window), --repo (gh silently infers the repo from the cwd), --exclude (the
+#   named exclusion policy is silently never applied) and --exemptions (issue
+#   #1571, guarded first). All five reject an empty value at PARSE TIME with
+#   exit 2, because parse time is the last point at which "passed empty" and
+#   "never passed" are still distinguishable. --exclude additionally rejects a
+#   value holding no non-blank pattern (`,`, `, ,`, whitespace): is_excluded()
+#   skips blank comma-fields, so such a value is empty in the only sense that
+#   reaches the scan and would fall back to the built-in list just as `''` did.
+#
+#   The other value-taking flags need no such guard and are deliberately left
+#   alone: --threshold, --conflict-weight, --pr-cap, --top and --sweep-threshold
+#   are already rejected with exit 2 by their numeric validators (whose `case`
+#   patterns match the empty string), and --source by its enum validator. The
+#   resulting invariant: every value-taking flag either rejects an empty value
+#   at parse time or is rejected downstream by its own validator; none falls
+#   back to a default the caller did not name.
 #
 # SCORING (the documented weight — issue #755 AC 2):
 #
@@ -89,15 +142,169 @@
 #   all read as 0 — which is what lets this run in a fresh clone with no session
 #   history at all.
 #
+# SWEEP AND CREATION FILTERS (issue #1547):
+#   Two systematic biases inflated every score before these existed. A
+#   three-round triage of 39 flagged files closed 37 of them as by-design, and
+#   the two shapes below supplied most of the inflation. Both filters drop the
+#   touch EVENT before aggregation — they never re-weight the score formula —
+#   so `score == pr_count + conflict_weight * conflict_rounds` still holds
+#   exactly and every reported number stays an integer.
+#
+#   1. FILE CREATION IS NOT CHURN. The commit that adds a path is that file's
+#      birth, not evidence that the file is a magnet. 7 of one triage round's
+#      14 files were created inside their own scan window, so each mechanically
+#      started at score 1-2 and reached the reporting threshold on one sweep
+#      plus one real touch. The creating commit is now excluded (git path: diff
+#      status `A` or `C`; gh path: `"status"` of `added` or `copied`), reported
+#      as `creation_skipped_count`. A copy destination is a birth on both paths
+#      so the two backends cannot disagree about the same history. A rename
+#      DESTINATION is not a creation — renames already read as two paths, and
+#      mass renames are caught by rule 2.
+#      `--include-creation` restores the old behaviour.
+#
+#   2. REPO-WIDE SWEEPS ARE NOT FILE-LOCAL CHURN. One 72-file mechanical sweep
+#      and two 39-file rename sweeps supplied the majority of events across
+#      dozens of flagged files, none of which had anything to do with those
+#      files' concerns. A commit touching >= --sweep-threshold paths (DEFAULT
+#      20) therefore contributes nothing, reported as `sweep_commit_count` and
+#      `sweep_skipped_count`.
+#
+#      The count is the commit's RAW path count, taken before the exclusion and
+#      existence filters: a 72-file sweep is a sweep even after 60 of its paths
+#      were later deleted.
+#
+#      The unit differs by enumeration path — a COMMIT on the git path, the
+#      whole PR's file list on the gh path (which has no per-commit granularity).
+#      For a squash-merge repo these are the same thing.
+#
+#   WHY 0 AND NOT A FRACTION. `churn-hotspot-wrap-plan.sh` validates this
+#   envelope with `score == pr_count + conflict_weight * conflict_rounds` and
+#   `floor == .` on every count, and /wrap files nothing when that check fails.
+#   A fractional sweep weight would break that consumer contract; dropping the
+#   event is the weight-0 case, and it needs no consumer change.
+#
+#   A PR is still counted for a file when any OTHER commit of that PR touched it
+#   non-mechanically — that is precisely what weighting the sweep commit 0 means.
+#   Only in-window commits are scanned, so a file created BEFORE the window is
+#   untouched by rule 1.
+#
+#   The creation fact is reported, not just spent: each hotspot carries
+#   `created_in_window` and `creation_pr`, so a file born in the window that
+#   still crosses the threshold on its other PRs can be read for what it is.
+#
 # DEFAULT EXCLUSIONS:
 #   package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, poetry.lock,
-#   go.sum, CHANGELOG.md — generated or append-only files that churn by design
-#   and are never refactor candidates. The list is deliberately universal;
-#   repo-specific by-design churn (an index or catalog file every change edits)
-#   belongs in --exclude, not baked in here.
+#   go.sum, CHANGELOG.md, project.pbxproj, Package.resolved — generated or
+#   append-only files that churn by design and are never refactor candidates.
+#   project.pbxproj (written by Xcode or XcodeGen) and Package.resolved (written
+#   by SwiftPM) are the Xcode/SwiftPM equivalents of Cargo.lock and go.sum: the
+#   same basename in every repo of their ecosystem (issue #1855). Entries are
+#   literal basenames, so they match at any depth, root level included. The list
+#   is deliberately universal: tool-written files universal to an ecosystem go
+#   here; repo-specific by-design churn is handled by CATALOG EXEMPTIONS (lint-
+#   enforced) or POLICY EXEMPTIONS (a scanned repo's written rule) below, and
+#   --exclude remains for per-invocation and repo-specific generated files.
+#
+# CATALOG EXEMPTIONS (issue #1571):
+#   Some files churn because a LINT requires it: a catalog or index whose CI
+#   check fails unless a row is edited every time a script or test is added or
+#   renamed. No refactor can retire that flag, so re-reporting the file forever
+#   is pure noise — and noise is how a real hotspot eventually gets skimmed past.
+#
+#   Exempt paths are read from a persisted, reason-validated JSON file
+#   (`.claude/reference/churn-hotspot-exemptions.json` by default):
+#
+#     {"schema": "churn-hotspot-exemptions/v1",
+#      "exemptions": {"<path>": {"lint": "<enforcing lint>", "reason": "<why>"}}}
+#
+#   BOTH `lint` and `reason` are REQUIRED and must be non-empty strings. An
+#   entry that states no enforcing lint is rejected with exit 3 naming the
+#   offending path, so exemption can never be claimed by an arbitrary file on
+#   assertion alone.
+#
+#   EXEMPT IS NOT EXCLUDED. An excluded path is dropped at the touch event and
+#   never scored. An exempt path is scored exactly like any other file and then
+#   RECLASSIFIED at aggregation: it leaves `hotspots[]` for `exemptions[]`,
+#   keeping its real pr_count / pr_numbers / score, so history stays complete
+#   and the file is reported rather than hidden. Every exempt path touched in
+#   the window appears there regardless of threshold — the reporting floor
+#   (`score >= threshold AND pr_count >= 2`) governs hotspots only.
+#
+#   Because exempt files are absent from `hotspots[]`, the /wrap consumer
+#   (`churn-hotspot-wrap-plan.sh`) produces no comment, file, growth, unknown,
+#   or suppressed entry for them, and the wrap sweep stops asking the same
+#   keep-or-reopen question every run. No consumer change was needed.
+#
+#   The exit-code contract keys on `hotspots[]` ALONE: a run whose only reported
+#   paths are exempt is clean (exit 1). The existing-issue lookup is skipped for
+#   exempt paths — they are never filed, so there is nothing to dedupe against.
+#
+#   Exclusion still wins over exemption: an excluded path never reaches
+#   aggregation, so it can never appear on the exempt line.
+#
+# POLICY EXEMPTIONS (issue #1858):
+#   A second exemption kind, for files a repo's OWN written process requires
+#   PRs of some kind to edit — a hand-kept ledger such as a parity checklist.
+#   No lint forces the edit and the file is specific to one repo, so neither the
+#   universal DEFAULT EXCLUSIONS nor the runner-local catalog above fits it.
+#
+#   The declaration lives IN THE SCANNED REPO, at a fixed repo-relative path:
+#
+#     .claude/reference/churn-hotspot-policy-exemptions.json
+#     {"schema": "churn-hotspot-policy-exemptions/v1",
+#      "exemptions": {"<path>": {"rule_source": "<repo file>", "reason": "<why>"}}}
+#
+#   It is read from the scanned repo AT THE SCANNED REF, never from this
+#   script's checkout and never from a working tree: on the git path from the
+#   commit SCAN_REF resolves to (an uncommitted declaration does not apply); on
+#   the gh path from the target repo's default-branch head, resolved once and
+#   pinned, so the declaration and every rule file come from one snapshot.
+#
+#   Guards (each exits 3 naming the declaration or the offending path; none
+#   ever falls back to scoring without the declaration):
+#     - the file exists but cannot be read (any git/gh failure other than a
+#       confirmed absence), is not valid JSON, has the wrong `schema`, or has a
+#       non-object `exemptions`;
+#     - an entry lacks a non-blank string `rule_source` or `reason`, or its
+#       path or `rule_source` holds a control character, or its `rule_source`
+#       is absolute, holds a `..`, `.` or empty segment, or is the declaration
+#       itself or the exempted file itself (either would "mention" the path
+#       trivially);
+#     - the cited `rule_source` does not exist at the same ref, or exists but
+#       does not mention the exempted path as a literal substring (catching
+#       typos and stale citations — exemption is never by assertion alone).
+#   Only a CONFIRMED absence (git: no such entry in the ref's tree; gh: HTTP 404
+#   on the contents request after the repo and commit lookups succeeded) means
+#   "no declaration", and the run then behaves exactly as before.
+#
+#   A policy exemption is a WEAKER claim than a catalog one: a written rule is
+#   not enforced by CI the way a lint is. The distinct `# exempt (policy)` line
+#   and the `kind` field exist so a reviewer can audit the two kinds apart.
+#
+#   Both kinds share one partition step: a policy-exempt file is scored exactly
+#   like any other and reclassified into `exemptions[]` with `kind: "policy"`,
+#   `rule_source` and `reason`. A path in both lists is reported once, as
+#   `kind: "catalog"`: the catalog is runner-local and applies to every scanned
+#   repo, so a collision is not the scanned repo's error. Catalog entries are
+#   not repo-scoped yet (a documented follow-up). --no-exemptions disables both
+#   kinds; --exemptions replaces the catalog only.
 #
 # ENUMERATION:
-#   git path (primary) — `git log --no-merges --name-only` over the window,
+#   DELIMITER — NUL, END TO END, ON BOTH BACKENDS (issue #1554). A filename may
+#     contain any byte except NUL and `/`, a NEWLINE included, so NUL is the only
+#     separator a path cannot forge. The gh path used to count newline-delimited
+#     LINES, so one embedded-newline filename made a 2-file PR count as 3 and
+#     drove the --sweep-threshold classification off the wrong number. The git
+#     path did not miscount (git C-quotes such a path onto a single line) but
+#     reported the ESCAPED path, which then failed the existence check and
+#     vanished into `missing_count` — so neither backend told the truth, and the
+#     two disagreed about identical history. Now git emits `-z --name-status`
+#     tokens (`status NUL path NUL`, or `R100 NUL old NUL new NUL` for a
+#     rename/copy) after a NUL-terminated `tformat` header, and the gh path pipes
+#     `pulls/{N}/files` JSON through jq to emit the same `status NUL filename NUL`
+#     pairs. Both spool files carry NUL-terminated rows for the same reason: a
+#     path is never split in half anywhere between the source and the report.
+#   git path (primary) — `git log --no-merges --name-status -z` over the window,
 #     scoped to an EXPLICIT ref, never to the invoking checkout's `HEAD`. The
 #     ref is resolved in order: --ref, `origin/HEAD` (honours a default branch
 #     not named `main`), then `origin/main`, `origin/master`, `main`, `master`.
@@ -125,7 +332,7 @@
 #   guard — a deleted file is not a refactor candidate regardless of its score).
 #
 # EXISTING-ISSUE LOOKUP:
-#   For each hotspot, issues in BOTH states (`--state all`) are searched for
+#   For each hotspot, issues in BOTH states are searched for
 #   `Refactor hotspot in:title` and matched CLIENT-SIDE on an exact title
 #   (`Refactor hotspot: <path>`) or an exact body marker
 #   (`<!-- churn-hotspot: <path> -->`). GitHub tokenizes paths in `in:title`
@@ -144,9 +351,12 @@
 #   chosen match on the next run. This detector still decides nothing — it only
 #   stops hiding the closed hit.
 #
-#   `--state all` enlarges the candidate set, so the ISSUE_LOOKUP_CAP guard below
-#   matters MORE, not less. It is unchanged: a capped lookup still sets
-#   `existing_lookup_failed` and blocks filing.
+#   Repo-scoped REST search reads creation-ascending pages of 100, at most 10
+#   pages. Stable totals, unique numbers, validated candidates and a short/empty
+#   final page prove completion; exactly 200 is complete after page 3. Totals
+#   >=1000 retain the conservative search ceiling and set both lookup-failed
+#   and truncated. Any page/matcher failure blocks filing. Closed matches are
+#   retained; do not close old tickets to fit the bound.
 #
 # OUTPUT:
 #   Default: one TSV row per hotspot, no header —
@@ -156,15 +366,35 @@
 #   state could not be read, or "-" when there is no match. The suffix is there
 #   so a person scanning the TSV cannot read a closed-issue hotspot as already
 #   handled.)
+#   Then, AFTER the hotspot rows, one line per touched exempt file —
+#     # exempt (catalog) <TAB> path <TAB> pr_count <TAB> score <TAB> pr_numbers <TAB> lint
+#     # exempt (policy) <TAB> path <TAB> pr_count <TAB> score <TAB> pr_numbers <TAB> rule_source
+#   The leading `#` marks the line so a column parser can tell it from a hotspot
+#   row (`grep -v '^#'` drops them); hotspot rows come first, so a caller reading
+#   the top N rows is unaffected. These lines are the "never silently omitted"
+#   guarantee — an exempt file is suppressed as a FLAG, never as a fact.
 #   --json: a single object with `repo`, `since`, `threshold`, `conflict_weight`,
 #   `min_prs`, `source`, `scan_ref`, `scan_ref_source` (one of `explicit`,
 #   `origin-head`, `candidate`, `head-fallback`, or `n/a` on the gh path),
 #   `scanned_pr_count`, `excluded_count`, `missing_count` (paths dropped because
-#   the file does not exist at the scanned ref or in the working tree), `truncated`,
+#   the file does not exist at the scanned ref or in the working tree),
+#   `sweep_threshold`, `include_creation`, `creation_skipped_count` (touches
+#   dropped as a file's own creation), `sweep_commit_count` (commits/PRs
+#   classified as sweeps), `sweep_skipped_count` (touches dropped as sweeps),
+#   `truncated`,
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
+#   `exemptions_file` (the resolved exemption file, or null when the feature is
+#   off or no file was found), `policy_exemptions_file` (the scanned repo's
+#   declaration path, or null when absent or disabled), `policy_exemptions_ref`
+#   (the commit it was read at, or null), `exempt_count` (both kinds),
+#   `exemptions[]` (each: the same scored fields as a hotspot minus the
+#   issue-lookup pair, plus `kind` — `"catalog"` with `lint` and `reason`, or
+#   `"policy"` with `rule_source` and `reason` — never bounded by --top or the
+#   threshold),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
-#   `last_merged_at`, `existing_hotspot_issue`, `existing_hotspot_issue_state`
+#   `last_merged_at`, `created_in_window`, `creation_pr`,
+#   `existing_hotspot_issue`, `existing_hotspot_issue_state`
 #   — `"open"`, `"closed"`, `"unknown"` when a match was found but its state
 #   could not be read, or null ONLY when there is no match at all. Null never
 #   means "matched but unclassifiable": a caller may read `state == null` as
@@ -176,8 +406,13 @@
 #   1  Clean — no file crossed the threshold
 #   2  Usage error (unknown flag, missing or invalid value)
 #   3  Environment error (missing dependency, not a git repo, no window,
-#      unresolvable --ref, or a --ref the chosen enumeration path cannot honour)
+#      unresolvable --ref, a --ref the chosen enumeration path cannot honour,
+#      or an unreadable/invalid exemption file — including an entry that names
+#      no enforcing lint — or a scanned-repo policy declaration that cannot be
+#      read or validated, including an entry whose rule source is missing at
+#      the scanned ref or does not mention the exempted path)
 #   4  gh/API error during enumeration
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES:
 #   .claude/scripts/churn-hotspots.sh --json
@@ -190,13 +425,14 @@
 #   gh is required only for the gh enumeration path and the issue lookup.
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
   # Self-terminating: print the contiguous comment header and stop at the first
   # line that is not one. A hardcoded end line silently truncates help the next
   # time the header grows.
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {
@@ -219,33 +455,120 @@ DO_FETCH=0
 PR_CAP=150
 TOP=0
 AS_JSON=0
-ISSUE_LOOKUP_CAP=200
+SWEEP_THRESHOLD=20
+INCLUDE_CREATION=0
+# GitHub search is bounded to 1000 results; stop conservatively at that ceiling.
+ISSUE_SEARCH_PER_PAGE=100
+ISSUE_SEARCH_MAX_PAGES=10
+ISSUE_SEARCH_CEILING=$((ISSUE_SEARCH_PER_PAGE * ISSUE_SEARCH_MAX_PAGES))
+EXEMPTIONS_FILE=""
+NO_EXEMPTIONS=0
 
-DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
+# Resolved beside this script, exactly as churn-hotspot-wrap-plan.sh resolves
+# its baseline file. That coupling is deliberate: the exemption policy travels
+# with the checkout whose detector is running, so a caller can never score
+# against one checkout while classifying against another's policy.
+DEFAULT_EXEMPTIONS="$SCRIPT_DIR/../reference/churn-hotspot-exemptions.json"
+
+# Policy exemptions (issue #1858) are the OPPOSITE coupling: a repo-relative
+# path read from the SCANNED repo at the scanned ref, never resolved against
+# SCRIPT_DIR — the scanned repo owns its own written process. No flag overrides
+# it; --no-exemptions is the only switch. Initialised here so every exit path,
+# early ones included, reports them under `set -u`.
+POLICY_DECL_PATH=".claude/reference/churn-hotspot-policy-exemptions.json"
+POLICY_MAP='{}'
+POLICY_FILE_USED=""
+POLICY_REF=""
+
+# A literal newline, built with printf rather than ANSI-C quoting. `git log -z`
+# puts exactly one LF between a commit header and that commit's first
+# name-status token, and under bash 3.2 (macOS) `${token#$'\n'}` can silently
+# fail to strip even where the matching `case` pattern succeeds — the same trap
+# the @@C@@ sentinels below exist to avoid. Command substitution eats trailing
+# newlines, so the value is built with a sentinel that is then removed.
+NL_CHAR=$(printf '\nx'); NL_CHAR="${NL_CHAR%x}"
+
+DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md,project.pbxproj,Package.resolved"
+
+# --exclude is the one guarded flag whose emptiness is not just "". Its value is
+# comma-split by is_excluded(), which `continue`s past blank fields, so `,` and
+# `'   '` clear a bare -n test yet contribute NO pattern: the run then applies
+# DEFAULT_EXCLUDES alone, which is exactly the "silent default the caller never
+# named" failure the guard block below exists to stop. The other guarded flags
+# need no equivalent: --since, --repo and --ref are consumed verbatim
+# downstream, so a blank value there produces a visibly wrong scan rather than a
+# silent fallback to a default policy.
+require_exclude_patterns() {  # $1 raw --exclude value
+  [ -n "$1" ] || { err "--exclude requires a non-empty value"; exit 2; }
+  [ -n "$(printf '%s' "$1" | tr -d '[:space:],')" ] ||
+    { err "--exclude requires at least one non-blank pattern"; exit 2; }
+}
 
 # ---- flag parsing (supports --flag value and --flag=value) ------------------
 while [ $# -gt 0 ]; do
   case "$1" in
-    --since=*)            SINCE="${1#*=}" ;;
-    --since)              shift; [ $# -gt 0 ] || { err "--since requires a value"; exit 2; }; SINCE="$1" ;;
+    # EMPTY-VALUE GUARDS (issue #1577, generalising issue #1571's --exemptions
+    # guard). Four flags below are read downstream through a `[ -n "$VAR" ]`
+    # test, so an explicitly empty value is indistinguishable there from the
+    # flag never having been passed and the run silently applies a DEFAULT the
+    # caller did not name: --since falls back to the computed 14-day window,
+    # --repo to whatever `gh` infers from the cwd, --exclude to the built-in
+    # list alone, and --ref to auto-detection (origin/HEAD -> origin/main ->
+    # HEAD) via resolve_scan_ref(). Parse time is the LAST point at which
+    # "passed empty" and "never passed" are still distinguishable, so each is
+    # rejected here with exit 2 rather than measured against the wrong policy.
+    # --exclude goes one step further via require_exclude_patterns() above,
+    # because a comma- or whitespace-only value is blank in the only sense that
+    # matters downstream. The remaining value-taking flags need no guard: --threshold,
+    # --conflict-weight, --pr-cap, --top and --sweep-threshold are rejected by
+    # their numeric validators below (which match ''), --source by its enum
+    # validator, and --exemptions by its own copy of this guard.
+    --since=*)            SINCE="${1#*=}"
+                          [ -n "$SINCE" ] || { err "--since requires a non-empty value"; exit 2; } ;;
+    --since)              shift; [ $# -gt 0 ] || { err "--since requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--since requires a non-empty value"; exit 2; }
+                          SINCE="$1" ;;
     --threshold=*)        THRESHOLD="${1#*=}" ;;
     --threshold)          shift; [ $# -gt 0 ] || { err "--threshold requires a value"; exit 2; }; THRESHOLD="$1" ;;
-    --repo=*)             REPO="${1#*=}" ;;
-    --repo)               shift; [ $# -gt 0 ] || { err "--repo requires a value"; exit 2; }; REPO="$1" ;;
+    --repo=*)             REPO="${1#*=}"
+                          [ -n "$REPO" ] || { err "--repo requires a non-empty value"; exit 2; } ;;
+    --repo)               shift; [ $# -gt 0 ] || { err "--repo requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--repo requires a non-empty value"; exit 2; }
+                          REPO="$1" ;;
     --conflict-weight=*)  CONFLICT_WEIGHT="${1#*=}" ;;
     --conflict-weight)    shift; [ $# -gt 0 ] || { err "--conflict-weight requires a value"; exit 2; }; CONFLICT_WEIGHT="$1" ;;
-    --exclude=*)          EXTRA_EXCLUDES="${1#*=}" ;;
-    --exclude)            shift; [ $# -gt 0 ] || { err "--exclude requires a value"; exit 2; }; EXTRA_EXCLUDES="$1" ;;
+    --exclude=*)          EXTRA_EXCLUDES="${1#*=}"
+                          require_exclude_patterns "$EXTRA_EXCLUDES" ;;
+    --exclude)            shift; [ $# -gt 0 ] || { err "--exclude requires a value"; exit 2; }
+                          require_exclude_patterns "$1"
+                          EXTRA_EXCLUDES="$1" ;;
     --no-default-excludes) USE_DEFAULT_EXCLUDES=0 ;;
     --source=*)           SOURCE_MODE="${1#*=}" ;;
     --source)             shift; [ $# -gt 0 ] || { err "--source requires a value"; exit 2; }; SOURCE_MODE="$1" ;;
-    --ref=*)              REF="${1#*=}" ;;
-    --ref)                shift; [ $# -gt 0 ] || { err "--ref requires a value"; exit 2; }; REF="$1" ;;
+    --ref=*)              REF="${1#*=}"
+                          [ -n "$REF" ] || { err "--ref requires a non-empty value"; exit 2; } ;;
+    --ref)                shift; [ $# -gt 0 ] || { err "--ref requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--ref requires a non-empty value"; exit 2; }
+                          REF="$1" ;;
     --fetch)              DO_FETCH=1 ;;
     --pr-cap=*)           PR_CAP="${1#*=}" ;;
     --pr-cap)             shift; [ $# -gt 0 ] || { err "--pr-cap requires a value"; exit 2; }; PR_CAP="$1" ;;
     --top=*)              TOP="${1#*=}" ;;
     --top)                shift; [ $# -gt 0 ] || { err "--top requires a value"; exit 2; }; TOP="$1" ;;
+    --sweep-threshold=*)  SWEEP_THRESHOLD="${1#*=}" ;;
+    --sweep-threshold)    shift; [ $# -gt 0 ] || { err "--sweep-threshold requires a value"; exit 2; }; SWEEP_THRESHOLD="$1" ;;
+    --include-creation)   INCLUDE_CREATION=1 ;;
+    # An EMPTY value is rejected HERE, at parse time, because it is the one
+    # place the distinction still exists: downstream, "--exemptions ''" and
+    # "no --exemptions at all" are both an empty EXEMPTIONS_FILE, so the
+    # explicit-file branch below would fall through to the DEFAULT policy and
+    # silently score against a file the caller never named.
+    --exemptions=*)       EXEMPTIONS_FILE="${1#*=}"
+                          [ -n "$EXEMPTIONS_FILE" ] || { err "--exemptions requires a non-empty value"; exit 2; } ;;
+    --exemptions)         shift; [ $# -gt 0 ] || { err "--exemptions requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--exemptions requires a non-empty value"; exit 2; }
+                          EXEMPTIONS_FILE="$1" ;;
+    --no-exemptions)      NO_EXEMPTIONS=1 ;;
     --json)               AS_JSON=1 ;;
     --help|-h)            print_help; exit 0 ;;
     *)                    err "unknown argument: $1"; exit 2 ;;
@@ -258,19 +581,104 @@ case "$CONFLICT_WEIGHT" in ''|*[!0-9]*) err "--conflict-weight must be a non-neg
 case "$PR_CAP" in ''|*[!0-9]*) err "--pr-cap must be a non-negative integer"; exit 2 ;; esac
 [ "$PR_CAP" -gt 0 ] || { err "--pr-cap must be positive"; exit 2; }
 case "$TOP" in ''|*[!0-9]*) err "--top must be a non-negative integer"; exit 2 ;; esac
+case "$SWEEP_THRESHOLD" in ''|*[!0-9]*) err "--sweep-threshold must be a non-negative integer (0 disables the sweep filter)"; exit 2 ;; esac
 case "$SOURCE_MODE" in auto|git|gh) ;; *) err "--source must be one of: auto, git, gh"; exit 2 ;; esac
 
 command -v jq >/dev/null 2>&1 || { err "jq is required but not installed"; exit 3; }
 command -v git >/dev/null 2>&1 || { err "git is required but not installed"; exit 3; }
 
+# ---- catalog exemptions: load and validate (issue #1571) --------------------
+# Resolved and validated up front, before any enumeration, so a malformed policy
+# file fails on its own terms rather than after a full scan. EXEMPT_MAP is the
+# only product used downstream; EXEMPTIONS_PATH is reported so a reader can see
+# which policy the run applied (empty => reported as null => feature inactive).
+EXEMPT_MAP='{}'
+EXEMPTIONS_JSON='[]'
+EXEMPTIONS_PATH=""
+
+if [ "$NO_EXEMPTIONS" -eq 0 ]; then
+  if [ -n "$EXEMPTIONS_FILE" ]; then
+    # An EXPLICIT --exemptions is a promise about what the run applied, so an
+    # unreadable file is a hard error — silently scoring without the policy the
+    # caller named is the same failure mode --ref refuses.
+    [ -r "$EXEMPTIONS_FILE" ] || { err "--exemptions '$EXEMPTIONS_FILE' is not readable"; exit 3; }
+    EXEMPTIONS_PATH="$EXEMPTIONS_FILE"
+  elif [ -r "$DEFAULT_EXEMPTIONS" ]; then
+    # The DEFAULT is best-effort: a checkout carrying no exemption file simply
+    # runs with the feature inactive, which is what keeps this script working in
+    # a fresh clone and in repos that never adopt the mechanism.
+    EXEMPTIONS_PATH="$DEFAULT_EXEMPTIONS"
+  fi
+fi
+
+if [ -n "$EXEMPTIONS_PATH" ]; then
+  if ! jq -e '
+        .schema == "churn-hotspot-exemptions/v1"
+        and ((.exemptions | type) == "object")
+        and (all(.exemptions | keys_unsorted[]; test("\\S")))
+      ' "$EXEMPTIONS_PATH" >/dev/null 2>&1; then
+    err "exemption file is not a valid churn-hotspot-exemptions/v1 document: $EXEMPTIONS_PATH"
+    exit 3
+  fi
+
+  # AC: an entry without a stated reason is REJECTED. Both fields are required
+  # and must carry a non-blank value, so "exempt because I say so" cannot pass:
+  # `lint` names the enforcing lint/workflow, `reason` says why it forces the
+  # edit. The offending paths are named — a rejection nobody can act on is only
+  # marginally better than the noise this feature removes.
+  # `$v` normalises a non-object entry to {} BEFORE any field is read, so the
+  # filter never indexes an array or a scalar. Every clause is then safe on its
+  # own, without relying on `or` short-circuiting to keep a later clause from
+  # erroring — the whole program aborting would degrade this rejection into a
+  # silent pass.
+  INVALID_EXEMPTIONS=$(jq -r '
+    [ .exemptions | to_entries[]
+      | . as $e
+      | (if ($e.value | type) == "object" then $e.value else {} end) as $v
+      | select(
+          (($v.lint | type) != "string")
+          or ((($v.lint // "") | tostring | test("\\S")) | not)
+          or (($v.reason | type) != "string")
+          or ((($v.reason // "") | tostring | test("\\S")) | not)
+        )
+      | $e.key ]
+    | join(", ")' "$EXEMPTIONS_PATH" 2>/dev/null)
+  # FAIL CLOSED. A `|| INVALID_EXEMPTIONS=""` fallback here would turn every
+  # validator crash into a clean pass — the reason-requirement would then be
+  # enforced only while it happened to work.
+  EXEMPT_JQ_RC=$?
+  if [ "$EXEMPT_JQ_RC" -ne 0 ]; then
+    err "could not validate exemption entries in $EXEMPTIONS_PATH (jq exited $EXEMPT_JQ_RC)"
+    exit 3
+  fi
+  if [ -n "$INVALID_EXEMPTIONS" ]; then
+    err "exemption entries must name the enforcing lint — non-empty \"lint\" and \"reason\" are both required. Offending path(s) in $EXEMPTIONS_PATH: $INVALID_EXEMPTIONS"
+    exit 3
+  fi
+
+  EXEMPT_MAP=$(jq -c '.exemptions' "$EXEMPTIONS_PATH" 2>/dev/null)
+  EXEMPT_JQ_RC=$?
+  case "$EXEMPT_MAP" in ''|null) EXEMPT_MAP='{}' ;; esac
+  if [ "$EXEMPT_JQ_RC" -ne 0 ]; then
+    # Same reasoning: a validated file that then reads back as nothing would
+    # silently drop every exemption and re-flag the files this exists to quiet.
+    err "could not read exemptions from $EXEMPTIONS_PATH (jq exited $EXEMPT_JQ_RC)"
+    exit 3
+  fi
+fi
+
 # ---- emit helpers -----------------------------------------------------------
 # Every exit path emits valid (possibly empty) output before returning.
 SOURCE_USED="$SOURCE_MODE"
 SCAN_REF=""
+SCAN_COMMIT=""
 SCAN_REF_SOURCE="n/a"
 SCANNED_PR_COUNT=0
 EXCLUDED_COUNT=0
 MISSING_COUNT=0
+CREATION_SKIPPED_COUNT=0
+SWEEP_COMMIT_COUNT=0
+SWEEP_SKIPPED_COUNT=0
 TRUNCATED=false
 LOOKUP_FAILED=false
 TOTAL_HOTSPOT_COUNT=0
@@ -287,9 +695,23 @@ as_number() {  # $1 variable name
 
 emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
   local hotspots="$1" rc="$2"
+  # Exemptions ride a global rather than a third positional argument so EVERY
+  # existing early-exit call site reports them without being rewritten — the
+  # "no hotspots crossed the threshold" path (exit 1) is precisely the one where
+  # a touched exempt file would otherwise vanish.
+  local exemptions="${EXEMPTIONS_JSON:-[]}"
+  case "$exemptions" in ''|null) exemptions='[]' ;; esac
+  # Derived, never tracked separately: a count that can disagree with the array
+  # it describes is a field that will eventually lie.
+  local exempt_count
+  exempt_count=$(printf '%s' "$exemptions" | jq 'length' 2>/dev/null) || exempt_count=0
+  case "$exempt_count" in ''|*[!0-9]*) exempt_count=0 ;; esac
   as_number SCANNED_PR_COUNT
   as_number EXCLUDED_COUNT
   as_number MISSING_COUNT
+  as_number CREATION_SKIPPED_COUNT
+  as_number SWEEP_COMMIT_COUNT
+  as_number SWEEP_SKIPPED_COUNT
   as_number TOTAL_HOTSPOT_COUNT
   case "$hotspots" in ''|null) hotspots='[]' ;; esac
   if [ "$AS_JSON" -eq 1 ]; then
@@ -305,16 +727,34 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --argjson scanned "$SCANNED_PR_COUNT" \
       --argjson excluded "$EXCLUDED_COUNT" \
       --argjson missing "$MISSING_COUNT" \
+      --argjson sweep_threshold "$SWEEP_THRESHOLD" \
+      --argjson include_creation "$( [ "$INCLUDE_CREATION" -eq 1 ] && printf 'true' || printf 'false' )" \
+      --argjson creation_skipped "$CREATION_SKIPPED_COUNT" \
+      --argjson sweep_commits "$SWEEP_COMMIT_COUNT" \
+      --argjson sweep_skipped "$SWEEP_SKIPPED_COUNT" \
       --argjson truncated "$TRUNCATED" \
       --argjson lookup_failed "$LOOKUP_FAILED" \
       --argjson total "$TOTAL_HOTSPOT_COUNT" \
       --argjson hotspots "$hotspots" \
+      --arg exemptions_file "$EXEMPTIONS_PATH" \
+      --argjson exemptions "$exemptions" \
+      --argjson exempt_count "$exempt_count" \
+      --arg policy_file "$POLICY_FILE_USED" \
+      --arg policy_ref "$POLICY_REF" \
       '{repo:$repo, since:$since, source:$source,
         scan_ref:$scan_ref, scan_ref_source:$scan_ref_source, threshold:$threshold,
         conflict_weight:$conflict_weight, min_prs:$min_prs,
         scanned_pr_count:$scanned, excluded_count:$excluded, missing_count:$missing,
+        sweep_threshold:$sweep_threshold, include_creation:$include_creation,
+        creation_skipped_count:$creation_skipped,
+        sweep_commit_count:$sweep_commits, sweep_skipped_count:$sweep_skipped,
         truncated:$truncated, existing_lookup_failed:$lookup_failed,
-        total_hotspot_count:$total, hotspots:$hotspots}'
+        total_hotspot_count:$total,
+        exemptions_file:(if $exemptions_file == "" then null else $exemptions_file end),
+        policy_exemptions_file:(if $policy_file == "" then null else $policy_file end),
+        policy_exemptions_ref:(if $policy_file == "" or $policy_ref == "" then null else $policy_ref end),
+        exempt_count:$exempt_count, exemptions:$exemptions,
+        hotspots:$hotspots}'
   else
     printf '%s' "$hotspots" | jq -r '.[] | [
       .file, (.pr_count|tostring), (.conflict_rounds|tostring), (.score|tostring),
@@ -325,6 +765,19 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
        else ((.existing_hotspot_issue|tostring)
              + " (" + (.existing_hotspot_issue_state // "unknown") + ")") end)
     ] | @tsv'
+    # Exempt files are reported, never dropped — but AFTER the hotspot rows and
+    # behind a `#` marker, so a column parser reading hotspot rows cannot mistake
+    # one for the other and a caller taking the top N rows is unaffected.
+    if [ "$exempt_count" -gt 0 ]; then
+      # The marker names the kind, and the last column carries that kind's
+      # authority: the enforcing lint for a catalog row, the cited rule file for
+      # a policy row. Same six columns either way, so one parser reads both.
+      printf '%s' "$exemptions" | jq -r '.[] | (.kind // "catalog") as $k | [
+        ("# exempt (" + $k + ")"), .file, (.pr_count|tostring), (.score|tostring),
+        (.pr_numbers|map(tostring)|join(",")),
+        (if $k == "policy" then (.rule_source // "") else (.lint // "") end)
+      ] | @tsv'
+    fi
   fi
   exit "$rc"
 }
@@ -474,52 +927,444 @@ if [ -n "$EXTRA_EXCLUDES" ]; then
 fi
 
 is_excluded() {  # $1 path -> 0 when excluded
-  local path="$1" pattern base
+  local path="$1" pattern base rc=1 restore_glob=0
   [ -n "$EXCLUDE_LIST" ] || return 1
   base="${path##*/}"
   local OLD_IFS="$IFS"
+  # The unquoted comma split below would also pathname-expand each entry against
+  # the invoking cwd, rewriting `*.md` into whatever Markdown sits there (issue
+  # #1856). Disable globbing for the split only, and restore the caller's state
+  # on the single exit path; `case` pattern matching is unaffected by noglob.
+  case "$-" in *f*) ;; *) set -f; restore_glob=1 ;; esac
   IFS=','
   for pattern in $EXCLUDE_LIST; do
     [ -n "$pattern" ] || continue
     # A bare filename pattern matches that file at any depth; a pattern with a
     # slash is matched against the full path.
     case "$pattern" in
-      */*) case "$path" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac ;;
-      *)   case "$base" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac
-           case "$path" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac ;;
+      */*) case "$path" in $pattern) rc=0; break ;; esac ;;
+      *)   case "$base" in $pattern) rc=0; break ;; esac
+           case "$path" in $pattern) rc=0; break ;; esac ;;
     esac
   done
   IFS="$OLD_IFS"
-  return 1
+  [ "$restore_glob" -eq 0 ] || set +f
+  return "$rc"
 }
 
 file_present() {  # $1 path -> 0 when the file exists at the scan target
   local file="$1"
   if [ -n "$SCAN_REF" ]; then
-    git cat-file -e "${SCAN_REF}:${file}" 2>/dev/null
+    git cat-file -e "${SCAN_COMMIT:-$SCAN_REF}:${file}" 2>/dev/null
   else
     [ -e "$file" ]
   fi
 }
 
 # ---- enumeration ------------------------------------------------------------
-# Both paths produce the same TSV stream on stdout: pr <TAB> merged_at <TAB> file
+# Both paths produce the same spool: pr <TAB> merged_at <TAB> file, NUL-terminated
+# per row. The row TERMINATOR is NUL rather than a newline because `file` is a
+# verbatim path that may contain a newline (see ENUMERATION above); `file` is the
+# LAST field for the same reason a tab cannot delimit it — the reader rejoins
+# every field past the second, so an embedded tab survives too.
 TOUCH_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
 SEEN_PRS=$(mktemp) || { err "could not create a temp file"; exit 3; }
-cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS"; }
+CREATION_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
+# The gh backend's NUL stream lands here rather than in a variable: command
+# substitution silently strips NUL bytes, which is exactly the byte carrying the
+# record boundary.
+GH_FILES=$(mktemp) || { err "could not create a temp file"; exit 3; }
+# gh's stderr for the policy reads: the only place "HTTP 404" (a confirmed
+# absence) can be told apart from every other failure, which must exit 3.
+POLICY_ERR_FILE=$(mktemp) || { err "could not create a temp file"; exit 3; }
+# The NUL-delimited (path, rule_source) pairs of a policy declaration.
+POLICY_PAIRS=$(mktemp) || { err "could not create a temp file"; exit 3; }
+cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV" "$GH_FILES" "$POLICY_ERR_FILE" "$POLICY_PAIRS"; }
 trap cleanup EXIT
 
+# ---- policy exemptions: scanned-repo reader (issue #1858) --------------------
+# policy_read <repo-relative path> reads ONE file from the scanned repo at the
+# pinned policy ref and sets three globals rather than printing, so the caller
+# runs it in the current shell (a `$( )` subshell would lose the classification):
+#   POLICY_READ_STATUS  present | absent | error
+#   POLICY_READ_BODY    file contents when present
+#   POLICY_READ_ERR     why, when error
+# ABSENT is only ever a CONFIRMED absence. Everything else — an unresolvable
+# ref, a tree entry that is not a file, any gh failure other than a 404 on the
+# contents request itself — is an error, because treating an unreadable
+# declaration as a missing one is exactly the silent score the guard forbids.
+POLICY_READ_STATUS=""
+POLICY_READ_BODY=""
+POLICY_READ_ERR=""
+
+policy_pin_ref() {  # resolve POLICY_REF once per run -> 0 ok / 2 no commit at all / 1 error
+  local meta branch commit enc
+  [ -n "$POLICY_REF" ] && return 0
+  if [ "$SOURCE_USED" = "git" ]; then
+    # The commit the log was enumerated from, never a fresh resolve of the
+    # symbolic ref (which may have moved since).
+    POLICY_REF="$SCAN_COMMIT"
+    if [ -z "$POLICY_REF" ]; then
+      # The head-fallback on an unborn branch has no commit at all, so no
+      # declaration can exist there: that IS a confirmed absence. Any other
+      # unresolvable ref is not.
+      if [ "$SCAN_REF_SOURCE" = "head-fallback" ] && ! git rev-parse --verify --quiet HEAD >/dev/null 2>&1 </dev/null; then
+        return 2
+      fi
+      POLICY_READ_ERR="scan ref '$SCAN_REF' does not resolve to a commit"
+      return 1
+    fi
+    return 0
+  fi
+  # gh path: the target repo's default-branch head, pinned so the declaration
+  # and every rule file it cites are read from one snapshot.
+  command -v gh >/dev/null 2>&1 || { POLICY_READ_ERR="gh is not installed"; return 1; }
+  [ -n "$REPO" ] || { POLICY_READ_ERR="the target repo is unknown"; return 1; }
+  meta=$(gh api "repos/$REPO" 2>"$POLICY_ERR_FILE" </dev/null) ||
+    { POLICY_READ_ERR="gh api repos/$REPO failed: $(head -1 "$POLICY_ERR_FILE")"; return 1; }
+  branch=$(printf '%s' "$meta" | jq -r '.default_branch // empty' 2>/dev/null) || branch=""
+  [ -n "$branch" ] || { POLICY_READ_ERR="repos/$REPO reported no default_branch"; return 1; }
+  # A branch name may hold "/" (release/2.x): encode it whole, so the path
+  # segment cannot be misread as several.
+  enc=$(jq -rn --arg b "$branch" '$b | @uri' 2>/dev/null) && [ -n "$enc" ] ||
+    { POLICY_READ_ERR="could not encode default branch '$branch'"; return 1; }
+  commit=$(gh api "repos/$REPO/commits/$enc" 2>"$POLICY_ERR_FILE" </dev/null) ||
+    { POLICY_READ_ERR="gh api repos/$REPO/commits/$branch failed: $(head -1 "$POLICY_ERR_FILE")"; return 1; }
+  POLICY_REF=$(printf '%s' "$commit" | jq -r '.sha // empty' 2>/dev/null) || POLICY_REF=""
+  case "$POLICY_REF" in
+    *[!0-9a-f]*|'') POLICY_REF=""
+                    POLICY_READ_ERR="repos/$REPO/commits/$branch reported no commit sha"; return 1 ;;
+  esac
+  return 0
+}
+
+policy_read() {  # $1 repo-relative path
+  local path="$1" entry mode type blob enc rc
+  POLICY_READ_STATUS="error"; POLICY_READ_BODY=""; POLICY_READ_ERR=""
+  if [ "$SOURCE_USED" = "git" ]; then
+    # --literal-pathspecs: a path is a path, never a glob. Only the
+    # "<mode> <type> <sha>" prefix before the TAB is parsed, so however git
+    # quotes the path itself cannot matter (and no -z: `$( )` would warn about
+    # and drop the NUL anyway).
+    # --full-tree: the path is repo-root-relative even when the caller runs
+    # from a subdirectory (ls-tree otherwise resolves it against the cwd).
+    entry=$(git --literal-pathspecs ls-tree --full-tree "$POLICY_REF" -- "$path" 2>/dev/null </dev/null) ||
+      { POLICY_READ_ERR="git ls-tree failed at $POLICY_REF"; return 0; }
+    if [ -z "$entry" ]; then POLICY_READ_STATUS="absent"; return 0; fi
+    entry="${entry%%	*}"            # "<mode> <type> <sha>" (cut at the TAB)
+    mode="${entry%% *}"
+    type="${entry#* }"; type="${type%% *}"
+    blob="${entry##* }"
+    [ "$type" = "blob" ] || { POLICY_READ_ERR="'$path' is a $type, not a file, at $POLICY_REF"; return 0; }
+    # Regular-file modes only. A symlink (120000) is also typed "blob", but
+    # its body is the link TARGET text — `RULES.md -> LEDGER.md` would name the
+    # exempted path with no rule file behind it (the gh probe rejects
+    # "symlink" for the same reason).
+    case "$mode" in
+      100644|100755) ;;
+      *) POLICY_READ_ERR="'$path' is a mode-$mode entry (a symlink or other non-regular blob), not a file, at $POLICY_REF"; return 0 ;;
+    esac
+    POLICY_READ_BODY=$(git cat-file blob "$blob" 2>/dev/null </dev/null) ||
+      { POLICY_READ_ERR="git cat-file failed for '$path' at $POLICY_REF"; return 0; }
+    POLICY_READ_STATUS="present"; return 0
+  fi
+  enc=$(printf '%s' "$path" | jq -Rrs 'split("/") | map(@uri) | join("/")' 2>/dev/null) ||
+    { POLICY_READ_ERR="could not encode '$path' for the contents API"; return 0; }
+  # Entry type first, mirroring the git backend's blob check: the raw media
+  # type answers a DIRECTORY with its listing, and a listing names its
+  # children, so it would pass the mention check with no rule file behind it.
+  # Only "file" is accepted; a dir, symlink, submodule, or an answer that is
+  # not a contents object at all is an error (exit 3), never "present".
+  type=$(gh api "repos/$REPO/contents/$enc?ref=$POLICY_REF" \
+           --jq 'if type == "object" then (.type // "unknown") else "dir" end' \
+           2>"$POLICY_ERR_FILE" </dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if grep -q 'HTTP 404' "$POLICY_ERR_FILE" 2>/dev/null; then
+      POLICY_READ_STATUS="absent"; return 0
+    fi
+    POLICY_READ_ERR="gh api repos/$REPO/contents/$path failed: $(head -1 "$POLICY_ERR_FILE")"
+    return 0
+  fi
+  [ "$type" = "file" ] ||
+    { POLICY_READ_ERR="'$path' is a ${type:-entry of unknown type}, not a file, at $POLICY_REF"; return 0; }
+  POLICY_READ_BODY=$(gh api -H 'Accept: application/vnd.github.raw' \
+                       "repos/$REPO/contents/$enc?ref=$POLICY_REF" 2>"$POLICY_ERR_FILE" </dev/null)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then POLICY_READ_STATUS="present"; return 0; fi
+  # The entry was just confirmed to be a file at this pinned commit, so any
+  # failure now — a 404 included — is an error, never a confirmed absence.
+  POLICY_READ_BODY=""
+  POLICY_READ_ERR="gh api repos/$REPO/contents/$path failed: $(head -1 "$POLICY_ERR_FILE")"
+  return 0
+}
+
+# load_policy_exemptions — read, validate, and install POLICY_MAP. Called once,
+# after the enumeration backend is FINAL (an auto fallback reads from gh, not
+# from the abandoned git ref) and before the empty-touch early exit.
+load_policy_exemptions() {
+  local pin_rc decl invalid key rule offending="" where
+  [ "$NO_EXEMPTIONS" -eq 0 ] || return 0
+  policy_pin_ref; pin_rc=$?
+  [ "$pin_rc" -eq 2 ] && return 0
+  if [ "$pin_rc" -ne 0 ]; then
+    err "cannot read policy declaration $POLICY_DECL_PATH (backend: $SOURCE_USED): $POLICY_READ_ERR"
+    exit 3
+  fi
+  where="$SOURCE_USED backend at $POLICY_REF"
+  policy_read "$POLICY_DECL_PATH"
+  case "$POLICY_READ_STATUS" in
+    absent) POLICY_REF=""; return 0 ;;   # no declaration: behave exactly as before
+    present) ;;
+    *) err "cannot read policy declaration $POLICY_DECL_PATH ($where): $POLICY_READ_ERR"; exit 3 ;;
+  esac
+  decl="$POLICY_READ_BODY"
+
+  if ! printf '%s' "$decl" | jq -e '
+        .schema == "churn-hotspot-policy-exemptions/v1"
+        and ((.exemptions | type) == "object")
+        and (all(.exemptions | keys_unsorted[]; test("\\S")))
+      ' >/dev/null 2>&1; then
+    err "policy declaration is not a valid churn-hotspot-policy-exemptions/v1 document: $POLICY_DECL_PATH ($where)"
+    exit 3
+  fi
+
+  # Same fail-closed shape as the catalog validator: `$v` normalises a
+  # non-object entry to {} before any field is read, and a jq crash exits 3
+  # rather than reading as "no invalid entries".
+  invalid=$(printf '%s' "$decl" | jq -r --arg decl_path "$POLICY_DECL_PATH" '
+    def blank: ((type != "string") or ((. // "") | test("\\S") | not));
+    def ctrl: (type == "string" and test("[[:cntrl:]]"));
+    [ .exemptions | to_entries[]
+      | . as $e
+      | (if ($e.value | type) == "object" then $e.value else {} end) as $v
+      | (if ($v.rule_source | blank) then "no rule_source"
+         elif ($v.reason | blank) then "no reason"
+         elif ($e.key | ctrl) or ($v.rule_source | ctrl) then "control character in path or rule_source"
+         elif ($v.rule_source | startswith("/")) then "rule_source is absolute"
+         elif ($v.rule_source | split("/") | any(.[]; . == "..")) then "rule_source holds a .. segment"
+         elif ($v.rule_source | split("/") | any(.[]; . == "" or . == ".")) then "rule_source is not a normalised path"
+         # Either file trivially "mentions" the path, so citing it would let an
+         # entry satisfy the mention check by assertion alone.
+         elif $v.rule_source == $decl_path then "rule_source is the declaration itself"
+         elif $v.rule_source == $e.key then "rule_source is the exempted file itself"
+         else empty end) as $why
+      | "\($e.key) (\($why))" ]
+    | join("; ")' 2>/dev/null)
+  local jq_rc=$?
+  if [ "$jq_rc" -ne 0 ]; then
+    err "could not validate policy entries in $POLICY_DECL_PATH ($where; jq exited $jq_rc)"
+    exit 3
+  fi
+  if [ -n "$invalid" ]; then
+    err "policy exemption entries must cite a rule file in the scanned repo — non-empty \"rule_source\" and \"reason\" are both required. Offending path(s) in $POLICY_DECL_PATH ($where): $invalid"
+    exit 3
+  fi
+
+  # Every cited rule file must exist at the SAME ref and mention the exempted
+  # path literally. The pairs travel NUL-delimited through a temp file, never
+  # @tsv: @tsv escapes a backslash (legal in a filename) and `read -r` does not
+  # undo it, so the path and rule_source would be read back altered. A variable
+  # cannot hold the NULs and a process substitution would hide jq's exit
+  # status, hence the file. The pair count is checked against the entry count,
+  # so a short or desynchronised stream exits 3 instead of skipping an entry.
+  local want got=0
+  want=$(printf '%s' "$decl" | jq -r '.exemptions | length' 2>/dev/null) ||
+    { err "could not read policy entries from $POLICY_DECL_PATH ($where)"; exit 3; }
+  printf '%s' "$decl" | jq -j 'def z: [0] | implode;
+      .exemptions | to_entries[] | .key, z, .value.rule_source, z' \
+    > "$POLICY_PAIRS" 2>/dev/null ||
+    { err "could not read policy entries from $POLICY_DECL_PATH ($where)"; exit 3; }
+  while IFS= read -r -d '' key && IFS= read -r -d '' rule; do
+    got=$((got + 1))
+    [ -n "$key" ] || { err "could not read policy entries from $POLICY_DECL_PATH ($where): empty path"; exit 3; }
+    policy_read "$rule"
+    case "$POLICY_READ_STATUS" in
+      present)
+        case "$POLICY_READ_BODY" in
+          *"$key"*) ;;
+          *) offending="${offending:+$offending; }$key (rule_source $rule does not mention it)" ;;
+        esac ;;
+      absent) offending="${offending:+$offending; }$key (rule_source $rule does not exist)" ;;
+      *) err "cannot read rule_source $rule for $key ($where): $POLICY_READ_ERR"; exit 3 ;;
+    esac
+  done < "$POLICY_PAIRS"
+  if [ "$got" != "$want" ]; then
+    err "could not read policy entries from $POLICY_DECL_PATH ($where): read $got of $want"
+    exit 3
+  fi
+  if [ -n "$offending" ]; then
+    err "policy exemption rejected — each rule_source must exist at the scanned ref and mention the exempted path. Offending path(s) in $POLICY_DECL_PATH ($where): $offending"
+    exit 3
+  fi
+
+  POLICY_MAP=$(printf '%s' "$decl" | jq -c '.exemptions | map_values({rule_source, reason})' 2>/dev/null) ||
+    { err "could not read policy exemptions from $POLICY_DECL_PATH ($where)"; exit 3; }
+  case "$POLICY_MAP" in ''|null) err "could not read policy exemptions from $POLICY_DECL_PATH ($where)"; exit 3 ;; esac
+  POLICY_FILE_USED="$POLICY_DECL_PATH"
+  return 0
+}
+
+# is_creation_status — 0 when git's diff status marks the path as newly created.
+# `A` is an add. `C` (copy destination) is also a path that did not exist
+# before, so it reads the same way. `R` (rename destination) deliberately does
+# NOT: renames already read as two unrelated paths here, and the mass renames
+# that motivated issue #1547 are caught by the sweep rule instead.
+is_creation_status() {  # $1 status token
+  case "$1" in A|C*) return 0 ;; *) return 1 ;; esac
+}
+
+# is_creation_status_gh — the gh path's counterpart, kept as its own function so
+# the two enumeration backends cannot drift apart silently. GitHub's
+# `pulls/{N}/files` names a birth `added` and — per its documented schema — a
+# copy destination `copied`; both are paths that did not exist before, which is
+# what `is_creation_status` reads `A`/`C` as above. `renamed` deliberately does
+# NOT count, matching `R` there.
+#
+# GitHub does not run copy detection today, so `copied` is unobserved in
+# practice (16 merged PRs sampled: only added/modified/renamed). It is honoured
+# anyway: it is a documented value of a third-party API, and without it a
+# `copied` row would score on the gh path while the git path drops the same
+# birth, so `--source git` and `--source gh` would disagree about identical
+# history. Found in review of PR #1550.
+is_creation_status_gh() {  # $1 GitHub file status
+  case "$1" in added|copied) return 0 ;; *) return 1 ;; esac
+}
+
+# ---- per-commit buffer (git path) -------------------------------------------
+# A commit's sweep classification depends on how many paths it touched IN TOTAL,
+# and that is not known until its last path row has been read. Rows are
+# therefore buffered and flushed at the next commit header and once at EOF.
+# These are globals rather than locals so the flush is an ordinary function
+# instead of a call that silently depends on bash's dynamic scope.
+#
+# Status and path live in PARALLEL arrays rather than in one `status<TAB>path`
+# string. That is required, not tidiness: `-z` hands over verbatim paths, so a
+# filename containing a tab now reaches this buffer and `${row##*<TAB>}` would
+# silently return its last tab-separated fragment as the path. Separate slots
+# leave no delimiter to be forged.
+CUR_PR=""
+CUR_DATE=""
+CUR_ROW_STATUS=()
+CUR_ROW_FILE=()
+
+# The gh backend's per-PR equivalent. Global for the same reason and because a
+# `local` array declared inside the PR loop would be re-created per iteration
+# under bash 3.2 without the parallel-slot guarantee being obvious.
+GH_ROW_STATUS=()
+GH_ROW_FILE=()
+
+flush_commit() {
+  local total=${#CUR_ROW_FILE[@]}
+  local is_sweep=0 idx status file
+  if [ "$total" -eq 0 ] || [ -z "$CUR_PR" ]; then
+    CUR_ROW_STATUS=()
+    CUR_ROW_FILE=()
+    return 0
+  fi
+
+  # Count the RAW path total, before exclusions and the existence filter: a
+  # 72-file mechanical sweep is a sweep even after most of its paths were later
+  # deleted or are on the exclusion list.
+  if [ "$SWEEP_THRESHOLD" -gt 0 ] && [ "$total" -ge "$SWEEP_THRESHOLD" ]; then
+    is_sweep=1
+    SWEEP_COMMIT_COUNT=$((SWEEP_COMMIT_COUNT + 1))
+  fi
+
+  # A PR-marked commit that touched files was SEEN in the window even when every
+  # one of its paths is then filtered out. Recording it here rather than per
+  # emitted row keeps `scanned_pr_count` — the figure that says how big the
+  # window was — immune to the sweep and creation filters.
+  printf '%s\n' "$CUR_PR" >> "$SEEN_PRS"
+
+  idx=0
+  while [ "$idx" -lt "$total" ]; do
+    status="${CUR_ROW_STATUS[$idx]}"
+    file="${CUR_ROW_FILE[$idx]}"
+    idx=$((idx + 1))
+    [ -n "$file" ] || continue
+
+    if is_excluded "$file"; then
+      EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+      continue
+    fi
+    if ! file_present "$file"; then
+      MISSING_COUNT=$((MISSING_COUNT + 1))
+      continue
+    fi
+
+    # Record the creation fact BEFORE either drop, so `created_in_window` stays
+    # true even for a file born inside a sweep.
+    if is_creation_status "$status"; then
+      printf '%s\t%s\000' "$CUR_PR" "$file" >> "$CREATION_TSV"
+    fi
+
+    if [ "$is_sweep" -eq 1 ]; then
+      SWEEP_SKIPPED_COUNT=$((SWEEP_SKIPPED_COUNT + 1))
+      continue
+    fi
+    if [ "$INCLUDE_CREATION" -eq 0 ] && is_creation_status "$status"; then
+      CREATION_SKIPPED_COUNT=$((CREATION_SKIPPED_COUNT + 1))
+      continue
+    fi
+
+    printf '%s\t%s\t%s\000' "$CUR_PR" "$CUR_DATE" "$file" >> "$TOUCH_TSV"
+  done
+
+  CUR_ROW_STATUS=()
+  CUR_ROW_FILE=()
+}
+
 enumerate_git() {
-  local line rest commit_date subject pr file
-  # `@@C@@date@@S@@subject` marks a commit header; every other non-empty line is
-  # a path. Plain ASCII sentinels, not control bytes: under bash 3.2 (macOS)
-  # `${line#$'\x01'}` silently fails to strip even where the matching `case`
-  # pattern succeeds, which leaked the byte into every timestamp. Nothing here
-  # relies on ANSI-C quoting.
-  while IFS= read -r line; do
-    case "$line" in
+  # `token` is initialised because the loop guard reads it after a FAILED read
+  # (the `|| [ -n "$token" ]` that keeps an unterminated final record), and an
+  # unset variable would abort under `set -u` on a repo with no in-window log.
+  local token="" rest commit_date subject pr
+  local expect_path=0 skip_source=0 pending_status=""
+  # `@@C@@date@@S@@subject` marks a commit header; every other token is one
+  # `-z --name-status` field. Plain ASCII sentinels, not control bytes: under
+  # bash 3.2 (macOS) `${token#$'\x01'}` silently fails to strip even where the
+  # matching `case` pattern succeeds, which leaked the byte into every
+  # timestamp. Nothing here relies on ANSI-C quoting.
+  #
+  # `-z` framing, measured rather than assumed (git 2.50.1): a `tformat` header
+  # is NUL-terminated, then ONE LF precedes that commit's first status token,
+  # then fields alternate `status NUL path NUL` — `R100 NUL old NUL new NUL` for
+  # a rename/copy. `%s` is the subject LINE, so a header token can never contain
+  # a newline of its own.
+  CUR_PR=""; CUR_DATE=""; CUR_ROW_STATUS=(); CUR_ROW_FILE=()
+  while IFS= read -r -d '' token || [ -n "$token" ]; do
+    # POSITION decides what a token is, never its bytes — so the path branch
+    # runs FIRST, ahead of the header test. A path may legally begin with
+    # `@@C@@`, and testing content before position would let such a filename
+    # spoof a commit header: `flush_commit` would fire mid-record, the path
+    # would be dropped, and every later token in that commit would shift by one.
+    # The pre-`-z` reader got this immunity for free (a status column always sat
+    # in front of the path on the same line); `-z` removes that prefix, so the
+    # ordering here is what carries the guarantee. Framing is tracked even for
+    # an UNMARKED commit — only the recording below is skipped — so its paths
+    # cannot spoof a header either.
+    if [ "$expect_path" -eq 1 ]; then
+      if [ "$skip_source" -eq 1 ]; then
+        # A rename/copy names two paths; the SOURCE arrives first and the
+        # DESTINATION — the path this detector scores, matching the pre-`-z`
+        # "last tab-separated field" rule — arrives next, so keep expecting one.
+        skip_source=0
+        continue
+      fi
+      if [ -n "${CUR_PR:-}" ]; then
+        CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]="$pending_status"
+        CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
+      fi
+      expect_path=0; pending_status=""
+      continue
+    fi
+
+    case "$token" in
       '@@C@@'*)
-        rest="${line#@@C@@}"
+        flush_commit
+        expect_path=0; skip_source=0; pending_status=""
+        rest="${token#@@C@@}"
         commit_date="${rest%%@@S@@*}"
         subject="${rest#*@@S@@}"
         # ONLY a TRAILING (#N) marker is a PR number — that is the suffix GitHub
@@ -529,26 +1374,53 @@ enumerate_git() {
         # contributes nothing. `fix(#749): repair (#750)` still yields 750.
         pr=$(printf '%s' "$subject" | grep -oE '\(#[0-9]+\)[[:space:]]*$' 2>/dev/null | tr -dc '0-9')
         [ -n "$pr" ] && GIT_MARKED_COMMITS=$((GIT_MARKED_COMMITS + 1))
-        ;;
-      '')
-        ;;
-      *)
-        file="$line"
-        [ -n "${pr:-}" ] || continue
-        if is_excluded "$file"; then
-          EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
-          continue
-        fi
-        if ! file_present "$file"; then
-          MISSING_COUNT=$((MISSING_COUNT + 1))
-          continue
-        fi
-        printf '%s\t%s\t%s\n' "$pr" "$commit_date" "$file" >> "$TOUCH_TSV"
-        printf '%s\n' "$pr" >> "$SEEN_PRS"
+        CUR_PR="$pr"
+        CUR_DATE="$commit_date"
+        continue
         ;;
     esac
-  done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-only \
-             --pretty=format:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
+
+    # Status state. Strip the single LF `-z` places after a commit header —
+    # positional, so it can never touch a path: a diff status never starts with
+    # a newline, and a path is only ever read in the branch above.
+    case "$token" in
+      "$NL_CHAR"*) token="${token#"$NL_CHAR"}" ;;
+    esac
+    [ -n "$token" ] || continue
+
+    case "$token" in
+      A|B|C|D|M|T|U|X|R|C[0-9]*|R[0-9]*)
+        pending_status="$token"
+        expect_path=1
+        case "$token" in R*|C*) skip_source=1 ;; *) skip_source=0 ;; esac
+        ;;
+      *)
+        # Not a diff status: the stream desynchronised on an unexpected payload.
+        # Count the touch under an unknown status rather than dropping it — the
+        # same degradation the newline reader applied to a row with no status
+        # column — and resynchronise at the next header. Buffer only
+        # PR-attributed commits: an unmarked commit contributes nothing
+        # regardless of how many paths it touched.
+        if [ -n "${CUR_PR:-}" ]; then
+          CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]=""
+          CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
+        fi
+        ;;
+    esac
+  # `-M` pins rename detection ON regardless of the ambient `diff.renames`
+  # setting. Without it a repo that disables renames reports every rename as
+  # `D old` + `A new`, so the destination would be dropped as a CREATION — a
+  # result that silently varied with the caller's git config, and a regression
+  # against the `--name-only` behaviour this replaced (which always printed the
+  # destination as an ordinary touch).
+  #
+  # `core.quotePath=false` is now REDUNDANT — `-z` emits paths verbatim even
+  # with quoting on (verified) — and is kept deliberately: it costs nothing, and
+  # it means a future edit dropping `-z` fails the embedded-newline test loudly
+  # instead of quietly mangling non-ASCII paths as well.
+  done < <(git -c core.quotePath=false log -z --no-merges --since="$SINCE" --name-status -M \
+             --pretty=tformat:'@@C@@%cI@@S@@%s' "${SCAN_COMMIT:-$SCAN_REF}" 2>/dev/null)
+  flush_commit
 }
 
 enumerate_gh() {
@@ -583,17 +1455,63 @@ enumerate_gh() {
     '[.[] | select(.mergedAt != null and (.mergedAt[0:10]) >= $since)]
      | .[] | "\(.number)\t\(.mergedAt)"' 2>/dev/null)
 
-  local pr merged_at files
+  local pr merged_at
   while IFS=$'\t' read -r pr merged_at; do
     [ -n "$pr" ] || continue
-    files=$(gh api "repos/${owner_repo}/pulls/${pr}/files" --paginate \
-              --jq '.[].filename' 2>/dev/null) || {
+    # `status NUL filename NUL` per file, spooled to a file rather than
+    # captured: command substitution strips NUL bytes, and NUL is the byte
+    # carrying the record boundary. jq runs OUTSIDE gh (no `--jq`) because gh's
+    # writer newline-terminates every result, and a newline is precisely what
+    # must not delimit records here. The filter stays per-element, so it still
+    # composes with --paginate's concatenated per-page arrays. `[0] | implode`
+    # is the NUL literal: `--raw-output0` reads better but does not exist on
+    # jq 1.6, and this script claims no jq floor.
+    if ! gh api "repos/${owner_repo}/pulls/${pr}/files" --paginate 2>/dev/null \
+         | jq -j 'def z: [0] | implode;
+                  .[] | ((.status // "") + z + (.filename // "") + z)' \
+             > "$GH_FILES" 2>/dev/null; then
       err "gh api pulls/${pr}/files failed — skipping PR #${pr}"
       continue
-    }
+    fi
     printf '%s\n' "$pr" >> "$SEEN_PRS"
-    local file
-    while IFS= read -r file; do
+    # `token` is initialised for the same reason as in enumerate_git: an empty
+    # payload (a PR with no files) leaves the loop guard reading it unset.
+    local file status token="" idx pr_file_total=0 pr_is_sweep=0
+    local expect_path=0 pending_status=""
+    GH_ROW_STATUS=(); GH_ROW_FILE=()
+    while IFS= read -r -d '' token || [ -n "$token" ]; do
+      if [ "$expect_path" -eq 1 ]; then
+        GH_ROW_STATUS[${#GH_ROW_STATUS[@]}]="$pending_status"
+        GH_ROW_FILE[${#GH_ROW_FILE[@]}]="$token"
+        expect_path=0; pending_status=""
+      else
+        pending_status="$token"; expect_path=1
+      fi
+    done < "$GH_FILES"
+    if [ "$expect_path" -eq 1 ] && [ -n "$pending_status" ]; then
+      # An odd trailing token means the stream ended mid-pair. Count it as a
+      # path under an unknown status rather than dropping the touch, matching
+      # the git backend's desynchronisation degradation.
+      GH_ROW_STATUS[${#GH_ROW_STATUS[@]}]=""
+      GH_ROW_FILE[${#GH_ROW_FILE[@]}]="$pending_status"
+    fi
+    # The gh path has no per-commit granularity, so the sweep unit is the PR's
+    # whole file list. On a squash-merge repo that is the same thing. The total
+    # is a RECORD count, never a line count: one filename carrying an embedded
+    # newline used to read as two files and drove this classification off the
+    # wrong number (issue #1554).
+    pr_file_total=${#GH_ROW_FILE[@]}
+    if [ "$SWEEP_THRESHOLD" -gt 0 ] && [ "$pr_file_total" -ge "$SWEEP_THRESHOLD" ]; then
+      pr_is_sweep=1
+      SWEEP_COMMIT_COUNT=$((SWEEP_COMMIT_COUNT + 1))
+    fi
+    idx=0
+    while [ "$idx" -lt "$pr_file_total" ]; do
+      # A payload with no `status` key degrades to an empty status — the touch
+      # still counts, exactly as a row with no status column did before.
+      status="${GH_ROW_STATUS[$idx]}"
+      file="${GH_ROW_FILE[$idx]}"
+      idx=$((idx + 1))
       [ -n "$file" ] || continue
       if is_excluded "$file"; then
         EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
@@ -609,8 +1527,21 @@ enumerate_gh() {
         MISSING_COUNT=$((MISSING_COUNT + 1))
         continue
       fi
-      printf '%s\t%s\t%s\n' "$pr" "$merged_at" "$file" >> "$TOUCH_TSV"
-    done <<< "$files"
+      # Record the creation fact BEFORE either drop, so `created_in_window`
+      # stays true even for a file born inside a sweep.
+      if is_creation_status_gh "$status"; then
+        printf '%s\t%s\000' "$pr" "$file" >> "$CREATION_TSV"
+      fi
+      if [ "$pr_is_sweep" -eq 1 ]; then
+        SWEEP_SKIPPED_COUNT=$((SWEEP_SKIPPED_COUNT + 1))
+        continue
+      fi
+      if [ "$INCLUDE_CREATION" -eq 0 ] && is_creation_status_gh "$status"; then
+        CREATION_SKIPPED_COUNT=$((CREATION_SKIPPED_COUNT + 1))
+        continue
+      fi
+      printf '%s\t%s\t%s\000' "$pr" "$merged_at" "$file" >> "$TOUCH_TSV"
+    done
   done <<< "$in_window"
   return 0
 }
@@ -618,6 +1549,11 @@ enumerate_gh() {
 if [ "$SOURCE_MODE" = "git" ] || [ "$SOURCE_MODE" = "auto" ]; then
   if [ "$IN_CHECKOUT" -eq 1 ]; then
     resolve_scan_ref
+    # Pin the symbolic ref to ONE commit before anything reads it: the log,
+    # the existence filter, and the policy declaration then all see the same
+    # snapshot even if the ref moves mid-run. Empty only on an unborn
+    # head-fallback, where every reader already finds nothing.
+    SCAN_COMMIT=$(git rev-parse --verify --quiet "${SCAN_REF}^{commit}" 2>/dev/null </dev/null) || SCAN_COMMIT=""
     enumerate_git
     SOURCE_USED="git"
   fi
@@ -643,10 +1579,17 @@ if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_
   fi
   : > "$TOUCH_TSV"
   : > "$SEEN_PRS"
+  : > "$CREATION_TSV"
   EXCLUDED_COUNT=0
+  # The git attempt's filter tallies describe a scan that is being discarded;
+  # leaving them would double-count against the gh enumeration about to run.
+  CREATION_SKIPPED_COUNT=0
+  SWEEP_COMMIT_COUNT=0
+  SWEEP_SKIPPED_COUNT=0
   # The gh path enumerates merged PRs over the API — no ref is involved, and
   # reporting a leftover one would misdescribe what was scanned.
   SCAN_REF=""
+  SCAN_COMMIT=""
   SCAN_REF_SOURCE="n/a"
   enumerate_gh
   GH_RC=$?
@@ -655,6 +1598,20 @@ if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_
   fi
   SOURCE_USED="gh"
 fi
+
+# The backend is final here, so the scanned repo's own policy declaration is
+# read from the snapshot this run actually measured — and BEFORE the
+# empty-touch exit below, so an unreadable declaration fails every run alike.
+load_policy_exemptions
+
+# One map for the partition step, each entry tagged with its kind. `+` lets the
+# right side win, so a path in both lists reports once as the CATALOG kind: the
+# stronger, lint-enforced claim, and one the scanned repo did not make.
+EXEMPT_ALL=$(jq -cn --argjson c "$EXEMPT_MAP" --argjson p "$POLICY_MAP" '
+  ($p | map_values({kind: "policy", rule_source, reason}))
+  + ($c | map_values({kind: "catalog", lint, reason}))' 2>/dev/null) ||
+  { err "could not merge catalog and policy exemptions"; exit 3; }
+case "$EXEMPT_ALL" in ''|null) err "could not merge catalog and policy exemptions"; exit 3 ;; esac
 
 # `grep -c` prints 0 AND exits 1 on an empty file, so a `|| echo 0` fallback
 # would emit "0\n0" and break the --argjson call downstream. wc -l always
@@ -692,36 +1649,82 @@ if [ -n "$SESSION_STATE_SH" ]; then
   case "$CONFLICT_MAP" in ''|null) CONFLICT_MAP='{}' ;; esac
 fi
 
+# ---- creation map -----------------------------------------------------------
+# path -> the PR whose commit created it inside the window. Recorded whether or
+# not the creation touch was scored, so `created_in_window` is a LABEL rather
+# than a by-product of the filter. Log order is newest-first, so reversing
+# before from_entries (which keeps the LAST occurrence of a key) reports the
+# most recent creation for a path created more than once in the window.
+#
+# Rows are `pr <TAB> path`, NUL-terminated: the PR comes first so the path stays
+# the LAST field and every field past it can be rejoined, which is what keeps a
+# tab or a newline inside a filename from silently truncating the key.
+CREATION_MAP=$(jq -Rs -c 'def z: [0] | implode;
+  split(z)
+  | map(select(length > 0) | split("\t") | select(length >= 2)
+        | {key: (.[1:] | join("\t")), value: (.[0] | tonumber? // .[0])})
+  | reverse | from_entries' < "$CREATION_TSV" 2>/dev/null) || CREATION_MAP=""
+case "$CREATION_MAP" in ''|null) CREATION_MAP='{}' ;; esac
+
 # ---- aggregate --------------------------------------------------------------
-HOTSPOTS=$(jq -Rs -c \
+AGGREGATED=$(jq -Rs -c \
   --argjson conflicts "$CONFLICT_MAP" \
+  --argjson creations "$CREATION_MAP" \
+  --argjson exempt "$EXEMPT_ALL" \
   --argjson threshold "$THRESHOLD" \
   --argjson weight "$CONFLICT_WEIGHT" \
   --argjson min_prs "$MIN_PRS" '
-  split("\n")
-  | map(select(length > 0) | split("\t") | {pr: .[0], merged_at: .[1], file: .[2]})
+  def z: [0] | implode;
+  split(z)
+  | map(select(length > 0) | split("\t")
+        | {pr: .[0], merged_at: .[1], file: (.[2:] | join("\t"))})
   | group_by(.file)
   | map(
-      (map(.pr) | unique) as $prs
+      (.[0].file) as $f
+      | (map(.pr) | unique) as $prs
       | ($prs | map($conflicts[.] // 0)) as $rounds
       | ($rounds | add // 0) as $conflict_rounds
       | ($prs | length) as $pr_count
       | {
-          file: .[0].file,
+          file: $f,
           pr_count: $pr_count,
           pr_numbers: ($prs | map(tonumber? // .) | sort),
           conflict_rounds: $conflict_rounds,
           conflict_prs: [ $prs[] | select(($conflicts[.] // 0) > 0) | (tonumber? // .) ] | sort,
           score: ($pr_count + ($weight * $conflict_rounds)),
           first_merged_at: (map(.merged_at) | sort | .[0]),
-          last_merged_at: (map(.merged_at) | sort | .[-1])
+          last_merged_at: (map(.merged_at) | sort | .[-1]),
+          created_in_window: ($creations | has($f)),
+          creation_pr: ($creations[$f] // null)
         }
     )
-  | map(select(.pr_count >= $min_prs and .score >= $threshold))
-  | sort_by(-.score, -.pr_count, .file)
-' < "$TOUCH_TSV" 2>/dev/null) || HOTSPOTS=""
+  # Partition, do not pre-filter (issue #1571). Exempt files are scored by the
+  # identical formula above and only then reclassified, so their history stays
+  # complete and the non-exempt hotspot rule below is byte-for-byte the rule it
+  # was. `in($exempt)` — never `$exempt | has(.file)`, which would look up the
+  # literal key "file" on the map instead of the path.
+  | {
+      hotspots: ( map(select((.file | in($exempt)) | not))
+                  | map(select(.pr_count >= $min_prs and .score >= $threshold))
+                  | sort_by(-.score, -.pr_count, .file) ),
+      # No threshold here on purpose: a touched exempt file is reported however
+      # small its score, because the promise is "never silently omitted".
+      exemptions: ( map(select(.file | in($exempt)))
+                    | map(. as $e
+                          | $exempt[$e.file] as $x
+                          | $e + (if $x.kind == "policy"
+                                  then {kind: "policy", rule_source: $x.rule_source, reason: $x.reason}
+                                  else {kind: "catalog", lint: $x.lint, reason: $x.reason} end))
+                    | sort_by(-.score, -.pr_count, .file) )
+    }
+' < "$TOUCH_TSV" 2>/dev/null) || AGGREGATED=""
 
+case "$AGGREGATED" in ''|null) AGGREGATED='{"hotspots":[],"exemptions":[]}' ;; esac
+
+HOTSPOTS=$(printf '%s' "$AGGREGATED" | jq -c '.hotspots' 2>/dev/null) || HOTSPOTS=""
 case "$HOTSPOTS" in ''|null) HOTSPOTS='[]' ;; esac
+EXEMPTIONS_JSON=$(printf '%s' "$AGGREGATED" | jq -c '.exemptions' 2>/dev/null) || EXEMPTIONS_JSON=""
+case "$EXEMPTIONS_JSON" in ''|null) EXEMPTIONS_JSON='[]' ;; esac
 
 TOTAL_HOTSPOT_COUNT=$(printf '%s' "$HOTSPOTS" | jq 'length' 2>/dev/null || echo 0)
 if [ "$TOTAL_HOTSPOT_COUNT" -eq 0 ]; then
@@ -740,30 +1743,88 @@ fi
 # GitHub tokenizes paths in `in:title`, so a server-side path query can match a
 # sibling file. When the lookup fails, callers must not file (duplicate risk).
 #
-# `--state all`, NOT `--state open` (issue #915). An open-only search hid every
-# hotspot issue the owner had already reviewed and closed, so the caller read the
-# path as never-ticketed and re-filed it on every run. Closed hits now come back
-# labelled (see the merge below) and the caller decides. `--state all` enlarges
-# the candidate set, which is exactly why the cap guard below stays.
+# Search both open and closed issues (issue #915). Hiding closed decisions made
+# previously ticketed paths look new and caused repeat filings. The complete
+# candidate set retains those decisions for the caller; the page-completeness
+# checks below replace the old fixed-limit guard and still block unsafe filing.
+# Explicit page reads expose completion evidence. Search is not a snapshot:
+# stable creation order and consistency checks detect some concurrent changes.
+lookup_existing_hotspot_issues() {
+  local page=1 response total=-1 page_total count items combined actual
+  local query="repo:$REPO is:issue Refactor hotspot in:title"
+  CANDIDATE_ISSUES='[]'
+  if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    err "issue lookup repository unresolved — not safe to file"
+    return 1
+  fi
+  while [ "$page" -le "$ISSUE_SEARCH_MAX_PAGES" ]; do
+    response=$(gh api --method GET search/issues \
+      -f "q=$query" -f "per_page=$ISSUE_SEARCH_PER_PAGE" -f "page=$page" \
+      -f sort=created -f order=asc 2>/dev/null) || {
+        err "issue lookup page $page failed — not safe to file"
+        return 1
+      }
+    # Slurp validates ONE JSON response, not a stream whose last object passed.
+    if ! printf '%s' "$response" | jq -e -s --argjson bound "$ISSUE_SEARCH_PER_PAGE" '
+      length == 1 and (.[0] |
+        type == "object"
+        and (.total_count | type == "number" and . >= 0 and floor == .)
+        and .incomplete_results == false
+        and (.items | type == "array" and length <= $bound)
+        and all(.items[];
+          type == "object"
+          and (.number | type == "number" and . > 0 and . <= 9007199254740991 and floor == .)
+          and (.title | type == "string")
+          and (.body | . == null or type == "string")
+          and (has("pull_request") | not)))
+    ' >/dev/null 2>&1; then
+      err "issue lookup page $page invalid or incomplete — not safe to file"
+      return 1
+    fi
+    if printf '%s' "$response" | jq -e --argjson ceiling "$ISSUE_SEARCH_CEILING" \
+      '.total_count >= $ceiling' >/dev/null; then
+      TRUNCATED=true
+      err "issue lookup page $page reaches the $ISSUE_SEARCH_CEILING-result search ceiling — not safe to file"
+      return 1
+    fi
+    page_total=$(printf '%s' "$response" | jq -r '.total_count') || return 1
+    if [ "$total" -eq -1 ]; then total=$page_total; fi
+    if [ "$page_total" -ne "$total" ]; then
+      err "issue lookup page $page changed total_count — not safe to file"
+      return 1
+    fi
+    items=$(printf '%s' "$response" | jq -c '[.items[] | {number,title,body,state}]') || return 1
+    count=$(printf '%s' "$items" | jq 'length') || return 1
+    combined=$(printf '%s\n%s\n' "$CANDIDATE_ISSUES" "$items" | jq -sc '.[0] + .[1]') || return 1
+    if ! printf '%s' "$combined" | jq -e 'length == (unique_by(.number) | length)' >/dev/null; then
+      err "issue lookup page $page repeated an issue number — not safe to file"
+      return 1
+    fi
+    CANDIDATE_ISSUES="$combined"
+    actual=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length') || return 1
+    if [ "$actual" -gt "$total" ]; then
+      err "issue lookup page $page exceeds total_count — not safe to file"
+      return 1
+    fi
+    if [ "$count" -lt "$ISSUE_SEARCH_PER_PAGE" ]; then
+      if [ "$actual" -ne "$total" ]; then
+        err "issue lookup page $page ended before total_count — not safe to file"
+        return 1
+      fi
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  TRUNCATED=true
+  err "issue lookup exhausted $ISSUE_SEARCH_MAX_PAGES pages — not safe to file"
+  return 1
+}
+
 CANDIDATE_ISSUES='[]'
 if command -v gh >/dev/null 2>&1; then
-  ISSUES_RAW=$(gh issue list --state all --search "Refactor hotspot in:title" \
-                 --limit "$ISSUE_LOOKUP_CAP" --json number,title,body,state $REPO_ARGS 2>/dev/null) || ISSUES_RAW=""
-  if [ -z "$ISSUES_RAW" ]; then
+  if ! lookup_existing_hotspot_issues; then
     LOOKUP_FAILED=true
-  else
-    CANDIDATE_ISSUES=$(printf '%s' "$ISSUES_RAW" | jq -c '.' 2>/dev/null) || { CANDIDATE_ISSUES='[]'; LOOKUP_FAILED=true; }
-    ISSUE_HITS=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length' 2>/dev/null || echo 0)
-    if [ "$ISSUE_HITS" -ge "$ISSUE_LOOKUP_CAP" ]; then
-      # A capped lookup is an INCOMPLETE lookup: an existing hotspot issue may
-      # sit beyond the cap, so absence of a match no longer proves absence of an
-      # issue. Callers gate filing on existing_lookup_failed, so it must be set
-      # here too — reporting only `truncated` would let a caller file a
-      # duplicate for a hotspot that already has one.
-      err "issue lookup hit the ${ISSUE_LOOKUP_CAP}-issue cap — an existing hotspot issue may have been missed; not safe to file"
-      TRUNCATED=true
-      LOOKUP_FAILED=true
-    fi
+    CANDIDATE_ISSUES='[]'
   fi
 else
   LOOKUP_FAILED=true
@@ -783,7 +1844,9 @@ fi
 # norm_state type-checks instead of calling ascii_downcase blind: on a
 # non-string the whole program would abort, and this jq's failure mode is an
 # EMPTY hotspot list emitted under exit 0 — every hotspot lost, not just one.
-HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" '
+# Candidate bodies can exceed argv limits; both arrays travel on stdin.
+MATCHED_HOTSPOTS=$(printf '%s\n%s\n' "$CANDIDATE_ISSUES" "$HOTSPOTS" | jq -cs '
+  .[0] as $issues | .[1] |
   def norm_state: (if type == "string" then ascii_downcase else "" end);
   map(
     . as $h
@@ -804,7 +1867,16 @@ HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" 
         end
       )
   )
-' 2>/dev/null) || HOTSPOTS='[]'
+' 2>/dev/null)
+MATCH_RC=$?
+if [ "$MATCH_RC" -eq 0 ]; then
+  HOTSPOTS="$MATCHED_HOTSPOTS"
+else
+  LOOKUP_FAILED=true
+  err "issue matching failed — not safe to file"
+  HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c \
+    'map(.existing_hotspot_issue = null | .existing_hotspot_issue_state = null)') || exit 4
+fi
 
 case "$HOTSPOTS" in ''|null) HOTSPOTS='[]' ;; esac
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Regression coverage for Issue #924: recurring polls use Monitor end to end.
+# catalog: tests — Regression coverage that recurring polls use `Monitor` end to end
 
 set -euo pipefail
 
@@ -34,9 +35,9 @@ require_text .claude/reference/scheduling-failure-modes.md \
 
 require_text .claude/skills/babysit-pr/SKILL.md 'babysit.monitor_task_id' \
   'babysit-pr must persist its Monitor task ID'
-require_text .claude/skills/babysit-pr/SKILL.md 'stop the exact current Monitor' \
+require_text .claude/skills/babysit-pr/SKILL.md "Call \`TaskStop\` only for the captured \`\$CADENCE_TASK_ID\`." \
   'babysit-pr cadence changes must stop the prior Monitor'
-require_text .claude/skills/babysit-pr/SKILL.md 'Run that atomic cleanup only after `TaskStop` succeeds.' \
+require_text .claude/skills/babysit-pr/SKILL.md 'TERMINAL_STOP_SUCCEEDED:-false' \
   'babysit-pr terminal cleanup must retain a failed Monitor task ID'
 reject_text .claude/skills/babysit-pr/SKILL.md 'arm_loop ' \
   'babysit-pr must not retain the dynamic-loop arm path'
@@ -53,7 +54,7 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   'a stale reclaim **must stop the exact `$RETAINED_TASK_ID` with `TaskStop`**' \
   'babysit-pr stale reclaim must stop the identified silent Monitor before re-arming'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'Before comparing cadences, read the exact' \
+  'T5_MISSING_GUARD_JSON' \
   'babysit-pr must validate Monitor identity even when the cadence is unchanged'
 require_text .claude/skills/babysit-pr/SKILL.md 'If that task-ID publication fails' \
   'babysit-pr initial Monitor arm must handle task-ID publication failure'
@@ -61,7 +62,7 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   'if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi' \
   'babysit-pr must derive the effective cadence before persisting or re-arming it'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'monitor_task_id=$NEW_MONITOR_TASK_ID' \
+  ".cadence_effective_minutes=\$cadence | .stop_requested=false | .cadence_transition=false" \
   'babysit-pr must publish replacement identity with its effective cadence'
 require_text .claude/skills/babysit-pr/SKILL.md \
   '--monitor-generation $MONITOR_GENERATION' \
@@ -70,19 +71,25 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   '"$TICK_GENERATION" != "$RECORDED_GENERATION"' \
   'babysit-pr must reject queued events from an older Monitor generation'
 require_text .claude/skills/babysit-pr/SKILL.md \
+  "--expect \"\$TERMINAL_SNAPSHOT\"" \
+  'babysit-pr must compare tick ownership before terminal TaskStop'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  "--expect \"\$TERMINAL_GUARDED_JSON\"" \
+  'babysit-pr must compare ownership again before terminal cleanup'
+require_text .claude/skills/babysit-pr/SKILL.md \
   'TICK_GENERATION="$_BABYSIT_ARG"' \
   'babysit-pr must parse the generation carried by Monitor-emitted ticks'
 require_text .claude/skills/babysit-pr/SKILL.md \
   'if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then' \
   'babysit-pr must apply generation validation to the parsed internal tick mode'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"' \
+  '.monitor_task_id=$task | .monitor_generation=$gen' \
   'babysit-pr must publish replacement task ID and generation together'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'Before that stop, atomically set `stop_requested=true`' \
+  'cadence_transition=true' \
   'babysit-pr cadence re-arm must guard against queued old-generation events before TaskStop'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  'known-stopped old identity and set `active=false`, `stop_requested=false`' \
+  'ROLLBACK_ARGS+=(--set' \
   'babysit-pr must clear its cadence guard after verified rollback teardown'
 require_text .claude/skills/babysit-pr/SKILL.md \
   'TASK_STOP_SUCCEEDED=true only when that exact tool call succeeds' \
@@ -96,8 +103,31 @@ require_text .claude/hooks/polling-backoff-warn.sh \
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
-reject_text .claude/skills/pr-monitor-and-manage/SKILL.md '$SESSION_STATE_SH" --get' \
-  'fleet monitoring must not use an undefined state-helper variable'
+# `$SESSION_STATE_SH` used to be undefined here, so this asserted its absence.
+# Issue #1189 made the skill resolve its helpers for cross-repo use, and Step 00
+# now binds the variable before any state read. The invariant is unchanged —
+# never read state through a helper variable nothing defined — so the check
+# follows it: the variable may be used, but only if the skill binds it first.
+#
+# Checked by line number, not by presence. A `grep -q` for the binding passes
+# even when the binding sits *below* the first read, which is precisely the bug
+# the invariant forbids (CodeAnt, PR #1196).
+require_ordered_binding() {
+  local file=$1 bind_re=$2 use_re=$3 message=$4
+  local bind_line use_line
+  bind_line=$(grep -nE -- "$bind_re" "$ROOT/$file" | head -1 | cut -d: -f1)
+  use_line=$(grep -nF -- '"$SESSION_STATE_SH"' "$ROOT/$file" | head -1 | cut -d: -f1)
+  [[ -n "$bind_line" ]] || fail "$message (no binding found at all)"
+  # No use is vacuously fine: the invariant constrains reads, not the binding.
+  [[ -n "$use_line" ]] || return 0
+  (( bind_line < use_line )) || \
+    fail "$message (binding at line $bind_line, first read at line $use_line)"
+  ok "$message"
+}
+require_ordered_binding .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'SESSION_STATE_SH=\$\(resolve_script session-state\.sh' \
+  '"\$SESSION_STATE_SH"' \
+  'fleet monitoring must bind its state helper before any state read'
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
@@ -114,7 +144,7 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   '/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>' \
   'fleet Monitor events must be distinguishable from direct user starts'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  "RECORDED_MONITOR_GENERATION=\$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation'" \
+  "RECORDED_MONITOR_GENERATION=\$(\"\$SESSION_STATE_SH\" --get '.pmm_monitor_generation'" \
   'fleet ticks must read the currently published Monitor generation'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   '"$PMM_TICK_GENERATION" != "$RECORDED_MONITOR_GENERATION"' \
@@ -150,7 +180,7 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`' \
   'fleet cadence re-arm must clear its guard after verified rollback teardown'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  "CURRENT_MONITOR_CADENCE=\$(.claude/scripts/session-state.sh --get '.pmm_cadence'" \
+  "CURRENT_MONITOR_CADENCE=\$(\"\$SESSION_STATE_SH\" --get '.pmm_cadence'" \
   'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'Keep the existing task only when both pieces of its recorded identity are present and its cadence' \

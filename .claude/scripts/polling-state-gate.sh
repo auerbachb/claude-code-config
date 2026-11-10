@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # polling-state-gate.sh — Procedural gate for CodeRabbit polling (issue #315).
+# catalog: pr-state-polling — CR polling procedural gate — registers PR in session-state and runs merge-gate.sh each cycle
 #
 # Enforces before and during polling:
-#   1) Handoff file exists at ~/.claude/handoffs/pr-{N}-handoff.json (parent agent
-#      owns creation/refresh for the polling loop; Phase A/B subagents use the same
-#      path for phase handoffs — see handoff-files.md).
+#   1) A handoff file exists at the path handoff-state.sh resolves for this PR —
+#      the scoped ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json layout,
+#      with the legacy flat ~/.claude/handoffs/pr-{N}-handoff.json as a fallback
+#      (parent agent owns creation/refresh for the polling loop; Phase A/B
+#      subagents write the same file for phase handoffs — see handoff-files.md,
+#      and "Handoff resolution" below).
 #   2) PR is registered in ~/.claude/session-state.json and scoped to this repo via
 #      per-PR owner_repo / root_repo (issue #647), read from this repo's own
 #      scope in session-state (`.repos["<owner>/<name>"].prs["N"]`, issue #638).
@@ -53,8 +57,11 @@
 #
 # Usage:
 #   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
-#   polling-state-gate.sh <pr_number> [--root-repo <path>] [--repo <owner>/<name>]
+#   polling-state-gate.sh <pr_number> [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
 #   polling-state-gate.sh <pr_number> --verify-state [--root-repo <path>] [--repo <owner>/<name>]
+#   polling-state-gate.sh <pr_number> --resolve-handoff [--root-repo <path>] [--repo <owner>/<name>]
+#     Offline selected-handoff/v1 JSON for persistence. Reuses gate selection
+#     and requires explicit embedded PR/owner identity; never creates a record.
 #
 # Modes:
 #   --ensure-session  Run once before the first poll tick: write/update session-state,
@@ -68,10 +75,31 @@
 #                      pr-authorship.sh; fail-closed). Enrolling a PR in polling is
 #                      a write. Bypass with --allow-nonauthor ONLY under an explicit
 #                      per-PR user override.
+#                      The override decision is PERSISTED per PR (issue #1266) as
+#                      the boolean `.prs["N"].allow_nonauthor`, inside the same
+#                      atomic state write as root_repo/head_sha/owner_repo. It is
+#                      written on every enrolment — `true` with the flag, `false`
+#                      without — so re-enrolling without the override clears a
+#                      stale `true` rather than leaving it latched on.
 #   --verify-state     Offline recovery check: confirm handoff + session-state and
 #                      root_repo consistency (no gh, no merge-gate). Exit 0 if OK.
 #   (default)         Validate handoff + session-state, cd to resolved root_repo, run
 #                      merge-gate.sh. Exit 0 iff merge gate is met (same as merge-gate).
+#                      --allow-nonauthor is forwarded to merge-gate.sh so a PR
+#                      enrolled under the override isn't re-blocked by
+#                      merge-gate.sh's own authorship check every tick (issue
+#                      #1251). Two independent sources turn it on, either alone
+#                      sufficient (issue #1266):
+#                        - the persisted enrolment decision, read back from
+#                          `.prs["N"].allow_nonauthor == true`. This is what makes
+#                          the documented per-cycle contract work: the polling loop
+#                          calls `polling-state-gate.sh <PR_NUMBER>` with no extra
+#                          flags, so without read-back the override applied only to
+#                          the one enrolment call and merge-gate.sh re-added the
+#                          authorship blocker on every later tick.
+#                        - the flag passed on THIS invocation, retained so an
+#                          explicit per-cycle override still works with no persisted
+#                          state (e.g. state written before #1266).
 #
 # Flags:
 #   --root-repo <path>       Which CHECKOUT to operate in (where gh/merge-gate run).
@@ -95,15 +123,42 @@
 #                            Value must match session-state.sh's key charset
 #                            ([A-Za-z0-9._/-]); anything else is a usage error,
 #                            never a silent fall-through to "_unknown".
-#   --allow-nonauthor        See --ensure-session above.
+#   --allow-nonauthor        See --ensure-session above, which persists the
+#                            decision per PR. Also forwarded to merge-gate.sh in
+#                            default (poll-cycle) mode — from the persisted
+#                            decision or from this invocation's own flag; see
+#                            (default) above.
 #
 # Exit codes (default mode): same as merge-gate.sh (0 met, 1 not met, 2 usage, 3 PR, 4 error)
+#                            plus 5 — missing or unreadable handoff (below).
 # --ensure-session: 0 success, 2 usage, 4 state/gh failure
-# --verify-state: 0 valid, 2 usage, 4 invalid/missing
+# --verify-state: 0 valid, 2 usage, 4 invalid/missing, 5 missing/unreadable handoff
 # Every refusal exits non-zero; only a *notice* (case (d) below) prints and passes.
 #
+# Exit 5 — missing or unreadable handoff (issue #1559). Minted as a fresh number
+# rather than folded into 4, and deliberately outside the 0-4 vocabulary this
+# script forwards verbatim from merge-gate.sh in poll-cycle mode, so a caller can
+# tell "the gate could not run — its input is gone" from "not met, keep polling"
+# (1) and from every other error (4). Covers three shapes of the same failure:
+# no handoff at any resolved path, a handoff that exists but is not readable, and
+# one that is not valid JSON (which previously surfaced as jq's status — 2, this
+# script's *usage* code — from under `set -e`). Exit 0 is reserved for a
+# validated gate result and is never emitted when the handoff is absent.
+#
+# Handoff resolution (issues #1507 + #1559). The handoff is resolved through
+# handoff-state.sh over the scope precedence handoff-files.md documents —
+# per-PR `owner_repo` -> $CLAUDE_SESSION_REPO -> the resolved checkout's `origin`
+# — with the legacy flat path as a fallback, never as a default. Deriving it from
+# the per-PR `owner_repo` field ALONE made the scoped layout invisible whenever
+# that one field was absent (state from a writer that does not record it, or
+# predating #655), which produced both reported failures from one omission:
+# #1507, exit 4 naming the flat path for a PR whose scoped handoff was sitting
+# right there; and #1559, a stale flat file answering silently in its place — the
+# migration notice being gated on the very field that was missing — so the gate
+# exited 0 having validated a file that was not this PR's record.
+#
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -126,7 +181,15 @@ MERGE_GATE="${SCRIPT_DIR}/merge-gate.sh"
 POLL_WATERMARKS="${SCRIPT_DIR}/poll-watermarks.sh"
 PR_AUTHORSHIP="${SCRIPT_DIR}/pr-authorship.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
-HANDOFF_DIR="${HOME}/.claude/handoffs"
+# There is deliberately no HANDOFF_DIR here (issue #1559). Every handoff path —
+# scoped AND legacy flat — is computed by handoff-state.sh, which owns the
+# layout; a second copy of `${HOME}/.claude/handoffs/pr-N-handoff.json` in this
+# file is exactly how the flat path kept answering for scoped handoffs.
+
+# Exit status for "the handoff this gate validates could not be read" — see the
+# header. Named rather than inlined so the three sites that raise it (missing,
+# unreadable, unparseable) can never drift apart.
+HANDOFF_UNREADABLE_EXIT=5
 
 PR_NUMBER=""
 MODE="cycle"
@@ -142,7 +205,8 @@ ALLOW_NONAUTHOR=0
 # old `sed -n '2,40p'` truncated mid-Modes the moment the header grew, so a newly
 # documented flag could be invisible to --help (issue #854).
 usage() {
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 while [[ $# -gt 0 ]]; do
@@ -157,6 +221,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-state)
       MODE="verify"
+      shift
+      ;;
+    --resolve-handoff)
+      MODE="resolve-handoff"
       shift
       ;;
     --allow-nonauthor)
@@ -302,10 +370,108 @@ fi
 
 ACTIVE_REPO_KEY="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
 
+# flat_handoff_path — the legacy flat handoff path, from handoff-state.sh rather
+# than rebuilt here (issue #1559). --legacy-flat is the explicit per-call opt-in
+# the helper has required since issue #1366: omitting it makes the helper DERIVE
+# a scope from this script's cwd and hand back a scoped path, which is not what
+# any caller of this function is asking for.
+#
+# stdout only. handoff-state.sh writes *notes* to stderr on successful calls
+# (the CLAUDE_HANDOFF_FLAT_OK one, for instance), and a `2>&1` capture here
+# would splice one of those into the path this returns. The diagnostic is
+# re-read from stderr alone on the failure path, where --path — a pure
+# computation that reads and writes no handoff — is safe to re-invoke.
+flat_handoff_path() {
+  local p why
+  if ! p="$("$HANDOFF_HELPER" --legacy-flat --path "$PR_NUMBER" 2>/dev/null)" || [[ -z "$p" ]]; then
+    why="$("$HANDOFF_HELPER" --legacy-flat --path "$PR_NUMBER" 2>&1 >/dev/null || true)"
+    echo "polling-state-gate.sh: handoff-state.sh --legacy-flat --path failed for PR #$PR_NUMBER: ${why:-no output}" >&2
+    return 1
+  fi
+  printf '%s' "$p"
+}
+
+# unsearchable_ancestor <path>
+#
+# Echo the ancestor directory that makes <path>'s existence UNKNOWABLE, or
+# return 1 when absence is a real answer.
+#
+# `[[ -f x ]]` is false for two different facts: "x is not there" and "the stat
+# failed", and an unsearchable directory anywhere above x produces the second
+# while looking exactly like the first. Collapsing them is how a present-but-
+# unreachable scoped handoff gets reported as missing and quietly replaced by
+# whatever the flat path holds — the same wrong-record substitution issue #1559
+# fixed one layer up, arriving through a permission error instead of a scope
+# miss. Never let "cannot determine" mean "absent" (memory:
+# portable-stat-and-mkdir-lock-traps).
+#
+# Walks up to the deepest ancestor that can actually be stat'd: that is the
+# first one whose own parent is searchable, so its verdict is trustworthy. If
+# that ancestor is a directory we may not search, everything beneath it is
+# indeterminate; if it is searchable, the child is genuinely absent.
+unsearchable_ancestor() {
+  local p="${1%/*}"
+  while [[ -n "$p" && "$p" != "/" ]]; do
+    if [[ -e "$p" ]]; then
+      if [[ -d "$p" && ! -x "$p" ]]; then
+        printf '%s' "$p"
+        return 0
+      fi
+      return 1
+    fi
+    p="${p%/*}"
+  done
+  return 1
+}
+
+# handoff_scope_candidates <resolved_checkout> [recorded_owner_repo]
+#
+# The owner/repo scopes this PR's handoff may legitimately live under, most
+# specific first, deduped, one per line. Composed inline from the primitives
+# lib/pr-scope-resolver.sh already provides rather than added to that library:
+# handoff-state.sh, session-state.sh --repo-key and this script each keep their
+# own composition of the same precedence, and this ticket is not the place to
+# rewire all three.
+#
+#   1. the per-PR `owner_repo` recorded in session-state — the scope THIS PR was
+#      enrolled under, so it outranks anything about the ambient session.
+#   2. $CLAUDE_SESSION_REPO — already resolved and exported above from
+#      --repo -> invoking checkout -> inherited value (issue #967), so this one
+#      entry covers the declared and the self-identifying-checkout cases both.
+#   3. the resolved checkout's own identity. Taken from the RESOLVED path, not
+#      the cwd, so a --root-repo override resolves that checkout's handoff.
+#
+# Every candidate is normalized and admitted only by is_strict_owner_repo():
+# the loose is_owner_repo_identity() test accepts values that name no
+# {owner}/{repo} directory pair (`org/repo name`, `org/a/b`, `org/`, `.`), and
+# turning one of those into a path is how a handoff lands where no reader looks
+# (PR #1423). A rejected candidate is skipped, never guessed at.
+handoff_scope_candidates() {
+  local resolved="$1"
+  local recorded="${2:-}"
+  local raw cand seen=""
+  for raw in "$recorded" "${CLAUDE_SESSION_REPO:-}" "$(repo_identity "$resolved")"; do
+    [[ -n "$raw" && "$raw" != "null" ]] || continue
+    cand="$(normalize_repo_key "$raw")"
+    is_strict_owner_repo "$cand" || continue
+    # Substring dedupe over a delimited accumulator — bash 3.2 has no
+    # associative arrays, and the delimiters keep `a/b` from matching `xa/by`.
+    case "$seen" in
+      *"|${cand}|"*) continue ;;
+    esac
+    seen="${seen}|${cand}|"
+    printf '%s\n' "$cand"
+  done
+}
+
 write_checkpoint_handoff() {
   local head_sha="$1"
   local reviewer="${2:-cr}"
   local owner_repo="${3:-}"
+  # "init" (default) never touches an existing file; "replace" overwrites one.
+  # Only the repair path below passes "replace", and only for a handoff that is
+  # already unusable — see the call site for why that is not data loss.
+  local write_mode="${4:-init}"
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Build the JSON body first, then route through handoff-state.sh --create so the
@@ -353,10 +519,25 @@ write_checkpoint_handoff() {
   # this call, --init is a no-op that preserves Phase A's data (Greptile P1, #682).
   # Pass --owner-repo when available so the file lands in the scoped subdirectory
   # (issue #655: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json).
-  local or_flag=()
+  # Scope is always declared explicitly (issue #1366): handoff-state.sh no
+  # longer falls back to the flat path on omission, and this script's cwd is not
+  # necessarily $canon, so letting it derive could name a different repo than
+  # the one this checkpoint belongs to. An empty owner_repo here means all three
+  # sources failed — `gh repo view`, repo_identity(), and the session's declared
+  # $CLAUDE_SESSION_REPO — i.e. genuinely repo-less, which is what the legacy
+  # flat path is for.
+  local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
-  if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --init "$PR_NUMBER" "$json_body"; then
-    echo "polling-state-gate.sh: handoff-state.sh --init failed for PR #$PR_NUMBER" >&2
+  # "replace" routes to --repair, not --create. --create overwrites
+  # unconditionally, so the caller's corruption verdict would be acted on after
+  # it was formed: a Phase A writer that repairs the record between our read and
+  # this call would have its valid, richer handoff destroyed by a bare polling
+  # checkpoint. --repair re-tests readability inside the same lock that guards
+  # the write and no-ops on a usable record (CodeAnt Major, PR #1598).
+  local mode_flag="--init"
+  [[ "$write_mode" == "replace" ]] && mode_flag="--repair"
+  if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} "$mode_flag" "$PR_NUMBER" "$json_body"; then
+    echo "polling-state-gate.sh: handoff-state.sh $mode_flag failed for PR #$PR_NUMBER" >&2
     exit 4
   fi
 }
@@ -430,12 +611,59 @@ ensure_session() {
       owner_repo="$derived"
     fi
   fi
+  if [[ -z "$owner_repo" ]] && is_owner_repo_identity "${CLAUDE_SESSION_REPO:-}"; then
+    # Last resort before the flat path: the session's own declared scope, set
+    # from --repo or inherited supply-only (issue #967) and already exported
+    # above. Reaching here means $canon names no owner/repo of its own — an
+    # origin-less checkout, or one whose `origin` is a local filesystem path.
+    #
+    # Without this the checkpoint lands flat while session-state is written
+    # under .repos["$CLAUDE_SESSION_REPO"] (session-state.sh derives its own key
+    # from the same variable), so the two halves of one poll's state disagree
+    # and no scoped reader ever finds the handoff. The flat file is also shared
+    # by every repo, so falling back to it is strictly more collision-prone than
+    # honouring a scope the session has already declared — the same precedence
+    # handoff-state.sh itself applies (--owner-repo -> $CLAUDE_SESSION_REPO ->
+    # cwd origin) when the flag is omitted (issue #1366).
+    # is_owner_repo_identity() only rejects the empty/_unknown/gitdir:/path:
+    # sentinels and then tests for a slash — too loose to turn into a path. It
+    # admits `org/repo name` (session-state.sh keys on ^[A-Za-z0-9._/-]+$ and
+    # routes anything else to `_unknown`, so the handoff lands where session
+    # state never looks) and equally `org/a/b`, `org/`, `/repo`, which name no
+    # {owner}/{repo} pair at all — this value is passed straight to
+    # handoff-state.sh as --owner-repo, which now refuses them, so accepting one
+    # here would update session state and then fail to resolve the checkpoint
+    # (CodeAnt, PR #1423). One strict validator, shared with handoff-state.sh,
+    # keeps both ends agreeing on what a scope is; the flat path is the right
+    # fallback for anything they cannot.
+    local _sess_key
+    _sess_key="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
+    if is_strict_owner_repo "$_sess_key"; then
+      owner_repo="$_sess_key"
+      echo "polling-state-gate.sh: notice: '$canon' names no owner/repo; scoping PR #$PR_NUMBER's handoff to the session repo '$owner_repo' (\$CLAUDE_SESSION_REPO) rather than the shared flat path" >&2
+    else
+      echo "polling-state-gate.sh: notice: \$CLAUDE_SESSION_REPO '$CLAUDE_SESSION_REPO' is not a usable repo key (session-state.sh would route it to '_unknown'); leaving PR #$PR_NUMBER's handoff on the flat path rather than scoping it somewhere session state will never look" >&2
+    fi
+  fi
   local reviewer="cr"
   if [[ -f "$STATE_FILE" ]]; then
     local r
     r="$(state_pr_field reviewer)"
     [[ -n "$r" ]] && reviewer="$r"
   fi
+
+  # Persist the authorship-override decision for this PR (issue #1266). The
+  # documented per-cycle contract calls `polling-state-gate.sh <PR_NUMBER>` with
+  # no extra flags, so an override supplied only here would be forgotten on the
+  # very next tick and merge-gate.sh's own authorship check would re-add the
+  # blocker forever. Written unconditionally — `false` when the flag is absent —
+  # so a re-enrolment without the override clears a stale `true` instead of
+  # leaving the bypass latched on. Typed `boolean` in
+  # .claude/reference/session-state-schema.json's `_field_types.pr_nested`, so a
+  # corrupted value is rejected by session-state.sh rather than silently read as
+  # permission.
+  local allow_nonauthor_json="false"
+  [[ "$ALLOW_NONAUTHOR" -eq 1 ]] && allow_nonauthor_json="true"
 
   # Single atomic write — session-state.sh merges multiple --set in one
   # transaction. Running it from $canon scopes every path to THIS repo
@@ -447,38 +675,110 @@ ensure_session() {
         --set ".root_repo=\"$canon\"" \
         --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
         --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
+        --set ".prs[\"$PR_NUMBER\"].allow_nonauthor=$allow_nonauthor_json" \
         --set ".prs[\"$PR_NUMBER\"].owner_repo=\"$owner_repo\"" )
   else
     ( cd "$canon" && "$STATE_HELPER" \
         --set ".root_repo=\"$canon\"" \
         --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
-        --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" )
+        --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
+        --set ".prs[\"$PR_NUMBER\"].allow_nonauthor=$allow_nonauthor_json" )
   fi
 
   # Resolve the canonical handoff path (scoped when owner_repo is known).
   # Use handoff-state.sh --path so path computation is in one place (issue #655).
-  local or_flag=()
+  # --legacy-flat is the explicit default here (issue #1366): with no owner_repo
+  # — none of `gh repo view`, repo_identity(), or $CLAUDE_SESSION_REPO could name
+  # one — this checkpoint IS the repo-less case the flat path exists for, and
+  # omitting the scope would now make handoff-state.sh derive one from THIS
+  # script's cwd, which is not necessarily $canon — a different repo's path,
+  # or exit 2.
+  local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   local handoff_path
   handoff_path="$("$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --path "$PR_NUMBER")"
   # Backward-compat: also check the flat path so a polling session started before
   # this change can refresh an already-existing flat handoff without moving it.
-  local flat_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+  local flat_path
+  if ! flat_path="$(flat_handoff_path)"; then
+    exit 4
+  fi
   if [[ ! -f "$handoff_path" && -f "$flat_path" && "$handoff_path" != "$flat_path" ]]; then
     echo "polling-state-gate.sh: notice: using existing flat handoff $flat_path (not yet migrated to $handoff_path)" >&2
     handoff_path="$flat_path"
   fi
   if [[ ! -f "$handoff_path" ]]; then
     write_checkpoint_handoff "$head_sha" "$reviewer" "$owner_repo"
+  elif [[ ! -r "$handoff_path" ]] || ! jq -e . "$handoff_path" >/dev/null 2>&1; then
+    # Repair, not refresh. The poll-cycle gate now exits 5 on a handoff it
+    # cannot read and tells the caller to run --ensure-session; that advice has
+    # to be true. The refresh below is a read-modify-write, so on an unparseable
+    # file handoff-state.sh --set would fail and leave the loop with no way out.
+    # Overwriting is not data loss: a file that cannot be parsed or opened
+    # carries no readable phase record to preserve. But that verdict is formed
+    # HERE, outside the lock, so it cannot also authorize the write: being
+    # serialized behind a concurrent Phase A writer is not the same as being
+    # safe from one — losing the race means overwriting the valid handoff it
+    # just wrote. The write therefore goes out as --repair, which re-tests the
+    # file under the lock and no-ops if it has become readable (CodeAnt, #1598).
+    #
+    # Repair the file the branch above actually selected: an empty scope routes
+    # write_checkpoint_handoff to --legacy-flat, so a corrupt flat handoff is
+    # rewritten in place instead of being left behind next to a fresh scoped one.
+    local repair_scope="$owner_repo"
+    [[ "$handoff_path" == "$flat_path" ]] && repair_scope=""
+    echo "polling-state-gate.sh: notice: handoff $handoff_path is unreadable or not valid JSON; re-creating it as a polling checkpoint" >&2
+    write_checkpoint_handoff "$head_sha" "$reviewer" "$repair_scope" replace
   else
     # Refresh head_sha only — preserve phase_completed, reviewer, and other Phase A/B fields.
     # Route through handoff-state.sh --set so the whole RMW cycle is under the advisory lock
     # (issue #682 — same fix as #639 applied to session-state.json).
     # Pass --owner-repo when path is the scoped one so we hold the right lock.
-    local set_or_flag=()
+    # Otherwise we are deliberately refreshing an already-flat handoff, so say
+    # --legacy-flat rather than omitting the scope: omission now derives or
+    # refuses (issue #1366), and either outcome would move this write off the
+    # very file the branch above chose.
+    # --require-existing (issue #1603): this branch decided the record exists
+    # OUTSIDE the lock, so between that test and this write a merge's Phase C
+    # cleanup can delete it. Without the flag --set would then seed a fresh
+    # record from `{}` holding only head_sha — a plausible-looking file with a
+    # null phase_completed that reads as "Phase A never completed". The flag
+    # re-tests presence under the lock and exits 3 having written nothing.
+    local set_or_flag=(--legacy-flat)
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
-    if ! "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --set "$PR_NUMBER" ".head_sha=$head_sha"; then
-      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
+    local set_rc=0
+    "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --require-existing \
+      --set "$PR_NUMBER" ".head_sha=$head_sha" || set_rc=$?
+    if [[ "$set_rc" -eq 3 ]]; then
+      # Exit 3 means the record was gone when the helper re-tested it under the
+      # lock. That has TWO causes, and they need opposite handling. A merge's
+      # Phase C cleanup DELETES it — refusing is the point. But a concurrent
+      # handoff-migrate.sh MOVES a flat record to its scoped path: the record
+      # still exists, this branch merely chose a name that no longer resolves,
+      # and failing the whole --ensure-session over a rename would strand
+      # polling on a handoff that is sitting right there (CodeAnt, PR #1606).
+      #
+      # Only the flat branch can be fooled this way — the scoped path is
+      # migration's destination, never its source — so retry once against the
+      # migrated record before concluding deletion. A retry that itself exits 3
+      # means the record really is gone and falls through to the refusal.
+      local migrated_rc=1
+      if [[ "${set_or_flag[0]}" == "--legacy-flat" && -n "$owner_repo" ]]; then
+        local scoped_path
+        scoped_path="$("$HANDOFF_HELPER" --owner-repo "$owner_repo" --path "$PR_NUMBER" 2>/dev/null || true)"
+        if [[ -n "$scoped_path" && "$scoped_path" != "$flat_path" && -f "$scoped_path" ]]; then
+          echo "polling-state-gate.sh: notice: flat handoff $flat_path was migrated to $scoped_path while refreshing head_sha; retrying against the migrated record" >&2
+          migrated_rc=0
+          "$HANDOFF_HELPER" --owner-repo "$owner_repo" --require-existing \
+            --set "$PR_NUMBER" ".head_sha=$head_sha" || migrated_rc=$?
+        fi
+      fi
+      if [[ "$migrated_rc" -ne 0 ]]; then
+        echo "polling-state-gate.sh: handoff for PR #$PR_NUMBER was deleted while refreshing head_sha (--require-existing); not recreating it — confirm the PR state before polling again" >&2
+        exit 4
+      fi
+    elif [[ "$set_rc" -ne 0 ]]; then
+      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER (exit $set_rc)" >&2
       exit 4
     fi
   fi
@@ -522,34 +822,94 @@ require_handoff_and_state() {
     exit 4
   fi
 
-  # Resolve the handoff path — prefer the scoped layout introduced by issue #655.
-  # Backward-compat: fall back to the legacy flat path when the scoped file is absent
-  # but the flat file exists; this is the normal state during the migration window.
+  # Resolve the handoff over the scope precedence handoff-files.md documents
+  # (issues #1507 + #1559), not from the per-PR `owner_repo` field alone. See the
+  # header for both failure shapes that single-source resolution produced. The
+  # scoped layout of issue #655 is preferred; the legacy flat path remains a
+  # fallback for the migration window, but is now reached only after every
+  # candidate scope has been tried, and always says so.
   local owner_repo_for_path
   owner_repo_for_path="$(state_pr_field owner_repo)"
   [[ "$owner_repo_for_path" == "null" ]] && owner_repo_for_path=""
-  local handoff_path=""
-  if [[ -n "$owner_repo_for_path" ]]; then
-    local scoped_path
-    scoped_path="$("$HANDOFF_HELPER" --owner-repo "$owner_repo_for_path" --path "$PR_NUMBER" 2>/dev/null || true)"
-    if [[ -n "$scoped_path" && -f "$scoped_path" ]]; then
-      handoff_path="$scoped_path"
+  local handoff_path="" expected_path="" expected_scope=""
+  local cand cand_path cand_why blocked_path="" blocked_dir=""
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    cand_path=""
+    # Surfaced, not swallowed: the previous `2>/dev/null || true` turned a
+    # helper refusal into an empty path and then into a flat-path fallback,
+    # with nothing on any stream to say the scoped layout had been skipped.
+    # Streams stay separate — a successful --path call can still print a note
+    # (CLAUDE_HANDOFF_FLAT_OK), and a merged capture would make that note part
+    # of the path. The failure text is re-read from stderr alone.
+    if ! cand_path="$("$HANDOFF_HELPER" --owner-repo "$cand" --path "$PR_NUMBER" 2>/dev/null)" || [[ -z "$cand_path" ]]; then
+      cand_why="$("$HANDOFF_HELPER" --owner-repo "$cand" --path "$PR_NUMBER" 2>&1 >/dev/null || true)"
+      echo "polling-state-gate.sh: notice: handoff-state.sh could not resolve a path for scope '$cand' (PR #$PR_NUMBER): ${cand_why:-no output}" >&2
+      continue
     fi
-  fi
-  local flat_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
-  if [[ -z "$handoff_path" ]]; then
-    if [[ -f "$flat_path" ]]; then
-      if [[ -n "$owner_repo_for_path" ]]; then
-        echo "polling-state-gate.sh: notice: scoped handoff not found for '$owner_repo_for_path' PR #$PR_NUMBER; falling back to flat $flat_path (run handoff-migrate.sh to migrate)" >&2
+    # The first candidate names the path the error message reports, so a gate
+    # that finds nothing still points at where the handoff was expected.
+    if [[ -z "$expected_path" ]]; then
+      expected_path="$cand_path"
+      expected_scope="$cand"
+    fi
+    if [[ -f "$cand_path" ]]; then
+      handoff_path="$cand_path"
+      break
+    fi
+    # Not found — but distinguish "absent" from "unknowable" before any later
+    # branch is allowed to treat this scope as empty and let the flat path
+    # answer in its place. Recorded, not fatal here: a later candidate may
+    # still hold a readable handoff, and that is a better answer than an error.
+    if [[ -z "$blocked_path" ]]; then
+      if blocked_dir="$(unsearchable_ancestor "$cand_path")"; then
+        blocked_path="$cand_path"
+      else
+        blocked_dir=""
       fi
-      handoff_path="$flat_path"
     fi
-  fi
-  if [[ -z "$handoff_path" || ! -f "$handoff_path" ]]; then
-    local expected_path="${flat_path}"
-    [[ -n "$owner_repo_for_path" ]] && expected_path="${HANDOFF_DIR}/${owner_repo_for_path}/pr-${PR_NUMBER}-handoff.json"
-    echo "polling-state-gate.sh: missing handoff $expected_path — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+  done < <(handoff_scope_candidates "$resolved" "$owner_repo_for_path")
+  local flat_path
+  if ! flat_path="$(flat_handoff_path)"; then
     exit 4
+  fi
+  # An indeterminate scoped path outranks the flat fallback. Falling through
+  # here would validate an unrelated record and announce it as "scoped handoff
+  # not found", which is a false statement about a file that is very likely
+  # sitting right there — exactly the failure mode exit 5 exists to report.
+  # Actionable, because the remedy is a permission fix, not --ensure-session:
+  # --ensure-session cannot repair what it cannot stat either.
+  if [[ -z "$handoff_path" && -n "$blocked_path" ]]; then
+    echo "polling-state-gate.sh: unreadable handoff $blocked_path — directory $blocked_dir is not searchable, so whether that handoff exists cannot be determined; refusing to let $flat_path answer for PR #$PR_NUMBER. Run: chmod u+x '$blocked_dir'" >&2
+    exit "$HANDOFF_UNREADABLE_EXIT"
+  fi
+  if [[ -z "$handoff_path" && -f "$flat_path" ]]; then
+    # Always announced. The old notice was gated on `owner_repo_for_path`, the
+    # very field whose absence caused the misresolution, so the one case where
+    # the flat file answered for a scoped handoff was also the one case that
+    # printed nothing (issue #1559).
+    if [[ -n "$expected_scope" ]]; then
+      echo "polling-state-gate.sh: notice: scoped handoff not found for '$expected_scope' PR #$PR_NUMBER; falling back to flat $flat_path (run handoff-migrate.sh to migrate)" >&2
+    else
+      echo "polling-state-gate.sh: notice: no owner/repo scope could be derived for PR #$PR_NUMBER (no per-PR owner_repo, no \$CLAUDE_SESSION_REPO, and the checkout names none); falling back to flat $flat_path (run: polling-state-gate.sh $PR_NUMBER --ensure-session to record a scope)" >&2
+    fi
+    handoff_path="$flat_path"
+  fi
+  if [[ -z "$handoff_path" || ! -f "$handoff_path" || ! -r "$handoff_path" ]]; then
+    local reported="${expected_path:-$flat_path}"
+    local detail="missing handoff $reported"
+    # An existing-but-unreadable file is its own diagnosis: naming the path it
+    # "expected" would send the reader looking for a file that is right there.
+    [[ -n "$handoff_path" && -e "$handoff_path" ]] && detail="unreadable handoff $handoff_path (exists but is not readable)"
+    echo "polling-state-gate.sh: $detail — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+    exit "$HANDOFF_UNREADABLE_EXIT"
+  fi
+  # Parse-check once, here, rather than letting the first `jq` read below abort
+  # under `set -e` with jq's own status — which is 2, this script's documented
+  # *usage* code, for what is actually corrupt state (issue #1559).
+  if ! jq -e . "$handoff_path" >/dev/null 2>&1; then
+    echo "polling-state-gate.sh: unreadable handoff $handoff_path — not valid JSON — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+    exit "$HANDOFF_UNREADABLE_EXIT"
   fi
   if [[ ! -f "$STATE_FILE" ]]; then
     echo "polling-state-gate.sh: missing $STATE_FILE — run --ensure-session first" >&2
@@ -588,7 +948,9 @@ require_handoff_and_state() {
     exit 4
   fi
   if [[ "$state_sha" != "$handoff_sha" ]]; then
-    echo "polling-state-gate.sh: head_sha mismatch between session-state and handoff — run polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+    # Name the file. Which handoff answered is the whole question when a scoped
+    # and a flat file both exist for one PR (issue #1559).
+    echo "polling-state-gate.sh: head_sha mismatch between session-state ($state_sha) and handoff $handoff_path ($handoff_sha) — run polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
     exit 4
   fi
   canon="$(cd "$resolved" && git rev-parse --show-toplevel)"
@@ -609,18 +971,36 @@ require_handoff_and_state() {
   if ! validate_root_match "$resolved"; then
     exit 4
   fi
+  VERIFIED_HANDOFF_PATH="$handoff_path"
+  VERIFIED_HANDOFF_HEAD="$handoff_sha"
+  VERIFIED_HANDOFF_LANE="scoped"
+  [[ "$handoff_path" == "$flat_path" ]] && VERIFIED_HANDOFF_LANE="legacy-flat"
+  return 0
 }
 
 if [[ "$MODE" == "ensure" ]]; then
   ensure_session
 fi
 
-if [[ "$MODE" == "verify" ]]; then
+if [[ "$MODE" == "verify" || "$MODE" == "resolve-handoff" ]]; then
   resolved=""
   if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
     exit 4
   fi
   require_handoff_and_state "$resolved" verify
+  if [[ "$MODE" == "resolve-handoff" ]]; then
+    selected_owner="$(active_scope_key)"
+    if ! jq -se --argjson pr "$PR_NUMBER" --arg owner "$selected_owner" \
+      'length == 1 and (.[0] | type == "object" and .pr_number == $pr
+       and (.owner_repo | type == "string") and (.owner_repo | ascii_downcase) == $owner)' \
+      "$VERIFIED_HANDOFF_PATH" >/dev/null 2>&1; then
+      echo "polling-state-gate.sh: selected handoff identity is unknown or foreign at $VERIFIED_HANDOFF_PATH; verify ownership and repair explicitly (wait-handoff-selection.md); no write authorized" >&2
+      exit "$HANDOFF_UNREADABLE_EXIT"
+    fi
+    jq -n --argjson pr "$PR_NUMBER" --arg owner "$selected_owner" --arg head "$VERIFIED_HANDOFF_HEAD" \
+      --arg scope "$VERIFIED_HANDOFF_LANE" --arg path "$VERIFIED_HANDOFF_PATH" \
+      '{schema:"selected-handoff/v1",pr_number:$pr,owner_repo:$owner,head_sha:$head,scope:$scope,path:$path}'
+  fi
   exit 0
 fi
 
@@ -631,4 +1011,40 @@ if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
 fi
 require_handoff_and_state "$resolved" live
 canon="$(cd "$resolved" && git rev-parse --show-toplevel)"
-(cd "$canon" && exec "$MERGE_GATE" "$PR_NUMBER")
+GATE_ARGS=("$PR_NUMBER")
+# Forward the authorship override (issue #733) so a PR enrolled under
+# --allow-nonauthor isn't re-blocked by merge-gate.sh's own independent
+# authorship check on every poll cycle (issue #1251).
+#
+# Read the enrolment-time decision back out of session-state (issue #1266). The
+# per-cycle contract in cr-github-review.md passes no flags on these ticks, so
+# without this read-back the override survived exactly one invocation and the
+# gate could never report "met" for an overridden PR. `state_pr_field` is safe
+# here: require_handoff_and_state() above already pinned STATE_READ_DIR to the
+# resolved checkout and refused if the PR is not registered for this repo.
+#
+# Only the literal boolean `true` enables the bypass. Absent, `false`, `null`,
+# and any other value all mean "not overridden" — an authorship bypass must be
+# granted affirmatively, never inferred from a value we cannot read.
+#
+# What the persisted value does NOT do, deliberately: it never satisfies an
+# authorship check other than merge-gate.sh's, and merge-gate.sh only REPORTS.
+# --ensure-session re-reads the flag from its own invocation, never from state,
+# so re-enrolling a foreign PR still refuses; admin-merge.sh keeps its own
+# independent check, so no merge is authorized by this field. It suppresses one
+# blocker line for a PR the user already named in chat to enrol.
+#
+# safety.md requires a tool operating under the override to SAY SO. On stderr,
+# because merge-gate.sh's stdout is the JSON its callers parse — a notice there
+# would corrupt the payload. One line per tick, only for overridden PRs, is the
+# audit trail a persisted bypass has to carry.
+PERSISTED_ALLOW_NONAUTHOR="$(state_pr_field allow_nonauthor)"
+if [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]]; then
+  GATE_ARGS+=(--allow-nonauthor)
+  if [[ "$ALLOW_NONAUTHOR" -eq 1 ]]; then
+    echo "polling-state-gate.sh: notice: PR #$PR_NUMBER — operating under an explicit per-PR authorship override passed on this invocation (.claude/rules/safety.md §Authorship); merge-gate.sh's authorship block is suppressed." >&2
+  else
+    echo "polling-state-gate.sh: notice: PR #$PR_NUMBER — operating under the per-PR authorship override recorded at enrolment (.prs[\"$PR_NUMBER\"].allow_nonauthor, .claude/rules/safety.md §Authorship); merge-gate.sh's authorship block is suppressed. Clear it by re-running --ensure-session without --allow-nonauthor." >&2
+  fi
+fi
+(cd "$canon" && exec "$MERGE_GATE" "${GATE_ARGS[@]}")

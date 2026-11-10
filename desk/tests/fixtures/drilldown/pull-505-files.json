@@ -1,0 +1,48 @@
+[
+ {
+  "sha": "1111111111111111111111111111111111111111",
+  "filename": "docs/guide.md",
+  "status": "modified",
+  "additions": 1,
+  "deletions": 1,
+  "changes": 2,
+  "patch": "@@ -3,7 +3,7 @@\n Widgets are counted.\n \n ## Setup\n-Run setup once.\n+Run setup once, then count.\n \n ## Use\n Count widgets."
+ },
+ {
+  "sha": "2222222222222222222222222222222222222222",
+  "filename": "src/widget.sh",
+  "status": "modified",
+  "additions": 6,
+  "deletions": 3,
+  "changes": 9,
+  "patch": "@@ -1,5 +1,5 @@\n # widget line 1\n-# widget line 2\n+# widget line 2, renamed\n # widget line 3\n # widget line 4\n # widget line 5\n@@ -28,6 +28,8 @@\n # widget line 28\n # widget line 29\n # widget line 30\n+# inserted after 30 (a)\n+# inserted after 30 (b)\n # widget line 31\n # widget line 32\n # widget line 33\n@@ -42,7 +44,8 @@ widget_count()\n # widget line 42\n # widget line 43\n # widget line 44\n-# widget line 45\n+# widget line 45, counted\n+# widget line 45, extra\n # widget line 46\n # widget line 47\n # widget line 48\n@@ -107,7 +110,7 @@\n # widget line 107\n # widget line 108\n # widget line 109\n-# widget line 110\n+# widget line 110, near the end\n # widget line 111\n # widget line 112\n # widget line 113"
+ },
+ {
+  "sha": "3333333333333333333333333333333333333333",
+  "filename": "src/gizmo.sh",
+  "status": "renamed",
+  "additions": 1,
+  "deletions": 1,
+  "changes": 2,
+  "patch": "@@ -2,7 +2,7 @@\n # gadget\n set -eu\n \n-echo gadget\n+echo gizmo\n \n exit 0\n ",
+  "previous_filename": "src/gadget.sh"
+ },
+ {
+  "sha": "4444444444444444444444444444444444444444",
+  "filename": "tests/widget.test.sh",
+  "status": "added",
+  "additions": 6,
+  "deletions": 0,
+  "changes": 6,
+  "patch": "@@ -0,0 +1,6 @@\n+#!/usr/bin/env bash\n+# widget tests\n+. ./testlib.sh\n+check widget_count 3\n+check widget_line 2\n+finish"
+ },
+ {
+  "sha": "5555555555555555555555555555555555555555",
+  "filename": "tests/gizmo_test.sh",
+  "status": "modified",
+  "additions": 2,
+  "deletions": 0,
+  "changes": 2,
+  "patch": "@@ -4,5 +4,7 @@\n check gizmo 1\n \n check gizmo 2\n+check_doc docs/guide.md\n+check gizmo 3\n \n finish"
+ }
+]

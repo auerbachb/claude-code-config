@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # admin-merge.sh — Generate (and, only when the USER opts in, run) the
 # toggle-merge-toggle bypass for a protected branch on a SOLO-OWNER repo.
+# catalog: merge-gate-sequencing — Generate or execute the solo-owner branch-protection bypass
 #
 # Background (issue #451): on a solo-owner repo where the user is the sole admin
 # and CodeRabbit / CodeAnt are the only required reviewers, a merge can stall on
@@ -57,8 +58,17 @@
 #
 # Options:
 #   --repo-path <path>  Absolute path of the local clone to cd into (default:
-#                       repo-root.sh / git toplevel of the cwd).
+#                       repo-root.sh / git toplevel of the cwd). AUTHORITATIVE
+#                       over the invoker's cwd (issue #1439): the script enters
+#                       this path BEFORE it resolves owner/repo, so gh's cwd
+#                       inference and every cwd-scoped helper (pr-authorship.sh,
+#                       merge-gate.sh, clean-behind-check.sh) target it too — a
+#                       cross-repo invocation no longer needs the caller to cd
+#                       first. A value that cannot be entered is a hard error
+#                       (exit 7) in every mode, never a silent cwd fallback.
 #   --branch <name>     Protected branch (default: the PR's base branch).
+#   --defer-bookkeeping  In --auto-plain, leave post-merge bookkeeping to /wrap
+#                        after its issue completion assessment.
 #   --ac-verified       REQUIRED by --auto-plain. Caller attests it has completed
 #                       cr-merge-gate.md Step 2 — per-criterion Test Plan
 #                       verification against the code at the CURRENT SHA — for this
@@ -72,11 +82,22 @@
 #   --allow-nonauthor   Bypass the issue #733 authorship guard (see below). Pass
 #                       ONLY under an explicit per-PR user override — the default
 #                       refuses a bypass merge on a PR you did not author.
+#                       REFUSED (exit 2) when combined with --auto-plain: that
+#                       mode runs unattended, and skipping the authorship guard
+#                       unattended is never allowed. Works normally with
+#                       --print, --launch-terminal, and --execute — a human is
+#                       always in the loop for those.
 #   -h, --help          Print this header.
 #
 # Authorship guard (issue #733): before any pre-flight, this refuses when the
 # authenticated user did not author the PR (delegated to pr-authorship.sh;
 # fail-closed). A bypass merge is a write, so it is restricted to your own PRs.
+# --allow-nonauthor is forwarded to every downstream consumer that runs its own
+# independent authorship check, so none of them re-adds the blocker this
+# script's own guard just cleared: merge-gate.sh directly (issue #1251), and
+# clean-behind-check.sh — whose NESTED merge-gate.sh call kept the override
+# unreachable for BEHIND non-author PRs, refusing them with a misleading "not
+# safe to skip a rebase" (issue #1257).
 #
 # Exit codes:
 #   0 — bypass command printed (print/launch) OR dance completed (execute)
@@ -84,47 +105,69 @@
 #   1 — refused: PR not merge-ready (hard blockers / human changes requested),
 #        OR refused by the issue #733 authorship guard (non-author PR, no override),
 #        OR (auto-plain) the clean-BEHIND state no longer holds at merge time
-#   2 — usage error
+#   2 — usage error, INCLUDING --auto-plain combined with --allow-nonauthor
+#        (issue #1251 — that combination is refused before any pre-flight runs)
 #   3 — PR not found / not open
-#   4 — gh / network / jq error
+#   4 — gh / git / network / jq error, including repo-root.sh timing out (its
+#        exit 3, issue #1363) or being unable to run git at all (its exit 4,
+#        issue #1403) while resolving the repo path. Both are absorbed here
+#        because neither is a determinate answer — the path is refused, not
+#        guessed. A determinate "not a git repo" still takes the fallback chain,
+#        whose own `git rev-parse --show-toplevel` is bounded too (issue #1404,
+#        via lib/bounded-run.sh): on expiry — or with that library missing — the
+#        path is refused here rather than guessed from $PWD.
 #   5 — refused: repo is not solo-owned (would skip a real review)
 #   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
 #        not apply — no bypass path detected (inspect branch protection for the
 #        actual blocker)
-#   7 — execute/auto-plain failure (unusable --repo-path, merge failed, or the PR
-#        never reported state=MERGED; in execute's toggle shape the trap
-#        re-enabled protection)
+#   7 — unusable repo path, or an execute/auto-plain failure (merge failed, or
+#        the PR never reported state=MERGED; in execute's toggle shape the trap
+#        re-enabled protection). The repo-path refusal fires right after argument
+#        parsing, before any gh call, whenever the resolved path cannot be
+#        entered AND acting on the invoker's cwd instead would be wrong: an
+#        explicit --repo-path (any mode — honouring it is the flag's purpose), or
+#        --auto-plain/--execute with any resolved path (an irreversible merge).
+#        A read-only mode with an auto-resolved bad path keeps warning and
+#        continuing in the cwd it derived that path from.
 #   8 — refused by --auto-plain: the diagnosed shape is not `plain` (protection
 #        modification is prohibited for Claude), --ac-verified was not passed, an
 #        auto attempt already ran for this PR, or the repeat-guard marker could not
 #        be written. The bypass command is printed; nothing was executed.
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# release_issue_claim — drop the pick-time claim on the PR's linked issue once
-# the merge is confirmed (issue #873). A merged PR is a terminal state, so the
-# issue becomes startable again.
-#
-# BEST-EFFORT BY DESIGN: this only ever runs AFTER a merge has already landed,
-# so it must never change the exit status. An unreleased claim ages out on its
-# own within CLAIM_STALE_HOURS; failing an already-completed merge would be the
-# far worse outcome. Every failure path here is a warning.
+# The shared wall-clock bound (issue #1404). Loaded here, consumed only by
+# resolve_repo_path's fallback below — the one git call this script makes
+# itself. Loading is best-effort at this point ON PURPOSE: every other mode,
+# --repo-path included, needs no git call at all, and refusing a merge over a
+# library that path never reaches would be its own bug. The refusal lives at
+# the call site, where the alternative really is an unbounded call.
+BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
+BOUNDED_RUN_OK=0
+if [[ -r "$BOUNDED_RUN_LIB" ]]; then
+  # shellcheck source=lib/bounded-run.sh
+  if source "$BOUNDED_RUN_LIB"; then BOUNDED_RUN_OK=1; fi
+fi
+
+# Post-merge only: preserve pickup evidence before any claim deletion.
+# Keep all three merge shapes on one retryable bookkeeping boundary.
 release_issue_claim() {
-  local issue
-  [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" && -x "$SCRIPT_DIR/issue-claim.sh" ]] || return 0
-  issue="$("$SCRIPT_DIR/pr-issue-ref.sh" "$PR_NUMBER" 2>/dev/null || true)"
-  [[ -n "$issue" ]] || return 0
-  if ! "$SCRIPT_DIR/issue-claim.sh" "$issue" --release >/dev/null 2>&1; then
-    echo "WARNING: could not release the claim on issue #$issue — it will expire on its own. Clear it early with: $SCRIPT_DIR/issue-claim.sh $issue --release" >&2
+  [[ "$DEFER_BOOKKEEPING" != true ]] || return 0
+  if [[ -x "$SCRIPT_DIR/post-merge-bookkeeping.sh" ]]; then
+    "$SCRIPT_DIR/post-merge-bookkeeping.sh" "$PR_NUMBER" --repo "$OWNER_REPO" >/dev/null || \
+      echo "WARN: post-merge bookkeeping not confirmed for PR #$PR_NUMBER; retry /wrap" >&2
+  else
+    echo "WARN: post-merge-bookkeeping.sh missing for PR #$PR_NUMBER; retry /wrap after restoring helpers" >&2
   fi
   return 0
 }
 
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 # --------------------------------------------------------------------------
@@ -141,6 +184,7 @@ REVIEWER_OVERRIDE=""
 # not rest on clean-behind-check.sh's ticked-checkbox proxy alone. The caller
 # asserts it ran cr-merge-gate.md Step 2 against the code at the current SHA.
 AC_VERIFIED=false
+DEFER_BOOKKEEPING=false
 # Authorship guard (issue #733): a bypass merge is the most consequential PR
 # write. Refuse non-author PRs unless the caller passes --allow-nonauthor under
 # an explicit per-PR user override.
@@ -172,6 +216,7 @@ while [[ $# -gt 0 ]]; do
       shift 2 ;;
     --force-solo) FORCE_SOLO=true; shift ;;
     --ac-verified) AC_VERIFIED=true; shift ;;
+    --defer-bookkeeping) DEFER_BOOKKEEPING=true; shift ;;
     --allow-nonauthor) ALLOW_NONAUTHOR=true; shift ;;
     --reviewer)
       REVIEWER_OVERRIDE="${2:-}"
@@ -190,6 +235,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$DEFER_BOOKKEEPING" == true && "$MODE" != "auto-plain" ]]; then
+  echo "ERROR: --defer-bookkeeping is only valid with --auto-plain" >&2
+  exit 2
+fi
+
+# --auto-plain + --allow-nonauthor hard refusal (issue #1251 review round).
+# --auto-plain is the one mode Claude may run UNATTENDED — no human confirms
+# the actual merge — so skipping the issue #733 authorship guard here is never
+# allowed.
+#
+# THIS CHECK IS LOAD-BEARING, NOT BELT-AND-BRACES. When issue #1251 added it,
+# a second, accidental protection also happened to block the combination:
+# clean-behind-check.sh's internal merge-gate.sh call could not receive
+# --allow-nonauthor, so CLEAN_BEHIND_OK could never become true for a
+# non-author PR and BYPASS_MODE could never reach "plain". Issue #1257 closed
+# that gap on purpose (the override now propagates through CBC_ARGS below), so
+# the accidental protection is GONE. This explicit refusal is now the only
+# thing standing between `--auto-plain --allow-nonauthor` and an unattended
+# merge of a foreign-authored PR. Do not remove or weaken it, and do not
+# reintroduce the combination through a new mode without re-deciding this.
+#
+# --print, --launch-terminal, and --execute are unaffected: a human is always
+# in the loop for those (--execute is documented USER-INVOKED ONLY; Claude
+# never runs it), so --allow-nonauthor keeps working for them as intended.
+if [[ "$MODE" == "auto-plain" && "$ALLOW_NONAUTHOR" == true ]]; then
+  echo "ERROR: --auto-plain does not accept --allow-nonauthor. --auto-plain runs UNATTENDED (no human confirms the merge), so skipping the issue #733 authorship guard in this mode is never allowed. Use --print (or --launch-terminal) with --allow-nonauthor instead — it only prints the bypass command for a human to review and run themselves." >&2
+  exit 2
+fi
+
 if [[ -z "$PR_NUMBER" ]]; then
   echo "ERROR: <pr_number> is required" >&2
   print_usage >&2
@@ -198,6 +272,158 @@ fi
 if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "ERROR: <pr_number> must be a positive integer (got: $PR_NUMBER)" >&2
   exit 2
+fi
+
+# --------------------------------------------------------------------------
+# Resolve the local clone FIRST, then scope the whole process to it (issue #1439)
+# --------------------------------------------------------------------------
+# --repo-path exists so a caller can point this script at a clone OTHER than the
+# invoker's cwd. It used to fail at that: repo identity was resolved from the cwd
+# (`gh repo view`, which infers owner/repo from the cwd's git remote) long before
+# REPO_PATH was computed, so a cross-repo invocation resolved the WRONG repo and
+# exited 3 ("PR not found") even when the flag named the right clone — observed
+# live on PR #1423's Phase C from an unrelated repo's checkout.
+#
+# Resolving the path here — before the first repo-identity call — and entering it
+# once makes --repo-path authoritative for every cwd-sensitive consumer at the
+# same time, without threading an explicit repo scope through each of them:
+# `gh repo view` / `gh pr view`, the pr-authorship.sh / merge-gate.sh /
+# clean-behind-check.sh pre-flight subprocesses (all cwd-scoped), the AUTO_MARKER
+# dedup key, and the final `gh pr merge`. It runs before the mode branches
+# diverge, so all four modes (--print, --launch-terminal, --auto-plain,
+# --execute) get it. The printed BYPASS_CMD keeps its own `cd %q` prefix so the
+# emitted one-liner stays portable for a human pasting it elsewhere.
+#
+# resolve_repo_path() itself still reads the cwd (repo-root.sh / git toplevel /
+# $PWD) when no override is given — that fallback chain, and its precedence, are
+# unchanged; only the moment it runs moved.
+resolve_repo_path() {
+  if [[ -n "$REPO_PATH_OVERRIDE" ]]; then
+    echo "$REPO_PATH_OVERRIDE"; return
+  fi
+  local p="" rc=0 errfile="" err=""
+  if [[ -x "$SCRIPT_DIR/repo-root.sh" ]]; then
+    # This script runs without `set -e`, so a bare `mktemp` failure would leave
+    # errfile empty and turn the redirect below into `2>""`. Name a fallback
+    # path instead — still safe to `rm -f`, unlike /dev/null.
+    errfile="$(mktemp 2>/dev/null)" || errfile="${TMPDIR:-/tmp}/admin-merge-reporoot.$$"
+    p="$("$SCRIPT_DIR/repo-root.sh" 2>"$errfile")" || rc=$?
+    err="$(head -n 1 "$errfile" 2>/dev/null || true)"
+    rm -f "$errfile"
+    # Two repo-root.sh codes mean "git itself is unusable", and NEITHER may fall
+    # through: exit 3, a git call killed at its wall-clock bound (issue #1363),
+    # and exit 4, git never launching at all (issue #1403). The next statement
+    # is an UNBOUNDED `git rev-parse` against that same broken git — for the
+    # timeout it moves the 20-minute freeze rather than removing it, and for a
+    # missing binary it just fails again — and the `$PWD` after it would
+    # silently substitute the invoker's cwd for the root repo on the one path
+    # whose action is irreversible. Refuse, like dirty-main-guard.sh and
+    # stale-cleanup.sh already do. Both land in this script's exit 4 bucket
+    # ("gh / git / network / jq error") via the caller below.
+    if [[ "$rc" -eq 3 ]]; then
+      echo "ERROR: repo-root.sh timed out resolving the root repo${err:+ — $err}" >&2
+      echo "ERROR: refusing to guess the repo path for a merge; pass --repo-path <abs-path> once git responds." >&2
+      return 3
+    fi
+    if [[ "$rc" -eq 4 ]]; then
+      echo "ERROR: repo-root.sh could not run git at all while resolving the root repo${err:+ — $err}" >&2
+      echo "ERROR: refusing to guess the repo path for a merge; repair git (or pass --repo-path <abs-path>) and retry." >&2
+      return 4
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+      # What is left is a determinate answer ("not a git repo"), so the historic
+      # fallback chain still applies — it just no longer runs silently.
+      p=""
+      echo "WARNING: repo-root.sh could not resolve the root repo (exit $rc)${err:+ — $err}" >&2
+      echo "WARNING: falling back to the current checkout; pass --repo-path <abs-path> to pin it." >&2
+    fi
+  fi
+  if [[ -z "$p" ]]; then
+    # The determinate-answer fallback, now BOUNDED (issue #1404). PR #1386
+    # refused rather than fall through on repo-root.sh's timeout, but left this
+    # call unbounded on the grounds that it is a cheap single-file read. That
+    # is a statement about COST, not about stall risk: the #1363 filesystem
+    # stalls per file, so this reproduces the same no-output freeze one call
+    # further down the chain — on the path whose next action is irreversible.
+    # On expiry, refuse exactly as the rc=3 path above does: the `$PWD`
+    # substitution below is a guess, and a merge must not be aimed by a guess.
+    # CAPTURE/CAPTURE_ERR are the library's caller-owned inputs; declaring them
+    # `local` keeps bash's dynamic scoping (run_bounded still sees them) without
+    # leaving globals pointing at files this function has already unlinked.
+    # BOUNDED_REQUIRE_OUTPUT: like repo-root.sh, the ANSWER here is the
+    # capture — a path. A late child that finished with an EMPTY capture has
+    # left nothing to keep, and treating it as success would return an empty
+    # $p straight into the `$PWD` fallback this refusal exists to prevent.
+    local rp_rc=0 capfile="" caperr="" bound="" CAPTURE CAPTURE_ERR
+    local BOUNDED_REQUIRE_OUTPUT=1
+    if (( BOUNDED_RUN_OK != 1 )); then
+      echo "ERROR: bounded-run library not found at $BOUNDED_RUN_LIB, so 'git rev-parse --show-toplevel' cannot be bounded" >&2
+      echo "ERROR: refusing to run it unbounded (issue #1363) or to guess the repo path for a merge; pass --repo-path <abs-path>." >&2
+      return 3
+    fi
+    # Same fallback-path shape as errfile above: this script runs without
+    # `set -e`, so a bare `mktemp` failure must not leave an empty redirect.
+    capfile="$(mktemp 2>/dev/null)" || capfile="${TMPDIR:-/tmp}/admin-merge-toplevel.$$"
+    caperr="$(mktemp 2>/dev/null)" || caperr="${TMPDIR:-/tmp}/admin-merge-toplevel-err.$$"
+    CAPTURE="$capfile"
+    CAPTURE_ERR="$caperr"
+    # The NORMALIZED bound in both the call and the message: reporting the raw
+    # override would name a value that was never enforced.
+    bound="$(normalize_bound "${REPO_ROOT_TIMEOUT_SECS:-10}" 10)"
+    run_bounded "$bound" git rev-parse --show-toplevel || rp_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      rm -f "$capfile" "$caperr"
+      echo "ERROR: 'git rev-parse --show-toplevel' exceeded the ${bound}s bound and was killed while resolving the root repo" >&2
+      echo "ERROR: refusing to guess the repo path for a merge; pass --repo-path <abs-path> once git responds." >&2
+      return 3
+    fi
+    if (( rp_rc == 0 )); then
+      p="$(head -n 1 "$capfile" 2>/dev/null || true)"
+    fi
+    rm -f "$capfile" "$caperr"
+  fi
+  if [[ -z "$p" ]]; then
+    p="$PWD"
+  fi
+  echo "$p"
+}
+# `|| rc` rather than a bare assignment: resolve_repo_path returns non-zero (3
+# timed out, 4 git could not run) when the root is genuinely unknown, and an
+# `exit` inside it would only leave the command substitution's subshell.
+#
+# The `$( )` here is compatible with run_bounded's "never in a command
+# substitution" rule, and stays so only under three conditions: the timeout
+# path RETURNS (it does not `exit`, which would leave only this subshell), the
+# status is carried out by RESOLVE_RC below, and BOUNDED_CAPTURE_TEMPLATE is
+# unset so there is no parent-state handover to lose. Changing any of the three
+# would break the contract silently.
+REPO_PATH=""
+RESOLVE_RC=0
+REPO_PATH="$(resolve_repo_path)" || RESOLVE_RC=$?
+if [[ "$RESOLVE_RC" -ne 0 ]]; then
+  exit 4
+fi
+
+# Enter the resolved clone ONCE, before any repo-identity resolution, so cwd,
+# gh's repo inference, and every helper subprocess below agree on one repo.
+REPO_PATH_NOTE=""
+if ! cd "$REPO_PATH" 2>/dev/null; then
+  # Refuse whenever continuing could act on a DIFFERENT repo than the one asked
+  # for:
+  #   * an explicit --repo-path names a target we cannot honour — falling back
+  #     to the invoker's cwd is precisely issue #1439's bug, and would print (or
+  #     run) a bypass against whatever repo the cwd happens to be, which may
+  #     well have a PR at this number;
+  #   * --auto-plain / --execute merge for real, so a wrong cwd is irreversible.
+  #     This preserves the refusal those two branches carried before #1439.
+  # A read-only mode with an AUTO-RESOLVED path keeps the historic
+  # warn-and-continue: that path was derived from this very cwd, so the cwd is a
+  # coherent fallback, and the note tells the operator to pin it.
+  if [[ -n "$REPO_PATH_OVERRIDE" || "$MODE" == "auto-plain" || "$MODE" == "execute" ]]; then
+    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path> naming an existing local clone." >&2
+    exit 7
+  fi
+  REPO_PATH_NOTE="WARNING: resolved repo path '$REPO_PATH' could not be entered — pass --repo-path <abs-path>."
 fi
 
 # --------------------------------------------------------------------------
@@ -262,31 +488,6 @@ if [[ -z "$BRANCH" ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# Resolve absolute path of the local clone (for the cd-prefix)
-# --------------------------------------------------------------------------
-resolve_repo_path() {
-  if [[ -n "$REPO_PATH_OVERRIDE" ]]; then
-    echo "$REPO_PATH_OVERRIDE"; return
-  fi
-  local p=""
-  if [[ -x "$SCRIPT_DIR/repo-root.sh" ]]; then
-    p="$("$SCRIPT_DIR/repo-root.sh" 2>/dev/null || true)"
-  fi
-  if [[ -z "$p" ]]; then
-    p="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  fi
-  if [[ -z "$p" ]]; then
-    p="$PWD"
-  fi
-  echo "$p"
-}
-REPO_PATH="$(resolve_repo_path)"
-REPO_PATH_NOTE=""
-if [[ ! -d "$REPO_PATH" ]]; then
-  REPO_PATH_NOTE="WARNING: resolved repo path '$REPO_PATH' is not a directory — pass --repo-path <abs-path>."
-fi
-
-# --------------------------------------------------------------------------
 # Pre-flight 1: merge-readiness (CI green, approved, threads resolved)
 # --------------------------------------------------------------------------
 # The only protection-related blocker the bypass is allowed to step over is the
@@ -307,6 +508,10 @@ fi
 
 GATE_ARGS=("$PR_NUMBER")
 [[ -n "$REVIEWER_OVERRIDE" ]] && GATE_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+# Forward the authorship override (issue #733) so merge-gate.sh's own
+# authorship check — independent of the pre-flight above — doesn't re-add the
+# blocker this script's caller already asked to bypass (issue #1251).
+[[ "$ALLOW_NONAUTHOR" == true ]] && GATE_ARGS+=(--allow-nonauthor)
 # set -e is intentionally off, so a non-zero merge-gate exit (e.g. 1 = gate not
 # met) does not abort here — capture the real exit code, then inspect the JSON.
 GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null)"
@@ -314,6 +519,16 @@ GATE_EXIT=$?
 if [[ -z "$GATE_JSON" ]] || ! echo "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   echo "ERROR: merge-gate.sh produced no parseable JSON (exit $GATE_EXIT)." >&2
   exit 4
+fi
+
+# No-review override (issue #1899): an unreviewed merge never also takes an
+# admin bypass. Refused in every shape with the ordinary not-merge-ready exit
+# (1), which callers route to rebase/recovery — the rebased HEAD then gets its
+# own window. Never exit 8: there is nothing for the repo admin to print.
+if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
+  echo "AUTO_PLAIN_REFUSED: reason=no-review-override" >&2
+  echo "REFUSED: PR #$PR_NUMBER would merge through the no-review override — admin bypass is never combined with an unreviewed merge. If the PR is CLEAN, merge it plainly via /wrap (gh pr merge --squash --match-head-commit, no admin); only if it is BEHIND, rebase via /fixpr — the new HEAD gets its own window." >&2
+  exit 1
 fi
 
 # Clean-BEHIND allowance (issue #631): a `mergeStateStatus: BEHIND` is normally a
@@ -326,7 +541,7 @@ fi
 # protection reviewDecision note that admin-merge is independently allowed to
 # bypass. Keep that note separate from the mechanical clean-BEHIND verdict so the
 # two gate filters cannot make --auto-plain unreachable (issue #947).
-REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
+REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, a Greptile re-review is paid: ask the owner to approve it in chat \(#1897\)|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
 
 clean_behind_evidence_allows_admin() {
   local json="$1" rc="$2"
@@ -365,6 +580,14 @@ if [[ "${BEHIND_PRESENT:-0}" -gt 0 ]]; then
   if [[ -n "$CBC" ]]; then
     CBC_ARGS=("$PR_NUMBER")
     [[ -n "$REVIEWER_OVERRIDE" ]] && CBC_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+    # Forward the authorship override into clean-behind-check.sh's own NESTED
+    # merge-gate.sh call (issue #1257). Without it that nested gate re-adds the
+    # non-author blocker to its `missing[]`, which lands in the helper's
+    # `residual_blockers`, fails clean_behind_evidence_allows_admin()'s
+    # reviewDecision-only match, and refuses a BEHIND non-author PR with a
+    # misleading "not safe to skip a rebase". CBC_ARGS is built once and reused
+    # by both pre-merge re-validation call sites, so this covers all three.
+    [[ "$ALLOW_NONAUTHOR" == true ]] && CBC_ARGS+=(--allow-nonauthor)
     CBC_JSON="$("$CBC" "${CBC_ARGS[@]}" 2>/dev/null)"
     CBC_RC=$?
     if clean_behind_evidence_allows_admin "$CBC_JSON" "$CBC_RC"; then
@@ -445,6 +668,7 @@ if [[ "$FORCE_SOLO" != true ]]; then
     fi
   done
 
+  # graphite-app: retired 2026-11-03 (#1889); kept so a stale CODEOWNERS entry is never a human.
   HUMAN_OWNERS=$(printf '%s\n' "$CODEOWNERS_TEXT" \
     | sed 's/#.*$//' \
     | grep -oE '@[A-Za-z0-9/_-]+' \
@@ -669,12 +893,11 @@ if [[ "$MODE" == "auto-plain" ]]; then
     exit 8
   fi
 
-  # Run from the resolved clone so `gh pr merge` (which infers owner/repo from the
-  # cwd's git remote) targets the intended repo regardless of the invoker's cwd.
-  if ! cd "$REPO_PATH" 2>/dev/null; then
-    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
-    exit 7
-  fi
+  # NOTE: the process is already inside $REPO_PATH — it was entered right after
+  # argument parsing (issue #1439), so `gh pr merge` below (which infers
+  # owner/repo from the cwd's git remote) targets the intended repo regardless of
+  # the invoker's cwd, and an unusable path already refused with exit 7 there.
+  # Do not re-add a cd here: one early cd is the single source of truth.
 
   # Mandatory re-validation (TOCTOU): CLEAN_BEHIND_OK above is a snapshot, and
   # main may have advanced since — turning a clean BEHIND into one whose base
@@ -759,14 +982,11 @@ fi
 # Mode: execute (USER-INVOKED ONLY) — toggle-merge-toggle with safe re-enable.
 # --------------------------------------------------------------------------
 if [[ "$MODE" == "execute" ]]; then
-  # Run from the resolved clone so `gh pr merge` (which infers owner/repo from
-  # the cwd's git remote) targets the intended repo regardless of the invoker's
-  # cwd — mirrors the cd-prefix baked into the --print one-liner. Fail before
-  # touching protection if the path is bad.
-  if ! cd "$REPO_PATH" 2>/dev/null; then
-    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
-    exit 7
-  fi
+  # NOTE: the process is already inside $REPO_PATH — it was entered right after
+  # argument parsing (issue #1439), mirroring the cd-prefix baked into the
+  # --print one-liner, so `gh pr merge` targets the intended repo regardless of
+  # the invoker's cwd. An unusable path refused with exit 7 there, well before
+  # any protection call. Do not re-add a cd here.
 
   # Safety-critical revalidation (issue #631): the pre-flight above computed
   # CLEAN_BEHIND_OK from a snapshot. When this bypass is proceeding over a clean

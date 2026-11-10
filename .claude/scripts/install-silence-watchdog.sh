@@ -1,8 +1,9 @@
 #!/bin/bash
 # Install the macOS launchd watchdog that monitors Claude heartbeat files.
+# catalog: scheduling-monitoring — Install the macOS launchd watchdog that monitors Claude heartbeat files
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 LABEL="com.user.claude-silence-watchdog"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +56,7 @@ launchctl bootstrap "$GUI_DOMAIN" "$INSTALLED_PLIST"
 launchctl enable "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 launchctl kickstart -k "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 
-if launchctl list | grep -q "$LABEL"; then
+if LAUNCHD_LIST=$(launchctl list) && grep -q "$LABEL" <<<"$LAUNCHD_LIST"; then
   echo "PASS: $LABEL is running."
   echo "Verify with: launchctl list | grep claude-silence-watchdog"
 else

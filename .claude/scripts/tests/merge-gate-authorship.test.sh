@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # merge-gate-authorship.test.sh — the issue #733 authorship guard in merge-gate.sh.
+# catalog: tests — Tests the authorship guard in `merge-gate.sh`
 # Runs the REAL merge-gate.sh (+ real ci-status.sh / check-runs-dedup.sh /
 # session-state.sh siblings); only `gh` is stubbed on PATH. Requires jq.
 # Run from repo root: bash .claude/scripts/tests/merge-gate-authorship.test.sh
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-MERGE_GATE="$REPO_ROOT/.claude/scripts/merge-gate.sh"
+# Overridable so this suite can be pointed at another checkout's merge-gate.sh
+# (issue #1485); the guard stops a mistyped path from reading as a real result.
+# Named MERGE_GATE here, not SUT, as it has been since this suite was written.
+MERGE_GATE="${MERGE_GATE:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+[[ -f "$MERGE_GATE" && -x "$MERGE_GATE" ]] || { echo "FAIL — MERGE_GATE is not an executable file: $MERGE_GATE" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -57,6 +62,24 @@ case "$ARGS" in
   *issues/*/comments*) echo "[]"; exit 0 ;;
   *graphql*)
     jq -cn '{data:{repository:{pullRequest:{reviewThreads:{nodes:[]}}}}}'; exit 0 ;;
+  *"/branches/"*"/protection/required_status_checks"*)
+    # Branch-protection required contexts (issue #1361). Default is a 404, which
+    # combined with the unprotected branch object below resolves to "no required
+    # status checks" — so every pre-#1361 expectation in this file is unchanged.
+    # FAKE_REQUIRED_STATUS_CHECKS supplies the endpoint payload;
+    # FAKE_BRANCH_PROTECTED=true marks the base branch protected.
+    if [[ -n "${FAKE_REQUIRED_STATUS_CHECKS:-}" ]]; then
+      printf '%s' "${FAKE_REQUIRED_STATUS_CHECKS}"; exit 0
+    fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *"/branches/"*)
+    if [[ -n "${FAKE_BRANCH_JSON:-}" ]]; then
+      printf '%s' "${FAKE_BRANCH_JSON}"; exit 0
+    fi
+    jq -cn --arg p "${FAKE_BRANCH_PROTECTED:-false}" \
+      '{name:"main", protected:($p == "true"),
+        protection:{required_status_checks:{contexts:[]}}}'
+    exit 0 ;;
   *contents/*) echo "Not Found" >&2; exit 1 ;;
 esac
 echo "unexpected gh call: $ARGS" >&2

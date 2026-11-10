@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # diff-survival-check.sh — Verify a rebase / conflict resolution did not vaporize
 # the branch's own diff (issue #757).
+# catalog: review-threads-diffs — Verify a rebase or conflict resolution did not vaporize the branch's own diff
 #
 # Manual conflict re-resolution is the riskiest moment in the whole flow. Git is
 # satisfied by ANY resolution without conflict markers — including one that
@@ -102,14 +103,15 @@
 # move to 3/4 rather than the repo's more usual "2 = usage".
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SNAPSHOT_NAME="claude-diff-survival.json"
 SNAPSHOT_VERSION=1
 STALE_AFTER_SECS=86400
 
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() { echo "ERROR: $1" >&2; exit 3; }

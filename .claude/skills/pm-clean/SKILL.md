@@ -1,15 +1,34 @@
 ---
 name: pm-clean
-description: Scan two independent fronts and recommend cleanup — open GitHub issues (solved-by-PR, inactive, superseded, duplicates) and the on-disk workspace (stale worktrees + local/remote branches, via the shared stale-cleanup.sh). Never auto-closes issues or deletes worktrees/branches without confirmation. Triggers on "pm-clean", "stale issues", "clean backlog", "close stale", "clean worktrees", "stale branches", "prune branches".
+description: Scan two independent fronts and recommend cleanup — open GitHub issues (solved-by-PR, inactive, superseded, duplicates) and the on-disk workspace (stale worktrees + local/remote branches, via the shared stale-cleanup.sh). Never auto-closes issues; age-only workspace cleanup asks first. Verified finished worktrees/local branches can be reaped without confirmation. Triggers on "pm-clean", "stale issues", "clean backlog", "close stale", "clean worktrees", "stale branches", "prune branches".
 argument-hint: "[days] (optional — default 30; applies to issue inactivity and worktree/branch age) [--worktree-days N] (optional — override worktree/branch age only)"
 ---
 
 `/pm-clean` is the repo's single janitor. It runs two **independent** staleness scans and presents one recommend-then-confirm report:
 
 1. **Open GitHub issues** — solved-by-merged-PR, inactive, superseded, potential duplicates.
-2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `.claude/scripts/stale-cleanup.sh` (the exact script `/pm-update` Step 8 calls — one implementation, no divergence).
+2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `stale-cleanup.sh` (this skill holds that script's only direct invocation — one implementation, no divergence).
 
-The two scans never gate each other: one finding nothing does **not** suppress the other, and the summary always reports both. Nothing is closed or deleted without explicit confirmation.
+The two scans never gate each other: one finding nothing does **not** suppress the other. Issue closures and age-only workspace cleanup require confirmation. Verified finished worktrees/local branches are the deliberate noninteractive exception (Issue #1961); unknown liveness never qualifies.
+
+Resolve both scan engines before Step 0:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+BACKLOG_STALENESS_SH=$(resolve_script backlog-staleness.sh || true)
+STALE_CLEANUP_SH=$(resolve_script stale-cleanup.sh || true)
+[[ -n "$BACKLOG_STALENESS_SH" ]] || { echo "ERROR: backlog-staleness.sh not found (checked all three paths) — issue scan unavailable" >&2; exit 1; }
+[[ -n "$STALE_CLEANUP_SH" ]] || { echo "ERROR: stale-cleanup.sh not found (checked all three paths) — workspace scan unavailable" >&2; exit 1; }
+```
 
 > **Invoking-repo scope (issue #687).** Both scans stay in the invoking repo's lane:
 > the issue scan (`backlog-staleness.sh`) runs `gh issue list` cwd-repo-scoped, and
@@ -29,11 +48,11 @@ Parse `$ARGUMENTS`:
 
 Record two values for the rest of the run: `DAYS` (issue-inactivity threshold) and `WORKTREE_DAYS` (workspace threshold — equal to `DAYS` unless `--worktree-days` overrode it).
 
-> **Threshold note.** Reusing `[days]` means `/pm-clean` defaults the workspace age to 30 days (its issue default), whereas `/pm-update` Step 8 keeps its own `STALE_DAYS=7` default. That is intentional: the two skills share the *implementation* (`stale-cleanup.sh`), not the threshold. Use `--worktree-days 7` for the aggressive sweep.
+> **Threshold note.** Reusing `[days]` means `/pm-clean` defaults the workspace age to 30 days (its issue default), whereas `stale-cleanup.sh` itself defaults to `STALE_DAYS=7`. That is intentional: this skill owns the *threshold* it passes, while the script owns the *implementation*. Use `--worktree-days 7` for the script's own aggressive default.
 
 ## Step 1: Issue staleness scan
 
-> **Authorship guard (issue #733, `safety.md`).** `/pm-clean` performs **no PR writes** — it closes issues (after confirmation) and cleans local worktrees/branches; it never merges, comments on, or closes a PR. Any merged-PR data it reads (e.g. "solved by merged PR") is **read-only context**, and may legitimately reference a collaborator's PR. Workspace cleanup already protects **every** open PR's branch (yours and collaborators') from deletion via `stale-cleanup.sh`, so no author filter is applied there by design.
+> **Authorship guard (issue #733, `safety.md`).** `/pm-clean` performs **no PR writes** — it closes issues (after confirmation) and cleans local worktrees/branches; it never merges, comments on, or closes a PR. Any merged-PR data it reads (e.g. "solved by merged PR") is **read-only context**, and may legitimately reference a collaborator's PR. Workspace cleanup already protects **every** open PR's branch (yours and collaborators') from deletion via `stale-cleanup.sh`, so no author filter is applied to that protection by design. The finished class separately requires an owner-authored merged/closed PR through `pr-authorship.sh`.
 
 ### Step 1.1: Count the open backlog
 
@@ -46,18 +65,18 @@ Record the count as `TOTAL_OPEN` for the summary. If it is 0, the issue backlog 
 ### Step 1.2: Run the shared staleness detection
 
 ```bash
-.claude/scripts/backlog-staleness.sh --days <DAYS> --json
+"$BACKLOG_STALENESS_SH" --days <DAYS> --json
 ```
 
 This one call reproduces what was previously four separate inline steps here — gathering open issues, merged PRs, and closed issues, then flagging **solved-by-merged-PR** (closing-keyword regex in merged PR bodies, plus a weaker branch-name signal requiring 2+ shared keywords), **inactive** (the `updatedAt` threshold plus a per-issue comment/open-PR-reference/commit-reference triple check, capped at the 50 oldest candidates), **superseded** (issue-body file/keyword references with 3+ commits each, or 5+ commits on a single file), and **potential-duplicate** (3+ shared significant title words against a *resolved* closed issue, suppressed by explicit cross-references).
 
-Since issue #656 `/pm` runs this entire `/pm-clean` flow inline by default (reversing the #598 count-only design; the only opt-out is `/pm`'s `--no-clean` / `fast` ranking-only flag), so it reaches `backlog-staleness.sh` through this same flow rather than a separate call — both skills share the one `backlog-staleness.sh` detector, so the detection logic cannot diverge between them. Full per-category rules, safeguards (the `pinned`/`do-not-close`/`long-term`/`epic` label-skip, the 50-candidate performance cap), and the JSON record shape are documented in `.claude/scripts/backlog-staleness.sh --help`.
+Since issue #656 `/pm` runs this entire `/pm-clean` flow inline by default (reversing the #598 count-only design; the only opt-out is `/pm`'s `--no-clean` / `fast` ranking-only flag), so it reaches `backlog-staleness.sh` through this same flow rather than a separate call — both skills share the one `backlog-staleness.sh` detector, so the detection logic cannot diverge between them. Full per-category rules, safeguards (the `pinned`/`do-not-close`/`long-term`/`epic` label-skip, the 50-candidate performance cap), and the JSON record shape are documented by `backlog-staleness.sh --help`.
 
 Each returned record has `number`, `title`, `category` (`solved-by-pr`|`inactive`|`superseded`|`potential-duplicate`), a human-readable `rationale`, plus category-specific evidence fields (`pr`/`merged_at`; `last_activity`/`age_days`; `path`/`commits`; `closed_issue`/`closed_title`/`closed_at`/`keywords`). Group records by `category` for Step 3.
 
 ## Step 2: Workspace staleness sweep (worktrees + branches)
 
-This scan delegates **entirely** to `.claude/scripts/stale-cleanup.sh` — the same script `/pm-update` Step 8 calls (issue #618). **Reuse it as-is: never re-derive worktree/branch detection, thresholds, or safety checks in this skill.** The script's safety contract is the single source of truth — it always skips the main worktree, your current worktree, worktrees with uncommitted tracked changes, open-PR branches, protected branch names, and branches checked out in a worktree. See `.claude/scripts/stale-cleanup.sh --help` for the full contract.
+This scan delegates **entirely** to `stale-cleanup.sh`, which is the single source of truth for stale worktree/branch detection; this skill holds its only direct invocation (issue #618). **Reuse it as-is: never re-derive worktree/branch detection, thresholds, or safety checks in this skill.** The script's safety contract is the single source of truth — it always skips the main worktree, your current worktree, worktrees with uncommitted tracked changes, open-PR branches, protected branch names, and branches checked out in a worktree. See `stale-cleanup.sh --help` for the full contract.
 
 ### Step 2.1: Run the dry-run pass
 
@@ -65,20 +84,72 @@ Always run `--check` first — the script never deletes in this mode. Pass the r
 
 ```bash
 RC=0
-WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" .claude/scripts/stale-cleanup.sh --check --json)" || RC=$?
+WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json)" || RC=$?
 ```
 
-The `|| RC=$?` guard is required: `--check` exits **1** when stale items exist (the normal "found something" case), which would otherwise abort this step under `set -e`.
+The `|| RC=$?` guard is required: `--check` exits **1** for stale/finished items or incomplete scans (the normal "found something or could not verify" case), which would otherwise abort this step under `set -e`.
 
-Branch on `RC` (same contract as `/pm-update` Step 8):
+Branch on `RC` (the script's documented exit contract — `stale-cleanup.sh --help`):
 
-- **`RC == 0`** — no stale items. Record "no stale worktrees or branches" for the Step 3 summary.
-- **`RC == 1`** — stale items exist. Parse `WORKSPACE_JSON` and present them in Step 3.
+- **`RC == 0`** — no stale items. Record "no stale worktrees or branches" for the Step 3 summary. **Still parse `WORKSPACE_JSON` for `orphaned_checkouts[]` and `checkout_scan`** — that class is exit-code neutral by design (issue #1417), so this is the exit code it reports under when it is the *only* finding. Treating `RC == 0` as "nothing to show" is precisely how the backstop would go unseen.
+- **`RC == 1`** — items exist or verification is incomplete. Present age-only stale items in Step 3 only when `stale_worktrees`, `stale_local_branches`, `stale_remote_branches` or `orphaned_registrations` is non-empty. Finished candidates and unknowns stay separate; RC alone does not establish an age-only candidate.
 - **`RC == 3`** — usage error (bad flag or `STALE_DAYS`). Surface the script's `--help` output and skip the workspace section — this indicates a bug in this skill's invocation, not a real-state problem. The issue scan (Step 1) still stands.
 - **`RC == 4`** — environment error (no `gh`/`jq`, cannot resolve repo). Surface stderr and skip the workspace section. The issue scan still stands.
 - **Any other exit** — treat like an environment error: surface stderr and skip the workspace section (the issue scan still stands). `--check` documents only 0/1/3/4, so this is a defensive catch-all.
 
-`WORKSPACE_JSON` shape (from `--check --json`): `root` (the resolved main-worktree root of the swept repo — cwd-derived, or `--root` when passed; issue #707); `stale_days`; `stale_worktrees[]` (`path`, `branch`, `last_commit_ts`); `stale_local_branches[]` (`branch`, `last_commit_ts`); `stale_remote_branches[]` (`ref`, `last_commit_ts`); and `skipped_worktrees[]` / `skipped_local_branches[]` / `skipped_remote_branches[]` (each `{…, reason}`). Every key is always present (empty arrays when nothing matches), so parsing is safe regardless of state. `last_commit_ts` is a Unix timestamp — render it as `YYYY-MM-DD` for display (`date -r <ts> +%F` on macOS/BSD, `date -d @<ts> +%F` on GNU — the same portable pair `stale-cleanup.sh` uses internally).
+`WORKSPACE_JSON` shape (from `--check --json`): `root` (the resolved main-worktree root of the swept repo — cwd-derived, or `--root` when passed; issue #707); `stale_days`; `stale_worktrees[]` (`path`, `branch`, `last_commit_ts`); `stale_local_branches[]` (`branch`, `last_commit_ts`); `stale_remote_branches[]` (`ref`, `last_commit_ts`); `skipped_worktrees[]` / `skipped_local_branches[]` / `skipped_remote_branches[]` (each `{…, reason}`); `orphaned_registrations[]` (`id`, `registration_path`, `worktree_path`, `reason`, `method`) and `skipped_registrations[]` (`id`, `reason`) for orphaned `.git/worktrees/<id>` entries (issue #1402); `orphaned_checkouts[]` (`path`, `gitdir`, `reason`) and `skipped_checkouts[]` (`path`, `reason`) for checkout directories under `.claude/worktrees/` whose registration is gone (issue #1417); and the four scalars `worktree_enumeration` (`"ok"` / `"timed_out"` / `"failed"`), `registration_scan` (`"ok"` / `"unavailable"` / `"none"`), `ref_scan` (`"ok"` / `"timed_out"` / `"failed"` — the branch-classifying `for-each-ref` passes, bounded in issue #1404), and `checkout_scan` (`"ok"` / `"none"` / `"unreadable"`). Every key is always present (empty arrays when nothing matches), so parsing is safe regardless of state.
+
+> **`orphaned_checkouts[]` is exit-code neutral — read it at every `RC`.** This class never moves the exit code, because plain `--apply` can never clear it (removal needs `--remove-orphaned-checkouts`, which `/pm-clean` never runs), so letting it raise exit 1 would pin the sweep's status high forever. The consequence for this skill is that a run whose *only* finding is orphaned checkouts exits **0** — so read `orphaned_checkouts[]` and `checkout_scan` regardless of `RC`, and never let an `RC == 0` short-circuit swallow them. `checkout_scan == "unreadable"` means the scan directory could not be inspected, resolved, or entered: `orphaned_checkouts[]` is then empty because nothing was *classified*, not because nothing is orphaned — report that as an incomplete sweep, never as clean (`"none"` is the clean state, and means provably absent).
+
+> **Read `worktree_enumeration`, `registration_scan`, and `ref_scan` before trusting an empty result.** A `ref_scan` other than `"ok"` means the bounded `for-each-ref` passes did not complete, so `stale_local_branches[]` and `stale_remote_branches[]` are empty for the same "nothing was classified" reason as below, and `--check` exits **1**. If `worktree_enumeration` is anything other than `"ok"`, the bounded `git worktree list` did not complete, so `stale_worktrees[]` and `stale_local_branches[]` are empty because nothing was *classified* — not because nothing is stale. If `registration_scan` is `"unavailable"`, the git common dir would not resolve inside its bound and the registration sweep never ran, so `orphaned_registrations[]` is empty for the same reason. `--check` exits **1** in both states. Report the sweep as incomplete either way: surface any orphaned registrations, clear them with `--apply`, and re-run — never present an empty sweep as clean. `last_commit_ts` is a Unix timestamp — render it as `YYYY-MM-DD` for display (`date -r <ts> +%F` on macOS/BSD, `date -d @<ts> +%F` on GNU — the same portable pair `stale-cleanup.sh` uses internally).
+
+### Step 2.2: Reap verified finished worktrees
+
+The additive JSON fields are `finished_worktrees[]` (`path`, `branch`,
+`head_sha`, `pr_number`, `pr_state`, `last_commit_ts`),
+`skipped_finished_worktrees[]` / `unknown_finished_worktrees[]` (path, branch,
+reason), and `finished_scan` (`complete`, `incomplete`, `not_run`). This class is
+independent of `WORKTREE_DAYS`. Read unknowns as incomplete verification, not an
+empty/clean result. A known desktop host without a session binding, a managed
+Codex/Cursor worktree, partial/missing lsof visibility, API failure or any other
+unknown is retained. Protected dotenv files, including ignored ones, are retained.
+
+When the dry-run reports a finished class, run the finished-only mode without
+asking. This exception does **not** authorize ordinary `--apply`, issue closure,
+remote deletion, orphan/source cleanup or cadence wiring. The script rechecks
+PR/author/HEAD, pushed/clean state, lock and a fresh cwd census before removal.
+
+```bash
+FINISHED_APPLY_RC=0
+FINISHED_APPLY_JSON='{"finished_apply":[],"finished_scan":"not_run"}'
+if [ "$RC" -le 1 ] && [ "$(jq -r '.finished_worktrees | length' <<<"$WORKSPACE_JSON")" -gt 0 ]; then
+  FINISHED_APPLY_JSON=$("$STALE_CLEANUP_SH" --apply-finished --json) || FINISHED_APPLY_RC=$?
+fi
+```
+
+Record the apply result and evidence. Exit 0 means eligible removals completed;
+1 means unknowns or failed removals remain; 4 means the required helper could
+not run. A skipped live worktree stays pending without pressure to remove it.
+Never add `--force`, recurse-delete a failed path, or run `git clean`. If removal
+reports Directory not empty, retain/list the path as the script reports.
+Local branch deletion uses Git's own checkout guard with a pinned verified upstream tip,
+so a new checkout or a commit beyond that tip retains the branch. Remote refs are untouched.
+
+After any removal (including a partial apply), rerun Step 2.1 and overwrite
+both variables before asking about age-only items. Refresh after attempted
+removals too, because a timed-out command may have partially changed state:
+
+<!-- test-anchor: finished-workspace-refresh -->
+```bash
+if jq -e 'any(.finished_apply[]?; .removal_attempted == true)' <<<"$FINISHED_APPLY_JSON" >/dev/null; then
+  RC=0
+  WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json)" || RC=$?
+fi
+```
+
+Removed worktrees cannot remain in the confirmation list. Unknowns stay listed
+separately and are never folded into automatic finished cleanup. The age-only
+confirmation in Step 4.2 requires a non-empty age/orphan array, not just RC 1.
 
 ## Step 3: Present combined recommendations
 
@@ -132,7 +203,7 @@ If a category has no flagged issues, omit that section entirely. If no issues we
 
 ### Workspace sections
 
-Render from `WORKSPACE_JSON` (only when `RC == 1`). Convert each `last_commit_ts` to a `YYYY-MM-DD` date. Put the item count in each heading, and omit any category with no items:
+Render from `WORKSPACE_JSON` when `RC == 1`, **plus the orphaned-checkout block whenever `orphaned_checkouts[]` is non-empty or `checkout_scan` is not `"ok"`/`"none"` — at any `RC`, including 0** (see the exit-code-neutral note in Step 2). Convert each `last_commit_ts` to a `YYYY-MM-DD` date. Put the item count in each heading, and omit any category with no items:
 
 ```
 ### Stale Worktrees (K)
@@ -164,7 +235,7 @@ Protected by the script — listed for transparency, NOT offered for deletion:
 | `path / branch / ref` | worktree / local branch / remote branch | reason (verbatim from the script) |
 ```
 
-Draw the **Skipped (safety)** rows from the three `skipped_*` arrays (each item's `reason` verbatim), and render the block whenever any is non-empty while presenting stale items. If the workspace scan found no stale items (`RC == 0`), skip these tables and state: "No stale worktrees or branches detected."
+Draw the **Skipped (safety)** rows from the three `skipped_*` arrays (each item's `reason` verbatim), and render the block whenever any is non-empty while presenting stale items. If the workspace scan found no stale items (`RC == 0`), skip these tables and state: "No stale worktrees or branches detected." — but only after checking `orphaned_checkouts[]` and `checkout_scan`, which report under `RC == 0` too: render the orphaned-checkout block (and any `skipped_checkouts[]` reasons) before that line, and do not claim a clean workspace while either is non-empty or `checkout_scan == "unreadable"`.
 
 **Summarize the tail.** For large sets (e.g. 20+ stale worktrees), list the most relevant items and summarize the remainder ("…and N more, all idle {WORKTREE_DAYS}+ days") — the same tail treatment the issue scan relies on (`backlog-staleness.sh` caps its own deep check at the 50 oldest candidates and notes any remainder on stderr; surface that note when present).
 
@@ -174,10 +245,13 @@ Close the report with a one-line status for **each** scan so neither is ambiguou
 
 ## Step 4: Confirm and act — two separate gates
 
-Issue closures and workspace deletions are **separate** confirmations. Declining one never affects the other — surface both asks, act only on what the user confirms.
+Issue closures and age-only workspace deletions are **separate** confirmations. Verified finished removals already ran through Step 2.2. Declining one never affects the other — surface both asks, act only on what the user confirms.
 
 ### Step 4.1: Issue closures
 
+Present via **`AskUserQuestion`** when available (prose fallback in headless runs): `multiSelect: true` with up to 3 closure categories found (mark highest-count category as `(Recommended)`; if >3 categories found, surface 3 with most candidates) plus `"Skip all"`. When the user wants to select specific issue numbers rather than whole categories, fall back to the prose prompt below. See `ask-menu.md` for the full vehicle convention (`Skip all` is skip-wins).
+
+Prose fallback:
 ```
 ## Next Steps — Issues
 
@@ -198,28 +272,31 @@ gh issue close 42 --comment "Closing: [rationale from the recommendation]. Ident
 
 ### Step 4.2: Workspace deletions
 
-Only if the workspace scan surfaced stale items (`RC == 1`) and the user explicitly confirms. Ask separately, e.g. "Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)". `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually.
+Only if the refreshed `WORKSPACE_JSON` has a non-empty `stale_worktrees`, `stale_local_branches`, `stale_remote_branches` or `orphaned_registrations` array and the user explicitly confirms. `RC == 1` alone is insufficient; unknown finished results never authorize or prompt age-only cleanup. Present via **`AskUserQuestion`** when available (options: `"Apply cleanup (Recommended)"`, `"Skip"`; prose fallback `"Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)"` in headless runs). `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually. See `ask-menu.md` for the full vehicle convention.
 
 On explicit confirmation:
 
 ```bash
 APPLY_RC=0
-STALE_DAYS="$WORKTREE_DAYS" .claude/scripts/stale-cleanup.sh --apply || APPLY_RC=$?
+STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --apply || APPLY_RC=$?
 ```
 
 The script re-runs the same detection (state may have changed since the dry-run), re-applies every safety check, then attempts each deletion. Report the `removed:` / `failed:` lines verbatim:
 
-- **`APPLY_RC == 0`** — all deletions succeeded.
-- **`APPLY_RC == 2`** — one or more deletions failed; surface the `failed:` lines. Do not retry automatically — some failures (e.g. network errors on remote-branch deletion) need user intervention.
+- **`APPLY_RC == 0`** — all deletions succeeded and every category was swept.
+- **`APPLY_RC == 1`** — **incomplete sweep, not a failure.** Worktree enumeration or the registration scan did not finish inside its bound, so whole categories were skipped; anything the script *did* reach was still applied (the registration sweep in particular, which is what clears the cause). Report it as incomplete and re-run — never record it as done. Same meaning as `--check`'s exit 1.
+- **`APPLY_RC == 2`** — one or more deletions failed; surface the `failed:` lines. Do not retry automatically — some failures (e.g. network errors on remote-branch deletion) need user intervention. Outranks 1.
+
+A `skipped: worktree registration <id> — its worktree reappeared after the scan` line is the removal-time re-check declining to delete an entry that came back to life between the dry-run and the apply. That is the guard working: it is not a failure, does not affect the exit code, and needs no user action.
 
 If the user declines, report: "Workspace cleanup: dry-run only — nothing deleted."
 
 ## Rules
 
 - **NEVER auto-close issues.** Always present recommendations and wait for user confirmation.
-- **NEVER delete worktrees or branches without explicit confirmation.** `/pm-clean` NEVER runs `stale-cleanup.sh --apply` on its own — consistent with the "never auto-close" rule and `/pm-update` Step 8. The `--check` dry-run is the user's only chance to spot a false positive before anything is removed.
+- **Age-only cleanup requires confirmation.** `/pm-clean` never runs ordinary `stale-cleanup.sh --apply` on its own. The sole noninteractive exception is the verified finished class via `--apply-finished` (Step 2.2); unknown/live/dirty/unpushed work is retained.
 - **The two scans are independent.** One finding nothing must not suppress the other; the summary reports both, always.
-- **Delegate workspace detection — never reimplement it.** `stale-cleanup.sh` is the shared source of truth for worktree/branch staleness and safety (issue #618, mirroring the shared-detection precedent `backlog-staleness.sh` set in #598). `/pm-update` Step 8 calls the same script, and `/pm` reaches it by running this whole `/pm-clean` flow inline (#656); keep them in sync by changing only the script, never by forking its logic into this skill.
+- **Delegate workspace detection — never reimplement it.** `stale-cleanup.sh` is the shared source of truth for worktree/branch staleness and safety (issue #618, mirroring the shared-detection precedent `backlog-staleness.sh` set in #598). This skill holds the only direct invocation of the script, and `/pm` reaches it by running this whole `/pm-clean` flow inline rather than calling the script itself (#656); keep them in sync by changing only the script, never by forking its logic into this skill.
 - **Be conservative with "superseded" and "duplicate" flags.** False positives waste the user's time reviewing issues that shouldn't be closed. Only flag when evidence is clear.
 - **Include rationale for every recommendation.** The user should be able to evaluate each suggestion without reading the full issue or inspecting the worktree.
 - **Handle large backlogs gracefully.** `backlog-staleness.sh` already caps the inactive-candidate deep check at the 50 oldest issues and notes any remainder on stderr — surface that note in the summary when present. Apply the same summarize-the-tail treatment to large workspace result sets.

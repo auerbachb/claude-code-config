@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # repo-root.sh — Resolve the absolute path of the main (root) worktree.
+# catalog: trust-worktree-repo — Resolve the absolute path of the root (main) worktree (every git call wall-clock bounded; exit 3 on timeout)
 #
 # PURPOSE
 #   Centralizes the "first-entry-in-`git worktree list`" pattern used across
@@ -14,12 +15,46 @@
 #     2. Path contains whitespace — the space-splitting awk breaks; porcelain
 #        format preserves the full path on its own line.
 #
+#   RESOLUTION ORDER (issue #1363)
+#     1. `git rev-parse --git-common-dir` — reads the ONE `.git` pointer of the
+#        current worktree. When the common dir's basename is `.git`, its parent
+#        is the main worktree root.
+#     2. `git worktree list --porcelain` — fallback for layouts step 1 cannot
+#        answer (bare repos, `--separate-git-dir`, submodules), where the
+#        historic first-stanza answer is still the contract.
+#
+#   Step 1 exists because step 2 opens `.git/worktrees/<name>/{gitdir,HEAD}`
+#   for EVERY registered worktree. With dozens registered on a filesystem that
+#   can stall per-file (iCloud-evicted `dataless` files, a dead network mount),
+#   that enumeration blocked for 20+ minutes with no output and took the whole
+#   merge path — `admin-merge.sh`, `/wrap`, `/merge`, Phase C — down with it.
+#
+#   BOUNDED, NEVER SILENT
+#   Every git call runs under a wall-clock bound (`REPO_ROOT_TIMEOUT_SECS`).
+#   On expiry the child process group is killed and the script exits 3 with a
+#   one-line diagnostic naming the bound and the command — so callers fail
+#   closed and loudly instead of hanging indistinguishably from slow work.
+#   A run makes at most two bounded git calls, so the worst case is bounded
+#   too. There is no `timeout(1)` on stock macOS, hence the background-and-poll
+#   shape rather than a wrapper binary — which now lives in
+#   `lib/bounded-run.sh`, shared with the callers that bound their own
+#   post-resolution git calls (issue #1404).
+#
 # USAGE
 #   repo-root.sh [path]
 #   repo-root.sh --help | -h
 #
 #   path   Optional directory to resolve from (equivalent to `git -C <path>`).
 #          Defaults to the current working directory.
+#
+# ENVIRONMENT
+#   REPO_ROOT_TIMEOUT_SECS   Wall-clock bound, in whole seconds, applied to
+#                            each git call (default 10). Empty, non-numeric,
+#                            or zero values fall back to the default rather
+#                            than disabling the bound. The clock has
+#                            whole-second resolution, so a bound of N trips
+#                            somewhere in (N-1, N] — immaterial at the default,
+#                            worth knowing if you set it to 1.
 #
 # OUTPUT
 #   stdout: absolute path of the main-worktree root (no trailing newline beyond
@@ -29,18 +64,126 @@
 # EXIT STATUS
 #   0  Success — path printed on stdout.
 #   1  Not inside a git repo / no worktrees found / resolved path missing.
+#      DETERMINATE: git ran and reported it, so a caller may act on the answer.
 #   2  Usage error (unknown flag or extra argument).
+#   3  Timed out — a git call exceeded REPO_ROOT_TIMEOUT_SECS and was killed.
+#   4  Nothing could be determined, because some command could not be launched.
+#      Covers the case where git could not run (missing, not executable,
+#      unusable interpreter, broken PATH — the shell returns 126/127 before
+#      git's own code starts) and any helper this script needs (see
+#      REQUIREMENTS). A helper that is absent is
+#      named up front by the preflight; one that resolves but will not exec is
+#      caught at the exit boundary, where an escaping 126/127 is normalized to
+#      this code. NOT determinate: nothing was learned about the directory, so
+#      a caller must not fall back to another git call or to $PWD on this
+#      code (issue #1403).
+#   70  --help header extraction produced no output (internal defect).
+#
+#      ONE exception, and it is deliberate: the teardown `rm` in the EXIT trap
+#      runs AFTER the answer has been resolved and printed, so a failure there
+#      cannot mean "nothing was determined" — something already was. It leaves
+#      a capture file in $TMPDIR and preserves the status the run had earned.
+#      Every command whose failure could affect the ANSWER is covered above.
+#
+# REQUIREMENTS
+#   Besides git, this script REQUIRES mktemp, awk, head, date, sleep, dirname,
+#   basename and rm. All are checked up front; a missing one exits 4 rather than
+#   letting the shell's own 127 escape as an undocumented status. It also
+#   REQUIRES `lib/bounded-run.sh` beside it — the shared wall-clock bound — and
+#   an unreadable one exits 4 for the same reason: without the bound nothing
+#   about the directory could be determined safely.
+#
+#   `ps` and `tr` are used too (by the library's kill_child) but are deliberately NOT
+#   required: without them the process-group kill is skipped and the builtin
+#   single-pid `kill` still stops the child, so a timeout still exits 3 with the
+#   right message. Requiring them would refuse to resolve in an environment
+#   where this script demonstrably works. BOTH carry their own `2>/dev/null` so
+#   that absence degrades QUIETLY — unguarded, the shell narrated its own
+#   `command not found` ahead of the diagnostic and the one-line stderr contract
+#   above became three lines (issue #1435). `sed` is help-only.
+#   Pinned by T16g/T16h (status) and T16m (the one-line contract).
 #
 # EXAMPLES
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh)            # from anywhere in repo
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh "$SOME_WT") # from another worktree
+#   REPO_ROOT_TIMEOUT_SECS=2 .claude/scripts/repo-root.sh   # tighter bound
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
-# Self-extract the header block between BEGIN/END markers for --help.
+# Installed FIRST, before anything else can fail, and it owns two jobs.
+#
+# 1. Remove the capture files, once they exist.
+# 2. Normalize an escaping 126/127 to 4. Those two mean the shell could not
+#    launch something, and this script never exits them on purpose. The
+#    preflight below is the fast, friendly diagnosis, but it cannot be complete:
+#    `command -v` proves a NAME resolves, not that the file will exec (a bad
+#    interpreter, a dangling symlink, the wrong architecture all resolve fine),
+#    and nothing can close the window between the check and the call — PATH can
+#    change under a long run. Enumerating those shapes is a losing game, so the
+#    guarantee is enforced here at the boundary instead: whatever went wrong,
+#    nothing was determined, and that is exactly exit 4 — never a raw shell
+#    status admin-merge.sh would read as determinate (issue #1403).
+CAPTURE=""
+CAPTURE_ERR=""
+#
+# The teardown `rm`s are deliberately status-swallowing. `rc` is captured before
+# them and every exit below is explicit, so they cannot corrupt the answer — but
+# neither are they allowed to CREATE a failure. An `rm` that will not launch at
+# teardown leaves two files in $TMPDIR; the resolution above already succeeded,
+# and turning a correct, fully-computed answer into an exit 4 over a temp file
+# is the same over-reach declined for ps/tr. A missing `rm` is still reported
+# up front by the preflight, which is where that belongs. Pinned by T16k.
+on_exit() {
+  local rc=$?
+  if [[ -n "$CAPTURE" ]]; then rm -f "$CAPTURE" 2>/dev/null || true; fi
+  if [[ -n "$CAPTURE_ERR" ]]; then rm -f "$CAPTURE_ERR" 2>/dev/null || true; fi
+  if [[ "$rc" -eq 126 || "$rc" -eq 127 ]]; then
+    echo "repo-root.sh: a required command could not be launched (shell exit $rc), so nothing was determined${TARGET:+ about $TARGET} — repair PATH and retry" >&2
+    exit 4
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
+# Usage telemetry, and the ONE thing that runs before the helper preflight
+# below — so it must not narrate a broken PATH on its way there. `${0##*/}` is
+# bash's own basename (no helper call at all), and the `date` substitution is
+# silenced so a missing one leaves an empty field instead of the shell's
+# "command not found" landing on stderr ahead of the guard's single normalized
+# message. The preflight cannot simply move above this line: it would then also
+# precede argument parsing, and `--help` and usage errors would start exiting 4
+# in exactly the broken environment where an operator most needs to read them.
+#
+# Best-effort, matching dirty-main-guard.sh / escalate-review.sh / merge-gate.sh:
+# under `set -e` an unset HOME, a missing ~/.claude, or a read-only log would
+# otherwise kill the script here — before argument parsing — and return a shell
+# error in place of the documented help, usage, or resolution status.
+# Telemetry must never be able to change this script's contract.
+# Skipped outright when HOME is unset rather than expanded: `${HOME:-}/...`
+# would name `/.claude/script-usage.log`, and anywhere `/` happens to be
+# writable (root, a container) that quietly drops a stray file at the
+# filesystem root instead of logging nothing.
+if [[ -n "${HOME:-}" ]]; then
+  # The record is TAB-delimited and line-oriented, so BOTH delimiters have to go:
+  # an argument carrying a tab invents columns and one carrying a newline or a
+  # carriage return invents rows, either of which silently corrupts every later
+  # read of the log. A `--repo` path can carry any of the three — they are legal
+  # in a filename — so the sanitising is on the value, not on a trusted caller.
+  USAGE_ARGS="${*//$'\n'/ }"
+  USAGE_ARGS="${USAGE_ARGS//$'\r'/ }"
+  USAGE_ARGS="${USAGE_ARGS//$'\t'/ }"
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ 2>/dev/null || true)" "${0##*/}" "$USAGE_ARGS" \
+    2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
+
+# Self-extract the leading header comment block for --help: every line from the
+# one after the shebang up to (not including) the first blank line. Terminating
+# on a BLANK line rather than a named heading is deliberate — a `sed` range ends
+# AT its terminator, so the previous `/^# EXAMPLES$/` anchor emitted the EXAMPLES
+# heading and swallowed every example under it (issue #1475).
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 TARGET=""
@@ -78,30 +221,240 @@ for arg in "$@"; do
   esac
 done
 
-# Porcelain parsing: first `worktree <path>` line is the main worktree root.
-# Suppress stderr — we emit our own one-line error on failure below.
-# Use two code paths instead of an empty array + expansion because Bash 3.2
-# (macOS default) errors on `"${arr[@]}"` when arr is empty under `set -u`.
-if [[ -n "$TARGET" ]]; then
-  root="$(git -C "$TARGET" worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
-else
-  root="$(git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
+# The helpers this script cannot work without, checked before it creates any
+# state. Historically the first missing one killed the run through `set -e` at
+# the `mktemp` below, and what reached the caller was the SHELL's own 127. That
+# is the same KIND of answer as a git that will not launch — nothing was learned
+# about the directory — but it arrived as a code the contract never named, and
+# admin-merge.sh reads anything outside {3,4} as determinate and answers it with
+# the `git rev-parse` / $PWD substitution this script exists to prevent. So a
+# missing helper exits 4 as well (issue #1403).
+#
+# `rm` earns its place for a non-obvious reason: it is only used by the EXIT
+# trap, but a failing trap overwrites the script's status. Unguarded, that made
+# the run print the CORRECT root on stdout and still exit 127 — the worst shape
+# of all, because admin-merge.sh then discards a right answer and falls back to
+# $PWD. Measured, not assumed. The trap now tolerates a failing `rm` too, so
+# that status can no longer escape; `rm` stays required so the environment is
+# REPORTED rather than silently leaking a capture file on every run.
+#
+# `ps` and `tr` are used by kill_child and are deliberately EXCLUDED. Their
+# absence is absorbed by design: the pgid lookup yields empty, the group kill is
+# skipped, and the builtin single-pid `kill` still stops the child — a wedged
+# git still exits 3 in the same time, with the same message. Requiring them
+# would refuse to resolve in an environment where this script works correctly.
+# T16g/T16h pin that, so a later reader does not "complete" the list by reflex.
+# Absorbing it also means staying QUIET about it: each of the two carries its own
+# `2>/dev/null` at the call site, so the shell cannot narrate a missing one to
+# stderr where the header promises a single line (T16m).
+#
+# `git` is deliberately NOT in this list either. A git that cannot run is
+# diagnosed by the 126/127 machinery below, which relays what the shell actually
+# said about it; checking it here would preempt that with a blunter message.
+#
+# Placed after argument parsing so `--help` and usage errors keep answering
+# first, and written with `command -v` — a bash builtin, so the check needs
+# nothing from the PATH it is testing.
+MISSING_HELPERS=""
+for helper in mktemp awk head date sleep dirname basename rm; do
+  command -v "$helper" >/dev/null 2>&1 \
+    || MISSING_HELPERS="${MISSING_HELPERS:+$MISSING_HELPERS }$helper"
+done
+if [[ -n "$MISSING_HELPERS" ]]; then
+  echo "repo-root.sh: required helper(s) not found on PATH ($MISSING_HELPERS), so nothing was determined${TARGET:+ about $TARGET} — repair PATH and retry" >&2
+  exit 4
 fi
 
-if [[ -z "$root" ]]; then
-  if [[ -n "$TARGET" ]]; then
-    echo "repo-root.sh: could not resolve main worktree root (not a git repo: $TARGET)" >&2
+# The wall-clock bound itself, shared with the three callers that bound their
+# own post-resolution git calls (issue #1404). Checked like any other required
+# helper and for the same reason: without it this script has no bound, and a
+# run with no bound is exactly the 20-minute silent stall it exists to prevent.
+# Refusing here is therefore "nothing was determined" — exit 4, never a fall
+# through to an unbounded call.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+BOUNDED_RUN_LIB="${SCRIPT_DIR:-.}/lib/bounded-run.sh"
+if [[ ! -r "$BOUNDED_RUN_LIB" ]]; then
+  echo "repo-root.sh: required library not found at $BOUNDED_RUN_LIB, so the wall-clock bound could not be loaded and nothing was determined${TARGET:+ about $TARGET} — reinstall .claude/scripts/lib/ and retry" >&2
+  exit 4
+fi
+# shellcheck source=lib/bounded-run.sh
+source "$BOUNDED_RUN_LIB"
+
+# A bad override must not silently disable the bound — that is the exact
+# failure this script exists to prevent. Anything non-numeric or zero falls
+# back to the default instead (normalize_bound, including the `10#` octal
+# hardening, lives in the library).
+TIMEOUT_SECS="$(normalize_bound "${REPO_ROOT_TIMEOUT_SECS:-10}" 10)"
+
+# This script's ANSWER is the capture: it reads a path out of $CAPTURE. So a
+# child that finished with an EMPTY capture must not be trusted over the
+# sampling — there is no answer there to keep. See BOUNDED_REQUIRE_OUTPUT in
+# lib/bounded-run.sh.
+BOUNDED_REQUIRE_OUTPUT=1
+
+# Created after arg parsing so --help and usage errors leave nothing behind.
+# The EXIT trap that removes these was installed at the top of the script, so
+# the window where a failure could leak them is closed by construction rather
+# than by remembering to install it here.
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/repo-root.XXXXXX")"
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/repo-root-err.XXXXXX")"
+
+# Always at least one element, so `"${GIT_CMD[@]}"` is safe under `set -u` on
+# Bash 3.2 (macOS default), which errors on expanding an empty array.
+GIT_CMD=(git)
+if [[ -n "$TARGET" ]]; then
+  GIT_CMD=(git -C "$TARGET")
+fi
+
+# Set when a git call came back 126/127 — the shell could not launch the binary
+# at all, so git never formed an opinion about this directory. Read ONLY by the
+# final failure branch, which means a later call that does succeed still wins:
+# the flag can escalate the diagnosis of a failure, never turn a success into
+# one.
+GIT_UNRUNNABLE=0
+
+# 127 = the shell could not find the command; 126 = it found it and could not
+# execute it (no execute bit, unusable interpreter, wrong architecture). Both
+# are decided by the shell BEFORE git's own code starts, which is what makes
+# them safe to read as "git could not run" without parsing stderr — a locale-
+# dependent guess this script deliberately avoids. Git's own fatal code is 128,
+# and that one legitimately covers a genuine non-repo alongside a corrupt or
+# unreadable object store, so it keeps exiting 1 with git's stderr appended.
+note_if_unrunnable() { # rc
+  case "$1" in 126|127) GIT_UNRUNNABLE=1 ;; esac
+}
+
+timeout_die() {
+  if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
+    # Say which of the two it was. Reporting a clock failure as an elapsed-time
+    # timeout is the same misdiagnosis this change removes from the callers.
+    echo "repo-root.sh: could not read the clock (date -u +%s), so the ${TIMEOUT_SECS}s bound on '$1' could not be enforced — killed the call rather than running it unbounded" >&2
   else
-    echo "repo-root.sh: could not resolve main worktree root (not inside a git repo)" >&2
+    echo "repo-root.sh: timed out after ${TIMEOUT_SECS}s running '$1' — killed it rather than blocking the caller (raise REPO_ROOT_TIMEOUT_SECS if the repo is genuinely this slow)" >&2
+  fi
+  exit 3
+}
+
+# ---------------------------------------------------------------------------
+# Step 1 — resolve through the shared git dir, touching no worktree entries.
+# Sets ROOT and returns 0 on success; returns non-zero when this layout needs
+# step 2. Deliberately NOT called in a command substitution: `timeout_die` has
+# to exit the script, and inside `$( )` it would only exit the subshell — the
+# caller would then fall through to the enumeration this script exists to
+# avoid, turning a bounded failure back into a silent one.
+# ---------------------------------------------------------------------------
+ROOT=""
+resolve_via_common_dir() {
+  local rc=0 common base parent
+
+  run_bounded "$TIMEOUT_SECS" "${GIT_CMD[@]}" rev-parse --path-format=absolute --git-common-dir || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    # git rev-parse is the cheapest call this script can make. If it cannot
+    # finish inside the bound, git is wedged and the heavier enumeration below
+    # would only double the outage — fail now.
+    timeout_die "git rev-parse --git-common-dir"
+  fi
+  note_if_unrunnable "$rc"
+  if [[ "$rc" -ne 0 ]]; then
+    # git < 2.31 has no --path-format; its plain form may answer with a path
+    # relative to the directory the call ran in.
+    rc=0
+    run_bounded "$TIMEOUT_SECS" "${GIT_CMD[@]}" rev-parse --git-common-dir || rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      timeout_die "git rev-parse --git-common-dir"
+    fi
+    note_if_unrunnable "$rc"
+    [[ "$rc" -eq 0 ]] || return 1
+  fi
+
+  common="$(head -n 1 "$CAPTURE")"
+  [[ -n "$common" ]] || return 1
+
+  # Only a common dir literally named `.git` has the main worktree as its
+  # parent. A bare repo (`repo.git`) and a submodule's `.git/modules/<name>`
+  # fail this test and belong to step 2, which still answers them exactly as
+  # this script always has.
+  #
+  # `--separate-git-dir` is split by the dir's NAME, not by the layout, so it
+  # lands on both sides: `--separate-git-dir=/elsewhere/.git` passes this test
+  # and is answered here, while `/elsewhere/repo.git` falls through to step 2.
+  # Both answers are the historic one. For a separate-git-dir repo
+  # `git worktree list` also reports dirname(common-dir) as the main worktree —
+  # it does NOT report the linked `core.worktree` path — so the fast path and
+  # the enumeration agree here rather than diverging, and this test does not
+  # need to detect the layout to keep the contract. Pinned by T6b/T6c.
+  base="$(basename "$common")"
+  [[ "$base" == ".git" ]] || return 1
+
+  parent="$(dirname "$common")"
+  if [[ "$parent" != /* ]]; then
+    parent="${TARGET:-$PWD}/$parent"
+  fi
+  # Physical path: `git worktree list` records symlink-resolved paths, so the
+  # logical form would differ from the historic answer wherever the repo sits
+  # behind a symlink (macOS $TMPDIR, /var -> /private/var).
+  parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 1
+  [[ -n "$parent" && -d "$parent" ]] || return 1
+
+  ROOT="$parent"
+  return 0
+}
+
+if ! resolve_via_common_dir; then
+  ROOT=""
+fi
+
+if [[ -z "$ROOT" ]]; then
+  # Porcelain parsing: first `worktree <path>` line is the main worktree root.
+  # The two statuses that are distinct — the bound tripping, and git never
+  # launching — are carried by BOUNDED_TIMED_OUT and GIT_UNRUNNABLE; git's own
+  # stderr survives in $CAPTURE_ERR and is reported below.
+  #
+  # The rc is captured for DIAGNOSIS ONLY, replacing the old `|| true`. Whether
+  # this call succeeded is still decided by what the awk below finds, exactly as
+  # before, so nothing about the resolution outcome moves — the rc only lets a
+  # failure name itself accurately at the bottom of the script.
+  WT_RC=0
+  run_bounded "$TIMEOUT_SECS" "${GIT_CMD[@]}" worktree list --porcelain || WT_RC=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    timeout_die "git worktree list --porcelain"
+  fi
+  note_if_unrunnable "$WT_RC"
+  ROOT="$(awk '/^worktree /{sub(/^worktree /, ""); print; exit}' "$CAPTURE")" || ROOT=""
+fi
+
+if [[ -z "$ROOT" ]]; then
+  # Carry git's own last words. Without them a broken git install, a bad PATH,
+  # an unreadable object store, and a genuinely non-repo directory all collapse
+  # into one confident sentence — and the callers now relay that sentence with
+  # authority. Naming what git actually said is the whole point of this change.
+  GIT_SAID="$(head -n 1 "$CAPTURE_ERR" 2>/dev/null || true)"
+  if [[ "$GIT_UNRUNNABLE" -eq 1 ]]; then
+    # Split out of exit 1 by issue #1403. Exit 1 is a DETERMINATE answer — git
+    # ran and reported that this is not a repo — and callers are entitled to act
+    # on it, which is why admin-merge.sh substitutes `git rev-parse` / $PWD
+    # there. Here git never started, so nothing was determined, and that same
+    # substitution would be a guess made with the same broken git. Callers need
+    # the CODE to tell them apart; the appended stderr alone was not enough,
+    # because nothing branches on prose.
+    WHERE="the current directory"
+    if [[ -n "$TARGET" ]]; then
+      WHERE="$TARGET"
+    fi
+    echo "repo-root.sh: git could not run (missing, not executable, or a broken PATH), so nothing was determined about $WHERE${GIT_SAID:+ — git said: $GIT_SAID}" >&2
+    exit 4
+  fi
+  if [[ -n "$TARGET" ]]; then
+    echo "repo-root.sh: could not resolve main worktree root (not a git repo: $TARGET)${GIT_SAID:+ — git said: $GIT_SAID}" >&2
+  else
+    echo "repo-root.sh: could not resolve main worktree root (not inside a git repo)${GIT_SAID:+ — git said: $GIT_SAID}" >&2
   fi
   exit 1
 fi
 
-if [[ ! -d "$root" ]]; then
-  echo "repo-root.sh: resolved path does not exist: $root" >&2
+if [[ ! -d "$ROOT" ]]; then
+  echo "repo-root.sh: resolved path does not exist: $ROOT" >&2
   exit 1
 fi
 
-echo "$root"
+echo "$ROOT"

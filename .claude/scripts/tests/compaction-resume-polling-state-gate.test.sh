@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Simulated compaction test for polling-state-gate.sh (issue #315).
+# catalog: tests — Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery
 # Uses a temporary HOME — does not touch ~/.claude/. Requires jq + git.
 set -euo pipefail
 

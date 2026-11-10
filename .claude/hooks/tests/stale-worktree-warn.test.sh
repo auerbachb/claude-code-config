@@ -48,8 +48,8 @@ ctx="$(echo "$out" | additional_context)"
 out="$(hook_payload "$LINKED" 'Work on issue #411')"
 ctx="$(echo "$out" | additional_context)"
 [[ -n "$ctx" ]] || fail "expected warning on issue-424 branch with #411 prompt"
-echo "$ctx" | grep -q "issue #424" || fail "message should mention branch issue: $ctx"
-echo "$ctx" | grep -q "issue #411" || fail "message should mention prompt issue: $ctx"
+grep -q "issue #424" <<<"$ctx" || fail "message should mention branch issue: $ctx"
+grep -q "issue #411" <<<"$ctx" || fail "message should mention prompt issue: $ctx"
 
 # SDK-style claude/* branch + prompt with issue -> no false positive (no issue token in branch)
 out="$(hook_payload "$CLAUDE_WT" 'Implement #424 acceptance criteria')"

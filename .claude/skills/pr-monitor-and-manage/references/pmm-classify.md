@@ -12,7 +12,7 @@ implementation, and the Step 4 heartbeat/quiet-tick definition.
 **Refresh `HARD_BLOCK_JSON` immediately before the per-PR loop** so Step 2.5 `blocked`/`crashed` persists from earlier in this same tick are visible to the decision tree (the Step 2.5 tick-start load is stale once Step 2.5 writes new entries):
 
 ```bash
-HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+HARD_BLOCK_JSON=$("$SESSION_STATE_SH" --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
 ```
 
 This step performs no PR mutations or dispatches: it gathers state, computes verdicts, and may persist orchestration bookkeeping (e.g. Step 3.6's `.pmm_merge_holds`). PR mutations and dispatches happen in **Step 5**, after the heartbeat/table prints (Step 4). This ordering is required so the classification is always visible *before* any long-running dispatch.
@@ -24,14 +24,15 @@ For a single PR `$N` (with `$HEADREF` = its `headRefName` from the Step 2 `$PR_L
 ```bash
 # Gate verdict — single source of truth for merge readiness, CI, merge_state,
 # review_decision, human_changes_requested, stale_bot_changes_requested_count.
-GATE=$(.claude/scripts/merge-gate.sh "$N"); GATE_EXIT=$?
+GATE=$("$MERGE_GATE_SH" "$N"); GATE_EXIT=$?
 GATE_BY_PR[$N]="$GATE"   # retain per-PR — Step 5c/5d look up THIS PR's gate by
                           # number rather than relying on a loop-scoped $GATE,
                           # which is only valid for whichever PR Step 3 last
                           # iterated and goes stale/wrong once other steps
                           # iterate their own PR lists.
 # Linked issue for the Issue column (exit 1 = no link, expected).
-ISSUE=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || true)
+# --first: the column holds one primary issue; default mode is set-valued (#1492).
+ISSUE=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null || true)
 # Unresolved review threads (GraphQL — covers every bot/human author).
 UNRESOLVED=$(gh api graphql -f query='
   query($owner:String!,$repo:String!,$n:Int!){
@@ -57,6 +58,76 @@ HUMAN_CR=$(jq -r '.human_changes_requested | join(",")' <<<"$GATE")
 STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE")
 ```
 
+### Reviewer engagement scan (display only — issue #1582)
+
+The all-open-PRs reviewer-coverage matrix the retired `/monitor` skill used to render. It answers one question the gate does not: which of the four AI reviewers has not shown up on **this** HEAD. It is computed here, rendered in Step 4, and read by nothing else — no verdict, no dispatch, no trigger depends on it.
+
+Run the shared state helper **once** per PR; it already aggregates the three comment endpoints plus check-runs and commit statuses from a single HEAD-SHA pull. Do **not** re-issue per-PR REST loops for this.
+
+```bash
+BUNDLE=$("$PR_STATE_SH" --pr "$N" 2>/dev/null) || BUNDLE=""
+```
+
+HEAD scoping is the point: a reviewer that only ran on an older commit must read ❌ so the gap is visible after a push. Check-runs and commit statuses in the bundle are already HEAD-pulled; reviews and inline comments are filtered on `commit_id == head_sha`; conversation comments carry no `commit_id`, so they count only when the body names the HEAD SHA (full or short).
+
+```bash
+engagement_matrix() {  # $1 = pr-state.sh bundle JSON ("" or unparseable → all "?")
+  local bundle="$1"
+  if [[ -z "$bundle" ]]; then
+    printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?"}'
+    return 0
+  fi
+  jq -c '
+    def reviewers: [
+      {key:"coderabbit", login:"coderabbitai[bot]", needles:["coderabbit"]},
+      {key:"codeant",    login:"codeant-ai[bot]",   needles:["codeant"]},
+      {key:"bugbot",     login:"cursor[bot]",       needles:["cursor","bugbot"]}
+    ];
+    # Pure-acknowledgment comments that must NOT count as engagement.
+    def is_ack($body):
+      ($body // "") as $b
+      | ($b == "")
+        or ($b | test("actions performed"; "i"))
+        or ($b | test("full review triggered"; "i"))
+        or ($b | test("actionable comments posted:\\s*0\\b"; "i"))
+        or ($b | test("no actionable comments were generated"; "i"))
+        or ($b | test("rate limit"; "i"));
+    . as $b
+    | (.pr.head_sha // "") as $head
+    | ($head[0:7]) as $short
+    | reviewers
+    | map(. as $r
+        | {
+            has_review:
+              ([$b.comments.reviews[]?
+                 | select(.user.login == $r.login and (.commit_id == $head))] | length > 0),
+            has_check:
+              (([$b.check_runs.all[]?
+                 | (.name // "" | ascii_downcase) as $n
+                 | select(any($r.needles[]; . as $needle | $n | contains($needle)))] | length > 0)
+               or ($r.key == "coderabbit" and ($b.bot_statuses.CodeRabbit != null))),
+            has_finding_comment:
+              (([$b.comments.inline[]?
+                 | select(.user.login == $r.login
+                          and ((.commit_id // .original_commit_id // "") == $head)
+                          and (is_ack(.body) | not))] | length > 0)
+               or ($head != "" and ([$b.comments.conversation[]?
+                 | select(.user.login == $r.login
+                          and (is_ack(.body) | not)
+                          and (((.body // "") | contains($head)) or ((.body // "") | contains($short))))] | length > 0)))
+          }
+        | . + {key: $r.key, engaged: (.has_review or .has_check or .has_finding_comment)}
+      )
+    | { coderabbit: (map(select(.key=="coderabbit"))[0].engaged),
+        codeant:    (map(select(.key=="codeant"))[0].engaged),
+        bugbot:     (map(select(.key=="bugbot"))[0].engaged) }
+  ' <<<"$bundle" 2>/dev/null \
+    || printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?"}'
+}
+```
+
+Store the result per PR (`ENGAGEMENT_BY_PR[$N]`) for Step 4. A missing `PR_STATE_SH`, a non-zero call, or a bundle `jq` cannot parse yields the all-`?` row and the tick continues — matching the soft-fail posture of the `UNRESOLVED` GraphQL fetch. Never let this scan abort a tick: it is the one piece of the table that carries no merge authority.
+
 ### Decision tree rationale (per row)
 
 Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infer `BEHIND` from `BLOCKED`** — `BLOCKED` also covers missing checks/reviews, not just behind-base. Only the literal `BEHIND` triggers a rebase.
@@ -72,7 +143,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `MET == true` | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
 | Otherwise | `waiting` | CI in-progress, reviewer pending, `REVIEW_REQUIRED` with no bot signal yet, `UNKNOWN` — no-op |
 
-`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone`, clear persisted block (`.claude/scripts/session-state.sh --set ".pmm_hard_block.\"$N\"=null"`), drop from fleet. When the user explicitly approves respawn of a `crashed(needs-approval)` or `conflicts(needs-human)` PR, clear the same `pmm_hard_block` key before dispatch. Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
+`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone`, clear persisted block (`"$SESSION_STATE_SH" --set ".pmm_hard_block.\"$N\"=null"`), drop from fleet. When the user explicitly approves respawn of a `crashed(needs-approval)` or `conflicts(needs-human)` PR, clear the same `pmm_hard_block` key before dispatch. Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
 
 ### VERDICTS_JSON accumulation
 
@@ -109,7 +180,7 @@ gh api "repos/$OWNER/$REPO/pulls/$N/comments?per_page=100"
 gh api "repos/$OWNER/$REPO/issues/$N/comments?per_page=100"
 ```
 
-Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, `graphite-app[bot]`). Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
+Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, plus the retired `graphite-app[bot]`, which still posts until its App is uninstalled). Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
 
 ### Refinement pass: `fixpr` verdicts for concurrency + idempotency (still Step 3)
 
@@ -118,12 +189,12 @@ Step 5c's parallel-dispatch decisions (skip-if-in-flight, cap slots) are pure re
 For every PR whose base verdict is `fixpr`:
 
 1. **In-flight check.** Refine to `awaiting fix subagent` if a **blocking** Phase A `active_agents` entry exists for this PR (per Step 5's shared gate idiom — foreign entries past `PMM_LOCK_STALE_SECS` with no progress evidence are non-blocking), OR if `pmm_in_flight[N]` has an active lock for the same PR **that is not stale** — apply the same `PMM_LOCK_STALE_SECS` (default 3600s) staleness rule Step 5d uses for `/wrap` locks. A stale lock (e.g. a `wrap` lock left over from a crashed parent, on a PR now reclassified `fixpr`) is broken here too, not just in Step 5d — otherwise a stale non-`phase-a-fixer` lock can block fix dispatch forever with no path to clear it.
-2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active **PMM-spawned** fix subagents (`id` prefixed `pmm-fix-` — excludes Phase A agents spawned by other workflows sharing the same `active_agents` array) and compute remaining slots:
+2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active **PMM-spawned** fix subagents (`id` prefixed `pmm-fix-` — excludes Phase A agents spawned by other workflows sharing the same `active_agents` map) and compute remaining slots. `.[]` iterates a map's values exactly as it iterated the array's elements, so the filter is unchanged from the pre-#1631 shape; only the empty-state fallback moved from `[]` to `{}`:
 
    ```bash
    ACTIVE_COUNT=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed")
      and ((.id // "") | startswith("pmm-fix-")))] | length' \
-     <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
+     <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '{}')")
    SLOTS=$(( PMM_MAX_PARALLEL - ACTIVE_COUNT ))
    (( SLOTS < 0 )) && SLOTS=0
    ```
@@ -142,7 +213,7 @@ This step is **side-effect-free** — `merge-sequence.sh` reads `pulls/{N}/files
 
 ```bash
 # Prior tick's hold state — this is what makes stall detection work across ticks.
-PRIOR_HOLDS=$(.claude/scripts/session-state.sh --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
+PRIOR_HOLDS=$("$SESSION_STATE_SH" --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
 
 # Flatten Step 3's VERDICTS_JSON ({"<n>":{verdict,tag}}) to {"<n>":"<verdict>"},
 # then overwrite each entry with the REFINED verdict where Step 3's refinement
@@ -171,7 +242,7 @@ done | tr '\n' ',' | sed 's/,$//')
 
 SEQ=""; SEQ_RC=1
 if [[ -n "$SEQ_PRS" ]]; then
-  SEQ=$(.claude/scripts/merge-sequence.sh --prs "$SEQ_PRS" --skip-missing \
+  SEQ=$("$MERGE_SEQUENCE_SH" --prs "$SEQ_PRS" --skip-missing \
     --verdicts "$VERDICTS_MAP" --heads "$HEADS_MAP" --holds "$PRIOR_HOLDS")
   SEQ_RC=$?
 fi
@@ -195,7 +266,7 @@ fi
 ```bash
 if [[ "$SEQ_RC" -eq 0 || "$SEQ_RC" -eq 1 ]]; then
   NEW_HOLDS=$(jq -c '.holds // {}' <<<"$SEQ")
-  .claude/scripts/session-state.sh --set ".pmm_merge_holds=$NEW_HOLDS"
+  "$SESSION_STATE_SH" --set ".pmm_merge_holds=$NEW_HOLDS"
 else
   echo "[PMM] merge-sequence.sh failed (exit $SEQ_RC) — sequencing disabled this tick; prior holds left intact"
   SEQ=""   # every PR falls through to `merge`; Step 4 prints no annotation
@@ -224,6 +295,8 @@ Print the **full table** (below the lead line) when ANY of:
 
 ### Table format
 
+**This is a documented divergence from the canonical "Running now" table, not an unreconciled one** (issue #1527). The rationale is recorded once, in `.claude/reference/time-estimates.md` §"Documented divergence: `/pr-monitor-and-manage`" — do not restate it here, and do not reshape these columns toward the canonical seven without changing that entry first. The canonical table still has a home in this skill: the round-progress question routes to `/board` (SKILL.md Step 4), which renders it unaltered.
+
 | Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent |
 |-------|----|-------|---------|----|--------------------|---------|----------|
 | #<issue or —> | #<N> | <merge_state> | <review_decision> | <pass>/<fail>/<prog> | <count> | <VERDICT from Step 3> | <SUBAGENT_STATUS> |
@@ -237,6 +310,28 @@ Print the **full table** (below the lead line) when ANY of:
 - **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `dispatched (merge-conflict)` (conflict-resolution fixer spawned this tick — transitions to `spawned`/`working`/`complete`/`failed` as the subagent runs), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
 
 A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.
+
+Each PR's three engagement cells are part of `ROW_TUPLE_SORTED`, so a reviewer arriving on or dropping off HEAD is a display change like any other — it feeds (b)'s digest half and never on its own forces a print.
+
+### Reviewer engagement block
+
+Printed on every tick that prints the table, directly beneath it (and beneath the merge-sequence annotation when there is one). One row per PR in the same order as the table; ✅ = engaged on the current HEAD SHA, ❌ = missing, `?` = the bundle was unavailable for that PR.
+
+| PR | CodeRabbit | CodeAnt | BugBot |
+|----|------------|---------|--------|
+| #476 | ✅ | ❌ | ✅ |
+| #479 | ❌ | ❌ | ✅ |
+
+Under it, one line per PR that is missing at least one reviewer, naming the missing ones — omit the line entirely for a fully covered PR, and omit the whole block when the fleet is empty:
+
+```text
+Gaps: PR #476 — missing: CodeAnt
+Gaps: PR #479 — missing: CodeRabbit, CodeAnt
+```
+
+When every PR is fully covered, replace the gap lines with a single `Reviewer engagement: all PRs covered on HEAD.`
+
+**Authority boundary.** The block is display-only. It proposes nothing and posts nothing: reviewer triggers are issued solely by Step 5.0's `pr-preflight.sh` (CR account hourly budget + per-PR 2-explicit-triggers/hour cap, fail-closed), and Step 2's `READ_ONLY_FLEET` guard already suppresses every dispatch when the fleet is not the authenticated user's. A gap on a PR you did not author is therefore reported and never acted on.
 
 ### Merge-sequence annotation
 

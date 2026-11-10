@@ -21,13 +21,10 @@ make_fixture() {
   local dir="$1"
   mkdir -p \
     "$dir/.claude/agents" \
-    "$dir/.claude/rules" \
-    "$dir/.claude/skills/pr-review-help"
+    "$dir/.claude/rules"
   for agent in phase-a-fixer phase-b-reviewer phase-c-merger pm-worker README; do
     cp "$REPO_ROOT/.claude/agents/${agent}.md" "$dir/.claude/agents/"
   done
-  cp "$REPO_ROOT/.claude/skills/pr-review-help/SKILL.md" \
-     "$dir/.claude/skills/pr-review-help/"
   cp "$REPO_ROOT/.claude/rules/safety.md" "$dir/.claude/rules/"
 }
 
@@ -106,10 +103,6 @@ expect "phase-c-merger with dist|tpl suffix fails" 1 \
 expect "pm-worker with dist|tpl suffix fails" 1 \
   'pm-worker.md' \
   inject_dist_tpl .claude/agents/pm-worker.md
-
-expect "pr-review-help SKILL.md with dist|tpl suffix fails" 1 \
-  'SKILL.md' \
-  inject_dist_tpl .claude/skills/pr-review-help/SKILL.md
 
 # --- Missing canonical token cases -------------------------------------------
 expect "phase-a-fixer missing prompt token fails" 1 \

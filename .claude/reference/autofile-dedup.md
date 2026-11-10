@@ -12,6 +12,8 @@ Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site mus
 | `.claude/skills/wrap/SKILL.md` (Phase 3, Step 3.10a — churn hotspots) | **Autonomous** | **Exact-match** on a path key, not strong/weak/none — see "Exact-artifact dedup" below (issue #755) |
 | `.claude/agents/pm-worker.md` (Task: Issue Creation) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #680) |
 | `.claude/skills/harness-audit/SKILL.md` (Step 7) | **Autonomous** | **Exact-artifact** on the audited path — see "Exact-artifact dedup" below (issue #770) |
+| `.claude/skills/subagent/SKILL.md` (Step 5.1 — pick-time decomposition) | **Autonomous** | Strong/weak/none — suppress + report, with two mandatory `--exclude` entries: see "Decomposition children" below (issue #1193) |
+| `.claude/scripts/backfill-review.sh` (overnight no-review backfill) | **Autonomous** | **Exact-artifact** on a `<!-- backfill-finding: owner/repo#PR:fingerprint -->` marker suppresses; `issue-dedup.sh` candidates are only noted, never suppress — `backfill-review.md` (issue #1900) |
 | `.claude/skills/issue-maker/SKILL.md` (Step 4) | **Human-in-the-loop** | Surface-only — never auto-suppress (wired since PR #661) |
 | `.claude/skills/start-issue/SKILL.md` (Step 1a) | **Human-in-the-loop** | Surface strong matches, pause for confirmation (wired since PR #680) |
 | `.claude/agents/researcher.md` | **Non-filer** | `gh issue create` appears in the agent's forbidden-command list |
@@ -36,12 +38,12 @@ That category therefore uses an exact key instead of `dedup_search`:
 
 - **Title convention** — `Refactor hotspot: <path>` (`/wrap`) or `Harness redundancy: <path>` (`/harness-audit`), matched with string equality.
 - **Body marker** — `<!-- churn-hotspot: <path> -->` / `<!-- harness-audit: <path> -->`, which still matches after a human edits the title. A **grouped** issue covering several artifacts that share one fix carries one marker per artifact, so each path still dedups independently.
-- **Search is recall only.** `gh issue list --search "Refactor hotspot in:title"` (`/wrap`) or `gh issue list --search "Harness redundancy in:title"` (`/harness-audit`) narrows the candidate set; the decision is a **client-side exact comparison**, because GitHub tokenizes paths in `in:title` and would otherwise match `src/OtherForm.tsx` for `src/Form.tsx` — or `.claude/rules/cr-github-review.md` for `.claude/rules/cr-merge-gate.md`.
+- **Search is recall only.** repo-scoped paginated REST `search/issues` with `Refactor hotspot in:title` (`/wrap`, completeness contract in `churn-hotspots.md`) or `gh issue list --search "Harness redundancy in:title"` (`/harness-audit`) narrows the candidate set; the decision is a **client-side exact comparison**, because GitHub tokenizes paths in `in:title` and would otherwise match `src/OtherForm.tsx` for `src/Form.tsx` — or `.claude/rules/cr-github-review.md` for `.claude/rules/cr-merge-gate.md`.
 - **A failed lookup blocks filing.** `churn-hotspots.sh` reports `existing_lookup_failed`; the caller surfaces it and files nothing rather than risk a duplicate.
 - **The churn lookup searches `--state all`, and a closed match is a weak match** (issue #915). An open-only search made a hotspot issue the owner had already reviewed and **closed** invisible: the caller read `existing_hotspot_issue: null`, treated the path as never-ticketed, and re-filed it on every subsequent run — the exact-artifact path filing a clean duplicate with no caveat, while the fuzzy ladder above would have caught the same case as weak. `churn-hotspots.sh` now reports `existing_hotspot_issue_state` (`open` / `closed` / null) alongside the number, preferring an open match when a path carries both, and a closed match takes the standard `Possibly duplicates #{N}` caveat rather than a clean file. The churn path was the outlier here: `/harness-audit` has searched `--state all` and branched on open-vs-closed since #770, so this is the two exact-artifact filers converging, not a new rule.
-- **The churn path gates that re-file on conflict cost — a deliberate exception to the generic weak/closed rule above.** Under the generic ladder a closed match always files with the caveat; the churn path does **not**. A closed churn hotspot re-files (with the caveat, surfaced as a decision item) only when `conflict_rounds > 0`; with no recorded conflict cost it files nothing and shows as a decision item naming the closed issue. Closing an observational churn report is a recorded owner judgement, and rising PR count alone is not evidence that the judgement expired.
+- **The churn path gates that re-file on conflict cost — a deliberate exception to the generic weak/closed rule above.** Under the generic ladder a closed match always files with the caveat; the churn path does **not**. A closed churn hotspot re-files (with the caveat, surfaced as a decision item) only when `conflict_rounds > 0`. With no recorded conflict cost it files nothing: `churn-hotspot-wrap-plan.sh` suppresses the per-file decision below the 2× score-at-decision gate and reports the suppressed count in one verbose aggregate (Issue #1307). At or above 2×, the existing closed issue is surfaced for a new owner decision but still is not re-filed automatically. Closing an observational churn report is a recorded owner judgement, and ordinary rising PR count alone is not evidence that the judgement expired.
 
-Both invariants from the fuzzy path still hold: suppression is reported (the evidence goes onto the existing issue as a comment, named in the closing report), and no finding is dropped silently.
+Both invariants from the fuzzy path still hold: open-issue evidence is named in the closing report, and closed/no-cost suppression is counted in the churn aggregate. No finding is dropped silently or expanded back into repetitive per-file prompts.
 
 **Use exact-artifact dedup only when the artifact genuinely is the key.** If a finding is about behavior, a decision, or a cross-cutting concern, it is prose — use `dedup_search`.
 
@@ -92,6 +94,17 @@ Flag it in the run report too, so the ambiguity is visible in two places rather 
 ### No match → file normally
 
 Behavior is unchanged from before this check existed.
+
+## Decomposition children — the parent is never a suppression target (issue #1193)
+
+`/subagent` Step 5.1 splits a criterion-3 issue into increment children and files them autonomously, so the full ladder above applies. Two exclusions are **mandatory**, not tuning, because without them the mechanism suppresses the work it was invoked to create:
+
+1. **The parent issue.** It is the ask being decomposed. Every child restates a slice of it, so the parent strong-matches all of them by construction — same primary artifact, a body criterion that plainly covers the finding, high coverage. Left in the candidate set, the first child is "deferred" into a comment on its own parent and the decomposition collapses to nothing.
+2. **Every sibling already filed in this run.** Increments share a theme prefix and most of their keywords deliberately, so increment 1 outranks everything when increment 2 is filed. This is the same-run self-check below plus `/issue-maker` Step 4's `chain_id` sibling rule; both resolve membership by `chain_id`, never by theme text.
+
+Pass both to `issue-dedup.sh --exclude`. A genuine duplicate **outside** the chain still classifies normally — the exclusions narrow the candidate set, they never lower the strong-match bar.
+
+This is the mirror image of the exact-artifact case above. There, fuzzy scoring was too *loose* for a finding keyed to one path. Here it is correctly fuzzy but pointed at candidates that are related **by design**, so relatedness carries no evidence of duplication.
 
 ## Same-run batch self-check
 

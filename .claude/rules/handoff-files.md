@@ -22,9 +22,10 @@ Mechanism + migration: `.claude/reference/state-file-contracts.md`. Canonical co
 
 ## Handoff File Storage
 
-- **Naming:** `{owner}/{repo}/pr-{N}-handoff.json`. Create via `handoff-state.sh --owner-repo <owner>/<repo> --create`; resolve path with `handoff-state.sh --path <N>`.
+- **Naming:** `{owner}/{repo}/pr-{N}-handoff.json`. **`--owner-repo <owner>/<repo>` on every call** — resolution as well as creation (`handoff-state.sh --owner-repo <owner>/<repo> --path <N>`).
+- **Scope resolution:** omitting it no longer means flat — it derives from `$CLAUDE_SESSION_REPO`, else the cwd's `origin`, and **exits 2 having written nothing** when neither resolves. The legacy flat path needs an explicit `--legacy-flat` (or `CLAUDE_HANDOFF_FLAT_OK=1`), only where intended (`/wrap` cleanup sweeps, migration tooling); an explicit `--owner-repo` overrides that variable. Why: `.claude/reference/handoff-missing-owner-repo-decision.md`.
 - **One file per PR per repo at any time** — two repos at the same PR number occupy different paths.
-- **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C → deleted by **parent** after `OUTCOME: merged` confirmed by GitHub (see `phase-protocols.md`).
+- **Lifecycle:** A creates → B updates → C reads → **parent** deletes after `OUTCOME: merged` is confirmed by GitHub (`phase-protocols.md`) — so every update of an expected-existing record passes `--require-existing`; only creation may seed one.
 
 ### Phase Operations
 
@@ -34,7 +35,7 @@ Mechanism + migration: `.claude/reference/state-file-contracts.md`. Canonical co
 | B | Read-modify-write; append arrays, update scalars, preserve unknown fields |
 | C | Read only; deletion timing per `phase-protocols.md` |
 
-Required and optional fields: `.claude/reference/handoff-file-schema.json` (single source of truth). Note `stale_bot_reviews_dismissed` — review IDs dismissed by `dismiss-stale-bot-changes.sh` after a push.
+Required and optional fields: `.claude/reference/handoff-file-schema.json` (single source of truth); `stale_bot_reviews_dismissed` holds review IDs `dismiss-stale-bot-changes.sh` dismissed after a push.
 
 **Forward compatibility:** preserve unknown fields; dedupe string arrays by value, `findings_dismissed` by `.id`.
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline BugBot failure and response classification tests for escalate-review.sh.
+# catalog: tests — BugBot failure and response-classification tests for `escalate-review.sh`
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/escalate-review-fixtures.sh
@@ -13,7 +14,7 @@ FAILURE_COMMENT="$(failure_comment "$(ts_seconds_ago 60)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (a2): usage-limit failure via check-run title only (no comment) -> trigger_greptile =="
@@ -22,7 +23,7 @@ write_commits "$(ts_seconds_ago 120)"
 write_state "[$BUGBOT_CHECK_RUN_FAILED_TITLE]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (b): genuine BugBot findings comment -> switch_bugbot =="
@@ -32,7 +33,7 @@ GENUINE_COMMENT="$(genuine_comment "$(ts_seconds_ago 7000)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$GENUINE_COMMENT]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (c): genuine clean pass via completed check-run, no comment -> switch_bugbot =="
@@ -41,7 +42,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (d): failure comment followed by a LATER genuine review (by timestamp) -> switch_bugbot =="
@@ -52,7 +53,7 @@ GENUINE_COMMENT_D="$(genuine_comment "$(ts_seconds_ago 3000)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT_D, $GENUINE_COMMENT_D]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (e): alt failure phrasing (\"usage or spend limit\") also detected -> trigger_greptile =="
@@ -62,7 +63,7 @@ FAILURE_COMMENT_ALT="$(failure_comment_alt "$(ts_seconds_ago 60)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT_ALT]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (f): genuine review followed by a LATER failure comment -> trigger_greptile (CodeRabbit finding) =="
@@ -73,7 +74,7 @@ FAILURE_COMMENT_F="$(failure_comment "$(ts_seconds_ago 60)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$GENUINE_COMMENT_F, $FAILURE_COMMENT_F]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (g): check-run has a blocking conclusion (timed_out) with a non-matching title, no comment -> trigger_greptile (CodeAnt finding) =="
@@ -82,7 +83,7 @@ write_commits "$(ts_seconds_ago 120)"
 write_state "[$BUGBOT_CHECK_RUN_TIMED_OUT]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo
@@ -96,6 +97,6 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_CHECK_RUN_SUCCESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 finish_escalate_review_tests "BugBot classification"

@@ -100,20 +100,60 @@ Both exit **6** on lock timeout; the caller retries. Locks whose holder process 
 
 The reason inline `jq … > tmp && mv tmp` is banned is that it is atomic with respect to the *file* but not with respect to the *lock* — it will happily clobber a concurrent writer's siblings.
 
+## `HOME` unset — exit 8 (issue #1434)
+
+`session-state.sh` and `reviewer-of.sh` resolve their state file from `$HOME`. When `HOME` is unset there is no state file to resolve, so both exit **8** with a single named stderr line (`HOME is unset; cannot resolve ~/.claude/session-state.json`) instead of aborting with bash's `HOME: unbound variable` under `set -u`. `silence-watchdog.sh` and `script-usage-report.sh` use the same code for the same condition on their own `~/.claude` paths.
+
+Like the lock-timeout **6** above, 8 is a fresh number rather than an overload of the existing 2–7 vocabulary, so a caller can tell "no HOME in this environment" from a usage error (2) or a genuine I/O failure (5).
+
+Two properties callers can rely on:
+
+- **Cheap paths never require `HOME`.** `--help`, every usage error, and `session-state.sh --repo-key` answer before the guard — none of them open the state file. Exit 8 means a mode that genuinely needed `~/.claude` was reached.
+- **No fabricated paths.** There is deliberately no `${HOME:-}` fallback anywhere on a load-bearing path: an empty default would produce root-anchored `/.claude/...` paths and strew state at the filesystem root — the stray-file hazard issue #1430 removed. The guard fails fast instead. The non-load-bearing usage-telemetry append is separate: it is skipped entirely when `HOME` is unset, and never changes any script's exit contract.
+
+Pinned by `.claude/scripts/tests/unset-home-contract.test.sh` (all four scripts) and the unset-`HOME` block in `session-state.test.sh` (per-mode).
+
 ## Scoping is not retroactive (issue #651)
 
 Adding scoping did not rewrite entries already on disk. Legacy entries lacking `owner_repo` / `root_repo` stay in `_unknown`, where they still collide in `infer-pr.sh` and `pr-state.sh` candidate lists.
 
 Repair with `session-state-audit.sh --apply --reattribute`, which moves entries into their correct scope by matching HEAD SHA. `--prune` additionally drops entries whose PRs are merged. The audit backs the file up first, holds the write lock for the duration, and re-checks integrity afterward.
 
-## Field-type contract (issue #625)
+## Field-type contract (issues #625, #1283)
 
 `session-state.sh` enforces JSON types on known fields:
 
-- a `--set` carrying the wrong type exits **4** and leaves the file unmodified
+- a `--set` **or `--cas`** carrying the wrong type exits **4** and leaves the file unmodified
 - a `--get` against a corrupted field warns and returns a type-appropriate safe default
 
+Both write paths run the identical check, through one shared
+`enforce_field_type_contract()`, against the candidate document and before the
+atomic `mv` — so no value is acceptable through one path and rejected through
+the other (issue #1283 closed that gap; `--cas` previously skipped the check
+entirely). For `--cas` the check runs only after the compare succeeds, so a
+type violation (**4**) stays distinct from a lost race (**7**).
+
+Since issue #1445 one invocation may carry a `--cas` **and** `--set` writes
+together; they land in one jq pipeline under the one lock hold, and the compare
+gates all of them — a mismatch writes nothing, the accompanying `--set` values
+included, and still exits **7**. The two codes stay ordered: the compare runs
+first, so a lost race exits **7** before the companion assignments are built or
+type-checked at all. Once it succeeds, every assignment (the CAS target and each
+composed `--set`) is built by the same `add_write_assignment()` helper, so the
+type contract reaches all of them: one wrong-typed companion rejects the whole
+invocation with **4** and leaves the file unmodified.
+
 The most common way to corrupt a field is passing a raw jq filter as a `--set` value — the string is stored literally instead of being evaluated. Evaluate first, then pass the resulting scalar.
+
+`handoff-state.sh` has no field-type schema, so it cannot run the check above. It does refuse the clearest form of that same mistake (issue #1357): a `--set` value that starts like a jq path expression, carries a jq operator, **and** compiles as a jq program exits **4** with the file unmodified, rather than silently clobbering the field with the expression's source text. A value that misses any one of those three signals is still stored verbatim as a string — prose, SHAs, paths and URLs keep working. A value containing `#` or `;` skips the compile probe outright and stores as a string: either character can carry the value past the probe's terminator and get its tail executed during what is meant to be a compile-only check (a `#` comment swallowing the terminator, or a trailing unterminated `def` absorbing it), so the guard declines to judge those rather than risk running them. `--append` is deliberately outside that guard: its values are array elements and cannot overwrite a prior value. The script header stays the canonical contract.
+
+### Update-only writes — `--require-existing` (issue #1603)
+
+`--set` and `--append` seed a record from `{}` when the target is absent. That is deliberate and stays the default: it is what makes a genuinely new record cheap to build. It is also the wrong behaviour for an *update*, because a handoff has a legitimate terminal state — Phase C merges, the parent deletes the record, and there is no next phase to read one. A write that arrives after that deletion does not fail; it recreates the file holding only the key it wrote. The result is a plausible-looking lie: a record for a merged PR with a null `phase_completed`, which a resumed parent, `/go-on`, `/pm-clean`, or a post-compaction sweep reads as "Phase A never completed" rather than "this PR is done" (observed 2026-09-02, auerbachb/skingod PR #3818).
+
+So every caller whose write is an update passes `--require-existing`, and only a creation may seed. The check runs **under the lock**, which is why a caller's own `[[ -f … ]]` test is not a substitute — `polling-state-gate.sh`'s `head_sha` refresh chooses its branch outside the lock and can be overtaken by the deleter between the test and the write. The refusal is exit **3**, nothing written.
+
+Exit 3 is not an error to route around. It says the record is gone, which after a merge is correct — the caller confirms the PR's state (`gh pr view <N> --json state`) and reports the outcome rather than recreating the record. Current update call sites: the Phase B block in `.claude/agents/phase-b-reviewer.md` and its twin in `.claude/skills/subagent/SKILL.md`, `dismiss-stale-bot-changes.sh`'s `stale_bot_reviews_dismissed` append (PR #1423), and the `head_sha` refresh above. Phase A's `--create`, `polling-state-gate.sh`'s checkpoint `--create`/`--repair`, and `handoff-migrate.sh` are creations and stay flagless. `.claude/scripts/tests/handoff-scoping.test.sh` §19 pins that split.
 
 The `_field_types.top_level` and `_field_types.pr_nested` maps in
 `session-state-schema.json` are the single source of truth for which fields are typed and what
@@ -139,6 +179,61 @@ not a disposable sample.
 Sub-shape documents may explain their own state machines without becoming schema owners.
 `merge-sequencing.md` owns merge-hold behavior, and `/babysit-pr` owns its Monitor lifecycle; the
 JSON field names and enforced types remain authoritative in `session-state-schema.json`.
+
+#### Worked example: `.repos["<key>"].leave` (issue #1525)
+
+The declared-leave-time block exercises every branch of the procedure above, including the one that
+is most often got wrong — step 1's *only when*:
+
+1. **No `_field_types` entry.** The runtime contract loads `top_level` and `pr_nested` only, and
+   `pr_nested` applies to entries under a repo's `prs` map. A repo-scoped sibling like `leave` (or
+   `day`, or `pause`) is therefore **unvalidatable today**, so adding keys for it would be inert
+   decoration that reads like a guard. Widening enforcement to repo-scoped blocks is a change to
+   `session-state.sh`'s contract, not a schema edit.
+2. **Representative document updated**, because the shape is a cross-agent contract: `/leave-by`
+   writes it, `/pause` Step 2 and `/pause-resume` Step 5 tear it down, and `/subagent` Step 7 reads
+   its sibling `.window`. The `_leave_comment` carries writer, lifecycle, and the staleness rule.
+3. **Alignment test added** (`leave-time.test.sh`), because the identity pair
+   `winddown_task_id` + `winddown_generation` must change together — the same reason
+   `_auto_wake_comment` pins its pair.
+4. **Rationale here and in `leave-time.md`.** Notably `leave.deadline_epoch` is present and
+   permanently `null`: the deadline lives once, in `.window.deadline_epoch`, and the null field is
+   the signpost that says so. A reader who finds a number there is looking at corruption, not at a
+   second source of truth.
+
+#### Round membership: `.repos["<key>"].rounds["<session>"]` (issues #1604, #1712)
+
+The old repo-level singleton prevented write races but still let a second
+session replace an unchanged, active foreign round. New dispatchers own separate
+session slots; no stale or absent heartbeat authorizes a foreign overwrite.
+
+1. No inert `_field_types` entry: enforcement covers `top_level` and `pr_nested`,
+   not these repo siblings. The writer and reader validate the records they use.
+2. `/subagent` Step 7.0 self-compares its whole slot before writing; same-set
+   re-entry keeps `dispatched_at`, and reordering updates members without moving
+   that clock. A missing/ambiguous session identity records nothing, visibly.
+3. Step 8 clears only the matching ended membership and session through a whole
+   slot CAS. It stores null as a tombstone and never clears another slot.
+4. `round-membership.sh` reads one repo snapshot. `/board` selects its invoking
+   session's own ordered queue/completed membership, or an explicitly labelled,
+   deterministic recorded-round union for an observer. Running rows keep their
+   existing repo scope. Membership never proves liveness; queued-only and pre-PR
+   evidence rules remain. Unreadable/malformed state degrades, never invents an
+   empty successful round. `--all-repos` selects independently for each repo.
+5. Legacy `.round` remains read-only compatibility evidence. A new slot key,
+   including a null tombstone, shadows a legacy record attributed to that owner;
+   otherwise it remains visible. There is no destructive migration or stale-age
+   cleanup. Unknown ownership is retained.
+
+The representative schema carries both forms. Native controls execute the real
+writer/clear fences and locked state writer with two sessions, and verify own,
+observer, legacy, tombstone and repo-isolation reads. Generic CAS is unchanged.
+
+
+Membership selection requires an explicit valid session ID. An empty, default,
+null or malformed identity is a usage error; `/board` labels the degradation and
+uses its no-record fallbacks. A distinct identified observer can still read the
+recorded-round union. The table-freshness default clock remains unchanged.
 
 ## Handoff file migration
 
@@ -175,3 +270,21 @@ The hook skips re-emitting a widen instruction when `.type == "update"` and `.in
 ## Diff-survival snapshot — deliberately outside these mechanisms (issue #757)
 
 `diff-survival-check.sh` persists one file at `git rev-parse --git-path claude-diff-survival.json` — `.git/claude-diff-survival.json` in the main worktree, `.git/worktrees/<name>/claude-diff-survival.json` in a linked one. It is **not** session state and **not** a handoff file: it is written and read only by `diff-survival-check.sh`, scoped to a single worktree's in-flight rebase/merge rather than to a PR or a session, untracked, and transient — deleting it (or running `diff-survival-check.sh clear`) costs nothing but the ability to verify the current resolution. It lives in the git dir precisely so it survives a session being killed mid-rebase, which is the scenario it exists for. Full rationale: `.claude/reference/diff-survival-guard.md`.
+
+## Operator priority file — per repo, outside session state (issue #1767)
+
+`<main-root>/.claude/pm-priority.json` holds the operator's backlog order for `/pm`: an ordered `order` array of issue numbers and a `parked` map (`"<issue>": {"until": "YYYY-MM-DD", "parked_at": …}`), plus `version` and `updated_at`. `/desk` writes it (`top`, `bump`, `park`, `drop`) and `/pm` overlays it on its ranking (1B.1a, 1B.4 item 7, 3.4); `pm-priority.sh` is the only reader and writer, and its `--help` is the canonical contract.
+
+- **Where, and why not session state.** It sits next to `pm-config.md`, per repo, because that is where `/pm` reads its repo config (#1767 §6.1, `desk/DESIGN.md` 7.6). It is resolved to the **main** checkout's root (`repo-root.sh`), so every linked worktree of one repo reads one file. It is not in `~/.claude/session-state.json`: the order belongs to the repo, not to a session, and it must not move when a session's `root_repo` does.
+- **Untracked.** It is runtime state and never committed — a tracked copy would dirty `main` on every desk write and trip the dirty-main guard (`main-hygiene.md`). This repo ignores `.claude/pm-priority.json*`; elsewhere it is an untracked file, which the guard ignores.
+- **Optional, and fail-closed when broken.** Absent means no override. A file that does not match the shape (bad JSON, wrong types, an issue listed twice, an issue both ordered and parked) is unreadable: the helper exits 4 and never overwrites it, and `/pm` ranks without it but launches nothing autonomously until it reads again, because it may be hiding a park.
+- **Dates.** A park is in force while today in America/New_York is earlier than `until`; the issue returns on that date. Expired parks are ignored on read and pruned on the next write.
+- **Writes** take the `state-lock.sh` lock on the file (`pm-priority.json.lock/`), re-read under the lock, and commit through a same-directory temp file and `state_lock_commit`.
+
+## Unreviewed-merge ledger — cross-repo, outside session state (issue #1899)
+
+`~/.claude/unreviewed-merges.json` (`{schema_version: 1, entries: [...]}`) records every merge made through the no-review override, one entry per `(repo, pr, head_sha)`. It is deliberately not in `session-state.json`: it must survive sessions and span repos, and Issue #1900's backfill reads it. Only `unreviewed-merge-ledger.sh` writes it — `state-lock.sh` lock across the read-modify-write, temp + rename commit, exit codes as `session-state.sh`. Contract and fields: `.claude/reference/no-review-override.md` §The ledger.
+
+## Paid review grants (issue #1898)
+
+`.prs["<N>"].paid_review_grants["<vendor>"]` has exactly one writer: `.claude/scripts/paid-review-grant.sh`. A grant is written only after the owner's live approval and spent with a `session-state.sh --cas` on the exact record read, so of two racing triggers exactly one posts. An unparseable or mistyped slot is `grant_unreadable`, which refuses. Field list: `session-state-schema.json` `_paid_review_grants_comment`. Ask contract: `paid-review-approval.md`.

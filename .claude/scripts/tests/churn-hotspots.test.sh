@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for churn-hotspots.sh (issue #755).
+# catalog: tests — Tests for `churn-hotspots.sh`
 #
 # Fully hermetic: builds real temp git repos with squash-style subjects, stubs
 # `gh` on PATH, and points HOME at a temp dir so session-state reads are seeded
@@ -9,7 +10,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.claude/scripts/churn-hotspots.sh"
+SCRIPT="${CHURN_HOTSPOTS_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/churn-hotspots.sh}"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -31,6 +32,21 @@ check_jq() {  # desc, json, jq boolean expr
   if printf '%s' "$2" | jq -e "$3" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi
 }
 
+# Prints yes when $1 contains every following needle, in order; else no. Lives
+# in a function because bash 3.2 misparses a `case ... in pat)` written inline
+# inside `$( )` — the unbalanced `)` ends the substitution early (issue #1856
+# test plan: the whole file is green under bash 3.2).
+has_text() {  # text, needle...
+  local rest="$1" needle; shift
+  for needle in "$@"; do
+    case "$rest" in
+      *"$needle"*) rest="${rest#*"$needle"}" ;;
+      *) echo no; return 0 ;;
+    esac
+  done
+  echo yes
+}
+
 # ---- gh stub ----------------------------------------------------------------
 # Matches on a single stable token per case — never on --json field order, which
 # changes as callers add fields. Unhandled invocations exit 1 loudly.
@@ -42,11 +58,61 @@ check_jq() {  # desc, json, jq boolean expr
 # means those tests fail on `--state open` and pass on `--state all`.
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
+CHURN_TEST_REAL_JQ=$(command -v jq)
+cat > "$STUB_BIN/jq" <<JQ_STUB
+#!/usr/bin/env bash
+if [ -f "$TMP/fail-matcher" ]; then
+  for arg in "\$@"; do
+    case "\$arg" in *"def norm_state:"*) exit 9 ;; esac
+  done
+fi
+exec "$CHURN_TEST_REAL_JQ" "\$@"
+JQ_STUB
+chmod +x "$STUB_BIN/jq"
+
+GH_POLICY_SHA="0123456789abcdef0123456789abcdef01234567"
+cat > "$TMP/search-pages.py" <<'SEARCH_PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+fields = dict(a.split('=', 1) for a in sys.argv[2:] if '=' in a)
+assert fields.get('per_page') == '100' and fields.get('sort') == 'created' and fields.get('order') == 'asc', fields
+assert 'repo:' in fields.get('q', '') and 'is:issue' in fields['q'] and 'Refactor hotspot in:title' in fields['q'], fields
+page = int(fields['page'])
+with (root / 'search-requests.jsonl').open('a') as log:
+    log.write(json.dumps(fields) + '\n')
+all_items = json.loads((root / 'issue_list.json').read_text())
+items = all_items[(page - 1) * 100:page * 100]
+payload = dict(total_count=len(all_items), incomplete_results=False, items=items)
+fault_file = root / 'lookup-fault.json'
+fault = json.loads(fault_file.read_text()) if fault_file.exists() else {}
+if page == fault.get('page'):
+    kind = fault['kind']
+    if kind == 'transport': sys.exit(1)
+    if kind == 'malformed': print('{bad'); sys.exit(0)
+    if kind == 'empty': sys.exit(0)
+    if kind == 'scalar': print('"not an object"'); sys.exit(0)
+    if kind == 'incomplete': payload['incomplete_results'] = True
+    if kind == 'count-drift': payload['total_count'] += 1
+    if kind == 'duplicate': payload['items'][0] = all_items[0]
+    if kind == 'short': payload['items'] = items[:-1]
+    if kind == 'bad-title': payload['items'][0] = dict(items[0], title=7)
+    if kind == 'bad-number': payload['items'][0] = dict(items[0], number='7')
+    if kind == 'bad-body': payload['items'][0] = dict(items[0], body=[])
+    if kind == 'pr-item': payload['items'][0] = dict(items[0], pull_request={})
+    if kind == 'missing-items': del payload['items']
+    if kind == 'bad-total': payload['total_count'] = True
+    if kind == 'fractional-total': payload['total_count'] = 200.5
+    if kind == 'bad-items': payload['items'] = {}
+    if kind == 'multiple-json': print(json.dumps(payload))
+print(json.dumps(payload))
+SEARCH_PY
+
 cat > "$STUB_BIN/gh" <<STUB
 #!/usr/bin/env bash
 set -uo pipefail
 args="\$*"
 case "\$args" in
+  *"search/issues"*) python3 "$TMP/search-pages.py" "$TMP" "\$@" ;;
   *"repo view"*)      cat "$TMP/repo_view.txt" ;;
   *"issue list"*)
     case "\$args" in
@@ -59,9 +125,47 @@ case "\$args" in
     esac
     ;;
   *"pr list"*)        cat "$TMP/pr_list.json" ;;
+  # Policy-exemption reads (issue #1858). Every call is logged so a test can
+  # assert the pinned ref; a fixture file under $TMP/contents/ is served
+  # verbatim, and anything absent is a 404 — the default, which keeps every
+  # older gh scenario on the "no declaration" path. The fail switches stand in
+  # for a non-404 failure (rate limit, auth, network), which must exit 3.
+  *"/contents/"*)
+    printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
+    if [ -f "$TMP/gh_fail_contents" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    cpath=\$(printf '%s' "\$args" | sed -n 's|.*/contents/\([^?]*\)?ref=.*|\1|p')
+    # Like the real API: the raw media type serves a file's bytes, the default
+    # (JSON) one an entry object; a directory answers either with a listing
+    # (which the caller's --jq type probe reduces to "dir").
+    fpath="$TMP/contents/\$cpath"
+    if [ -n "\$cpath" ] && [ -d "\$fpath" ]; then
+      case "\$args" in
+        *"vnd.github.raw"*) ls "\$fpath" | jq -Rnc --arg d "\$cpath" '[inputs | {name: ., path: (\$d + "/" + .), type: "file"}]' ;;
+        *) printf '%s\n' dir ;;
+      esac
+    elif [ -n "\$cpath" ] && [ -f "\$fpath" ]; then
+      case "\$args" in
+        *"vnd.github.raw"*) cat "\$fpath" ;;
+        *) printf '%s\n' file ;;   # what --jq leaves of {"type":"file",...}
+      esac
+    else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    ;;
+  *"/commits/"*)
+    printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
+    if [ -f "$TMP/gh_fail_meta" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    printf '{"sha":"%s"}\n' "$GH_POLICY_SHA"
+    ;;
   *"/files"*)
     pr=\$(printf '%s' "\$args" | sed -n 's|.*/pulls/\([0-9][0-9]*\)/files.*|\1|p')
-    if [ -f "$TMP/files_\$pr.txt" ]; then cat "$TMP/files_\$pr.txt"; else printf ''; fi
+    if [ -f "$TMP/files_\$pr.json" ]; then cat "$TMP/files_\$pr.json"; else printf '[]'; fi
+    ;;
+  # Repo metadata — after every more specific api-repos handler above (no
+  # backticks in this unquoted heredoc: they would run at stub-write time).
+  "api repos/"*)
+    printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
+    if [ -f "$TMP/gh_fail_meta" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    if [ -f "$TMP/default_branch" ]; then jq -nc --arg b "\$(cat "$TMP/default_branch")" '{default_branch: \$b}'
+    else printf '{"default_branch":"main"}\n'; fi
     ;;
   *) echo "gh stub: unhandled args: \$args" >&2; exit 1 ;;
 esac
@@ -72,6 +176,27 @@ export PATH="$STUB_BIN:$PATH"
 printf 'testowner/testrepo\n' > "$TMP/repo_view.txt"
 printf '[]\n' > "$TMP/issue_list.json"
 printf '[]\n' > "$TMP/pr_list.json"
+
+# gh_files <PR> [<status> <path>]... — write the JSON that `pulls/{N}/files`
+# returns, one object per status/path pair.
+#
+# These fixtures hold the API's OWN payload, not the post-`--jq` stream the old
+# `files_<PR>.txt` fixtures held. That difference is the point: the detector now
+# pipes the raw response through its own jq filter, so a fixture in the old
+# shape would stub past the very code that turns a payload into NUL-delimited
+# records (issue #1554).
+#
+# An EMPTY status writes a row with NO `status` key at all — how the real schema
+# expresses a payload without one, which must still count as a touch. `--args`
+# carries each value through argv, so a path containing a newline or a tab
+# reaches the fixture verbatim instead of being re-split by the shell.
+gh_files() {  # $1 PR number, then alternating <status> <path> arguments
+  local pr="$1"; shift
+  jq -nc '[ range(0; ($ARGS.positional | length); 2)
+            | { status: $ARGS.positional[.], filename: $ARGS.positional[. + 1] }
+            | if .status == "" then del(.status) else . end ]' \
+    --args "$@" > "$TMP/files_$pr.json"
+}
 
 # ---- helpers ----------------------------------------------------------------
 WINDOW_START="2026-01-01"
@@ -85,12 +210,55 @@ new_repo() {  # $1 dir name -> echoes path
   printf '%s' "$dir"
 }
 
+# Every path a fixture touches is born in a PR-UNMARKED seed commit unless the
+# scenario deliberately creates it in-window. Creation commits no longer score
+# (issue #1547), so letting the first in-window PR create the file would
+# silently turn every unrelated scenario into a test of the creation rule.
+#
+# The seed date sits INSIDE the window (before every fixture commit date) even
+# though the seed is conceptually "before" the history. A pre-window date would
+# be correct only if every seed landed at the root: `git log --since` STOPS
+# walking a linear history at the first commit older than the cutoff, so a seed
+# emitted lazily in the middle of a fixture's history would hide every commit
+# beneath it. An unmarked commit contributes nothing either way, so an in-window
+# seed is invisible to the detector without truncating the log.
+SEED_DATE="2026-01-15T00:00:00"
+
+seed_missing() {  # $1 repo, $2... files
+  local repo="$1"; shift
+  local f any=0
+  for f in "$@"; do
+    if [ ! -e "$repo/$f" ]; then
+      mkdir -p "$repo/$(dirname "$f")"
+      printf 'seed\n' > "$repo/$f"
+      git -C "$repo" add "$f"
+      any=1
+    fi
+  done
+  [ "$any" -eq 1 ] || return 0
+  GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" \
+    git -C "$repo" commit -q -m "seed fixture paths"
+}
+
 commit_touch() {  # $1 repo, $2 date, $3 subject, $4... files
+  local repo="$1" date="$2" subject="$3"; shift 3
+  local f
+  seed_missing "$repo" "$@"
+  for f in "$@"; do
+    mkdir -p "$repo/$(dirname "$f")"
+    echo "change $date" >> "$repo/$f"
+    git -C "$repo" add "$f"
+  done
+  GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date" \
+    git -C "$repo" commit -q -m "$subject"
+}
+
+commit_create() {  # $1 repo, $2 date, $3 subject, $4... files — create IN-window
   local repo="$1" date="$2" subject="$3"; shift 3
   local f
   for f in "$@"; do
     mkdir -p "$repo/$(dirname "$f")"
-    echo "change $date" >> "$repo/$f"
+    printf 'created %s\n' "$date" > "$repo/$f"
     git -C "$repo" add "$f"
   done
   GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date" \
@@ -368,45 +536,227 @@ run_in "$R1" --since "$WINDOW_START" --json
 check_jq "9a: a sibling-file hotspot issue does not match" "$OUT" \
   '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == null and .existing_hotspot_issue_state == null'
 
-# A capped issue lookup is an INCOMPLETE lookup: a matching issue may sit beyond
-# the cap, so absence of a match no longer proves absence of an issue. Callers
-# gate filing on existing_lookup_failed, so the cap must set it — reporting only
-# `truncated` would let a caller file a duplicate. `--state all` enlarges the
-# candidate set, so the fixture mixes both states: closed issues alone can now
-# fill the cap, which is why this guard matters more after #915, not less.
-python3 - "$TMP/issue_list.json" <<'PY'
+lookup_page_count() {
+  if [ -f "$TMP/search-requests.jsonl" ]; then
+    wc -l < "$TMP/search-requests.jsonl" | tr -d ' '
+  else
+    printf '0\n'
+  fi
+}
+
+# Exact-at-200 is complete after the empty third page; the 1000-result
+# GitHub search ceiling remains conservative and fail closed.
+python3 - "$TMP/issue_list.json" <<'PY_FIXTURE'
 import json, sys
-# 200 non-matching issues == ISSUE_LOOKUP_CAP, so the lookup is capped out.
 json.dump([{"number": 1000 + i, "title": "Refactor hotspot: src/Unrelated%d.ts" % i, "body": "",
             "state": "OPEN" if i % 2 else "CLOSED"}
            for i in range(200)], open(sys.argv[1], "w"))
-PY
+PY_FIXTURE
+rm -f "$TMP/search-requests.jsonl"
 run_in "$R1" --since "$WINDOW_START" --json
-check_jq "9b: a capped issue lookup sets existing_lookup_failed" "$OUT" '.existing_lookup_failed == true'
-check_jq "9c: a capped issue lookup is also reported as truncated" "$OUT" '.truncated == true'
+check_jq "9b: exactly 200 issues is a complete lookup" "$OUT" '.existing_lookup_failed == false and .truncated == false'
+check_eq "9c: exactly 200 proves completion with an empty third page" 3 "$(lookup_page_count)"
+
+# Page-three exact matches cannot be treated as absence. Numbered fixture rows
+# are already in creation order, as requested from the real API.
+for issue_count in 199 201 999 1000 1001; do
+  python3 - "$TMP/issue_list.json" "$issue_count" <<'PY_FIXTURE'
+import json, sys
+n=int(sys.argv[2])
+items=[dict(number=1000+i,title='Refactor hotspot: src/Unrelated%d.ts'%i,body='',state='CLOSED') for i in range(n)]
+if n>200:items[200]=dict(number=1200,title='Refactor hotspot: src/Form.tsx',body='',state='OPEN')
+json.dump(items,open(sys.argv[1],'w'))
+PY_FIXTURE
+  rm -f "$TMP/search-requests.jsonl"
+  run_in "$R1" --since "$WINDOW_START" --json
+  if [ "$issue_count" -lt 1000 ]; then
+    check_jq "9d: $issue_count candidates complete without lookup flags" "$OUT" '.existing_lookup_failed == false and .truncated == false'
+    expected_pages=$((issue_count / 100 + 1))
+    check_eq "9d: $issue_count visits exactly the required pages" "$expected_pages" "$(lookup_page_count)"
+    if [ "$issue_count" -gt 200 ]; then
+      check_jq "9d: $issue_count preserves a page-three exact match" "$OUT" '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 1200 and .existing_hotspot_issue_state == "open"'
+      printf '%s\n' "$OUT" > "$TMP/paged-envelope.json"
+      PLAN_RC=0
+      bash "$REPO_ROOT/.claude/scripts/churn-hotspot-wrap-plan.sh" --input "$TMP/paged-envelope.json" --pr 999 > "$TMP/paged-plan.json" 2> "$TMP/paged-plan.err" || PLAN_RC=$?
+      check_eq "9d: complete page-three envelope is accepted by planner" 0 "$PLAN_RC"
+      check_jq "9d: page-three existing match is never a new-issue candidate" "$(cat "$TMP/paged-plan.json")" 'all(.file_set[]?; .file != "src/Form.tsx")'
+    fi
+  else
+    check_jq "9e: $issue_count reaches the conservative search ceiling" "$OUT" '.existing_lookup_failed == true and .truncated == true'
+    check_eq "9e: $issue_count stops on first-page ceiling evidence" 1 "$(lookup_page_count)"
+  fi
+done
+
+# Real issue bodies make a complete candidate set much larger than argv.
+python3 - "$TMP/issue_list.json" <<'PY_FIXTURE'
+import json,sys
+items=[dict(number=1000+i,title='Refactor hotspot: src/Unrelated%d.ts'%i,body='x'*16384,state='CLOSED') for i in range(201)]
+items[200]['title']='Refactor hotspot: src/Form.tsx'
+items[200]['state']='OPEN'
+json.dump(items,open(sys.argv[1],'w'))
+PY_FIXTURE
+rm -f "$TMP/search-requests.jsonl"
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "9e: large candidate bodies stream without argv truncation" "$OUT" '.existing_lookup_failed == false and .truncated == false'
+check_jq "9e: large candidate bodies retain the page-three match" "$OUT" '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 1200'
+check_eq "9e: large candidate lookup remains exactly three pages" 3 "$(lookup_page_count)"
+
+# A fault in the last page invalidates the WHOLE candidate set, including
+# valid earlier pages. The unchanged planner must reject every unsafe envelope.
+python3 - "$TMP/issue_list.json" <<'PY_FIXTURE'
+import json,sys
+json.dump([dict(number=1000+i,title='Refactor hotspot: src/Unrelated%d.ts'%i,body='',state='OPEN') for i in range(201)],open(sys.argv[1],'w'))
+PY_FIXTURE
+for lookup_fault in transport malformed empty scalar incomplete count-drift duplicate short bad-title bad-number bad-body pr-item missing-items bad-total fractional-total bad-items multiple-json; do
+  jq -nc --arg kind "$lookup_fault" '{page:3,kind:$kind}' > "$TMP/lookup-fault.json"
+  rm -f "$TMP/search-requests.jsonl"
+  run_in "$R1" --since "$WINDOW_START" --json
+  check_jq "9f: later-page $lookup_fault fails closed" "$OUT" '.existing_lookup_failed == true and .total_hotspot_count > 0'
+  check_eq "9f: later-page $lookup_fault stays bounded" 3 "$(lookup_page_count)"
+  printf '%s\n' "$OUT" > "$TMP/unsafe-envelope.json"
+  PLAN_RC=0
+  bash "$REPO_ROOT/.claude/scripts/churn-hotspot-wrap-plan.sh" --input "$TMP/unsafe-envelope.json" --pr 999 > "$TMP/unsafe-plan.json" 2> "$TMP/unsafe-plan.err" || PLAN_RC=$?
+  check_eq "9f: planner rejects later-page $lookup_fault" 2 "$PLAN_RC"
+done
+rm -f "$TMP/lookup-fault.json"
 printf '[]\n' > "$TMP/issue_list.json"
+: > "$TMP/fail-matcher"
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "9g: matcher failure retains unsafe hotspots" "$OUT" '.existing_lookup_failed == true and .total_hotspot_count > 0'
+check_jq "9g: matcher failure preserves null issue fields" "$OUT" 'all(.hotspots[]; has("existing_hotspot_issue") and .existing_hotspot_issue == null and has("existing_hotspot_issue_state") and .existing_hotspot_issue_state == null)'
+rm -f "$TMP/fail-matcher"
 
 # =============================================================================
 # Scenario 10 — default exclusions
 # =============================================================================
 R10=$(new_repo r10)
-commit_touch "$R10" "2026-02-01T00:00:00" "deps (#501)" package-lock.json src/Real.ts
-commit_touch "$R10" "2026-02-02T00:00:00" "deps (#502)" package-lock.json src/Real.ts
-commit_touch "$R10" "2026-02-03T00:00:00" "deps (#503)" package-lock.json src/Real.ts
+# Generated Xcode/SwiftPM files, nested AND root-level, plus near-name controls
+# (issue #1855). 8 paths per commit stays below the 20-path sweep threshold.
+R10_GEN_NESTED_PBX="ios/App.xcodeproj/project.pbxproj"
+R10_GEN_NESTED_RES="ios/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+R10_PATHS=(package-lock.json src/Real.ts "$R10_GEN_NESTED_PBX" "$R10_GEN_NESTED_RES"
+  project.pbxproj Package.resolved ios/project.yml ios/myproject.pbxproj)
+commit_touch "$R10" "2026-02-01T00:00:00" "deps (#501)" "${R10_PATHS[@]}"
+commit_touch "$R10" "2026-02-02T00:00:00" "deps (#502)" "${R10_PATHS[@]}"
+commit_touch "$R10" "2026-02-03T00:00:00" "deps (#503)" "${R10_PATHS[@]}"
 
 printf '[]\n' > "$TMP/issue_list.json"
-run_in "$R10" --since "$WINDOW_START" --json
+run_in "$R10" --since "$WINDOW_START" --top 0 --json
+R10_DEFAULT_OUT="$OUT"
+check_jq "10q: nested project.pbxproj is excluded by default" "$OUT" \
+  ".hotspots | map(.file) | index(\"$R10_GEN_NESTED_PBX\") == null"
+check_jq "10r: nested Package.resolved is excluded by default" "$OUT" \
+  ".hotspots | map(.file) | index(\"$R10_GEN_NESTED_RES\") == null"
+check_jq "10s: root-level project.pbxproj and Package.resolved are excluded by default" "$OUT" \
+  '.hotspots | map(.file) | (index("project.pbxproj") == null and index("Package.resolved") == null)'
+check_jq "10t: near-name controls (ios/project.yml, ios/myproject.pbxproj) still register" "$OUT" \
+  '.hotspots | map(.file) | (index("ios/project.yml") != null and index("ios/myproject.pbxproj") != null)'
 check_jq "10a: lockfiles are excluded by default" "$OUT" '.hotspots | map(.file) | index("package-lock.json") == null'
 check_jq "10b: real source files in the same commits still register" "$OUT" \
   '.hotspots | map(.file) | index("src/Real.ts") != null'
 check_jq "10c: excluded paths are counted, not hidden" "$OUT" '.excluded_count > 0'
 
-run_in "$R10" --since "$WINDOW_START" --no-default-excludes --json
+# Comparison run: only package-lock.json excluded. The default run must count
+# strictly more exclusions, so the new entries feed excluded_count.
+run_in "$R10" --since "$WINDOW_START" --no-default-excludes --exclude package-lock.json --top 0 --json
+R10_CMP_COUNT=$(printf '%s' "$OUT" | jq -r '.excluded_count | numbers' 2>/dev/null)
+# Fail closed: a missing or non-numeric comparison count (jq's `x > null` is
+# true) must not let 10u pass, so it becomes an unreachable bound.
+[ -n "$R10_CMP_COUNT" ] || R10_CMP_COUNT=999999
+check_jq "10u: generated Xcode/SwiftPM paths are counted in excluded_count" "$R10_DEFAULT_OUT" \
+  ".excluded_count > $R10_CMP_COUNT"
+
+run_in "$R10" --since "$WINDOW_START" --no-default-excludes --top 0 --json
 check_jq "10d: --no-default-excludes brings the lockfile back" "$OUT" \
   '.hotspots | map(.file) | index("package-lock.json") != null'
+check_jq "10v: --no-default-excludes brings all four generated Xcode/SwiftPM paths back" "$OUT" \
+  ".hotspots | map(.file) | (index(\"$R10_GEN_NESTED_PBX\") != null and index(\"$R10_GEN_NESTED_RES\") != null and index(\"project.pbxproj\") != null and index(\"Package.resolved\") != null)"
 
-run_in "$R10" --since "$WINDOW_START" --exclude 'src/*' --json
+run_in "$R10" --since "$WINDOW_START" --exclude 'src/*' --top 0 --json
 check_jq "10e: --exclude drops a matching path" "$OUT" '.hotspots | map(.file) | index("src/Real.ts") == null'
+
+# =============================================================================
+# Scenario 10b — --exclude globs match paths, never the cwd (issue #1856)
+# =============================================================================
+# The cwd MUST hold files the patterns match (root README.md, docs/guide.md)
+# AND descendants the cwd listing does not (docs/sub/deep.md, notes/todo.md):
+# the pre-fix matcher pathname-expanded each entry against the cwd, so `*.md`
+# became the literal `README.md` and `docs/*` became `docs/guide.md docs/sub`.
+R10G=$(new_repo r10g)
+seed_missing "$R10G" README.md docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+commit_touch "$R10G" "2026-02-01T00:00:00" "edit (#511)" docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+commit_touch "$R10G" "2026-02-02T00:00:00" "edit (#512)" docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+commit_touch "$R10G" "2026-02-03T00:00:00" "edit (#513)" docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+
+ALL4='["docs/guide.md","docs/sub/deep.md","notes/todo.md","src/Real.ts"]'
+check_exclude_globs() {  # $1 label suffix
+  run_in "$R10G" --since "$WINDOW_START" --exclude '*.md' --json
+  check_jq "10g: --exclude '*.md' reports only src/Real.ts ($1)" "$OUT" \
+    '(.hotspots | map(.file) | sort) == ["src/Real.ts"] and .excluded_count == 9'
+  run_in "$R10G" --since "$WINDOW_START" --exclude 'docs/*' --json
+  check_jq "10h: --exclude 'docs/*' excludes docs/ at any depth ($1)" "$OUT" \
+    '(.hotspots | map(.file) | sort) == ["notes/todo.md","src/Real.ts"] and .excluded_count == 6'
+}
+
+# NEGATIVE CONTROL — without --exclude all four touched files are hotspots, so
+# 10g/10h measure the exclusion rather than a fixture that never qualified.
+run_in "$R10G" --since "$WINDOW_START" --json
+check_jq "10f: NEGATIVE CONTROL — no --exclude reports all four touched files" "$OUT" \
+  "(.hotspots | map(.file) | sort) == $ALL4"
+
+check_exclude_globs "README.md and docs/ in the working tree"
+# Working-tree independence: move matching files out of the checkout without
+# touching history, refs or HEAD — the results must not change.
+mv "$R10G/README.md" "$TMP/r10g-README.md"
+check_exclude_globs "README.md moved out of the working tree"
+mv "$TMP/r10g-README.md" "$R10G/README.md"
+mv "$R10G/docs" "$TMP/r10g-docs"
+check_exclude_globs "docs/ moved out of the working tree"
+mv "$TMP/r10g-docs" "$R10G/docs"
+
+# Function-level checks on the production matcher, extracted verbatim. Each runs
+# in a subshell so the test shell's options are never touched.
+MATCHER_SRC=$(sed -n '/^is_excluded() {/,/^}/p' "$SCRIPT")
+MATCH_CWD="$TMP/r10g-cwd"
+mkdir -p "$MATCH_CWD/src" && : > "$MATCH_CWD/README.md" && : > "$MATCH_CWD/src/Real.ts"
+matcher_verdicts() {  # $1 EXCLUDE_LIST, rest: paths -> "path:0|1" per path, space-joined
+  ( cd "$MATCH_CWD" || exit 1
+    eval "$MATCHER_SRC"
+    EXCLUDE_LIST="$1"; shift
+    out=""
+    for p in "$@"; do
+      if is_excluded "$p"; then out="$out $p:0"; else out="$out $p:1"; fi
+    done
+    printf '%s' "${out# }" )
+}
+check_eq "10i: '*.md,src/*' excludes root and nested paths regardless of the cwd" \
+  "README.md:0 docs/guide.md:0 notes/deep/a.md:0 src/Real.ts:0 src/deep/New.ts:0 lib/x.ts:1" \
+  "$(matcher_verdicts '*.md,src/*' README.md docs/guide.md notes/deep/a.md src/Real.ts src/deep/New.ts lib/x.ts)"
+check_eq "10j: a slash-free literal still matches the basename at any depth" \
+  "Cargo.lock:0 nested/Cargo.lock:0" \
+  "$(matcher_verdicts 'Cargo.lock' Cargo.lock nested/Cargo.lock)"
+check_eq "10k: a slash-containing entry never matches by basename alone" \
+  "Real.ts:1 lib/src/Real.ts:1 src/Real.ts:0" \
+  "$(matcher_verdicts 'src/Real.ts' Real.ts lib/src/Real.ts src/Real.ts)"
+check_eq "10l: an empty EXCLUDE_LIST excludes nothing" "README.md:1" \
+  "$(matcher_verdicts '' README.md)"
+
+# Shell state: `$-` and IFS are identical before and after every call, with
+# globbing enabled and disabled, on a match and on a miss.
+matcher_state() {  # $1 "glob"|"noglob", $2 path -> "same" or a diff report
+  ( cd "$MATCH_CWD" || exit 1
+    eval "$MATCHER_SRC"
+    [ "$1" = noglob ] && set -f
+    EXCLUDE_LIST='*.md,src/*'
+    before_opts="$-" before_ifs="$IFS"
+    is_excluded "$2"
+    if [ "$-" = "$before_opts" ] && [ "$IFS" = "$before_ifs" ]; then echo same
+    else echo "opts '$before_opts'->'$-'"; fi )
+}
+check_eq "10m: shell state preserved — globbing on, match" "same" "$(matcher_state glob docs/a.md)"
+check_eq "10n: shell state preserved — globbing on, miss" "same" "$(matcher_state glob lib/x.ts)"
+check_eq "10o: shell state preserved — globbing off, match" "same" "$(matcher_state noglob docs/a.md)"
+check_eq "10p: shell state preserved — globbing off, miss" "same" "$(matcher_state noglob lib/x.ts)"
 
 # =============================================================================
 # Scenario 11 — gh enumeration path (the "gh data alone" contract)
@@ -417,10 +767,12 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":803,"mergedAt":"2026-02-03T00:00:00Z"},
  {"number":804,"mergedAt":"2020-01-01T00:00:00Z"}]
 EOF
-printf 'src/Api.ts\nREADME.md\n' > "$TMP/files_801.txt"
-printf 'src/Api.ts\n'             > "$TMP/files_802.txt"
-printf 'src/Api.ts\n'             > "$TMP/files_803.txt"
-printf 'src/Api.ts\n'             > "$TMP/files_804.txt"
+# No `status` key on any of these rows — the status-less payload shape, which
+# must still enumerate rather than being silently dropped (11a-11i below).
+gh_files 801 '' src/Api.ts '' README.md
+gh_files 802 '' src/Api.ts
+gh_files 803 '' src/Api.ts
+gh_files 804 '' src/Api.ts
 
 R11=$(new_repo r11)
 commit_touch "$R11" "2026-02-01T00:00:00" "unmarked local commit" src/Ignored.ts
@@ -453,7 +805,7 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":813,"mergedAt":"2026-03-03T12:00:00Z"},
  {"number":814,"mergedAt":"2026-02-28T23:59:00Z"}]
 EOF
-for n in 811 812 813 814; do printf 'src/Edge.ts\n' > "$TMP/files_$n.txt"; done
+for n in 811 812 813 814; do gh_files "$n" '' src/Edge.ts; done
 run_in "$R11" --since "2026-03-01" --source gh --json
 check_jq "11f: a PR merged late on the boundary day is inside the window" "$OUT" \
   '.hotspots[] | select(.file=="src/Edge.ts") | (.pr_numbers | index(811)) != null'
@@ -470,15 +822,17 @@ check_jq "11h: exactly the three in-window PRs are counted" "$OUT" \
 # the offset from the comparison entirely.
 R11B=$(new_repo r11b)
 commit_touch "$R11B" "2026-03-01T18:00:00" "boundary marker commit" src/Anchor.ts
+# Capture the anchor by SHA immediately — a relative HEAD~1 would name whichever
+# bookkeeping commit the fixture helpers happen to create next.
+REF_SHA=$(git -C "$R11B" rev-parse HEAD)
 # The gh stub reports src/Ref.ts; the working-tree existence check requires it.
 commit_touch "$R11B" "2026-03-01T18:01:00" "add stub fixture file" src/Ref.ts
-REF_SHA=$(git -C "$R11B" rev-parse HEAD~1)
 cat > "$TMP/pr_list.json" <<'EOF'
 [{"number":821,"mergedAt":"2026-03-01T12:00:00Z"},
  {"number":822,"mergedAt":"2026-03-01T20:00:00Z"},
  {"number":823,"mergedAt":"2026-03-04T09:00:00Z"}]
 EOF
-for n in 821 822 823; do printf 'src/Ref.ts\n' > "$TMP/files_$n.txt"; done
+for n in 821 822 823; do gh_files "$n" '' src/Ref.ts; done
 run_in "$R11B" --since "$REF_SHA" --source gh --json
 check_jq "11i: a git-ref --since counts every PR merged on that calendar day" "$OUT" \
   '.hotspots[] | select(.file=="src/Ref.ts") | .pr_numbers == [821,822,823]'
@@ -508,6 +862,19 @@ check_jq "12d: total_hotspot_count keeps the full pre-bound figure" "$OUT" '.tot
 (cd "$R1" && bash "$SCRIPT" --threshold abc >/dev/null 2>&1); check_eq "13c: non-numeric threshold exits 2" "2" "$?"
 (cd "$R1" && bash "$SCRIPT" --source bogus >/dev/null 2>&1); check_eq "13d: invalid --source exits 2" "2" "$?"
 (cd "$R1" && bash "$SCRIPT" --help >/dev/null 2>&1); check_eq "13e: --help exits 0" "0" "$?"
+# print_help() re-prints the comment header and STOPS at the first non-comment
+# line, so a header section can silently vanish from --help while the exit code
+# stays 0. Assert on content, not just status: every documented flag and the
+# trailing sections must survive the extraction.
+HELP_OUT=$(cd "$R1" && bash "$SCRIPT" --help 2>/dev/null)
+for flag in --since --repo --ref --exclude --exemptions; do
+  check_eq "13e-help: --help documents $flag" "yes" \
+    "$(has_text "$HELP_OUT" "$flag")"
+done
+check_eq "13e-help: --help reaches the EMPTY VALUES section" "yes" \
+  "$(has_text "$HELP_OUT" "EMPTY VALUES")"
+check_eq "13e-help: --help is not truncated before EXIT CODES" "yes" \
+  "$(has_text "$HELP_OUT" "EXIT CODES:")"
 
 # --flag=value form is accepted alongside --flag value
 run_in "$R1" --since="$WINDOW_START" --threshold=3 --json
@@ -645,6 +1012,81 @@ check_eq "17c: an unresolvable --ref exits 3 instead of scanning something else"
 (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref main --source gh --json >/dev/null 2>&1)
 check_eq "17d: --ref on the gh path is a usage error" "2" "$?"
 
+# An EMPTY --ref is the quiet version of 17c (issue #1577). It survives the
+# "requires a value" check — the argument IS present — and then reads downstream
+# exactly like no --ref at all, because resolve_scan_ref() gates on
+# `[ -n "$REF" ]`. Pre-fix, the run fell through to auto-detection and scanned a
+# ref the caller never named, with no diagnostic. Both spellings are rejected at
+# parse time, the last point at which "passed empty" and "never passed" differ.
+run_in "$R14" --since "$WINDOW_START" --ref '' --json
+check_eq "17e: an explicit empty --ref exits 2 rather than auto-detecting" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --ref= --json
+check_eq "17f: the --ref= spelling is rejected the same way" "2" "$RC"
+REF_EMPTY_ERR=$( (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref '' --json) 2>&1 >/dev/null )
+check_eq "17g: and the rejection names --ref and says the value must be non-empty" "yes" \
+  "$(has_text "$REF_EMPTY_ERR" "--ref" "non-empty")"
+
+# The same hole existed on every other flag read through a `[ -n "$VAR" ]` test:
+# --since silently re-computes the default window, --repo lets gh infer the repo
+# from the cwd, --exclude silently applies no named exclusion. Guarded together.
+run_in "$R14" --ref main --since '' --json
+check_eq "17h: an explicit empty --since exits 2 rather than defaulting the window" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --repo '' --json
+check_eq "17i: an explicit empty --repo exits 2 rather than inferring from cwd" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude '' --json
+check_eq "17j: an explicit empty --exclude exits 2 rather than excluding nothing" "2" "$RC"
+# The `--flag=` spellings hit DIFFERENT case arms from the space-separated form,
+# so each parser branch needs its own assertion or half the guard is untested.
+run_in "$R14" --ref main --since= --json
+check_eq "17h2: the --since= spelling is rejected the same way" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --repo= --json
+check_eq "17i2: the --repo= spelling is rejected the same way" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude= --json
+check_eq "17j2: the --exclude= spelling is rejected the same way" "2" "$RC"
+
+# --exclude is empty in a SECOND sense the other three flags do not have. Its
+# value is comma-split by is_excluded(), which `continue`s past blank fields, so
+# `,` and `'   '` are non-empty strings that carry no pattern: pre-fix they
+# cleared the -n guard and the run applied the built-in list alone — the very
+# silent-default failure 17j rejects for `''`. Both spellings, both shapes.
+run_in "$R14" --since "$WINDOW_START" --exclude ',' --json
+check_eq "17j3: a comma-only --exclude exits 2 rather than excluding nothing named" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude=, --json
+check_eq "17j4: the --exclude=, spelling is rejected the same way" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude '   ' --json
+check_eq "17j5: a whitespace-only --exclude exits 2" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude ', ,' --json
+check_eq "17j6: so does a value whose every comma-field is blank" "2" "$RC"
+EXCL_BLANK_ERR=$( (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --exclude ',' --json) 2>&1 >/dev/null )
+check_eq "17j7: and the rejection names --exclude and says non-blank pattern" "yes" \
+  "$(has_text "$EXCL_BLANK_ERR" "--exclude" "non-blank")"
+
+# NEGATIVE CONTROL — the widened test rejects BLANKNESS, not punctuation or
+# whitespace. A value carrying one real pattern still runs, and runs exactly
+# like the no---exclude baseline in 17m when that pattern matches nothing.
+run_in "$R14" --since "$WINDOW_START" --exclude 'no-such-path-xyz' --json
+check_eq "17j8: NEGATIVE CONTROL — a non-blank --exclude still runs" "0" "$RC"
+check_jq "17j9: NEGATIVE CONTROL — and scans identically to the baseline" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "candidate"'
+run_in "$R14" --since "$WINDOW_START" --exclude ' *.md ,docs/*' --json
+check_eq "17j10: NEGATIVE CONTROL — padding around a real pattern is not blankness" "0" "$RC"
+
+# NEGATIVE CONTROL 1 — the guard rejects the EMPTY value, not the flag itself.
+# Without this, 17e/17f would pass just as well if --ref were broken outright.
+run_in "$R14" --since "$WINDOW_START" --ref main --json
+check_eq "17k: NEGATIVE CONTROL — a non-empty --ref still runs" "0" "$RC"
+check_jq "17l: NEGATIVE CONTROL — and is still honoured as explicit" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "explicit"'
+
+# NEGATIVE CONTROL 2 — auto-detection is untouched when --ref is ABSENT, and
+# this is precisely the pre-fix behaviour of `--ref ''`: the empty value was
+# indistinguishable from this run, which is why it was silent. 17e now differs
+# from this control, so the fix is observable rather than assumed.
+run_in "$R14" --since "$WINDOW_START" --json
+check_eq "17m: NEGATIVE CONTROL — an absent --ref still auto-detects" "0" "$RC"
+check_jq "17n: NEGATIVE CONTROL — via candidate resolution, exactly as before" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "candidate"'
+
 # =============================================================================
 # Scenario 18 — HEAD fallback: loud, reported, and extraction still guarded
 # =============================================================================
@@ -733,6 +1175,999 @@ check_jq "19d: missing_count is incremented for the dropped file" "$OUT" \
   '.missing_count > 0'
 check_jq "19e: missing_count is a top-level field on all exit paths" "$OUT" \
   'has("missing_count")'
+
+# =============================================================================
+# Scenario 20 — a file's own creation commit does not score (issue #1547 AC 1)
+#
+# 7 of one triage round's 14 flagged files were created inside their own scan
+# window, so each mechanically started at score 1-2 and reached the reporting
+# threshold on one sweep plus one real touch.
+#
+# Every assertion below is paired with a NEGATIVE CONTROL (`--include-creation`)
+# reproducing the pre-fix behaviour on the same history, so a rule that silently
+# stopped running could not pass this scenario.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+R20=$(new_repo_on r20 main)
+# src/Old.tsx is born OUTSIDE PR attribution; the other two are born in-window.
+commit_touch  "$R20" "2026-02-01T00:00:00" "seed the pre-existing file" src/Old.tsx
+commit_create "$R20" "2026-02-02T00:00:00" "feat(#10): add both (#1001)" src/Born.tsx src/BornBusy.tsx
+commit_touch  "$R20" "2026-02-03T00:00:00" "fix(#11): edit (#1002)" src/Born.tsx src/BornBusy.tsx src/Old.tsx
+commit_touch  "$R20" "2026-02-04T00:00:00" "fix(#12): edit (#1003)" src/Born.tsx src/BornBusy.tsx src/Old.tsx
+commit_touch  "$R20" "2026-02-05T00:00:00" "fix(#13): edit (#1004)" src/BornBusy.tsx src/Old.tsx
+
+run_in "$R20" --since "$WINDOW_START" --json
+check_jq "20a: a file whose 3rd touch was its own creation drops below threshold" "$OUT" \
+  '.hotspots | map(.file) | index("src/Born.tsx") == null'
+check_jq "20b: the creation PR is absent from a file that still qualifies" "$OUT" \
+  '.hotspots[] | select(.file=="src/BornBusy.tsx") | .pr_numbers == [1002,1003,1004] and .pr_count == 3 and .score == 3'
+check_jq "20c: creation_skipped_count reports the dropped touches" "$OUT" \
+  '.creation_skipped_count == 2'
+check_jq "20d: an excluded creation is still LABELLED, not just spent" "$OUT" \
+  '.hotspots[] | select(.file=="src/BornBusy.tsx") | .created_in_window == true and .creation_pr == 1001'
+check_jq "20e: a file born outside the window is not labelled as created" "$OUT" \
+  '.hotspots[] | select(.file=="src/Old.tsx") | .created_in_window == false and .creation_pr == null'
+check_jq "20f: a pre-existing file keeps every one of its PRs" "$OUT" \
+  '.hotspots[] | select(.file=="src/Old.tsx") | .pr_numbers == [1002,1003,1004]'
+check_jq "20g: the filter settings are reported in the envelope" "$OUT" \
+  '.sweep_threshold == 20 and .include_creation == false'
+
+# NEGATIVE CONTROL — the same history scores the creation commit again under
+# --include-creation, which is exactly the pre-fix result. Without this, a rule
+# that never fired would pass 20a by accident.
+run_in "$R20" --since "$WINDOW_START" --include-creation --json
+check_jq "20h: NEGATIVE CONTROL — --include-creation restores the pre-fix hotspot" "$OUT" \
+  '.hotspots[] | select(.file=="src/Born.tsx") | .pr_numbers == [1001,1002,1003] and .score == 3'
+check_jq "20i: NEGATIVE CONTROL — nothing is counted as a skipped creation" "$OUT" \
+  '.creation_skipped_count == 0 and .include_creation == true'
+check_jq "20j: the creation LABEL is independent of whether the touch scored" "$OUT" \
+  '.hotspots[] | select(.file=="src/BornBusy.tsx") | .created_in_window == true and .creation_pr == 1001'
+
+# The TSV contract is unchanged — six columns, no new fields leaking in.
+run_in "$R20" --since "$WINDOW_START"
+check_eq "20k: TSV still carries exactly the six documented columns" "6" \
+  "$(printf '%s' "$OUT" | head -1 | awk -F'\t' '{print NF}')"
+
+# =============================================================================
+# Scenario 21 — repo-wide mechanical sweeps score 0 (issue #1547 AC 2)
+#
+# The measured shape from Issue #1341: a creation, two 39-file rename sweeps
+# that touched one hardcoded line, and two real edits. Pre-fix that read as
+# score 5; only two of the five touches were about this file at all.
+# =============================================================================
+sweep_paths() {  # $1 count, $2 prefix -> space-separated paths (word-split at the call site)
+  local n="$1" prefix="$2" i=1 out=""
+  while [ "$i" -le "$n" ]; do out="$out ${prefix}${i}.ts"; i=$((i + 1)); done
+  printf '%s' "$out"
+}
+
+R21=$(new_repo_on r21 main)
+commit_create "$R21" "2026-02-01T00:00:00" "feat(#20): create the suite (#1201)" src/Roster.ts
+commit_touch  "$R21" "2026-02-02T00:00:00" "chore(#21): roster line (#1202)" src/Roster.ts
+# Both sweeps touch the SAME 39 paths, as the real rename sweeps did.
+commit_touch  "$R21" "2026-02-03T00:00:00" "refactor(#22): rename sweep (#1203)" \
+  src/Roster.ts $(sweep_paths 38 src/sweep_a)
+commit_touch  "$R21" "2026-02-04T00:00:00" "refactor(#23): rename sweep (#1204)" \
+  src/Roster.ts $(sweep_paths 38 src/sweep_a)
+commit_touch  "$R21" "2026-02-05T00:00:00" "fix(#24): delete the static list (#1205)" src/Roster.ts
+
+run_in "$R21" --since "$WINDOW_START" --json
+check_eq "21a: creation + two sweeps + two real edits no longer crosses threshold 3" "1" "$RC"
+check_jq "21b: sweep commits are counted, not hidden" "$OUT" \
+  '.sweep_commit_count == 2 and .sweep_skipped_count == 78'
+check_jq "21c: the envelope survives the clean exit path with the new fields" "$OUT" \
+  'has("sweep_threshold") and has("include_creation") and has("creation_skipped_count")
+   and has("sweep_commit_count") and has("sweep_skipped_count")'
+
+run_in "$R21" --since "$WINDOW_START" --threshold 2 --json
+check_jq "21d: exactly the two non-mechanical PRs survive" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1202,1205] and .pr_count == 2 and .score == 2'
+
+# NEGATIVE CONTROL 1 — both rules off reproduces the pre-fix score of 5 on the
+# identical history.
+run_in "$R21" --since "$WINDOW_START" --sweep-threshold 0 --include-creation --json
+check_jq "21e: NEGATIVE CONTROL — both rules off restores the pre-fix score of 5" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1201,1202,1203,1204,1205] and .score == 5'
+check_jq "21f: NEGATIVE CONTROL — no commit is classified as a sweep at threshold 0" "$OUT" \
+  '.sweep_commit_count == 0 and .sweep_skipped_count == 0 and .sweep_threshold == 0'
+
+# NEGATIVE CONTROL 2 — the SAME 39-file commits count again once the threshold
+# is above them, so the rule keys on the file count and not on anything
+# incidental to these fixtures. Creation stays excluded, isolating the rules.
+run_in "$R21" --since "$WINDOW_START" --sweep-threshold 40 --json
+check_jq "21g: NEGATIVE CONTROL — the same commits count when below the threshold" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1202,1203,1204,1205] and .score == 4'
+
+# The two rules are independent: sweeps off, creation still excluded.
+run_in "$R21" --since "$WINDOW_START" --sweep-threshold 0 --json
+check_jq "21h: the two rules are independent of one another" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1202,1203,1204,1205]'
+
+# The >= boundary, measured from both sides on one history.
+R21B=$(new_repo_on r21b main)
+commit_touch "$R21B" "2026-02-01T00:00:00" "seed" src/Edge.ts
+commit_touch "$R21B" "2026-02-02T00:00:00" "sweep of exactly 20 (#1301)" \
+  src/Edge.ts $(sweep_paths 19 src/twenty_)
+commit_touch "$R21B" "2026-02-03T00:00:00" "sweep of exactly 19 (#1302)" \
+  src/Edge.ts $(sweep_paths 18 src/nineteen_)
+commit_touch "$R21B" "2026-02-04T00:00:00" "ordinary edit (#1303)" src/Edge.ts
+
+run_in "$R21B" --since "$WINDOW_START" --threshold 2 --json
+check_jq "21i: 20 files is a sweep and 19 is not — the >= boundary from both sides" "$OUT" \
+  '.hotspots[] | select(.file=="src/Edge.ts") | .pr_numbers == [1302,1303]'
+check_jq "21j: exactly one commit was classified as a sweep" "$OUT" \
+  '.sweep_commit_count == 1 and .sweep_skipped_count == 20'
+
+# Sweep size is the commit's RAW path count, taken before the exclusion list —
+# a 20-file sweep stays a sweep when one of its paths is an excluded lockfile.
+R21C=$(new_repo_on r21c main)
+commit_touch "$R21C" "2026-02-01T00:00:00" "seed" src/Raw.ts
+commit_touch "$R21C" "2026-02-02T00:00:00" "sweep with a lockfile (#1311)" \
+  src/Raw.ts package-lock.json $(sweep_paths 18 src/raw_)
+commit_touch "$R21C" "2026-02-03T00:00:00" "ordinary (#1312)" src/Raw.ts
+commit_touch "$R21C" "2026-02-04T00:00:00" "ordinary (#1313)" src/Raw.ts
+
+run_in "$R21C" --since "$WINDOW_START" --threshold 2 --json
+# 20 raw paths, only 19 of which survive the exclusion list — the commit is
+# still a sweep, and the excluded lockfile is counted as excluded rather than
+# swept, so the two filters never double-count the same path.
+check_jq "21k: sweep size counts raw paths, before the exclusion list" "$OUT" \
+  '.sweep_commit_count == 1 and .sweep_skipped_count == 19 and .excluded_count == 1
+   and (.hotspots[] | select(.file=="src/Raw.ts") | .pr_numbers == [1312,1313])'
+
+(cd "$R21" && bash "$SCRIPT" --sweep-threshold abc >/dev/null 2>&1)
+check_eq "21l: a non-numeric --sweep-threshold exits 2" "2" "$?"
+
+# =============================================================================
+# Scenario 22 — both rules apply on the gh enumeration path
+#
+# The gh path has no per-commit granularity, so the sweep unit is the PR's whole
+# file list, and creation comes from the API's own `"status": "added"`.
+# =============================================================================
+R22=$(new_repo_on r22 main)
+# The gh path checks the working tree for existence, so the paths must be on
+# disk. An unmarked commit keeps the git-path attribution tests unaffected.
+commit_touch "$R22" "2026-02-01T00:00:00" "add stub fixture files" \
+  src/GhBorn.ts $(sweep_paths 19 src/ghsweep_)
+
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1401,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":1402,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1403,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+gh_files 1401 added    src/GhBorn.ts
+gh_files 1402 modified src/GhBorn.ts
+gh_files 1403 modified src/GhBorn.ts
+
+printf '[]\n' > "$TMP/issue_list.json"
+run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "22a: an \"added\" file on the gh path is not scored as churn" "$OUT" \
+  '.hotspots[] | select(.file=="src/GhBorn.ts") | (.pr_numbers | index(1401)) == null'
+check_jq "22b: the gh path reports the skipped creation and labels it" "$OUT" \
+  '.creation_skipped_count == 1
+   and (.hotspots[] | select(.file=="src/GhBorn.ts")
+        | .pr_numbers == [1402,1403] and .created_in_window == true and .creation_pr == 1401)'
+
+# NEGATIVE CONTROL — the same fixtures score the creation under --include-creation.
+run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --include-creation --json
+check_jq "22c: NEGATIVE CONTROL — --include-creation restores the gh creation touch" "$OUT" \
+  '.hotspots[] | select(.file=="src/GhBorn.ts") | .pr_numbers == [1401,1402,1403]'
+
+# A 20-file PR is a sweep on the gh path too.
+SWEEP_ARGS=(modified src/GhBorn.ts)
+i=1
+while [ "$i" -le 19 ]; do
+  SWEEP_ARGS[${#SWEEP_ARGS[@]}]=modified
+  SWEEP_ARGS[${#SWEEP_ARGS[@]}]="src/ghsweep_$i.ts"
+  i=$((i + 1))
+done
+gh_files 1403 "${SWEEP_ARGS[@]}"
+run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_eq "22d: a 20-file PR is a sweep, dropping the file below threshold 2" "1" "$RC"
+check_jq "22e: the sweep PR is counted on the gh path" "$OUT" \
+  '.sweep_commit_count == 1 and .sweep_skipped_count == 20'
+
+# Scenario 11's fixtures carry no status key at all — that payload is still
+# enumerated rather than silently dropped (verified by 11a-11i above).
+gh_files 1403 modified src/GhBorn.ts
+
+# =============================================================================
+# Scenario 23 — a file with recorded conflict cost is still flagged
+#
+# Issue #1547's AC requires the tuned detector to keep flagging anything with
+# conflict_rounds > 0. No file in the live 2026-08-15 window has any, so the
+# path is pinned here instead of resting on a vacuous live check.
+# =============================================================================
+cat > "$HOME/.claude/session-state.json" <<'EOF'
+{"schema_version":1,"repos":{"testowner/testrepo":{"prs":{
+  "1502":{"babysit":{"conflict_streak":2}}
+}}}}
+EOF
+R23=$(new_repo_on r23 main)
+commit_create "$R23" "2026-02-01T00:00:00" "feat(#30): create (#1501)" src/Costly.ts
+commit_touch  "$R23" "2026-02-02T00:00:00" "fix(#31): conflicted work (#1502)" src/Costly.ts
+commit_touch  "$R23" "2026-02-03T00:00:00" "sweep (#1503)" src/Costly.ts $(sweep_paths 25 src/c23_)
+commit_touch  "$R23" "2026-02-04T00:00:00" "fix(#32): real edit (#1504)" src/Costly.ts
+
+printf '[]\n' > "$TMP/issue_list.json"
+run_in "$R23" --since "$WINDOW_START" --repo testowner/testrepo --json
+check_eq "23a: a file with conflict cost is still reported after both filters" "0" "$RC"
+check_jq "23b: the creation and the sweep are gone, the conflict weight remains" "$OUT" \
+  '.hotspots[] | select(.file=="src/Costly.ts")
+   | .pr_numbers == [1502,1504] and .pr_count == 2
+     and .conflict_rounds == 2 and .conflict_prs == [1502] and .score == 6'
+check_jq "23c: the score formula the consumer asserts still holds exactly" "$OUT" \
+  '. as $d | all(.hotspots[]; .score == (.pr_count + ($d.conflict_weight * .conflict_rounds))
+                              and (.score | floor) == .score
+                              and (.pr_numbers | length) == .pr_count)'
+rm -f "$HOME/.claude/session-state.json"
+
+# =============================================================================
+# Scenario 24 — a rename destination is a touch, not a creation, whatever the
+# ambient `diff.renames` setting says
+#
+# `--name-status` reports a rename as `R100 old new` only while rename
+# detection is on. With `diff.renames = false` the same commit reports
+# `D old` + `A new`, so the destination would be dropped as a CREATION — a
+# result that varied with the caller's git config and regressed the
+# `--name-only` behaviour, which always printed the destination as a touch.
+# The detector pins `-M`, so both configs agree.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+for renames in false true; do
+  R24=$(new_repo_on "r24_$renames" main)
+  git -C "$R24" config diff.renames "$renames"
+  commit_touch "$R24" "2026-02-01T00:00:00" "seed" src/Before.ts
+  git -C "$R24" mv src/Before.ts src/After.ts
+  GIT_AUTHOR_DATE="2026-02-02T00:00:00" GIT_COMMITTER_DATE="2026-02-02T00:00:00" \
+    git -C "$R24" commit -q -m "refactor(#40): rename it (#1601)"
+  commit_touch "$R24" "2026-02-03T00:00:00" "fix(#41): edit (#1602)" src/After.ts
+  commit_touch "$R24" "2026-02-04T00:00:00" "fix(#42): edit (#1603)" src/After.ts
+
+  run_in "$R24" --since "$WINDOW_START" --json
+  check_jq "24 (diff.renames=$renames): the rename destination counts as a touch, not a creation" "$OUT" \
+    '.hotspots[] | select(.file=="src/After.ts")
+     | .pr_numbers == [1601,1602,1603] and .created_in_window == false'
+done
+
+# =============================================================================
+# Scenario 25 — a copy destination is a creation on the gh path too
+#
+# The git path reads `C` as a birth (is_creation_status), so a gh path that
+# only honoured `"added"` would SCORE a copied file the git path DROPS, and the
+# two backends would disagree about identical history. GitHub does not run copy
+# detection today, so `"copied"` is unobserved in practice — but it is a
+# documented value of its file schema, and the parity must not depend on that.
+# Found in review of PR #1550.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+R25=$(new_repo_on r25 main)
+# The gh path checks the working tree for existence, so the path must be on
+# disk. An unmarked commit keeps the git-path attribution tests unaffected.
+commit_touch "$R25" "2026-02-01T00:00:00" "add stub fixture files" src/Copied.ts
+
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1701,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":1702,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1703,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+gh_files 1701 copied   src/Copied.ts
+gh_files 1702 modified src/Copied.ts
+gh_files 1703 modified src/Copied.ts
+
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "25a: a \"copied\" birth is not scored as churn on the gh path" "$OUT" \
+  '.hotspots[] | select(.file=="src/Copied.ts") | (.pr_numbers | index(1701)) == null'
+check_jq "25b: the copied birth is reported and labelled like an \"added\" one" "$OUT" \
+  '.creation_skipped_count == 1
+   and (.hotspots[] | select(.file=="src/Copied.ts")
+        | .pr_numbers == [1702,1703] and .created_in_window == true
+          and .creation_pr == 1701)'
+
+# NEGATIVE CONTROL — without it, 25a/25b could pass on a fixture that never
+# reached the creation branch at all. --include-creation must restore the touch.
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --include-creation --json
+check_jq "25c: NEGATIVE CONTROL — --include-creation restores the copied touch" "$OUT" \
+  '.hotspots[] | select(.file=="src/Copied.ts") | .pr_numbers == [1701,1702,1703]'
+
+# A "renamed" destination is NOT a creation — the same guard must not overreach.
+gh_files 1701 renamed src/Copied.ts
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "25d: a \"renamed\" destination is still a touch, not a creation" "$OUT" \
+  '.creation_skipped_count == 0
+   and (.hotspots[] | select(.file=="src/Copied.ts")
+        | .pr_numbers == [1701,1702,1703] and .created_in_window == false)'
+
+# =============================================================================
+# Scenario 26 — a filename with an EMBEDDED NEWLINE is ONE file on both backends
+# (issue #1554)
+#
+# A path may carry any byte but NUL and `/`, a newline included. The gh backend
+# counted newline-delimited LINES, so a 2-file PR whose one filename embedded a
+# newline counted 3 and drove the --sweep-threshold classification off the wrong
+# number. The git backend did not miscount — git C-quotes such a path onto a
+# single line — but it then reported the ESCAPED path, which failed the
+# existence check and vanished into missing_count. So neither backend told the
+# truth and the two disagreed about identical history; both now enumerate
+# NUL-delimited, and the assertions below pin them to the SAME answer.
+#
+# THE PRE-FIX CONTROL IS HERMETIC ON PURPOSE. Running `origin/main`'s copy of the
+# detector is the obvious reproduction, but CI checks out shallow (no
+# `fetch-depth: 0` in .github/workflows/hook-scripts.yml), so that control would
+# SKIP in exactly the environment it exists to protect — a guard that passes by
+# not running. Instead: 26i applies the literal pre-fix counting expression to
+# the literal pre-fix byte stream, and 26g/26h run the shipped detector twice at
+# ONE threshold over payloads differing only in whether the third record is a
+# real file or a newline artifact.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+NL_PATH=$(printf 'src/two\nlines.ts')
+TAB_PATH=$(printf 'src/tab\there.ts')
+# jq string literals cannot carry a raw newline, so the assertions below compare
+# against the JSON-escaped form jq itself produces for these paths.
+NL_JSON=$(printf '%s' "$NL_PATH" | jq -Rs '.')
+TAB_JSON=$(printf '%s' "$TAB_PATH" | jq -Rs '.')
+
+R26=$(new_repo_on r26 main)
+# src/Second.ts and src/Third.ts exist only so the gh-path existence check can
+# find them in 26h; no PR-marked commit ever touches them, so they stay out of
+# the git-path parity comparison.
+commit_touch "$R26" "2026-02-01T00:00:00" "seed the fixture paths" \
+  "$NL_PATH" src/Plain.ts src/Second.ts src/Third.ts
+commit_touch "$R26" "2026-02-02T00:00:00" "first (#1801)"  "$NL_PATH" src/Plain.ts
+commit_touch "$R26" "2026-02-03T00:00:00" "second (#1802)" "$NL_PATH" src/Plain.ts
+
+run_in "$R26" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json
+check_eq "26a: git — exit 0 with an embedded-newline path in history" "0" "$RC"
+# THE git-side regression pin. Pre-fix this path arrived C-quoted as
+# "src/two\nlines.ts", failed `git cat-file -e` under that literal name, and was
+# dropped as missing — so the file was invisible rather than miscounted.
+check_jq "26b: git — the embedded-newline path is reported VERBATIM, not escaped" "$OUT" \
+  ".hotspots | map(.file) | index($NL_JSON) != null"
+check_jq "26c: git — it is ONE file carrying both PRs" "$OUT" \
+  ".hotspots[] | select(.file == $NL_JSON) | .pr_count == 2 and .pr_numbers == [1801,1802]"
+check_jq "26d: git — 2 paths is not a sweep at --sweep-threshold 3" "$OUT" \
+  '.sweep_commit_count == 0 and .missing_count == 0'
+
+# NEGATIVE CONTROL — the sweep rule is live on this history: at a threshold of 2
+# the same two commits DO sweep, so 26d is a measurement and not an inert pass.
+run_in "$R26" --since "$WINDOW_START" --threshold 2 --sweep-threshold 2 --json
+check_jq "26e: NEGATIVE CONTROL — git — the same commits sweep at --sweep-threshold 2" "$OUT" \
+  '.sweep_commit_count == 2 and (.hotspots | length) == 0'
+
+# A TAB inside a filename is a hazard `-z` INTRODUCES: git used to quote such a
+# path, and the old parser took the last tab-separated field as the path, so a
+# verbatim tab would have truncated it to "here.ts".
+R26B=$(new_repo_on r26b main)
+commit_touch "$R26B" "2026-02-01T00:00:00" "seed" "$TAB_PATH"
+commit_touch "$R26B" "2026-02-02T00:00:00" "one (#1811)"   "$TAB_PATH"
+commit_touch "$R26B" "2026-02-03T00:00:00" "two (#1812)"   "$TAB_PATH"
+commit_touch "$R26B" "2026-02-04T00:00:00" "three (#1813)" "$TAB_PATH"
+run_in "$R26B" --since "$WINDOW_START" --json
+check_jq "26f: git — a TAB inside a filename survives verbatim, untruncated" "$OUT" \
+  ".hotspots[] | select(.file == $TAB_JSON) | .pr_numbers == [1811,1812,1813]"
+
+# ---- the gh backend, same history ------------------------------------------
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1801,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1802,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+gh_files 1801 modified "$NL_PATH" modified src/Plain.ts
+gh_files 1802 modified "$NL_PATH" modified src/Plain.ts
+
+run_in "$R26" --since "$WINDOW_START" --source gh --threshold 2 --sweep-threshold 3 --json
+check_eq "26g: gh — exit 0; a 2-file PR is not a sweep at --sweep-threshold 3" "0" "$RC"
+check_jq "26h: gh — the embedded-newline filename counts as ONE file, not two" "$OUT" \
+  ".sweep_commit_count == 0
+   and (.hotspots[] | select(.file == $NL_JSON) | .pr_count == 2 and .pr_numbers == [1801,1802])"
+
+# PARITY — the whole point of the ticket: identical history, identical answer.
+GIT_VIEW=$(cd "$R26" && bash "$SCRIPT" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json 2>/dev/null \
+  | jq -c '[.hotspots[] | {file, pr_count, pr_numbers}] | sort_by(.file)')
+GH_VIEW=$(cd "$R26" && bash "$SCRIPT" --since "$WINDOW_START" --source gh --threshold 2 --sweep-threshold 3 --json 2>/dev/null \
+  | jq -c '[.hotspots[] | {file, pr_count, pr_numbers}] | sort_by(.file)')
+check_eq "26i: PARITY — git and gh report identical files, counts and PR evidence" "$GIT_VIEW" "$GH_VIEW"
+check_jq "26j: PARITY — and that shared answer really contains the newline path" "$GIT_VIEW" \
+  "map(.file) | index($NL_JSON) != null"
+
+# NEGATIVE CONTROL — at the SAME --sweep-threshold 3, a payload whose third file
+# is REAL does sweep. The only difference from 26h is whether the third record is
+# a file or a newline artifact, which is exactly what the pre-fix line count
+# could not tell apart.
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1821,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1822,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+gh_files 1821 modified src/Plain.ts modified src/Second.ts modified src/Third.ts
+gh_files 1822 modified src/Plain.ts modified src/Second.ts modified src/Third.ts
+run_in "$R26" --since "$WINDOW_START" --source gh --threshold 2 --sweep-threshold 3 --json
+check_eq "26k: NEGATIVE CONTROL — gh — a genuine 3-file PR still sweeps at the same threshold" "1" "$RC"
+check_jq "26l: NEGATIVE CONTROL — gh — both real 3-file PRs are counted as sweeps" "$OUT" \
+  '.sweep_commit_count == 2 and .sweep_skipped_count == 6'
+
+# PRE-FIX CONTROL — the exact stream `gh api --jq '… | join("<TAB>")'` emitted for
+# the 26h payload, counted with the exact pre-fix expression. Three lines for two
+# files: that number is the bug, and 26h shows the shipped detector now says two.
+{ printf 'modified\t%s\n' "$NL_PATH"; printf 'modified\t%s\n' 'src/Plain.ts'; } > "$TMP/prefix_stream.txt"
+check_eq "26m: PRE-FIX CONTROL — the newline-delimited stream counts 3 lines for 2 files" \
+  "3" "$(sed '/^$/d' "$TMP/prefix_stream.txt" | wc -l | tr -d '[:space:]')"
+check_eq "26n: PRE-FIX CONTROL — NUL-terminating the same two records counts 2" \
+  "2" "$({ printf 'modified\t%s\000' "$NL_PATH"; printf 'modified\t%s\000' 'src/Plain.ts'; } | tr -dc '\000' | wc -c | tr -d '[:space:]')"
+
+# An EMPTY file payload must leave the NUL reader at zero records rather than
+# tripping `set -u` on the loop guard that catches an unterminated final record.
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1831,"mergedAt":"2026-02-02T00:00:00Z"}]
+EOF
+gh_files 1831
+run_in "$R26" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_eq "26o: gh — a PR with an empty file list exits clean, not with an error" "1" "$RC"
+check_jq "26p: gh — the empty PR is still counted as scanned, with no touches" "$OUT" \
+  '.scanned_pr_count == 1 and (.hotspots | length) == 0 and .sweep_commit_count == 0'
+
+# =============================================================================
+# Scenario 27 — a filename cannot spoof a commit header (git backend)
+#
+# `-z` deletes the one thing that used to make the git reader unspoofable: the
+# status column that always sat in front of the path on the same line. With the
+# fields now bare NUL tokens, a path is a path only because of WHERE it arrives,
+# so the reader must test POSITION before content. Test content first and a file
+# literally named `@@C@@…@@S@@… (#N)` parses as a commit header: flush_commit
+# fires mid-record, the path itself is dropped, CUR_PR is hijacked to the
+# invented number, and every remaining token in that commit shifts onto it.
+#
+# The fixture path is adversarial on purpose — it carries BOTH sentinels and a
+# trailing `(#9999)`, so the pre-fix reader does not merely stumble, it produces
+# a specific wrong answer this scenario names: PR 9999 present, the spoof path
+# absent, and its co-touched neighbour attributed to 9999 instead of 1901/1902.
+# The gh backend needs no counterpart — its reader alternates status/path with
+# no sentinel at all, so there is nothing there for a filename to impersonate.
+# =============================================================================
+# AT THE REPO ROOT ON PURPOSE — do not "tidy" this into src/. The header test is
+# an anchored prefix match, so only a path whose FIRST bytes are the sentinel can
+# collide; a nested `src/@@C@@…` starts with `src/` and defangs the guard while
+# still looking adversarial.
+SPOOF_PATH='@@C@@2026-02-09@@S@@spoofed (#9999).ts'
+SPOOF_JSON=$(printf '%s' "$SPOOF_PATH" | jq -Rs '.')
+
+R27=$(new_repo_on r27 main)
+commit_touch "$R27" "2026-02-01T00:00:00" "seed the fixture paths" "$SPOOF_PATH" src/Plain.ts
+commit_touch "$R27" "2026-02-02T00:00:00" "first (#1901)"  "$SPOOF_PATH" src/Plain.ts
+commit_touch "$R27" "2026-02-03T00:00:00" "second (#1902)" "$SPOOF_PATH" src/Plain.ts
+
+run_in "$R27" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json
+check_eq "27a: git — exit 0 with a header-shaped filename in history" "0" "$RC"
+check_jq "27b: git — the header-shaped path is reported VERBATIM as a file" "$OUT" \
+  ".hotspots | map(.file) | index($SPOOF_JSON) != null"
+check_jq "27c: git — it carries the REAL PRs, not the number embedded in its name" "$OUT" \
+  ".hotspots[] | select(.file == $SPOOF_JSON) | .pr_numbers == [1901,1902]"
+# The desync tell: pre-fix the spoof path hijacked CUR_PR, so the file touched
+# ALONGSIDE it in the same commits was scored under the invented PR.
+check_jq "27d: git — the co-touched neighbour keeps its own PR attribution" "$OUT" \
+  '.hotspots[] | select(.file == "src/Plain.ts") | .pr_numbers == [1901,1902]'
+# The `length == 2` clause is load-bearing, not decoration: pre-fix this history
+# produced NO hotspots at all, and "9999 is absent" is vacuously true of an empty
+# list. Pinning the set size first makes the absence a measurement.
+check_jq "27e: git — both files are present and the invented PR 9999 appears nowhere" "$OUT" \
+  '(.hotspots | length) == 2
+   and ([.hotspots[].pr_numbers[]] | index(9999)) == null
+   and .missing_count == 0'
+
+# NEGATIVE CONTROL — the header parser is still LIVE on this same history: a
+# genuine trailing `(#N)` in a real SUBJECT is still extracted. Without this,
+# 27c/27e would also pass if the reader had simply stopped recognising headers.
+check_jq "27f: NEGATIVE CONTROL — git — real subjects still yield their PR numbers" "$OUT" \
+  '.scanned_pr_count == 2 and ([.hotspots[].pr_numbers[]] | unique) == [1901,1902]'
+
+# =============================================================================
+# Scenario 28 — lint-enforced catalog files are exempt, not silenced (issue #1571)
+#
+# AC 1  a documented exemption mechanism keeps by-design churners out of scoring
+# AC 2  an entry that names no enforcing lint is REJECTED
+# AC 3  exempt files raise no hotspot flag, but are reported on a distinct
+#       "exempt (catalog)" line — never silently omitted
+# AC 4  scoring for non-exempt files is unchanged
+#
+# The exemption file is a HERMETIC fixture, so the suite never depends on the
+# repo's real .claude/reference/churn-hotspot-exemptions.json.
+#
+# Fixture churn, chosen so every claim is a measurement rather than a
+# coincidence: the exempt README and the non-exempt control carry IDENTICAL
+# churn (3 PRs each), and tests.md is touched once — below BOTH reporting floors
+# — so "still reported" cannot be explained by it having qualified anyway.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+
+EXEMPT_FIXTURE="$TMP/exemptions-28.json"
+cat > "$EXEMPT_FIXTURE" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    ".claude/scripts/README.md": {
+      "lint": "scripts-catalog-lint.sh",
+      "reason": "the index must link every category doc exactly once"
+    },
+    ".claude/scripts/docs/tests.md": {
+      "lint": "scripts-catalog-lint.sh",
+      "reason": "one catalog row per test suite is enforced"
+    }
+  }
+}
+JSON
+
+R28=$(new_repo_on r28 main)
+commit_touch "$R28" "2026-02-01T00:00:00" "one (#2801)" .claude/scripts/README.md src/Control.ts
+commit_touch "$R28" "2026-02-02T00:00:00" "two (#2802)" .claude/scripts/README.md src/Control.ts
+commit_touch "$R28" "2026-02-03T00:00:00" "three (#2803)" .claude/scripts/README.md src/Control.ts
+commit_touch "$R28" "2026-02-04T00:00:00" "catalog row (#2804)" .claude/scripts/docs/tests.md
+
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+check_eq "28a: exit 0 — the non-exempt control still crosses the threshold" "0" "$RC"
+# `length == 1` first: "README is absent" is vacuously true of an empty list, so
+# the set size is what makes the absence a measurement (the scenario 27 lesson).
+check_jq "28b: an exempt file with qualifying churn raises NO hotspot flag" "$OUT" \
+  '(.hotspots | length) == 1
+   and ([.hotspots[].file] | index(".claude/scripts/README.md")) == null'
+check_jq "28c: it is reported in exemptions[] with its real score, not dropped" "$OUT" \
+  '.exemptions[] | select(.file==".claude/scripts/README.md")
+   | .pr_count == 3 and .score == 3 and .pr_numbers == [2801,2802,2803]'
+check_jq "28d: the entry names the enforcing lint and why it forces the edit" "$OUT" \
+  '.exemptions[] | select(.file==".claude/scripts/README.md")
+   | .lint == "scripts-catalog-lint.sh" and (.reason | test("category doc"))'
+# EQUAL-CHURN CONTROL — same 3 PRs, same score, not on the list, still flagged.
+check_jq "28e: EQUAL-CHURN CONTROL — a non-exempt file with identical churn flags" "$OUT" \
+  '.hotspots[] | select(.file=="src/Control.ts")
+   | .pr_count == 3 and .score == 3 and .pr_numbers == [2801,2802,2803]'
+check_jq "28f: a file touched BELOW both floors is still reported, never omitted" "$OUT" \
+  '.exemptions[] | select(.file==".claude/scripts/docs/tests.md")
+   | .pr_count == 1 and .score == 1 and .pr_numbers == [2804]'
+check_jq "28g: the envelope reports the count and the file the policy came from" "$OUT" \
+  '.exempt_count == 2 and (.exemptions | length) == 2
+   and (.exemptions_file | endswith("exemptions-28.json"))'
+# The consumer asserts total_hotspot_count == (hotspots | length); reclassifying
+# a file out of hotspots[] must move BOTH or churn-hotspot-wrap-plan.sh rejects
+# the envelope and /wrap silently files nothing.
+check_jq "28h: total_hotspot_count tracks the partitioned list, not the raw one" "$OUT" \
+  '.total_hotspot_count == 1 and .total_hotspot_count == (.hotspots | length)'
+
+# The distinct TSV line: marker, path, counts, and the enforcing lint.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE"
+check_eq "28i: one exempt line per touched exempt file" "2" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+check_eq "28j: the exempt line names the enforcing lint" "scripts-catalog-lint.sh" \
+  "$(awk -F'\t' '$1 == "# exempt (catalog)" && $2 == ".claude/scripts/README.md" { print $6 }' <<<"$OUT")"
+check_eq "28k: the exempt line carries its own six columns" "6" \
+  "$(awk -F'\t' '$1 == "# exempt (catalog)" { print NF; exit }' <<<"$OUT")"
+# Hotspot rows come FIRST and keep the six documented columns, so a column
+# parser reading them cannot pick up an exempt line by accident.
+check_eq "28l: the first row is still an ordinary six-column hotspot row" \
+  "src/Control.ts	3	0	3	2801,2802,2803	-" "$(head -1 <<<"$OUT")"
+
+# NEGATIVE CONTROL 1 — --no-exemptions on the SAME history and the SAME fixture.
+# Without this, 28b would also pass if the detector had simply stopped reporting
+# that file at all.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --no-exemptions --json
+check_jq "28m: NEGATIVE CONTROL — the exempt file flags as an ordinary hotspot" "$OUT" \
+  '(.hotspots | length) == 2
+   and (.hotspots[] | select(.file==".claude/scripts/README.md") | .score == 3)'
+check_jq "28n: NEGATIVE CONTROL — the feature reports itself as off, not silent" "$OUT" \
+  '.exempt_count == 0 and (.exemptions | length) == 0 and .exemptions_file == null'
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --no-exemptions
+check_eq "28o: NEGATIVE CONTROL — no exempt line is rendered" "0" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+
+# AC 4 REGRESSION — the control file's score and PR count must be IDENTICAL with
+# the feature active and with it disabled. Comparing the two runs directly is
+# what pins "non-exempt scoring is unchanged" to a measurement.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+CONTROL_ON=$(printf '%s' "$OUT" | jq -c '.hotspots[] | select(.file=="src/Control.ts")')
+run_in "$R28" --since "$WINDOW_START" --no-exemptions --json
+CONTROL_OFF=$(printf '%s' "$OUT" | jq -c '.hotspots[] | select(.file=="src/Control.ts")')
+check_eq "28p: AC4 — the non-exempt control scores identically either way" \
+  "$CONTROL_ON" "$CONTROL_OFF"
+check_eq "28q: AC4 — and that comparison was not two empty strings" "false" \
+  "$([ -z "$CONTROL_ON" ] && echo true || echo false)"
+
+# NEGATIVE CONTROL 2 — exemption cannot be claimed without a stated reason.
+# An arbitrary file listing only a lint is REJECTED, and the message names it.
+BAD_EXEMPT="$TMP/exemptions-28-noreason.json"
+cat > "$BAD_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"lint": "scripts-catalog-lint.sh"}
+  }
+}
+JSON
+ERR_OUT=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$BAD_EXEMPT" --json) 2>&1 >/dev/null )
+BAD_RC=$?
+check_eq "28r: NEGATIVE CONTROL — a reasonless entry exits 3" "3" "$BAD_RC"
+check_eq "28s: NEGATIVE CONTROL — the error names the offending path" "yes" \
+  "$(has_text "$ERR_OUT" "src/Control.ts")"
+# Rejection is what must happen — NOT a quiet fall-through that scores the file
+# as if the entry had been valid.
+check_eq "28t: NEGATIVE CONTROL — a rejected file is never silently exempted" "" \
+  "$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$BAD_EXEMPT") 2>/dev/null )"
+
+# ...and the OTHER half of the same requirement. Both fields are required, so
+# testing only the missing-`reason` case would leave the `lint` half of the
+# validator unproven — enforced only while it happened to work.
+NOLINT_EXEMPT="$TMP/exemptions-28-nolint.json"
+cat > "$NOLINT_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"reason": "it changes a lot and that is annoying"}
+  }
+}
+JSON
+ERR_OUT=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$NOLINT_EXEMPT" --json) 2>&1 >/dev/null )
+BAD_RC=$?
+check_eq "28aa: NEGATIVE CONTROL — an entry naming no enforcing lint exits 3" "3" "$BAD_RC"
+check_eq "28ab: NEGATIVE CONTROL — that error names the offending path too" "yes" \
+  "$(has_text "$ERR_OUT" "src/Control.ts")"
+
+# A key-presence check would pass this one: both fields are PRESENT, and both
+# are blank. Requiring non-empty values is what stops an exemption from being
+# claimed with an empty gesture at a lint.
+BLANK_EXEMPT="$TMP/exemptions-28-blank.json"
+cat > "$BLANK_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"lint": "   ", "reason": ""}
+  }
+}
+JSON
+run_in "$R28" --since "$WINDOW_START" --exemptions "$BLANK_EXEMPT" --json
+check_eq "28ac: NEGATIVE CONTROL — present-but-blank lint/reason is rejected" "3" "$RC"
+
+# POSITIVE CONTROL for the validator itself: the same shape WITH both fields
+# populated is accepted, so 28r/28aa/28ac measure the missing values rather
+# than a validator that rejects everything.
+GOOD_EXEMPT="$TMP/exemptions-28-good.json"
+cat > "$GOOD_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"lint": "some-catalog-lint.sh", "reason": "one row per entry is enforced"}
+  }
+}
+JSON
+run_in "$R28" --since "$WINDOW_START" --exemptions "$GOOD_EXEMPT" --json
+check_jq "28ad: POSITIVE CONTROL — the same entry with both fields is accepted" "$OUT" \
+  '.exempt_count == 1 and (.exemptions[0].file == "src/Control.ts")
+   and ([.hotspots[].file] | index("src/Control.ts")) == null'
+
+# An EXPLICIT --exemptions naming a missing file is an environment error: a run
+# that silently scored without the policy the caller named would be the same
+# measuring-the-wrong-thing failure --ref refuses.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$TMP/does-not-exist.json" --json
+check_eq "28u: an explicit --exemptions that is unreadable exits 3" "3" "$RC"
+
+# An EMPTY explicit value is the same promise broken more quietly: it survives
+# the "requires a value" check (the argument IS present), then reads as unset
+# downstream and silently selects the DEFAULT policy. Rejected at parse time,
+# both spellings, because that is the last point the distinction exists.
+run_in "$R28" --since "$WINDOW_START" --exemptions '' --json
+check_eq "28ae: an explicit empty --exemptions exits 2 rather than falling back" "2" "$RC"
+run_in "$R28" --since "$WINDOW_START" --exemptions= --json
+check_eq "28af: the --exemptions= spelling is rejected the same way" "2" "$RC"
+EMPTY_ERR=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions '' --json) 2>&1 >/dev/null )
+check_eq "28ag: and the rejection says the value must be non-empty" "yes" \
+  "$(has_text "$EMPTY_ERR" "non-empty")"
+# NEGATIVE CONTROL — the guard rejects the EMPTY value, not the flag itself:
+# the same invocation with a real file still runs and still applies THAT file.
+# Without this, 28ae/28af would pass just as well if --exemptions were broken
+# outright, or if the default policy had quietly been selected anyway.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$GOOD_EXEMPT" --json
+check_eq "28ah: NEGATIVE CONTROL — a non-empty --exemptions still runs" "0" "$RC"
+check_jq "28ai: NEGATIVE CONTROL — and applies that file, not the default" "$OUT" \
+  '.exempt_count == 1 and (.exemptions_file | endswith("exemptions-28-good.json"))'
+
+# Only-exempt output on the CLEAN exit path — the one place a suppressed file
+# would otherwise vanish entirely.
+R28B=$(new_repo_on r28b main)
+commit_touch "$R28B" "2026-02-01T00:00:00" "one (#2811)" .claude/scripts/README.md
+commit_touch "$R28B" "2026-02-02T00:00:00" "two (#2812)" .claude/scripts/README.md
+commit_touch "$R28B" "2026-02-03T00:00:00" "three (#2813)" .claude/scripts/README.md
+
+run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+check_eq "28v: a window whose only churner is exempt exits 1 (clean)" "1" "$RC"
+check_jq "28w: and the exempt file is STILL reported on that clean path" "$OUT" \
+  '(.hotspots | length) == 0 and .total_hotspot_count == 0 and .exempt_count == 1
+   and (.exemptions[0].file == ".claude/scripts/README.md")
+   and (.exemptions[0].pr_numbers == [2811,2812,2813])'
+run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE"
+check_eq "28x: the exempt TSV line survives the clean exit path too" "1" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+# NEGATIVE CONTROL — the same history IS a hotspot with the feature off, so 28v
+# measures the exemption rather than a fixture that never qualified.
+run_in "$R28B" --since "$WINDOW_START" --no-exemptions --json
+check_eq "28y: NEGATIVE CONTROL — the same history exits 0 with the feature off" "0" "$RC"
+
+# Exclusion still wins over exemption: an excluded path never reaches
+# aggregation, so it cannot reappear on the exempt line.
+run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" \
+  --exclude '.claude/scripts/README.md' --json
+check_jq "28z: an excluded path is excluded, not re-surfaced as exempt" "$OUT" \
+  '.exempt_count == 0 and (.hotspots | length) == 0 and .excluded_count == 3'
+
+# =============================================================================
+# Scenario 29 — a scanned repo's own by-design ledger is exempt by POLICY
+# (issue #1858)
+#
+# The motivating shape: three PR-marked commits each touch a hand-kept ledger
+# (docs/LEDGER.md) and a real source file (src/Real.ts), and the repo declares
+# the ledger in its OWN checked-in policy file, citing a rule file that names
+# it. The declaration and rule file land in an UNMARKED commit, so they add no
+# churn of their own. Equal churn again makes every claim a measurement: the
+# ledger and the control differ only in being declared.
+# =============================================================================
+POLICY_PATH=".claude/reference/churn-hotspot-policy-exemptions.json"
+GOOD_POLICY='{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/RULES.md","reason":"every parity-affecting PR must update the ledger"}}}'
+
+# policy_repo <dir> <declaration-json|-> <rules-text|-> — a fresh repo with the
+# motivating history; "-" leaves that file out. Defined here, in this file,
+# because the suite's decision record bars helper libraries.
+policy_repo() {
+  local repo
+  repo=$(new_repo_on "$1" main)
+  if [ "$2" != "-" ]; then
+    mkdir -p "$repo/.claude/reference"; printf '%s\n' "$2" > "$repo/$POLICY_PATH"
+    git -C "$repo" add "$POLICY_PATH"
+  fi
+  if [ "$3" != "-" ]; then
+    mkdir -p "$repo/docs"; printf '%s\n' "$3" > "$repo/docs/RULES.md"
+    git -C "$repo" add docs/RULES.md
+  fi
+  if [ "$2" != "-" ] || [ "$3" != "-" ]; then
+    GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" \
+      git -C "$repo" commit -q -m "add repo policy"
+  fi
+  commit_touch "$repo" "2026-02-01T00:00:00" "one (#2901)" docs/LEDGER.md src/Real.ts
+  commit_touch "$repo" "2026-02-02T00:00:00" "two (#2902)" docs/LEDGER.md src/Real.ts
+  commit_touch "$repo" "2026-02-03T00:00:00" "three (#2903)" docs/LEDGER.md src/Real.ts
+  printf '%s' "$repo"
+}
+RULES_TEXT='Every PR that changes parity must update docs/LEDGER.md.'
+
+R29=$(policy_repo r29 "$GOOD_POLICY" "$RULES_TEXT")
+R29_SHA=$(git -C "$R29" rev-parse main)
+
+run_in "$R29" --since "$WINDOW_START" --json
+check_eq "29a: exit 0 — the real source file still crosses the threshold" "0" "$RC"
+check_jq "29b: the declared ledger raises NO hotspot flag" "$OUT" \
+  '(.hotspots | length) == 1
+   and ([.hotspots[].file] | index("docs/LEDGER.md")) == null'
+check_jq "29c: it is in exemptions[] as a POLICY exemption with its real score" "$OUT" \
+  '[.exemptions[] | select(.file=="docs/LEDGER.md")] | length == 1
+   and (.[0] | .kind == "policy" and .rule_source == "docs/RULES.md"
+        and .pr_count == 3 and .score == 3 and .pr_numbers == [2901,2902,2903]
+        and (.reason | test("parity")) and (has("lint") | not))'
+check_jq "29d: EQUAL-CHURN CONTROL — src/Real.ts flags with identical churn" "$OUT" \
+  '.hotspots[] | select(.file=="src/Real.ts")
+   | .pr_count == 3 and .score == 3 and .pr_numbers == [2901,2902,2903]'
+check_jq "29e: the envelope names the declaration and the commit it was read at" "$OUT" \
+  ".policy_exemptions_file == \"$POLICY_PATH\" and .policy_exemptions_ref == \"$R29_SHA\"
+   and .exempt_count == 1 and .total_hotspot_count == 1"
+
+run_in "$R29/docs" --since "$WINDOW_START" --json
+check_jq "29e2: run from a subdirectory, the declaration still resolves repo-root-relative" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy" and .score == 3'
+
+run_in "$R29" --since "$WINDOW_START"
+check_eq "29f: one distinct '# exempt (policy)' TSV line" "1" \
+  "$(grep -c '^# exempt (policy)' <<<"$OUT")"
+check_eq "29g: that line names the rule source in its last column" "docs/RULES.md" \
+  "$(awk -F'\t' '$1 == "# exempt (policy)" && $2 == "docs/LEDGER.md" { print $6 }' <<<"$OUT")"
+check_eq "29h: the policy line carries the same six columns" "6" \
+  "$(awk -F'\t' '$1 == "# exempt (policy)" { print NF; exit }' <<<"$OUT")"
+check_eq "29i: no policy file is ever rendered as a catalog line" "0" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+
+# NEGATIVE CONTROL — the same fixture with --no-exemptions flags the ledger, so
+# 29b measures the declaration rather than a fixture that never qualified.
+run_in "$R29" --since "$WINDOW_START" --no-exemptions --json
+check_jq "29j: NEGATIVE CONTROL — --no-exemptions disables the policy kind too" "$OUT" \
+  '(.hotspots[] | select(.file=="docs/LEDGER.md") | .score == 3)
+   and (.hotspots | length) == 2 and .exempt_count == 0
+   and .policy_exemptions_file == null and .policy_exemptions_ref == null'
+
+# --exemptions replaces the CATALOG only: an unrelated catalog file does not
+# switch the scanned repo's policy off.
+run_in "$R29" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+check_jq "29k: --exemptions leaves the scanned repo's policy in force" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy"'
+
+# Collision — the same path in both lists is reported ONCE, as the catalog kind.
+COLLIDE_EXEMPT="$TMP/exemptions-29-collide.json"
+printf '%s\n' '{"schema":"churn-hotspot-exemptions/v1","exemptions":{"docs/LEDGER.md":{"lint":"ledger-lint.sh","reason":"one row per feature is enforced"}}}' > "$COLLIDE_EXEMPT"
+run_in "$R29" --since "$WINDOW_START" --exemptions "$COLLIDE_EXEMPT" --json
+check_jq "29l: a path in both lists reports once, as kind catalog" "$OUT" \
+  '[.exemptions[] | select(.file=="docs/LEDGER.md")] | length == 1
+   and .[0].kind == "catalog" and .[0].lint == "ledger-lint.sh"'
+
+# Exclusion still wins over the policy kind.
+run_in "$R29" --since "$WINDOW_START" --exclude docs/LEDGER.md --json
+check_jq "29m: a declared AND excluded path stays off the exempt line" "$OUT" \
+  '.exempt_count == 0 and ([.hotspots[].file] | index("docs/LEDGER.md")) == null
+   and .excluded_count == 3'
+
+# Read AT THE SCANNED REF, never from the working tree: an uncommitted edit
+# emptying the declaration changes nothing...
+printf '%s\n' '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{}}' > "$R29/$POLICY_PATH"
+run_in "$R29" --since "$WINDOW_START" --json
+check_jq "29n: an uncommitted edit to the declaration has no effect" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy"'
+git -C "$R29" checkout -q -- "$POLICY_PATH"
+# ...and a declaration that exists ONLY in the working tree applies nothing.
+R29U=$(policy_repo r29u - "$RULES_TEXT")
+mkdir -p "$R29U/.claude/reference"; printf '%s\n' "$GOOD_POLICY" > "$R29U/$POLICY_PATH"
+run_in "$R29U" --since "$WINDOW_START" --json
+check_jq "29o: an untracked declaration is not a declaration" "$OUT" \
+  '(.hotspots[] | select(.file=="docs/LEDGER.md") | .score == 3)
+   and .policy_exemptions_file == null and .exempt_count == 0'
+
+# A repo with no declaration behaves exactly as before.
+R29N=$(policy_repo r29n - "$RULES_TEXT")
+run_in "$R29N" --since "$WINDOW_START" --json
+check_jq "29p: no declaration — the ledger is an ordinary hotspot, nothing reported" "$OUT" \
+  '(.hotspots | length) == 2 and .exempt_count == 0
+   and .policy_exemptions_file == null and .policy_exemptions_ref == null'
+
+# Exempt-only window: clean exit 1, and the exempt line is still printed.
+R29B=$(new_repo_on r29b main)
+mkdir -p "$R29B/.claude/reference" "$R29B/docs"
+printf '%s\n' "$GOOD_POLICY" > "$R29B/$POLICY_PATH"; printf '%s\n' "$RULES_TEXT" > "$R29B/docs/RULES.md"
+git -C "$R29B" add -A
+GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" git -C "$R29B" commit -q -m "add repo policy"
+commit_touch "$R29B" "2026-02-01T00:00:00" "one (#2911)" docs/LEDGER.md
+commit_touch "$R29B" "2026-02-02T00:00:00" "two (#2912)" docs/LEDGER.md
+commit_touch "$R29B" "2026-02-03T00:00:00" "three (#2913)" docs/LEDGER.md
+run_in "$R29B" --since "$WINDOW_START" --json
+check_eq "29q: a window whose only churner is policy-exempt exits 1" "1" "$RC"
+check_jq "29r: and still reports it" "$OUT" \
+  '(.hotspots | length) == 0 and .exempt_count == 1 and .exemptions[0].kind == "policy"'
+run_in "$R29B" --since "$WINDOW_START"
+check_eq "29s: the policy TSV line survives the clean exit path" "1" \
+  "$(grep -c '^# exempt (policy)' <<<"$OUT")"
+
+# ---- guards: every bad declaration exits 3 naming the path -----------------
+# stdout must stay EMPTY on each: "never a silent score without it".
+policy_guard() {  # $1 label, $2 repo, $3 needle expected on stderr
+  local err_out out rc
+  out=$( (cd "$2" && bash "$SCRIPT" --since "$WINDOW_START" --json) 2>"$TMP/guard-29.err" )
+  rc=$?
+  err_out=$(cat "$TMP/guard-29.err")
+  check_eq "$1 exits 3" "3" "$rc"
+  check_eq "$1 names '$3' on stderr" "yes" "$(has_text "$err_out" "$3")"
+  check_eq "$1 never scores without the declaration" "" "$out"
+}
+G1=$(policy_repo r29g1 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"reason":"trust me"}}}' "$RULES_TEXT")
+policy_guard "29t: an entry with no rule_source" "$G1" "docs/LEDGER.md"
+G2=$(policy_repo r29g2 "$GOOD_POLICY" -)
+mkdir -p "$G2/docs"; printf '%s\n' "$RULES_TEXT" > "$G2/docs/RULES.md"   # working tree only
+policy_guard "29u: a rule_source missing at the scanned ref (present only on disk)" "$G2" "docs/LEDGER.md"
+check_eq "29u: and the error says the rule file does not exist" "yes" \
+  "$(has_text "$(cat "$TMP/guard-29.err")" "docs/RULES.md" "does not exist")"
+G3=$(policy_repo r29g3 "$GOOD_POLICY" 'A rules file that names some other ledger entirely.')
+policy_guard "29v: a rule_source that does not mention the path" "$G3" "docs/LEDGER.md"
+G4=$(policy_repo r29g4 '{"schema":"churn-hotspot-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/RULES.md","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29w: a wrong schema" "$G4" "$POLICY_PATH"
+G5=$(policy_repo r29g5 '{"schema": "churn-hotspot-policy-exemptions/v1", "exemptions": {' "$RULES_TEXT")
+policy_guard "29x: a malformed declaration" "$G5" "$POLICY_PATH"
+G6=$(policy_repo r29g6 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"../docs/RULES.md","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29y: a rule_source that escapes the repo" "$G6" "docs/LEDGER.md"
+# Self-citation: the ledger always "mentions" itself, so citing it is assertion.
+G7=$(policy_repo r29g7 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/LEDGER.md","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29y2: a ledger citing itself as its rule" "$G7" "exempted file itself"
+# A directory cited as rule_source is never a rule file (git backend parity
+# with 29ae3).
+G8=$(policy_repo r29g8 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29y3: a directory cited as rule_source" "$G8" "not a file"
+# A committed symlink is typed "blob" but its body is the target text, which
+# here names the exempted path — assertion, not a rule file.
+G9=$(policy_repo r29g9 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/LINK.md","reason":"x"}}}' -)
+mkdir -p "$G9/docs"; ln -s docs/LEDGER.md "$G9/docs/LINK.md"
+git -C "$G9" add docs/LINK.md
+GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" git -C "$G9" commit -q -m "add link"
+policy_guard "29y3b: a symlink cited as rule_source" "$G9" "not a file"
+
+# A backslash is legal in a filename. The (path, rule_source) pairs must reach
+# the reader unaltered — an @tsv stream doubles it, and a valid declaration
+# would then be rejected for citing a file that "does not exist".
+R29BS=$(policy_repo r29bs '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/back\\slash.md","reason":"x"}}}' -)
+mkdir -p "$R29BS/docs"; printf '%s\n' "$RULES_TEXT" > "$R29BS/docs/back\\slash.md"
+git -C "$R29BS" add -A docs
+GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" git -C "$R29BS" commit -q -m "add rules"
+run_in "$R29BS" --since "$WINDOW_START" --json
+check_eq "29y4: a rule_source with a backslash is read unaltered (exit 0)" "0" "$RC"
+check_jq "29y5: and the ledger is policy-exempt under that rule_source" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy" and .rule_source == "docs/back\\slash.md"'
+
+# ---- independence: the scanned repo's declaration, not the detector's ------
+# A copied detector whose OWN checkout carries a declaration for the ledger
+# must not exempt it in a repo that declares nothing...
+DET1="$TMP/det1"
+mkdir -p "$DET1/.claude/scripts" "$DET1/.claude/reference"
+cp "$SCRIPT" "$DET1/.claude/scripts/churn-hotspots.sh"
+printf '%s\n' "$GOOD_POLICY" > "$DET1/$POLICY_PATH"
+OUT=$(cd "$R29N" && bash "$DET1/.claude/scripts/churn-hotspots.sh" --since "$WINDOW_START" --json 2>/dev/null)
+check_jq "29z: a declaration in the detector's checkout exempts nothing elsewhere" "$OUT" \
+  '(.hotspots[] | select(.file=="docs/LEDGER.md") | .score == 3)
+   and .exempt_count == 0 and .policy_exemptions_file == null'
+# ...and a detector with NO reference directory at all still honours the
+# scanned repo's declaration.
+DET2="$TMP/det2"
+mkdir -p "$DET2/.claude/scripts"
+cp "$SCRIPT" "$DET2/.claude/scripts/churn-hotspots.sh"
+OUT=$(cd "$R29" && bash "$DET2/.claude/scripts/churn-hotspots.sh" --since "$WINDOW_START" --json 2>/dev/null)
+check_jq "29aa: the scanned repo's declaration needs nothing in the detector's checkout" "$OUT" \
+  '.exemptions_file == null and .exempt_count == 1
+   and (.exemptions[0] | .file == "docs/LEDGER.md" and .kind == "policy")'
+
+# ---- the gh backend: read at the pinned default-branch head ----------------
+R29GH=$(new_repo r29gh)
+# Unmarked commit: the gh path's working-tree existence check needs the files.
+commit_touch "$R29GH" "2026-02-01T00:00:00" "add stub fixture files" docs/LEDGER.md src/Real.ts
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":2921,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":2922,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":2923,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+for n in 2921 2922 2923; do gh_files "$n" modified docs/LEDGER.md modified src/Real.ts; done
+mkdir -p "$TMP/contents/.claude/reference" "$TMP/contents/docs"
+printf '%s\n' "$GOOD_POLICY" > "$TMP/contents/$POLICY_PATH"
+printf '%s\n' "$RULES_TEXT" > "$TMP/contents/docs/RULES.md"
+: > "$TMP/gh_calls.log"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29ab: gh — the real source file still flags" "0" "$RC"
+check_jq "29ac: gh — the ledger is policy-exempt, read at the pinned head" "$OUT" \
+  "(.exemptions[] | select(.file==\"docs/LEDGER.md\") | .kind == \"policy\" and .rule_source == \"docs/RULES.md\")
+   and .policy_exemptions_ref == \"$GH_POLICY_SHA\"
+   and ([.hotspots[].file] == [\"src/Real.ts\"])"
+check_eq "29ad: gh — every contents read is pinned to that one commit" "0" \
+  "$(grep '/contents/' "$TMP/gh_calls.log" | grep -vc "ref=$GH_POLICY_SHA")"
+check_eq "29ae: gh — and both the declaration and its rule file were read" "2" \
+  "$(grep '/contents/' "$TMP/gh_calls.log" | grep -c 'vnd.github.raw')"
+check_eq "29ae2: gh — each read was preceded by its entry-type probe" "2" \
+  "$(grep '/contents/' "$TMP/gh_calls.log" | grep -vc 'vnd.github.raw')"
+# A DIRECTORY cited as rule_source: its raw listing names the exempted path, so
+# without the entry-type probe the mention check would pass with no rule file.
+printf '%s\n' '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs","reason":"x"}}}' \
+  > "$TMP/contents/$POLICY_PATH"
+: > "$TMP/contents/docs/LEDGER.md"   # the listing of docs/ now names docs/LEDGER.md
+ERR_OUT=$( (cd "$R29GH" && bash "$SCRIPT" --since "$WINDOW_START" --source gh --json) 2>&1 >/dev/null )
+check_eq "29ae3: gh — a directory rule_source exits 3, never 'present'" "3" "$?"
+check_eq "29ae4: gh — and says it is not a file" "yes" "$(has_text "$ERR_OUT" "not a file")"
+rm -f "$TMP/contents/docs/LEDGER.md"
+printf '%s\n' "$GOOD_POLICY" > "$TMP/contents/$POLICY_PATH"
+# A default branch holding "/" is one path segment, encoded whole.
+printf '%s' 'release/2.x' > "$TMP/default_branch"
+: > "$TMP/gh_calls.log"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29ae5: gh — a slash-bearing default branch still pins (exit 0)" "0" "$RC"
+check_eq "29ae6: gh — and is requested as one encoded segment" "1" \
+  "$(grep -c 'commits/release%2F2\.x' "$TMP/gh_calls.log")"
+rm -f "$TMP/default_branch"
+rm -f "$TMP/contents/docs/RULES.md"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29af: gh — a rule_source that 404s exits 3" "3" "$RC"
+printf '%s\n' "$RULES_TEXT" > "$TMP/contents/docs/RULES.md"
+: > "$TMP/gh_fail_contents"
+ERR_OUT=$( (cd "$R29GH" && bash "$SCRIPT" --since "$WINDOW_START" --source gh --json) 2>&1 >/dev/null )
+check_eq "29ag: gh — a non-404 contents failure exits 3, never 'absent'" "3" "$?"
+check_eq "29ah: gh — and names the declaration path" "yes" "$(has_text "$ERR_OUT" "$POLICY_PATH")"
+rm -f "$TMP/gh_fail_contents"
+: > "$TMP/gh_fail_meta"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29ai: gh — a failed repo/commit lookup exits 3" "3" "$RC"
+rm -f "$TMP/gh_fail_meta"
+rm -rf "$TMP/contents"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_jq "29aj: gh — a 404 declaration is a confirmed absence: behaves as before" "$OUT" \
+  '(.hotspots | length) == 2 and .policy_exemptions_file == null'
 
 # =============================================================================
 echo

@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
-# Regression tests for the SessionStart migration of session-start-sync.sh (issue #792).
-# Asserts correct registration wiring across global-settings.json and
-# setup-skills-worktree.sh, and that the script itself no longer uses a
-# /tmp sentinel and emits the correct event name on the error path.
+# Registration, migration wiring and capture structure for session-start-sync.
 set -euo pipefail
-
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$REPO_ROOT/.claude/hooks/session-start-sync.sh"
-SETTINGS="$REPO_ROOT/global-settings.json"
-SETUP_SCRIPT="$REPO_ROOT/setup-skills-worktree.sh"
-
-fail() { echo "FAIL: $*" >&2; exit 1; }
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/session-start-sync-fixtures.sh
+source "$TEST_DIR/lib/session-start-sync-fixtures.sh"
 
 # --- 1. Registration: must be under SessionStart in global-settings.json ---
 python3 - "$SETTINGS" <<'PY' || fail "session-start-sync.sh not found under SessionStart in global-settings.json"
@@ -71,7 +64,7 @@ fi
 grep -qE 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT" \
   || fail "setup-skills-worktree.sh does not invoke register-hooks.py — hook registration may be broken"
 # Full-mode must not pass --statusline-only: that flag skips hook registration entirely.
-if grep -E 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT" | grep -q -- "--statusline-only"; then
+if grep -q -- "--statusline-only" <<<"$(grep -E 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT")"; then
   fail "setup-skills-worktree.sh invokes register-hooks.py with --statusline-only — this skips hook registration"
 fi
 
@@ -85,8 +78,7 @@ true
 # no skills-worktree present (setup_script check is skipped via a non-existent
 # path, so the script reaches the "skills worktree not found" error).
 TMP_HOME="$(mktemp -d)"
-cleanup() { rm -rf "$TMP_HOME"; }
-trap cleanup EXIT
+ssync_register_tmp "$TMP_HOME"
 
 out=$(HOME="$TMP_HOME" echo '{}' | bash "$HOOK" 2>/dev/null || true)
 # The script should produce JSON with hookEventName: "SessionStart" on error.
@@ -107,5 +99,112 @@ except json.JSONDecodeError:
 event = d.get("hookSpecificOutput", {}).get("hookEventName", "")
 sys.exit(0 if event == "SessionStart" else 1)
 PY
+
+# --- 8. Config-sync mutex: the worktree/symlink region runs under the lock ---
+# Issue #1524: claude-config-sync.sh performs the same fast-forward, symlink
+# publish and hook registration on an hourly LaunchAgent. Both sides must take
+# the one lock, or a scheduled `git reset --hard` can race this hook's publish.
+grep -q 'state-lock.sh' "$HOOK" \
+  || fail "session-start-sync.sh does not source state-lock.sh — the config-sync region is unserialized"
+grep -q 'state_lock_acquire' "$HOOK" \
+  || fail "session-start-sync.sh never calls state_lock_acquire"
+grep -q 'state_lock_release' "$HOOK" \
+  || fail "session-start-sync.sh never releases the lock"
+grep -qF '.claude/logs/claude-config-sync-state.json' "$HOOK" \
+  || fail "session-start-sync.sh does not use claude-config-sync.sh's canonical lock base"
+
+# Contention comes from the lock itself (issue #1567). state_lock_acquire
+# reports whether it waited in STATE_LOCK_WAITED; the hook must read that, and
+# read it fail-closed — anything but an explicit 0 is contended — rather than
+# infer contention from outside. Cases 11b, 11c and 13 prove the behaviour; these
+# pin the wiring.
+grep -qF '[[ "${STATE_LOCK_WAITED:-}" == 0 ]] || _lock_contended=1' "$HOOK" \
+  || fail "session-start-sync.sh does not derive _lock_contended from state-lock.sh's STATE_LOCK_WAITED (fail-closed: anything but 0 is contended)"
+# The outside guesses it replaced (PR #1553) must not creep back. The whole-
+# second `date` stamps are the harmful one — a slow uncontended acquire crossing
+# a second boundary read as contended (issue #1751) — and case 11b fails on them
+# functionally; these catch the names too.
+for _gone in '_lock_t0' '_lock_t1' '_lock_contended_pre' '_lock_probe_waited'; do
+  if grep -qE "^[^#]*${_gone}" "$HOOK"; then
+    fail "session-start-sync.sh still carries the ${_gone} contention heuristic — read STATE_LOCK_WAITED instead (issues #1567, #1751)"
+  fi
+done
+
+# Post-region budget honesty (BugBot 111e48c9, PR #1553): repo-root.sh defaults
+# to 10s per git call and may run two, which alone exceeds the hook's 9s
+# post-region reserve — a slow-but-successful reset could then have the hook
+# killed before publish with nothing recorded. Both lookups must carry the
+# explicit 3s-per-call bound so the reserve arithmetic actually covers them.
+[ "$(grep -cF 'REPO_ROOT_TIMEOUT_SECS=3 bash "$_repo_root_helper"' "$HOOK")" -eq 2 ] \
+  || fail "session-start-sync.sh must bound BOTH repo-root.sh lookups with REPO_ROOT_TIMEOUT_SECS=3 — the 10s/call default exceeds the 9s post-region reserve"
+
+# The lock must be released BEFORE the root-repo sync: that is a different
+# resource, and holding the config-sync lock across a `git pull` would block
+# every scheduled tick for the duration of the pull.
+# Matched by symbol with a word boundary, on the first non-comment line: keying
+# on exact indentation would break on any reformat that leaves the contract
+# intact.
+line_release="$(grep -nE '^[^#]*\bstate_lock_release\b' "$HOOK" | head -1 | cut -d: -f1)"
+line_root_sync="$(grep -n 'Sync root repo' "$HOOK" | head -1 | cut -d: -f1)"
+[[ -n "$line_release" && -n "$line_root_sync" ]] \
+  || fail "could not locate the lock release / root-repo sync markers in session-start-sync.sh"
+[[ "$line_release" -lt "$line_root_sync" ]] \
+  || fail "session-start-sync.sh holds the config-sync lock across the root-repo sync"
+
+# --- 9. The hook publishes skill symlinks, not just agent symlinks ---
+grep -q 'publish-skill-symlinks' "$HOOK" \
+  || fail "session-start-sync.sh does not publish skill/CLAUDE.md/rules symlinks (issue #1524)"
+
+# --- 10. Marker handling: surfaced always, restart portion cleared on startup ---
+grep -qF '.claude/sync-restart-recommended.json' "$HOOK" \
+  || fail "session-start-sync.sh does not read the config-sync marker"
+grep -q 'del(.restart_recommended)' "$HOOK" \
+  || fail "session-start-sync.sh never clears the restart portion of the marker"
+
+# --- 16. The capture pair is handed over on a wedged child (CodeAnt, PR #1640) -
+# A bound trip in this hook is NOT fatal: _publish_one records the failure and
+# returns 0, so the run continues to the second publisher and then to both
+# root-repo sync legs — each truncating and re-reading the SAME $CAPTURE pair.
+# A child still alive after SIGKILL is wedged in uninterruptible I/O and still
+# holds those descriptors open, so without bounded-run.sh's orphan handover a
+# later call can read the wedged publisher's late output as its own.
+#
+# Structural only, on purpose: a process that survives SIGKILL cannot be
+# manufactured portably in a test, so the library's own rotation logic is
+# covered by bounded-run.test.sh and what is asserted here is that this caller
+# OPTS IN — the failure mode being a refactor that drops the opt-in silently.
+grep -q '^  ORPHANED_CAPTURES=()' "$HOOK" \
+  || fail "session-start-sync.sh does not declare ORPHANED_CAPTURES — bounded-run.sh's orphan handover is off, so a wedged publisher's late output can contaminate a later call's capture (CodeAnt, PR #1640)"
+grep -q '^  BOUNDED_CAPTURE_TEMPLATE=' "$HOOK" \
+  || fail "session-start-sync.sh does not set BOUNDED_CAPTURE_TEMPLATE — the capture pair is never rotated away from a wedged child (CodeAnt, PR #1640)"
+grep -q '^  BOUNDED_CAPTURE_ERR_TEMPLATE=' "$HOOK" \
+  || fail "session-start-sync.sh does not set BOUNDED_CAPTURE_ERR_TEMPLATE — the stderr half of the pair is never rotated (CodeAnt, PR #1640)"
+# The handover only removes contamination if the rotated-away files are still
+# unlinked at exit; otherwise it trades a correctness bug for a temp-file leak.
+hook_trap_line="$(grep -n "trap 'rm -f" "$HOOK" | head -1 | cut -d: -f2-)"
+case "$hook_trap_line" in
+  *'${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"}'*) : ;;
+  *) fail "the EXIT trap does not unlink ORPHANED_CAPTURES — handed-over captures leak in \$TMPDIR (CodeAnt, PR #1640)" ;;
+esac
+
+# --- 17. A failed handover allocation must decline, not silently no-op --------
+# bounded-run.sh's rotation calls mktemp twice and checks neither, so a full or
+# read-only $TMPDIR leaves CAPTURE/CAPTURE_ERR empty. The NEXT bounded call's
+# `: > "$CAPTURE"` redirection would then fail and its command would never run
+# — silently, with nothing recorded, which is the exact failure this whole
+# change exists to prevent (CodeAnt, PR #1640). Opting into the handover is
+# what creates that path, so the caller must detect it.
+bounded_body="$(awk '/^_run_hook_bounded\(\) \{/,/^\}$/' "$HOOK")"
+[ -n "$bounded_body" ] || fail "could not extract the _run_hook_bounded body from session-start-sync.sh"
+case "$bounded_body" in
+  *'-z "${CAPTURE:-}"'*) : ;;
+  *) fail "_run_hook_bounded does not check that the capture pair survived the orphan handover — a failed mktemp there makes every later bounded call a silent no-op (CodeAnt, PR #1640)" ;;
+esac
+case "$bounded_body" in
+  *_bound_available=0*) : ;;
+  *) fail "a failed handover allocation does not disable bounding, so later calls would run with an empty \$CAPTURE instead of declining (CodeAnt, PR #1640)" ;;
+esac
+grep -q '_bound_unavailable_reason' "$HOOK" \
+  || fail "the decline message is hard-coded to \"bounded-run.sh unavailable\", so a handover-allocation decline would be reported as a missing library (CodeAnt, PR #1640)"
 
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

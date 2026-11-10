@@ -21,7 +21,7 @@ Emit `[INFERRED]` line before any Phase 1 verification when `INFERRED_SOURCE` is
 OWNER_REPO=""   # repo the resolved PR lives in, when known
 if [[ -n "${ARGUMENTS:-}" ]]; then
   if [[ -z "$INFER_PR" ]]; then
-    echo "STOP: /wrap was given '$ARGUMENTS' but infer-pr.sh was not found — cannot safely resolve an explicit PR reference. Install .claude/scripts/infer-pr.sh, or run /wrap with no argument from the PR's branch." >&2
+    echo "STOP: /wrap was given '$ARGUMENTS' but infer-pr.sh was not found (checked all three paths) — cannot safely resolve an explicit PR reference. Install the shared helper, or run /wrap with no argument from the PR's branch." >&2
     # STOP — do NOT fall through to 1.1b (would risk wrapping the wrong PR).
   elif EXPLICIT_JSON=$("$INFER_PR" --explicit "$ARGUMENTS"); then
     PR_NUM=$(jq -r '.most_recent.number' <<<"$EXPLICIT_JSON")
@@ -114,7 +114,7 @@ References without an `owner_repo` (`#N`, bare `N`, 1.1b branch PR, or session-s
 Once `$PR_NUM` is resolved and the repo-scoping guard passes:
 
 ```bash
-.claude/scripts/pr-authorship.sh "$PR_NUM"   # exit 0 = yours
+"$PR_AUTHORSHIP_SH" "$PR_NUM"   # exit 0 = yours
 ```
 
 Not yours (exit 1) or undetermined (exit 4) → **stop** with: "PR #$PR_NUM is authored by someone else — the authorship guard blocks automated merges; name this PR explicitly to override." Proceed only under an explicit per-PR user override (pass `--allow-nonauthor` to `merge-gate.sh` in Step 2). `merge-gate.sh` also blocks a confirmed foreign author as a fail-safe.

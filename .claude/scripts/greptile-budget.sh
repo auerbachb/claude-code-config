@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # greptile-budget.sh — Daily Greptile review budget guard.
+# catalog: review-escalation — Guard the daily Greptile review budget counter in session-state
 #
 # PURPOSE
 #   Single source of truth for the Greptile daily-budget contract defined in
@@ -51,6 +52,7 @@
 #   6  Lock timeout — another writer held the session-state lock past the
 #      acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). Nothing
 #      is consumed and the state file is left unmodified.
+#   70  --help header extraction produced no output (internal defect).
 #
 # ATOMICITY
 #   All writes go through `jq ... > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp"
@@ -70,7 +72,7 @@
 #   - .claude/scripts/state-lock.sh (sibling library — write serialization)
 #
 # EXAMPLES
-#   # Gate a @greptileai trigger — exit 1 means "do not trigger":
+#   # Gate an OWNER-APPROVED @greptileai trigger (issue #1897) — exit 1 means "do not trigger":
 #   if ! greptile-budget.sh --consume >/dev/null; then
 #     echo "Greptile budget exhausted — falling back to self-review" >&2
 #     exit 1
@@ -82,7 +84,7 @@
 #   # -> {"date":"2026-04-16","reviews_used":3,"budget":40,"exhausted":false}
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 DEFAULT_BUDGET=40
@@ -101,7 +103,8 @@ if ! source "$SELF_DIR/state-lock.sh"; then
 fi
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

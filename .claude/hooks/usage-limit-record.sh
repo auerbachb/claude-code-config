@@ -11,7 +11,7 @@
 #   inject context, or change any decision. It can only write to disk.
 #
 # THE HANDOFF POINTER (issue #901)
-#   When /pause has written a portable handoff, the breadcrumb names the most
+#   When /end has written a portable handoff, the breadcrumb names the most
 #   recent one instead of pointing only at a transcript. That is the difference
 #   between "reconstruct what was happening" and "here is what was happening" —
 #   and it costs the session that died without warning nothing, because the
@@ -32,7 +32,7 @@
 #   the user still has exactly what they had before this feature existed.
 #
 #   WHY IT IS NOT SCOPED TO THIS SESSION OR REPO
-#   Session-matching cannot work by construction: running /pause is how a
+#   Session-matching cannot work by construction: running /end is how a
 #   session ends, so the session that later dies on a limit is never the one
 #   that wrote the document. Repo-matching would mean reading the file to learn
 #   which repo it describes, and not reading it is the property that keeps this
@@ -42,11 +42,18 @@
 #   The age bound is what keeps "most recent" from meaning "from March".
 #
 # WHY THIS SHAPE (and not a pre-emptive wind-down)
-#   Claude Code exposes no approaching-limit signal to any hook, skill, or
-#   session. The only surface carrying `rate_limits` is the status line, which
-#   is display-only and never executes in a headless (`--output-format
-#   stream-json`) desktop-app session. Full evidence, including the live probe
-#   that produced zero invocations:
+#   No HOOK receives an approaching-limit signal — not this one, not any of the
+#   other 31 events. The only program-facing surface carrying `rate_limits` is
+#   the status line, which is display-only and never executes in a headless
+#   (`--output-format stream-json`) desktop-app session; re-probed 2026-08-27
+#   on 2.1.246, still zero invocations. So this hook stays a post-hoc recorder.
+#
+#   As of 2026-08-27 a pre-emptive signal DOES reach a session, by a route no
+#   hook can use: the harness injects a remaining-token counter directly into
+#   the model's context. That is Probe 0 (.claude/scripts/usage-horizon.sh) and
+#   it does not change this hook's job — the counter says how much runway is
+#   left, this record says the wall was hit. Full evidence and the 2026-08-27
+#   addendum:
 #       .claude/reference/usage-limit-signal-audit-2026-07.md
 #
 # SAFETY (.claude/rules/safety.md §"Anthropic Quota & Spend Authority")
@@ -61,6 +68,17 @@
 # OUTPUT  Appends to ~/.claude/usage-limit-events.jsonl
 #         Rewrites  ~/.claude/usage-limit-last.json (atomically)
 #         Always exits 0 — a recorder must never become a new failure mode.
+#
+# WHICH LIMIT (issue #1633)
+#   Every record also carries `limit_kind` (plan_window | overage |
+#   unclassified) and `reset_at`, classified at write time through
+#   ../scripts/lib/usage-limit-classify.sh. `error == "rate_limit"` says a
+#   limit was hit but not which one, and the two are opposite facts: a
+#   plan-window wall means the account is on plan and spent nothing, an overage
+#   means it spent. Recording the distinction is what stops `credit-budget.sh`
+#   from reading a weekly-limit hit as a day's credit spend. Both fields are
+#   null when the library is unavailable — see the block at the classification
+#   site for why that dependency stays optional.
 
 set -uo pipefail
 
@@ -105,6 +123,48 @@ file_size() {
 
 RECORDED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 [[ -n "$RECORDED_AT" ]] || RECORDED_AT="unknown"
+
+# LIMIT KIND (issue #1633)
+#
+# `error == "rate_limit"` says a limit was hit. It does NOT say WHICH limit,
+# and the two possibilities are opposite facts about the account: a plan-window
+# wall (rolling 5-hour or weekly) means the account is on plan and spent
+# nothing, while a credit overage means it spent. `credit-budget.sh` read every
+# record here as the second and froze autonomous dispatch for a whole day on
+# four events that were all the first.
+#
+# Classifying at write time is what keeps the vendor's prose parsed in ONE
+# place: the gate reads this field rather than re-deriving it, and reaches for
+# the same library only for records written before this field existed.
+#
+# The dependency is OPTIONAL, and deliberately so. This hook's contract is that
+# it always exits 0 and always writes the record; a recorder must never become
+# a new failure mode. With the library missing or unloadable both fields are
+# null, which is exactly the legacy shape the gate already knows how to
+# classify for itself.
+#
+# Classification reads `last_assistant_message` ONLY — the same field the gate's
+# fallback sees — so a record's stored kind and a re-derivation from its stored
+# text can never disagree. That invariant is about the STORED text, so the
+# expression below must stay byte-identical to the one writing the field near
+# the end of this file, truncation included: classifying the full message while
+# storing 1,000 characters would let a notice living past the cutoff produce a
+# stored kind the gate's fallback cannot reproduce from the record it can see.
+LIMIT_KIND=""
+RESET_AT=""
+_ulc_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../scripts/lib/usage-limit-classify.sh"
+if [[ -r "$_ulc_lib" ]]; then
+  # shellcheck source=../scripts/lib/usage-limit-classify.sh
+  if source "$_ulc_lib" 2>/dev/null; then
+    _ulc_msg=$(printf '%s' "$STDIN_JSON" \
+      | jq -r '((.last_assistant_message // null)
+                | if . == null then ""
+                  elif type == "string" then .[0:1000]
+                  else (tojson | .[0:1000]) end)' 2>/dev/null) || _ulc_msg=""
+    LIMIT_KIND=$(usage_limit_kind "$_ulc_msg" 2>/dev/null) || LIMIT_KIND=""
+    RESET_AT=$(usage_limit_reset_at "$_ulc_msg" "$RECORDED_AT" 2>/dev/null) || RESET_AT=""
+  fi
+fi
 
 # Only handoffs modified within HANDOFF_MAX_AGE_DAYS are eligible. Without a
 # bound, a document from a different project weeks ago stays advertised forever
@@ -157,7 +217,7 @@ newest_portable_handoff() {
   printf '%s' "$newest"
 }
 
-# Handoffs live at ~/.claude/handoffs — a fixed location /pause writes to, NOT a
+# Handoffs live at ~/.claude/handoffs — a fixed location /end writes to, NOT a
 # subdirectory of this hook's own output dir. Deriving it from STATE_DIR would
 # tie the two together, so setting CLAUDE_USAGE_LIMIT_DIR (which exists to
 # isolate this hook's records) would silently point the lookup at a directory no
@@ -175,9 +235,13 @@ build_record() { # $1 = portable handoff path, or "" for none
     --arg recorded_at "$RECORDED_AT" \
     --arg hint_base "$RESUME_HINT_BASE" \
     --arg handoff "$1" \
+    --arg limit_kind "$LIMIT_KIND" \
+    --arg reset_at "$RESET_AT" \
     '{
        recorded_at: $recorded_at,
        reason: "rate_limit",
+       limit_kind: (if $limit_kind == "" then null else $limit_kind end),
+       reset_at: (if $reset_at == "" then null else $reset_at end),
        session_id: (.session_id // null),
        cwd: (.cwd // null),
        transcript_path: (.transcript_path // null),

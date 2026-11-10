@@ -2,6 +2,7 @@
 # skill-usage-snapshot.sh — Keep a machine-independent snapshot of the skill
 # telemetry (~/.claude/skill-usage.log + .csv) on the repo's dedicated
 # `skill-telemetry` branch, and restore from it on a fresh machine.
+# catalog: skills-telemetry — Push/restore skill telemetry to/from the repo's dedicated `skill-telemetry` branch
 #
 # STORAGE MODEL (issue #572):
 #   Live files stay in ~/.claude/ (written by skill-usage-tracker.sh). This
@@ -49,12 +50,14 @@
 #   2  usage error
 #   3  environment error (no git/gh/python3, cannot resolve repo)
 #   4  push/restore failure (without --quiet)
+#   70  --help header extraction produced no output (internal defect).
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {

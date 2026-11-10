@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # escalate-review.sh — Deterministic CR→BugBot→Greptile escalation verdict.
+# catalog: review-escalation — Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help`
 #
 # PURPOSE
 #   Implements the per-cycle reviewer escalation gate documented in
@@ -14,36 +15,141 @@
 # OUTPUT
 #   stdout: one line, exactly one of:
 #     STATUS=gate_met         CR-path primary review already satisfied (CodeRabbit or
-#                             CodeAnt has a valid APPROVED review on current HEAD) —
+#                             CodeAnt has a valid APPROVED review on current HEAD), OR
+#                             merge-gate.sh is met via the no-review override at a
+#                             paid-escalation point (issue #1899; stderr names it) —
 #                             do not escalate; the merge gate will pick this up
-#     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window
-#     STATUS=switch_bugbot    BugBot has responded — OR BugBot was never invited
-#                             (no footprint on HEAD and no fresh `@cursor review`
-#                             trigger comment). Make BugBot the sticky reviewer;
-#                             when it has no footprint yet, post the manual
-#                             `@cursor review` trigger before polling
-#     STATUS=trigger_greptile CR failed AND BugBot either failed outright or was
-#                             invited and then timed out; trigger Greptile. NOT
-#                             emitted for a BugBot that was never invited — that
-#                             case is switch_bugbot above
-#     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile
+#     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window — including
+#                             while a CodeRabbit `Review limit reached` banner's own
+#                             stated retry window is still open (issue #1199), and
+#                             while review-substance.sh is unusable and the PR is
+#                             inside the evaluator-outage cap (issue #1465)
+#     STATUS=no_reviewer      a PAID reviewer (BugBot or Greptile) would be next, and
+#                             paid reviews need the owner's explicit approval in
+#                             chat (issue #1897). Nothing was posted and merge is
+#                             NOT authorized: post no `@cursor review` and no
+#                             `@greptileai`, never retry a paid trigger, keep the
+#                             reviewer `cr`, and keep polling — CodeRabbit's free
+#                             allowance may return, and merge-gate.sh's no-review
+#                             override (issue #1899) turns this into gate_met once
+#                             its window passes. stderr names the paid verdict this
+#                             replaced (`paid_route=switch_bugbot|trigger_greptile`)
+#                             — the seam the per-review approval path (issue
+#                             #1898) hooks. Emitted where switch_bugbot or
+#                             trigger_greptile used to be, BEFORE the Greptile
+#                             budget is read, so budget_exhausted is unreachable
+#     STATUS=tier_gate        the PR's review tier excludes BugBot (gate ci-only or
+#                             ci+codeant-one-round, issue #1728), so the tier, not
+#                             this chain, governs it. Emitted INSTEAD of
+#                             no_reviewer at the BugBot point: trigger nothing,
+#                             keep the current reviewer, and keep polling —
+#                             merge-gate.sh applies the tier's gate. Not a stop and
+#                             not self-review. An unresolvable tier emits
+#                             no_reviewer (fail-open to the cheaper verdict).
+#                             ALSO emitted, with the same meaning, when the repo
+#                             turned escalation off (REVIEW_ESCALATION=off in
+#                             `## Review policy`, issue #1807): on ANY gate, full
+#                             and legacy included, at both paid points. The
+#                             Greptile budget is then never read or consumed. A
+#                             full PR needs a CodeRabbit or CodeAnt APPROVED on
+#                             HEAD, with no fallback reviewer
+#     STATUS=switch_bugbot, STATUS=trigger_greptile, STATUS=budget_exhausted
+#                             RETIRED as autonomous verdicts (issue #1897): this
+#                             script no longer emits them. Consumers keep a
+#                             defensive arm that routes them to no_reviewer
 #     STATUS=self_review      PR is already marked for self-review fallback
 #
 # EXIT STATUS
 #   0  A STATUS verdict was printed
 #   2  Usage/dependency error
-#   4  GitHub/API/state read error
+#   4  GitHub/API/state read error, OR a raw shell exec failure (126/127) caught
+#      at the exit boundary and normalized here — see the EXIT BOUNDARY note.
+#   70  --help header extraction produced no output (internal defect).
+#
+#   EVERY non-zero exit prints exactly one `escalate-review.sh: ...` diagnostic
+#   line to stderr. A non-verdict exit is never silent (issue #1600): the caller
+#   reads an empty stdout as an empty verdict, so a script that dies without
+#   saying so is indistinguishable from one that ran and decided nothing.
+#
+# EXIT BOUNDARY (issue #1600)
+#   During PR #1553's review loop this script exited 126 with zero output on
+#   both streams, so the caller had to walk cr-github-review.md's chain by hand.
+#   126/127 mean the SHELL could not launch something; this script never exits
+#   them on purpose. Under `set -euo pipefail` an unguarded command substitution
+#   propagates that raw status straight out with nothing printed. The EXIT trap
+#   below normalizes it to 4 — nothing was determined — with one stderr line,
+#   mirroring repo-root.sh's precedent (issue #1403).
+#
+#   SCOPE: this covers exits from a script that STARTED. It cannot cover a
+#   failure to launch the interpreter itself (a corrupted PATH, `env: bash: No
+#   such file or directory` — issue #1556), because no in-script trap runs then.
+#
+# ESCALATION OFF — KNOWN LIMIT (issue #1807)
+#   The switch is read through review-tier.sh, once per run and only on a
+#   cycle that reaches a BugBot or Greptile hand-off. If the tier cannot be
+#   resolved (review-tier.sh missing, exiting non-zero, or answering without a
+#   readable `escalation`), the switch reads as ON and the chain runs as
+#   before — the fail-open direction of issue #1728. A repo that turned
+#   escalation off can therefore still see one BugBot or Greptile hand-off
+#   while its policy is unreadable. The merge gate is unaffected.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
+# Installed BEFORE anything else can fail, and it owns two jobs (issue #1600).
+#
+# 1. Normalize an escaping 126/127 to 4. Those two mean the shell could not
+#    launch a command, and this script never exits them deliberately. The
+#    dependency preflight below is the fast, friendly diagnosis, but it cannot
+#    be complete: `command -v` proves a NAME resolves, not that the file will
+#    exec (a bad interpreter, a dangling symlink, the wrong architecture all
+#    resolve fine), and nothing closes the window between the check and the
+#    call. So the guarantee is enforced at the boundary instead: whatever went
+#    wrong, no verdict was reached, and that is exactly exit 4.
+# 2. Backstop every OTHER non-zero exit that reaches here without a diagnostic —
+#    an unguarded substitution failing on, say, a jq parse error would otherwise
+#    still be silent. `DIAG_PRINTED` is what keeps that from double-printing on
+#    the paths that already spoke.
+#
+# It deliberately does NOT emit a verdict. A shell-launch failure is a broken
+# environment, not a bounded helper outage: fabricating a STATUS= line here
+# would be a guard that passes by not running. Contrast issue #1465, which
+# degrades to polling_cr for an evaluator outage the script actually diagnosed.
+DIAG_PRINTED=0
 PR_NUMBER=""
 
+on_exit() {
+  local rc=$?
+  if [[ "$rc" -eq 126 || "$rc" -eq 127 ]]; then
+    printf 'escalate-review.sh: a required command could not be launched (shell exit %s), so no STATUS verdict was reached%s — repair PATH/permissions and retry\n' \
+      "$rc" "${PR_NUMBER:+ for PR #$PR_NUMBER}" >&2
+    exit 4
+  fi
+  if [[ "$rc" -ne 0 && "$DIAG_PRINTED" -eq 0 ]]; then
+    printf 'escalate-review.sh: exited %s before emitting a STATUS verdict%s — no verdict was reached\n' \
+      "$rc" "${PR_NUMBER:+ for PR #$PR_NUMBER}" >&2
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { DIAG_PRINTED=1; printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
+
+# The one-line diagnostic every fatal path goes through, so on_exit's backstop
+# stays quiet on the paths that already explained themselves.
+die() { # <exit_code> <reason...>
+  local code="$1"; shift
+  DIAG_PRINTED=1
+  printf 'escalate-review.sh: %s\n' "$*" >&2
+  exit "$code"
 }
 
 die_usage() {
+  DIAG_PRINTED=1
   echo "escalate-review.sh: $1" >&2
   echo "Run with --help for usage." >&2
   exit 2
@@ -52,6 +158,100 @@ die_usage() {
 emit() {
   printf 'STATUS=%s\n' "$1"
   exit 0
+}
+
+# The ONE way this script hands a PR to BugBot (issue #1728). A PR whose review
+# tier excludes BugBot (gate ci-only or ci+codeant-one-round) gets tier_gate
+# instead: its merge gate never needs BugBot, and switching is sticky and
+# one-way, so a hand-off would spend the stack's most expensive review on a PR
+# the repo's policy exempts. Asked only at the two points that would otherwise
+# switch, so every earlier verdict keeps its precedence, the Greptile branches
+# are untouched, and no other cycle pays for the lookup.
+#
+# FAILS OPEN to the paid-point verdict (no_reviewer since #1897) — a missing helper, an unresolvable tier, or any
+# exit but 0 (full and legacy are exit 1). `|| tier_rc=$?` keeps a failing or
+# unlaunchable helper (126/127) away from `set -e` and the EXIT trap: an
+# unreadable policy has a defined answer here, the pre-#1728 one.
+#
+# The helper also answers 0 on ANY gate when the repo turned escalation off
+# (REVIEW_ESCALATION=off, issue #1807), and names that reason on its own
+# stderr line — so this arm needs no lookup of its own.
+# No-review override precedence (issue #1899). Asked ONLY at the two points
+# that would spend on a paid reviewer (switch_bugbot, trigger_greptile): when
+# merge-gate.sh is already met through the no-review override, the PR merges
+# unreviewed and is logged for backfill — inviting a paid review now would
+# spend exactly what the owner's policy exists to save. gate_met, never a
+# paid verdict. FAILS OPEN to today's routing: a missing gate, any non-zero
+# exit, or unparseable output changes nothing.
+override_gate_met() {
+  local gate="$SCRIPT_DIR/merge-gate.sh" out="" rc=0 here=""
+  [[ -x "$gate" ]] || return 1
+  # merge-gate.sh judges the cwd's repo; never let it answer for another one.
+  here="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
+  [[ "$(printf '%s' "$here" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]] || return 1
+  out="$("$gate" "$PR_NUMBER" 2>/dev/null)" || rc=$?
+  [[ "$rc" -eq 0 ]] || return 1
+  printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1
+}
+emit_unless_override() { # <paid verdict>
+  if override_gate_met; then
+    echo "escalate-review.sh: merge gate met via the no-review override on HEAD — gate_met, not $1; no paid reviewer is invited (issue #1899)" >&2
+    emit "gate_met"
+  fi
+  paid_review_denied "$1"
+}
+
+# The ONE place a paid hand-off is refused (issue #1897). The owner's policy:
+# no paid AI review without explicit approval in chat, and nothing this script
+# reads can carry that approval — so there is no flag, variable, or state
+# marker that lets a paid verdict through. The per-review approval path (issue
+# #1898) does not change this verdict: an owner grant is spent only by
+# paid-review-grant.sh --trigger, and an attended consumer of no_reviewer is
+# where the agent may ask for one (.claude/reference/paid-review-approval.md).
+# `paid_route=` names the verdict that would have been emitted, so a reader
+# (and the regression suites) can still tell the two hand-off points apart.
+paid_review_denied() { # <paid verdict it replaces>
+  echo "escalate-review.sh: paid_route=$1 — a paid review (BugBot or Greptile) needs the owner's explicit approval in chat; nothing was posted, merge is not authorized, do not retry a paid trigger — no_reviewer (issue #1897)" >&2
+  emit "no_reviewer"
+}
+
+emit_switch_bugbot() {
+  local helper="$SCRIPT_DIR/bugbot-tier-excluded.sh" gate="" tier_rc=0
+  if [[ -x "$helper" ]]; then
+    gate="$("$helper" "$PR_NUMBER" --repo "$OWNER/$REPO")" || tier_rc=$?
+    if [[ "$tier_rc" -eq 0 ]]; then
+      echo "escalate-review.sh: bugbot-tier-excluded.sh skips BugBot (gate '$gate') — tier_gate, not switch_bugbot (issues #1728, #1807)" >&2
+      emit "tier_gate"
+    fi
+  fi
+  emit_unless_override "switch_bugbot"
+}
+
+# Has the repo turned escalation off (REVIEW_ESCALATION=off in `## Review
+# policy`, issue #1807)? Asked only by the Greptile arm at the tail, so no
+# cycle that ends earlier pays for the lookup, and cached so a run asks
+# review-tier.sh at most once. FAILS OPEN to "on" exactly as emit_switch_bugbot
+# does: a missing resolver, a non-zero exit, or an answer without a readable
+# `escalation` keeps today's chain (see ESCALATION OFF — KNOWN LIMIT above).
+# Run through bash, as bugbot-tier-excluded.sh runs it, so a checkout that
+# dropped the executable bit still resolves; `|| rc=$?` keeps a failing or
+# unlaunchable resolver away from `set -e` and the EXIT trap.
+ESCALATION_STATE=""
+escalation_off() {
+  if [[ -z "$ESCALATION_STATE" ]]; then
+    ESCALATION_STATE="on"
+    local resolver="$SCRIPT_DIR/review-tier.sh" out="" rc=0 value=""
+    if [[ -f "$resolver" ]]; then
+      out="$(bash "$resolver" "$PR_NUMBER" --repo "$OWNER/$REPO" --json)" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        echo "escalate-review.sh: review-tier.sh exited $rc — REVIEW_ESCALATION unresolved, treating escalation as on (fail-open, issue #1807)" >&2
+      else
+        value="$(jq -r 'if type == "object" then (.escalation // "" | tostring) else "" end' <<<"$out" 2>/dev/null)" || value=""
+        [[ "$value" == "off" ]] && ESCALATION_STATE="off"
+      fi
+    fi
+  fi
+  [[ "$ESCALATION_STATE" == "off" ]]
 }
 
 while [[ $# -gt 0 ]]; do
@@ -83,8 +283,7 @@ fi
 
 for dep in gh jq python3; do
   if ! command -v "$dep" >/dev/null 2>&1; then
-    echo "escalate-review.sh: '$dep' not found on PATH" >&2
-    exit 2
+    die 2 "'$dep' not found on PATH"
   fi
 done
 
@@ -94,8 +293,7 @@ PR_STATE="$SCRIPT_DIR/pr-state.sh"
 GREPTILE_BUDGET="$SCRIPT_DIR/greptile-budget.sh"
 
 if [[ ! -x "$SESSION_STATE" || ! -x "$PR_STATE" || ! -x "$GREPTILE_BUDGET" ]]; then
-  echo "escalate-review.sh: required sibling scripts are missing or not executable" >&2
-  exit 2
+  die 2 "required sibling scripts are missing or not executable"
 fi
 
 CURRENT_REVIEWER="$("$SESSION_STATE" --get ".prs[\"$PR_NUMBER\"].reviewer // \"\"" 2>/dev/null || true)"
@@ -105,18 +303,15 @@ fi
 
 STATE_PATH="$("$PR_STATE" --pr "$PR_NUMBER" 2>/dev/null)"
 if [[ -z "$STATE_PATH" || ! -f "$STATE_PATH" ]]; then
-  echo "escalate-review.sh: failed to gather PR state for #$PR_NUMBER" >&2
-  exit 4
+  die 4 "failed to gather PR state for #$PR_NUMBER"
 fi
 
 read -r OWNER REPO HEAD_SHA < <(jq -r '[.pr.owner, .pr.repo, .pr.head_sha] | @tsv' "$STATE_PATH") || {
-  echo "escalate-review.sh: failed to read PR state JSON" >&2
-  exit 4
+  die 4 "failed to read PR state JSON"
 }
 
 if [[ -z "$OWNER" || -z "$REPO" || -z "$HEAD_SHA" ]]; then
-  echo "escalate-review.sh: PR state missing owner/repo/head_sha" >&2
-  exit 4
+  die 4 "PR state missing owner/repo/head_sha"
 fi
 
 # Gate-already-met short-circuit (issue reported on PR #619, 2026-07-21): before
@@ -150,8 +345,7 @@ VALID_APPROVERS="$(jq -r --arg sha "$HEAD_SHA" '
   | map(. as $l | select($doc | approval_valid($l)))
   | join(",")
 ' "$STATE_PATH")" || {
-  echo "escalate-review.sh: failed to evaluate primary-review-met check" >&2
-  exit 4
+  die 4 "failed to evaluate primary-review-met check"
 }
 PRIMARY_REVIEW_MET=false
 [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
@@ -164,6 +358,23 @@ PRIMARY_REVIEW_MET=false
 # itself stayed blocked, which is the same escalation stall this file exists to
 # prevent. Fetched once, only when an approval actually exists.
 HEAD_COMMIT_TS=""
+# Review-substance evidence (issues #875, #876). Computed ONCE, here, because
+# BOTH the freshness redemption immediately below and the hollow-approval guard
+# further down read it — merge-gate.sh likewise computes REVIEW_EVIDENCE once
+# and reuses it, and two evaluations of the same payload could drift apart
+# between the two verdicts. Fail-closed default: an unusable evaluator leaves
+# this at '{}', which reports no external evidence for any login, so redemption
+# can only ever be withheld by a broken evaluator, never granted.
+SUBSTANCE_JSON='{}'
+SUBSTANCE_OK=false
+# TOOLING FAULT, distinct from a negative verdict (issue #1465). SUBSTANCE_OK
+# alone cannot carry this: it is also false when the evaluator was never asked
+# (no approval on HEAD), which is an ordinary state and must escalate normally.
+# Set at the two OUTAGE sites below and nowhere else — in particular NOT at the
+# "no reviewer holds BOTH" branch further down, which is the evaluator answering,
+# nor at the freshness-filter failure, which the recorded decision does not scope
+# in. Read only by the evaluator-outage cap after AGE_SECONDS.
+EVALUATOR_UNUSABLE=false
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
   HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
   if [[ -z "$HEAD_COMMIT_TS" ]]; then
@@ -174,16 +385,91 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
     VALID_APPROVERS=""
     echo "escalate-review.sh: cannot verify approval freshness — HEAD commit timestamp unavailable; not reporting gate_met (issues #836, #875)" >&2
   else
+    # HEAD_COMMIT_TS is non-empty from here on, so the evaluator always gets the
+    # push_ts its temporal-inversion and capability-failure signals need. Same
+    # input projection merge-gate.sh uses, and no extra API calls — pr-state.sh
+    # already fetched reviews plus both comment endpoints.
+    REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
+    if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+      EVALUATOR_UNUSABLE=true
+      echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+    else
+      # resolved_comment_ids (issue #1632) is derived from the SAME state file —
+      # pr-state.sh already requests `databaseId` on every review-thread comment,
+      # so this costs no extra API call. It must be supplied here for the same
+      # reason the freshness parity suite exists: merge-gate.sh passes it, and an
+      # evaluator fed a poorer payload here would refuse a redemption the gate
+      # grants, sending a green PR to a PAID Greptile escalation.
+      #
+      # pr-state.sh projects `comments(first: 10)` per thread, so a thread longer
+      # than that contributes only its first ten ids. That degrades in the safe
+      # direction: an id we do not see reads as unresolved and still counts as a
+      # finding, and the FINDING itself is a thread's first comment.
+      SUBSTANCE_RAW="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
+          head_sha: $sha,
+          push_ts: $push,
+          reviews: (.comments.reviews // []),
+          pr_comments: (.comments.inline // []),
+          issue_comments: (.comments.conversation // []),
+          resolved_comment_ids: [ (.threads.all // [])[]
+                                  | select(.isResolved == true)
+                                  | (.comments.nodes // [])[]
+                                  | .databaseId
+                                  | select(. != null) ]
+        }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
+      # Structure, not just parseability (same test merge-gate.sh applies): the
+      # redemption term and the hollow guard both read .reviewers[<login>], and a
+      # well-formed-but-wrong shape would silently read as "nothing is
+      # substantive" for every reviewer.
+      if [[ -n "$SUBSTANCE_RAW" ]] && echo "$SUBSTANCE_RAW" \
+          | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+        SUBSTANCE_JSON="$SUBSTANCE_RAW"
+        SUBSTANCE_OK=true
+      else
+        # Unusable evaluator output. Fail closed to match merge-gate.sh, which
+        # die_local()s on the same condition: claiming gate_met here would stop
+        # escalation on a PR whose gate is simultaneously refusing to pass,
+        # leaving it stalled with no reviewer working on it.
+        EVALUATOR_UNUSABLE=true
+        echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+      fi
+    fi
+
     # Evaluated into a temporary first so a jq FAILURE is distinguishable from a
     # successful "every approval is stale" (BugBot review, PR #883). Both clear
     # VALID_APPROVERS, but only one is a degraded run, and silently reporting it
     # as "no valid approvers" would escalate to a PAID Greptile review on what is
     # really a tooling fault. The two sibling guards in this block both announce
     # themselves on stderr; this one used to be the exception.
+    #
+    # STALE-APPROVAL REDEMPTION (issue #1387, mirroring merge-gate.sh #876).
+    # A pure `submitted_at >= push` compare is STRICTER than the gate it fronts.
+    # CodeAnt PATCHes its EXISTING review object on a re-review — same review id,
+    # commit_id advanced to the new HEAD, submitted_at frozen at the original
+    # submission, because GitHub treats that field as immutable creation time. So
+    # every in-place re-review reads as permanently stale here, VALID_APPROVERS
+    # empties, and a PR whose merge gate already reports primary_review_met: true
+    # keeps escalating toward a PAID Greptile review with no reviewer needed
+    # (observed on PR #1373 at HEAD 39d0442). A caller stricter than the gate
+    # burns money exactly as a caller more permissive than the gate strands PRs.
+    #
+    # The redeeming term is external_evidence_on_head, NOT reviewer identity:
+    # "CodeAnt timestamps are unreliable, so skip staleness for CodeAnt" would
+    # re-open the hole #875 closed, since that bot also emits genuinely hollow
+    # approvals. CodeRabbit and CodeAnt get identical treatment. Nor can an
+    # approval redeem itself — review-substance.sh computes that flag from
+    # substance produced OUTSIDE the review object whose timestamp is in doubt,
+    # and excludes fixed run-start/completion markers and capability-failure
+    # notices, so a bot cannot certify its own freshness with a constant.
+    # The hollow-approval guard below still runs on whatever survives here, so
+    # redemption cannot launder a rubber stamp.
+    FRESH_EVAL=""
     FRESH_APPROVERS=""
+    REDEEMED_APPROVERS=""
     FRESHNESS_OK=true
-    FRESH_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
-      --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
+    FRESH_EVAL="$(jq -cn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
+      --arg logins "$VALID_APPROVERS" --argjson evidence "$SUBSTANCE_JSON" \
+      --slurpfile doc "$STATE_PATH" '
       # Canonicalise before comparing (BugBot review, PR #883): this is a
       # lexicographic string compare, so when two timestamps share a
       # whole-second prefix the zone suffix is the first differing character —
@@ -223,15 +509,40 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
       | ($push | canon_ts) as $push_c
       | [ $candidates[]
           | . as $l
-          | select(
-              ([ $d.comments.reviews[]?
-                 | select(.user.login == $l and (.commit_id // "") == $sha
-                          and .state == "APPROVED")
-                 | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
-              | ($approved_at != "") and ($approved_at >= $push_c)) ]
-      | join(",")')" || FRESHNESS_OK=false
+          | ([ $d.comments.reviews[]?
+               | select(.user.login == $l and (.commit_id // "") == $sha
+                        and .state == "APPROVED")
+               | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
+          | select($approved_at != "")
+          # Two terms, not one: fresh by its own timestamp, OR stale but redeemed
+          # by evidence this reviewer left on HEAD outside the review object.
+          # Keyed strictly by login — no allowlist, no identity branch.
+          | { login: $l,
+              fresh: ($approved_at >= $push_c),
+              redeemed: (($evidence.reviewers[$l].external_evidence_on_head // false) == true) }
+          | select(.fresh or .redeemed) ]
+      | { keep: [ .[].login ],
+          redeemed: [ .[] | select(.fresh | not) | .login ] }')" || FRESHNESS_OK=false
+    # A jq program can succeed and still hand back something unusable, so pin the
+    # shape — both keys, both arrays — before reading the two lists out of it.
+    # Checking only `has()` would let a non-array through, and the extractions
+    # below would then fail into empty strings, which read as "every approval is
+    # stale": a degraded run wearing a legitimate verdict.
+    if [[ "$FRESHNESS_OK" == "true" ]] \
+       && ! echo "$FRESH_EVAL" \
+          | jq -e '(.keep | type == "array") and (.redeemed | type == "array")' \
+            >/dev/null 2>&1; then
+      FRESHNESS_OK=false
+    fi
     if [[ "$FRESHNESS_OK" == "true" ]]; then
+      FRESH_APPROVERS="$(echo "$FRESH_EVAL" | jq -r '.keep | join(",")' 2>/dev/null || true)"
+      REDEEMED_APPROVERS="$(echo "$FRESH_EVAL" | jq -r '.redeemed | join(",")' 2>/dev/null || true)"
       VALID_APPROVERS="$FRESH_APPROVERS"
+      if [[ -n "$REDEEMED_APPROVERS" ]]; then
+        # Parallel to merge-gate.sh's #876 message: names the head SHA, says what
+        # was redeemed and why, so a redemption is never silent.
+        echo "escalate-review.sh: APPROVED on ${HEAD_SHA:0:7} from $REDEEMED_APPROVERS has a stale submitted_at (< $HEAD_COMMIT_TS) but left substantive evidence on this SHA outside the review object — in-place re-review edit, counting it as fresh to match merge-gate.sh (issue #876, escalation parity #1387)" >&2
+      fi
     else
       VALID_APPROVERS=""
       echo "escalate-review.sh: approval-freshness filter failed to evaluate (malformed state payload or jq error) — treating every approval as unverifiable; not reporting gate_met (issues #836, #875)" >&2
@@ -242,50 +553,37 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
 fi
 
 # Review-substance guard (issue #875): the check above only asks whether an
-# APPROVED exists on HEAD, not whether anything reviewed it. merge-gate.sh now
-# discounts hollow approvals, so without the same test here a rubber stamp would
-# short-circuit escalation ("gate_met") while the gate itself stays blocked —
-# the PR would sit with no reviewer working on it and no escalation in flight.
-# Same evaluator, same definition, no extra API calls (pr-state.sh already
-# fetched reviews + both comment endpoints).
+# APPROVED exists on HEAD and whether its timestamp holds up, not whether
+# anything reviewed it. merge-gate.sh discounts hollow approvals, so without the
+# same test here a rubber stamp would short-circuit escalation ("gate_met")
+# while the gate itself stays blocked — the PR would sit with no reviewer
+# working on it and no escalation in flight. It is also what stops the #876
+# redemption above from laundering one: an approval whose stale timestamp was
+# redeemed still has to clear this guard on its own substance.
+#
+# Reuses the SUBSTANCE_JSON computed alongside the freshness filter (no second
+# review-substance.sh call): one evaluation, so the redemption verdict and the
+# hollow verdict can never disagree about the same payload.
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
-  REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
-  if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+  if [[ "$SUBSTANCE_OK" != "true" ]]; then
+    # The evaluator was missing or returned an unusable shape; that was announced
+    # on stderr where it was computed. Fail closed here, matching merge-gate.sh,
+    # which die_local()s on the same condition: claiming gate_met would stop
+    # escalation on a PR whose gate is simultaneously refusing to pass, leaving
+    # it stalled with no reviewer working on it.
     PRIMARY_REVIEW_MET=false
-    echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
-  else
-    # HEAD_COMMIT_TS was fetched by the freshness guard above and is guaranteed
-    # non-empty here (that guard clears PRIMARY_REVIEW_MET otherwise), so the
-    # evaluator always gets the push_ts its temporal-inversion and
-    # capability-failure signals need.
-    SUBSTANCE_JSON="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
-        head_sha: $sha,
-        push_ts: $push,
-        reviews: (.comments.reviews // []),
-        pr_comments: (.comments.inline // []),
-        issue_comments: (.comments.conversation // [])
-      }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
-    if [[ -z "$SUBSTANCE_JSON" ]] || ! echo "$SUBSTANCE_JSON" \
-        | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
-      # Unusable evaluator output. Fail closed to match merge-gate.sh, which
-      # die_local()s on the same condition: claiming gate_met here would stop
-      # escalation on a PR whose gate is simultaneously refusing to pass, leaving
-      # it stalled with no reviewer working on it.
-      PRIMARY_REVIEW_MET=false
-      echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
-    elif ! echo "$SUBSTANCE_JSON" | jq -e --arg valid "$VALID_APPROVERS" '
+  elif ! echo "$SUBSTANCE_JSON" | jq -e --arg valid "$VALID_APPROVERS" '
             ($valid | split(",") | map(select(length > 0))) as $v
             | [ (.substantive // [])[] | select(. as $s | $v | index($s)) ]
             | length > 0' >/dev/null 2>&1; then
-      # The SAME reviewer must clear both gates (CodeAnt review, PR #883).
-      # Testing `.substantive | length > 0` on its own let a substantive but
-      # RETRACTED CodeRabbit approval satisfy the check while the fresh approval
-      # actually on the table was a hollow CodeAnt stamp — emitting gate_met
-      # while merge-gate.sh rejected both, which strands the PR with no reviewer
-      # working on it and no escalation in flight.
-      PRIMARY_REVIEW_MET=false
-      echo "escalate-review.sh: no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence (valid approvals: ${VALID_APPROVERS:-none}; substantive: $(echo "$SUBSTANCE_JSON" | jq -r '(.substantive // []) | join(", ") | if . == "" then "none" else . end'); hollow: $(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ") | if . == "" then "none" else . end')) — not treating the gate as met (issue #875)" >&2
-    fi
+    # The SAME reviewer must clear both gates (CodeAnt review, PR #883).
+    # Testing `.substantive | length > 0` on its own let a substantive but
+    # RETRACTED CodeRabbit approval satisfy the check while the fresh approval
+    # actually on the table was a hollow CodeAnt stamp — emitting gate_met
+    # while merge-gate.sh rejected both, which strands the PR with no reviewer
+    # working on it and no escalation in flight.
+    PRIMARY_REVIEW_MET=false
+    echo "escalate-review.sh: no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence (valid approvals: ${VALID_APPROVERS:-none}; substantive: $(echo "$SUBSTANCE_JSON" | jq -r '(.substantive // []) | join(", ") | if . == "" then "none" else . end'); hollow: $(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ") | if . == "" then "none" else . end')) — not treating the gate as met (issue #875)" >&2
   fi
 fi
 
@@ -294,18 +592,19 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
 fi
 
 COMMITS_JSON="$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/commits?per_page=100" 2>/dev/null | jq -s 'add // []')" || {
-  echo "escalate-review.sh: failed to fetch PR commits" >&2
-  exit 4
+  die 4 "failed to fetch PR commits"
 }
 
+# A COMMIT date, which is NOT when this SHA became HEAD. It is only the FLOOR of
+# the head-observation anchor computed at AGE_SECONDS below (issue #1517); do not
+# feed it to an age comparison directly.
 PUSH_TIMESTAMP="$(jq -r --arg sha "$HEAD_SHA" '
   (map(select(.sha == $sha)) | last // {})
   | .commit.committer.date // .commit.author.date // empty
 ' <<<"$COMMITS_JSON")"
 
 if [[ -z "$PUSH_TIMESTAMP" ]]; then
-  echo "escalate-review.sh: could not determine push timestamp for #$PR_NUMBER" >&2
-  exit 4
+  die 4 "could not determine push timestamp for #$PR_NUMBER"
 fi
 
 # Age in seconds of an ISO-8601 timestamp, clamped at 0. Two callers share it —
@@ -337,8 +636,152 @@ print(max(0, int((datetime.now(timezone.utc) - ts).total_seconds())))
 PY
 }
 
-AGE_SECONDS="$(iso_age_seconds "$PUSH_TIMESTAMP")"
+# HEAD-OBSERVATION ANCHOR (issue #1517 — CodeRabbit's post-merge review of PR #1203).
+#
+# PUSH_TIMESTAMP is a COMMIT date, not the moment this SHA became HEAD: the same
+# class of mistake as the commit_id re-pointing trap, where commit metadata gets
+# read as push attribution. A force-push can move an OLDER commit onto HEAD, and
+# every consumer of AGE_SECONDS then measures from that older date.
+#
+# The harm is concrete, not theoretical. `CR_BANNER_AGE -le AGE_SECONDS` and
+# `BUGBOT_TRIGGER_AGE -le AGE_SECONDS` both encode "posted after the push", so an
+# inflated AGE_SECONDS lets a CodeRabbit rate-limit banner or an `@cursor review`
+# trigger left over from the PRIOR head read as current — emitting polling_cr for
+# up to a full retry window on a signal that belongs to a different HEAD. That is
+# precisely the escalation stall this file exists to prevent.
+#
+# The anchor is max(commit date, newest `head_ref_force_pushed` event), expressed
+# as min() over AGES so both timestamps go through the ONE parsing rule this file
+# already owns. A second lexicographic timestamp compare is deliberately avoided
+# here for the reason iso_age_seconds states above: ts-normalizer-parity.test.sh
+# pins the single `def canon_ts:` in this file against merge-gate.sh's norm_ts,
+# and a near-copy under another name reintroduces exactly the drift that guard
+# exists to prevent.
+#
+# SAFE BY CONSTRUCTION — the anchor is never LATER than the true moment this SHA
+# became HEAD. A commit cannot be pushed before it exists, and the newest
+# force-push either IS when the current SHA became HEAD or precedes a later
+# ordinary push that set it. So this never understates age; it only removes the
+# overstatement. Every consumer therefore moves in the same direction: keep
+# polling the current tier a little longer rather than escalate to a paid one on
+# evidence about a previous HEAD.
+#
+# RESIDUAL, known and unchanged: a commit authored well before it was pushed with
+# no force-push involved still anchors on the commit date. GitHub's timeline
+# records no event for an ordinary push, so there is nothing to read — this
+# narrows the defect to that case rather than closing it outright.
+#
+# FAILS SOFT: an unreachable, empty, or unparseable timeline leaves AGE_SECONDS
+# exactly as it is today. The ISO shape test is required rather than optional
+# because iso_age_seconds returns 0 for anything it cannot parse, and 0 would
+# read here as "HEAD is brand new" — the stall direction being fixed.
+#
+# The shape test is ANCHORED AT BOTH ENDS (CodeRabbit CLI, PR for #1517). A
+# prefix match would admit `…T12:00:00-GARBAGE`: well-formed for the first
+# nineteen characters, unparseable to iso_age_seconds, and therefore scored 0 —
+# the exact failure the test is here to stop, reached through the test itself.
+# The accepted zone suffixes are the two UTC spellings datetime.fromisoformat
+# handles on every Python this repo supports once a trailing `Z` is mapped; the
+# compact `+0000` form and genuine offsets are refused on purpose, degrading to
+# the commit date rather than risking a wrong instant.
+#
+# Not a meta-guard L violation. That guard (escalate-review-gate-met.test.sh)
+# bans a direct per-commit check-run fetch from this file, so check-run data
+# keeps coming from pr-state.sh's deduped bundle. This call reads the PR
+# TIMELINE — content the bundle does not carry, and not check-run data at all.
+# The guard is a source grep, so do not spell its banned path here even in prose.
+FORCE_PUSH_TS="$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/timeline?per_page=100" 2>/dev/null \
+  | jq -rs '
+      [ .[]? | .[]?
+        | select(type == "object")
+        | select((.event // "") == "head_ref_force_pushed")
+        | (.created_at // "")
+        | select(. != "") ]
+      | sort | last // ""
+    ' 2>/dev/null || true)"
 
+AGE_SECONDS="$(iso_age_seconds "$PUSH_TIMESTAMP")"
+if [[ "$FORCE_PUSH_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|\+00:00)$ ]]; then
+  FORCE_PUSH_AGE="$(iso_age_seconds "$FORCE_PUSH_TS")"
+  if [[ "$FORCE_PUSH_AGE" -lt "$AGE_SECONDS" ]]; then
+    AGE_SECONDS="$FORCE_PUSH_AGE"
+  fi
+fi
+
+# --- BEGIN evaluator-outage cap (issue #1465) ---
+# EVALUATOR-OUTAGE CAP (issue #1465). Recorded decision, 2026-09-02: option 3,
+# bounded suppression, plus option 4's documentation of the asymmetry.
+#
+# THE ASYMMETRY IS DELIBERATE — this is the router half; merge-gate.sh carries
+# the matching note at its own review-substance.sh sites. The two scripts call
+# the SAME evaluator and answer different questions, so they fail differently on
+# the same outage:
+#
+#   merge-gate.sh asks "may this merge?" — die_local(), refuse to answer. Safe:
+#     the refusal reaches a human or an agent at merge time, and nothing merges
+#     on a verdict nobody produced.
+#   escalate-review.sh asks "who reviews this next?" — polled every 60 s. It may
+#     NOT refuse: every caller's `case` treats an unrecognised STATUS as fatal
+#     (`*)` -> exit 1), and an aborted router routes nobody, which is exactly the
+#     stall this file exists to prevent. So it degrades to its CHEAPEST verdict
+#     instead of aborting, and does so for a bounded time.
+#
+# WHAT WENT WRONG WITHOUT IT: an unusable evaluator forces PRIMARY_REVIEW_MET
+# false above, which is indistinguishable here from "no reviewer has approved".
+# A sustained outage therefore walked the whole chain and authorised a PAID
+# Greptile review that no reviewer had actually withheld — a tooling fault
+# spending money (CodeAnt, PR #1463).
+#
+# THE CAP IS A CAP, not a Greptile-only brake. `emit()` exits, so inside the
+# window `switch_bugbot`, `budget_exhausted` and `trigger_greptile` are all
+# unreachable. Suppressing switch_bugbot as well is the point, not collateral:
+# BugBot is the highest per-review cost in the stack (bugbot.md) AND switching is
+# STICKY and one-way — a PR that falls to BugBot never returns to the CR path
+# (cr-merge-gate.md Step 1). Making a permanent ownership change on the strength
+# of a broken local script is the same class of harm as the paid trigger.
+# `gate_met` is already unreachable (the outage forced PRIMARY_REVIEW_MET false),
+# so the cap is total rather than partial.
+#
+# ACCEPTED, BOUNDED COST: inside the window the free never-invited
+# `@cursor review` route (issue #935) and the `bugbot_installed` cache are
+# deferred — by at most EVALUATOR_OUTAGE_CAP_SECONDS, and only when the evaluator
+# is genuinely broken. Past the cap this guard does nothing and the cascade below
+# runs unchanged, so a PERMANENT outage can never strand the PR; the existing
+# brakes (BugBot arming, the CR retry window, `greptile-budget.sh --check` plus
+# the caller's mandatory `--consume`) still gate paid spend on that resumed path.
+#
+# NEITHER SIDE IS SILENT. The two outage sites above already say what broke; the
+# lines here say what it COST — suppression while it holds, resumption when it
+# lapses — so a per-cycle grep for `DEGRADED:` sees the whole outage, not half of
+# it. Fixing the evaluator is what ends either message.
+#
+# The BEGIN/END markers are load-bearing, and they enclose this comment as well
+# as the code: tests/escalate-review-evaluator-outage.test.sh strips exactly this
+# block to reconstruct pre-change behaviour for its negative control, and what
+# survives has to be a file that neither runs nor documents the feature. Hermetic
+# on purpose — CI checks out shallow, and origin/main carries the fix once this
+# merges, so a git-ref control would skip in the one environment it protects and
+# silently invert in the other. The flag assignments deliberately stay OUTSIDE
+# the markers: nothing else reads EVALUATOR_UNUSABLE (the test asserts that), so
+# the strip isolates this guard rather than the flag that feeds it.
+EVALUATOR_OUTAGE_CAP_SECONDS=3600
+if [[ "$EVALUATOR_UNUSABLE" == "true" ]]; then
+  if [[ "$AGE_SECONDS" -le "$EVALUATOR_OUTAGE_CAP_SECONDS" ]]; then
+    echo "escalate-review.sh: DEGRADED: review-substance.sh unavailable — paid escalation suppressed; capping the verdict at polling_cr while the PR is inside the ${EVALUATOR_OUTAGE_CAP_SECONDS}s outage window (age ${AGE_SECONDS}s, issue #1465)" >&2
+    emit "polling_cr"
+  fi
+  echo "escalate-review.sh: DEGRADED: review-substance.sh unavailable — outage window of ${EVALUATOR_OUTAGE_CAP_SECONDS}s exceeded (age ${AGE_SECONDS}s); resuming normal escalation so a permanent outage cannot strand this PR (issue #1465)" >&2
+fi
+# --- END evaluator-outage cap (issue #1465) ---
+
+# DELIBERATELY NOT WIDENED with the banner parsers below (issue #1364). This is
+# the windowless commit-status/check-run shape (b) from cr-rate-limits.md, and it
+# is a fast path PAST the CR wait, not into it: a match here skips the 720s CR
+# timeout and escalates sooner. Its harm asymmetry therefore runs OPPOSITE to the
+# retry-window parser's — over-matching there parks a PR on a wait it never
+# earned, over-matching here spends a lower tier early. Loose prose matching is
+# the conservative choice for this direction, which is why a wording drift that
+# broke the window parser leaves this one correct. Logic unchanged.
 CR_RATE_LIMITED="$(jq -r '
   def text: [(.title // ""), (.description // ""), (.state // ""), (.conclusion // "")] | join(" ");
   (
@@ -363,7 +806,64 @@ CR_REVIEW_ON_HEAD="$(jq -r --arg sha "$HEAD_SHA" '
   | length > 0
 ' "$STATE_PATH")"
 
-if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 720 && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
+# CR-PATH STUCK STATE (issue #1736). `CR_REVIEW_ON_HEAD` keeps the gate above in
+# polling_cr for as long as CodeRabbit has ANY review on HEAD. That is right
+# while CodeRabbit may still approve, and wrong forever when it cannot: in a
+# repo where CodeRabbit only ever posts COMMENTED, CodeAnt is the sole possible
+# CR-path approver, and once CodeAnt's only approval on HEAD is a pre-run stub
+# whose run has already COMPLETED without redeeming it (review-substance.sh
+# `.pre_run_stuck`), no amount of polling changes the verdict on this SHA —
+# CodeAnt never re-approves a SHA it already approved. Observed on
+# auerbachb/sales-kit PR #114 at 69650c8: CI green, 0 unresolved threads,
+# reviewDecision APPROVED, and polling_cr indefinitely.
+#
+# Every term is required, and every unreadable term reads as NOT stuck, so this
+# can only ever release the existing wait, never invent an escalation:
+#   1. the evaluator answered (SUBSTANCE_OK) and lists a stuck approver — the
+#      SAME review_evidence merge-gate.sh reports, so the two agree on why;
+#   2. CodeRabbit has posted no APPROVED anywhere on this PR (comment-only);
+#   3. CodeRabbit's latest review on HEAD is older than the 720 s CR window;
+#   4. the thread snapshot exists and holds zero unresolved threads;
+#   5. no non-reviewer check-run on HEAD is incomplete or blocking.
+# On a match the PR falls through to the ordinary BugBot -> Greptile chain below.
+CR_SILENCE_WINDOW_SECONDS=720
+CR_PATH_STUCK=false
+if [[ "$SUBSTANCE_OK" == "true" && "$CR_RATE_LIMITED" != "true" && "$CR_REVIEW_ON_HEAD" == "true" \
+      && "$AGE_SECONDS" -gt "$CR_SILENCE_WINDOW_SECONDS" ]]; then
+  STUCK_APPROVERS="$(jq -r '(.pre_run_stuck // []) | join(",")' <<<"$SUBSTANCE_JSON" 2>/dev/null || echo "")"
+  CR_LAST_REVIEW_TS=""
+  STUCK_SHAPE="$(jq -r --arg sha "$HEAD_SHA" '
+    def blocking: . == "failure" or . == "timed_out" or . == "action_required"
+                  or . == "startup_failure" or . == "stale";
+    ([.comments.reviews[]? | select(.user.login == "coderabbitai[bot]" and .state == "APPROVED")]
+       | length == 0) as $cr_comment_only
+    | ([.comments.reviews[]? | select(.user.login == "coderabbitai[bot]" and ((.commit_id // "") == $sha))
+        | (.submitted_at // "")] | sort | last // "") as $cr_last
+    | ((.threads | type) == "object" and (.threads.all | type) == "array"
+       and ([.threads.all[] | select(.isResolved != true)] | length) == 0) as $threads_clear
+    # An absent or malformed check-run list is unreadable, never clear.
+    | ((.check_runs.all | type) == "array" and
+       ([.check_runs.all[]
+        # Reviewer runs are not CI. Both are excluded by their publishing app,
+        # never by check name alone (issue #956 structural guard): a pending or
+        # failing "CodeRabbit" run from any other app is CI like any other.
+        | select(((.name // "") == "CodeRabbit" and (.app.slug // "") == "coderabbitai") | not)
+        | select((.app.slug // "") != "cursor")
+        | select((.status // "") != "completed" or ((.conclusion // "") | blocking))]
+       | length == 0)) as $ci_clear
+    | [ ($cr_comment_only and $threads_clear and $ci_clear), $cr_last ] | @tsv
+  ' "$STATE_PATH" 2>/dev/null || printf 'false\t\n')"
+  IFS=$'\t' read -r STUCK_SHAPE_OK CR_LAST_REVIEW_TS <<<"$STUCK_SHAPE" || true
+  if [[ -n "$STUCK_APPROVERS" && "${STUCK_SHAPE_OK:-false}" == "true" && -n "${CR_LAST_REVIEW_TS:-}" ]]; then
+    if [[ "$(iso_age_seconds "$CR_LAST_REVIEW_TS")" -gt "$CR_SILENCE_WINDOW_SECONDS" ]]; then
+      CR_PATH_STUCK=true
+      echo "escalate-review.sh: CR path stuck on ${HEAD_SHA:0:7} — CodeRabbit is comment-only, the only approval ($STUCK_APPROVERS) is a pre-run stub its own completed run did not redeem (review_evidence.pre_run_stuck), threads resolved, CI clear; escalating instead of polling_cr (issue #1736)" >&2
+    fi
+  fi
+fi
+
+if [[ "$CR_RATE_LIMITED" != "true" && "$CR_PATH_STUCK" != "true" \
+      && ! ( "$AGE_SECONDS" -gt "$CR_SILENCE_WINDOW_SECONDS" && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
   emit "polling_cr"
 fi
 
@@ -421,8 +921,7 @@ read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
     ) as $genuine
   | [$failed, $genuine] | @tsv
 ' "$STATE_PATH") || {
-  echo "escalate-review.sh: failed to classify BugBot activity" >&2
-  exit 4
+  die 4 "failed to classify BugBot activity"
 }
 
 # Same app-scoped predicate as the classifier above (issue #956) — a same-named
@@ -453,8 +952,7 @@ BUGBOT_TRIGGER_TS="$(jq -r '
    | select(. != "")]
   | sort | last // ""
 ' "$STATE_PATH")" || {
-  echo "escalate-review.sh: failed to scan for a BugBot trigger comment" >&2
-  exit 4
+  die 4 "failed to scan for a BugBot trigger comment"
 }
 
 # Only a trigger that POSTDATES the HEAD commit counts. A trigger left over from
@@ -481,14 +979,12 @@ case "$CACHED_BUGBOT_INSTALLED" in
     if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_FAILED" == "true" || "$BUGBOT_GENUINE" == "true" ]]; then
       BUGBOT_INSTALLED="true"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=true" 2>/dev/null || {
-        echo "escalate-review.sh: failed to cache bugbot_installed=true" >&2
-        exit 4
+        die 4 "failed to cache bugbot_installed=true"
       }
     elif [[ "$AGE_SECONDS" -ge 600 ]]; then
       BUGBOT_INSTALLED="false"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=false" 2>/dev/null || {
-        echo "escalate-review.sh: failed to cache bugbot_installed=false" >&2
-        exit 4
+        die 4 "failed to cache bugbot_installed=false"
       }
     else
       BUGBOT_INSTALLED="false"
@@ -507,7 +1003,7 @@ esac
 # fetch added here (meta-guard test L). The gate-satisfiable evaluation lives in
 # merge-gate.sh where CHECK_RUNS_JSON and LAST_COMMIT_TS are already available.
 if [[ "$BUGBOT_GENUINE" == "true" ]]; then
-  emit "switch_bugbot"
+  emit_switch_bugbot
 fi
 
 # A usage-limit/couldn't-run failure is not a reason to keep waiting out the
@@ -552,19 +1048,240 @@ fi
 # leaves this branch open and routes to the free `@cursor review` instead.
 if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_GENUINE" != "true" \
       && "$BUGBOT_CHECK_PRESENT" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
-  emit "switch_bugbot"
+  emit_switch_bugbot
 fi
 
-BUDGET_CHECK_RC=0
-BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)" || BUDGET_CHECK_RC=$?
-if [[ $BUDGET_CHECK_RC -ge 2 ]]; then
-  echo "escalate-review.sh: failed to check Greptile budget" >&2
-  exit 4
+# CodeRabbit retry-window grace (issue #1199). CodeRabbit's `Review limit reached`
+# banner is a BOUNDED, self-healing wait, not a tier failure: it names its own
+# retry window — "**Next review available in:** **12 minutes**" historically,
+# "**Next included review available in 27 minutes.**" as of 2026-08. Escalating past
+# it spends a LOWER tier while the allowance we already paid for is still coming
+# back — measured on 183 of 244 PRs in the 2026-08 audit, where that banner was
+# CodeRabbit's ONLY output for the PR because nothing ever waited it out.
+# Evidence and role rationale: .claude/reference/ai-review-tool-audit-2026-08.md,
+# ai-review-chain-roles-decision.md.
+#
+# PLACEMENT: immediately before the Greptile budget check, and deliberately NOT
+# up beside the other CodeRabbit logic. Everything that can still emit above this
+# point is a BETTER answer than waiting — `switch_bugbot` for a BugBot that has
+# genuinely responded, and the free `@cursor review` route for one that was never
+# invited. Sitting higher would delay both by up to a full retry window for no
+# gain. By here the only remaining verdicts are `trigger_greptile` and
+# `budget_exhausted`, which is exactly what the wait is meant to displace.
+#
+# This block can only ADD `polling_cr`; it never causes an escalation that would
+# not otherwise happen. Every uncertain case therefore falls through to the
+# pre-#1199 conditional below unchanged: no banner, an unparseable banner
+# timestamp, no readable window, a banner predating the HEAD commit, or a CR
+# review already on HEAD. A wording change by CodeRabbit degrades this to
+# today's behaviour rather than stalling a PR.
+#
+# That degradation is SILENT, and it fired within three weeks (issue #1364):
+# CodeRabbit inserted one word, the window read 0, and PRs escalated to a sticky
+# Greptile assignment mid-allowance with nothing in the output to say why. Fail-
+# safe direction, no failure signal. Hence the anchor-keyed pattern and the
+# wording-independent marker below — and the standing lesson that a parser keyed
+# on vendor prose needs the prose recorded where the next drift is visible
+# (.claude/reference/cr-rate-limits.md).
+#
+# The honoured wait is CAPPED so a malformed or absurd window ("in 900 hours")
+# cannot park a PR: past the cap the PR escalates on the normal schedule.
+CR_RETRY_WINDOW_CAP_SECONDS=3600
+
+# Newest banner that BOTH matches the rate-limit text AND carries a readable
+# window. `window_seconds` emits `empty` when no window can be read, which drops
+# that comment from the array entirely — a banner we cannot time is the same as
+# no banner here. Asterisks are stripped first because the window is wrapped in
+# markdown emphasis in the live text.
+# WINDOW FIRST, ts second. `read` strips leading IFS whitespace — and a tab is
+# IFS whitespace even when IFS is set to just a tab — so a LEADING empty field
+# collapses and the next value slides into the first variable. The window always
+# has a value (0 when absent) while the ts may be empty, so putting the window
+# first makes the only possible empty field a TRAILING one, which `read` does
+# preserve.
+read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
+  def window_seconds:
+    # `capture` emits an EMPTY GENERATOR on no-match, not null — so binding it
+    # directly with `as` yields zero outputs and silently deletes the whole
+    # enclosing object, making any null-branch below unreachable. Collecting into
+    # an array first turns "no match" into a real null this code can act on.
+    # KEYED ON THE STABLE ANCHORS, NOT THE SENTENCE (issue #1364). CodeRabbit has
+    # already reworded this line twice: `Next review available in: 12 minutes`
+    # became `Next included review available in 27 minutes.` — an inserted word
+    # AND a dropped colon. The colon was already optional; the inserted word is
+    # what silently zeroed the window and escalated PRs mid-allowance. What does
+    # not drift is `next` … `review available in` … number + unit, so that is all
+    # this matches, with a BOUNDED 0-2 word allowance for the next insertion.
+    # Bounded, not `.*`: the banner is selected before this runs, but an
+    # unbounded bridge could still reach across a paragraph and time the PR off
+    # an unrelated number. `\\b` keeps `next` a word, not a suffix. The internal
+    # separators are `\\s+` rather than literal spaces because THIS FUNCTION
+    # creates the variation it has to survive: stripping the markdown emphasis
+    # off `**review**  **available in**` leaves a double space behind.
+    #
+    # THE COPULA SLOT, and why it is a literal rather than a second `{0,2}`
+    # (CodeAnt review of this PR). CodeRabbit also ships the sentence in the
+    # future tense — `Your next review will be available in 22 minutes.`,
+    # captured verbatim on PR #554 (2026-07-16) and tolerated by
+    # `lib/pr-state-classify.jq` since #557. That insertion sits between `review`
+    # and `available`, so the 0-2 allowance above — which is on the other side of
+    # `review` — could never reach it, and this parser read a zero window from a
+    # phrasing its sibling had already been reading for six weeks. Both are now
+    # keyed on ONE anchor shape; keep them identical (`cr-rate-limits.md`).
+    # Literal `will be`, not a generic bridge, because the same shape is used by
+    # the classifier, which has NO author gate: `available in <number>` is
+    # ordinary prose, and a generic slot there would let a real finding saying
+    # "the next review is available in the dashboard" classify as a rate-limit
+    # ack. Slot one guards an adjective position ahead of a noun, where the next
+    # insertion is unguessable; this one guards a copula with two observed forms.
+    # An unrecognised third form degrades to escalation, not to a stalled PR.
+    ([ ascii_downcase | gsub("\\*"; "")
+       | capture("\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+(?:will\\s+be\\s+)?available\\s+in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
+     | first) as $m
+    | if $m == null then 0
+      else ($m.n | tonumber)
+           * (if $m.unit == "hour" then 3600 elif $m.unit == "minute" then 60 else 1 end)
+      end;
+  # NEWEST banner first, THEN read its window — never the reverse (CodeRabbit
+  # review, PR #1203). "Newest" is by the edit-aware ts built below, so it means
+  # MOST RECENTLY STATED, not most recently born (issue #1440): between a banner
+  # CodeRabbit is still refreshing and one it has abandoned, the refreshed one is
+  # the live statement even when it was posted first. With one in-place-edited
+  # banner per PR — the shape CodeRabbit actually ships — this list is usually a
+  # single element and the ordering is moot; it matters only for the leftovers of
+  # a wording change, where the live statement is still the one to read.
+  #
+  # An unreadable window yields 0 rather than dropping the banner from the list,
+  # because dropping it would let an OLDER readable banner win the sort: a
+  # CodeRabbit wording change would then hand the PR a grace
+  # period computed from a stale window it had already served. With 0, the
+  # newest-banner-has-no-window case grants no grace at all, which is the
+  # fail-toward-escalation direction this block is built on.
+  [ .comments.conversation[]?
+    | select((.user.login // "") == "coderabbitai[bot]")
+    # Two independent signals, either sufficient (issue #1364). The heading prose
+    # is what drifts; the auto-generated marker CodeRabbit stamps on every one of
+    # these comments does not, and it is machine-readable by construction. The
+    # author `select` above is untouched — a foreign author quoting either signal
+    # still buys no grace. Detection alone grants nothing: a matched banner must
+    # still yield a readable, unelapsed, uncapped window below.
+    #
+    # The marker alternative is scoped to an HTML COMMENT, not to the phrase
+    # anywhere in the body (CodeRabbit CLI review of this PR). CodeRabbit writes
+    # prose too, and the author gate cannot separate its banners from its
+    # walkthroughs — so a bare phrase match would let a summary that merely says
+    # "rate limited by coderabbit.ai" next to any future-tense window sentence
+    # buy a grace period. `<!--[^>]*` is the machine-marker anchor; the words
+    # inside stay tolerant so this does not re-acquire the sentence-brittleness
+    # the rest of this fix removes.
+    #
+    # DELIBERATELY still excludes the ADAPTIVE-LIMITS notice — the `You are
+    # currently rate limited … Your next review will be available in 22 minutes.`
+    # family (PR #554), which carries neither signal. (No raw apostrophe in this
+    # comment on purpose: it lives inside a single-quoted jq program, where one
+    # would close the quote and break the script.) That exclusion is correct, not
+    # an oversight: CR wraps that notice inside a `Full review finished.` auto-
+    # reply, so it reports a review that ALREADY LANDED and times the NEXT one.
+    # There is nothing to wait out on this HEAD, and granting grace on it would
+    # park a reviewed PR. The classifier tolerates that wording regardless,
+    # because its only question is whether the comment is a finding; this block
+    # asks whether CodeRabbit still owes us a review, which that body answers no.
+    | select((.body // "") | test("review limit reached|<!--[^>]*rate[- ]?limited by coderabbit\\.ai"; "i"))
+    # EDIT-AWARE TIMESTAMP (issue #1440). CodeRabbit keeps ONE banner per PR and
+    # REWRITES it in place as the allowance recovers, refreshing the window
+    # inside it; it does not post a second comment. Reading `created_at` alone
+    # therefore times the banner from its BIRTH, which on a comment edited in
+    # place is the wrong clock. Observed live on PR #1436: a banner born
+    # 01:55:37Z was still being refreshed at 02:05:02Z and still said 33 minutes
+    # remained, yet aged from birth it predated every push and bought no grace at
+    # all. The verdict fell through to a sticky, one-way, budget-consuming
+    # Greptile downgrade while the allowance we had already paid for was still
+    # coming back — the exact outcome this block exists to prevent.
+    #
+    # MAX of the two, not a bare `updated_at`, and the difference is load-
+    # bearing. A bundle written before pr-state.sh projected the field — or any
+    # future payload that stops carrying it — yields no edit time, and a bare
+    # read would then produce an empty ts, which the `select` below DELETES.
+    # The whole grace would disappear SILENTLY on a payload-shape change rather
+    # than merely losing precision, which is the failure mode #1364 already cost
+    # us once. Under max the birth time stays the floor, so a missing edit time
+    # costs nothing beyond the pre-#1440 behaviour. Both fields are GitHub UTC
+    # `Z` strings of one fixed width, so lexicographic max IS chronological max —
+    # the same property `sort_by` below already relies on.
+    #
+    # Non-ISO values are FILTERED OUT rather than compared, because max is
+    # lexicographic: a malformed edit time sorting above a valid birth time would
+    # otherwise win the comparison and then fail the ISO shape check in bash,
+    # turning a perfectly readable banner into no grace. Filtering keeps the
+    # good value and leaves the fallback intact.
+    | { ts: ([ .created_at, .updated_at
+               | strings
+               | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}")) ]
+             | max // ""),
+        w: ((.body // "") | window_seconds) }
+    | select(.ts != "") ]
+  | sort_by(.ts) | last // {ts: "", w: 0}
+  | [ (if .w > $cap then $cap else .w end), .ts ] | @tsv
+' "$STATE_PATH") || { CR_BANNER_WINDOW_S=0; CR_BANNER_TS=""; }
+
+# The ISO shape is checked before trusting the value: iso_age_seconds returns 0
+# for anything unparseable, and 0 would read here as "posted just now", i.e.
+# inside every window — turning a timestamp we cannot read into an indefinite
+# wait. Failing toward the existing escalation is the safe direction.
+if [[ -n "$CR_BANNER_TS" && "$CR_REVIEW_ON_HEAD" != "true" \
+      && "$CR_BANNER_WINDOW_S" =~ ^[0-9]+$ && "$CR_BANNER_WINDOW_S" -gt 0 \
+      && "$CR_BANNER_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+  CR_BANNER_AGE="$(iso_age_seconds "$CR_BANNER_TS")"
+  # Only a banner POSTDATING the HEAD commit describes this push; a leftover from
+  # an earlier SHA must not buy the current one a grace period. Both ages are
+  # measured from now by the same function, so "no older than the push" is
+  # age <= AGE_SECONDS.
+  #
+  # PER-SHA vs ACCOUNT-WIDE — re-decided for issue #1440, KEPT, and the reasoning
+  # is recorded here because the axis is not self-evident. CodeRabbit's cap is
+  # account-wide, not per-SHA, so a banner raised on an earlier SHA can still be
+  # describing a cap that is live right now; on that reading the per-SHA term
+  # looks like the wrong axis outright, and #1440 asked whether it should go.
+  #
+  # It stays, because the term was never really asking "was this banner raised
+  # for this SHA" — it was asking "is this banner a live statement or an
+  # abandoned leftover", and it was answering with the wrong clock. That was the
+  # whole #1440 defect. `CR_BANNER_TS` is now the banner's LAST-STATED time, so
+  # the same comparison discriminates the thing it was reaching for: CodeRabbit
+  # rewrites the banner in place whenever it declines a review, so a cap that is
+  # still biting produces a fresh edit after the push and grace is granted, while
+  # a cap that has cleared leaves the banner untouched and it ages out. The
+  # residual — a push CodeRabbit has not yet answered at all — correctly grants
+  # nothing: absent any statement from CodeRabbit about this push, there is no
+  # evidence a cap applies to it, and waiting on CodeRabbit's own signal is the
+  # honest default.
+  #
+  # Dropping the term instead would rest the entire grace on `< window_seconds`.
+  # That bound does self-limit (and is capped at CR_RETRY_WINDOW_CAP_SECONDS), so
+  # the blast radius would be bounded rather than unbounded — but it would widen
+  # behaviour on an axis with no observed failure behind it, and it would delete
+  # the only guard standing between a stale banner and a repeat of the indefinite
+  # wait this block was built to avoid. Fixing the clock is the change the
+  # evidence supports; changing the axis is not. Revisit only with a live case
+  # where a banner is genuinely refreshed, genuinely inside its window, and still
+  # denied — which the timestamp fix is expected to make unreachable.
+  if [[ "$CR_BANNER_AGE" -le "$AGE_SECONDS" && "$CR_BANNER_AGE" -lt "$CR_BANNER_WINDOW_S" ]]; then
+    emit "polling_cr"
+  fi
 fi
 
-BUDGET_EXHAUSTED="$(jq -r '.exhausted == true' <<<"$BUDGET_JSON")"
-if [[ "$BUDGET_EXHAUSTED" == "true" ]]; then
-  emit "budget_exhausted"
+# Escalation off (issue #1807). By here the only verdicts left are
+# trigger_greptile and budget_exhausted, and a repo that turned escalation off
+# wants neither: Greptile is never invited, so its budget is neither consumed
+# (that is the caller's job after trigger_greptile, which is never emitted)
+# nor even read. Placed AFTER the CR retry-window grace so a free wait still
+# wins over a hand-off that will not happen.
+if escalation_off; then
+  echo "escalate-review.sh: REVIEW_ESCALATION=off — Greptile not invited; tier_gate, not trigger_greptile/budget_exhausted (issue #1807)" >&2
+  emit "tier_gate"
 fi
 
-emit "trigger_greptile"
+# Greptile point (issue #1897). Greptile bills per review, so it is refused
+# BEFORE its budget is read: budget_exhausted is unreachable, and the budget
+# ledger is never consumed or even consulted on an autonomous cycle.
+emit_unless_override "trigger_greptile"

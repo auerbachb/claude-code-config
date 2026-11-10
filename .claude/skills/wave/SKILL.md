@@ -18,7 +18,42 @@ Answer one question: **what is the largest set of backlog issues I can start rig
 
 ---
 
-## Step 0: Parse arguments
+## Step 0: Resolve shared tooling
+
+`/wave` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
+PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
+```
+
+Read `chip-launching.md` the same way — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/` — and `cr-rate-limits.md` likewise.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable`, and stop before offering any chip. A `/wave` that cannot read its own routing gate is exactly the run that fans out one thread per issue (#1189); refusing is the safe failure.
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim filter skipped, in-flight detection is PR-only` and continue with Step 2's other filters.
+- `CANDIDATE_OWNERSHIP` empty → **optional**. Print `DEGRADED: candidate-ownership.sh not found (checked all three paths) — ownership sweep skipped; a candidate paused in another thread may be re-offered here` and fall back to claim-gate-only behavior in Step 2 item 4. **Never block a wave on this** — the sweep exists to stop duplicate work, and a sweep that cannot run must not also stop the work it was meant to protect. `/wave` launches nothing either way, so the cost of the fallback is a re-offer the user can decline, not a duplicate implementation.
+- `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo Wave override unavailable` and use `CEILING` as computed. An *absent* `.claude/pm-config.md` in a repo that has the script is a normal state, not a degradation — say nothing.
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, sizing on the per-thread ceiling only` and drop `FREE` from the `SLOTS` formula; `CEILING` falls back to its default of 4, since the repo's `PIPELINE_CEILING` is read through the same script. A **non-zero exit from `--ceiling`** on a script that did resolve (a usage error — a bad config value warns and prints the default instead) is handled like an unreadable census: defer the wave rather than sizing it on an empty `CEILING`. `/wave` still has `EFFECTIVE - IN_FLIGHT`, so the wave stays bounded; what is lost is only the cross-thread term, and a run that silently dropped it would look identical to one where the repo genuinely had headroom. A **non-zero exit** from the script is different from a missing script: it means a count source could not be read, so treat it as `FREE = 0` and defer, rather than sizing as if nothing were in flight (`active-work-cap.md` "Resolution order and failure behavior").
+
+The pipeline ceiling's default needs no fallback: `.claude/rules/subagent-orchestration.md` auto-loads at user scope in every project, so the default of 4 is already in context wherever `/wave` runs. Only a repo's own `PIPELINE_CEILING` override needs the script.
+
+---
+
+## Step 0a: Parse arguments
 
 `$ARGUMENTS` is either empty or a single count.
 
@@ -46,34 +81,115 @@ Ranking is `/pm`'s job. `/wave` consumes a ranking; it does not produce one.
 
 Start from the ranked order and remove, in this sequence:
 
-1. **Already offered or already running.** Drop any issue whose row in `/pm`'s `## Active Work` table has Thread status `Chip offered`, `Inline`, `Active`, or `Prompt generated`. The first three are the acceptance criterion; `Prompt generated` joins them because `/pm` 3.2 defines it and `Chip offered` as the same state — offered, not yet started — and `chip-launching.md` treats an issue with a live offer as already offered. Re-running `/wave` immediately must therefore produce **no** duplicate chips.
+1. **Already offered, already running, or already decomposed.** Drop any issue whose row in `/pm`'s `## Active Work` table has Thread status `Chip offered`, `Inline`, `Active`, `Prompt generated`, or `Tracking`. The first three are the acceptance criterion; `Prompt generated` joins them because `/pm` 3.2 defines it and `Chip offered` as the same state — offered, not yet started — and `chip-launching.md` treats an issue with a live offer as already offered. Re-running `/wave` immediately must therefore produce **no** duplicate chips.
+
+   **`Tracking` is the decomposed-parent case (#1193), and it is the one that bites hardest if missed.** A criterion-3 parent whose children are already building inline stays *open*, is deliberately never claimed, carries no `Depends on` marker, and is subagent-fit by `chip-launching.md`'s check — so every other filter here waves it through. Offering it would hand the user a chip to start a second thread implementing exactly what the running chain is already building. Drop it: its children are the real work and are counted individually.
 2. **Already offered by `/issue-maker` in another thread.** The Active Work table check above only sees chips offered inside this PM thread — `/issue-maker` runs in its own capture-only thread and never writes to it (`chip-launching.md` "Cross-skill chip visibility"). Consult the shared cross-thread record instead:
 
    ```bash
+   # TARGET_SLUG is this run's repo, e.g. `gh repo view --json nameWithOwner --jq .nameWithOwner`.
    for f in "$HOME"/.claude/handoffs/issue-maker-*-log.json; do
      [ -f "$f" ] || continue
-     jq -r '.issues[] | select(.status == "open" and .chip_task_id != null) | .number' "$f"
+     jq -r --arg slug "$TARGET_SLUG" '
+       .issues[]
+       | select(.status == "open" and .chip_task_id != null)
+       | select(((if (.url | type) == "string" then .url else "" end)
+                 | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""}
+                 | .r | ascii_downcase) == ($slug | ascii_downcase))
+       | .number' "$f"
    done | sort -u
    ```
 
+   Three things in that filter are load-bearing, and each was a real defect:
+
+   - **Extract the slug, then compare it literally — never interpolate it into a regex.** Repo names may contain regex metacharacters, and `.` is common (`api.v2`, `foo.github.io`); built into a pattern it matches any character, so a run in `acme/api.v2` would silently accept a chip from `acme/apiXv2`.
+   - **Compare case-insensitively.** GitHub repo identities are case-insensitive, so a URL recorded as `Owner/Repo` is the same repo as a slug resolved as `owner/repo`. A case-sensitive compare would call it foreign and drop a live chip.
+   - **Guard the URL's type.** `.url // ""` does not coerce an object or array to a string, and `capture` on a non-string aborts jq — taking every *later* entry in that log with it, so `/wave` would miss live chips and emit duplicate offers.
+
+   `active-work-cap.sh` applies the same three rules; the two must agree on what "this repo" means or the counts diverge again.
+
    Leave jq's stderr unredirected — a malformed log file should surface as a visible error, not look identical to "no live chip found" (`chip-launching.md` "Cross-skill chip visibility"). Drop any candidate whose number appears in the command's output, silently — same treatment as (1). An issue-maker thread already offering a chip for #N is the same "already offered" state as a `Chip offered` row, just recorded in a different store.
+
+   **Filter on the chip's repo, not just its number.** These logs are written one per capture thread and span *every* repo worked in, so an unfiltered read mixes `owner/other-repo#42` into a wave for this repo — where it would both suppress a legitimate `#42` here and consume an `IN_FLIGHT` slot that `FREE` (Step 6) scopes to this repo alone. The `select` on `.url` above is what keeps the two counts talking about the same thing. An entry with no usable `url` cannot be attributed and is **not** dropped from the candidate set — a bare number is not evidence that *this* repo's issue was offered.
 3. **Already in flight on GitHub (dedup — any author).** Drop any issue referenced by a closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) in an open PR body — local (`#N`) and cross-repo (`owner/repo#N`) forms both, **regardless of who authored the PR**: you don't want to start work a collaborator is already doing. Reuse the open-PR data `/pm` already fetched (it carries the `author` field); do not re-query. As you drop each one, note whether the covering PR is **yours** (`author.login` equals your authenticated login — `$GH_USER`, else `gh api user --jq .login`) or a **collaborator's** — only your own feed the ceiling count below.
-4. **Already claimed by another thread (no PR yet).** Item 3 only sees issues that have reached a PR; a thread that picked an issue twenty minutes ago and is still planning is invisible to it. Consult the claim instead (issue #873). **Batch the lookup** — one call for the whole backlog, then the helper only for the intersection, because a candidate without the label cannot hold a claim:
+4. **Already owned by another thread (no PR yet).** Item 3 only sees issues that have reached a PR; a thread that picked an issue twenty minutes ago and is still planning is invisible to it, and so is a coding thread that parked itself mid-issue. Consult the **shared ownership sweep** — the same `candidate-ownership.sh`, the same reader set, and the same `dispatch`/`skip`/`adopt` contract `/pm` runs at Steps 1B.5 and 3.4 (issues #873, #1431, #1460). **Batch the lookup** — one label query for the whole backlog, then one sweep call for the intersection, as a lookup optimisation; a candidate without the label can still have a claim marker:
 
    ```bash
-   CLAIMED=$(gh issue list --label in-progress --state open --limit 100 --json number --jq '.[].number')
-   # then, only for candidates whose number appears in $CLAIMED:
-   .claude/scripts/issue-claim.sh <N> --check
+   CLAIM_LIMIT=200
+   CLAIM_RC=0
+   CLAIMED=$(gh issue list --label in-progress --state open --limit "$CLAIM_LIMIT" --json number --jq '.[].number') || CLAIM_RC=$?
+   # A FAILED query returns the SAME empty string as "nothing is claimed", and an
+   # empty index means an empty intersection means the sweep never runs at all —
+   # the guard disabled by a network blip, silently. Read the exit status, not
+   # the output: any non-zero widens to the whole pool, exactly like truncation.
+   if (( CLAIM_RC != 0 )); then CLAIM_INDEX_TRUNCATED=true; fi
+   # A FULL page may be a TRUNCATED one. `gh issue list` has no --paginate, so a
+   # count equal to the limit means the claim index may be short — and a claimed
+   # candidate missing from it reads as unlabelled, which is the one direction
+   # this filter must never fail in. Sweep the whole candidate pool instead.
+   if [[ "$(printf '%s\n' "$CLAIMED" | grep -c .)" -ge "$CLAIM_LIMIT" ]]; then
+     CLAIM_INDEX_TRUNCATED=true   # pre-filter abandoned for this run
+   fi
+   # CANDIDATE_NUMS: the pool as it stands after items 1-3. OWNED_CANDIDATES is
+   # what the sweep actually runs on — the labelled intersection normally, and
+   # the WHOLE pool when the index is untrustworthy, since a short index would
+   # otherwise shrink the sweep to nothing exactly when it is needed most.
+   OWNED_CANDIDATES=()
+   for n in ${CANDIDATE_NUMS[@]+"${CANDIDATE_NUMS[@]}"}; do
+     # Here-string, not `printf | grep -q`: under `set -o pipefail` grep exits at
+     # the first match and the producer takes SIGPIPE, so the MATCHING case can
+     # return non-zero and a claimed candidate would read as unclaimed.
+     if [[ "${CLAIM_INDEX_TRUNCATED:-false}" == true ]] \
+        || grep -qxF -- "$n" <<<"$CLAIMED"; then
+       OWNED_CANDIDATES+=("$n")
+     fi
+   done
+   SWEEP=""; SWEEP_RC=0; SWEEP_ERR=""
+   if [[ -n "$CANDIDATE_OWNERSHIP" && ${#OWNED_CANDIDATES[@]} -gt 0 ]]; then
+     SWEEP_ARGS=(${OWNED_CANDIDATES[@]+"${OWNED_CANDIDATES[@]}"} --json)
+     # Liveness needs a session listing, and no CLI enumerates Claude sessions —
+     # it comes from the harness. Without one, liveness is `indeterminate`, which
+     # resolves to live, so every owner is surfaced rather than taken over.
+     # CLAUDE_SESSION_LISTING is the script's own documented env input; seed the
+     # local name from it so a harness that exported only the env var still gets
+     # a readability check rather than silently falling through to no listing.
+     : "${SESSION_LISTING_PATH:=${CLAUDE_SESSION_LISTING:-}}"
+     if [[ -n "${SESSION_LISTING_PATH:-}" && -r "${SESSION_LISTING_PATH:-}" ]]; then
+       SWEEP_ARGS+=(--sessions "$SESSION_LISTING_PATH")
+     fi
+     SWEEP_ERRFILE="$(mktemp)"
+     SWEEP="$("$CANDIDATE_OWNERSHIP" ${SWEEP_ARGS[@]+"${SWEEP_ARGS[@]}"} 2>"$SWEEP_ERRFILE")" || SWEEP_RC=$?
+     SWEEP_ERR="$(cat "$SWEEP_ERRFILE")"; rm -f "$SWEEP_ERRFILE"
+   fi
    ```
 
-   The label is a safe pre-filter because `issue-claim.sh` maintains it as a **superset** of the claim: `--claim` writes the label before the claim comment and rolls the label back if the comment fails, and `--release` deletes the comment before removing the label. So a claim that exists at all carries the label at every intermediate point — there is no "comment but no label" state for this filter to miss.
+   The label query is a lookup hint. Claims normally carry `in-progress`, but renewal or a failed label write can leave a marker without it. One sweep invocation over the intersection still performs per-candidate lookups. Widen to the full pool on a failed or full index, and report `claim index query failed (rc=N)` or `claim index truncated`. Even a complete label index can miss a marker-only claim, so it never replaces the mandatory claim check at launch.
 
-   Drop a candidate whose verdict is `claimed` (exit 1) or `unknown` (exit 4), naming the claim as the reason. `unknown` is treated exactly as `claimed` — it never reads as permission. `stale` is **not** an exclusion: keep the candidate and surface the stale warning alongside it.
+   Branch per candidate on the sweep's `action` field — `/pm`'s three-way contract, with one `/wave`-shaped difference on `adopt`:
 
-   Respect issue #732 the same way item 3 does: a **collaborator's** fresh claim drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten.
+   | `action` | `/wave` does |
+   |---|---|
+   | `dispatch` | keep the candidate in the pool — the common case, and still the answer for `unclaimed`, `mine`, and a **bare** stale claim |
+   | `skip` (`owned_live`) | drop it, naming `owner_label`, `state`, and `resume_route` from the sweep JSON — never a bare "claimed". **Never** resume, message, or write the owning thread's state: a human parked it, and running the same work in two places is how duplicates get shipped |
+   | `adopt` (`owned_dead`) | drop it too, and say it is handed to `/pm` for adoption. A wave admits only work that can start now; adoption is a claim write plus a resume decision, and `/wave` makes neither — it never launches anything (Execution boundary) |
+
+   **Branch on `action`, never on `verdict`.** The two do not always agree, and the disagreement is deliberate: a candidate whose owner session is dead but whose claim the takeover path cannot re-stamp — claim verdict `claimed`, `unknown`, or `unavailable` — reports `verdict: owned_dead` with `action: skip`. It is a **skip**, not an adoption candidate, and `/wave` reports it with the sweep's own `reason` (which names what blocked the takeover) rather than calling it live. Reading `verdict` instead would hand `/pm` a candidate it is not allowed to adopt.
+
+   **The sweep replaces the old "`stale` is not an exclusion" posture, and that replacement is the whole point** (issue #1460). A stale claim with surviving state behind it — a park marker, an execution pause, a linked open PR, a phase handoff — is **owned**, and which owned verdict it gets follows the owner's liveness: `owned_live` when the owning session is open, paused, or unresolvable, so it is skipped with its owner named instead of warned about and re-offered; `owned_dead` when that session is archived or absent from a listing that was read, so it leaves the wave and is handed to `/pm` for adoption. Either way it stops being re-offered as startable work — re-offering it is the duplicate-shipping shape issue #652 produced. A stale claim with *nothing* behind it still comes back `dispatch` and is still admitted, so the stale window keeps doing its job: a genuinely dead thread cannot park an issue forever.
+
+   **Degradation has two layers, both matching `/pm`, and neither ever blocks a wave:**
+
+   - `CANDIDATE_OWNERSHIP` empty → the Step 0 `DEGRADED` line, then fall back to claim-gate-only over the same candidate set: `"$ISSUE_CLAIM" <N> --check`, read on **every** documented exit, not just the two happy ones — exit `0` keeps the candidate (`unclaimed`, `mine`, `stale`), exit `1` drops it as claimed, exit `4` drops it as `unknown`, and exits `2` (usage) and `3` (not_found) drop it too, each naming which happened (`claim gate unreadable (rc=N)`). `unknown` is treated exactly as `claimed` — it never reads as permission — and a gate that errored is in the same position: "we failed to look" is not permission either, and treating an unenumerated exit as startable is how a typo in this call quietly re-admits every owned candidate. `ISSUE_CLAIM` empty too → its own Step 0 line, and this filter is skipped entirely.
+   - Sweep present but `SWEEP_RC` non-zero, or empty output with candidates present → the ownership filter is *off* for this tick. Say so per candidate, quoting `SWEEP_ERR` — `` `#N` — sweep degraded: {SWEEP_ERR}; using claim gate only`` — and fall back to that same claim-gate-only path. Discarding the error and continuing would let a usage error silently disable the whole guard, which is the failure this sweep exists to prevent.
+   - A candidate the sweep *did* answer but with a non-empty `degraded[]` falls back to claim-gate-only **for that candidate alone**, named the same way (`sweep degraded: {degraded[0]}; using claim gate only`). A read failure is never a silent skip of the whole sweep, and it never marks a candidate owned by itself.
+
+   Respect issue #732 the same way item 3 does: a **collaborator's** claim — or an owner that is a collaborator's thread — drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten. The `IN_FLIGHT` formula below is items 1–3 only, so a sweep-dropped candidate never enters the ceiling count.
+
 5. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate` (`/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
 
 Every issue removed here is **silent** — it is not a wave exclusion and does not appear in the excluded list (Step 9). The excluded list is for issues that were genuine candidates and lost on independence or cap.
+
+   **One carve-out: ownership drops from item 4 are reported, not silent** (issue #1460). Items 1–3 are silent because the user can already see why — the chip they were offered, the PR that is open. An ownership drop is the opposite: the evidence lives in another thread's state, on this machine, where nothing surfaces it. "`#N` is missing from your wave" with no reason is how a parked thread gets re-picked by hand five minutes later, and naming the owner and resume route costs one line and turns the drop into an action. Sweep-degraded candidates are named for the same reason: the filter was off, and a wave that silently dropped its own guard looks identical to one where nothing was owned.
 
 Record `IN_FLIGHT` = the number of **distinct in-flight pipelines of yours**: each Active Work row from (1), each issue-maker chip from (2), and each **distinct open PR you authored** that covers one or more issues dropped in (3) **and is not already the PR backing an Active Work row counted in (1)**. Count PRs, not issue rows — a single PR that closes several issues is **one** pipeline consuming **one** reviewer slot, not several — and cross-reference PR numbers against (1) so a PR that closed one issue already tracked in Active Work *and* covers another still-candidate issue is not counted twice (once as its Active Work row, once as its (3) contribution). Step 6 subtracts it. Collaborator-covered issues are still dropped from candidates (they are already being worked), but they **never count toward your ceiling**: a collaborator's backlog must not consume your slots (issue #732 — count only your own PRs; shared-budget contention is at most FYI context, never a gate). Offered-but-unstarted issues of yours count toward it deliberately: a chip the user clicks a minute from now consumes the same reviewer budget as one already running, and the point of the cap is to avoid discovering that after the fact.
 
@@ -106,7 +222,7 @@ Two issues collide when they touch the same **surface**, which is usually the sa
 
 **Why the rule corpus is one surface:** `rule-lint.sh` fails when the corpus exceeds the committed ratchet cap in `.claude/rules/.budget-soft-cap`, so two branches that each add words to *different* rule files still collide — the second to merge inherits a cap the first already consumed. Same mechanical collision for shared settings files, where two branches append different keys to one JSON object.
 
-**Repo-declared surfaces.** If `.claude/pm-config.md` has a `## Dependency Rules` section, read it (`.claude/scripts/pm-config-get.sh --section "Dependency Rules"`) and honor any coupling it declares — e.g. "changes to X require regenerating Y" makes X and Y one surface. A repo that knows its own coupling outranks this table.
+**Repo-declared surfaces.** If `.claude/pm-config.md` has a `## Dependency Rules` section, read it (`"$PM_CONFIG_GET" --section "Dependency Rules"` — Step 0) and honor any coupling it declares — e.g. "changes to X require regenerating Y" makes X and Y one surface. A repo that knows its own coupling outranks this table.
 
 **What is NOT a surface:** a shared *directory*. Two different skills under `.claude/skills/`, two different scripts under `.claude/scripts/`, two different hooks — these are independent. Directory-level matching would exclude nearly every pair in a config repo and collapse every wave to one issue. Match on files and the named coarse surfaces above; nothing wider.
 
@@ -120,6 +236,8 @@ Walk the candidates in `/pm`'s ranked order and admit each one only if it surviv
 
 - it is blocked by another issue **in this wave** → the blocker keeps its slot, the blocked issue is excluded ("blocked by #N, which is in this wave"); or
 - it is blocked by any **open, unmerged** issue at all → excluded ("blocked by #N, still open"). A wave is for work that can start *now*.
+
+The canonical reading of those markers is `issue-deps.sh` (resolved like `/pm`'s helpers; issue #1760): its edges are `/pm` 1B.3's, and the desk counts an issue's open dependents with the same script, so the three never disagree. The exclusion rules above are unchanged.
 
 **Circular pairs** (A blocks B, B blocks A) → exclude **both** and flag them for human resolution, matching `/pm` 1B.4's treatment. Do not guess which direction is real.
 
@@ -144,35 +262,45 @@ Record the exclusion reason for every candidate that fails a check — Step 9 pr
 ## Step 6: Cap the wave
 
 ```
-CEILING    = 4                        # top of the 3–4 concurrent-pipeline band
+CEILING    = "$ACTIVE_WORK_CAP_SH" --ceiling   # PIPELINE_CEILING; 4 if unset or script absent
 CONFIG     = MAX_WAVE from pm-config  # optional; clamped to [1, CEILING]
 EFFECTIVE  = min(CEILING, CONFIG?)    # total concurrent work allowed
-SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT)
+FREE       = "$ACTIVE_WORK_CAP_SH"         # default line: CAP=n ACTIVE=n FREE=n
+SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT, FREE)
 ```
 
 `REQUESTED` caps *new* chips; `EFFECTIVE - IN_FLIGHT` caps *total* concurrent work. Applying them separately means `/wave 2` with one issue already in flight still offers 2 (total 3, under the ceiling) rather than being penalized twice.
 
-- **`CEILING = 4`** comes from `.claude/rules/subagent-orchestration.md` ("Keep 3-4 active CR-polled PRs max"). It binds chip-launched threads too: the scarce resource is **reviewer throughput** — roughly 8 CodeRabbit reviews/hour shared across every open PR (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget.
+- **`CEILING`** is the per-thread pipeline ceiling from `.claude/rules/subagent-orchestration.md`, resolved by `"$ACTIVE_WORK_CAP_SH" --ceiling` (Step 0; no network call, same checkout as the census). It is the repo's `PIPELINE_CEILING` from `.claude/pm-config.md` `## Active work`, **default 4** when the repo sets none — so an unconfigured repo sizes exactly as before. It binds chip-launched threads too: the scarce resource is **reviewer throughput** — CodeRabbit serves 5 PR reviews per developer per hour, shared across every open PR you own (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget; a repo on a review plan without that limit opts into a wider `CEILING` explicitly.
+- **`FREE`** is the repo-wide headroom from `"$ACTIVE_WORK_CAP_SH"` (Step 0). Read its **default output**, not `--free`: the one line carries `CAP`, `ACTIVE`, and `FREE`, and the cap-bound message below quotes `{ACTIVE}/{CAP}`, which `--free` cannot supply (`chip-launching.md` "Repo-wide active-work cap"). `CEILING` bounds *this thread*; `FREE` bounds **every thread on the repo at once**, counting your open PRs, live chips offered from any capture thread, and pipelines not yet at a PR. It is the term that stops a fresh `/wave` in a new tab from re-filling a board that other tabs already filled. Never read the cap's number into this file — the script owns it, and its derivation is `active-work-cap.md`.
 - **`CONFIG`** is an optional `MAX_WAVE=N` line in a `## Wave` section of `.claude/pm-config.md`:
 
   ```bash
-  .claude/scripts/pm-config-get.sh --section Wave 2>/dev/null | sed -n 's/^ *MAX_WAVE *= *\([0-9][0-9]*\).*/\1/p' | head -1
+  "$PM_CONFIG_GET" --section Wave 2>/dev/null | sed -n 's/^ *MAX_WAVE *= *\([0-9][0-9]*\).*/\1/p' | head -1
   ```
 
-  Absent, unparseable, or out of range → ignore it and use `CEILING`. A config value **may lower the cap and may never raise it** past the auto-loaded rule; clamp rather than error. Changing the ceiling itself means editing `subagent-orchestration.md`, which is a reviewed rule change. (`## Wave` is a non-canonical section, so `/pm-update` preserves it verbatim.)
+  Absent, unparseable, or out of range → ignore it and use `CEILING`. A config value **may lower the cap and may never raise it** past `CEILING`; clamp rather than error. Widening the ceiling itself is the repo's `PIPELINE_CEILING` knob, never `MAX_WAVE`. (`## Wave` is a non-canonical section, so `/pm-handoff`'s config refresh preserves it verbatim.)
 - **`IN_FLIGHT`** is the count from Step 2 — issues already offered or already running consume the same reviewer budget.
 
-If `SLOTS <= 0`, print one line naming what is already in flight and **whose** — the count is your own PRs only ("your 4 open pipelines fill the 4-slot ceiling — merge or park one before starting more."). Never phrase it as a bare "N open PRs": a collaborator's PRs are not in this count, and naming the scope is what makes a wrong count visible at a glance (issue #732, AC4). Then branch on PM context. **Inside a PM thread** (a `## Active Work` table is present): name the subagent-fit issues as **queued inline** behind the running pipelines, and list any **too-big** ones as *deferred* — they need a thread, and opening one now would spend the same reviewer budget the ceiling exists to protect, so they wait for a slot too. **Outside PM context:** report every issue as **deferred**, naming the in-flight count and scope, and offer no chip — `/wave` derives `IN_FLIGHT` from your own open PRs (Step 2), so it *can* see the ceiling and must respect it (`chip-launching.md` "Precedence when the ceiling is full", case 2). "Stop" means no new work starts, not that issues go unnamed. Either way a full ceiling **never** produces a chip — slot state schedules, it never routes work to a thread (#776 AC4) — and **nothing is silently dropped**: every excluded issue is named with its reason.
+If `SLOTS <= 0`, print one line naming what is already in flight and **whose** — the count is your own PRs only ("your {IN_FLIGHT} open pipelines fill the {EFFECTIVE}-slot ceiling — merge or park one before starting more."). Never phrase it as a bare "N open PRs": a collaborator's PRs are not in this count, and naming the scope is what makes a wrong count visible at a glance (issue #732, AC4). Then, **in every thread** — `/wave` is always execution-capable, so there is no PM-context branch to take (#1229; `chip-launching.md` "Precedence when the ceiling is full", case 1) — name the subagent-fit issues as **queued inline** behind the running pipelines, bootstrapping the `## Active Work` table if this thread has none, and list any **too-big** ones as *deferred*: they need a thread, and opening one now would spend the same reviewer budget the ceiling exists to protect, so they wait for a slot too. "Stop" means no new work starts, not that issues go unnamed. A full ceiling **never** produces a chip — slot state schedules, it never routes work to a thread (#776 AC4) — and **nothing is silently dropped**: every excluded issue is named with its reason. The repo-wide cap binding is the same shape: an issue it holds back is **deferred and named**, never given a chip and never quietly omitted, so every issue in the independent set ends as running, queued, or deferred.
 
-Take the first `SLOTS` issues from the independent set. Anything past that is excluded with reason "cap reached ({SLOTS} slot(s); {IN_FLIGHT} already in flight)".
+**Name the term that actually bound.** `SLOTS` has three inputs and they fail for different reasons, so a block message must say which one is tight — "the ceiling is full" when the repo-wide cap is what stopped you sends the user to merge a PR in *this* thread when the work is in another tab. Record the limiting term as you compute `SLOTS`, rather than re-deriving it from the numbers afterwards. **When two bounds tie, name the repo-wide cap**: it is the one the user cannot see from this thread, so it is the one worth saying out loud; `REQUESTED` is named last, since the user chose it and already knows.
+
+- **`FREE` bound** → "the repo is at its active-work cap ({ACTIVE} of {CAP} in motion — your open PRs, offered chips, and running pipelines across all threads)". `active-work-cap.sh --json` gives the per-source breakdown when the split is worth showing.
+- **`EFFECTIVE - IN_FLIGHT` bound** → the existing per-thread message, naming your own in-flight pipelines.
+- **Capacity could not be read** — the script resolved but exited non-zero → **not the same as `FREE = 0`**, and it must not borrow that wording. There is no `{ACTIVE}/{CAP}` to quote, because the count is precisely what failed. Say "could not read the repo-wide active-work figure ({reason}) — deferring rather than assuming the repo is idle" and defer. Reporting an unread count as a cap of zero is a fabricated number; reporting it as headroom is the unsafe direction. The missing-script case is different again and is a `DEGRADED:` line at Step 0, not a deferral.
+
+Take the first `SLOTS` issues from the independent set. Anything past that is excluded, with the reason matching the term that bound: "cap reached ({SLOTS} slot(s); {IN_FLIGHT} already in flight)" for the per-thread ceiling, "deferred — repo-wide active-work cap ({ACTIVE}/{CAP})" for `FREE`, or "deferred — repo-wide capacity unreadable ({reason})" when the figure could not be obtained. Deferred issues are re-offered as work drains; they are never dropped.
 
 ---
 
-## Step 7: Offer the wave — inline when PM context is live, else chips
+## Step 7: Offer the wave — inline by default, chips only for too-big issues
 
-**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". When this thread already has a `## Active Work` table (PM context), the subagent-fit wave issues should be **recommended for inline parallel execution** — lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the ceiling, which is exactly what a wave is for, and it keeps them in the one PM thread instead of scattering tabs (#613). Slot availability decides only **how many start now versus queue behind the ceiling** (Step 6) — it never sends a subagent-fit issue to a separate thread (#776, AC4). Fall through to the chip offer below only for issues that are **too big** for a subagent (each naming which of `/subagent` Step 4's criteria fired) or when there is **no PM context** — a separate thread is the right hand-off there. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
+**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the Step 0 candidate order. **`/wave` is always execution-capable** — the one exception the gate names is a capture thread, which runs no waves — so the subagent-fit wave issues are **recommended for inline parallel execution in this thread**: lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the ceiling, which is exactly what a wave is for, and it keeps them in one thread instead of scattering tabs (#613). **A thread with no `## Active Work` table bootstraps one** (`/pm` 3.2's schema) and proceeds — its absence is a bootstrap instruction, never a reason to chip (#1229). Slot availability decides only **how many start now versus queue behind the ceiling** (Step 6) — it never sends a subagent-fit issue to a separate thread (#776, AC4). Fall through to the chip offer below **only** for issues that are **too big** for a subagent, each naming which criterion fired in one line — normally criterion 1 or 2, since #1193's criterion 3 decomposes into an inline chain rather than routing out (`chip-launching.md` "PM-context inline gate" carries the one case where it still routes). That is now the sole structural reason a `/wave` chip exists, and one with no nameable criterion is a bug. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
 
-**7.1 — Offer the (remaining) wave as chips.** Follow `.claude/reference/chip-launching.md` **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
+**Bootstrapping vs. the Step 1.2 cold start — one route each, for different things.** Step 1.2 cold-starts `/pm` when the thread has no *ranking*, and a table falls out of that as a side effect. The bootstrap here is the fallback for the remaining case: a thread that has a ranking (or was given issues directly) but no table. There is exactly one table-bootstrap route — this one — and it never re-runs `/pm`.
+
+**7.1 — Offer the (remaining) wave as chips.** Follow `chip-launching.md` (Step 0 candidate order) **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it. **Before each `spawn_task`, register the offer via `chip-offer-registry.sh --reserve`** (see `chip-launching.md` "Offer Registry" for the full contract — exit 7 defers that issue).
 
 **Chip model + effort contract (non-negotiable):** For each chip, the `prompt` MUST open with `**Model:** {MODEL} — {REASON}`, then `**Effort:** {LEVEL} — {REASON}`, then the model-guard preamble — no blank line between the three. The visible short summary MUST repeat both lines. `{MODEL}` is a bare family name and `{LEVEL}` a picker label (`chip-launching.md` "Model and effort lines"). When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
@@ -190,41 +318,62 @@ Print only the short summary per issue. A failed `spawn_task` falls back to a pr
 
 ## Step 8: Record every `task_id`
 
-Immediately after each successful spawn — before printing anything else — write the returned `task_id` into `/pm`'s `## Active Work` table with Thread `Chip offered`, Status `Awaiting thread start`. That table is the canonical home for chip state (`chip-launching.md`, `/pm` 3.2); `/wave` writes to it rather than keeping a parallel ledger.
-
-Outside a PM thread (Step 1.2 cold-started `/pm`, so the table exists either way), the same rule holds. If for any reason no table is present, create one in `/pm` 3.2's exact format.
+Immediately after each successful spawn — before printing anything else — write the returned `task_id` into `/pm`'s `## Active Work` table with Thread `Chip offered`, Status `Awaiting thread start`. That table is the canonical home for chip state (`chip-launching.md`, `/pm` 3.2); `/wave` writes to it rather than keeping a parallel ledger. If no table is present, create one in `/pm` 3.2's exact format — the bootstrap from Step 7.0, which does not re-run `/pm` (Step 1.2's cold start is a separate, ranking-only route).
 
 An unrecorded chip cannot be dismissed later — recording is what makes withdrawal possible at all, not bookkeeping.
+
+**`/wave` writes no round-membership record, and that is not an omission (issue #1604).** The durable round record — `.repos["<key>"].rounds["<session>"].members`/`dispatched_at`, which `/board` reads for exact queued and delivered rows — belongs to whoever **dispatches** a round, and `/wave` dispatches nothing (Execution boundary): a chip is an offer the user may never click, and an inline recommendation is started by the user's own `/subagent`, which performs the write there and then. Writing one here would record a round that does not exist, and writing one *as well* would be a double-write racing `/subagent`'s. If `/wave` ever gains a path that launches pipelines itself, that path writes the record at its own dispatch, in `/subagent` Step 7.0's shape and with the same read-before-write guard.
+
+**Inline rows are deliberately *not* recorded here, and that is not the same gap.** `/wave` only *recommends* inline execution; the user's `/subagent` is what starts it, and that is what marks the rows `Inline` (Execution boundary — writing `Inline` for an issue `/wave` merely named would claim work that has not started). The asymmetry is safe because the two re-run hazards are different: re-spawning a chip creates a **second live offer** for one issue, which is why Step 2 case 1 must see it; re-printing an inline recommendation creates nothing, so an unchanged wave on a re-run is correct rather than duplicated. `IN_FLIGHT` is unaffected either way — Step 2 derives it from your own open PRs, and an issue nobody has started is genuinely not in flight.
 
 ---
 
 ## Step 9: Print the wave
 
-```
+```text
 ## Wave — {K} issue(s) ready to run in parallel
 
-- **#42 — {Title}** — chip offered
-  **Model:** Opus — {reason}
-  **Effort:** Extra — {reason}
+- **#42 — {Title}** — recommended inline
   {one-line rationale, carried from /pm's ranking}
 
-- **#55 — {Title}** — chip offered
-  **Model:** Sonnet — {reason}
-  **Effort:** Low — {reason}
+- **#55 — {Title}** — recommended inline, queued behind #42
   {one-line rationale}
 
-Click a chip to start that thread. To run these inline in this thread instead, say `/subagent #42 #55`.
+- **#67 — {Title}** — chip offered
+  **Model:** Opus — {reason}
+  **Effort:** Extra — {reason}
+  too big for a subagent — {which /subagent Step 4 criterion fired, and why}
+
+Running #42 #55 inline here: `/subagent #42 #55`. Click the chip to start #67 in its own thread.
+
+Batch makespan: 1.5 h–3 h · binding: parallel-work · plan on ~8:45 PM ET
 
 ### Excluded from this wave
 - **#61** — overlaps #42 on `.claude/skills/pm/SKILL.md`
 - **#38** — blocked by #42, which is in this wave
 - **#70** — footprint undeclared; can't rule out overlap with #55
 - **#71** — cap reached (2 slots; 2 already in flight)
+- **#88** — owned by {owner_label} ({state}); resume with {resume_route}
+- **#91** — owner thread no longer live ({reason}); handed to `/pm` for adoption from {adopt.from} #{adopt.pr}
+- **#92** — owner thread no longer live ({reason}); handed to `/pm` for adoption from branch at phase {adopt.phase}
+- **#94** — owner thread no longer live ({reason}); adoption blocked by the claim gate — not handed on
+- **#93** — sweep degraded: {degraded[0]}; claim gate says claimed
 ```
+
+**Batch makespan:** Resolve `makespan.sh` and `estimate-resolve.sh` (Step 0 candidate order). For each inline wave issue, call `estimate-resolve.sh <N>` and capture both stdout and exit code:
+- `estimate-resolve.sh` exit 0 (body) or 1 (tier fallback): parse `est_lo`/`est_hi` from the Est line (two integers separated by `–`).
+- `estimate-resolve.sh` exit 2 (`unestimated`): use `null`/`null` — `makespan.sh` applies Standard fallback.
+- `estimate-resolve.sh` exit 3 or 4 (usage/error): report one line per failure; use `null`/`null` for that issue.
+
+Collect `Depends on` links for `deps` (the blockers 5.1's reading — `issue-deps.sh` edges — names for each issue). Build `{"issues":[{"num":N,"est_lo":lo,"est_hi":hi,"deps":[...]},...]}` and pipe to `makespan.sh --ceiling "$EFFECTIVE"` (Step 6's resolved per-thread limit, so a widened repo's makespan reflects its real parallelism). Append the single output line as `Batch makespan: <output>` after the `Running ...` line and before `### Excluded`. If `makespan.sh` is unavailable, print `DEGRADED: makespan.sh not found — batch makespan unavailable` (non-blocking; wave dispatch continues). If `makespan.sh` exits 1 (all issues were unestimated — every one used Standard fallback), omit the line silently.
+
+The same exit-code mapping applies to the per-issue estimate in `/subagent`'s launch announcement: exit 0/1 → show the Est line; exit 2 → show `unestimated`; exit 3/4 → report the failure, omit the parenthetical.
 
 Rules for this block:
 
-- **Every candidate that reached Step 5 appears exactly once** — in the wave or in the excluded list. Issues dropped in Step 2 (already offered, already in flight, blocked-labelled) appear in neither; they were never candidates.
+- **Annotate rows the armed deadline will decline** (issue #1525). When `.repos["<key>"].window.deadline_epoch` is set — by `/pm --window` or a declared leave time (`/leave-by`) — compare each offered issue's `plan on N` bound against the time remaining — **in seconds, on Step 7's inclusive condition** (`BOUND_MIN * 60 >= REMAINING_SEC`), so an exact fit annotates exactly as it will decline — and append the decline reason to any row that cannot finish, reusing `/subagent` Step 7's wording: `— cannot finish before {clock}`. **Render `{clock}` from `deadline_epoch` with Step 7's own formatter** (`TZ='America/New_York' date -j -f '%s' "$DEADLINE_EPOCH" +'%-I:%M %p ET' 2>/dev/null || TZ='America/New_York' date -d "@$DEADLINE_EPOCH" +'%-I:%M %p ET'`) — never a literal time. A wave that warns about a 7:00 PM deadline the user never set is worse than no warning, and two surfaces printing different clocks for one deadline is worse still. This is a **warning, not a gate**: `/wave` never launches, so the real decline fires in `/subagent`, and an annotated issue still appears in the wave rather than moving to the excluded list. Annotating it here is what stops the user running a `/subagent` line whose first pipeline is refused a second later. **An issue whose bound will not resolve is annotated too** — `— unestimated; /subagent will decline this while a deadline is armed` — because Step 7 fails closed on an unknown duration, so an unestimated row is exactly as certain to be refused as an over-running one. Use **Step 7's own classification**, not a catch-all: `estimate-resolve.sh` exit 2 is genuinely `unestimated`, while exits 3 and 4 are the resolver failing and carry that reason instead (`estimate lookup failed (rc=N)`) — collapsing a broken tool into "this issue has no estimate" sends the user to edit an issue body that was never the problem. Either way, **no clock**: there is no projected finish to compare, so naming one would invent a comparison that was never made. No armed deadline — the literal `null`, or exit 3 — means no annotation. An **unreadable** read and a readable-but-**malformed** one (any non-`null` value failing Step 7's epoch validation) are each annotated once for the wave rather than per row, and they say which happened — `deadline state unreadable — /subagent may decline these` for a failed read, `deadline state malformed — /subagent may decline these` for a value that read fine and is not an epoch. Both are annotated because `/subagent` fails closed on either and declines every launch, so a silent wave here would be immediately contradicted by the dispatch it recommends; naming which one lets the user tell a lock timeout from corrupt state. Never invent a deadline, a clock time, or a per-issue decline reason from an unreadable read, and never let one exclude an issue: `/wave` still offers the whole set.
+- **Inline is the default row shape** (#1229). `recommended inline` rows carry no `**Model:**` / `**Effort:**` lines — an inline pipeline picks its own model at spawn time, so there is no picker for the user to set. Only a `chip offered` row carries them, and every such row **names its `/subagent` Step 4 criterion on its rationale line**; a chip row without one is a bug (`chip-launching.md`). "Recommended" is the honest word: `/wave` names the set, the user's `/subagent` starts it (Execution boundary).
+- **Every candidate that reached Step 5 appears exactly once** — in the wave or in the excluded list. Issues dropped in Step 2 (already offered, already in flight, blocked-labelled) appear in neither; they were never candidates. **Item 4's ownership drops are the one Step 2 exception** and appear here with the sweep's own words: `skip` reads as owned-by-another-thread and names `owner_label`, `state`, and `resume_route`; `adopt` says the owner thread is no longer live and that the candidate is handed to `/pm`, because `/wave` never takes a claim over itself — quote the sweep's own `reason` rather than writing “archived”, since `owned_dead` also covers a session simply absent from the listing. **Name only the surviving state that exists:** `#{adopt.pr}` belongs on an `adopt.from: pr` row and nowhere else — `adopt.from: branch` carries no PR number and names `{adopt.phase}` instead, and `adopt.from: null` means nothing survived, so the row says the adoption reduces to a fresh start. Printing `#null` is worse than printing nothing. **A dead owner whose claim blocks the takeover is not an adoption row at all** — `verdict: owned_dead` with `action: skip` gets its own line saying adoption is blocked and quoting the sweep's `reason`, with **no** resume route and **no** hand-off to `/pm`: nothing there is startable by anyone until the claim ages out, and offering a route that would be refused is worse than saying so; a sweep-degraded candidate says the filter fell back to the claim gate **and what that gate then decided**. A degraded candidate the claim gate *drops* is an exclusion and belongs in this list; a degraded candidate the gate *keeps* is still in the wave, so it carries the same note as a row annotation on its wave entry instead — an issue cannot be both offered and excluded, and printing the degradation in the excluded list while the issue sits in the wave above is exactly that contradiction. These are bookkeeping lines only — `/wave` adds no claim write, no takeover call, and no cross-skill dispatch behind them.
 - **One line, one reason** per exclusion. The reason names the *specific* blocker or surface — "overlaps #M" without saying on what is not a reason. Never emit a bare "excluded".
 - Omit the `### Excluded from this wave` heading entirely when nothing was excluded.
 - Flag circular dependency pairs on their own line: "**#80 / #81** — circular dependency; needs human resolution."
@@ -234,11 +383,11 @@ Rules for this block:
 
 ## Step 10: Fallback mode (no `spawn_task`)
 
-When chip mode is unavailable (CLI, headless, older client), the wave is delivered as printed prompt blocks — content byte-identical to what the chips would have carried, model-guard preamble included, per `chip-launching.md` "Fallback mode".
+When chip mode is unavailable (CLI, headless, older client), the **too-big** issues are delivered as printed prompt blocks — content byte-identical to what their chips would have carried, model-guard preamble included, per `chip-launching.md` "Fallback mode". Inline rows are unaffected: `/subagent` needs no `spawn_task`, so the inline recommendation is identical in both modes and never degrades to a printed block (#1229).
 
-- Print the full block for each wave issue instead of the short summary.
+- Print the full block for each **too-big** wave issue instead of the short summary.
 - The Excluded section is unchanged.
-- **Do not mention chips, clicking, or `task_id`s** — none of that exists in this mode. Replace the launch line with: "Paste a block into a new thread to start it."
+- **Do not mention chips, clicking, or `task_id`s** — none of that exists in this mode. Replace the *chip* half of the launch line with "Paste a block into a new thread to start it." The inline half stays as written: `Running #{a} #{b} inline here: /subagent #{a} #{b}`.
 - Track offered issues in this thread's state so a re-run still skips them (Step 2 case 1 reads `Prompt generated` for exactly this).
 
 ---
@@ -250,7 +399,7 @@ When chip mode is unavailable (CLI, headless, older client), the wave is deliver
 | Rationalization | Reality |
 |---|---|
 | "The user asked for a wave, so they clearly want these running." | They asked for the *set*. Which ones actually run is the click. |
-| "These are all small — I'll just run them inline myself like `/pm` does." | *Recommending* inline via `/subagent` (Step 7.0) is the #613 default in a PM thread — but `/wave` *running them itself* is not. Launch stays elective: which issues run, and how, is the user's action (a chip click or their own `/subagent`), never `/wave`'s. |
+| "These are all small — I'll just run them inline myself like `/pm` does." | *Recommending* inline via `/subagent` (Step 7.0) is the default in **any** execution-capable thread since #1229 — but `/wave` *running them itself* is not, and that did not change. Launch stays elective: which issues run, and how, is the user's action (a chip click or their own `/subagent`), never `/wave`'s. |
 | "I'll just start the top one to save a round-trip." | One auto-launch is the whole violation. There is no partial version of this rule. |
 | "Fallback mode has no chips, so I'll spawn subagents instead." | Fallback prints blocks. Absent chips means fewer delivery options, not a different execution boundary. |
 | "The user said 'go' after seeing the wave." | An explicit user instruction to run specific issues is honored by `/subagent` — invoke that, and only for the issues they named. `/wave` still never launches on its own. |
@@ -264,7 +413,7 @@ When chip mode is unavailable (CLI, headless, older client), the wave is deliver
 - **No PM context and `/pm` finds nothing rankable** — one line, stop (Step 1.3).
 - **Every candidate overlaps the top one** — a wave of 1 is a valid, correct answer. Emit it with the full excluded list; do not pad the wave by relaxing Step 5.
 - **`SLOTS <= 0`** — no chips at all; name the in-flight work (Step 6).
-- **`/wave N` larger than the ceiling** — silently clamped to the ceiling; note it in one line ("requested 8, capped at 4").
+- **`/wave N` larger than the ceiling** — clamped to the ceiling `/wave` actually applies (`EFFECTIVE`, which `MAX_WAVE` may have lowered below `CEILING`); note it in one line ("requested 8, capped at {EFFECTIVE}").
 - **Ranking exists but every issue was already offered** — "Everything currently ranked is already offered or in flight." No chips, no excluded list.
 - **Spawn fails mid-wave** — printed block for that issue only; the rest keep their chips (`chip-launching.md`). Do not retry.
 - **User asks to print the full prompt for a wave issue** — re-emit that issue's complete block verbatim, guard included. The chip stays offered.

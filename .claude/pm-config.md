@@ -17,14 +17,79 @@ THRESHOLD_SCORE=100
 FIRST_CR_ROUND=3
 CADENCE_ROUNDS=2
 FILE_WEIGHT=5
-ENABLE_PR_REVIEW_HELP=0
+TRIGGER_SETTLE_SECONDS=600
+CODEANT_UNAVAILABLE_SECONDS=1800
 ```
 
 - **THRESHOLD_SCORE** — minimum `complexity-score.sh` value before auto-trigger; must be a **non-negative integer**. Repo file sets the default; **`COMPLEXITY_THRESHOLD_SCORE` env overrides** when set.
 - **FIRST_CR_ROUND** — first fire at this CodeRabbit round count (must be **≥ 3**; scripts error out otherwise — needs ≥ 2 completed CR rounds before first fire). Uses `cycle-count.sh <PR> --cr-only`. **`COMPLEXITY_FIRST_CR_ROUND` env overrides** when set.
 - **CADENCE_ROUNDS** — after the first fire, fire again every N additional CR rounds (e.g. 2 → rounds 3, 5, 7…); must be **≥ 1**. **`COMPLEXITY_CADENCE_ROUNDS` env overrides** when set.
 - **FILE_WEIGHT** — multiplier on `changedFiles` inside the score; must be a **positive integer** (0 and non-positive values are rejected). **`COMPLEXITY_FILE_WEIGHT` env overrides** when set.
-- **ENABLE_PR_REVIEW_HELP** — `1` / `true` / `yes` / `on` posts a fourth comment `/pr-review-help #<PR_NUMBER>` after the three single-mention triggers.
+- **TRIGGER_SETTLE_SECONDS** — tier-aware repos only (issue #1749): how long a green HEAD must have been observed before `review-triggers-allowed.sh` lets anything invite BugBot; a **non-negative integer** (junk warns and keeps 600). **`COMPLEXITY_TRIGGER_SETTLE_SECONDS` env overrides** when set.
+- **CODEANT_UNAVAILABLE_SECONDS** — tier-aware repos only (issue #1749): how long after a CodeAnt invitation with no CodeAnt artifact before CodeRabbit may be invited as the fallback on a `full` PR; a **non-negative integer** (junk warns and keeps 1800). **`COMPLEXITY_CODEANT_UNAVAILABLE_SECONDS` env overrides** when set.
+
+## Active work
+
+```ini
+ACTIVE_WORK_CAP=18
+PIPELINE_CEILING=6
+```
+
+- **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Must be a **positive integer in [1, 20]**. Absent is the normal case and falls back to the default **silently**; only a value that is present but unparseable or out of range warns on stderr before falling back. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh`.
+- **This repo runs 18; the built-in default stays 6.** The default is derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): rebase re-review reaches parity with productive review at 5 concurrent PRs, and past 5 a PR no longer gets even one review round per hour. The owner raised this repo to 12 on 2026-11-05 (Issue #1920), then to 18 on 2026-11-06 (Issue #1923) once Issue #1899 (merge without AI review after 10 minutes) landed in PR #1930 and PRs stopped waiting on review supply. Full derivation and the dated decision: [`active-work-cap.md`](reference/active-work-cap.md).
+- **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
+- **PIPELINE_CEILING** — the per-thread concurrent-pipeline ceiling that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch launch up to. Positive integer in **[1, 20]**, **default 4**; absent falls back silently, a present-but-unparseable or out-of-range value warns on stderr and falls back to 4. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh --ceiling`, which prints the raw ceiling; each consumer applies the `min()` with `ACTIVE_WORK_CAP` itself, so the ceiling never raises the cap — running wider than the cap means raising both. This repo sets **6**, a third of the cap, so one orchestrating thread cannot take every slot; a repo that keeps the default omits the line.
+
+## Budget
+
+```ini
+daily_credit_budget_usd = 25
+
+LEAVE_LEAD_TIME_MIN = 30
+
+SPLIT_OVER_MIN = 180
+INCREMENT_BOUND_MIN = 120
+
+usage_horizon_approaching_pct = 25
+usage_horizon_critical_pct    = 10
+usage_horizon_floor_tokens    = 2000000
+usage_horizon_hysteresis_pct  = 3
+usage_horizon_reading_ttl_s   = 1800
+
+quotas_cheapest_next_threshold_pct = 20
+```
+
+- **daily_credit_budget_usd** — owner's stated daily Anthropic credit overage tolerance (USD). User-editable; window is an ET calendar day. **`CLAUDE_DAILY_CREDIT_BUDGET_USD` env overrides** when set. Read via `.claude/scripts/credit-budget.sh`. This wallet covers Anthropic credit spend **only** — third-party reviewer-tool costs are tracked separately in `pricing-matrix.md`.
+- **Default 25** — $25/day is the owner's stated acceptable overage exposure for a continuous autonomous thread. Budget is evaluated against authoritative harness signals only (see `.claude/reference/budget-source-probe.md`); local token/cost estimation is never used.
+- **Gates autonomous dispatch only** — explicit user requests in chat always proceed with a one-line budget note. Day mode and refill respect this cap; interactive work does not.
+- **LEAVE_LEAD_TIME_MIN** — minutes before a declared leave time at which the thread posts its check-in and starts winding down (issue #1525). Must be an **integer in [5, 240]**; an out-of-range or unparseable value is rejected on stderr and falls back to the default rather than being clamped — a 2-minute lead is a wind-down that cannot finish, and a 10-hour one fires before the work does. **`CLAUDE_LEAVE_LEAD_TIME_MIN` env overrides** when set, and an explicit `--lead Nm` on the invocation beats both. Read by **`/leave-by`** via `pm-config-get.sh --section Budget`, same env → config → code-default cascade as `STALL_MARGIN_MIN`.
+- **Default 30** — the motivating case: told at 3 PM that the desk is empty at 7, the thread checks in at 6:30. Long enough for `/pause` to land a PR that is one merge away, short enough that the last half-hour is not spent idle. Whether it should scale with fleet size is open (issue #1525 notes).
+- **SPLIT_OVER_MIN** — the planning bound, in minutes, **above which** an issue is split into an increment chain instead of being started whole (issue #1680). The comparison is **strict `>`**: a bound of exactly this value does not trigger. Must be an **integer in [30, 960]**; an out-of-range or unparseable value is reported on stderr and falls back to the default rather than being clamped. **`CLAUDE_SPLIT_OVER_MIN` env overrides** when set. Read by **`/issue-maker`** (capture-time sizing check), **`/subagent`** (Step 4 criterion 3, Step 7's overrun menu) and **`/start-issue`** (ready-to-code summary) via `.claude/scripts/split-thresholds.sh`, which owns the env → config → default cascade.
+- **Default 180** — three hours is the owner's stated line for "too long to start as one block". It is also where a pipeline stops fitting an afternoon: the measured claim-to-merge P90 for this repo is around 6 hours, so an issue planned above 3 h routinely outlives the window a leave time leaves open, and a deadline-armed thread then declines it and does nothing rather than landing two hours of mergeable work.
+- **INCREMENT_BOUND_MIN** — the planning bound, in minutes, each increment of a split must fit **at or under**. Must be an **integer in [15, 480]** and **strictly below `SPLIT_OVER_MIN`**; an incoherent pair (a slice bound at or above the split line, which would make every slice its own split trigger) is reported and **both** knobs fall back to the shipped defaults, the same way an inverted usage-horizon pair does. **`CLAUDE_INCREMENT_BOUND_MIN` env overrides** when set. Same reader and same cascade as `SPLIT_OVER_MIN`.
+- **Default 120** — two hours keeps a slice inside a single attended sitting and clear of the 30-minute `LEAVE_LEAD_TIME_MIN` wind-down, so a chain's head is startable in the runway a declared leave time leaves. Against the seed table in `time-estimates.md` that admits the **Light** row (`plan on 90`) and excludes the Standard row (`plan on 180`): an increment that genuinely needs 180 minutes is a slice cut too coarse, not a reason to raise the knob.
+
+### Usage horizon (window runway)
+
+Five knobs turning the harness-injected in-context remaining-token counter into a verdict. All are read by **`.claude/scripts/usage-horizon.sh`**; a per-invocation env override always wins over the value here. **Distinct wallet from `daily_credit_budget_usd`** — that one is credit *spend*, these are window *quota runway*.
+
+- **usage_horizon_approaching_pct** — integer percent `0`–`100`, default **25**. Env: **`CLAUDE_USAGE_HORIZON_APPROACHING_PCT`**. A reading at or below this share of the stated window total is `approaching`.
+- **usage_horizon_critical_pct** — integer percent `0`–`100`, default **10**, and must be strictly below the approaching knob (an inverted pair is reported and falls back to the shipped defaults). Env: **`CLAUDE_USAGE_HORIZON_CRITICAL_PCT`**. At or below this share, `critical`.
+- **usage_horizon_floor_tokens** — non-negative integer below 1e12, default **2000000**. Env: **`CLAUDE_USAGE_HORIZON_FLOOR_TOKENS`**. The absolute stand-in used when a reading carries **no known total**: the percentage knobs need a denominator, so the floor supplies the approaching threshold directly and the critical threshold scales by the same ratio the percentages express (`floor × critical_pct ÷ approaching_pct`). One absolute knob, same severity ordering — the `RELEASE_BUILD_FACTOR` + `RELEASE_NOTIFY_FLOOR_MIN` pairing from `release-policy.sh`, where a proportional rule keeps an absolute stand-in for the case the proportion cannot be computed.
+- **usage_horizon_hysteresis_pct** — integer percent `0`–`100`, default **3**. Env: **`CLAUDE_USAGE_HORIZON_HYSTERESIS_PCT`**. Stops adjacent readings from flapping the verdict: worsening applies immediately, while leaving a band requires exceeding that band's threshold by this margin (scaled into tokens by the same ratio in floor mode). `0` disables hysteresis.
+- **usage_horizon_reading_ttl_s** — seconds, `1`–`999999999`, default **1800**. Env: **`CLAUDE_USAGE_HORIZON_TTL_SECONDS`**. A stored reading older than this is `unknown`, not `clear`.
+
+**Consuming the verdict — `/pm` day mode (#1428).** Three further values shape what day mode *does* with a verdict, and they are **env-only** — deliberately not `ini` keys here, because nothing reads this file for them and a knob that silently does nothing is worse than no knob: `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` (default **2** — the landing window the pre-emptive park gives `/pause`; `0` selects exact reactive-park parity), `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` (default **30**), and `CLAUDE_HORIZON_PROBE_MAX_FIRES` (default **12**) — the bounded probe wake used when a park has no known reset time. Contract: `/pm` Step 2D.7; rationale: `.claude/reference/pm-day-mode.md`.
+
+**These knobs gate horizon verdicts only.** They never authorize local token estimation — `usage-horizon.sh` compares an upstream-supplied number and has no code path that could consume an estimate (`.claude/rules/safety.md` §"Anthropic Quota & Spend Authority"; `.claude/reference/budget-source-probe.md` §"Probe 0").
+
+### Quota tracker — cheapest-next threshold (display only)
+
+One knob, read by **`.claude/scripts/quotas-cheapest-next.sh`** behind `/quotas` (issue #1669). **It gates nothing.** Unlike every other value in this section it feeds no dispatch decision at all: it decides only whether a display-only hint is printed under a table.
+
+- **quotas_cheapest_next_threshold_pct** — integer percent `0`–`100`, default **20**. Env: **`CLAUDE_QUOTAS_CHEAPEST_NEXT_THRESHOLD_PCT`**; an explicit `--threshold <pct>` on the invocation beats both. An unparseable value **here or in the env** is reported on stderr and replaced by the default; an unparseable **`--threshold`** is a usage error instead (exit `3`), because whoever just typed the flag is there to retype it. An account **at or below** this share of its allowance remaining makes it worth naming the cheapest account to continue on; above it, nothing prints. Inclusive on purpose — an account sitting exactly on the line is the case the hint exists for.
+- **Default 20** — a fifth of a weekly cap is roughly a day of the owner's throughput: late enough that the switching question is real, early enough to answer it before the cap actually bites. Chosen with the issue; no measurement claims it is optimal.
+- **Informational only, and structurally so.** The hint never switches accounts, never purchases anything, and never gates dispatch — `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority", and the rolled-back `/quota` skill (#499) for what gating on locally-read numbers cost. Overage prices and their sources: `.claude/reference/ai-quotas.md` §"Overage — what continuing costs" (a **different wallet** from `pricing-matrix.md`, which prices the review stack).
 
 ## Infrastructure
 
@@ -37,7 +102,7 @@ No hosting/deployment infrastructure detected (no Railway, Vercel, Fly.io, Rende
 ## Architecture
 
 - **Entry points:** none — this repo has no application runtime entry point. `setup.sh` and `setup-skills-worktree.sh` are install-time bootstrap scripts only (run once to provision `~/.claude/`), not something invoked at runtime.
-- **Standard directories** (counts as of this scan — re-run `/pm-update` to refresh):
+- **Standard directories** (counts as of this scan — re-run `/pm-handoff` to refresh):
   - `.claude/skills/` — 26 skill definitions (`SKILL.md` per skill)
   - `.claude/rules/` — 17 rule files (workflow policy, auto-loaded into every session)
   - `.claude/scripts/` — 48 helper scripts (bash/python) backing skills and hooks
@@ -58,3 +123,7 @@ No hosting/deployment infrastructure detected (no Railway, Vercel, Fly.io, Rende
 ## Notes
 
 <!-- Free-form. -->
+
+<!-- workspace-sweep cadence -->
+`CLAUDE_WORKSPACE_SWEEP_INTERVAL_S` overrides the finished-only `/pm day`
+sweep interval (seconds, default `3600`). It does not rerun age-based cleanup.

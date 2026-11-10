@@ -34,7 +34,7 @@ Backlog refill reuses `/pm` 1B.2–1B.4b unchanged: incremental body/comment re-
 
 It changes **when the thread goes looking for work**. It changes nothing about **how much may run at once**, or **what may run**. Every limit below predates #823 and binds identically after it:
 
-- **The 3–4 concurrent-pipeline ceiling** (`subagent-orchestration.md`) — refill fills *up to* it and never past it. The ceiling's basis is CodeRabbit review throughput, not agent capacity, so raising it is a separate decision with its own evidence.
+- **The concurrent-pipeline ceiling** (`PIPELINE_CEILING`, default 4 — `subagent-orchestration.md`) — refill fills *up to* it and never past it. The ceiling's basis is CodeRabbit review throughput, not agent capacity, so raising it is a separate, per-repo decision with its own evidence (`active-work-cap.md` §Subordination).
 - **Author-scoped counting** (issue #733) — only pipelines you launched and PRs you authored occupy slots. A collaborator's open PR is context; it neither consumes a slot nor blocks a launch.
 - **Slot release only on a terminal `merged`/`blocked`** — a pipeline parked at `merge_ready` still has Phase C ahead and keeps its slot. Releasing at `merge_ready` would let refill push total in-flight pipelines past the ceiling, which is exactly the bug the terminal-outcome rule exists to prevent.
 - **Overlap chains** (`/subagent` Step 6.0b) — a free slot is permission to launch *some* issue, never one whose file is contested. Refill takes the next unchained candidate; it never jumps a chain to fill a slot faster.

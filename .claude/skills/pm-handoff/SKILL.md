@@ -1,10 +1,27 @@
 ---
 name: pm-handoff
-description: Generate a PM handoff prompt for context-window turnover. Captures static config, live GitHub state, in-flight thread state, and memory summary into a self-contained prompt for a fresh PM thread. Bootstraps `.claude/pm-config.md` on first run. Triggers on "pm-handoff", "handoff", "context turnover", "new pm thread", "thread turnover".
+description: Generate a PM handoff prompt for context-window turnover. Captures static config, live GitHub state, in-flight thread state, and memory summary into a self-contained prompt for a fresh PM thread. Bootstraps and re-scans `.claude/pm-config.md`, preserving user-edited sections. Triggers on "pm-handoff", "handoff", "context turnover", "new pm thread", "refresh pm config", "rescan repo".
 argument-hint: "[copy] (optional — copies output to clipboard via pbcopy)"
 ---
 
 Generate a PM handoff prompt for starting or continuing a PM orchestration thread. This prompt is self-contained — paste it into a new Claude Code session (web or CLI) and the new thread becomes the project manager for this repo, with full awareness of what the previous PM thread was doing.
+
+Resolve the config parser before Step 1:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PM_CONFIG_GET_SH=$(resolve_script pm-config-get.sh || true)
+[[ -n "$PM_CONFIG_GET_SH" ]] || { echo "ERROR: pm-config-get.sh not found (checked all three paths) — PM handoff config capture unavailable" >&2; exit 1; }
+```
 
 Parse `$ARGUMENTS`:
 - If `$ARGUMENTS` contains "copy" or "clipboard", copy the final output to clipboard via `pbcopy` in addition to stdout.
@@ -21,7 +38,7 @@ on an *existing* config would be silently overwritten by Step 2's bootstrap.
 
 ```bash
 CONFIG_FILE=".claude/pm-config.md"
-.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+"$PM_CONFIG_GET_SH" --list >/dev/null 2>&1
 CONFIG_RC=$?
 
 if [[ "$CONFIG_RC" -eq 0 || "$CONFIG_RC" -eq 1 ]]; then
@@ -99,7 +116,7 @@ You are the project manager for {repo URL} — {repo description}.
 You manage the backlog, track progress, write GitHub issues, and generate prompts for parallel cloud threads (Claude Code on the Web) to do the actual coding work. You do NOT write code yourself — you orchestrate.
 
 ## OKRs
-{Leave empty with a placeholder: "No OKRs set. Use `/pm-okr set` to define objectives."}
+{Leave empty with a placeholder: "No OKRs set. Edit this section by hand to define objectives."}
 
 ## Workflow Rules
 1. Check repo state: `gh issue list --state open --limit 500`, `gh pr list --state open`, `gh pr list --state merged --limit 10`
@@ -112,6 +129,31 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 4. When threads finish, verify PRs merged, then identify next batch
 5. Create new GitHub issues when gaps are identified
 6. **Do NOT spawn subagents or use the Agent tool to execute work.** Your job is to write prompts and present them to the user. The user will paste them into new Claude Code threads (web or CLI). Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
+
+## Active work
+
+```ini
+# ACTIVE_WORK_CAP=6
+# PIPELINE_CEILING=4
+```
+
+> Emit both keys **commented out**, exactly as above. `active-work-cap.sh` owns the default and every skill file is supposed to avoid restating the number — but a written value wins over the built-in one, so bootstrapping a live `ACTIVE_WORK_CAP=6` into every repo would freeze today's default there forever and a later change to `CAP_DEFAULT` would never reach them. Commented, the knob stays discoverable in the file an operator actually opens, while the script keeps ownership until someone deliberately uncomments it.
+
+- **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Positive integer in **[1, 20]**. Absent falls back to the built-in default silently; only a present-but-unparseable or out-of-range value warns on stderr. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `active-work-cap.sh`.
+- **Default 6** — CodeRabbit allows 5 reviews/hour/developer, so past 5 concurrent PRs a PR cannot get one review round per hour and rebase re-review overtakes productive review. Derivation: `.claude/reference/active-work-cap.md`.
+- **PIPELINE_CEILING** — per-thread concurrent-pipeline ceiling for `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch. Positive integer in **[1, 20]**, **default 4**; same silent-when-absent, warn-when-invalid fallback. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `active-work-cap.sh --ceiling`. Uncomment it only in a repo that should run wider (or narrower) than the default.
+- Governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)` — the cap never raises a thread's own pipeline band, and the ceiling never raises the cap: running 10 wide means raising both.
+
+## Budget
+
+```ini
+# daily_credit_budget_usd = 25
+```
+
+> Emit the key **commented out**, exactly as above. `credit-budget.sh` owns the default — a written value wins, so bootstrapping a live value would freeze it for the repo. Commented, the knob stays discoverable while the script keeps ownership until someone deliberately uncomments it.
+
+- **daily_credit_budget_usd** — owner's stated daily Anthropic credit overage tolerance (USD). ET calendar day window. **`CLAUDE_DAILY_CREDIT_BUDGET_USD` env overrides** when set. Read via `credit-budget.sh`. Governs Anthropic credit spend only; third-party reviewer-tool costs are tracked separately.
+- **Default 25** — $25/day authorized overage. Evaluated against authoritative harness signals only; local token/cost estimation is never used. Gates autonomous dispatch (day mode, refill) only — explicit user chat requests always proceed with a one-line note.
 
 ## Infrastructure
 {Auto-detected infrastructure from 2b}
@@ -133,26 +175,200 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 
 Tell the user the config was bootstrapped and they should review/customize the Role, OKRs, Team, and Notes sections.
 
-**Non-canonical sections (e.g. `Complexity triggers`).** Step 1 now only dispatches here (`MODE == BOOTSTRAP`) when the config file is genuinely absent — an existing-but-unreadable file instead stops with an error (`MODE == UNREADABLE`, see #606) rather than reaching this bootstrap. So this path never has parseable prior sections to work from, and there is nothing to preserve here. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule `pm-update` uses in its Step 6: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see `pm-update/SKILL.md` Step 6 for the full algorithm and worked example.
+**Non-canonical sections (e.g. `Complexity triggers`).** Step 1 now only dispatches here (`MODE == BOOTSTRAP`) when the config file is genuinely absent — an existing-but-unreadable file instead stops with an error (`MODE == UNREADABLE`, see #606) rather than reaching this bootstrap. So this path never has parseable prior sections to work from, and there is nothing to preserve here. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule the config-refresh path uses in its Step 3f: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see Step 3f below for the full algorithm and worked example.
 
-## Step 3: Read existing config
+## Step 3: Read and refresh the existing config
 
-Parse `.claude/pm-config.md` via the shared parser:
+This skill is the one place `.claude/pm-config.md` is created (Step 2) or refreshed (this step). The auto-generated sections (Infrastructure, Architecture) are regenerated from the repo's current state; every user-edited section is preserved verbatim. Refreshing here means a handoff prompt is never assembled from stale infrastructure or architecture detection.
+
+**Stale worktree and branch cleanup is not part of this flow.** `/pm-clean` is the sole documented caller of `stale-cleanup.sh` — never invoke it from this skill. Config staleness and workspace staleness are independent concerns with independent skills.
+
+### Section classification
+
+| Section | Type | Behavior on refresh |
+|---------|------|---------------------|
+| Role | User-edited | Preserved verbatim |
+| OKRs | User-edited | Preserved verbatim |
+| Workflow Rules | User-edited | Preserved verbatim |
+| Dependency Rules | User-edited | Preserved verbatim |
+| Team | User-edited | Preserved verbatim |
+| Notes | User-edited | Preserved verbatim |
+| Infrastructure | Auto-generated | Regenerated from repo scan |
+| Architecture | Auto-generated | Regenerated from repo scan |
+| Any other section name | Non-canonical | Preserved verbatim, repositioned next to its nearest canonical neighbor (see Step 3f) |
+
+> **"Verbatim" means body content is never rewritten, not that the file round-trips byte-for-byte.** `pm-config-get.sh` trims trailing whitespace from every body it extracts (its documented contract), so a preserved section can come back with trailing blank lines collapsed. That normalization applies uniformly to canonical and non-canonical sections alike and is the only permitted difference — no other edit to a preserved body is ever acceptable.
+
+### Step 3a: Parse existing config into sections
+
+Enumerate section names via the shared parser, then extract each body by name:
+
+**Capture every parser exit code.** This step now feeds a path that can *overwrite* `pm-config.md` (Step 3f), so a read error must never be mistaken for "that section is empty." Process substitution hides `--list`'s status and a bare `2>/dev/null` discards the reason, so read both explicitly:
 
 ```bash
 # Enumerate headers, then fetch each body verbatim.
-mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
-for name in "${SECTIONS[@]}"; do
-  body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
-  # store (name, body) for use in later steps
-done
+SECTION_LIST=$("$PM_CONFIG_GET_SH" --list 2>/tmp/pm-config-list.err); LIST_RC=$?
+if (( LIST_RC != 0 && LIST_RC != 1 )); then
+  echo "ERROR: pm-config-get.sh --list exited ${LIST_RC} — $(cat /tmp/pm-config-list.err)" >&2
+  REFRESH_OK=false            # skip Steps 3b-3g; never write on an unexplained read failure
+else
+  # `while read` rather than `mapfile` — macOS ships Bash 3.2, which has no mapfile.
+  SECTIONS=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && SECTIONS+=("$line")
+  done <<<"$SECTION_LIST"
+  REFRESH_OK=true
+  for name in "${SECTIONS[@]}"; do
+    [[ -n "$name" ]] || continue
+    body="$("$PM_CONFIG_GET_SH" --section "$name" 2>/tmp/pm-config-section.err)"; SEC_RC=$?
+    if (( SEC_RC != 0 && SEC_RC != 1 )); then
+      echo "ERROR: pm-config-get.sh --section '${name}' exited ${SEC_RC} — $(cat /tmp/pm-config-section.err)" >&2
+      REFRESH_OK=false; break   # abort the refresh before anything is written
+    fi
+    # store (name, body) — reused by Steps 3b-3g and by Steps 4-6
+  done
+fi
 ```
 
-`pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), the next-header/EOF boundary, and preserves body content verbatim.
+Only **0** (section present, non-empty body) and **1** (section missing or body empty) are documented non-error statuses — those two continue. Anything else (2 = config file missing, 3 = usage, or any unexpected code) sets `REFRESH_OK=false`: report the error, **skip Steps 3b-3g entirely so `pm-config.md` is never rewritten from a partial parse**, and continue to Step 4 with whatever sections were read. A failed read degrades the handoff's config capture; it must never corrupt the config itself.
+
+`pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), the next-header/EOF boundary, and preserves body content verbatim. Preserve the file's title line (`# PM Config — ...`) separately — it sits above all `## ` sections.
+
+**Classify each section and record non-canonical anchors.** Compare every name in `SECTIONS` against the canonical list (Role, OKRs, Workflow Rules, Infrastructure, Architecture, Dependency Rules, Team, Notes — the fixed schema in Step 3f):
+
+- **Canonical** — one of the eight names above. Handled by Step 3b (preserved) or Steps 3c-3d (regenerated).
+- **Non-canonical** — any other name (e.g. `Complexity triggers`). Store its body verbatim, and record its **anchor**: the nearest canonical section name that precedes it in `SECTIONS`' original order. If no canonical section precedes it (it appears before the first canonical section in the file), anchor it to `TOP` (immediately below the title line, before Role).
+
+The `Active work` and `Budget` sections that Step 2d's bootstrap template emits are **non-canonical by this definition** — neither name is in the eight-name list, so both take the non-canonical path here and are preserved verbatim at their recorded anchors like any other. A config this skill bootstrapped therefore round-trips through a refresh unchanged apart from Infrastructure and Architecture.
+
+Non-canonical sections are never dropped — Step 3f re-inserts each one immediately after its recorded anchor. Sections sharing the same anchor keep their original relative order. Order is **not** guaranteed across different anchors: Step 3f emits canonical sections in the fixed schema order regardless of how they appeared in the original file, so two non-canonical sections anchored to canonical sections that were themselves out of fixed order will follow their anchors' fixed-schema order, not their original file order.
+
+**Duplicate section names are a malformed-config case, not a reassembly case.** `pm-config-get.sh --section "$name"` returns only the *first* occurrence's body — if `SECTIONS` (from `--list`) contains the same name twice (any name, canonical or non-canonical), extracting "by name" cannot recover the second occurrence's actual content; blindly reassembling would silently duplicate the first occurrence's body into both slots and lose the second one. Check for duplicates in `SECTIONS` before proceeding: if found, **skip the refresh entirely** (Steps 3b-3g) and tell the user which header name repeats, so they can fix the file manually — do not guess which occurrence is "correct" or attempt an automatic merge. Then continue to Step 4 with the sections as parsed; a malformed config blocks the *write*, not the handoff.
+
+### Step 3b: Preserve user-edited sections
+
+Store the content of these sections verbatim — do not modify them:
+- Role
+- OKRs
+- Workflow Rules
+- Dependency Rules
+- Team
+- Notes
+
+**Non-canonical sections are preserved the same way.** Any section name not in the canonical list above (see Step 3f) is treated exactly like a user-edited section: store its body content unmodified and never rewrite it. Do not ask the user to re-add it — Step 3f automatically re-inserts it at the anchor recorded in Step 3a. (`pm-config-get.sh` trims trailing whitespace from every extracted body per its documented contract — this applies uniformly to canonical and non-canonical sections and isn't specific to this preservation rule.)
+
+### Step 3c: Re-scan infrastructure
+
+Run the same infrastructure detection as Step 2b:
+
+| Signal file | Service |
+|-------------|---------|
+| `railway.toml` or `railway.json` | Railway |
+| `vercel.json` or `.vercel/` | Vercel |
+| `fly.toml` | Fly.io |
+| `render.yaml` | Render |
+| `docker-compose.yml` or `Dockerfile` | Docker |
+| `supabase/` or `supabase.json` | Supabase |
+| `.neon` or references to `neon.tech` in config | Neon DB |
+| `netlify.toml` | Netlify |
+| `package.json` | Node.js (extract key deps) |
+| `requirements.txt` or `pyproject.toml` or `Pipfile` | Python (extract key deps) |
+| `.env.example` | Environment variables (list key names, not values) |
+
+Generate a new Infrastructure section from the scan results.
+
+### Step 3d: Re-scan architecture
+
+Scan the directory structure (depth 2) and detect:
+- Entry points, standard directories, database patterns, test patterns, CI workflows, config files
+
+Same detection logic as Step 2c. Generate a new Architecture section.
+
+### Step 3e: Display diff for review
+
+Before writing, show the user what will change:
+
+1. Compare the current Infrastructure section against the newly scanned version
+2. Compare the current Architecture section against the newly scanned version
+3. Display changes in a clear format:
+   ```
+   ### Infrastructure changes
+   - Added: Fly.io (detected fly.toml)
+   - Removed: Heroku (heroku.yml no longer present)
+   - Unchanged: Railway, Vercel, Docker
+
+   ### Architecture changes
+   - Added: api/ directory (new)
+   - Updated: CI workflows (added deploy.yml)
+   ```
+4. **Preview the whole reconstructed file, not just those two sections.** Step 3f rewrites `pm-config.md` end to end, so the write can also reorder canonical sections into the fixed schema order, move a non-canonical section to its recorded anchor, and collapse trailing whitespace (Step 3a's note). Build the Step 3f output in memory and `diff` it against the file on disk, then show that diff alongside the summaries above — a confirmation gate that previews only Infrastructure and Architecture is asking the user to approve edits they were never shown.
+5. If the reconstructed file is byte-identical to the one on disk: skip Step 3f with the message "Infrastructure and Architecture are unchanged — config is up to date." Do not write the file; continue to Step 3g.
+6. If the diff is non-empty, ask the user: "Apply these updates to `.claude/pm-config.md`?" Wait for confirmation before writing — via `AskUserQuestion` when available, prose fallback in headless runs (`ask-menu.md`).
+7. If the user declines, do not write. Report "Config refresh declined — no changes written," and continue to Step 4 using the sections as parsed in Step 3a.
+8. If the user confirms, proceed to Step 3f to apply them.
+
+### Step 3f: Reassemble and write config
+
+**Gate:** only run this step when `REFRESH_OK` is true (Step 3a), no duplicate header was found (Step 3a), and the user confirmed (Step 3e). Any of those failing means no write happens at all.
+
+**Re-check the file has not changed under you.** Step 3e pauses for a human answer, and the natural thing to do while deciding is to open `pm-config.md` — so the parse this write is built from can be stale by the time the answer arrives. Record the file's hash in Step 3a, immediately before parsing, and compare it again here:
+
+```bash
+CONFIG_HASH_BEFORE=$(git hash-object "$CONFIG_FILE")   # Step 3a, before parsing
+# ... Steps 3a-3e ...
+if [[ "$(git hash-object "$CONFIG_FILE")" != "$CONFIG_HASH_BEFORE" ]]; then
+  echo "pm-config.md changed while the refresh was awaiting confirmation — nothing written." >&2
+  # Re-run Steps 3a-3e against the new content, or continue to Step 4 without refreshing.
+fi
+```
+
+On a mismatch, **abort the pending write** and either rebuild the preview from the current file or skip the refresh entirely — never replace content the user edited after seeing the diff. This flow's whole contract is that user edits survive it.
+
+Reconstruct `.claude/pm-config.md` using the fixed schema order below for the eight canonical sections (regardless of the order they appeared in the existing file):
+
+1. Title line (preserved from original)
+2. Role (preserved)
+3. OKRs (preserved)
+4. Workflow Rules (preserved)
+5. Infrastructure (regenerated)
+6. Architecture (regenerated)
+7. Dependency Rules (preserved)
+8. Team (preserved)
+9. Notes (preserved)
+
+Infrastructure and Architecture are always written — Steps 3c-3d regenerate them unconditionally, regardless of whether they existed in the original file. For the six *preserved* canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes), skip any that wasn't present in the original file — do not fabricate an empty one.
+
+**Re-insert each non-canonical section at its recorded anchor** (from Step 3a):
+- A section anchored to `TOP` goes immediately after the title line, before Role.
+- A section anchored to a canonical name goes immediately after that canonical section's body in the output — ahead of whatever canonical section is next in the fixed-order list, even if that next section is absent from the file entirely (e.g. `Workflow Rules` not existing doesn't push the anchored section past `Infrastructure`).
+- Sections sharing the same anchor keep their original relative order (Step 3a).
+- An anchor can only ever be a canonical section that itself appeared in `SECTIONS`, so the "anchor absent from output" case should not occur; if it somehow does, fall back to `TOP`.
+
+*Worked example — this repo's own `pm-config.md`:* the original order is Role, OKRs, **Complexity triggers**, Infrastructure, Architecture, Team, Notes. `Complexity triggers` is non-canonical and anchored to OKRs (its nearest preceding canonical section). `Workflow Rules` and `Dependency Rules` are both absent and skipped. Reassembly emits Role, OKRs, **Complexity triggers**, Infrastructure, Architecture, Team, Notes, in the same content and order as the original — `Complexity triggers` stays pinned immediately after OKRs regardless of which canonical sections around it are present.
+
+Write back to `.claude/pm-config.md`.
+
+### Step 3g: Report config changes
+
+Output a summary showing what changed in the config:
+
+```
+## PM Config Refreshed
+
+**Preserved (unchanged):**
+- Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes
+- Non-canonical sections (if any), kept verbatim and reinserted at their recorded anchor — e.g. "Complexity triggers", "Active work", "Budget"
+
+**Regenerated:**
+- Infrastructure: {brief diff — e.g., "added Fly.io, removed Heroku"}
+- Architecture: {brief diff — e.g., "detected new api/ directory"}
+```
+
+If nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date." Either way, continue to Step 4 — the handoff prompt is assembled whether or not the config needed a refresh.
 
 ## Step 4: Fetch live GitHub state
 
-Run **§1 Live GitHub state** of `.claude/reference/session-state-collector.md` — the shared collector this skill and `/pause` both read from, so the two cannot drift apart on what a handoff sees. It carries the queries and the empty-result handling.
+Run **§1 Live GitHub state** of `.claude/reference/session-state-collector.md` — the shared collector this skill and `/end` both read from, so the two cannot drift apart on what a handoff sees. It carries the queries and the empty-result handling.
 
 **Surface both truncation warnings it can raise** — one when open issues come back at exactly 500, one when open pull requests do. A handoff that omits the 501st item while reading as complete is the failure those warnings exist to prevent, and it is the receiving thread that pays for it.
 
@@ -220,7 +436,7 @@ Do NOT spawn subagents or use the Agent tool to execute work yourself. Write the
 
 ### Step 5b: Capture in-flight thread state
 
-Run **§2 Tracked pull requests and their per-PR handoff files** of `.claude/reference/session-state-collector.md`. It carries the repo-scoped `--session-view` read, the per-PR handoff resolution (scoped layout first, flat fallback), the cross-repo PR-number collision guard, and the field list to extract from each source — including the reminder that `active_agents` is a list to verify, not current fact.
+Run **§2 Tracked pull requests and their per-PR handoff files** of `.claude/reference/session-state-collector.md`. It carries the repo-scoped `--session-view` read, the per-PR handoff resolution (scoped layout first, flat fallback), the cross-repo PR-number collision guard, and the field list to extract from each source — including the reminder that the `active_agents` map entries (keyed by agent id) are candidates to verify, not current fact.
 
 Render what it returns in this skill's own shape. The table below has a column for the common fields; **`needs` and `remaining_work` do not have one and must not be folded into the `Status` column** — emit each as its own bullet under that PR's row, omitted only when that specific field is empty. They are the only record of what the previous thread knew was still outstanding, and a receiving thread cannot re-derive them from GitHub.
 

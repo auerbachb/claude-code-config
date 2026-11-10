@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # session-state.sh — Surgical read/write helper for ~/.claude/session-state.json.
+# catalog: session-state-locking — Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed)
 #
 # PURPOSE
 #   Single helper for read-modify-write operations on ~/.claude/session-state.json
@@ -11,11 +12,16 @@
 #
 #   Multiple --set flags merge into ONE atomic write (not N sequential writes),
 #   so callers can mutate several paths in a single transaction without a
-#   partial-write race window between them.
+#   partial-write race window between them. `--remove-agent` joins that same
+#   write (issue #1631) so an agent record can be dropped without the
+#   read-filter-write idiom that used to lose a sibling thread's entries.
 #
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
+#   session-state.sh [--repo <owner/name>] --get-json <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
+#   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--set ...]
+#   session-state.sh --remove-agent <agent-id> [--remove-agent ...] [--set ...]
 #   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
 #   session-state.sh --migrate [--dry-run]
@@ -55,11 +61,88 @@
 #   `.schema_version = 2`.
 #
 # MODES
+#   --cas <path>=<new> Compare-and-set: read the current value at <jq-path>,
+#   --expect <val>     compare it with <expected-value>, and write <new-value>
+#                      only when they match — all under one lock hold.
+#                      <expected-value> follows the same JSON-or-string rules as
+#                      --set: valid JSON is treated as a JSON value (so
+#                      `--expect null` compares against JSON null, not the
+#                      string "null"); anything that fails JSON parsing is a
+#                      bare string. Comparison is jq's `==` (deep equality).
+#                      Exits 0 when the write is applied (CAS win). Exits 7
+#                      when the current value does not match (CAS loss — a
+#                      distinct code so callers can tell a loss from an I/O
+#                      error). Other exit codes (2 usage, 4 parse, 5 write,
+#                      6 lock-timeout) are unchanged from --set. On exit 7
+#                      the state file is left unmodified.
+#
+#                      Use this instead of a separate --get + --set pair for
+#                      any claim that must be atomic: the gap between two
+#                      invocations is a race window; --cas eliminates it.
+#
+#                      COMPOSITION (issue #1445): one --cas may be combined
+#                      with any number of --set flags in the SAME invocation.
+#                      The compare gates the whole batch — on a match the CAS
+#                      target and every --set path are assigned in one jq
+#                      pipeline under the one lock hold; on a mismatch NOTHING
+#                      is written, the accompanying --set values included, and
+#                      the exit code is still 7. That is what makes a claim
+#                      plus its metadata a single atomic write instead of a
+#                      CAS followed by a second, separately-locked --set whose
+#                      gap another writer can land inside. --cas is still at
+#                      most once per invocation, and still requires --expect.
+#                      Repeated --set flags apply in flag order, so naming one
+#                      path twice resolves last-writer-wins inside the one
+#                      pipeline — exactly what repeated --set flags have always
+#                      done. The --cas target is assigned FIRST in that
+#                      pipeline, so a --set naming the CAS path wins over the
+#                      compared value regardless of which flag came first.
+#                      A --set naming a strict ANCESTOR of the CAS path is a
+#                      usage error (exit 2): assigned after the claim, it would
+#                      replace the subtree holding it, so the command would exit
+#                      0 reporting a won claim that is no longer in the file. An
+#                      exact-path --set keeps the precedence above, and a
+#                      DESCENDANT --set is allowed — it refines the claim.
+#   --expect-at <path> <JSON> adds a typed read guard to --cas, repeatable.
+#                      Every guard must match under the same lock before any
+#                      assignment. Guards use concrete scoped paths; mismatch
+#                      exits 7 and leaves the entire batch untouched.
+#
 #   --get <jq-path>    Read the value at <jq-path> from the state file and
 #                      print it on stdout (raw via `jq -r`). Exits 3 if the
 #                      state file does not exist; exits 4 on jq parse errors.
 #                      Returns "null" with exit 0 if the path is absent but
 #                      the file is a valid JSON object — matches jq semantics.
+#
+#                      Raw output is LOSSY by design (issue #1629): an absent
+#                      path, a stored JSON `null`, and a stored JSON STRING
+#                      "null" all print the same four characters, and a stored
+#                      `""` prints nothing at all. Every caller that compares
+#                      stdout to the literal `null` therefore reads a slot
+#                      holding the string "null" as absent. That is fine for
+#                      the many callers whose paths can only ever hold a
+#                      number, a SHA, or a flag; a caller that must tell
+#                      "nothing is here" from "something corrupt is here"
+#                      wants --get-json instead.
+#
+#   --get-json <path>  Identical to --get in every guard, scoping, migration,
+#                      and exit code — it runs the SAME execution block — but
+#                      prints the value as JSON (`jq -c`) instead of raw. That
+#                      makes the four states above distinct on the wire:
+#                        absent path        -> null
+#                        stored JSON null   -> null
+#                        stored string      -> "null"
+#                        stored empty string-> ""
+#                      An absent path and a stored JSON null still coincide,
+#                      as they do in jq itself — the distinction this mode
+#                      exists to give is absent-vs-CORRUPT, which is what the
+#                      pause-source readers (/pause-resume Step 1, /go-on
+#                      probe B, candidate-ownership.sh) need so a damaged
+#                      board is never reported as "nothing parked".
+#                      Exit codes match --get exactly: 3 = no state file,
+#                      4 = jq parse error, 2 = no jq path. --get and
+#                      --get-json are mutually exclusive, and each may be
+#                      given at most once.
 #
 #   --repo-key         Print the resolved repo key (see REPO SCOPING) and
 #                      exit 0. For consumers that must build their own jq
@@ -76,10 +159,10 @@
 #                      origin). The projection, applied to the migrated document:
 #                        • .prs        = .repos[<key>].prs // {}   (this repo only)
 #                        • .root_repo  = .repos[<key>].root_repo // null
-#                        • .active_agents = the global array with every entry
+#                        • .active_agents = the global map with every entry
 #                          that belongs to a DIFFERENT repo removed. Attribution,
 #                          in order: an explicit .owner_repo on the entry wins
-#                          (kept iff it equals <key>) — the array has no repo
+#                          (kept iff it equals <key>) — entries carry no repo
 #                          field today, but honoring it here means stamping it at
 #                          the write sites later needs no reader change. Absent
 #                          that, an entry with no .pr is kept (unattributable);
@@ -127,25 +210,49 @@
 #                        • A bare string — anything that fails JSON parsing is
 #                          treated as a literal string.
 #                      Multiple --set flags accumulate into ONE atomic jq
-#                      pipeline → ONE temp-file → ONE mv. If the state file is
+#                      pipeline → ONE temp-file → ONE mv, and they accumulate
+#                      into a --cas invocation's single pipeline the same way
+#                      when the two are combined (issue #1445 — see --cas
+#                      COMPOSITION). If the state file is
 #                      missing, it is initialized with `{}` and the writes are
 #                      applied to that fresh object (exit 0, NOT 3).
 #                      Auto-updates `.last_updated` to the current ISO 8601
 #                      timestamp on every write — matches the pattern in
 #                      greptile-budget.sh and reviewer-of.sh.
 #
+#   --remove-agent <id>  Delete one key from the `.active_agents` map
+#                      (issue #1631). May be repeated, and composes with --set
+#                      and --cas: every assignment and deletion in one
+#                      invocation lands in the SAME jq pipeline, under the same
+#                      lock hold, in one atomic mv. Deletions are applied
+#                      BEFORE assignments regardless of flag order, so a
+#                      same-key `--remove-agent X --set '.active_agents["X"]=…'`
+#                      always means REPLACE and the assignment survives; for
+#                      different keys the order is immaterial. Removing an id
+#                      that is not present is a no-op that still exits 0, so a
+#                      caller draining an agent twice never has to probe first.
+#                      This is the ONLY supported way to drop an agent record.
+#                      The old idiom — `--get '.active_agents'`, filter locally,
+#                      `--set` the whole value back — spans two lock windows,
+#                      so a sibling thread's append between the read and the
+#                      write is silently discarded; that is the loss #1631
+#                      fixes and why the field is now a keyed map.
+#
 # EXIT STATUS
-#   0  Success — value printed (--get) or write completed (--set). A --get on
-#      a corrupted known-typed field (see FIELD-TYPE CONTRACT) also exits 0,
-#      printing a safe default instead of the corrupt value.
+#   0  Success — value printed (--get/--get-json) or write completed (--set).
+#      A --get/--get-json on a corrupted known-typed field (see FIELD-TYPE
+#      CONTRACT) also exits 0, printing a safe default instead of the corrupt
+#      value.
 #   2  Usage error — missing/invalid mode, unknown flag, malformed --set
-#      argument (no `=`), no jq path given for --get, or a --repo value that
+#      argument (no `=`), no jq path given for --get/--get-json, both of those
+#      flags given together or either given twice, or a --repo value that
 #      is not a plausible repo key (`[A-Za-z0-9._/-]+`).
-#   3  State file missing on --get. (--set creates the file from `{}`.)
+#   3  State file missing on --get/--get-json. (--set creates the file from
+#      `{}`.)
 #   4  jq failed to parse the file or evaluate the path/expression, OR a
-#      --set would leave a known-typed field (see FIELD-TYPE CONTRACT) holding
-#      the wrong JSON type — the write is rejected and the state file is left
-#      unmodified.
+#      --set or --cas would leave a known-typed field (see FIELD-TYPE
+#      CONTRACT) holding the wrong JSON type — the write is rejected and the
+#      state file is left unmodified.
 #   5  Write failed — could not create temp file, could not mv into place,
 #      or jq filter pipeline failed during the atomic write. Also returned
 #      when the state-lock library (see LOCKING) cannot be loaded.
@@ -153,13 +260,31 @@
 #      the acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). The
 #      write is ABANDONED and the state file is left unmodified; this script
 #      never falls back to writing unserialized.
+#   7  CAS mismatch (--cas only) — the current value at the given path does
+#      not match the --expect value. The state file is left unmodified —
+#      including every --set composed into the same invocation, which is the
+#      all-or-nothing half of the composition contract (issue #1445). This
+#      code is distinct from all I/O or locking failures so callers can
+#      differentiate a lost race from a broken environment.
+#   8  HOME unset — ~/.claude/session-state.json cannot be resolved, so no
+#      mode that touches the state file can run (issue #1434). A fresh number
+#      rather than an overload of 2-7 above, chosen the way state-lock.sh
+#      chose 6, so callers can tell "no HOME in this environment" from a
+#      usage error or a genuine I/O failure. --help, every usage error, and
+#      --repo-key answer BEFORE this guard — none of them read the state
+#      file. There is deliberately no ${HOME:-} fallback: defaulting to empty
+#      would fabricate a root-anchored /.claude/session-state.json and strew
+#      state at the filesystem root.
 #
 # LOCKING (issue #639)
-#   --set takes an exclusive advisory lock around the ENTIRE read-modify-write
-#   cycle — read, jq pipeline, type-contract check, and the final mv — not
-#   just the mv. Without it, two writers could each read the same document,
-#   each apply their own change, and each write back, silently losing one of
-#   the two changes (last writer wins, no error).
+#   --set and --cas take an exclusive advisory lock around the ENTIRE
+#   read-modify-write cycle — read, compare (--cas), jq pipeline, type-contract
+#   check, and the final mv — not just the mv. A --cas composed with --set
+#   writes (issue #1445) is ONE such cycle, not two: the composition adds no
+#   lock, it just puts more assignments inside the hold the compare already
+#   takes. Without it, two writers could
+#   each read the same document, each apply their own change, and each write
+#   back, silently losing one of the two changes (last writer wins, no error).
 #
 #   The lock is a `mkdir`-based lock directory at `<state-file>.lock`, because
 #   this fleet runs on macOS where `flock(1)` is not installed by default.
@@ -168,7 +293,7 @@
 #   wedge every future session. Full contract, tunables, and failure modes:
 #   `.claude/scripts/state-lock.sh`.
 #
-#   --get does NOT lock: `mv` is atomic, so a reader always observes either
+#   --get/--get-json do NOT lock: `mv` is atomic, so a reader always observes either
 #   the pre-write or the post-write document, never a partial one. Reads stay
 #   contention-free.
 #
@@ -194,16 +319,27 @@
 #   contract follows it there: `repos` itself must be an object, every
 #   `.repos[*]` must be an object, and every `.repos[*].prs` present must be
 #   an object. The `pr_nested` checks apply to entries under each repo's
-#   `prs` map. Classification runs on the caller's ORIGINAL path (which
-#   still reads `.prs["<N>"].<field>`) while the jq check path is scoped,
-#   so #640's guarantee is not quietly lost to the restructure.
+#   `prs` map. Classification runs on the CONCRETE path — the caller's path
+#   after scope_path() has resolved it — so the same guard reaches a write
+#   however it is spelled: auto-scoped (`.prs["<N>"].<field>`) or fully
+#   spelled under --raw-path, in dot or all-bracket form (issue #1340).
 #
-#   --set checks the FINAL value of any touched known field after the whole
-#   batch is applied (not just the raw value passed in), so both whole-field
-#   writes (`--set '.active_agents=...'`) and element/sub-path writes
-#   (`--set '.active_agents[0]=...'` or, for a per-PR nested field,
-#   `--set '.prs["287"].babysit.active=...'`) are covered. If a touched
-#   known field would end up the wrong type, the entire batch is rejected
+#   Three shapes of write against the per-PR map are each classified and
+#   checked (issue #1340): a nested field (`.prs["<N>"].<field>`, including
+#   deeper subpaths), a whole entry (`.prs["<N>"]={...}`), and a whole map
+#   (`.prs={...}`). For the latter two every known field PRESENT in the
+#   written entry is checked — presence via `has(...)`, so a field written as
+#   an explicit null is rejected exactly as the single-path write of that
+#   same null always was, while a field simply omitted is not corruption.
+#   A whole-repo-scope write (`.repos["<key>"]={...}`) is deliberately NOT
+#   classified: it has no caller and is out of #1340's scope.
+#
+#   --set and --cas both check the FINAL value of any touched known field
+#   after the whole write is applied (not just the raw value passed in), so
+#   both whole-field writes (`--set '.active_agents=...'`) and element/
+#   sub-path writes (`--set '.active_agents[0]=...'` or, for a per-PR nested
+#   field, `--set '.prs["287"].babysit.active=...'`) are covered. If a touched
+#   known field would end up the wrong type, the entire write is rejected
 #   (exit 4) and the state file is left unmodified — this is what should
 #   have caught the original corruption: a caller passed an unevaluated jq
 #   filter expression (e.g.
@@ -214,7 +350,18 @@
 #   resulting JSON array/object as the --set value) — see the
 #   read-filter-write pattern in .claude/skills/pr-monitor-and-manage/SKILL.md.
 #
-#   --get on a known top-level field whose *stored* value doesn't match the
+#   --cas runs the identical check on its own candidate document once the
+#   compare has succeeded and before the commit (issue #1283), so the two
+#   write paths accept and reject exactly the same values. Both call
+#   enforce_field_type_contract(); there is no second implementation to drift.
+#   Both also build their assignments through add_write_assignment(), so a
+#   --set composed into a --cas is scoped, type-probed, and classified by the
+#   same code that handles a standalone --set — and a wrong-typed companion
+#   therefore rejects the WHOLE invocation (exit 4, nothing written), exactly
+#   as a wrong-typed value in a multi---set batch already did (issue #1445).
+#
+#   --get (and --get-json, which shares the block) on a known top-level field
+#   whose *stored* value doesn't match the
 #   contract (state corrupted before this guard existed, or written by
 #   something bypassing this script) prints a warning to stderr and returns
 #   a safe default (`[]`/`{}`) on stdout instead of the corrupt value,
@@ -226,12 +373,15 @@
 #
 # OUTPUT
 #   --get: raw value on stdout (one line per jq output, like `jq -r`).
+#   --get-json: the same value as JSON on stdout (one line per jq output, like
+#          `jq -c`), so `null`, the string `"null"`, and `""` are distinct.
 #   --set: nothing on stdout when the write succeeds.
 #   stderr: one-line error messages on failure.
 #
 # ATOMICITY
 #   The state file is read into a temp file (or seeded as `{}` if missing),
-#   piped through a jq pipeline that builds all --set assignments + the
+#   piped through a jq pipeline that builds all --set assignments (plus the
+#   --cas target when one is given) + the
 #   `.last_updated` refresh, written to `${STATE_FILE}.tmp.$$`, and then
 #   atomically renamed via `mv`. `mv` within the same filesystem is atomic
 #   on POSIX. Sibling fields outside the assigned paths are preserved
@@ -249,6 +399,15 @@
 #   # Read a value:
 #   session-state.sh --get '.greptile_daily.reviews_used'
 #   # -> 3
+#
+#   # Read a value WITHOUT losing its JSON type (issue #1629). Distinguishing
+#   # an absent slot from one corrupted into the string "null" is the whole
+#   # point — with --get both of these print `null`:
+#   session-state.sh --get-json '.repos["org/repo"].pauses'
+#   # absent          -> null
+#   # stored as null  -> null
+#   # stored as "null"-> "null"      (corrupt: a string, not a record map)
+#   # stored as ""    -> ""          (corrupt: --get would print nothing)
 #
 #   # Set a single value (string auto-detected). The path is scoped to the
 #   # repo of the current working directory, so this writes
@@ -306,6 +465,24 @@
 #   # leaves the state file unmodified:
 #   session-state.sh --set '.prs["287"].last_cron_action=some bare string'
 #   # -> exit 4: field '.prs["287"].last_cron_action' would become type 'string' but must be 'object'
+#
+#   # Atomic claim: write a record only if the slot is currently unoccupied.
+#   # Exits 0 on win, 7 if another caller already owns the slot:
+#   session-state.sh --raw-path --cas '.repos["org/repo"].release.in_flight={"claim":"mine"}' \
+#     --expect null
+#
+#   # Update the claim only if it still matches exactly (safe release pattern):
+#   session-state.sh --raw-path --cas '.repos["org/repo"].release.in_flight=null' \
+#     --expect '{"claim":"mine"}'
+#
+#   # Claim a slot AND record its metadata in one atomic write (issue #1445).
+#   # On a lost race nothing lands — not the cause, not the kind, not the
+#   # bound — and the exit code is still 7, so the caller stands down on one
+#   # signal instead of reasoning about a half-written record:
+#   session-state.sh --raw-path \
+#     --cas '.repos["org/repo"].day.limit_cause="preemptive"' --expect null \
+#     --set '.repos["org/repo"].day.limit_kind=rolling_window' \
+#     --set '.repos["org/repo"].day.limit_probe_fires_remaining=12'
 
 set -euo pipefail
 # Usage telemetry. `script-usage-report.sh` derives adherence ratios from this
@@ -314,12 +491,19 @@ set -euo pipefail
 # this script on a refresh timer, so it sets CLAUDE_SCRIPT_USAGE_LOG=0 to keep
 # thousands of automatic reads a day out of the denominator (issue #779).
 # Opt-out only, and never the default: every ordinary call still logs.
-if [[ "${CLAUDE_SCRIPT_USAGE_LOG:-1}" != "0" ]]; then
-  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort — must never change this script's exit contract (issue #1430):
+# skipped when HOME is unset, stderr muted BEFORE the append per issue #1406's
+# ordering.
+if [[ "${CLAUDE_SCRIPT_USAGE_LOG:-1}" != "0" && -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 
-STATE_FILE="${HOME}/.claude/session-state.json"
-
+# NOTE: $STATE_FILE is deliberately NOT computed here. Its ${HOME} expansion
+# used to sit at this line and aborted every HOME-less invocation under `set -u`
+# before argument parsing could answer --help (issue #1434). It is now
+# initialized, behind an explicit guard, just below the --repo-key block — the
+# first point past which every remaining mode reads or writes the state file.
+#
 # Saved before any parsing consumes them, so a read-modify-write whose lock was
 # stolen mid-flight can be retried from scratch by re-exec'ing this script (see
 # the state_lock_assert_held branch just before the commit, near the end).
@@ -374,6 +558,14 @@ die_usage() {
   exit 2
 }
 
+# One named line + exit 8 instead of bash's `HOME: unbound variable` trace
+# (issue #1434). Same shape as die_usage above; see the EXIT STATUS header for
+# why 8 and why no ${HOME:-} fallback.
+die_home_unset() {
+  echo "session-state.sh: HOME is unset; cannot resolve ~/.claude/session-state.json" >&2
+  exit 8
+}
+
 # Validate that the state file contains exactly ONE top-level JSON object.
 # `jq empty` and `jq -e 'type == "object"'` both succeed on multi-document
 # files like `{}\n{}` because jq processes documents independently — the
@@ -395,6 +587,12 @@ is_single_object_state_file() {
 FIELD_TYPES_LOADED=0
 FIELD_TYPES_TOP=""
 FIELD_TYPES_NESTED=""
+# Same `pr_nested` contract as FIELD_TYPES_NESTED, kept as compact JSON for the
+# jq-side entry scan (issue #1340) so a caller-supplied PR key never has to be
+# interpolated into a jq filter. Stays `{}` whenever the schema is missing or
+# unparseable, which keeps the documented "type guard disabled for this run"
+# degradation path (issue #640) covering the entry scan too.
+FIELD_TYPES_NESTED_JSON="{}"
 
 load_field_types() {
   if [[ "$FIELD_TYPES_LOADED" -eq 1 ]]; then
@@ -413,6 +611,16 @@ load_field_types() {
   nested="$(jq -r '._field_types.pr_nested // {} | to_entries[] | "\(.key)=\(.value)"' "$SCHEMA_FILE" 2>/dev/null)" || nested=""
   FIELD_TYPES_TOP="$top"
   FIELD_TYPES_NESTED="$nested"
+  # `objects` rather than a bare `// {}`: a pr_nested that PARSES but is not an
+  # object (a string, an array) is a malformed contract, not a usable one, and
+  # caching it verbatim would feed a scalar to `to_entries` inside the entry
+  # scan. That scan fails closed by design, so the malformed schema would refuse
+  # unrelated, legitimate writes instead of degrading (CodeAnt, PR #1573).
+  # FIELD_TYPES_NESTED above already degrades on the same input for free — its
+  # `to_entries` runs jq-side and trips the `|| nested=""` fallback — so this
+  # keeps the two caches agreeing on what "unusable contract" means.
+  FIELD_TYPES_NESTED_JSON="$(jq -c '(._field_types.pr_nested | objects) // {}' "$SCHEMA_FILE" 2>/dev/null)" || FIELD_TYPES_NESTED_JSON="{}"
+  [[ -n "$FIELD_TYPES_NESTED_JSON" ]] || FIELD_TYPES_NESTED_JSON="{}"
 }
 
 # Prints the expected JSON type ("array"/"object"/etc) for a known top-level
@@ -633,14 +841,62 @@ def _scoped($pathmap; $unknown):
   | del(.prs) | del(.root_repo)
   | .schema_version = 2;
 
+# active_agents array -> map keyed by agent id (issue #1631). The array was
+# not addressable per entry, so every writer replaced the whole value and two
+# threads racing that read-modify-write dropped each other live agents. As a
+# map each writer touches only its own key. Applied to EVERY read and write
+# pipeline, and independent of the .prs/.root_repo migration above: it is a
+# different field, so it also runs on the branch that refuses a corrupt
+# legacy document. In memory for --get/--session-view; persisted by the next
+# write or by --migrate. No schema_version bump is needed, because unlike
+# flat->scoped this migration is self-detecting by type and idempotent.
+#
+# `null` and other non-object elements are DROPPED (one observed clobber left
+# `[null, {...}]` on disk). An entry with no usable `.id` keeps a stable
+# `_unkeyed_<index>` key rather than being discarded. `.agent` is honored as a
+# secondary key source because live entries written before this change carry
+# that field instead of `.id`. The two are tried in order for the first USABLE
+# key — a non-empty string or a number — NOT the first non-null one: `//` falls
+# through only on null and false, so an entry carrying `id: ""` (or an object,
+# or an array) would have shadowed a perfectly good `.agent` and landed under
+# `_unkeyed_` instead (CodeAnt, PR #1637). Duplicate ids collapse
+# to the last entry, the same last-writer-wins the array already had. Any
+# non-array, non-object value (including null/absent) is left untouched, which
+# is the "refuse rather than discard" behavior migrate() uses everywhere else.
+#
+# The `_unkeyed_<index>` fallback is NOT assumed free: nothing stops a real
+# agent from carrying the literal id `_unkeyed_3`, and a migration that loses a
+# real, identified agent to an anonymous one would defeat the point of this
+# change. So the fallback appends `_` until the key is unused in the map built
+# so far. Collision the other way — a real id landing on a key an earlier
+# unkeyed entry took — stays last-writer-wins, identical to the duplicate-id
+# case above, and the record it displaces is the anonymous one.
+def _agents_map:
+  if (.active_agents | type) == "array"
+  then .active_agents = ( reduce (.active_agents | to_entries[]) as $e (
+         {};
+         if ($e.value | type) != "object" then .
+         else ( ( [ $e.value.id?, $e.value.agent? ]
+                  | map(select((type == "string" and length > 0) or type == "number"))
+                  | map(tostring) | first ) as $id
+              | . as $acc
+              | (if $id != null then $id
+                 else ( ("_unkeyed_" + ($e.key | tostring))
+                        | until( (. as $s | $acc | has($s)) | not; . + "_" ) )
+                 end) as $k
+              | .[$k] = $e.value )
+         end ) )
+  else . end;
+
 def migrate($pathmap; $unknown):
-  if (.prs != null and (.prs | type) != "object")
-     or (.root_repo != null and (.root_repo | type) != "string")
-  then .
-  elif (.prs != null) or (.root_repo != null)
-  then _scoped($pathmap; $unknown)
-  else (.schema_version // 2) as $v | .schema_version = $v
-  end;
+  ( if (.prs != null and (.prs | type) != "object")
+       or (.root_repo != null and (.root_repo | type) != "string")
+    then .
+    elif (.prs != null) or (.root_repo != null)
+    then _scoped($pathmap; $unknown)
+    else (.schema_version // 2) as $v | .schema_version = $v
+    end )
+  | _agents_map;
 '
 
 # True when the document carries legacy top-level keys whose shape we refuse
@@ -673,97 +929,517 @@ top_level_key_of() {
   fi
 }
 
-# Extract the PR-number key from a path whose top-level key is "prs", e.g.
-# `.prs["287"].last_cron_action` -> "287". Every known caller uses bracket
-# notation for the PR-number selector (`.prs["<N>"]`), so only that form is
-# recognized; a bare `.prs.287...` (unusual — jq requires bracket or quoted-
-# dot notation for a numeric key) returns empty, same as an absent selector.
-pr_number_of() {
-  local path="${1#.prs}"
-  if [[ "$path" != \[* ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  path="${path#\[}"
-  path="${path%%]*}"
-  path="${path#[\"\']}"
-  path="${path%[\"\']}"
-  printf '%s' "$path"
-}
+# --- per-PR write classification (issues #640, #1340) -----------------------
+#
+# Everything below classifies a CONCRETE write path — the path after
+# scope_path() has resolved it, i.e. exactly where the write lands in the final
+# document. Classifying the concrete path rather than the caller's spelling is
+# what closes issue #1340's gap 2: helpers that matched only a leading `.prs`
+# saw nothing in a fully-spelled `.repos["o/r"].prs["1"].<field>` write (the
+# shape session-scheduling-reconcile.sh renders through --raw-path), so the
+# nested guard silently did not run. As a bonus, the concrete path is also the
+# check path, so nothing has to be scoped back at the point of use.
+#
+# Globals published by path_take_segment(); read immediately after each call.
+SEG_TEXT=""
+SEG_KEY=""
+SEG_REST=""
 
-# Extract the per-PR nested field name immediately after the PR-number
-# selector, e.g. `.prs["287"].babysit.active` -> "babysit" (the known field
-# two levels up from a subpath write — the same principle top_level_key_of()
-# applies for top-level fields, e.g. `.active_agents[0].id` -> "active_agents").
-# Returns empty if the path's top-level key isn't "prs", there's no bracket
-# PR-number selector, or nothing follows it (a whole-`.prs["<N>"]` entry
-# replacement isn't checked here — the existing top-level object-type check
-# on `prs` itself still applies).
-pr_nested_key_of() {
-  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  local path
-  path="$(pr_number_of "$1")"
-  if [[ -z "$path" ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  # Re-derive the remainder after the PR-number selector (pr_number_of()
-  # only returns the extracted number, not the leftover path).
-  path="${1#.prs}"
-  path="${path#\[*\]}"
-  path="${path#.}"
-  if [[ -z "$path" ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  if [[ "$path" == \[* ]]; then
-    path="${path#\[}"
-    path="${path%%]*}"
-    path="${path#[\"\']}"
-    path="${path%[\"\']}"
-    printf '%s' "$path"
+# Consume the leading path segment of $1, publishing:
+#   SEG_TEXT — the literal jq text consumed (re-emittable verbatim)
+#   SEG_KEY  — the object key it selects; empty for a numeric array index
+#   SEG_REST — the unconsumed remainder
+# Returns 1 when the remainder does not begin with a segment shape we
+# understand, which callers treat as "stop classifying".
+#
+# Both spellings of every segment are recognized, because both are produced by
+# live callers: the dot form (`.prs["287"].babysit`, hand-written) and the
+# all-bracket form (`.["repos"]["o/r"]["prs"]["287"]["babysit"]`, rendered by
+# session-scheduling-reconcile.sh's `as_path`). Each also accepts a trailing
+# jq optional-index `?`, which scope_path() already treats as a legal spelling
+# of the same node: without it a `.prs?["287"].<field>` write would scope
+# correctly and then classify as nothing, escaping the very guard this
+# function feeds. Written with regexes held in variables so bash 3.2 (macOS
+# system bash) applies them as regexes rather than literals.
+path_take_segment() {
+  local p="$1"
+  local re_dquote='^\.?\["([^"]*)"\]\??'
+  local re_squote="^[.]?\\['([^']*)'\\]\\??"
+  local re_index='^\.?\[([0-9]+)\]\??'
+  local re_ident='^\.([A-Za-z_][A-Za-z0-9_]*)\??'
+  SEG_TEXT=""; SEG_KEY=""; SEG_REST=""
+  if [[ "$p" =~ $re_dquote ]] || [[ "$p" =~ $re_squote ]]; then
+    SEG_TEXT="${BASH_REMATCH[0]}"; SEG_KEY="${BASH_REMATCH[1]}"
+  elif [[ "$p" =~ $re_index ]]; then
+    SEG_TEXT="${BASH_REMATCH[0]}"; SEG_KEY=""
+  elif [[ "$p" =~ $re_ident ]]; then
+    SEG_TEXT="${BASH_REMATCH[0]}"; SEG_KEY="${BASH_REMATCH[1]}"
   else
-    printf '%s' "${path%%[.[]*}"
+    return 1
+  fi
+  SEG_REST="${p#"$SEG_TEXT"}"
+  return 0
+}
+
+# Classify a concrete write path against the per-PR map, publishing:
+#   PR_PATH_KIND   — "map"    the write replaces a whole `.prs` map
+#                    "entry"  the write replaces a whole `.prs["<N>"]` entry
+#                    "nested" the write lands inside a `.prs["<N>"]` entry
+#                    ""       the path does not address a per-PR map at all
+#   PR_PATH_PREFIX — the literal jq path of that map / entry
+#   PR_PATH_KEY    — for "nested", the segment immediately after the PR-number
+#                    selector; the known-nested-field candidate (empty when
+#                    that segment is a numeric index)
+#   PR_PATH_TAIL_OPAQUE — for "nested", 1 when that segment could not be
+#                    tokenized at all: a valid jq spelling this tokenizer does
+#                    not model (`."reviewer"`, a key with an escaped quote).
+#                    The field name is then unknowable, so callers scan the
+#                    whole entry instead of skipping the check outright
+#                    (CodeAnt, PR #1573). Distinct from the numeric-index case,
+#                    where tokenizing SUCCEEDS and there is genuinely no field.
+#
+# Accepts a leading `.prs` (the legacy/--raw-path top level) as well as
+# `.repos["<key>"].prs` (the scoped shape since issue #638). A whole-repo-scope
+# write (`.repos["<key>"]=…`) and a whole-`.repos` write classify as "" — a
+# distinct shape with no live caller, deliberately out of issue #1340's scope.
+PR_PATH_KIND=""
+PR_PATH_PREFIX=""
+PR_PATH_KEY=""
+PR_PATH_TAIL_OPAQUE=0
+pr_path_classify() {
+  local rest="$1" prefix=""
+  PR_PATH_KIND=""; PR_PATH_PREFIX=""; PR_PATH_KEY=""; PR_PATH_TAIL_OPAQUE=0
+
+  path_take_segment "$rest" || return 0
+  if [[ "$SEG_KEY" == "repos" ]]; then
+    prefix="$SEG_TEXT"
+    # The repo-scope key, then the `prs` segment beneath it.
+    path_take_segment "$SEG_REST" || return 0
+    [[ -n "$SEG_KEY" ]] || return 0
+    prefix="$prefix$SEG_TEXT"
+    path_take_segment "$SEG_REST" || return 0
+    [[ "$SEG_KEY" == "prs" ]] || return 0
+  elif [[ "$SEG_KEY" != "prs" ]]; then
+    return 0
+  fi
+
+  # SEG_* now holds the `prs` segment in both branches.
+  prefix="$prefix$SEG_TEXT"
+  rest="$SEG_REST"
+  if [[ -z "$rest" ]]; then
+    PR_PATH_KIND="map"; PR_PATH_PREFIX="$prefix"
+    return 0
+  fi
+
+  # The PR-number selector. A numeric index here (`.prs[0]`) selects no entry —
+  # `.prs` is an object — so it is not a per-PR write.
+  path_take_segment "$rest" || return 0
+  [[ -n "$SEG_KEY" ]] || return 0
+  prefix="$prefix$SEG_TEXT"
+  rest="$SEG_REST"
+  if [[ -z "$rest" ]]; then
+    PR_PATH_KIND="entry"; PR_PATH_PREFIX="$prefix"
+    return 0
+  fi
+
+  PR_PATH_KIND="nested"
+  PR_PATH_PREFIX="$prefix"
+  if path_take_segment "$rest"; then
+    PR_PATH_KEY="$SEG_KEY"
+  else
+    PR_PATH_TAIL_OPAQUE=1
+  fi
+  return 0
+}
+
+# jq program shared by the whole-entry and whole-map scans below. `offences`
+# decides presence with `has(...)` rather than by comparing the value's type
+# against "null" (issue #1340, gap 1): an omitted known field and one written
+# as an explicit null are the same jq type but not the same write, and the
+# nested single-path check has always rejected the latter. A null ENTRY is
+# still skipped — clearing an entry is not corruption — while a non-object
+# entry is reported, since its fields cannot be scanned at all.
+#
+# `render` builds the whole message jq-side so a caller-supplied PR key is
+# never interpolated into a jq filter. Quoted heredoc: the body is literal, so
+# the apostrophes the message needs are safe here.
+PR_ENTRY_SCAN_JQ="$(cat <<'PR_ENTRY_SCAN_JQ_EOF'
+def offences($entry; $types):
+  if $entry == null then empty
+  elif ($entry | type) != "object"
+  then {f: null, actual: ($entry | type), expected: "object"}
+  else ( $types | to_entries[] as $t
+         | select($entry | has($t.key))
+         | select(($entry[$t.key] | type) != $t.value)
+         | {f: $t.key, actual: ($entry[$t.key] | type), expected: $t.value} )
+  end;
+def render($prefix; $statefile):
+  ( $prefix
+    + (if .ent == null then "" else "[\"" + .ent + "\"]" end)
+    + (if .f == null then "" else "." + .f end) ) as $p
+  | "session-state.sh: refusing to write — field '" + $p
+    + "' would become type '" + .actual
+    + "' but must be '" + .expected
+    + "' (see issue #640); " + $statefile + " left unmodified";
+PR_ENTRY_SCAN_JQ_EOF
+)"
+
+# Append $2 to the NEWLINE-separated list variable named by $1, unless it is
+# already present. Indirect read plus `printf -v` rather than a nameref, so this
+# stays bash 3.2 compatible like the rest of the script.
+pr_list_add_unique() {
+  local list_name="$1" value="$2" current="${!1}"
+  case $'\n'"$current"$'\n' in
+    *$'\n'"$value"$'\n'*) return 0 ;;
+  esac
+  printf -v "$list_name" '%s' "${current}${current:+$'\n'}${value}"
+}
+
+# Record one concrete write path in the three per-PR lists (deduped). Shared by
+# --set, once per assignment, and --cas, once for its single target, so the two
+# write paths cannot classify differently — the issue #1283 lesson applied to
+# classification as well as to the checks it feeds. The lists are NEWLINE-
+# separated: they hold concrete jq paths, and a --raw-path repo key is caller
+# text that may contain a space.
+pr_record_write_target() {
+  pr_path_classify "$1"
+  case "$PR_PATH_KIND" in
+    nested)
+      if [[ -n "$PR_PATH_KEY" ]]; then
+        [[ -n "$(known_nested_field_type "$PR_PATH_KEY")" ]] || return 0
+        pr_list_add_unique TOUCHED_NESTED_CHECKS \
+          "${PR_PATH_KEY}"$'\x1f'"${PR_PATH_PREFIX}.${PR_PATH_KEY}"
+      elif [[ "$PR_PATH_TAIL_OPAQUE" -eq 1 ]]; then
+        # The write lands inside a known PR entry but names its field in a
+        # spelling this tokenizer cannot decompose, so the single-path check has
+        # no path to check. Scanning the resulting ENTRY covers it instead:
+        # PR_PATH_PREFIX is exactly that entry, the scan validates every known
+        # field present in it, and it can only reject a genuinely wrong-typed
+        # value — so this adds coverage without refusing anything the
+        # equivalent whole-entry write would not already refuse.
+        pr_list_add_unique WHOLE_ENTRY_PATHS "$PR_PATH_PREFIX"
+      fi
+      ;;
+    entry)
+      pr_list_add_unique WHOLE_ENTRY_PATHS "$PR_PATH_PREFIX"
+      ;;
+    map)
+      pr_list_add_unique WHOLE_MAP_PATHS "$PR_PATH_PREFIX"
+      ;;
+  esac
+  return 0
+}
+
+# Run one per-PR field-type scan and exit 4 on the first offence, exactly as
+# every other check in enforce_field_type_contract() does — so, like it, this
+# MUST be invoked as a plain statement.
+#   $1 candidate document   $2 the concrete path being scanned
+#   $3 the jq body that turns it into offence records
+#   $4 the noun used if the scan itself cannot run
+# A jq failure here is a surprise rather than a finding (issue #638's scope
+# check has already established that every `.repos[*].prs` is an object), so it
+# fails closed instead of being swallowed into a vacuous pass.
+run_pr_entry_scan() {
+  local candidate="$1" target="$2" body="$3" noun="$4"
+  local msg rc=0
+  msg="$(jq -r --argjson __types "$FIELD_TYPES_NESTED_JSON" \
+    --arg __prefix "$target" --arg __statefile "$STATE_FILE" \
+    "$PR_ENTRY_SCAN_JQ
+     $body | first // empty | render(\$__prefix; \$__statefile)" \
+    "$candidate" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "session-state.sh: refusing to write — could not scan the PR $noun at '$target' against the field-type contract; $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+  if [[ -n "$msg" ]]; then
+    printf '%s\n' "$msg" >&2
+    exit 4
+  fi
+  return 0
+}
+
+# Field-type contract enforcement, shared by --set and --cas (issue #1283).
+# Both modes build a candidate document in a temp file and then commit it with
+# `mv`; this runs every contract check against that candidate BEFORE the
+# commit, so a rejected write leaves $STATE_FILE untouched. Extracted rather
+# than duplicated so the two write paths can never drift apart — the whole
+# point of #1283 was that --cas silently accepted values --set rejects.
+#
+# $1 is the candidate file. The touched-field records are read from four
+# variables the caller populates while classifying its write path(s). The three
+# per-PR lists are NEWLINE-separated (issue #1340): they hold concrete jq paths
+# now, and a --raw-path repo key is caller text that may contain a space.
+#   TOUCHED_KNOWN_FIELDS  — space-separated known-typed top-level keys
+#   TOUCHED_NESTED_CHECKS — "<nested-key><US><concrete check path>" records
+#   WHOLE_ENTRY_PATHS     — concrete paths of entries written whole
+#   WHOLE_MAP_PATHS       — concrete paths of `.prs` maps written whole
+#
+# On any violation this exits 4 directly instead of returning — both callers
+# want exactly that, and it keeps the message and exit behavior identical
+# between them. MUST therefore be invoked as a plain statement: calling it in
+# an `if`/`&&`/`||` context would disable `set -e` for the entire body.
+enforce_field_type_contract() {
+  local candidate="$1"
+  local set_touched_key set_expected_type set_actual_type
+  local nested_record nested_field_key nested_expected_type
+  local nested_check_path nested_actual_type
+  local scan_target
+  local bad_scope bad_path bad_actual
+
+  # The input document was already required to be exactly one JSON object; a
+  # candidate that is not is a jq-pipeline surprise, and committing it would
+  # corrupt the file in exactly the way that input guard exists to prevent.
+  if ! is_single_object_state_file "$candidate"; then
+    echo "session-state.sh: refusing to write — the resulting document is not a single top-level JSON object; $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+
+  # Field-type contract (issue #625): reject the write if any known
+  # array/object-typed field touched by this batch would end up the wrong
+  # type in the FINAL document — not just the raw written value, so subpath/
+  # element writes (e.g. `.active_agents[0]=...`) are covered too, not just
+  # whole-field writes. This is what should have caught the original
+  # corruption: an unevaluated jq filter expression passed as a value falls
+  # into the --arg (string) branch at the call site and would otherwise be
+  # written verbatim, turning an array field into a literal string.
+  for set_touched_key in $TOUCHED_KNOWN_FIELDS; do
+    set_expected_type="$(known_field_type "$set_touched_key")"
+    set_actual_type="$(jq -r ".${set_touched_key} | type" "$candidate" 2>/dev/null)"
+    if [[ "$set_actual_type" != "$set_expected_type" ]]; then
+      echo "session-state.sh: refusing to write — field '.$set_touched_key' would become type '$set_actual_type' but must be '$set_expected_type' (see issue #625); $STATE_FILE left unmodified" >&2
+      exit 4
+    fi
+  done
+
+  # Per-repo scope contract (issue #638): `.prs` kept its object-typed
+  # guarantee when it moved down a level, so check the shape of every repo
+  # scope — `.repos` an object, each `.repos[*]` an object, each
+  # `.repos[*].prs` present an object. Without this, the write-time guard that
+  # #625 added for a top-level `.prs` would have been quietly lost to the
+  # restructure. Reported as the offending scope's own path so the message
+  # still names the exact field, as before.
+  #
+  # The offending scope is emitted as `<path><US><actual-type>` (U+001F unit
+  # separator) rather than whitespace-joined: repo keys are caller data and a
+  # whitespace split would mangle any key containing one.
+  bad_scope="$(jq -r '
+    def bad:
+      if (.repos // null) == null then empty
+      elif (.repos | type) != "object" then ".repos\u001f" + (.repos | type)
+      else
+        ( .repos | to_entries[]
+          | if (.value | type) != "object"
+            then ".repos[\"" + .key + "\"]\u001f" + (.value | type)
+            elif (.value.prs != null) and ((.value.prs | type) != "object")
+            then ".repos[\"" + .key + "\"].prs\u001f" + (.value.prs | type)
+            else empty end )
+      end;
+    [bad] | (first // "")' "$candidate" 2>/dev/null || echo "")"
+  if [[ -n "$bad_scope" ]]; then
+    bad_path="${bad_scope%%$'\x1f'*}"
+    bad_actual="${bad_scope##*$'\x1f'}"
+    echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+
+  # The per-PR checks run LAST, after #638's scope check has established that
+  # every `.repos[*].prs` in the candidate is an object. That ordering is what
+  # lets the scans below treat a jq evaluation failure as a genuine surprise
+  # and fail closed, instead of having to swallow the "Cannot index <type>"
+  # error a malformed `.prs` would otherwise produce here (issue #1340).
+
+  # Field-type contract, per-PR nested fields (issue #640): same principle as
+  # the top-level loop above, extended to reach fields nested under a specific
+  # `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
+  # string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
+  # object. Checked against the FINAL value at the concrete path recorded by
+  # the caller, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
+  # covered by checking the whole `babysit` object's final type, not just the
+  # raw written value.
+  while IFS= read -r nested_record; do
+    [[ -z "$nested_record" ]] && continue
+    nested_field_key="${nested_record%%$'\x1f'*}"
+    nested_check_path="${nested_record#*$'\x1f'}"
+    nested_expected_type="$(known_nested_field_type "$nested_field_key")"
+    nested_actual_type="$(jq -r "${nested_check_path} | type" "$candidate" 2>/dev/null)"
+    if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
+      echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+      exit 4
+    fi
+  done <<<"$TOUCHED_NESTED_CHECKS"
+
+  # Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
+  # PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
+  # per-path tracking never sees a specific nested-field path to check — but
+  # the embedded object can still carry a malformed known field (e.g.
+  # `last_cron_action` as a bare string) that the top-level `.prs` object-type
+  # check alone can't catch. Scan every known nested key PRESENT in the final
+  # entry; an omitted key is not corruption, an explicitly-null one is
+  # (issue #1340, gap 1 — `offences` decides that with `has(...)`).
+  #
+  # Whole-`.prs`-map writes (issue #1340, gap 3) get the identical scan over
+  # every entry of the replacement map: `.prs={...}` carries no PR-number
+  # selector, so nothing else in this function would ever look inside it.
+  # Skipped entirely when the schema did not load, which is what keeps the
+  # documented "type guard disabled for this run" degradation honest.
+  if [[ -n "$TOUCHED_NESTED_CHECKS$WHOLE_ENTRY_PATHS$WHOLE_MAP_PATHS" ]]; then
+    load_field_types
+  fi
+  if [[ "$FIELD_TYPES_NESTED_JSON" != "{}" ]]; then
+    while IFS= read -r scan_target; do
+      [[ -z "$scan_target" ]] && continue
+      run_pr_entry_scan "$candidate" "$scan_target" \
+        "[ offences(${scan_target}; \$__types) | . + {ent: null} ]" "entry"
+    done <<<"$WHOLE_ENTRY_PATHS"
+
+    # A map write replaces every entry at once, so the same offence generator
+    # runs over `to_entries[]` and the offending entry's key is carried through
+    # to the message — no caller-supplied PR key is ever interpolated into a
+    # jq filter. A non-object map is left to #638's check above, which owns
+    # that message.
+    while IFS= read -r scan_target; do
+      [[ -z "$scan_target" ]] && continue
+      run_pr_entry_scan "$candidate" "$scan_target" \
+        "[ (${scan_target}) as \$m
+           | select((\$m | type) == \"object\")
+           | (\$m | to_entries[]) as \$e
+           | offences(\$e.value; \$__types) | . + {ent: \$e.key} ]" "map"
+    done <<<"$WHOLE_MAP_PATHS"
   fi
 }
 
-# Returns the PR number when `path` is a WHOLE-entry write, e.g. `.prs["999"]`
-# -> "999" (nothing follows the PR-number selector) — as opposed to a nested
-# write like `.prs["999"].reviewer`, which returns empty here even though
-# "reviewer" isn't a known field. This distinction matters (CodeAnt finding,
-# issue #640, PR #654): pr_nested_key_of() deliberately returns empty for a
-# whole-entry write since there's no single nested key to check — but that
-# left a real gap, since a whole-entry write's value can still embed a
-# malformed known nested field (e.g. `--set '.prs["999"]={"last_cron_action":
-# "bare string"}'`) that the top-level `.prs` object-type check alone can't
-# catch. Used below to trigger a full per-known-field scan of the written
-# entry, not just the single-path check pr_nested_key_of() enables.
-pr_whole_entry_write_number_of() {
-  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
-    printf '%s' ""
-    return 0
+# Accumulate ONE assignment into the shared write pipeline and register its
+# field-type-contract targets. Called once per --set, and once for the --cas
+# target, so a --set composed into a --cas invocation (issue #1445) is built by
+# exactly the code a standalone --set is built by — the issue #1283 lesson
+# ("there is no second implementation to drift") applied to construction as
+# well as to checking.
+#
+#   $1 the caller-spelled jq path
+#   $2 the raw value text (interpreted JSON-or-string here, see the probe below)
+#   $3 the jq variable name to bind the value to — MUST be unique per call
+#
+# Appends to JQ_FILTER / JQ_ARGS and to the four touched-field records the
+# caller later hands enforce_field_type_contract(). Globals rather than return
+# values: bash 3.2 has no namerefs, and the accumulation is inherently spread
+# across five variables.
+add_write_assignment() {
+  local orig_path="$1" raw_value="$2" varname="$3"
+  local scoped_path assign_key
+  # Two views of the same write (issues #638 + #640):
+  #   orig_path   — what the caller asked for, e.g. `.prs["287"].babysit`
+  #   scoped_path — where it lands, e.g. `.repos["org/x"].prs["287"].babysit`
+  # Every classification below reads scoped_path: it is the shape of the final
+  # document, so it is also the concrete check path. Classifying the caller's
+  # spelling instead is what made a fully-spelled `.repos[...]` write invisible
+  # to #640's nested guard (issue #1340, gap 2).
+  scoped_path="$(scope_path "$orig_path")"
+  # Try to parse as JSON; fall back to string. Probe with `--argjson` itself —
+  # the exact operation the JSON branch performs — so the probe can never accept
+  # a value the write then rejects.
+  #
+  # NOT `jq -e .`: `-e` exits non-zero on null/false even when parse succeeds, so
+  # legitimate JSON values null and false would be silently coerced to the strings
+  # "null" and "false" ("false" being truthy in jq — issue #853).
+  #
+  # NOT `jq empty`: it accepts zero-value stdin — empty AND whitespace-only
+  # ("", " ", "\t") — while `--argjson` rejects all three, so those values would
+  # pass the probe and then hard-fail the write instead of storing as strings.
+  if jq -n --argjson "$varname" "$raw_value" 'empty' >/dev/null 2>&1; then
+    JQ_ARGS+=(--argjson "$varname" "$raw_value")
+  else
+    JQ_ARGS+=(--arg "$varname" "$raw_value")
   fi
-  local num
-  num="$(pr_number_of "$1")"
-  if [[ -z "$num" ]]; then
-    printf '%s' ""
-    return 0
+  if [[ -z "$JQ_FILTER" ]]; then
+    JQ_FILTER="$scoped_path = \$$varname"
+  else
+    JQ_FILTER="$JQ_FILTER | $scoped_path = \$$varname"
   fi
-  local rest="${1#.prs}"
-  rest="${rest#\[*\]}"
-  if [[ -n "$rest" ]]; then
-    printf '%s' ""
-    return 0
+  # Track known-typed fields touched by this batch (deduped) for the post-write
+  # field-type contract check below — see FIELD-TYPE CONTRACT.
+  assign_key="$(top_level_key_of "$scoped_path")"
+  if [[ -n "$(known_field_type "$assign_key")" ]]; then
+    case " $TOUCHED_KNOWN_FIELDS " in
+      *" $assign_key "*) ;;
+      *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $assign_key" ;;
+    esac
   fi
-  printf '%s' "$num"
+  # Same tracking for the per-PR map (issues #640, #1340). One classification
+  # covers all three shapes a write can take against it, recorded as the
+  # CONCRETE path so the post-write checks address the final document
+  # directly — no PR number is interpolated into a jq filter any more:
+  #   nested — `.prs["287"].last_cron_action`, or a deeper subpath like
+  #            `.prs["287"].babysit.active`; recorded as a
+  #            "<key><US><check path>" record so the loop checks that one
+  #            entry's field, not every PR in the file
+  #   entry  — `.prs["999"]={...}` replaces the entry in one shot, so no
+  #            single nested-field path is touched, but the embedded object
+  #            can still carry a malformed known field
+  #   map    — `.prs={...}` replaces the whole map, so not even a PR-number
+  #            selector exists to classify on
+  pr_record_write_target "$scoped_path"
+}
+
+# Append one `del(.active_agents[<id>])` stage per --remove-agent to the shared
+# write pipeline (issue #1631), and register `active_agents` with the field-type
+# contract so the deletion is checked exactly like an assignment. Called from
+# both write blocks right after their assignment loops, so a --remove-agent
+# batched with --set or gated by --cas commits in the same atomic write.
+#
+# The id goes in through `--arg`, never string interpolation: agent ids are
+# caller data, and a jq program built by concatenating them would be an
+# injection surface. `.active_agents` is a genuinely global field, so the path
+# is written literally rather than through scope_path().
+#
+# Deleting a key that is not present is a no-op — jq's del() on a missing key
+# returns the object unchanged — so a caller draining an agent it already
+# removed still exits 0 rather than having to probe first.
+#
+# The seed makes an absent map an empty object, so the field-type contract
+# registered below sees an object rather than the `null` an absent field
+# reports; without it, the first --remove-agent against a fresh state file
+# would be rejected as a type violation for doing nothing. A value that is
+# present but NOT an object is passed through untouched on purpose: del() on a
+# string would abort the pipeline with exit 5, whereas leaving it alone lets
+# the contract reject it with exit 4 and the message that names the field.
+#
+# The seed tests `== null` rather than using `// {}`: jq's alternative operator
+# treats `false` as empty too, so `// {}` would quietly heal a corrupt `false`
+# into a valid empty map — a write that reports success while discarding the
+# evidence, and the one value that would slip past the contract this stage
+# deliberately defers to.
+add_remove_agent_stages() {
+  local i id_var stage
+  [[ "${#REMOVE_AGENTS[@]}" -gt 0 ]] || return 0
+  for i in "${!REMOVE_AGENTS[@]}"; do
+    id_var="__rmagent$i"
+    JQ_ARGS+=(--arg "$id_var" "${REMOVE_AGENTS[$i]}")
+    stage=".active_agents = ((if .active_agents == null then {} else .active_agents end) | if type == \"object\" then del(.[\$$id_var]) else . end)"
+    if [[ -z "$JQ_FILTER" ]]; then
+      JQ_FILTER="$stage"
+    else
+      JQ_FILTER="$JQ_FILTER | $stage"
+    fi
+  done
+  case " $TOUCHED_KNOWN_FIELDS " in
+    *" active_agents "*) ;;
+    *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS active_agents" ;;
+  esac
 }
 
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
+# Output format for the shared read block (issue #1629). --get sets `raw`
+# (jq -r, the historical, lossy contract every existing caller depends on);
+# --get-json sets `json` (jq -c), which is what keeps an absent path, a stored
+# JSON null, the STRING "null", and "" distinguishable on stdout. Both flags
+# run the SAME MODE="get" execution block — only this variable differs — so
+# the two modes can never drift apart in their guards, scoping, or exit codes.
+GET_OUTPUT="raw"
+# Which spelling the caller actually typed, so the usage errors below name that
+# flag rather than always saying "--get". Empty until one of them is seen.
+GET_FLAG=""
 REPO_ARG=""
 RAW_PATH="0"
 DRY_RUN="0"
@@ -773,6 +1449,17 @@ ALL_REPOS="0"
 # JSON-or-string at write time so we keep their raw form here.
 SET_PATHS=()
 SET_VALUES=()
+# For --cas: the path=new-value pair (split same as --set) and the expected value.
+CAS_PATH=""
+CAS_VALUE=""
+CAS_EXPECT=""
+CAS_EXPECT_SET=0
+CAS_GUARD_PATHS=()
+CAS_GUARD_VALUES=()
+# For --remove-agent: agent ids to delete from the `.active_agents` map
+# (issue #1631). Kept as data, never interpolated into a jq program — each id
+# is bound to its own `--arg` at write time.
+REMOVE_AGENTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -823,28 +1510,45 @@ while [[ $# -gt 0 ]]; do
       MODE="migrate"
       shift
       ;;
-    --get)
+    --get|--get-json)
+      # Two spellings of one mode: they differ ONLY in the final output format
+      # (issue #1629). Sharing MODE="get" is deliberate — the file-missing,
+      # single-object, migration, scoping, and field-type self-heal guards are
+      # then literally the same code for both, so a fix to one is a fix to both.
       if [[ -n "$MODE" && "$MODE" != "get" ]]; then
-        die_usage "--get cannot be combined with --$MODE"
+        die_usage "$1 cannot be combined with --$MODE"
+      fi
+      # `-n "$GET_FLAG"` (not `-n "$GET_PATH"`) is the repeat check: a path can
+      # legitimately be the empty string, and testing the path would let
+      # `--get "" --get-json .x` through as if only one flag had been given.
+      if [[ -n "$GET_FLAG" ]]; then
+        if [[ "$GET_FLAG" == "$1" ]]; then
+          die_usage "$1 may only be given once"
+        fi
+        die_usage "--get and --get-json are mutually exclusive"
       fi
       if [[ $# -lt 2 ]]; then
-        die_usage "--get requires a jq path"
-      fi
-      if [[ -n "$GET_PATH" ]]; then
-        die_usage "--get may only be given once"
+        die_usage "$1 requires a jq path"
       fi
       MODE="get"
+      GET_FLAG="$1"
+      [[ "$1" == "--get-json" ]] && GET_OUTPUT="json"
       GET_PATH="$2"
       shift 2
       ;;
     --set)
-      if [[ -n "$MODE" && "$MODE" != "set" ]]; then
+      # --set composes with --cas (issue #1445): one invocation may carry a
+      # single --cas plus any number of --set writes, applied together under
+      # the one lock hold. Every other mode stays mutually exclusive.
+      if [[ -n "$MODE" && "$MODE" != "set" && "$MODE" != "cas" ]]; then
         die_usage "--set cannot be combined with --$MODE"
       fi
       if [[ $# -lt 2 ]]; then
         die_usage "--set requires <jq-path>=<value>"
       fi
-      MODE="set"
+      # --cas owns the mode whenever both are present, in either order: the
+      # compare is what gates the whole write, so the CAS block runs the batch.
+      [[ "$MODE" == "cas" ]] || MODE="set"
       local_arg="$2"
       # Split on the FIRST `=` only — values may contain `=` (e.g., a JSON
       # string with `=` inside it).
@@ -861,6 +1565,65 @@ while [[ $# -gt 0 ]]; do
       SET_VALUES+=("${local_arg#*=}")
       shift 2
       ;;
+    --remove-agent)
+      # Deleting one key from `.active_agents` (issue #1631). It composes with
+      # --set and --cas exactly as they compose with each other, and rides the
+      # SAME write path they do — one lock hold, one migration stage, one
+      # field-type check, one atomic mv. There is deliberately no second
+      # implementation of that machinery here: #1283 taught that a parallel
+      # write path drifts from the one it copied.
+      if [[ -n "$MODE" && "$MODE" != "set" && "$MODE" != "cas" ]]; then
+        die_usage "--remove-agent cannot be combined with --$MODE"
+      fi
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        die_usage "--remove-agent requires an agent id"
+      fi
+      [[ "$MODE" == "cas" ]] || MODE="set"
+      REMOVE_AGENTS+=("$2")
+      shift 2
+      ;;
+    --cas)
+      # See the --set branch: these two compose (issue #1445). --cas itself is
+      # still at most once. Additional comparisons use --expect-at without
+      # introducing another assignment target.
+      if [[ -n "$MODE" && "$MODE" != "cas" && "$MODE" != "set" ]]; then
+        die_usage "--cas cannot be combined with --$MODE"
+      fi
+      if [[ $# -lt 2 ]]; then
+        die_usage "--cas requires <jq-path>=<new-value>"
+      fi
+      if [[ -n "$CAS_PATH" ]]; then
+        die_usage "--cas may only be given once"
+      fi
+      MODE="cas"
+      cas_arg="$2"
+      if [[ "$cas_arg" != *=* ]]; then
+        die_usage "--cas argument must be <jq-path>=<new-value>, got: $cas_arg"
+      fi
+      if [[ -z "${cas_arg%%=*}" ]]; then
+        die_usage "--cas requires a non-empty jq path, got: $cas_arg"
+      fi
+      CAS_PATH="${cas_arg%%=*}"
+      CAS_VALUE="${cas_arg#*=}"
+      shift 2
+      ;;
+    --expect-at)
+      [[ $# -ge 3 && -n "$2" ]] || die_usage "--expect-at requires a path and a JSON value"
+      CAS_GUARD_PATHS+=("$2")
+      CAS_GUARD_VALUES+=("$3")
+      shift 3
+      ;;
+    --expect)
+      if [[ $# -lt 2 ]]; then
+        die_usage "--expect requires a value"
+      fi
+      if [[ "$CAS_EXPECT_SET" -eq 1 ]]; then
+        die_usage "--expect may only be given once"
+      fi
+      CAS_EXPECT="$2"
+      CAS_EXPECT_SET=1
+      shift 2
+      ;;
     --)
       shift
       break
@@ -875,7 +1638,73 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get, --set, --session-view, --repo-key or --migrate is required"
+  die_usage "one of --get, --get-json, --set, --cas, --remove-agent, --session-view, --repo-key or --migrate is required"
+fi
+
+# --cas requires --expect; --expect without --cas is a usage error.
+if [[ "$MODE" == "cas" && "$CAS_EXPECT_SET" -eq 0 ]]; then
+  die_usage "--cas requires --expect <expected-value>"
+fi
+if [[ "$MODE" != "cas" && "$CAS_EXPECT_SET" -eq 1 ]]; then
+  die_usage "--expect is only valid with --cas"
+fi
+if [[ "$MODE" != "cas" && "${#CAS_GUARD_PATHS[@]}" -gt 0 ]]; then
+  die_usage "--expect-at is only valid with --cas"
+fi
+if [[ "$MODE" == "cas" && "$DRY_RUN" == "1" ]]; then
+  die_usage "--dry-run is not supported with --cas (--dry-run is only valid with --migrate)"
+fi
+# Resolve exactly one concrete path for composed writes and extra CAS reads.
+_norm_path() {
+  local expr="$1" collected
+  collected="$(jq -cn "[path($expr)]" 2>/dev/null)" || return 1
+  [[ "$(jq -r 'length' <<<"$collected" 2>/dev/null)" == "1" ]] || return 1
+  jq -c '.[0]' <<<"$collected" 2>/dev/null || return 1
+}
+# A composed --set naming an ANCESTOR of the CAS path is refused (issue #1445).
+# The CAS target is assigned first and companions follow in flag order, so an
+# ancestor write replaces the subtree the claim just landed in — erasing it
+# while the compare still gated the batch and the command still exits 0. That is
+# the one composition whose success code lies: the caller is told it won a claim
+# that is no longer in the file. Naming the CAS path *exactly* stays legal and
+# keeps its documented last-writer-wins precedence, and a companion writing a
+# DESCENDANT of the CAS path is fine too — it refines the claim rather than
+# dropping it. Only a strict ancestor is contradictory, so only it is rejected.
+if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
+  # Compare CANONICAL paths, not raw text. `.outer`, `.["outer"]` and `."outer"`
+  # are one path, so a textual prefix test would catch only the first spelling
+  # and wave the others through into exactly the silent erase this guard exists
+  # to stop. jq is the normalizer — `path()` renders any accessor expression as
+  # a segment array — so there is no hand-rolled jq-path parser here.
+  # Compare what the pipeline will actually ASSIGN, which is the scoped path:
+  # `scope_path` rewrites a legacy `.prs` / `.root_repo` companion into
+  # `.repos["<key>"].…`, so a relative companion and a fully-spelled claim (or
+  # the reverse) look unrelated before scoping and nest after it. Comparing the
+  # raw spellings would miss exactly that pair.
+  # Canonicalize to exactly ONE path array, or refuse. `[path(expr)]` collects
+  # every location the expression names: a single accessor yields one, `.a[]`
+  # fails to render at all, and `.a,.b` yields two. Anything but one is not a
+  # single assignable location, which --cas and a composed --set both already
+  # require — the compare binds one value and the pipeline assigns one target.
+  # Refusing here (rather than degrading to a weaker textual test) is what keeps
+  # the guard from having a soft edge an unrenderable path could slip through.
+  _cas_scoped="$(scope_path "$CAS_PATH")"
+  if ! _cas_norm="$(_norm_path "$_cas_scoped")"; then
+    die_usage "--cas path '$CAS_PATH' does not name exactly one assignable location; --cas requires a single concrete path (issue #1445)"
+  fi
+  for _sp in "${SET_PATHS[@]}"; do
+    _sp_scoped="$(scope_path "$_sp")"
+    if ! _sp_norm="$(_norm_path "$_sp_scoped")"; then
+      die_usage "--set path '$_sp' does not name exactly one assignable location; a --set composed with --cas requires a single concrete path (issue #1445)"
+    fi
+    # Strict ancestor: the companion is a PROPER prefix of the CAS path.
+    # Equal paths are excluded by the length test, preserving the documented
+    # exact-path precedence; a descendant fails it too, and is legal.
+    if jq -e -n --argjson a "$_sp_norm" --argjson b "$_cas_norm" \
+         '($a | length) < ($b | length) and ($b[0:($a | length)] == $a)' >/dev/null 2>&1; then
+      die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
+    fi
+  done
 fi
 
 # --- dependency check ---
@@ -884,17 +1713,28 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 5
 fi
 
-# --- ensure state-file directory exists (only needed for --set) ---
-STATE_DIR="$(dirname "$STATE_FILE")"
-
 # ============================================================================
 # --repo-key
 # ============================================================================
+# Ordered ahead of the state-path init below: resolving the repo key reads
+# --repo / $CLAUDE_SESSION_REPO / the cwd's origin remote and never opens the
+# state file, so this mode has no reason to require HOME (issue #1434).
 if [[ "$MODE" == "repo-key" ]]; then
   resolve_repo_key
   echo
   exit 0
 fi
+
+# --- state-file path (requires HOME) ---
+# Every mode from here down reads or writes ~/.claude/session-state.json, so
+# HOME is genuinely load-bearing past this point. Everything above — --help,
+# every usage error, the dependency check, and --repo-key — answers without it.
+if [[ -z "${HOME:-}" ]]; then
+  die_home_unset
+fi
+STATE_FILE="${HOME}/.claude/session-state.json"
+# --- ensure state-file directory exists (only needed for --set) ---
+STATE_DIR="$(dirname "$STATE_FILE")"
 
 # Warn (once) when the file carries legacy keys we refuse to reshape, so the
 # data is never silently stranded under an old path nobody reads any more.
@@ -919,7 +1759,7 @@ migrate_jq_args() {
 # ============================================================================
 if [[ "$MODE" == "get" ]]; then
   if [[ -z "$GET_PATH" ]]; then
-    die_usage "--get requires a jq path"
+    die_usage "${GET_FLAG:---get} requires a jq path"
   fi
   if [[ ! -f "$STATE_FILE" ]]; then
     echo "session-state.sh: state file not found: $STATE_FILE" >&2
@@ -987,15 +1827,26 @@ if [[ "$MODE" == "get" ]]; then
     fi
   fi
 
-  # Use jq -r so callers get the raw value (string without quotes, number
-  # as-is, etc.). jq exits non-zero on parse errors — translate to 4.
+  # --get uses jq -r so callers get the raw value (string without quotes,
+  # number as-is, etc.); --get-json uses jq -c so the value keeps its JSON
+  # type and an absent slot, a stored `null`, a stored `"null"`, and a stored
+  # `""` are four distinguishable outputs (issue #1629). Everything else about
+  # the read — the filter, the migration args, the error translation — is
+  # identical, which is the point of sharing this block.
+  #
+  # jq exits non-zero on parse errors — translate to 4.
   #
   # The migration runs in memory only: a read never rewrites the state file,
   # but it still sees legacy entries in their scoped home, so a session that
   # only ever reads is not blind to state written before the restructure.
+  if [[ "$GET_OUTPUT" == "json" ]]; then
+    get_jq_flag="-c"
+  else
+    get_jq_flag="-r"
+  fi
   jq_err="$(mktemp)"
   trap "rm -f '$jq_err' 2>/dev/null" EXIT
-  if ! jq -r --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
+  if ! jq "$get_jq_flag" --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
        "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_GET_PATH" "$STATE_FILE" 2>"$jq_err"; then
     echo "session-state.sh: jq failed reading $STATE_FILE: $(cat "$jq_err")" >&2
     exit 4
@@ -1055,9 +1906,9 @@ migrate(\$__pathmap; \$__unknown)"
 | ([ (.repos // {}) | to_entries[] | select(.key != \$__rk and .key != \$__unknown) | (.value.prs // {}) | keys[] ]) as \$otherpr
 | .prs = (\$mine.prs // {})
 | .root_repo = (\$mine.root_repo // null)
-| .active_agents = ((.active_agents // [])
-    | if type != \"array\" then [] else . end
-    | map(select(type == \"object\"
+| .active_agents = ((.active_agents // {})
+    | if type != \"object\" then {} else . end
+    | with_entries(select(.value | type == \"object\"
         and (
         if (.owner_repo != null) then (.owner_repo == \$__rk)
         elif (.pr == null) then true
@@ -1116,9 +1967,173 @@ if [[ "$MODE" == "migrate" ]]; then
 fi
 
 # ============================================================================
+# --cas (compare-and-set, issue #1195)
+# ============================================================================
+# Compare the current value at CAS_PATH with CAS_EXPECT under one lock hold;
+# write CAS_VALUE only when they match. Exits 0 on win, 7 on mismatch, other
+# codes per the exit-status contract (2/4/5/6 unchanged). Runs the SAME
+# field-type contract check --set runs, against the candidate document and
+# before the commit (issue #1283): a wrong-typed value is rejected with exit 4
+# and the state file is left unmodified, so neither write path can accept a
+# value the other rejects. Exit 4 stays distinct from 5 (jq/write mechanics)
+# and 7 (CAS mismatch).
+if [[ "$MODE" == "cas" ]]; then
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    echo "session-state.sh: could not create state dir: $STATE_DIR" >&2
+    exit 5
+  fi
+
+  # Acquire the lock — read, compare, and write all run under it.
+  state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+  # Install the lock-release trap immediately so every exit path (including
+  # the exit 4 below) releases the lock. Temp-file cleanup is added once the
+  # files are known (CR finding: lock was held past the validation exit).
+  trap "state_lock_release" EXIT
+
+  SEEDED_TMP=""
+  input_file="$STATE_FILE"
+  if [[ ! -f "$STATE_FILE" ]]; then
+    SEEDED_TMP="$(mktemp)"
+    printf '%s\n' '{}' > "$SEEDED_TMP"
+    input_file="$SEEDED_TMP"
+  elif ! is_single_object_state_file "$STATE_FILE"; then
+    echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object; refusing to overwrite" >&2
+    exit 4
+  fi
+
+  CAS_ERR="$(mktemp)"
+  CAS_OUT_TMP="$STATE_FILE.tmp.$$"
+  # shellcheck disable=SC2064
+  # Update the trap to also clean up temp files now that they are defined.
+  trap "state_lock_release; rm -f '$CAS_OUT_TMP' '$CAS_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
+
+  warn_if_unmigratable "$input_file"
+  CAS_PATHMAP="$(migrate_jq_args "$input_file")"
+  SCOPED_CAS_PATH="$(scope_path "$CAS_PATH")"
+
+  # Build jq --argjson or --arg for the expected value (same JSON-or-string
+  # probe as --set: `--argjson` probe, not `jq -e .`, to reject null/false
+  # from the argjson branch — issue #853).
+  CAS_COMPARE_ARGS=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY")
+  if jq -n --argjson __casexpect "$CAS_EXPECT" 'empty' >/dev/null 2>&1; then
+    CAS_COMPARE_ARGS+=(--argjson __casexpect "$CAS_EXPECT")
+  else
+    CAS_COMPARE_ARGS+=(--arg __casexpect "$CAS_EXPECT")
+  fi
+
+  # Bind optional guard paths as data; they are resolved with the same scope
+  # rules as the CAS target. The expressions are not inserted into this compare.
+  CAS_GUARD_FILTER=""
+  for ((_guard=0; _guard<${#CAS_GUARD_PATHS[@]}; _guard++)); do
+    _guard_scoped="$(scope_path "${CAS_GUARD_PATHS[_guard]}")"
+    _guard_norm="$(_norm_path "$_guard_scoped")" ||
+      die_usage "--expect-at requires one concrete path: ${CAS_GUARD_PATHS[_guard]}"
+    jq -n --argjson value "${CAS_GUARD_VALUES[_guard]}" 'empty' >/dev/null 2>&1 ||
+      die_usage "--expect-at requires a JSON value for ${CAS_GUARD_PATHS[_guard]}"
+    CAS_COMPARE_ARGS+=(--argjson "__guard_path_${_guard}" "$_guard_norm"
+                       --argjson "__guard_value_${_guard}" "${CAS_GUARD_VALUES[_guard]}")
+    CAS_GUARD_FILTER+=" and (getpath(\$__guard_path_${_guard}) == \$__guard_value_${_guard})"
+  done
+
+  # Read the current value and compare with the expected value in one jq call
+  # (inside the lock), so no concurrent writer can slip in between.
+  # Use RC=0; VAR="$(cmd)" || RC=$? to capture jq's exit code under set -e;
+  # a bare command-substitution assignment terminates the script on failure
+  # before CAS_COMPARE_RC=$? is ever evaluated.
+  CAS_COMPARE_RC=0
+  CAS_COMPARE_RESULT="$(jq -r "${CAS_COMPARE_ARGS[@]}" \
+    "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH as \$cur | if (\$cur == \$__casexpect $CAS_GUARD_FILTER) then \"match\" else \"mismatch\" end" \
+    "$input_file" 2>"$CAS_ERR")" || CAS_COMPARE_RC=$?
+
+  if [[ "$CAS_COMPARE_RC" -ne 0 ]]; then
+    echo "session-state.sh: jq failed reading $STATE_FILE for CAS compare: $(cat "$CAS_ERR")" >&2
+    exit 4
+  fi
+
+  if [[ "$CAS_COMPARE_RESULT" != "match" ]]; then
+    # CAS mismatch — exit 7 so callers can distinguish a lost race from an
+    # I/O or locking failure. State file is left unmodified, and so is every
+    # --set composed into this invocation: the compare gates the whole batch
+    # (issue #1445), which is what lets a caller treat one exit code as
+    # "somebody else owns this record" instead of inspecting a half-write.
+    exit 7
+  fi
+
+  # Match: apply the write. The CAS target and every composed --set accumulate
+  # into ONE jq pipeline through the same builder --set uses, so composition
+  # cannot drift from a standalone --set in scoping, type-probing, or
+  # classification (issue #1445), and the whole batch commits under the lock
+  # hold this block already owns — no second lock, no second mv.
+  JQ_FILTER=""
+  JQ_ARGS=()
+  TOUCHED_KNOWN_FIELDS=""
+  TOUCHED_NESTED_CHECKS=""
+  WHOLE_ENTRY_PATHS=""
+  WHOLE_MAP_PATHS=""
+  # BEFORE every assignment in this pipeline — the CAS target included, not just
+  # the composed --set writes. Staging removes after the CAS assignment left
+  # `--cas '.active_agents["X"]=...' --remove-agent X` deleting the record it had
+  # just written (CodeAnt, PR #1637). See the --set path below for why the order
+  # is fixed rather than following flag order.
+  add_remove_agent_stages
+  add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
+  # Guarded because an empty SET_PATHS is the NORMAL case here — a plain --cas
+  # with no composed writes — unlike the --set block below, which cannot be
+  # reached with zero assignments. Index expansion of an empty array is fine on
+  # bash 3.2 under `set -u`, but the count check says so out loud rather than
+  # resting on it.
+  if [[ "${#SET_PATHS[@]}" -gt 0 ]]; then
+    for i in "${!SET_PATHS[@]}"; do
+      add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
+    done
+  fi
+
+  CAS_LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  JQ_ARGS+=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY"
+            --arg __last_updated "$CAS_LAST_UPDATED")
+
+  CAS_JQ_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $JQ_FILTER | .last_updated = \$__last_updated"
+  if ! jq "${JQ_ARGS[@]}" "$CAS_JQ_FILTER" "$input_file" > "$CAS_OUT_TMP" 2>"$CAS_ERR"; then
+    echo "session-state.sh: jq failed writing $STATE_FILE: $(cat "$CAS_ERR")" >&2
+    exit 5
+  fi
+
+  # Enforce the field-type contract against the candidate document, before the
+  # stolen-lock guard and the mv below, so a rejected write leaves $STATE_FILE
+  # untouched — same position in the pipeline as --set (issue #1283). Called
+  # as a plain statement so it exits 4 directly.
+  enforce_field_type_contract "$CAS_OUT_TMP"
+
+  # Lock integrity — same stolen-lock guard as --set (issue #930).
+  if ! state_lock_assert_held; then
+    _n="${CLAUDE_STATE_RMW_RETRY:-0}"; _max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
+    if (( _n < _max )); then
+      export CLAUDE_STATE_RMW_RETRY=$(( _n + 1 ))
+      state_lock_release
+      rm -f "$CAS_OUT_TMP" "$CAS_ERR" ${SEEDED_TMP:+"$SEEDED_TMP"} 2>/dev/null || true
+      trap - EXIT
+      sleep "0.0$(( (RANDOM % 8) + 1 ))"
+      exec bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+    fi
+    echo "session-state.sh: lock was broken by another writer $_max times running; giving up with $STATE_FILE unchanged (retry)" >&2
+    exit "$STATE_LOCK_EXIT_TIMEOUT"
+  fi
+
+  if ! mv "$CAS_OUT_TMP" "$STATE_FILE" 2>/dev/null; then
+    echo "session-state.sh: could not write $STATE_FILE" >&2
+    exit 5
+  fi
+
+  exit 0
+fi
+
+# ============================================================================
 # --set
 # ============================================================================
-if [[ "${#SET_PATHS[@]}" -eq 0 ]]; then
+# A --remove-agent-only invocation reaches this block with no --set pairs
+# (issue #1631) — it is a write with one del() stage and no assignments, which
+# is why the guard counts both accumulators rather than SET_PATHS alone.
+if [[ "${#SET_PATHS[@]}" -eq 0 && "${#REMOVE_AGENTS[@]}" -eq 0 ]]; then
   die_usage "--set requires at least one <jq-path>=<value>"
 fi
 
@@ -1159,92 +2174,31 @@ JQ_ERR="$(mktemp)"
 trap "state_lock_release; rm -f '$OUT_TMP' '$JQ_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
 
 # Build the jq pipeline. Each --set becomes one assignment in the pipeline,
-# bound to a unique --argjson or --arg variable. The final stage refreshes
-# `.last_updated`. All assignments + the timestamp run in a single jq
-# invocation → single atomic write.
+# bound to a unique --argjson or --arg variable, through the same builder the
+# --cas path uses for its target and its composed --set writes (issue #1445).
+# The final stage refreshes `.last_updated`. All assignments + the timestamp
+# run in a single jq invocation → single atomic write.
 JQ_FILTER=""
 JQ_ARGS=()
 TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
-WHOLE_ENTRY_PRS=""
-for i in "${!SET_PATHS[@]}"; do
-  # Two views of the same write (issues #638 + #640):
-  #   orig_path — what the caller asked for, e.g. `.prs["287"].babysit`
-  #   path      — where it actually lands, e.g. `.repos["org/x"].prs["287"].babysit`
-  # The assignment and the TOP-LEVEL type check use `path`, because that is
-  # the shape of the final document. The per-PR classification helpers below
-  # use `orig_path`: they match on a leading `.prs`, and handing them the
-  # scoped path would make every lookup return empty — silently disabling
-  # #640's nested guard the moment #638 moved the data. Their concrete jq
-  # check paths are scoped back at the point of use.
-  orig_path="${SET_PATHS[$i]}"
-  path="$(scope_path "$orig_path")"
-  value="${SET_VALUES[$i]}"
-  varname="v$i"
-  # Try to parse as JSON; fall back to string. Probe with `--argjson` itself —
-  # the exact operation the JSON branch performs — so the probe can never accept
-  # a value the write then rejects.
-  #
-  # NOT `jq -e .`: `-e` exits non-zero on null/false even when parse succeeds, so
-  # legitimate JSON values null and false would be silently coerced to the strings
-  # "null" and "false" ("false" being truthy in jq — issue #853).
-  #
-  # NOT `jq empty`: it accepts zero-value stdin — empty AND whitespace-only
-  # ("", " ", "\t") — while `--argjson` rejects all three, so those values would
-  # pass the probe and then hard-fail the write instead of storing as strings.
-  if jq -n --argjson "$varname" "$value" 'empty' >/dev/null 2>&1; then
-    JQ_ARGS+=(--argjson "$varname" "$value")
-  else
-    JQ_ARGS+=(--arg "$varname" "$value")
-  fi
-  if [[ -z "$JQ_FILTER" ]]; then
-    JQ_FILTER="$path = \$$varname"
-  else
-    JQ_FILTER="$JQ_FILTER | $path = \$$varname"
-  fi
-  # Track known-typed fields touched by this batch (deduped) for the
-  # post-write field-type contract check below — see FIELD-TYPE CONTRACT.
-  set_top_level_key="$(top_level_key_of "$path")"
-  if [[ -n "$(known_field_type "$set_top_level_key")" ]]; then
-    case " $TOUCHED_KNOWN_FIELDS " in
-      *" $set_top_level_key "*) ;;
-      *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $set_top_level_key" ;;
-    esac
-  fi
-  # Same tracking for per-PR nested fields (issue #640): a touched path whose
-  # top-level key is "prs" and whose immediate post-PR-number segment is a
-  # known nested field (e.g. `.prs["287"].last_cron_action` or a deeper
-  # subpath like `.prs["287"].babysit.active`) is recorded as a "<PR>:<key>"
-  # pair so the post-write loop below can check that specific PR entry's
-  # field, not every PR in the file.
-  set_nested_key="$(pr_nested_key_of "$orig_path")"
-  if [[ -n "$set_nested_key" ]] && [[ -n "$(known_nested_field_type "$set_nested_key")" ]]; then
-    set_pr_number="$(pr_number_of "$orig_path")"
-    # PR numbers are always plain digits (GitHub PR numbers). Requiring that
-    # shape here — before $set_pr_number gets interpolated into the jq
-    # filter string built for nested_check_path below — keeps that
-    # interpolation injection-safe without needing full jq-string escaping.
-    if [[ "$set_pr_number" =~ ^[0-9]+$ ]]; then
-      nested_pair="${set_pr_number}:${set_nested_key}"
-      case " $TOUCHED_NESTED_CHECKS " in
-        *" $nested_pair "*) ;;
-        *) TOUCHED_NESTED_CHECKS="$TOUCHED_NESTED_CHECKS $nested_pair" ;;
-      esac
-    fi
-  fi
-  # Track whole-PR-entry writes (issue #640, CodeAnt finding on PR #654):
-  # `--set '.prs["999"]={...}'` replaces the entire entry in one shot, so no
-  # single nested-field path is touched above — but the embedded object can
-  # still carry a malformed known field. Record the PR number so the
-  # post-write loop below can scan every known nested key in that entry.
-  set_whole_entry_pr="$(pr_whole_entry_write_number_of "$orig_path")"
-  if [[ "$set_whole_entry_pr" =~ ^[0-9]+$ ]]; then
-    case " $WHOLE_ENTRY_PRS " in
-      *" $set_whole_entry_pr "*) ;;
-      *) WHOLE_ENTRY_PRS="$WHOLE_ENTRY_PRS $set_whole_entry_pr" ;;
-    esac
-  fi
-done
+WHOLE_ENTRY_PATHS=""
+WHOLE_MAP_PATHS=""
+# Deletions are staged BEFORE assignments, and that order is FIXED — it does
+# not follow flag order (CodeAnt, PR #1637). The stages are built from two
+# separate arrays, so argv position is not recoverable here; staging removes
+# last silently deleted a record the caller had just assigned in the same
+# invocation, which is the loss issue #1631 exists to stop arriving through the
+# drain path. Front-loading them makes a same-key
+# `--remove-agent X --set '.active_agents["X"]=…'` mean REPLACE in either flag
+# order — the caller's explicit assignment always survives. Different keys are
+# unaffected either way, which is every other composed call.
+add_remove_agent_stages
+if [[ "${#SET_PATHS[@]}" -gt 0 ]]; then
+  for i in "${!SET_PATHS[@]}"; do
+    add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
+  done
+fi
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the
 # atomic write. Use UTC ISO 8601 to match `(now | todate)` semantics in
@@ -1252,7 +2206,11 @@ done
 # but emitting from bash keeps the path injection-free.
 LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 JQ_ARGS+=(--arg __last_updated "$LAST_UPDATED")
-JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+if [[ -z "$JQ_FILTER" ]]; then
+  JQ_FILTER=".last_updated = \$__last_updated"
+else
+  JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+fi
 
 # Migrate first, in the same atomic write (issue #638). A write through this
 # helper is therefore what permanently heals a legacy flat file — the scoped
@@ -1270,100 +2228,11 @@ if ! jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$input_file" > "$OUT_TMP" 2>"$JQ_ERR"; the
   exit 5
 fi
 
-# Field-type contract (issue #625): reject the write if any known
-# array/object-typed field touched by this batch would end up the wrong
-# type in the FINAL document — not just the raw --set value, so subpath/
-# element writes (e.g. `.active_agents[0]=...`) are covered too, not just
-# whole-field writes. This is what should have caught the original
-# corruption: an unevaluated jq filter expression passed as a --set value
-# falls into the --arg (string) branch above and would otherwise be written
-# verbatim, turning an array field into a literal string. Checked before
-# the atomic mv below, so a rejected batch leaves $STATE_FILE untouched.
-for set_touched_key in $TOUCHED_KNOWN_FIELDS; do
-  set_expected_type="$(known_field_type "$set_touched_key")"
-  set_actual_type="$(jq -r ".${set_touched_key} | type" "$OUT_TMP" 2>/dev/null)"
-  if [[ "$set_actual_type" != "$set_expected_type" ]]; then
-    echo "session-state.sh: refusing to write — field '.$set_touched_key' would become type '$set_actual_type' but must be '$set_expected_type' (see issue #625); $STATE_FILE left unmodified" >&2
-    exit 4
-  fi
-done
-
-# Field-type contract, per-PR nested fields (issue #640): same principle as
-# the top-level loop above, extended to reach fields nested under a specific
-# `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
-# string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
-# object. Checked against the FINAL value at the concrete `.prs["<N>"].<key>`
-# path, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
-# covered by checking the whole `babysit` object's final type, not just the
-# raw --set value.
-for nested_pair in $TOUCHED_NESTED_CHECKS; do
-  nested_pr_number="${nested_pair%%:*}"
-  nested_field_key="${nested_pair#*:}"
-  nested_expected_type="$(known_nested_field_type "$nested_field_key")"
-  nested_check_path="$(scope_path ".prs[\"${nested_pr_number}\"].${nested_field_key}")"
-  nested_actual_type="$(jq -r "${nested_check_path} | type" "$OUT_TMP" 2>/dev/null)"
-  if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
-    echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
-    exit 4
-  fi
-done
-
-# Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
-# PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
-# per-path tracking above never sees a specific nested-field path to check —
-# but the embedded object can still carry a malformed known field (e.g.
-# `last_cron_action` as a bare string) that the top-level `.prs` object-type
-# check alone can't catch. For every PR written as a whole entry this batch,
-# check EVERY known nested key present in the FINAL entry (absent keys are
-# type "null" and are skipped — a whole-entry write simply omitting a known
-# field is not corruption, same as any other unset nested field).
-if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
-  load_field_types
-  KNOWN_NESTED_KEYS="$(printf '%s\n' "$FIELD_TYPES_NESTED" | cut -d= -f1)"
-  for whole_entry_pr in $WHOLE_ENTRY_PRS; do
-    while IFS= read -r whole_entry_key; do
-      [[ -z "$whole_entry_key" ]] && continue
-      whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
-      whole_entry_check_path="$(scope_path ".prs[\"${whole_entry_pr}\"].${whole_entry_key}")"
-      whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$OUT_TMP" 2>/dev/null)"
-      if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
-        echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
-        exit 4
-      fi
-    done <<<"$KNOWN_NESTED_KEYS"
-  done
-fi
-
-# Per-repo scope contract (issue #638): `.prs` kept its object-typed
-# guarantee when it moved down a level, so check the shape of every repo
-# scope — `.repos` an object, each `.repos[*]` an object, each
-# `.repos[*].prs` present an object. Without this, the write-time guard that
-# #625 added for a top-level `.prs` would have been quietly lost to the
-# restructure. Reported as the offending scope's own path so the message
-# still names the exact field, as before.
-#
-# The offending scope is emitted as `<path><US><actual-type>` (U+001F unit
-# separator) rather than whitespace-joined: repo keys are caller data and a
-# whitespace split would mangle any key containing one.
-BAD_SCOPE="$(jq -r '
-  def bad:
-    if (.repos // null) == null then empty
-    elif (.repos | type) != "object" then ".repos\u001f" + (.repos | type)
-    else
-      ( .repos | to_entries[]
-        | if (.value | type) != "object"
-          then ".repos[\"" + .key + "\"]\u001f" + (.value | type)
-          elif (.value.prs != null) and ((.value.prs | type) != "object")
-          then ".repos[\"" + .key + "\"].prs\u001f" + (.value.prs | type)
-          else empty end )
-    end;
-  [bad] | (first // "")' "$OUT_TMP" 2>/dev/null || echo "")"
-if [[ -n "$BAD_SCOPE" ]]; then
-  bad_path="${BAD_SCOPE%%$'\x1f'*}"
-  bad_actual="${BAD_SCOPE##*$'\x1f'}"
-  echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
-  exit 4
-fi
+# Enforce the field-type contract against the candidate document before the
+# atomic mv below, so a rejected batch leaves $STATE_FILE untouched. Shared
+# with --cas (issue #1283) — see enforce_field_type_contract() above for the
+# individual checks. Called as a plain statement so it exits 4 directly.
+enforce_field_type_contract "$OUT_TMP"
 
 # Fail closed if the lock was broken and re-taken while we were reading and
 # transforming: $OUT_TMP was computed from a snapshot another writer has since

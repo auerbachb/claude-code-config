@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # off-peak-minute.sh — Deterministic per-repo off-peak cron minute selector.
+# catalog: scheduling-monitoring — Deterministic per-repo off-peak cron minute selector for CronCreate jobs
 #
 # PURPOSE
 #   Centralizes the minute-selection contract for any skill that needs a
@@ -45,6 +46,7 @@
 #   0  OK (value printed on stdout)
 #   2  Usage error (missing value, unknown flag, non-numeric N, or
 #      --every-n-min outside [1, 59])
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   # Hourly cron — stable per-repo minute, 7 days a week.
@@ -56,14 +58,15 @@
 #   echo "cron: \"$RANGE * * * *\"   # fires at :$MINUTE, :$(($MINUTE+10)), ..."
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
   # Print the header comment block (from shebang's next line until the first
   # blank comment line). Matches the pattern used by hhg-state.sh /
   # reply-thread.sh: skip line 1 (shebang), strip leading "# " or "#", stop
   # at the first blank line.
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {

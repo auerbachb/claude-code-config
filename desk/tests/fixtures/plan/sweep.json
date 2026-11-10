@@ -1,0 +1,17 @@
+{"today": "2026-10-08", "count": 4, "decisions": 3, "reviews": 1, "more": 0, "items": [
+  {"id": "D-44", "kind": "decision", "status": "open", "repo": "acme/widgets", "key": "pr-12",
+   "session_id": "worker-b", "question": "Retry the flaky upload test once?", "context": [],
+   "options": ["Yes", "No"], "default_option": "Yes", "default_at": null,
+   "impact_declared": null, "parked": true, "cost": null, "focus": null},
+  {"id": "D-41", "kind": "decision", "status": "open", "repo": "acme/widgets", "key": "issue-11",
+   "session_id": "worker-a", "question": "Ship the migration first?", "context": [],
+   "options": ["Yes", "No"], "default_option": "No", "default_at": "2026-10-08T22:00:00+00:00",
+   "impact_declared": "high", "parked": false, "cost": "~2 min", "focus": null},
+  {"id": "D-45", "kind": "decision", "status": "open", "repo": "acme/widgets", "key": "issue-13",
+   "session_id": "worker-a", "question": "How should the importer handle partial rows?", "context": [],
+   "options": [], "default_option": null, "default_at": null,
+   "impact_declared": null, "parked": false, "cost": "1h", "focus": "deep focus"},
+  {"id": "R-9", "kind": "review", "status": "open", "repo": "acme/gadgets", "key": "issue-202",
+   "question": "Idea: export gadgets", "context": ["https://github.com/acme/gadgets/issues/202", "Filed 2026-10-08 12:00 UTC"],
+   "summary_l1": null}
+]}

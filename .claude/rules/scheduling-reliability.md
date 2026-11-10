@@ -4,22 +4,34 @@
 > **Ask first:** Never — scheduling reliability is autonomous.
 > **Never:** Use `CronCreate`, dynamic `/loop`, or chained one-shot `ScheduleWakeup` calls for a recurring user-facing poll. Promise to "check back in N minutes" without an active `Monitor`. Exit a wake-up turn without confirming the monitor is live and the last tick fired. Leave background work running with no ceiling armed.
 
-The 5-minute heartbeat rule catches silence during turns; this file covers between-turn polling. **Background work in flight is a polling context** — that wait is between turns too.
+This file covers between-turn polling. **Background work in flight is a polling context** — that wait is between turns too. In-turn silence is default (CLAUDE.md #3); the bgwork-ceiling backstop is the liveness signal.
 
 ## Tool Selection Decision Tree
 
-| User request / context | Primitive | Why |
-|------------------------|-----------|-----|
-| Recurring: "poll/check/watch every N", "keep running /skill" | **persistent `Monitor`** | The only primitive with positive idle-liveness evidence (#914, #924) |
-| Wall-clock cadence, ≥3 concurrent polls | **persistent `Monitor`** | One out-of-turn process can emit each tick independently |
-| One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
-| Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll |
+| User request / context | Primitive |
+|------------------------|-----------|
+| Recurring: "poll/check/watch every N", "keep running /skill" | **persistent `Monitor`** |
+| Wall-clock cadence, ≥3 concurrent polls | **persistent `Monitor`** |
+| One-shot "wake me in N minutes" | `ScheduleWakeup` — single tick only |
+| Declared leave time ("I'm out at 7 PM") | **`/leave-by`** — arms the window; declared also arms a `Monitor`, elicited none |
+| Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` |
+
+## Declared Leave Times
+
+Routing only — `/leave-by` owns the source gate, countermand, and check-in wording; do not restate them here.
+
+- Route a wall-clock stop stated in chat to `/leave-by`, from **any** orchestration thread. Arming one is not becoming a `/pm` thread. Only a live user message arms, changes, or cancels one; a message during the runway **re-plans**.
+- **With none armed, ask** (#1679): attended threads elicit it via `/leave-by --elicit` before the first new-pipeline launch; an overrun asks once per issue per deadline. Never headless, in `/pm day`/`--window`, or at phase transitions.
+- The deadline is repo-scoped (`.window.deadline_epoch`); read it through `session-state.sh` and decline over-running pipelines at every launch (`/subagent` Step 7, `phase-protocols.md` §Launch gate) against the pause point `deadline_epoch − lead_minutes×60`.
+- **At session start and after compaction, recover it explicitly** — `--session-view` projects no `.leave`, so an unrecovered declaration dies with its Monitor and the wind-down never fires. Run `/leave-by` Step 11 whenever `.repos["<key>"].leave` exists.
+
+Mechanism and rationale: `.claude/reference/leave-time.md`.
 
 ## PM Monitoring Primitive
 
 Division of responsibility (`.claude/reference/pm-monitoring-decision.md`):
 
-- `/pm` never creates polls — on-demand orchestration only.
+- `/pm` creates no polls; `/pm day` owns one repo `Monitor`, excluding `/pr-monitor-and-manage`.
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (persistent `Monitor`, including `--auto-wake`).
 - `CronCreate` — **never**: see contract below.
 
@@ -27,9 +39,7 @@ Skill-owned polling updates `session-state.json` per skill's contract; stale sta
 
 ### Recurring scheduler contract (authoritative)
 
-**It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. Fixed-interval `/loop` delegates to it. Dynamic `/loop` uses `ScheduleWakeup`, but two live watchers also stopped until manual wake-up (#924). A follow-up control (#983) found the failure tracks the presence of a *concurrently-armed* `Monitor`, a detached probe, or their combination: a lone `CronCreate` job with neither mechanism fired 15/15 ticks over 31 minutes — but this system pairs recurring work with `Monitor`-based ceiling watches by default, so the guidance is unchanged. Use `Monitor`. Detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
-
-It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827). A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`.
+**CronCreate is unreliable** — reproducibly zero ticks under common usage (#914, #924) — and **session-only and in-memory**: `durable` has **no effect**, nothing survives a session boundary. Use `Monitor`; **durable work belongs in on-disk state, not a job.** A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`. Failure-mode detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 
@@ -39,15 +49,15 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
    - `Monitor`: verify its task is active and its command emitted the latest expected tick.
    - Legacy `ScheduleWakeup`: confirm this turn made the next-tick call and it returned cleanly. Never chain it for recurrence; switch to `Monitor`.
    - Background work: `bgwork-ceiling.sh --check` passes; if not, arm it (`--arm-command` → `Monitor`). The Stop hook blocks the turn otherwise.
-2. **User heartbeat sent this turn?** Timestamped one-liner: what happened, what's next.
+2. **Any explicit status request, owner-action blocker, safety event, decision, verified stall, unknown health, or stopped/exhausted recovery?** Surface it immediately, even when the owner cannot repair the underlying service. Honor requested periodic reports; otherwise stay silent. Record and handle recoverable failures. The clean merge line still emits; file-write counts, refill picks, first/resume ticks, and table age alone never trigger output (`decision-only-output.md`).
 3. **Monitoring state recorded?** Update `~/.claude/session-state.json` with tick time, next expected tick, and watermarks (last review ID, last HEAD SHA, etc.). See `handoff-files.md`.
 
 ## Stable-State Backoff
 
-Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens or stops the poll; the watch is a `Monitor`.
+Hash each tick's `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 (`/pm day` pauses resumably instead) or on `blocker_kind == "user_input"`. Resume at base cadence after a user message or a changed digest. Enforced by `polling-backoff-warn.sh`. Backoff never reaches the ceiling watch — it widens or stops the poll; the watch is a `Monitor`.
 
 ## Failure Recovery
 
 On a dropped tick: re-establish with `Monitor`; record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
 
-In-turn heartbeat and monitor loop: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.
+Monitor mode: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.

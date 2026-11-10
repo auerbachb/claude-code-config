@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for portable-handoff-lint.sh — the enforceable half of issue #901.
+# catalog: tests — Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff
 #
 # The issue's requirement is that portability be "testable, not aspirational",
 # so these tests do two jobs:
@@ -18,8 +19,8 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LINT="$REPO_ROOT/.claude/scripts/portable-handoff-lint.sh"
-SKILL="$REPO_ROOT/.claude/skills/pause/SKILL.md"
-TEMPLATE="$REPO_ROOT/.claude/skills/pause/references/portable-handoff-template.md"
+SKILL="$REPO_ROOT/.claude/skills/end/SKILL.md"
+TEMPLATE="$REPO_ROOT/.claude/skills/end/references/portable-handoff-template.md"
 SAFETY_RULE="$REPO_ROOT/.claude/rules/safety.md"
 RECORDER="$REPO_ROOT/.claude/hooks/usage-limit-record.sh"
 
@@ -64,6 +65,15 @@ session ending on a usage limit does not lose where the work stood.
   What is left: answer whatever it raises, then merge once checks are green.
   Verify with: bash .github/scripts/run-hook-tests.sh
 
+## Progress and verification
+
+Completed: the handoff checker and command integration are implemented.
+Remaining: answer review comments and merge the pull request.
+Blockers and decisions needed: the automated review is still running.
+Tests: the hook suite passes; re-run `bash .github/scripts/run-hook-tests.sh`.
+Review: nobody has approved commit 0123456789abcdef0123456789abcdef01234567 yet.
+Next commands: run `gh pr checks 903`, then the hook suite after any edit.
+
 ## Decisions made this session
 
 - Reused the existing stop flag instead of adding a second one — both mean "do
@@ -72,10 +82,22 @@ session ending on a usage limit does not lose where the work stood.
 
 ## Local state on this machine
 
-Branch: issue-901-clean-pause
+Repository identity: auerbachb/claude-code-config
+Repository root: /Users/b/Develop/claude-code-config
 Working directory: /Users/b/Develop/claude-code-config/.claude/worktrees/issue-901-clean-pause
-Uncommitted changes: none
+Worktree condition: linked worktree
+Branch: issue-901-clean-pause
+Base branch: main
+HEAD commit: 0123456789abcdef0123456789abcdef01234567
+Tracked changes: none
+Untracked changes: none
 Unpushed commits: none — run `git status` and `gh pr view 903` to confirm.
+
+## Resume safely
+
+Resume command: /end-resume
+For another agent: enter the working directory above and run `git status`.
+Relaunch rule: inspect every recorded task outcome before replacing work; do not duplicate completed work.
 EOF
 
 run_lint() { "$LINT" --repo-root "$REPO_ROOT" "$@"; }
@@ -97,7 +119,7 @@ assert_catches() { # rule, appended-line
   printf '%s\n' "$line" >>"$f"
   out=$(run_lint "$f" 2>&1); rc=$?
   [[ "$rc" -eq 1 ]] || fail "expected exit 1 for [$rule], got $rc — line: $line"
-  printf '%s' "$out" | grep -q "\[$rule\]" \
+  grep -q "\[$rule\]" <<<"$out" \
     || fail "expected rule [$rule] to fire on: $line"$'\n'"got: $out"
 }
 
@@ -196,8 +218,8 @@ MISSING="$TMP_DIR/missing.md"
 grep -v '^## Decisions made this session$' "$GOLDEN" >"$MISSING"
 out=$(run_lint "$MISSING" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a document missing a required section must fail (got $rc)"
-printf '%s' "$out" | grep -q 'required-sections' || fail "missing section did not report required-sections"
-printf '%s' "$out" | grep -q 'is missing' || fail "missing section must be reported as missing"
+grep -q 'required-sections' <<<"$out" || fail "missing section did not report required-sections"
+grep -q 'is missing' <<<"$out" || fail "missing section must be reported as missing"
 
 EMPTY="$TMP_DIR/empty.md"
 cat >"$EMPTY" <<'EOF'
@@ -211,7 +233,11 @@ cat >"$EMPTY" <<'EOF'
 
 ## Decisions made this session
 
+## Progress and verification
+
 ## Local state on this machine
+
+## Resume safely
 EOF
 # Structural-only markup is not an answer to the reader: a section holding just
 # a fence pair or an HTML comment must still count as empty.
@@ -219,7 +245,7 @@ STRUCTURAL="$TMP_DIR/structural.md"
 sed 's|^Adding a command that produces a handoff document any agent can act on, so a$|```|; s|^session ending on a usage limit does not lose where the work stood.$|```|' "$GOLDEN" >"$STRUCTURAL"
 out=$(run_lint "$STRUCTURAL" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a section holding only fence markers must count as empty (got $rc)"
-printf '%s' "$out" | grep -q 'present but empty' \
+grep -q 'present but empty' <<<"$out" \
   || fail "fence-only section was not reported as empty"$'\n'"got: $out"
 
 # Step 6 prints the finished document inside a fence, so a render that captured
@@ -230,15 +256,15 @@ FENCED="$TMP_DIR/fenced.md"
 { printf '%s\n' '```'; cat "$GOLDEN"; printf '%s\n' '```'; } >"$FENCED"
 out=$(run_lint "$FENCED" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a document whose headings are all inside a code fence must fail (got $rc)"
-printf '%s' "$out" | grep -q 'is missing' \
+grep -q 'is missing' <<<"$out" \
   || fail "fenced headings should be reported as missing sections"$'\n'"got: $out"
 
 out=$(run_lint "$EMPTY" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an all-headings-no-content shell must fail (got $rc)"
-printf '%s' "$out" | grep -q 'present but empty' \
+grep -q 'present but empty' <<<"$out" \
   || fail "an empty section must be reported as empty, not merely as present"
 EMPTY_HITS=$(printf '%s' "$out" | grep -c 'present but empty')
-[[ "$EMPTY_HITS" -eq 5 ]] || fail "expected all 5 required sections flagged empty, got $EMPTY_HITS"
+[[ "$EMPTY_HITS" -eq 7 ]] || fail "expected all 7 required sections flagged empty, got $EMPTY_HITS"
 
 # A duplicated required heading defeats the emptiness check: content under the
 # second copy vouches for an empty first one, and the reader hits the empty one
@@ -249,12 +275,14 @@ DUPE="$TMP_DIR/dupe.md"
   printf '%s\n\n%s\n\n' "## Start here" "Actually do this."
   printf '%s\n\n%s\n\n' "## What we're working on" "x"
   printf '%s\n\n%s\n\n' "## Open work" "y"
+  printf '%s\n\n%s\n\n' "## Progress and verification" "p"
   printf '%s\n\n%s\n\n' "## Decisions made this session" "z"
   printf '%s\n\n%s\n' "## Local state on this machine" "Working directory: /tmp/x"
+  printf '\n%s\n\n%s\n' "## Resume safely" "Resume command: /end-resume"
 } >"$DUPE"
 out=$(run_lint "$DUPE" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a duplicated required heading must fail (got $rc)"
-printf '%s' "$out" | grep -q 'appears 2 times' \
+grep -q 'appears 2 times' <<<"$out" \
   || fail "duplicate heading was not reported as a duplicate"$'\n'"got: $out"
 
 # --- 5b. Open-work entries: ownership, review state, verification --------
@@ -283,6 +311,15 @@ Adding a command that produces a handoff document any agent can act on.
 
 $body
 
+## Progress and verification
+
+Completed: the checker change is implemented.
+Remaining: finish review and merge.
+Blockers and decisions needed: none recorded.
+Tests: run bash .github/scripts/run-hook-tests.sh.
+Review: re-check the linked pull request.
+Next commands: run git status, then the hook suite.
+
 ## Decisions made this session
 
 - Reused the existing stop flag rather than adding a second one — two flags
@@ -290,10 +327,22 @@ $body
 
 ## Local state on this machine
 
-Branch: issue-901-clean-pause
+Repository identity: auerbachb/claude-code-config
+Repository root: /Users/b/Develop/claude-code-config
 Working directory: /Users/b/Develop/claude-code-config
-Uncommitted changes: none
+Worktree condition: main worktree
+Branch: issue-901-clean-pause
+Base branch: main
+HEAD commit: 0123456789abcdef0123456789abcdef01234567
+Tracked changes: none
+Untracked changes: none
 Unpushed commits: none
+
+## Resume safely
+
+Resume command: /end-resume
+For another agent: enter the working directory above and run git status.
+Relaunch rule: inspect recorded task outcomes before replacing work.
 EOF
 }
 
@@ -313,7 +362,7 @@ assert_doc() { # description, expected-rc, body, [expected substring...]
   [[ "$rc" -eq "$want_rc" ]] \
     || fail "$desc: expected exit $want_rc, got $rc"$'\n'"got: $out"
   for needle in "$@"; do
-    printf '%s' "$out" | grep -q -- "$needle" \
+    grep -q -- "$needle" <<<"$out" \
       || fail "$desc: expected output to mention '$needle'"$'\n'"got: $out"
   done
 }
@@ -473,12 +522,33 @@ Adding a command that produces a handoff document any agent can act on.
 
 - Reused the existing stop flag rather than adding a second one.
 
+## Progress and verification
+
+Completed: the checker change is implemented.
+Remaining: finish review.
+Blockers and decisions needed: none recorded.
+Tests: run `bash .github/scripts/run-hook-tests.sh`.
+Review: the linked pull request still needs review.
+Next commands: run `git status`.
+
 ## Local state on this machine
 
-Branch: issue-901-clean-pause
+Repository identity: auerbachb/claude-code-config
+Repository root: /Users/b/Develop/claude-code-config
 Working directory: /Users/b/Develop/claude-code-config
-Uncommitted changes: none
+Worktree condition: main worktree
+Branch: issue-901-clean-pause
+Base branch: main
+HEAD commit: 0123456789abcdef0123456789abcdef01234567
+Tracked changes: none
+Untracked changes: none
 Unpushed commits: none
+
+## Resume safely
+
+Resume command: /end-resume
+For another agent: enter the working directory above and run `git status`.
+Relaunch rule: inspect recorded task outcomes before replacing work.
 
 ## Open work
 
@@ -490,7 +560,7 @@ Unpushed commits: none
 EOF
 out=$(run_lint "$EOF_ENTRY" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an entry ending at EOF must still be judged (got $rc)"
-printf '%s' "$out" | grep -q 'open-work-ownership' \
+grep -q 'open-work-ownership' <<<"$out" \
   || fail "the final entry in the file was never flushed"$'\n'"got: $out"
 
 # --- 5c. The cold read, as a regression -----------------------------------
@@ -544,8 +614,8 @@ while IFS= read -r want; do
   grep -qF "## $want" "$TEMPLATE" \
     || fail "template is missing required section heading: $want"
 done < <(sed -n '/^REQUIRED_SECTIONS=(/,/^)/p' "$LINT" | sed -n 's/^  "\(.*\)"$/\1/p')
-[[ "$SECTION_COUNT" -eq 5 ]] \
-  || fail "expected 5 required sections parsed from the checker, got $SECTION_COUNT"
+[[ "$SECTION_COUNT" -eq 7 ]] \
+  || fail "expected 7 required sections parsed from the checker, got $SECTION_COUNT"
 
 # --- 6b. The working directory must be an absolute path ------------------
 # It is the single address the reader needs in order to find the work at all.
@@ -559,13 +629,13 @@ wd_fixture() { # replacement line for the Working directory field
 f=$(wd_fixture "Working directory: ../claude-code-config")
 out=$(run_lint "$f" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a relative working directory must fail (got $rc)"
-printf '%s' "$out" | grep -q 'working-directory-absolute' \
+grep -q 'working-directory-absolute' <<<"$out" \
   || fail "relative working directory did not report working-directory-absolute"
 
 f=$(wd_fixture "Working directory:")
 out=$(run_lint "$f" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an empty working directory must fail (got $rc)"
-printf '%s' "$out" | grep -q 'working-directory-absolute' \
+grep -q 'working-directory-absolute' <<<"$out" \
   || fail "empty working directory did not report working-directory-absolute"
 
 # A MISSING anchor must fail rather than silently disable the rule — otherwise
@@ -574,13 +644,127 @@ f="$TMP_DIR/wd-missing.md"
 grep -v '^Working directory: ' "$GOLDEN" >"$f"
 out=$(run_lint "$f" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a missing Working directory line must fail (got $rc)"
-printf '%s' "$out" | grep -q 'working-directory-absolute' \
+grep -q 'working-directory-absolute' <<<"$out" \
   || fail "missing anchor must report working-directory-absolute, not pass silently"
 
 # And the anchor the checker looks for must actually exist in the template,
 # or the rule above is unreachable in practice.
 grep -q 'Working directory:' "$TEMPLATE" \
   || fail "template lacks the 'Working directory:' anchor the checker requires"
+
+# Every takeover identity field is independently required. Removing one from
+# an otherwise valid note must fail closed rather than silently narrowing the
+# contract shared by the template, collector, and automatic producer.
+for anchor in 'Repository identity:' 'Repository root:' 'Worktree condition:' \
+              'Branch:' 'Base branch:' 'HEAD commit:' 'Tracked changes:' \
+              'Untracked changes:' 'Unpushed commits:'; do
+  f="$TMP_DIR/missing-field.md"
+  grep -v "^${anchor}" "$GOLDEN" >"$f"
+  out=$(run_lint "$f" 2>&1); rc=$?
+  [[ "$rc" -eq 1 ]] || fail "missing '$anchor' must fail (got $rc)"
+  grep -q 'working-copy-fields' <<<"$out" \
+    || fail "missing '$anchor' did not report working-copy-fields"
+done
+
+EMPTY_THEN_VALID="$TMP_DIR/empty-then-valid-field.md"
+awk '/^Repository identity:/ && !done { print "Repository identity:"; done=1 } { print }' \
+  "$GOLDEN" >"$EMPTY_THEN_VALID"
+out=$(run_lint "$EMPTY_THEN_VALID" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty field followed by a populated duplicate must fail (got $rc)"
+grep -q 'working-copy-fields' <<<"$out" \
+  || fail "empty-then-valid duplicate did not report working-copy-fields"
+
+EMPTY_UNPUSHED="$TMP_DIR/empty-unpushed.md"
+sed 's/^Unpushed commits:.*/Unpushed commits:/' "$GOLDEN" >"$EMPTY_UNPUSHED"
+out=$(run_lint "$EMPTY_UNPUSHED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty Unpushed commits field must fail (got $rc)"
+grep -q 'working-copy-fields' <<<"$out" \
+  || fail "empty Unpushed commits field did not report working-copy-fields"
+
+DUP_UNPUSHED="$TMP_DIR/duplicate-unpushed.md"
+awk '/^Unpushed commits:/ && !done { print; done=1 } { print }' "$GOLDEN" >"$DUP_UNPUSHED"
+out=$(run_lint "$DUP_UNPUSHED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "duplicate Unpushed commits fields must fail (got $rc)"
+grep -q 'working-copy-fields' <<<"$out" \
+  || fail "duplicate Unpushed commits fields did not report working-copy-fields"
+
+# `/end-resume` is permitted only in its dedicated field. A checkpoint that
+# stopped nothing may explicitly mark the field not applicable, but every note
+# still needs a relaunch rule to prevent duplicate background work.
+NOT_APPLICABLE="$TMP_DIR/not-applicable.md"
+sed 's|^Resume command: /end-resume$|Resume command: not applicable — automatic checkpoint|' "$GOLDEN" >"$NOT_APPLICABLE"
+run_lint "$NOT_APPLICABLE" >/dev/null 2>&1 \
+  || fail "an automatic checkpoint may explicitly mark end-resume not applicable"
+
+BAD_RESUME="$TMP_DIR/bad-resume.md"
+sed 's|^Resume command: /end-resume$|Resume command: /pause-resume|' "$GOLDEN" >"$BAD_RESUME"
+out=$(run_lint "$BAD_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an unrelated resume command must fail (got $rc)"
+grep -q 'resume-guidance' <<<"$out" \
+  || fail "bad resume entrypoint did not report resume-guidance"
+
+PREFIX_RESUME="$TMP_DIR/prefix-resume.md"
+sed 's|^Resume command: /end-resume$|Resume command: /end-resumeevil|' "$GOLDEN" >"$PREFIX_RESUME"
+out=$(run_lint "$PREFIX_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "a end-resume prefix collision must fail (got $rc)"
+grep -q 'resume-guidance' <<<"$out" \
+  || fail "end-resume prefix collision did not report resume-guidance"
+
+EMPTY_RESUME="$TMP_DIR/empty-resume.md"
+sed 's|^Resume command: /end-resume$|Resume command:|' "$GOLDEN" >"$EMPTY_RESUME"
+out=$(run_lint "$EMPTY_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty resume command must report a lint violation, not abort (got $rc)"
+grep -q 'resume-guidance' <<<"$out" \
+  || fail "empty resume command did not report resume-guidance"
+
+CONFLICTING_RESUME="$TMP_DIR/conflicting-resume.md"
+awk '/^Resume command: \/end-resume$/ && !done { print "Resume command: /pause-resume"; done=1 } { print }' \
+  "$GOLDEN" >"$CONFLICTING_RESUME"
+out=$(run_lint "$CONFLICTING_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "conflicting resume commands must fail (got $rc)"
+grep -q 'resume-guidance' <<<"$out" \
+  || fail "conflicting resume commands did not report resume-guidance"
+
+NO_RELAUNCH="$TMP_DIR/no-relaunch.md"
+grep -v '^Relaunch rule:' "$GOLDEN" >"$NO_RELAUNCH"
+out=$(run_lint "$NO_RELAUNCH" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "missing relaunch guidance must fail (got $rc)"
+grep -q 'resume-guidance' <<<"$out" \
+  || fail "missing relaunch rule did not report resume-guidance"
+
+for mode in missing empty duplicate; do
+  f="$TMP_DIR/${mode}-agent-path.md"
+  case "$mode" in
+    missing) grep -v '^For another agent:' "$GOLDEN" >"$f" ;;
+    empty) sed 's/^For another agent:.*/For another agent:/' "$GOLDEN" >"$f" ;;
+    duplicate) awk '/^For another agent:/ && !done { print; done=1 } { print }' "$GOLDEN" >"$f" ;;
+  esac
+  out=$(run_lint "$f" 2>&1); rc=$?
+  [[ "$rc" -eq 1 ]] || fail "$mode For another agent field must fail (got $rc)"
+  grep -q 'resume-guidance' <<<"$out" \
+    || fail "$mode For another agent field did not report resume-guidance"
+done
+
+OUTSIDE_RESUME="$TMP_DIR/outside-resume.md"
+cp "$GOLDEN" "$OUTSIDE_RESUME"
+printf '%s\n' 'Run /end-resume from this unrelated line.' >>"$OUTSIDE_RESUME"
+out=$(run_lint "$OUTSIDE_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "end-resume outside its dedicated field must fail (got $rc)"
+grep -q 'skill-invocation' <<<"$out" \
+  || fail "out-of-field end-resume did not report skill-invocation"
+
+# Renaming the project skill must not make Claude Code's reserved built-in
+# command portable to another agent. Construct the old spelling in two pieces
+# so the repository-wide retired-command contract can distinguish this fixture
+# from an advertised invocation.
+BUILTIN_STOP="$TMP_DIR/builtin-stop.md"
+BUILTIN_STOP_COMMAND="/""stop"
+cp "$GOLDEN" "$BUILTIN_STOP"
+printf 'Run %s before continuing.\n' "$BUILTIN_STOP_COMMAND" >>"$BUILTIN_STOP"
+out=$(run_lint "$BUILTIN_STOP" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "built-in stop invocation must fail portability lint (got $rc)"
+grep -q 'skill-invocation' <<<"$out" \
+  || fail "built-in stop invocation did not report skill-invocation"
 
 # The per-entry fields are the same kind of contract, and the same kind of
 # silent failure: reword one on either side and the rule stops firing on a
@@ -601,11 +785,12 @@ run_lint --list-rules >/dev/null 2>&1 || fail "--list-rules should exit 0"
 # found — intermittently, depending on whether the write completed first.
 RULES_OUT=$(run_lint --list-rules)
 RULE_COUNT=$(printf '%s\n' "$RULES_OUT" | grep -c .)
-[[ "$RULE_COUNT" -eq 10 ]] || fail "expected 10 rules, got $RULE_COUNT"
+[[ "$RULE_COUNT" -eq 12 ]] || fail "expected 12 rules, got $RULE_COUNT"
 for r in harness-path phase-vocabulary state-file skill-invocation \
          unrendered-placeholder required-sections working-directory-absolute \
-         open-work-ownership pull-request-review-state verification-command; do
-  printf '%s\n' "$RULES_OUT" | grep -qx "$r" || fail "--list-rules omits '$r'"
+         open-work-ownership pull-request-review-state verification-command \
+         working-copy-fields resume-guidance; do
+  grep -qx "$r" <<<"$RULES_OUT" || fail "--list-rules omits '$r'"
 done
 
 # `--` must hand the document through, not swallow it.
@@ -615,9 +800,9 @@ run_lint -- "$GOLDEN" >/dev/null 2>&1 || fail "'-- <doc>' should lint the docume
 HELP_OUT=$("$LINT" --help 2>&1) || fail "--help should exit 0"
 # Assert content, not just status: a truncated or broken --help is a silent
 # regression if the test only looks at the exit code.
-printf '%s' "$HELP_OUT" | grep -q 'EXIT STATUS' || fail "--help omits the EXIT STATUS section"
-printf '%s' "$HELP_OUT" | grep -q -- '--repo-root'  || fail "--help omits the --repo-root flag"
-printf '%s' "$HELP_OUT" | grep -q '4' || fail "--help does not mention exit code 4"
+grep -q 'EXIT STATUS' <<<"$HELP_OUT" || fail "--help omits the EXIT STATUS section"
+grep -q -- '--repo-root' <<<"$HELP_OUT"  || fail "--help omits the --repo-root flag"
+grep -q '4' <<<"$HELP_OUT" || fail "--help does not mention exit code 4"
 
 "$LINT" >/dev/null 2>&1; [[ $? -eq 2 ]] || fail "no document should exit 2"
 "$LINT" --nope "$GOLDEN" >/dev/null 2>&1; [[ $? -eq 2 ]] || fail "unknown option should exit 2"
@@ -638,13 +823,13 @@ cp "$GOLDEN" "$SHAPED"
 printf '%s\n' "Then run /some-unknown-command to finish." >>"$SHAPED"
 out=$("$LINT" --repo-root "$NO_CATALOG" "$SHAPED" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "with no catalog, a command-shaped token must still be caught (got $rc)"
-printf '%s' "$out" | grep 'skill-invocation' | grep -q 'some-unknown-command' \
+grep -q 'some-unknown-command' <<<"$(grep 'skill-invocation' <<<"$out")" \
   || fail "fallback must flag the command-shaped line itself, not merely fail on something else"$'\n'"got: $out"
 
 # An explicitly named root is authoritative — it must not be silently replaced
 # by the script's own repo, or --repo-root would be decorative and the
 # fail-closed path above untestable.
-printf '%s' "$out" | grep -q 'harness-path' \
+grep -q 'harness-path' <<<"$out" \
   && fail "unexpected harness-path violation in the no-catalog fixture"
 
 # Short names are the most common skills (/pm, /go), so a fallback that only
@@ -656,7 +841,7 @@ for short in "/pm" "/go"; do
   printf '%s\n' "Then run $short to continue." >>"$SHORT_FIX"
   out=$("$LINT" --repo-root "$NO_CATALOG" "$SHORT_FIX" 2>&1); rc=$?
   [[ "$rc" -eq 1 ]] || fail "no-catalog fallback missed short command $short (rc=$rc)"
-  printf '%s' "$out" | grep -q 'skill-invocation' \
+  grep -q 'skill-invocation' <<<"$out" \
     || fail "no-catalog fallback did not report skill-invocation for $short"
 done
 
@@ -669,13 +854,13 @@ cp "$GOLDEN" "$ESC_FIX"
 printf 'Then run \033[31m/wrap\033[0m to finish.\n' >>"$ESC_FIX"
 out=$(run_lint "$ESC_FIX" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an escape-laden violation line should still be caught (rc=$rc)"
-printf '%s' "$out" | grep -q 'skill-invocation' || fail "escape fixture did not report the violation"
-printf '%s' "$out" | LC_ALL=C grep -q '[[:cntrl:]]' \
+grep -q 'skill-invocation' <<<"$out" || fail "escape fixture did not report the violation"
+LC_ALL=C grep -q '[[:cntrl:]]' <<<"$out" \
   && fail "the report emitted raw control characters from document text"
 
 # --- 9. Quota authority: nothing here estimates spend --------------------
 # safety.md §"Anthropic Quota & Spend Authority" is deliberately unamended by
-# #901; the human reads the authoritative usage view and invokes /pause. A
+# #901; the human reads the authoritative usage view and invokes /end. A
 # silent contradiction between that rule and shipped behavior is the failure
 # this block exists to prevent.
 grep -q 'MUST NOT gate agent decisions' "$SAFETY_RULE" \

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ccusage-baseline.sh — Read-only per-repo/per-session spend and usage baseline (issue #781).
+# catalog: token-measurement — Read-only per-session spend baseline via `ccusage`; exits 0 OK / 1 no data / 2 usage error / 3 ccusage missing / 4 invocation error; `--json` for machine output, `--recent` for last 3 days (#781)
 #
 # PURPOSE:
 #   Provides a reproducible, read-only way to capture per-session token spend
@@ -49,6 +50,7 @@
 #   2  Usage error (unknown flag or conflicting options)
 #   3  ccusage not found or environment error (PATH or npx unavailable)
 #   4  ccusage invocation failed (network, auth, or parse error)
+#   70  --help header extraction produced no output (internal defect).
 #
 # CCUSAGE DETECTION (in order):
 #   1. ccusage binary on PATH
@@ -68,10 +70,11 @@
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
-  >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+  2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {

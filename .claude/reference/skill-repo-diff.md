@@ -15,8 +15,12 @@ cycles.
 |------|--------------|-------|-----------------|
 | [obra/superpowers](https://github.com/obra/superpowers) | `main` @ `f268f7c` (2026-07-02) | 14 focused discipline skills + SDD scripts/prompts; SessionStart bootstrap hook; v6.1.0 | **High** — overlaps our worktree + plan + review workflow; already installed as a Cursor plugin, so its skills are available at runtime but are **not** in our repo |
 | [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | `main` @ `81af407` (2026-07-02) | ~277 published skills, 67 agents, 92 commands, Node hook graph with profiles (`minimal`/`standard`/`strict`), MCP connector policy, selective install CLI | **Selective** — most skills are language/domain-specific and out of scope; the hook graph and meta-skills (`skill-comply`, `config-protection`) have transferable ideas |
+| [obra/superpowers](https://github.com/obra/superpowers) | `main` @ `b36e0829` (2026-08-12) | 14 skills (unchanged), 4 hook files, 4 scripts, 16 test suites | **High** — see `skill-repo-diff-2026-08.md` for delta vs July cycle |
+| [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | `main` @ `569b1d5b` (2026-08-12) | ~287 skills (+10), 68 agents (+1), 94 commands (+2) | **Selective** — see `skill-repo-diff-2026-08.md` for new patterns; `silent-failure-hunter` agent is the high-value new addition |
+| [obra/superpowers](https://github.com/obra/superpowers) | `main` @ `22f0b463` (2026-11-09) | 15 top-level skills; task and diagnosis workflow changes | **Selective** — adapt the explicit report of requirements a diff cannot prove |
+| [affaan-m/ECC](https://github.com/affaan-m/ECC) | `main` @ `d2ef2680` (2026-11-09) | 314 top-level skills; new doc governance, triage, host compatibility, and static MCP review | **Selective** — no import this cycle; see the [November comparison](skill-repo-diff-2026-11.md) |
 
-**Survey run:** 2026-07-02 (first-pass continuation), against the pinned commits above. Re-survey
+**Survey runs:** 2026-07-02 (first pass) · [2026-08-12](skill-repo-diff-2026-08.md) · [2026-11-09](skill-repo-diff-2026-11.md). Re-survey
 each cycle and record the new run date + commit SHAs — a delta is only real
 relative to a pinned ref; both repos move fast, so coarse dates hide repo churn.
 
@@ -114,6 +118,13 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
   3. **`verification-evidence-patterns.md`** — repo-specific claim→evidence
      checklist for AC, exit reports, and merge claims. Source: superpowers
      `verification-before-completion` (reference doc, not a duplicate skill).
+- **P1 — second cycle (2026-08-12), separate PRs each:**
+  1. **`silent-failure-hunter` agent** — add to `.claude/agents/silent-failure-hunter.md`; direct fit for our Bash-heavy scripts. Source: ECC `agents/silent-failure-hunter.md` @ `569b1d5b`. Issue [#1163](https://github.com/auerbachb/claude-code-config/issues/1163).
+  2. **`dispatching-parallel-agents` skill** — distill parallel-agent dispatch discipline into `.claude/skills/subagent-dispatch/SKILL.md` or `.claude/reference/parallel-agent-dispatch.md`. Source: superpowers `skills/dispatching-parallel-agents/SKILL.md` @ `b36e0829`. Issue [#1164](https://github.com/auerbachb/claude-code-config/issues/1164). *(Shipped, then retired in [#1584](https://github.com/auerbachb/claude-code-config/issues/1584); guidance folded into `.claude/reference/phase-decomposition.md`.)*
+  3. **`receiving-code-review` skill** — adapt Phase B reviewer verification discipline into `.claude/skills/receiving-code-review/SKILL.md`. Source: superpowers `skills/receiving-code-review/SKILL.md` @ `b36e0829`. Issue [#1165](https://github.com/auerbachb/claude-code-config/issues/1165).
+- **November 2026:** Adapt the diff review evidence pattern in the existing
+  [verification guide](verification-evidence-patterns.md) ([#2132](https://github.com/auerbachb/claude-code-config/issues/2132)).
+  The [dated survey](skill-repo-diff-2026-11.md) records what to skip or revisit.
 - **P2 — deferred (revisit, see below).**
 
 ## Deferred Patterns (P2 — revisit in future cycles)
@@ -140,6 +151,8 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 | 2026-07-02 | affaan-m/everything-claude-code `config-protection.js` @ `81af407` | `config-protection` PreToolUse hook (Python) | [#529](https://github.com/auerbachb/claude-code-config/pull/529) | Extended ECC basename list with `.coderabbit.yaml`, `rule-lint.sh`, `.budget-soft-cap`; first-time create allowed; registered in `global-settings.json`. |
 | 2026-07-02 | affaan-m/everything-claude-code `skill-comply` @ `81af407` | `skill-conventions-audit.sh` static audit | [#530](https://github.com/auerbachb/claude-code-config/pull/530) | Bash-only convention checks; no LLM harness. |
 | 2026-07-02 | obra/superpowers `verification-before-completion` @ `f268f7c` | `verification-evidence-patterns.md` reference | [#532](https://github.com/auerbachb/claude-code-config/pull/532) | Repo-specific claim→evidence map; linked from phase-protocols + AC skill. |
+
+_August 2026 candidates (Issues #1163, #1164, #1165) move to this log when their PRs merge. Tracked in the P1 backlog above and in `skill-repo-diff-2026-08.md`. #1164 shipped in [#1175](https://github.com/auerbachb/claude-code-config/pull/1175) and was retired in [#1584](https://github.com/auerbachb/claude-code-config/issues/1584), so it is recorded in that cycle's Import Log rather than here._
 
 ## Re-Survey Checklist (each cycle)
 

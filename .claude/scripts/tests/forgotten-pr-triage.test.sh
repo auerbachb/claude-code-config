@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for forgotten-pr-triage.sh (issue #657).
+# catalog: tests — Tests for `forgotten-pr-triage.sh`
 # Stubs `gh` with fixture JSON/values; runs inside a real temp git repo with a
 # file-based `origin` remote carrying refs/pull/<N>/head refs, so the
 # supersession ("already in main") check exercises the real `git fetch` +
@@ -45,7 +46,7 @@ check_contains() {
 check_line() {
   # Exact whole-line match (anchored) — stronger than substring check_contains.
   local desc="$1" line="$2" hay="$3"
-  if printf '%s\n' "$hay" | grep -Fxq "$line"; then
+  if grep -Fxq "$line" <<<"$hay"; then
     pass "$desc"
   else
     fail "$desc (missing exact line '$line')"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline never-invited and cache-state tests for escalate-review.sh.
+# catalog: tests — Invitation, grace-window, and cache-state tests for `escalate-review.sh`
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/escalate-review-fixtures.sh
@@ -28,7 +29,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (n2): genuine BugBot failure in the SAME no-check-run shape -> trigger_greptile (parity with pre-#935) =="
@@ -42,7 +43,7 @@ FAILURE_COMMENT_N2="$(failure_comment "$(ts_seconds_ago 3000)")"
 write_state "[]" "[]" "[]" "[$FAILURE_COMMENT_N2]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (n3): invited but silent — fresh @cursor review, no BugBot response, past the grace window -> trigger_greptile =="
@@ -55,7 +56,7 @@ TRIGGER_COMMENT_N3="$(trigger_comment "$(ts_seconds_ago 3000)")"
 write_state "[]" "[]" "[]" "[$TRIGGER_COMMENT_N3]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (n4): trigger comment PREDATES the HEAD commit -> switch_bugbot (a stale invite must not mask an unprovisioned one) =="
@@ -68,7 +69,7 @@ TRIGGER_COMMENT_N4="$(trigger_comment "$(ts_seconds_ago 9000)")"
 write_state "[]" "[]" "[]" "[$TRIGGER_COMMENT_N4]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (n5): never invited but still INSIDE the 600s grace window -> polling_cr (the new branch must not preempt the wait) =="
@@ -95,7 +96,7 @@ write_commits "$(ts_seconds_ago 120)"
 write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 # Stale `bugbot_installed` cache vs. the never-invited branch (issue #948)
@@ -123,7 +124,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 CACHED_AFTER_N6="$(read_bugbot_installed)"
 check_eq "cached true bypasses fresh classification" "true" "$CACHED_AFTER_N6"
 
@@ -139,7 +140,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (n8): same in-flight run on HEAD, cached false -> trigger_greptile (the live footprint still shuts the branch) =="
@@ -152,7 +153,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (n8b): fresh in-flight run on HEAD overrides cached false for the grace wait =="

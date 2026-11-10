@@ -1,0 +1,300 @@
+# shellcheck shell=bash
+# desk/bin/lib/items.sh — shared code for the item subcommands (add, bump, get,
+# list, show; issue #1775). Sourced by those command files after lib/common.sh
+# and lib/db.sh; never executed. Bash 3.2 compatible.
+#
+# PUBLIC FUNCTIONS
+#   hq_item_id VAR VALUE        canonical id (D-43, R-88) into VAR; d-43 is
+#                               accepted; exits 4 when malformed
+#   hq_parse_id_args CMD ID_VAR JSON_VAR ARGS...
+#                               parses `CMD ID [--json]`; exits 4 on anything else
+#   hq_check_text FIELD VALUE MAX
+#                               VALUE is non-blank, one line, free of control
+#                               characters (tab aside), at most MAX
+#                               characters; exits 4 naming FIELD otherwise
+#   hq_refuse_control FIELD VALUE [newline]
+#                               exits 4 naming FIELD when VALUE holds a control
+#                               character other than tab (and line breaks,
+#                               with `newline`)
+#   hq_check_timestamp FIELD VALUE
+#                               ISO 8601 date and time WITH a time zone (an
+#                               offset of at most 14:00 either way), and a
+#                               real calendar date; exits 4 otherwise
+#   hq_in_list VALUE WORDS      true when VALUE is one of the space-separated WORDS
+#   hq_is_kind / hq_is_status / hq_is_impact VALUE
+#                               true when VALUE is in the schema's value set
+#   hq_flag_name ARG            prints "option '--flag'" when ARG looks like a
+#                               flag, else "argument": a stray value (which may
+#                               be free text) is never echoed into a message
+#   hq_sql_item_json            SQL expression: the items row `i` as JSON, every
+#                               column except the internal change marker
+#   hq_sql_render_item          SQL expression rendering the items row `i`
+#   hq_sql_render_events        SQL expression rendering the events of `i`
+#   hq_sql_events_json          SQL expression: the events of `i` as JSON
+#   hq_sql_item_order           ORDER BY list: parked, then impact, then age
+#   hq_sql_impact_rank          SQL expression: the item `i`'s effective impact
+#                               (derived, else declared; issue #1760) as a
+#                               sort key, critical-path 0 ... none 4
+#   hq_desk_tz                  prints the desk's calendar (America/New_York)
+#
+# Lengths are checked with ${#value}: characters under a UTF-8 locale, bytes
+# under bash 3.2 or a C locale. Bytes are never fewer than characters, so the
+# CLI is at most stricter than the database's own CHECK constraints.
+
+# hq_desk_tz — the desk's calendar (issue #1782): the Reviews view groups by
+# its day and `review --synced-today` reads the same one. America/New_York,
+# like `history`. One definition, so the two can never disagree.
+hq_desk_tz() { printf 'America/New_York'; }
+
+# The value sets of the CHECK constraints (001, and 006 for answer-parked),
+# mirrored so input is refused before any connection attempt.
+HQ_ITEM_KINDS="decision review"
+HQ_ITEM_STATUSES="open answered acknowledged reviewed flagged closed answer-parked"
+HQ_ITEM_IMPACTS="low medium high"
+
+hq_is_kind()   { hq_in_list "$1" "$HQ_ITEM_KINDS"; }
+hq_is_status() { hq_in_list "$1" "$HQ_ITEM_STATUSES"; }
+hq_is_impact() { hq_in_list "$1" "$HQ_ITEM_IMPACTS"; }
+
+hq_in_list() {
+  case "$1" in
+    ''|*[[:space:]]*) return 1 ;;
+  esac
+  case " $2 " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+hq_flag_name() {
+  case "$1" in
+    --[a-z]*)
+      if [ "${#1}" -le 32 ] && [[ $1 =~ ^--[a-z][a-z-]*$ ]]; then
+        printf "option '%s'" "$1"
+        return 0
+      fi
+      ;;
+  esac
+  printf 'argument'
+}
+
+hq_item_id() {
+  local hq__v="$2" hq__n
+  case "$hq__v" in
+    [DdRr]-[1-9]*) ;;
+    *) hq_die_validation "invalid item id (expected D-<n> or R-<n>, for example D-43)" ;;
+  esac
+  hq__n="${hq__v#??}"
+  # No length cap: 001's CHECK (^[DR]-[1-9][0-9]*$) has none, the sequences
+  # reach 19 digits (bigint), and the id only ever travels as text.
+  case "$hq__n" in
+    *[!0-9]*) hq_die_validation "invalid item id (expected D-<n> or R-<n>, for example D-43)" ;;
+  esac
+  case "$hq__v" in
+    [Dd]*) printf -v "$1" 'D-%s' "$hq__n" ;;
+    *) printf -v "$1" 'R-%s' "$hq__n" ;;
+  esac
+}
+
+# hq_parse_id_args CMD ID_VAR JSON_VAR ARGS... — the `CMD ID [--json]` shape
+# shared by get and show. Stores the canonical id in ID_VAR and 0/1 in
+# JSON_VAR; exits 4 on anything else. -h/--help anywhere prints the calling
+# command's cmd_usage. Locals carry an hq__ prefix so the caller's variable
+# names can never be shadowed.
+hq_parse_id_args() {
+  local hq__cmd="$1" hq__idvar="$2" hq__jsonvar="$3" hq__raw="" hq__have=0 hq__json=0
+  shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help)
+        cmd_usage
+        exit 0
+        ;;
+      --json)
+        hq__json=1
+        ;;
+      -*) hq_die_validation "$hq__cmd: unknown $(hq_flag_name "$1") (run human-queue.sh $hq__cmd --help)" ;;
+      *)
+        if [ "$hq__have" -eq 1 ]; then hq_die_validation "$hq__cmd: takes one item id"; fi
+        hq__have=1
+        hq__raw="$1"
+        ;;
+    esac
+    shift
+  done
+  if [ "$hq__have" -eq 0 ]; then
+    hq_die_validation "$hq__cmd: missing item id (run human-queue.sh $hq__cmd --help)"
+  fi
+  hq_item_id "$hq__idvar" "$hq__raw"
+  printf -v "$hq__jsonvar" '%s' "$hq__json"
+}
+
+hq_check_text() {
+  local field="$1" value="$2" max="$3"
+  case "$value" in
+    *$'\n'*|*$'\r'*) hq_die_validation "$field must be a single line" ;;
+  esac
+  hq_refuse_control "$field" "$value"
+  case "$value" in
+    *[![:space:]]*) ;;
+    *) hq_die_validation "$field is empty" ;;
+  esac
+  if [ "${#value}" -gt "$max" ]; then
+    hq_die_validation "$field is longer than $max characters"
+  fi
+}
+
+# hq_refuse_control FIELD VALUE [newline] — free text is printed raw by list,
+# show, and set-open, so a stored escape sequence would reach the operator's
+# terminal. Refused here, at the only way in: tab is allowed, and line breaks
+# only with `newline` (answers). The value is never echoed into the message.
+hq_refuse_control() {
+  local hq__tab=$'\t' hq__nl=$'\n' hq__v
+  hq__v=${2//$hq__tab/}
+  if [ "${3:-}" = newline ]; then hq__v=${hq__v//$hq__nl/}; fi
+  case "$hq__v" in
+    *[[:cntrl:]]*) hq_die_validation "$1 contains a control character (an escape or other non-printing character)" ;;
+  esac
+}
+
+hq_check_timestamp() {
+  local field="$1" v="$2" re y mo d h mi s tz oh om dim
+  re='^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt ]([0-9]{2}):([0-9]{2})(:([0-9]{2})(\.[0-9]{1,6})?)?([Zz]|[+-][0-9]{2}(:?[0-9]{2})?)$'
+  if ! [[ $v =~ $re ]]; then
+    hq_die_validation "$field must be an ISO 8601 time with a time zone, for example 2026-10-05T18:00Z or 2026-10-05T14:00-04:00"
+  fi
+  y=$((10#${BASH_REMATCH[1]}))
+  mo=$((10#${BASH_REMATCH[2]}))
+  d=$((10#${BASH_REMATCH[3]}))
+  h=$((10#${BASH_REMATCH[4]}))
+  mi=$((10#${BASH_REMATCH[5]}))
+  s="${BASH_REMATCH[7]}"
+  tz="${BASH_REMATCH[9]}"
+  s=$((10#${s:-0}))
+  case "$mo" in
+    2)
+      dim=28
+      if [ $((y % 4)) -eq 0 ] && { [ $((y % 100)) -ne 0 ] || [ $((y % 400)) -eq 0 ]; }; then
+        dim=29
+      fi
+      ;;
+    4|6|9|11) dim=30 ;;
+    *) dim=31 ;;
+  esac
+  if [ "$y" -lt 1 ] || [ "$mo" -lt 1 ] || [ "$mo" -gt 12 ] || [ "$d" -lt 1 ] || [ "$d" -gt "$dim" ] \
+    || [ "$h" -gt 23 ] || [ "$mi" -gt 59 ] || [ "$s" -gt 59 ]; then
+    hq_die_validation "$field is not a real date and time"
+  fi
+  case "$tz" in
+    [Zz]) ;;
+    *)
+      oh=$((10#${tz:1:2}))
+      om="${tz:3}"
+      om="${om#:}"
+      om=$((10#${om:-0}))
+      # Real offsets span -12:00 to +14:00; accept up to 14:00 either way.
+      if [ "$om" -gt 59 ] || [ $((oh * 60 + om)) -gt 840 ]; then
+        hq_die_validation "$field has an out-of-range time-zone offset"
+      fi
+      ;;
+  esac
+}
+
+# The SQL below lives in functions (not heredocs inside $(...)) because bash
+# 3.2's command-substitution scanner does not understand here-documents.
+
+# The items row `i` as one JSON object. change_xid (migration 003) is the
+# transaction id `tick` reads changes from: internal bookkeeping, so it is left
+# out and the item JSON keeps one shape before and after 003.
+hq_sql_item_json() {
+  printf '%s' "(CASE WHEN to_jsonb(i)->>'source_tool' IS NULL THEN
+    to_jsonb(i) - ARRAY['change_xid','capture_key','source_tool','source_account','return_route']
+  ELSE to_jsonb(i) - ARRAY['change_xid','capture_key'] END)"
+}
+
+# One item, as the operator reads it: a header line, the question in bold, the
+# context as a numbered list, lettered options, the default and when it
+# applies, one line of triage facts, the operator's own to-do fields (issue
+# #1769: priority, tags, and a snooze still ahead on one line, the note on the
+# next), and the answer once there is one. Lines with nothing to say are left
+# out (concat_ws skips NULLs). Times are UTC. The to-do fields are read through
+# to_jsonb(i), so the renderer works on a store without migration 010 too.
+hq_sql_render_item() {
+  cat <<'SQL'
+concat_ws(E'\n',
+  concat_ws(' · ', i.id, i.kind, i.status, i.repo, i.key),
+  '**' || i.question || '**',
+  CASE WHEN to_jsonb(i)->>'source_tool' IS NOT NULL THEN
+    'Source: ' || (to_jsonb(i)->>'source_tool') || ' · ' || (to_jsonb(i)->>'source_account')
+    || CASE WHEN to_jsonb(i)->>'return_route' IS NULL THEN ' · store only' ELSE '' END
+  END,
+  (SELECT string_agg(c.n || '. ' || c.line, E'\n' ORDER BY c.n)
+     FROM unnest(i.context) WITH ORDINALITY AS c(line, n)),
+  (SELECT 'Options: ' || string_agg(chr(64 + o.n::int) || '. ' || o.opt, ' · ' ORDER BY o.n)
+     FROM unnest(i.options) WITH ORDINALITY AS o(opt, n)),
+  CASE WHEN i.default_option IS NOT NULL OR i.default_at IS NOT NULL THEN
+    'Default: ' || concat_ws(', at ',
+      coalesce(chr(64 + array_position(i.options, i.default_option)) || '. ', '') || i.default_option,
+      to_char(i.default_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
+  END,
+  concat_ws(' · ',
+    'Asked ' || to_char(i.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
+    'Impact: ' || coalesce((to_jsonb(i)->>'impact_derived') || ' (derived'
+                             || coalesce(': ' || (to_jsonb(i)->>'impact_basis'), '')
+                             || coalesce('; declared ' || i.impact_declared, '') || ')',
+                           i.impact_declared),
+    'Cost: ' || i.cost,
+    'Focus: ' || i.focus,
+    CASE WHEN i.parked THEN 'Parked' END,
+    'Session: ' || i.session_id),
+  nullif(concat_ws(' · ',
+    'My priority: ' || (to_jsonb(i)->>'my_priority'),
+    CASE WHEN jsonb_typeof(to_jsonb(i)->'my_tags') = 'array' AND jsonb_array_length(to_jsonb(i)->'my_tags') > 0
+         THEN 'Tags: ' || (SELECT string_agg(t.tag, ', ' ORDER BY t.n)
+                             FROM jsonb_array_elements_text(to_jsonb(i)->'my_tags') WITH ORDINALITY AS t(tag, n)) END,
+    CASE WHEN (to_jsonb(i)->>'snoozed_until')::timestamptz > statement_timestamp()
+         THEN 'Snoozed until ' || to_char((to_jsonb(i)->>'snoozed_until')::timestamptz AT TIME ZONE 'UTC',
+                                          'YYYY-MM-DD HH24:MI "UTC"') END), ''),
+  'My note: ' || (to_jsonb(i)->>'my_note'),
+  'Answer: ' || i.answer
+)
+SQL
+}
+
+# The events of item `i`, oldest first, one "- <time> <kind> — <note>" line each.
+hq_sql_render_events() {
+  cat <<'SQL'
+(SELECT string_agg(
+          '- ' || to_char(e.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS "UTC"')
+          || '  ' || e.kind || coalesce(' — ' || e.note, ''),
+          E'\n' ORDER BY e.at, e.id)
+   FROM events e
+  WHERE e.item_id = i.id)
+SQL
+}
+
+# The order items are listed in, per desk/DESIGN.md 4.2.5: parked agents
+# first, then impact, then age.
+hq_sql_item_order() {
+  printf 'i.parked DESC,\n%s,\ni.created_at, i.id\n' "$(hq_sql_impact_rank)"
+}
+
+# The item's effective impact as a sort key (issue #1760): the derived value
+# (`impact`, migration 014) wins over the declared one, and critical-path
+# ranks above the declared scale's high. Every order that reads impact (tick,
+# list, the sets, the day plan's clear-first batch, the sweep) goes through
+# this one expression. impact_derived is read through to_jsonb(i), so a store
+# without migration 014 still orders, by declared impact alone.
+hq_sql_impact_rank() {
+  printf '%s' "CASE coalesce(to_jsonb(i)->>'impact_derived', i.impact_declared) WHEN 'critical-path' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+}
+
+# The events of item `i` as a JSON array, oldest first.
+hq_sql_events_json() {
+  cat <<'SQL'
+coalesce((SELECT jsonb_agg(jsonb_build_object('kind', e.kind, 'at', e.at, 'note', e.note)
+                           ORDER BY e.at, e.id)
+            FROM events e
+           WHERE e.item_id = i.id), '[]'::jsonb)
+SQL
+}

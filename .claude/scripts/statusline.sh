@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # statusline.sh — Render the Claude Code status line: ET time · branch · agents · watchers.
+# catalog: scheduling-monitoring — Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0
 #
 # Implements FU-3 from .claude/reference/token-efficiency-audit-2026-07.md. A
 # status line renders OUTSIDE the model's context window, so everything it shows
@@ -40,7 +41,7 @@
 #   manual run from a terminal returns immediately instead of blocking on `cat`.
 #
 # Output (stdout, exactly one line):
-#   <ET time> · <branch> [· N agents] [· M watchers]
+#   <ET time> · <branch> [· N agents] [· M watchers] [· ⚠ sync failing] [· ↻ restart]
 #
 #   e.g. "Sat Aug 1 09:37 PM ET · issue-779-statusline · 2 agents · 1 watcher"
 #
@@ -49,10 +50,14 @@
 #     branch, or "(no repo)" when the directory is not a git working tree
 #   - the agent and watcher segments are omitted entirely at zero, and are
 #     singularized at one ("1 agent", "1 watcher")
+#   - the sync badges appear only while ~/.claude/sync-restart-recommended.json
+#     carries the matching portion (issue #1524): "↻ restart" while a scheduled
+#     config sync has landed changes a live session cannot pick up, "⚠ sync
+#     failing" while the job's failure streak is past its threshold
 #
 # Counts come from ~/.claude/session-state.json via `session-state.sh
 # --session-view`:
-#     agents   = .active_agents | length
+#     agents   = .active_agents | length   (a map keyed by agent id, issue #1631)
 #     watchers = (.polling_jobs | length)
 #              + (.prs[] | select(.babysit.active == true) | count)
 #              + (1 when .pmm_active == true)
@@ -199,8 +204,16 @@ if [[ -x "$SESSION_STATE_SH" ]]; then
   if [[ -n "$STATE_VIEW" ]]; then
     COUNTS=$(printf '%s' "$STATE_VIEW" | jq -r '
       def arrlen($v): if ($v | type) == "array" then ($v | length) else 0 end;
+      # active_agents is a keyed MAP since issue #1631 (it was an array), so it
+      # gets its own guard rather than arrlen — which returns 0 for an object
+      # and would silently render "no agents" while four were running. The
+      # array branch stays for a state file this session has not written since
+      # the migration; session-state.sh --session-view normally hands us the
+      # migrated shape already.
+      def agentlen($v): ($v | type) as $t
+        | if $t == "object" or $t == "array" then ($v | length) else 0 end;
       [
-        arrlen(.active_agents),
+        agentlen(.active_agents),
         ( arrlen(.polling_jobs)
           + ( if (.prs | type) == "object"
               then [ .prs[] | select((type == "object") and (.babysit?.active == true)) ] | length
@@ -217,7 +230,33 @@ if [[ -x "$SESSION_STATE_SH" ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# 5. Emit one line
+# 5. Config-sync signal badge (issue #1524)
+# --------------------------------------------------------------------------
+# claude-config-sync.sh writes ~/.claude/sync-restart-recommended.json when a
+# scheduled sync lands changes a live session cannot pick up, or when the job has
+# been failing repeatedly. The status line is the between-sessions surface for
+# both: session-start-sync.sh delivers them into a session's context, but a
+# machine sitting idle with a stale config has no session to deliver into.
+#
+# One cheap local read, no network — same contract as the rest of this script.
+# The marker path is defined canonically in claude-config-sync.sh; the three
+# spellings of it are held together by
+# .claude/scripts/tests/claude-config-sync.test.sh.
+SYNC_MARKER="${HOME:-}/.claude/sync-restart-recommended.json"
+SYNC_SEGMENTS=()
+if [[ -n "${HOME:-}" && -r "$SYNC_MARKER" ]]; then
+  while IFS= read -r _badge; do
+    [[ -n "$_badge" ]] || continue
+    SYNC_SEGMENTS+=("$_badge")
+  done < <(jq -r '
+    [ (if (.sync_failure // null) != null then "⚠ sync failing" else empty end),
+      (if (.restart_recommended // null) != null then "↻ restart" else empty end)
+    ] | .[]
+  ' "$SYNC_MARKER" 2>/dev/null)
+fi
+
+# --------------------------------------------------------------------------
+# 6. Emit one line
 # --------------------------------------------------------------------------
 pluralize() { # count singular-noun -> "N noun" / "N nouns"
   if [[ "$1" -eq 1 ]]; then
@@ -230,6 +269,7 @@ pluralize() { # count singular-noun -> "N noun" / "N nouns"
 SEGMENTS=("$ET_TIME" "$BRANCH")
 [[ "$AGENTS" -gt 0 ]] && SEGMENTS+=("$(pluralize "$AGENTS" agent)")
 [[ "$WATCHERS" -gt 0 ]] && SEGMENTS+=("$(pluralize "$WATCHERS" watcher)")
+SEGMENTS+=("${SYNC_SEGMENTS[@]+"${SYNC_SEGMENTS[@]}"}")
 
 LINE="${SEGMENTS[0]}"
 for ((i = 1; i < ${#SEGMENTS[@]}; i++)); do

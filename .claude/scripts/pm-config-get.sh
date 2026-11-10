@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pm-config-get.sh — Extract a named section from .claude/pm-config.md.
+# catalog: backlog-pm — Extract a named section from `.claude/pm-config.md`
 #
 # PURPOSE
 #   Parses the repo-local .claude/pm-config.md using line-anchored level-2
@@ -49,7 +50,7 @@
 #   pm-config-get.sh --section OKRs --file /path/to/pm-config.md
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
   # Print the header comment block (PURPOSE through EXAMPLES and their bodies)

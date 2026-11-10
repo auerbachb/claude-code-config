@@ -1,0 +1,427 @@
+# Review-Stack Pricing Matrix — Priced Upgrade Levers
+
+Issue: [#1202](https://github.com/auerbachb/claude-code-config/issues/1202)
+Companion records: [#1199](https://github.com/auerbachb/claude-code-config/issues/1199) assigns each tool a role; [#1204](https://github.com/auerbachb/claude-code-config/issues/1204) reconciled billing state from the vendor dashboards; this document prices the purchasable levers those two cannot recommend without numbers.
+Re-verification owner: [#1201](https://github.com/auerbachb/claude-code-config/issues/1201) — the recurring review-stack audit re-checks every price here on each run.
+
+Date reviewed: **2026-08-21**
+Demand window: **2026-07-22 → 2026-08-21**, 245 merged PRs
+
+> **Two independent sources, deliberately kept apart.** Rows marked *public* were read from the vendor's pricing page — what anyone can buy. Rows marked *dashboard* were read from the logged-in account during the [#1204](https://github.com/auerbachb/claude-code-config/issues/1204) co-working session — what we are actually billed. They disagree in three places, and each disagreement is a finding rather than an error.
+>
+> **Prices drift.** Every figure carries a source and a retrieval date. Vendor pricing pages are JS-rendered and several default to the annual price without labelling it, so each row states which billing toggle produced the number.
+>
+> **No agent executes a purchase.** Everything here is a recommendation. Raising a spend cap, buying credits, changing a plan, adding a seat, or claiming a discount stays with the account owner. Nothing was changed on any dashboard to produce this document.
+>
+> **Distinct wallet.** This file is the **review-stack** wallet — CodeRabbit, BugBot, Greptile, CodeAnt. The owner's **AI coding-assistant subscriptions** (Claude Max, ChatGPT Pro / Codex, Cursor Ultra) and what continuing past their caps costs live in [`ai-quotas.md`](./ai-quotas.md) §"Overage — what continuing costs". No price is copied between the two files: a figure that appears in both is a figure that will be updated in one and silently stale in the other.
+>
+> **The wallet is account-level, with a per-repo breakdown** ([#1809](https://github.com/auerbachb/claude-code-config/issues/1809)). Each vendor bills one account across every repo it reviews, so the review-stack audit's spend ledger (`measure.sh --repos` / `--all-repos`) reports each tool's spend per repo and as a cross-repo total. Every ledger figure carries a label — `receipt` (CodeRabbit's own `Charged: $X` lines, a floor: a later review can overwrite a receipt), `estimate` (a count times a unit rate), `flat` (a monthly fee prorated to the window's elapsed days), or `none` (no figure; null, never 0). **The vendor dashboard remains the authority for the real bill**; the ledger is an observation that can disagree with it, never a substitute. Its unit rates come only from the block in §[Machine-readable rates](#machine-readable-rates-review-stack-ratesv1).
+>
+> **Redactions.** This repository is **public**. Personal email addresses read from the dashboards have been removed (#1227), matching the practice [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §Redactions set in PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203): seat holders are named by role ("the account owner") or by GitHub handle. Redaction is not a rewrite — every figure, reading, and verdict below stands exactly as recorded on 2026-08-21, and the point-in-time exemption still forbids updating them. The findings survive the removal: what matters is *that* the commit-author identity holds no seat, not which addresses do.
+
+## Executive summary
+
+**The problem is not that we are under-buying. It is that roughly $1,340 was billed this cycle and the review stack is still blocking.** Priced levers do exist — a CodeRabbit metered add-on, a higher BugBot cap — but not one of the current refusals is a case of simply not having paid enough. Each traces to a consumed cap, a misattributed email, an hourly burst limit, or a canceled plan still serving traffic, and the cheapest fix for three of the four is a settings change rather than a purchase.
+
+Current monthly spend, as billed:
+
+| Tool | Plan | Fixed monthly | Metered this cycle | Source |
+|---|---|---|---|---|
+| Cursor (BugBot's host) | Ultra | **$200** | **$999.87** of a $1,000.00 cap | dashboard |
+| CodeRabbit | Pro, 3 seats, monthly billing | **$90** | $0 (usage-based reviews off) | dashboard |
+| CodeAnt | Premium, 2 seats | **~$48** | $0 (unlimited) | dashboard |
+| Greptile | **Canceled → Free** | **$0** | $0 | dashboard |
+| Graphite | **Cancelled 2026-11-03** (Team plan; $450 pro-rated refund, [#1889](https://github.com/auerbachb/claude-code-config/issues/1889)) | $0 from 2026-11-03 | — | support ticket |
+| **Total (excl. Graphite)** | | **$338 fixed** | **+$999.87 metered** | **≈$1,337.87 this cycle** |
+
+The total excluded Graphite, whose tier was not read at the time; Graphite has since been cancelled (§Graphite).
+
+The single largest line is Cursor on-demand at **$999.87 against a $1,000.00 cap — 100.0% consumed**. Within it, the invoice itemizes **$815.58 as `github_bugbot`** (516 reviews) and **$184.29 as `claude-sonnet-5-thinking-high`** (48 requests, the IDE/agent line). The `github_bugbot` line was recorded here as disputed, leaving only **$522.29** ($338 fixed + $184.29) unconditional. **That dispute is settled** ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)): the dashboard event log — 763 runs across 324 PRs, per-PR rows — confirms the $815.58 really is BugBot, so the whole $1,337.87 is unconditional review spend. Full evidence in §Cursor BugBot below.
+
+### Verdicts
+
+| Lever | Verdict | Cost | Billing unit | Why |
+|---|---|---|---|---|
+| **BugBot — narrow the trigger scope** (Every Push → per PR, Incremental Review → On, Drafts → Off, Effort High → Medium, Autofix → Off) | **DO THIS FIRST — free** | **$0** | settings, not spend | These five settings are the multipliers behind 516 reviews/cycle. Autofix alone ran **299 times with 0 branches ever merged**. |
+| **BugBot — raise the $1,000 on-demand cap** | **DON'T BUY YET — verdict holds, original reason superseded** | ~$400–500/mo more | per-user | Recorded as *blocked on attribution*; **[#1228](https://github.com/auerbachb/claude-code-config/issues/1228) settled that** — the $815.58 `github_bugbot` line is genuinely BugBot (763 runs, 324 PRs, per-PR rows), not IDE usage mislabeled. The line is real, which makes the row above — same spend, $0 — the cheaper attack on it. Re-measure a full cycle under narrowed scope before buying headroom. |
+| **CodeAnt — set `git user.email` to a seat holder** | **DO THIS — free** | **$0** | — | Ends the "no PR Review subscription" warning on 84% of PRs. The plan is already unlimited; nothing needs buying. |
+| **Greptile — add a LICENSE file, then apply to the OSS program** | **PURSUE (free to try)** | **$0 if accepted** | per-repo eligibility | This public repo has **no LICENSE**. Greptile is free for "qualified non-commercial projects with MIT or Apache licenses" — a LICENSE file makes us *eligible to apply*; acceptance is Greptile's call, not automatic. |
+| **Greptile — find the second installation** | **URGENT — free** | **$0** | — | The audited org shows 8 reviews this month; this repo took **71 completed Greptile reviews** in the window. A second, unaudited installation is serving us and may be billing. |
+| **CodeRabbit — enable usage-based reviews, capped** | **BUY** | $0.25/file ≈ **$1.26/PR** | per-file, one org-wide pool | The only lever that removes rate-limit blocking — **up to the cap you set**; past it, reviews queue again. **196 of 290 reviews were rate-limited and 36% of blocked PRs merged unreviewed** — that is a correctness problem, not just a latency one. |
+| **CodeRabbit — Pro → Pro+** | **CONDITIONAL** | 3 seats: **$144/mo annual** or **$180/mo monthly** (vs $72 / $90 on Pro) | per-seat | Genuinely doubles the per-developer hourly allowance (see the corrected Fair Usage reading below). Helps bursts; does not guarantee zero blocking. |
+| **CodeAnt — apply for the 100% OSS discount** | **PURSUE (free to try)** | **$48 today**, → $0 only if approved | per-org waiver | Public repo, qualifies on its face — but the page routes through "contact required", so approval is CodeAnt's call. Budget $48/month until it lands. |
+| **CodeAnt — buy a third seat for the CI identity** | **DON'T BUY** | +$24/user/mo | per-seat | Path B (fix the email) achieves the same thing for $0. |
+| **Graphite — Starter tier** | **N/A — cancelled 2026-11-03** | $20/user/mo annual | per-seat | Buys org-repo support; **no documented increase in AI review allowance** over free Hobby — both tiers are published only as "Limited AI Reviews", with no number attached to either. |
+| **Graphite — Team tier** | **CANCELLED 2026-11-03, $450 refund** | $40/user/mo annual | per-seat | Bought, then cancelled for yield: 30 of 620 PRs reviewed (2026-08-21 → 11-01) vs 484–620 for CodeAnt/CodeRabbit/BugBot ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)). |
+| **CodeAnt CLI daily cap** | **NO PAID LEVER EXISTS** | — | — | The ~10 agent-reviews/day cap is undocumented and unpriced. The App is a separate pool and satisfies the merge gate alone, so the CLI cap is never blocking. |
+
+**Most of the recommended set adds no spend at all.** The BugBot scope changes, the CodeAnt email fix, and locating the second Greptile installation are settings and housekeeping; the two OSS applications cost nothing to file but are not guaranteed to be granted, so keep budgeting today's prices until they are. The one genuine new line is a capped, opt-in metered budget for CodeRabbit — a **$50/month** cap buys 200 files (≈67 PRs at the 3-file median, ≈40 at the 5.04-file mean), which is a deliberate partial budget rather than full overflow coverage. The set also plausibly *reduces* total spend, since the BugBot scope changes attack a four-figure line.
+
+## Corrected reading: how CodeRabbit's cap actually binds
+
+This deserves its own section because the obvious reading is wrong in both directions, and #1202's premise inherited one of the errors.
+
+**Our rules model `~8` reviews/hour.** The vendor's Pro allowance is **5/hour**, further reduced by a Fair Usage tier keyed to *trailing-7-day volume* **per developer identity**:
+
+| Trailing 7-day reviews | Pro | Pro+ |
+|---|---|---|
+| 0–29 | 5/hr | 10/hr |
+| 30–39 | 4/hr | 8/hr |
+| 40–49 | 3/hr | 6/hr |
+| 50–59 | 2/hr | 5/hr |
+| 60–69 | **1/hr, one at a time** | 4/hr |
+| 70–79 | 1/hr | 3/hr |
+| 80–89 | 1/hr | 2/hr |
+| 90+ | 1/hr | **1/hr, one at a time** |
+
+**The trap: applying org-level volume to a per-developer limit.** 290 reviews/month across the org looks like it lands in the bottom row, which would make Pro+ worthless. It does not. The CodeRabbit billing dashboard's per-user usage panel (read 2026-08-21, recorded in [#1204](https://github.com/auerbachb/claude-code-config/issues/1204)) splits that volume across seat holders — faculoyarte 170 reviews/110 rate-limited and auerbachb 120/86. Converted to trailing-7-day rates on a uniform-arrival assumption, that is ≈40/7d for faculoyarte (**Pro 3/hr, Pro+ 6/hr**) and ≈28/7d for auerbachb (**Pro 5/hr, Pro+ 10/hr**); real arrival is bursty, so treat these as band placements rather than precise rates. Both sit in bands where **Pro+ roughly doubles the allowance**. An earlier draft of this document concluded "Pro+ buys nothing"; that was the org-level error, and it is recorded here so the next reader does not repeat it.
+
+**But Fair Usage is not the dominant cause either.** At 3–5/hour, 290 reviews spread evenly over a month would never block. The dashboard's own numbers point elsewhere: **196 of 290 reviews rate-limited (68%)**, **average review wait 87.4 hours**, **2 of 3 seat-holders affected**. That is burst concurrency — many PRs opened by one author inside one hour — with a queue that then backs up for days. Doubling 3/hr to 6/hr shortens the queue; only the metered path removes it.
+
+**The number that should drive the decision is neither of those.** It is **36% of blocked PRs merged unreviewed.** At that point the cap has stopped being a throughput cost and become a coverage gap: roughly one in three blocked PRs shipped with no CodeRabbit review at all.
+
+## The pricing and quota matrix
+
+One row per tool × surface. "Pool" answers the question a price alone cannot: *which* ceiling does this money raise.
+
+### CodeRabbit
+
+Sources — *public:* [pricing](https://www.coderabbit.ai/pricing), [plans and rate limits](https://docs.coderabbit.ai/management/plans), [usage-based add-on](https://docs.coderabbit.ai/management/usage-based-addon), retrieved 2026-08-21. *Dashboard (authenticated, not publicly linkable):* `app.coderabbit.ai` → Settings ▸ Billing (Overview + Usage) and Team Management, read 2026-08-21; evidence recorded in [#1204](https://github.com/auerbachb/claude-code-config/issues/1204).
+
+| Surface | Current plan | Included quota / rate limit | Upgrade tiers | Metered? | Marginal cost/review | Billing unit | Pool |
+|---|---|---|---|---|---|---|---|
+| **GitHub App** | **Pro, 3/3 seats, monthly billing, $90/mo**, renews 2026-08-27 *(dashboard)* | 5 PR reviews/dev/hr, 150 files/review, 50 chats/hr — degraded by Fair Usage | Pro+ $48/dev/mo annual, $60 monthly → 10/hr; Enterprise (contact) → 12/hr | **Yes** — currently **OFF** | **$0.25/file ≈ $1.26/PR** (mean 5.04 files); historical dashboard charges ran **$0.25–$5.75/review** | per-seat for the plan, **per-file** for metered | **Shared with CLI** for metered: "one pay-as-you-go billing path across all PR and CLI reviews" |
+| **CLI** (`coderabbit review`) | Same Pro plan | 5 CLI reviews/dev/hr, 150 files/review | Same ladder | **Yes** — `coderabbit review --use-credits` | $0.25/file | per-file | Metered pool **shared** with App; *included* hourly allowances are **independent** per-surface counters |
+
+Public plan ladder (reviews per developer per hour):
+
+| Plan | Price | PR | IDE | CLI | Files/review | Chat |
+|---|---|---|---|---|---|---|
+| Free | $0 | 1 | 3 | 3 | 150 | N/A |
+| **OSS** | **$0** (public repos, Pro+ features) | **1–10**, per repository, scaled by "community and popularity" | 1 | 3 | 100–300 | 25 |
+| **Pro** (ours) | $24/dev/mo annual, **$30 month-to-month — we pay monthly** | 5 | 5 | 5 | 150 | 50 |
+| Pro+ | $48/dev/mo annual, $60 monthly | 10 | 10 | 10 | 300 | 100 |
+| Enterprise | Contact sales | 12 | 12 | 12 | 300 | 100 |
+
+**We are paying the monthly rate.** 3 seats × $30 = $90/mo. Switching the same 3 seats to annual billing is **$24/seat = $72/mo, a $216/year saving at identical capability** — the cheapest untaken lever on this tool, and it is not an upgrade at all.
+
+**Usage-based add-on** (Pro/Pro+ only, admin-only, not during trial, Enterprise excluded from self-serve):
+
+| Metric | Value |
+|---|---|
+| Price per credit | **$1.00** |
+| Files reviewed per credit | **4** |
+| Cost per reviewed file | **$0.25** |
+
+Continuation modes: **Automatic** (bill everything), **On demand** (pause; an assigned-seat developer authorizes each review after seeing billable file count and maximum price), **Off**. Monthly cap configurable or Unlimited; over-limit reviews stop at the cap and resume when raised or when the period resets. Postpaid. Reviews over 300 files cannot use the metered path at all.
+
+*Dashboard note:* usage-based reviews are **OFF** today but were **ON about three months ago**, with recorded per-review charges of **$0.25–$5.75**. That range is the best available empirical check on the $1.26/PR estimate — consistent, with a long tail on large PRs.
+
+**Seat coverage gap.** Seats are assigned to `auerbachb`, `faculoyarte`, `zilbermang`. Unassigned: `davidpetersen`, `mirkosalvato1-ctrl`, `paulkathat-lmc`, plus `dependabot` and `cursor`. PRs authored by unassigned humans receive **no CodeRabbit review** — the other reviewers in the chain are unaffected, so the merge gate can still be satisfied by CodeAnt, but CodeRabbit's finding coverage has a hole no rate-limit lever addresses. `paulkathat-lmc` opened a PR 10 days before retrieval.
+
+**Two repo-specific facts:** public repositories under 10 stars require **manual review triggering** (this repo has 3 stars), and a rate-limited push posts a **passing** check named "Review rate limited" — passing by design so it never blocks merging. The comment, not the check, is the authoritative signal that no review ran.
+
+**Volume setting:** review profile is **Assertive**, the noisiest of quiet/chill/assertive. Switching to `chill` is the largest comment-volume lever and **does not change the rate limit** — it trades noise, not throughput.
+
+**The CLI is not drawing on the paid seat — SUPERSEDED (see below).** Observed while producing this document (2026-08-21): after three local reviews the CLI returned `{"type":"error","errorType":"rate_limit",...,"metadata":{"isProUser":false,"waitTime":"47 minutes"}}`. **`isProUser: false`** means this machine's CLI is authenticated as something other than one of the three paid Pro seats, so it receives the **Free tier's 3 CLI reviews/hour** rather than Pro's 5 — the $90/month buys nothing on this surface. Worth checking `coderabbit auth` against the seat list before concluding any CLI cap is a plan limit; it may just be an unattached identity, which is free to fix.
+
+**UPDATE (2026-08-23, issue #1286):** `coderabbit auth status` on 2026-08-23 reads `Plan: Pro / Seat: assigned / Account: auerbachb`. The `isProUser: false` observation from 2026-08-21 no longer holds — the CLI now reports a Pro seat assigned. However, `auth status` shows the default org as `LocalMovers-dot-com` (2 available), not `auerbachb`. Whether the seat is drawn from the `LocalMovers-dot-com` org or the `auerbachb` org's Pro plan is not resolved by `auth status` alone. **The distinction matters:** the OSS pool applies per-repository on public repos; entitlement (Pro seat assigned) ≠ effective rate (which is the OSS repository-scaled allowance on a public repo). The effective CLI rate for `auerbachb/claude-code-config` is **3 reviews per reset window (~55 min)** — confirmed by the rate-limit payload from this same 2026-08-23 run (`isProUser: false`, `policyGuidance: "You've used all 3 included reviews currently available"`). The 1–10/hr figure in vendor docs applies to **GitHub App PR reviews** (popularity-scaled); the **CLI is separately capped at 3**, not 1–10. The Pro plan's 5/hr CLI allowance is not drawn on this public repo. See struck-through entry §5 for the authoritative explanation.
+
+### CodeAnt
+
+Sources — *public:* [pricing, "AI Code Review" tab](https://www.codeant.ai/pricing), retrieved 2026-08-21. *Dashboard (authenticated, not publicly linkable):* `app.codeant.ai/auerbachb` → Subscription and Team Management, read 2026-08-21; evidence recorded in [#1204](https://github.com/auerbachb/claude-code-config/issues/1204).
+
+| Surface | Current plan | Included quota / rate limit | Upgrade tiers | Metered? | Marginal cost/review | Billing unit | Pool |
+|---|---|---|---|---|---|---|---|
+| **GitHub App** | **Premium, 2/2 seats, ACTIVE, ~$48/mo** *(dashboard)* | **Unlimited PR Reviews** | Enterprise (contact) adds SSO, on-prem/VPC, SLAs — **not** more reviews | No, and none needed | **$0** | per-user/month | Separate from CLI |
+| **CLI** (`codeant review`) | Same Premium plan | **~10 agent reviews/day** — undocumented, observed only. One `review` invocation issues several `agent/turn` calls (5 files/turn), so one run is not one unit. 15-file cap per run. **Auth restored 16:11 ET 2026-08-23** (was absent at investigation start — see `local-review-cli-failure-modes.md` "CodeAnt: missing API key" for the 403 vs cap discrimination). Restore path: `codeant login` (browser OAuth, **documented**) or `codeant set-codeant-api-key <key>` (non-interactive, undocumented in setup docs; key exposed in shell history — prefer `codeant login`). | **None published** | **No** | **No paid lever exists** | — | Separate from App — the App served 234 reviews on a day the CLI was locked out |
+
+Public plans (annual toggle is the page default):
+
+| Plan | Price | Includes |
+|---|---|---|
+| Free trial | $0, 14 days | 100 PR reviews, unlimited seats, all premium features |
+| **Premium** (ours) | **$24/user/mo annual, $30/user/mo monthly** | **Unlimited PR Reviews**, unlimited summaries/chat, unlimited custom prompts, SAST on PRs, CI/CD integration |
+| Enterprise | Contact sales | Premium plus on-prem/VPC, SSO/SAML/SCIM, SLAs |
+| **Open source** | **100% off** — contact required | — |
+
+**Drift since the 2026-06 audit:** that audit recorded a **$10/user/mo Basic tier with 100 reviews/month**. It is **gone** from the page as of 2026-08-21. Any reasoning that assumed a cheap metered CodeAnt tier is stale — the only **self-serve** paid AI-Code-Review tier is Premium, and it is unlimited (Enterprise exists but is contact-only, and adds controls rather than review volume).
+
+**Seats are full (2 of 2, 0 left):** the account owner (Admin) and one collaborator (Member). AI credits balance $0.00.
+
+### Cursor BugBot
+
+Sources — *public:* [pricing](https://cursor.com/pricing), [May 2026 billing change](https://cursor.com/blog/may-2026-bugbot-changes), [spend limits](https://cursor.com/help/account-and-billing/spend-limits), retrieved 2026-08-21. *Dashboard (authenticated, not publicly linkable):* `cursor.com/dashboard` → Spending, Billing & Invoices, and `/automations/from-cursor/bugbot`, read 2026-08-21; evidence recorded in [#1204](https://github.com/auerbachb/claude-code-config/issues/1204).
+
+| Surface | Current plan | Included quota / rate limit | Upgrade tiers | Metered? | Marginal cost/review | Billing unit | Pool |
+|---|---|---|---|---|---|---|---|
+| **GitHub App** (only surface — BugBot ships no CLI) | **Ultra, $200/mo** *(dashboard)*, renews 2026-08-28 | Plan "includes at least $400 of Other Models usage" — **100.0% consumed**, of which `github_bugbot` is 96.1%. Then on-demand: **$999.87 of a $1,000.00 fixed cap** | **None — Ultra is the top individual plan.** The only control is the Monthly Limit field (Fixed or Unlimited) | **Yes — metered by default since the seat fee was retired** | **$1.58/review measured** (516 reviews, $815.58); vendor-stated average $1.00–$1.50 | per-user (Individual) / per-team (Teams) | Single pool |
+
+**The seat model is gone.** Cursor's announcement (2026-05-11): Bugbot moved "from a $40 per seat per month subscription to usage-based billing," effective at each customer's first renewal after **2026-06-08**. The $40/seat figure in the 2026-06 audit is retired.
+
+**Public plan ladder:** Hobby free (no Bugbot), Pro $20/mo, Pro+ $60/mo, Ultra $200/mo — each "Bugbot on usage-based billing"; Teams $40/user/mo ("Agentic code reviews with Bugbot"); Enterprise custom with pooled usage. Included third-party-model usage: Pro $20/mo, Pro+ $70, Ultra $400.
+
+**Unresolved attribution — settle before touching the cap — SUPERSEDED (see below).** The Billing & Invoices page itemizes the on-demand cycle as `github_bugbot`: 1.3B tokens, quantity **516**, **$815.58**; plus `claude-sonnet-5-thinking-high`, quantity 48, $184.29. The operator's position ([#1204](https://github.com/auerbachb/claude-code-config/issues/1204)) is that this spend is pay-per-use model usage while coding in the Cursor app, not BugBot. Both readings are recorded because they lead to opposite actions: if the invoice is right, BugBot is a ~$400–815/cycle line and the scope settings below are urgent; if the operator is right, Cursor is mislabelling IDE usage as `github_bugbot` — which also explains the Other-Models bucket reading 100% — and that is a support ticket, not a purchase. **Raising the cap is the wrong first move under either reading.**
+
+**UPDATE (2026-08-27, issue [#1228](https://github.com/auerbachb/claude-code-config/issues/1228)):** **the attribution is settled — the invoice is right and the operator's reading is wrong.** The spend is genuinely BugBot. Three independent lines of dashboard evidence, **read 2026-08-21/22** (no new reading was taken for this correction) on `cursor.com/automations/from-cursor/bugbot/analytics` and `/dashboard/usage`, recorded in [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §4 *"BugBot attribution — it really is BugBot"*:
+
+- **Per-PR rows, not an aggregate.** The analytics table lists **763 runs across 324 PRs**, one user, naming the repo and PR number of each run (`claude-code-config #883`, `inventory #271`, `skingod #2529` — 152 rows over 31 pages). An IDE-usage mislabel could not enumerate PRs.
+- **Bot cadence.** The `github_bugbot` on-demand event log fires in discrete bursts 1–3 minutes apart (3 Aug 21:55–22:26 UTC: twelve events, $0.48–$3.68) — a bot re-reviewing every push, not a person typing.
+- **IDE usage bills separately, under its own models.** `cursor-grok-4.5-high-fast`, `composer-2.5-fast`, and the `claude-sonnet-5-thinking-high` line at $184.29 are where app usage lands. It was never folded into `github_bugbot`.
+
+516 billed on-demand events reconcile against 763 total runs — the remainder was absorbed by the $400 included Other-Models bucket before it hit 100%, at ~$1.58/run (range $0.48–$3.68). **No support ticket is needed.** Consequences for the rest of this section: the $815.58 is real review spend, so the scope settings below are the urgent lever exactly as the invoice-is-right branch predicted; the ~$400–815/cycle figure stands unqualified; and the "wrong first move" verdict on the cap survives for a *different* reason — the settings are free and attack the same line, not because the line might be someone else's. Recorded in [`review-stack-baseline.json`](./review-stack-baseline.json) (`bugbot.notes`, landed in [PR #1349](https://github.com/auerbachb/claude-code-config/pull/1349)) and in [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) §Superseded, which closes owner-action item 2 below.
+
+**Settings that multiply cost** (`/automations/from-cursor/bugbot`) — every one of these is free to change:
+
+| Setting | Current | Effect |
+|---|---|---|
+| Trigger Mode | **Every Push** | Re-reviews on every commit rather than once per PR |
+| Incremental Review | **Off** | Each re-review is a **full** re-review, not a delta |
+| Effort Level | **High** | Vendor: high effort finds 35% more bugs at higher cost; resolution rate stays 80% |
+| Review Draft PRs | **On** | Bills work-in-progress |
+| Autofix Mode | **Create New Branch**, threshold Low/Med/High | **299 runs, 0 merged** — billed at plan rates for zero realized value |
+
+Coverage: `auerbachb` 64/64 repos, `LocalMovers-dot-com` 23/23, `faculoyarte` 0/1. Analytics: 324 PRs reviewed, 515 issues, 89.8% resolved.
+
+**Spend-limit mechanics:** on-demand "must be enabled to view and set spend limits"; at the limit, "AI features stop working for that specific user" until the next billing cycle. Individual plans set per-user limits; Teams set team-level limits; Enterprise sets both.
+
+### Greptile
+
+Sources — *public:* [pricing](https://www.greptile.com/pricing), retrieved 2026-08-21. *Dashboard (authenticated, not publicly linkable):* `app.greptile.com/localmovers-com` → Billing, Usage, Review settings and Analytics, read 2026-08-21; evidence recorded in [#1204](https://github.com/auerbachb/claude-code-config/issues/1204).
+
+| Surface | Current plan | Included quota / rate limit | Upgrade tiers | Metered? | Marginal cost/review | Billing unit | Pool |
+|---|---|---|---|---|---|---|---|
+| **GitHub App** (only surface — no CLI) | **Canceled 2026-06-18 → Free tier, $0** *(dashboard)*. Free plan **not yet explicitly activated** | Free: unlimited repos, **50 credits/month, 1 active developer** | Pro **$30/seat/mo** (50 credits/seat); Enterprise custom | **Yes** — **$1.00 per additional credit** | **$1.00** standard review, **$3.00** TREX | per-seat **and** per-credit | Single pool |
+
+Credit weights, verbatim: "1 credit = 1 standard review", "3 credits = 1 trex review". Last billed period (May 18 – Jun 18, still on Pro): 117 reviews / 117 credits — faculoyarte 116 (+66 flex credits), paulkathat-lmc 1. Final invoice: **0 active developers, $0**.
+
+**A 71-versus-8 discrepancy that needs closing.** The audited Greptile org (LocalMovers.com) reports **8 reviews this month**. This repo saw **132 `@greptileai` triggers** in the window, which produced **71 completed Greptile review objects across 69 PRs** (both counts verified against the GitHub API, 2026-08-21) — all of it *after* the June cancellation. **Credits bill against completed reviews, not triggers**, so 71 is the figure that matters for cost; the 61-trigger gap is retries and no-ops. #1199's census matches at 71 review objects, and recorded **zero refusals**. Those reviews are therefore served by an installation that #1204 did not open. Three consequences:
+
+1. **There may be a second Greptile account with its own billing state**, unaudited. Find it before assuming $0.
+2. **If it is on Free**, 71 reviews/month runs about 1.4× the 50-credit allowance — over, but far less dramatically than the trigger count implied. The overage is ~21 credits, and the reviewer we lean on hardest could still stop without warning. Any TREX reviews in that 71 would bill at 3 credits each and push the overage higher; the review objects do not distinguish the two modes, so 71 credits is a **floor**, not an exact figure.
+3. The audited org's settings — auto-review **OFF**, label-gated to `greptile`, drafts off, strictness **Low** — do not describe whatever is reviewing this repo. Our agent's explicit `@greptileai` comment triggers bypass label gating, which is consistent with the census's "132 triggers, all posted by the PR author."
+
+**Two discounts not being claimed.** "Greptile is free for qualified non-commercial projects with MIT or Apache licenses" — this repo is public and has **no LICENSE file at all**, so it cannot qualify today. Adding an MIT or Apache LICENSE makes it *eligible to apply*; the page routes through an "Apply for OSS" form, and the "qualified non-commercial" wording means acceptance is Greptile's judgement, not an automatic entitlement. Treat $0 as the outcome to pursue, not one to assume. Separately, pre-Series A companies under $2M trailing revenue get 50% off.
+
+**The 2026-06 "cut the seat" verdict is superseded** — and was already acted on. That audit judged Greptile on 4 firings in 8 weeks and recommended cancellation; the seat was canceled in June. Volume arrived afterwards: #1199 measured Greptile **sole-source on 41 PRs**, the highest of any tool in the window. The live question is no longer "is a dormant fallback worth $30" but "we are depending on a canceled tool — is that dependency safe?"
+
+### Graphite
+
+**Cancelled 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)). Graphite support (ticket T-J15030) cancelled the **Team plan** effective immediately and issued a **pro-rated $450 refund**. Reason — yield: across 620 PRs (2026-08-21 → 2026-11-01) Graphite reviewed **30**, against **484–620** for CodeAnt, CodeRabbit and BugBot. Decision record: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) §Graphite retirement. Provenance is the support ticket; no dashboard reading is checked in.
+
+*(Historical: this section held the 2026-08-21 public-pricing read — Starter $20/user/mo annual with an unpublished "Limited" AI-review allowance, Team $40/user/mo annual for unlimited reviews.)*
+
+## Machine-readable rates (review-stack-rates/v1)
+
+The spend ledger in `/review-stack-audit` ([#1809](https://github.com/auerbachb/claude-code-config/issues/1809)) reads **only** the fenced block below — never the prose tables above. A reworded sentence must not be able to move a number, so a rate changes here or nowhere. The parser (`review_ledger.py` in `.claude/scripts/lib/`) selects the one fence whose info string carries `review-stack-rates`, requires `"schema": "review-stack-rates/v1"`, and refuses a duplicated, unterminated, or malformed block outright — every rate-priced figure then reads null with a note, rather than a guess.
+
+Rules the block keeps:
+
+- **Every figure carries `usd`, `unit`, `source`, and `retrieved`.** An unknown value is `null`, never `0`; `basis: "unknown"` with a number is rejected. `0` means a known price of nothing (Vercel).
+- **Units are checked.** The ledger prices BugBot per `review`, Greptile per `credit`, and flat fees per `month`. An entry in any other unit is unusable, and the ledger says so rather than multiplying it as if it matched.
+- **CodeRabbit's rate is informational.** The ledger prices CodeRabbit from its own receipts; the $0.25/file figure is here for reference and is never multiplied.
+- **Estimates are not bills.** BugBot's rate is a measured average, not a price list. Greptile's is the public list price, which this account's discount halves on flex credits, and a trigger is not always a completed review. Read each `source` before quoting a figure.
+- **Caps are account-level** and recorded for reference. This block enforces nothing.
+
+```json review-stack-rates
+{
+  "schema": "review-stack-rates/v1",
+  "as_of": "2026-10-08",
+  "tools": [
+    {
+      "key": "coderabbit",
+      "usd": 0.25,
+      "unit": "file",
+      "basis": "published",
+      "informational": true,
+      "source": "CodeRabbit usage-based add-on: $1.00 per credit, 4 files per credit (docs.coderabbit.ai/management/usage-based-addon). The ledger prices CodeRabbit from its own `Charged: $X` receipts and never multiplies this rate.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "bugbot",
+      "usd": 1.58,
+      "unit": "review",
+      "basis": "observed_average",
+      "source": "Cursor invoice line github_bugbot: $815.58 over 516 billed reviews (dashboard, #1204; attribution settled as BugBot by #1228). Measured run range $0.48-$3.68; vendor-stated average $1.00-$1.50.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "greptile",
+      "usd": 1.0,
+      "unit": "credit",
+      "credits_per_review": 1,
+      "basis": "published",
+      "source": "greptile.com/pricing: $1 per additional credit; a Base review costs 1 credit (Plus 3, Apex 10), so triggers x 1 credit is a floor on credits. Overstates the marginal bill: this account's flex line bills $0.50 per credit after its discount (dashboard, 2026-08-22), Pro includes 50 credits per seat, and a trigger is not always a completed review.",
+      "retrieved": "2026-10-08"
+    },
+    {
+      "key": "codeant",
+      "usd": 48,
+      "unit": "month",
+      "basis": "observed",
+      "source": "CodeAnt Premium, 2 of 2 seats, about $48/month, unlimited PR reviews (dashboard, #1204).",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "vercel",
+      "usd": 0,
+      "unit": "month",
+      "basis": "baseline_assertion",
+      "source": "review-stack-baseline.json records Vercel Agent as billed: free (role off on this repo).",
+      "retrieved": "2026-08-26"
+    }
+  ],
+  "caps": [
+    {
+      "key": "bugbot_monthly",
+      "tool": "bugbot",
+      "usd": 300,
+      "unit": "month",
+      "basis": "operator_instruction",
+      "source": "Operator instruction ticked in auerbachb/sales-kit Issue #178 (2026-10-01): a $300/month BugBot cap, or, if BugBot has no cap of its own, the account-wide on-demand limit left as is. Which of the two the dashboard now holds was not recorded; see cursor_on_demand_monthly.",
+      "retrieved": "2026-10-01"
+    },
+    {
+      "key": "cursor_on_demand_monthly",
+      "tool": "bugbot",
+      "usd": 1000,
+      "unit": "month",
+      "basis": "dashboard",
+      "source": "Cursor on-demand Monthly Limit, Fixed, read at $999.87 of $1,000.00 consumed (dashboard, #1204). Shared by BugBot and IDE usage on the account.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "coderabbit_usage_monthly",
+      "tool": "coderabbit",
+      "usd": 300,
+      "unit": "month",
+      "basis": "operator_instruction",
+      "source": "Operator instruction ticked in auerbachb/sales-kit Issue #178 (2026-10-01): usage-based add-on set to On demand with a $300/month cap.",
+      "retrieved": "2026-10-01"
+    },
+    {
+      "key": "greptile_flex",
+      "tool": "greptile",
+      "usd": 100,
+      "unit": "month",
+      "basis": "account_configured",
+      "source": "Greptile flex usage cap on the auerbachb org: 'Stop flex usage after $100' (ai-review-billing-dashboard-2026-08.md, #1228).",
+      "retrieved": "2026-08-22"
+    }
+  ]
+}
+```
+
+## Reconciling observed limits against documented ones
+
+Each cap incident from #1199, mapped to a matrix row and a verdict.
+
+### 1. BugBot refusing every trigger — "Bugbot couldn't run — usage limit reached" (156 of 224 PRs)
+
+| | |
+|---|---|
+| **Documented** | Bugbot bills from included usage, then on-demand spend. On-demand must be enabled to set limits. At the limit, "AI features stop working for that specific user" until the next cycle. |
+| **Observed (PRs)** | A `Cursor Bugbot` check-run with **`conclusion: neutral`** **alongside** a `cursor[bot]` comment carrying a failure phrase. **Corrected from `conclusion: success`** by the #1304 audit ([PR #1349](https://github.com/auerbachb/claude-code-config/pull/1349), [`review-stack-audit-2026-08.md`](./review-stack-audit-2026-08.md) §BugBot follow-ups): of 20 capped PRs sampled across #982..#1332, the 19 retrievable concluded `neutral` (17) or published no `Cursor Bugbot` check-run at all (2) — **zero `success`**. `success` is BugBot's *genuine* silent clean pass (non-capped PRs #963, #965, #970), so the refusal takes a shape that was never a pass shape and `merge-gate.sh` never counts it. `merge-gate.sh` **also** blocks the `success` silent-pass path when such a comment postdates the HEAD commit — a sample is not a census, so that guard stays. |
+| **Observed (dashboard)** | On-demand **$999.87 / $1,000.00, fixed cap, 100% consumed**; included Other-Models bucket also 100% consumed. |
+| **Reconciliation** | Exact agreement — this is the documented spend-cap behavior, reached rather than misconfigured. **The earlier hypothesis that on-demand was simply switched off is wrong**: it is on, funded, and exhausted. |
+| **Verdict** | **A priced fix exists but is not the right first move.** Raising the cap costs roughly **$400–500/month more** — the run-rate needed a ceiling near $1,400–1,500 against today's $1,000 ([#1204](https://github.com/auerbachb/claude-code-config/issues/1204)) — and was recorded as blocked on the attribution dispute, **now settled as genuinely BugBot** ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228); §Cursor BugBot UPDATE). Settling it does not change this verdict, because the cheaper lever was never the attribution question. **The free fix is the settings**: Every Push → per PR, Incremental Review → On, Drafts → Off, Effort High → Medium, Autofix off (0 of 299 merged). Re-measure a full cycle, then decide on the cap. |
+
+### 2. CodeAnt "not subscribed" on the App, and 403 on the CLI
+
+These look like one problem and are two, with different pools and opposite verdicts.
+
+| | App surface | CLI surface |
+|---|---|---|
+| **Documented** | Premium is "Unlimited PR Reviews" | Nothing — the daily agent-review cap is undocumented |
+| **Observed** | "User ci@example.com does not have a PR Review subscription" on 206 of 244 PRs — **alongside 360 `APPROVED` reviews across 184 PRs**. Non-blocking. Dashboard confirms Premium ACTIVE with 2/2 seats held by the account owner and one collaborator; the CI commit email is not among them. | `403` with `"Either the API key is invalid or the daily limit of 10 for agent review has been reached"`. `codeant scans orgs` succeeds while `review` 403s — the token is fine. |
+| **Reconciliation** | Not a billing failure. The plan is Premium and unlimited; the warning is seat attribution against an unrecognized commit-author email, and CodeAnt reviews anyway. | A real, unpublished quota on a pool the dashboard does not surface. "AI Code Reviews: Unlimited" describes the **App**, which kept serving 234 reviews the same day the CLI was locked out. |
+| **Verdict** | **No purchase needed.** Set the git `user.email` to a seat holder — **$0**. Buying a third seat for the CI identity (+$24/user/mo) achieves the same result and is strictly worse. | **No paid lever exists.** No published upgrade raises the CLI agent cap. Mitigation is operational: budget a few CLI reviews/day and never re-authenticate to clear a 403 — it cannot fix a quota and nulls the token. The App satisfies the CR-path merge gate alone, so a capped CLI is never blocking. |
+
+### 3. CodeRabbit hourly contention across four competing PRs
+
+| | |
+|---|---|
+| **Documented (our rules)** | `~8` PR reviews/hour — `cr-rate-limits.md` and `cr-review-hourly.sh`'s default budget |
+| **Documented (vendor)** | Pro includes **5** PR reviews/dev/hour as a **rolling** allowance, further reduced by Fair Usage against trailing-7-day volume **per developer** |
+| **Observed (PRs)** | "Review limit reached" on **223 of 244 PRs**; CodeRabbit substantively reviewed **53 (22%)** |
+| **Observed (dashboard)** | **196 of 290 reviews rate-limited (68%)**; average wait **87.4h**; **36% of blocked PRs merged unreviewed**; faculoyarte 170 reviews / 110 blocked, auerbachb 120 / 86 |
+| **Reconciliation** | Our `8/hr` figure is wrong in magnitude (Pro is 5) and in shape (the meter is rolling-window and volume-degraded). But Fair Usage is **not** the dominant cause: per-developer trailing volume puts faculoyarte at 3/hr and auerbachb at 5/hr, which even-paced would never block 68% of reviews. The binding constraint is **burst concurrency** — many PRs opened in one hour by one author — with an 87-hour queue behind it. |
+| **Verdict** | **A priced fix exists, and there are two of them.** (a) **Enable usage-based reviews at $0.25/file** — removes rate-limit blocking **up to whatever monthly cap you set**, after which reviews queue again. Covering the *whole* current overflow (~196 blocked reviews) costs **$147–247/month** at our median-to-mean file profile, not the $50 a cap alone suggests; a $50 cap is a deliberate partial budget, not full coverage. Requires completing the flagged-incomplete billing profile. (b) **Pro+ for 3 seats: $144/month annual or $180/month monthly** (against $72 / $90 on Pro — so **+$72/month** comparing annual to annual, **+$90/month** comparing monthly to monthly) — doubles the per-developer allowance (3→6/hr, 5→10/hr), shortens the queue, does not guarantee zero blocking. Free adjuncts: assign the unassigned authors' seats, and spread PR opens across the hour. **A separate free saving: switch the same 3 seats from monthly to annual billing — $90 → $72/month.** |
+
+## Break-even math
+
+**Demand.** 245 merged PRs in the window (2026-07-22 → 2026-08-21), consistent with #1199's 244-PR census. Size profile, measured for this ticket because the census did not collect it:
+
+| Metric | Files changed |
+|---|---|
+| Mean | **5.04** |
+| Median | 3 |
+| p90 | 11 |
+| Max | 27 |
+| **Total across 245 PRs** | **1,235** |
+
+The 245 figure is this ticket's own `gh pr list` count for the window; #1199's census reported 244 over the same period. The one-PR difference is a boundary effect at the window edge and changes no conclusion below.
+
+**Target.** Every merged PR reviewed at least once by a reviewer that can satisfy the merge gate.
+
+| Lever | Monthly cost at full coverage | Cost per PR reviewed |
+|---|---|---|
+| **CodeAnt Premium** (current, unlimited, 2 seats) | $48 | **$0.196** |
+| **CodeAnt via OSS discount** (if accepted) | **$0** | **$0** |
+| **Greptile via OSS program** (needs a LICENSE file, then acceptance) | **$0** | **$0** |
+| **CodeRabbit Pro, annual instead of monthly** (3 seats) | $72 *(saves $18/mo)* | $0.294 |
+| CodeRabbit Pro (current, monthly, 3 seats) | $90 | $0.367 |
+| Graphite Team *(cancelled 2026-11-03)* | $40/seat | $0.16/seat — *if* it reviewed everything, which it did not |
+| **Greptile Pro + overage** (71 completed reviews: 50 included + 21 × $1) | **~$51** | **$0.72** |
+| **CodeRabbit metered overflow** (~196 blocked reviews, priced per *file*) | **$147–247** (median 3 files → $147; mean 5.04 → $247) | **$0.75–1.26** |
+| CodeRabbit metered, all 245 PRs (1,235 files × $0.25) | $309 | $1.26 |
+| CodeRabbit Pro → Pro+ (3 seats) | $144 annual / $180 monthly | +$72 or +$90 over Pro at the same cadence; doubles allowance, blocking reduced not eliminated |
+| **BugBot at measured run-rate** (516 reviews × $1.58) | **$815** | **$1.58** |
+| Graphite Hobby → Starter *(cancelled 2026-11-03)* | +$20/seat | **no documented additional reviews** — both tiers publish only "Limited" |
+
+Two rows looked like upgrades and were not: **Graphite Starter** (now moot — cancelled 2026-11-03) cost real money for an AI-review allowance that is not documented to change, and **raising the BugBot cap** funds a line item nobody has yet confirmed is BugBot. Both are the natural instinct when a cap bites.
+
+**Sizing the CodeRabbit lever.** A **$50/month** cap buys 200 reviewed files — **≈67 PRs at the 3-file median, ≈40 at the 5.04-file mean**. That is not full coverage and is not meant to be: with CodeAnt unlimited and Greptile cheap-or-free, CodeRabbit's credits should be reserved for PRs where its finding profile is worth $1.26 — not spent automatically on every incremental push. This is why **On demand** beats **Automatic**, and it is the difference between a $50 bill and a $309 one. The historical dashboard range of **$0.25–$5.75 per review** confirms the tail risk that makes Automatic unattractive. Note the cap is a stop, not a smoother: once it is reached, over-limit reviews queue exactly as they do today until an admin raises it or the month rolls over.
+
+**Putting a number on the Greptile "bad deal" judgment**, as #1202 asks. Bill against **completed reviews, not triggers**: 132 `@greptileai` triggers produced **71 completed reviews**. The free Starter tier covers 50 of those at $0; Pro covers all 71 for $30 + 21 overage credits = **~$51/month**, or **$0.72/review** — and that is a floor, since any TREX reviews among the 71 bill at 3 credits rather than 1. Against its measured output — sole-source on **41** PRs, the highest of any tool — $51/month is roughly **$1.24 per sole-source PR** — a PR where Greptile was the only tool to find anything. (#1199's census recorded 90 Greptile findings across the window, 3 P0 / 26 P1 / 63 P2, but does not break out how many fell on those 41 PRs, so the per-PR unit is the one the evidence actually supports.) On that measure it is comfortably the best value-per-unique-coverage in the stack. **That "really bad deal" judgment — the issue's own words — does not survive contact with the numbers**; it was correct on 2026-06 evidence (4 firings in 8 weeks) and was overtaken by volume that arrived after the cancellation took effect. Pursue the OSS program first because $0 beats $51, but $51/month is a perfectly defensible fallback if the application is refused — not a reason to stay off Greptile.
+
+## Which pool each price buys
+
+Issue `#1202` asks this explicitly, because buying one lever may not raise the other.
+
+| Tool | Do CLI and App share a pool? |
+|---|---|
+| **CodeRabbit** | **Split, then shared.** *Included* allowances are independent per-surface counters (5 PR/hr and 5 CLI/hr are separate budgets). The *metered* add-on is a **single org-wide pay-as-you-go path covering both** — one purchase raises both surfaces. |
+| **CodeAnt** | **Separate.** Documented App "Unlimited" and the undocumented ~10/day CLI agent cap are independent; the App served 234 reviews on a day the CLI was locked out. Buying Premium does not raise the CLI cap, and nothing else does either. |
+| **Cursor BugBot** | **N/A — no CLI surface.** Single pool, shared with all other Cursor on-demand usage — which is why the attribution question arose at all. It is settled ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)): the pool is shared, but the line items are not, and `github_bugbot` is the review line. |
+| **Greptile** | **N/A — no CLI surface.** Single credit pool, per installation — and we appear to have more than one installation. |
+| **Graphite** | **N/A — cancelled 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)). |
+
+## Owner action list
+
+None of these are agent-executable. Ordered by value per unit of effort. Items 1-3 and 5 involve no spend at all; item 4 lowers the monthly rate but swaps month-to-month flexibility for a 12-month commitment, so it is cheaper rather than free.
+
+1. **Fix the BugBot scope settings** — Trigger Mode to once-per-PR, Incremental Review on, Draft PRs off, Effort to Medium, Autofix off. Attacks a four-figure line for $0. Autofix has produced 299 branches and zero merges.
+2. **~~Resolve the Cursor attribution dispute before raising any cap — open a support ticket citing the `github_bugbot` line.~~ SETTLED — NO ACTION, NO TICKET** ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228), read 2026-08-21/22). The dispute resolved in the invoice's favour: the $815.58 is genuinely BugBot, evidenced by per-PR analytics rows (**763 runs across 324 PRs**), a 1–3 minute event cadence matching a bot re-reviewing every push, and IDE usage billing separately under its own model names. Cursor was not mislabelling anything, so there is nothing to dispute with support. What survives is item 1 — narrowing the scope settings that generated those 763 runs. Kept as a struck-through entry so the ticket is not re-derived from the shared-pool symptom. Detail: §Cursor BugBot UPDATE; recorded in [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) §Superseded.
+3. **Set git `user.email` to a seat holder** so CodeAnt stops flagging commits as unlicensed. $0; avoids a $24/month third seat.
+4. **Switch CodeRabbit from monthly to annual billing** — same 3 seats, $90 → $72/month, $216/year, no capability change. **Recommended: take it.** This lever waited on the OSS-vs-paid verdict, because prepaying a year of seats would have locked in an answer nobody had checked. That verdict is now recorded — [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) evaluated the free OSS tier and **declined it** on two documented constraints: under 10 stars (this repo has 3) reviews stop being automatic and must be triggered by comment, and the metered add-on in item 9 becomes permanently unavailable because it is Pro/Pro+ only. The per-developer rate also becomes a star-scaled 1–10/hr band whose value here the vendor does not publish — an unknown replacing a known 5/hr. Staying paid is settled, so the only remaining question was cadence, and annual wins it. Math and sourcing: [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md). Renewal is **2026-08-27**.
+5. **~~Attach the CodeRabbit CLI to a paid seat.~~ NO ACTION AVAILABLE — this was a misdiagnosis** (#1213, measured 2026-08-21). The CLI is *already* seated: `coderabbit auth status` reports `Plan: Pro` / `Seat: assigned`. The `isProUser: false` in the rate-limit payload names **the pool the review was billed against**, not the account's tier, and that pool is selected by **repository visibility** — the CLI says so itself: *"This looks like a public open-source repository… no organization will be billed. Free OSS limits apply."* On a public repo the CLI draws free-OSS limits no matter what seat holds it, so there is no re-auth that raises this ceiling and nothing here to buy. Kept as a struck-through entry so the action is not re-derived from the `isProUser` symptom. Detail: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) §Repo variance.
+6. **Locate the second Greptile installation** serving this repo (**71 completed reviews here vs the audited org's 8**) and record its billing state. We are depending on a tool we believe is canceled.
+7. **Add a LICENSE file** (MIT or Apache) to this public repo, then apply to Greptile's OSS program — acceptance is their call, so treat $0 as the goal and ~$51/month on Pro as the fallback. CodeRabbit's OSS tier no longer needs re-checking — [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) evaluated and declined it ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)). A LICENSE does not change that verdict: the two constraints it turns on are the under-10-stars manual-trigger requirement and the fact that OSS cannot buy the metered add-on, and neither is licence-dependent.
+8. **Apply for CodeAnt's 100% open-source discount.** Public repo, qualifies on its face; $48/month to zero.
+9. **Enable CodeRabbit usage-based reviews in On demand mode with a ~$50 monthly cap.** Requires completing the billing profile flagged incomplete (name, phone, address). Do **not** use Automatic.
+10. **Assign CodeRabbit seats** to unassigned human authors (`paulkathat-lmc`, `davidpetersen`, `mirkosalvato1-ctrl`) or accept that their PRs go unreviewed.
+11. **Do not buy** a Greptile Pro seat, or a third CodeAnt seat on current evidence. Treat CodeRabbit Pro+ as a second-line option behind the metered lever.
+
+## Rule-file pointers
+
+Four rule files cite this document from the section that governs the matching cap, so an agent that hits a cap mid-workflow finds the priced way past it without knowing this file exists:
+
+| Rule file | Citing section | Cited here |
+|---|---|---|
+| `bugbot.md` | BugBot failure detection (spend-limit) | [§Cursor BugBot](#cursor-bugbot) |
+| `greptile.md` | Daily Budget — "the real cap is vendor-side" | [§Greptile](#greptile) |
+| `cr-github-review.md` | Rate Limits & Behavior (Pro Tier) | [§CodeRabbit](#coderabbit) |
+| `cr-local-review.md` | CodeAnt 403 / daily-cap note | [§CodeAnt](#codeant) |
+
+Wired by Issue #1211, deferred out of the original PR [#1208](https://github.com/auerbachb/claude-code-config/pull/1208) only because PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203) was concurrently rewriting all four of those sections and consuming the ratchet headroom. **Renaming any `###` heading above breaks a live rule-file citation** — update the four pointers in the same PR.

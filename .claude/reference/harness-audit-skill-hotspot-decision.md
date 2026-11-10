@@ -180,7 +180,7 @@ set of generic principles worth deduplicating.
   (named in autofile-dedup.md as harness-audit's instantiation)
 - `DEDUP_LIMIT=200` constant and saturation-check bash — unique to SKILL.md, not in autofile-dedup.md
 - Template text in issue #770 caveat (the `<!-- harness-audit: <artifact path> -->` in a template) — unique to SKILL.md
-- Body shape (6-section `/issue-maker` body) — unique to harness-audit, not in autofile-dedup.md
+- Body shape (7-section `/issue-maker` body) — unique to harness-audit, not in autofile-dedup.md
 - Open/closed match implementation actions — harness-audit-specific (autofile-dedup.md documents
   that harness-audit has branched on open-vs-closed since #770, as harness-audit's own behavior)
 

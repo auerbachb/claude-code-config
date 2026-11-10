@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # model-fleet.sh — Resolve the current Claude model fleet from one source.
+# catalog: utilities — Resolve the current Claude model fleet from `.claude/model-fleet.json`
 #
 # PURPOSE
 #   Reads `.claude/model-fleet.json` and answers "what is the top-tier model
@@ -50,6 +51,7 @@
 #      inconsistent (no `top_tier`, empty `top_tier`, `top_tier` absent from
 #      `fleet[]`, missing/empty `fleet[]`, or a fleet entry missing `id`).
 #   2  Usage error (unknown flag, missing value, conflicting mode flags).
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   TOP=$(.claude/scripts/model-fleet.sh --top-tier)
@@ -57,12 +59,13 @@
 #   .claude/scripts/model-fleet.sh --list
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME:-/tmp}/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
 
 print_help() {
   # Header block from the line after the shebang to the first blank line,
   # matching off-peak-minute.sh / hhg-state.sh.
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for model-fleet.sh (issue #770).
+# catalog: tests — Tests for `model-fleet.sh`
 #
 # Fully hermetic: every case points the resolver at a temp fixture via --file,
 # so nothing here depends on what .claude/model-fleet.json currently says. The
@@ -44,7 +45,7 @@ check_fails() {
   fi
   # `--` before the pattern: several expected messages start with `--flag`,
   # which grep would otherwise parse as its own option.
-  if ! printf '%s' "$out" | grep -qE -- "$want_re"; then
+  if ! grep -qE -- "$want_re" <<<"$out"; then
     fail "$desc (rc $rc as expected, but message did not match /$want_re/)"
     return
   fi

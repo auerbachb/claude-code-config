@@ -2,6 +2,7 @@
 # merge-gate-sticky-cr-approval.test.sh — Regression tests for issue #865:
 # a fresh CR-path APPROVED on the current HEAD SHA satisfies the merge gate
 # even when reviewer == bugbot (sticky). The sticky pointer is NOT changed.
+# catalog: tests — Tests that a fresh CR-path approval on current HEAD satisfies the gate even when the sticky reviewer is BugBot
 #
 # All freshness (#836), retraction (#893), and substance (#875/#876) guards
 # apply on the bypass path — same code paths as the cr) branch, not a copy.
@@ -20,7 +21,10 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SUT="$REPO_ROOT/.claude/scripts/merge-gate.sh"
+# Overridable so this suite can be pointed at another checkout's merge-gate.sh
+# (issue #1485); the guard stops a mistyped path from reading as a real result.
+SUT="${SUT:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+[[ -f "$SUT" && -x "$SUT" ]] || { echo "FAIL: SUT is not an executable file: $SUT" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
@@ -75,6 +79,24 @@ case "$ARGS" in
     printf '%s' "${FAKE_ISSUE_COMMENTS:-[]}"; exit 0 ;;
   *graphql*)
     jq -cn '{data:{repository:{pullRequest:{reviewThreads:{nodes:[]}}}}}'; exit 0 ;;
+  *"/branches/"*"/protection/required_status_checks"*)
+    # Branch-protection required contexts (issue #1361). Default is a 404, which
+    # combined with the unprotected branch object below resolves to "no required
+    # status checks" — so every pre-#1361 expectation in this file is unchanged.
+    # FAKE_REQUIRED_STATUS_CHECKS supplies the endpoint payload;
+    # FAKE_BRANCH_PROTECTED=true marks the base branch protected.
+    if [[ -n "${FAKE_REQUIRED_STATUS_CHECKS:-}" ]]; then
+      printf '%s' "${FAKE_REQUIRED_STATUS_CHECKS}"; exit 0
+    fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *"/branches/"*)
+    if [[ -n "${FAKE_BRANCH_JSON:-}" ]]; then
+      printf '%s' "${FAKE_BRANCH_JSON}"; exit 0
+    fi
+    jq -cn --arg p "${FAKE_BRANCH_PROTECTED:-false}" \
+      '{name:"main", protected:($p == "true"),
+        protection:{required_status_checks:{contexts:[]}}}'
+    exit 0 ;;
   *contents/*)
     echo "Not Found" >&2; exit 1 ;;
 esac

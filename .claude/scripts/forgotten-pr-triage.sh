@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # forgotten-pr-triage.sh — detect + classify "forgotten" open PRs (issue #657).
+# catalog: backlog-pm — Detect and classify open PRs that have gone quiet past a staleness threshold
 #
 # PURPOSE:
 #   Surfaces the author's open PRs that have gone quiet — last activity older
@@ -73,7 +74,7 @@
 #   - gh CLI (authenticated), git, jq, bash 3.2+ (macOS-compatible)
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
   # Print only the leading comment block (stops at the first non-comment line)
@@ -272,10 +273,13 @@ printf '%s' "$OPEN_PRS" \
       REC="merge"
       RATIONALE=""
 
-      # Signal (b): linked issue closed (cheap — no git). First match wins.
+      # Signal (b): linked issue closed (cheap — no git). One primary issue is
+      # enough for this signal, so ask for it explicitly with --first: default
+      # mode is set-valued (issue #1492) and a two-line value would be handed
+      # straight to `gh issue view` below.
       ISSUE=""
       if [ -x "$PR_ISSUE_REF" ]; then
-        ISSUE="$("$PR_ISSUE_REF" "$NUM" 2>/dev/null || true)"
+        ISSUE="$("$PR_ISSUE_REF" --first "$NUM" 2>/dev/null || true)"
       else
         err "pr-issue-ref.sh not found at $PR_ISSUE_REF — linked-issue signal skipped for #$NUM"
       fi

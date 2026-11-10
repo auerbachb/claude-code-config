@@ -2,6 +2,7 @@
 # merge-gate-review-substance.test.sh — Regression tests for issue #875:
 # merge-gate.sh must not count a bot APPROVED as review coverage when nothing
 # evidences that the reviewer actually read the commit.
+# catalog: tests — Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage
 #
 # Every case below is drawn from a real observed trace:
 #   #171 3634336 — CodeAnt APPROVED bodylen=0, status comment naming 98f0bd0
@@ -39,6 +40,9 @@
 #        external evidence; timing/failure/start-marker/completion-marker
 #        negatives stay hollow, and an existing wrong-SHA self-report remains
 #        disqualifying
+#   (hh-416) HEAD-anchored inline comments supersede a stale CodeAnt status
+#        table (inventory #416 / this repo #1380). Rubber-stamp + stale table
+#        still blocks; a no-SHA status comment still does not disqualify.
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -47,8 +51,12 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SUT="$REPO_ROOT/.claude/scripts/merge-gate.sh"
-EVAL_SUT="$REPO_ROOT/.claude/scripts/review-substance.sh"
+# Overridable so this suite can be pointed at another checkout's scripts (issue
+# #1485); the guards stop a mistyped path from reading as a real result.
+SUT="${SUT:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+EVAL_SUT="${EVAL_SUT:-$REPO_ROOT/.claude/scripts/review-substance.sh}"
+[[ -f "$SUT" && -x "$SUT" ]] || { echo "FAIL: SUT is not an executable file: $SUT" >&2; exit 1; }
+[[ -f "$EVAL_SUT" && -x "$EVAL_SUT" ]] || { echo "FAIL: EVAL_SUT is not an executable file: $EVAL_SUT" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
@@ -110,6 +118,24 @@ case "$ARGS" in
     printf '%s' "${FAKE_ISSUE_COMMENTS:-[]}"; exit 0 ;;
   *graphql*)
     jq -cn '{data:{repository:{pullRequest:{reviewThreads:{nodes:[]}}}}}'; exit 0 ;;
+  *"/branches/"*"/protection/required_status_checks"*)
+    # Branch-protection required contexts (issue #1361). Default is a 404, which
+    # combined with the unprotected branch object below resolves to "no required
+    # status checks" — so every pre-#1361 expectation in this file is unchanged.
+    # FAKE_REQUIRED_STATUS_CHECKS supplies the endpoint payload;
+    # FAKE_BRANCH_PROTECTED=true marks the base branch protected.
+    if [[ -n "${FAKE_REQUIRED_STATUS_CHECKS:-}" ]]; then
+      printf '%s' "${FAKE_REQUIRED_STATUS_CHECKS}"; exit 0
+    fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *"/branches/"*)
+    if [[ -n "${FAKE_BRANCH_JSON:-}" ]]; then
+      printf '%s' "${FAKE_BRANCH_JSON}"; exit 0
+    fi
+    jq -cn --arg p "${FAKE_BRANCH_PROTECTED:-false}" \
+      '{name:"main", protected:($p == "true"),
+        protection:{required_status_checks:{contexts:[]}}}'
+    exit 0 ;;
   *contents/*)
     echo "Not Found" >&2; exit 1 ;;
 esac
@@ -132,7 +158,10 @@ approval() { # <login> <body> [submitted_at]
     '[{user:{login:$l,type:"Bot"}, commit_id:$sha, state:"APPROVED", body:$b, submitted_at:$t}]'
 }
 convo() { # <login> <body> <created_at> [<login2> <body2> <created2>]
-  jq -cn --args '[ $ARGS.positional | _nwise(3) | {user:{login:.[0],type:"Bot"}, body:.[1], created_at:.[2], updated_at:.[2]} ]' "$@"
+  # nwise is defined inline: jq's `_nwise` is an undocumented internal that jq
+  # 1.8 stopped exposing (first caught by the macOS CI job's newer jq — #1473).
+  jq -cn --args 'def nwise($n): . as $a | range(0; length; $n) | $a[. : . + $n];
+                 [ $ARGS.positional | nwise(3) | {user:{login:.[0],type:"Bot"}, body:.[1], created_at:.[2], updated_at:.[2]} ]' "$@"
 }
 
 run_gate() { # extra args...
@@ -362,6 +391,42 @@ FAKE_ISSUE_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[
 OUT="$(run_gate)"
 check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.mismatched[0]')" "(v) newest POSTED self-report wins over an edited older one"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(v) gate blocks on the mismatch"
+
+echo "=== (1894a) an edited-in-place Review Status naming HEAD outranks an older-posted, never-edited PR Risk naming a stale SHA (issue #1894) ==="
+# Live PR #1845: CodeAnt opened its Review Status table first and edits it in
+# place on every run; GitHub freezes created_at on edit, so a never-edited
+# "PR Risk" summary posted seconds later (Assessed commit: <stale>) won the
+# self-report forever and no re-review could clear it.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:("## CodeAnt AI — Review Status\n| Status | Commit |\n|---|---|\n| Reviewed your PR | " + $sha[0:12] + " |\n<!-- codeant-review-status:[{\"label\":\"Reviewed your PR\",\"commit\":\"" + $sha + "\",\"started\":\"2026-07-31T10:01:30.000000\",\"finished\":\"2026-07-31T10:03:30.000000\",\"done\":true}] -->"),
+   created_at:"2026-07-31T09:00:00Z", updated_at:"2026-07-31T10:03:30Z"},
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:"## PR Risk\nRisk level: low. Assessed commit: 98f0bd0abc12 — the change is confined to documentation.",
+   created_at:"2026-07-31T09:00:05Z", updated_at:"2026-07-31T09:00:05Z"}]')"
+OUT="$(run_gate)"
+R1894A="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "false" "$(echo "$R1894A" | jq -r '.self_report_mismatch')" "(1894a) the latest-edited Review Status table is the self-report"
+check_not_contains "own status comment names" "$(echo "$OUT" | jq -r '.missing | join(" | ")')" "(1894a) no stale-SHA disqualifier in missing[]"
+check_eq "true" "$(echo "$R1894A" | jq -r '.counts_as_coverage')" "(1894a) the CodeAnt approval counts as coverage"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(1894a) CodeAnt path of the CR gate is met"
+
+echo "=== (1894b) a Review Status table whose latest edit names another SHA still disqualifies (issue #1894) ==="
+# The mirror: the in-place table, edited most recently, names only a different
+# commit; an older-posted comment naming HEAD must not rescue the approval.
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:"## CodeAnt AI — Review Status\n| Status | Commit |\n|---|---|\n| Reviewed your PR | 98f0bd0abc12 |\n<!-- codeant-review-status:[{\"label\":\"Reviewed your PR\",\"commit\":\"98f0bd0abc1234567890abcdef1234567890abcd\",\"started\":\"2026-07-31T10:01:30.000000\",\"finished\":\"2026-07-31T10:03:30.000000\",\"done\":true}] -->",
+   created_at:"2026-07-31T09:00:00Z", updated_at:"2026-07-31T10:03:30Z"},
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:("## PR Risk\nRisk level: low. Assessed commit: " + $sha[0:12] + " — the change is confined to documentation."),
+   created_at:"2026-07-31T09:00:05Z", updated_at:"2026-07-31T09:00:05Z"}]')"
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].self_report_mismatch')" "(1894b) the latest-edited table naming another SHA is the self-report"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.mismatched[0]')" "(1894b) evidence flags the mismatch"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(1894b) gate blocks on the mismatch"
+FAKE_ISSUE_COMMENTS='[]'
 
 echo "=== (w) same-second approval and run marker counts as inversion (BugBot, PR #883) ==="
 # GitHub timestamps are whole-second, so this ordering is unknowable from the
@@ -681,6 +746,136 @@ check_eq '["a1b2c3d"]' "$(echo "$RU" | jq -c '.status_comment_shas')"    "(ee-91
 check_eq "false"    "$(echo "$RU" | jq -r '.self_report_mismatch')"     "(ee-917) a later UUID-only status comment no longer manufactures a mismatch"
 check_eq "[]"       "$(echo "$RU" | jq -c '.disqualified_by')"          "(ee-917) and the reviewer is not disqualified"
 
+echo "=== (xx-408) review command invocation UUID does not wedge a genuine approval (issue #1248) ==="
+# auerbachb/inventory issue #408 / this repo issue #1248. CodeRabbit's "Action
+# performed" reply embeds a GUID in a <!-- CodeRabbit review command invocation:
+# UUID --> HTML comment. A GUID's first segment (8 hex chars) and last segment
+# (12 hex chars) satisfy rule 1's shape (7-40 chars, >= one a-f letter) and
+# were misread as SHAs the bot claimed to have reviewed. The production shape
+# requires two comments: an earlier walkthrough naming HEAD, then a LATER
+# "Action performed" comment whose only SHA-shaped tokens are GUID segments.
+# $selfrep (most-recently-created comment with tokens) becomes the "Action
+# performed" comment pre-fix, and its GUID segments don't match HEAD.
+#
+# This fixture uses the real GUID (df440ae1-9ab9-4b17-bb0a-caae8c17534a) and
+# HEAD SHA (05b928597c90aebd91f9eb644808a25a20a01d82) from inventory PR #403.
+GUID_HEAD="05b928597c90aebd91f9eb644808a25a20a01d82"
+guid_eval() { # <earlier-body> <later-body> -> the coderabbitai reviewer object
+  jq -cn --arg sha "$GUID_HEAD" --arg b1 "$1" --arg b2 "$2" \
+    '{head_sha:$sha, push_ts:"2026-08-01T09:00:00Z",
+      reviews:[{user:{login:"coderabbitai[bot]"},commit_id:$sha,state:"APPROVED",
+                submitted_at:"2026-08-01T11:00:00Z",body:""}],
+      pr_comments:[],
+      issue_comments:[
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-08-01T09:24:55Z",
+         updated_at:"2026-08-01T09:24:55Z", body:$b1},
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-08-01T09:51:15Z",
+         updated_at:"2026-08-01T09:51:15Z", body:$b2}
+      ]}' \
+  | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["coderabbitai[bot]"]'
+}
+GUID_WALKTHROUGH_BODY="$(printf "## Walkthrough\n\nReviewed the space-membership ACL changes and the personal-space derivation for commit \`05b9285\`. No blocking issues found.")"
+GUID_INVOCATION_BODY="$(printf '<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a -->\n<details>\n<summary>Action performed</summary>\n\nFull review finished.\n\n</details>')"
+
+RI="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_INVOCATION_BODY")"
+check_eq "true"        "$(echo "$RI" | jq -r '.status_comment_names_head')"  "(xx-408) walkthrough naming HEAD still sets status_comment_names_head"
+check_eq '["05b9285"]' "$(echo "$RI" | jq -c '.status_comment_shas')"        "(xx-408) only the genuine short SHA is admitted — no GUID segments"
+check_eq "false"       "$(echo "$RI" | jq -r '.self_report_mismatch')"       "(xx-408) invocation GUID does not manufacture a self_report_mismatch"
+check_eq "[]"          "$(echo "$RI" | jq -c '.disqualified_by')"            "(xx-408) and the approval is not disqualified"
+# Negative control: a genuine non-HEAD SHA in the later comment still trips mismatch,
+# proving the fixture discriminates and is not trivially passing.
+GUID_NONHEAD_BODY="$(printf 'Reviewed changes for commit deadbeef1234567890abcdef1234567890abcdef in this round.')"
+RI_NEG="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_NONHEAD_BODY")"
+check_eq "true"        "$(echo "$RI_NEG" | jq -r '.self_report_mismatch')"   "(xx-408) negative control: genuine non-HEAD SHA still triggers mismatch"
+
+echo "=== (xx-408b) run-start marker + invocation-only comment does not grant descriptive evidence (CodeAnt PR #1280) ==="
+# CodeAnt finding (PR #1280): a run-start marker followed by a GUID invocation
+# comment whose authored_len >= $min_chars used to satisfy $descriptive_ev,
+# granting counts_as_coverage on a hollow approval without any genuine review
+# substance. The invocation_comment flag (issue #1248 follow-up) must suppress
+# this path. The eval here uses two comments anchored to the same GUID_HEAD:
+#   b1: run-start marker (CodeRabbit is running the review…)
+#   b2: GUID invocation comment (Action performed / Full review finished)
+# with a concurrent empty APPROVED on HEAD.
+#
+# guid_eval puts b1 before b2 (created order), so $marker = b1 and b2 is the
+# only candidate for $descriptive_ev. The fix means b2 is excluded (invocation_comment).
+GUID_MARKER_BODY="CodeRabbit is running the review. Please wait while the analysis completes."
+RI_B="$(guid_eval "$GUID_MARKER_BODY" "$GUID_INVOCATION_BODY")"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation-only comment does not satisfy descriptive_evidence_on_head"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.external_evidence_on_head')"     "(xx-408b) no external substance without genuine review content"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.counts_as_coverage')"            "(xx-408b) hollow approval + invocation comment is not coverage"
+# Positive control 1: a genuine descriptive comment (after the marker) still grants evidence.
+GUID_GENUINE_DESC="This change looks reasonable. The GUID handling is correct and the test coverage is thorough."
+RI_C="$(guid_eval "$GUID_MARKER_BODY" "$GUID_GENUINE_DESC")"
+check_eq "true"   "$(echo "$RI_C" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) positive control: genuine descriptive comment after marker grants evidence"
+# Positive control 2: invocation HTML metadata FOLLOWED by genuine prose is NOT invocation_comment.
+# A comment with both shapes must have its prose part evaluated, not excluded wholesale.
+# (CodeRabbit finding, PR #1280 — pattern must not over-match prose that mentions
+# invocation phrases outside of the HTML-comment wrapper, nor exclude comments that
+# carry both metadata and genuine substance.)
+GUID_HYBRID_BODY="$(printf '%s\n\n%s' "$GUID_INVOCATION_BODY" "The new invocation_comment flag is well-targeted. The implementation correctly identifies invocation-only metadata.")"
+RI_D="$(guid_eval "$GUID_MARKER_BODY" "$GUID_HYBRID_BODY")"
+check_eq "true"   "$(echo "$RI_D" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation metadata + genuine prose still satisfies descriptive_evidence_on_head"
+
+echo "=== (xx-408c) invocation_comment requires phrase inside complete HTML comment with full UUID ==="
+# CodeRabbit finding (PR #1280): the v2 invocation_comment check must:
+#   1. Bind the phrase only to COMPLETE <!-- --> blocks (scan prevents crossing -->).
+#   2. Require a full 8-4-4-4-12 UUID inside the block (not a prefix or UUID-less phrase).
+# Each case below would have had invocation_comment=true with the v1 pattern
+# (excluding the comment from $descriptive_ev), but must be false with v2.
+#
+# (a) Phrase outside comment: the v1 regex crossed --> into prose on the next
+# line (the "m" flag made . match newlines). Residual = 37 chars < 40, so
+# invocation_comment flipped true — the comment was wrongly excluded even
+# though the phrase appeared in prose, not inside any HTML comment.
+GUID_OUTSIDE_BODY="$(printf '<!-- a longer unrelated HTML comment -->\nreview command invocation: documented')"
+RI_E="$(guid_eval "$GUID_MARKER_BODY" "$GUID_OUTSIDE_BODY")"
+check_eq "true" "$(echo "$RI_E" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) phrase outside HTML comment is not invocation_comment; comment still eligible for descriptive_ev"
+# (b) UUID-less invocation phrase: the v1 regex matched the bare phrase with no
+# UUID requirement, so the invocation-keyword-only comment was incorrectly excluded.
+GUID_NOUID_BODY="<!-- review command invocation: documented and thoroughly explained -->"
+RI_F="$(guid_eval "$GUID_MARKER_BODY" "$GUID_NOUID_BODY")"
+check_eq "true" "$(echo "$RI_F" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) UUID-less invocation phrase in HTML comment is not invocation_comment"
+# (c) Incomplete UUID (prefix only, missing 4-4-12 tail): the v1 regex accepted
+# "request id [8hex]-[4hex]-" with no further constraint, so a partial UUID also
+# flipped invocation_comment=true incorrectly.
+GUID_SHORTUID_BODY="<!-- This is a partial request id 9f69125b-29d9-47d4- without full uuid -->"
+RI_G="$(guid_eval "$GUID_MARKER_BODY" "$GUID_SHORTUID_BODY")"
+check_eq "true" "$(echo "$RI_G" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) incomplete UUID prefix in HTML comment is not invocation_comment"
+
+echo "=== (xx-408d) invocation_comment boundary: overlong UUID and echoed-line residual inflation ==="
+# CodeRabbit findings (PR #1280, PRRT_kwDORbRzR86bdTJq / PRRT_kwDORbRzR86bdTJs):
+#
+# (a) Overlong UUID — PRRT_kwDORbRzR86bdTJq (Minor):
+# The UUID regex had no boundary after {12}. A 37-char last group matched the
+# first 12 hex chars without rejecting the extra digit. Adding (?![0-9a-f])
+# after {12} prevents a hex run longer than 12 from matching.
+# Expected: invocation_comment=false (no valid full-UUID match) and
+# descriptive_evidence_on_head=true (comment is eligible for $descriptive_ev).
+GUID_LONGUID_BODY="<!-- review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a0 -->"
+RI_H="$(guid_eval "$GUID_MARKER_BODY" "$GUID_LONGUID_BODY")"
+check_eq "true" "$(echo "$RI_H" | jq -r '.descriptive_evidence_on_head')"  "(xx-408d) overlong UUID in last segment is not a valid invocation_comment"
+
+# (b) Echoed line inflates residual — PRRT_kwDORbRzR86bdTJs (Major):
+# The residual check for invocation_comment scanned raw $b. If a bot comment
+# contained the invocation metadata HTML comment plus a verbatim copy of the
+# author's (or an earlier bot) text, the echoed line kept the residual >=
+# $min_chars, flipping invocation_comment=false even though no genuine
+# reviewer-authored prose remained. Applying strip_echoed($cts) before the
+# residual check removes echoed lines, so the residual only reflects prose the
+# reviewer actually wrote.
+# Here b2 = GUID_INVOCATION_BODY + GUID_MARKER_BODY (marker echoed from b1).
+# Without strip_echoed: residual includes the marker line (~75 chars) >= 40 ->
+# invocation_comment=false -> descriptive_evidence_on_head=true (WRONG).
+# With strip_echoed: marker line stripped -> residual ~38 chars < 40 ->
+# invocation_comment=true -> descriptive_evidence_on_head=false (CORRECT).
+GUID_ECHOED_BODY="$(printf '%s\n%s' "$GUID_INVOCATION_BODY" "$GUID_MARKER_BODY")"
+RI_I="$(guid_eval "$GUID_MARKER_BODY" "$GUID_ECHOED_BODY")"
+check_eq "false" "$(echo "$RI_I" | jq -r '.descriptive_evidence_on_head')"  "(xx-408d) echoed line does not inflate residual past min_chars in invocation_comment filter"
+
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
 # by reproducing the requester's comment verbatim (lowercased) under a
@@ -955,11 +1150,111 @@ check_eq "false" "$(echo "$GG_REVIEWER" | jq -r '.counts_as_coverage')" "(gg-927
 check_contains "self_report_mismatch" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) mismatch reason remains explicit"
 check_not_contains "no_substantive_footprint" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) only the hollow reason is cleared"
 
+############################################################################
+# (hh-416): a manually-triggered CodeAnt review can never count as coverage
+# while the status table is treated as a veto (inventory #416 / this repo
+# #1380). CodeAnt's one "Review Status" table records only push-triggered
+# auto-reviews. A later @codeant-ai review leaves real HEAD-anchored inline
+# findings and a SHA-less summary, but never appends a table row — so the
+# latest SHA-naming comment stays frozen on older commits.
+#
+# Live shape (inventory PR #415, HEAD 7c9a7fa): status table named a9c00b0
+# and c038325; the 1,049-char review named no SHA; inline_comments_on_head=2;
+# substantive=true; disqualified_by=["self_report_mismatch"]. Reproduced on
+# PR #448 (HEAD b541695) with the same sole disqualifier.
+############################################################################
+
+# Stale auto-review table: names older hex SHAs, never HEAD. No accidental
+# hex-letter run that could prefix-match $HEAD_SHA (396ced5…).
+STALE_TABLE='## 🤖 CodeAnt AI — Review Status
+| Status | Commit | Started | Finished |
+| --- | --- | --- | --- |
+| Reviewed your PR | `a9c00b0` | 10:00 | 10:03 |
+| Reviewed your PR | `c038325` | 10:04 | 10:07 |'
+
+# SHA-less review body (inventory PR #415: the four most recent comments,
+# including the 1,049-char review, contained no [0-9a-f]{7,40} token).
+SHA_LESS_REVIEW='## Sequence Diagram
+The change keeps the merge gate from treating a stale auto-review table as a veto
+when the same reviewer already left findings on this commit. The table records
+only push-triggered runs; a later manual review still posts inline notes and a
+summary, but never appends a row. Inline comments anchored to this commit are
+first-party evidence of which revision was read. A rubber-stamp approval with
+no such notes must still fail. No commit identifier is repeated in this summary.'
+
+echo "=== (hh-416) stale table + HEAD inlines + SHA-less body -> coverage ==="
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z" \
+  "codeant-ai[bot]" "$SHA_LESS_REVIEW" "2026-07-31T10:06:30Z")"
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:$sha,created_at:"2026-07-31T10:06:00Z",body:"Major: unused import in the new helper."},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:$sha,created_at:"2026-07-31T10:06:10Z",body:"Major: missing null check on the coordinator path."}]')"
+OUT="$(run_gate)"
+HH_REVIEWER="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "true"  "$(echo "$OUT" | jq -r '.met')" "(hh-416) PR #415 shape satisfies the gate"
+check_eq "2"     "$(echo "$HH_REVIEWER" | jq -r '.inline_comments_on_head')" "(hh-416) two HEAD-anchored inlines"
+check_eq "true"  "$(echo "$HH_REVIEWER" | jq -r '.substantive')" "(hh-416) substantive via inlines"
+check_eq "false" "$(echo "$HH_REVIEWER" | jq -r '.status_comment_names_head')" "(hh-416) stale table does not name HEAD"
+check_eq "false" "$(echo "$HH_REVIEWER" | jq -r '.self_report_mismatch')" "(hh-416) inlines suppress the mismatch"
+check_eq "true"  "$(echo "$HH_REVIEWER" | jq -r '.counts_as_coverage')" "(hh-416) stale table no longer vetoes coverage"
+check_not_contains "self_report_mismatch" "$(echo "$HH_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) mismatch is not a disqualifier"
+
+echo "=== (hh-416) stale table without inlines still blocks (rubber stamp) ==="
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+HH_STAMP="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(hh-416) rubber stamp + stale table still blocks"
+check_eq "true"  "$(echo "$HH_STAMP" | jq -r '.self_report_mismatch')" "(hh-416) mismatch still recorded without inlines"
+check_eq "false" "$(echo "$HH_STAMP" | jq -r '.counts_as_coverage')" "(hh-416) rubber stamp is not coverage"
+check_contains "self_report_mismatch" "$(echo "$HH_STAMP" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) rubber-stamp mismatch remains a disqualifier"
+
+echo "=== (hh-416) long SHA-less body alone does not clear a stale table ==="
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z" \
+  "codeant-ai[bot]" "$SHA_LESS_REVIEW" "2026-07-31T10:06:30Z")"
+OUT="$(run_gate)"
+HH_BODY="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "true"  "$(echo "$HH_BODY" | jq -r '.self_report_mismatch')" "(hh-416) descriptive body does not suppress mismatch"
+check_eq "false" "$(echo "$HH_BODY" | jq -r '.counts_as_coverage')" "(hh-416) SHA-less body is not enough to count as coverage"
+check_contains "self_report_mismatch" "$(echo "$HH_BODY" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) #927 launder stays closed"
+
+echo "=== (hh-416) moved-forward inline (original_commit_id != HEAD) does not suppress ==="
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:"a9c00b0aabbccddeeff001122334455667788990",created_at:"2026-07-31T10:06:00Z",body:"Major: unused import in the new helper."}]')"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+HH_MOVED="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "0"     "$(echo "$HH_MOVED" | jq -r '.inline_comments_on_head')" "(hh-416) force-pushed-forward inline is not HEAD-anchored"
+check_eq "true"  "$(echo "$HH_MOVED" | jq -r '.self_report_mismatch')" "(hh-416) moved inline does not suppress mismatch"
+check_eq "false" "$(echo "$HH_MOVED" | jq -r '.counts_as_coverage')" "(hh-416) moved inline is not coverage"
+
+echo "=== (hh-416) a status comment naming no SHA does not disqualify ==="
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$SHA_LESS_REVIEW" "2026-07-31T10:06:30Z")"
+OUT="$(run_gate)"
+HH_NOSHA="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "false" "$(echo "$HH_NOSHA" | jq -r '.self_report_mismatch')" "(hh-416) no-SHA comment is not a self-report"
+check_not_contains "self_report_mismatch" "$(echo "$HH_NOSHA" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) no-SHA comment does not disqualify"
+# Coverage here comes from the long SHA-less body only if a run-start marker
+# also exists (descriptive_evidence_on_head). Without one it is hollow for
+# a different reason — the point of this case is only that mismatch stays off.
+check_not_contains "self_report_mismatch" "$(echo "$HH_NOSHA" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) AC3: absence of a SHA is not a veto"
+
+FAKE_PR_COMMENTS='[]'
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"
 printf '' | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) empty stdin exits 4"
+
+echo "=== (gr) retired Graphite stays a default corroborator (#1889) ==="
+# The echo filter excludes $approvers + $others, so dropping graphite-app[bot]
+# from the default list would turn its comments into author text whose lines are
+# stripped from CR/CodeAnt bodies — changing their verdicts. The App still posts.
+check_eq "1" "$(grep -cE '^CORROBORATORS="[^"]*graphite-app\[bot\]' "$EVAL_SUT")" "(gr) default CORROBORATORS keeps graphite-app[bot]"
 
 echo
 echo "----------------------------------------"

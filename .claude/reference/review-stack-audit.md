@@ -1,0 +1,612 @@
+# Review stack audit — mechanism and contracts
+
+> **Graphite retired 2026-11-03** (#1889): it is no longer measured or priced; `review-stack-baseline.json` keeps it as an `off` / `cancelled` row, reported as an unmatched baseline tool. Re-run audits no longer attribute historical Graphite findings.
+
+Mechanism, rationale, and the decision-record contract behind
+`/review-stack-audit` (issue #1201). Not auto-loaded: the operative contract is
+`.claude/skills/review-stack-audit/SKILL.md`. `measure.sh`, `drift.sh`, and
+`scorecard.sh` document their interfaces under `--help`. This reference keeps
+the audit rationale, measurement definitions, and report contracts together.
+
+## Why a recurring audit at all
+
+`.claude/reference/ai-review-tool-audit-2026-04.md` and `-2026-06.md` are two
+hand-run instances of this audit. They worked — the 2026-06 pass caught CodeAnt's
+exhausted trial while it was the merge gate's only approver, and cut a $30/mo
+Greptile seat that had not fired in eight weeks. But each was a one-off, and the
+2026-06 doc closes by naming a successor (`ai-review-tool-audit-2026-08.md`) that
+nothing was scheduled to write.
+
+That is the failure mode: an audit that depends on someone remembering. Between
+audits, the gap between what we pay for and what the workflow assumes reopens
+silently, and surfaces as PRs queuing on review rather than as a line item.
+
+## Why a sibling skill rather than a section of `/harness-audit`
+
+`/harness-audit` asks *"does the harness already do this natively?"* — internal
+redundancy against a moving upstream. This asks *"does this external spend still
+buy value?"* Different inputs (GitHub review activity and vendor billing signals
+vs. harness release notes), different verdicts (roles and subscriptions vs. keep
+/redundant/conflicting), different remedy owners (the person holding the credit
+card vs. whoever edits the rule corpus).
+
+Folding them together would give one skill two inventories and two verdict
+vocabularies. They share the *shape* — monthly, advisory, issue-filing,
+watermark-driven — and that shape is deliberately copied, which is why the
+session-start nudge and the exact-marker dedup are near-identical. CodeRabbit's
+plan for #1201 reached the same conclusion independently.
+
+## Why the judgment is one pass, not two
+
+`/harness-audit` splits into a cheap inventory tick and an expensive top-tier
+judgment pass reached by a chip, because verdicting ~100 artifacts against live
+harness behavior needs real reasoning per artifact.
+
+This audit does not. Measurement is a script, and the comparison is a bounded
+diff of two JSON documents over six tools and five rules — `drift.sh` does it
+deterministically with no model in the loop. Issue #1201's AC4 ("a no-drift run
+completes in one invocation and reports 'no change' in a single line") makes the
+single pass a requirement rather than a preference: a chip handoff cannot satisfy
+it. The cost of that choice is that the tick does real work; the benefit is that
+a quiet month costs one invocation and one line of output.
+
+## Billed state is a proxy, and says so
+
+No vendor in this stack exposes a billing API these scripts can read. Three
+things are readable, and the audit is careful about which is which:
+
+| Signal | Source | Trust |
+|---|---|---|
+| `plan_observed` | The tier a vendor states in its own comment body. Only CodeRabbit does (`> **Plan**: Pro`). | Direct, but only for vendors that volunteer it. |
+| `cap_signals` | Limit messages that appear when a plan runs out. | Direct evidence of a limit *being hit*; silence is not evidence of headroom. |
+| `billed` | A human-maintained field in the baseline. | Authoritative by declaration, stale by default. |
+
+The audit's job is to notice when these disagree. D2 ("paid but unused") fires
+entirely on the declared field, which is why the seeded baseline leaves Greptile
+as `paid` even though the 2026-06 audit recommended cancelling: cancellation is a
+billing action outside the repo and was never confirmed. If the seat is live, D2
+asks the question; if it was cancelled, the answer is one comment and a
+one-word baseline edit. For a recurring charge, failing toward surfacing is the
+correct direction.
+
+## Why classifiers are grounded, and what happens when they rot
+
+The `CAP_SIGNALS` table in `measure.sh` was extracted from 4,632 real bot
+comments on this repo's 25 most recently merged PRs, not written from memory.
+Each entry carries the observation that justifies it.
+
+A phrase table is exactly the kind of thing that rots silently: a vendor rewords
+its limit message, the pattern stops matching, and every affected tool reads
+`active` forever. That failure is indistinguishable from good news, which makes
+it the worst possible failure for this audit.
+
+The mitigation is the `unclassified` array. Limit-shaped language from a known
+bot (`quota`, `usage limit`, `subscription`, `billing`, …) that no declared
+pattern explains is reported. It is deliberately **not** counted as a cap — a
+generic word is not evidence — but it is never dropped, and `drift.sh` turns a
+non-empty array into a caveat on the whole run. "0 drift with 3 unclassified cap
+candidates" is a materially weaker claim than "0 drift", and the user sees the
+difference without opening the JSON.
+
+That guarantee is per **signal**, not per comment (#1342). The probe used to be
+skipped entirely once any declared pattern matched the body, so a banner that
+announced a recognized cap *and* a second, unrecognized one recorded only the
+first — and the more complete the phrase table got, the more bodies matched and
+the less the audit could see. The probe now runs on every body, excluding the
+spans a matched pattern already accounts for so the declared phrases' own
+limit-shaped words (`…hit a usage or spend limit`) are not read back as unknowns.
+
+**One repo-specific caveat:** this repo's own subject matter *is* rate limits and
+quotas, so bot comments reviewing our prose about caps land in `unclassified`
+routinely. That is a true positive for the mechanism and a false alarm for the
+question. Expect a small standing count here; a sudden jump is the signal.
+
+Vendor boilerplate is stripped before the generic probe (collapsed `<details>`
+blocks and CodeRabbit's `tips_start`/`tips_end` region), because both mention
+limits routinely and would otherwise drown the report. Declared classifiers still
+run against the **raw** body, so machine markers written as HTML comments — the
+most reliable signals available — still match.
+
+## `gates_merge` and `approves_via` are separate fields
+
+The baseline records both, and collapsing them produces a permanent false
+positive whichever way you collapse:
+
+- **`gates_merge`** — would a cap here stall PRs? Drives D3's severity.
+- **`approves_via`** — should this tool be posting `APPROVED` review objects?
+  The only trigger for D4.
+
+BugBot is why. A clean BugBot pass on current HEAD satisfies the merge gate alone
+on its path (`bugbot.md` §Merge Gate), so a spend cap on it is a high-severity
+problem — but it signals that pass through the `Cursor Bugbot` check-run and
+posts no `APPROVED` review object. Drive D4 off `gates_merge` and BugBot is
+flagged for a missing approval every single run; drive D3's severity off
+`approves_via` and a cap on the gating fallback reads as routine.
+
+CodeRabbit is the mirror case: it *can* satisfy the CR path with an `APPROVED`,
+but the 2026-06 audit measured 0 approvals across 63 PRs and concluded it is a
+finder, not an approver. The baseline records that measured reality
+(`gates_merge: false`, `approves_via: "none"`), so the audit does not spend every
+month reporting a fact we already decided about.
+
+### Why the absent-field default does not include `primary`
+
+`approves_via` is optional; when absent it is inferred from the role, and the
+inference is `"review"` only for role `approver`. A pre-merge review of #1201
+proposed widening that to `role in ("approver", "primary")`, on the reasoning
+that any role gating the merge in practice should get D4 by default.
+
+**Declined, because CodeRabbit is exactly that case and the widening breaks it.**
+CodeRabbit's role is `primary` and it was measured issuing zero approvals; infer
+`"review"` there and D4 fires against it on every run, forever — the permanent
+false positive the two-field split was introduced to eliminate. The proposal
+trades a silent gap for a guaranteed false alarm, and a check that cries wolf
+monthly gets ignored faster than one that is quietly off.
+
+The underlying concern was real, though: a future baseline author writing
+`role: "primary"` without the field silently disables the check that catches the
+merge gate's approver going quiet, and nothing said so. The fix is therefore to
+make the inference **visible** rather than to change what it infers — `drift.sh`
+emits a note naming every tool whose `approves_via` was inferred and what it was
+inferred to, flagging that D4 does not run for any of them. The gap can still
+exist; it can no longer exist unannounced.
+
+## The decision-record contract (#1199)
+
+`/review-stack-audit` reads its baseline from
+`.claude/reference/review-stack-baseline.json`, schema
+`review-stack-baseline/v1`. Fields are documented in `drift.sh --help`.
+
+**#1199's decision record writes to that path.** It should replace the `tools`
+array and set `source.provenance` to `"decision-record"` with `source.record`
+pointing at the prose document. The file shipped with #1201 is marked
+`"provenance": "seeded"` and carries the 2026-06 audit's verdicts, so the skill
+has a real baseline before #1199 lands.
+
+That seeding is the deliberate departure from CodeRabbit's plan, which had the
+audit stop with "baseline missing — depends on #1199". Three reasons it does not:
+
+1. #1199 was open with no PR when #1201 was built. A hard stop ships a skill that
+   cannot run at all.
+2. AC3 requires *each run* to append a dated snapshot. A stop produces none.
+3. AC4 requires a one-invocation run reporting in a single line. A stop is not
+   that run.
+
+Bootstrap mode (no baseline resolvable at all) remains as the third rung: publish
+the snapshot, file nothing, report that a baseline was established. A first run
+with nothing to compare against has still done its job — it created what every
+later run needs.
+
+## Dedup: two layers, and why both
+
+**Layer 1, the marker, is the authority.** `<!-- review-stack-audit: <tool>/<code> -->`
+keys on `(tool, code)` and nothing else. The same unresolved drift re-found next
+month produces a byte-identical string, which is what makes issue #1201's Test
+Plan item 3 (a second consecutive run files no duplicate) deterministic rather
+than probabilistic. Nothing that moves month to month — the window, a count, a
+date — may enter the key, and there is a test asserting the marker survives a
+moved window.
+
+Compare the **fully-substituted** marker by string equality, never the
+`<!-- review-stack-audit:` prefix. `/harness-audit` hit this on its first live
+run: its own tracking issue documented the convention, so it contained the
+template text, and a prefix match read that as an existing filing for every
+artifact. This document and `SKILL.md` both contain such text.
+
+**Layer 2, `issue-dedup.sh`, is recall.** The marker cannot find an issue a human
+filed by hand about the same drift. AC2 names the helper explicitly, and it is
+strictly additive. Its exit ≥ 2 is a *degraded* lookup, never "no duplicate" —
+it blocks the filing exactly like a saturated search, because a duplicate filed
+on an unverified lookup is worse than a filing deferred.
+
+A saturated `gh issue list` (exactly `DEDUP_LIMIT` rows) is likewise a failed
+lookup, not a clean one: the page was truncated and the issue you needed may be
+the one that was cut.
+
+## Cadence without a durable scheduler
+
+This setup has no durable scheduler it trusts. `CronCreate` is session-scoped and
+in-memory (`cross-session-durability.md`, #827), so a monthly job armed today is
+gone by tomorrow — and a monthly audit that silently never runs is the worst
+possible outcome for a skill whose entire job is noticing silent staleness.
+
+The watermark file is durable, and `session-scheduling-reconcile.sh` reads it on
+every session start. Sessions start far more often than monthly, so a month
+cannot be missed. The review-stack block there is `2a-bis`, deliberately adjacent
+to `/harness-audit`'s `2a` and computing its own `RS_MONTH` rather than reusing
+`MONTH`, which only exists when the harness-audit watermark does.
+
+Its state machine is simpler than `/harness-audit`'s: **off / done / due**, with
+no `offered` state, because its tick runs the real comparison instead of offering
+a step-up chip. A corrupt watermark reads as `off` — fail-soft and silent, never
+as `due`, so a garbled file cannot nag every session start.
+
+## Feeding issue #1191
+
+Each run's Throughput section restates PRs and reviews per day for the window.
+Issue #1191's concurrent-work cap derives from review throughput, and this is the
+surface that refreshes that figure. It is stated in the report rather than left
+inside the snapshot JSON so the number is readable without tooling.
+
+## Value fields (issue #1810)
+
+Counting findings says how loud a reviewer is, not how right. Every finding
+already gets a verdict when an agent replies to its thread — `Fixed in <sha>`,
+`Deferred to #N`, or a decline with a reason — and the ledger reads those
+verdicts back instead of letting them vanish when the thread resolves. These
+are the working definitions; the verdict buckets are the ones sales-kit
+Issue #184's hand-built ledger used, so the two compare (differences below). The
+fields land in the snapshot in ledger mode only; the report renders them as the
+scorecard below (increment 4 of Issue #1747).
+
+### What a finding and a verdict are
+
+A **finding** is a review thread whose first comment a review tool wrote
+(GraphQL `reviewThreads`, first 100 comments per thread). Its verdict comes only
+from the replies after that first comment written by a GitHub `User` account —
+the same qualifying-reply rule as [deferred findings](review-policy.md#what-counts-as-a-follow-up-reply).
+A bot's reply, the tool's own included, never decides a verdict; GraphQL bot
+logins carry no `[bot]` suffix, so the account type is what is tested. Quoted
+lines (`> …`) are skipped, so a reply that quotes the finding cannot borrow its
+wording, its numbers, or a marker inside it.
+
+Each reply is read, in order of precedence:
+
+| Rule | Verdict |
+|---|---|
+| A marker `<!-- review-verdict: fixed\|deferred\|declined defect=real\|not agent=<name> [fix=as-given\|adapted\|wrong\|none] -->` outside any code span or fenced block | the marker's verdict |
+| The reply **starts** with `Declined`, `Not a defect`, or `Won't fix` (straight or curly apostrophe), after any leading @mentions, HTML comments, emphasis, or fenced code block | `declined` |
+| `Fixed in <sha>` anywhere outside a fenced code block (7–40 hex digits; backticks and a `commit` word tolerated) | `fixed` |
+| A follow-up link — `#N`, `owner/repo#N` for this repo, or an `/issues/N` URL | `deferred` |
+
+Fenced blocks are read as CommonMark reads them: a fence closes on a line of
+the same character (backtick or tilde) at least as long as its opener, and an
+unclosed fence runs to the end of the reply. Emphasis is up to three `*` or `_`
+characters (`***Declined***`, `_Won't fix_`).
+
+Per thread, the **latest marker** wins over everything — and supplies every
+field, `fix` included: a later marker without `fix=` reads as unknown, never
+borrowing an older marker's value; with no marker, the
+**latest reply whose wording matched** wins ("Fixed in…" then "Declined: on
+reflection…" is declined); with neither, the thread is `unanswered`.
+
+Two choices here are deliberate:
+
+- **A leading decline beats a cited number.** Replies in this repo cite PRs as
+  precedent ("Declined: same as the pattern in PR #1222"), and the follow-up
+  parser cannot tell an issue from a PR without a lookup. The opening verb is
+  the agent's stated disposition, so it wins. An agent deferring with a
+  decline-shaped opening should lead with "Deferred to" or stamp the marker.
+- **`deferred` is syntactic only.** The ledger reads links with the merge gate's
+  own parser (`.claude/scripts/lib/deferred-refs.jq`, one shared file), but makes
+  none of the gate's issue lookups: a batch audit over hundreds of threads should
+  not carry that API cost or its failure modes. The gate still verifies every
+  link it acts on.
+
+A marker whose verdict is unknown is ignored and counted in a note; the reply is
+then read by its wording. Only `defect=real` counts as a real defect — an unknown
+or missing value reads as not real — an `agent` outside a plain token shape
+reads as unnamed, and a missing or unknown `fix` value reads as unknown.
+
+### The marker
+
+Real-defect judgment stays with the agent at reply time, which is where the
+evidence is; no text heuristic guesses it afterwards. `defect=real` means the
+test sales-kit Issue #184 §2.3 applied: as merged, the code or spec would have
+behaved incorrectly, insecurely, or undefinedly for a reachable input (or led a
+reader to build the wrong thing), and the fix closes a behavioral gap rather
+than style drift.
+
+`reply-thread.sh` writes the marker: `--verdict <v> --defect real|not` (plus
+`--agent <name>`, default `claude-code`, and `--fix <q>`, issue #1843) appends
+it as its own line after the reviewer's @mention rules run; without the flags a
+reply is byte-identical to before, and without `--fix` the marker is
+byte-identical to its pre-#1843 form. An unknown `--fix` value exits 2. A reply that ends inside an open fenced block gets that fence closed
+first, so the marker never lands in code where the ledger would skip it. The
+`agent` field is recorded so a later study can split results by
+coding agent without a second collection pass; this increment does not
+aggregate by it.
+
+#### The mandate (issue #1842)
+
+The flags were optional at first, and adoption, not reviewer quality, set the
+numbers: the first ledger-mode snapshot (2026-10-09, four repos, 138 PRs, 473
+findings) had `real_defects` of 17 for CodeAnt, 4 for CodeRabbit, 2 for
+Graphite, and 0 for BugBot and Greptile. So **every agent reply to a bot
+finding now carries the marker.** Every reply path an agent follows spells the
+flags out — `cr-github-review.md` §Processing CR Feedback step 3, `bugbot.md`
+§Processing BugBot Findings, `greptile-reply-format.md`, the Phase A and
+Phase B agents (and their copies embedded in `/subagent`), `/fixpr` Step 4, and
+`/go-on`'s reply step:
+
+```bash
+reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant \
+  --body "Fixed in \`SHA\`: <what changed>" --pr N \
+  --verdict fixed|deferred|declined --defect real|not \
+  [--fix as-given|adapted|wrong|none]   # required when --defect real
+```
+
+`--agent` keeps its default, `claude-code`, so the study can still split by
+coding agent. A raw `gh api …/replies` or `gh pr comment` posts no marker, so
+agents reply through the helper only.
+
+**Choosing `defect`.** `real` when the finding named a behaviour the code would
+actually have gotten wrong; `not` for style, duplication, or a reviewer
+misreading. It is a judgment made at reply time, where the evidence is; the
+one-line rule keeps agents consistent rather than automating the call.
+
+**Choosing `fix`** (issue #1843; required with `--defect real`). It records the
+quality of the reviewer's suggested fix, the second of the study's criteria
+(issue #1747) — a reviewer that finds a real defect but proposes an unusable fix
+costs the agent a round of its own analysis:
+
+| `--fix` | Meaning |
+|---|---|
+| `as-given` | The suggestion was applied as proposed, or with trivial edits |
+| `adapted` | The direction was right, but the code had to be rewritten |
+| `wrong` | The proposed fix was incorrect or harmful |
+| `none` | The finding came with no fix suggestion |
+
+Four values rather than a score: at reply time an agent can tell "applied as
+written" from "rewrote it" reliably; it cannot calibrate a scalar across
+vendors. `none` is informative on its own — a reviewer that flags without
+proposing is cheaper to run but costs the agent more per finding. With
+`--defect not` the flag may be given but is never scored.
+
+**Choosing `verdict`** for `/fixpr`'s reply categories:
+
+| `/fixpr` category | `--verdict` | Usual `--defect` |
+|---|---|---|
+| fix, already-fixed | `fixed` | per the rule above |
+| deferred to a follow-up issue | `deferred` | per the rule above |
+| decline-high-confidence, surface-low-confidence, outdated | `declined` | `not` |
+
+**It triggers nothing.** The marker is an HTML comment on its own line with no
+`@mention`, so the plain-text rules for BugBot and Greptile replies (no
+`@cursor`, no `@greptileai`) are unchanged, and it cannot request a review.
+
+**Exit reports.** Phase A and Phase B print `VERDICTS_POSTED: N/M` — replies
+carrying a marker over replies posted to bot findings (`0/0` when none;
+`exit-report-format.md`). `N < M` is a reply that skipped the flags.
+
+**`unmarked_replies` (advisory).** `pr-state.sh` adds a top-level integer
+`unmarked_replies`: inline review comments written by a GitHub `User` account
+(login not ending `[bot]`) that reply (`in_reply_to_id`) to a root comment by
+one of the five review-bot logins, and carry no complete marker line —
+`<!-- review-verdict: <verdict> defect=<real|not> agent=<name>[ fix=<q>] -->`,
+exactly as `reply-thread.sh` writes it (an unknown `fix` value is not); a partial marker (no `defect`, no `agent`, or no
+closing `-->`) skipped the mandatory flags and counts. `/wrap` Step 1.2 prints the
+count when it is non-zero. It never blocks a merge, never joins the findings
+`/wrap` routes to `/fixpr`, and `merge-gate.sh` never reads it. It is a proxy in
+two ways: a human typing on the same account counts as an agent reply, and a
+PR-level fallback reply (the 404 path) is not an inline reply, so it is not
+counted by that inline-only advisory. The ledger separately attributes matching
+fallback replies (Limits below; Issue #1829).
+
+### The fields
+
+| Field | Definition |
+|---|---|
+| `findings` | Threads whose first comment the tool wrote |
+| `valid` | `fixed` + `deferred` |
+| `real_defects` | Threads whose deciding marker says `defect=real`. A valid finding without the marker is not a real defect |
+| `declined`, `unanswered` | The other two verdicts |
+| `precision` | `valid / (valid + declined)`, 3 decimals; `null` when both are 0. Unanswered findings are left out: no verdict is not a no |
+| `cost_per_real_defect_usd` | `spend_usd / real_defects`, in cents; `null` when either is null or 0 — a $0.00 receipt floor per defect would read as free |
+| `median_response_min` | The median, over the PRs the tool reviewed or commented on, of the minutes from the start of its clock to its first review or comment |
+| `fix_as_given`, `fix_adapted`, `fix_wrong`, `fix_none` | Fix-quality-eligible findings by the deciding marker's `fix=` value (Choosing `fix` above) |
+| `fix_unknown` | Eligible findings whose deciding marker has no `fix=`, or an unknown value — never counted as `none` |
+| `fix_quality` | `fix_as_given / (fix_as_given + fix_adapted + fix_wrong)`, 3 decimals; `null` when that sum is 0. `none` and `unknown` are left out: no suggestion, or no recorded judgment, is not a verdict on a suggestion |
+
+**Fix-quality eligibility.** `fix=` is scored only for a finding whose deciding
+marker says `defect=real` and whose verdict is not `declined` (`fixed` or
+`deferred`). A declined finding's fix quality is not scored, nor is a
+`defect=not` one, even when its marker carries `fix=`. A deferred finding is
+scored too: `fix=` judges the suggestion as the agent read it at reply time,
+whether or not the fix has landed yet. The fix counts are
+distinct from `real_defects` and `precision`, which they never change: a
+declined real defect still counts in `real_defects`.
+
+The clock starts at the earliest **trigger comment** for that tool that precedes
+its first response, and at PR open otherwise — so a tool that reviews at open on
+its own is never timed from a later re-request. Triggers are non-bot PR
+conversation comments outside quoted lines: `@coderabbitai review` or `@coderabbitai
+full review` (CodeRabbit), `@cursor review` (BugBot), `@codeant-ai review`
+(CodeAnt), any `@greptileai` mention
+(Greptile). Vercel has none. A PR the tool cannot be timed on is left out of the
+median and counted in a note: one where any of its responses has no timestamp
+(that response may have been the first, so a later dated one never stands in),
+or one with nothing to start from.
+
+Multi-repo totals are recomputed, never averaged: counts are summed, precision
+and fix quality come from the summed counts, the median pools every repo's response times, and
+the cost divides the total spend. Each repo's cost divides its own share of a
+flat fee after the split.
+
+### Velocity fields (issue #1844)
+
+`median_response_min` says how fast a reviewer *starts*. These say how many
+rounds it took and how long a PR waited between its last push and a satisfied
+gate — the "which reviewer slows merges" question.
+
+| Field | Where | Definition |
+|---|---|---|
+| `rounds_per_pr` | each tool | The median, over the PRs the tool posted a review object or inline comment on, of the distinct commits those were posted against — a review's `commit_id`, an inline comment's `original_commit_id` (else its `commit_id`). One round per HEAD it looked at. 1 decimal; `null` when the tool reviewed no PR |
+| `prs_with_3plus_rounds` | each tool | PRs where that count is 3 or more; `0`, never null, when there are none |
+| `push_to_gate_min` | `velocity.prs[]` (single-repo document) | Minutes from the committer date of the merged HEAD to the earliest gate signal on that HEAD (below); `null` when the PR is excluded, with `excluded` naming why |
+| `push_to_gate_min_median`, `push_to_gate_min_p90` | `velocity`, per repo and in the total | The median and the nearest-rank 90th percentile (the ⌈0.9·n⌉-th smallest) of the timed PRs, 1 decimal half-up; `null` when no PR was timed |
+| `prs_timed` | `velocity` | PRs with a duration |
+| `no_gate_signal` | `velocity` | PRs whose HEAD is dated but carries no gate signal — admin merges, relaxed tiers, a Greptile-only gate — excluded, never timed |
+| `no_head_date` | `velocity` | PRs whose HEAD is missing from the PR's commit list (the endpoint lists at most 250 commits) or has no committer date — excluded, never counted as no signal |
+
+A (tool, PR) whose review objects and inline comments name no commit at all is
+left out of `rounds_per_pr` and counted in a note.
+
+**The gate signal is a first cut.** It does not reuse `merge-gate.sh`'s whole
+reviewer-path logic (`merge-gate-reviewer-paths.md`): a signal is a CodeRabbit
+or CodeAnt `APPROVED` review whose `commit_id` is HEAD, or a `Cursor Bugbot`
+check-run from the Cursor app on HEAD with `status: completed` and `conclusion:
+success`, timed by `submitted_at` and `completed_at` (else `started_at`). A
+signal dated before the committer date is discarded. Not modelled: Greptile's
+summary footer and severity path, a later same-SHA `CHANGES_REQUESTED`
+retraction, hollow-approval checks, and relaxed tiers — a PR gated only by one
+of them lands in `no_gate_signal`.
+
+**Known distortion.** The committer date is a proxy for the push time — it is
+when the commit was made, and a rebase re-dates it — so `push_to_gate_min` is an
+upper bound after a rebase, never review latency alone. HEAD is GraphQL's
+`headRefOid`; its date comes from the commit list the BugBot spend already
+reads, so velocity adds no endpoint.
+
+**Pooling.** Per tool, rounds pool every repo's per-PR counts into one median.
+The total `velocity` pools every PR's exact duration once and sums the counts —
+never a median of repo medians. A PR's duration belongs to the PR and its fix
+loop, so it is never attributed to a tool; a per-tool "rounds it caused" figure
+is not measured, because attributing a round to one reviewer would be an
+estimate presented as a measurement.
+
+### Limits
+
+- **The sample is the PRs, not the window.** Threads are read for every PR the
+  run samples (merged in the window, up to `--limit`), whenever the reply came;
+  spend is timed by event inside the window. At the window's edges the two do
+  not line up exactly, so cost per real defect is an approximation there.
+- **100 comments per thread.** A reply past the 100th is unseen; a thread that
+  long is counted in a note.
+- **Fallback identity must be explicit.** A `User` account's PR-level comment
+  whose first nonempty line is `<!-- review-comment-id:N -->` joins the unique
+  matching first-comment REST/GraphQL identity in that same PR. Bot, unmatched,
+  ambiguous, quoted/fenced and later-line markers decide nothing. Inline and
+  fallback replies share the latest-marker, else latest-wording rule; timestamped
+  fallbacks merge chronologically without reordering inline replies. Historical
+  undated data retains supplied order, with undated fallbacks appended.
+- **`real_defects` is a floor before the mandate and a measurement after it.**
+  From **2026-10-09 (UTC)** — the landing of the issue #1842 mandate above; if
+  the `feat(#1842)` squash commit on `main` is dated later, its UTC date governs
+  — every agent reply to a bot finding carries a marker. Before that date a real
+  defect replied to without the flags reads as not real, so for earlier PRs
+  `real_defects` is a lower bound and `cost_per_real_defect_usd` — spend over
+  that undercounted figure — an upper bound; both reflect marker adoption. On
+  and after it, a missing marker is a process miss that `unmarked_replies`
+  surfaces, and both figures measure the marked thread replies. A PR-level
+  fallback can now decide a ledger verdict when explicitly attributed (above),
+  but still escapes the separate inline-only `unmarked_replies` advisory.
+
+### Comparing with sales-kit Issue #184
+
+Shared: the four outcomes (fixed, deferred, declined, unanswered), valid as
+fixed plus deferred, and the real-defect test above. Different, and worth
+reading before putting the two side by side:
+
+- **Spend.** sales-kit Issue #184's headline cost per real defect uses
+  **marginal** spend, the extra cost a review added. That is why it shows
+  CodeAnt at $0.00 — the seat is paid either way. This ledger reports CodeAnt's
+  **prorated flat** fee (the `flat` label), so its CodeAnt figure is not $0.00
+  and is not comparable with that marginal one.
+- **Who judged real.** That ledger classified real defects afterwards, by a
+  verifier pass, so a real defect could be unanswered or declined. Here only the
+  replying agent's marker makes one, so a finding nobody stamped is never real.
+- **What a finding is.** That ledger also counted findings written in a review
+  body; this one counts review threads only.
+
+## The scorecard (issue #1811)
+
+The snapshot knows what each reviewer cost and caught; the report used to read
+like an activity log anyway. `scorecard.sh` turns the snapshot into the three
+pieces of report content that answer the parent question, where the review
+money should go. SKILL.md Step 7 embeds them verbatim. The renderer reads the
+snapshot, the claims page, and the snapshot directory; it writes nothing and
+calls nothing, so it is tested on fixtures alone.
+
+**None of it is a drift finding.** The tables never reach `drift.sh` or Step 6:
+a tool ranking last, or a claim far from our figure, files no issue. Drift
+stays the only thing the audit files, and `--report-only` stays filing-free.
+
+### Value per dollar
+
+One row per tool from the snapshot's top-level `tools[]` — the cross-repo total
+on a multi-repo run — with a collapsed per-repo table beneath it, ranked the same
+way.
+
+| Column | Field | Notes |
+|---|---|---|
+| Spend | `spend_usd` (`spend_source`) | The label travels with the figure: `$62.00 (flat)`, `$3.30 (receipt)`, `— (none)` |
+| Real defects | `real_defects` | Marker-stamped only (Value fields above); a floor for PRs before the mandate cutoff (Limits above), a measurement of marked thread replies after it |
+| Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect; a ceiling for PRs before the mandate cutoff (Limits above) |
+| Precision | `precision` | As a percentage, one decimal |
+| Fix quality | `fix_quality` | As a percentage, one decimal; `—` when null. The four counts and `unknown` sit in a collapsed **Fix quality counts** table beneath |
+| Sole-source PRs | `sole_provider_on` | PRs where this tool alone posted an inline finding |
+
+**Ranking.** Tools with a cost per real defect come first, lowest cost first.
+Tools with known spend but no cost follow, their spend still shown — "paid,
+found nothing" is a finding in its own right, so they stay in the table. Tools
+whose spend is unknown come last. Precision breaks ties inside each group
+(higher first, unknown last), then the tool key, so the order is deterministic.
+Fix quality is shown, never ranked on.
+
+**Velocity fold.** A collapsed **Velocity** fold follows the ranked table and
+its folds: per tool `rounds_per_pr` and `prs_with_3plus_rounds`, in the ranked
+order; then per repo and for the total (one repo row on a single-repo snapshot)
+the push-to-gate median and p90 with `prs_timed`, `no_gate_signal`, and
+`no_head_date` (Velocity fields above). A missing figure renders `—`.
+
+**`—` is no figure, never zero.** Every null renders `—`, and only a real zero
+renders `0` or `$0.00`. A table that turned an unknown into `0` would rank a
+tool we cannot price as free.
+
+A snapshot measured without the ledger (a direct single-repo `measure.sh` run
+without `--ledger`) has no spend or real-defect fields. The section then says so
+in one line rather than printing a table of dashes. `/review-stack-audit` itself
+always measures with `--ledger` (Step 3), so its reports, the monthly tick's
+included, carry the table.
+
+### Vendor claims vs observed
+
+Every vendor publishes figures about itself. `.claude/reference/ai-review-vendor-claims.md`
+records each claim once, with its metric, benchmark, who ran it, source URL,
+retrieval date, and a `verified` / `unverified` status. A claim that could not be
+re-confirmed is kept and marked, never dropped. The renderer reads only that
+page's fenced `review-stack-claims` block (schema `review-stack-claims/v1`),
+through the same fence parser that reads the pricing matrix's rates block, and
+refuses a duplicated, malformed, or wrongly-versioned block whole. One caveat
+line replaces a table that might otherwise be half right.
+
+Each claim row sits beside the claimed tool's observed precision and cost per
+real defect, joined on `tool_key`. A vendor outside this stack (Qodo) keeps its
+row, with blank observed cells. Every snapshot tool that no claim names gets a
+`no published claim` row citing the page itself and its retrieval date, so a
+tool is never silently missing and every row carries a URL and a date. A claim
+whose `tool_key` matches no tool in the snapshot is named in a note under the
+table.
+
+The page opens with the comparability caveat for a reason. Published benchmarks
+are small, partly vendor-run, and score injected or back-tracked bugs, and the
+metric names collide. Our figures are agent-judged verdicts on real PRs. The
+table sets the two side by side to show where a vendor's story and our
+experience diverge, not to rank anyone on its own claim.
+
+### The 30-day study window
+
+Issue #1747's study needs a declared boundary for its data. The window opens on
+the UTC date of `generated_at` of the earliest ledger-mode snapshot (one whose
+tools carry `spend_source`) among `~/.claude/review-stack-audit/snapshot-*.json`,
+and closes 30 days later: a first ledger snapshot dated 2026-10-10 gives
+`study window: 2026-10-10 → 2026-11-09`. Before any ledger snapshot exists the
+line reads `study window: not started`. A file that cannot be read or parsed is
+skipped and counted on the line. An unreadable directory reads
+`study window: unknown`, because a lookup that failed is not evidence that
+nothing exists.
+
+**Limit — the start is the earliest snapshot still on disk.** Snapshots are
+monthly and a same-month run overwrites `snapshot-YYYY-MM.json`, so a re-run
+inside the first month moves the start to that re-run's date. No state file
+pins it. Every report caveats it, and a study that needs a fixed start should
+quote the first report's window line.
+
+## What this audit will not do
+
+It never edits a rule, skill, script, or config, and never touches a
+subscription. Its whole output surface is a snapshot, a report, and GitHub
+issues. Billing actions belong to the person holding the card; the audit's
+contribution is saying "this looks like a bill with no return" early enough to
+matter.

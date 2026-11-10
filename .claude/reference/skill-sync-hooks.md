@@ -1,8 +1,76 @@
 # Skill Sync Hooks — How They Work
 
-## Session-Start Sync Hook
+## Scheduled Sync — `claude-config-sync.sh` (primary, issue #1524)
 
-The `session-start-sync.sh` PostToolUse hook runs once per session (on the first tool call) and syncs the skills worktree to `origin/main`. This ensures skills, rules, and CLAUDE.md are fresh across **all repos** — not just `claude-code-config`. The hook also pulls the root repo's `main` branch if it's currently checked out.
+The hooks below only fire when someone opens a session on that machine. A machine you have not worked on lately therefore drifts silently: it runs stale rules, and skills or agents merged elsewhere are never linked at all.
+
+`.claude/scripts/claude-config-sync.sh` is the machine-level answer — one idempotent freshen pass that:
+
+1. fast-forwards `~/.claude/skills-worktree` to `origin/main` (bootstrapping via `setup-skills-worktree.sh` when it is missing),
+2. publishes every managed symlink through `publish-skill-symlinks.sh` and `publish-agent-symlinks.sh`,
+3. verifies the managed links still resolve,
+4. re-runs the other idempotent setup — `register-hooks.py` and `repair-trust-all.sh`,
+5. records a durable restart-recommended / sync-failure signal.
+
+`install-config-sync.sh` registers it as a launchd LaunchAgent (macOS only): `RunAtLoad` for one pass at login, `StartInterval` for the hourly repeat, and launchd's own coalescing for the runs missed during sleep. `uninstall-config-sync.sh` removes it. Both are opt-in — `setup.sh` does not call them.
+
+**Scope boundary.** The job touches the skills worktree and the `~/.claude` links, nothing else. It never pulls, resets, or checks out the root repo; root `main` hygiene stays a session-start concern behind `dirty-main-guard.sh` (`.claude/rules/main-hygiene.md`).
+
+**Concurrency.** The scheduled job and the session-start hook do the same work, so both take one `state-lock.sh` mutex on `~/.claude/logs/claude-config-sync-state.json`. Whichever arrives second skips its region cleanly — the scheduled job reports `outcome: skipped` and exits 0; the hook records a notice and leaves the worktree alone. Neither ever proceeds unserialized.
+
+The two sides wait for different lengths of time, because they are bounded by different things:
+
+| Variable | Read by | Default | Why that default |
+|----------|---------|---------|------------------|
+| `CLAUDE_CONFIG_SYNC_LOCK_TIMEOUT` | `claude-config-sync.sh` | 30s | The scheduled tick can afford to wait for a session-start sync to finish; if it still cannot get in, the next tick is an hour away and costs nothing. |
+| `CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT` | `session-start-sync.sh` | 5s | The wait is charged against the same `timeout 30` hook budget the lock-held git region must finish inside, so it is capped short to leave that region a usable deadline (the hook reserves the remainder for git and declines calls that cannot complete). A scheduled sync still holding the lock after 5s has already done the hook's work, so waiting longer buys nothing. |
+
+A real critical section is milliseconds; both defaults are sized for the contention tail, not the common case. The marker's read is lock-free — a contended session start still surfaces the restart notice — and only the startup *clear* re-takes the lock, for at most 5s.
+
+**Bounded execution.** `state-lock.sh` breaks a lock on *age alone*, with no liveness check, so any lock-held call that stalls past `STALE_AGE` (120s default) invites a second sync to mutate the same worktree concurrently. The potentially slow git, publish and setup operations on both sides are therefore scheduled against one deadline — the hook's registered `timeout 30`, the job's staleness window — and a call with too little budget left is **declined and recorded** rather than started and killed. A recorded failure keeps the publish guard and the marker-clear guard honest; a kill records nothing, which is the failure these bounds exist to remove. Issue #1593 extended the same treatment to the symlink publishers and the hook's root-repo sync leg, which PR #1553 had left outside the budget. The per-call ceilings, all clamped to what is left of their region:
+
+| Variable | Read by | Default | Bounds |
+|----------|---------|---------|--------|
+| `CLAUDE_CONFIG_SYNC_GIT_BOUND` | `claude-config-sync.sh` | half the staleness window (60s) | one lock-held `fetch`/`reset`/bootstrap |
+| `CLAUDE_CONFIG_SYNC_PUBLISH_BOUND` | `claude-config-sync.sh` | a sixth of the window (20s) | one lock-held symlink publisher |
+| `CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND` | `session-start-sync.sh` | 8s | one lock-held `fetch`/`reset` |
+| `CLAUDE_CONFIG_SYNC_HOOK_SETUP_BOUND` | `session-start-sync.sh` | 18s | `setup-skills-worktree.sh` (clone + fetch + publish + register) |
+| `CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND` | `session-start-sync.sh` | 5s | one symlink publisher |
+| `CLAUDE_CONFIG_SYNC_HOOK_ROOT_SYNC_BOUND` | `session-start-sync.sh` | 6s | the post-lock root-repo `main-sync.sh` / `pull --ff-only` leg |
+
+The deadline the ceilings are clamped against is itself overridable — **for tests only**:
+
+| Variable | Read by | Default | Bounds |
+|----------|---------|---------|--------|
+| `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS` | `session-start-sync.sh` | 30s | the whole hook run — the deadline every ceiling above is clamped to |
+| `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK` | `session-start-sync.sh` | unset | required alongside the row above to set a deadline **larger** than 30s |
+
+The 30s default mirrors the `timeout: 30` registration in `global-settings.json`, and `claude-config-sync.test.sh` test 16 holds the two spellings to each other. Raising it in production only lets the hook outlive the registered timeout and be killed mid-git — the outcome the deadline model exists to prevent. That is why the raise takes two variables and not one (CodeAnt, PR #1709): the four ceilings above are each `min(budget left, ceiling)` and so cannot outlive the deadline no matter what the environment says, but this one variable can, and it is just as inheritable as they are — a stray export in a shell profile or a CI job would otherwise widen production's deadline silently. A **lower** value needs no pair (shrinking the budget only declines more, the safe direction); a raise without `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1` is refused, kept at 30s, and **said out loud** in the session's config-sync notice naming the value it ignored — a silent clamp is how a test knob becomes a no-op nobody notices. It exists because a bound is `min(budget left, ceiling)` and `budget left` drains with wall-clock time, so a timing-sensitive test on a slow runner sees its call *declined* for want of budget rather than for the reason under test (issue #1698, from a `hook-tests-macos` flake on PR #1689). Test-side, `CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS` (default 60s; the macOS CI lane sets 120s) is what `session-start-sync-publish-bounds.test.sh` passes into that knob, and it widens **only** the ample-budget control that proves the stall assertion is not vacuous — the stall leg keeps the production deadline, so it still fails when the hook genuinely stalls.
+
+The hook's post-region calls reserve only the genuinely unbounded tail (the marker `jq`, the scheduling reconcile, the JSON emission), which is what makes its 9s post-git reserve arithmetic rather than a guess: the work it covers now bounds itself.
+
+**Setup tail and recovery (Issue #1641).** Link verification, hook registration and trust repair run in bounded children. The scheduled job uses its original acquire clock and a deadline of the lock staleness window minus eight seconds; each call is capped at `CLAUDE_CONFIG_SYNC_TAIL_BOUND` (default one third of the publisher tail reservation, normally 10s). The SessionStart registration uses its original hook clock, `CLAUDE_CONFIG_SYNC_HOOK_REGISTER_BOUND` (default 3s), and an eight-second finalization reserve. These reserves allow up to five seconds for termination/reaping and three for reporting; they do not guarantee filesystem responsiveness. Missing bounds, captures, unusable/backward clocks or exhausted time decline the operation before launch. Parent clock observations are retained at statement level across calls; a detected backward step remains invalid even if the clock later recovers. A clock failure after launch is reported as an abort, and an elapsed bound as an overrun.
+
+Both callers persist typed `pending_setup.hooks` / `pending_setup.trust` booleans in the shared state file before mutation, under verified lock ownership. A mutator also checks inherited ownership immediately before execution. Only confirmed successful completion clears its flag. Unknown state fields survive; malformed pending state or unverifiable ownership declines setup. Scheduled summaries expose only the known flags, with `outcome: incomplete` and `setup_incomplete` events for unfinished tail work, separately from core sync failure streaks. SessionStart retains its restart signal when registration fails. Both captured publisher streams must be readable; unavailable completion output conservatively records the full affected restart categories, using cached streams rather than re-reading them. Both already retry setup on every eligible tick, including unchanged HEADs, so pending work needs no separate service. A helper can finish some atomic replacements before termination; pending means retry required, not rollback. Existing helpers use atomic replacement but recovery must still tolerate completed earlier work.
+
+The parent still performs link snapshots for change detection, lock/state/marker I/O and reporting. Arbitrary blocked kernel filesystem calls, an unkillable child, or ownership lost after a check cannot be made atomic or given a universal hard deadline by these shell bounds. Finalization reserves and ownership checks reduce that exposure; they do not prove persistence or rollback after lock loss.
+
+**Signal path.** `~/.claude/sync-restart-recommended.json` carries two independent portions:
+
+| Portion | Written when | Cleared when |
+|---------|--------------|--------------|
+| `restart_recommended` | a landed sync changed `.claude/agents/`, `.claude/rules/`, `.claude/skills/` or `CLAUDE.md`, published a new agent symlink, or bootstrapped the worktree | `session-start-sync.sh` sees `source == "startup"` **and** it actually ran the sync region **and** its lock acquire was uncontended (read from `state-lock.sh`'s `STATE_LOCK_WAITED`, never inferred from a clock — issue #1567) **and** the marker still holds the same `restart_recommended` it surfaced — only then has this session demonstrably loaded the change. Any other combination leaves the signal for the next startup: a duplicate reminder, never a lost one |
+| `sync_failure` | the consecutive-failure streak reaches `CONFIG_SYNC_FAILURE_THRESHOLD` (default 3), carrying how long it has been failing | the next successful tick |
+
+Both surface twice: in the session's context via `session-start-sync.sh`'s `additionalContext`, and as a statusline badge (`↻ restart`, `⚠ sync failing`) for the human between sessions. Run detail lands in `~/.claude/logs/claude-config-sync.log`; failure and recovery events in `~/.claude/logs/claude-config-sync-events.jsonl`. When neither portion applies the marker file is removed, so a healthy machine shows nothing.
+
+Restart automation is deliberately out of scope: no scheduler restarts a live Claude session. The visible signal is the ceiling.
+
+## Session-Start Sync Hook (backstop)
+
+The `session-start-sync.sh` SessionStart hook runs at every session start (fresh session, resume, clear, compact, fork) and syncs the skills worktree to `origin/main`, publishes the skill and agent symlinks, and registers hooks — all inside the shared lock above. This ensures skills, rules, and CLAUDE.md are fresh across **all repos** — not just `claude-code-config`. Outside the lock, the hook also pulls the root repo's `main` branch if it's currently checked out.
+
+It remains the backstop for machines without the LaunchAgent, and the only place the restart signal is cleared. With the scheduler installed the common case needs no restart at all: everything is already linked before the session opens.
 
 The `post-merge-pull.sh` hook syncs the skills worktree after merges and also refreshes the CLAUDE.md and rules symlinks.
 

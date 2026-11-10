@@ -8,6 +8,8 @@
 
 **Current fleet (for model-line context):** Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5.
 
+> **Point-in-time record — one behavior below has since changed.** This audit describes each surface as it stood on 2026-07-22, and is kept as the verification record for #701. Since [#1193](https://github.com/auerbachb/claude-code-config/issues/1193) (2026-08-22), **criterion 3 ("should be split into multiple PRs") no longer routes an issue to a thread** — it is decomposed into an inline increment chain by `/subagent` Step 5.1. Read every "too-big → thread chip" row below as covering criteria 1 and 2 only. Current behavior: `too-big-recalibration-2026-07.md` "Amendment — criterion 3 decomposes".
+
 ---
 
 ## Why this audit, and why now
@@ -98,6 +100,8 @@ When all three hold → **prefer inline**: recommend `/subagent #N` in the PM th
 
 > **Superseded in part by [#776](https://github.com/auerbachb/claude-code-config/issues/776) (2026-07-28).** Treating "pipeline full" as a reason to offer a chip was a defect: it pushed past-ceiling *subagent-fit* work into a separate thread. The gate is now **two** routing conditions (PM context + subagent-fit); slot availability decides only run-now vs **queue inline**, never inline-vs-thread. Every separate-thread offer must state its reason, and the too-big case must name which Step 4 criterion fired — not just offers made while a slot was free. The standalone (no-PM-context) case names *that* as its reason and needs no too-big criterion, since no inline path exists to prefer. The rest of this section stands as the #701 record. See [too-big-recalibration-2026-07.md](too-big-recalibration-2026-07.md); `chip-launching.md` carries the live wording.
 
+> **Superseded again by [#1229](https://github.com/auerbachb/claude-code-config/issues/1229) (2026-08-22) — the first condition itself.** "PM context" is no longer a routing condition. The gate's first check is now **execution capability**: every thread can run a pipeline except one under an explicit capture-mode invariant (`/issue-maker` Step 2), and an absent `## Active Work` table is a **bootstrap** instruction, not a verdict. That retires this section's "no PM context (the common standalone case)" reason and, with it, "What NOT to change" → *Standalone chip behavior* below: outside PM context `/start-issue` and `/wave` now **adopt** the work rather than chip it, and `/issue-maker` — the one non-executing surface — emits **one batch hand-off per capture session** instead of one chip per issue. Exactly one structural chip reason survives: a named `/subagent` Step 4 disqualifier. Two non-routing cases also end in a thread (the capture-mode invariant; an explicit user request for a prompt), and neither carries a Step 4 criterion. The audit's own "honest scope" paragraph below anticipated this residual and called it a workflow-adoption matter; #1229 makes it a routing one instead. Rationale, the guardrail it depends on (#1191's repo-wide cap), and the scope calls left unmade: [inline-default-any-thread-2026-08.md](inline-default-any-thread-2026-08.md). `chip-launching.md` carries the live wording.
+
 **The execution boundary is untouched.** The gate never launches anything — it only chooses which *recommendation* to surface. The user's action (running `/subagent`, or clicking a chip) remains the only execution path (`chip-launching.md` "execution boundary", NON-NEGOTIABLE).
 
 **Honest scope of the fix.** The gate closes the in-PM-session leak, which is correct and necessary. It is **not** sufficient to end sprawl on its own: the data shows most work enters thread-first via `/start-issue` with *no* PM session, where a chip is the right hand-off (there is no inline pipeline to use). Ending that residual is a workflow-adoption matter (make PM-first the habit) plus **FU-1** telemetry to actually measure spend rather than proxy it.
@@ -123,6 +127,17 @@ When all three hold → **prefer inline**: recommend `/subagent #N` in the PM th
 
 - **Problem:** No pipeline attributes token/Sonnet spend to threads vs inline subagents. `skill-usage.log` records invocation counts only, so every attribution here is a *thread-count proxy*, not a spend measurement (AC1 could only be answered "even roughly").
 - **AC:** Lightweight capture of per-session model tier and (where available) token spend, tagged thread vs inline; a `*-report.sh` that summarizes the thread-vs-inline split; this audit's AC1 re-runnable against real spend rather than a proxy.
+- **Status (2026-08-12):** **PARTIAL** — infrastructure closed by PR implementing Issue #710. Two hooks installed: `spend-session-tracker.sh` (SessionStart — tags new standalone threads) and `spend-subagent-tracker.sh` (SubagentStop — tags each inline Agent-tool subagent). Append-only TSV log at `~/.claude/spend-telemetry.log`; report via `bash .claude/scripts/spend-telemetry-report.sh`. Provides execution-type attribution and model-tier distribution; comparative thread-vs-inline token spend requires a thread token source (SessionStart does not expose usage data). Full schema, reliability caveats, and AC1 re-run methodology: `.claude/reference/spend-telemetry-pipeline.md`.
+
+#### Re-running AC1 against real spend (post-FU-1)
+
+To replace the proxy-based AC1 table with real execution-type attribution:
+
+```bash
+bash .claude/scripts/spend-telemetry-report.sh --days 30
+```
+
+Read the `inline`/`thread` row split in the "All-time thread-vs-inline breakdown" table. In a healthy post-#613 regime the inline row should grow over time and `pm-worker`/`phase-*` agent types should dominate the inline inventory. Cross-validate with `skill-usage-report.sh` for the same window (which shows `/pm`, `/subagent`, `/start-issue` invocation counts). Full methodology: `.claude/reference/spend-telemetry-pipeline.md` §"Re-running AC1 from pm-routing-audit-2026-07.md against real spend".
 
 ### FU-2 — `/wave` missing its global skill symlink — [#711](https://github.com/auerbachb/claude-code-config/issues/711) *(local deploy hygiene)*
 

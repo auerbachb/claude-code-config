@@ -16,7 +16,7 @@ Use `state` — **not** a `merged` field. `gh` has no `merged` JSON field; `--js
 ## Gate refresh (every iteration)
 
 ```bash
-GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
 GATE_EXIT=$?
 HEAD_NOW=$(printf '%s' "$GATE_JSON" | jq -r '.head_sha // empty')
 ```
@@ -41,9 +41,37 @@ When `(.stale_bot_changes_requested_count // 0) > 0`, invoke dismissal without w
 
 Then: if `mergeable == CONFLICTING` — stop immediately; recommend **`/merge-conflict`** or manual resolution. Do not proceed to Branch B.
 
+## `BEHIND` — transparent to branch selection (issue #1425)
+
+Evaluated **before** Branch B, after the human-`CHANGES_REQUESTED`, Branch A, and `CONFLICTING` guards.
+
+`BEHIND` is cleared by Step 2.4, not by any branch here, so it is **removed before classification**. Let `REMAINDER` be `missing[]` minus the `BEHIND` entry; every branch below matches against `REMAINDER`:
+
+```bash
+REMAINDER=$(printf '%s' "$GATE_JSON" | jq -c '
+  [ (.missing // [])[] | select(startswith("branch is BEHIND base") | not) ]')
+```
+
+- **`REMAINDER` empty** and no `WRAP_PHASE1_FINDINGS` pending → **break out of the recovery loop** to SKILL.md Step 2.2, then Step 2.4's clean-`BEHIND` merge path. Do not dispatch `/fixpr` and do not rebase.
+- **`REMAINDER` non-empty** → classify on `REMAINDER` alone and carry `BEHIND` forward; it is re-evaluated next iteration, and clears at Step 2.4 once it is the only entry left.
+
+That second bullet is what keeps `BEHIND` + a non-Branch-B blocker classified. `BEHIND` + *incomplete* CI is the common case: incomplete CI is explicitly not a Branch B trigger (Branch B needs CI **failing**), so without the `REMAINDER` rule that pair would match no branch at all, burn the iteration cap on "unclassified blocker", and stop instead of waiting for CI. With it, Branch D takes the wait, and the following iteration sees `BEHIND` alone and exits to Step 2.4.
+
+The gate never returns exit `0` for a `BEHIND` PR — the entry stays in `missing[]` — so without this clause a clean-`BEHIND` PR could never reach the merge step at all. The clean/non-clean decision belongs to Step 2.4: `clean-behind-check.sh` exit `0` → `admin-merge.sh --auto-plain --ac-verified` (no rebase, no protection change — issue #754); exit `1` → fall through to `/fixpr`'s non-clean `BEHIND` rebase path. Rebasing a *clean* `BEHIND` is the treadmill #754 exists to avoid, and it invalidates the bot approval that just satisfied the rest of the gate.
+
+An empty `REMAINDER` is load-bearing: `merge-gate.sh` gives human `CHANGES_REQUESTED` and `CONFLICTING` their own `missing[]` entries, so neither can be present when the exit fires. AC verification must precede the probe — `clean-behind-check.sh` counts unchecked Test Plan boxes as `reasons_not_safe`, which is why the exit lands on Step 2.2 first.
+
+### Re-entry from Step 2.4
+
+Step 2.4's two `BEHIND` fall-throughs — `clean-behind-check.sh` exit `1` (not clean) and `admin-merge.sh` exit `1` (clean state lost at merge time) — rebase and force-push, then **return to the top of this loop**. They must never merge from Step 2.4 and never end `/wrap`: the rebase moves HEAD, so the bot approval that satisfied the gate no longer applies and CI restarts.
+
+Re-entry reuses the **same** `i` counter and `WRAP_RECOVERY_MAX_ITERATIONS` cap — a rebase that lands `BEHIND` again cannot spin unbounded, and exhausting the cap stops with the last `missing` plus the full `WRAP_RECOVERY_AUDIT`. Record each re-entry in the audit with the pre- and post-rebase SHA. Because the path back to Step 2.4 runs through Step 2.2, AC is re-verified on the rebased SHA, which is what keeps `--ac-verified` truthful on the retry.
+
 ## Branch B — Delegate `/fixpr`
 
-Run when **any** of: `missing` mentions unresolved review threads; `merge_state == "BEHIND"`; `missing` reports CI failing (not merely incomplete); `merge_state == "DIRTY"`; or Phase 1 left `WRAP_PHASE1_FINDINGS` pending.
+Run when **any** of: `REMAINDER` mentions unresolved review threads; `REMAINDER` reports CI failing (not merely incomplete); `merge_state == "DIRTY"`; or Phase 1 left `WRAP_PHASE1_FINDINGS` pending.
+
+**`merge_state == "BEHIND"` is not on its own a Branch B trigger (issue #1425).** It reaches `/fixpr` only when it *accompanies* one of the conditions above — a rebase is needed anyway in that case — or when Step 2.4's `clean-behind-check.sh` probe returns exit `1`, i.e. the `BEHIND` is not clean. A `BEHIND`-only `missing[]` takes the loop exit above instead.
 
 **Threads-only detection (issue #455 / #479):** classify using `merge-gate.sh`'s structured signals:
 
@@ -86,12 +114,13 @@ When CR hourly budget blocks an internal `@coderabbitai full review` inside `/fi
 
 When `missing` indicates stale/dismissed bot approval or missing CR/BugBot/CodeAnt/Greptile signal per `cr-merge-gate.md`, trigger the **one** bot your repo needs:
 
-- **CodeRabbit:** run `.claude/scripts/cr-review-hourly.sh --check` first. Exit `1` → **stop** with JSON snapshot and `cr-github-review.md` rate-limit guidance — do not loop until cap resets.
-- **Greptile:** `@greptileai` only when Greptile is the owning path / code owner (per `greptile.md`).
+- **CodeRabbit:** run `"$CR_HOURLY_SH" --check` first. If the resolved helper is empty, emit `ERROR: cr-review-hourly.sh not found (checked all three paths) — CodeRabbit budget gate unavailable` and stop. Exit `1` → **stop** with JSON snapshot and `cr-github-review.md` rate-limit guidance — do not loop until cap resets.
+- **Greptile:** paid — `@greptileai` only under an owner grant, via `"$PAID_GRANT_SH" --trigger <N> --vendor greptile` (resolved in the SKILL.md preamble; empty → stop and report the blocker) (issues #1897, #1898), and only when Greptile is the owning path / code owner (per `greptile.md`). Without approval, stop with the JSON snapshot.
 - **CodeAnt:** `@codeant-ai review` when CodeAnt owns the gap.
-- **BugBot:** post `@cursor review` when `reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json` — duplicates OK.
+- **BugBot:** paid — post `@cursor review` only under an owner grant, via `"$PAID_GRANT_SH" --trigger <N> --vendor cursor` (issues #1897, #1898), when `reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json`, and never on a HEAD BugBot already refused for spend (`bugbot.md`). Without approval, stop with the JSON snapshot.
+- **Tier-aware repo** (issue #1749 — the repo's `.claude/pm-config.md` has a `## Review policy`): before the CodeRabbit, CodeAnt, BugBot, or Greptile bullet, ask `review-triggers-allowed.sh <N>` fresh on this iteration (three-path resolution). Greptile is outside the helper's reviewer list (issue #1840): when the helper's JSON reports `escalation` `off` (`REVIEW_ESCALATION=off`), Greptile is never invited — stop with the JSON snapshot without spending a grant; otherwise its bullet above applies unchanged — owner grant, `greptile.md` ownership, and the budget check inside `--trigger`. Post CodeRabbit or CodeAnt only when the helper reports it `allowed`, after `--claim <reviewer>` exits 0; `--release` it if the post fails. BugBot is never `allowed` and takes no claim (`--claim cursor` is always denied): any earlier helper reason wins, and only at its last one, excluded `approval_required`, is the owner grant spent via the BugBot bullet's `--trigger`, passing the helper's `head_sha` as `--head` so a HEAD that moved since the helper ran refuses (`grant_head_mismatch`) instead of posting on an unchecked SHA; that refusal stops like any other non-`triggered` status below (a new HEAD needs a new owner grant). A `deferred` reviewer (CI pending, HEAD not settled, daily cap, CodeAnt still inside its window) is not posted yet: delegate the wait to `/fixpr` as below and ask the helper again on the next recovery iteration, bounded by the same `WRAP_RECOVERY_MAX_ITERATIONS`. Any other `excluded` reviewer is never posted — the tier's own gate decides the PR (`merge-gate.sh`), so stop with the JSON snapshot rather than loop. Mode `legacy` keeps the bullets above unchanged. Mechanism: `.claude/reference/review-policy.md` "Trigger eligibility".
 
-Then **delegate the wait to `/fixpr`** (issue #454 — no wrap-side sleeps): run the `/fixpr` workflow; its idempotent path makes no push when nothing needs fixing, and its Step 4d loop waits on the current SHA until the triggered bot completes or the 20-min cap fires. Parse `FIXPR_WAIT_SUMMARY`, append to audit, re-run `merge-gate.sh` immediately.
+Then **delegate the wait to `/fixpr`** (issue #454 — no wrap-side sleeps) — for a paid trigger, only when `--trigger` printed `STATUS=triggered`. Any other status (`no_grant`, `grant_head_mismatch`, `price_above_grant`, `daily_cap_over`, `budget_exhausted`, `trigger_failed`, …) means no review was requested: **stop** and report that status with the JSON snapshot rather than wait on a review that will never arrive. A `deferred` reviewer's wait is unaffected. Run the `/fixpr` workflow; its idempotent path makes no push when nothing needs fixing, and its Step 4d loop waits on the current SHA until the triggered bot completes or the 20-min cap fires. Parse `FIXPR_WAIT_SUMMARY`, append to audit, re-run `merge-gate.sh` immediately.
 
 ## Branch D — CI incomplete only
 
@@ -99,11 +128,13 @@ Do not fix anything. Delegate the wait to `/fixpr` (idempotent — no push; its 
 
 ## Branch E — Branch-protection block
 
-When the **only** outstanding blocker is `missing` reporting `branch protection reviewDecision is … not APPROVED, with <bot> in CODEOWNERS` **and** that bot already has a fresh `APPROVED` on HEAD (so Branch C's re-trigger won't help — the AI reviewer auto-skipped the code-owner path), this is the solo-owner `enforce_admins` bypass scenario.
+When the protection note is the **only** entry in `REMAINDER` — `missing` reporting `branch protection reviewDecision is … not APPROVED, with <bot> in CODEOWNERS` — **and** that bot already has a fresh `APPROVED` on HEAD (so Branch C's re-trigger won't help — the AI reviewer auto-skipped the code-owner path), this is the solo-owner `enforce_admins` bypass scenario.
+
+Like every branch here, Branch E matches on `REMAINDER`, so a `BEHIND` entry **alongside** the protection note does not disqualify it (issue #1425) — that pair reached `/fixpr` through Branch B before `BEHIND` became transparent, and must still land here rather than falling through to "unclassified blocker" and burning the cap without ever offering `/admin-merge`.
 
 **Stop and suggest `/admin-merge <PR>`** — never tell the user to toggle `enforce_admins` in the GitHub UI, and never modify branch protection yourself. `/admin-merge` prints a user-runnable bypass command (gate is re-verified first). Record the suggestion in the audit.
 
-**A clean `BEHIND` is NOT this branch (issue #754):** that bypass changes no protection — `/fixpr`'s BEHIND row auto-runs `admin-merge.sh <PR> --auto-plain --ac-verified` and the merge completes without a user turn. Only a protection-**modifying** bypass stops here.
+**A `BEHIND`-only `missing[]` is NOT this branch (issue #754):** that bypass changes no protection — Step 2.4's clean-`BEHIND` path auto-runs `admin-merge.sh <PR> --auto-plain --ac-verified` and the merge completes without a user turn. Only a protection-**modifying** bypass stops here. This excludes `BEHIND` as the *sole* blocker, never a `BEHIND` accompanying the protection note above.
 
 ## `merge_state == UNKNOWN`
 

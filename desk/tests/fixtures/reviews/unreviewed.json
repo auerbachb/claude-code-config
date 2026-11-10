@@ -1,0 +1,20 @@
+{"count": 6, "level2_lines": 120, "today": "2026-10-07", "items": [
+  {"id": "R-3", "kind": "review", "status": "open", "repo": "acme/gadgets", "key": "pr-7",
+   "question": "docs: gadget guide", "context": ["https://github.com/acme/gadgets/pull/7", "Merged 2026-10-04 09:00 UTC"],
+   "synced_on": "2026-10-05", "summary_l1": "The gadget guide explains setup end to end."},
+  {"id": "R-10", "kind": "review", "status": "open", "repo": "acme/widgets", "key": "issue-202",
+   "question": "Idea: export widgets", "context": ["https://github.com/acme/widgets/issues/202", "Filed 2026-10-07 13:00 UTC"],
+   "synced_on": "2026-10-07", "summary_l1": "Captured issue: widgets can be exported to paper."},
+  {"id": "R-2", "kind": "review", "status": "open", "repo": "acme/widgets", "key": "pr-102",
+   "question": "fix: widget count", "context": ["https://github.com/acme/widgets/pull/102", "Merged 2026-10-07 14:00 UTC"],
+   "synced_on": "2026-10-07", "summary_l1": null},
+  {"id": "R-1", "kind": "review", "status": "open", "repo": "acme/widgets", "key": "pr-101",
+   "question": "feat(#90): widgets become reviewable", "context": ["https://github.com/acme/widgets/pull/101", "Merged 2026-10-06 21:34 UTC"],
+   "synced_on": "2026-10-07", "summary_l1": "Widgets become reviewable from the desk."},
+  {"id": "R-4", "kind": "review", "status": "open", "repo": "other/widgets", "key": "pr-9",
+   "question": "feat: other widgets", "context": ["https://github.com/other/widgets/pull/9", "Merged 2026-10-06 08:00 UTC"],
+   "synced_on": "2026-10-06", "summary_l1": "Other widgets ship."},
+  {"id": "R-5", "kind": "review", "status": "open", "repo": "acme/gadgets", "key": "pr-8",
+   "question": "feat: gadgets", "context": ["https://github.com/acme/gadgets/pull/8", "Merged 2026-10-06 09:00 UTC"],
+   "synced_on": "2026-10-07"}
+]}

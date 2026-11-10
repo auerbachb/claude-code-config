@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # reviewer-of.sh — Determine which reviewer (cr/bugbot/greptile) owns a PR.
+# catalog: pr-state-polling — Determine which reviewer (cr/bugbot/greptile) owns a PR; reads session-state then GitHub history
 #
 # PURPOSE
 #   Centralizes the reviewer-ownership resolution contract defined in
@@ -63,6 +64,16 @@
 #      BugBot/Greptile escalation decisions are intentionally stored in
 #      session-state and are not always recoverable from live-history
 #      co-presence; a corrupt state file must be repaired or removed.
+#   8  HOME unset — ~/.claude/session-state.json cannot be resolved, so no
+#      mode that touches the state file can run (issue #1434). 8 is the next
+#      free number in the session-state family's shared vocabulary (2 usage,
+#      3 missing state file, 4 parse/type, 5 write, 6 lock timeout, 7 CAS
+#      loss), chosen the way state-lock.sh chose 6 — a fresh code rather than
+#      an overload of an existing one. --help and usage errors answer BEFORE
+#      this guard, so they never need HOME. There is deliberately no
+#      ${HOME:-} fallback: defaulting to empty would fabricate a
+#      root-anchored /.claude/session-state.json and strew state at the
+#      filesystem root.
 #
 # ATOMICITY (--sticky)
 #   Writes go through `jq … > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp"
@@ -89,9 +100,11 @@
 #   # -> unknown  (exit 1)
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
-
-STATE_FILE="${HOME}/.claude/session-state.json"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 print_help() {
   # Print from PURPOSE through end of the header block (the first non-comment
@@ -106,6 +119,14 @@ die_usage() {
   echo "reviewer-of.sh: $1" >&2
   echo "Run with --help for usage." >&2
   exit 2
+}
+
+# One named line + exit 8 instead of bash's `HOME: unbound variable` trace
+# (issue #1434). Same shape as die_usage above; see the EXIT STATUS header for
+# why 8 and why no ${HOME:-} fallback.
+die_home_unset() {
+  echo "reviewer-of.sh: HOME is unset; cannot resolve ~/.claude/session-state.json" >&2
+  exit 8
 }
 
 # --- arg parsing ---
@@ -167,6 +188,16 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "reviewer-of.sh: 'jq' not found on PATH" >&2
   exit 2
 fi
+
+# --- state-file path (requires HOME) ---
+# Deliberately BELOW argument parsing (issue #1434). Both remaining modes —
+# --sticky and the default lookup — read or write ~/.claude/session-state.json,
+# so HOME is genuinely load-bearing from here on. Everything above (--help and
+# every usage error) answers without it.
+if [[ -z "${HOME:-}" ]]; then
+  die_home_unset
+fi
+STATE_FILE="${HOME}/.claude/session-state.json"
 
 # --- atomic write helper (--sticky path) ---
 # Writes .prs["$PR_NUMBER"].reviewer = "$1", scoped to the active repo
@@ -323,18 +354,18 @@ AUTHORS="$(sort -u "$AUTHORS_TMP")"
 # over anything else (sticky); bugbot only when cursor is the sole AI reviewer
 # among CR-path bots (CodeAnt without CodeRabbit still uses the cr path — #408);
 # otherwise cr if CodeRabbit or CodeAnt has activity.
-if printf '%s\n' "$AUTHORS" | grep -q '^greptile-apps\[bot\]$'; then
+if grep -q '^greptile-apps\[bot\]$' <<<"$AUTHORS"; then
   printf '%s\n' "greptile"
   exit 0
 fi
-if printf '%s\n' "$AUTHORS" | grep -q '^cursor\[bot\]$' \
-   && ! printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$' \
-   && ! printf '%s\n' "$AUTHORS" | grep -q '^codeant-ai\[bot\]$'; then
+if grep -q '^cursor\[bot\]$' <<<"$AUTHORS" \
+   && ! grep -q '^coderabbitai\[bot\]$' <<<"$AUTHORS" \
+   && ! grep -q '^codeant-ai\[bot\]$' <<<"$AUTHORS"; then
   printf '%s\n' "bugbot"
   exit 0
 fi
-if printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$' \
-   || printf '%s\n' "$AUTHORS" | grep -q '^codeant-ai\[bot\]$'; then
+if grep -q '^coderabbitai\[bot\]$' <<<"$AUTHORS" \
+   || grep -q '^codeant-ai\[bot\]$' <<<"$AUTHORS"; then
   printf '%s\n' "cr"
   exit 0
 fi

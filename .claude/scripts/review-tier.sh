@@ -1,0 +1,948 @@
+#!/usr/bin/env bash
+# review-tier.sh — Resolve a PR's review tier from the repo's pm-config `## Review policy`.
+# catalog: merge-gate-sequencing — Resolve a PR's review tier (ci-only / ci+codeant-one-round / full / legacy) from pm-config
+#
+# PURPOSE
+#   A repo may declare review tiers in its own .claude/pm-config.md (issue
+#   #1724). This script is the ONE place that reads that declaration and says
+#   which gate a PR falls under, so the merge gate, the BugBot triggers and
+#   the CI workflow never parse the policy themselves and cannot drift apart.
+#   Format and resolution rules: .claude/reference/review-policy.md.
+#
+# USAGE
+#   review-tier.sh <pr_number> [--repo <owner/name>] [--base <ref>] [--config <path>] [--json]
+#   review-tier.sh --files-from <file|-> [--labels <csv>] [--config <path>] [--json]
+#   review-tier.sh --help | -h
+#
+#   <pr_number>        Resolve for this PR: its changed files (renames count
+#                      both old and new path) and labels come from GitHub, and
+#                      the policy is read from the PR's BASE branch, so a PR
+#                      can never re-tier itself by editing pm-config.md.
+#   --repo <o/n>       Repository for PR mode (default: gh's current repo).
+#   --base <ref>       The PR's base branch, when the caller already knows it
+#                      (merge-gate.sh does). Saves a `gh pr view` on the path
+#                      where the policy turns out to be absent.
+#   --config <path>    Read the policy from this file instead (a base-branch
+#                      checkout in CI, or a fixture in tests). Deliberately a
+#                      flag only, never an environment variable: a gate that
+#                      enforces review must not be re-pointable at a looser
+#                      policy by ambient state. The merge gate never passes it.
+#   --files-from <f>   Offline mode: newline-separated repo-relative paths
+#                      ("-" = stdin). No gh call is made. Without --config the
+#                      policy is read from the current checkout's pm-config.md.
+#   --labels <csv>     Offline mode: comma-separated PR labels.
+#   --json             Emit the structured result (below) instead of the gate.
+#
+# POLICY FORMAT (the `## Review policy` section of .claude/pm-config.md)
+#   The first markdown table in the section, columns matched by header name
+#   (case-insensitive; order free; unknown columns ignored):
+#     | Tier | Gate | Paths | Labels |
+#     |------|------|-------|--------|
+#     | core | full | src/ledger/**, migrations/** | tier:core |
+#     | leaf | ci+codeant-one-round | src/adapters/** | |
+#     | docs | ci-only | docs/**, *.md | tier:docs |
+#     | default | full | | |
+#   Gate    one of ci-only, ci+codeant-one-round, full. Required.
+#   Paths   comma-separated shell globs against the repo-relative path; `*`
+#           also crosses `/`; `**/` also matches zero directories; a trailing
+#           `/` means "everything under". Brace lists are refused.
+#   Labels  comma-separated PR labels (case-insensitive).
+#   A row named `default` classifies files no path matches; without one they
+#   are `full`. The table is found as GFM finds one (a header line followed
+#   by a delimiter row); edge pipes are optional; it runs to the first blank
+#   line or heading. A `|`-leading row outside it, or a second table, makes
+#   the policy invalid. Fenced blocks and <!-- --> comments are removed from
+#   the whole file first, so a fenced example is never the live section.
+#
+# ESCALATION SWITCH (issue #1807)
+#   The same section may carry a fenced ```ini block with one knob:
+#     ```ini
+#     REVIEW_ESCALATION=off
+#     ```
+#   on  (the default when the key is absent) — the CR → BugBot → Greptile
+#       escalation chain runs as today.
+#   off — never invite BugBot or Greptile, on any gate. bugbot-tier-excluded.sh
+#       and escalate-review.sh act on it; this script only reports it.
+#   The key is read with active-work-cap.sh's KEY=value rule (`KEY=value` or
+#   `key: value`, key case-insensitive, first occurrence wins), and ONLY from
+#   a live ```ini fence inside the section the table comes from: the section's
+#   bounds are taken from the fence- and comment-free text, so a fenced
+#   `## Review policy` elsewhere is never the live one. A key anywhere else in
+#   the file — prose, a comment, another fence, or another section such as
+#   `## Active work` — is ignored with one stderr warning. `on` and
+#   `off` match in any case; any other value, empty included, reads as `off`
+#   with one stderr warning — an unclear cost switch fails toward not
+#   spending. A near-miss heading's section is read the same way. The table
+#   and the switch are independent: an ini-only section is policy "absent"
+#   (gate legacy) and still reports its switch.
+#
+# RESOLUTION (strictest wins: full > ci+codeant-one-round > ci-only)
+#   Candidates = the tiers every changed file matches, plus every tier whose
+#   label is on the PR, plus `default` when some file matched no path and no
+#   tier label is present. A label therefore classifies what the paths leave
+#   open, and can never lower a file a path already matched. The PR gets the
+#   strictest candidate gate; `tier` names the first table row carrying it.
+#   A PR with no files and no tier label gets `default`.
+#   The policy is read BEFORE the PR's files and labels are fetched: an absent
+#   or invalid policy answers without them, so a repo that declares no tiers
+#   pays for one contents read and nothing else. When GitHub returns
+#   fewer files than the PR changed (its 3000-file listing cap), `full` is
+#   added: unseen files are never assumed light.
+#
+# OUTPUT
+#   plain: the gate — legacy | ci-only | ci+codeant-one-round | full
+#   --json: one line —
+#     {"policy":"absent|present|invalid","gate":"...","tier":"<name>"|null,
+#      "source":"<where the policy came from>","error":"<why invalid>"|null,
+#      "matches":[{"tier","gate","via":"path|label|default|truncated",
+#                  "count":N,"examples":[up to 5 items]}],
+#      "escalation":"on|off"}
+#   escalation is on every line, whatever the policy; with no readable
+#   switch it is "on". Plain output never carries it.
+#   no_review_override_minutes (issue #1899) is appended after escalation:
+#   the no-review merge window in minutes (default 10), or null when the
+#   section's ```ini block sets NO_REVIEW_OVERRIDE_MINUTES=off or an
+#   invalid value (one stderr warning).
+#   codeant_lifetime_cap_full (issue #1849) is appended last: how many CodeAnt
+#   invitations a `full` PR may receive — CODEANT_LIFETIME_CAP_FULL from the
+#   same ```ini block, an integer 1-5; absent, invalid or misplaced → 1 (the
+#   last two with one stderr warning). review-triggers-allowed.sh applies it.
+#   policy "absent"  — no section, or a section with no table → gate legacy:
+#                      every consumer keeps today's behaviour.
+#   policy "invalid" — unknown gate, missing Tier/Gate column, no header
+#                      separator, no data rows, empty or duplicate tier name,
+#                      a brace glob, a `|` row outside the table, a second
+#                      table, or a near-miss heading (`## Review Policy`)
+#                      → gate full (today's gate) plus one stderr warning.
+#                      Fail-closed: a typo can never loosen review.
+#
+# EXIT STATUS
+#   0  Resolved (absent and invalid policies included).
+#   2  Usage error.
+#   3  PR not found.
+#   4  gh / local failure: files, labels, changedFiles, or a policy source
+#      that exists but cannot be read (non-file API object, unreadable or
+#      directory --config, offline mode outside a git checkout). Nothing is
+#      printed on stdout, so a consumer fails closed. Only a source that does
+#      not exist reads as "absent".
+
+set -uo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+SECTION="Review policy"
+
+usage() {
+  sed -n '/^# PURPOSE$/,/^$/{/^$/d;p;}' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+}
+warn() { printf 'review-tier.sh: %s\n' "$1" >&2; }
+die_usage() { warn "$1"; printf 'Run with --help for usage.\n' >&2; exit 2; }
+die_read() { warn "$1"; exit 4; }
+
+PR_NUMBER=""
+REPO=""
+BASE_REF=""
+CONFIG=""
+FILES_FROM=""
+LABELS_CSV=""
+LABELS_SET=0
+JSON=0
+
+need_value() { [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "$1 requires a value"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --json) JSON=1; shift ;;
+    --repo) need_value "$@"; REPO="$2"; shift 2 ;;
+    --repo=*) REPO="${1#--repo=}"; [[ -n "$REPO" ]] || die_usage "--repo requires a value"; shift ;;
+    --base) need_value "$@"; BASE_REF="$2"; shift 2 ;;
+    --base=*) BASE_REF="${1#--base=}"; [[ -n "$BASE_REF" ]] || die_usage "--base requires a value"; shift ;;
+    --config) need_value "$@"; CONFIG="$2"; shift 2 ;;
+    --config=*) CONFIG="${1#--config=}"; [[ -n "$CONFIG" ]] || die_usage "--config requires a value"; shift ;;
+    --files-from) need_value "$@"; FILES_FROM="$2"; shift 2 ;;
+    --files-from=*) FILES_FROM="${1#--files-from=}"; [[ -n "$FILES_FROM" ]] || die_usage "--files-from requires a value"; shift ;;
+    --labels) [[ $# -ge 2 ]] || die_usage "--labels requires a value"; LABELS_CSV="$2"; LABELS_SET=1; shift 2 ;;
+    --labels=*) LABELS_CSV="${1#--labels=}"; LABELS_SET=1; shift ;;
+    -*) die_usage "unknown flag: $1" ;;
+    *)
+      [[ -z "$PR_NUMBER" ]] || die_usage "unexpected argument: $1"
+      PR_NUMBER="${1#\#}"
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "$PR_NUMBER" && -n "$FILES_FROM" ]]; then
+  die_usage "pass a PR number OR --files-from, not both"
+fi
+if [[ -z "$PR_NUMBER" && -z "$FILES_FROM" ]]; then
+  die_usage "a PR number or --files-from is required"
+fi
+if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+  die_usage "PR number must be a positive integer (got: $PR_NUMBER)"
+fi
+if [[ -z "$PR_NUMBER" && -n "$BASE_REF" ]]; then
+  die_usage "--base is PR-mode only"
+fi
+if [[ -n "$PR_NUMBER" && $LABELS_SET -eq 1 ]]; then
+  die_usage "--labels is offline-mode only; PR mode reads the PR's labels"
+fi
+if [[ -n "$REPO" && ! "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  die_usage "--repo must look like owner/name (got: $REPO)"
+fi
+
+command -v jq >/dev/null 2>&1 || die_read "jq not found on PATH"
+GETTER="$SCRIPT_DIR/pm-config-get.sh"
+[[ -x "$GETTER" ]] || die_read "pm-config-get.sh not found beside this script ($GETTER)"
+
+TMP_DIR="$(mktemp -d)" || die_read "mktemp failed"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+# Strip markdown decoration a human writes around a cell value: backticks and
+# surrounding whitespace. `docs/**` and docs/** mean the same glob.
+clean_cell() {
+  local s="$1"
+  s="${s//\`/}"
+  trim "$s"
+}
+
+# ------------------------------------------------------------ PR facts ------
+
+FILES_FILE="$TMP_DIR/files"
+LABELS_FILE="$TMP_DIR/labels"
+: > "$FILES_FILE"
+: > "$LABELS_FILE"
+TRUNCATED=0
+UNREADABLE_NAMES=0
+
+# The PR's labels, changed-file count and file listing. Deferred until the
+# policy is known to be present — see RESOLUTION in the header. Runs in the
+# main shell (never inside $(...)) so its die_read exits the script.
+fetch_pr_facts() {
+  local pr_err="$TMP_DIR/pr.err" pr_json changed listed
+  if ! pr_json="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,changedFiles 2>"$pr_err")"; then
+    if grep -qiE 'could not resolve to a pullrequest|not found|no pull requests found' "$pr_err" 2>/dev/null; then
+      warn "PR #$PR_NUMBER not found in $REPO"
+      exit 3
+    fi
+    die_read "gh pr view #$PR_NUMBER failed: $(head -1 "$pr_err" 2>/dev/null)"
+  fi
+  changed="$(printf '%s' "$pr_json" | jq -r '.changedFiles // ""')" || die_read "could not parse gh pr view output"
+  # Without a count there is no way to tell a complete listing from a
+  # truncated one, and "assume complete" is the direction that loosens.
+  [[ "$changed" =~ ^[0-9]+$ ]] || die_read "gh pr view returned no usable changedFiles (got: '$changed')"
+  printf '%s' "$pr_json" | jq -r '.labels[]?.name' > "$LABELS_FILE" || die_read "could not parse PR labels"
+
+  # Paginated past GitHub's 100-per-page default. Each entry is tagged: F for
+  # the file itself, P for a rename's previous path. Both are classified —
+  # moving a file out of a core directory still touches that directory — but
+  # only F lines are counted against changedFiles, so a rename can never pad
+  # the count and hide a truncated listing.
+  # A path carrying a newline would split its own record, so the file it
+  # names could never be classified; it is tagged W instead and forces full.
+  if ! gh api "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate \
+      --jq '.[] | if ((.filename + (.previous_filename // "")) | test("[\n\r]")) then "W\t-" else ("F\t\(.filename)", (.previous_filename // empty | "P\t\(.)")) end' \
+      > "$TMP_DIR/files.tagged" 2>"$TMP_DIR/files.err"; then
+    die_read "could not list PR #$PR_NUMBER files: $(head -1 "$TMP_DIR/files.err" 2>/dev/null)"
+  fi
+  awk -F'\t' '$1 == "F" || $1 == "P" { sub(/^[^\t]*\t/, ""); print }' "$TMP_DIR/files.tagged" > "$FILES_FILE" \
+    || die_read "could not read the PR file listing"
+  listed="$(awk -F'\t' '$1 == "F" || $1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
+  UNREADABLE_NAMES="$(awk -F'\t' '$1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
+  # An undershoot is GitHub's file-listing cap: the files it hid are
+  # unclassified, so they are never assumed light.
+  if (( listed < changed )); then
+    TRUNCATED=1
+  fi
+}
+
+if [[ -n "$PR_NUMBER" ]]; then
+  command -v gh >/dev/null 2>&1 || die_read "gh not found on PATH"
+  if [[ -z "$REPO" ]]; then
+    REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || REPO=""
+    [[ -n "$REPO" ]] || die_read "gh repo view failed — not in a git repo, or no remote"
+  fi
+  # The base branch decides which policy governs, so it is the one PR fact the
+  # policy read needs up front.
+  if [[ -z "$BASE_REF" && -z "$CONFIG" ]]; then
+    PR_ERR="$TMP_DIR/pr-base.err"
+    if ! BASE_REF="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>"$PR_ERR")"; then
+      if grep -qiE 'could not resolve to a pullrequest|not found|no pull requests found' "$PR_ERR" 2>/dev/null; then
+        warn "PR #$PR_NUMBER not found in $REPO"
+        exit 3
+      fi
+      die_read "gh pr view #$PR_NUMBER failed: $(head -1 "$PR_ERR" 2>/dev/null)"
+    fi
+    [[ -n "$BASE_REF" ]] || die_read "gh pr view #$PR_NUMBER returned no baseRefName"
+  fi
+else
+  if [[ "$FILES_FROM" == "-" ]]; then
+    cat > "$FILES_FILE" || die_read "could not read file list from stdin"
+  else
+    [[ -r "$FILES_FROM" ]] || die_read "--files-from file not readable: $FILES_FROM"
+    cat "$FILES_FROM" > "$FILES_FILE" || die_read "could not read $FILES_FROM"
+  fi
+  if [[ -n "$LABELS_CSV" ]]; then
+    printf '%s\n' "$LABELS_CSV" | tr ',' '\n' > "$LABELS_FILE"
+  fi
+fi
+
+# ----------------------------------------------------------- the policy -----
+
+# Blank out every fenced code block and HTML comment in the WHOLE file before
+# anything looks for the section, keeping the line count. Doing it here, not
+# after the section is extracted, is what stops a fenced example that happens
+# to contain `## Review policy` (say, under `## Notes`) from being read as the
+# live section: pm-config-get.sh itself does not know about fences.
+#   Fences follow CommonMark: an opener is a run of 3+ ` or ~ indented at most
+#   three spaces (four or more is an indented code block); a backtick run
+#   with another backtick after it on the line is an inline span, not a fence;
+#   a fence closes only on a run of the same character at least as long as its
+#   opener with nothing after it. An unclosed fence hides the rest of the file,
+#   exactly as GitHub renders it. An indented code block (4+ spaces or a tab,
+#   after a blank line or another such line) is hidden the same way.
+# `strip_hidden ini` is the complement used for the escalation switch: it
+# keeps ONLY the content lines of live fences whose info string is `ini`, and
+# blanks everything else, with the same line count. One parser decides what
+# is a fence for both, so the switch and the table can never disagree about
+# which lines are live.
+strip_hidden() {
+  awk -v want="${1:-visible}" '
+    BEGIN { fence = 0; comment = 0; prev_blank = 1; in_icode = 0; ini = 0 }
+    {
+      line = $0
+      if (!fence && !comment && (line ~ /^(    |\t)/) && (prev_blank || in_icode)) {
+        in_icode = 1; print ""; next
+      }
+      in_icode = 0
+      prev_blank = (line ~ /^[ \t]*$/)
+      if (fence) {
+        # A content line of a live ini fence is kept in ini mode; the closing
+        # line never is, and closing clears `ini` along with `fence`.
+        keep = (want == "ini" && ini)
+        if (line ~ /^ ? ? ?[`~]/) {
+          s = line; sub(/^ */, "", s)
+          n = 0
+          while (substr(s, n + 1, 1) == fch) n++
+          if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) { fence = 0; ini = 0; keep = 0 }
+        }
+        print (keep ? line : ""); next
+      }
+      if (comment) {
+        i = index(line, "-->")
+        if (i == 0) { print ""; next }
+        line = substr(line, i + 3); comment = 0
+      }
+      if (match(line, /^ ? ? ?(```+|~~~+)/)) {
+        s = substr(line, RSTART, RLENGTH); sub(/^ */, "", s)
+        info = substr(line, RSTART + RLENGTH)
+        if (!(substr(s, 1, 1) == "`" && index(info, "`") > 0)) {
+          fch = substr(s, 1, 1); flen = length(s); fence = 1
+          lang = info; sub(/^[ \t]+/, "", lang); sub(/[ \t].*$/, "", lang)
+          ini = (tolower(lang) == "ini")
+          print ""; next
+        }
+      }
+      while (index(line, "<!--") > 0) {
+        pre = substr(line, 1, index(line, "<!--") - 1)
+        rest = substr(line, index(line, "<!--") + 4)
+        if (index(rest, "-->") > 0) { line = pre substr(rest, index(rest, "-->") + 3) }
+        else { line = pre; comment = 1; break }
+      }
+      print ((want == "ini") ? "" : line)
+    }
+  '
+}
+
+# Whatever the source, the policy lands in POLICY_COPY with CRs stripped, so
+# a CRLF checkout parses exactly like the LF blob CI reads. Only a source that
+# does not EXIST is "absent"; one that exists but cannot be read is a read
+# failure (exit 4), never a silent "no policy".
+POLICY_COPY="$TMP_DIR/pm-config.md"
+HAVE_POLICY=0
+SOURCE=""
+if [[ -n "$CONFIG" ]]; then
+  SOURCE="file:$CONFIG"
+  if [[ -L "$CONFIG" && ! -e "$CONFIG" ]]; then
+    # A dangling symlink is a path someone pointed somewhere on purpose; its
+    # target going missing is a read failure, not "no policy declared".
+    die_read "--config is a dangling symlink: $CONFIG"
+  elif [[ ! -e "$CONFIG" ]]; then
+    # Almost always a typo; say so rather than reading it silently as absent.
+    warn "--config file not found: $CONFIG — treating the policy as absent"
+  elif [[ -d "$CONFIG" ]]; then
+    die_read "--config is a directory, not a file: $CONFIG"
+  elif ! { tr -d '\r' < "$CONFIG" > "$POLICY_COPY"; } 2>/dev/null; then
+    die_read "--config file not readable: $CONFIG"
+  else
+    HAVE_POLICY=1
+  fi
+elif [[ -n "$PR_NUMBER" ]]; then
+  SOURCE="base:${BASE_REF:-default-branch}"
+  CONTENT_ERR="$TMP_DIR/content.err"
+  if [[ -n "$BASE_REF" ]]; then
+    CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" -f ref="$BASE_REF" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+  else
+    CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+  fi
+  if [[ -z "$CONTENT_JSON" ]]; then
+    # 404 = the base branch carries no pm-config.md: the normal "no policy"
+    # case (gh says "Not Found (HTTP 404)"). Anything else is a read failure
+    # and must not read as "absent".
+    grep -qE 'HTTP 404|Not Found' "$CONTENT_ERR" 2>/dev/null \
+      || die_read "could not read .claude/pm-config.md at ${BASE_REF:-the default branch}: $(head -1 "$CONTENT_ERR" 2>/dev/null)"
+  else
+    # Only a base64 file object carries the config. A symlink, a submodule,
+    # or an over-size blob (`encoding: none`) answers 200 with no usable
+    # content; defaulting that to "" would read as "no policy".
+    printf '%s' "$CONTENT_JSON" | jq -e 'type == "object" and .type == "file" and .encoding == "base64" and (.content | type) == "string"' >/dev/null 2>&1 \
+      || die_read ".claude/pm-config.md at ${BASE_REF:-the default branch} is not a readable base64 file object"
+    printf '%s' "$CONTENT_JSON" | jq -r '.content' | base64 --decode 2>/dev/null | tr -d '\r' > "$POLICY_COPY" \
+      || die_read "could not decode .claude/pm-config.md from ${BASE_REF:-the default branch}"
+    HAVE_POLICY=1
+  fi
+else
+  TOP="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || die_read "not in a git checkout (git rev-parse failed) — pass --config"
+  [[ -n "$TOP" ]] || die_read "git rev-parse returned no toplevel — pass --config"
+  SOURCE="file:$TOP/.claude/pm-config.md"
+  if [[ -L "$TOP/.claude/pm-config.md" && ! -e "$TOP/.claude/pm-config.md" ]]; then
+    die_read "$TOP/.claude/pm-config.md is a dangling symlink"
+  elif [[ -e "$TOP/.claude/pm-config.md" ]]; then
+    { tr -d '\r' < "$TOP/.claude/pm-config.md" > "$POLICY_COPY"; } 2>/dev/null \
+      || die_read "could not read $TOP/.claude/pm-config.md"
+    HAVE_POLICY=1
+  fi
+fi
+
+SECTION_BODY=""
+POLICY_VISIBLE="$TMP_DIR/pm-config.visible.md"
+POLICY_INI="$TMP_DIR/pm-config.ini.md"
+if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
+  strip_hidden < "$POLICY_COPY" > "$POLICY_VISIBLE" || die_read "could not pre-process the policy file"
+  strip_hidden ini < "$POLICY_COPY" > "$POLICY_INI" || die_read "could not pre-process the policy file"
+  rc=0
+  SECTION_BODY="$("$GETTER" --section "$SECTION" --file "$POLICY_VISIBLE" 2>/dev/null)" || rc=$?
+  case $rc in
+    0) ;;
+    1) SECTION_BODY="" ;;
+    *) die_read "pm-config-get.sh failed (rc $rc) reading ## $SECTION" ;;
+  esac
+fi
+
+# ---------------------------------------------------- escalation switch -----
+
+ESC_KEY="REVIEW_ESCALATION"
+ESCALATION="on"
+ESC_SECTION_FOUND=0
+ESC_LIVE_FOUND=0
+
+# The body line range "<first> <last>" of the live section, found in the
+# fence- and comment-free text with pm-config-get.sh's heading rule (`## ` at
+# column 1, trailing whitespace ignored, first match wins, ends at the next
+# `## `). strip_hidden keeps the line count, so the same numbers address the
+# raw and the ini-only copies. $1, when given, is a near-miss heading line to
+# start from instead; it travels through ENVIRON, not -v, so awk never
+# rewrites a backslash in it. Prints nothing when there is no such heading.
+section_range() {
+  ESC_NEAR_LINE="${1-}" awk -v target="$SECTION" '
+    function is_start(l,    h) {
+      if (near != "") return (l == near)
+      if (l !~ /^## /) return 0
+      h = l; sub(/^## /, "", h); sub(/[ \t]+$/, "", h)
+      return (h == target)
+    }
+    BEGIN { near = ENVIRON["ESC_NEAR_LINE"] }
+    start == 0 { if (is_start($0)) start = NR + 1; next }
+    /^## / { last = NR - 1; ended = 1; exit }
+    END { if (start) print start, (ended ? last : NR) }
+  ' "$POLICY_VISIBLE"
+}
+
+# active-work-cap.sh's KEY=value rule, copied rather than sourced: a line
+# `KEY=value` or `key: value` whose text before its first `=` or `:`, trimmed,
+# equals the key as a whole string, ignoring case (a plain string comparison,
+# never a regex built from the key). The first such line wins; its value is
+# trimmed. Two deliberate differences from the original: a found key prints
+# with a leading `=`, so an empty value (`REVIEW_ESCALATION=`) is told apart
+# from an absent key; and the input is always read to the end rather than
+# abandoned at the first match, so the `sed | awk` feeding it can never die of
+# SIGPIPE under pipefail and read as a failure.
+extract_knob_value() {
+  awk -v key="$1" '
+    done { next }
+    {
+      i = match($0, /[=:]/)
+      if (i == 0) next
+      k = substr($0, 1, i - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (tolower(k) != tolower(key)) next
+      v = substr($0, i + 1)
+      sub(/^[[:space:]]*/, "", v)
+      sub(/[[:space:]]*$/, "", v)
+      print "=" v
+      done = 1
+    }
+  '
+}
+
+# Sets ESCALATION from the section (or near-miss section $1), and
+# ESC_LIVE_FOUND when a live key was read. Runs in the main shell so die_read
+# exits the script.
+resolve_escalation() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $ESC_KEY"
+  [[ -n "$range" ]] || return 0
+  ESC_SECTION_FOUND=1
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$ESC_KEY")" \
+    || die_read "could not read $ESC_KEY from ## $SECTION"
+  [[ -n "$found" ]] || return 0
+  ESC_LIVE_FOUND=1
+  value="${found#=}"
+  case "$(lower "$value")" in
+    on|off) ESCALATION="$(lower "$value")" ;;
+    *)
+      warn "$ESC_KEY='$value' in ## $SECTION is not on or off — treating escalation as off (an unclear cost switch fails toward not spending)"
+      ESCALATION="off"
+      ;;
+  esac
+}
+
+# No-review override window (issue #1899): NO_REVIEW_OVERRIDE_MINUTES in the
+# same live ```ini block, read with the same KEY=value rule. Absent → 10. An
+# integer 1–1440 → that many minutes. `off` → null (disabled). Anything else
+# → null with one stderr warning: an unclear merge-authorizing knob fails
+# toward NOT merging unreviewed work.
+NRO_KEY="NO_REVIEW_OVERRIDE_MINUTES"
+NRO_MINUTES="10"
+NRO_LIVE_FOUND=0
+resolve_override_window() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $NRO_KEY"
+  [[ -n "$range" ]] || return 0
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$NRO_KEY")" \
+    || die_read "could not read $NRO_KEY from ## $SECTION"
+  [[ -n "$found" ]] || return 0
+  NRO_LIVE_FOUND=1
+  value="${found#=}"
+  if [[ "$(lower "$value")" == "off" ]]; then
+    NRO_MINUTES="null"
+  elif [[ "$value" =~ ^[0-9]{1,4}$ ]] && (( 10#$value >= 1 && 10#$value <= 1440 )); then
+    NRO_MINUTES="$((10#$value))"
+  else
+    warn "$NRO_KEY='$value' in ## $SECTION is not off or an integer 1-1440 — the no-review override is disabled (an unclear merge switch fails toward not merging unreviewed work)"
+    NRO_MINUTES="null"
+  fi
+}
+
+# CodeAnt lifetime cap on the `full` gate (issue #1849):
+# CODEANT_LIFETIME_CAP_FULL in the same live ```ini block, read with the same
+# KEY=value rule. Absent → 1 (the pre-#1849 cap). An integer 1–5 → that many
+# CodeAnt invitations per PR on `full`. Anything else → 1 with one stderr
+# warning: an unclear spend knob fails closed to the current cap. Free
+# reviewer only — the paid BugBot cap is never configurable here.
+CAP_KEY="CODEANT_LIFETIME_CAP_FULL"
+CAP_FULL="1"
+CAP_LIVE_FOUND=0
+resolve_codeant_cap() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $CAP_KEY"
+  [[ -n "$range" ]] || return 0
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$CAP_KEY")" \
+    || die_read "could not read $CAP_KEY from ## $SECTION"
+  [[ -n "$found" ]] || return 0
+  CAP_LIVE_FOUND=1
+  value="${found#=}"
+  if [[ "$value" =~ ^[1-5]$ ]]; then
+    CAP_FULL="$value"
+  else
+    warn "$CAP_KEY='$value' in ## $SECTION is not an integer 1-5 — keeping the CodeAnt lifetime cap at 1 (an unclear spend knob fails closed to the current cap)"
+    CAP_FULL="1"
+  fi
+}
+
+# A heading that is almost `## Review policy` (other case, extra spaces).
+# The gate treats it as invalid below; the switch in it is honoured.
+near_miss_heading() {
+  awk '{ l = tolower($0) } l ~ /^##[ \t]+review[ \t]+policy[ \t]*$/ && $0 !~ /^## Review policy[ \t]*$/ { print; exit }' "$POLICY_VISIBLE"
+}
+
+# Resolution finishes here, before any emit: the exact section, else a
+# near-miss one (the gate fails toward more review, the switch toward less
+# spend). Only then is a key that no live ```ini block carried looked for
+# ANYWHERE in the raw file (prose, a comment, another fence, another
+# section such as `## Active work`), so a misplaced cost switch is never
+# silent. One warning at most; the whole file is read, never a pipe.
+if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
+  resolve_escalation
+  resolve_override_window
+  resolve_codeant_cap
+  if [[ $ESC_SECTION_FOUND -eq 0 ]]; then
+    ESC_NEAR="$(near_miss_heading)"
+    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; resolve_codeant_cap "$ESC_NEAR"; }
+  fi
+  # A cap key outside a live ini block is never honoured; say so once.
+  if [[ $CAP_LIVE_FOUND -eq 0 ]]; then
+    CAP_STRAY="$(extract_knob_value "$CAP_KEY" < "$POLICY_COPY")" || CAP_STRAY=""
+    [[ -z "$CAP_STRAY" ]] \
+      || warn "$CAP_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — ignored; the CodeAnt lifetime cap stays 1"
+  fi
+  # A window key anywhere but a live ini block is someone's intent we cannot
+  # read: disable the override (never silently keep the 10-minute default).
+  if [[ $NRO_LIVE_FOUND -eq 0 ]]; then
+    NRO_STRAY="$(extract_knob_value "$NRO_KEY" < "$POLICY_COPY")" || NRO_STRAY=""
+    if [[ -n "$NRO_STRAY" ]]; then
+      warn "$NRO_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — the no-review override is disabled"
+      NRO_MINUTES="null"
+    fi
+  fi
+  if [[ $ESC_LIVE_FOUND -eq 0 ]]; then
+    ESC_STRAY="$(extract_knob_value "$ESC_KEY" < "$POLICY_COPY")" || ESC_STRAY=""
+    [[ -z "$ESC_STRAY" ]] \
+      || warn "$ESC_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — ignored; escalation stays on"
+  fi
+fi
+
+emit() {
+  # emit <policy> <gate> <tier-or-empty> <error-or-empty> <matches-json>
+  # `escalation` is appended last, after every pre-#1807 key.
+  if [[ $JSON -eq 1 ]]; then
+    jq -cn --arg policy "$1" --arg gate "$2" --arg tier "$3" --arg source "$SOURCE" \
+      --arg error "$4" --argjson matches "$5" --arg escalation "$ESCALATION" \
+      --argjson nro "$NRO_MINUTES" --argjson cap_full "$CAP_FULL" \
+      '{policy: $policy, gate: $gate,
+        tier: (if $tier == "" then null else $tier end),
+        source: $source,
+        error: (if $error == "" then null else $error end),
+        matches: $matches,
+        escalation: $escalation,
+        no_review_override_minutes: $nro,
+        codeant_lifetime_cap_full: $cap_full}'
+  else
+    printf '%s\n' "$2"
+  fi
+}
+
+if [[ -z "$SECTION_BODY" ]]; then
+  # A heading that is almost `## Review policy` (other case, extra spaces)
+  # is a policy someone meant to declare; reading it as absent would ignore
+  # it without a word. Checked only when the exact section was not found.
+  NEAR=""
+  if [[ $HAVE_POLICY -eq 1 ]]; then
+    [[ -f "$POLICY_VISIBLE" ]] || : > "$POLICY_VISIBLE"
+    NEAR="$(near_miss_heading)"
+  fi
+  if [[ -n "$NEAR" ]]; then
+    # The switch in a near-miss section was already resolved above.
+    warn "## $SECTION is invalid (heading '$NEAR' must read exactly '## $SECTION') — resolving to the full gate"
+    emit invalid full "" "heading '$NEAR' must read exactly '## $SECTION'" '[]'
+    exit 0
+  fi
+  emit absent legacy "" "" '[]'
+  exit 0
+fi
+
+# Parse the policy table out of the (already fence- and comment-free) section.
+# Emits one of:  NOTABLE | ERROR<US>reason | ROW<US>tier<US>gate<US>paths<US>labels
+# <US> is the ASCII unit separator (\037): a NON-whitespace IFS, so an empty
+# cell stays an empty field instead of collapsing into its neighbour the way
+# consecutive tabs do.
+#   A table is found the way GFM finds one: a line containing `|` immediately
+#   followed by a delimiter row (`|---|:---:|`). Edge pipes are optional, so
+#   `core | full | src/**` is a row. Prose that merely contains a `|` is not a
+#   table and is skipped. The table runs to the first blank line or heading.
+#   Fail-closed refusals (ERROR → gate full): a line STARTING with `|` that
+#   belongs to no table (a table missing its delimiter row, or rows cut off
+#   from the table by a blank line or comment), or a second table.
+parse_table() {
+  awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function split_cells(line, cells,    n, i) {
+      line = trim(line)
+      sub(/^\|/, "", line); sub(/\|$/, "", line)
+      n = split(line, cells, "|")
+      for (i = 1; i <= n; i++) { cells[i] = trim(cells[i]); gsub(/\t/, " ", cells[i]) }
+      return n
+    }
+    function is_delim(l) { return (index(l, "|") > 0 && l ~ /-/ && l ~ /^[ \t|:-]+$/) }
+    function is_row_start(l) { return (l ~ /^[ \t]*\|/) }
+    BEGIN { state = 0; found = 0; pending = ""; US = "\037" }
+    {
+      line = $0
+      if (state == 0) {
+        # GFM also requires the delimiter row to have exactly as many cells
+        # as the header; otherwise neither line is a table.
+        if (pending != "" && is_delim(line) && split_cells(pending, hdr) == split_cells(line, dl)) {
+          nh = split_cells(pending, hdr)
+          for (i = 1; i <= nh; i++) {
+            h = tolower(hdr[i]); gsub(/[`*_]/, "", h); h = trim(h)
+            col[h] = i
+          }
+          state = 1; found = 1; pending = ""
+          next
+        }
+        if (pending != "" && is_row_start(pending) && bad == "")
+          bad = "a | row outside any table with a header separator row"
+        pending = (index(line, "|") > 0) ? line : ""
+        next
+      }
+      if (state == 1) {
+        if (line ~ /^[ \t]*$/ || line ~ /^[ \t]*#/) { state = 2; next }
+        nc = split_cells(line, c)
+        t = ("tier"   in col) ? c[col["tier"]]   : ""
+        g = ("gate"   in col) ? c[col["gate"]]   : ""
+        p = ("paths"  in col) ? c[col["paths"]]  : ""
+        l = ("labels" in col) ? c[col["labels"]] : ""
+        rows[++nr] = t US g US p US l
+        next
+      }
+      # state 2: the table has ended. A row-shaped line or a second table
+      # after it is ambiguous — refuse it rather than silently dropping rows
+      # the author meant to declare.
+      if (bad == "" && (is_row_start(line) || is_delim(line)))
+        bad = "a | row follows the policy table; keep every tier in one contiguous table"
+    }
+    END {
+      if (!found && pending != "" && is_row_start(pending) && bad == "")
+        bad = "a | row outside any table with a header separator row"
+      if (bad != "") { print "ERROR" US bad; exit }
+      if (!found) { print "NOTABLE"; exit }
+      if (!("tier" in col) || !("gate" in col)) { print "ERROR" US "table must have Tier and Gate columns"; exit }
+      if (nr == 0) { print "ERROR" US "table declares no tiers"; exit }
+      for (i = 1; i <= nr; i++) print "ROW" US rows[i]
+    }
+  '
+}
+
+gate_rank() {
+  case "$1" in
+    ci-only) echo 1 ;;
+    ci+codeant-one-round) echo 2 ;;
+    full) echo 3 ;;
+    *) echo 0 ;;
+  esac
+}
+
+invalid() {
+  warn "## $SECTION is invalid ($1) — resolving to the full gate"
+  emit invalid full "" "$1" '[]'
+  exit 0
+}
+
+PARSED="$(printf '%s\n' "$SECTION_BODY" | parse_table)" || die_read "could not parse ## $SECTION"
+case "$PARSED" in
+  NOTABLE)
+    warn "## $SECTION has no table — treating the policy as absent"
+    emit absent legacy "" "" '[]'
+    exit 0
+    ;;
+  ERROR*)
+    invalid "$(printf '%s\n' "$PARSED" | cut -d $'\037' -f2-)"
+    ;;
+esac
+
+TIER_NAMES=()
+TIER_GATES=()
+TIER_PATHS=()
+TIER_LABELS=()
+DEFAULT_IDX=-1
+SEEN_NAMES=$'\n'
+
+while IFS=$'\037' read -r tag t g p l; do
+  [[ "$tag" == "ROW" ]] || continue
+  name="$(clean_cell "$t")"
+  [[ -n "$name" ]] || invalid "a row has an empty Tier name"
+  lname="$(lower "$name")"
+  case "$SEEN_NAMES" in
+    *$'\n'"$lname"$'\n'*) invalid "duplicate tier name '$name'" ;;
+  esac
+  SEEN_NAMES="$SEEN_NAMES$lname"$'\n'
+  gate="$(lower "$(clean_cell "$g")")"
+  [[ "$(gate_rank "$gate")" != "0" ]] || invalid "tier '$name' has unknown gate '$(clean_cell "$g")'"
+
+  globs=""
+  if [[ -n "$p" ]]; then
+    while IFS= read -r glob; do
+      glob="$(clean_cell "$glob")"
+      [[ -z "$glob" || "$glob" == "-" ]] && continue
+      # Paths is split on commas, so a brace list `src/{a,b}/**` would arrive
+      # as two dead halves that match nothing — and the files it meant fall
+      # through to a lighter default. Refuse it instead.
+      case "$glob" in
+        *'{'*|*'}'*) invalid "tier '$name' path '$glob' uses braces — list each path separately" ;;
+      esac
+      while [[ "$glob" == ./* ]]; do glob="${glob#./}"; done
+      while [[ "$glob" == /* ]]; do glob="${glob#/}"; done
+      [[ "$glob" == */ ]] && glob="${glob}*"
+      [[ -n "$glob" ]] && globs="$globs$glob"$'\n'
+    done < <(printf '%s\n' "$p" | tr ',' '\n')
+  fi
+  labels=""
+  if [[ -n "$l" ]]; then
+    while IFS= read -r lab; do
+      lab="$(lower "$(clean_cell "$lab")")"
+      [[ -z "$lab" || "$lab" == "-" ]] && continue
+      labels="$labels$lab"$'\n'
+    done < <(printf '%s\n' "$l" | tr ',' '\n')
+  fi
+
+  TIER_NAMES+=("$name")
+  TIER_GATES+=("$gate")
+  TIER_PATHS+=("$globs")
+  TIER_LABELS+=("$labels")
+  [[ "$lname" == "default" ]] && DEFAULT_IDX=$(( ${#TIER_NAMES[@]} - 1 ))
+done <<<"$PARSED"
+
+N_TIERS=${#TIER_NAMES[@]}
+(( N_TIERS > 0 )) || invalid "table declares no tiers"
+
+# ------------------------------------------------------------- classify -----
+
+# The policy is present and valid, so the PR's own facts are needed now.
+[[ -n "$PR_NUMBER" ]] && fetch_pr_facts
+
+MATCH_TSV="$TMP_DIR/matches.tsv"
+: > "$MATCH_TSV"
+CAND=()
+for (( i = 0; i < N_TIERS; i++ )); do CAND+=(0); done
+UNMATCHED=0
+LABEL_HIT=0
+IMPLICIT_DEFAULT=0
+
+# glob_matches <file> <glob> — the documented Paths semantics. An unquoted
+# case pattern is a glob match in which `*` also crosses `/`. `**/` also
+# matches zero directories, the way CODEOWNERS and .gitignore read it, so
+# `**/migrations/**` covers a root-level migrations/ and `a/**/b` covers a/b.
+glob_matches() {
+  local f="$1" g="$2"
+  case "$f" in
+    $g) return 0 ;;
+  esac
+  if [[ "$g" == '**/'* ]] && glob_matches "$f" "${g#\*\*/}"; then
+    return 0
+  fi
+  # Collapse the FIRST `/**/` to `/` by splitting around it (bash 3.2 keeps a
+  # literal backslash in a ${var/pat/rep} replacement, so no substitution).
+  if [[ "$g" == *'/**/'* ]] && glob_matches "$f" "${g%%/\*\*/*}/${g#*/\*\*/}"; then
+    return 0
+  fi
+  return 1
+}
+
+# One TSV line per match. A tab inside a field (a path may legally carry one)
+# would shift the columns the summary reads, so it is shown as a space.
+record() {
+  printf '%s\t%s\t%s\t%s\n' "${1//$'\t'/ }" "${2//$'\t'/ }" "${3//$'\t'/ }" "${4//$'\t'/ }" >> "$MATCH_TSV"
+}
+
+# Labels first: whether any tier label is present decides whether unmatched
+# files fall back to `default`.
+while IFS= read -r lab; do
+  lab="$(lower "$(trim "$lab")")"
+  [[ -n "$lab" ]] || continue
+  for (( i = 0; i < N_TIERS; i++ )); do
+    # Whole-line match against the tier's newline-joined label list, so
+    # `docs` never matches a tier labelled `tier:docs`.
+    case $'\n'"${TIER_LABELS[$i]}" in
+      *$'\n'"$lab"$'\n'*)
+        CAND[i]=1; LABEL_HIT=1
+        record "${TIER_NAMES[$i]}" "${TIER_GATES[$i]}" label "$lab"
+        ;;
+    esac
+  done
+done < <(awk 1 "$LABELS_FILE")
+
+while IFS= read -r file; do
+  # Paths are matched exactly as GitHub reports them — never trimmed. A path
+  # with leading or trailing whitespace is a different file, and trimming it
+  # could land it on a lighter tier. Only blank lines are skipped.
+  [[ -n "$file" ]] || continue
+  hit=0
+  for (( i = 0; i < N_TIERS; i++ )); do
+    [[ -n "${TIER_PATHS[$i]}" ]] || continue
+    while IFS= read -r glob; do
+      [[ -n "$glob" ]] || continue
+      if glob_matches "$file" "$glob"; then
+        CAND[i]=1; hit=1
+        record "${TIER_NAMES[$i]}" "${TIER_GATES[$i]}" path "$file"
+        break
+      fi
+    done <<<"${TIER_PATHS[$i]}"
+  done
+  if [[ $hit -eq 0 ]]; then
+    UNMATCHED=$((UNMATCHED + 1))
+    printf '%s\n' "$file" >> "$TMP_DIR/unmatched"
+  fi
+done < <(awk 1 "$FILES_FILE")
+
+apply_default() {
+  # apply_default <via> <item>
+  if (( DEFAULT_IDX >= 0 )); then
+    CAND[DEFAULT_IDX]=1
+    record "${TIER_NAMES[$DEFAULT_IDX]}" "${TIER_GATES[$DEFAULT_IDX]}" "$1" "$2"
+  else
+    IMPLICIT_DEFAULT=1
+    record default full "$1" "$2"
+  fi
+}
+
+if (( UNMATCHED > 0 && LABEL_HIT == 0 )); then
+  while IFS= read -r file; do apply_default default "$file"; done < "$TMP_DIR/unmatched"
+fi
+
+ANY=0
+for (( i = 0; i < N_TIERS; i++ )); do [[ "${CAND[$i]}" == "1" ]] && ANY=1; done
+if (( ANY == 0 && IMPLICIT_DEFAULT == 0 )); then
+  apply_default default "(no changed files)"
+fi
+
+FORCE_FULL=0
+if (( TRUNCATED == 1 )); then
+  FORCE_FULL=1
+  record "(truncated)" full truncated "GitHub listed fewer files than the PR changed"
+fi
+if (( UNREADABLE_NAMES > 0 )); then
+  FORCE_FULL=1
+  record "(truncated)" full truncated "$UNREADABLE_NAMES path(s) contain a newline and cannot be classified"
+fi
+
+BEST=0
+BEST_TIER=""
+for (( i = 0; i < N_TIERS; i++ )); do
+  [[ "${CAND[$i]}" == "1" ]] || continue
+  r="$(gate_rank "${TIER_GATES[$i]}")"
+  if (( r > BEST )); then BEST=$r; BEST_TIER="${TIER_NAMES[$i]}"; fi
+done
+if (( IMPLICIT_DEFAULT == 1 && BEST < 3 )); then BEST=3; BEST_TIER="default"; fi
+if (( FORCE_FULL == 1 && BEST < 3 )); then BEST=3; BEST_TIER="(truncated)"; fi
+
+case $BEST in
+  1) GATE="ci-only" ;;
+  2) GATE="ci+codeant-one-round" ;;
+  *) GATE="full" ;;
+esac
+
+MATCHES="$(jq -R -s -c '
+  split("\n") | map(select(length > 0) | split("\t")
+    | {tier: .[0], gate: .[1], via: .[2], item: .[3]})
+  | group_by([.tier, .via])
+  | map({tier: .[0].tier, gate: .[0].gate, via: .[0].via,
+         count: length, examples: (map(.item) | .[0:5])})
+' < "$MATCH_TSV")" || die_read "could not build the match summary"
+
+emit present "$GATE" "$BEST_TIER" "" "$MATCHES"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for bgwork-ceiling.sh — the hard ceiling on chat silence while
 # background work runs (issue #803).
+# catalog: tests — Tests for `bgwork-ceiling.sh`
 #
 # Every marker this script touches is redirected into a temp dir via
 # CLAUDE_BGWORK_MARKER_DIR, and the log via CLAUDE_BGWORK_LOG_DIR, so the suite
@@ -11,6 +12,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/bgwork-ceiling.sh"
 
 TMP_DIR="$(mktemp -d)"
+export HOME="$TMP_DIR/home" CLAUDE_SESSION_STATE_FILE="$TMP_DIR/session-state.json"
+mkdir -p "$HOME"
+printf '{"repos":{}}' > "$CLAUDE_SESSION_STATE_FILE"
 export CLAUDE_BGWORK_MARKER_DIR="$TMP_DIR/markers"
 export CLAUDE_BGWORK_LOG_DIR="$TMP_DIR/logs"
 mkdir -p "$CLAUDE_BGWORK_MARKER_DIR" "$CLAUDE_BGWORK_LOG_DIR"
@@ -99,17 +103,22 @@ OUT=$("$SCRIPT" --tick --session "$SID")
 [[ -z "$OUT" ]] || fail "--tick below the trip point should print nothing, got: '$OUT'"
 ok "--tick stays silent while the thread is heartbeating normally"
 
-# --- 10. --tick breaches past the trip point, in heartbeat format ------------
+# --- 10. --tick breaches past the trip point, references Liveness section ----
 touch -t "$(stamp_minutes_ago 25)" "$(hb)"
 OUT=$("$SCRIPT" --tick --session "$SID")
 [[ "$OUT" == *"CEILING BREACH"* ]] || fail "--tick past the trip point should breach, got: '$OUT'"
-[[ "$OUT" == *"User Heartbeat"* ]] || \
-  fail "breach line must point at the monitor-mode.md one-line heartbeat format, got: '$OUT'"
-[[ "$OUT" == *"nothing new"* ]] || \
-  fail "breach line must authorise a nothing-new heartbeat, got: '$OUT'"
+[[ "$OUT" == *"Liveness"* ]] || \
+  fail "breach line must point at the monitor-mode.md Liveness section, got: '$OUT'"
+[[ "$OUT" != *"User Heartbeat"* ]] || \
+  fail "breach line must NOT contain removed User Heartbeat section name, got: '$OUT'"
+[[ "$OUT" != *"nothing new"* && "$OUT" != *"timestamp>]"* && "$OUT" != *"status NOW"* ]] || \
+  fail "breach must not demand routine status, got: '$OUT'"
+for required in 'parent heartbeat' 'verified stall' 'unknown health' 'safety event' 'stopped/exhausted recovery' 'explicit status request' 'requested periodic report'; do
+  [[ "$OUT" == *"$required"* ]] || fail "missing required notice: $required"
+done
 LINES=$(printf '%s' "$OUT" | wc -l | tr -d ' ')
 [[ "$LINES" -le 1 ]] || fail "breach output should be a single line, got $LINES newlines"
-ok "--tick emits a single one-line heartbeat instruction on breach"
+ok "--tick emits a single one-line status instruction on breach"
 
 # --- 11. Breaches are deduped per stretch of silence ------------------------
 OUT=$("$SCRIPT" --tick --session "$SID")

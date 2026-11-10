@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # check-runs-dedup.test.sh — Offline unit tests for check-runs-dedup.sh (issue #675).
+# catalog: tests — Tests for `check-runs-dedup.sh`
 #
 # The helper is pure stdin -> stdout, so these need no gh stub and no network.
 # Run from repo root: bash .claude/scripts/tests/check-runs-dedup.test.sh
@@ -179,7 +180,7 @@ check_eq 2 "$?" "an unexpected positional argument exits 2"
 
 HELP_OUT=$("$SUT" --help 2>/dev/null); HELP_RC=$?
 check_eq 0 "$HELP_RC" "--help exits 0"
-if echo "$HELP_OUT" | grep -q "check-runs-dedup.sh"; then
+if grep -q "check-runs-dedup.sh" <<<"$HELP_OUT"; then
   ok "--help prints the usage block"
 else
   bad "--help prints the usage block (got: $HELP_OUT)"

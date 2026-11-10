@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 672 676" xmlns="http://www.w3.org/2000/svg">
+<style>  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10.5px; fill: #111; }
+  svg .box { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .soft { fill: #f3f3f3; stroke: #777; stroke-dasharray: 3 2; }
+  svg .dark { fill: #e3e3e3; stroke: #222; stroke-width: 1.1; }
+  svg .dia { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .human { fill: #fff; stroke: #000; stroke-width: 2.6; }
+  svg .ai { fill: #f7f7f7; stroke: #222; stroke-width: 1.2; }
+  svg .sw { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 6 3; }
+  svg .git { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 1.5 2.5; }
+  svg .ln { stroke: #222; stroke-width: 1.1; fill: none; }
+  svg .dsh { stroke-dasharray: 4 3; }
+  svg .lbl { font-size: 9.4px; fill: #333; }
+  svg .ttl { font-weight: 700; font-size: 11px; }
+  svg .big { font-weight: 700; font-size: 14px; }
+  svg .sm { font-size: 8.8px; fill: #333; }
+  svg .tag { font-size: 8.4px; font-weight: 700; letter-spacing: 0.6px; fill: #333; }
+  svg .mono { font-family: Menlo, Consolas, monospace; font-size: 9.3px; }
+</style>
+<defs><marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker></defs>
+<!-- row 1: morning -->
+<rect x="10" y="10" width="200" height="66" class="human"/>
+<text x="16" y="24" class="tag">YOU · morning check-in</text>
+<text x="16" y="40" class="sm">"4 hours at the desk, energy ok,</text>
+<text x="16" y="52" class="sm">half the afternoon away"</text>
+<text x="16" y="66" class="sm">one sentence, once a day</text>
+<rect x="236" y="10" width="200" height="66" class="ai"/>
+<text x="242" y="24" class="tag">DESK · reads yesterday</text>
+<text x="242" y="40" class="sm">22 items reviewed in about 3 hours;</text>
+<text x="242" y="52" class="sm">median 4 min from shown to answered;</text>
+<text x="242" y="66" class="sm">18 queued, 6 open Decisions, 3 threads live</text>
+<rect x="462" y="10" width="200" height="66" class="dark"/>
+<text x="468" y="24" class="tag">TODAY'S BUDGET</text>
+<text x="468" y="40" class="sm">"plan on 24 reviews and</text>
+<text x="468" y="52" class="sm">about 15 questions today"</text>
+<text x="468" y="66" class="sm">shown once; adjusts with the plan</text>
+<path d="M210,43 L236,43" class="ln" marker-end="url(#ah4)"/>
+<path d="M436,43 L462,43" class="ln" marker-end="url(#ah4)"/>
+<!-- row 2: the dialogue -->
+<text x="10" y="104" class="ttl">The plan is a conversation, not a mode</text>
+<rect x="10" y="114" width="200" height="54" class="human"/>
+<text x="16" y="130" class="sm">"I need to work on the PRD today."</text>
+<text x="16" y="146" class="sm">"Each section is about 30 minutes;</text>
+<text x="16" y="158" class="sm">four sections, I'll submit them one by one."</text>
+<rect x="236" y="114" width="200" height="54" class="ai"/>
+<text x="242" y="130" class="sm">"How fast will the next revision go,</text>
+<text x="242" y="142" class="sm">and in what chunks?"</text>
+<text x="242" y="156" class="sm">"About 4 questions should arrive in the</text>
+<text x="242" y="166" class="sm">next hour from the three running threads."</text>
+<rect x="462" y="114" width="200" height="54" class="ai"/>
+<text x="468" y="130" class="sm">"Clear R-87 and the four small ones first,</text>
+<text x="468" y="142" class="sm">about ten minutes; then 90 minutes on §4</text>
+<text x="468" y="154" class="sm">with everything held; then the batch.</text>
+<text x="468" y="166" class="sm">Sound right?"</text>
+<path d="M210,141 L236,141" class="ln" marker-end="url(#ah4)"/>
+<path d="M436,141 L462,141" class="ln" marker-end="url(#ah4)"/>
+<rect x="10" y="180" width="200" height="40" class="human"/>
+<text x="16" y="196" class="sm">"Yes. And show me anything from the</text>
+<text x="16" y="208" class="sm">BK engine thread right away."</text>
+<rect x="236" y="180" width="426" height="48" class="dark"/>
+<text x="242" y="194" class="sm">Stored as the day plan: blocks (what, pace, until), what to clear first, and exceptions</text>
+<text x="242" y="207" class="sm">("BK engine thread: show now"). Revised in one sentence at any time.</text>
+<text x="242" y="220" class="sm">Nothing here is a fixed policy; policy.json only holds the defaults the conversation overrides.</text>
+<path d="M210,200 L236,200" class="ln" marker-end="url(#ah4)"/>
+<!-- row 3: during the block -->
+<text x="10" y="248" class="ttl">While you work: what reaches you</text>
+<rect x="10" y="258" width="206" height="78" class="dark"/>
+<text x="16" y="274" class="ttl">Default: loud</text>
+<text x="16" y="288" class="sm">every new item at the next tick,</text>
+<text x="16" y="300" class="sm">in sets numbered 1..n, parked agents</text>
+<text x="16" y="312" class="sm">first, then impact, then age.</text>
+<text x="16" y="328" class="sm">You asked for this at first.</text>
+<rect x="232" y="258" width="206" height="78" class="box"/>
+<text x="238" y="274" class="ttl">Per your plan: held</text>
+<text x="238" y="288" class="sm">"90 minutes on §4, hold everything"</text>
+<text x="238" y="300" class="sm">→ items accumulate; the batch shows</text>
+<text x="238" y="312" class="sm">at the block end. Named exceptions</text>
+<text x="238" y="324" class="sm">("BK engine thread") still show now.</text>
+<rect x="454" y="258" width="208" height="78" class="box"/>
+<text x="460" y="274" class="ttl">Away: nothing</text>
+<text x="460" y="288" class="sm">"away" suppresses everything;</text>
+<text x="460" y="300" class="sm">a desktop notification goes out only</text>
+<text x="460" y="312" class="sm">for an exception you named.</text>
+<text x="460" y="328" class="sm">Allowed, but not the model.</text>
+<!-- row 4: feedback -->
+<text x="10" y="364" class="ttl">Your feedback tunes it</text>
+<rect x="10" y="374" width="652" height="60" class="human"/>
+<text x="16" y="390" class="sm">On any item, one tag: "2: not important" · "2: should have defaulted" · "2: good interrupt". Stored as an event with the asking thread.</text>
+<text x="16" y="404" class="sm">The desk acknowledges in one line and does not argue. Tags feed the weekly attention report and, later, the agents' own defaults:</text>
+<text x="16" y="418" class="sm">a thread that keeps asking what it should have decided itself is a thread whose instructions need a line, not a thread to mute.</text>
+<text x="16" y="430" class="sm">You said you will complain if it is too much; the system only ever gets quieter from feedback, never louder on its own.</text>
+<!-- timeline -->
+<text x="10" y="464" class="ttl">One day under this plan</text>
+<rect x="20" y="476" width="632" height="26" class="box"/>
+<rect x="20" y="476" width="12" height="26" fill="#222"/>
+<rect x="32" y="476" width="12" height="26" fill="#777"/>
+<rect x="44" y="476" width="111" height="26" class="dark"/>
+<text x="99" y="493" text-anchor="middle" class="sm">PRD §4 · held</text>
+<rect x="155" y="476" width="12" height="26" fill="#777"/>
+<rect x="167" y="476" width="111" height="26" class="dark"/>
+<text x="222" y="493" text-anchor="middle" class="sm">PRD §5 · held</text>
+<rect x="278" y="476" width="12" height="26" fill="#777"/>
+<rect x="290" y="476" width="37" height="26" fill="#fff" stroke="#222"/>
+<text x="308" y="493" text-anchor="middle" class="sm">lunch</text>
+<rect x="327" y="476" width="200" height="26" fill="#fff" stroke="#222"/>
+<text x="427" y="493" text-anchor="middle" class="sm">loud · everything as it arrives</text>
+<rect x="527" y="476" width="113" height="26" fill="#f3f3f3" stroke="#222"/>
+<text x="583" y="493" text-anchor="middle" class="sm">away</text>
+<rect x="640" y="476" width="12" height="26" fill="#222"/>
+<polygon points="120,460 128,476 112,476" fill="#222"/>
+<text x="20" y="518" class="sm">9:00</text>
+<text x="155" y="518" text-anchor="middle" class="sm">10:40</text>
+<text x="278" y="518" text-anchor="middle" class="sm">12:20</text>
+<text x="327" y="518" text-anchor="middle" class="sm">13:00</text>
+<text x="527" y="518" text-anchor="middle" class="sm">15:40</text>
+<text x="652" y="518" text-anchor="end" class="sm">17:30</text>
+<text x="20" y="542" class="lbl">■ 9:00 check-in and the ten-minute clear-first batch · ■ grey slivers: the batch at each block end · ▲ 10:20: the named exception shows now</text>
+<text x="20" y="558" class="lbl">13:00–15:40: no plan declared, so the default applies and each set shows at the next tick · 15:40 away · ■ 17:30 sweep → numbered PDF</text>
+<!-- knobs -->
+<rect x="8" y="580" width="656" height="86" class="soft"/>
+<text x="16" y="598" class="ttl">policy.json — defaults only; the conversation overrides them case by case</text>
+<text x="16" y="616" class="mono">interrupt_rule everything · tick_cadence_min 5 · set_size 4 · eod_time 17:30 ET · budget_start 30x20</text>
+<text x="16" y="634" class="lbl">Order inside a set: parked agents first, then impact (derived later by #1760), then age. Away still suppresses.</text>
+<text x="16" y="652" class="lbl">Notifications only for an exception you named. Check-in and budget: #1770 · plan dialogue and tags: #1758 · weekly report: #1771.</text>
+</svg>

@@ -1,90 +1,39 @@
-# Issue #892: fix BugBot trigger — bot-authored @cursor review comments are ignored
+# Cursor BugBot per-push nudge — DISABLED (issue #1897).
 #
-# BugBot (Cursor) auto-reviews a PR when it is opened, but does NOT re-review the
-# new HEAD after a push. This workflow posts `@cursor review` to close that gap.
+# This workflow used to post `@cursor review` (as the repository owner, via the
+# CURSOR_REVIEW_PAT secret) after every push, because BugBot does not re-review
+# a new HEAD on its own (issue #892). BugBot bills per review, and the owner's
+# policy is that no paid AI review starts without the owner's explicit approval
+# in chat (.claude/rules/safety.md). A workflow cannot carry that approval, so
+# the posting step — and the refusal and review-tier guard steps that existed
+# only to narrow it (issues #1356, #1728, #1749) — are gone. No input, secret,
+# or helper output can make this workflow post a comment.
 #
-# IT MUST BE POSTED AS A HUMAN. A trigger comment authored by `github-actions[bot]`
-# is ignored by BugBot — measured on PR #891 in this repo (three bot triggers, 30
-# minutes, zero BugBot responses; one human trigger: check-run started in 5 seconds)
-# and independently on auerbachb/meeting_insights_and_actions PR #172 (27 minutes,
-# no response to a bot-authored comment). The comment is posted with the
-# CURSOR_REVIEW_PAT secret so the author is the repository owner rather than
-# github-actions[bot].
-#
-# Why `pull_request` and not `pull_request_target`:
-# `pull_request_target` runs with base-branch context and exposes secrets even on
-# fork PRs — which would hand the PAT to fork-triggered events. `pull_request`
-# withholds secrets from fork PRs, so a fork's run simply takes the no-token path
-# below. This repo has no external contributors, so no coverage is lost.
-#
-# This is a convenience trigger, never a merge gate. A missing PAT or a failed
-# comment degrades to a warning annotation; the workflow always exits success.
+# The workflow, its trigger, and its job name stay so that any required-status
+# check keyed on `post-cursor-review` still reports. The single step only prints
+# a notice. It cannot read the owner's session state, so it never spends an
+# owner grant: approved BugBot reviews post only through the agent-side
+# paid-review-grant.sh --trigger (issue #1898). The inventory of gated
+# trigger paths lives in .claude/reference/review-policy.md
+# §Paid review authorization.
 name: Cursor BugBot review trigger
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-permissions:
-  # Comment is posted via CURSOR_REVIEW_PAT, not GITHUB_TOKEN.
-  # contents:read is the minimum for pull_request triggers.
-  contents: read
+# Nothing is read or written through the token.
+permissions: {}
 
 jobs:
   post-cursor-review:
     runs-on: ubuntu-latest
-    # Guards — all three must pass:
-    #   1. Drafts are not ready for review.
-    #   2. Only the repository owner's PRs trigger a per-seat reviewer;
-    #      an outside contributor's PR must not spend the maintainer's seat.
-    #   3. Bot-authored PRs never trigger (prevent comment loops).
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login == github.repository_owner &&
       !endsWith(github.event.pull_request.user.login, '[bot]')
-    env:
-      # Reduce CURSOR_REVIEW_PAT to a boolean here so step `if:` conditions can
-      # test for secret presence without embedding the value. secrets.* is not
-      # available in step-level `if:`, but env.* is.
-      HAS_TRIGGER_TOKEN: ${{ secrets.CURSOR_REVIEW_PAT != '' }}
     steps:
-      - name: Warn — CURSOR_REVIEW_PAT not configured
-        if: env.HAS_TRIGGER_TOKEN != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            core.warning(
-              'Skipped the BugBot trigger: CURSOR_REVIEW_PAT is not available to this ' +
-              'workflow run — either it is not configured, or this is a fork-triggered ' +
-              'pull_request run, which never receives repository secrets. ' +
-              'BugBot was NOT asked to review this commit. ' +
-              'A comment posted by github-actions[bot] is ignored by BugBot, ' +
-              'so none was posted rather than leaving a misleading one. ' +
-              'Comment `@cursor review` manually, or add a fine-grained PAT for this ' +
-              'repository with Pull requests: Read and write as CURSOR_REVIEW_PAT.'
-            );
-
-      - name: Comment @cursor review
-        if: env.HAS_TRIGGER_TOKEN == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          # Authenticate as the PAT owner (repository owner) rather than
-          # github-actions[bot] — that distinction is why this workflow exists.
-          github-token: ${{ secrets.CURSOR_REVIEW_PAT }}
-          script: |
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: '@cursor review'
-              });
-            } catch (error) {
-              // Never fail the PR's checks over a missed trigger comment.
-              core.warning(
-                `Could not post the '@cursor review' trigger comment: ${error.message}. ` +
-                'Check that CURSOR_REVIEW_PAT has not expired and still grants ' +
-                'this repository Pull requests: Read and write. ' +
-                'BugBot was NOT asked to review this commit — comment it manually.'
-              );
-            }
+      - name: Notice — BugBot invitations need owner approval
+        id: approval-notice
+        run: |
+          echo "::notice::BugBot was not invited: it is a paid review and needs the owner's explicit approval in chat (issue #1897). This workflow never posts a trigger comment."

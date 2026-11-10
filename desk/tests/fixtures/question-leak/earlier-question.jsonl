@@ -1,0 +1,4 @@
+{"type":"user","uuid":"u-1","sessionId":"fixture","message":{"role":"user","content":"Clean up the stale branches."}}
+{"type":"assistant","uuid":"a-1","sessionId":"fixture","message":{"id":"msg_fixture_01","role":"assistant","content":[{"type":"text","text":"Found three stale branches. Delete all three?"}],"stop_reason":"end_turn"}}
+{"type":"user","uuid":"u-2","sessionId":"fixture","message":{"role":"user","content":"Yes, delete them."}}
+{"type":"assistant","uuid":"a-2","sessionId":"fixture","message":{"id":"msg_fixture_02","role":"assistant","content":[{"type":"text","text":"Deleted all three stale branches."}],"stop_reason":"end_turn"}}

@@ -8,10 +8,21 @@
 #
 # Discovered dirs:
 #   .claude/hooks/tests/    .claude/scripts/tests/    .github/scripts/tests/
+#   desk/tests/             (the human-queue store, issue #1774 — its live
+#                            database suite skips without HUMAN_QUEUE_DATABASE_URL,
+#                            so CI runs only the offline ones)
 #
 # Test contract: exit 0 on pass / non-zero on fail; invoked via `bash` so the
 # executable bit is NOT required (some suites are intentionally non-exec); no
 # positional args needed.
+#
+# Every discovered suite is parse-checked with `bash -n` before it is run, and a
+# suite that fails that check is reported as the syntax error it is rather than
+# as the last line it managed to print before aborting (issue #1675).
+# Runtime command-substitution parsing is not covered by bash -n (issue #1677).
+# Decision: retain execution as the behavioral gate and move problematic case
+# syntax / nested escaped-JSON construction out of substitutions in fixtures;
+# do not claim that a syntax-only precheck proves native Bash 3.2 compatibility.
 #
 # Usage (CI or local, runnable from anywhere):
 #   bash .github/scripts/run-hook-tests.sh            # human/CI folds (default)
@@ -49,7 +60,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
     -h|--help)
-      awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+      awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0
       ;;
     *)
@@ -84,10 +96,25 @@ FAILED_LIST=""
 RELEVANT=""
 for t in .claude/hooks/tests/*.test.sh \
          .claude/scripts/tests/*.test.sh \
-         .github/scripts/tests/*.test.sh; do
+         .github/scripts/tests/*.test.sh \
+         desk/tests/*.test.sh; do
   total=$((total + 1))
   rc=0
-  bash "$t" >"$SUITE_OUT" 2>&1 || rc=$?
+  # Parse-check BEFORE running (issue #1675). A suite that does not parse still
+  # executes every complete command ahead of the fault and then aborts, so its
+  # capture ends on whatever it happened to print last — and the reporting below
+  # (and `relevant_error`) names that line as the failure. The real cause, a
+  # syntax error, never appears. `bash -n` turns that into a parse failure that
+  # names itself, and it runs under the same PATH-resolved bash the suite would
+  # have run under, so a version-specific parse fault is caught on the platform
+  # that actually has it.
+  if SYNTAX_ERR="$(bash -n "$t" 2>&1)"; then
+    bash "$t" >"$SUITE_OUT" 2>&1 || rc=$?
+  else
+    rc=2
+    printf 'ERROR: %s does not parse — `bash -n` rejected it, so the suite never ran:\n%s\n' \
+      "$t" "$SYNTAX_ERR" >"$SUITE_OUT"
+  fi
 
   # The full capture always reaches the log, pass or fail, in both modes.
   {

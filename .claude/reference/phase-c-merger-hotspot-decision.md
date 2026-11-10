@@ -56,8 +56,9 @@ sources that define the underlying schemas and gates.
 
 - `.claude/rules/cr-merge-gate.md` and `.claude/scripts/merge-gate.sh` own the
   exact-current-HEAD review, terminal CI, unresolved-thread, and merge-metadata
-  requirements. The agent retains exit-code branching and its explicit BEHIND
-  stop-and-report boundary.
+  requirements. The agent retains exit-code branching and its exit-`1`
+  classification block (clean-`BEHIND` candidate, `ac-gate`-only candidate,
+  otherwise stop-and-report).
 - `.claude/scripts/ac-checkboxes.sh --help` owns helper modes and exit-code
   details. The agent retains source-based verification, the missing-criteria
   stop, update-failure stop, and no-tick-on-failure judgment.
@@ -75,8 +76,12 @@ sources that define the underlying schemas and gates.
 - Review approval must match the current HEAD, CI must be terminal and
   non-blocking, all review threads must be resolved, and merge metadata must be
   acceptable before `/wrap`.
-- A literal `BEHIND` result blocks Phase C and routes rebase/re-review recovery
-  back to the parent; the merger never self-heals or merges around it.
+- A `BEHIND` result that is not verified clean routes rebase/re-review recovery
+  back to the parent; the merger never self-heals or merges around it. (Issue
+  #1563 later admitted the *verified clean* `BEHIND`, and issue #1588 the
+  non-`BEHIND` PR whose only unmet reason is a pre-tick `ac-gate` failure — both
+  proceed to AC verification rather than stopping, and neither bypasses a real
+  blocker.)
 - Every unchecked acceptance criterion is verified against relevant source
   files before it is ticked. Missing criteria, failed verification, and helper
   or PR-body update errors block the merge.

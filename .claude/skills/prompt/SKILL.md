@@ -39,7 +39,40 @@ Separately from Fast mode: for Light-tier work, **Haiku** is a valid cheaper alt
 
 **Model-guard preamble (mandatory):** Immediately after the `**Effort:**` line — no blank line between the three — insert the model-guard preamble defined in `.claude/reference/chip-launching.md` "Model-guard preamble," verbatim, never reworded. It applies in both delivery modes: the launched thread's first action is to compare its actual running model against the `**Model:**` line and stop on any mismatch. The guard covers the model only — effort is a pre-click recommendation, not a guarded self-report (`chip-model-guard-decision.md`, which also explains why the guard rides in both the chip `prompt` and the fallback block). In chip mode both lines MUST also appear in the visible short summary; when the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
-## Step 0: Parse Arguments and Detect Context
+## Step 0: Resolve shared tooling
+
+`/prompt` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
+```
+
+Read `chip-launching.md` through the same order — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/`.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip; Step 5.5's inline/too-big partition depends on it, and without the gate every issue routes to its own thread (#1189).
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped` and continue.
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced` and fall back to the pre-cap behavior in Step 6 (delegated gating only). A **non-zero exit** from a script that did resolve means a count source could not be read — treat it as `FREE = 0` and defer, never as an idle repo.
+
+`/prompt` also *emits* script paths into the prompts it generates. Those go to a thread running in some other repo, so the generated text carries the candidate order itself rather than a bare path — see the Constraints and Workflow blocks below.
+
+The tier ladder's rule citations (`subagent-orchestration.md`, `cr-*.md`, `issue-planning.md`) need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project.
+
+---
+
+## Step 0a: Parse Arguments and Detect Context
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers.
 
@@ -190,17 +223,21 @@ If classification is unclear, default to **Standard**. It is better to slightly 
 
 **Skip this step entirely if `PM_AUTO_DETECT` is not `true`** (i.e., when explicit arguments were provided via Path A, or if Path C was taken). When skipped, all issues proceed to Step 6 as thread-prompt issues.
 
-When `PM_AUTO_DETECT=true`, partition the classified issues into two groups. **The default is subagent-eligible (inline execution); an issue falls into the thread-prompt group only if it is "too big for any subagent."** Evaluate the too-big test **per issue**, using the same three criteria as `/subagent` Step 4 — a judgment call about resumability and interactivity, **not** tier and **not** file/AC/dependency arithmetic:
+When `PM_AUTO_DETECT=true`, partition the classified issues into two groups. **The default is subagent-eligible (inline execution); an issue falls into the thread-prompt group only if it is too big in a way a split cannot fix** — criteria 1 or 2 below. Evaluate the too-big test **per issue**, using the same three criteria as `/subagent` Step 4 — a judgment call about resumability and interactivity, **not** tier and **not** file/AC/dependency arithmetic:
 
 1. **The implementation can't be carried across sequential subagent turns** — work that resists being cut into resumable pieces, where a replacement agent couldn't pick up from a handoff and continue. **Size is not the test:** a sweeping many-file change is highly resumable and stays inline, because the token-exhaustion protocol already carries it across agents.
 2. **Needs interactive human judgment mid-build** — genuinely unresolved product/design decisions that must be settled *during* implementation. An "Open questions" section the issue already answers does not count.
 3. **Should be split into multiple PRs** — the issue asks to be split, or its scope spans several independent deliverables.
 
-If **none** hold, the issue is **subagent-eligible** (runs inline). If **any** holds, it is a **thread-prompt issue** (too big) — and the group assignment **must name which criterion fired**; an unnamed "too big" is not a valid verdict. Touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills`, a high `ac_count`, dependencies, orchestration keywords, a Heavy/Standard `issue_tier`, "looks large", or a full inline pipeline never force the thread-prompt group — none of them is a gate here. Rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776).
+If **none** hold, the issue is **subagent-eligible** (runs inline). If **criterion 1 or 2** holds, it is a **thread-prompt issue** (too big) — and the group assignment **must name which criterion fired**; an unnamed "too big" is not a valid verdict. Touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills`, a high `ac_count`, dependencies, orchestration keywords, a Heavy/Standard `issue_tier`, "looks large", or a full inline pipeline never force the thread-prompt group — none of them is a gate here. Rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776, #1193).
+
+**If only criterion 3 holds, the issue is NOT a thread-prompt issue (#1193).** It goes to the subagent-eligible group flagged **`needs decomposition`**, because `/subagent` Step 5.1 splits it into an inline increment chain rather than routing it out. `/prompt` files nothing and decomposes nothing — it just stops sending these issues down the thread path. When a thread criterion *and* criterion 3 both hold, the thread criterion wins and the issue is a thread-prompt issue naming that criterion.
 
 **Result of partitioning:**
-- **Subagent-eligible issues (the default, usually the majority)** — reported in a separate section with a `/subagent` command suggestion (see Step 6).
-- **Thread-prompt issues (too big)** — everything the too-big test flagged. These get full prompt blocks as normal, each naming the criterion that forced the thread.
+- **Subagent-eligible issues (the default, usually the majority)** — reported in a separate section with a `/subagent` command suggestion (see Step 6). A `needs decomposition` issue is listed here with that flag and a one-line note on why one pipeline can't land it, so the `/subagent` run knows to expect a chain.
+- **Thread-prompt issues (too big)** — those criterion 1 or 2 flagged. These get full prompt blocks as normal, each naming the criterion that forced the thread.
+
+This partition governs **Path B (PM auto-detect) only.** An explicit `/prompt #N` (Path A) skips Step 5.5 and still produces a full thread-prompt block for any issue, criterion 3 included — the user naming an issue *is* the explicit ask that authorizes a thread (`/pm` 3.1 trigger 2), and it is how a decomposition the user disagrees with gets overridden.
 
 If all issues are subagent-eligible, the thread-prompt group is empty — only the Subagent Candidates section is output. If no issues are subagent-eligible (every detected issue is too big), the Subagent Candidates section is omitted entirely.
 
@@ -214,16 +251,18 @@ Produce the following output in Markdown. Use the gathered data to fill in each 
 
 Check chip availability per `.claude/reference/chip-launching.md`, then branch. The **prompt content is identical either way** — only delivery differs:
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): for each thread-prompt issue (after Step 5.5 partitioning), call `spawn_task` with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is exactly the content that would sit **inside** that issue's `~~~` fences in fallback mode — the fence delimiters themselves are not part of the prompt. Everything between them, starting with the `**Model:**` line, is. Print only the short summary per issue — issue, title, `**Model:**` line, one-line rationale. The user clicks to launch; never launch for them.
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): for each thread-prompt issue (after Step 5.5 partitioning), **register via `chip-offer-registry.sh --reserve` before calling `spawn_task`** (see `chip-launching.md` "Offer Registry" — exit 7 defers that issue). Then call `spawn_task` with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is exactly the content that would sit **inside** that issue's `~~~` fences in fallback mode — the fence delimiters themselves are not part of the prompt. Everything between them, starting with the `**Model:**` line, is. Print only the short summary per issue — issue, title, `**Model:**` line, one-line rationale. The user clicks to launch; never launch for them.
 - **Fallback mode** (tool absent): print today's `~~~`-fenced blocks for every thread-prompt issue — **copy-paste-ready**, each independently pasteable into a new thread. Byte-identical to the chip `prompt` (model-guard preamble included) — see `chip-model-guard-decision.md` for why this is no longer byte-for-byte identical to pre-chip output.
 
-**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, or a printed block.
+**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, a printed block, or a **deferred** entry — deferral is a third terminal outcome, not a missing one. An issue held back by the repo-wide cap gets neither a chip nor a block, since printing its block would hand over the launch the cap just withheld; it is named in the deferred list instead.
 
 **Record every chip's `task_id`.** After each successful spawn, record the returned `task_id` against its issue and mark that issue `Chip offered` — an unrecorded chip can never be withdrawn, which would break stale-chip hygiene. In a PM thread, write it to `/pm`'s Active Work table (its `Task ID` column is the canonical home). Outside a PM thread, keep it in this thread's state so it stays dismissable within the session, and say so in the summary.
 
-**Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
+**Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0a) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
 
 Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
+
+**Bound the batch against the repo-wide cap.** Before the `spawn_task` loop, read the census from `"$ACTIVE_WORK_CAP_SH"` (resolved in Step 0) — the default output line carries `CAP`, `ACTIVE`, and `FREE`, and the deferral message below quotes `{ACTIVE}/{CAP}`, so `--free` alone cannot render it (`chip-launching.md` "Repo-wide active-work cap") and offer **at most `FREE`** new chips this turn. Report the remainder as **deferred**, naming the count and the scope — "4 deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)". Print no block for a deferred issue: a deferred issue is not offered, and printing its block would hand the user the same launch the cap just withheld. Deferred issues are re-offered as active work drains. This does not change the rule below that every *offered* issue ends with either a chip or a block.
 
 `/prompt` introduces **no all-open-PR ceiling count of its own**: Path B's issue set comes from the PM thread's own `## Suggested Next Issues` / `## Active Work` (your work), and any slot/ceiling gating is delegated — chip offers follow `chip-launching.md`'s PM-context inline gate and inline runs follow `/subagent`'s concurrency ceiling, both author-scoped per `subagent-orchestration.md` (the canonical ceiling). The `Fixes #N` / `Closes #N` signal read during classification (Step 2) is a per-issue in-flight/dedup hint, not a `/prompt`-owned slot count, and never gates a launch on a collaborator's PR. (`/wave` is different: an issue covered by a PR *you* authored **does** count toward its `IN_FLIGHT` and reduces available slots — that is `/wave`'s slot accounting, not `/prompt`'s.)
 
@@ -255,8 +294,8 @@ When `PM_AUTO_DETECT=true` and subagent-eligible issues exist, output this secti
 ## Subagent Candidates (run inline — default)
 
 These issues run inline as subagents directly in this PM thread — the default for anything not too big for a subagent:
-- #{N} — {Title} ({Tier} tier, {file_count} file(s))
-- #{M} — {Title} ({Tier} tier, {file_count} file(s))
+- #{N} — {Title} ({Tier} tier, {file_count} file(s)) — {estimate-line}
+- #{M} — {Title} ({Tier} tier, {file_count} file(s)) — {estimate-line}
 
 Run: `/subagent #{N} #{M}`
 ```
@@ -273,7 +312,28 @@ Output the Tier Recommendation as plain text first (skip if all issues are subag
 **{TIER_NAME}** — {MODEL} — effort: {LEVEL}
 
 Rationale: {1-line explanation of why this tier was selected, citing the dominant signal}
+
+**Estimate:** {estimate-line}
 ```
+
+**Surfacing the estimate:** For each issue, check whether the issue body contains an
+`## Estimate` section (filed by `/issue-maker`). If present, extract the `Est: …` line
+and validate it matches `^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$` with
+Group 1 < Group 2 and Group 3 == Group 2; if valid, echo it as `{estimate-line}`. If
+the section is absent,
+or the line is missing or fails validation, derive from the issue's `issue_tier` using
+`time-estimates.md` (candidate order:
+`$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
+`$HOME/.claude/reference/`, then `.claude/reference/`). If none of the three candidates
+resolves, print exactly:
+`DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
+then use: Light `Est: 60–90 min · plan on 90`, Standard `Est: 120–180 min · plan on 180`,
+Heavy `Est: 210–300 min · plan on 300`. Never omit the estimate. Each per-issue prompt block carries its own `{estimate-line}`
+derived from that issue's `issue_tier` (the per-issue tier from Step 4 classification —
+computed for every issue, including subagent candidates, before partitioning; always
+available here). The batch-level Tier Recommendation shows the
+most demanding thread-prompt issue's estimate (same issue set as the batch tier,
+excluding subagent candidates) as a quick planning summary.
 
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
@@ -293,6 +353,7 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 **Effort:** Extra — rules-adjacent change, many acceptance checks
 {Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 ### Issue #{NUMBER}: {TITLE}
+{Full issue URL}
 
 **Acceptance Criteria:**
 {List all checkbox items from the issue body, preserving the original text}
@@ -301,6 +362,8 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 {List any dependency relationships, or "None detected"}
 
 **Labels:** {comma-separated labels, or "None"}
+
+**Estimate:** {estimate-line for this issue, derived per "Surfacing the estimate" below}
 
 ---
 
@@ -334,13 +397,13 @@ These are mandatory verification points. The executing agent MUST follow these:
 {Include relevant checkpoints based on the task type:}
 
 **If the task involves pushing code and creating a PR:**
-- [ ] After coding: Run `.claude/scripts/local-review.sh --tool coderabbit` and `--tool codeant` — one clean pass (`ok:true` + `verified_run:true`) on each available CLI required before pushing (fallbacks per `cr-local-review.md`)
+- [ ] After coding: resolve `local-review.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/local-review.sh`, `$HOME/.claude/scripts/local-review.sh`, `.claude/scripts/local-review.sh`, then run it `--tool coderabbit` and `--tool codeant` — one clean pass (`ok:true` + `verified_run:true`) on each available CLI required before pushing (fallbacks per `cr-local-review.md`)
 - [ ] After pushing: Enter GitHub review polling loop immediately — do NOT ask permission
 - [ ] After CR/Greptile posts findings: Fix all valid findings in ONE commit, push once, reply to every thread
 
 **If the task involves subagent orchestration:**
 - [ ] After Phase A completes: Launch Phase B within 60 seconds — this is the highest priority action
-- [ ] Write handoff file to `~/.claude/handoffs/pr-{N}-handoff.json` before exiting Phase A
+- [ ] Write handoff file to `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` before exiting Phase A — always via `handoff-state.sh --owner-repo <owner>/<repo>`
 - [ ] Enter monitor mode when subagents are active — do NOT do substantive work yourself
 
 **If the task involves merging:**
@@ -352,10 +415,11 @@ These are mandatory verification points. The executing agent MUST follow these:
 
 {ALWAYS include this section, at every tier:}
 ## Constraints
-- Claim the issue before anything else: run `.claude/scripts/issue-claim.sh <N> --check`, and if it clears, `.claude/scripts/issue-claim.sh <N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim.
-- Do NOT work on main — use a worktree or feature branch
+- Claim the issue before anything else. After the model guard, resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`, and resolve `chip-claim-receipt.sh` in the same order (skip installed paths if `HOME` is unset or empty; use absolute helper paths across checkouts). If the workflow delegates the listed issues directly to `/subagent`, only check ownership read-only for each issue before sizing or decomposition; skip live foreign or unreadable claims and let `/subagent` Step 6.0 acquire each eligible claim. For direct execution, give a fresh launch its own `CLAIM_HOLDER` (host, epoch, shell PID and two Bash random values) before any repo read, edit or planning. Run `<N> --check --holder "$CLAIM_HOLDER"` and, if it clears, `<N> --claim --holder "$CLAIM_HOLDER" --json`, both with `--repo <owner/repo>`. Report stale before takeover; stop on failure or unless the result is `mine` for the exact holder. Require the receipt helper before acquiring. Keep that acquisition JSON locally and, as soon as the launch creates its assigned worktree, pipe it to `chip-claim-receipt.sh save WORKTREE OWNER/REPO N "$CLAIM_HOLDER"` before switching or coding; stop if saving fails. On resume of that same launch, get the holder only from `chip-claim-receipt.sh read WORKTREE OWNER/REPO N` for its own known worktree and confirm with `<N> --renew --holder "$CLAIM_HOLDER"` (also pass `--repo`). Stop on missing or failed recovery; never read a receipt on a fresh launch or infer ownership from a GitHub marker. Renew before every review or CI wait and at least every 30 minutes of long coding; stop if renewal fails. Pass the issue and same holder to `/wrap` as `CLAIM_PAIRS`. If the claim helper is unavailable on a fresh direct launch, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue.
+- Do NOT work on main — use the worktree assigned to this launch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
+- At your first status message and whenever the user asks "how far along?" (or equivalent), lead with the progress readout from `time-estimates.md` §"Progress Readout Format": "Est {bound} · {elapsed} elapsed · {verdict} — {outcome}". Derive {bound} from this issue's `## Estimate` section (or your tier's fallback from the table). Derive {elapsed} from the wall-clock time since you claimed the issue. Use `overrun-check.sh --readout --pr {N} --bound-min {M} --started-at {ISO8601}` (resolve per RESOLVE) when available; otherwise compute inline. Do not repeat the readout on every message — only at the first status and on explicit progress questions.
 
 ---
 

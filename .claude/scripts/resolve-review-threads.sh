@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # resolve-review-threads.sh — Resolve unresolved PR review threads from bot reviewers.
+# catalog: review-threads-diffs — Fetch PR review threads via GraphQL, resolve them, and verify `isResolved`
 #
 # Fetches all review threads on the given PR via GraphQL, filters to unresolved
 # threads whose first-comment author matches --authors, and resolves each via
@@ -14,6 +15,7 @@
 #   --authors  Comma-separated list of GitHub logins (without [bot] suffix) whose
 #              threads are eligible for resolution. Default:
 #              coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai
+#              (graphite-app retired 2026-11-03, #1889; kept so leftover threads resolve)
 #   --thread-ids
 #              Comma-separated GraphQL review thread node IDs that must be verified
 #              resolved after mutation attempts. When provided, these explicit IDs
@@ -41,7 +43,7 @@
 
 set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
 DRY_RUN=0
@@ -53,7 +55,8 @@ MAX_ATTEMPTS=2
 PR_NUMBER=""
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 while [[ $# -gt 0 ]]; do
@@ -229,7 +232,7 @@ collect_threads() {
     }"
     local resp
     if ! resp=$(gh api graphql -f query="$query" 2>&1); then
-      if printf '%s' "$resp" | grep -qi "could not resolve to a pullrequest"; then
+      if grep -qi "could not resolve to a pullrequest" <<<"$resp"; then
         echo "ERROR: PR #$PR_NUMBER not found in $OWNER/$REPO" >&2
         exit 3
       fi

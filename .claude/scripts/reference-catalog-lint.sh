@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Lint the .claude/reference/ catalog against the directory contents.
+# catalog: utilities — Lint the `.claude/reference/` catalog against the directory contents (index/disk parity, no phantoms, no duplicates)
 #
 # Validates:
 #   1. Every *.md and *.json file under .claude/reference/ (excluding README.md

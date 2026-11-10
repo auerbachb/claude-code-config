@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # repair-worktrees.sh — Detect and optionally clean up stale git worktrees.
+# catalog: trust-worktree-repo — Detect stale git worktrees (merged/deleted branch) and optionally remove them
 #
 # A worktree is "stale" when BOTH:
 #   1. Its branch is merged into main OR its branch no longer exists on origin, AND
@@ -27,7 +28,7 @@
 #     (first entry) and explicitly excluded.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 APPLY=0
 for arg in "$@"; do

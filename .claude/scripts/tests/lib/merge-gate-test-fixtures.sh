@@ -5,15 +5,54 @@
 # will not execute it directly.
 #
 # Consumed by:
-#   merge-gate-ci-dedup.test.sh  — CI check-run dedup + CodeAnt supplemental gate (issue #675)
-#   merge-gate-bugbot.test.sh    — BugBot reviewer merge-gate paths (issues #844, #962)
+#   merge-gate-bugbot.test.sh             — BugBot reviewer merge-gate paths (issues #844, #962)
+#   merge-gate-ci-dedup.test.sh           — CI check-run dedup + CodeAnt supplemental gate (issue #675)
+#   merge-gate-codeant-run-marker.test.sh — CodeAnt pre-run approval stubs (issues #1432, #1476)
+#   merge-gate-required-contexts.test.sh  — branch-protection required contexts (issue #1361)
 #
 # Source from repo root or any worktree — REPO_ROOT is resolved via git.
+#
+# Scripts under test (issue #1485). SUT (merge-gate.sh) and EVAL_SUT
+# (review-substance.sh) default to this checkout's copies and are overridable
+# from the environment, so pointing a suite at another checkout's evaluator —
+# the origin/main negative control — is one command:
+#
+#   EVAL_SUT=/path/to/main/.claude/scripts/review-substance.sh \
+#     bash .claude/scripts/tests/merge-gate-codeant-run-marker.test.sh
+#
+# rather than a clone-and-overlay. Note that merge-gate.sh resolves the
+# evaluator as its OWN sibling, so EVAL_SUT steers only the cases that invoke
+# review-substance.sh directly; point SUT at the same foreign checkout to steer
+# the cases that go through merge-gate.sh.
 
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SUT="$REPO_ROOT/.claude/scripts/merge-gate.sh"
+SUT="${SUT:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+EVAL_SUT="${EVAL_SUT:-$REPO_ROOT/.claude/scripts/review-substance.sh}"
+
+# A mistyped override must not read as evidence. Left unchecked, a bad path
+# makes every invocation produce empty output and every assertion FAIL — which
+# looks exactly like a successful negative control while proving nothing. No new
+# dependency: merge-gate.sh already dies when review-substance.sh is missing
+# from its own directory, so every suite here already needs both files.
+# `-f` as well as `-x`: every directory is `-x`, so an override that stopped one
+# component short of the script would otherwise sail through and fail at exec.
+#
+# BOTH variables are validated in every consuming suite, including the three that
+# only ever execute SUT (bugbot, ci-dedup, required-contexts). That is deliberate,
+# not an oversight: the override is normally exported once and left set across a
+# whole family run, so validating only what a given suite happens to read would let
+# a typo'd EVAL_SUT abort the run-marker suite while those three report a green
+# pass the user credits to the foreign evaluator they never actually ran. Aborting
+# uniformly is the whole point — the cost is paid only on a typo, and the refusal
+# names the offending variable.
+for _sut_var in SUT EVAL_SUT; do
+  _sut_path="${!_sut_var}"
+  [[ -f "$_sut_path" && -x "$_sut_path" ]] || {
+    echo "FAIL: $_sut_var is not an executable file: $_sut_path" >&2; exit 1; }
+done
+unset _sut_var _sut_path
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
@@ -52,6 +91,10 @@ case "\$ARGS" in
     exit 0 ;;
   *check-runs*)
     printf '%s' "\$FAKE_CHECK_RUNS"; exit 0 ;;
+  *commits/*/statuses*)
+    # Legacy commit statuses (issue #1361) — a required context can be satisfied
+    # by one of these instead of a check-run. Empty unless a test supplies them.
+    printf '%s' "\${FAKE_COMMIT_STATUSES:-[]}"; exit 0 ;;
   *pulls/*/reviews*)
     printf '%s' "\${FAKE_REVIEWS:-[]}"; exit 0 ;;
   *pulls/*/comments*)
@@ -66,6 +109,24 @@ case "\$ARGS" in
     # lets the stale-approval guard (issue #836) treat every check-run as fresh
     # — the important variable for CI-dedup tests is suite ordering, not freshness.
     jq -cn '{committer:{date:"2026-07-21T09:59:00Z"}}'; exit 0 ;;
+  *"/branches/"*"/protection/required_status_checks"*)
+    # Branch-protection required contexts (issue #1361). Default is a 404, which
+    # combined with the unprotected branch object below resolves to "no required
+    # status checks" — so every pre-#1361 expectation in this file is unchanged.
+    # FAKE_REQUIRED_STATUS_CHECKS supplies the endpoint payload;
+    # FAKE_BRANCH_PROTECTED=true marks the base branch protected.
+    if [[ -n "\${FAKE_REQUIRED_STATUS_CHECKS:-}" ]]; then
+      printf '%s' "\${FAKE_REQUIRED_STATUS_CHECKS}"; exit 0
+    fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *"/branches/"*)
+    if [[ -n "\${FAKE_BRANCH_JSON:-}" ]]; then
+      printf '%s' "\${FAKE_BRANCH_JSON}"; exit 0
+    fi
+    jq -cn --arg p "\${FAKE_BRANCH_PROTECTED:-false}" \
+      '{name:"main", protected:(\$p == "true"),
+        protection:{required_status_checks:{contexts:[]}}}'
+    exit 0 ;;
   *contents/*)
     # No CODEOWNERS file — merge-gate.sh tolerates the 404.
     echo "Not Found" >&2; exit 1 ;;
@@ -79,12 +140,21 @@ chmod +x "$BIN/gh"
 # supplemental gate reads it to find CodeAnt's latest clean signal, and a run
 # without one reads as "no successful check". Ids ascend with suite recency in
 # these fixtures, so deriving the timestamp from the id keeps them ordered.
-cr() { # id name conclusion suite_id [app_slug] [status]
+# `app.id` defaults to 15368 — GitHub Actions' real app id, and the same value
+# the required-contexts fixtures pin `checks[].app_id` to. They must agree by
+# default: protection that scopes a context to an app is only satisfied by a run
+# from THAT app (issue #1383 review), so a fixture whose run carried a different
+# id than its own protection payload would read as `wrong_app` and describe a
+# configuration GitHub never produces. Pass arg 7 to model a genuine mismatch.
+# Dedup groups by [.app.slug, .app.id, .name], so a uniform id leaves every
+# existing grouping exactly as it was — the slug is what varies across fixtures.
+cr() { # id name conclusion suite_id [app_slug] [status] [app_id]
   jq -cn --argjson id "$1" --arg name "$2" --arg concl "$3" --argjson suite "$4" \
          --arg slug "${5:-gha}" --arg status "${6:-completed}" \
+         --argjson appid "${7:-15368}" \
     '{id:$id, name:$name, status:$status,
       conclusion:(if $concl == "null" then null else $concl end),
       completed_at:(if $status == "completed" then "2026-07-21T10:00:0\($id)Z" else null end),
-      check_suite:{id:$suite}, app:{slug:$slug, id:1}}'
+      check_suite:{id:$suite}, app:{slug:$slug, id:$appid}}'
 }
 bundle() { printf '{"check_runs":[%s]}' "$(IFS=,; echo "$*")"; }

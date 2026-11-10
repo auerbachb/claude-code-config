@@ -31,7 +31,7 @@ The path does appear in git history (4 commits total). PR #822 deleted the file 
 
 PRs #750 and #799 were coordinated propagation PRs updating model-naming conventions across every skill surface simultaneously — none of them represented independent iterative churn on the open-code-review skill itself. PR #822 was the deletion commit.
 
-No such skill exists in the README skill catalog. The `/code-review` skill (`pr-review-help`) covers the role that `/open-code-review` originally held.
+No such skill exists in the README skill catalog. The built-in `/code-review` covers the role that `/open-code-review` originally held. *(As originally written this line named `pr-review-help` as the covering skill; that skill was itself retired in #1583, and its surviving executive lens is now `/recap --executive`.)*
 
 ## Diagnosis
 

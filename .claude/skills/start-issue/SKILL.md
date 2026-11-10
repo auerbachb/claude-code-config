@@ -11,6 +11,45 @@ argument-hint: "<issue-number | 'description of new issue'>"
 
 Automate the full issue-to-coding flow: create issue (if needed) → wait for CR plan → merge plans → create worktree + branch → output ready-to-code summary. Replaces 5-10 minutes of manual setup per issue.
 
+## Step 0: Resolve shared tooling
+
+`/start-issue` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
+CR_PLAN=$(resolve_script cr-plan.sh || true)
+ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+SPLIT_THRESHOLDS=$(resolve_script split-thresholds.sh || true)
+```
+
+Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `autofile-dedup.md`, and `issue-claim.md`.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering a chip; without the gate a subagent-fit issue routes to its own thread instead of the inline pipeline (#1189).
+- `ISSUE_CLAIM` empty → **optional**, but loud. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 2b gate cannot run, proceeding unclaimed` and continue. Say it once, in the visible output — an unclaimed start that nobody was told about is how two threads end up on one issue.
+- `SPEND_TELEMETRY_LINK` empty → **optional**. Record `DEGRADED: spend-telemetry-link.sh not found (checked all three paths) — issue/session correlation unavailable` and continue; telemetry must never gate starting work.
+- `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and go straight to Step 4; Claude's own plan and the issue-body merge are still mandatory.
+- `ISSUE_DEDUP` empty → **optional**. Print `DEGRADED: issue-dedup.sh not found (checked all three paths) — duplicate search skipped` and continue.
+- `REPO_ROOT_SH` empty → **optional**. Fall back to `git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}'`; no warning needed, the inline form is equivalent.
+- `SPLIT_THRESHOLDS` empty → **optional**. Print `DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120` and read Step 7's time trigger against those defaults. The thresholds are knobs, so an unresolved helper must be *said*, not silently defaulted — a lowered `SPLIT_OVER_MIN` that never loaded is a split that never fires.
+
+  **Read both knobs, in one call, the way `/issue-maker`'s sizing block does** — `"$SPLIT_THRESHOLDS" --json`, then `SPLIT_OVER_MIN` and `INCREMENT_BOUND_MIN` out of it with `jq`, both or neither, keeping the documented `180`/`120` on a partial read. Step 7's trigger only needs the first, but its split branch runs `/subagent` Step 5.1, which bounds every child it files at or under the second; resolving one knob here and letting the decomposition fall back to a default the config overrode is how a chain gets filed against a bound nobody chose.
+
+---
+
 ## Step 1: Parse arguments
 
 Parse `$ARGUMENTS`:
@@ -27,11 +66,11 @@ Only when a description was provided.
    - Title: concise version of the description (≤70 chars)
    - Body: one paragraph of context plus an `## Acceptance Criteria` section with placeholder checkbox items derived from the description
 2. **Dedup surface check** (human-in-the-loop — surface only, never auto-suppress):
-   Run `.claude/scripts/issue-dedup.sh` with a 2–6 keyword phrase from the draft title. Try the three standard paths:
+   Run `issue-dedup.sh` with a 2–6 keyword phrase from the draft title (`$ISSUE_DEDUP` from Step 0; the inline form below is the same candidate order):
    ```bash
    for DEDUP in \
-     "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-     "$HOME/.claude/scripts/issue-dedup.sh" \
+     "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+     "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
      ".claude/scripts/issue-dedup.sh"; do
      [ -x "$DEDUP" ] && break; DEDUP=""; done
    ```
@@ -61,7 +100,7 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,state,createdAt --comment
 An open-PR check cannot see a thread that picked this issue twenty minutes ago and has not pushed yet. Stake the claim here, at pick time — **before** CR-plan polling (Step 3) and **before** the worktree (Step 6) — so a sibling thread checking a minute from now sees it (issue #873).
 
 ```bash
-CLAIM=$(.claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --check); CLAIM_RC=$?
+CLAIM=$("$ISSUE_CLAIM" "$ISSUE_NUMBER" --check); CLAIM_RC=$?   # $ISSUE_CLAIM from Step 0
 ```
 
 | Verdict | Exit | Do |
@@ -75,11 +114,21 @@ When the check clears, take the claim before doing anything else — and **gate 
 
 ```bash
 CLAIM_HOLDER="${CLAUDE_CLAIM_HOLDER:-issue-$ISSUE_NUMBER-$(hostname -s)-$$}"
-if ! .claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
+if ! "$ISSUE_CLAIM" "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
   # exit 1 = another thread claimed it in the race; exit 4 = write failed / undetermined.
   # Either way the claim is NOT held — STOP, same as a `claimed` verdict above.
   echo "Issue #$ISSUE_NUMBER — could not take the claim; not starting." >&2
   exit 1
+fi
+```
+
+**Best-effort telemetry correlation.** After the claim succeeds, record only an explicit runtime session, repository slug, and issue number; do not infer a session ID from the claim holder or branch. The helper resolves and validates the repository from `GH_REPO` or the local `origin` remote. If the runtime session ID or helper is unavailable, continue without a session correlation. The recorder is metadata-only and non-blocking:
+
+```bash
+TELEMETRY_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+if [[ -n "$SPEND_TELEMETRY_LINK" && -n "$TELEMETRY_SESSION_ID" ]]; then
+  "$SPEND_TELEMETRY_LINK" --session "$TELEMETRY_SESSION_ID" \
+    --issue "$ISSUE_NUMBER" --source start_issue_claim >/dev/null 2>&1 || true
 fi
 ```
 
@@ -93,16 +142,16 @@ The Step 6 `git worktree list` guard stays as a same-machine backstop — it cov
 
 ## Step 3: Handle CR implementation plan
 
-CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `.claude/scripts/cr-plan.sh` for detection — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: reject the issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop.
+CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `cr-plan.sh` (`$CR_PLAN` from Step 0) for detection — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: reject the issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop.
 
-Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `.claude/scripts/cr-plan.sh --help` for full usage.
+Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `"$CR_PLAN" --help` for full usage.
 
 ### Path A: Fresh issue (age < 10 minutes)
 
 CR may still be generating the plan. Poll for up to 10 minutes, stopping early once the issue ages past 10 minutes from `createdAt`:
 
 ```bash
-if PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10); then
+if PLAN=$("$CR_PLAN" "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10); then
   : # plan captured
 else
   case $? in
@@ -120,7 +169,7 @@ fi
 Do a single check for an existing CR plan comment:
 
 ```bash
-PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" || true)
+PLAN=$("$CR_PLAN" "$ISSUE_NUMBER" || true)
 ```
 
 - **If plan exists:** capture and proceed to Step 4.
@@ -138,7 +187,7 @@ PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" || true)
   - **If the workflow run for this issue hit a blocking conclusion, is missing entirely, or stalled past the 5-minute wait**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
     ```bash
     gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
-    PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 5 || true)
+    PLAN=$("$CR_PLAN" "$ISSUE_NUMBER" --poll 5 || true)
     ```
 - If still no plan after 5 minutes, proceed to Step 4 without it. Note it in the final summary.
 
@@ -213,7 +262,7 @@ This creates **one canonical planning document** the coding agent can work from.
    ```
 4. **Pull main and create worktree:**
    ```bash
-   ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+   ROOT_REPO=$("$REPO_ROOT_SH" 2>/dev/null || true)   # $REPO_ROOT_SH from Step 0
    if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
      echo "ERROR: could not resolve root repo path" >&2
      exit 1
@@ -234,14 +283,33 @@ This creates **one canonical planning document** the coding agent can work from.
 
 ## Step 7: Deliver the ready-to-code handoff
 
-**PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". `/start-issue` creates no `## Active Work` table of its own, but when it is invoked *inside* a PM thread that has one and the issue is subagent-fit, **prefer recommending the issue run inline via `/subagent #N` in that PM thread** over spawning a chip that opens yet another thread (#613); the worktree prepared in Step 6 stays ready if the user would rather code it here instead. Busy slots do not change this — the issue queues inline rather than becoming a chip (#776, AC4). In the common case — `/start-issue` as the front door to a fresh coding thread, no PM context — there is no inline pipeline to use, so the chip/handoff below is the right delivery and Step 7 proceeds unchanged. Recommending inline is not launching it (Execution boundary).
+**PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". **`/start-issue` is always execution-capable** — a capture thread refuses it outright (`/issue-maker` Step 2), so every thread that reaches this step can run the work. A subagent-fit issue is therefore **adopted by this thread**, never handed to a new one; the absence of a `## Active Work` table is a bootstrap instruction, not a reason to chip (#1229). Busy slots do not change this — the issue queues inline rather than becoming a chip (#776, AC4). Route on what this thread is already doing:
 
-**First, check chip availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
+**Keep the Step 2b claim with either inline route that enters decomposition.** Pass the verified issue number and its captured holder from this launch as `INHERITED_PARENT_NUMBER` and `INHERITED_PARENT_HOLDER` to `/subagent` Step 5.1, whether invoking `/subagent #N` or applying that step here. These are caller context, not new slash-command arguments. If Step 2b acquired a claim but the verified pair is missing, stop before filing children. Do not rederive the holder from the new checkout or copy one from a GitHub marker.
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, `**Effort:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
+- **This thread is already orchestrating** — a `## Active Work` table with live rows, or subagents running (monitor mode forbids substantive work in the parent) → run the issue as a pipeline: `/subagent #N`. Recommending inline is not launching it (Execution boundary). Say in one line that the worktree Step 6 prepared goes unused on this branch — the pipeline's phases provision their own — so it can be removed with `git worktree remove` rather than sitting there unexplained.
+- **Any other thread** — the common front-door case → **this thread codes the issue**, in the worktree Step 6 just created. Bootstrap a one-row `## Active Work` table (`/pm` 3.2's schema, Thread `Inline`) so the work is tracked, then continue from the ready-to-code block below. No chip and no second tab: the thread that ran `/start-issue` is the thread that lands the issue.
+
+  Direct coding rather than `/subagent #N` is deliberate *here* and only here: `/subagent`'s phases spawn with `isolation: "worktree"`, so they provision a second worktree and leave the branch Step 6 just checked out orphaned. Both branches are inline; the shape follows what the thread is already doing.
+- **The picked issue's planning bound exceeds `SPLIT_OVER_MIN`** (#1680) → this is `/subagent` Step 4 criterion 3's **time** trigger, and it fires here for the same reason it fires there: the ready-to-code summary is about to hand over a monolith that one attended sitting cannot land. **Ask for a seam before starting it as one issue.** With a clean seam, take the Step 5.1 decomposition path — file the increment chain, adopt the head, and say in one line which bound tripped it (`plan on 360, above the 180-minute split line`). **Hand the claim and the worktree over to the head before coding it.** By this point Step 2b holds a claim on the *parent* and Step 6 has cut a branch and worktree named for it, and decomposition makes the parent tracking-only — never coded, never a PR — so leaving either in place claims an issue nobody will work and codes the head on a branch named for a different one, which is exactly what `stale-worktree-warn.sh` fires on. Re-run **Step 2b** and **Step 6** for the head, so it gets its own claim, branch, and worktree; then `git worktree remove` the parent's (never from inside it — the head's worktree is the new cwd) and release the parent claim with `"$ISSUE_CLAIM" <parent> --release`, since no `/wrap` will ever drop it. **That order is the failure handling.** Acquire before you release: if the head's claim or worktree fails, stop and report with the parent's claim and worktree still intact — Step 2b's own gate already refuses to proceed on an unheld claim, and nothing has been torn down to go back to. **Unwind the head's claim on the way out, though:** when Step 2b took the head's claim and Step 6 then failed, run `"$ISSUE_CLAIM" <head> --release` before reporting, or the retry a user runs a minute later hits their own fresh claim and stops until `CLAIM_STALE_HOURS` expires. Only once the head is genuinely adopted does the parent's residue get cleared, and a failure *there* is a one-line report and continue: the head is claimed on its own branch either way, and what is left behind is a stale worktree and claim to clear by hand, never a lost adoption. **With no clean seam, start the monolith** and say that too, naming the bound and that no seam was available — a chain with a broken seam costs more than one long pipeline (`/subagent` Step 5.1 sub-step 1), so this branch is the designed outcome rather than a failure to split. **It does not route the issue out**, and the difference from `/subagent` Step 5.1's no-seam decline is deliberate: that decline exists because a refill tick has no one to ask, while `/start-issue` is always execution-capable and adopts the issue in this thread. Criterion 3 alone is never a valid route-to-thread verdict on any surface (`chip-launching.md`), so there is no chip to emit here — only a long issue, started with its length stated. The comparison is **strict `>`**, so `plan on 180` starts normally and this bullet never fires. The bound is the `{estimate-line}` this step already resolves (see "Estimate" below); the threshold comes from `"$SPLIT_THRESHOLDS" --split-over` (resolved in Step 0), falling back to its documented 180 with that step's one-line `DEGRADED:` note. Either way this is a routing choice, not a chip: the decomposition and its head both run in this thread.
+- **A named `/subagent` Step 4 disqualifier** → the issue is too big for a subagent, so it goes to a separate thread via the chip/fallback path below, **naming which criterion fired in one line**. Normally that is criterion 1 or 2: since #1193 criterion 3 decomposes into an inline increment chain instead, so naming it alone is not a valid verdict — it routes out only when it also names why decomposition was unavailable (`chip-launching.md` "PM-context inline gate"). This is the only structural reason a chip survives, and a chip with no nameable criterion is a bug.
+
+**When the chip path applies, check availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
+
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): **before calling `spawn_task`, register via `chip-offer-registry.sh --reserve --emitter start-issue`** (see `chip-launching.md` "Offer Registry" — exit 7 defers the chip offer). Then call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, `**Effort:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
 - **Fallback mode** (tool absent): print the summary block below, unchanged.
 
-**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: a chip, a printed block, or — when the PM-context inline gate above routed it — an inline `/subagent` recommendation; never neither.
+**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: **in-thread adoption** (the default — coded here, or run as `/subagent #N`), a chip, or a printed block; never neither.
+
+### In-thread adoption output (the default)
+
+The block below is also the working spec when this thread adopts the issue — print it, minus the one part that only makes sense for a *spawned* session:
+
+- **Drop the model-guard preamble.** The guard exists so a session started from a picker can check itself against a recommendation it did not set. This thread is already running on whatever model the user chose, with nothing to compare against, so the guard has no work to do here.
+- **Keep the model and effort recommendation lines** — the `**Model:**` and `**Effort:**` lines — and say so in one line if they differ from what this thread is running, so the user can restart on the recommended tier if they want it. Never stop and wait on the difference; that is the guard's job in a spawned session, not a gate here.
+- **Keep everything else verbatim** — plan, AC, and the whole `### Constraints` block, including the claim line and the merge-authority bullet. The constraints bind this thread exactly as they would bind a spawned one. **One substitution**, forced by the dropped preamble: the claim bullet times re-affirmation "after the model-guard check", and there is no such check on this path — read it as **"immediately before any repo read, edit, or planning"** instead. The ordering it protects is unchanged; only the landmark it names is gone. Do **not** edit the chip or fallback templates for this — a spawned session still runs the guard, so the verbatim wording is correct there.
+
+Then start on step 1 of the plan.
 
 ### Fallback mode output
 
@@ -258,6 +326,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 **Branch:** issue-{N}-{slug}
 **Worktree:** {WORKTREE_PATH}
 **CR plan:** {included | not available}
+**Estimate:** {estimate-line}
 
 ### Implementation Plan
 {top-level bullets from the merged plan — files, key steps, risks}
@@ -266,7 +335,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 {unchecked checkbox items from the issue body}
 
 ### Constraints
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else — `.claude/scripts/issue-claim.sh <N> --claim --holder "{CLAIM_HOLDER}"` — after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory — then run `<N> --renew --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours, without acquiring a new claim. Stop and report on any non-zero exit (exit 5: the claim is no longer held or the issue is closed). Before coding, separately verify native issue state with `gh issue view <N> --repo <owner/repo> --json state --jq .state`; proceed only on `OPEN`. A closed or unreadable issue stops the handoff. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 - Do NOT work on main — use the worktree above
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
@@ -316,9 +385,51 @@ The two step-ups are separate on purpose. Collapsing them would put skill-only w
 
 Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model or effort concept beyond this rule. When `/prompt` already produced recommendations for the issue, prefer them.
 
+### Estimate
+
+**`{estimate-line}`** in the ready-to-code block is sourced and formatted as follows:
+
+1. **From the issue body (preferred):** if the fetched issue body (Step 2) contains an
+   `## Estimate` section, extract the `Est: …` line and validate it matches the
+   machine-parse pattern `^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$` with
+   Group 1 < Group 2 and Group 3 == Group 2. If valid, echo it verbatim. If the
+   section is present but the line is missing or fails validation, fall through to
+   the label/tier fallbacks below.
+2. **Label fallback (before the tier fallback):** whenever step 1 did not produce a line —
+   the `## Estimate` section absent, **or** present with a missing or invalid `Est:` line —
+   and the issue carries `complexity:XL`, `tier:XL`, `size:XL`, or `size:XXL` (matched
+   whole, case-insensitively — `size:xlarge` is a different label), the estimate is the
+   XL row, `Est: 180–360 min · plan on 360`. **All four labels, not just the `size:*`
+   pair:** this mirrors `estimate-resolve.sh`'s XL branch exactly, and it must — `/pm`
+   and `/subagent` read that script, so a narrower list here gives a `complexity:XL`
+   issue 360 on one surface and, via step 3's inference, 180 or 300 on this one, which
+   is the difference between crossing the split line and not.
+3. **Tier fallback:** if steps 1 and 2 both produced nothing, infer the Heavy/Standard/Light
+   tier from the issue's signals using the same rules as `tier-inference.md` (Heavy:
+   `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or
+   `file_count > 5`; Standard: not Heavy and `file_count` 2–5, `ac_count > 3`, or
+   `touches_skill`; Light: positive scope keyword or `file_count ≤ 1` with clear scope;
+   default to Standard when signals are sparse), then look up the estimate in
+   `time-estimates.md` (candidate order:
+   `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
+   `$HOME/.claude/reference/`, then `.claude/reference/`): Light →
+   `Est: 60–90 min · plan on 90`; Standard → `Est: 120–180 min · plan on 180`;
+   Heavy → `Est: 210–300 min · plan on 300`. **The fallback never produces XL**
+   (`Est: 180–360 min · plan on 360`): that row is read from a body or one of step 2's
+   four XL labels, never inferred from signals (`time-estimates.md` "The XL row").
+4. **Inline fallback:** if `time-estimates.md` does not resolve, use the same values
+   directly. Print `DEGRADED: time-estimates.md not found (checked all three paths) —
+   using inline fallback` once, then continue. Never omit the estimate line.
+5. **Feed the resolved bound to the time trigger** in Step 7's routing gate — the
+   `plan on {bound}` figure from whichever branch above produced the line. A bound
+   above `SPLIT_OVER_MIN` routes to decomposition instead of starting the monolith
+   (#1680).
+
 ### Execution boundary
 
-Stop after delivering the handoff. Do NOT start coding automatically — the user may want to review the plan first. **Offering a chip is not launching a thread:** `spawn_task` only puts a chip in front of the user, and their click is the only launch path. Never click for them, and never do the coding thread's work yourself — via the Agent tool or otherwise — in place of a chip they haven't clicked.
+**In-thread adoption is the default and needs no confirmation turn** — the plan is already merged into the issue body (Step 5), so "let the user review it first" is satisfied before this step, and the standing autonomy posture (`CLAUDE.md`) covers starting. Start and report; the user saying hold is the correction path, and a live "don't start that" in chat stops it.
+
+The boundary that remains is about **other** threads. **Offering a chip is not launching a thread:** `spawn_task` only puts a chip in front of the user, and their click is the only launch path. Never click for them, and never do the *chipped* work yourself — via the Agent tool or otherwise — in place of a chip they haven't clicked. That prohibition is about work routed away from this thread; it never applies to the issue this thread adopted, which is yours to code.
 
 ## Edge cases
 

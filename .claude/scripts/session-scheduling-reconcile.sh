@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # session-scheduling-reconcile.sh — reconcile durable scheduling state at
 # session start (issues #827, #874).
+# catalog: scheduling-monitoring — Session-start reconciliation of durable scheduling state — purge dead in-memory job bookkeeping, surface the on-disk records that survived
 #
 # CronCreate jobs are in-memory and session-scoped: every job recorded by a
 # previous session is already gone by the time this runs. Rather than trying to
@@ -36,6 +37,7 @@ set -uo pipefail
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 AUDIT_WATERMARK="${HOME}/.claude/harness-audit/last-run.json"
+REVIEW_STACK_WATERMARK="${HOME}/.claude/review-stack-audit/last-run.json"
 
 usage() {
   cat <<'EOF'
@@ -71,6 +73,8 @@ WHAT IT PURGES (writes go through session-state.sh, the locked single writer)
 
 WHAT IT SURFACES (durable, still meaningful)
   harness-audit due this month  (~/.claude/harness-audit/last-run.json)
+  review-stack-audit due this month
+                                (~/.claude/review-stack-audit/last-run.json)
   a paused PR fleet             (.pmm.paused_at)
   unverifiable scheduling records (skipped due to unknown ownership)
 
@@ -88,6 +92,10 @@ while [[ $# -gt 0 ]]; do
     --format)
       [[ $# -ge 2 ]] || { echo "session-scheduling-reconcile.sh: --format needs a value" >&2; exit 0; }
       FORMAT="$2"; shift 2 ;;
+    --format=*)
+      FORMAT="${1#--format=}"
+      [[ -n "$FORMAT" ]] || { echo "session-scheduling-reconcile.sh: --format value cannot be empty" >&2; exit 0; }
+      shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "session-scheduling-reconcile.sh: unknown flag '$1'" >&2; exit 0 ;;
   esac
@@ -389,11 +397,88 @@ if [[ -f "$AUDIT_WATERMARK" ]]; then
   esac
 fi
 
+# 2a-bis. review-stack-audit — same durable-watermark mechanism as 2a, for the
+#     sibling audit that asks whether the AI review tools still earn what we pay
+#     (issue #1201). It has no "offered" state: its tick runs the real comparison
+#     rather than offering a step-up chip, so a month is either done or due.
+#     MONTH is computed locally rather than reused from 2a, which only defines it
+#     when the harness-audit watermark exists.
+if [[ -f "$REVIEW_STACK_WATERMARK" ]]; then
+  RS_MONTH="$(TZ='America/New_York' date +%Y-%m)"
+  RS_DUE="$(jq -r --arg m "$RS_MONTH" '
+      if (.nudge_enabled // false) != true then "off"
+      elif (.last_completed_month // "") == $m then "done"
+      else "due" end
+    ' "$REVIEW_STACK_WATERMARK" 2>/dev/null || echo "off")"
+  case "$RS_DUE" in
+    due) NOTICES+=("review-stack-audit is due for $RS_MONTH — run /review-stack-audit --tick to re-measure review tool costs, caps, and value.") ;;
+  esac
+fi
+
 # 2b. A paused PR fleet resumes from the on-disk marker, in any later session —
 #     this is the cross-session continuity --auto-wake never actually provided.
 if [[ -f "$STATE_FILE" ]]; then
   PAUSED_AT="$(jq -r '.pmm.paused_at // empty' "$STATE_FILE" 2>/dev/null || echo "")"
   [[ -n "$PAUSED_AT" ]] && NOTICES+=("A paused PR fleet is recorded (paused at $PAUSED_AT) — resume with /pr-monitor-and-manage-wake, or /pmm-stop to discard it.")
+fi
+
+# 2b2. Credit budget park — check if today's Anthropic credit budget was reached
+#      (issue #1289). credit-budget.sh writes the global top-level `credit_budget`
+#      object in session-state.json (account-wide, not per-repo, because the
+#      Anthropic usage limit is account-wide). This notice fires when that global
+#      record shows status "reached" for today's ET date. Fail-soft: a missing,
+#      absent, or corrupt state file skips this notice and never blocks session start.
+if [[ -f "$STATE_FILE" ]] && jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+  TODAY_ET="$(TZ='America/New_York' date +'%Y-%m-%d')"
+  # Read all three credit_budget fields in one jq invocation to avoid
+  # inconsistent notice values from concurrent writes between separate calls.
+  IFS=$'\t' read -r CB_DATE CB_STATUS CB_BUDGET < <(
+    jq -r '[
+      (.credit_budget.date // ""),
+      (.credit_budget.status // ""),
+      (if .credit_budget.budget_usd == null then "" else (.credit_budget.budget_usd | tostring) end)
+    ] | join("\t")' "$STATE_FILE" 2>/dev/null || printf '\t\t'
+  )
+  if [[ "$CB_DATE" == "$TODAY_ET" && "$CB_STATUS" == "reached" ]]; then
+    # Include the dollar amount only when the stored value is known (populated by
+    # credit-budget.sh --check). Omit it if absent to avoid showing a wrong figure.
+    CB_BUDGET_SUFFIX="${CB_BUDGET:+ (\$${CB_BUDGET}/day)}"
+    NOTICES+=("Daily credit budget reached${CB_BUDGET_SUFFIX} — autonomous dispatch is paused for today. Run 'credit-budget.sh --reset' to override, or wait for tomorrow's ET day reset.")
+  fi
+fi
+
+# 2c. Agent-initiated TestFlight releases (issue #1169). A merge inside a repo's
+#     build window leaves a durable "release pending" marker instead of building;
+#     this is one of three surfaces that turn that marker into an actual build
+#     later, from whatever session happens to be running. It also resolves builds
+#     already triggered to a terminal state, so a failed or silently-skipped
+#     release surfaces here rather than disappearing with the thread that cut it.
+#
+#     Skipped under --check: the sweep writes state and can trigger a build, and
+#     --check promises neither. Fail-soft like everything else here — exit 1 just
+#     means "something needs attention", which is a notice, not an error.
+RELEASE_SWEEP="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/release-sweep.sh"
+if [[ "$CHECK_ONLY" -eq 0 && -x "$RELEASE_SWEEP" ]]; then
+  # Bounded: this runs on the session-start path, where a hung `gh` would delay
+  # every session with no visible cause. Prefer a real timeout binary; without
+  # one, run unbounded rather than silently skipping the sweep (a missing
+  # timeout(1) is not a reason to stop following builds).
+  RELEASE_SWEEP_TIMEOUT="${RELEASE_SWEEP_TIMEOUT_SECS:-45}"
+  # A non-numeric override would make timeout(1) fail outright and skip the sweep.
+  case "$RELEASE_SWEEP_TIMEOUT" in ''|*[!0-9]*) RELEASE_SWEEP_TIMEOUT=45 ;; esac
+  [ "$RELEASE_SWEEP_TIMEOUT" -gt 0 ] 2>/dev/null || RELEASE_SWEEP_TIMEOUT=45
+  if command -v timeout >/dev/null 2>&1; then
+    SWEEP_JSON="$(timeout "$RELEASE_SWEEP_TIMEOUT" "$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  elif command -v gtimeout >/dev/null 2>&1; then
+    SWEEP_JSON="$(gtimeout "$RELEASE_SWEEP_TIMEOUT" "$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  else
+    SWEEP_JSON="$("$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  fi
+  if [[ -n "${SWEEP_JSON:-}" ]]; then
+    while IFS= read -r sweep_line; do
+      [[ -n "$sweep_line" ]] && NOTICES+=("$sweep_line")
+    done < <(jq -r '.[]? | .line // empty' <<<"$SWEEP_JSON" 2>/dev/null)
+  fi
 fi
 
 # ---------------------------------------------------------------------------

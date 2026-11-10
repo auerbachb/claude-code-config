@@ -212,3 +212,16 @@ remains unchanged.
 - Issue #861 — `--ref`/HEAD scoping bug (PR #882)
 - Issue #915 — closed-hotspot re-filing bug (PR #925)
 - PR #1080 — reporting merge that triggered this hotspot
+
+## Issue #1307 addendum — aggregate closed/no-cost findings
+
+Issue #1307 does not change this file's KEEP verdict or the detector. It changes the
+`/wrap` consumer so a closed hotspot with zero conflict cost no longer becomes the same
+pending decision on every session. Those findings are now counted in one verbose
+aggregate and remain individually inspectable in `churn-hotspot-wrap-plan.sh` output.
+
+The recorded verdict returns for review only after measurable new evidence: any positive
+`conflict_rounds`, or a current score at least 2× the score captured in
+`churn-hotspot-baselines.json`. The latter is a material centrality change, not ordinary
+linear growth. This preserves Issue #915's closed-match visibility while respecting the
+owner's no-action decision instead of repeatedly asking for it.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline publishing-app identity tests for escalate-review.sh.
+# catalog: tests — Publishing-app identity and spoof-guard tests for `escalate-review.sh`
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/escalate-review-fixtures.sh
@@ -31,7 +32,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_RUN_FOREIGN_IN_PROGRESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (o2): identical fixture published by the REAL Cursor app -> trigger_greptile (parity control for o1) =="
@@ -43,7 +44,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (o3): same-named in-flight run with NO app identity -> switch_bugbot (missing-slug fallback) =="
@@ -55,7 +56,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_RUN_NO_APP_IN_PROGRESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (o4): foreign app's completed run must not read as a genuine BugBot pass -> trigger_greptile =="
@@ -70,7 +71,7 @@ TRIGGER_COMMENT_O4="$(trigger_comment "$(ts_seconds_ago 3000)")"
 write_state "[$BUGBOT_RUN_FOREIGN_OK]" "[]" "[]" "[$TRIGGER_COMMENT_O4]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (o5): identical fixture published by the REAL Cursor app -> switch_bugbot (parity control for o4) =="
@@ -83,7 +84,7 @@ TRIGGER_COMMENT_O5="$(trigger_comment "$(ts_seconds_ago 3000)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$TRIGGER_COMMENT_O5]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (o6): completed run with NO app identity, invited on HEAD -> trigger_greptile (missing-slug fallback, classifier path) =="
@@ -96,7 +97,7 @@ TRIGGER_COMMENT_O6="$(trigger_comment "$(ts_seconds_ago 3000)")"
 write_state "[$BUGBOT_RUN_NO_APP_OK]" "[]" "[]" "[$TRIGGER_COMMENT_O6]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (o7): foreign app cannot forge a BugBot FAILURE either -> switch_bugbot =="
@@ -109,7 +110,7 @@ write_commits "$(ts_seconds_ago 7200)"
 write_state "[$BUGBOT_RUN_FOREIGN_FAILED_TITLE]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 ############################################################################
 echo

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ci-status.sh — Summarize CI check-run health for a commit or PR.
+# catalog: merge-gate-sequencing — Summarize CI check-run health for a commit or PR
 #
 # Implements the CI-must-pass contract from .claude/rules/cr-merge-gate.md Step 1b:
 # "all check-runs must be status=completed AND none in the blocking conclusion set".
@@ -17,7 +18,7 @@
 # merge gate.
 #
 # Usage:
-#   ci-status.sh <head_sha_or_pr_number> [--format json|summary] [--check-runs-stdin]
+#   ci-status.sh <head_sha_or_pr_number> [--format json|summary] [--check-runs-stdin] [--exclude-reviewers]
 #   ci-status.sh --help
 #
 # Input resolution:
@@ -32,6 +33,18 @@
 #   `--paginate`-style stream of concatenated objects. Requires a full SHA input
 #   (PR-number resolution still calls `gh pr view`, but the check-runs fetch is
 #   skipped).
+#
+# --exclude-reviewers (issue #1749):
+#   Opt-in. Drop the AI reviewers' own check-runs before classifying, so the
+#   verdict is BUILD CI only. Matched by exact app slug, never by check name:
+#   codeant-ai, codeant, cursor, cursor-com, coderabbitai, coderabbit,
+#   graphite-app, graphite (retired 2026-11-03, #1889; kept for leftover runs),
+#   greptile-apps, greptile. Without it a reviewer that
+#   was never invited can hold CI "pending" forever, and one that failed can
+#   hold it "red" — so a trigger gated on green CI would deadlock waiting for
+#   itself (review-triggers-allowed.sh). Applied after the dedup. When no build
+#   check is left, the result is pending, exactly as for an empty run list.
+#   Without the flag the output and exit codes are unchanged.
 #
 # Output (JSON, default):
 #   {
@@ -65,11 +78,21 @@
 # turn red too; the caller should fix the known failures first.
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430): under `set -u` an unset HOME aborted the script here, before
+# argument parsing, and returned 1 ("incomplete — wait") to merge-gate.sh in
+# place of the documented codes. Skipped when HOME is unset rather than
+# expanded — a `${HOME:-}` fallback would drop /.claude/script-usage.log at the
+# filesystem root. Stderr is muted BEFORE the append (issue #1406's ordering)
+# so a missing ~/.claude leaks no shell diagnostic into captured output.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 FORMAT="json"
 INPUT=""
 CHECK_RUNS_STDIN=0
+EXCLUDE_REVIEWERS=0
 
 print_usage() {
   awk '
@@ -111,6 +134,10 @@ while [[ $# -gt 0 ]]; do
       CHECK_RUNS_STDIN=1
       shift
       ;;
+    --exclude-reviewers)
+      EXCLUDE_REVIEWERS=1
+      shift
+      ;;
     -*)
       echo "ERROR: unknown flag: $1" >&2
       exit 2
@@ -150,7 +177,7 @@ if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
   PR_VIEW_RC=0
   PR_VIEW_OUT=$(gh pr view "$INPUT" --json headRefOid 2>&1) || PR_VIEW_RC=$?
   if [[ "$PR_VIEW_RC" -ne 0 ]] || [[ -z "$PR_VIEW_OUT" ]]; then
-    if echo "$PR_VIEW_OUT" | grep -qiE 'no pull requests found|could not resolve to a pullrequest|HTTP 404'; then
+    if grep -qiE 'no pull requests found|could not resolve to a pullrequest|HTTP 404' <<<"$PR_VIEW_OUT"; then
       # Not a PR — treat as an abbreviated commit SHA. The check-runs API
       # accepts abbreviated forms; if the SHA is also invalid, that request
       # will return 404 below and we exit 4 there.
@@ -207,7 +234,7 @@ else
     # to exit 5, not be mis-classified as commit-not-found (exit 4).
     # Pre-existing behavior — not affected by the --check-runs-stdin path
     # (stdin callers are responsible for their own HTTP error handling).
-    if echo "$CHECK_RUNS_RAW" | grep -qiE 'HTTP 404|Not Found|No commit found for SHA'; then
+    if grep -qiE 'HTTP 404|Not Found|No commit found for SHA' <<<"$CHECK_RUNS_RAW"; then
       echo "ERROR: commit $HEAD_SHA not found" >&2
       exit 4
     fi
@@ -232,6 +259,20 @@ RUNS_JSON=$(printf '%s\n' "$CHECK_RUNS_RAW" | "$CHECK_RUNS_DEDUP" 2>/dev/null ||
 if [[ -z "$RUNS_JSON" ]]; then
   echo "ERROR: could not parse check-runs JSON" >&2
   exit 5
+fi
+
+# Build-CI-only view (--exclude-reviewers, issue #1749). Exact slugs, so a
+# workflow job that merely NAMES itself after a reviewer still counts as build CI.
+if [[ "$EXCLUDE_REVIEWERS" -eq 1 ]]; then
+  RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c '
+    ["codeant-ai", "codeant", "cursor", "cursor-com", "coderabbitai", "coderabbit",
+     "graphite-app", "graphite", "greptile-apps", "greptile"] as $reviewers
+    | [ .[] | select((.app.slug // "") as $s | ($reviewers | any(. == $s)) | not) ]
+  ' 2>/dev/null || true)
+  if [[ -z "$RUNS_JSON" ]]; then
+    echo "ERROR: could not filter reviewer check-runs" >&2
+    exit 5
+  fi
 fi
 
 # --------------------------------------------------------------------------

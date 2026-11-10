@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Verify stdin contains a parseable EXIT_REPORT per
+# catalog: utilities — Verify stdin contains a parseable EXIT_REPORT with all required fields
 # .claude/reference/exit-report-format.md — header line plus KEY: value fields.
 # Exit 0 = valid block with all required fields; 1 = missing/invalid.
 # Uses read loops instead of mapfile/associative arrays — macOS ships bash 3.2.
@@ -17,12 +18,16 @@ required=(
 )
 
 content=$(cat || true)
-if ! printf '%s\n' "$content" | grep -qx 'EXIT_REPORT'; then
+if ! grep -qx 'EXIT_REPORT' <<<"$content"; then
   echo "verify-exit-report-block: missing EXIT_REPORT header line" >&2
   exit 1
 fi
 
-# Contiguous block: EXIT_REPORT then KEY: value (value may be empty)
+# Contiguous block: EXIT_REPORT then KEY: value (value may be empty).
+# awk emits nothing for a header-only block, so lines[] can legitimately be
+# EMPTY — every expansion below uses ${lines[@]+"${lines[@]}"} because a bare
+# "${lines[@]}" aborts under `set -u` on macOS bash 3.2 (issue #1371), crashing
+# instead of reporting the missing required fields.
 lines=()
 while IFS= read -r line; do
   lines+=("$line")
@@ -35,7 +40,7 @@ done < <(printf '%s\n' "$content" | awk '
 missing=()
 for k in "${required[@]}"; do
   found=0
-  for line in "${lines[@]}"; do
+  for line in ${lines[@]+"${lines[@]}"}; do
     case "$line" in
       "$k:"*) found=1; break ;;
     esac
@@ -51,7 +56,7 @@ if ((${#missing[@]})); then
 fi
 
 # Disallow tab-only or multiple spaces after colon
-for line in "${lines[@]}"; do
+for line in ${lines[@]+"${lines[@]}"}; do
   if [[ "$line" =~ ^[A-Z_]+:[[:space:]] ]]; then
     rest=${line#*:}
     if [[ "$rest" =~ ^[[:space:]]{2,} ]]; then

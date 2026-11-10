@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
+description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, records each tick and surfaces owner-action blockers, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
 triggers:
   - babysit pr
   - babysit this pr
@@ -8,6 +8,8 @@ triggers:
   - keep an eye on pr
 argument-hint: "<PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]"
 ---
+
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
 
 Watch one PR and drive it toward merge **without looping forever**. Each tick reads the PR's state through the shared scripts, classifies it, and dispatches the right skill — `/fixpr` to fix recoverable blockers, `/wrap` to merge when the gate is met — then re-arms the poll until a terminal condition fires.
 
@@ -19,7 +21,7 @@ This is reused by `/pr-monitor-and-manage` (issue #460): that skill invokes `/ba
 
 `/babysit-pr` is read-only plus the dispatches below. It MUST NOT:
 
-- **Never babysit a PR you did not author (issue #733, `safety.md`).** Enrolling a PR in a watch loop is a "touch". Before the first tick, gate the target: `.claude/scripts/pr-authorship.sh <PR>` (exit 0 = yours). Not yours / undetermined → refuse with one line naming the authorship guard, and do NOT enrol — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it). `polling-state-gate.sh --ensure-session` also refuses non-author enrolment as a fail-safe (bypass only with `--allow-nonauthor` under that override).
+- **Never babysit a PR you did not author (issue #733, `safety.md`).** Enrolling a PR in a watch loop is a "touch". Before the first tick, gate the target with `"$PR_AUTHORSHIP_SH" <PR>` (exit 0 = yours). Not yours / undetermined → refuse with one line naming the authorship guard, and do NOT enrol — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it). `polling-state-gate.sh --ensure-session` also refuses non-author enrolment as a fail-safe (bypass only with `--allow-nonauthor` under that override).
 - **Never modify branch protection** — no calls to `.../branches/.../protection`.
 - **Never dismiss human-authored reviews.** Only `/fixpr`'s `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`) may dismiss, and only bot reviews.
 - **Never resolve a review thread** itself — thread resolution happens only inside `/fixpr` Steps 1–4 after code-verification. `/babysit-pr` does not call `resolveReviewThread`.
@@ -37,7 +39,7 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `<PR>` (required) | — | PR number to watch. Must be an open PR. |
 | `--cadence Nm` | `5m` | Base poll cadence. Floor `1m` (60s) — clamp anything lower. |
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
-| `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
+| `--silent` | on | Compatibility flag: decision-only output is already the default; explicit status requests render the stored tick details. |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
 | ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped the session watcher for a `CronCreate` job to buy cross-session continuity that never existed. Issue #914 measured cron producing zero ticks; issue #924 found dynamic `/loop` unreliable too. The watcher is always a persistent `Monitor`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
 | `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
@@ -106,8 +108,8 @@ resolve_script() {
   # $1 = script basename; echoes the first executable path or empty
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -120,6 +122,9 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
 PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
+USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh)  || true   # optional; unresolved holds the `unknown` verdict (#1444)
+PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh) || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — babysit authorship gate unavailable" >&2; exit 1; }
+ADMIN_MERGE_SH=$(resolve_script admin-merge.sh)     || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND recovery unavailable" >&2; exit 1; }
 
 to_epoch() {
   # Portable ISO-8601 UTC (e.g. 2026-07-21T17:13:05Z) -> epoch seconds.
@@ -175,7 +180,9 @@ bump_parse_failure_counter() {
   "last_dispatch": null,        // {"skill":"…","started_at":"…","completed_at":"…","status":"…"}
   "auto_resolve_conflicts": false, // from --auto-resolve-conflicts; enables unattended rebase+force-push on simple conflicts
   "max_conflict_rounds": 3,        // from --max-conflict-rounds; hard cap on consecutive conflict rounds
-  "conflict_streak": 0             // consecutive conflict rounds entered this watcher run; does not reset on SHA change — only on a non-conflicting tick
+  "conflict_streak": 0,            // consecutive conflict rounds entered this watcher run; does not reset on SHA change — only on a non-conflicting tick
+  "horizon_status": null,          // last usage-horizon verdict seen by T1a (#1444): clear|approaching|critical|unknown. Heartbeat + cadence bookkeeping in THIS watcher's own namespace — never a park record, never read by day mode
+  "horizon_held_since": null       // ISO-8601 of the first consecutive `critical` tick; null once the verdict leaves `critical`
 }
 ```
 
@@ -281,7 +288,7 @@ Write the babysit object (one atomic `--set` batch), seeding backoff fields to a
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"stop_requested\":false,\"monitor_task_id\":null,\"monitor_generation\":null,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
+  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"stop_requested\":false,\"cadence_transition\":false,\"monitor_task_id\":null,\"monitor_generation\":null,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
@@ -352,22 +359,50 @@ Run on every poll cycle (and once at the end of arm mode). One tick = classify �
 
 ### T0. Stop / terminal short-circuit (check FIRST)
 
+<!-- test-anchor: babysit-pr-t0-owner-gate -->
+
 ```bash
+T0_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: watcher state unreadable at tick entry; stopping no task.' >&2; exit 1; }
+if ! printf '%s' "$T0_SNAPSHOT" | jq -e '
+  . == null or (type == "object" and (.active | type == "boolean")
+  and (.stop_requested == null or (.stop_requested | type == "boolean"))
+  and (.cadence_transition == null or (.cadence_transition | type == "boolean"))
+  and (.monitor_generation == null or (.monitor_generation | type == "string" and length > 0)))' >/dev/null; then
+  echo 'ERROR: malformed watcher at tick entry; stopping no task.' >&2; exit 1
+fi
+RECORDED_GENERATION=$(printf '%s' "$T0_SNAPSHOT" | jq -r '.monitor_generation // "null"')
 if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then
-  RECORDED_GENERATION=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_generation" 2>/dev/null || echo "null")
-  if [[ -z "$TICK_GENERATION" || "$TICK_GENERATION" == "null" ||
-        "$TICK_GENERATION" != "$RECORDED_GENERATION" ]]; then
-    echo "[babysit] Ignoring a stale or unidentified Monitor tick for PR #$PR."
+  GATE_GENERATION="${TICK_GENERATION:-}"
+  if [[ -z "$GATE_GENERATION" || "$GATE_GENERATION" == null || "$TICK_GENERATION" != "$RECORDED_GENERATION" ]]; then
+    echo 'TICK_GATE=lost'
+    exit 0
+  fi
+else
+  GATE_GENERATION="${MONITOR_GENERATION:-}"
+  if [[ -z "$GATE_GENERATION" || "$GATE_GENERATION" == null || "$GATE_GENERATION" != "$RECORDED_GENERATION" ]]; then
+    echo 'TICK_GATE=lost'
     exit 0
   fi
 fi
-STOP=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.stop_requested" 2>/dev/null || echo "false")
-ACTIVE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.active" 2>/dev/null || echo "false")
-if [[ "$STOP" == "true" || "$ACTIVE" != "true" ]]; then
-  # user ran /babysit-pr-stop, or state was cleared — terminate cleanly
-  goto TERMINATE with reason="user-stop"
+if [[ $(printf '%s' "$T0_SNAPSHOT" | jq -r '.cadence_transition == true') == true ]]; then
+  # The transition owner stops its captured old task. This is NOT a user stop.
+  echo 'TICK_GATE=cadence-transition'
+  exit 0
 fi
+STOP=$(printf '%s' "$T0_SNAPSHOT" | jq -r '.stop_requested == true')
+ACTIVE=$(printf '%s' "$T0_SNAPSHOT" | jq -r '.active == true')
+if [[ "$STOP" == true || "$ACTIVE" != true ]]; then
+  echo 'TICK_GATE=user-stop'
+  exit 0
+fi
+echo 'TICK_GATE=continue'
+
 ```
+
+Only `TICK_GATE=continue` proceeds. `user-stop` enters T-END under the same
+authorizing generation. `lost` and `cadence-transition` end this tick quietly;
+never reinterpret a cadence guard as an instruction to stop a freshly read task.
 
 If `dispatch_in_flight` is set, decide whether it is **still running** or **stale** using an explicit TTL (`BABYSIT_DISPATCH_TTL_MIN`, default `30` — comfortably longer than `/fixpr`'s 20-min wait cap plus `/wrap` recovery, so a live dispatch is never mistaken for stale).
 
@@ -444,17 +479,40 @@ if [[ -z "${SKIP_STATE_READ:-}" ]]; then
 fi
 ```
 
+### T1a. Usage-horizon consult (read-only — issue #1444)
+
+Runs on the state read and **before T1b's pre-flight**, which is the earliest point anything on this tick can start new work: `pr-preflight.sh` flips a draft ready and engages four reviewers, so a verdict read after it would already have spent the runway it exists to protect. Everything downstream — T2's rate-cap snapshot, T3's classification, T4's dispatch — then runs with the verdict already in hand.
+
+**Run `subagent-thread-limit-park.md` §7.1's gate block, then §8.1's posture block** — resolve that document through the same three-candidate order as the scripts above and run the blocks it holds; do not re-derive either branch here. Feed §7.1 the counter the **harness** printed into this turn's context (`<total_tokens>N tokens left</total_tokens>`) and nothing else — never a figure from the transcript, this watcher's own accounting, or an earlier tick. An absent counter is `unknown`, and an unresolved `USAGE_HORIZON_SH` is `unknown` too. `unknown` is never `clear`.
+
+| `HORIZON_STATUS` | T4 dispatch | T5 cadence | State written |
+|------------------|-------------|------------|---------------|
+| `clear` | normal | normal tiers | `horizon_status`, `horizon_held_since=null` |
+| `approaching` | new `/fixpr` **suppressed**; `/wrap` on a `merge-ready` PR still dispatches | normal tiers | `horizon_status`, `horizon_held_since=null` |
+| `unknown` | same as `approaching` | normal tiers | `horizon_status` only — **never parks, never widens** |
+| `critical` | **all dispatch suppressed** | held at the horizon cadence (T5) | `horizon_status`, `horizon_held_since` |
+
+**Why `/wrap` survives `approaching` and `unknown`.** A merge-ready PR is finishing work, not starting it (`subagent-thread-limit-park.md` §7.2, §8.1); refusing to land it would hold the PR — and this watcher — open across the whole window. `/fixpr` starts a new round of bot reviews and CI, which is exactly the new work those verdicts stop. `critical` stops both because the watcher itself is standing down.
+
+**In-flight dispatch is never orphaned.** `dispatch_in_flight` idempotency in T4 is untouched by any verdict: a `/fixpr` or `/wrap` already running keeps running and is still reconciled by T0 on the next tick. This step suppresses *new* dispatch and nothing else.
+
+**This watcher claims no park (§8).** It watches one PR it did not launch. Everything it writes stays under `.prs["<PR>"].babysit.*`; it never runs `session-state.sh --cas` on `limit_cause` and never `--set` anything under `.repos["<key>"].day.*`, on any verdict. `WATCH_PARK_SEEN` from §8.1 is a read-only probe used only for the heartbeat's wording.
+
 ### T1b. Pre-flight — draft→ready + four-reviewer trigger (issue #493)
 
 **Run after the gate-exit check (which sets `SKIP_STATE_READ`), then re-fetch `GATE_JSON` and `BUNDLE` so that T1c field extraction and T3 classification operate on post-trigger snapshots.** A reviewer just engaged by pre-flight is not misclassified as "missing" and does not cause a spurious `/fixpr` dispatch on the same tick.
 
-Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. Since #576 "engaged on the current SHA" is enforced rather than assumed: a reviewer whose only artifact is on a superseded commit is re-triggered, so a PR does not sit in `waiting-on-bots` relying on each bot's own auto-review-on-push. It is idempotent (a PR whose reviewers are all fresh on HEAD is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the other three), never flips another user's draft, and never triggers Greptile.
+Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all three conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. Since #576 "engaged on the current SHA" is enforced rather than assumed: a reviewer whose only artifact is on a superseded commit is re-triggered, so a PR does not sit in `waiting-on-bots` relying on each bot's own auto-review-on-push. It is idempotent (a PR whose reviewers are all fresh on HEAD is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the others), never flips another user's draft, and never triggers Greptile.
 
 Run **only** on a valid state read (skip when `SKIP_STATE_READ=1` — a gone/merged/closed PR needs no pre-flight):
 
+**Horizon gate (issue #1444).** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`) the pre-flight is **skipped whole**, draft flip included. Engaging four reviewers starts a fresh round of bot reviews and CI — the same new work T4 suppresses `/fixpr` for, and the reason T1a has to be read before this step rather than after it. Nothing is lost by the skip: pre-flight is idempotent, so the first `clear` tick runs it in full, and a `merge-ready` PR needs no trigger to be `/wrap`ped under `approaching`. Say so on the heartbeat (T7) rather than letting a silently-skipped pre-flight look like a PR whose reviewers were already fresh.
+
 ```bash
 PREFLIGHT_SUMMARY_JSON=""
-if [[ -z "${SKIP_STATE_READ:-}" && -n "$PREFLIGHT_SH" ]]; then
+if [[ "${WATCH_LAUNCH_OK:-true}" != "true" ]]; then
+  echo "[babysit] pre-flight held (horizon ${HORIZON_STATUS:-unknown}) — no draft flip, no reviewer triggers this tick"
+elif [[ -z "${SKIP_STATE_READ:-}" && -n "$PREFLIGHT_SH" ]]; then
   PREFLIGHT_OUT=$("$PREFLIGHT_SH" "$PR") || echo "[babysit] pr-preflight.sh exited non-zero (exit $?) — continuing tick" >&2
   echo "$PREFLIGHT_OUT"   # its timestamped action lines double as part of this tick's heartbeat
   PREFLIGHT_SUMMARY_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PREFLIGHT_OUT")
@@ -523,7 +581,7 @@ if [[ -n "$GREPTILE_SH" ]]; then "$GREPTILE_SH" --check >/dev/null 2>&1 || GREP_
 
 - **CodeRabbit:** `cr-review-hourly.sh --check` exit `1` ⇒ `CR_BUDGET_OK=0` (hourly budget exhausted). `/babysit-pr` only consults `--check`, never consumes — `/fixpr`'s own `--record-explicit` enforces the ≤2/PR/hour cap atomically when it actually posts `@coderabbitai full review`.
 - **Greptile:** `greptile-budget.sh --check` exit `1` ⇒ `GREP_BUDGET_OK=0` (daily budget exhausted).
-- **BugBot (`@cursor review`):** per-seat, no per-call charge — always safe (`bugbot.md`). Never gate on it.
+- **BugBot (`@cursor review`):** per-seat and **spend-metered** (#1199) — never posted without the owner's explicit approval in chat (issue #1897) — recorded as a grant, spent only by `paid-review-grant.sh --trigger` (#1898) — so never gate the classifier on it.
 
 The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only gap is a fresh review becomes `hard-blocked` (budget exhaustion) **only** when CR **and** Greptile are both exhausted and there is no other recoverable work; otherwise it stays `waiting-on-bots` (a trigger path still exists). Re-running `/babysit-pr` after the window resets resumes cleanly.
 
@@ -543,7 +601,7 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 | 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and both budgets are exhausted (`CR_BUDGET_OK == 0 && GREP_BUDGET_OK == 0`, from T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
 | 4 | `conflicting` | `MERGEABLE == CONFLICTING` (checked before other recoverable signals; first-match priority) | See T4 `conflicting` dispatch — branches on `--auto-resolve-conflicts` flag and `conflict_streak` cap. |
-| 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `.claude/scripts/admin-merge.sh <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
+| 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `"$ADMIN_MERGE_SH" <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
 | 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI (and at least one review budget remains per T2) | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.
@@ -551,6 +609,8 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 ### T4. Dispatch with idempotency (`session-state.json` is the source of truth)
 
 Only classes `merge-ready` (→ `/wrap`), `conflicting` (→ `/fixpr` in safe-only mode **or** terminate), and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
+
+**Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed tick is **not** a terminal state and **not** a `hard-blocked` classification: the watcher stays armed, `blocker_streak` still counts it as a blocker-state tick (no forward progress was made), and `--max-iter` still bounds the wait exactly as it does for a bot that never answers. T5's frozen-state terminate (`digest_streak >= 9`) is **not** relaxed either, and both bounds can expire before the window reopens — `--max-iter` first at its default `6`, since T5 counts a suppressed tick as a blocker-state tick whatever its class. That is deliberate: a watcher is not the right thing to keep armed across an arbitrarily long closed window, and a terminated watch is re-armed with one `/babysit-pr <PR>`. T5's "the hold releases itself" therefore means *while the watcher is still armed*; it is not a promise to outlast the window.
 
 #### T4: `conflicting` dispatch
 
@@ -653,7 +713,29 @@ WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
 PREV_EFFECTIVE_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo "$BASE_MIN")
 [[ "$PREV_EFFECTIVE_MIN" =~ ^[0-9]+$ ]] || PREV_EFFECTIVE_MIN=$BASE_MIN
 if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi
+
+# Usage-horizon hold (#1444). A `critical` verdict widens to the probe cadence
+# that `subagent-thread-limit-park.md` §7.4 uses for the same window, so a
+# stood-down watcher polls at the rate the park's own wake probes at instead of
+# hammering a closed window at 5m. It only ever WIDENS: max() against the
+# backoff tier keeps a frozen-state 60m cadence from being pulled back to 30m.
+# `approaching` and `unknown` do NOT widen — `unknown` especially, since a
+# routinely-displaced session (§7.3) would otherwise drift its own cadence out
+# on a posture that means nothing about this account's runway.
+HORIZON_HOLD_MIN=30
+if [[ -n "${CLAUDE_HORIZON_PROBE_CADENCE_MINUTES:-}" ]]; then
+  if [[ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" =~ ^[0-9]{1,6}$ ]] && (( 10#$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES > 0 )); then
+    HORIZON_HOLD_MIN=$(( 10#$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES ))
+  else
+    echo "horizon: rejected CLAUDE_HORIZON_PROBE_CADENCE_MINUTES='$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES' — using 30" >&2
+  fi
+fi
+if [[ "${HORIZON_STATUS:-unknown}" == critical ]]; then
+  (( EFFECTIVE_MIN < HORIZON_HOLD_MIN )) && EFFECTIVE_MIN=$HORIZON_HOLD_MIN
+fi
 ```
+
+**The hold releases itself.** The cadence is recomputed from `HORIZON_STATUS` every tick, so the first tick that reads `clear` returns to whichever tier the digest streak selects — there is no held flag to clear and nothing to resume by hand. `horizon_held_since` is stamped on the first consecutive `critical` tick and nulled the moment the verdict leaves `critical`; it exists for the heartbeat and for `/recap`, and no other loop reads it.
 
 | `digest_streak` | Effective cadence |
 |-----------------|-------------------|
@@ -663,7 +745,7 @@ if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN
 
 **Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
-**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **and** the digest did not change (no forward progress). Increment `blocker_streak` on such ticks; reset to `0` on `merge-ready`/`merged` or on any digest change. A `conflicting` tick that successfully auto-resolved and pushed counts as forward progress — reset `blocker_streak` to `0` (the new SHA will change the digest on the next tick); `conflict_streak` is NOT reset by a SHA change, only by a non-`conflicting` tick (any class other than `conflicting`).
+**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when the digest did not change (no forward progress) **and** either `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **or** the horizon gate suppressed this tick's dispatch (T4, `WATCH_LAUNCH_OK=false` or `WATCH_FINISH_OK=false`). The suppressed clause is what makes `--max-iter` a real bound on a hold: without it a `critical` tick on a `merge-ready` PR would take the `merge-ready` reset below, zero the streak every tick, and leave the watcher held until the frozen-state terminate alone stopped it. Increment `blocker_streak` on such ticks; reset to `0` on any digest change, and on `merge-ready`/`merged` **only when the tick actually dispatched** — a held `merge-ready` tick did no work and resets nothing. A `conflicting` tick that successfully auto-resolved and pushed counts as forward progress — reset `blocker_streak` to `0` (the new SHA will change the digest on the next tick); `conflict_streak` is NOT reset by a SHA change, only by a non-`conflicting` tick (any class other than `conflicting`).
 
 **Conflict-streak** bookkeeping per tick:
 - `CLASS == conflicting` and dispatch status was `CONFLICTS` (complex hunk, aborted): `conflict_streak` was already incremented in T4 dispatch; tick terminates via T-END (no T5 persist needed).
@@ -682,59 +764,236 @@ else
 fi
 ```
 
-Persist all non-cadence counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
+Persist all eight non-cadence bookkeeping fields atomically under the generation that authorized this tick. Re-read the whole watcher and self-compare that snapshot, so a stop, replacement or other revision between read and write discards the entire batch without refreshing a newer watcher or continuing to cadence/T6. A failed read/write is an error, never a clean supersession. Then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
+
+<!-- test-anchor: babysit-pr-t5-persist -->
 
 ```bash
+# Keep the generation that authorized this tick; never adopt a fresh one here.
+if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then
+  GATE_GENERATION="${TICK_GENERATION:-}"
+else
+  GATE_GENERATION="${MONITOR_GENERATION:-}"
+fi
+if [[ -z "$GATE_GENERATION" || "$GATE_GENERATION" == null ]]; then
+  echo 'ERROR: bookkeeping has no authorizing Monitor generation.' >&2
+  exit 1
+fi
+T5_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: could not read the watcher before bookkeeping.' >&2; exit 1; }
+if ! printf '%s' "$T5_SNAPSHOT" | jq -e '
+  . == null or (type == "object" and (.active | type == "boolean")
+  and (.stop_requested == null or (.stop_requested | type == "boolean"))
+  and (.cadence_transition == null or (.cadence_transition | type == "boolean"))
+  and (.monitor_generation == null or (.monitor_generation | type == "string" and length > 0)))' >/dev/null; then
+  echo 'ERROR: watcher bookkeeping snapshot is malformed.' >&2
+  exit 1
+fi
+if ! printf '%s' "$T5_SNAPSHOT" | jq -e --arg gen "$GATE_GENERATION" '
+  type == "object" and .monitor_generation == $gen and .active == true
+  and .stop_requested != true and .cadence_transition != true' >/dev/null; then
+  echo '[babysit] Watcher changed or stopped; discarding this tick.'
+  exit 0
+fi
+# Identity is required on EVERY tick, even when the effective cadence is unchanged.
+if ! printf '%s' "$T5_SNAPSHOT" | jq -e '
+  .monitor_task_id | (type == "string" and length > 0) or
+  (type == "number" and . >= 0 and floor == .)' >/dev/null; then
+  T5_MISSING_GUARD_JSON=$(printf '%s' "$T5_SNAPSHOT" | jq -c '.stop_requested=true | .cadence_transition=false') || exit 1
+  MISSING_RC=0
+  "$SESSION_STATE_SH" --cas ".prs[\"$PR\"].babysit=$T5_MISSING_GUARD_JSON" --expect "$T5_SNAPSHOT" || MISSING_RC=$?
+  if [[ "$MISSING_RC" -eq 7 ]]; then
+    echo '[babysit] Watcher changed while checking its identity; discarding this tick.'
+    exit 0
+  fi
+  echo "ERROR: current Monitor identity missing (guard rc=$MISSING_RC); stopping and arming nothing." >&2
+  exit 1
+fi
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# HORIZON_HELD_SINCE is the JSON value the write below stores: the stamp is set
+# on the FIRST consecutive `critical` tick, carried unchanged through the ones
+# after it, and cleared the moment the verdict leaves `critical`. Compute it
+# here rather than describing it — an unassigned variable under `set -u` aborts
+# the tick, and without `set -u` it silently stores nothing (#1444, #1653).
+PREV_HELD=$(printf '%s' "$T5_SNAPSHOT" | jq -r '
+  .horizon_held_since | if . == null then "" elif type == "string" then .
+  else error("invalid held-since stamp") end') || {
+  echo 'ERROR: watcher held-since stamp is unreadable.' >&2; exit 1; }
+if [[ "${HORIZON_STATUS:-unknown}" != "critical" ]]; then
+  HELD_RAW=""                                   # any non-critical verdict clears it
+elif [[ -n "$PREV_HELD" && "$PREV_HELD" != "null" ]]; then
+  HELD_RAW="$PREV_HELD"                         # already held — keep the original stamp
+else
+  HELD_RAW="$NOW"                               # first consecutive critical tick
+fi
+# jq -n --arg produces a correctly quoted JSON string (or the literal null),
+# so a stamp never reaches --set as a bare unquoted token.
+if [[ -n "$HELD_RAW" ]]; then
+  HORIZON_HELD_SINCE=$(jq -cn --arg v "$HELD_RAW" '$v')
+else
+  HORIZON_HELD_SINCE=null
+fi
+
+PERSIST_RC=0
 "$SESSION_STATE_SH" \
+  --cas ".prs[\"$PR\"].babysit=$T5_SNAPSHOT" --expect "$T5_SNAPSHOT" \
   --set ".prs[\"$PR\"].digest=$DIGEST" \
   --set ".prs[\"$PR\"].digest_streak=$STREAK" \
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
   --set ".prs[\"$PR\"].babysit.conflict_streak=$CONFLICT_STREAK_NEW" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
-  --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
+  --set ".prs[\"$PR\"].babysit.horizon_status=\"${HORIZON_STATUS:-unknown}\"" \
+  --set ".prs[\"$PR\"].babysit.horizon_held_since=$HORIZON_HELD_SINCE" \
+  --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW" || PERSIST_RC=$?
+if [[ "$PERSIST_RC" -eq 7 ]]; then
+  echo '[babysit] Watcher changed during bookkeeping; discarding this tick.'
+  exit 0
+elif [[ "$PERSIST_RC" -ne 0 ]]; then
+  echo "ERROR: watcher bookkeeping failed (rc=$PERSIST_RC); not re-arming." >&2
+  exit 1
+fi
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** Before comparing cadences, read the exact
-current `babysit.monitor_task_id` on every tick. A missing ID while active is degraded teardown: set
-`stop_requested=true`, report it, and terminate without retaining or arming a task. Then compare the
-computed `$EFFECTIVE_MIN` to the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on
-every tick. When they are equal, retain the identified Monitor and cadence. When they differ, stop
-the exact current Monitor. Before that stop, atomically set `stop_requested=true`; this makes every
-already-emitted old-generation event exit at T0 throughout the stop-to-publication gap. In other
-words, cadence changes must **guard, then stop the exact current Monitor** and complete this transaction:
+`HORIZON_HELD_SINCE` is computed by the block above rather than assumed: on a `critical` tick it reuses the existing `.prs["<PR>"].babysit.horizon_held_since` when that is already a non-null string and stamps `"$NOW"` otherwise, and on every other verdict it is the literal `null`. Both fields are this watcher's own bookkeeping — nothing outside `.prs["<PR>"].babysit` is written on any verdict (#1444).
 
-1. Publish `stop_requested=true`, then stop the exact current Monitor task with `TaskStop`. A failed
-   old-task stop retains its complete ID+generation pair, `$PREV_EFFECTIVE_MIN`, and the stop guard
-   in state and aborts the re-arm as incomplete teardown.
-2. Generate a fresh `$NEW_MONITOR_GENERATION`, then arm a replacement whose sleep and emitted
-   `--cadence` use `$EFFECTIVE_MIN` and whose event includes
-   `--monitor-generation $NEW_MONITOR_GENERATION`.
-3. Publish the replacement ID, generation, cadence, and cleared stop guard in one atomic state write:
+**Re-arm cadence only when it crosses a tier boundary.** Compare `$EFFECTIVE_MIN` to
+`$PREV_EFFECTIVE_MIN` on every tick. If equal, retain the current Monitor. Otherwise,
+first capture the exact watcher this tick is authorized to stop and atomically set `cadence_transition=true`, distinct from the operator's `stop_requested` guard.
+A lost compare exits this tick without stopping any task or running T6. Never adopt a
+replacement generation observed after T0/T5.
 
-   ```bash
-   "$SESSION_STATE_SH" \
-     --set ".prs[\"$PR\"].babysit.monitor_task_id=$NEW_MONITOR_TASK_ID" \
-     --set ".prs[\"$PR\"].babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"" \
-     --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
-     --set ".prs[\"$PR\"].babysit.stop_requested=false"
-   ```
-
-If replacement arming fails, the old task is already stopped: atomically set `active=false`,
-`stop_requested=false`, `monitor_task_id=null`, `monitor_generation=null`, and restore
-`cadence_effective_minutes=$PREV_EFFECTIVE_MIN`, then report that the watcher terminated. If the
-publication write fails, stop the exact replacement task. After a successful rollback stop, clear
-the known-stopped old identity and set `active=false`, `stop_requested=false`; after a failed rollback stop, best-effort
-publish `stop_requested=true`, `active=true`, and the exact `$NEW_MONITOR_TASK_ID` plus
-`$NEW_MONITOR_GENERATION` so a later `/babysit-pr-stop` can retry the potentially-live task. Never
-retain the already-stopped old identity as if it were the replacement, and never claim the cadence
-changed until the ID+generation+cadence publication succeeds. A queued event from the stopped old
-generation is rejected at T0 before it can classify, dispatch, terminate, or re-arm the replacement.
-
-On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
+<!-- test-anchor: babysit-pr-t5-cadence-guard -->
 
 ```bash
-"$SESSION_STATE_SH" --set ".prs[\"$PR\"].last_cron_action={\"type\":\"update\",\"interval\":\"${WIDE_MIN}m\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+if [[ -z "${GATE_GENERATION:-}" || "$GATE_GENERATION" == null ]]; then
+  echo 'ERROR: cadence teardown has no authorizing generation; stopping no task.' >&2; exit 1
+fi
+CADENCE_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: cannot read the watcher before cadence teardown.' >&2; exit 1; }
+if ! printf '%s' "$CADENCE_SNAPSHOT" | jq -e '
+  type == "object" and (.active | type == "boolean")
+  and (.stop_requested == null or (.stop_requested | type == "boolean"))
+  and (.cadence_transition == null or (.cadence_transition | type == "boolean"))
+  and (.monitor_generation == null or (.monitor_generation | type == "string"))' >/dev/null; then
+  echo 'ERROR: malformed cadence watcher; stopping no task.' >&2; exit 1
+fi
+if ! printf '%s' "$CADENCE_SNAPSHOT" | jq -e --arg gen "$GATE_GENERATION" '
+  .active == true and .stop_requested != true and .cadence_transition != true and .monitor_generation == $gen' >/dev/null; then
+  echo '[babysit] Watcher changed before cadence teardown; discarding this tick.'
+  exit 0
+fi
+CADENCE_TASK_ID=$(printf '%s' "$CADENCE_SNAPSHOT" | jq -er '
+  .monitor_task_id | select((type == "string" and length > 0) or
+  (type == "number" and . >= 0 and floor == .))') || CADENCE_TASK_ID=""
+if [[ -z "$CADENCE_TASK_ID" ]]; then
+  # Retain the existing missing-ID stop posture without arming anything.
+  CADENCE_GUARDED_JSON=$(printf '%s' "$CADENCE_SNAPSHOT" | jq -c '.stop_requested=true | .cadence_transition=false') || exit 1
+else
+  CADENCE_GUARDED_JSON=$(printf '%s' "$CADENCE_SNAPSHOT" | jq -c '.cadence_transition=true') || exit 1
+fi
+GUARD_RC=0
+"$SESSION_STATE_SH" --cas ".prs[\"$PR\"].babysit=$CADENCE_GUARDED_JSON" \
+  --expect "$CADENCE_SNAPSHOT" || GUARD_RC=$?
+if [[ "$GUARD_RC" -eq 7 ]]; then
+  echo '[babysit] Watcher changed while guarding cadence; discarding this tick.'
+  exit 0
+elif [[ "$GUARD_RC" -ne 0 ]]; then
+  echo "ERROR: cadence guard failed (rc=$GUARD_RC); stopping no task." >&2; exit 1
+fi
+
+if [[ -z "$CADENCE_TASK_ID" ]]; then
+  echo 'ERROR: current Monitor identity is missing; stopping and arming nothing.' >&2
+  exit 1
+fi
+```
+
+Call `TaskStop` only for the captured `$CADENCE_TASK_ID`. If that exact stop fails,
+retain the guarded identity and old cadence, report incomplete teardown, and abort;
+never arm beside it. After success, mint a fresh `$NEW_MONITOR_GENERATION` and arm a
+replacement whose sleep and emitted `--cadence` use `$EFFECTIVE_MIN`, and whose event
+includes `--monitor-generation $NEW_MONITOR_GENERATION`. Then publish through the
+same captured ownership compare. An actual widen's advisory record joins this
+transaction, so a stale tick cannot publish a false cadence action separately.
+
+<!-- test-anchor: babysit-pr-t5-cadence-publish -->
+
+```bash
+NEW_TASK_JSON=$(jq -cn --arg v "$NEW_MONITOR_TASK_ID" '$v | try fromjson catch $v') || exit 1
+if ! printf '%s' "$NEW_TASK_JSON" | jq -e '
+  (type == "string" and length > 0) or (type == "number" and . >= 0 and floor == .)' >/dev/null; then
+  echo 'ERROR: replacement Monitor identity is invalid; stop the returned task.' >&2
+  exit 1
+fi
+if [[ -z "${NEW_MONITOR_GENERATION:-}" || "$NEW_MONITOR_GENERATION" == null || "$NEW_MONITOR_GENERATION" == "$GATE_GENERATION" ]]; then
+  echo 'ERROR: replacement generation is not fresh; stop the owned replacement task.' >&2
+  exit 1
+fi
+PROPOSED_PUBLISH_JSON=$(printf '%s' "$CADENCE_GUARDED_JSON" | jq -c \
+  --argjson task "$NEW_TASK_JSON" --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" \
+  '.monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence | .stop_requested=false | .cadence_transition=false') || exit 1
+PUBLISH_ARGS=(--cas ".prs[\"$PR\"].babysit=$PROPOSED_PUBLISH_JSON" --expect "$CADENCE_GUARDED_JSON")
+if [[ "$EFFECTIVE_MIN" -gt "$PREV_EFFECTIVE_MIN" ]]; then
+  CADENCE_ACTION=$(jq -cn --arg interval "${EFFECTIVE_MIN}m" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{type:"update",interval:$interval,at:$at}') || exit 1
+  PUBLISH_ARGS+=(--set ".prs[\"$PR\"].last_cron_action=$CADENCE_ACTION")
+fi
+PUBLISH_RC=0
+"$SESSION_STATE_SH" "${PUBLISH_ARGS[@]}" || PUBLISH_RC=$?
+if [[ "$PUBLISH_RC" -eq 0 ]]; then
+  echo 'CADENCE_PUBLISH=armed'
+elif [[ "$PUBLISH_RC" -eq 7 ]]; then
+  echo 'CADENCE_PUBLISH=lost'
+else
+  echo "CADENCE_PUBLISH=failed rc=$PUBLISH_RC"
+fi
+```
+
+Only `armed` continues to T6. A nonzero block exit or absent/unreadable result is `failed`, never armed. On `lost` or `failed`, stop only this tick's exact
+`$NEW_MONITOR_TASK_ID`, bind `REPLACEMENT_STOP_SUCCEEDED` to that tool result, and run
+the rollback below. If arming itself failed before a task existed, set that binding
+to true and run the same owned cleanup. Never call a successful stop from silence.
+An unknown publication can have committed, so cleanup accepts either the exact old
+guarded snapshot or this tick's exact proposed publication; any other state is
+retained. A failed replacement stop records the potentially live owned identity
+only while that ownership still compares, otherwise reports it without overwriting
+the winning watcher. Neither outcome claims a successful cadence change. A verified owned stop records the actual delete action in the same cleanup CAS, so an update from an uncertain publication cannot survive as a false widen acknowledgement.
+
+<!-- test-anchor: babysit-pr-t5-cadence-rollback -->
+
+```bash
+ROLLBACK_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: rollback state unknown; retain state and report the owned replacement task.' >&2; exit 1; }
+if ! printf '%s' "$ROLLBACK_SNAPSHOT" | jq -e --argjson old "$CADENCE_GUARDED_JSON" \
+  --argjson published "${PROPOSED_PUBLISH_JSON:-null}" \
+  'type == "object" and (. == $old or ($published != null and . == $published))' >/dev/null; then
+  echo 'ERROR: rollback lost ownership; retained the winning watcher. Report any unstopped owned replacement task.' >&2
+  exit 1
+fi
+if [[ "${REPLACEMENT_STOP_SUCCEEDED:-false}" == true ]]; then
+  ROLLBACK_VALUE=$(printf '%s' "$ROLLBACK_SNAPSHOT" | jq -c --argjson cadence "$PREV_EFFECTIVE_MIN" \
+    '.active=false | .stop_requested=false | .cadence_transition=false | .monitor_task_id=null | .monitor_generation=null | .cadence_effective_minutes=$cadence') || exit 1
+else
+  if [[ -z "${NEW_MONITOR_GENERATION:-}" || "$NEW_MONITOR_GENERATION" == null || "$NEW_MONITOR_GENERATION" == "$GATE_GENERATION" ]]; then
+    echo 'ERROR: cannot register the stranded replacement generation; retain state and report its exact task ID.' >&2
+    exit 1
+  fi
+  ROLLBACK_VALUE=$(printf '%s' "$ROLLBACK_SNAPSHOT" | jq -c --argjson task "$NEW_TASK_JSON" \
+    --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" \
+    '.active=true | .stop_requested=true | .cadence_transition=false | .monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence') || exit 1
+fi
+ROLLBACK_ARGS=(--cas ".prs[\"$PR\"].babysit=$ROLLBACK_VALUE" --expect "$ROLLBACK_SNAPSHOT")
+if [[ "${REPLACEMENT_STOP_SUCCEEDED:-false}" == true ]]; then
+  ROLLBACK_ACTION=$(jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{type:"delete",interval:"paused",at:$at}') || exit 1
+  ROLLBACK_ARGS+=(--set ".prs[\"$PR\"].last_cron_action=$ROLLBACK_ACTION")
+fi
+ROLLBACK_RC=0
+"$SESSION_STATE_SH" "${ROLLBACK_ARGS[@]}" || ROLLBACK_RC=$?
+if [[ "$ROLLBACK_RC" -ne 0 ]]; then
+  echo "ERROR: rollback not verified (rc=$ROLLBACK_RC); retain state and report the owned task." >&2
+fi
+# A failed re-arm is terminal even when owned cleanup succeeds.
+exit 1
 ```
 
 ### T6. Termination check
@@ -753,62 +1012,100 @@ Terminate (→ T-END) when **any** hold:
 
 Otherwise the Monitor continues — its next stdout event re-enters tick mode.
 
-### T7. Heartbeat (per tick — never silent by default)
+### T7. Notification decision
 
-Always run a `date` for the timestamp (never estimate — `monitor-mode.md`):
-
-```bash
-TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-```
-
-One-liner format:
-
-```
-[<TS>] #<PR> tick <n>: state=<class>, action=<dispatch /fixpr | dispatch /wrap | no-op | waiting | dispatch-in-progress>, next in <effective-cadence>
-```
-
-Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch target on a dispatch; `(backoff: stable ×<streak>, widened to <WIDE_MIN>m)` when cadence widened; the final summary on termination.
-
-**`--silent`:** suppress the line on plain `waiting-on-bots`/no-change ticks, but **always** print on state change, any dispatch, backoff transitions, and termination. (Default — no `--silent` — prints every tick, satisfying the per-tick heartbeat AC.)
+Apply `decision-only-output.md`. Persist tick/class, dispatch, backoff, horizon holds and evidence in `.babysit` even when silent. Waiting, dispatch-in-progress, routine recovery, and state changes alone print nothing. On an owner-only blocker, safety event, exhausted recovery or genuine stall, surface a concise action/choice with consequence and evidence. Explicit status requests can render those stored fields without ceremony-only timestamps. `--silent` is a compatibility flag, not an opt-out from required notices.
 
 ### T-END. Terminate cleanly
 
-Set the stop flag first so any already-emitted tick's T0 short-circuit exits cleanly. Do **not**
-clear `active` until the recorded Monitor task has stopped; otherwise A2 can admit a duplicate
-watcher while the old task is still emitting:
+Capture and compare the watcher this tick is authorized to stop. A cadence
+transition belongs to its transition owner; it is not a user-stop request. A lost
+compare or different generation returns without stopping a task or writing a
+completion report. Never adopt a task ID from a replacement watcher.
+
+<!-- test-anchor: babysit-pr-terminal-owner-guard -->
 
 ```bash
-"$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true"
+if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then
+  TERMINAL_AUTH_GENERATION="${TICK_GENERATION:-}"
+else
+  TERMINAL_AUTH_GENERATION="${MONITOR_GENERATION:-}"
+fi
+if [[ -z "$TERMINAL_AUTH_GENERATION" || "$TERMINAL_AUTH_GENERATION" == null ]]; then
+  echo 'ERROR: terminal teardown has no authorizing generation; stopping no task.' >&2; exit 1
+fi
+TERMINAL_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".prs[\"$PR\"].babysit") || {
+  echo 'ERROR: terminal watcher state unreadable; stopping no task.' >&2; exit 1; }
+if ! printf '%s' "$TERMINAL_SNAPSHOT" | jq -e '
+  . == null or (type == "object" and (.active | type == "boolean")
+  and (.stop_requested == null or (.stop_requested | type == "boolean"))
+  and (.cadence_transition == null or (.cadence_transition | type == "boolean")))' >/dev/null; then
+  echo 'ERROR: malformed terminal watcher; stopping no task.' >&2; exit 1
+fi
+if printf '%s' "$TERMINAL_SNAPSHOT" | jq -e '. == null or (.active == false and .monitor_task_id == null)' >/dev/null; then
+  echo 'TERMINAL_GUARD=already-stopped'
+  exit 0
+fi
+if ! printf '%s' "$TERMINAL_SNAPSHOT" | jq -e --arg gen "$TERMINAL_AUTH_GENERATION" '.monitor_generation == $gen' >/dev/null; then
+  echo 'TERMINAL_GUARD=lost'
+  exit 0
+fi
+if printf '%s' "$TERMINAL_SNAPSHOT" | jq -e '.cadence_transition == true' >/dev/null; then
+  echo 'TERMINAL_GUARD=cadence-transition'
+  exit 0
+fi
+TERMINAL_GUARDED_JSON=$(printf '%s' "$TERMINAL_SNAPSHOT" | jq -c '.stop_requested=true') || exit 1
+TERMINAL_RC=0
+"$SESSION_STATE_SH" --cas ".prs[\"$PR\"].babysit=$TERMINAL_GUARDED_JSON" \
+  --expect "$TERMINAL_SNAPSHOT" || TERMINAL_RC=$?
+if [[ "$TERMINAL_RC" -eq 7 ]]; then echo 'TERMINAL_GUARD=lost'; exit 0; fi
+if [[ "$TERMINAL_RC" -ne 0 ]]; then echo 'ERROR: terminal guard failed; stopping no task.' >&2; exit 1; fi
+TERMINAL_TASK_ID=$(printf '%s' "$TERMINAL_SNAPSHOT" | jq -er '
+  .monitor_task_id | select((type == "string" and length > 0) or
+  (type == "number" and . >= 0 and floor == .))') || {
+  echo 'ERROR: terminal Monitor identity missing; retained the owned stop guard.' >&2; exit 1; }
+echo 'TERMINAL_GUARD=owned'
 ```
 
-**Cancelling the poll is a required terminal action — a persistent Monitor does not lapse on its own.** Read `babysit.monitor_task_id`, stop that exact task with `TaskStop`, and do not re-arm it. If the ID is missing or `TaskStop` fails, keep both `active=true` and the ID for diagnosis, report degraded teardown, and do not claim completion; `stop_requested=true` still makes an already-emitted tick exit at T0. A2 treats that stop-requested active state as an incomplete teardown and refuses re-arm regardless of tick age, so the ordinary stale-watcher reclaim can never revive an old Monitor alongside a replacement.
+**Cancelling the poll remains required.** Only `owned` permits `TaskStop`, and only
+for the captured `$TERMINAL_TASK_ID`; never reread an ID before the tool call. Bind
+`TERMINAL_STOP_SUCCEEDED` only from that exact result. A failed stop retains the
+owned guard and identity for diagnosis; report incomplete teardown and re-arm
+nothing. `lost` or `cadence-transition` ends this old tick without touching the
+winning watcher. `already-stopped` needs no task call and no state write.
 
-One idempotent exception: when T0 observed `active != true` **and** the task ID is already null,
-another teardown path (normally `/babysit-pr-stop`) completed the exact stop before this queued tick
-ran. Treat that pair as already stopped, not degraded, and do not call `TaskStop` without an ID.
+After a verified exact stop, compare the captured guarded snapshot again while
+clearing its identity and recording the delete advisory atomically. An intervening
+replacement or dispatch revision is retained, never overwritten. Preserve a
+non-null `dispatch_in_flight` marker in the snapshot rather than erasing work still
+running in `/fixpr` or `/wrap`.
 
-**Record the stop.** `polling-backoff-warn.sh` suppresses a repeated STOP advisory by reading `.prs["<N>"].last_cron_action.type == "delete"`. The field name is historical — it records the poll-lifecycle action, whatever primitive backs the poll:
+<!-- test-anchor: babysit-pr-terminal-owner-cleanup -->
 
 ```bash
-"$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit.active=false" \
-  --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
-  --set ".prs[\"$PR\"].babysit.monitor_generation=null" \
-  --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+if [[ "${TERMINAL_STOP_SUCCEEDED:-false}" != true ]]; then
+  echo 'ERROR: exact terminal TaskStop not verified; retained the owned watcher.' >&2; exit 1
+fi
+TERMINAL_VALUE=$(printf '%s' "$TERMINAL_GUARDED_JSON" | jq -c \
+  '.active=false | .monitor_task_id=null | .monitor_generation=null | .cadence_transition=false') || exit 1
+TERMINAL_ACTION=$(jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{type:"delete",interval:"paused",at:$at}') || exit 1
+TERMINAL_RC=0
+"$SESSION_STATE_SH" --cas ".prs[\"$PR\"].babysit=$TERMINAL_VALUE" --expect "$TERMINAL_GUARDED_JSON" \
+  --set ".prs[\"$PR\"].last_cron_action=$TERMINAL_ACTION" || TERMINAL_RC=$?
+if [[ "$TERMINAL_RC" -ne 0 ]]; then
+  echo "ERROR: terminal cleanup not verified (rc=$TERMINAL_RC); retained current state." >&2
+  exit 1
+fi
+echo 'TERMINAL_CLEANUP=cleared'
 ```
 
-Run that atomic cleanup only after `TaskStop` succeeds. Clear `dispatch_in_flight` in the same
-call only when it is null; if a user stop raced an existing `/fixpr` or `/wrap`, retain the marker
-until that dispatch completes or T0's TTL reclaim owns it.
+Only `cleared` permits the successful terminal report. If exact stop or cleanup
+failed, report `babysit-pr teardown incomplete` with the owned task and generation.
+A2 refuses re-arm regardless of tick age while the stop-requested watcher remains active.
+Any later summary-field persistence must compare this exact owned terminal result;
+never write a summary into a newly re-armed watcher.
 
-Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`stop_requested` /
-`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is
-still mandatory so the runtime stops invoking the watcher.
-
-If exact teardown failed, emit a `babysit-pr teardown incomplete` report with the retained task ID
-and generation instead of the successful `babysit-pr complete` summary below.
-
-Emit the final summary:
+Persist the final summary fields below in the existing babysit state/handoff; render this full report only on an explicit status/verbose request. Default terminal output follows `final-wrapup-format.md`:
 
 ```
 === babysit-pr complete ===

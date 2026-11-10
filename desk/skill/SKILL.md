@@ -1,0 +1,183 @@
+---
+name: desk
+description: "Use when you want one place to answer every question your agent threads ask — the human queue's control session. Registers this session as the desk, ticks the queue on a persistent Monitor, shows waiting Decisions as menus or long-form prompts, lets you discuss one, writes the answers, and wakes each asking thread."
+triggers:
+  - desk
+  - open the desk
+  - human queue
+  - answer the queue
+argument-hint: "[--cadence Nm]"
+---
+
+# /desk — the human queue's control session
+
+The desk is the operator's single point of contact (`desk/DESIGN.md` 2.3, 2.6). Worker threads' questions are captured into the store by the capture hook (`desk/README.md`, "Capture hook") and render **only here**, as the same clickable menus a normal session shows. Answers go to the store; the asking thread gets a pointer and reads the store.
+
+The hook queues a question only while a desk is **live**: a registered control session whose last tick is at most 15 minutes old. Running `/desk` is what makes it live, so the steps below are exact — a desk that believes it is ticking and is not leaves every worker's questions with nobody to show them to.
+
+**This file is a router.** It owns starting the desk, the Monitor, its events, and the end-of-turn gate. Each kind of work lives in its own file, loaded when it is needed:
+
+| File | Owns | Issue |
+|------|------|-------|
+| `decisions.md` | Simple Decisions: sets, menus, replies, answers, wake-ups | #1779 |
+| `longform.md` | Long-form and multipart Decisions: one text prompt at a time, part by part, answers stored word for word | #1780 |
+| `discuss.md` | `discuss <n\|D-id>`: talk one item through with its context loaded, then answer it | #1780 |
+| `desk.jq` | The functions both views call: which Decisions fit a menu, sets, multipart groups, the long-form and discussion cards, feedback tags | #1779, #1780, #1783 |
+| `interrupts.md` | `desk/policy.json`; the interrupt rule (`away`, `available`, `focus until …`, `focus for …`, `focus off`, `interrupts?`); feedback tags (`2: not important`, `2: should have defaulted`, `2: good interrupt`) | #1783 |
+| `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once | #1781 |
+| `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), printed without a state line | #1781 |
+| `priorities.md` | `top`, `bump`, `park`, `drop`, `priorities`: the operator's backlog order for `/pm`, kept in the target repo's `.claude/pm-priority.json` | #1767 |
+| `reviews.md` | The Reviews view: `reviews` (one line per unreviewed item, by day and repo), `open R-<n>` (level 2, cached), `diff R-<n> [path]` (level 3, live), `reviewed`, `reviewed all today`, `flag`, and `follow up` | #1782 |
+| `drilldown.md` | The PR drill-down: `outline R-<n>` (files, hunks, and the tests touching each, numbered), `open R-<n> <node>…` (a hunk with twenty lines of context, or a file's diff), `ask R-<n>: <question>` (answered from the hunks it reads, named on a `Read:` line); nothing stored | #1768 |
+| `ideas.md` | `idea: <text>` / `file: <text>`: file an issue through `/issue-maker`'s one-shot entry, no capture mode; `repo: owner/name` sets where ideas go | #1766 |
+| `plan.md` | The day plan: `plan`, `I need to work on …`, `plan: …` (one sentence revises it), `plan?`, `plan off`; asks pace and chunking, forecasts incoming questions, proposes what to clear first, stores the confirmed blocks, which hold new Decisions while they run | #1784 |
+| `sweep.md` | The end-of-day sweep at `eod_time` (the `eod` event) or on `sweep`: everything still open as one numbered list, then the paper export (`export`, #1759) | #1784 |
+| `attention.md` | The weekly attention report: `report` (`report <YYYY-MM-DD>` for another week), one page from the events table, offered once a week after Friday's end-of-day sweep | #1771 |
+| `todo.md` | The operator's own to-do layer on items: `tag`, `untag`, `note`, `unnote`, `snooze … until\|for …`, `unsnooze`, `mine D-<n> 1-5\|off`, and `my list` (by personal priority, then age; snoozed items hidden until their time). Not `/pm`'s priorities | #1769 |
+| `checkin.md` | The morning check-in (the `morning` event, `check-in`, or a new plan with none today): hours at the desk, energy, plans, and yesterday's measured pace set today's reading budget; `budget?` | #1770 |
+
+## The prelude (every Bash call)
+
+Shell state does not survive between Bash calls, so every block below starts with this prelude. The desk runs in any directory, so it resolves its own folder only from installed locations, never from the current checkout:
+
+<!-- test-anchor: desk-prelude -->
+
+```bash
+DESK=""
+for c in "${HUMAN_QUEUE_DESK_DIR:-}" "${HOME:+$HOME/.claude/skills-worktree/desk}"; do
+  if [ -n "$c" ] && [ -x "$c/bin/desk-cli.sh" ]; then DESK="$c"; break; fi
+done
+if [ -z "$DESK" ]; then
+  echo "ERROR: desk/bin/desk-cli.sh not found (checked \$HUMAN_QUEUE_DESK_DIR and ~/.claude/skills-worktree/desk) — the desk is unavailable"
+fi
+HQ="$DESK/bin/desk-cli.sh"
+SKILL_SID="${CLAUDE_SESSION_ID}"
+SID="${SKILL_SID:-${CLAUDE_CODE_SESSION_ID:-}}"
+SESSION_STATE_SH=""
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/session-state.sh}" "${HOME:+$HOME/.claude/scripts/session-state.sh}"; do
+  if [ -x "$c" ]; then SESSION_STATE_SH="$c"; break; fi
+done
+```
+
+- `HQ` is `human-queue.sh` with the store's URL found the way the capture hook finds it (the app's Bash and Monitor do not source your shell profile). It never prints the URL. Exit **7** from any call means the store is unreachable.
+- `SID` is this session's id **as the capture hook sees it** (the hook input's `session_id`). `${CLAUDE_SESSION_ID}` is the skill's own substitution when the harness provides it; `CLAUDE_CODE_SESSION_ID` is the same id from the environment. Never use `CLAUDE_CODE_HOST_SESSION_ID` (the app's `local_…` id) here: the hook would not recognise it, and would deny the desk's own menus.
+- `SESSION_STATE_SH` empty → `DEGRADED: session-state.sh not found (checked both paths) — the desk's Monitor identity is not recorded, continuing without it`. Keep the task id and generation in this conversation instead, and skip every `"$SESSION_STATE_SH"` call below (steps 4 and 7, the `replaced` event, the end-of-turn gate's step 3): with it empty, the call would run `--get-json` or `--set` as a command and fail.
+
+## Start: `/desk [--cadence Nm]`
+
+1. **Prelude.** `DESK` or `SID` empty → say so in one line and stop. Nothing is armed.
+2. **Policy and cadence.** Capture the policy’s `interrupt_rule` once as this desk’s `<DEFAULT>` (`everything` or `away`; missing/invalid means `everything`, matching the policy parser). Keep it in this conversation and carry it into `.desk.interrupt_default` in step 7. A policy edit applies at the next `/desk`; a re-arm retains the captured default. Read `desk/policy.json` first (`interrupts.md`, "The policy": block `desk-policy`); a warning line it prints goes in the start report, once. `--cadence Nm`, a whole number of minutes, default the policy's `tick_cadence_min` (5), and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
+3. **Migrate, validate the initial hold, then register** this session. Do the read before registration, stopping an earlier loop or stamping a tick: a failed hold read leaves the earlier desk working and creates no fresh capture target without a Monitor.
+
+   <!-- test-anchor: desk-start -->
+
+   ```bash
+   "$HQ" migrate || exit "$?"
+   START_HOLD=$("$HQ" interrupt get --session "$SID" --default "<DEFAULT>" --json) || exit "$?"
+   HELD_FLAG=$(printf '%s' "$START_HOLD" | jq -er 'if type == "object" and (.held | type) == "boolean" then (if .held then "--held" else "" end) else error("invalid held") end' 2>/dev/null) || {
+     printf '%s\n' 'Desk not started: interrupt state is unreadable.' >&2
+     exit 4
+   }
+   "$HQ" register-control "$SID" || exit "$?"
+   printf '%s\nHELD_FLAG=%s\n' "$START_HOLD" "$HELD_FLAG"
+   ```
+
+   A failed/malformed hold read exits before control registration; use the not-started report below and stop. On success, retain `HELD_FLAG` from the receipt for step 6. A held seed covers focus expiry before the first persistent observation.
+
+   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, the Reviews view `007_reviews_summary_l1.sql`, and feedback tags `008_event_session.sql`).
+   - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
+   - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
+4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
+5. **Tick once, inline**, with a new generation. This stamps the tick time, which is what makes the desk live from this moment:
+
+   <!-- test-anchor: desk-first-tick -->
+
+   ```bash
+   GEN="desk-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+   "$DESK/bin/desk-tick.sh" --session "$SID" --generation "$GEN" --cadence <N> --interrupts "<DEFAULT>" --once; echo "GEN=$GEN"
+   ```
+
+   An `error` line → the same "not started" report as step 3, and stop. Exit 4 → the cadence (or another argument) was refused: report its one stderr line as "not started", and stop. Nothing is armed. An `eod` line (a desk started after `eod_time` that has not swept today) → after the start report, show the sweep (`sweep.md`). A `morning` line (the day's first desk, from 04:00 until `eod_time`) → after the start report, show the morning check-in (`checkin.md`) before the backlog of step 8.
+6. **Arm the Monitor** using the validated initial hold from step 3. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from step 3:
+
+   <!-- test-anchor: desk-monitor -->
+
+   ```bash
+   HELD_FLAG="<HELD_FLAG>"
+   exec "<DESK>/bin/desk-tick.sh" --session "<SID>" --generation "<GEN>" --cadence <N> --interrupts "<DEFAULT>" ${HELD_FLAG:+"$HELD_FLAG"}
+   ```
+
+   The loop sleeps first (the inline tick was this cycle). Each cadence it confirms this session is still the control session, runs `tick` and `wake-due`, and prints a line only when there is something to do (see "Monitor events").
+7. **Record the identity at once.** An unrecorded Monitor cannot be stopped by a later turn:
+
+   <!-- test-anchor: desk-record -->
+
+   ```bash
+   "$SESSION_STATE_SH" --set ".desk={\"session\":\"$SID\",\"generation\":\"$GEN\",\"monitor_task_id\":\"<TASK_ID>\",\"cadence_minutes\":<N>,\"interrupt_default\":\"<DEFAULT>\",\"armed_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+   ```
+
+   - Arming failed (no task id) → `Desk not started: the Monitor did not arm.` Leave `.desk` unwritten.
+   - `SESSION_STATE_SH` empty (the prelude's DEGRADED line) → skip this write and keep `TASK_ID`, `GEN`, the cadence, and the captured interrupt default in this conversation. That is the degraded mode, not a failure: the desk starts.
+   - Arming worked but this write failed → `TaskStop` the task id you hold now, then report the desk as not started. If that `TaskStop` also fails, name the task id in the message so the operator can stop it.
+8. **Show what is already waiting.** The first tick reports only what changed since the last desk ticked, so read the whole backlog once: `"$HQ" list --kind decision --status open --json`, and hand it to `decisions.md` ("Showing items"); it covers any `new` line the step 5 tick printed. This read can also see a write that tick could not, which the next tick reports again, so keep each id it showed with its `updated_at` in this conversation: the first `new` event after it drops any of those ids whose `updated_at` is unchanged (a later write, such as a bump, changes it, and that item shows again). With nothing waiting, the start report is one line: `Desk live — nothing waiting; ticking every <N> min.` When the current interrupt rule holds items (`interrupts.md`, block `desk-interrupt-get`, using the captured startup default), show nothing yet: `Desk live — holding new Decisions (<the rule>); "available" shows them.` This read then waits for the hold to end, and happens there (`interrupts.md`, "The release").
+
+**Every re-arm and release retains the start default.** Fill `<DEFAULT>` from this conversation. If absent, read `.desk` once with `session-state.sh --get-json .desk` and recover `interrupt_default` only when its `session` equals `SID` and its value is `everything` or `away`. Carry it forward in the new whole-object write. Never reread `policy.json` for a re-arm, release or `interrupts?`. If neither source supplies a valid default (including a legacy desk), say `Desk start default unknown — run /desk again.` and do not launch or query with a guessed default. With session state unavailable, retain the value in this conversation. Only an explicit fresh `/desk` captures the edited policy.
+
+For a re-arm, fill `HELD_FLAG` with `--held` while this conversation's known held-start backlog read still waits; once that read has happened, use empty. An unknown initial state is not evidence for a seed. The inline first/release `--once` ticks never carry `--held`.
+
+## Monitor events
+
+Each stdout line of the loop arrives as a notification. A line whose generation is not the recorded `.desk.generation` (or the `GEN` in this conversation) comes from a superseded loop: ignore it silently.
+
+| Line | Do |
+|------|----|
+| `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
+| `desk-tick <GEN> released` | A known hold ended. If step 8's initial backlog read still waits, do that read once, even when nothing changed in the store; apply the existing held/longform rules and shown-item deduplication. If it was already read, do nothing |
+| `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
+| `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep", then "Friday" (the weekly report's offer); during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
+| `desk-tick <GEN> morning` | The first tick of the day (from 04:00 until `eod_time`), once a day. Load `checkin.md` and show the card; during a hold, or while a long-form prompt waits, keep it and show it after (`checkin.md`, "Held like a Decision") |
+| `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
+| `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
+| `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
+| The Monitor exited or expired | Re-arm: steps 5–7 with a new generation (no new registration; `register-control` is only for start) |
+
+A quiet tick prints nothing, and the desk says nothing about it.
+
+## Replies the operator types
+
+Read each operator message in this order:
+
+1. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`), as the whole message → load `history.md`. This works at any time, including while a long-form prompt waits or during a discussion, and stores nothing.
+   **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`, each optionally ending `in <repo>`), as the whole message → load `priorities.md`. The same holds: any time, and nothing goes to the store.
+   **A Reviews verb** as the whole message — `reviews` (`reviews since <YYYY-MM-DD>`), `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`, or `follow up R-<n>` (`follow up R-<n> again`) → load `reviews.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after.
+   **A drill-down verb** as the whole message — `outline R-<n>`, `open R-<n>` followed by one or more node ids (`open R-<n> 2.3`, `open R-<n> 2 T1`; `open R-<n>` alone stays the Reviews view's level 2), or `ask R-<n>: <question>` → load `drilldown.md`. Also at any time, and nothing goes to the store.
+   **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`**, or **`export`** after a sweep → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
+   **`report`** (`report <YYYY-MM-DD>` for the week holding that day), as the whole message → load `attention.md`: the weekly attention report (#1771). Any time, like `history`, and nothing goes to the store.
+   **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
+   **A to-do verb** as the whole message — `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, or `mine` followed by an item id (`D-<n>` or `R-<n>`), or `my list` (`my list all`, `my list snoozed`, `my list tag <word>`) → load `todo.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after, and a to-do verb is never an answer.
+   **A check-in verb** as the whole message — `check-in`, `checkin`, or `budget?` — or, **while a morning check-in card waits for its reply**, a message `desk.jq`'s `checkin_parse` reads as one (`4, ok, the PRD until noon`; `skip`) → load `checkin.md` (#1770). Also at any time; a message it does not read as a reply goes on down this list, and the card keeps waiting.
+2. **`idea: …`**, **`file: …`**, or **`repo: …`** (any case) → load `ideas.md`. Like `show`, it works at any time; a waiting long-form prompt's card is printed again afterwards.
+3. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
+4. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, `idea: …`, or a `D-<n>:` reply for another item.
+5. **A message that starts with an item number or an id followed by a colon** is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies".
+6. **A plan sentence** (`I need to work on …`, `today is for …`: `plan.md`, "The grammar"), or, **while a plan is being agreed**, `yes`, `no`, or a sentence that changes it (`4 sections`, `until 12:30`) → load `plan.md`. Not during a discussion (`discuss.md` owns that conversation). A message `plan.md`'s parse finds nothing in goes on to 7.
+7. Any other message is ordinary conversation.
+
+## End-of-turn gate (STOP before ending any desk turn)
+
+`scheduling-reliability.md`'s pre-exit checklist, made concrete for the desk. Run it before every turn of this session ends, including turns that only rendered a menu:
+
+<!-- test-anchor: desk-end-of-turn -->
+
+```bash
+"$HQ" control-status --json
+```
+
+1. **Ticking, not just armed.** The JSON's `session` is `SID` and `tick_age_seconds` is at most the cadence in seconds plus 60. Arming is not ticking: the inline tick at start or a loop tick must have run. Too old → run the step 5 inline tick now, and if the Monitor has exited, re-arm (steps 5–7).
+2. **The Monitor is live.** The recorded `monitor_task_id` is still running (no exit or expiry notice since it was armed). Not running → re-arm.
+3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`. With `SESSION_STATE_SH` empty, skip it (degraded mode).
+4. **Output.** Say something only for a blocker, a failed first wake-up (`decisions.md`; a failed retry stays quiet), a parked answer's one-time notice (`wakeups.md`), a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line; `show` or `history` output, `history.md`; a plan card, `plan.md`; the weekly report, `attention.md`), the end-of-day sweep (`sweep.md`), the morning check-in and its budget card (`checkin.md`) — never a routine "still watching", never a state line nobody asked for, and never the interrupt rule unasked (`interrupts.md`).
+
+If 1 or 2 cannot be fixed (the store is down, the Monitor will not arm), say so in one line. Never end a turn claiming the desk is watching when either check failed.
+
+Background work in flight still follows `scheduling-reliability.md` item 1 (`bgwork-ceiling.sh --check`): the desk's Monitor does not replace the ceiling watch.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Portable-handoff-pointer tests for usage-limit-record.sh (split from the
 # monolith by Issue #1071). Covers the enrichment layer that names the most
-# recent /pause handoff in the breadcrumb (issue #901).
+# recent /end handoff in the breadcrumb (issue #901).
 #
 # Self-contained — defines its own helpers. No shared harness.
 # Sub-case labels 15a-15k are preserved from the original file for
@@ -20,7 +20,7 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 # --- 15. Portable handoff pointer (issue #901) ---------------------------
-# The breadcrumb should name the document /pause already wrote, when there is
+# The breadcrumb should name the document /end already wrote, when there is
 # one. This is a filesystem lookup only — see the code-body grep in case 8,
 # which also covers the lines added for this.
 BASE_HINT="Turn ended on an Anthropic usage limit. Reconstruct in-flight state from the transcript above, then resume; see .claude/reference/usage-limit-signal-audit-2026-07.md."
@@ -28,11 +28,14 @@ BASE_HINT="Turn ended on an Anthropic usage limit. Reconstruct in-flight state f
 # Fixture mtimes MUST be derived from the current clock. The hook filters with
 # `find -mtime -N`, which is relative to now, so a hard-coded calendar date is a
 # time bomb: fine on the day it is written, then silently future-dated before it
-# and aged out after it. `date -r` is BSD, `date -d @` is GNU.
+# and aged out after it. `date -r` is BSD, `date -d @` is GNU. GNU is tried FIRST
+# and the order is load-bearing: GNU `date -r` reads its argument as a FILE, so a
+# BSD-first chain silently emits a file's mtime whenever one happens to be named
+# for the epoch (issue #1587). Both arms stay — GNU alone strands macOS.
 stamp_ago() { # $1 = seconds before now -> YYYYMMDDhhmm for `touch -t`
   local epoch=$(( $(date -u +%s) - $1 ))
-  date -u -r "$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
   date -u -d "@$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
+  date -u -r "$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
   return 1
 }
 touch_ago() { local when; when=$(stamp_ago "$2") || fail "cannot compute a relative timestamp on this platform"; touch -t "$when" "$1"; }
@@ -91,7 +94,7 @@ jq -e --arg h "$BASE_HINT" '.resume_hint | startswith($h)' "$SOME_LAST" >/dev/nu
 
 # 15d. Only portable-handoff-*.md is eligible — a newer unrelated file in the
 # same directory must not be advertised as a handoff. The in-progress temp file
-# /pause stages before its atomic rename is deliberately dot-prefixed and
+# /end stages before its atomic rename is deliberately dot-prefixed and
 # suffix-less for exactly this reason: an unverified draft must never be
 # advertised as a finished handoff.
 DRAFT="$SOME_DIR/handoffs/.portable-handoff.aBcDeF"
@@ -123,7 +126,7 @@ jq -e --arg p "$TIE_LATER" '.resume_hint | contains($p)' "$SOME_LAST" >/dev/null
   || fail "resume_hint does not name the tie-break winner"
 
 # 15f. The handoff directory is its OWN concept, not a subdirectory of this
-# hook's output dir. /pause writes to ~/.claude/handoffs regardless of where the
+# hook's output dir. /end writes to ~/.claude/handoffs regardless of where the
 # recorder keeps its records, so deriving one from the other would point the
 # lookup at a directory no handoff is ever written to.
 SPLIT_REC="$TMP_DIR/split-records"     # where the recorder writes

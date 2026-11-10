@@ -13,8 +13,8 @@ Prefer the global install; fall back to the in-repo copy when developing the ski
 ```bash
 SCRIPT=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/memory-audit.py" \
-  "$HOME/.claude/scripts/memory-audit.py" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/memory-audit.py}" \
+  "${HOME:+$HOME/.claude/scripts/memory-audit.py}" \
   ".claude/scripts/memory-audit.py"; do
   if [[ -f "$candidate" ]]; then SCRIPT="$candidate"; break; fi
 done
@@ -71,8 +71,16 @@ Low-confidence; never auto-recommended. Each cites the entry it defers to.
 
 ## Step 3: Confirm — never delete without a yes
 
-After presenting, stop and ask which items to prune:
+After presenting, stop and present the choice via **`AskUserQuestion`** when available (`multiSelect: true`; prose fallback in headless runs). Options map to finding types present in the report. **Always list the `(Recommended)` option first.**
 
+- `"Drop dangling index pointers — safe (Recommended)"` (only when dangling pointers found; skip-wins if selected with others)
+- `"Delete orphaned files"` (only when orphans found; user may name specific files via "Other")
+- `"Act on advisory items"` (only when advisory findings found)
+- `"Skip — leave the store untouched"` (mark `(Recommended)` and list first when only advisory or orphan-only findings remain; skip-wins)
+
+Present only options for finding types that exist in the current report. See `ask-menu.md` for the full vehicle convention.
+
+Prose fallback:
 ```
 To prune, tell me which to remove. I can:
 1. Drop all dangling index pointers (safe — they point at nothing)

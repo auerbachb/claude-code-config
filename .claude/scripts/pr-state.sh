@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pr-state.sh — Gather all PR state into a single JSON file.
+# catalog: pr-state-polling — Gather full PR state (threads, CI, comments, merge state) into a JSON snapshot
 #
 # Shared helper used by /fixpr, /merge, /wrap, /go-on, /status, phase-b-reviewer,
 # and phase-c-merger. Collapses the 3-endpoint comment scan + GraphQL review threads
@@ -30,6 +31,12 @@
 #   user object. Measured 66% smaller on a live payload (294KB -> 99KB). Interface is
 #   unchanged: still "write the bundle to a tempfile, print only the path".
 #   Rationale and the full measurement: .claude/reference/compact-result-contract.md
+#
+# unmarked_replies (issue #1842): top-level integer - User-account inline
+#   replies to a review-bot thread that carry no `review-verdict` marker line.
+#   ADVISORY ONLY: never a merge blocker, never a finding. It is a proxy (a human
+#   on the agent's account counts; PR-level fallback replies are not counted).
+#   Contract: lib/pr-state-unmarked-replies.jq; .claude/reference/review-stack-audit.md.
 #
 # Check-run projection (issue #956): entries in check_runs.all, .failing_runs and
 #   .in_progress_runs each carry `app: {slug, id}` — the GitHub App that published
@@ -86,7 +93,7 @@
 #   5  gh/network error
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 # Wrap every `gh` invocation so any auth/network/API failure maps to exit code 5
 # (the documented "gh/network error" code in the CLI contract). Under `set -e`,
@@ -161,7 +168,8 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       # Print the leading `#` comment block (everything after the shebang, up to the first blank line).
       # Delimiter-based extraction survives header edits without needing fixed line numbers.
-      awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0
       ;;
     *)
@@ -298,17 +306,31 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
   fi
   jq -c --arg sha "$WAIT_STATE_SHA" '
     . as $root
+    # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
+    # with lib/pr-state-classify.jq, so historical comments still classify) and its
+    # leftover check-run is not CI, but it is never a participant to wait for — it
+    # will not answer a new push. Review checks are recognised by publishing-app
+    # slug, not by name (#1953): a GitHub Actions job named "post-cursor-review"
+    # or "Graphite …" stays CI. The name is consulted only when the bundle carries
+    # no slug at all (an old or hand-built bundle), and never for Graphite.
     | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
     | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
-    | def is_review_check($n):
-        ($n // "" | ascii_downcase) as $name
-        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
-              . as $x | $name | contains($x));
+       "greptile-apps[bot]":"greptile"} as $needles
+    | def is_review_check:
+        (.app.slug // "" | ascii_downcase) as $slug
+        | if $slug != "" then
+            any("coderabbit","codeant","cursor","greptile","graphite";
+                . as $x | $slug | contains($x))
+          else
+            (.name // "" | ascii_downcase) as $name
+            | any("coderabbit","codeant","cursor","bugbot","greptile";
+                  . as $x | $name | contains($x))
+          end;
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+     | map(select(. as $l | $botlist | index($l) != null))
+     | map(select(. != "graphite-app[bot]")) | unique) as $participants
     | ($root.check_runs.all // []) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot
@@ -333,8 +355,8 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
            )})) as $bots
     | {head_moved: ($root.pr.head_sha != $sha),
        bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
+       ci_pending: [ $checks[] | select((is_review_check | not) and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select((is_review_check | not)
                      and (.conclusion == "failure" or .conclusion == "timed_out"
                           or .conclusion == "action_required" or .conclusion == "startup_failure"
                           or .conclusion == "stale")) | .name ],
@@ -351,7 +373,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_STATE_CR_SPLIT_JQ="$SCRIPT_DIR/lib/pr-state-cr-split.jq"
 PR_STATE_CLASSIFY_JQ="$SCRIPT_DIR/lib/pr-state-classify.jq"
-for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ"; do
+PR_STATE_UNMARKED_JQ="$SCRIPT_DIR/lib/pr-state-unmarked-replies.jq"
+for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ" "$PR_STATE_UNMARKED_JQ"; do
   if [[ ! -f "$required_filter" || ! -r "$required_filter" ]]; then
     echo "ERROR: required pr-state jq filter not readable: $required_filter" >&2
     exit 5
@@ -372,7 +395,7 @@ if [[ -n "$PR_ARG" ]]; then
   fi
   if ! PR_JSON=$(gh pr view "$PR_ARG" --json number,headRefName,headRefOid,state,url,mergeStateStatus,mergeable,reviewDecision 2>&1); then
     # Distinguish "not found" (404) from other gh errors
-    if echo "$PR_JSON" | grep -qiE 'not found|could not resolve|no pull request'; then
+    if grep -qiE 'not found|could not resolve|no pull request' <<<"$PR_JSON"; then
       echo "ERROR: PR #$PR_ARG not found" >&2
       exit 4
     fi
@@ -387,7 +410,7 @@ else
     exit 3
   fi
   if ! PR_JSON=$(gh pr view --json number,headRefName,headRefOid,state,url,mergeStateStatus,mergeable,reviewDecision 2>&1); then
-    if echo "$PR_JSON" | grep -qiE 'no pull requests|not found|could not resolve'; then
+    if grep -qiE 'no pull requests|not found|could not resolve' <<<"$PR_JSON"; then
       echo "ERROR: no PR found for branch $BRANCH" >&2
       exit 4
     fi
@@ -450,14 +473,21 @@ OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
 OUT="${OUT_BASE}.json"
 mv "$OUT_BASE" "$OUT"
 
+# Endpoint bodies must never travel through argv (Issue #1565; downstream
+# poll-watermarks has the same requirement in Issues #1557/#1562). Keep each
+# value inside one private scratch directory; the published OUT survives it.
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-state-work-${PR_NUMBER}-XXXXXX")
+trap 'rm -rf "$WORKDIR"' EXIT
+
 # ----------------------------------------------------------------------
 # 2. Review threads (GraphQL, paginated — authoritative for resolution)
 # Use -F cursor (not -f) so "null" is typed as GraphQL null on the first page.
 # ----------------------------------------------------------------------
-ALL_THREADS="[]"
+THREAD_PAGES="$WORKDIR/thread-pages.jsonl"
+: > "$THREAD_PAGES"
 CURSOR="null"
 while :; do
-  RESP=$(run_gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  run_gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         reviewThreads(first: 100, after: $cursor) {
@@ -483,15 +513,16 @@ while :; do
         }
       }
     }
-  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$CURSOR")
-  ALL_THREADS=$(jq -n --argjson acc "$ALL_THREADS" --argjson page "$RESP" \
-    '$acc + $page.data.repository.pullRequest.reviewThreads.nodes')
-  HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$CURSOR" > "$WORKDIR/thread-page.json"
+  jq -c '.data.repository.pullRequest.reviewThreads.nodes' "$WORKDIR/thread-page.json" >> "$THREAD_PAGES"
+  HAS_NEXT=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$WORKDIR/thread-page.json")
   [[ "$HAS_NEXT" == "true" ]] || break
-  CURSOR=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+  CURSOR=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' "$WORKDIR/thread-page.json")
 done
 
-UNRESOLVED=$(echo "$ALL_THREADS" | jq '[.[] | select(.isResolved == false)]')
+# Retain one history representation. Final assembly combines pages and derives
+# unresolved threads in memory; scratch must not hold two more full copies.
+rm -f "$WORKDIR/thread-page.json"
 
 # ----------------------------------------------------------------------
 # 3. CI check-runs (paginated)
@@ -505,17 +536,17 @@ if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
 fi
-CHECK_RUNS=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
-  --jq '.check_runs[]' | "$CHECK_RUNS_DEDUP")
+run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
+  --jq '.check_runs[]' | "$CHECK_RUNS_DEDUP" > "$WORKDIR/check-runs.json"
 
-CR_SPLIT=$(echo "$CHECK_RUNS" | jq -f "$PR_STATE_CR_SPLIT_JQ")
+jq -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
 
 # ----------------------------------------------------------------------
 # 4. Commit statuses — latest per context, plus CR/Greptile bot rollup
 # ----------------------------------------------------------------------
-STATUSES=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []')
+run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []' > "$WORKDIR/statuses.json"
 
-BOT_STATUSES=$(echo "$STATUSES" | jq '
+jq '
   [.[] | select(.context == "CodeRabbit" or .context == "Greptile")]
   | group_by(.context)
   | map({
@@ -523,7 +554,7 @@ BOT_STATUSES=$(echo "$STATUSES" | jq '
       value: (sort_by(.updated_at) | last | {state, description, updated_at, target_url})
     })
   | from_entries
-')
+' "$WORKDIR/statuses.json" > "$WORKDIR/bot-statuses.json"
 
 # ----------------------------------------------------------------------
 # 5. REST comment endpoints (paginated), field-projected
@@ -554,32 +585,54 @@ BOT_STATUSES=$(echo "$STATUSES" | jq '
 # ----------------------------------------------------------------------
 PROJECT_USER='(if .user == null then null else {login: .user.login, type: .user.type, id: .user.id} end)'
 
-REVIEWS=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body, state, commit_id,
-                               submitted_at, html_url, author_association}]")
-INLINE=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
+                               submitted_at, html_url, author_association}]" > "$WORKDIR/reviews.json"
+run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, pull_request_review_id, user: $PROJECT_USER, body,
                                path, line, original_line, start_line, original_start_line,
                                side, start_side, position, original_position, subject_type,
                                commit_id, original_commit_id, in_reply_to_id,
-                               created_at, updated_at, url, html_url, author_association}]")
-CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+                               created_at, updated_at, url, html_url, author_association}]" > "$WORKDIR/inline.json"
+run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body,
-                               created_at, updated_at, url, html_url, author_association}]")
+                               created_at, updated_at, url, html_url, author_association}]" > "$WORKDIR/convo.json"
+
+# ----------------------------------------------------------------------
+# 5b. Advisory unmarked-reply count (issue #1842)
+#    User-account inline replies to a review-bot thread whose body carries no
+#    `<!-- review-verdict: ... -->` marker line. ADVISORY ONLY - nothing gates on
+#    it (merge-gate.sh never reads it; /wrap Step 1.2 only prints it). A proxy:
+#    a human typing on the agent's account counts, and PR-level fallback replies
+#    are not inline, so they are never counted (issue #1829). Computed from the
+#    full inline inventory, independent of --since and of thread resolution.
+#    Contract: lib/pr-state-unmarked-replies.jq.
+# ----------------------------------------------------------------------
+UNMARKED_REPLIES=$(jq -f "$PR_STATE_UNMARKED_JQ" "$WORKDIR/inline.json")
+if ! [[ "$UNMARKED_REPLIES" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: unmarked-replies filter produced a non-integer: '$UNMARKED_REPLIES'" >&2
+  exit 5
+fi
 
 # ----------------------------------------------------------------------
 # 6. New-since-baseline classification (only when --since given)
 #    The canonical jq program and its load-bearing branch-order rationale live
 #    in lib/pr-state-classify.jq. fixpr/SKILL.md Step 5b documents the contract.
 # ----------------------------------------------------------------------
-NEW_SINCE="null"
+printf '%s\n' 'null' > "$WORKDIR/new-since.json"
 if [[ -n "$SINCE" ]]; then
-  NEW_SINCE=$(jq -n \
-    --argjson reviews "$REVIEWS" \
-    --argjson inline "$INLINE" \
-    --argjson conversation "$CONVO" \
+  # Preserve the canonical filter's named-binding interface. Only this
+  # file-loading prelude is new; classification rules are not copied.
+  cat > "$WORKDIR/classify.jq" <<'CLASSIFY_FILES'
+$reviews_file[0] as $reviews | $inline_file[0] as $inline | $conversation_file[0] as $conversation |
+CLASSIFY_FILES
+  cat "$PR_STATE_CLASSIFY_JQ" >> "$WORKDIR/classify.jq"
+  jq -n \
+    --slurpfile reviews_file "$WORKDIR/reviews.json" \
+    --slurpfile inline_file "$WORKDIR/inline.json" \
+    --slurpfile conversation_file "$WORKDIR/convo.json" \
     --arg since "$SINCE" \
-    -f "$PR_STATE_CLASSIFY_JQ")
+    -f "$WORKDIR/classify.jq" > "$WORKDIR/new-since.json"
 fi
 
 # ----------------------------------------------------------------------
@@ -599,16 +652,25 @@ jq -n \
   --arg review_decision "$REVIEW_DECISION" \
   --arg run_started_at "$RUN_STARTED_AT" \
   --arg since "$SINCE" \
-  --argjson threads_all "$ALL_THREADS" \
-  --argjson threads_unresolved "$UNRESOLVED" \
-  --argjson cr_split "$CR_SPLIT" \
-  --argjson statuses "$STATUSES" \
-  --argjson bot_statuses "$BOT_STATUSES" \
-  --argjson reviews "$REVIEWS" \
-  --argjson inline "$INLINE" \
-  --argjson conversation "$CONVO" \
-  --argjson new_since "$NEW_SINCE" \
-  '{
+  --slurpfile thread_pages_file "$THREAD_PAGES" \
+  --slurpfile cr_split_file "$WORKDIR/cr-split.json" \
+  --slurpfile statuses_file "$WORKDIR/statuses.json" \
+  --slurpfile bot_statuses_file "$WORKDIR/bot-statuses.json" \
+  --slurpfile reviews_file "$WORKDIR/reviews.json" \
+  --slurpfile inline_file "$WORKDIR/inline.json" \
+  --slurpfile conversation_file "$WORKDIR/convo.json" \
+  --slurpfile new_since_file "$WORKDIR/new-since.json" \
+  --argjson unmarked_replies "$UNMARKED_REPLIES" \
+  '($thread_pages_file | add // []) as $threads_all |
+    ($threads_all | map(select(.isResolved == false))) as $threads_unresolved |
+    $cr_split_file[0] as $cr_split |
+    $statuses_file[0] as $statuses |
+    $bot_statuses_file[0] as $bot_statuses |
+    $reviews_file[0] as $reviews |
+    $inline_file[0] as $inline |
+    $conversation_file[0] as $conversation |
+    $new_since_file[0] as $new_since |
+    {
     schema_version: $schema,
     pr: {
       number: $pr_number,
@@ -637,6 +699,7 @@ jq -n \
       conversation: $conversation
     },
     new_since_baseline: $new_since,
+    unmarked_replies: $unmarked_replies,
     merge_state: {
       mergeable: $mergeable,
       mergeStateStatus: $merge_state,

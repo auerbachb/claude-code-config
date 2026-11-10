@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# Unit tests for skill-portability-lint.sh (issue #1189)
+#
+# Each failure case plants one regression into a copy of the real corpus and
+# asserts the lint catches it. The clean case asserts the shipped corpus passes,
+# so a fixture that stops reproducing its own premise shows up as a failure
+# rather than a silent green.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+LINT="${REPO_ROOT}/.github/scripts/skill-portability-lint.sh"
+errors=0
+source "${REPO_ROOT}/.github/scripts/lib/lint-common.sh"
+
+TMP_ROOT=$(mktemp -d -t skill-portability-lint.XXXXXX)
+trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null; rm -rf "$TMP_ROOT"' EXIT
+
+failures=0
+case_num=0
+
+REQUIRED_RENAMED_SKILLS=(end end-resume pause pause-resume)
+
+make_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/.claude/reference" "$dir/.claude/agents"
+  cp "$REPO_ROOT/.claude/reference/chip-launching.md" "$dir/.claude/reference/"
+  cp "$REPO_ROOT/.claude/reference/portable-skill-resolution.md" "$dir/.claude/reference/"
+  cp "$REPO_ROOT/.claude/reference/subagent-phase-guardrails.md" "$dir/.claude/reference/"
+  cp "$REPO_ROOT"/.claude/agents/*.md "$dir/.claude/agents/"
+  while IFS= read -r skill; do
+    mkdir -p "$dir/.claude/skills/${skill}"
+    cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
+    if [[ "$skill" == "issue-maker" ]]; then
+      cp -R "$REPO_ROOT/.claude/skills/${skill}/modules" "$dir/.claude/skills/${skill}/"
+    fi
+    if [[ -d "$REPO_ROOT/.claude/skills/${skill}/references" ]]; then
+      cp -R "$REPO_ROOT/.claude/skills/${skill}/references" "$dir/.claude/skills/${skill}/"
+    fi
+  done < <(published_skills "$REPO_ROOT")
+}
+
+expect() {
+  local name="$1" want="$2" want_re="$3"; shift 3
+  case_num=$((case_num + 1))
+  local dir="${TMP_ROOT}/case${case_num}"
+  make_fixture "$dir"
+  ( cd "$dir" && "$@" )
+
+  local out got
+  out=$(cd "$dir" && bash "$LINT" 2>&1) && got=0 || got=$?
+
+  if (( got != want )); then
+    echo "FAIL — ${name}: expected exit ${want}, got ${got}"
+    echo "$out" | sed 's/^/       /'
+    failures=$((failures + 1))
+    return
+  fi
+  if ! grep -qE "$want_re" <<< "$out"; then
+    echo "FAIL — ${name}: exit ${got} as expected, but output did not match /${want_re}/"
+    echo "$out" | sed 's/^/       /'
+    failures=$((failures + 1))
+    return
+  fi
+  echo "ok   — ${name}"
+}
+
+poison_issue_module() {
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> .claude/skills/issue-maker/modules/update.md
+}
+expect "issue-maker module gets portable-path enforcement" 1 'issue-claim.sh' poison_issue_module
+
+hide_issue_modules() {
+  mv .claude/skills/issue-maker/modules .claude/skills/issue-maker/modules-missing
+}
+expect "missing issue-maker module directory fails closed" 3 'Guarded module directory missing' hide_issue_modules
+
+noop() { :; }
+
+plant_bare_invocation() {
+  printf '\n```bash\nCLAIM=$(.claude/scripts/issue-claim.sh 42 --check)\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_bare_invocation_in_reference() {
+  printf '\n```bash\nGATE=$(.claude/scripts/merge-gate.sh 42)\n```\n' \
+    >> ".claude/skills/pr-monitor-and-manage/references/pmm-act.md"
+}
+
+plant_bare_invocation_in_agent() {
+  printf '\n```bash\nSTATE=$(.claude/scripts/pr-state.sh --pr 42)\n```\n' \
+    >> ".claude/agents/phase-b-reviewer.md"
+}
+
+# This skill exists only in the fixture and is absent from every maintained
+# list. Dynamic publication coverage must discover it without a test-side edit.
+plant_new_unlisted_skill() {
+  mkdir -p ".claude/skills/future-unlisted-skill"
+  printf '%s\n' \
+    '---' \
+    'name: future-unlisted-skill' \
+    '---' \
+    '' \
+    '```bash' \
+    '.claude/scripts/future-helper.sh --run' \
+    '```' \
+    > ".claude/skills/future-unlisted-skill/SKILL.md"
+}
+
+# These are textual or already-rooted references, not bare executions. Keeping
+# them in one fixture guards the classifier boundary without weakening dynamic
+# coverage of genuine commands.
+plant_non_invocation_mentions() {
+  cat >> ".claude/skills/pm/SKILL.md" <<'EOF'
+
+The contract is implemented by `example.sh`.
+The regression lives at `.claude/scripts/tests/example.test.sh`.
+```bash
+ROOTED="$REPO_ROOT/.claude/scripts/example.sh"
+```
+EOF
+}
+
+plant_command_like_prose() {
+  printf '\nRun `.claude/scripts/example.sh --help` before continuing.\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_backtick_command_substitution() {
+  printf '\n```bash\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_long_backtick_fence_command() {
+  printf '\n````bash\necho `.claude/scripts/example.sh`\n````\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_tilde_fence_command() {
+  printf '\n~~~shell\necho `.claude/scripts/example.sh`\n~~~\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_uncommon_shell_fence_command() {
+  printf '\n```zsh\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_overindented_pseudo_close() {
+  printf '\n```bash\n    ```\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+# A candidate list that skips the skills-worktree entry resolves to nothing in a
+# fresh repo — the exact silent-degradation shape, wearing the resolver's shape.
+plant_truncated_candidate_list() {
+  {
+    printf '\n```bash\n'
+    printf 'for c in \\\n'
+    printf '  "${HOME:+$HOME/.claude/scripts/session-state.sh}" \\\n'
+    printf '  ".claude/scripts/session-state.sh"; do\n'
+    printf '  [[ -x "$c" ]] && break\n'
+    printf 'done\n'
+    printf '```\n'
+  } >> ".claude/skills/wave/SKILL.md"
+}
+
+drift_resolve_block() {
+  # Reword one line of the RESOLVE copy; the canonical stays put.
+  perl -0pi -e 's/^Read reference docs the same way under/Read reference docs however you like under/m' \
+    ".claude/reference/subagent-phase-guardrails.md"
+}
+
+drift_claim_bullet() {
+  perl -0pi -e 's/^(- Claim the issue before anything else\.).*$/$1 Run `.claude\/scripts\/issue-claim.sh <N> --check`./m' \
+    ".claude/skills/prompt/SKILL.md"
+}
+
+strip_worktree_from_canonical_claim() {
+  perl -0pi -e 's/\$HOME\/\.claude\/skills-worktree\/\.claude\/scripts\/issue-claim\.sh`, //' \
+    ".claude/reference/chip-launching.md"
+}
+
+remove_guarded_surface() {
+  rm -f ".claude/skills/wave/SKILL.md"
+}
+
+remove_renamed_guarded_surface() {
+  rm -f ".claude/skills/$1/SKILL.md"
+}
+
+# The agents directory had no missing-surface counter in the first draft, so an
+# absent .claude/agents/ produced zero agent files and a confident pass. This is
+# the regression channel that would otherwise be unguarded.
+remove_agents_dir() {
+  rm -rf ".claude/agents"
+}
+
+empty_agents_dir() {
+  rm -f .claude/agents/*.md
+}
+
+# Two files losing their closing fence in the same edit must not compare equal.
+unterminate_both_resolve_blocks() {
+  perl -0pi -e 's/^```$//gm' ".claude/reference/subagent-phase-guardrails.md"
+  perl -0pi -e 's/^```$//gm' ".claude/reference/portable-skill-resolution.md"
+}
+
+make_surface_unreadable() {
+  chmod 000 ".claude/skills/prompt/SKILL.md"
+}
+
+# --- Cases -----------------------------------------------------------------
+
+expect "clean corpus passes" 0 'skill-portability-lint: OK' noop
+
+expect "bare invocation in a SKILL.md" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of issue-claim\.sh' \
+  plant_bare_invocation
+
+expect "bare invocation in a skill references/ file" 1 \
+  'pmm-act\.md:[0-9]+: bare invocation of merge-gate\.sh' \
+  plant_bare_invocation_in_reference
+
+expect "bare invocation in an agent definition" 1 \
+  'phase-b-reviewer\.md:[0-9]+: bare invocation of pr-state\.sh' \
+  plant_bare_invocation_in_agent
+
+expect "newly published skill cannot bypass coverage" 1 \
+  'future-unlisted-skill/SKILL\.md:[0-9]+: bare invocation of future-helper\.sh' \
+  plant_new_unlisted_skill
+
+expect "basename prose, subdirectory, and rooted paths are not bare invocations" 0 \
+  'skill-portability-lint: OK' \
+  plant_non_invocation_mentions
+
+expect "command-like inline prose remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_command_like_prose
+
+expect "backtick command substitution in a shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_backtick_command_substitution
+
+expect "long backtick shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_long_backtick_fence_command
+
+expect "tilde shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_tilde_fence_command
+
+expect "uncommon shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_uncommon_shell_fence_command
+
+expect "four-space pseudo-close cannot end a real fence" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_overindented_pseudo_close
+
+plant_bare_home_candidate() {
+  local candidate="$1"
+  {
+    printf '\n```bash\n'
+    printf 'for c in "%s" "${HOME:+$HOME/.claude/scripts/example.sh}"; do\n' "$candidate"
+    printf '  [[ -x "$c" ]] && break\ndone\n'
+    printf '```\n'
+  } >> ".claude/skills/wave/SKILL.md"
+}
+
+expect "bare HOME abort in an inline candidate list is rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '$HOME/.claude/skills-worktree/.claude/scripts/example.sh'
+
+expect "braced bare HOME in an inline candidate list is also rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '${HOME}/.claude/skills-worktree/.claude/reference/example.md'
+
+expect "nested installed skill helper still needs the HOME guard" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_bare_home_candidate '$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/dispatch-module.sh'
+
+plant_array_home_candidate() {
+  printf '\n```bash\ncandidates=("$HOME/.claude/scripts/example.sh")\n```\n' \
+    >> ".claude/skills/wave/SKILL.md"
+}
+expect "bare HOME in the first array candidate is rejected" 1 \
+  'skills/wave/SKILL\.md:[0-9]+: unguarded HOME helper candidate' \
+  plant_array_home_candidate
+
+expect "candidate list missing the skills-worktree entry" 1 \
+  'candidate list for session-state\.sh has no' \
+  plant_truncated_candidate_list
+
+expect "RESOLVE block drifts from its canonical copy" 1 \
+  'RESOLVE block differs from the canonical copy' \
+  drift_resolve_block
+
+expect "claim bullet drifts from its canonical copy" 1 \
+  'claim bullet differs from the canonical copy' \
+  drift_claim_bullet
+
+expect "canonical claim bullet loses its worktree candidate" 1 \
+  'claim bullet does not carry the skills-worktree candidate' \
+  strip_worktree_from_canonical_claim
+
+expect "missing guarded surface is exit 3, never a pass" 3 \
+  'Guarded surface missing from disk' \
+  remove_guarded_surface
+
+# Keep the rename contract independent from dynamic publication coverage. The
+# dedicated assertions document the public command pair and still fail closed
+# if a renamed command disappears from the fixture.
+for renamed_skill in "${REQUIRED_RENAMED_SKILLS[@]}"; do
+  expect "renamed ${renamed_skill} surface remains guarded" 3 \
+    "Guarded surface missing from disk: \\.claude/skills/${renamed_skill}/SKILL\\.md" \
+    remove_renamed_guarded_surface "$renamed_skill"
+done
+
+expect "missing agents directory is exit 3, never a pass" 3 \
+  'Guarded surface missing from disk: \.claude/agents/' \
+  remove_agents_dir
+
+expect "empty agents directory is a broken glob, not an empty guard" 3 \
+  'contains no \*\.md' \
+  empty_agents_dir
+
+expect "unterminated RESOLVE blocks do not compare equal" 1 \
+  'no closing .* fence' \
+  unterminate_both_resolve_blocks
+
+expect "unreadable guarded surface is exit 3, never a pass" 3 \
+  'exists but is unreadable' \
+  make_surface_unreadable
+
+# Exercise the actual portable and installed-only skill resolvers, not a copy.
+extract_resolver() {
+  awk '/^resolve_script\(\) \{/ {active=1} active {print} active && /^}/ {exit}' "$1"
+}
+RESOLVE_PORTABLE=$(extract_resolver "$REPO_ROOT/.claude/reference/portable-skill-resolution.md")
+RESOLVE_INSTALLED_ONLY=$(extract_resolver "$REPO_ROOT/.claude/skills/pause-resume/SKILL.md")
+[[ -n "$RESOLVE_PORTABLE" && -n "$RESOLVE_INSTALLED_ONLY" ]]
+RESOLVE_ROOT="$TMP_ROOT/resolve"
+RESOLVE_HOME="$RESOLVE_ROOT/home"
+RESOLVE_REPO="$RESOLVE_ROOT/repo"
+RESOLVE_FIRST="$RESOLVE_HOME/.claude/skills-worktree/.claude/scripts/probe.sh"
+RESOLVE_SECOND="$RESOLVE_HOME/.claude/scripts/probe.sh"
+RESOLVE_LOCAL="$RESOLVE_REPO/.claude/scripts/probe.sh"
+for fixture in "$RESOLVE_FIRST" "$RESOLVE_SECOND" "$RESOLVE_LOCAL"; do
+  mkdir -p "$(dirname "$fixture")"
+  printf '#!/bin/sh\nexit 0\n' > "$fixture"
+  chmod +x "$fixture"
+done
+check_resolution() { # description, resolver, HOME or unset, rc, output
+  local description="$1" code="$2" home="$3" want_rc="$4" want_out="$5" rc out
+  case_num=$((case_num + 1))
+  if [[ "$home" == unset ]]; then
+    out=$(cd "$RESOLVE_REPO" && env -u HOME -u BASH_ENV "$BASH" -uc \
+      "$code"$'\n''resolve_script probe.sh' 2>&1) && rc=0 || rc=$?
+  else
+    out=$(cd "$RESOLVE_REPO" && env -u BASH_ENV HOME="$home" "$BASH" -uc \
+      "$code"$'\n''resolve_script probe.sh' 2>&1) && rc=0 || rc=$?
+  fi
+  if [[ "$rc" == "$want_rc" && "$out" == "$want_out" ]]; then
+    echo "ok   — $description"
+  else
+    echo "FAIL — $description: expected rc=$want_rc output='$want_out', got rc=$rc output='$out'"
+    failures=$((failures + 1))
+  fi
+}
+check_resolution "installed skills worktree still wins" "$RESOLVE_PORTABLE" "$RESOLVE_HOME" 0 "$RESOLVE_FIRST"
+rm -f "$RESOLVE_FIRST"
+check_resolution "installed scripts are still second" "$RESOLVE_PORTABLE" "$RESOLVE_HOME" 0 "$RESOLVE_SECOND"
+check_resolution "unset HOME reaches the relative fallback under set -u" "$RESOLVE_PORTABLE" unset 0 '.claude/scripts/probe.sh'
+check_resolution "empty HOME reaches the relative fallback under set -u" "$RESOLVE_PORTABLE" '' 0 '.claude/scripts/probe.sh'
+check_resolution "installed-only pause-resume does not trust the checkout" "$RESOLVE_INSTALLED_ONLY" unset 1 ''
+FIXPR_LOOP=$(awk '/^Locate `pr-state.sh`/ {wanted=1}
+  wanted && /^SCRIPT=""$/ {active=1} active {print} active && /^done$/ {exit}' "$REPO_ROOT/.claude/skills/fixpr/SKILL.md")
+[[ -n "$FIXPR_LOOP" ]]
+RESOLVE_FIXPR='resolve_script() {'$'\n'"$FIXPR_LOOP"$'\n''printf "%s\n" "$SCRIPT"; }'
+cp "$RESOLVE_LOCAL" "$RESOLVE_REPO/.claude/scripts/pr-state.sh"
+check_resolution "fixpr finds repo pr-state before the installed legacy wrapper with HOME unset" \
+  "$RESOLVE_FIXPR" unset 0 '.claude/scripts/pr-state.sh'
+rm -f "$RESOLVE_LOCAL"
+check_resolution "unset HOME without a fallback fails cleanly" "$RESOLVE_PORTABLE" unset 1 ''
+
+# --- Result ----------------------------------------------------------------
+
+echo ""
+if (( failures > 0 )); then
+  echo "skill-portability-lint.test.sh: ${failures} of ${case_num} case(s) FAILED"
+  exit 1
+fi
+echo "skill-portability-lint.test.sh: all ${case_num} cases passed"

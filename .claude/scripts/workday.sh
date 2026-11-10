@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # workday.sh — US-business-day calculator (ET-anchored, macOS + GNU date).
+# catalog: scheduling-monitoring — US business-day calculator (ET-anchored, macOS + GNU date)
 #
 # PURPOSE:
 #   Compute US business days: detect holidays, decide whether a given date
@@ -37,6 +38,7 @@
 #   1   For --is-workday only: the date is NOT a workday.
 #   2   Usage error (unknown flag, missing/invalid argument).
 #   3   Runtime failure (system `date` command rejected an input).
+#   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES:
 #   - bash (any modern version)
@@ -51,7 +53,11 @@
 #   bash .claude/scripts/workday.sh --holidays-for-year 2026
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Date helpers (cross-platform: BSD on macOS, GNU on Linux)
@@ -353,7 +359,8 @@ case "$1" in
   -h|--help)
     # Print the leading comment header (lines 2..first blank line), stripping
     # the leading `# `. Portable across BSD + GNU awk.
-    awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+      { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
     exit 0
     ;;
   --last-workday)

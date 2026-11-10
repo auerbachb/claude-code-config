@@ -162,7 +162,7 @@ if [[ $elapsed -ge $THRESHOLD ]]; then
   ( write_log "$elapsed" ) || true
   touch "$WARNED_FILE"
   touch "$TIME_FILE" 2>/dev/null || true  # warning carries a fresh time — restart the dedupe window
-  emit_context "Current system time: ${current_time}. HEARTBEAT WARNING: No visible message to user in ${elapsed_min}+ minutes (${elapsed}s). Per the 5-minute heartbeat rule, you MUST send a status update to the user NOW — before making any more tool calls. Include: what you are doing, what is pending, any blockers. Use the timestamp above as your prefix."
+  emit_context "Current system time: ${current_time}. SILENCE CHECK: No visible message in ${elapsed_min}+ minutes (${elapsed}s). Apply decision-only-output.md: surface an explicit status request, requested periodic report, blocker, failure, decision, safety event, verified stall, unknown health, stopped or exhausted recovery, or defined always-emit exception now. Keep the notice concise and action first. Otherwise continue silently; routine progress and unchanged work need no status or timestamp prefix."
 else
   emit_time_if_due
 fi

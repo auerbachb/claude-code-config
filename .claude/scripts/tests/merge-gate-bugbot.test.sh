@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # merge-gate-bugbot.test.sh — Offline integration tests for the BugBot reviewer
 # path in merge-gate.sh (issues #844 and #962).
+# catalog: tests — Tests the BugBot reviewer path in `merge-gate.sh` (issues #844, #962)
 #
 # Covers the gate's BugBot path (--reviewer bugbot):
 #   - Silent-pass: completed/success check-run published by Cursor app → gate met (issue #844)

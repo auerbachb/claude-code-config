@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit smoke test for skill-conventions-audit.sh (issue #417)
+# catalog: tests — Tests for `skill-conventions-audit.sh`
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

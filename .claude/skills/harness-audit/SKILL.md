@@ -13,6 +13,23 @@ deliberate because they have sat there so long.
 
 This skill is that missing question, run on a schedule.
 
+Resolve the repository locator before either pass:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+[[ -n "$REPO_ROOT_SH" ]] || { echo "ERROR: repo-root.sh not found (checked all three paths) — harness inventory root unavailable" >&2; exit 1; }
+```
+
 > **ADVISORY ONLY — NON-NEGOTIABLE.** This skill **never** edits, deletes,
 > moves, or rewrites a rule, skill, script, or hook. Not even an obviously-dead
 > one. Not even when the verdict is unambiguous. Its entire output surface is a
@@ -59,10 +76,11 @@ combine with a plain on-demand run (and with each other). A `--tick` ignores
 Resolve once, up front:
 
 ```bash
-REPO_ROOT="$(.claude/scripts/repo-root.sh)"
+REPO_ROOT="$("$REPO_ROOT_SH")"
 INVENTORY="$REPO_ROOT/.claude/skills/harness-audit/inventory.sh"
 FLEET="$REPO_ROOT/.claude/scripts/model-fleet.sh"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
+REPORT_PATH="$REPO_ROOT/.claude/scripts/report-path.sh"   # shared with /review-stack-audit
 STATE_DIR="$HOME/.claude/harness-audit"
 WATERMARK="$STATE_DIR/last-run.json"
 MONTH="$(TZ='America/New_York' date +%Y-%m)"
@@ -312,15 +330,19 @@ state_lock_release; trap - EXIT
    `delivery: "pending"`, preserving the rest of the watermark document. Release
    only after the write lands.
 3. **Offer**, by whichever path is available:
-   - **Chip** via `mcp__ccd_session__spawn_task`, per `chip-launching.md`.
-     On success record the returned `task_id` and set `delivery: "chip"`, so
-     the offer can be withdrawn later.
+   - **Chip** via `mcp__ccd_session__spawn_task`, per `chip-launching.md` —
+     **reserve first** (§Registry reservation below). On success record the
+     returned `task_id` and set `delivery: "chip"`, so the offer can be
+     withdrawn later.
    - **Fallback** (no `spawn_task` in session): print the byte-identical fenced
      block and set `delivery: "fallback"`, `task_id: null`. **A fallback block
      is still an offer** — the month stays claimed, or the tick reprints the
      same wall of text every day until someone acts on it.
 4. **Roll back** the claim (clear `last_offered_month`) only if *neither* path
    delivered anything. An undelivered claim would silently skip the month.
+   The *reservation* rolls back on a **different** trigger — a failed
+   `spawn_task`, retracted even when the fallback then delivers the offer and
+   the month therefore stays claimed (§Registry reservation).
 
 ### On-demand path
 
@@ -332,11 +354,51 @@ state_lock_release; trap - EXIT
   its *display* name far more often than its API id, so an id-only comparison
   would report a mismatch on the very model it was asked to check for — and the
   inline path would never run.
-- **Mismatch** → say so plainly, offer the same step-up chip, and stop. The user
-  either clicks it or re-runs with `--force-here`.
+- **Mismatch** → say so plainly, offer the same step-up chip — **reserve first**,
+  §Registry reservation below — and stop. The user either clicks it or re-runs
+  with `--force-here`.
 - **`--force-here`** → proceed on the current model and stamp
   `judged_on_model: <actual>` into the report header, so a reader can weigh the
   verdicts against the tier that produced them.
+
+### Registry reservation
+
+Both offer paths above end in the same `mcp__ccd_session__spawn_task` call, and
+**every emitter that calls `spawn_task` MUST call
+`chip-offer-registry.sh --reserve` first** (`chip-launching.md` §Offer Registry,
+Issue #1225). Naming the call here rather than inheriting it by reference is the
+point: `active-work-cap.sh` counts registry entries, so an unreserved chip is
+work the repo-wide cap cannot see — and a reservation that is only implied is
+not greppable, which is how it stayed missing (#1388).
+
+`$REGISTRY` is that script, resolved per the reference's path order:
+
+```bash
+REG_TID="$("$REGISTRY" --emitter harness-audit --issue 770 \
+  --cap-free "$CAP_ADMISSION" --reserve 2>/dev/null)" || REG_TID_RC=$?
+```
+
+- **`--emitter harness-audit`** — the sixth canonical emitter name, already in
+  the registry's validated allowlist. Any other spelling exits 2.
+- **`--issue 770`** — this skill's own tracking issue. The step-up chip covers no
+  backlog issue, and #770 is the number the Step 8 report header already carries,
+  so the mandatory flag is satisfied without inventing per-tick state.
+- **Exit 7 = cap exhausted.** Offer nothing. On the tick path that means rolling
+  the month claim back (item 4) — a claimed-but-undelivered month silently skips
+  the audit. The on-demand path holds no claim, so it just says the cap is full
+  and stops.
+- **Capture `$REG_TID`** for the lifecycle calls; record it alongside the
+  `spawn_task` task_id, which is a different id.
+- **A `spawn_task` that fails after a successful reserve releases the slot in the
+  same turn** — `chip-offer-registry.sh --retract --task-id "$REG_TID"` — then
+  falls back to the printed block. TTL would free it eventually; an explicit
+  retract does not make the next tick wait for that.
+
+Mechanics stay in `chip-launching.md`: resolving `$REGISTRY`, the single
+`active-work-cap.sh --json` snapshot that yields `$CAP_ADMISSION`
+(`registry_baseline + FREE`, atomic — a separate `--count` reopens the TOCTOU
+window), the degraded path when the registry is unavailable, and the
+`--transition` states. Do not restate them here.
 
 ### Chip model + effort contract
 
@@ -534,8 +596,8 @@ search may not even have indexed yet.
 
 ### Body shape
 
-Reuse `/issue-maker`'s canonical 6-section body (Background, Problem, Proposed
-solution, Acceptance Criteria, Test Plan, Notes / Open questions), its
+Reuse `/issue-maker`'s canonical 7-section body (Background, Problem, Proposed
+solution, Acceptance Criteria, Test Plan, Notes / Open questions, Estimate), its
 label-intersection rule (apply only labels that already exist in the repo), and
 its closing-URL convention (the issue URL is the last line of the report entry).
 Include the marker comment, the verdict, the one-line reason, and the harness
@@ -551,27 +613,112 @@ nor reported is the exact outcome this contract exists to prevent.
 
 ## Step 8 — Write the report
 
-**Default destination is outside the repo:**
-`~/.claude/harness-audit/harness-audit-YYYY-MM.md`.
+### The report's name — one series, one collision rule
+
+**The series is `harness-audit-YYYY-MM.md`, in both destinations** — this skill's
+own name, and the only name a report of this skill takes.
+
+**A month can hold more than one report.** When the name is already taken the
+report lands under a counter suffix — `harness-audit-2026-09-2.md`, then `-3` — so
+a second audit in the same month can never overwrite the first. **Never derive
+this from the month alone** (#1519): that is what this step used to do, and two
+runs in one month resolved to the same path, the second silently destroying the
+first. The sibling `/review-stack-audit` had the identical bug and it was not
+hypothetical there — it happened in 2026-08 and PR #1338 had to rename its report
+by hand (#1345).
+
+`report-path.sh` returns a path proven free, and refuses rather than guessing when
+it cannot read the target directory. It is **shared with `/review-stack-audit`**,
+which is why the `--series` below is not optional: without it neither skill's
+report has a name of its own.
+
+### Where `$REPORT_DIR` points
+
+**Default is outside the repo:** `REPORT_DIR="$STATE_DIR"`, i.e.
+`~/.claude/harness-audit/`.
 
 > **Why outside.** The recurring tick can run in a session sitting on the root
 > repo on `main`. Writing a report there would put changes on `main` — against
 > `CLAUDE.md` §ALWAYS USE A WORKTREE — and trip `dirty-main-guard`. Landing a
 > report *in* the repo stays a deliberate, human, PR-shaped act.
 
-`--report-to-repo` writes `.claude/reference/harness-audit-YYYY-MM.md` instead,
-and is valid **only** when both hold:
+`--report-to-repo` sets `REPORT_DIR="$WORKTREE_ROOT/.claude/reference"` instead —
+the **current worktree** — and is valid **only** when all three hold:
 
 ```bash
+WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   && [[ "$(git branch --show-current)" != "main" ]] \
-  && [[ "$(git rev-parse --show-toplevel)" != "$(.claude/scripts/repo-root.sh)" ]]
+  && [[ "$WORKTREE_ROOT" != "$("$REPO_ROOT_SH")" ]]
 ```
 
 i.e. a worktree that is **not** the root repo, on a branch that is **not** `main`.
-**Refuse otherwise** — explain why and fall back to the default path. When it does
-land in-repo, add the one-line entry under **"Audits and research
-(point-in-time)"** in `.claude/reference/README.md`.
+
+> **Not `$REPO_ROOT`.** `$REPO_ROOT` is `repo-root.sh`'s answer — the root
+> checkout, which normally sits on `main`. Writing the report there would put the
+> file on `main` and leave it out of the very PR the flag exists to produce, which
+> is exactly what the third condition tests *against*. The destination must be the
+> tree the guard just validated, so both derive from the same `$WORKTREE_ROOT`.
+
+**Refuse otherwise** — explain why and fall back to the default directory. When it
+does land in-repo, add the one-line entry under **"Audits and research
+(point-in-time)"** in `.claude/reference/README.md`, naming the filename
+`report-path.sh` actually returned — suffix included, if it has one.
+
+### Resolve the path, then write
+
+With `$REPORT_DIR` settled, resolve the destination and write through a temp file
+in that same directory, so a half-written report is never what a reader finds:
+
+```bash
+# Resolve, then CLAIM. `set -o noclobber` opens with O_EXCL, so if a simultaneous
+# audit took the name between resolving and reserving, the claim fails instead of
+# overwriting. Losing that race is not fatal — ask for the next free name and
+# claim again. The subshell keeps noclobber out of the rest of the flow.
+REPORT=""
+for _attempt in 1 2 3 4 5; do
+  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)" \
+    || { echo "ERROR: report-path.sh could not resolve a free report path in $REPORT_DIR — not writing." >&2; exit 1; }
+  if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi
+done
+[[ -n "$REPORT" ]] \
+  || { echo "ERROR: lost the claim race 5 times in $REPORT_DIR — not writing." >&2; exit 1; }
+
+TMP_REPORT="$REPORT_DIR/.$(basename "$REPORT").tmp"
+
+# The claim is an EMPTY placeholder until `mv` lands. If composition dies in
+# between, drop it — otherwise the canonical name stays occupied by a blank file
+# and every later audit that month is pushed onto -2, -3, … `-s` keeps a real
+# report: after `mv` it is non-empty.
+cleanup_report() { rm -f "$TMP_REPORT"; [[ -s "$REPORT" ]] || rm -f "$REPORT"; }
+trap cleanup_report EXIT
+
+# ...compose the report into "$TMP_REPORT"...
+mv "$TMP_REPORT" "$REPORT"
+```
+
+**A non-zero exit from `report-path.sh` is a hard stop, not a cue to fall back to
+the base name.** The whole point is that the unverified path is exactly the one
+that destroys a prior report.
+
+**The claim is what makes the resolved path yours.** `report-path.sh` creates
+nothing, so its answer is only true at the instant it is given; a lock inside it
+could not help, because it exits before this flow writes. Claiming with O_EXCL
+closes that window at the only layer that can close it. Because `$TMP_REPORT` is
+derived from the claimed `$REPORT`, the temp file is unique too, so two audits
+cannot collide on it either.
+
+**Two failure modes the claim introduces, and how the block above handles them:**
+
+- **Losing the race must not lose the audit.** A bare hard-stop on a failed claim
+  would discard a completed judgment pass — the expensive one — because another
+  audit happened to be writing at that instant. The loop re-resolves instead, so
+  the loser takes the next suffix; only five consecutive losses abort.
+- **A crashed run must not leave the name occupied.** The claim is a zero-byte
+  placeholder until `mv` lands, and `report-path.sh` counts any existing file as
+  taken. Without cleanup, one failed compose would park an empty file on the
+  canonical name and push every later report that month onto a suffix. The `EXIT`
+  trap removes the placeholder unless it holds a real report.
 
 Follow the established audit-report shape used by the repo's prior audits:
 
@@ -633,7 +780,9 @@ verdict is `unverified`, say how many and why.
    suppressed, naming its target issue. **Nothing is silently dropped.** Under
    `--report-only` nothing is filed, so every such finding must appear in the
    report instead — the obligation moves, it does not lapse.
-4. The report is written to a permitted destination.
+4. The report is written to a permitted destination, at a path `report-path.sh`
+   returned and this run claimed — never a name derived from the month alone
+   (#1519), which would overwrite an earlier report from the same month.
 5. The watermark is updated.
 6. **No audited artifact was modified.** Confirm with `git status --short` —
    the only paths that may appear are a `--report-to-repo` report and its

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.user.claude-backfill-review</string>
+
+  <!-- __SHELL__, __SCRIPT_PATH__, __REPO_DIR__, __PATH__ and __HOME__ are
+       substituted by install-backfill-review.sh at install time. The checkout
+       path is its own <string>, so a path with spaces stays one argument.
+       backfill-review.sh writes its run detail to
+       ~/.claude/logs/backfill-review.log; the launchd stdout file below gets
+       its one-line summary per tick. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__SHELL__</string>
+    <string>__SCRIPT_PATH__</string>
+    <string>--repo-dir</string>
+    <string>__REPO_DIR__</string>
+  </array>
+
+  <!-- launchd starts jobs with a bare PATH. The installer renders the
+       directories of gh, git, jq, python3, coderabbit and codeant it resolved,
+       followed by the base system directories. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+
+  <!-- The runner checks its own quiet window and exits 0 at once outside it,
+       so a run at load and a plain 30-minute interval are both harmless.
+       --interval rewrites the value on the line directly after the
+       StartInterval key, so the template stays a valid plist and no other
+       integer is touched. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.claude/logs/backfill-review-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.claude/logs/backfill-review-stderr.log</string>
+</dict>
+</plist>

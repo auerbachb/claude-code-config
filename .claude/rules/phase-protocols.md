@@ -1,24 +1,54 @@
 # Phase Completion Protocols & Exit Reports
 
 > **Always:** Print a Structured Exit Report as the final output before every subagent exits. Execute the appropriate Completion Protocol immediately when a subagent returns. Verify outputs before marking complete.
-> **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns ("Always do").
+> **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns, and a limit-parked death never asks ("Always do").
 > **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions — including Phase C after `merge_ready`.
+
+## Launch gate before every successor
+
+Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch, re-read
+all three stop controls. Launch only when every read succeeds and returns an
+explicit clear value: repo `refill.paused` false/null,
+`execution-pause.sh --status --session "${CLAUDE_SESSION_ID:-default}"` reporting
+`inactive`, and the armed-deadline gate (`/subagent` Step 7's
+`subagent-step7-deadline-decline` block) returning `LAUNCH_DECLINED=false`. A
+caller resets `SUCCESSOR_KIND`: A→B/B→B `review` uses remaining work; verified
+B→C `merge` skips the original bound; A→A uses full-bound `retry`, new/queued empty.
+Pause points still apply. Anything else — paused, `active`, declined, a missing helper,
+a non-zero read, any other output — **fails closed**: persist the pending
+transition, report which control was unreadable, launch nothing. A launch the
+deadline gate declined stays queued and is **not** terminal: it frees no
+overlap-chain successor. This gate overrides every "within
+60 seconds" instruction below; only an explicit `/end-resume` or
+`/pause-resume` reopens it.
+
+## Routing evidence before successors
+
+Before each successor, append completed-attempt evidence to its scoped routing
+record and execute `task-model-routing.md`'s dispatch block. Persist refreshed
+eligibility and the decision before launch; failed writes launch nothing.
+Progress keeps the cheap model; diagnosis/escalation stays task-local and never
+skips the launch, review or acceptance gates.
 
 ## Structured Exit Report (MANDATORY — all phases)
 
 Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one colon-separated field per line, no extra whitespace. Fields + valid `OUTCOME` values: `.claude/reference/exit-report-format.md`; evidence requirements: `.claude/reference/verification-evidence-patterns.md`. On exhaustion, print `OUTCOME: exhaustion` before the token limit.
 
+## Limit-parked is not a crash
+
+A missing exit report is a crash **only** when the runtime's own structured classification is not a usage limit (`rate_limit`, `rate_limit_error`, the harness session-limit code). When it is, park, arm the wake, resume on wake, never ask: `.claude/reference/subagent-thread-limit-park.md`.
+
 ## Phase A Completion Protocol (MANDATORY)
 
 **WHEN** a Phase A subagent returns, execute immediately — before any other work:
 
-1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub.
+1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report: classify first (§Limit-parked), else silent failure — report, check GitHub.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
    - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-7**.
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Clean up the Phase A worktree:** `git worktree remove <path> --force` (or `git worktree prune` on failure). Releases the branch lock for Phase B.
-5. **Verify handoff file.** Resolve path with `handoff-state.sh [--owner-repo owner/repo] --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
+5. **Verify handoff file.** Resolve path with `handoff-state.sh --owner-repo owner/repo --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
 6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints; include findings and handoff path.
 7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 
@@ -26,7 +56,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 
 **WHEN** a Phase B subagent returns, execute immediately:
 
-1. **Parse the exit report.** No exit report = silent failure.
+1. **Parse the exit report.** None: classify first (§Limit-parked), else silent failure.
 2. **Branch on OUTCOME:**
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
    - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), and **STOP**. Report `exhaustion` (a failure); `clean`/`fixes_pushed` are silent (`CLAUDE.md` #3).
@@ -38,13 +68,22 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 
 **WHEN** a Phase C subagent returns, execute immediately:
 
-1. **Parse the exit report.** No exit report = silent failure — check GitHub API.
-2. **Branch on OUTCOME:**
-   - `merged` → verify GitHub confirms the PR is merged (`merged == true`), then proceed to cleanup.
-   - `blocked` → report blocker details to user. Do NOT merge.
-3. **Update `session-state.json`.** Mark Phase C complete, remove from `active_agents`.
-4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. Emit one line — `merged PR #N` — after a clean merge.
+1. **Parse exit report.** Missing: classify (§Limit-parked), then verify GitHub.
+2. `merged` or `blocked` after merge → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md); pending → preserve evidence and recover without re-merging. Otherwise report blockers without merging.
+After verified merge, run the [finished-only sweep](../reference/workspace-sweep-cadence.md) from the parent's checkout:
+
+<!-- test-anchor: workspace-sweep-post-merge -->
+```bash
+# workspace-sweep-post-merge
+SWEEP_SH=$(resolve_script workspace-sweep.sh || true)
+if [[ -n "$SWEEP_SH" ]]; then
+  "$SWEEP_SH" --trigger post-merge --repo-dir "$(git rev-parse --show-toplevel)" || true
+fi
+```
+
+3. **State:** Phase C completes only after verified merge and verified/justified-retained completion. Every outcome removes its returned agent: `session-state.sh --remove-agent <id>`.
+4. Delete scoped handoff (`handoff-state.sh --owner-repo owner/repo --delete N`) only after verified merge and [completion reconciliation](../reference/issue-completion.md). Preserve pending evidence. Emit `merged PR #N` once.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 
-`/wrap` Step 2.1 delegates recovery to the **full** `/fixpr` workflow — including when unresolved review threads are the only blocker. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+`/wrap` Step 2.1 delegates **full** `/fixpr` recovery, including threads-only blockers. Handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 672 770" xmlns="http://www.w3.org/2000/svg">
+<style>  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10.5px; fill: #111; }
+  svg .box { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .soft { fill: #f3f3f3; stroke: #777; stroke-dasharray: 3 2; }
+  svg .dark { fill: #e3e3e3; stroke: #222; stroke-width: 1.1; }
+  svg .dia { fill: #fff; stroke: #222; stroke-width: 1.1; }
+  svg .human { fill: #fff; stroke: #000; stroke-width: 2.6; }
+  svg .ai { fill: #f7f7f7; stroke: #222; stroke-width: 1.2; }
+  svg .sw { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 6 3; }
+  svg .git { fill: #fff; stroke: #222; stroke-width: 1.2; stroke-dasharray: 1.5 2.5; }
+  svg .ln { stroke: #222; stroke-width: 1.1; fill: none; }
+  svg .dsh { stroke-dasharray: 4 3; }
+  svg .lbl { font-size: 9.4px; fill: #333; }
+  svg .ttl { font-weight: 700; font-size: 11px; }
+  svg .big { font-weight: 700; font-size: 14px; }
+  svg .sm { font-size: 8.8px; fill: #333; }
+  svg .tag { font-size: 8.4px; font-weight: 700; letter-spacing: 0.6px; fill: #333; }
+  svg .mono { font-family: Menlo, Consolas, monospace; font-size: 9.3px; }
+</style>
+<defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker></defs>
+<rect x="186" y="8" width="300" height="40" class="box"/>
+<text x="336" y="26" text-anchor="middle" class="ttl">1. An agent needs your input</text>
+<text x="336" y="40" text-anchor="middle" class="sm">as often as today; nothing about the agent changes</text>
+<path d="M336,48 V72" class="ln" marker-end="url(#ah2)"/>
+<rect x="186" y="72" width="300" height="56" class="box"/>
+<text x="336" y="90" text-anchor="middle" class="ttl">2. The hook writes D-n to the store</text>
+<text x="336" y="104" text-anchor="middle" class="sm">bold question · 3 numbered context lines · options · default · default-at</text>
+<text x="336" y="117" text-anchor="middle" class="sm">impact · cost · return address (the asking session)</text>
+<rect x="500" y="66" width="164" height="68" class="soft"/>
+<text x="508" y="82" class="ttl">Re-asked later?</text>
+<text x="508" y="96" class="sm">same repo + PR + question →</text>
+<text x="508" y="108" class="sm">the same D-n is bumped, and</text>
+<text x="508" y="120" class="sm">its context is complete there,</text>
+<text x="508" y="131" class="sm">so you never hunt for the original</text>
+<path d="M500,100 L486,100" class="ln dsh" marker-end="url(#ah2)"/>
+<path d="M336,128 V156" class="ln" marker-end="url(#ah2)"/>
+<polygon points="336,156 496,196 336,236 176,196" class="dia"/>
+<text x="336" y="192" text-anchor="middle" class="ttl">3. Is this the desk session?</text>
+<text x="336" y="208" text-anchor="middle" class="sm">the one registered control thread</text>
+<path d="M176,196 H160 V258" class="ln" marker-end="url(#ah2)"/>
+<text x="124" y="192" class="lbl">yes</text>
+<path d="M496,196 H512 V258" class="ln" marker-end="url(#ah2)"/>
+<text x="520" y="192" class="lbl">no</text>
+<rect x="20" y="258" width="280" height="60" class="box"/>
+<text x="160" y="276" text-anchor="middle" class="ttl">4a. The menu renders in the desk</text>
+<text x="160" y="291" text-anchor="middle" class="sm">the same clickable menu a normal session shows;</text>
+<text x="160" y="304" text-anchor="middle" class="sm">you answer right there</text>
+<rect x="372" y="258" width="280" height="72" class="box"/>
+<text x="512" y="276" text-anchor="middle" class="ttl">4b. Menu declined; the thread prints</text>
+<text x="512" y="291" text-anchor="middle" class="mono">question D-43 sent to human queue</text>
+<text x="512" y="305" text-anchor="middle" class="sm">then proceeds on its recommended default</text>
+<text x="512" y="318" text-anchor="middle" class="sm">at the stated time, or parks if it cannot</text>
+<path d="M512,330 V352 H336" class="ln"/>
+<path d="M336,352 V372" class="ln" marker-end="url(#ah2)"/>
+<rect x="186" y="372" width="300" height="60" class="box"/>
+<text x="336" y="390" text-anchor="middle" class="ttl">5. The desk shows it</text>
+<text x="336" y="405" text-anchor="middle" class="sm">loud by default: at the next tick, in a set numbered 1..n;</text>
+<text x="336" y="418" text-anchor="middle" class="sm">alone if long form; held only when your day plan says so</text>
+<path d="M336,432 V456" class="ln" marker-end="url(#ah2)"/>
+<rect x="186" y="456" width="300" height="56" class="box"/>
+<text x="336" y="474" text-anchor="middle" class="ttl">6. You answer</text>
+<text x="336" y="488" text-anchor="middle" class="sm">discuss first if you want · click, or "2: B", or write and hit return</text>
+<text x="336" y="501" text-anchor="middle" class="sm">optional tag: not important · should have defaulted · good interrupt</text>
+<path d="M336,512 V536" class="ln" marker-end="url(#ah2)"/>
+<rect x="186" y="536" width="300" height="48" class="box"/>
+<text x="336" y="554" text-anchor="middle" class="ttl">7. Wake the owning thread</text>
+<text x="336" y="569" text-anchor="middle" class="sm">session message "human-queue: D-43 answered" — the id only</text>
+<path d="M336,584 V606" class="ln" marker-end="url(#ah2)"/>
+<polygon points="336,606 466,636 336,666 206,636" class="dia"/>
+<text x="336" y="640" text-anchor="middle" class="ttl">8. Owning thread alive?</text>
+<path d="M206,636 H160 V688" class="ln" marker-end="url(#ah2)"/>
+<text x="150" y="632" class="lbl">yes</text>
+<path d="M466,636 H512 V688" class="ln" marker-end="url(#ah2)"/>
+<text x="520" y="632" class="lbl">no</text>
+<rect x="20" y="688" width="280" height="76" class="box"/>
+<text x="160" y="706" text-anchor="middle" class="ttl">9a. It reads the stored answer and acts</text>
+<text x="160" y="721" text-anchor="middle" class="sm">never from the message text. If it already</text>
+<text x="160" y="734" text-anchor="middle" class="sm">proceeded on the default and your answer</text>
+<text x="160" y="747" text-anchor="middle" class="sm">differs, it reconciles in that thread</text>
+<rect x="372" y="688" width="280" height="76" class="box"/>
+<text x="512" y="706" text-anchor="middle" class="ttl">9b. The answer waits in the store</text>
+<text x="512" y="721" text-anchor="middle" class="sm">the next thread touching that PR picks it up.</text>
+<text x="512" y="734" text-anchor="middle" class="sm">PR already merged and your answer differs</text>
+<text x="512" y="747" text-anchor="middle" class="sm">from what was done → a new GitHub issue</text>
+</svg>

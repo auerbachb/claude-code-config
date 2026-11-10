@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-usage-report.sh — Roll up Skill tool telemetry from ~/.claude/skill-usage.log
+# catalog: skills-telemetry — Read `~/.claude/skill-usage.log` and print usage tables and dead-skill candidates
 #
 # PURPOSE:
 #   Reads ~/.claude/skill-usage.log (append-only, one line per Skill invocation;
@@ -31,7 +32,7 @@
 #   audit-skill-usage.sh — legacy JSON/CSV audit; prefer this report for log-based AC.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 usage() {
   sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'

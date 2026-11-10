@@ -6,6 +6,17 @@ on:
 permissions:
   contents: read
 
+# A new PR head supersedes the old one, so its queued/running Hook scripts run
+# can only validate a commit nobody will merge (issue #1882). Group per workflow
+# + PR number: a push to PR #N cancels only PR #N's older run here — other PRs
+# and other workflows never share the group. The run_id fallback keeps any
+# future non-pull_request trigger (where the PR number is empty) in a group of
+# its own instead of one global group; that trigger set is pinned by
+# .github/scripts/tests/hook-scripts-concurrency.test.sh.
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 # Tests are AUTO-DISCOVERED, not listed by name (issue #681). Adding a test used
 # to mean appending a `- name:/run:` step at the shared tail of these jobs, so
 # every in-flight PR collided here (PRs #657/#658/#660/#661/#672/#676; #676 took
@@ -22,7 +33,8 @@ permissions:
 # Contract: .claude/reference/compact-result-contract.md
 jobs:
   hook-tests:
-    runs-on: ubuntu-latest
+    # Keep the existing GNU userland assumptions stable across image migrations.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,11 +46,103 @@ jobs:
           git config --global user.email "ci@example.com"
           git config --global user.name "CI"
 
+      # PyYAML is a HARD dependency of the bash suites (issue #1392):
+      # cursor-review-workflow-suppression.test.sh parses
+      # .github/workflows/cursor-review-pr-comment.yml and exits 1 when `import yaml`
+      # fails — skipping there would pass vacuously. ubuntu-latest happens to ship it
+      # today, so this step DECLARES the dependency instead of inheriting it, pinned so
+      # neither runner-image drift nor a bad release reddens this job for a
+      # non-regression. Not redundant — "the image already has it" IS the exposure.
+      #
+      # The venv is the install TARGET, not job isolation: ubuntu-latest's python3 is
+      # PEP 668 externally-managed, so a bare `pip install` only lands because the image
+      # ships /etc/pip.conf `break-system-packages = true` — trading one undeclared image
+      # dependency for another. A venv is immune. `--system-site-packages` keeps every
+      # module the suites import today (venv site-packages still win, so the pin is what
+      # `import yaml` resolves to), and building it from the ambient python3 keeps this
+      # job on "whatever ubuntu-latest ships" — the 3.10+ counterpart to hook-tests-py39.
+      - name: Install PyYAML (pinned — bash suites parse workflow YAML)
+        run: |
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/pyyaml-venv"
+          "$RUNNER_TEMP/pyyaml-venv/bin/python" -m pip install "PyYAML==6.0.3"
+          echo "$RUNNER_TEMP/pyyaml-venv/bin" >> "$GITHUB_PATH"
+          # $GITHUB_PATH only takes effect in LATER steps; mirror it here so the assert
+          # resolves the same `python3` the suites will.
+          export PATH="$RUNNER_TEMP/pyyaml-venv/bin:$PATH"
+          python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", f"PyYAML {yaml.__version__} on sys.path, expected 6.0.3"; print("PyYAML", yaml.__version__)'
+
       - name: Run bash hook + script test suites (auto-discovered)
         run: bash .github/scripts/summarize-test-run.sh "Bash test suites" .github/scripts/run-hook-tests.sh
 
       - name: Run Python hook unit tests (auto-discovered)
         run: bash .github/scripts/summarize-test-run.sh "Python unit tests" .github/scripts/run-python-tests.sh
+
+  # The fleet's primary platform is macOS (state-lock.sh: no flock(1), BSD
+  # userland, ~8ms forks) while the job above runs on ubuntu-latest only — so a
+  # macOS-only divergence passed CI and surfaced solely in local runs (issue
+  # #1473: the portable-handoff-publish lock-contention flake). This job runs
+  # the SAME bash-suite discovery on macos-latest; a new test is covered by
+  # both jobs with no edit here.
+  hook-tests-macos:
+    runs-on: macos-latest
+    # session-start-sync-publish-bounds.test.sh's ample-budget control proves its stall
+    # assertion is not vacuous by running a HEALTHY publisher inside the hook's
+    # deadline. Every bound there is min(budget left, ceiling), so a slow runner
+    # that spends the deadline on fixture git work leaves the publish leg too
+    # little budget and the control fails with no code change — it did on
+    # PR #1689, on a commit that had passed the same job 32 minutes earlier
+    # (issue #1698). These runners are the slow ones, so give the control real
+    # headroom here; the Linux job above relies on the documented 60s default.
+    # This widens the CONTROL only — the stall leg keeps the production 30s.
+    env:
+      CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS: "120"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure git (worktree tests)
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      # The runner's /bin/bash is 3.2 (last GPLv2 release) and several suites
+      # use bash-4+ features. The discovery runner invokes each suite as
+      # `bash suite.sh`, resolved through PATH — Homebrew's bin precedes /bin
+      # on these images, so installing its bash is enough. Install only when
+      # the PATH-resolved bash is actually old, then assert, so a future image
+      # that ships a modern bash skips the install instead of masking it.
+      - name: Ensure bash >= 4 on PATH
+        run: |
+          set -euo pipefail
+          if ! bash -c 'exit $(( BASH_VERSINFO[0] >= 4 ? 0 : 1 ))'; then
+            brew install bash
+            # The probe above hashed `bash` as /bin/bash in THIS shell; without
+            # a rehash the assert below would re-test the old binary.
+            hash -r
+          fi
+          bash -c 'echo "bash on PATH: $BASH_VERSION"; [ "${BASH_VERSINFO[0]}" -ge 4 ]'
+
+      # The workflow-reading suites import yaml; ubuntu images preinstall
+      # PyYAML, the macOS image does not. Bind the install to the same
+      # interpreter the suites resolve (`python3`). That interpreter is
+      # Homebrew-managed on this image, so a bare `pip install --user` is
+      # refused under PEP 668 (externally-managed-environment) — retry with
+      # --break-system-packages, which pip's own refusal names as the
+      # override; the plain first try keeps images whose pip predates the
+      # flag working. The final import is the real success condition.
+      - name: Install PyYAML for workflow-reading suites
+        run: |
+          set -uo pipefail
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            python3 -m pip install --user pyyaml 2>/dev/null \
+              || python3 -m pip install --user --break-system-packages pyyaml
+          fi
+          python3 -c 'import yaml; print("PyYAML available:", yaml.__version__)'
+
+      - name: Run bash hook + script test suites (auto-discovered, macOS)
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
@@ -46,7 +150,8 @@ jobs:
   # job runs the SAME Python discovery, so a new test is covered by both jobs
   # with no edit — retiring the "keep both job lists in sync" footgun.
   hook-tests-py39:
-    runs-on: ubuntu-latest
+    # Python 3.9 builds are available for Ubuntu 24.04, not 26.04.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

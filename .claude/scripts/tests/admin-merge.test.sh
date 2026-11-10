@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # admin-merge.test.sh — Offline unit tests for admin-merge.sh (issue #451).
+# catalog: tests — Tests for `admin-merge.sh`
 # Stubs `gh` and `merge-gate.sh` so no network / real repo is touched.
 # Run from repo root: bash .claude/scripts/tests/admin-merge.test.sh
 set -uo pipefail
@@ -8,7 +9,12 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SRC="$REPO_ROOT/.claude/scripts/admin-merge.sh"
 
 TMP="$(mktemp -d)"
-cleanup() { rm -rf "$TMP"; }
+cleanup() {
+  # Test 31's stall stub spawns a self-limiting sleeper; kill any survivor so a
+  # failing process-group kill cannot leak one into the runner.
+  pkill -f "$TMP/gitstub/stub-sleeper" >/dev/null 2>&1 || true
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 export HOME="$TMP/home"; mkdir -p "$HOME/.claude"
@@ -20,13 +26,39 @@ CLONE="$TMP/clone"; mkdir -p "$CLONE"
 cp "$SRC" "$SCRIPTS/admin-merge.sh"; chmod +x "$SCRIPTS/admin-merge.sh"
 SUT="$SCRIPTS/admin-merge.sh"
 
+# lib/bounded-run.sh ships beside the script and supplies the wall-clock bound
+# on resolve_repo_path's `git rev-parse --show-toplevel` fallback (issue #1404).
+# Copied here so $SCRIPTS looks like a real install; test 30b removes it again
+# to pin the refusal that fires when it is genuinely absent.
+mkdir -p "$SCRIPTS/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$SCRIPTS/lib/"
+
 # --- Fake merge-gate.sh: emits JSON; behaviour driven by env vars. ----------
+# FAKE_GATE_LOG (issue #1251) — when set, every invocation's raw argv ("$*") is
+# appended as a line, so a test can assert --allow-nonauthor actually reached
+# THIS call rather than only admin-merge.sh's own separate pr-authorship.sh
+# pre-check. FAKE_GATE_AUTHORSHIP_BLOCK=1 simulates merge-gate.sh's OWN
+# independent authorship guard: it appends the authorship-blocker string to
+# missing[] unless --allow-nonauthor is present in argv — modeling the real
+# script's "adds a `missing` entry unless --allow-nonauthor is passed" behavior.
+#
+# FAKE_GATE_PWD_LOG (issue #1439) — when set, each invocation's cwd is appended.
+# merge-gate.sh is cwd-scoped, so this proves the pre-flight SUBPROCESSES were
+# scoped to --repo-path too, not just admin-merge.sh's own gh calls.
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
+if [ -n "${FAKE_GATE_PWD_LOG:-}" ]; then printf '%s\n' "$PWD" >> "$FAKE_GATE_PWD_LOG"; fi
 MISSING="${FAKE_GATE_MISSING:-[]}"
 HUMAN="${FAKE_GATE_HUMAN:-[]}"
-jq -cn --argjson m "$MISSING" --argjson h "$HUMAN" \
-  '{met:false, missing:$m, human_changes_requested:$h}'
+SAW_ALLOW_NONAUTHOR=0
+for a in "$@"; do [ "$a" = "--allow-nonauthor" ] && SAW_ALLOW_NONAUTHOR=1; done
+if [ -n "${FAKE_GATE_AUTHORSHIP_BLOCK:-}" ] && [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
+  MISSING="$(printf '%s' "$MISSING" | jq -c '. + ["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]')"
+fi
+jq -cn --argjson m "$MISSING" --argjson h "$HUMAN" --arg nro "${FAKE_GATE_NRO_APPLIED:-}" \
+  '{met:false, missing:$m, human_changes_requested:$h}
+   + (if $nro == "1" then {no_review_override:{applied:true}} else {} end)'
 exit "${FAKE_GATE_EXIT:-1}"
 EOF
 chmod +x "$SCRIPTS/merge-gate.sh"
@@ -43,8 +75,17 @@ chmod +x "$SCRIPTS/merge-gate.sh"
 # FAKE_CBC_OVERLAP_COUNT / FAKE_CBC_AC_ALL_CHECKED / FAKE_CBC_RESIDUAL /
 # FAKE_CBC_REASONS / FAKE_CBC_MERGE_STATE / FAKE_CBC_MERGEABLE control the
 # mechanical evidence emitted for each call.
+# FAKE_CBC_LOG (issue #1257) — when set, every invocation's raw argv ("$*") is
+#   appended as a line, so a test can assert --allow-nonauthor actually reached
+#   this helper via CBC_ARGS.
+# FAKE_CBC_AUTHORSHIP_BLOCK (issue #1257) — when 1, models the real helper's
+#   NESTED merge-gate.sh authorship check: without --allow-nonauthor in argv the
+#   non-author blocker lands in residual_blockers and the verdict is exit 1
+#   (which fails clean_behind_evidence_allows_admin's reviewDecision-only match,
+#   so CLEAN_BEHIND_OK stays false); with the flag it is suppressed → exit 0.
 cat > "$SCRIPTS/clean-behind-check.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${FAKE_CBC_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_CBC_LOG"; fi
 N=1
 if [ -n "${FAKE_CBC_COUNT_FILE:-}" ]; then
   N=$(cat "$FAKE_CBC_COUNT_FILE" 2>/dev/null || echo 0)
@@ -58,6 +99,20 @@ if [ -n "${FAKE_CBC_EXIT_SEQ:-}" ]; then
     I=$((I + 1))
     if [ "$I" -eq "$N" ]; then RC="$code"; fi
   done
+fi
+RESIDUAL="${FAKE_CBC_RESIDUAL:-[]}"
+if [ "${FAKE_CBC_AUTHORSHIP_BLOCK:-0}" = "1" ]; then
+  SAW_ALLOW_NONAUTHOR=0
+  for a in "$@"; do
+    if [ "$a" = "--allow-nonauthor" ]; then SAW_ALLOW_NONAUTHOR=1; fi
+  done
+  if [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
+    RC=1
+    RESIDUAL='["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]'
+    FAKE_CBC_REASONS='["merge gate blocker: PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md)"]'
+  else
+    RC=0
+  fi
 fi
 OVERLAP="${FAKE_CBC_OVERLAP_COUNT:-}"
 if [ -z "$OVERLAP" ]; then
@@ -73,7 +128,7 @@ jq -cn \
   --arg mergeable "${FAKE_CBC_MERGEABLE:-MERGEABLE}" \
   --argjson overlap "$OVERLAP" \
   --argjson ac_all_checked "${FAKE_CBC_AC_ALL_CHECKED:-true}" \
-  --argjson residual "${FAKE_CBC_RESIDUAL:-[]}" \
+  --argjson residual "$RESIDUAL" \
   --argjson reasons "$REASONS" '{
   safe_to_offer: ($rc == 0), head_sha: "abc1234def",
   reasons_not_safe: $reasons,
@@ -103,10 +158,35 @@ chmod +x "$SCRIPTS/pr-authorship.sh"
 # Every invocation is appended to $FAKE_GH_LOG when set, so tests can assert on
 # the calls actually ISSUED (e.g. "no protection API call") rather than only on
 # printed output (issue #754).
+#
+# GH_FAKE_REPO_BY_CWD (issue #1439) — when 1, repo identity is resolved from the
+# fake's OWN cwd via a `.fake-repo-slug` marker file, the way real gh infers
+# owner/repo from the cwd's git remote, and `gh pr view` only finds the PR in the
+# repo that holds it. That makes a cwd-scoped call OBSERVABLE: without it the
+# fake answers "solo/repo" from anywhere, so a cross-cwd test would pass whether
+# or not --repo-path was honoured. Off by default so every other test is
+# unaffected.
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 ARGS="$*"
 if [ -n "${FAKE_GH_LOG:-}" ]; then printf '%s\n' "$ARGS" >> "$FAKE_GH_LOG"; fi
+if [ "${GH_FAKE_REPO_BY_CWD:-0}" = "1" ]; then
+  CWD_SLUG=""
+  if [ -f "$PWD/.fake-repo-slug" ]; then CWD_SLUG=$(cat "$PWD/.fake-repo-slug"); fi
+  case "$ARGS" in
+    "repo view --json nameWithOwner --jq .nameWithOwner")
+      if [ -z "$CWD_SLUG" ]; then
+        echo "fake gh: not a git repository (cwd=$PWD)" >&2; exit 1
+      fi
+      echo "$CWD_SLUG"; exit 0 ;;
+    "pr view "*baseRefName*)
+      # The PR lives in ONE repo. Anywhere else, fail the way real gh does.
+      if [ "$CWD_SLUG" != "${GH_FAKE_PR_HOME:-solo/repo}" ]; then
+        echo "fake gh: no pull request found (cwd=$PWD, repo=${CWD_SLUG:-none})" >&2
+        exit 1
+      fi ;;
+  esac
+fi
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
@@ -147,10 +227,10 @@ expect_rc() {  # expect_rc <want> <desc>
   if [[ "$RC" -eq "$1" ]]; then ok "$2"; else bad "$2 (got rc=$RC: $OUT)"; fi
 }
 grep_ok() {    # grep_ok <pattern> <desc>
-  if printf '%s\n' "$OUT" | grep -q "$1"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
+  if grep -q "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
 }
 grep_absent() {  # grep_absent <pattern> <desc>
-  if printf '%s\n' "$OUT" | grep -q "$1"; then bad "$2 (output: $OUT)"; else ok "$2"; fi
+  if grep -q "$1" <<<"$OUT"; then bad "$2 (output: $OUT)"; else ok "$2"; fi
 }
 
 # --- gh call-log helpers (issue #754) ---------------------------------------
@@ -166,6 +246,30 @@ log_absent() {   # log_absent <ere> <desc>
   if grep -qE -- "$1" "$FAKE_GH_LOG" 2>/dev/null; then bad "$2 (calls: $(log_calls))"; else ok "$2"; fi
 }
 
+# --- clean-behind-check.sh argv helper (issue #1257, CodeAnt review) ---------
+# A forwarded override must reach EVERY clean-behind-check.sh invocation, not
+# only the pre-flight one: admin-merge.sh re-runs the helper immediately before
+# it acts (issue #631 TOCTOU re-validation), and an override that stopped
+# propagating at that second call would re-acquire the nested authorship blocker
+# and resurrect issue #1257's misleading "not safe to skip a rebase" at the worst
+# possible moment. An aggregate `grep -q` over the log cannot see that — any one
+# matching call satisfies it — so assert each invocation's argv separately, and
+# pin the call COUNT so a silently-skipped re-validation cannot pass by vacuum.
+cbc_argv_all() {  # cbc_argv_all <logfile> <want_calls> <flag> <desc>
+  local log="$1" want="$2" flag="$3" desc="$4" n miss
+  n=$(grep -c . "$log" 2>/dev/null); [[ -n "$n" ]] || n=0
+  if [[ "$n" -ne "$want" ]]; then
+    bad "$desc (expected $want clean-behind-check.sh call(s), got $n: $(tr '\n' '|' < "$log" 2>/dev/null))"
+    return 0
+  fi
+  miss=$(grep -cv -- "$flag" "$log" 2>/dev/null); [[ -n "$miss" ]] || miss=0
+  if [[ "$miss" -ne 0 ]]; then
+    bad "$desc ($miss of $n invocation(s) missing $flag: $(tr '\n' '|' < "$log" 2>/dev/null))"
+  else
+    ok "$desc"
+  fi
+}
+
 # 1. Happy path: solo + enforce_admins + clean gate → print exact command.
 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' run 1 --print --repo-path "$CLONE" --branch main
 expect_rc 0 "print exits 0 on merge-ready solo repo"
@@ -174,7 +278,7 @@ grep_ok "gh api -X DELETE repos/solo/repo/branches/main/protection/enforce_admin
 grep_ok "gh pr merge 1 --squash --admin" "merge --admin present"
 POST_LINE=$(printf '%s\n' "$OUT" | grep "gh api -X POST repos/solo/repo/branches/main/protection/enforce_admins")
 if [[ -n "$POST_LINE" ]]; then ok "re-enable POST present"; else bad "missing POST: $OUT"; fi
-if printf '%s\n' "$POST_LINE" | grep -qiE -- '-f |--field|enabled='; then
+if grep -qiE -- '-f |--field|enabled=' <<<"$POST_LINE"; then
   bad "POST must have NO body (found a field flag): $POST_LINE"
 else
   ok "POST sent with no body (no -f/--field/enabled=)"
@@ -221,12 +325,18 @@ fi
 # 9. Static: execute mode has a trap that re-enables protection.
 if grep -q "trap reenable_protection EXIT" "$SRC"; then ok "execute mode installs re-enable trap"; else bad "missing trap in execute mode"; fi
 
-# 9b. Static: execute mode cd's into the resolved repo path before the dance
-# (so `gh pr merge` targets the right repo from any cwd — BugBot finding).
-if awk '/MODE" == "execute"/{f=1} f && /cd "\$REPO_PATH"/{found=1} END{exit !found}' "$SRC"; then
-  ok "execute mode cd's into repo path before the dance"
+# 9b. Static (issue #1439): the process enters $REPO_PATH BEFORE the first
+# repo-identity call, so `gh` — and every cwd-scoped helper — resolves the
+# --repo-path target instead of the invoker's cwd. This supersedes the old
+# per-branch cd in --execute/--auto-plain (a BugBot finding that only covered the
+# two executing modes): one early cd now covers all four, and the ORDER relative
+# to `gh repo view` is the property that actually fixes the cross-repo bug.
+if awk '/^if ! cd "\$REPO_PATH"/{cd_seen=1}
+        /OWNER_REPO=\$\(gh repo view/{if (cd_seen) good=1; exit}
+        END{exit !good}' "$SRC"; then
+  ok "the early cd into \$REPO_PATH precedes the cwd-based owner/repo resolution"
 else
-  bad "execute mode does not cd into \$REPO_PATH before running gh"
+  bad "repo identity is resolved before the process enters \$REPO_PATH (issue #1439 regression)"
 fi
 
 # 9c. Static: execute mode revalidates a clean-BEHIND bypass BEFORE disabling
@@ -451,7 +561,7 @@ expect_rc 2 "--auto-plain and --execute are mutually exclusive (exit 2)"
 AUTO_BLOCK=$(awk '/^if \[\[ "\$MODE" == "auto-plain" \]\]; then/{f=1} f{print} f && /^fi$/{exit}' "$SRC")
 if [[ -z "$AUTO_BLOCK" ]]; then
   bad "could not extract the auto-plain branch for static analysis"
-elif printf '%s\n' "$AUTO_BLOCK" | grep -qE '\$(DELETE_CALL|REENABLE_CALL)|-X (DELETE|POST)'; then
+elif grep -qE '\$(DELETE_CALL|REENABLE_CALL)|-X (DELETE|POST)' <<<"$AUTO_BLOCK"; then
   bad "auto-plain branch contains a protection-modifying call"
 else
   ok "auto-plain branch contains no protection-modifying call (static)"
@@ -463,6 +573,397 @@ if awk '/MODE" == "auto-plain"/{f=1} f && /BYPASS_MODE" != "plain"/{seen=1} f &&
 else
   bad "auto-plain: shape gate does not precede the merge call"
 fi
+
+# ============================================================================
+# Regression (issue #1251): --allow-nonauthor was parsed and cleared this
+# script's OWN authorship pre-check, but was never forwarded to merge-gate.sh
+# — which runs its own INDEPENDENT authorship check and re-added the blocker,
+# making the documented override unreachable. FAKE_GATE_AUTHORSHIP_BLOCK
+# simulates that independent check; FAKE_GATE_LOG proves the flag's presence
+# (or absence) in the actual merge-gate.sh invocation, not just in the printed
+# output.
+# ============================================================================
+
+# 27. --allow-nonauthor reaches merge-gate.sh's own authorship check (--print).
+new_log
+GATE_LOG="$TMP/gatecalls.log"; : > "$GATE_LOG"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 12 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--allow-nonauthor forwarded to merge-gate.sh unblocks its own authorship check (exit 0)"
+grep_ok "gh pr merge 12 --squash --admin" "bypass command still printed with the forwarded override"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG"; then
+  ok "--allow-nonauthor literally appears in the merge-gate.sh invocation (--print)"
+else
+  bad "--allow-nonauthor was NOT forwarded to merge-gate.sh (logged calls: $(cat "$GATE_LOG"))"
+fi
+
+# 27b. Sanity companion: without the flag, the simulated merge-gate.sh authorship
+#      block still fires — proves the fixture models the real bug, not a tautology.
+new_log
+GATE_LOG2="$TMP/gatecalls2.log"; : > "$GATE_LOG2"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG2" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 14 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "without --allow-nonauthor, merge-gate.sh's own authorship block still refuses (exit 1)"
+grep_ok "authored by other" "refusal surfaces merge-gate.sh's own authorship blocker text"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG2"; then
+  bad "--allow-nonauthor unexpectedly present when the flag was not passed (logged calls: $(cat "$GATE_LOG2"))"
+else
+  ok "no --allow-nonauthor forwarded when the flag was not passed"
+fi
+
+# ============================================================================
+# Regression (issue #1251 review round — CodeAnt): --auto-plain runs UNATTENDED
+# (no human confirms the merge), so combining it with --allow-nonauthor is a
+# hard usage error, refused before ANY pre-flight work — not merely a gate
+# outcome that happens to fail. Verified by asserting zero gh calls and zero
+# merge-gate.sh calls, not just the exit code.
+# ============================================================================
+
+# 27c. --auto-plain + --allow-nonauthor is refused immediately (exit 2), no
+#      gh calls and no merge-gate.sh call at all — even on an otherwise
+#      merge-ready, clean-BEHIND PR.
+new_log
+GATE_LOG3="$TMP/gatecalls3.log"; : > "$GATE_LOG3"
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG3" \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 15 --auto-plain --ac-verified --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 2 "--auto-plain + --allow-nonauthor is a hard usage error (exit 2)"
+grep_ok "does not accept --allow-nonauthor" "refusal names the specific disallowed combination"
+grep_ok "UNATTENDED" "refusal explains why (auto-plain runs unattended)"
+grep_ok "Use --print" "refusal points at --print as the alternative"
+log_absent "." "no gh call of any kind before this refusal fires"
+if [[ -s "$GATE_LOG3" ]]; then
+  bad "merge-gate.sh was invoked despite the auto-plain + --allow-nonauthor refusal (logged calls: $(cat "$GATE_LOG3"))"
+else
+  ok "merge-gate.sh was never invoked — refusal fires before any pre-flight work"
+fi
+
+# 27d. Sanity companion: --auto-plain WITHOUT --allow-nonauthor is unaffected —
+#      the new hard refusal is scoped to the flag combination, not the mode.
+new_log
+GATE_LOG4="$TMP/gatecalls4.log"; : > "$GATE_LOG4"
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_LOG="$GATE_LOG4" \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 16 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 0 "--auto-plain without --allow-nonauthor still merges normally (exit 0)"
+
+# 27e. Sanity companion: --print + --allow-nonauthor is unaffected — the
+#      override still works for the modes that keep a human in the loop.
+new_log
+GATE_LOG5="$TMP/gatecalls5.log"; : > "$GATE_LOG5"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG5" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 17 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--print + --allow-nonauthor is unaffected by the auto-plain-only refusal (exit 0)"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG5"; then
+  ok "--print still forwards --allow-nonauthor to merge-gate.sh"
+else
+  bad "--print no longer forwards --allow-nonauthor to merge-gate.sh (logged calls: $(cat "$GATE_LOG5"))"
+fi
+
+# ============================================================================
+# Regression (issue #1257): --allow-nonauthor cleared this script's own guard
+# and (after #1251) merge-gate.sh's, but was never forwarded to
+# clean-behind-check.sh — whose NESTED merge-gate.sh call re-added the
+# authorship blocker into its residual_blockers. That failed
+# clean_behind_evidence_allows_admin()'s reviewDecision-only match, so
+# CLEAN_BEHIND_OK stayed false and a BEHIND non-author PR was refused with a
+# MISLEADING "not safe to skip a rebase" — a rebase would not have helped.
+# FAKE_CBC_AUTHORSHIP_BLOCK models that nested check; FAKE_CBC_LOG proves the
+# flag's presence (or absence) in the actual clean-behind-check.sh invocation.
+# ============================================================================
+
+# 28. BEHIND + non-author + --allow-nonauthor reaches the plain-shape bypass
+#     instead of the misleading rebase refusal.
+new_log
+CBC_LOG="$TMP/cbccalls.log"; : > "$CBC_LOG"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_GATE_AUTHORSHIP_BLOCK=1 \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 18 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "BEHIND + non-author + --allow-nonauthor reaches the bypass (exit 0)"
+grep_ok "gh pr merge 18 --squash --admin" "plain-shape bypass command is printed"
+if grep -q -- "not safe to skip a rebase" <<<"$OUT"; then
+  bad "the misleading rebase refusal still fires under --allow-nonauthor"
+else
+  ok "the misleading 'not safe to skip a rebase' refusal no longer fires"
+fi
+cbc_argv_all "$CBC_LOG" 1 "--allow-nonauthor" \
+  "--allow-nonauthor literally appears in the clean-behind-check.sh invocation (--print makes exactly 1)"
+
+# 28b. Negative control — the fail-closed default is unchanged: the same PR
+#      WITHOUT the flag still gets refused, and the flag is never fabricated.
+#      Also proves 28's fixture models the real bug rather than passing freely.
+new_log
+CBC_LOG2="$TMP/cbccalls2.log"; : > "$CBC_LOG2"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG2" FAKE_PROTECTION="$PLAIN_PROT" \
+  FAKE_AUTHORSHIP_EXIT=0 \
+  run 19 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "without --allow-nonauthor, the nested authorship blocker still refuses (exit 1)"
+grep_ok "not safe to skip a rebase" "refusal text preserved for a genuinely unsafe BEHIND"
+grep_ok "authorship guard" "refusal surfaces the nested authorship blocker as the reason"
+if grep -q -- "--allow-nonauthor" "$CBC_LOG2"; then
+  bad "--allow-nonauthor unexpectedly forwarded when not passed (logged: $(cat "$CBC_LOG2"))"
+else
+  ok "no --allow-nonauthor forwarded to clean-behind-check.sh when not passed"
+fi
+
+# 28c. The #1251 unattended guard is now LOAD-BEARING (its accidental backstop
+#      in clean-behind-check.sh is gone), so re-assert it holds after this fix:
+#      --auto-plain + --allow-nonauthor still refuses before any pre-flight, with
+#      no clean-behind-check.sh call and no merge call at all.
+new_log
+CBC_LOG3="$TMP/cbccalls3.log"; : > "$CBC_LOG3"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_CBC_AUTHORSHIP_BLOCK=1 \
+  FAKE_CBC_LOG="$CBC_LOG3" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 20 --auto-plain --ac-verified --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 2 "--auto-plain + --allow-nonauthor still refused after the #1257 fix (exit 2)"
+log_absent "^pr merge" "no merge call for --auto-plain + --allow-nonauthor"
+if [[ -s "$CBC_LOG3" ]]; then
+  bad "clean-behind-check.sh was invoked despite the pre-flight usage refusal (logged: $(cat "$CBC_LOG3"))"
+else
+  ok "clean-behind-check.sh never invoked — refusal precedes all pre-flight work"
+fi
+
+# 28d. Per-invocation argv coverage on the re-validation path (CodeAnt review).
+#      --execute over a clean BEHIND calls clean-behind-check.sh TWICE: once at
+#      pre-flight, then again as the issue #631 safety re-validation immediately
+#      before the bypass acts. Today CBC_ARGS is built once and reused, so both
+#      calls carry the flag by construction — but that is precisely the invariant
+#      worth pinning: a refactor that rebuilt the argv per call site could forward
+#      the override at pre-flight only, and 28's log would still contain a
+#      matching line while the re-validation silently re-acquired the nested
+#      authorship blocker and refused. --execute is the reachable double-call
+#      path for this flag; --auto-plain is not (28c: the combination is refused
+#      outright, before any clean-behind-check.sh call exists to assert on).
+new_log
+CBC_LOG4="$TMP/cbccalls4.log"; : > "$CBC_LOG4"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_GATE_AUTHORSHIP_BLOCK=1 \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG4" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 21 --execute --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--execute + --allow-nonauthor merges a clean-BEHIND non-author PR (exit 0)"
+log_present "^pr merge 21 --squash --admin" "the plain-shape admin merge actually ran"
+cbc_argv_all "$CBC_LOG4" 2 "--allow-nonauthor" \
+  "--allow-nonauthor reaches EVERY clean-behind-check.sh call, re-validation included"
+
+# 28e. Negative control for 28d — same --execute path WITHOUT the flag refuses at
+#      the re-validation rather than merging, and no invocation fabricates it.
+#      Without this, 28d's count assertion could not distinguish "both calls
+#      carry the override" from "the override is unconditional".
+new_log
+CBC_LOG5="$TMP/cbccalls5.log"; : > "$CBC_LOG5"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG5" FAKE_PROTECTION="$PLAIN_PROT" \
+  FAKE_AUTHORSHIP_EXIT=0 \
+  run 22 --execute --repo-path "$CLONE" --branch main
+expect_rc 1 "--execute without --allow-nonauthor still refuses the non-author clean BEHIND (exit 1)"
+log_absent "^pr merge" "no merge call when the nested authorship blocker stands"
+if grep -q -- "--allow-nonauthor" "$CBC_LOG5"; then
+  bad "--allow-nonauthor fabricated on the --execute path (logged: $(cat "$CBC_LOG5"))"
+else
+  ok "no --allow-nonauthor forwarded on --execute when not passed"
+fi
+
+# 29. repo-root.sh exit 4 — "git could not run" (issue #1403) ---------------
+# repo-root.sh now separates "git never launched" (4) from the DETERMINATE "not
+# a git repo" (1). Only the determinate answer may take the historic fallback
+# chain; on 4 the very next statement would be an unbounded `git rev-parse`
+# against that same broken git, and the `$PWD` behind it would substitute the
+# invoker's cwd for the root repo on an irreversible merge.
+#
+# Installed last, and removed immediately after, because every earlier test
+# resolves the repo path through the absence of this helper.
+cat > "$SCRIPTS/repo-root.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "repo-root.sh: git could not run (missing, not executable, or a broken PATH), so nothing was determined about the current directory — git said: git: command not found" >&2
+exit "${FAKE_REPO_ROOT_EXIT:-4}"
+EOF
+chmod +x "$SCRIPTS/repo-root.sh"
+
+export FAKE_REPO_ROOT_EXIT=4
+run 1 --print --branch main
+expect_rc 4 "repo-root.sh exit 4 refuses the merge instead of guessing the repo path"
+grep_ok "could not run git at all" "the refusal names a broken git, not a missing repo"
+grep_ok "repair git" "the operator is told what to fix"
+grep_absent "falling back to the current checkout" \
+  "no silent fallback to the cwd when git itself could not run"
+
+# Negative control: exit 1 is still determinate, so it must STILL reach the
+# historic fallback. Without this, refusing every non-zero code would pass the
+# assertions above while breaking the case the split had to preserve.
+export FAKE_REPO_ROOT_EXIT=1
+run 1 --print --branch main
+grep_ok "falling back to the current checkout" \
+  "a determinate 'not a git repo' answer still takes the fallback chain"
+grep_absent "could not run git at all" "exit 1 is never reported as a broken git"
+
+unset FAKE_REPO_ROOT_EXIT
+rm -f "$SCRIPTS/repo-root.sh"
+
+# ============================================================================
+# Regression (issue #1439): --repo-path did not override cwd repo detection.
+# `gh repo view` ran ~60 lines BEFORE REPO_PATH was even computed, so a run from
+# another repo's checkout resolved THAT repo and exited 3 ("PR not found in
+# <wrong repo>") even though the flag named the right clone — observed live on
+# PR #1423's Phase C. Every caller had to cd first, which the flag existed to
+# avoid.
+#
+# GH_FAKE_REPO_BY_CWD makes the fake gh resolve owner/repo from its own cwd, so
+# a cwd-scoped call FAILS the test instead of passing vacuously: reaching
+# solo/repo from $OTHER is only possible by entering $CLONE. Placed after test
+# 29's repo-root.sh fixture is removed, so path resolution here uses the same
+# fallback chain as every other case.
+# ============================================================================
+printf 'solo/repo\n' > "$CLONE/.fake-repo-slug"
+OTHER="$TMP/other-repo"; mkdir -p "$OTHER"; printf 'other/elsewhere\n' > "$OTHER/.fake-repo-slug"
+
+# Compare directories by physical path — $TMP is under /var on macOS, which is a
+# symlink to /private/var, so a literal string compare can differ spuriously.
+same_dir() { [[ "$(cd "$1" 2>/dev/null && pwd -P)" == "$(cd "$2" 2>/dev/null && pwd -P)" ]]; }
+
+# 30. --repo-path from an UNRELATED repo's cwd resolves the flagged repo.
+new_log
+GATE_PWD="$TMP/gate-pwd.log"; : > "$GATE_PWD"
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_PWD_LOG="$GATE_PWD" \
+  FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --repo-path "$CLONE" --branch main 2>&1 )"; RC=$?
+expect_rc 0 "--repo-path resolves the flagged repo from an unrelated cwd (exit 0)"
+grep_ok "repos/solo/repo/branches/main/protection/enforce_admins" \
+  "cross-cwd run resolved the --repo-path repo (solo/repo)"
+grep_absent "other/elsewhere" "cross-cwd run never resolved the invoker's cwd repo"
+grep_ok "cd $CLONE && \\\\" "cross-cwd run still prints the portable cd prefix"
+GATE_CWD="$(head -n 1 "$GATE_PWD" 2>/dev/null)"
+if [[ -n "$GATE_CWD" ]] && same_dir "$GATE_CWD" "$CLONE"; then
+  ok "the cwd-scoped merge-gate.sh pre-flight subprocess also ran inside the flagged clone"
+else
+  bad "merge-gate.sh ran in '${GATE_CWD:-<never invoked>}', not the --repo-path clone ($CLONE)"
+fi
+
+# 30b. Negative control: the SAME invocation WITHOUT --repo-path still resolves
+#      the invoker's cwd repo and fails exactly as the ticket reported. Without
+#      this, case 30 could pass against a fake gh that ignored cwd altogether —
+#      and it pins that the cwd fallback is preserved when no flag is given.
+new_log
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+expect_rc 3 "without --repo-path the invoker's cwd repo is used (exit 3)"
+grep_ok "not found in other/elsewhere" \
+  "the cwd-scoped run fails with the ticket's wrong-repo error — the bug this fix removes"
+
+# 30c. An explicit --repo-path that cannot be entered is a hard error in the
+#      read-only mode too (exit 7), never a silent fall back to the cwd: the
+#      alternative is printing a bypass for whatever repo the cwd happens to be.
+new_log
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --repo-path "$TMP/no-such-clone" --branch main 2>&1 )"; RC=$?
+expect_rc 7 "an unusable explicit --repo-path refuses even in --print (exit 7)"
+grep_ok "cannot cd into repo path" "the refusal names the unusable path"
+grep_absent "other/elsewhere" "no fallback to the invoker's cwd repo on an unusable --repo-path"
+log_absent "." "the repo-path refusal fires before any gh call"
+
+# ============================================================================
+# 31 (issue #1404): the exit-1 fallback `git rev-parse --show-toplevel` is
+# bounded. PR #1386 refused rather than fall through on repo-root.sh's timeout,
+# but left this call unbounded because it is a cheap single-file read — a claim
+# about COST, not about stall risk. The #1363 filesystem stalls per file, so an
+# unbounded call here re-creates the same no-output freeze one step further
+# down, on the path whose next action is an irreversible merge.
+#
+# There is no repo-root.sh in $SCRIPTS (test 29 removed its fixture), so a run
+# without --repo-path reaches this fallback directly.
+# ============================================================================
+GITSTUB="$TMP/gitstub"; mkdir -p "$GITSTUB"
+REAL_GIT="$(command -v git)"
+export REAL_GIT TICK_FILE="$TMP/t31-tick"
+cat > "$GITSTUB/stub-sleeper" <<'EOF'
+#!/usr/bin/env bash
+# Self-limited (~10s) so a failing process-group kill cannot leak a sleeper.
+for _ in $(seq 1 50); do
+  printf 'tick\n' >> "$TICK_FILE"
+  sleep 0.2
+done
+EOF
+chmod +x "$GITSTUB/stub-sleeper"
+cat > "$GITSTUB/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/t31-argv.log"
+for a in "\$@"; do
+  if [[ "\$a" == "--show-toplevel" ]]; then
+    "$GITSTUB/stub-sleeper" &
+    sleep 30
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GITSTUB/git"
+
+# 31a. A wedged fallback refuses instead of hanging — and instead of guessing.
+# A 3s bound, not 1s: the clock is whole-second, so a 1s bound can trip before
+# the stub is even live.
+new_log
+: > "$TMP/t31-argv.log"
+: > "$TICK_FILE"
+T31_START="$(date +%s)"
+OUT="$( cd "$OTHER" && PATH="$GITSTUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+T31_ELAPSED=$(( $(date +%s) - T31_START ))
+expect_rc 4 "a wedged 'git rev-parse --show-toplevel' refuses the merge (exit 4)"
+grep_ok "exceeded the 3s bound" "the refusal names the bound that tripped"
+grep_ok "refusing to guess the repo path" "the refusal is explicit about not guessing"
+grep_ok "pass --repo-path" "the operator is told what to do instead"
+grep_absent "not found in other/elsewhere" \
+  "no fall through to \$PWD — the cwd repo is never resolved on a killed call"
+log_absent "." "the refusal fires before any gh call"
+if (( T31_ELAPSED < 15 )); then
+  ok "the bounded refusal returned in ${T31_ELAPSED}s (the stub sleeps 30s)"
+else
+  bad "the refusal took ${T31_ELAPSED}s — the bound did not hold"
+fi
+if grep -q -- '--show-toplevel' "$TMP/t31-argv.log"; then
+  ok "control: the stalling call really was reached"
+else
+  bad "control: the stub never saw --show-toplevel, so nothing was bounded"
+fi
+
+# 31b. The library is what makes that bound possible, so its absence is a
+#      refusal too — never a quiet fall back to the unbounded call.
+new_log
+rm -rf "${SCRIPTS:?}/lib"
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+expect_rc 4 "a missing bounded-run library refuses rather than running unbounded (exit 4)"
+grep_ok "bounded-run library not found" "the refusal names the missing library"
+grep_absent "not found in other/elsewhere" "and still never guesses the repo path"
+mkdir -p "$SCRIPTS/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$SCRIPTS/lib/"
+
+# 31c. Control: with nothing stalling, the same stub resolves as before. Without
+#      it, 31a would also pass against a stub that broke every git call.
+new_log
+cat > "$GITSTUB/git" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GITSTUB/git"
+OUT="$( cd "$OTHER" && PATH="$GITSTUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+expect_rc 3 "control: a pass-through stub still resolves the cwd repo (exit 3, as in 30b)"
+grep_absent "exceeded the 3s bound" "control: nothing is reported as timed out"
+pkill -f "$GITSTUB/stub-sleeper" >/dev/null 2>&1 || true
+
+# 40. No-review override (issue #1899): an unreviewed merge never takes an admin
+#     bypass — refused in every shape with the ordinary exit 1 (rebase path).
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_NRO_APPLIED=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 5 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "no-review override: --auto-plain refuses (exit 1, not 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=no-review-override" "no-review override refusal is named"
+log_absent "^pr merge" "no-review override: no merge call"
+log_absent "protection/enforce_admins" "no-review override: no protection API call"
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Find existing issues that may already cover a finding — TITLE *and* BODY.
+# catalog: backlog-pm — Score open issues against keywords to find duplicate candidates before filing
 #
 # Usage: issue-dedup.sh <keywords> [options]
 #        issue-dedup.sh --help
@@ -50,7 +51,10 @@
 # Thresholds and the comment-vs-file decision: .claude/reference/autofile-dedup.md
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+# The usage ledger is optional; deduplication does not require a home.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 usage() {
   sed -n '3,47p' "$0" | sed 's/^# \{0,1\}//'

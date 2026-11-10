@@ -13,11 +13,51 @@ Hooks are **automatically registered** in `~/.claude/settings.json` on every ses
 2. Add the hook entry to `global-settings.json` at the repo root (use `/path/to/claude-code-config` as the path placeholder)
 3. Merge to `main` — the next session start registers it automatically
 
+`session-start-sync.sh` schedules its lock-held git work, its symlink publishers and its root-repo sync leg against one deadline, `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS` (default `30`, mirroring the `timeout: 30` its `global-settings.json` entry registers). That override — and the per-call ceilings clamped inside it — exist for timing-sensitive tests on slow CI runners, not for production, where a longer deadline would only let the hook outlive the registered timeout. Because an environment variable is inherited whether or not it was meant for you, raising the deadline above `30` also requires `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1`; a raise without it keeps 30 and says so in the session notice. Full table and rationale: [`.claude/reference/skill-sync-hooks.md`](../reference/skill-sync-hooks.md).
+
 Shared code that hooks source (rather than run) lives in `lib/` and is deliberately absent from `global-settings.json` — registration matches by basename, so anything listed there would be executed as a hook in its own right.
 
 **Initial setup** is handled by `setup-skills-worktree.sh` (see `SETUP.md`). The ongoing sync is a safety net that catches hooks added after initial setup.
 
 `register-hooks.py` — the helper `session-start-sync.sh` calls — also syncs the top-level **`statusLine`** key by the same rules (issue #779). That key is not a hook event, but its `command` carries the same path placeholder and must resolve to the skills worktree the same way. It is seeded when absent, path-repaired when it points at our own `statusline.sh`, and left completely alone when the user has pointed it at their own script. `--statusline-only` runs that sync without touching hooks; `setup-skills-worktree.sh` Step 6b uses it so install-time and session-start behavior share one implementation. See [ARCHITECTURE.md](../../ARCHITECTURE.md#status-line).
+
+
+### Session-start test ownership (Issue #1834)
+
+The former 1,172-line session-start suite mixed independent registration,
+marker, resume and deadline contracts. Local commit diffs confirm the three
+reported touches: PR #1709 added deadline controls, PR #1752 changed lock
+eligibility, and PR #1817 added publisher-category coverage. Seven cumulative
+cleanup traps also required each new fixture to edit earlier ownership lists.
+This is evidence for separating test concerns, not measured conflict cost or
+proof of faster CI.
+
+| Suite | Original sections | Owns |
+|---|---|---|
+| [session-start-sync.test.sh](tests/session-start-sync.test.sh) | 1–10, 16–17 | Registration, migration and capture structure |
+| [session-start-sync-marker.test.sh](tests/session-start-sync-marker.test.sh) | 11–13b | Restart marker and lock eligibility |
+| [session-start-sync-resume.test.sh](tests/session-start-sync-resume.test.sh) | 14 | Fast-forward notices and publisher categories |
+| [session-start-sync-publish-bounds.test.sh](tests/session-start-sync-publish-bounds.test.sh) | 15 | Publisher/root-sync bounds and healthy controls |
+
+The split preserves all **20 scenario headings and 81 assertion sites**. The
+five moved scenario chunks remain byte-identical after excluding only cleanup
+registration and the old cumulative traps. Timeouts, sleeps, environment knobs,
+sentinels and child release/wait ordering are unchanged. Production hook logic, workflow configuration and the independent reconcile
+suite are unchanged; hook/workflow comments and the timing reference point at
+the concern suites.
+
+Shared setup and the single EXIT trap live in
+[the source-only fixture](tests/lib/session-start-sync-fixtures.sh). Register
+only freshly allocated private directories through `ssync_register_tmp`;
+suites retain their explicit process handoffs and teardown. `ctx_has`,
+`marker_state`, `build_ok_home` and `wait_for` stay local to the marker suite;
+`build_publish_fixture` stays local to publisher bounds. Add cases to their
+concern suite, create another suite for a new concern, and keep scenario logic
+out of the fixture. Do not add competing suite EXIT traps. The existing runner
+discovers every `*.test.sh`; the source-only `.sh` fixture is not a suite.
+
+No churn baseline or exemption is added. This changes test ownership while
+preserving coverage; it makes no claim about future recurrence or saved time.
 
 ---
 
@@ -77,6 +117,33 @@ All state lives in `/tmp` markers (overridable as a set via `CLAUDE_BGWORK_MARKE
 - `jq` must be installed
 - `.claude/scripts/bgwork-ceiling.sh` must be present and executable — both hooks exit 0 silently without it, so a checkout missing it degrades rather than breaks
 
+## pause-launch-gate.sh + background-task-complete.sh
+
+These hooks make `/end` and `/pause` cost-quiescent (Issue #1308).
+
+- **`pause-launch-gate.sh`** (PreToolUse): while the current repo/session has an
+  active execution pause, rejects Agent, Workflow, Monitor, and background Bash
+  starts. Foreground Bash remains available for checkpoint and teardown.
+- **`bgwork-ceiling-arm.sh`** (PostToolUse): in addition to its silence-ceiling
+  job, captures the exact runtime ID returned by every background-start tool
+  and records successful `TaskStop` calls.
+- **`background-task-complete.sh`** (SubagentStop): marks the exact agent runtime
+  ID done, failed, or stopped. Logical agent names are never used for TaskStop.
+
+An active marker makes the launch gate fail closed if session state becomes
+unreadable after activation. Other hook/dependency failures stay fail-open so a
+malformed payload cannot brick all tool use.
+
+A registry write failure creates
+`claude-background-registry-failed-<session>` in the configured background-work
+marker directory (default `/tmp`), falling back to `$HOME/.claude` if that
+directory is unwritable. If neither location accepts the marker, the hook exits
+non-zero with a critical diagnostic. `/end` and `/pause` treat either
+marker as an incomplete audit until runtime inspection proves no untracked task
+remains.
+
+**Tests:** `.claude/hooks/tests/pause-lifecycle-hooks.test.sh`
+
 ## skill-usage-tracker.sh + skill-command-tracker.sh
 
 Records every skill invocation to `~/.claude/skill-usage.log` (and the aggregate `~/.claude/skill-usage.csv`), which `.claude/scripts/skill-usage-report.sh` rolls up.
@@ -109,7 +176,9 @@ Claude Code exposes **no** approaching-limit signal to any hook, skill, or sessi
 - `~/.claude/usage-limit-events.jsonl` — append-only history, rotated to `.1` past 256 KiB
 - `~/.claude/usage-limit-last.json` — the most recent event, written atomically; read this first when resuming
 
-Each record carries `recorded_at`, `session_id`, `cwd`, `transcript_path`, a truncated `last_assistant_message`, and a `resume_hint`.
+Each record carries `recorded_at`, `session_id`, `cwd`, `transcript_path`, a truncated `last_assistant_message`, a `resume_hint`, and — since issue #1633 — `limit_kind` (`plan_window` | `overage` | `unclassified`) with `reset_at`.
+
+**Which limit was hit.** `error == "rate_limit"` says a limit was hit but not which one, and the two are opposite facts: a plan-window wall (rolling 5-hour or weekly) means the account is on plan and spent nothing, while an overage means it spent. `credit-budget.sh` read every record here as the second and froze autonomous dispatch for a full ET day on four events that were all the first. Classification happens at write time through `.claude/scripts/lib/usage-limit-classify.sh` — the one place the vendor's prose is parsed, shared with that gate. The dependency is deliberately **optional**: with the library absent both fields are null and the record is otherwise unchanged, because a recorder must never become a new failure mode.
 
 ### Prerequisites
 
@@ -152,13 +221,13 @@ Registered on **`SubagentStop`** with a 15 s timeout.
 
 **Why it exists.** The recorder above names the most recent portable handoff in its breadcrumb, but the only thing that wrote one was invoked by hand. On 2026-08-01 an account limit killed three concurrent sessions and every record came out with `"portable_handoff": null`, because no handoff existed — a limit that arrives without warning is exactly the case where nobody ran the command. This closes the gap from the other side: it produces the artifact and nothing else.
 
-**It is document-only.** No wind-down, no stopping, no decision. The hand-invoked pause command keeps its contract — it runs when asked and for no other reason — because this is a different producer of the same artifact, not that command on a timer.
+**It is document-only.** No wind-down, no stopping, no decision. The hand-invoked `/end` command keeps its contract — it runs when asked and for no other reason — because this is a different producer of the same artifact, not that command on a timer.
 
 **Safety.** No token, spend, or quota arithmetic anywhere, and no output gates a decision. `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" is satisfied as written and was not amended, the same standing the recorder has.
 
 ### The degrade ladder
 
-`portable-handoff-lint.sh` rejects relative `.claude/` paths, phase vocabulary, internal state-file names, and slash-command names. A mechanical renderer walks into all of these: run it in this repo and the changed-file list is full of `.claude/scripts/…`. A human rewrites the offending line; a script cannot.
+`portable-handoff-lint.sh` rejects relative `.claude/` paths, phase vocabulary, internal state-file names, slash-command names, missing repository/worktree/Git fields, and unsafe resume guidance. A mechanical renderer walks into several of these: run it in this repo and the changed-file list is full of `.claude/scripts/…`. A human rewrites the offending line; a script cannot.
 
 So it renders, lints, and drops to a less specific rendering on failure, shipping the first tier that passes:
 
@@ -167,7 +236,7 @@ So it renders, lints, and drops to a less specific rendering on failure, shippin
 | 1 | changed-file paths listed, pull request titles quoted |
 | 2 | paths replaced by a count and a `git status` instruction |
 | 3 | titles dropped — pull requests by number and URL only |
-| 4 | minimal: absolute working directory, counts, universal commands |
+| 4 | minimal: explicit repository/worktree/Git unknowns where necessary, absolute working directory, separate tracked/untracked counts, universal commands, and non-stop resume guidance |
 
 If even tier 4 fails it writes **nothing** — a document that fails its own portability gate is the outcome the ladder exists to prevent. In this repository tier 2 is the normal result.
 
@@ -179,7 +248,7 @@ Writes at most once per `CLAUDE_CHECKPOINT_MIN_INTERVAL` (default 600 s), and ad
 
 - `~/.claude/handoffs/portable-handoff-<stamp>-<session>-checkpoint.md` — matches the glob the recorder already scans
 
-Checkpoints older than 7 days are pruned. A handoff written by the pause command is **never** a deletion candidate at any age — the `-checkpoint.md` suffix is what separates them.
+Checkpoints older than 7 days are pruned. A canonical handoff written by `/end` is **never** a deletion candidate at any age — the `-checkpoint.md` suffix is what separates them.
 
 ### Prerequisites
 
@@ -187,4 +256,107 @@ Checkpoints older than 7 days are pruned. A handoff written by the pause command
 - `CLAUDE_HANDOFF_DIR` overrides the output directory (used by the tests)
 - Run it by hand with `--stdout` to see what it would write without publishing
 
-**Tests:** `.claude/scripts/tests/checkpoint-handoff.test.sh`
+**Tests:** `.claude/scripts/tests/checkpoint-handoff.test.sh`, `portable-handoff-context.test.sh`, and `portable-handoff-publish.test.sh`
+
+## spend-session-tracker.sh
+
+Records the runtime model on a genuinely new Claude Code session start and metadata-only assistant-message usage at SessionEnd. Repeated provider-response snapshots and parent/child mirrors are merged by message ID in the report so usage is counted once; missing components remain unknown. Part of the spend telemetry pipeline (#710, repaired in #1877); pair with `spend-subagent-tracker.sh`.
+
+Registered on **`SessionStart`** with a 5 s timeout and **`SessionEnd`** with a 30 s timeout. SessionEnd has a larger bounded window for incremental metadata-only transcript scanning.
+
+**What it does:**
+
+- Reads the `source` field from the `SessionStart` payload (`startup`, `resume`, `compact`, `clear`).
+- **Only records on `startup` (or absent `source`)** — compact, resume, and clear fire inside an already-live session and must not inflate the thread count. An absent source is treated conservatively as startup for backward compatibility.
+- Extracts `session_id` and the optional active `model` from SessionStart. The runtime model is recorded as actual with `session_start.model` provenance; an omitted model stays unknown.
+- SessionEnd reads only assistant-message IDs, timestamps, model, and usage from the main transcript. A hashed per-session cursor checks file identity and boundary metadata, checkpoints incremental progress, and records the latest complete/pending scan status; message text, prompts, code, tool input, and credentials are ignored.
+- Appends through the shared recorder. Legacy eight-column TSV rows remain readable; new rows carry `schema_version=3`, requested/actual model provenance, repo/session/worker/phase identifiers, per-field usage, and explicit unavailable cost/outcome fields. Explicit issue/PR correlation rows use the same writer.
+- If the bounded log lock is busy, metadata rows are durably queued in a private pending directory instead of being silently dropped. The report displays queued writes and partial child cursors; `spend-telemetry-report.sh --resume-pending` explicitly drains the queue and resumes child cursors within a 20-second total budget.
+- Always exits `0` and emits `{}` — never blocks the session.
+
+**Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
+
+**Shared library:** sources `.claude/hooks/lib/spend-telemetry-recorder.sh` for sanitization, session resolution, and the append write.
+
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh`
+
+---
+
+## spend-subagent-tracker.sh
+
+Records assistant-message metadata from the `agent_transcript_path` on each `SubagentStop`. Part of the spend telemetry pipeline (#710, repaired in #1877); pair with `spend-session-tracker.sh`.
+
+Registered on **`SubagentStop`** with a 5 s timeout.
+
+**What it does:**
+
+- Reads only `session_id`, `cwd`, `agent_id`, `agent_type`, and `agent_transcript_path` from the hook payload.
+- Uses transcript `requestedModel` when available; otherwise treats an agent definition's frontmatter `model:` as a requested default with `agent_frontmatter_default` provenance. Actual model comes from each assistant transcript message's `model` field and is never filled from frontmatter.
+- Reads assistant-message `id`, `timestamp`, `model`, and nested `usage` fields (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). Missing fields remain blank and are reported against their own denominator.
+- Appends one v3 metadata row per assistant message to `~/.claude/spend-telemetry.log`; replayed transcript reads are skipped by the cursor, and report-level event-key dedup remains a second guard. Missing transcript path creates an explicit unavailable event row.
+- Cursor checkpoints keep private transcript-path/source metadata under `~/.claude/spend-telemetry-cursors/` (`0700` directory, `0600` files). Explicit refresh reuses the saved session/repository identity even if the recorded working directory is gone; it never borrows the report process session. A pending child scan can be resumed by the explicit bounded `spend-telemetry-report.sh --resume-pending` refresh; the normal report only shows the pending count.
+- Always exits `0` and emits `{}` — never blocks the session.
+
+**Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
+
+**Shared library:** sources `.claude/hooks/lib/spend-telemetry-recorder.sh`.
+
+**Reporting:** `bash .claude/scripts/spend-telemetry-report.sh [--days N]`
+
+**Schema and caveats:** `.claude/reference/spend-telemetry-pipeline.md`
+
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh` and `.claude/hooks/tests/spend-telemetry-maintenance.test.sh`
+
+## spend-task-tracker.sh
+
+Records task IDs and creator/completer actor IDs from `TaskCreated` and `TaskCompleted` without storing task subjects or descriptions. Actor IDs do not imply worker assignment; only explicit correlation records establish that mapping. `TaskCompleted` is a lifecycle event only; it does not prove issue acceptance criteria or tests passed. The hook is non-blocking and shares the single recorder.
+
+**Registration:** `global-settings.json` under `TaskCreated` and `TaskCompleted`.
+
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh`
+
+---
+
+## human-queue-capture.sh
+
+Sends a thread's questions to the human queue instead of rendering them in the thread, while a live desk exists (Issue #1755). A **symlink** to `desk/hooks/capture.sh`; the code lives in `desk/` with the rest of the queue.
+
+Registered on **`PreToolUse`** with matcher **`AskUserQuestion`** and a 15 s timeout.
+
+**What it does:**
+
+- Asks the store (`desk/bin/human-queue.sh control-status`) whether a live desk exists: a registered control session whose last tick is at most 15 minutes old (`live_desk_max_tick_age_min` in `desk/policy.json` overrides it).
+- **No live desk:** does nothing; the menu renders as it always has. This is the state until the `/desk` session (#1779) registers and ticks, so the hook is inert at rollout.
+- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.`
+- Finds `HUMAN_QUEUE_DATABASE_URL` even when the app's environment lacks it: from an owner-only `~/.config/human-queue/database_url`, else a literal `export` line in the shell profile (read, never run). Never prints it.
+- **Fails open:** any failure (no URL, store unreachable, CLI missing, timeout, bad input) allows the menu with one `human-queue-capture:` line on stderr. Always exits `0`.
+
+**Contract:** `desk/README.md`, "Capture hook". **Tests:** `desk/tests/capture-offline.test.sh` (offline, CI) and `desk/tests/capture.test.sh` (live, throwaway schema).
+
+---
+
+## question-leak-warn.sh
+
+Nudges a thread that asked the operator a question in prose — the one leak `human-queue-capture.sh` cannot see (Issue #1778, `desk/DESIGN.md` 2.4). A **symlink** to `desk/hooks/question-leak-warn.sh`; it backs up the worker contract in `.claude/rules/human-queue.md`.
+
+Registered on **`Stop`** with a 5 s timeout.
+
+**What it does:**
+
+- Reads the final assistant message: `last_assistant_message`, or, when the payload has none, the last assistant message in `transcript_path` (final 2 MiB, malformed lines skipped).
+- A **question line** ends in `?` outside fenced code blocks (including one that opens a list item); headings, blockquotes, table rows (also nested in a list item), a bare URL, and punctuation-only lines never count. A **receipt line** contains `question D-<n> sent to human queue` (or the plural `questions D-<n>, D-<m> …`) outside a code fence or blockquote.
+- When a question line has no receipt line after it, emits **one** `hookSpecificOutput.additionalContext` warning that quotes the line and names the fix: re-ask through `AskUserQuestion`; with a live desk, print the receipt and proceed on the default or park; with none, the menu renders.
+- **Warn-only:** never `decision: "block"`. Stop context continues the conversation for one model request. A warning leaves a per-session marker directory in `$TMPDIR` that the turn's first Stop clears; a later Stop of the same turn (`stop_hook_active: true`) warns only if it can create that marker, so the hook warns at most once per turn and cannot loop — yet a turn another Stop hook continued is still checked.
+- **Fails open:** no jq, bad input, an unreadable transcript — nothing printed. Always exits `0`. Needs no database.
+
+**Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.
+
+## quota-reserve-guard.sh + quota-reserve-turn.sh
+
+Pause autonomous work on a Claude account that is nearly out of weekly allowance (issue #1863). Detail: `.claude/reference/quota-reserve.md`.
+
+- **`quota-reserve-turn.sh`** (UserPromptSubmit, 5 s): records whether the turn was started by the owner or by an automated event. Writes a small per-session record; never blocks.
+- **`quota-reserve-guard.sh`** (PreToolUse, no matcher, 5 s): when the account this session runs on is at or above the threshold (95% default, from the provider's own reading), blocks launches and any subagent or automated-turn tool call beyond reads and the harness's bookkeeping scripts. The owner's interactive turns keep working: only launches are blocked there. A fresh marker with nobody in reserve costs one `grep` and one `stat`.
+- **Fails open:** no marker, a stale marker, an unknown reading, an unreadable account file, or a missing script all allow the call.
+
+**Tests:** `.claude/hooks/tests/quota-reserve-hooks.test.sh`.

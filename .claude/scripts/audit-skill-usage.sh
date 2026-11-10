@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # audit-skill-usage.sh — Monthly skill usage audit
+# catalog: skills-telemetry — Legacy monthly skill-usage audit against `.claude/data/skill-usage.json`
 #
 # PURPOSE:
 #   Reads .claude/data/skill-usage.json and reports skills that have not been
@@ -33,15 +34,17 @@
 # EXIT STATUS:
 #   0 — no removal recommendations (all clean, or only review flags)
 #   1 — at least one skill is recommended for removal (60+ days unused)
+#   70 — --help header extraction produced no output (internal defect).
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Help flag
 # ──────────────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  sed -n '2,/^# EXIT STATUS:/{ /^# EXIT STATUS:/d; s/^# \{0,1\}//; p }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
   exit 0
 fi
 
@@ -192,7 +195,7 @@ if (( ${#RECOMMEND[@]} > 0 )); then
   while IFS= read -r entry; do
     sorted+=("$entry")
   done < <(printf '%s\n' "${RECOMMEND[@]}" | sort -t$'\t' -k2 -rn)
-  for entry in "${sorted[@]}"; do
+  for entry in ${sorted[@]+"${sorted[@]}"}; do
     skill_name="${entry%%$'\t'*}"
     age_days="${entry##*$'\t'}"
     printf "  - %s (unused for %d days)\n" "$skill_name" "$age_days"
@@ -210,7 +213,7 @@ if (( ${#FLAGGED[@]} > 0 )); then
   while IFS= read -r entry; do
     sorted+=("$entry")
   done < <(printf '%s\n' "${FLAGGED[@]}" | sort -t$'\t' -k2 -rn)
-  for entry in "${sorted[@]}"; do
+  for entry in ${sorted[@]+"${sorted[@]}"}; do
     skill_name="${entry%%$'\t'*}"
     age_days="${entry##*$'\t'}"
     printf "  - %s (unused for %d days)\n" "$skill_name" "$age_days"

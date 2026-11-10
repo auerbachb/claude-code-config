@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# gizmo tests
+. ./testlib.sh
+check gizmo 1
+
+check gizmo 2
+check_doc docs/guide.md
+check gizmo 3
+
+finish

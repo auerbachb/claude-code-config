@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# catalog: utilities — Memory-store audit engine behind `/memory-clean`
 """memory-audit.py — audit + guarded prune for the durable memory store (issue #620).
 
 The memory store lives at ``~/.claude/projects/<encoded-project>/memory/``: one

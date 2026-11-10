@@ -39,7 +39,7 @@ Additionally, two files (`phase-c-merger.md`, `researcher.md`) used an `allowed-
 
 2. Renamed `allowed-tools:` to `tools:` in `phase-c-merger.md` and `researcher.md` so tool restrictions actually take effect.
 
-3. Updated `.claude/agents/README.md` to state that identity comes from `name:`, that a session restart is needed after adding/editing files, and that `tools:` (not `allowed-tools:`) is the correct key.
+3. Updated `.claude/agents/README.md` to state that identity comes from `name:`, that a session restart is needed after adding/editing files, and that `tools:` (not `allowed-tools:`) is the correct key. <!-- deprecated-key-ok: allowed-tools -->
 
 4. Updated `.claude/rules/subagent-orchestration.md` to add `researcher` to the enumerated types, add a precondition note about `name:` and session restart, and add a fallback path for when a custom spawn fails.
 

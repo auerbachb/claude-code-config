@@ -1,0 +1,44 @@
+{
+  "data": {
+    "repository": {
+      "nameWithOwner": "acme/widgets",
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 303,
+        "title": "feat: a \u001b[31mloud\u001b[0m title",
+        "url": "https://github.com/acme/widgets/pull/303",
+        "state": "MERGED",
+        "body": "First line\r\nan escape \u001b]0;pwned\u0007 here\r\na C1 \u009b2J control",
+        "mergedAt": "2026-10-05T22:00:00Z",
+        "closedAt": "2026-10-05T22:00:00Z",
+        "createdAt": "2026-10-05T20:00:00Z",
+        "additions": 900,
+        "deletions": 10,
+        "changedFiles": 150,
+        "labels": { "totalCount": 23, "nodes": [ { "name": "big" }, { "name": "desk" } ] },
+        "closingIssuesReferences": {
+          "totalCount": 12,
+          "nodes": [
+            {
+              "number": 91,
+              "title": "Large change",
+              "url": "https://github.com/acme/widgets/issues/91",
+              "repository": { "nameWithOwner": "acme/widgets" }
+            }
+          ]
+        },
+        "commits": {
+          "totalCount": 1,
+          "nodes": [ { "commit": { "messageHeadline": "feat: a large change" } } ]
+        },
+        "files": {
+          "totalCount": 150,
+          "nodes": [
+            { "path": "src/big.sh", "additions": 800, "deletions": 10 },
+            { "path": "tests/big.test.sh", "additions": 100, "deletions": 0 }
+          ]
+        }
+      }
+    }
+  }
+}

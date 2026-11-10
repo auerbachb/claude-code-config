@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ci-status.test.sh — Offline unit tests for ci-status.sh check-run dedup (issue #675).
+# catalog: tests — Tests for `ci-status.sh`
 #
 # Most cases drive the `--check-runs-stdin` path with a full 40-char SHA, which
 # makes zero gh calls — no stub, no network. A separate section stubs `gh` to prove
@@ -167,6 +168,84 @@ check_eq 3 "$RC" "live fetch: a failing newest run still exits 3"
 run_live "$(bundle "$(cr 1 test failure 100)")$(bundle "$(cr 2 test success 200)")"
 check_eq 0 "$RC" "live fetch: dedup spans pages of a --paginate response"
 check_eq 1 "$(field .total)" "live fetch: cross-page duplicate collapsed to the newest suite"
+
+# --------------------------------------------------------------------------
+# 9. Telemetry must never change the contract (issue #1430; cf. repo-root
+#    T16j). The usage-log append runs before argument parsing; unguarded, an
+#    unset HOME aborted under `set -u` with exit 1 — the documented
+#    "incomplete, wait" code, so merge-gate.sh would wait on CI forever — and
+#    a missing ~/.claude leaked bash's redirect diagnostic onto stderr ahead
+#    of the real output (issue #1406 ordering).
+# --------------------------------------------------------------------------
+RC=0
+ERR="$(env -u HOME "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq 0 "$RC" "telemetry: --help exits 0 with HOME unset (set -u)"
+check_eq "" "$ERR" "telemetry: no stderr with HOME unset"
+
+NOHOME="$TMP/no-such-home"
+RC=0
+ERR="$(HOME="$NOHOME" "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq 0 "$RC" "telemetry: --help exits 0 when \$HOME/.claude is missing"
+check_eq "" "$ERR" "telemetry: no shell diagnostic when the log dir is missing"
+
+# The full stdin path still classifies with an unwritable log — exit code,
+# stdout, and stderr all intact.
+ERR_FILE="$TMP/telemetry-stderr.cap"
+OUT=$(printf '%s' "$(bundle "$(cr 1 test success 100)")" \
+  | HOME="$NOHOME" "$SUT" "$SHA" --format json --check-runs-stdin 2>"$ERR_FILE"); RC=$?
+check_eq 0 "$RC" "telemetry: full stdin-path run exits 0 with missing log dir"
+check_eq "" "$(cat "$ERR_FILE")" "telemetry: full run leaves stderr empty"
+check_eq 1 "$(field .passing)" "telemetry: JSON output intact under missing log dir"
+
+# Positive control: with the sandbox ~/.claude present the invocation is
+# logged — the guard must not silence telemetry on healthy machines.
+: > "$HOME/.claude/script-usage.log"
+printf '%s' "$(bundle "$(cr 1 test success 100)")" \
+  | "$SUT" "$SHA" --format json --check-runs-stdin >/dev/null 2>&1
+check_eq 1 "$(grep -c 'ci-status.sh' "$HOME/.claude/script-usage.log")" \
+  "telemetry: append still lands when ~/.claude exists"
+
+# --------------------------------------------------------------------------
+# 10. --exclude-reviewers (issue #1749): build CI only. A reviewer's own check
+#     can neither hold the verdict pending nor turn it red, and identity is the
+#     exact app slug — never the check name.
+# --------------------------------------------------------------------------
+run_excl() { OUT=$(printf '%s' "$1" | "$SUT" "$SHA" --format json --check-runs-stdin --exclude-reviewers 2>/dev/null); RC=$?; }
+
+PENDING_REVIEWER="$(bundle "$(cr 1 build success 100)" "$(cr 2 "Cursor Bugbot" null 200 cursor in_progress)")"
+run_stdin "$PENDING_REVIEWER"
+check_eq 1 "$RC" "exclude-reviewers control: without the flag a pending reviewer check is pending"
+run_excl "$PENDING_REVIEWER"
+check_eq 0 "$RC" "exclude-reviewers: a pending reviewer check with green build checks is clean"
+check_eq 1 "$(field .total)" "exclude-reviewers: only the build check is counted"
+
+FAILED_REVIEWER="$(bundle "$(cr 1 build success 100)" "$(cr 2 "CodeAnt AI" failure 200 codeant-ai)" "$(cr 3 review failure 300 coderabbitai)")"
+run_stdin "$FAILED_REVIEWER"
+check_eq 3 "$RC" "exclude-reviewers control: without the flag a failed reviewer check is red"
+run_excl "$FAILED_REVIEWER"
+check_eq 0 "$RC" "exclude-reviewers: failed reviewer checks with green build checks are clean"
+
+for slug in codeant cursor-com coderabbit graphite-app graphite greptile-apps greptile; do
+  run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 r failure 200 "$slug")")"
+  check_eq 0 "$RC" "exclude-reviewers: slug $slug is a reviewer"
+done
+
+# A check NAMED after a reviewer but published by a workflow is build CI.
+run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 "CodeAnt AI" failure 200 github-actions)")"
+check_eq 3 "$RC" "exclude-reviewers: a reviewer-named check from another app still counts"
+run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 lint failure 200 codeant-ai-fork)")"
+check_eq 3 "$RC" "exclude-reviewers: a look-alike slug still counts"
+
+# Build failures and pending build checks are unaffected.
+run_excl "$(bundle "$(cr 1 build failure 100)" "$(cr 2 "Cursor Bugbot" success 200 cursor)")"
+check_eq 3 "$RC" "exclude-reviewers: a failing build check still exits 3"
+run_excl "$(bundle "$(cr 1 build null 100 gha in_progress)")"
+check_eq 1 "$RC" "exclude-reviewers: a pending build check still exits 1"
+
+# Only reviewer checks left: pending, exactly like an empty list.
+run_excl "$(bundle "$(cr 1 "CodeAnt AI" success 100 codeant-ai)")"
+check_eq 1 "$RC" "exclude-reviewers: no build check left reads as pending"
+check_eq "(no check-runs reported yet)" "$(field '.in_progress_runs[0].name')" "exclude-reviewers: empty build list carries the sentinel"
 
 echo "----------------------------------------"
 echo "ci-status.test.sh: $PASS passed, $FAIL failed"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # local-review.test.sh — Offline unit tests for local-review.sh (issue #782).
+# catalog: tests — Tests for `local-review.sh`; every CLI is a stub, so no network and no dependence on which CLIs are installed
 #
 # Fully offline: every CLI is a stub script driven through --bin, so no network, no
 # real coderabbit/codeant invocation, and no dependence on which CLIs are installed
@@ -57,6 +58,7 @@ field() { printf '%s' "$OUT" | jq -r "$1"; }
 "$SUT" --tool coderabbit --scope sideways >/dev/null 2>&1; check_eq 2 "$?" "unknown scope exits 2"
 "$SUT" --tool coderabbit --format yaml >/dev/null 2>&1; check_eq 2 "$?" "unknown format exits 2"
 "$SUT" --tool coderabbit --timeout abc >/dev/null 2>&1; check_eq 2 "$?" "non-integer timeout exits 2"
+"$SUT" --tool coderabbit --max-duration abc >/dev/null 2>&1; check_eq 2 "$?" "non-integer max-duration exits 2"
 
 # An unusable --log-dir is a usage error, not a run: the contract promises log_path and
 # stderr_path are real persisted files, so the script must refuse before launching the
@@ -187,6 +189,103 @@ check_eq 1 "$RC" "CodeAnt findings exits 1"
 check_eq "false" "$(field .ok)" "CodeAnt findings is not ok"
 check_eq "true" "$(field .verified_run)" "CodeAnt findings is still a verified run"
 check_eq "2" "$(field .findings)" "CodeAnt findings counts .issues"
+check_eq "2" "$(field .contentless_findings)" "labels are not diagnostic text — label-only entries are contentless"
+
+# 4h. Contentless findings (issue #1913) — a verified run whose entries carry only a
+#     label and a line, no diagnostic text. Must stay distinct from BOTH a clean pass
+#     (ok false, exit 1) and a failed run (verified true, failure_mode null — so the
+#     caller's retry/drop policy never fires on it). Synthetic payloads only.
+CA_META='"meta": {"capped": false, "skipped": []}, "error": null, "noFiles": false'
+BIN="$(make_stub codeant-contentless \
+  "{\"issues\": [{\"label\":\"MAJOR\",\"line\":12,\"issue_content\":\"\"}], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "contentless finding exits 1 (verified findings, not a failed run)"
+check_eq "false" "$(field .ok)" "contentless finding is not a clean pass"
+check_eq "true" "$(field .verified_run)" "contentless finding is still a verified run"
+check_eq "null" "$(field .failure_mode)" "contentless finding has no failure_mode (no retry/drop)"
+check_eq "1" "$(field .findings)" "contentless finding still counts as a finding"
+check_eq "1" "$(field .contentless_findings)" "empty issue_content is contentless"
+CONTENTLESS_LOG="$(field .log_path)"
+CONTENTLESS_ERR="$(field .stderr_path)"
+if [[ -f "$CONTENTLESS_LOG" && -f "$CONTENTLESS_ERR" ]]; then
+  ok "contentless run keeps both raw captures"
+else bad "contentless run capture missing: $CONTENTLESS_LOG / $CONTENTLESS_ERR"; fi
+if grep -q '"label":"MAJOR"' "$CONTENTLESS_LOG" 2>/dev/null; then
+  ok "contentless run preserves the raw payload at log_path"
+else bad "contentless payload did not reach log_path"; fi
+if printf '%s' "$OUT" | jq -e 'tostring | test("MAJOR") | not' >/dev/null; then
+  ok "verdict never echoes issue labels or content"
+else bad "verdict leaked issue labels into the compact result"; fi
+
+BIN="$(make_stub codeant-ws-missing \
+  "{\"issues\": [{\"label\":\"MINOR\",\"issue_content\":\"  \\n\\t \"},{\"label\":\"MINOR\",\"line\":3},{\"issue_content\":null},{\"issue_content\":7},\"bare-string\",{\"issue_content\":\"Real diagnostic.\"}], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "whitespace/missing/null/non-string/non-object entries exit 1"
+check_eq "6" "$(field .findings)" "every entry counts as a finding"
+check_eq "5" "$(field .contentless_findings)" "whitespace, missing, null, non-string and non-object are all contentless"
+
+# 4i. Usable finding — real diagnostic text.
+BIN="$(make_stub codeant-usable \
+  "{\"issues\": [{\"label\":\"MAJOR\",\"issue_content\":\"Unquoted variable expansion splits on spaces.\"}], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "usable finding exits 1"
+check_eq "1" "$(field .findings)" "usable finding counts as a finding"
+check_eq "0" "$(field .contentless_findings)" "usable finding is not contentless"
+
+# 4j. Mixed — contentless entries must not hide a real one, nor vice versa.
+BIN="$(make_stub codeant-mixed \
+  "{\"issues\": [{\"issue_content\":\"Missing error check on jq.\"},{\"label\":\"MINOR\",\"issue_content\":\"\"},42], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "mixed findings exit 1"
+check_eq "3" "$(field .findings)" "mixed findings count every entry"
+check_eq "2" "$(field .contentless_findings)" "mixed findings count only the contentless entry"
+
+# 4k. True clean, failed invocations, and the capped path keep their own shapes.
+BIN="$(make_stub codeant-bare-clean '{"issues":[]}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 0 "$RC" "bare issues-empty object is a clean pass"
+check_eq "true" "$(field .ok)" "true clean run is ok"
+check_eq "0" "$(field .contentless_findings)" "true clean run reports contentless_findings 0 (assessed)"
+
+BIN="$(make_stub codeant-contentless-403 \
+  "{\"issues\": [{\"label\":\"MAJOR\",\"issue_content\":\"\"}], $CA_META}" 'API Error: Access denied (403).' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "contentless stdout + stderr 403 is a failed run"
+check_eq "stderr_error" "$(field .failure_mode)" "stderr 403 outranks contentless issues"
+check_eq "false" "$(field .verified_run)" "failed run with contentless issues is not verified"
+check_eq "0" "$(field .findings)" "failed run reports 0 findings"
+check_eq "null" "$(field .contentless_findings)" "failed run never assessed contentless (null, not 0)"
+
+BIN="$(make_stub codeant-garbage-2 'not json at all' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "unparseable stdout exits 3"
+check_eq "no_review_records" "$(field .failure_mode)" "unparseable stdout stays no_review_records"
+check_eq "null" "$(field .contentless_findings)" "unparseable stdout reports null contentless"
+
+BIN="$(make_stub codeant-capped-contentless \
+  '{"issues": [{"label":"MAJOR","issue_content":""},{"issue_content":"real text"}], "meta": {"capped": true, "skipped": ["x.sh"]}, "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "capped run with contentless entries still exits 3"
+check_eq "capped" "$(field .failure_mode)" "capped run with contentless entries reports capped"
+check_eq "1" "$(field .contentless_findings)" "capped run still assesses contentless (integer)"
+
+BIN="$(make_stub codeant-capped-uncountable \
+  '{"issues": true, "meta": {"capped": true, "skipped": ["x.sh"]}, "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq "capped" "$(field .failure_mode)" "capped run with uncountable issues still reports capped"
+check_eq "null" "$(field .contentless_findings)" "uncountable issues leave contentless null, never 0"
+
+# Non-array .issues shapes: a string is countable but not iterable, so the contentless
+# query faults and falls back to the full count; an object's values are iterated as entries.
+BIN="$(make_stub codeant-issues-string '{"issues": "abc", "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq "3" "$(field .findings)" "string .issues keeps its existing length-based count"
+check_eq "3" "$(field .contentless_findings)" "string .issues falls back to all-contentless"
+BIN="$(make_stub codeant-issues-object \
+  '{"issues": {"a": {"issue_content": "Real diagnostic."}, "b": 1}, "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq "2" "$(field .findings)" "object .issues counts its values"
+check_eq "1" "$(field .contentless_findings)" "object .issues treats a non-object value as contentless"
 
 # --------------------------------------------------------------------------
 # 5. CodeRabbit — failure hides in the stdout NDJSON stream, stderr stays clean.
@@ -225,6 +324,7 @@ run --tool coderabbit --bin "$BIN"
 check_eq 0 "$RC" "CR clean run exits 0"
 check_eq "true" "$(field .ok)" "CR clean run is ok"
 check_eq "coderabbit" "$(field .tool)" "contract names the tool"
+check_eq "null" "$(field .contentless_findings)" "CR clean run reports null contentless (CodeAnt-only field)"
 
 # 5e. Findings.
 BIN="$(make_stub coderabbit-findings "$CR_CTX
@@ -233,6 +333,7 @@ run --tool coderabbit --bin "$BIN"
 check_eq 1 "$RC" "CR findings exits 1"
 check_eq "3" "$(field .findings)" "CR findings count comes from the complete record"
 check_eq "true" "$(field .verified_run)" "CR findings is a verified run"
+check_eq "null" "$(field .contentless_findings)" "CR findings run reports null contentless"
 
 # 5f. An error record outranks a later clean complete record — an explicit failure
 #     always beats an empty result, because an empty result IS what failure looks like.
@@ -262,14 +363,27 @@ case "$LOG_PATH" in *//*) bad "log_path contains a doubled slash: $LOG_PATH" ;; 
 # --------------------------------------------------------------------------
 BIN="$(make_stub codeant-summary "$CA_CLEAN" '' 0)"
 SUMMARY="$("$SUT" --tool codeant --bin "$BIN" --log-dir "$LOGS" --format summary 2>/dev/null)"
-if printf '%s' "$SUMMARY" | grep -q '^codeant: ok=true findings=0 verified=true'; then
+if grep -q '^codeant: ok=true findings=0 verified=true' <<<"$SUMMARY"; then
   ok "--format summary emits the one-line human shape"
 else bad "--format summary shape wrong: $SUMMARY"; fi
 check_eq 1 "$(printf '%s\n' "$SUMMARY" | wc -l | tr -d ' ')" "--format summary is a single line"
+if grep -q ' contentless=0 log=' <<<"$SUMMARY"; then
+  ok "--format summary carries contentless= immediately before log="
+else bad "--format summary missing contentless= before log=: $SUMMARY"; fi
+BIN="$(make_stub coderabbit-summary "$CR_CTX
+$CR_DONE" '' 0)"
+SUMMARY="$("$SUT" --tool coderabbit --bin "$BIN" --log-dir "$LOGS" --format summary 2>/dev/null)"
+if grep -q ' contentless=- log=' <<<"$SUMMARY"; then
+  ok "--format summary renders a null contentless as -"
+else bad "CR summary should show contentless=-: $SUMMARY"; fi
 
 # --------------------------------------------------------------------------
-# 8. Timeout — a hung CLI is bounded, never waited on forever (CodeAnt v0.5.1
-#    can hang with ZERO output, so silence is not progress).
+# 8. The bound is IDLE time, not elapsed time (issue #1220).
+#
+#    A silent CLI is still killed (CodeAnt v0.5.1 can hang with ZERO output, so
+#    silence is not progress), but a CLI that keeps writing — CodeRabbit streams
+#    `heartbeat` records — must survive a total runtime well past the bound.
+#    These stubs are raw heredocs, not make_stub: make_stub cannot interleave sleeps.
 # --------------------------------------------------------------------------
 HANG="$STUBS/codeant-hang"
 { echo '#!/usr/bin/env bash'; echo 'sleep 60'; } > "$HANG"
@@ -280,6 +394,92 @@ ELAPSED=$(( $(date -u +%s) - START ))
 check_eq 4 "$RC" "hung CLI exits 4"
 check_eq "timeout" "$(field .failure_mode)" "hung CLI reports timeout"
 if (( ELAPSED < 20 )); then ok "hung CLI is killed promptly (${ELAPSED}s)"; else bad "timeout took ${ELAPSED}s"; fi
+
+# A live CodeRabbit run: heartbeats every 1s for ~6s. Total runtime is double the 3s
+# idle bound, but no single gap reaches it — the pre-#1220 wall-clock loop killed this
+# at 3s and reported a hang that never happened.
+BEAT="$STUBS/coderabbit-heartbeat"
+cat > "$BEAT" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo '{"type":"review_context","files":["a.md"]}'
+for _ in 1 2 3 4 5 6; do
+  sleep 1
+  echo '{"type":"heartbeat","status":"reviewing"}'
+done
+echo '{"type":"complete","status":"review_completed","findings":0}'
+exit 0
+STUB_EOF
+chmod +x "$BEAT"
+START="$(date -u +%s)"
+run --tool coderabbit --bin "$BEAT" --timeout 3 --max-duration 60
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 0 "$RC" "heartbeating CLI past the idle bound still exits 0"
+check_eq "null" "$(field .failure_mode)" "heartbeating CLI is not classified as a hang"
+check_eq "true" "$(field .verified_run)" "heartbeating CLI counts as a verified run"
+if (( ELAPSED >= 5 )); then ok "heartbeating CLI ran past the idle bound (${ELAPSED}s vs 3s)"
+else bad "stub finished too fast (${ELAPSED}s) — it never outlived the bound, so the test proves nothing"; fi
+
+# The shape an idle bound cannot catch: output forever, never finishing. --max-duration
+# is the backstop, and it reports the same failure_mode with its own relevant_error.
+CHATTY="$STUBS/coderabbit-chatty-forever"
+cat > "$CHATTY" <<'STUB_EOF'
+#!/usr/bin/env bash
+while :; do
+  echo '{"type":"heartbeat","status":"reviewing"}'
+  sleep 1
+done
+STUB_EOF
+chmod +x "$CHATTY"
+START="$(date -u +%s)"
+run --tool coderabbit --bin "$CHATTY" --timeout 30 --max-duration 3
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "never-finishing chatty CLI exits 4"
+check_eq "timeout" "$(field .failure_mode)" "ceiling reports failure_mode timeout"
+if grep -q -- '--max-duration' <<<"$(field .relevant_error)"; then
+  ok "ceiling names --max-duration in relevant_error"
+else bad "ceiling error text does not name --max-duration: $(field .relevant_error)"; fi
+if (( ELAPSED < 20 )); then ok "ceiling kills promptly (${ELAPSED}s)"; else bad "ceiling took ${ELAPSED}s"; fi
+
+# The ceiling is derived from --timeout, not a second literal, so retuning one moves the
+# other. Asserted through behaviour (killed at ~2x the idle bound) rather than by pinning
+# the default value, which must stay owned solely by the script.
+START="$(date -u +%s)"
+run --tool coderabbit --bin "$CHATTY" --timeout 2
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "derived ceiling bounds a chatty CLI with no --max-duration"
+if (( ELAPSED < 20 )); then ok "derived ceiling kills promptly (${ELAPSED}s)"; else bad "derived ceiling took ${ELAPSED}s"; fi
+
+# A leading-zero bound must mean what it says. `^[0-9]+$` accepts `08`, which bash
+# arithmetic reads as an invalid octal literal — every (( )) on it then errors and the
+# bound stops being enforced, which is the one failure this wrapper must never have.
+START="$(date -u +%s)"
+STDERR_CAP="$TMP/leading-zero.err"
+OUT="$("$SUT" --tool codeant --bin "$HANG" --timeout 08 --max-duration 09 --log-dir "$LOGS" 2>"$STDERR_CAP")"; RC=$?
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "leading-zero bounds still enforce the timeout (exit 4)"
+check_eq "timeout" "$(field .failure_mode)" "leading-zero bounds report timeout"
+if grep -q 'value too great for base' "$STDERR_CAP" 2>/dev/null; then
+  bad "leading-zero bound produced a bash octal arithmetic error"
+else ok "leading-zero bound produces no octal arithmetic error"; fi
+if (( ELAPSED < 20 )); then ok "leading-zero bound is treated as base 10 (killed in ${ELAPSED}s, not 0 or never)"
+else bad "leading-zero bound took ${ELAPSED}s"; fi
+
+# A CLI that spawns workers must not outlive its own timeout. Only the direct PID gets
+# the signal unless the child is in its own process group, and an orphan keeps calling
+# the API and keeps writing to the capture this script is about to parse.
+SPAWNER="$STUBS/coderabbit-spawner"
+MARKER="$TMP/descendant-alive"
+cat > "$SPAWNER" <<STUB_EOF
+#!/usr/bin/env bash
+( while :; do touch "$MARKER"; sleep 1; done ) &
+sleep 60
+STUB_EOF
+chmod +x "$SPAWNER"
+run --tool coderabbit --bin "$SPAWNER" --timeout 2
+check_eq 4 "$RC" "spawning CLI hits the idle bound"
+rm -f "$MARKER"; sleep 3
+if [[ -e "$MARKER" ]]; then bad "descendant survived the timeout kill and is still running"
+else ok "descendant process is killed with the CLI (process-group kill)"; fi
 
 # --------------------------------------------------------------------------
 # 9. stdout carries ONLY the contract — the whole point of the compact shape is

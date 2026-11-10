@@ -1,0 +1,472 @@
+"""Actual estimate-log CLI writers against private ledgers and synthetic GitHub."""
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = Path(os.environ.get('ESTIMATE_LOCK_TEST_SOURCE', ROOT / '.claude/scripts/estimate-log.sh'))
+SHELL = os.environ.get('ESTIMATE_LOCK_TEST_SHELL', 'bash')
+
+
+class EstimateLockTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='estimate-lock-test-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / 'home'
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        scripts = self.home / '.claude/scripts'
+        scripts.mkdir(parents=True)
+        self.script = self.root / 'estimate-log.sh'
+        shutil.copy2(SOURCE, self.script)
+        ref = scripts / 'pr-issue-ref.sh'
+        ref.write_text('#!/bin/sh\necho 77\n')
+        ref.chmod(0o700)
+        self.log = self.root / 'ledger.jsonl'
+        self.lock = Path(str(self.log) + '.lock')
+        self.env = dict(os.environ, HOME=str(self.home), ESTIMATE_LOG_FILE=str(self.log),
+                        PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
+                        LOCK_FIXTURE=str(self.root), REAL_CAT=shutil.which('cat'),
+                        REAL_DATE=shutil.which('date'))
+        for name in ('GH_REPO', 'CLAUDE_SESSION_REPO'):
+            self.env.pop(name, None)
+        self.tool('gh', '''import json,sys
+p=sys.argv[2] if len(sys.argv)>2 else ''
+if sys.argv[1:3]==['pr','list']:
+ print('[{"number":101},{"number":102}]')
+elif '/pulls/' in p and '--jq' in sys.argv:
+ print('2')
+elif '/pulls/' in p:
+ print(json.dumps({'merged_at':'2026-09-01T14:00:00Z','state':'closed','created_at':'2026-09-01T11:00:00Z','commits':2}))
+elif p.endswith('/comments'): print('[]')
+elif p.endswith('/issues/77'): print('{"body":""}')
+else: sys.exit(99)
+''')
+        self.tool('cat', '''import os,sys,time
+from pathlib import Path
+r=Path(os.environ['LOCK_FIXTURE'])
+if os.environ.get('LOCK_TEST_HOLD')=='1' and any('.estimate-log-tmp-' in a for a in sys.argv[1:]):
+ (r/'held.pid.tmp').write_text(str(os.getpid()))
+ os.replace(r/'held.pid.tmp',r/'held.pid')
+ (r/'held').write_text('ready')
+ deadline=time.monotonic()+20
+ while not (r/'go').exists():
+  if time.monotonic()>deadline: sys.exit(98)
+  time.sleep(.02)
+os.execv(os.environ['REAL_CAT'], [os.environ['REAL_CAT']]+sys.argv[1:])
+''')
+        self.tool('date', '''import os,sys
+from pathlib import Path
+if sys.argv[1:]==['+%s'] and os.environ.get('LOCK_TEST_FAST_TIMEOUT')=='1':
+ p=Path(os.environ['LOCK_TEST_CLOCK']); n=int(p.read_text()) if p.exists() else 0
+ p.write_text(str(n+1)); print(1000000 if n==0 else 1001000)
+else: os.execv(os.environ['REAL_DATE'],[os.environ['REAL_DATE']]+sys.argv[1:])
+''')
+
+    def tool(self, name, body):
+        p = self.bin / name
+        p.write_text('#!' + sys.executable + '\n' + body)
+        p.chmod(0o700)
+
+    def start(self, number, hold=False, fast=False, arguments=None, publication_kind=None):
+        env = dict(self.env, LOCK_TEST_HOLD='1' if hold else '0',
+                   LOCK_TEST_FAST_TIMEOUT='1' if fast else '0',
+                   LOCK_TEST_CLOCK=str(self.root / ('clock-' + str(number))))
+        command = [SHELL, str(self.script)] + (arguments or ['--append', str(number), '--repo', 'acme/widgets'])
+        if publication_kind:
+            env.update(LOCK_TEST_PUBLICATION_KIND=publication_kind,
+                       LOCK_TEST_PUBLICATION_GATE=str(self.root / ('publication-' + str(number))))
+        if env.get('LOCK_TEST_PRINTF_FORMAT') or publication_kind:
+            command = [SHELL, '-c', r'''printf() {
+  if [[ -n "${LOCK_TEST_PRINTF_FORMAT:-}" && "$1" == "$LOCK_TEST_PRINTF_FORMAT" && ! -e "$LOCK_TEST_PRINTF_FAILED" ]]; then
+    : > "$LOCK_TEST_PRINTF_FAILED"
+    return 99
+  fi
+  if [[ -n "${LOCK_TEST_PUBLICATION_KIND:-}" && "${kind:-}" == "$LOCK_TEST_PUBLICATION_KIND" &&
+        "$1" == '%s %s\n' && "$#" == 3 && "${2:-}" =~ ^[0-9]+$ && "${3:-}" == "${LOCK_TOKEN:-}" ]]; then
+    builtin printf '%s %s\n' "$2" "$3" > "$LOCK_TEST_PUBLICATION_GATE.tmp"
+    command mv "$LOCK_TEST_PUBLICATION_GATE.tmp" "$LOCK_TEST_PUBLICATION_GATE.ready"
+    local ticks=0
+    while [[ ! -e "$LOCK_TEST_PUBLICATION_GATE.go" ]]; do
+      if (( ticks >= 1000 )); then
+        : > "$LOCK_TEST_PUBLICATION_GATE.timeout"
+        return 98
+      fi
+      sleep .02
+      ticks=$((ticks + 1))
+    done
+  fi
+  builtin printf "$@"
+}
+export -f printf
+exec "$@"
+''', '_'] + command
+        p = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+        self.addCleanup(self.stop, p)
+        return p
+
+    def stop(self, p):
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            # A parent already killed by an orphan control cannot release its
+            # private held stubs. Let them drain even if ps is unavailable.
+            (self.root / 'go').touch()
+            (self.root / 'go-mv').touch()
+            # Only this fixture's independently identified surviving children
+            # authorize killing an orphaned private process group.
+            for record in self.root.glob('held*.pid'):
+                try:
+                    child = int(record.read_text())
+                    command = subprocess.run(['ps', '-p', str(child), '-o', 'command='],
+                                             capture_output=True, text=True, timeout=2)
+                    if (os.getpgid(child) == p.pid and command.returncode == 0
+                            and str(self.bin) + os.sep in command.stdout):
+                        os.killpg(p.pid, signal.SIGKILL)
+                        break
+                except (ValueError, OSError, subprocess.TimeoutExpired):
+                    continue
+        p.communicate(timeout=5)
+
+    def finish(self, p):
+        out, err = p.communicate(timeout=12)
+        self.assertEqual(p.returncode, 0, err.decode())  # append remains best-effort
+        return err.decode()
+
+    def wait_held(self, p, name='held'):
+        end = time.monotonic() + 10
+        while not (self.root / name).exists():
+            self.assertIsNone(p.poll(), 'holder exited before append boundary')
+            self.assertLess(time.monotonic(), end, 'holder did not reach append boundary')
+            time.sleep(.02)
+        child = int((self.root / (name + '.pid')).read_text())
+        self.assertGreater(child, 0)
+        return child
+
+    def wait_writer_published(self, p, child, timeout=10, on_incomplete=None):
+        token = (self.lock / 'token').read_text().strip()
+        expected = f'{child} {token}\n'
+        end = time.monotonic() + timeout
+        observed_incomplete = False
+        while True:
+            self.assertIsNone(p.poll(), 'parent exited before writer publication')
+            try:
+                actual = (self.lock / 'writer').read_text()
+            except FileNotFoundError:
+                actual = None
+            if actual == expected:
+                return expected
+            if on_incomplete and not observed_incomplete:
+                on_incomplete(actual)
+                observed_incomplete = True
+            self.assertLess(time.monotonic(), end, 'matching writer PID/token was not published')
+            time.sleep(.02)
+
+    def published_orphan(self, p, number, name='held'):
+        child = self.wait_held(p, name)
+        gate = self.root / ('publication-' + str(number))
+        end = time.monotonic() + 10
+        while not gate.with_suffix('.ready').exists():
+            self.assertIsNone(p.poll())
+            self.assertLess(time.monotonic(), end, 'publication gate not reached')
+            time.sleep(.02)
+        token = (self.lock / 'token').read_text().strip()
+        self.assertEqual(gate.with_suffix('.ready').read_text(), f'{child} {token}\n')
+        events = []
+
+        def release(actual):
+            self.assertNotEqual(actual, f'{child} {token}\n')
+            self.assertFalse(gate.with_suffix('.go').exists())
+            self.assertIsNone(p.poll())
+            events.append('incomplete')
+            gate.with_suffix('.go').touch()
+
+        writer = self.wait_writer_published(p, child, on_incomplete=release)
+        events.append('published')
+        self.assertFalse(gate.with_suffix('.timeout').exists())
+        os.kill(p.pid, signal.SIGKILL)
+        p.wait(timeout=5)
+        events.append('killed')
+        self.assertEqual(events, ['incomplete', 'published', 'killed'])
+        os.kill(child, 0)
+        self.assertEqual((self.lock / 'writer').read_text(), writer)
+        self.assertEqual((self.lock / 'token').read_text().strip(), token)
+        return child
+
+    def rows(self):
+        return [json.loads(s)['pr'] for s in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def dead_holder(self):
+        p = self.start(101, hold=True)
+        child = self.wait_held(p)
+        self.wait_writer_published(p, child)
+        self.stop(p)
+        self.assertTrue(self.lock.exists())
+        return p
+
+    def test_old_live_cli_holder_is_never_reaped(self):
+        p = self.start(101, hold=True)
+        self.wait_held(p)
+        os.utime(self.lock, (1, 1))  # older than the former 120s stale threshold
+        before = (self.lock / 'token').read_bytes()
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertEqual((self.lock / 'token').read_bytes(), before)
+        self.assertEqual(self.rows(), [])
+        (self.root / 'go').touch()
+        self.finish(p)
+        self.assertEqual(self.rows(), [101])
+
+    def test_killed_cli_holder_is_recovered(self):
+        self.dead_holder()
+        self.finish(self.start(102))
+        self.assertEqual(self.rows(), [102])
+        self.assertFalse(self.lock.exists())
+
+    def test_two_recovery_contenders_preserve_both_writes(self):
+        self.dead_holder()
+        a, b = self.start(102), self.start(103)
+        self.finish(a)
+        self.finish(b)
+        self.assertEqual(sorted(self.rows()), [102, 103])
+        self.assertFalse(self.lock.exists())
+
+    def test_unknown_foreign_and_unpublished_owners_are_retained(self):
+        for index, owner in enumerate((None, 'bad metadata', '99999999 foreign.invalid old', '0 '+socket.gethostname()+' old')):
+            with self.subTest(owner=owner):
+                self.lock.mkdir()
+                (self.lock / 'token').write_text('old\n')
+                if owner is not None:
+                    (self.lock / 'owner').write_text(owner+'\n')
+                os.utime(self.lock, (1, 1))
+                self.assertIn('could not acquire', self.finish(self.start(110+index, fast=True)))
+                self.assertEqual((self.lock / 'token').read_text(), 'old\n')
+                self.assertEqual(self.rows(), [])
+                shutil.rmtree(self.lock)
+
+    def test_abandoned_recovery_guard_is_retained(self):
+        self.dead_holder()
+        guard = self.lock / ('reaper-' + (self.lock / 'token').read_text().strip())
+        guard.mkdir()
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertTrue(guard.is_dir())
+        self.assertEqual(self.rows(), [])
+
+    def test_generation_replaced_before_recovery_guard_is_not_wedged(self):
+        dead = self.dead_holder()
+        real_mkdir = shutil.which('mkdir')
+        self.env['REAL_MKDIR'] = real_mkdir
+        self.env['LOCK_TEST_SUCCESSOR_PID'] = str(os.getpid())
+        self.env['LOCK_TEST_SUCCESSOR_HOST'] = socket.gethostname()
+        self.tool('mkdir', '''import os,shutil,sys
+from pathlib import Path
+if len(sys.argv)==2 and Path(sys.argv[1]).name.startswith('reaper'):
+ lock=Path(sys.argv[1]).parent
+ marker=Path(os.environ['LOCK_FIXTURE'])/'generation-replaced'
+ if not marker.exists():
+  shutil.rmtree(lock);lock.mkdir()
+  (lock/'token').write_text('999-123456789-3\\n')
+  (lock/'owner').write_text(os.environ['LOCK_TEST_SUCCESSOR_PID']+' '+os.environ['LOCK_TEST_SUCCESSOR_HOST']+' 999-123456789-3\\n')
+  marker.touch()
+os.execv(os.environ['REAL_MKDIR'],[os.environ['REAL_MKDIR']]+sys.argv[1:])
+''')
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertTrue((self.root / 'generation-replaced').exists())
+        self.assertEqual((self.lock / 'token').read_text(), '999-123456789-3\n')
+        self.assertEqual(list(self.lock.glob('reaper*')), [])
+        self.assertEqual(self.rows(), [])
+        # The replacement later dies: its own acquisition can still recover.
+        (self.lock / 'owner').write_text(str(dead.pid)+' '+socket.gethostname()+' 999-123456789-3\n')
+        self.finish(self.start(103))
+        self.assertEqual(self.rows(), [103])
+        self.assertFalse(self.lock.exists())
+
+    def test_failed_pending_marker_publication_does_not_wedge_lock(self):
+        self.env['LOCK_TEST_PRINTF_FORMAT'] = r'pending %s\n'
+        self.env['LOCK_TEST_PRINTF_FAILED'] = str(self.root / 'printf-failed')
+        self.assertIn('failed to append', self.finish(self.start(101)))
+        self.assertTrue((self.root / 'printf-failed').exists())
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(self.lock.exists())
+        self.finish(self.start(102))
+        self.assertEqual(self.rows(), [102])
+
+    def test_failed_done_marker_publication_does_not_wedge_lock(self):
+        self.env['LOCK_TEST_PRINTF_FORMAT'] = r'done %s\n'
+        self.env['LOCK_TEST_PRINTF_FAILED'] = str(self.root / 'printf-failed')
+        self.assertIn('failed to append', self.finish(self.start(101)))
+        self.assertTrue((self.root / 'printf-failed').exists())
+        self.assertEqual(self.rows(), [101])
+        self.assertFalse(self.lock.exists())
+        self.finish(self.start(102))
+        self.assertEqual(self.rows(), [101, 102])
+
+    def test_failed_recovery_allocation_does_not_strand_guard(self):
+        self.dead_holder()
+        real_mktemp = shutil.which('mktemp')
+        self.tool('mktemp', 'import os,sys\nif any(".reaped." in a for a in sys.argv[1:]): sys.exit(88)\nos.execv('+repr(real_mktemp)+',['+repr(real_mktemp)+']+sys.argv[1:])\n')
+        self.assertIn('could not acquire', self.finish(self.start(102)))
+        self.assertEqual(list(self.lock.glob('reaper*')), [])
+        self.assertEqual(self.rows(), [])
+        (self.bin / 'mktemp').unlink()
+        self.finish(self.start(103))
+        self.assertEqual(self.rows(), [103])
+
+    def test_orphaned_append_child_keeps_generation_locked(self):
+        p = self.start(101, hold=True, publication_kind='append')
+        self.addCleanup((self.root / 'go').touch)
+        self.published_orphan(p, 101)  # deliberately leave its cat child alive
+        before = (self.lock / 'token').read_bytes()
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertEqual((self.lock / 'token').read_bytes(), before)
+        self.assertEqual(self.rows(), [])
+        (self.root / 'go').touch()
+        p.communicate(timeout=8)
+        self.assertEqual(self.rows(), [101])
+        self.finish(self.start(103))
+        self.assertEqual(self.rows(), [101, 103])
+
+    def test_orphaned_rewrite_child_cannot_overwrite_new_append(self):
+        self.finish(self.start(101))
+        row = json.loads(self.log.read_text()); row['rounds'] = None
+        self.log.write_text(json.dumps(row, separators=(',', ':'))+'\n')
+        self.env['REAL_MV'] = shutil.which('mv')
+        self.tool('mv', '''import os,sys,time
+from pathlib import Path
+r=Path(os.environ['LOCK_FIXTURE'])
+if sys.argv[-1]==os.environ['ESTIMATE_LOG_FILE']:
+ (r/'held-mv.pid.tmp').write_text(str(os.getpid()))
+ os.replace(r/'held-mv.pid.tmp',r/'held-mv.pid')
+ (r/'held-mv').touch()
+ deadline=time.monotonic()+20
+ while not (r/'go-mv').exists():
+  if time.monotonic()>deadline: sys.exit(98)
+  time.sleep(.02)
+os.execv(os.environ['REAL_MV'],[os.environ['REAL_MV']]+sys.argv[1:])
+''')
+        p = self.start(102, arguments=['--backfill', '--repo', 'acme/widgets', '--limit', '2'],
+                       publication_kind='replace')
+        self.addCleanup((self.root / 'go-mv').touch)
+        self.published_orphan(p, 102, 'held-mv')
+        before = self.log.read_bytes()
+        self.assertIn('could not acquire', self.finish(self.start(103, fast=True)))
+        self.assertEqual(self.log.read_bytes(), before)
+        (self.root / 'go-mv').touch()
+        p.communicate(timeout=8)
+        self.finish(self.start(104))
+        self.assertEqual(self.rows(), [101, 102, 104])
+        self.assertTrue(all(row['rounds']==2 for row in map(json.loads,self.log.read_text().splitlines())))
+
+    def test_orphan_cleanup_drains_private_child_when_inspection_fails(self):
+        faults = (OSError('ps missing'), PermissionError('ps denied'),
+                  subprocess.TimeoutExpired(['ps'], 2))
+        for index, fault in enumerate(faults):
+            with self.subTest(fault=type(fault).__name__):
+                (self.root / 'go').unlink(missing_ok=True)
+                (self.root / 'held').unlink(missing_ok=True)
+                (self.root / 'held.pid').unlink(missing_ok=True)
+                p = self.start(120 + index, hold=True)
+                child = self.wait_held(p)
+                self.wait_writer_published(p, child)
+                os.kill(p.pid, signal.SIGKILL)
+                p.wait(timeout=5)
+                with mock.patch('subprocess.run', side_effect=fault) as inspect:
+                    self.stop(p)
+                    self.assertTrue(inspect.called)
+                self.assertIn(120 + index, self.rows())
+
+    def test_publication_waiter_rejects_incomplete_or_mismatched_identity(self):
+        class LiveParent:
+            def poll(self):
+                return None
+
+        self.lock.mkdir()
+        (self.lock / 'token').write_text('generation\n')
+        for record in ('', 'pending generation\n', '456 generation\n', '123 other\n'):
+            with self.subTest(record=record):
+                (self.lock / 'writer').write_text(record)
+                with self.assertRaisesRegex(AssertionError, 'matching writer PID/token'):
+                    self.wait_writer_published(LiveParent(), 123, timeout=.05)
+                self.assertEqual((self.lock / 'writer').read_text(), record)
+        (self.lock / 'writer').write_text('123 generation\n')
+        self.assertEqual(self.wait_writer_published(LiveParent(), 123), '123 generation\n')
+
+    def test_unpublished_writer_pid_remains_unknown(self):
+        self.dead_holder()
+        token = (self.lock / 'token').read_text().strip()
+        (self.lock / 'writer').write_text('pending '+token+'\n')
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertTrue(self.lock.exists())
+        self.assertEqual(self.rows(), [])
+
+    def test_release_does_not_remove_successor_token(self):
+        p = self.start(101, hold=True)
+        self.wait_held(p)
+        (self.lock / 'token').write_text('successor\n')
+        (self.root / 'go').touch()
+        self.finish(p)
+        self.assertEqual((self.lock / 'token').read_text(), 'successor\n')
+
+    def test_release_does_not_remove_an_empty_successor_token(self):
+        p = self.start(101, hold=True)
+        self.wait_held(p)
+        (self.lock / 'token').write_text('')
+        (self.root / 'go').touch()
+        self.finish(p)
+        self.assertTrue(self.lock.is_dir())
+
+    def test_append_backfill_rounds_patch_and_rollup(self):
+        self.finish(self.start(101))
+        self.finish(self.start(101))
+        self.assertEqual(self.rows(), [101])
+        row = json.loads(self.log.read_text())
+        row['rounds'] = None
+        foreign = dict(row, repo='other/repository')
+        self.log.write_text(json.dumps(foreign,separators=(',',':'))+'\n'+json.dumps(row,separators=(',',':'))+'\n')
+        r = subprocess.run([SHELL, str(self.script), '--backfill', '--repo', 'acme/widgets', '--limit', '2'],
+                           env=self.env, capture_output=True, text=True, timeout=12)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        target = [v for v in rows if v['repo']=='acme/widgets']
+        self.assertEqual(sorted(v['pr'] for v in target), [101, 102])
+        self.assertTrue(all(v['rounds']==2 for v in target))
+        self.assertIn(foreign, rows)
+        before = self.log.read_bytes()
+        report = self.root / 'rollup.md'
+        r = subprocess.run([SHELL, str(self.script), '--rollup', '--repo', 'acme/widgets', '--output', str(report)],
+                           env=self.env, capture_output=True, text=True, timeout=12)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertGreater(report.stat().st_size, 200)
+        self.assertEqual(self.log.read_bytes(), before)
+        self.assertFalse(self.lock.exists())
+
+    def test_pid_inspection_error_is_not_dead_holder_evidence(self):
+        self.dead_holder()
+        self.tool('ps', 'import sys\nsys.exit(2)\n')
+        self.assertIn('could not acquire', self.finish(self.start(102, fast=True)))
+        self.assertTrue(self.lock.exists())
+        self.assertEqual(self.rows(), [])
+
+    def test_failed_owner_publication_refuses_write(self):
+        real_mv = shutil.which('mv')
+        self.tool('mv', 'import os,sys\nif any(a.endswith("/owner.tmp") for a in sys.argv[1:]): sys.exit(97)\nos.execv('+repr(real_mv)+',['+repr(real_mv)+']+sys.argv[1:])\n')
+        self.assertIn('could not acquire', self.finish(self.start(101)))
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(self.lock.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

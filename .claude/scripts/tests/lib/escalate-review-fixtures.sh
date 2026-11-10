@@ -69,6 +69,18 @@ case "$sub" in
           cat "$FIXTURE_COMMITS_JSON"
           exit 0
           ;;
+        repos/*/issues/*/timeline*)
+          # PR timeline — source of the head-observation anchor (issue #1517).
+          # Defaults to an empty timeline so every suite written before this
+          # existed keeps the behaviour the stub's `[]` fallback already gave
+          # them: no force-push event, anchor falls back to the commit date.
+          if [[ -n "${FIXTURE_TIMELINE_JSON:-}" ]]; then
+            cat "$FIXTURE_TIMELINE_JSON"
+          else
+            echo "[]"
+          fi
+          exit 0
+          ;;
         repos/*/git/commits/*)
           # HEAD committer date (issue #875). escalate-review.sh feeds this to
           # review-substance.sh as push_ts, and BOTH the temporal-inversion and
@@ -88,7 +100,84 @@ case "$sub" in
 esac
 STUB
 chmod +x "$STUB_BIN/gh"
+
+# ---- forced shell exec failure (issue #1600) ---------------------------------
+# escalate-review.sh exited 126 with zero output on both streams during PR
+# #1553's review loop. Under `set -euo pipefail` an UNGUARDED command
+# substitution propagates the shell's own status straight out of the script with
+# nothing printed, so the caller reads an empty verdict rather than a failure.
+#
+# Reproducing that needs a jq that passes the script's `command -v` preflight and
+# THEN fails, which is exactly the window the preflight cannot close. The shim
+# below is that jq: it delegates to the real one unless this invocation's program
+# text carries the configured trip pattern, so a suite can break exactly one
+# call site — the unguarded ones — and leave every other jq call working.
+#
+# `$ESC_JQ_REAL` is resolved BEFORE the shim is installed and before STUB_BIN
+# goes on PATH, so the shim cannot recurse into itself.
+ESC_JQ_REAL="$(command -v jq)"
+export ESC_JQ_REAL
+
+# A real, non-executable file. `exec`ing it is a genuine shell exec failure —
+# rc 126, not a fabricated `exit 126` — and the redirect swallows the shell's own
+# "Permission denied" so the observable matches the incident exactly: zero bytes
+# on both streams.
+ESC_JQ_UNRUNNABLE="$STUB_BIN/.unrunnable"
+printf 'not executable\n' > "$ESC_JQ_UNRUNNABLE"
+chmod -x "$ESC_JQ_UNRUNNABLE"
+export ESC_JQ_UNRUNNABLE
+
 export PATH="$STUB_BIN:$PATH"
+
+# The shim is installed ON DEMAND, not at load time: every other suite in this
+# family sources this file, and a permanently interposed jq would add a bash
+# fork to each of their (many) jq calls for no benefit.
+ESC_JQ_SHIM="$STUB_BIN/jq"
+
+# Arm the shim: every jq invocation whose program text contains $1 fails.
+# $2 = "exec" (genuine shell 126) or "code" (silent exit with $3, default 3).
+#
+# Asserts the manipulation LANDED rather than trusting it. A silently inert trip
+# would leave the scenario running an ordinary healthy script that happens to
+# expect a different verdict — a guard that passes by not running.
+break_jq_on() { # <program-text-substring> [exec|code] [rc]
+  ESC_JQ_TRIP_PATTERN="$1"
+  ESC_JQ_TRIP_MODE="${2:-exec}"
+  ESC_JQ_TRIP_RC="${3:-3}"
+  export ESC_JQ_TRIP_PATTERN ESC_JQ_TRIP_MODE ESC_JQ_TRIP_RC
+  cat > "$ESC_JQ_SHIM" <<'STUB'
+#!/usr/bin/env bash
+# Test shim (issue #1600). No `set -e`/pipefail and no pipelines on purpose: the
+# whole point is to control this process's exit status precisely.
+if [[ -n "${ESC_JQ_TRIP_PATTERN:-}" && "$*" == *"${ESC_JQ_TRIP_PATTERN}"* ]]; then
+  if [[ "${ESC_JQ_TRIP_MODE:-exec}" == "exec" ]]; then
+    exec "$ESC_JQ_UNRUNNABLE" 2>/dev/null
+  fi
+  exit "${ESC_JQ_TRIP_RC:-3}"
+fi
+exec "$ESC_JQ_REAL" "$@"
+STUB
+  chmod +x "$ESC_JQ_SHIM"
+  hash -r 2>/dev/null || true   # this shell may have hashed the real jq already
+  local want got
+  case "$ESC_JQ_TRIP_MODE" in exec) want=126 ;; *) want="$ESC_JQ_TRIP_RC" ;; esac
+  jq -r "$1" </dev/null >/dev/null 2>&1
+  got=$?
+  check_eq "jq shim trips on '$1' with rc $want" "$want" "$got"
+  # The negative half: an unrelated jq program must still work, or the shim
+  # would break the whole script rather than the one site under test.
+  got="$(printf '{"a":1}' | jq -r '.a' 2>/dev/null)"
+  check_eq "jq shim still delegates unrelated programs to the real jq" "1" "$got"
+}
+
+restore_jq() {
+  rm -f "$ESC_JQ_SHIM"
+  unset ESC_JQ_TRIP_PATTERN ESC_JQ_TRIP_MODE ESC_JQ_TRIP_RC
+  hash -r 2>/dev/null || true
+  local got
+  got="$(printf '{"a":1}' | jq -r '.a' 2>/dev/null)"
+  check_eq "jq shim removed — real jq restored" "1" "$got"
+}
 
 # ---- helpers -----------------------------------------------------------------
 PR_NUM="99552"
@@ -102,6 +191,18 @@ ts_seconds_ago() {
   python3 -c "
 from datetime import datetime, timedelta, timezone
 print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+"
+}
+
+# The same instant as ts_seconds_ago in GitHub's OTHER UTC spelling.
+# ts-normalizer.sh documents "…Z", "…+00:00", and "…+0000" as all live on the
+# wire, so a shape test keyed on one of them is a silent single-spelling
+# dependency. Used by the head-observation anchor suite to prove its test is
+# ANCHORED rather than narrowed.
+ts_seconds_ago_utc_offset() {
+  python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H:%M:%S') + '+00:00')
 "
 }
 
@@ -156,6 +257,41 @@ EOF
 {"sha": "$HEAD_SHA", "committer": {"date": "$push_ts"}, "author": {"date": "$push_ts"}}
 EOF
   export FIXTURE_GIT_COMMIT_JSON="$TMP/git-commit.json"
+  # Issue #1517: reset the timeline on every scenario. Clearing it HERE rather
+  # than in write_force_push is what stops a force-push event leaking from one
+  # scenario into the next — every suite calls write_commits per scenario, so an
+  # event set once would otherwise silently apply to everything after it.
+  printf '[]\n' > "$TMP/timeline.json"
+  export FIXTURE_TIMELINE_JSON="$TMP/timeline.json"
+}
+
+# The head ref MOVED BY FORCE at $1 (issue #1517). The head-observation anchor is
+# max(commit date, newest force-push), so this is how a scenario says "the commit
+# is old but it only became HEAD just now" — the case a commit date cannot
+# express. Call AFTER write_commits, which resets the timeline.
+#
+# $2 = the event's commit_id, defaulting to the fixture HEAD. Real
+# `head_ref_force_pushed` events DO carry a populated commit_id — verified live
+# against this repo's own timelines (PRs #1203, #1500), not assumed — so the
+# fixture emits one to match the payload shape a scenario is standing in for.
+#
+# escalate-review.sh deliberately does NOT filter on it (CodeAnt, PR for #1517).
+# The anchor takes the NEWEST force-push and applies it only when it makes the
+# age SMALLER, which is equivalent to a commit_id filter in every reachable case:
+# when the current SHA arrived by force-push the newest event IS that event, and
+# when it arrived by an ordinary push afterwards the older foreign event loses
+# the min() anyway — scenario (c) pins that half. The two designs diverge only if
+# a foreign force-push were NEWER than the HEAD commit's own date, which needs a
+# forged or skewed committer date; there the no-filter form degrades toward
+# "younger", i.e. keep polling the current tier, while a commit_id filter would
+# fall back to the stale commit date and re-open the very stall #1517 fixes.
+# Scenario (g) pins that divergence so the filter cannot be added silently.
+write_force_push() {
+  local ts="$1" commit_id="${2:-$HEAD_SHA}"
+  cat > "$TMP/timeline.json" <<EOF
+[{"event": "head_ref_force_pushed", "commit_id": "$commit_id", "created_at": "$ts"}]
+EOF
+  export FIXTURE_TIMELINE_JSON="$TMP/timeline.json"
 }
 
 # CodeRabbit rate-limited check-run — included in every scenario so the script
@@ -180,8 +316,29 @@ write_state() {
   export FIXTURE_STATE_JSON="$TMP/state.json"
 }
 
-run_script() {
+# Raw stdout, exactly as a caller sees it.
+run_script_raw() {
   ( cd "$REPO_ROOT" && bash "$STUB_DIR/escalate-review.sh" "$PR_NUM" )
+}
+
+# The router's verdict, with the refused paid hand-off named (issue #1897).
+# Both paid points now print the same `STATUS=no_reviewer`; stderr's
+# `paid_route=<verdict>` says which one fired. Appending it keeps every
+# routing assertion as discriminating as it was when the two points printed
+# different verdicts — a parity control can still tell them apart. stderr is
+# passed through unchanged and the exit status preserved.
+run_script() {
+  local err rc=0 out route
+  err="$(mktemp "$TMP/esc-stderr.XXXXXX")"
+  out="$(run_script_raw 2>"$err")" || rc=$?
+  cat "$err" >&2
+  if [[ "$out" == "STATUS=no_reviewer" ]]; then
+    route="$(sed -n 's/.*paid_route=\([a-z_]*\).*/\1/p' "$err" | head -n 1)"
+    out="$out paid_route=${route:-missing}"
+  fi
+  rm -f "$err"
+  [[ -n "$out" ]] && printf '%s\n' "$out"
+  return "$rc"
 }
 
 # Every canonical BugBot check-run below carries the PUBLISHING APP the real one
@@ -249,6 +406,109 @@ genuine_comment() {
 # not an invitation.
 trigger_comment() {
   printf '{"user": {"login": "test-user"}, "created_at": "%s", "body": "@cursor review"}' "$1"
+}
+
+# CodeRabbit `Review limit reached` banner (issue #1199). Reproduces the live
+# shape: a blockquoted WARNING admonition whose retry window is wrapped in
+# markdown emphasis (`**Next review available in:** **12 minutes**`), which is
+# why the parser strips asterisks before matching. $1 = created_at, $2 = the
+# window text ("12 minutes"), or "" for a banner carrying no readable window.
+cr_limit_banner() {
+  local ts="$1" window="${2-}" tail=""
+  [[ -n "$window" ]] && tail=" **Next review available in:** **${window}**"
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
+}
+# The SAME banner in CodeRabbit's CURRENT wording (issue #1364), captured
+# verbatim from auerbachb/still-point PR #676 on 2026-08-26: the word `included`
+# is inserted between "Next" and "review", the colon after "in" is gone, the
+# window ends in a period, and the whole comment is preceded by the auto-
+# generated `rate limited by coderabbit.ai` marker. Two drifts from
+# `cr_limit_banner` in one rewording — which is why the parser is keyed on the
+# stable anchors rather than the sentence. $1 = created_at, $2 = window text
+# ("27 minutes"), or "" for a banner carrying no readable window.
+cr_limit_banner_included() {
+  local ts="$1" window="${2-}" tail=""
+  [[ -n "$window" ]] && tail="\\n>\\n> **Next included review available in ${window}.**"
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n\\n> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
+}
+# The FUTURE-TENSE window sentence (CodeAnt review of PR #1393). CodeRabbit ships
+# `will be` between "review" and "available" — captured verbatim on PR #554 as
+# `Your next review will be available in 22 minutes.` and tolerated by
+# `lib/pr-state-classify.jq` since #557, while this parser's inserted-word
+# allowance sat on the far side of "review" and could never reach it. The wording
+# is carried here on a `Review limit reached` banner because that is the family
+# the grace admits: the #554 body itself is an adaptive-limits notice wrapped in
+# `Full review finished.`, which reports a landed review and earns no wait (see
+# cr-rate-limits.md). $1 = created_at, $2 = window text, or "" for none.
+cr_limit_banner_will_be() {
+  local ts="$1" window="${2-}" tail=""
+  [[ -n "$window" ]] && tail="\\n>\\n> **Your next review will be available in ${window}.**"
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
+}
+# The same banner with an UNRECOGNISED copula. Bounds the widening: the slot is a
+# literal `will be`, not a free bridge, so this yields no window and the PR
+# escalates. Pins the failure DIRECTION of the next unlogged drift — degraded to
+# escalation, never a stalled PR.
+#
+# The copula here is exactly TWO words on purpose. A longer one ("is once again")
+# would also be rejected by a generic `(?:\s+\w+){0,2}` bridge, so the scenario
+# would pass whether the slot were literal or widened — proving nothing. `is now`
+# is the shortest phrasing that a bridge WOULD swallow and the literal does not,
+# which is what makes this case fail if someone widens the slot in either file.
+# $1 = created_at, $2 = window text.
+cr_limit_banner_unknown_copula() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n>\\n> **Your next review is now available in %s.**"}' "$1" "$2"
+}
+# MARKER ONLY: the auto-generated marker present, the `Review limit reached`
+# heading prose absent. Pins the wording-independent half of banner detection —
+# if CodeRabbit drops or rewrites the heading entirely, this shape is all that is
+# left to key on. $1 = created_at, $2 = window text.
+cr_limit_banner_marker_only() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n\\n> [!WARNING]\\n> You have hit a temporary cap under our Fair Usage Limits Policy.\\n>\\n> **Next included review available in %s.**"}' "$1" "$2"
+}
+# CodeRabbit PROSE that names the marker phrase without being the marker: the
+# words appear in body text rather than inside the `<!-- ... -->` machine comment,
+# and a future-tense window sentence sits alongside them. The author gate cannot
+# separate this from a real banner — both are coderabbitai[bot] — so only the
+# HTML-comment anchor can. Grants no grace.
+cr_marker_phrase_in_prose() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "Actionable comments posted: 1\\n\\nThis PR was rate limited by coderabbit.ai on its previous run. Next included review available in 27 minutes was the banner it emitted; the retry helper should assert that string."}' "$1"
+}
+# A CodeRabbit comment carrying NEITHER signal — no heading prose, no marker —
+# but which does name a number and a unit. Guards the direction the banner select
+# exists to hold: an ordinary CodeRabbit comment must buy no grace no matter what
+# numbers it happens to contain.
+cr_non_banner_comment() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "Actionable comments posted: 2\\n\\nThe retry helper waits 12 minutes between attempts; see the docs at coderabbit.ai for details."}' "$1"
+}
+# Same banner text from a NON-CodeRabbit author — a quote or a human paraphrase
+# must not buy the PR a grace period.
+cr_limit_banner_foreign_author() {
+  printf '{"user": {"login": "test-user"}, "created_at": "%s", "body": "## Review limit reached **Next review available in:** **%s**"}' "$1" "$2"
+}
+# The banner as it actually lives on a PR: EDITED IN PLACE (issue #1440).
+# CodeRabbit rewrites this one comment as the allowance recovers — `created_at`
+# stays frozen at the banner's birth while `updated_at` tracks the window the
+# body currently states. Observed on PR #1436: created 01:55:37Z saying 43
+# minutes, updated 02:05:02Z saying 33.
+#
+# Every OTHER banner helper above deliberately omits `updated_at`, which makes
+# the rest of this suite the missing-field control for the max() fallback: if
+# the selector ever reads the edit time bare instead of taking the max, those
+# scenarios lose their timestamp entirely and go red as a group.
+#
+# $1 = created_at, $2 = updated_at (pass "" for the empty-field shape a payload
+# that stopped projecting the field would produce), $3 = window text, or "" for
+# a banner carrying no readable window. Built by editing the CURRENT-wording
+# banner so the two helpers cannot drift apart.
+cr_limit_banner_edited() {
+  cr_limit_banner_included "$1" "${3-}" | jq -c --arg u "$2" '.updated_at = $u'
+}
+
+# A CodeRabbit review object on the current HEAD — proves CR has already
+# answered, so there is nothing left to wait for.
+cr_review_on_head() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "commit_id": "%s", "state": "COMMENTED", "submitted_at": "%s"}' "$HEAD_SHA" "$1"
 }
 
 ESCALATE_SRC="$REPO_ROOT/.claude/scripts/escalate-review.sh"

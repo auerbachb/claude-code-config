@@ -1,0 +1,2491 @@
+#!/usr/bin/env bash
+# ai-quotas-setup.sh — Register AI subscription accounts and their isolated
+# per-account login profiles (issue #1666).
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
+#
+# PURPOSE
+#   The owner runs several premium AI coding subscriptions side by side and
+#   drains them in rotation. Reading where each account stands starts with
+#   knowing which accounts exist and being able to reach each one's live
+#   login. This script owns that registry, and nothing else: it records
+#   accounts, creates one isolated profile directory per account, launches the
+#   provider's OWN login flow against that profile, and reports which accounts
+#   currently hold a credential.
+#
+#   DISPLAY / CONFIG ONLY. Nothing here may gate dispatch, pause work, or feed
+#   `credit-budget.sh`. Quota and spend authority stays where
+#   `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" puts it:
+#   Anthropic's own in-app UI and upstream harness signals. Schema, re-login
+#   commands, and the increment boundary: `.claude/reference/ai-quotas.md`.
+#
+#   NO CREDENTIAL VALUE IS EVER READ, PRINTED, OR STORED. The config holds a
+#   provider, a label, a profile directory, and — on macOS — the NAME of the
+#   Keychain item the provider's own tool created. Every reader borrows the
+#   provider tool's live credential at run time instead.
+#
+# USAGE
+#   ai-quotas-setup.sh [list] [--json]
+#   ai-quotas-setup.sh doctor [--json]
+#   ai-quotas-setup.sh repair-layout <claude|codex>
+#   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
+#   ai-quotas-setup.sh nick <label> <name> [<provider>]
+#   ai-quotas-setup.sh remove <label> [<provider>]
+#   ai-quotas-setup.sh relogin <label> [<provider>]
+#   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
+#   ai-quotas-setup.sh launchers [--json]
+#   ai-quotas-setup.sh ledger-hooks
+#   ai-quotas-setup.sh share-config <label> [<provider>]
+#   ai-quotas-setup.sh --help | -h
+#
+# ACTIONS
+#   list      Default when no action is given. Prints one row per registered
+#             account with its status: `ok` (a credential is present),
+#             `needs-login` (none visible — run `relogin`). On a readable
+#             config it exits 0 whatever the statuses say — listing is a
+#             report, never a gate. The one non-zero list is exit 5, when the
+#             config itself is unreadable, unparseable, or written by a
+#             different schema major: a broken tool, not a verdict.
+#   add       Register <label> for <provider>, create its profile directory,
+#             and run that provider's interactive login against it. The login
+#             is the provider's own (magic link, SSO, CAPTCHA); this script
+#             launches it and waits — it never types or reads credentials.
+#             Refuses a (provider, label) pair that is already registered.
+#             `--nick <name>` records a short display name in the same step.
+#   sources   Configure <label> <comma-separated order|default>, or threshold <N>.
+#   nick      Set (or clear, with an empty name) an already-registered
+#             account's short display name. `/quotas` shows it in place of
+#             the label, which is what keeps a five-account table of full
+#             subscription emails inside 100 columns.
+#   remove    Drop an account from the config. The profile directory is LEFT
+#             ON DISK and its path is printed: removing a registry row must
+#             never destroy a working login. Delete it yourself if you mean to.
+#   relogin   Re-run the provider's login against an already-registered
+#             account's existing profile directory, then re-verify.
+#   schedule  macOS only (exit 2 elsewhere). Manage the LaunchAgent that takes
+#             one unattended usage reading a day, so the history `/quotas`
+#             records has no holes on days nobody ran it:
+#               install  write ~/Library/LaunchAgents/com.claude.ai-quotas.plist
+#                        and load it. Runs `ai-quotas.sh --json --quiet` at
+#                        09:00 local (--hour changes it) and once on load,
+#                        logging to ~/.claude/ai-quotas/launchd.log.
+#               remove   bootout the job and delete the plist.
+#               status   report loaded / not loaded, the plist path, and when
+#                        the last unattended snapshot was taken.
+#             The job is a RECORDER, never a gate: it reads figures and
+#             appends them, and nothing in this repo consults them to decide
+#             whether work may proceed.
+#   ledger-hooks — Merge metadata-only Codex SessionStart hooks into per-profile hooks.json.
+#   launchers Write ~/.claude/ai-quotas/launchers.zsh (#1851): one zsh
+#             function per registered claude/codex account, named
+#             `<provider>-<nickname slug>` (`Claude Work` -> claude-work,
+#             `GPT Personal` -> codex-personal; a leading provider word is
+#             dropped from the slug, and an account with no nickname uses the
+#             local part of its label). Each function sets the terminal tab
+#             title to the nickname, resolves the account's profile directory
+#             from the registry BY LABEL through `list --json` (never from a
+#             path built out of the label — #1850 records the directories
+#             can be named backwards), and runs the provider CLI with
+#             CLAUDE_CONFIG_DIR or CODEX_HOME set to it. cursor accounts are
+#             skipped with a note. Two accounts that would share a function
+#             name are refused (exit 3) rather than one silently shadowing
+#             the other. Prints the one `source` line to add to ~/.zshrc —
+#             this script never edits ~/.zshrc. A pre-existing file not
+#             written by this action is moved aside as launchers.zsh.pre-share.
+#             --json prints the validated launcher mapping without generating
+#             the file, probing credential status, or starting a provider.
+#   share-config
+#             Make a profile behave like the primary install. For a claude
+#             profile: symlink skills, agents, rules, hooks, plugins,
+#             projects, CLAUDE.md, and account-config.md to the ~/.claude
+#             equivalents, copy settings.json, and merge the primary
+#             ~/.claude.json mcpServers block into the profile's .claude.json
+#             (every other field of the profile's file — its login and
+#             onboarding state — is kept). For a codex profile: symlink rules
+#             and copy config.toml from ~/.codex. Anything already in the
+#             wanted state is left alone, so a re-run is a no-op; anything in
+#             the way is moved aside as <name>.pre-share, never deleted. A
+#             profile_dir that resolves to the primary install itself, or
+#             sits outside the profile root, is refused (exit 3), as is a
+#             cursor account. Neither action opens a login credential
+#             (.credentials.json, auth.json, the Keychain); the mcpServers
+#             block share-config copies can carry an API key in an env
+#             entry — copied byte for byte, never printed.
+#
+# PROVIDERS
+#   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
+#             against it. Verified Claude Code 2.1.312 also supports auth-only
+#             login via AI_QUOTAS_CLAUDE_LOGIN_ARGS='auth login --claudeai'.
+#             `setup-token` prints a model-request token, not a profile login.
+#             Credential lands in the macOS
+#             Keychain (service `Claude Code-credentials-<suffix>`, whose
+#             suffix this script learns by observing which item the login
+#             created; verified cycle repair additionally checks the binding) or, on other
+#             platforms, in `<profile_dir>/.credentials.json`.
+#   codex     Per-account CODEX_HOME. Credential lands in
+#             `<profile_dir>/auth.json`.
+#   cursor    The Cursor IDE's own login (#1703). There is nothing for this
+#             script to log in to and no profile to create: Cursor has no
+#             login CLI, cursor.com refuses automation browsers outright, and
+#             the IDE already holds an access token for the signed-in user.
+#             So `add` and `relogin` mean "open the Cursor IDE and sign in",
+#             and both confirm afterwards that a token is there — presence
+#             only, through sqlite3, never reading the value. One IDE holds
+#             one account, so this machine can register one cursor account.
+#
+# LAYOUT
+#   Config    ~/.claude/ai-quotas.json                 (mode 600)
+#   doctor reports layout mismatches without reading credentials; exit 8 means findings.
+#   repair-layout stages renames and atomically updates the registry. Stop affected
+#   sessions/readers first. Observed Claude Keychain cycles are supported on macOS
+#   with Swift/Python 3 and verified Claude Code 2.1.312; other bindings are refused.
+#   Exit 9 means rollback failed: preserve .layout-repair and its recovery plan.
+#
+#   Profiles  ~/.claude/ai-quotas/profiles/<label>/<provider>/   (mode 700)
+#   Both live under ~/.claude/, never in a worktree (hook-storage rule).
+#   Agent     ~/Library/LaunchAgents/com.claude.ai-quotas.plist  (mode 644,
+#             macOS only, written by `schedule install`)
+#   Job log   ~/.claude/ai-quotas/launchd.log
+#   Launchers ~/.claude/ai-quotas/launchers.zsh — written by `launchers`,
+#             sourced from ~/.zshrc by a line the owner adds
+#   History   ~/.claude/ai-quotas-history.jsonl — written by ai-quotas.sh,
+#             read here only to answer `schedule status`.
+#
+# ENVIRONMENT (overrides; the defaults are what you want)
+#   AI_QUOTAS_CONFIG        Config file path.
+#   AI_QUOTAS_PROFILE_ROOT  Profile directory root.
+#   AI_QUOTAS_LAUNCH_AGENT  Path of the LaunchAgent plist `schedule` writes.
+#   AI_QUOTAS_LAUNCHCTL_BIN Path to launchctl.
+#   AI_QUOTAS_READER_BIN    Path to ai-quotas.sh to put in the plist. Used
+#                           EXCLUSIVELY when set, for the same reason
+#                           AI_QUOTAS_CHEAPEST_BIN is in the reader: a seam
+#                           that falls back to the portable search finds the
+#                           repo copy whenever the caller stands in a
+#                           checkout, so the "reader unresolvable" path could
+#                           never be exercised from the one place the suite
+#                           runs.
+#   AI_QUOTAS_HISTORY       Snapshot history path, read by `schedule status`.
+#   AI_QUOTAS_LAUNCHD_LOG   Path the job's stdout/stderr are directed to.
+#   AI_QUOTAS_SCHEDULE_HOUR Default hour for `schedule install` when --hour
+#                           is not given (0-23; the built-in default is 9).
+#   AI_QUOTAS_LAUNCHERS_FILE
+#                           Path `launchers` writes (default above).
+#   AI_QUOTAS_PRIMARY_CLAUDE_DIR
+#                           The primary Claude Code config dir `share-config`
+#                           links a claude profile to (default ~/.claude).
+#   AI_QUOTAS_PRIMARY_CLAUDE_JSON
+#                           The primary ~/.claude.json whose mcpServers block
+#                           `share-config` merges into a claude profile.
+#   AI_QUOTAS_PRIMARY_CODEX_HOME
+#                           The primary CODEX_HOME `share-config` shares from
+#                           into a codex profile (default ~/.codex).
+#   AI_QUOTAS_CLAUDE_BIN    Path to the `claude` CLI.
+#   AI_QUOTAS_CODEX_BIN     Path to the `codex` CLI.
+#   AI_QUOTAS_SECURITY_BIN  Path to macOS `security(1)`.
+#   AI_QUOTAS_CLAUDE_LOGIN_ARGS
+#                           Extra argv for the `claude` login invocation
+#                           (default: none — the documented flow is a bare
+#                           `claude` against the profile's CLAUDE_CONFIG_DIR).
+#                           Set it to `/login` on a CLI version where that
+#                           shortcut is preferred.
+#   AI_QUOTAS_PLATFORM      Platform name (default: `uname -s`). `Darwin`
+#                           selects the Keychain probe.
+#   AI_QUOTAS_SQLITE3_BIN   Path to sqlite3 (reads the Cursor IDE store).
+#   AI_QUOTAS_CURSOR_STATE_DB
+#                           Path to the Cursor IDE state store, so the tests
+#                           can point at a fixture DB instead of the real one.
+#   Every override from AI_QUOTAS_CLAUDE_BIN down exists so the test suite can
+#   exercise each path against stubs — no real login, keychain, browser, or
+#   account. They are not meant for normal use.
+#
+# OUTPUT
+#   stdout: the account table, or a JSON array with `--json`.
+#   stderr: one-line diagnostics.
+#
+# EXIT STATUS
+#   0   Action completed (list always exits 0).
+#   1   Login ran but produced no credential this script can see — or produced
+#       an ambiguous one (two keychain items appeared across it, so the item
+#       belonging to this account cannot be told apart). Nothing recorded.
+#       Re-run, or use `add --no-login` to reserve the slot anyway.
+#   2   `schedule` on a host that is not macOS. launchd is the only scheduler
+#       that can reach this user's Keychain, CODEX_HOME directories, and
+#       browser profiles, so there is nothing to install elsewhere — and a
+#       cron line that ran the reader without them would record `needs-login`
+#       every day and call it history.
+#   3   Usage error: bad action, provider, or label; already-registered pair;
+#       an ambiguous label that matches more than one provider; two accounts
+#       that would share a launcher name; `share-config` on a cursor account
+#       or on a profile_dir that is the primary install itself.
+#   4   No account matches the given label (remove / relogin / nick /
+#       share-config).
+#   5   Dependency or write failure: `jq` missing, config unreadable,
+#       unparseable, or written by a different schema major (never rewritten),
+#       profile directory or config write failed; `launchers` or
+#       `share-config` could not write its file, or `share-config` found the
+#       profile directory missing or a .claude.json it cannot parse (never
+#       rewritten).
+#   6   The provider's login CLI could not be found. For `claude` and `codex`
+#       the exact command to run by hand is printed. For `cursor` the missing
+#       tool is sqlite3 — what reads the IDE state store, not a login CLI, so
+#       there is no manual login to print: install sqlite3 and re-run.
+#   7   Contention, refused rather than raced; nothing is changed. Either the
+#       config write lock was unavailable (timeout) or broken mid-update, or a
+#       `relogin` found another relogin already running for the same account.
+#   8   doctor found layout problems (diagnostic only).
+#   9   Repair rollback incomplete: preserve .layout-repair for manual recovery.
+#   70  --help header extraction produced no output (internal defect).
+#
+# DEPENDENCIES
+#   - bash 3.2+, jq
+#   - state-lock.sh (sibling library) for the config read-modify-write lock
+#   - macOS Swift compiler and Python 3 only for verified Keychain cycle repair
+#   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
+#     is sqlite3(1), which ships with macOS, and the Cursor IDE itself
+
+set -euo pipefail
+# Telemetry logs the ACTION ONLY, never the full argument list. Every other
+# script logs "$*", but here the arguments carry the account label — the
+# owner's subscription email — and script-usage.log is a long-lived plaintext
+# file. The action word is all the usage report needs.
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${1:-list}" \
+  2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
+
+SELF_NAME="$(basename "$0")"
+SELF_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# HOME is only needed for the defaults. An unset HOME under `set -u` would
+# otherwise abort with bash's own unbound-variable message, which names a
+# variable rather than the problem; both paths can also be given explicitly.
+_HOME="${HOME:-}"
+if [[ -z "$_HOME" ]] && { [[ -z "${AI_QUOTAS_CONFIG:-}" ]] || [[ -z "${AI_QUOTAS_PROFILE_ROOT:-}" ]]; }; then
+  echo "${SELF_NAME}: HOME is unset — set it, or pass both AI_QUOTAS_CONFIG and AI_QUOTAS_PROFILE_ROOT" >&2
+  exit 5
+fi
+
+CONFIG_FILE="${AI_QUOTAS_CONFIG:-${_HOME}/.claude/ai-quotas.json}"
+PROFILE_ROOT="${AI_QUOTAS_PROFILE_ROOT:-${_HOME}/.claude/ai-quotas/profiles}"
+SCHEMA_VERSION="1.0"
+PLATFORM="${AI_QUOTAS_PLATFORM:-$(uname -s 2>/dev/null || echo unknown)}"
+SECURITY_BIN="${AI_QUOTAS_SECURITY_BIN:-security}"
+KEYCHAIN_SERVICE_PREFIX="Claude Code-credentials"
+
+# --- the daily unattended snapshot (#1700) -----------------------------------
+# One reverse-DNS label, fixed, because it is also the launchctl service name
+# a user types by hand and the key `schedule remove` boots out.
+LAUNCH_LABEL="com.claude.ai-quotas"
+LAUNCH_AGENT_FILE="${AI_QUOTAS_LAUNCH_AGENT:-${_HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist}"
+LAUNCHCTL_BIN="${AI_QUOTAS_LAUNCHCTL_BIN:-launchctl}"
+LAUNCHD_LOG="${AI_QUOTAS_LAUNCHD_LOG:-${_HOME}/.claude/ai-quotas/launchd.log}"
+HISTORY_FILE="${AI_QUOTAS_HISTORY:-${_HOME}/.claude/ai-quotas-history.jsonl}"
+# 09:00 local. Late enough that the Mac is normally awake — launchd runs a
+# missed calendar job at the next wake rather than skipping it, but a reading
+# taken hours late is a reading attributed to the wrong day — and early enough
+# that a day's usage has not yet accumulated, so consecutive snapshots measure
+# a day apart rather than a day plus however long the owner slept in.
+SCHEDULE_HOUR_DEFAULT="9"
+
+# ledger-hooks installs metadata-only Codex hooks.json entries; unsupported versions use backfill.
+# --- help / usage ------------------------------------------------------------
+
+print_help() {
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
+
+die_usage() {
+  echo "${SELF_NAME}: $1" >&2
+  echo "Run with --help for usage." >&2
+  exit 3
+}
+
+die() { # <exit-code> <message>
+  echo "${SELF_NAME}: $2" >&2
+  exit "$1"
+}
+
+# --- shared write lock -------------------------------------------------------
+# The config is a read-modify-write surface like session-state.json, so it
+# borrows the same portable advisory lock rather than inventing a second one.
+
+if [[ ! -f "$SELF_DIR/state-lock.sh" || ! -r "$SELF_DIR/state-lock.sh" ]]; then
+  die 5 "missing sibling library: $SELF_DIR/state-lock.sh"
+fi
+# shellcheck source=./state-lock.sh
+if ! source "$SELF_DIR/state-lock.sh"; then
+  die 5 "failed to load $SELF_DIR/state-lock.sh"
+fi
+
+# --- arg parsing -------------------------------------------------------------
+
+ACTION=""
+JSON=0
+NO_LOGIN=0
+ARG_PROVIDER=""
+ARG_LABEL=""
+ARG_NICK=""
+NICK_GIVEN=0
+ARG_HOUR=""
+SCHEDULE_OP=""
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) print_help; exit 0 ;;
+    --json)    JSON=1; shift ;;
+    --no-login) NO_LOGIN=1; shift ;;
+    # NICK_GIVEN, not `-n "$ARG_NICK"`: `--nick ""` is the documented way to
+    # clear a nickname, and a flag whose "was it passed" test is the emptiness
+    # of its value cannot tell clearing apart from not asking.
+    --nick)
+      [[ $# -ge 2 ]] || die_usage "--nick requires a name (pass '' to clear one)"
+      ARG_NICK="$2"; NICK_GIVEN=1; shift 2 ;;
+    --nick=*) ARG_NICK="${1#--nick=}"; NICK_GIVEN=1; shift ;;
+    --hour)
+      [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--hour requires an hour (0-23)"
+      ARG_HOUR="$2"; shift 2 ;;
+    --hour=*) ARG_HOUR="${1#--hour=}"
+      [[ -n "$ARG_HOUR" ]] || die_usage "--hour requires an hour (0-23)"
+      shift ;;
+    --) shift; while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done ;;
+    -*) die_usage "unknown flag: $1" ;;
+    *)  POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+  ACTION="list"
+else
+  ACTION="${POSITIONAL[0]}"
+fi
+
+case "$ACTION" in
+  list|doctor|ledger-hooks)
+    [[ ${#POSITIONAL[@]} -le 1 ]] || die_usage "$ACTION takes no arguments"
+    ;;
+  repair-layout)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] || die_usage "repair-layout requires <claude|codex>"
+    ARG_PROVIDER="${POSITIONAL[1]}"
+    case "$ARG_PROVIDER" in claude|codex) ;; *) die_usage "repair-layout supports claude or codex only" ;; esac
+    ;;
+  add)
+    [[ ${#POSITIONAL[@]} -eq 3 ]] || die_usage "add requires <provider> <label>"
+    ARG_PROVIDER="${POSITIONAL[1]}"
+    ARG_LABEL="${POSITIONAL[2]}"
+    ;;
+  remove|relogin|share-config)
+    [[ ${#POSITIONAL[@]} -ge 2 && ${#POSITIONAL[@]} -le 3 ]] \
+      || die_usage "$ACTION requires <label> [<provider>]"
+    ARG_LABEL="${POSITIONAL[1]}"
+    if [[ ${#POSITIONAL[@]} -eq 3 ]]; then
+      ARG_PROVIDER="${POSITIONAL[2]}"
+    fi
+    ;;
+  sources)
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 4 ]] || die_usage "sources requires <label> <comma-separated sources|default> [<provider>], or sources threshold <N>"
+    ARG_LABEL="${POSITIONAL[1]}"; ARG_NICK="${POSITIONAL[2]}"
+    [[ ${#POSITIONAL[@]} -ne 4 ]] || ARG_PROVIDER="${POSITIONAL[3]}"
+    ;;
+  nick)
+    # The name is POSITIONAL here — `nick <label> <name>` reads the way the
+    # user says it — while `add` takes the same value through `--nick`,
+    # because `add <provider> <label> <name>` would be three bare words in a
+    # row and the first mis-ordering would register an account under a
+    # nickname.
+    # Refused rather than resolved: with both `nick <label> <name>` and
+    # `--nick <other>` on one line, the positional below would silently
+    # overwrite the flag, and the account would end up named the one the user
+    # did not read last.
+    [[ $NICK_GIVEN -eq 0 ]] \
+      || die_usage "nick takes the name as its second argument — do not also pass --nick"
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 4 ]] \
+      || die_usage "nick requires <label> <name> [<provider>] (pass '' as the name to clear one)"
+    ARG_LABEL="${POSITIONAL[1]}"
+    ARG_NICK="${POSITIONAL[2]}"
+    NICK_GIVEN=1
+    if [[ ${#POSITIONAL[@]} -eq 4 ]]; then
+      ARG_PROVIDER="${POSITIONAL[3]}"
+    fi
+    ;;
+  launchers)
+    [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "launchers takes no arguments"
+    ;;
+  schedule)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] \
+      || die_usage "schedule requires one of: install, remove, status"
+    SCHEDULE_OP="${POSITIONAL[1]}"
+    case "$SCHEDULE_OP" in
+      install|remove|status) ;;
+      *) die_usage "unknown schedule operation: $SCHEDULE_OP (expected install, remove, status)" ;;
+    esac
+    ;;
+  *)
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
+    ;;
+esac
+
+if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" && "$ACTION" != "launchers" ]]; then
+  die_usage "--json applies to list, doctor, or launchers"
+fi
+if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
+  die_usage "--no-login applies to add only"
+fi
+if [[ $NICK_GIVEN -eq 1 && "$ACTION" != "add" && "$ACTION" != "nick" ]]; then
+  die_usage "--nick applies to add only (use 'nick <label> <name>' on an existing account)"
+fi
+# One check, not two: SCHEDULE_OP is set only by the `schedule` action, so
+# `!= install` already covers every other action as well.
+if [[ -n "$ARG_HOUR" && "$SCHEDULE_OP" != "install" ]]; then
+  die_usage "--hour applies to 'schedule install' only"
+fi
+
+# --- validation --------------------------------------------------------------
+
+valid_provider() { # <provider>
+  case "$1" in claude|codex|cursor) return 0 ;; *) return 1 ;; esac
+}
+
+# A label becomes a directory name, so it is restricted rather than escaped:
+# no slash, no leading dot, nothing that could climb out of PROFILE_ROOT.
+valid_label() { # <label>
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._@+-]*$ ]] && [[ ${#1} -le 128 ]]
+}
+
+# A nickname is DISPLAY text, so it is allowed the space in `GPT LM` that a
+# label — which becomes a directory name — is not. What it may not contain is
+# anything that would corrupt the surface it is displayed on: a tab or newline
+# splits the reader's TSV row into columns that no longer line up with their
+# headers, and a control character can rewrite the terminal around it. The
+# 32-character cap is the table's, not an arbitrary one: the ACCOUNT column is
+# the widest thing on a five-account row and a nickname longer than the email
+# it replaces defeats the point.
+valid_nickname() { # <nickname>
+  # LC_ALL=C for the duration: bash matches bracket RANGES by the current
+  # LC_COLLATE order, and in some locales `[$'\001'-$'\037']` does not cover
+  # the C0 characters it names — the guard would then pass a control character
+  # straight into the table it exists to protect. `local` on LC_ALL both
+  # re-initialises the locale here and restores it on return.
+  local LC_ALL=C
+  [[ ${#1} -le 32 ]] || return 1
+  # Printable ASCII and above, excluding the C0 range and DEL. `$'…'` ranges
+  # keep this readable under LC_ALL variation, where a bracket expression
+  # like [[:print:]] can accept a control character in some locales.
+  case "$1" in
+    *[$'\t\n\r']*) return 1 ;;
+    *[$'\001'-$'\037']*) return 1 ;;
+    *$'\177'*) return 1 ;;
+  esac
+  # Leading or trailing whitespace is refused rather than trimmed: a name that
+  # renders identically to another one is a name the owner cannot tell apart
+  # in `list`.
+  [[ "$1" != " "* && "$1" != *" " ]] || return 1
+  return 0
+}
+
+if [[ -n "$ARG_PROVIDER" ]]; then
+  valid_provider "$ARG_PROVIDER" \
+    || die_usage "unknown provider: $ARG_PROVIDER (expected claude, codex, or cursor)"
+fi
+if [[ $NICK_GIVEN -eq 1 && -n "$ARG_NICK" ]]; then
+  valid_nickname "$ARG_NICK" \
+    || die_usage "invalid nickname (max 32 characters, no tabs, newlines, control characters, or leading/trailing spaces)"
+fi
+if [[ -n "$ARG_LABEL" ]]; then
+  valid_label "$ARG_LABEL" \
+    || die_usage "invalid label: $ARG_LABEL (allowed: letters, digits, and . _ @ + - starting with a letter or digit, max 128 chars)"
+fi
+
+command -v jq >/dev/null 2>&1 || die 5 "'jq' not found on PATH"
+
+# --- config read / write -----------------------------------------------------
+
+EMPTY_CONFIG="{\"schema_version\":\"${SCHEMA_VERSION}\",\"accounts\":[]}"
+
+read_config() {
+  if [[ ! -e "$CONFIG_FILE" ]]; then
+    printf '%s' "$EMPTY_CONFIG"
+    return 0
+  fi
+  [[ -r "$CONFIG_FILE" ]] || die 5 "config not readable: $CONFIG_FILE"
+  local raw
+  raw="$(cat "$CONFIG_FILE")" || die 5 "could not read config: $CONFIG_FILE"
+  # An unparseable config is never overwritten — the user's registry is not
+  # ours to discard on a parse error.
+  # Every account is checked for SHAPE, not just the envelope. A row missing
+  # `profile_dir` reads back as the string "null" through `jq -r`, and that
+  # string then reaches `mkdir -p` and `chmod 700 "$(dirname …)"` — which
+  # creates `./null` and chmods the CURRENT DIRECTORY to 700. Refusing the
+  # config is the same answer this function already gives an unparseable one.
+  # The check stays deliberately structural: it requires the three fields to
+  # be non-empty strings and does NOT enumerate provider values, so a `1.x`
+  # config written by a newer tool that knows a fourth provider is still
+  # accepted, exactly as the major-version rule below promises. `credential_ref`
+  # is optional (only macOS claude accounts carry one), but WHEN PRESENT its
+  # shape is checked too: `relogin` reads `.credential_ref.service` through
+  # `jq -r`, and a `credential_ref` that is a string rather than an object makes
+  # jq abort with "Cannot index string" — which under `set -e` surfaces as jq's
+  # error instead of this script's, telling the user nothing about their config.
+  # `added_at` is deliberately NOT required: nothing reads it, and demanding it
+  # would refuse a `1.x` config from a newer tool that stopped writing it.
+  printf '%s' "$raw" | jq -e '
+      type == "object"
+      and (.accounts | type == "array")
+      and ((.source_failure_threshold // 3) | type == "number" and . >= 1 and . == floor)
+      and (.accounts | all((.sources == null) or
+             (.sources | type == "array" and length > 0 and all(type == "string" and test("^[a-z][a-z0-9_-]{0,39}$")))))
+      and (.accounts | all(
+            type == "object"
+            and (.provider    | type == "string" and length > 0)
+            and (.label       | type == "string" and length > 0)
+            and (.profile_dir | type == "string" and length > 0)
+            and ((has("credential_ref") | not)
+                 or (.credential_ref
+                     | type == "object"
+                       and (.service | type == "string" and length > 0)))))' >/dev/null 2>&1 \
+    || die 5 "config is not valid ai-quotas JSON — every account needs a non-empty string provider, label, and profile_dir, and any credential_ref must be an object with a non-empty string service — refusing to touch it: $CONFIG_FILE"
+  # Forward compatibility is by MAJOR version: a `1.x` config written by a
+  # newer tool may carry fields this one does not know, and preserving them is
+  # a jq-level property of every write below. A different major means the
+  # shape itself changed, and rewriting it here would silently drop whatever
+  # it holds — so refuse instead.
+  local found_major
+  found_major="$(printf '%s' "$raw" | jq -r '(.schema_version // "1.0") | tostring | split(".")[0]')"
+  if [[ "$found_major" != "${SCHEMA_VERSION%%.*}" ]]; then
+    die 5 "config schema_version is v${found_major}.x but this tool writes v${SCHEMA_VERSION%%.*}.x — refusing to rewrite $CONFIG_FILE"
+  fi
+  printf '%s' "$raw"
+}
+
+# Callers hold the write lock; the install goes through state_lock_commit so a
+# lock broken mid-update refuses to publish instead of racing another writer.
+write_config() { # <json>
+  local json="$1" dir tmp rc=0
+  dir="$(dirname "$CONFIG_FILE")"
+  mkdir -p "$dir" || die 5 "could not create config directory: $dir"
+  printf '%s' "$json" | jq -e . >/dev/null 2>&1 \
+    || die 5 "refusing to write malformed config JSON"
+  tmp="$(mktemp "${dir}/.ai-quotas.XXXXXX")" || die 5 "could not create temp file in $dir"
+  # The mode is set on the temp file, before any content lands in it, so the
+  # config is never briefly world-readable between creation and chmod.
+  chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod temp config"; }
+  printf '%s\n' "$json" | jq -S . > "$tmp" || { rm -f "$tmp"; die 5 "could not serialize config"; }
+  state_lock_commit "$tmp" "$CONFIG_FILE" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    if [[ "$rc" -eq "${STATE_LOCK_EXIT_TIMEOUT:-6}" ]]; then
+      die 7 "the config write lock was broken mid-update; $CONFIG_FILE is unchanged — retry"
+    fi
+    die 5 "could not install config: $CONFIG_FILE"
+  fi
+  # The committed temp file already has mode 600. No fallible work after publish.
+}
+
+# --- keychain observation (macOS, claude only) -------------------------------
+# The Keychain service name Claude Code uses carries a suffix derived from
+# CLAUDE_CONFIG_DIR by an undocumented function. Registration observes names:
+# it lists the service NAMES before and after a login and records the one that
+# appeared. A name is not a secret, and `security` is never asked for a value
+# (`-w` is never passed), so nothing readable here is a credential.
+
+keychain_claude_services() {
+  [[ "$PLATFORM" == "Darwin" ]] || return 0
+  command -v "$SECURITY_BIN" >/dev/null 2>&1 || return 0
+  "$SECURITY_BIN" dump-keychain 2>/dev/null \
+    | sed -n "s/^[[:space:]]*\"svce\"<blob>=\"\(${KEYCHAIN_SERVICE_PREFIX}[^\"]*\)\"[[:space:]]*$/\1/p" \
+    | LC_ALL=C sort -u \
+    || true
+}
+
+# The observed service name is also remembered NEXT TO the profile, because a
+# login against a profile that already has a Keychain item rewrites that item
+# instead of creating one — so the before/after diff is empty and there is
+# nothing to observe. That is the ordinary shape of re-registering a label
+# whose profile `remove` deliberately left on disk. The sidecar holds a NAME,
+# never a value, and it is never trusted on its own: `credential_present`
+# still asks the Keychain whether that item exists, so a stale sidecar reports
+# needs-login rather than a false ok.
+keychain_sidecar_path() { # <profile_dir>
+  printf '%s/.keychain-service-%s' "$(dirname "$1")" "$(basename "$1")"
+}
+
+# A failed sidecar write is not fatal — the credential itself is already
+# verified and the account is genuinely registered — but it is never SILENT.
+# The sidecar is the only record of the observed service name, so losing it
+# turns a later re-add of this profile (after `remove` left the directory and
+# its Keychain item in place) into a fail-closed error with no visible cause.
+# Warning here is what makes that later refusal explicable. The file is
+# created under `umask 077` BEFORE the name goes into it, so it is never
+# briefly group- or world-readable; the chmod that follows tightens a file
+# that already existed with a looser mode, and its own failure is reported
+# too — the doc promises a mode-600 sidecar, so a silently looser one would
+# make that promise false.
+remember_keychain_service() { # <profile_dir> <service>
+  [[ -n "${2:-}" ]] || return 0
+  local f
+  f="$(keychain_sidecar_path "$1")"
+  if ! ( umask 077; : > "$f" ) 2>/dev/null || ! printf '%s\n' "$2" > "$f" 2>/dev/null; then
+    echo "${SELF_NAME}: warning: could not remember the keychain service name at ${f} — the account IS registered, but re-adding this label after a 'remove' will fail closed and need a fresh login." >&2
+    return 0
+  fi
+  chmod 600 "$f" 2>/dev/null ||
+    echo "${SELF_NAME}: warning: could not chmod 600 ${f} — it holds a service name, never a credential value, but tighten it by hand." >&2
+}
+
+recall_keychain_service() { # <profile_dir>
+  local f
+  f="$(keychain_sidecar_path "$1")"
+  [[ -s "$f" ]] || return 0
+  head -n 1 "$f"
+}
+
+keychain_service_exists() { # <service>
+  [[ "$PLATFORM" == "Darwin" ]] || return 1
+  [[ -n "$1" ]] || return 1
+  command -v "$SECURITY_BIN" >/dev/null 2>&1 || return 1
+  "$SECURITY_BIN" find-generic-password -s "$1" >/dev/null 2>&1
+}
+
+# --- provider CLI resolution -------------------------------------------------
+
+provider_bin() { # <provider> -> path on stdout, or empty + exit 1
+  local provider="$1" override="" candidate
+  # What to look for on PATH. It is the provider name for every provider that
+  # ships its own CLI — and deliberately NOT for cursor: `command -v cursor`
+  # finds the EDITOR launcher on any machine with Cursor installed, and
+  # handing that to the login step would open an IDE instead of the browser
+  # profile, then report the login as having run.
+  local lookup="$provider"
+  local -a candidates=()
+  case "$provider" in
+    claude)
+      override="${AI_QUOTAS_CLAUDE_BIN:-}"
+      candidates=(
+        "${_HOME}/.claude/local/claude"
+        "/opt/homebrew/bin/claude"
+        "/usr/local/bin/claude"
+      )
+      ;;
+    codex)
+      override="${AI_QUOTAS_CODEX_BIN:-}"
+      candidates=(
+        "/opt/homebrew/bin/codex"
+        "/usr/local/bin/codex"
+        "/Applications/ChatGPT.app/Contents/Resources/codex"
+      )
+      ;;
+    cursor)
+      # Cursor has no login CLI and needs none: the Cursor IDE owns the
+      # login. The only tool this script needs for cursor is sqlite3, which
+      # reads the IDE state store to answer "is it signed in?".
+      override="${AI_QUOTAS_SQLITE3_BIN:-}"
+      lookup="sqlite3"
+      candidates=(
+        "/usr/bin/sqlite3"
+        "/opt/homebrew/bin/sqlite3"
+        "/usr/local/bin/sqlite3"
+      )
+      ;;
+    *) return 1 ;;
+  esac
+  if [[ -n "$override" ]]; then
+    [[ -x "$override" ]] || return 1
+    printf '%s' "$override"
+    return 0
+  fi
+  if candidate="$(command -v "$lookup" 2>/dev/null)" && [[ -n "$candidate" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  for candidate in ${candidates[@]+"${candidates[@]}"}; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Where the Cursor IDE keeps its login (#1703). Kept identical to the reader's
+# resolution, including the env seam, so `list` can never disagree with
+# `/quotas` about whether this machine is signed in.
+cursor_state_db() {
+  if [[ -n "${AI_QUOTAS_CURSOR_STATE_DB:-}" ]]; then
+    printf '%s' "$AI_QUOTAS_CURSOR_STATE_DB"
+    return 0
+  fi
+  # Platform-selected, and it has to stay byte-identical to the reader's copy:
+  # a divergence here is `list` and `/quotas` disagreeing about whether this
+  # machine is signed in. Windows stays on the env seam in both.
+  if [[ "$PLATFORM" == "Linux" ]]; then
+    printf '%s' "${_HOME}/.config/Cursor/User/globalStorage/state.vscdb"
+    return 0
+  fi
+  printf '%s' "${_HOME}/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+}
+
+# PRESENCE ONLY, and the value is never opened: the query asks whether the
+# access token is a non-empty string and answers with an exit status. Nothing
+# a credential could ride out on.
+#
+# Read-only rather than a copy: the store is a WAL database the IDE holds open
+# and, measured on this machine, 10 GB — copying it to answer "is there a
+# token?" would cost minutes and 10 GB of disk. `-readonly` takes a plain path,
+# so the space in the default macOS path needs no URI encoding.
+#
+# Three outcomes, not two (CodeRabbit): 0 present, 1 the IDE is signed out,
+# 2 the store could not be read at all. Collapsing 2 into 1 tells the user to
+# sign in again over a store this tool could not open — the one instruction
+# that cannot fix it, and the same distinction the reader makes.
+CURSOR_PRESENT_DETAIL=""
+cursor_token_present() { # <sqlite3-bin>
+  local bin="$1" db found
+  CURSOR_PRESENT_DETAIL=""
+  db="$(cursor_state_db)"
+  if [[ ! -r "$db" ]]; then
+    CURSOR_PRESENT_DETAIL="no readable Cursor IDE state store at ${db}"
+    return 2
+  fi
+  # `length(value) > 0`, NOT `value <> ''` (CodeRabbit). The column is declared
+  # BLOB, and SQLite never compares a blob equal to a text literal — a
+  # zero-length blob would satisfy `value <> ''` and be reported as a present
+  # token, while the reader, which checks the value it actually read, would
+  # call the same store signed out. `length()` is right for both storage
+  # classes, so the two agree.
+  found="$("$bin" -readonly "$db" \
+    "select 1 from ItemTable where key='cursorAuth/accessToken' and value is not null and length(value) > 0;" \
+    2>/dev/null)" || {
+    CURSOR_PRESENT_DETAIL="sqlite3 could not read the Cursor IDE state store at ${db}"
+    return 2
+  }
+  if [[ "$found" == "1" ]]; then
+    return 0
+  fi
+  CURSOR_PRESENT_DETAIL="the Cursor IDE is not signed in"
+  return 1
+}
+
+manual_login_command() { # <provider> <profile_dir>
+  case "$1" in
+    claude) printf 'CLAUDE_CONFIG_DIR=%q claude %s' "$2" "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ;;
+    codex)  printf 'CODEX_HOME=%q codex login' "$2" ;;
+    # Not a command, because there is no command: the credential belongs to
+    # the IDE. Printed in the same slot every other provider prints one so the
+    # "log in by hand with:" line stays true for all three.
+    cursor) printf 'open the Cursor IDE and sign in' ;;
+  esac
+}
+
+# Runs the provider's own interactive login against this account's profile.
+# stdin/stdout/stderr are inherited on purpose: the user completes a magic
+# link or SSO flow in the normal way. Returns the login command's exit status.
+run_login() { # <provider> <profile_dir>
+  local provider="$1" dir="$2" bin
+  if ! bin="$(provider_bin "$provider")"; then
+    # For cursor the missing tool is sqlite3, not a 'cursor' CLI — naming the
+    # provider there would send the user looking for a login binary that has
+    # never existed.
+    if [[ "$provider" == "cursor" ]]; then
+      echo "${SELF_NAME}: no sqlite3 found (PATH, AI_QUOTAS_SQLITE3_BIN, and known install paths all checked)." >&2
+      echo "${SELF_NAME}: it is what reads the Cursor IDE state store; install it, then re-run." >&2
+    else
+      echo "${SELF_NAME}: no '${provider}' CLI found (PATH, override, and known install paths all checked)." >&2
+      echo "${SELF_NAME}: install it, or log in by hand with:" >&2
+      echo "  $(manual_login_command "$provider" "$dir")" >&2
+    fi
+    exit 6
+  fi
+  # Not said for cursor: nothing is launched and no window opens, because the
+  # IDE already holds that login. Announcing one anyway would leave the user
+  # waiting for a browser that is never coming.
+  if [[ "$provider" != "cursor" ]]; then
+    echo "${SELF_NAME}: launching ${provider} login for this profile — complete it in the window/browser it opens."
+  fi
+  case "$provider" in
+    claude)
+      # Preserve the existing interactive default. Verified Claude Code 2.1.312
+      # also supports `auth login --claudeai` through the argument-list override
+      # below; the owner-run replacement runbook uses that auth-only flow.
+      # `setup-token` prints a model-request token instead of storing this login
+      # and must never be substituted here. Never capture a credential value.
+      echo "${SELF_NAME}: when the login finishes, exit the session (/exit or Ctrl-D) to continue."
+      local -a claude_args=()
+      if [[ -n "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ]]; then
+        # The override is an argument LIST, so it is split on whitespace — but
+        # `read -a` is used rather than an unquoted expansion because splitting
+        # is wanted and PATHNAME EXPANSION is not: an unquoted `*` or `?` in the
+        # value would glob against the current directory and silently hand
+        # `claude` an argv nobody wrote. `read` splits and never globs.
+        read -r -a claude_args <<< "${AI_QUOTAS_CLAUDE_LOGIN_ARGS}"
+      fi
+      CLAUDE_CONFIG_DIR="$dir" "$bin" ${claude_args[@]+"${claude_args[@]}"}
+      ;;
+    codex)  CODEX_HOME="$dir" "$bin" login ;;
+    cursor)
+      # There is no login to run. The Cursor IDE owns this credential, and it
+      # is the ONLY thing that can create one: cursor.com's sign-in page runs
+      # a human-verification check that fails inside every automation browser,
+      # which is what retired the Playwright login this replaces (#1703).
+      #
+      # So this branch does the one useful thing left — check whether the IDE
+      # is already signed in, and say what to do when it is not. It reports
+      # failure rather than recording an account whose token never existed,
+      # exactly as the old branch refused to record a session that never
+      # landed. `add --no-login` still reserves the slot without the check.
+      if cursor_token_present "$bin"; then
+        echo "${SELF_NAME}: the Cursor IDE on this machine is signed in — using its token."
+        return 0
+      fi
+      # The probe's own reason, so a store this tool could not open is not
+      # reported as "you are signed out" (CodeRabbit).
+      echo "${SELF_NAME}: ${CURSOR_PRESENT_DETAIL:-the Cursor IDE on this machine is not signed in}." >&2
+      echo "${SELF_NAME}: $(manual_login_command cursor "$dir"), then re-run this command." >&2
+      return 1
+      ;;
+  esac
+}
+
+# --- credential probe --------------------------------------------------------
+# Answers one question — did the provider's own tool leave a credential for
+# this profile — by testing for the artifact's PRESENCE. The value is never
+# opened.
+#
+# Sets CRED_DETAIL to a short human note (may be empty). Returns 0 present,
+# 1 absent.
+
+CRED_DETAIL=""
+
+credential_present() { # <provider> <profile_dir> <keychain_service|"">
+  local provider="$1" dir="$2" service="$3"
+  CRED_DETAIL=""
+  case "$provider" in
+    codex)
+      [[ -s "$dir/auth.json" ]] && return 0
+      # auth.json is where Codex normally lands, but it is not the only place
+      # a logged-in CODEX_HOME can keep its session. Ask the tool itself
+      # before calling the account logged out — `login status` answers with an
+      # exit code, and its output is discarded so no account detail is
+      # printed. Absent CLI just means we fall through to the honest "no".
+      local codex_bin
+      if codex_bin="$(provider_bin codex)"; then
+        if CODEX_HOME="$dir" "$codex_bin" login status >/dev/null 2>&1; then
+          return 0
+        fi
+      fi
+      CRED_DETAIL="no auth.json in profile"
+      return 1
+      ;;
+    claude)
+      # File store first: it is the whole story off macOS, and on macOS a
+      # present file is still a valid credential store.
+      [[ -s "$dir/.credentials.json" ]] && return 0
+      if [[ "$PLATFORM" == "Darwin" ]]; then
+        if [[ -z "$service" ]]; then
+          CRED_DETAIL="no keychain item recorded for this profile"
+          return 1
+        fi
+        if ! command -v "$SECURITY_BIN" >/dev/null 2>&1; then
+          CRED_DETAIL="security(1) unavailable, cannot see the keychain"
+          return 1
+        fi
+        keychain_service_exists "$service" && return 0
+        CRED_DETAIL="recorded keychain item is gone"
+        return 1
+      fi
+      CRED_DETAIL="no .credentials.json in profile"
+      return 1
+      ;;
+    cursor)
+      # "Logged in" for cursor means "the Cursor IDE on this machine is
+      # signed in" (#1703): the credential lives in the IDE, not in a
+      # directory this tool created, so the probe asks the IDE store rather
+      # than <profile_dir>, which cursor no longer uses for anything.
+      #
+      # PRESENCE ONLY — the token is never fetched or printed, only tested
+      # for being a non-empty string, so no credential value passes through
+      # this tool. Presence is still a weaker claim than a live read: a token
+      # can be present and expired, which is why the note says plainly that
+      # only `/quotas` proves it still works.
+      local sqlite_bin
+      if ! sqlite_bin="$(provider_bin cursor)"; then
+        CRED_DETAIL="sqlite3 unavailable, cannot see whether the Cursor IDE is signed in"
+        return 1
+      fi
+      cursor_token_present "$sqlite_bin"
+      case "$?" in
+        0)
+          CRED_DETAIL="the Cursor IDE is signed in; /quotas confirms the token still works"
+          return 0 ;;
+        *)
+          # Carries the probe's own reason, so "signed out" and "I could not
+          # read the store" do not arrive as the same sentence.
+          CRED_DETAIL="${CURSOR_PRESENT_DETAIL:-the Cursor IDE is not signed in}"
+          return 1 ;;
+      esac
+      ;;
+  esac
+  CRED_DETAIL="unknown provider"
+  return 1
+}
+
+# Both results go into globals and NOTHING onto stdout (Greptile). The status
+# used to be printed, which forced every caller to invoke this through
+# `$(...)` — a subshell, where the CRED_DETAIL that `credential_present` sets
+# is discarded along with it. The caller then read the parent's still-empty
+# CRED_DETAIL, so every NOTE column rendered as `-` and every JSON `detail` came
+# out empty, hiding exactly the diagnostics this pair exists to surface: a
+# missing credential file, an unreachable Keychain, a deleted item. It is the
+# same subshell trap `discover_keychain_service` documents above.
+ACCOUNT_STATUS=""
+
+account_status() { # <provider> <profile_dir> <keychain_service|"">
+  ACCOUNT_STATUS=""
+  CRED_DETAIL=""
+  if credential_present "$@"; then
+    ACCOUNT_STATUS="ok"
+  else
+    ACCOUNT_STATUS="needs-login"
+  fi
+}
+
+# --- account lookup ----------------------------------------------------------
+
+# Echoes the indices (0-based, newline separated) of accounts matching
+# <label> and optionally <provider>.
+match_indices() { # <config-json> <label> <provider|"">
+  printf '%s' "$1" | jq -r --arg label "$2" --arg provider "$3" '
+    .accounts
+    | to_entries
+    | map(select(.value.label == $label
+                 and ($provider == "" or .value.provider == $provider)))
+    | .[].key'
+}
+
+# The label of the cursor account already registered, or empty. One expression,
+# used by BOTH the pre-flight check and the re-check under the write lock, so
+# the two can never drift into disagreeing about what "already registered"
+# means.
+cursor_label_held() { # <config-json> -> label on stdout, empty if none
+  printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""'
+}
+
+resolve_single_index() { # <config-json> <label> <provider|""> -> index on stdout
+  local matches count
+  matches="$(match_indices "$1" "$2" "$3")"
+  count="$(printf '%s' "$matches" | grep -c . || true)"
+  if [[ "$count" -eq 0 ]]; then
+    if [[ -n "$3" ]]; then
+      die 4 "no account registered with label '$2' for provider '$3'"
+    fi
+    die 4 "no account registered with label '$2'"
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    local providers
+    providers="$(printf '%s' "$1" | jq -r --arg label "$2" \
+      '[.accounts[] | select(.label == $label) | .provider] | join(", ")')"
+    die 3 "label '$2' matches more than one account ($providers) — name the provider too"
+  fi
+  printf '%s' "$matches"
+}
+
+# --- profile directory -------------------------------------------------------
+
+profile_dir_for() { # <label> <provider>
+  printf '%s/%s/%s' "$PROFILE_ROOT" "$1" "$2"
+}
+
+ensure_profile_dir() { # <dir>
+  mkdir -p "$PROFILE_ROOT" || die 5 "could not create profile root: $PROFILE_ROOT"
+  # The label is already restricted so it cannot climb out of PROFILE_ROOT,
+  # but a pre-existing SYMLINK at the label or provider component is a second
+  # way out: `mkdir -p` follows it, and the profile — with the credential the
+  # login is about to write into it — lands somewhere else entirely. So the
+  # containment is checked on the PHYSICAL path (`pwd -P` resolves every
+  # link), not on the string. A symlink that stays inside the root is left
+  # alone, because it does not move anything out.
+  #
+  # The check runs BEFORE anything is created (Greptile). Creating the profile
+  # first and refusing afterwards still let `mkdir -p` deposit the provider
+  # directory at the symlink's external destination — no credential, but a
+  # refused operation had already written outside the configured root. A link
+  # can only redirect through a component that already exists, so resolving
+  # the deepest EXISTING ancestor and re-attaching the components still to be
+  # created answers the same question without creating any of them.
+  local root_phys probe rest="" phys
+  root_phys="$( (cd -P "$PROFILE_ROOT" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$root_phys" ]] || die 5 "could not resolve the profile root: $PROFILE_ROOT"
+  probe="$1"
+  while [[ ! -d "$probe" ]]; do
+    rest="$(basename "$probe")${rest:+/$rest}"
+    probe="$(dirname "$probe")"
+    [[ "$probe" != "/" && "$probe" != "." && "$probe" != "$1" ]] || break
+  done
+  phys="$( (cd -P "$probe" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys" ]] || die 5 "could not resolve the profile directory or its root: $1"
+  [[ -z "$rest" ]] || phys="$phys/$rest"
+  case "$phys" in
+    "$root_phys"/*) : ;;
+    *) die 5 "profile directory $1 resolves to $phys, outside the profile root $root_phys (a symlink in the path?) — refusing to run a login against it" ;;
+  esac
+
+  mkdir -p "$1" || die 5 "could not create profile directory: $1"
+  # Re-check what was actually created. The pre-creation check answers the
+  # question for the tree as it stood a moment ago; this one answers it for
+  # the directory the login is about to be pointed at. Both run before any
+  # login, so a redirected profile never receives a credential.
+  phys="$( (cd -P "$1" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys" ]] || die 5 "could not resolve the profile directory or its root: $1"
+  case "$phys" in
+    "$root_phys"/*) : ;;
+    *) die 5 "profile directory $1 resolves to $phys, outside the profile root $root_phys (a symlink in the path?) — refusing to run a login against it" ;;
+  esac
+  # Tighten the whole chain we create, not just the leaf: a world-readable
+  # parent is how a per-account profile stops being isolated.
+  chmod 700 "$PROFILE_ROOT" 2>/dev/null || true
+  chmod 700 "$(dirname "$1")" || die 5 "could not chmod 700 the profile parent of $1"
+  chmod 700 "$1" || die 5 "could not chmod 700 $1"
+}
+
+# --- actions -----------------------------------------------------------------
+
+# Discovers which keychain item a just-completed claude login created, by
+# comparing the before/after service-name snapshots. Echoes a service name, or
+# nothing; it never fabricates or guesses one.
+#
+# AMBIGUITY IS REFUSED, NOT GUESSED (CodeRabbit, local review). If two logins
+# for different accounts overlap, more than one item can appear between this
+# run's two snapshots, and picking the first would silently bind an account to
+# another account's credential — a wrong answer that looks exactly like a
+# right one. The alternative CodeRabbit proposed, a dedicated keychain lock
+# held across the login, would hold a lock for the length of an unbounded
+# interactive flow (magic link, SSO) — well past the 120s staleness ceiling
+# that would then let another writer break it mid-login anyway. Detecting the
+# collision and refusing costs nothing and cannot be wrong: the caller reports
+# it and the user re-runs the one login on its own.
+# Results go into globals, NOT onto stdout: a `$(...)` call would run this in
+# a subshell, where the ambiguity flag it sets would be discarded along with
+# the subshell and every ambiguous login would silently fall through to the
+# ordinary "no credential" path.
+NEW_KEYCHAIN_AMBIGUOUS=0
+NEW_KEYCHAIN_SERVICE=""
+
+discover_keychain_service() { # <before-list> <after-list>
+  NEW_KEYCHAIN_AMBIGUOUS=0
+  NEW_KEYCHAIN_SERVICE=""
+  [[ "$PLATFORM" == "Darwin" ]] || return 0
+  local before_f after_f added count
+  before_f="$(mktemp)"; after_f="$(mktemp)"
+  printf '%s\n' "$1" | LC_ALL=C sort -u > "$before_f"
+  printf '%s\n' "$2" | LC_ALL=C sort -u > "$after_f"
+  added="$(LC_ALL=C comm -13 "$before_f" "$after_f" | grep . || true)"
+  rm -f "$before_f" "$after_f"
+  count="$(printf '%s' "$added" | grep -c . || true)"
+  if [[ "$count" -gt 1 ]]; then
+    NEW_KEYCHAIN_AMBIGUOUS=1
+    return 0
+  fi
+  NEW_KEYCHAIN_SERVICE="$added"
+}
+
+# Chooses which service name this profile's credential_ref should carry after a
+# login, given what this profile was already known to use and what appeared in
+# the Keychain while the login ran.
+#
+# A KNOWN item that the Keychain still holds WINS over one that merely appeared
+# (Greptile). The keychain-observation note above is the reason: a login against
+# a profile that already has an item rewrites that item in place, so OUR login
+# contributes nothing to the before/after diff — and anything that did appear
+# was created by some other login running at the same time. `discover_keychain_
+# service` refuses two or more such items as ambiguous, but exactly one is
+# indistinguishable from an ordinary first login, and adopting it would rebind
+# this account to another account's credential. `credential_present` cannot
+# catch that: the foreign item does exist, so the account would go on reporting
+# `ok` while pointing at the wrong credential.
+#
+# The item that appeared is taken only when this profile has no live item to
+# keep — nothing recorded anywhere, or what was recorded is gone from the
+# Keychain, which is what re-keying an account actually looks like.
+resolve_keychain_service() { # <profile_dir> <recorded-service|""> <appeared-service|"">
+  local known="$2"
+  [[ -n "$known" ]] || known="$(recall_keychain_service "$1")"
+  if [[ -n "$known" ]] && keychain_service_exists "$known"; then
+    printf '%s' "$known"
+    return 0
+  fi
+  if [[ -n "$3" ]]; then
+    printf '%s' "$3"
+    return 0
+  fi
+  printf '%s' "$known"
+}
+
+action_add() {
+  local provider="$ARG_PROVIDER" label="$ARG_LABEL"
+  local config dir service="" before="" after=""
+
+  config="$(read_config)"
+  local existing
+  existing="$(match_indices "$config" "$label" "$provider")"
+  if [[ -n "$existing" ]]; then
+    die 3 "'$label' is already registered for $provider — use 'relogin $label $provider' instead"
+  fi
+
+  # cursor is a SINGLETON provider (#1703, CodeAnt). Every other provider gets
+  # its own isolated profile directory, so two labels are two accounts. cursor
+  # has no directory at all — every cursor row reads the one Cursor IDE store
+  # — so a second label registers the same account twice and /quotas renders
+  # two rows with identical credentials, identical usage and identical reset.
+  # The label check above cannot catch it: the labels differ, the account does
+  # not. Refuse, and name the label already holding the slot.
+  #
+  # This is the PRE-FLIGHT half only. It fails early, before a login runs, but
+  # it is a read outside the lock and therefore racy on its own — the check and
+  # the append are re-run under the write lock below, exactly as the duplicate
+  # (provider, label) guard is.
+  local cursor_held
+  cursor_held="$(cursor_label_held "$config")"
+  if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
+    die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
+  fi
+
+  dir="$(profile_dir_for "$label" "$provider")"
+  # Not for cursor (#1703): its credential lives in the Cursor IDE, so this
+  # tool creates no directory for it. The registry still carries the field —
+  # the schema declares it for every account — but nothing reads it for
+  # cursor, and an empty directory nobody opens is just litter in ~/.claude.
+  if [[ "$provider" == "cursor" ]]; then
+    echo "${SELF_NAME}: cursor reads the Cursor IDE login at $(cursor_state_db) — no profile directory is created."
+  else
+    ensure_profile_dir "$dir"
+  fi
+
+  if [[ $NO_LOGIN -eq 1 ]]; then
+    # Cursor reserves a registry row, not a directory, so naming a path here
+    # would point the user at something that was never created (CodeRabbit).
+    if [[ "$provider" == "cursor" ]]; then
+      echo "${SELF_NAME}: --no-login — slot reserved; sign in to the Cursor IDE, then run 'relogin $label cursor'."
+    else
+      echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
+    fi
+  else
+    if [[ "$provider" == "claude" ]]; then
+      before="$(keychain_claude_services)"
+    fi
+    if ! run_login "$provider" "$dir"; then
+      die 1 "the ${provider} login did not complete; nothing was registered. Re-run, or use 'add ${provider} ${label} --no-login' to reserve the slot."
+    fi
+    if [[ "$provider" == "claude" ]]; then
+      after="$(keychain_claude_services)"
+      discover_keychain_service "$before" "$after"
+      if [[ "$NEW_KEYCHAIN_AMBIGUOUS" -eq 1 ]]; then
+        die 1 "more than one keychain item appeared while this login ran (a concurrent login?), so which one belongs to '${label}' cannot be told apart; nothing was registered. Re-run this add on its own."
+      fi
+      service="$(resolve_keychain_service "$dir" "" "$NEW_KEYCHAIN_SERVICE")"
+    fi
+    if ! credential_present "$provider" "$dir" "$service"; then
+      die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); nothing was registered. Re-run, or use 'add ${provider} ${label} --no-login' to reserve the slot."
+    fi
+    if [[ "$provider" == "claude" ]]; then
+      remember_keychain_service "$dir" "$service"
+    fi
+  fi
+
+  local entry now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  entry="$(jq -n \
+    --arg provider "$provider" \
+    --arg label "$label" \
+    --arg profile_dir "$dir" \
+    --arg added_at "$now" \
+    --arg service "$service" \
+    --arg nickname "$ARG_NICK" \
+    '{provider: $provider, label: $label, profile_dir: $profile_dir, added_at: $added_at}
+     + (if $nickname == "" then {} else {nickname: $nickname} end)
+     + (if $service == "" then {} else {credential_ref: {kind: "macos-keychain", service: $service}} end)')"
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  # Re-check under the lock: a concurrent add of the same pair would otherwise
+  # append a duplicate row that every later lookup reports as ambiguous.
+  if [[ -n "$(match_indices "$config" "$label" "$provider")" ]]; then
+    state_lock_release || true
+    die 3 "'$label' was registered for $provider by another process while this login ran"
+  fi
+  # And the cursor singleton, for the same reason (CodeAnt): two concurrent
+  # `add cursor` runs under different labels both clear the pre-flight check,
+  # and without this the second one appends a duplicate row the reference doc
+  # promises cannot exist. Re-read under the lock is what makes that promise true.
+  cursor_held="$(cursor_label_held "$config")"
+  if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
+    state_lock_release || true
+    die 3 "cursor was registered as '$cursor_held' by another process while this add ran — one Cursor IDE holds one account, so nothing was added."
+  fi
+  # Seed the version only when absent: a `1.x` config written by a newer tool
+  # keeps its own minor, since read_config already accepted it as compatible.
+  config="$(printf '%s' "$config" | jq --argjson entry "$entry" \
+    --arg schema "$SCHEMA_VERSION" '.schema_version = (.schema_version // $schema) | .accounts += [$entry]')" \
+    || { state_lock_release || true; die 5 "could not add the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  # What this account is READ FROM, which for cursor is not <profile_dir>: no
+  # such directory is created, so printing one would name a path the user
+  # could go looking for and never find (CodeAnt).
+  local where="profile: ${dir}"
+  [[ "$provider" != "cursor" ]] || where="reads the Cursor IDE login at $(cursor_state_db)"
+  if [[ -n "$ARG_NICK" ]]; then
+    echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (${where})."
+  else
+    echo "${SELF_NAME}: registered ${provider} account '${label}' (${where})."
+  fi
+}
+
+# Set or clear an existing account's short display name. Registry-only: it
+# touches no profile directory, runs no login, and reads no credential.
+# Source configuration is independently locked and re-resolved, like nick/remove.
+action_sources() {
+  local config index provider allowed entry order
+  config="$(read_config)"
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  if [[ "$ARG_LABEL" == threshold && "$ARG_NICK" =~ ^[0-9]+$ && -z "$ARG_PROVIDER" ]]; then
+    [[ "$ARG_NICK" =~ ^[1-9][0-9]*$ && ${#ARG_NICK} -le 6 ]] || die_usage "threshold must be a positive integer (at most six digits)"
+    config="$(printf '%s' "$config" | jq --argjson n "$ARG_NICK" '.source_failure_threshold=$n')"
+  else
+    index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+    provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+    case "$provider" in claude) allowed=oauth-usage ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
+    if [[ "$ARG_NICK" == default ]]; then
+      config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
+    else
+      order="$(jq -nc --arg order "$ARG_NICK" --arg allowed "$allowed" '
+        ($order|split(",")) as $s | ($allowed|split(",")) as $a |
+        if ($s|length)>0 and ($s|unique|length)==($s|length) and all($s[]; . as $v | $a|index($v))
+        then $s else error("invalid source order") end')" || die_usage "invalid source order for this provider"
+      config="$(printf '%s' "$config" | jq --argjson i "$index" --argjson order "$order" '.accounts[$i].sources=$order')"
+    fi
+  fi
+  write_config "$config"
+  state_lock_release || true
+  echo "${SELF_NAME}: usage source configuration updated."
+}
+
+action_nick() {
+  local config index provider label
+
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  # Re-resolved under the lock for the same reason `remove` re-resolves: the
+  # index read a moment ago may name a different row now, and writing by a
+  # stale index renames the wrong account.
+  index="$(match_indices "$config" "$ARG_LABEL" "${ARG_PROVIDER:-$provider}" | head -n 1)"
+  if [[ -z "$index" ]]; then
+    state_lock_release || true
+    die 4 "no account registered with label '$ARG_LABEL' (removed by another process?)"
+  fi
+  # Both label AND provider re-read from the LOCKED config, so the confirmation
+  # describes the row that was actually written rather than the one the
+  # pre-lock lookup saw.
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  # An empty name DELETES the key rather than storing `""`. A reader asking
+  # `.nickname // .label` would answer correctly either way, but one asking
+  # `has("nickname")` would not, and the config should not carry a field whose
+  # only meaning is "there isn't one".
+  config="$(printf '%s' "$config" | jq --argjson i "$index" --arg nickname "$ARG_NICK" '
+    .accounts[$i] = (if $nickname == ""
+                     then (.accounts[$i] | del(.nickname))
+                     else (.accounts[$i] + {nickname: $nickname}) end)')" \
+    || { state_lock_release || true; die 5 "could not update the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  if [[ -n "$ARG_NICK" ]]; then
+    echo "${SELF_NAME}: ${provider} account '${label}' is now shown as \"${ARG_NICK}\"."
+  else
+    echo "${SELF_NAME}: ${provider} account '${label}' no longer has a nickname; /quotas will show its label."
+  fi
+}
+
+action_remove() {
+  local config index entry dir provider
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
+  dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
+  provider="$(printf '%s' "$entry" | jq -r '.provider')"
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  # Re-resolve under the lock: the index read a moment ago may name a
+  # different row now, and deleting by a stale index removes the wrong one.
+  index="$(match_indices "$config" "$ARG_LABEL" "${ARG_PROVIDER:-$provider}" | head -n 1)"
+  if [[ -z "$index" ]]; then
+    state_lock_release || true
+    die 4 "no account registered with label '$ARG_LABEL' (removed by another process?)"
+  fi
+  config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i])')" \
+    || { state_lock_release || true; die 5 "could not remove the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  echo "${SELF_NAME}: removed ${provider} account '${ARG_LABEL}' from the registry."
+  echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
+}
+
+
+# Set while THIS process owns the relogin slot for a profile directory.
+RELOGIN_SLOT_MARKER=""
+
+# Refuse a second concurrent relogin for the same profile rather than letting
+# both run (CodeAnt, PR #1689). The exposure is specific to the replace path:
+# once the first relogin has moved the profile aside and recreated it, the
+# second sees an ordinary-looking directory at <dir> and retires THAT — the
+# fresh profile the first one's browser is actively writing into. Both then
+# believe they own <dir>, and whichever finishes last writes the registry row,
+# so the account ends up naming a profile holding someone else's half-written
+# session. No status probe can describe that state, which is the same reason
+# the replace exists at all.
+#
+# DETECT AND REFUSE, not a lock held across the login — the same call this
+# script already makes for the overlapping-keychain case above. A login is an
+# unbounded interactive flow (magic link, SSO), so any lock covering it outlives
+# every staleness ceiling we have and gets broken mid-login anyway, which is
+# worse than no lock: it looks serialized and is not.
+#
+# `mkdir` is the whole mechanism — it is atomic and it FAILS when the path
+# exists, so exactly one caller can win. The holder's PID is recorded so a
+# relogin killed hard (a lost terminal, a reboot mid-login) leaves a marker that
+# the next run can prove dead and take over, instead of a permanent refusal the
+# user has no documented way out of.
+#
+# The slot lives in a FLAT directory under the profile root, not as a sibling of
+# the profile itself (CodeRabbit, local review). A sibling has to be created
+# through the label and provider components of the profile path, and those are
+# exactly the components `ensure_profile_dir` refuses to `mkdir -p` through
+# until it has proved on the physical path that no symlink redirects them out of
+# the root. Claiming here would have to either repeat that proof or run before
+# it. Keying on the label instead puts the marker one component below the root
+# that `ensure_profile_dir` itself creates unconditionally — and it means a
+# relogin whose profile tree was deleted claims its slot and goes on to recreate
+# the profile, rather than reporting contention it never raced for.
+# The pid write FAILS THE CLAIM rather than being tolerated (CodeRabbit, local
+# review). A marker whose pid cannot be read is treated as a live holder by the
+# check above — deliberately, since guessing "probably dead" is what the whole
+# guard exists to avoid — so silently keeping a marker this run could not stamp
+# would convert a transient write error into a permanent, unexplained refusal of
+# every future relogin for the account. Removing it and failing loudly leaves
+# the account exactly as it was.
+write_slot_pid() { # <marker> — 0 when the pid is on disk and readable
+  local marker="$1"
+  printf '%s\n' "$$" > "${marker}/pid" 2>/dev/null || return 1
+  [[ "$(cat "${marker}/pid" 2>/dev/null || true)" == "$$" ]] || return 1
+  return 0
+}
+
+claim_relogin_slot() { # <label> <provider> — sets RELOGIN_SLOT_MARKER
+  local key slots marker recover holder=""
+  # One flat component: the label is already restricted from climbing out of
+  # the root, and this narrows it further rather than trusting that alone.
+  key="$(printf '%s__%s' "$1" "$2" | tr -c 'A-Za-z0-9._@+-' '_')"
+  slots="$PROFILE_ROOT/.relogin-slots"
+  mkdir -p "$slots" || die 5 "could not create the relogin slot directory: $slots"
+  # Owner-only, like the profile root and every profile under it (CodeRabbit,
+  # local review). These hold pids rather than credentials, but the mode is set
+  # here rather than left to the ambient umask so the whole tree answers the
+  # same way regardless of the shell the relogin was started from.
+  chmod 700 "$slots" 2>/dev/null || true
+  marker="$slots/$key"
+  if ! mkdir "$marker" 2>/dev/null; then
+    [[ -d "$marker" ]] || die 5 "could not claim the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+    holder="$(cat "${marker}/pid" 2>/dev/null || true)"
+    # Alive, or unreadable — either way this is not ours to take. An unreadable
+    # PID is treated as alive on purpose: guessing "probably dead" is how two
+    # logins end up sharing a profile, which is the outcome being prevented.
+    if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+      die 7 "another relogin for '${ARG_LABEL}' is already running${holder:+ (pid ${holder})}; '${ARG_LABEL}' is unchanged — wait for it to finish, or remove ${marker} if you are sure it is not."
+    fi
+    # The holder is gone, so this run may take the slot over — but the takeover
+    # is itself a read-modify-write on a shared path, and racing it unguarded
+    # reintroduces the bug in a subtler form (CodeAnt/CodeRabbit, PR #1689): two
+    # recoveries both find the marker dead, the first replaces it and starts a
+    # login, and the second then moves that LIVE marker aside and claims the
+    # slot on top of it. So the recovery takes its own atomic claim first.
+    recover="${marker}.recovering"
+    if ! mkdir "$recover" 2>/dev/null; then
+      # Refused, never broken. This guard covers a handful of non-blocking
+      # filesystem calls and nothing else — no login, no network, no lock wait —
+      # so there is no legitimate "it is just slow" case to wait out, and
+      # breaking it would only re-open the race it exists to close. A guard left
+      # by a process killed inside those few syscalls is cleared by hand, which
+      # the message says.
+      die 7 "another relogin for '${ARG_LABEL}' is recovering this slot right now; '${ARG_LABEL}' is unchanged — re-run it in a moment, or remove ${recover} if no other relogin is running."
+    fi
+    # Re-read UNDER the guard. The pid read above is only a fast path: between
+    # it and here, the dead holder's slot may have been taken over by a relogin
+    # that is now very much alive, and taking it from that one is the exact
+    # outcome being prevented.
+    holder="$(cat "${marker}/pid" 2>/dev/null || true)"
+    if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 7 "another relogin for '${ARG_LABEL}' claimed this slot while this one was recovering an abandoned marker; '${ARG_LABEL}' is unchanged — re-run it on its own."
+    fi
+    # Replaced rather than reused, so the marker this run goes on to own is one
+    # it created, not one it inherited and cannot vouch for.
+    rm -rf "${marker}.stale.$$" 2>/dev/null || true
+    if ! mv "$marker" "${marker}.stale.$$" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not retire the abandoned relogin marker at ${marker}; '${ARG_LABEL}' is unchanged"
+    fi
+    rm -rf "${marker}.stale.$$" 2>/dev/null || true
+    if ! mkdir "$marker" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not claim the relogin slot at ${marker} after retiring the abandoned one; '${ARG_LABEL}' is unchanged"
+    fi
+    if ! write_slot_pid "$marker"; then
+      rm -rf "$marker" 2>/dev/null || true
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not record this run's pid in the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+    fi
+    # Released only once the new marker carries this run's pid: a competing
+    # recovery that acquires the guard next must see a LIVE holder, not the
+    # empty marker it would otherwise feel entitled to take.
+    rmdir "$recover" 2>/dev/null || true
+    RELOGIN_SLOT_MARKER="$marker"
+    return 0
+  fi
+  if ! write_slot_pid "$marker"; then
+    rm -rf "$marker" 2>/dev/null || true
+    die 5 "could not record this run's pid in the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+  fi
+  RELOGIN_SLOT_MARKER="$marker"
+}
+
+release_relogin_slot() {
+  [[ -n "$RELOGIN_SLOT_MARKER" ]] || return 0
+  local marker="$RELOGIN_SLOT_MARKER"
+  RELOGIN_SLOT_MARKER=""
+  rm -f "${marker}/pid" 2>/dev/null || true
+  # `rmdir` first, then force. A marker that somehow holds more than the pid
+  # file would survive the rmdir, and a surviving marker with no readable pid is
+  # read as a LIVE holder by the next claim — so tolerating the failure here
+  # would lock the account out of every future relogin (CodeRabbit, local
+  # review). The path is this run's own slot marker under the profile root,
+  # never a profile: releasing it can destroy nothing a login depends on.
+  rmdir "$marker" 2>/dev/null || rm -rf "$marker" 2>/dev/null || true
+}
+
+# Releases the relogin slot from an EXIT trap rather than from each failure
+# branch, because the branches are not the whole exposure: `ensure_profile_dir`
+# exits through `die` from inside itself, with no return value the caller could
+# test. Hanging the release off the login failures alone would leave that path
+# uncovered, and the slot would stay claimed until a later run proved the
+# holder dead. The trap covers every exit in the window, expected or not.
+#
+# It used to roll a retired cursor browser profile back too; that retirement is
+# gone with the browser reader (#1703), so releasing the slot is the whole job.
+relogin_slot_trap() {
+  local code=$?
+  release_relogin_slot
+  return "$code"
+}
+
+action_relogin() {
+  local config index entry dir provider service="" before="" after=""
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
+  dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
+  provider="$(printf '%s' "$entry" | jq -r '.provider')"
+  service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
+
+  # Two relogins racing on one profile land two sessions in it, and whichever
+  # finishes last writes the registry row. Refuse the second rather than let
+  # both run. The trap is armed in the same step as the claim so no exit can
+  # leak the slot.
+  claim_relogin_slot "$ARG_LABEL" "$provider"
+  trap relogin_slot_trap EXIT
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$provider")"
+  entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
+  dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
+  service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
+
+  # The cursor profile-retirement dance is gone with the browser it existed
+  # for (#1703). It moved a Chromium profile aside so a second login could not
+  # layer over a half-expired session; an IDE token has no profile to retire
+  # and no layering to prevent — signing in again in the IDE simply replaces
+  # it. A cursor relogin is now a single instruction plus a presence check,
+  # which `run_login` performs.
+
+  # Not for cursor: nothing here writes to <profile_dir> any more, so creating
+  # one would leave an empty directory the tool never reads again.
+  [[ "$provider" == "cursor" ]] || ensure_profile_dir "$dir"
+  if [[ "$provider" == "claude" ]]; then
+    before="$(keychain_claude_services)"
+  fi
+  if ! run_login "$provider" "$dir"; then
+    die 1 "the ${provider} login did not complete; the registry row for '${ARG_LABEL}' was not touched."
+  fi
+  if [[ "$provider" == "claude" ]]; then
+    after="$(keychain_claude_services)"
+    discover_keychain_service "$before" "$after"
+    if [[ "$NEW_KEYCHAIN_AMBIGUOUS" -eq 1 ]]; then
+      die 1 "more than one keychain item appeared while this login ran (a concurrent login?), so which one belongs to '${ARG_LABEL}' cannot be told apart; '${ARG_LABEL}' is unchanged. Re-run this relogin on its own."
+    fi
+    service="$(resolve_keychain_service "$dir" "$service" "$NEW_KEYCHAIN_SERVICE")"
+  fi
+  if ! credential_present "$provider" "$dir" "$service"; then
+    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); the registry row for '${ARG_LABEL}' was not touched."
+  fi
+  if [[ "$provider" == "claude" ]]; then
+    remember_keychain_service "$dir" "$service"
+  fi
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  index="$(match_indices "$config" "$ARG_LABEL" "$provider" | head -n 1)"
+  if [[ -z "$index" ]]; then
+    state_lock_release || true
+    die 4 "account '$ARG_LABEL' disappeared from the registry while the login ran"
+  fi
+  if [[ "$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].profile_dir')" != "$dir" ]]; then
+    state_lock_release || true
+    die 7 "profile_dir changed during login; registry unchanged — retry"
+  fi
+  config="$(printf '%s' "$config" | jq --argjson i "$index" --arg service "$service" '
+    .accounts[$i] = (.accounts[$i]
+      + (if $service == "" then {} else {credential_ref: {kind: "macos-keychain", service: $service}} end))')" \
+    || { state_lock_release || true; die 5 "could not update the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  echo "${SELF_NAME}: ${provider} account '${ARG_LABEL}' is logged in again."
+}
+
+# --- the daily unattended snapshot (#1700) -----------------------------------
+#
+# WHY launchd AND NOT cron, AND NOT A CLAUDE SCHEDULER. The reader needs this
+# user's login context — the Keychain items the `claude` login created, the
+# per-account CODEX_HOME directories, the Cursor browser profile. A per-user
+# LaunchAgent runs inside exactly that context. A cron line or an agent-side
+# scheduler would run the same reader with none of it and record `needs-login`
+# every day, which is not a gap in the history: it is a history full of
+# confident wrong answers.
+#
+# The job is a RECORDER. It reads figures and appends them. Nothing in this
+# repo consults them to decide whether work may proceed — quota and spend
+# authority stays with Anthropic's own in-app UI and upstream harness signals
+# (.claude/rules/safety.md §"Anthropic Quota & Spend Authority").
+
+require_macos() { # <operation>
+  [[ "$PLATFORM" == "Darwin" ]] && return 0
+  echo "${SELF_NAME}: schedule $1 needs macOS launchd (this host reports '${PLATFORM}') — no daily snapshot job is installed here." >&2
+  exit 2
+}
+
+# Every path this section touches derives from HOME — the LaunchAgent, the job
+# log, the history file — and HOME may legitimately be unset here, because the
+# top of the script accepts that as long as AI_QUOTAS_CONFIG and
+# AI_QUOTAS_PROFILE_ROOT are both given. With it unset the agent resolves to
+# `/Library/LaunchAgents/com.claude.ai-quotas.plist`, a MACHINE-WIDE location,
+# and the log and history to `/.claude/…`. A per-user job aimed at a system
+# path is not a degraded outcome to warn about; it is one to refuse. The plist
+# also has to carry a real HOME for the reader to resolve anything at all.
+require_schedule_home() { # <operation>
+  [[ -n "$_HOME" ]] && return 0
+  die 5 "HOME is unset, and every schedule path — the LaunchAgent, its log, the history file — derives from it; refusing to aim a per-user job at a system path. Set HOME and re-run 'schedule $1'."
+}
+
+# The path that goes INTO the plist. It has to outlive this checkout: a plist
+# pointing into a worktree keeps working until the worktree is removed and then
+# fails every night, logging to a file nobody reads. So the durable
+# ~/.claude/ locations are preferred over the sibling copy, and choosing the
+# sibling is said out loud rather than assumed to be fine.
+resolve_reader_bin() {
+  local candidate
+  if [[ -n "${AI_QUOTAS_READER_BIN:-}" ]]; then
+    # Used EXCLUSIVELY when set — no fall-through to the search. A seam that
+    # falls back finds the repo copy through the sibling candidate whenever
+    # the caller stands in a checkout, which is the only place the suite runs,
+    # so the "reader unresolvable" path could never be exercised.
+    if [[ -x "$AI_QUOTAS_READER_BIN" ]]; then
+      printf '%s' "$AI_QUOTAS_READER_BIN"
+      return 0
+    fi
+    die 5 "AI_QUOTAS_READER_BIN names '${AI_QUOTAS_READER_BIN}', which is not executable — refusing to schedule a job that cannot run"
+  fi
+  for candidate in \
+    "${_HOME}/.claude/skills-worktree/.claude/scripts/ai-quotas.sh" \
+    "${_HOME}/.claude/scripts/ai-quotas.sh"; do
+    if [[ -x "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
+  done
+  if [[ -x "$SELF_DIR/ai-quotas.sh" ]]; then
+    echo "${SELF_NAME}: scheduling the reader at $SELF_DIR/ai-quotas.sh — the durable copies under ~/.claude/ are not there yet, and a job pointing into a checkout stops working the day that checkout is removed. Re-run 'schedule install' once the skills worktree is in place." >&2
+    printf '%s' "$SELF_DIR/ai-quotas.sh"
+    return 0
+  fi
+  die 5 "ai-quotas.sh not found (checked ~/.claude/skills-worktree/.claude/scripts, ~/.claude/scripts, and $SELF_DIR) — nothing to schedule"
+}
+
+# `&` first: escaping it after `<` would re-escape the ampersand this function
+# just introduced and turn `<` into `&amp;lt;`.
+xml_escape() { # <text>
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Digits only, then compared in base 10 EXPLICITLY. `--hour 09` is a perfectly
+# reasonable thing to type, and bash arithmetic reads a leading zero as octal —
+# where `09` is not a valid digit at all, so the comparison fails with bash
+# error text instead of accepting nine in the morning.
+valid_hour() { # <hour>
+  case "$1" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  [[ ${#1} -le 2 ]] || return 1
+  local h
+  h=$(( 10#$1 ))
+  [[ "$h" -ge 0 && "$h" -le 23 ]]
+}
+
+launch_uid() { id -u 2>/dev/null || true; }
+
+# 0 when launchd holds the job. `list` is asked first because it answers with
+# an exit status and nothing else; `print` is the modern spelling and is tried
+# second so a future launchctl that drops `list` still reports correctly.
+agent_is_loaded() {
+  local uid
+  "$LAUNCHCTL_BIN" list "$LAUNCH_LABEL" >/dev/null 2>&1 && return 0
+  uid="$(launch_uid)"
+  [[ -n "$uid" ]] || return 1
+  "$LAUNCHCTL_BIN" print "gui/${uid}/${LAUNCH_LABEL}" >/dev/null 2>&1
+}
+
+# bootout, then the legacy unload. Neither failing is fatal on its own: the
+# job may simply not be loaded, which is the state the caller wanted anyway.
+# Returns 0 when the job is gone afterwards.
+agent_unload() {
+  local uid
+  uid="$(launch_uid)"
+  if [[ -n "$uid" ]]; then
+    "$LAUNCHCTL_BIN" bootout "gui/${uid}/${LAUNCH_LABEL}" >/dev/null 2>&1 || true
+  fi
+  agent_is_loaded || return 0
+  "$LAUNCHCTL_BIN" unload -w "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 || true
+  # `agent_is_loaded && return 1` would be the same thing to read and a
+  # different thing to run: under `set -e` an `A && B` whose A fails makes the
+  # COMPOUND fail, which exits the script. It never fired here only because
+  # both call sites happen to invoke this function inside a tested context,
+  # where errexit is suspended — a property of the callers, not of this code.
+  if agent_is_loaded; then
+    return 1
+  fi
+  return 0
+}
+
+action_schedule_install() {
+  local reader uid hour plist_dir tmp extra_env="" rc=0
+  require_macos install
+  require_schedule_home install
+
+  hour="${ARG_HOUR:-${AI_QUOTAS_SCHEDULE_HOUR:-$SCHEDULE_HOUR_DEFAULT}}"
+  valid_hour "$hour" || die_usage "invalid hour: ${hour} (expected 0-23)"
+  # Normalised before it reaches the plist: `<integer>09</integer>` is not what
+  # a property list means by an integer.
+  hour=$(( 10#$hour ))
+
+  # `die` inside a command substitution exits the SUBSHELL, so the abort on an
+  # unresolvable reader rests entirely on `set -e` being in force at this call
+  # site. Checked explicitly as well: a `set +e` introduced anywhere above would
+  # otherwise turn "no reader found" into an empty path written confidently into
+  # a plist, and a LaunchAgent with an empty program fails every night into a
+  # log nobody reads.
+  reader="$(resolve_reader_bin)" || exit $?
+  [[ -n "$reader" ]] || die 5 "could not resolve which ai-quotas.sh to schedule"
+
+  plist_dir="$(dirname "$LAUNCH_AGENT_FILE")"
+  mkdir -p "$plist_dir" || die 5 "could not create $plist_dir"
+  mkdir -p "$(dirname "$LAUNCHD_LOG")" || die 5 "could not create the log directory for $LAUNCHD_LOG"
+
+  # PATH is spelled out because launchd gives a job a minimal one — typically
+  # /usr/bin:/bin:/usr/sbin:/sbin — and every tool this reader needs beyond
+  # the base system lives in Homebrew's prefix: `codex`, `node`, and `jq` are
+  # all under /opt/homebrew/bin on this Mac (/usr/local/bin on Intel). Without
+  # it the scheduled run finds no `jq`, exits 5, and writes a history file
+  # with a hole in it every single night.
+  #
+  # HOME is passed for the same reason: the reader resolves the registry, the
+  # profiles, and the history file from it, and a LaunchAgent's environment
+  # does not necessarily carry the one this shell has.
+  #
+  # An AI_QUOTAS_CONFIG or AI_QUOTAS_HISTORY set in THIS shell is carried in
+  # with them. Both override a HOME-derived default, so without this the
+  # commands the user runs by hand — `schedule install`, `schedule status`,
+  # and the reader itself — would honour a custom registry or history path
+  # while the nightly job silently resolved the defaults instead: two history
+  # files, each looking complete, neither holding every reading.
+  #
+  # AI_QUOTAS_PROFILE_ROOT is deliberately NOT carried. The reader never reads
+  # it — every account's `profile_dir` comes from the registry, already
+  # absolute — so passing it would advertise an effect it does not have.
+  if [[ -n "${AI_QUOTAS_CONFIG:-}" ]]; then
+    extra_env="${extra_env}
+        <key>AI_QUOTAS_CONFIG</key>
+        <string>$(xml_escape "$AI_QUOTAS_CONFIG")</string>"
+  fi
+  if [[ -n "${AI_QUOTAS_HISTORY:-}" ]]; then
+    extra_env="${extra_env}
+        <key>AI_QUOTAS_HISTORY</key>
+        <string>$(xml_escape "$AI_QUOTAS_HISTORY")</string>"
+  fi
+  tmp="$(mktemp "${plist_dir}/.ai-quotas-plist.XXXXXX")" || die 5 "could not create a temp file in $plist_dir"
+  cat > "$tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LAUNCH_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$(xml_escape "$reader")</string>
+        <string>--json</string>
+        <string>--quiet</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>${hour}</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>$(xml_escape "$LAUNCHD_LOG")</string>
+    <key>StandardErrorPath</key>
+    <string>$(xml_escape "$LAUNCHD_LOG")</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>$(xml_escape "$_HOME")</string>${extra_env}
+    </dict>
+</dict>
+</plist>
+PLIST
+  # The heredoc write is CHECKED, not assumed. A failed or truncated write —
+  # a full disk is the ordinary cause — would otherwise be installed as a
+  # plist, and launchd rejects a malformed one silently at load time.
+  [[ -s "$tmp" ]] || { rm -f "$tmp"; die 5 "could not write the plist to $tmp"; }
+  # Validated BEFORE it is installed, where plutil exists. launchd rejects a
+  # malformed plist silently at load time, so an escaping failure — a path
+  # carrying a character this writer did not anticipate — would otherwise
+  # present as a job that is installed, reports no error, and never runs.
+  if command -v plutil >/dev/null 2>&1; then
+    if ! plutil -lint "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      die 5 "the generated plist is not valid property-list XML — refusing to install a job launchd would silently reject (paths involved: ${reader}, ${LAUNCHD_LOG})"
+    fi
+  fi
+  chmod 644 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod the plist"; }
+  mv "$tmp" "$LAUNCH_AGENT_FILE" || { rm -f "$tmp"; die 5 "could not install $LAUNCH_AGENT_FILE"; }
+
+  # An already-loaded job is booted out first: bootstrap refuses a label
+  # launchd already holds, so a re-install without this would leave the OLD
+  # definition running while the new plist sat on disk looking installed.
+  agent_unload || true
+  uid="$(launch_uid)"
+  if [[ -n "$uid" ]]; then
+    "$LAUNCHCTL_BIN" bootstrap "gui/${uid}" "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 || rc=$?
+  else
+    rc=1
+  fi
+  # `bootstrap` is the modern spelling; `load -w` is what an older launchctl
+  # understands. The fallback's status IS captured, and only because of what
+  # the pair of failures means: launchd holds a job under a label, not a path,
+  # so when neither spelling took AND the label still reports loaded, the
+  # definition running tonight is the one that was loaded BEFORE this install
+  # — the old hour, the old reader — even though the new plist is on disk and
+  # `agent_is_loaded` answers yes. Reporting that as "is loaded" would be the
+  # check that looks like one and is not.
+  if [[ "$rc" -ne 0 ]]; then
+    "$LAUNCHCTL_BIN" load -w "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 && rc=0
+  fi
+
+  echo "${SELF_NAME}: wrote ${LAUNCH_AGENT_FILE}"
+  echo "${SELF_NAME}: it runs ${reader} --json --quiet at ${hour}:00 local and once on load; output goes to ${LAUNCHD_LOG}"
+  if agent_is_loaded && [[ "$rc" -eq 0 ]]; then
+    echo "${SELF_NAME}: ${LAUNCH_LABEL} is loaded."
+  elif agent_is_loaded; then
+    # Loaded, but not by this install. NOT a die for the same reason as below
+    # — the plist on disk is correct and takes effect at the next login — but
+    # the user has to be told the job running until then is the previous one.
+    echo "${SELF_NAME}: ${LAUNCH_LABEL} reports loaded, but neither bootstrap nor load took, so the definition launchd is running is the one loaded before this install — the new plist takes effect at your next login, or run: ${LAUNCHCTL_BIN} bootout gui/\$(id -u)/${LAUNCH_LABEL} && ${LAUNCHCTL_BIN} bootstrap gui/\$(id -u) ${LAUNCH_AGENT_FILE}" >&2
+  else
+    # NOT a die: the plist is installed and correct, and it will load at the
+    # next login even if this bootstrap did not take. Saying so beats
+    # reporting a failure the user cannot act on.
+    echo "${SELF_NAME}: the plist is installed but launchctl did not report the job as loaded — it will load at your next login, or run: ${LAUNCHCTL_BIN} bootstrap gui/\$(id -u) ${LAUNCH_AGENT_FILE}" >&2
+  fi
+  echo "${SELF_NAME}: the job records usage readings; it never gates, pauses, or re-routes work."
+}
+
+action_schedule_remove() {
+  local unloaded=0
+  require_macos remove
+  require_schedule_home remove
+
+  agent_unload && unloaded=1
+  if [[ -e "$LAUNCH_AGENT_FILE" ]]; then
+    # A plain file, never a tree, and never through a wildcard — the path is
+    # fixed by LAUNCH_LABEL or given explicitly.
+    rm -f "$LAUNCH_AGENT_FILE" || die 5 "could not delete $LAUNCH_AGENT_FILE"
+    echo "${SELF_NAME}: deleted ${LAUNCH_AGENT_FILE}"
+  else
+    echo "${SELF_NAME}: no plist at ${LAUNCH_AGENT_FILE} — nothing to delete."
+  fi
+  if [[ "$unloaded" -eq 1 ]]; then
+    echo "${SELF_NAME}: ${LAUNCH_LABEL} is not loaded."
+  else
+    echo "${SELF_NAME}: launchctl still reports ${LAUNCH_LABEL} as loaded; run: ${LAUNCHCTL_BIN} bootout gui/\$(id -u)/${LAUNCH_LABEL}" >&2
+  fi
+  echo "${SELF_NAME}: the history already recorded at ${HISTORY_FILE} was left alone."
+}
+
+action_schedule_status() {
+  local last=""
+  require_macos status
+  require_schedule_home status
+
+  if [[ -e "$LAUNCH_AGENT_FILE" ]]; then
+    echo "PLIST: ${LAUNCH_AGENT_FILE} (present)"
+  else
+    echo "PLIST: ${LAUNCH_AGENT_FILE} (absent — install with: ${SELF_NAME} schedule install)"
+  fi
+  if agent_is_loaded; then
+    echo "JOB:   ${LAUNCH_LABEL} loaded"
+  else
+    echo "JOB:   ${LAUNCH_LABEL} not loaded"
+  fi
+  echo "LOG:   ${LAUNCHD_LOG}"
+
+  # `fromjson?` drops a line it cannot parse rather than aborting, so one torn
+  # line from a run killed mid-append does not cost the answer. The `type`
+  # guard is the other half of that: `fromjson?` catches only the PARSE error,
+  # so a line holding a bare `5` parses fine and then aborts jq on `.source`.
+  #
+  # `sort` before `tail`, for the reason the reader's own footer does it: rows
+  # carry the clock their run STARTED on and land where it FINISHED, so a slow
+  # run appending after a quick one leaves an older ts on the last line. This
+  # sibling has to agree with `/quotas` about which reading is the latest —
+  # two commands answering the same question differently is worse than either
+  # answer being wrong. Fixed-width UTC, so the sort is exact.
+  if [[ -r "$HISTORY_FILE" ]]; then
+    last="$(jq -R -r 'fromjson?
+                      | select(type == "object" and .source == "scheduled")
+                      | .ts // empty' \
+      "$HISTORY_FILE" 2>/dev/null | sort | tail -n 1 || true)"
+  fi
+  if [[ -n "$last" ]]; then
+    echo "LAST SNAPSHOT: ${last} (scheduled)"
+  else
+    echo "LAST SNAPSHOT: none yet"
+  fi
+  echo
+  echo "Display and configuration only — the job records readings and never gates dispatch."
+}
+
+action_schedule() {
+  case "$SCHEDULE_OP" in
+    install) action_schedule_install ;;
+    remove)  action_schedule_remove ;;
+    status)  action_schedule_status ;;
+  esac
+}
+
+action_list() {
+  local config count
+  config="$(read_config)"
+  count="$(printf '%s' "$config" | jq '.accounts | length')"
+
+  if [[ "$count" -eq 0 ]]; then
+    if [[ $JSON -eq 1 ]]; then
+      echo "[]"
+    else
+      echo "No accounts registered yet."
+      echo "Add one with: ${SELF_NAME} add <claude|codex|cursor> <label>"
+      layout_warning "$config"
+    fi
+    return 0
+  fi
+
+  local rows="" json_rows="[]" i provider label nickname dir service status detail
+  for (( i = 0; i < count; i++ )); do
+    provider="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].provider // ""')"
+    label="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].label // ""')"
+    # A non-string nickname is dropped rather than stringified, for the same
+    # reason the reader drops it: a column showing a JSON fragment is worse
+    # than one showing a dash.
+    nickname="$(printf '%s' "$config" | jq -r --argjson i "$i" \
+      '.accounts[$i].nickname // "" | if type == "string" then . else "" end')"
+    dir="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].profile_dir // ""')"
+    service="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].credential_ref.service // ""')"
+    # Called bare, never through `$(...)`: both results come back in globals.
+    account_status "$provider" "$dir" "$service"
+    status="$ACCOUNT_STATUS"
+    detail="$CRED_DETAIL"
+    local source_order
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
+    [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
+    if [[ $JSON -eq 1 ]]; then
+      json_rows="$(printf '%s' "$json_rows" | jq \
+        --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
+        --arg status "$status" --arg detail "$detail" --arg nickname "$nickname" --arg order "$source_order" \
+        '. += [{provider: $provider, label: $label,
+                nickname: (if $nickname == "" then null else $nickname end),
+                profile_dir: $profile_dir,
+                status: $status, detail: $detail, sources: ($order|split(","))}]')"
+    else
+      rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
+    fi
+  done
+
+  if [[ $JSON -eq 1 ]]; then
+    printf '%s\n' "$json_rows"
+    return 0
+  fi
+
+  {
+    printf 'PROVIDER\tLABEL\tNICKNAME\tSTATUS\tNOTE\tPROFILE_DIR\n'
+    printf '%s' "$rows"
+  } | column -t -s $'\t' 2>/dev/null || {
+    printf 'PROVIDER\tLABEL\tNICKNAME\tSTATUS\tNOTE\tPROFILE_DIR\n'
+    printf '%s' "$rows"
+  }
+  echo
+  layout_warning "$config"
+  echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
+}
+
+# --- launchers + share-config (#1851) ----------------------------------------
+# Both actions turn a registered profile into something the owner can USE:
+# `launchers` writes the shell functions that start a provider CLI against one
+# account's profile, and `share-config` makes a profile behave like the primary
+# install (same skills, rules, hooks, plugins, memory, MCP servers). Neither
+# reads a credential: the launcher resolves a DIRECTORY and the provider's own
+# CLI finds its credential inside it, and share-config never opens
+# `.credentials.json`, `auth.json`, or the Keychain — the only JSON it parses
+# is `.claude.json`, whose `mcpServers` block it copies and never prints.
+
+LAUNCHERS_FILE="${AI_QUOTAS_LAUNCHERS_FILE:-${_HOME}/.claude/ai-quotas/launchers.zsh}"
+PRIMARY_CLAUDE_DIR="${AI_QUOTAS_PRIMARY_CLAUDE_DIR:-${_HOME}/.claude}"
+PRIMARY_CLAUDE_JSON="${AI_QUOTAS_PRIMARY_CLAUDE_JSON:-${_HOME}/.claude.json}"
+PRIMARY_CODEX_HOME="${AI_QUOTAS_PRIMARY_CODEX_HOME:-${_HOME}/.codex}"
+# The marker a generated launchers file carries on its second line. A file
+# WITHOUT it was written by someone else and is moved aside, never overwritten.
+LAUNCHERS_MARKER="# GENERATED by ai-quotas-setup.sh launchers — re-run that action after adding, removing, or renaming an account; edits here are overwritten."
+
+# Mirrors require_schedule_home: with HOME unset the defaults above resolve to
+# `/.claude/...`, a path at the filesystem root, which is refused rather than
+# written to. An explicit override for every path the action touches lifts
+# the requirement, which is how the suite runs these actions HOME-less.
+require_share_home() { # <action> <override-env-names...>
+  [[ -n "$_HOME" ]] && return 0
+  local action="$1" name; shift
+  for name in "$@"; do
+    [[ -n "${!name:-}" ]] || die 5 "HOME is unset and $name is not set — '$action' would resolve a path under / ; set HOME (or every override) and re-run"
+  done
+}
+
+# Single-quote a value for a zsh source file. A label cannot carry a quote
+# (valid_label), but a nickname is free display text that may — `Bob's` — and
+# an unescaped one would end the string and hand the rest to the shell.
+zsh_squote() { # <text>
+  local s="$1"
+  s=${s//"'"/"'\\''"}
+  printf "'%s'" "$s"
+}
+
+# The slug half of a launcher name. Lowercase, every run of non-alphanumerics
+# collapsed to one `-`, trimmed. A leading provider word is dropped so
+# `Claude Work` becomes `claude-work` rather than `claude-claude-work` and
+# `GPT Personal` becomes `codex-personal` rather than `codex-gpt-personal`.
+slugify() { # <text>
+  printf '%s' "$1" \
+    | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C tr -c 'a-z0-9' '-' \
+    | sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//'
+}
+
+launcher_name() { # <provider> <nickname|""> <label>
+  local provider="$1" nick="$2" label="$3" slug=""
+  if [[ -n "$nick" ]]; then
+    slug="$(slugify "$nick")"
+    case "$slug" in
+      claude-*|codex-*|gpt-*|chatgpt-*|openai-*) slug="${slug#*-}" ;;
+      claude|codex|gpt|chatgpt|openai) slug="" ;;
+    esac
+  fi
+  # No nickname, or one that was only the provider word: the label's local
+  # part (`someone` of `someone@example.com`) keeps the name short.
+  [[ -n "$slug" ]] || slug="$(slugify "${label%%@*}")"
+  [[ -n "$slug" ]] || slug="$(slugify "$label")"
+  printf '%s-%s' "$provider" "$slug"
+}
+
+# The octal mode of a file, portably. GNU `stat -f` means FILESYSTEM status
+# and exits 0 printing `?p` for the BSD directive, so the BSD-first
+# `stat -f … || stat -c …` chain never reached its fallback on Linux. Check
+# the shape instead of trusting an exit code. An unreadable mode must not
+# authorize replacing a file with permissions from an older snapshot.
+file_mode() { # <path> -> octal mode on stdout, nonzero if unreadable
+  local m
+  if ! m="$(stat -c '%a' "$1" 2>/dev/null)" || [[ ! "$m" =~ ^[0-7]{1,4}$ ]]; then
+    m="$(stat -f '%Lp' "$1" 2>/dev/null)" || return 1
+  fi
+  [[ "$m" =~ ^[0-7]{1,4}$ ]] || return 1
+  # stat omits leading zeroes (064 can be printed as 64). Normalize once
+  # so the mode checks compare permission bits, not their spelling.
+  printf '%03o' "$((8#$m))"
+}
+
+# The keepsake name for <path>: <path>.pre-share, or — when that name is
+# already taken by an earlier run's keepsake — a timestamped sibling. One
+# rule, used both by move_aside and by the .claude.json merge, which keeps a
+# COPY under this name so the live path never disappears.
+pre_share_dest() { # <path>
+  local dest="$1.pre-share" stamp n=1
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    dest="$1.pre-share.$stamp"
+    # Two keepsakes within one second get a numbered suffix rather than a
+    # refusal: the timestamp is for the owner's eyes, not a uniqueness claim.
+    while [[ -e "$dest" || -L "$dest" ]]; do
+      dest="$1.pre-share.$stamp.$n"; n=$((n + 1))
+      (( n < 1000 )) || die 5 "could not move $1 aside: too many keepsakes at $1.pre-share.$stamp.*"
+    done
+  fi
+  printf '%s' "$dest"
+}
+
+# Moves <path> to its keepsake name and prints the destination. Nothing is
+# ever deleted: the thing in the way may be the only copy of a working
+# config, and the owner decides when to drop it.
+move_aside() { # <path>
+  local dest
+  dest="$(pre_share_dest "$1")"
+  mv "$1" "$dest" || die 5 "could not move $1 aside to $dest"
+  printf '%s' "$dest"
+}
+
+action_launchers() {
+  if [[ $JSON -eq 0 ]]; then require_share_home launchers AI_QUOTAS_LAUNCHERS_FILE; fi
+  local config count i provider label nickname name profile metadata="[]"
+  config="$(read_config)"
+  count="$(printf '%s' "$config" | jq '.accounts | length')"
+
+  # Pass 1: name every claude/codex account and refuse a collision. Two
+  # functions of one name would not be an error to zsh — the second definition
+  # silently wins — so the owner would get the wrong account with no message.
+  local names=() labels=() providers=() nicks=() skipped=()
+  for (( i = 0; i < count; i++ )); do
+    provider="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].provider')"
+    label="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].label')"
+    nickname="$(printf '%s' "$config" | jq -r --argjson i "$i" \
+      '.accounts[$i].nickname // "" | if type == "string" then . else "" end')"
+    case "$provider" in
+      claude|codex) ;;
+      *) skipped+=("$provider '$label'"); continue ;;
+    esac
+    valid_nickname "$nickname" || nickname=""
+    name="$(launcher_name "$provider" "$nickname" "$label")"
+    local j
+    for (( j = 0; j < ${#names[@]}; j++ )); do
+      # A duplicate (provider, label) row — which `add` refuses but a hand
+      # edit can produce — would make the launcher's by-label lookup return
+      # two directories; refused here, where it can be named, not at launch.
+      if [[ "${providers[$j]}" == "$provider" && "${labels[$j]}" == "$label" ]]; then
+        die 3 "the registry holds $provider '$label' twice — the launcher could not tell which profile to start; fix $CONFIG_FILE first"
+      fi
+      if [[ "${names[$j]}" == "$name" ]]; then
+        die 3 "launcher name '$name' would be defined by both ${providers[$j]} '${labels[$j]}' and $provider '$label' — give one a different nickname (nick <label> <name>) and re-run"
+      fi
+    done
+    names+=("$name"); labels+=("$label"); providers+=("$provider"); nicks+=("${nickname:-$name}")
+    if [[ $JSON -eq 1 ]]; then
+      profile="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].profile_dir | if type == "string" then . else "" end')"
+      metadata="$(printf '%s' "$metadata" | jq -c --arg provider "$provider" --arg label "$label" \
+        --arg profile "$profile" --arg launcher "$name" '. + [{provider:$provider, label:$label, profile_dir:$profile, launcher:$launcher}]')"
+    fi
+  done
+  if [[ $JSON -eq 1 ]]; then
+    printf '%s\n' "$metadata"
+    return 0
+  fi
+
+  # Pass 2: render. Claude functions first, then Codex, registry order within
+  # each — grouped so the file reads as two short blocks rather than one
+  # interleaved list.
+  # No timestamp in the file: two runs over the same registry produce the
+  # same bytes, so a diff of the file is a diff of the registry.
+  local body="" group ordered=()
+  for group in claude codex; do
+    local block=""
+    for (( i = 0; i < ${#names[@]}; i++ )); do
+      [[ "${providers[$i]}" == "$group" ]] || continue
+      ordered+=("${names[$i]}")
+      block+="$(printf '%s() { _ai_launch %s %s %s "$@"; }' \
+        "${names[$i]}" "$group" "$(zsh_squote "${labels[$i]}")" "$(zsh_squote "${nicks[$i]}")")"$'\n'
+    done
+    [[ -n "$block" ]] || continue
+    case "$group" in
+      claude) body+="# Claude Code — CLAUDE_CONFIG_DIR points the CLI at one account's profile."$'\n' ;;
+      codex)  body+="# Codex — CODEX_HOME points the CLI at one account's profile."$'\n' ;;
+    esac
+    body+="$block"$'\n'
+  done
+
+  local dir tmp moved=""
+  dir="$(dirname "$LAUNCHERS_FILE")"
+  mkdir -p "$dir" || die 5 "could not create $dir"
+  tmp="$(mktemp "${dir}/.launchers.XXXXXX")" || die 5 "could not create a temp file in $dir"
+  # The resolver prefers the durable ~/.claude locations and falls back to the
+  # script that generated the file, so a file written from a checkout still
+  # works after the skills worktree is in place — and vice versa.
+  {
+    echo "# AI account launchers — one isolated login profile per subscription (claude-code-config #1851)."
+    echo "$LAUNCHERS_MARKER"
+    # A newline or carriage return in the config path would end this comment
+    # and make the rest of the path executable on every source (CodeAnt); the
+    # path is informational here, so such a character is shown as `?`.
+    echo "# Generated from ${CONFIG_FILE//[$'\n\r']/?}."
+    echo "# Each function resolves its profile directory from the ai-quotas registry BY LABEL at run time,"
+    echo "# so it stays correct even if a profile directory is renamed (claude-code-config #1850)."
+    echo "# Launch only: nothing here reads or prints a login credential — the provider CLI finds its own inside the profile."
+    echo
+    echo '_ai_profile_dir() { # <provider> <label> -> profile_dir on stdout'
+    echo '  local setup="" candidate'
+    echo '  for candidate in \'
+    echo '    "$HOME/.claude/skills-worktree/.claude/scripts/ai-quotas-setup.sh" \'
+    echo '    "$HOME/.claude/scripts/ai-quotas-setup.sh" \'
+    printf '    %s; do\n' "$(zsh_squote "${SELF_DIR}/${SELF_NAME}")"
+    echo '    [[ -x "$candidate" ]] && { setup="$candidate"; break; }'
+    echo '  done'
+    echo '  [[ -n "$setup" ]] || { echo "launcher: ai-quotas-setup.sh not found — re-run: ai-quotas-setup.sh launchers" >&2; return 1; }'
+    echo '  "$setup" list --json 2>/dev/null \'
+    echo "    | jq -r --arg p \"\$1\" --arg l \"\$2\" '.[] | select(.provider == \$p and .label == \$l) | .profile_dir // empty'"
+    echo '}'
+    echo
+    echo '_ai_launch() { # <provider> <label> <tab-title> [cli args...]'
+    echo '  local provider=$1 label=$2 nick=$3; shift 3'
+    echo '  local dir; dir=$(_ai_profile_dir "$provider" "$label")'
+    echo '  if [[ -z "$dir" || ! -d "$dir" ]]; then'
+    echo '    echo "launcher: no $provider profile registered for $label — run: ai-quotas-setup.sh list" >&2'
+    echo '    return 1'
+    echo '  fi'
+    echo '  # Name the terminal tab and window after the account so parallel sessions stay distinguishable —'
+    echo '  # only when stdout is a terminal, so `claude-work -p … | jq` is not handed the escape sequence.'
+    echo "  [[ -t 1 ]] && printf '\\e]1;%s\\a\\e]2;%s\\a' \"\$nick\" \"\$nick\""
+    echo '  case $provider in'
+    echo '    claude) CLAUDE_CONFIG_DIR="$dir" command claude "$@" ;;'
+    echo '    codex)  CODEX_HOME="$dir" command codex "$@" ;;'
+    echo '    *) echo "launcher: unknown provider $provider" >&2; return 1 ;;'
+    echo '  esac'
+    echo '}'
+    echo
+    printf '%s' "$body"
+  } > "$tmp" || { rm -f "$tmp"; die 5 "could not write $tmp"; }
+  # 600 like the registry it is derived from: the file names the owner's
+  # subscription emails, which is the registry's own reason for 600.
+  chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
+
+  # A file of ours is replaced in place; anyone else's is moved aside first.
+  # "Ours" means the marker is the file's SECOND LINE, where this action puts
+  # it — a hand-written file that merely quotes the marker further down (a
+  # note on how the file was once generated, say) is not ours, and treating
+  # it as ours would overwrite it instead of keeping it aside (CodeAnt).
+  if [[ -e "$LAUNCHERS_FILE" || -L "$LAUNCHERS_FILE" ]]; then
+    if [[ ! -L "$LAUNCHERS_FILE" && -f "$LAUNCHERS_FILE" ]] \
+        && [[ "$(sed -n '2p' "$LAUNCHERS_FILE" 2>/dev/null)" == "$LAUNCHERS_MARKER" ]]; then
+      :
+    else
+      moved="$(move_aside "$LAUNCHERS_FILE")"
+    fi
+  fi
+  mv "$tmp" "$LAUNCHERS_FILE" || { rm -f "$tmp"; die 5 "could not install $LAUNCHERS_FILE"; }
+
+  echo "${SELF_NAME}: wrote ${LAUNCHERS_FILE} — ${#ordered[@]} launcher(s)${ordered[*]:+: ${ordered[*]}}"
+  [[ -z "$moved" ]] || echo "${SELF_NAME}: moved the previous $(basename "$LAUNCHERS_FILE") aside to $(basename "$moved") (it was not generated by this tool)"
+  local s
+  for s in "${skipped[@]+"${skipped[@]}"}"; do
+    echo "${SELF_NAME}: skipped $s — the Cursor IDE holds that login; there is no CLI to launch"
+  done
+  # The source line, with the home prefix written as $HOME so the same line
+  # works in a dotfile that is checked in or copied between machines. The
+  # rest of the path goes inside double quotes ONLY when it carries nothing
+  # the shell would expand there — a `$(`, a backtick, a `"` or a `\` in an
+  # override path would otherwise be pasted into ~/.zshrc as live syntax
+  # (CodeAnt). Anything else is single-quoted whole, with `'` escaped.
+  local shown rest
+  if [[ -n "$_HOME" && "$LAUNCHERS_FILE" == "$_HOME/"* ]] \
+      && rest="${LAUNCHERS_FILE#"$_HOME"/}" && [[ "$rest" != *[\$\`\"\\]* ]]; then
+    shown="\"\$HOME/${rest}\""
+  else
+    shown="$(zsh_squote "$LAUNCHERS_FILE")"
+  fi
+  echo "Add this line to ~/.zshrc (this tool never edits it), then open a new shell:"
+  echo "  [ -f ${shown} ] && source ${shown}"
+}
+
+# --- share-config helpers ----------------------------------------------------
+# Each reports one line on stdout — `linked`, `copied`, `merged`, `kept`,
+# `skipped` — and bumps the matching counter so the summary line adds up.
+SHARE_LINKED=0; SHARE_COPIED=0; SHARE_MERGED=0; SHARE_KEPT=0; SHARE_MOVED=0; SHARE_SKIPPED=0
+
+share_note_moved() { # <name> <dest>
+  SHARE_MOVED=$((SHARE_MOVED + 1))
+  echo "  moved   $1 aside to $(basename "$2")"
+}
+
+share_link() { # <profile_dir> <name> <target>
+  local path="$1/$2" target="$3" dest
+  if [[ ! -e "$target" && ! -L "$target" ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped $2 — $target does not exist in the primary install"
+    return 0
+  fi
+  if [[ -L "$path" && "$(readlink "$path")" == "$target" ]]; then
+    SHARE_KEPT=$((SHARE_KEPT + 1))
+    echo "  kept    $2 (already linked)"
+    return 0
+  fi
+  if [[ -e "$path" || -L "$path" ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved "$2" "$dest"
+  fi
+  ln -s "$target" "$path" || die 5 "could not link $path -> $target"
+  SHARE_LINKED=$((SHARE_LINKED + 1))
+  echo "  linked  $2 -> $target"
+}
+
+share_copy() { # <profile_dir> <name> <source>
+  local path="$1/$2" source="$3" dest
+  if [[ ! -f "$source" ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped $2 — $source does not exist in the primary install"
+    return 0
+  fi
+  if [[ ! -L "$path" && -f "$path" ]] && cmp -s "$source" "$path"; then
+    SHARE_KEPT=$((SHARE_KEPT + 1))
+    echo "  kept    $2 (identical to the primary copy)"
+    return 0
+  fi
+  if [[ -e "$path" || -L "$path" ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved "$2" "$dest"
+  fi
+  # `-p` carries the primary file's mode across: a 600 settings file stays 600.
+  cp -p "$source" "$path" || die 5 "could not copy $source to $path"
+  SHARE_COPIED=$((SHARE_COPIED + 1))
+  echo "  copied  $2 from $source"
+}
+
+share_discard_staging() { # <private staging directory>
+  rm -f "$1/merged" "$1/backup" || return 1
+  rmdir "$1"
+}
+
+# Merges the primary `.claude.json`'s `mcpServers` into the profile's own,
+# primary entries winning on a shared name, and leaves EVERY other key of the
+# profile's file alone — its `oauthAccount`, onboarding flags, and project
+# list are what make it that account's. Nothing from either file is printed:
+# an MCP server entry can carry an API key in its env block.
+share_merge_mcp() { # <profile_dir> <primary_json>
+  local path="$1/.claude.json" primary="$2" servers n existing merged staging tmp mode dest backup=""
+  if [[ ! -f "$primary" ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped .claude.json — $primary does not exist in the primary install"
+    return 0
+  fi
+  servers="$(jq -ce '.mcpServers // {} | select(type == "object")' "$primary" 2>/dev/null)" \
+    || die 5 "could not read mcpServers from $primary (not valid JSON, or mcpServers is not an object)"
+  n="$(printf '%s' "$servers" | jq 'length')"
+  if [[ "$n" -eq 0 ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped .claude.json — the primary install has no mcpServers to share"
+    return 0
+  fi
+  # A symlink (even a dangling one) or a directory at this name is a thing in
+  # the way, moved aside like any other: the merge never writes through a link
+  # into another install's file, and `mv tmp dir/` would otherwise drop the
+  # new file INSIDE a directory and report success (CodeAnt).
+  if [[ -L "$path" || ( -e "$path" && ! -f "$path" ) ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved ".claude.json" "$dest"
+  fi
+  local snapshot="" had_original=false
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    had_original=true
+    snapshot="$(cat "$path")" || die 5 "could not read $path"
+    existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
+      || die 5 "$path is not a JSON object — refusing to touch it"
+    mode="$(file_mode "$path")" || die 5 "could not read the mode of $path — this path was left alone"
+  else
+    existing='{}'
+    mode=600
+  fi
+  merged="$(printf '%s' "$existing" | jq -c --argjson s "$servers" '.mcpServers = ((.mcpServers // {}) + $s)')" \
+    || die 5 "could not merge mcpServers into $path"
+  if [[ "$(printf '%s' "$existing" | jq -S .)" == "$(printf '%s' "$merged" | jq -S .)" ]]; then
+    SHARE_KEPT=$((SHARE_KEPT + 1))
+    echo "  kept    .claude.json (all $n primary mcpServers already present)"
+    return 0
+  fi
+  staging="$(mktemp -d "$1/.claude.json.share.XXXXXX")" || die 5 "could not stage a merge in $1"
+  tmp="$staging/merged"
+  printf '%s\n' "$merged" | jq . > "$tmp" || { share_discard_staging "$staging"; die 5 "could not serialize $path"; }
+  if ! chmod "$mode" "$tmp" 2>/dev/null || [[ "$(file_mode "$tmp")" != "$mode" ]]; then
+    share_discard_staging "$staging"
+    die 5 "could not preserve the mode of $path — this path was left alone"
+  fi
+  if [[ "$had_original" == true ]]; then
+    if [[ ! -f "$path" || -L "$path" ]] || [[ "$(cat "$path")" != "$snapshot" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed before backup — this path was left alone; re-run share-config when the profile is idle"
+    fi
+    # Copy to an owned name. `link` publishes at exactly the chosen name
+    # and refuses an existing entry, even a symlink or directory that
+    # appeared after pre_share_dest checked it.
+    dest="$(pre_share_dest "$path")" || { share_discard_staging "$staging"; die 5 "could not choose a backup name for $path"; }
+    backup="$staging/backup"
+    cp -p "$path" "$backup" || { share_discard_staging "$staging"; die 5 "could not copy backup of $path"; }
+    if [[ ! -f "$backup" || -L "$backup" || "$(cat "$backup")" != "$snapshot" ||
+          "$(file_mode "$backup")" != "$mode" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed during backup — live path retained; re-run share-config when the profile is idle"
+    fi
+    # The backup may survive a refusal. Do not publish an older, broader
+    # mode if the profile is being tightened while this copy is in flight.
+    if ! chmod go-rwx "$backup" || [[ ! "$(file_mode "$backup")" =~ ^[0-7]{1,2}00$ ]]; then
+      share_discard_staging "$staging"
+      die 5 "could not restrict backup of $path — live path retained"
+    fi
+    link "$backup" "$dest" || { share_discard_staging "$staging"; die 5 "could not publish backup at $dest — live path retained"; }
+    # Keep the private alias for the final comparison. An unrelated writer
+    # can still race this check and the rename, so the profile must be idle.
+    if [[ ! -f "$dest" || -L "$dest" || ! "$backup" -ef "$dest" ||
+          ! -f "$path" || -L "$path" ]] || ! cmp -s "$backup" "$path" ||
+          [[ "$(file_mode "$path")" != "$mode" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed during backup — live path and backup retained; re-run share-config when the profile is idle"
+    fi
+  elif [[ -e "$path" || -L "$path" ]]; then
+    share_discard_staging "$staging"
+    die 5 "$path appeared while the merge was computed — this path was left alone; re-run share-config when the profile is idle"
+  fi
+  if ! mv -f "$tmp" "$path"; then
+    share_discard_staging "$staging"
+    die 5 "could not install $path"
+  fi
+  share_discard_staging "$staging"
+  if [[ -n "$backup" ]]; then share_note_moved ".claude.json" "$dest"; fi
+  SHARE_MERGED=$((SHARE_MERGED + 1))
+  echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
+}
+
+action_share_config() {
+  local config index provider label dir primary_dir phys_dir phys_primary
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  dir="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].profile_dir')"
+
+  case "$provider" in
+    claude)
+      require_share_home share-config AI_QUOTAS_PRIMARY_CLAUDE_DIR AI_QUOTAS_PRIMARY_CLAUDE_JSON
+      primary_dir="$PRIMARY_CLAUDE_DIR" ;;
+    codex)
+      require_share_home share-config AI_QUOTAS_PRIMARY_CODEX_HOME
+      primary_dir="$PRIMARY_CODEX_HOME" ;;
+    *) die 3 "share-config applies to claude and codex profiles — $provider '$label' has no profile directory (the Cursor IDE holds that login)" ;;
+  esac
+  [[ -d "$dir" ]] || die 5 "profile directory does not exist: $dir — run 'relogin $label $provider' first"
+  [[ -d "$primary_dir" ]] || die 5 "primary install not found: $primary_dir"
+  # Symlink targets are written as `$primary_dir/<name>`, and `ln -s` resolves
+  # a relative target from the LINK's directory, not the caller's — so a
+  # relative override would produce eight links to nowhere (CodeAnt). Made
+  # absolute once, here; the per-item targets below then stay unresolved
+  # (`~/.claude/rules` may itself be a symlink, and that indirection is kept).
+  case "$primary_dir" in
+    /*) ;;
+    *) primary_dir="$( (cd "$primary_dir" 2>/dev/null && pwd) || true )"
+       [[ -n "$primary_dir" ]] || die 5 "could not resolve the primary install directory" ;;
+  esac
+
+  # The one way this action could destroy the primary install is being pointed
+  # at it: every `linked` step would first move the real ~/.claude/skills aside
+  # and then link it to itself. Compared on the physical paths, so a symlinked
+  # profile_dir cannot slip past a string comparison.
+  phys_dir="$( (cd -P "$dir" 2>/dev/null && pwd -P) || true )"
+  phys_primary="$( (cd -P "$primary_dir" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys_dir" && -n "$phys_primary" ]] || die 5 "could not resolve $dir or $primary_dir"
+  if [[ "$phys_dir" == "$phys_primary" ]]; then
+    die 3 "refusing: $provider '$label' profile_dir resolves to the primary install itself ($phys_primary)"
+  fi
+  # And it must sit under the profile root. Every profile `add` creates does;
+  # a hand-edited row pointing anywhere else would have this action moving
+  # that directory's files aside and linking into it (CodeAnt). Physical
+  # paths again, so a symlinked row cannot slip past.
+  local root_phys
+  root_phys="$( (cd -P "$PROFILE_ROOT" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$root_phys" ]] || die 5 "could not resolve the profile root: $PROFILE_ROOT"
+  case "$phys_dir" in
+    "$root_phys"/*) : ;;
+    *) die 3 "refusing: $provider '$label' profile_dir ($dir) resolves to $phys_dir, outside the profile root $root_phys — fix the registry row before sharing into it" ;;
+  esac
+
+  echo "${SELF_NAME}: share-config $provider '$label' ($dir) from $primary_dir"
+  local name
+  case "$provider" in
+    claude)
+      for name in skills agents rules hooks plugins projects CLAUDE.md account-config.md; do
+        share_link "$dir" "$name" "$primary_dir/$name"
+      done
+      share_copy "$dir" settings.json "$primary_dir/settings.json"
+      share_merge_mcp "$dir" "$PRIMARY_CLAUDE_JSON"
+      ;;
+    codex)
+      share_link "$dir" rules "$primary_dir/rules"
+      share_copy "$dir" config.toml "$primary_dir/config.toml"
+      ;;
+  esac
+  echo "${SELF_NAME}: done — linked $SHARE_LINKED, copied $SHARE_COPIED, merged $SHARE_MERGED, kept $SHARE_KEPT, moved aside $SHARE_MOVED, skipped $SHARE_SKIPPED. Nothing was deleted; *.pre-share holds whatever was in the way."
+}
+
+# shellcheck source=./lib/ai-quotas-layout.sh
+source "$SELF_DIR/lib/ai-quotas-layout.sh"
+
+case "$ACTION" in
+  ledger-hooks)
+    if [[ -e "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
+      [[ -f "$CONFIG_FILE" && -r "$CONFIG_FILE" ]] || die 5 "registry must be a readable regular file — refusing ledger-hooks"
+    fi
+    read_config >/dev/null
+    "$SELF_DIR/ai-account-ledger.sh" install-codex-hooks
+    ;;
+  list)     action_list ;;
+  doctor)   action_doctor ;;
+  repair-layout) action_repair_layout ;;
+  add)      action_add ;;
+  nick)     action_nick ;;
+  sources)  action_sources ;;
+  remove)   action_remove ;;
+  relogin)  action_relogin ;;
+  schedule) action_schedule ;;
+  launchers)    action_launchers ;;
+  share-config) action_share_config ;;
+esac

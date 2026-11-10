@@ -60,8 +60,8 @@ Run only after Step 5a actually force-pushed. Uses the **shared dismiss helper**
 
 ```bash
 DISMISS=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh" \
-         "$HOME/.claude/scripts/dismiss-stale-bot-changes.sh" \
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh}" \
+         "${HOME:+$HOME/.claude/scripts/dismiss-stale-bot-changes.sh}" \
          ".claude/scripts/dismiss-stale-bot-changes.sh"; do
   [ -x "$c" ] && { DISMISS="$c"; break; }
 done
@@ -77,7 +77,8 @@ if [ -n "$DISMISS" ] && [ -n "$BASH4" ]; then
 else
   # Inline REST fallback (POSIX-safe, no mapfile) — same allowlist + semantics
   # as the script: dismiss only Bot-authored CHANGES_REQUESTED whose commit_id
-  # != current HEAD. NEVER touches human reviews.
+  # != current HEAD. NEVER touches human reviews. graphite-app[bot]: retired
+  # 2026-11-03; kept so a leftover stale review still dismisses.
   HEAD_SHA=$(gh pr view "$N" --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/$OWNER/$REPO/pulls/$N/reviews?per_page=100" | jq -s 'add // []' \
    | jq -r --arg sha "$HEAD_SHA" '
@@ -103,12 +104,12 @@ Run **before Step 5c** for every PR whose Step 3 verdict is `fixpr` (or refined 
 
 **Dismiss** — run the shared dismiss helper with `DISMISS_MSG="Superseded — review was on a stale commit"`. Idempotent (already-`DISMISSED` counts as success). The helper only dismisses reviews whose `commit_id` ≠ current HEAD; never touches fresh bot CR on HEAD.
 
-**Re-trigger the owning bot** — post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`).
+**Re-trigger the owning bot** — post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `"$REVIEWER_OF_SH" "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`).
 
 > **Since #576, Step 5.0's pre-flight already re-triggers a bot whose only activity is on a superseded commit** — which is exactly this step's situation (the review just dismissed was on a stale SHA). This step therefore **skips** any reviewer pre-flight already triggered on this tick; without that guard both would post for the same PR in the same tick, and for CodeRabbit that burns two of the ≤2/PR/hour explicit-trigger slots at once. It still runs when pre-flight was unavailable, skipped the PR, or reported the reviewer `already-present` / `skipped-rate-cap` — the case this step was written for.
 
 ```bash
-REVIEWER=$(.claude/scripts/reviewer-of.sh "$N" 2>/dev/null || echo unknown)
+REVIEWER=$("$REVIEWER_OF_SH" "$N" 2>/dev/null || echo unknown)
 
 # Skip when Step 5.0's pre-flight already triggered this reviewer this tick
 # (issue #576) — it re-triggers stale-SHA bots itself now, so a second post here
@@ -117,17 +118,45 @@ PF_KEY=""
 case "$REVIEWER" in
   cr) PF_KEY="coderabbit" ;;   # gate-side name → pre-flight reviewer key
   bugbot) PF_KEY="cursor" ;;
-  graphite) PF_KEY="graphite" ;;
 esac
 if [ -n "$PF_KEY" ] && [ -n "${PF_SUMMARY_BY_PR[$N]:-}" ] \
    && [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].status // ""' <<<"${PF_SUMMARY_BY_PR[$N]}" 2>/dev/null)" = "triggered" ]; then
   echo "[PMM] pre-flight already re-triggered $REVIEWER on #$N this tick — skipping duplicate explicit trigger"
   REVIEWER="__already_triggered__"
 fi
+# Tier-aware repos (issue #1749): the review tier decides whether this reviewer
+# may be invited at all. On a repo with a `## Review policy`, post only a
+# reviewer review-triggers-allowed.sh allows, and claim it first; a failed post
+# releases the claim. Mode `legacy` or a missing helper leaves the explicit
+# re-trigger below exactly as it was.
+TRIGGERS_ALLOWED=""
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/review-triggers-allowed.sh}" \
+         "${HOME:+$HOME/.claude/scripts/review-triggers-allowed.sh}" \
+         ".claude/scripts/review-triggers-allowed.sh"; do
+  [ -x "$c" ] && { TRIGGERS_ALLOWED="$c"; break; }
+done
+TA_CLAIMED=""
+if [ -n "$PF_KEY" ] && [ "$REVIEWER" != "__already_triggered__" ] && [ -n "$TRIGGERS_ALLOWED" ]; then
+  TA_JSON=$("$TRIGGERS_ALLOWED" "$N" 2>/dev/null || echo '{"mode":"fail_closed"}')
+  if [ "$(jq -r '.mode // "fail_closed"' <<<"$TA_JSON" 2>/dev/null)" != "legacy" ]; then
+    if [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].allowed // false' <<<"$TA_JSON" 2>/dev/null)" = "true" ] \
+       && "$TRIGGERS_ALLOWED" "$N" --claim "$PF_KEY" >/dev/null 2>&1; then
+      TA_CLAIMED="$PF_KEY"
+    elif [ "$PF_KEY" = "cursor" ] \
+         && [ "$(jq -r '.reviewers.cursor.reason // ""' <<<"$TA_JSON" 2>/dev/null)" = "approval_required" ]; then
+      : # tier allows BugBot; only owner approval is missing (#1897) — fall through
+        # to the bugbot branch, which spends a grant or posts nothing (#1898)
+    else
+      echo "[PMM] review tier does not allow re-triggering $REVIEWER on #$N now ($(jq -r --arg k "$PF_KEY" '.reviewers[$k].reason // "tier_unresolved"' <<<"$TA_JSON" 2>/dev/null)) — skipping"
+      REVIEWER="__tier_skipped__"
+    fi
+  fi
+fi
+ta_release() { [ -n "$TA_CLAIMED" ] && "$TRIGGERS_ALLOWED" "$N" --release "$TA_CLAIMED" >/dev/null 2>&1; return 0; }
 CR_HOURLY=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
-         "$HOME/.claude/scripts/cr-review-hourly.sh" \
-         ".claude/scripts/cr-review-hourly.sh"; do
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh}" \
+         "${HOME:+$HOME/.claude/scripts/cr-review-hourly.sh}" \
+         ""$CR_HOURLY_SH""; do
   [ -x "$c" ] && { CR_HOURLY="$c"; break; }
 done
 
@@ -138,24 +167,37 @@ case "$REVIEWER" in
       if gh pr comment "$N" --body "@coderabbitai full review" >/dev/null 2>&1; then
         "$CR_HOURLY" --record-explicit "$N" >/dev/null 2>&1 || true
         echo "[PMM] re-triggered owning bot (cr) on #$N"
+      else
+        ta_release
       fi
     else
       echo "[PMM] CodeRabbit rate cap hit — skipping explicit re-trigger on #$N"
+      ta_release
     fi
     ;;
   bugbot)
-    gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1 \
-      && echo "[PMM] re-triggered owning bot (bugbot) on #$N"
-    ;;
-  graphite)
-    gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1 \
-      && echo "[PMM] re-triggered owning bot (graphite) on #$N"
+    # BugBot is paid per review (issue #1897): a fleet tick never asks. It only
+    # spends a grant the owner already approved for this PR and HEAD (#1898).
+    PRG=""
+    for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh}" \
+             "${HOME:+$HOME/.claude/scripts/paid-review-grant.sh}" ".claude/scripts/paid-review-grant.sh"; do
+      [ -x "$c" ] && { PRG="$c"; break; }
+    done
+    if [ -n "$PRG" ] && [ "$("$PRG" --trigger "$N" --vendor cursor 2>/dev/null | sed -n 's/^STATUS=//p')" = "triggered" ]; then
+      echo "[PMM] re-triggered owning bot (bugbot) on #$N under the owner's grant (now used, #1898)"
+    else
+      echo "[PMM] bugbot owning reviewer on #$N — re-review is paid and needs owner approval; not posted (#1897)"
+    fi
+    ta_release
     ;;
   greptile)
     echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"
     ;;
   __already_triggered__)
     : # pre-flight covered it this tick (#576) — message already printed above
+    ;;
+  __tier_skipped__)
+    : # the review tier ruled it out or deferred it (#1749) — message printed above
     ;;
   *)
     echo "[PMM] unknown reviewer on #$N — skipping explicit re-trigger"
@@ -165,7 +207,7 @@ esac
 
 Never batch mention strings; never auto-trigger Greptile. Set `TICK_HAD_ACTION=true` when dismissal or re-trigger posts.
 
-**Re-gate and gate Step 5c** — re-run `.claude/scripts/merge-gate.sh "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
+**Re-gate and gate Step 5c** — re-run `"$MERGE_GATE_SH" "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
    - **`MET == true`** → treat as `wrap` for Step 5d this tick (skip Step 5c spawn for this PR).
    - **`CI_FAILING > 0` or `UNRESOLVED > 0`** → proceed to Step 5c spawn (real fix work remains).
    - **Otherwise** (reviewer pending on fresh trigger, no CI/thread fix work) → skip Step 5c; verdict becomes `waiting` on the next tick when the bot lands.
@@ -189,10 +231,18 @@ Conflict dispatches participate in the same parallel cap, batched `session-state
 
 ```bash
 CR_BUDGET_OK=1
-.claude/scripts/cr-review-hourly.sh --check >/dev/null 2>&1 || CR_BUDGET_OK=0
+"$CR_HOURLY_SH" --check >/dev/null 2>&1 || CR_BUDGET_OK=0
 ```
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt. Do **not** block spawn entirely when the cap is exhausted.
+
+**Cost-first preflight.** For each allocated task, resolve `model-route.sh`
+through the shared-script candidate order and run `task-model-routing.md`'s
+`task-model-route-dispatch` block using refreshed eligibility and its existing
+scoped session/handoff routing record. Persist request/decision before dispatch;
+only `start`, `retry`, or `escalate` selects `ROUTED_MODEL`. Block on other
+results or failed writes. Preserve attempt evidence on successors and all
+existing permission, cap, budget and review controls.
 
 **Bulk spawn (one Agent call per PR, all in parallel up to the cap).** For each PR allocated a slot, read `VERDICTS_JSON[$N].tag` — when it is `merge-conflict`, set `TASK_TYPE=merge-conflict`. Otherwise use `TASK_TYPE=fixpr`. Invoke the Agent tool with:
 
@@ -200,53 +250,115 @@ If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` i
 subagent_type: "phase-a-fixer"
 name: "pmm-fix-$N"
 mode: "bypassPermissions"
-model: "opus"
+model: ROUTED_MODEL  # actual alias from the persisted current-task decision
 isolation: "worktree"
 run_in_background: true
 ```
 
 **Subagent prompt MUST include:**
 
+- Stable routing task identity and current record/request file pointers; require
+  the fixer to refresh/persist local-check, changed-tree and batch evidence after
+  editing and execute the `model-route-submission` guard before every push.
+  Pre-spawn eligibility is not post-edit submission permission.
+
+
 - PR number, branch name (`headRefName`), repo (`$OWNER/$REPO`), linked issue number (if any)
 - Current HEAD SHA from the tick's gate JSON
 - Reviewer classification (`cr`, `bugbot`, or `greptile`) — omit or set to `none` for merge-conflict-only dispatches
 - **Task type:** `fixpr` (CR/CI findings) or `merge-conflict` (conflict resolution) — for `merge-conflict`, include: "Run the `/merge-conflict` skill workflow: fetch main, rebase, run `resolve_merge_conflicts.py`, resolve complex hunks with judgment, commit + force-push. Exit with `OUTCOME: blocked` if conflicts are genuinely unresolvable."
-- Handoff file path: resolve with `handoff-state.sh [--owner-repo owner/repo] --path N` (scoped: `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`; legacy flat during migration)
+- Handoff file path: resolve with `handoff-state.sh --owner-repo owner/repo --path N` (scoped: `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`; the legacy flat layout needs an explicit `--legacy-flat`)
 - Pre-fetched findings from Step 3 (`FINDINGS_JSON[N]`) — omit for merge-conflict-only dispatches
 - `SKIP_CR_TRIGGER=1` when `$CR_BUDGET_OK == 0`
 - The verbatim `SAFETY:` block from `.claude/rules/safety.md`
 - The verbatim `MINDSET:` block from `.claude/rules/safety.md`
 - The verbatim `SKILLS:` block from `.claude/rules/skill-first.md`
 
-**Record all of this tick's spawns in ONE single write, after every Agent call has been issued — never one read-modify-write per PR.** `session-state.sh` has no cross-process lock; if each parallel spawn ran its own independent `--get` → append → `--set` cycle, two spawns' read-modify-write windows can interleave and the second writer's `--set` clobbers the first writer's append. Since the parent is a single sequential thread even when it fires N Agent tool calls in one message, build every new entry first, then issue exactly one `session-state.sh` call for the whole batch:
+**Record all of this tick's spawns in ONE single write, after every Agent call has been issued.** `.active_agents` is a map keyed by agent id (issue #1631), so each spawn writes only its own key — a sibling thread's entries are structurally untouchable, and the old `--get` → append → `--set`-the-whole-array idiom that lost them is gone. Batching is still the rule: one call per tick is one atomic write and one lock acquisition instead of N. Build every entry first, then issue exactly one `session-state.sh` call for the whole batch:
+
+<!-- test-anchor: pmm-spawn-record -->
 
 ```bash
-NOW=$(date -u +%FT%TZ)
-NEW_ENTRIES='[]'
+SPAWN_STATE_RC=0
+SPAWN_STATE_ERROR=""
+NOW=$(date -u +%FT%TZ) || SPAWN_STATE_RC=4
+[[ -n "$NOW" ]] || SPAWN_STATE_RC=4
+[[ "$SPAWN_STATE_RC" -eq 0 ]] || SPAWN_STATE_ERROR=clock
+AGENT_SETS=()
 IN_FLIGHT_SETS=()
-# ONE loop per spawned PR — build that PR's entry AND its --set argument together,
-# each using ONLY that PR's own head_sha. Never hoist head_sha into a shared
-# variable reused across iterations or across a second loop — the last PR's SHA
-# would silently overwrite every earlier PR's lock.
-for N in $SPAWNED_PR_NUMS; do
-  N_HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")   # that PR's own tick-scoped $GATE
-  ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || echo null)
+SPAWNED_COUNT=0
+SPAWN_STATE_AGENT_KEYS=()
+# Each entry uses ONLY its own PR's head, never a shared last-loop head.
+for N in ${SPAWNED_PR_NUMS:-}; do
+  SPAWNED_COUNT=$((SPAWNED_COUNT + 1))
+  SPAWN_STATE_AGENT_KEYS+=("pmm-fix-$N")
+  if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then
+    SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=pr_metadata; continue
+  fi
+  N_HEAD_SHA=$(jq -er '.head_sha | select(type == "string" and length > 0)' \
+    <<<"${GATE_BY_PR[$N]:-}") || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=head_metadata; }
+  ISSUE_N=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null) || ISSUE_N=null
   AGENT_ID="pmm-fix-$N"
-  ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
+  ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
     --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \
-    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}')
-  NEW_ENTRIES=$(jq --argjson entry "$ENTRY" '. + [$entry]' <<<"$NEW_ENTRIES")
-  IN_FLIGHT_SETS+=(--set ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$N_HEAD_SHA\",\"agent_id\":\"$AGENT_ID\"}")
+    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}') \
+    || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_entry; }
+  FLIGHT_ENTRY=$(jq -cn --arg now "$NOW" --arg head "$N_HEAD_SHA" --arg agent "$AGENT_ID" \
+    '{skill:"phase-a-fixer",status:"active",dispatched_at:$now,head_sha:$head,agent_id:$agent}') \
+    || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=flight_entry; }
+  AGENT_SETS+=(--set ".active_agents[\"$AGENT_ID\"]=$ENTRY")
+  IN_FLIGHT_SETS+=(--set ".pmm_in_flight[\"$N\"]=$FLIGHT_ENTRY")
 done
+# One complete, fixed batch per attempt: no entry can land without its siblings.
+SPAWN_WRITE_ARGS=(${AGENT_SETS[@]+"${AGENT_SETS[@]}"} ${IN_FLIGHT_SETS[@]+"${IN_FLIGHT_SETS[@]}"})
+SPAWN_STATE_OUTCOME=recorded
+if [[ "$SPAWNED_COUNT" -eq 0 ]]; then
+  SPAWN_STATE_RC=0; SPAWN_STATE_OUTCOME=none
+elif [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  SPAWN_STATE_ERROR=write
+  "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  if [[ "$SPAWN_STATE_RC" -eq 6 ]]; then
+    SPAWN_STATE_RC=0
+    "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  fi
+fi
 
-# After the loop — ONE read of the current array, ONE append of the whole batch, ONE write:
-CURRENT_AGENTS=$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo null)
-[ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
-UPDATED_AGENTS=$(jq --argjson entries "$NEW_ENTRIES" '. + $entries' <<<"$CURRENT_AGENTS")
-.claude/scripts/session-state.sh --set ".active_agents=$UPDATED_AGENTS" "${IN_FLIGHT_SETS[@]}"
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  echo "SPAWN_STATE=$SPAWN_STATE_OUTCOME"
+else
+  echo "SPAWN_STATE=failed rc=$SPAWN_STATE_RC reason=$SPAWN_STATE_ERROR"
+  # This is checkpoint DATA, never a shell command to eval or an unconditional
+  # retry instruction: children may have advanced before a later recovery.
+  SPAWN_STATE_PENDING=$(jq -cn --arg reason "$SPAWN_STATE_ERROR" \
+    --argjson key_count "${#SPAWN_STATE_AGENT_KEYS[@]}" --args \
+    '{registration:"unconfirmed",reason:$reason,requires_task_observation:true,
+      agent_keys:$ARGS.positional[:$key_count],args:$ARGS.positional[$key_count:]}' \
+    -- ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"} \
+       ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}) || SPAWN_STATE_PENDING=""
+  if [[ -n "$SPAWN_STATE_PENDING" ]]; then
+    echo "SPAWN_STATE_PENDING=$SPAWN_STATE_PENDING"
+  else
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_BEGIN'
+    if [[ "${#SPAWN_STATE_AGENT_KEYS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_END'
+    echo 'SPAWN_STATE_PENDING_ARGV_BEGIN'
+    if [[ "${#SPAWN_WRITE_ARGS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_ARGV_END'
+  fi
+fi
+# Preserve the failure status for the Bash tool as well as the explicit footer.
+(exit "$SPAWN_STATE_RC")
 ```
 
-Set Subagent column to `spawned` immediately for every PR in this batch; transition to `working` once each subagent reports activity (first tool call or ~30s elapsed).
+**Atomicity and recovery (#1642).** `session-state.sh` builds all assignments into one jq candidate, validates its field types and lock ownership, then commits with one rename. A failed batch cannot apply only some keys. Malformed JSON values deliberately fall back to strings, so build both agent and in-flight entries as real JSON and decline the whole record batch when construction fails. Only an actual write exit6 retries once; the original timestamps, IDs and argv stay fixed.
+
+`SPAWN_STATE=failed` means the tasks are already spawned but registration is unconfirmed. Retain their exact native Task/Agent IDs, original batch and this footer in the parent's resumable handoff, and observe those tasks directly. Do not redispatch, blindly stop them, release their claims, or make state-based merge/rebase/dispatch decisions for affected PRs while registration is pending. Preserve raw diagnostics and checkpoint data even if JSON serialization failed. Reconcile against current native task results before any later replay; if a child completed, use its terminal report/drain path rather than overwriting it with stale `spawned` state. No read-back is needed to reinterpret a successful atomic write.
+
+Set the Subagent column to `spawned` when registration is confirmed; qualify it as `spawned (registration unconfirmed)` on failure. Transition to `working` on actual activity, retaining the qualifier until reconciled.
 
 **Safety boundaries for every subagent (non-negotiable):**
 - Never modify branch protection
@@ -285,7 +397,7 @@ done
 **Idempotency-gated via `pmm_in_flight`** (only reached once the deferral gate above is open):
 
 ```bash
-INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev/null || echo null)
+INFLIGHT=$("$SESSION_STATE_SH" --get ".pmm_in_flight.\"$N\"" 2>/dev/null || echo null)
 ```
 
 - `$INFLIGHT` has `status == "active"` → skip (verdict `awaiting prior /wrap`) unless stale per `PMM_LOCK_STALE_SECS` (default **3600s**) with no live progress evidence.
@@ -299,7 +411,7 @@ INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev
 ```bash
 NOW=$(date -u +%FT%TZ)
 HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
-.claude/scripts/session-state.sh --set \
+"$SESSION_STATE_SH" --set \
   ".pmm_in_flight.\"$N\"={\"skill\":\"wrap\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
 
@@ -313,11 +425,11 @@ On completion:
 
 ## Step 5e: Dedicated monitor mode while fix subagents are active
 
-If any **blocking** fix subagents are active this tick (per the shared gate idiom and the deferral-gate definition in Step 5d — spawned now or carried over from a prior tick), **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the **parent's** ONLY job until every blocking fix subagent completes, fails, or is drained (foreign: disappearance / terminal `status` / `PMM_LOCK_STALE_SECS` staleness timeout) is orchestration (poll, verify, heartbeat); the parent does no direct feature-code edits, no local CR review, no substantive source analysis — but its subagents edit code, resolve conflicts, and push as designed. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
+If any **blocking** fix subagents are active this tick (per the shared gate idiom and the deferral-gate definition in Step 5d — spawned now or carried over from a prior tick), **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the **parent's** ONLY job until every blocking fix subagent completes, fails, or is drained (foreign: disappearance / terminal `status` / `PMM_LOCK_STALE_SECS` staleness timeout) is orchestration (poll, verify, record required notices); the parent does no direct feature-code edits, no local CR review, no substantive source analysis — but its subagents edit code, resolve conflicts, and push as designed. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
 
 **PMM's own monitor loop (~60s cadence — replaces, not layers on, `monitor-mode.md`'s checklist):**
 
-1. **Poll active subagent statuses — ownership-aware drain.** Each ~60s cycle, read `active_agents` and partition the Phase A entries gating deferred PRs into **PMM-owned** (`id` starts with `pmm-fix-`) and **foreign** (any other `id`) sets.
+1. **Poll active subagent statuses — ownership-aware drain.** Each ~60s cycle, read `active_agents` (a map keyed by agent id — iterate its values) and partition the Phase A entries gating deferred PRs into **PMM-owned** (`id` starts with `pmm-fix-`) and **foreign** (any other `id`) sets.
 
    **PMM-owned entries:** Transition Subagent column: `spawned` → `working` → `complete` / `failed`. On completion (success, exhaustion, or crash), proceed to item 2 below.
 
@@ -337,9 +449,9 @@ If any **blocking** fix subagents are active this tick (per the shared gate idio
 3. Branch on outcome for **PMM-owned** entries only (per Step 2.5's step 4, cleanup from item 2 above already done):
    - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Reported once and dropped from the actionable fleet this tick; the user can explicitly approve a respawn.
    - **`blocked` (unresolvable merge conflict or other fix blocker):** add `#N` to `HARD_BLOCK[]` with reason from the exit report (e.g. `conflicts(needs-human)`). Report once and drop from the actionable fleet.
-   - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `.claude/scripts/merge-gate.sh "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record.
-4. Send heartbeat if >5 min since last user message (timestamp prefix required).
-5. Investigate stale **PMM-owned** agents (>15 min Phase A without progress). Foreign staleness is handled by item 1's `PMM_LOCK_STALE_SECS` fallback.
+   - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `"$MERGE_GATE_SH" "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record.
+4. Apply decision-only-output.md: honor explicit status/periodic-report requests and surface blockers, safety events, stalls/unknown health and stopped/exhausted recovery. Otherwise continue silently.
+5. Investigate stale **PMM-owned** agents (>15 min Phase A without progress). Use child-attributable output/checkpoint activity and exact runtime IDs in the background registry, not parent poll/heartbeat freshness. The independent ceiling tick reports unchanged Agent artifacts as `CHILD STALL SUSPECT` and missing/unreadable evidence as `CHILD PROGRESS UNKNOWN`; neither proves a crash or permits stop/respawn. Correlate with the runtime result and existing ownership/generation gates before draining anything. Foreign staleness is handled by item 1's `PMM_LOCK_STALE_SECS` fallback.
 
 **While subagents run:** do not start rebases, new spawns for other PRs, or `/wrap` dispatches. **Exception:** an exhaustion respawn for a PR already in this tick's active-fixer set is a continuation of already-approved fix work — it is exempt from this restriction and proceeds inline. Deferred merge-ready PRs from Step 5d run immediately after the monitor loop exits. The tick completes only after all spawned fix subagents return (or fail) and any deferred `/wrap` dispatches finish. Then proceed to Step 6.
 

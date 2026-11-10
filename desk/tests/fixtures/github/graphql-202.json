@@ -1,0 +1,18 @@
+{
+  "data": {
+    "repository": {
+      "nameWithOwner": "acme/widgets",
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 202,
+        "title": "Idea: let the desk export widgets",
+        "url": "https://github.com/acme/widgets/issues/202",
+        "state": "OPEN",
+        "body": "## Background\n\nThe operator wants widgets on paper.\n\n## Acceptance Criteria\n\n4.1 [ ] Export works.\n\n_Captured via /issue-maker._",
+        "createdAt": "2026-10-05T16:49:52Z",
+        "closedAt": null,
+        "labels": { "nodes": [] }
+      }
+    }
+  }
+}

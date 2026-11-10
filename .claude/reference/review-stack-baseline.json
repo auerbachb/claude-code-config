@@ -1,0 +1,91 @@
+{
+  "schema": "review-stack-baseline/v1",
+  "source": {
+    "issue": 1304,
+    "record": ".claude/reference/ai-review-chain-roles-decision.md",
+    "as_of": "2026-08-26",
+    "provenance": "decision-record",
+    "note": "#1304's reconciliation (`ai-review-chain-roles-decision.md` §BugBot cap + chain-position reconciliation, Issue #1304) recorded BugBot's measured `spend_limit` cap and RETAINED its first-fallback position. It is the second of two cap reconciliations written against the same non-truncated 268-PR window (2026-07-25 -> 2026-08-26): #1303 recorded CodeRabbit's `rate_limit` + `fair_usage` caps in the same record. No `tools[]` entry changed `role`, `gates_merge`, or `approves_via` in either — only `expected_caps` and `notes`. This `source` field is updated to point at the most recent decision record per the pattern established by #1232; the previous source was #1287 (`self-hosted-reviewer-decision.md`, 2026-08-23), which surveyed self-hosted CLI candidates (`ocr`, PR-Agent — both CUT, both retained here as `role: off`) and is unchanged by this update."
+  },
+  "tools": [
+    {
+      "key": "coderabbit",
+      "role": "primary",
+      "billed": "paid",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [
+        "rate_limit",
+        "fair_usage"
+      ],
+      "notes": "Primary finder per the #1199 decision record: Pro, 3/3 seats, $90/mo as last measured 2026-08-21. The owner has since decided to cut the unused third seat (3 -> 2, then annual: $90/mo -> $48/mo, #1213/#1228) but has not yet made the change, so this stays at the measured value on purpose — an audit that reads 2/2 seats should report it as landed drift, not match a baseline written ahead of the click. gates_merge stays false — it never issues APPROVED, so marking it as gating would fire a permanent, false D4 every run. CAPS (measured, #1303, non-truncated window 2026-07-25 -> 2026-08-26, 268 merged PRs, window.truncated=false): two DIFFERENT mechanisms, which is why expected_caps lists two kinds rather than one. (1) rate_limit — the per-developer per-hour burst allowance; Pro base is 5 reviews/hr per developer (dashboard, #1204, 2026-08-21). Observed on 224 of 268 PRs. (2) fair_usage — the Fair Usage adaptive band, which SETS what that hourly number currently is from trailing 7-day included-attempt volume. Observed on 222 of 268 PRs. Both kinds landed on the same PR 213 times: one banner carries both signals, so the counts overlap and must not be added. Union: 233 of 268 PRs (87%) hit at least one cap. The band, quoted from CodeRabbit's own banners: 57 attempts -> 2 reviews/hr (PR #1240, 2026-08-22); 60 -> 1/hr (PR #1250); 68 -> 1/hr (PR #1295); 77 -> 1/hr (PR #1320); 76 -> 1/hr (PR #1330). The 57/60 pair brackets the documented 60-per-week cliff. Earlier in the window the banner was qualitative only ('adaptive limits are currently applied', PR #774, 2026-07-28) — same mechanism, later instrumentation. APPROVALS: 0 across all 268 PRs (254 review objects, 514 inline findings, sole source on 32). Zero is what CodeRabbit IS, not a regression — every merge gate in the window was carried by CodeAnt (530 approvals). APP vs CLI are billed and limited independently and do not share a pool: on the same public repo within the same 24h the App banner names 'Plan: Pro' and an org usage spending cap (PR #1295, 2026-08-23) while the CLI payload reports isProUser:false / orgAttributed:false / free OSS limits (#1286). #1286's OSS routing therefore explains the CLI only and does NOT explain the App-side rate limiting."
+    },
+    {
+      "key": "codeant",
+      "role": "approver",
+      "billed": "paid",
+      "gates_merge": true,
+      "approves_via": "review",
+      "expected_caps": [
+        "not_subscribed"
+      ],
+      "notes": "Primary approver (co-primary on the CR path) per the #1199 decision record: Premium, 2/2 seats, ~$48/mo — now paid, not trial. Sole source of APPROVED (360 approvals on 184 PRs), so gates_merge is true and approves_via is \"review\". The subscription-identity warning is confirmed non-blocking (org `Auto Approve PR` is ON), so not_subscribed stays an expected cap rather than news."
+    },
+    {
+      "key": "bugbot",
+      "role": "fallback",
+      "billed": "paid",
+      "gates_merge": true,
+      "approves_via": "check_run",
+      "expected_caps": [
+        "spend_limit"
+      ],
+      "notes": "First fallback per the #1199 decision record — position RETAINED on measurement (#1304). gates_merge is true — a clean BugBot pass on current HEAD satisfies the merge gate alone on its path — but approves_via stays \"check_run\", because it signals that pass through the `Cursor Bugbot` check-run and posts no APPROVED review object. Driving D4 off gates_merge would flag that as a missing approval every single run. CAP (measured, #1304, non-truncated window 2026-07-25 -> 2026-08-26, 268 merged PRs, window.truncated=false): one mechanism, `spend_limit`. Cursor **Ultra $200/mo**; the binding limit is the on-demand **Monthly Limit of $1,000.00, type Fixed**, read at **$999.87/$1,000.00 consumed**, with the plan's included ~$400 Other-Models bucket also 100% consumed (`github_bugbot` = 96.1% of it) — dashboard readings 2026-08-21/22 (#1204, `ai-review-billing-dashboard-2026-08.md`). RESET CADENCE: monthly, on the account renewal date — the measured cycle ran **Jul 28 -> Aug 28**, renewing 2026-08-28; vendor mechanics: at the limit \"AI features stop working for that specific user\" until the next billing cycle. Cost: **$1.58/review** (516 reviews, $815.58). Attribution is SETTLED as genuinely BugBot (#1228 dashboard event log: 763 runs, 324 PRs, per-PR rows) — this supersedes the still-open \"attribution disputed\" wording in `pricing-matrix.md` §Cursor BugBot. INCIDENCE: the refusal phrase `hit a usage or spend limit` landed on **176 of 268 PRs (66%)**, spanning PR #982 through PR #1332 — continuous across the window, not a burst. PR #1265 alone carries **8** refusal comments (the #1304 issue body's figure of two came from the truncated 60-PR run and is a floor). APPROVALS: **0 APPROVED review objects across all 268 PRs**, and BugBot satisfied no merge gate that was checked — on PR #1265 the gate was carried by a CodeAnt APPROVED on HEAD, which short-circuits merge-gate.sh before the BugBot path is ever evaluated. Zero is what BugBot IS on this axis, not a regression: it signals a clean pass through the check-run, so approves_via stays \"check_run\". PARTICIPATION is real despite the cap: 248 PRs touched, 153 review objects, 150 inline findings, 553 issue comments, 0 CHANGES_REQUESTED, and **sole source of findings on 29 PRs**. FAILURE SHAPE (measured correction, #1304): the spend-limit refusal in this window concludes **`neutral`**, NOT `success` — of 20 sampled capped PRs spanning #982..#1332, 19 were retrievable (PR #1130 404s) and every one read `neutral` (17) or had no Cursor Bugbot check-run (2), with **zero `success`**; `success` is BugBot's genuine silent clean pass, observed on non-capped PRs #963, #965, #970. The `success`-plus-failure-comment conjunction that `bugbot.md` and `pricing-matrix.md` describe therefore did NOT occur in this window. `merge-gate.sh` blocks both shapes, verified live against PR #1265's real payload (#1304): with the real `neutral` check-run the gate reads met:false, and with the conclusion mutated to `success` while the real refusal comment is kept it still reads met:false; stripping only that refusal comment flips the same payload to met:true, which is what proves the failure-phrase guard is the thing doing the blocking."
+    },
+    {
+      "key": "greptile",
+      "role": "fallback",
+      "billed": "paid",
+      "gates_merge": true,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Second fallback — retained; a vendor-side spend cap is the intended control and is now CONFIGURED at $100 (applied 2026-08-22, #1228). Before that, per the #1199 decision record: paid Pro on the `auerbachb` org with flex overage UNCAPPED (roughly $36-72/mo, 42 of 92 credits already on flex 15 days in). SETTLED 2026-08-22 (#1228) by reading `app.greptile.com/auerbachb/-/settings/billing` live: the org is PAID — Active, 6 Aug-6 Sep invoice $72 -> $36 after discount, usage 92/92 credits. That morning reading also showed \"No cap on flex usage\"; the cap was applied the same evening, so treat the uncapped wording above and here as the dated PRE-change observation and $100 as the current state. The owner's free-tier report described `localmovers-com`, which is canceled. `billed` therefore stays \"paid\" as a confirmed value rather than a contested one. The 2026-08 audit found NO D2 (paid-but-unused) against it: over a non-truncated 240-PR window it was the top sole-source finder in the stack (40 PRs) and hit no cap, so the observed idle day is not disuse. Its OSS program looked self-serve (a repository picker on that billing page listing claude-code-config), but selecting it on 2026-08-22 was REFUSED: the program requires at least 50 stars and this repo has 3. Listing is not eligibility -- the picker validates only on selection -- so the $0 route does not exist here and keep rests on sole-source yield alone. Promoted out of dormant: highest unique yield in the chain (41 sole-source PRs), and the Greptile path is sticky on history once triggered. gates_merge is true on its path; approves_via is none because it signals through issue-comment reactions and severity classification, never a formal APPROVED review object. expected_caps is empty so the current flex-overage exposure surfaces as genuine D3 drift rather than being pre-suppressed."
+    },
+    {
+      "key": "graphite",
+      "role": "off",
+      "billed": "cancelled",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "RETIRED 2026-11-03 (#1889): Graphite support (ticket T-J15030) cancelled the Team plan effective immediately with a pro-rated $450 refund. Reason: yield — it reviewed 30 of 620 PRs (2026-08-21..2026-11-01) against 484-620 for CodeAnt, CodeRabbit and BugBot. No longer polled, triggered or measured; the row is kept so the decision stays readable. Superseded history: supplemental non-gating fallback re-decided 2026-08-22 (#1232) on 2 sole-source prose/formatting findings in a 240-PR window."
+    },
+    {
+      "key": "vercel",
+      "role": "off",
+      "billed": "free",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Zero activity under any login in the 2026-06 window. This repo is agent configuration, not a Vercel app. Kept disabled / Vercel-only. The #1199 decision record does not cover Vercel, so this entry is unchanged by the swap."
+    },
+    {
+      "key": "ocr",
+      "role": "off",
+      "billed": "self-hosted",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "alibaba/open-code-review v1.9.10, Apache-2.0. Evaluated 2026-08-23 (#1287): CUT. Excludes .md files (unsupported_ext) — `ocr delegate preview` on PR #1292's exact commit identified 0 of 2 files as reviewable; no LLM call was made and no findings were possible. This repo's diff profile is predominantly .md; the tool cannot produce findings in practice. No API key available to test code-file coverage on non-.md files. Prior CUT verdict from #793/PR#822 confirmed. Promotion bar (all three required): (1) ≥10% of PRs in the 30-day window contain non-.md files; (2) a session with ANTHROPIC_API_KEY can run ocr review on 3+ real diffs with non-.md content; (3) at least one ocr finding overlaps with a CodeRabbit or CodeAnt finding in the same PR. Does not post APPROVED review objects; cannot satisfy the merge gate. Self-hosted CLIs do not appear in bot snapshots — expected and correct."
+    },
+    {
+      "key": "pr-agent",
+      "role": "off",
+      "billed": "self-hosted",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Qodo PR-Agent v0.43.0, Apache-2.0, pip install pr-agent. Evaluated 2026-08-23 (#1287): CUT. No local diff mode — requires a GitHub PR URL, GitHub API token, and LLM key. Does not fit the local pre-push slot (runs before a PR exists). Could post inline GitHub comments if deployed as a self-hosted GitHub App, but that is out of scope for this survey. Does not post APPROVED review objects; cannot satisfy the merge gate on its own."
+    }
+  ]
+}

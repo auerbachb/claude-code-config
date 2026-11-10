@@ -24,7 +24,7 @@ Skills live in `.claude/skills/<name>/SKILL.md`.
    - `description` (required — used by the model for discovery; be specific about when to trigger)
    - `model` (optional: `sonnet` or `opus` override)
    - `triggers` (optional: natural-language invocation phrases)
-   - `allowed-tools` (optional: restrict the skill to specific tools)
+   - `allowed-tools` (optional: restrict the skill to specific tools — **correct for skills only**; agent definitions under `.claude/agents/` use `tools:` instead)
    - `disable-model-invocation` (optional: prevents auto-trigger AND hides from slash-command autocomplete — avoid unless you really mean both)
 2. **Skill body:** step-by-step instructions, exact bash commands with absolute paths, and clear exit criteria. Subagents skip prose rules — prefer numbered checklists with explicit STOP conditions.
 
@@ -84,7 +84,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) "Hook Lifecycle" and "Hook Auto-Registrat
 
 Tests are **auto-discovered** by the [`hook-scripts.yml`](.github/workflows/hook-scripts.yml) CI workflow — you do **not** edit the workflow to register one (issue #681, which retired the hand-maintained per-test step list that made that file a merge-conflict hotspot).
 
-- **Bash tests** — drop a `<name>.test.sh` into `.claude/scripts/tests/`, `.claude/hooks/tests/`, or `.github/scripts/tests/`. They are discovered and run by [`.github/scripts/run-hook-tests.sh`](.github/scripts/run-hook-tests.sh).
+- **Bash tests** — drop a `<name>.test.sh` into `.claude/scripts/tests/`, `.claude/hooks/tests/`, `.github/scripts/tests/`, or `desk/tests/` (the human-queue store). They are discovered and run by [`.github/scripts/run-hook-tests.sh`](.github/scripts/run-hook-tests.sh).
 - **Python tests** — drop a `test_*.py` unittest module into `tests/`. It runs under **both** the default-Python job and the pinned-3.9 job, so keep it **Python 3.9-compatible** (e.g. `from __future__ import annotations` before any PEP 604 `X | Y` annotation; no `match`/`case`).
 
 **Discovery contract** (a test must satisfy these to be picked up correctly): exit `0` on pass / non-zero on fail; be invoked via `bash` (the executable bit is **not** required — some suites are intentionally non-exec); and require **no** positional arguments.
@@ -97,6 +97,19 @@ Run the whole suite locally from the repo root before pushing:
 bash .github/scripts/run-hook-tests.sh        # all bash suites
 bash .github/scripts/run-python-tests.sh      # all Python suites
 ```
+
+**Runtime budget — one suite is slow on purpose (issue #1505).** Suites are otherwise
+quick, but [`checkpoint-handoff.test.sh`](.claude/scripts/tests/checkpoint-handoff.test.sh)
+builds a throwaway git repository per case: ~71s idle, ~156s with four copies running
+concurrently, ~202s under concurrent subagents — and it climbs from there. It announces
+this on its first line of output, because silence from it is fixture construction, not a
+hang.
+
+Neither the runner nor CI bounds any suite today. **If you add a bound — in a runner, a CI
+job, or an ad-hoc invocation — keep it ≥420s for that suite.** A tighter bound does not
+detect a hang, it manufactures one: a ~240s alarm on a loaded machine is what produced a
+phantom hang report that parked real, already-correct work. The floor is enforced by
+[`checkpoint-handoff-slow-bound.test.sh`](.claude/scripts/tests/checkpoint-handoff-slow-bound.test.sh).
 
 **Compact mode (`--json`)** — both runners also emit the one-line result contract from
 [`compact-result-contract.md`](.claude/reference/compact-result-contract.md) instead of every
@@ -111,6 +124,25 @@ A green run drops from thousands of lines to one; the full capture is always at 
 **failing** suites still print in full (on stderr) in both modes. In CI both runners go through
 [`summarize-test-run.sh`](.github/scripts/summarize-test-run.sh), which mirrors the contract into
 the job's step summary and raises an `::error::` annotation on a red run.
+
+## Adding a Script or Test to the `.claude/scripts/` Catalog
+
+The catalog — [`.claude/scripts/README.md`](.claude/scripts/README.md) plus one doc per category under `.claude/scripts/docs/` — is **generated**, not hand-authored (issue #1578).
+
+**To add a script or a test suite:** put one line in the new file's own header block and regenerate.
+
+```bash
+# in the new file, inside the leading comment block:
+# catalog: <category-id> — <one-line description>
+
+bash .github/scripts/scripts-catalog-gen.sh --write
+```
+
+`<category-id>` is the filename stem of the owning doc under `.claude/scripts/docs/` (`tests`, `utilities`, `release-cadence`, …). That is the whole change — you never edit a shared doc, which is what removed both the structural churn (issue #1571) and the recurring merge conflicts in `docs/tests.md` (PR #1543). A region two branches both regenerated is resolved by re-running the generator, not by reading a diff.
+
+**To add a category:** add `docs/<id>.md` carrying an H1, `<!-- catalog:category id=<id> order=<N> -->`, `<!-- catalog:covers <one-line index summary> -->`, a `<!-- catalog:rows:begin -->` / `<!-- catalog:rows:end -->` pair (plus a second pair marked `<!-- catalog:rows:begin kind=py -->` if the category will hold Python helpers — a `.py` file whose doc has no `kind=py` region is reported as unplaced, never silently dropped), and the `[← back to the index](../README.md)` back-link — then regenerate. Adding a category is adding a file; there is no shared registry to edit. Regeneration also rewrites this doc's entry in `.claude/reference/churn-hotspot-exemptions.json` (a generated region is lint-enforced churn, so it is exempt from hotspot scoring by construction) — commit that file alongside the new category doc.
+
+`.github/scripts/scripts-catalog-lint.sh` (auto-discovered, see below) fails CI when a file has no declaration, when a declaration names a category with no doc, when a committed region has drifted, or when a hand-written row appears outside a generated region. Rationale and the rejected alternatives: [`scripts-catalog-generation-decision.md`](.claude/reference/scripts-catalog-generation-decision.md).
 
 ## Adding a Doc Lint
 

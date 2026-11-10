@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-conventions-audit.sh — Static audit of skill files against repo conventions
+# catalog: skills-telemetry — Static audit that `.claude/skills/*/SKILL.md` files match repo conventions
 #
 # Adapted from affaan-m/everything-claude-code skill-comply / skill-stocktake (issue #417).
 # ECC runs LLM-driven behavioral compliance tests; we only check static conventions
@@ -11,16 +12,18 @@
 # EXIT STATUS:
 #   0 — no errors (warnings may still print unless --strict)
 #   1 — at least one ERROR (or any finding when --strict)
+#   70 — --help header extraction produced no output (internal defect).
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME:-/tmp}/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
 
 STRICT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --strict) STRICT=1; shift ;;
     --help|-h)
-      sed -n '2,/^# EXIT STATUS:/{ /^# EXIT STATUS:/d; s/^# \{0,1\}//; p }' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0
       ;;
     *)
@@ -131,7 +134,7 @@ m = re.match(r"^---\s*\n.*?\n---\s*\n", text, re.DOTALL)
 print(text[m.end():] if m else text)
 PY
 )"
-  if ! printf '%s' "$body" | grep -qiE '(exit criteria|STOP|## exit|when done|zero uncollapsed|merge gate|do not exit)'; then
+  if ! grep -qiE '(exit criteria|STOP|## exit|when done|zero uncollapsed|merge gate|do not exit)' <<<"$body"; then
     warn "${skill_name}: body may lack explicit exit/stop criteria"
   fi
 }

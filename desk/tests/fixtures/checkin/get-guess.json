@@ -1,0 +1,9 @@
+{"now": "2026-10-08T13:00:00Z", "today": "2026-10-08",
+ "checkin": {"version": 1, "day": "2026-10-08", "session": "desk-1", "set_at": "2026-10-08T12:59:00Z",
+             "hours": 2.5, "energy": "meh", "factor": 1, "factor_known": false, "planned": null,
+             "budget": 30, "lines": 600,
+             "basis": {"kind": "guess", "items": 30, "lines_per_item": 20}},
+ "measured": null,
+ "factors": {"low": 0.7, "tired": 0.7, "ok": 1, "fine": 1, "normal": 1, "good": 1, "high": 1.2, "great": 1.2},
+ "guess": {"items": 30, "lines_per_item": 20, "min_read": 3, "lookback_days": 7},
+ "answered_today": 0, "unreviewed": 0, "read_today": 33, "budget": 30, "left": -3}

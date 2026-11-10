@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # reviewer-activity.sh — Detect whether each conditionally-triggered reviewer has
 # already posted activity on a specific pushed SHA.
+# catalog: pr-state-polling — Detect whether each AI reviewer has posted activity on a specific pushed SHA
 #
 # Extracted from /fixpr Step 3b (Issue #788 hotspot extraction).
 # The trigger rate-cap / @coderabbitai full review decision logic stays in the
@@ -15,7 +16,7 @@
 #   PUSHED_AT  — ISO-8601 timestamp captured before git push (avoids race)
 #
 # Output: JSON object on stdout —
-#   { "coderabbit": <bool>, "graphite": <bool>, "codeant": <bool> }
+#   { "coderabbit": <bool>, "codeant": <bool> }
 #   true  = reviewer auto-triggered activity on PUSHED_SHA since PUSHED_AT
 #   false = no activity detected; caller should post a trigger comment
 #
@@ -32,7 +33,7 @@
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
-  >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+  2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 if [[ $# -ne 3 ]]; then
   echo "Usage: reviewer-activity.sh <PR_NUMBER> <PUSHED_SHA> <PUSHED_AT>" >&2
@@ -108,11 +109,6 @@ jq -n \
        or any($inline[]?; .user.login == "coderabbitai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
        or convo_by("coderabbitai[bot]")
        or check_by(["CodeRabbit", "coderabbitai"])),
-    graphite:
-      (any($reviews[]?; .user.login == "graphite-app[bot]" and .commit_id == $sha and recent(.submitted_at))
-       or any($inline[]?; .user.login == "graphite-app[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or convo_by("graphite-app[bot]")
-       or check_by(["Graphite", "graphite-app"])),
     codeant:
       (any($reviews[]?; .user.login == "codeant-ai[bot]" and .commit_id == $sha and recent(.submitted_at))
        or any($inline[]?; .user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # main-sync.sh — Sync a repo's local `main` with `origin/main`.
+# catalog: trust-worktree-repo — Sync a repo's local main branch with `origin/main`
 #
 # PURPOSE
 #   Centralizes the "sync local main" sequence used in `/merge` Step 5b,
@@ -76,6 +77,7 @@
 #   2  Failed — checkout main, fetch, rev-list, pull, or reset failed.
 #   3  Usage error (unknown flag, missing --repo value, bad path).
 #   4  Aborted — --reset refused because local main has unpushed commits.
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   # Default: operate on the current working directory's repo.
@@ -86,7 +88,11 @@
 #   STATUS=$(bash .claude/scripts/main-sync.sh --repo "$ROOT_REPO")
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 # Collapse a captured git stderr blob into a single whitespace-normalized line
 # so the "failed: ..." status string honors the single-line stdout contract
@@ -100,7 +106,8 @@ to_one_line() {
 print_help() {
   # Print the header block (lines 2..first blank line), stripping leading "# ".
   # Matches the pattern used by repo-root.sh / off-peak-minute.sh / workday.sh.
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {

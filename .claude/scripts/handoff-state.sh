@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # handoff-state.sh — Locked read/write helper for per-repo handoff files.
+# catalog: session-state-locking — Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`)
 #
 # PURPOSE
 #   Serializes the WHOLE read-modify-write cycle of every writer that touches
@@ -14,26 +15,84 @@
 #   prompts, parent/wrap deletes — routes through this script so only one lock
 #   path exists. A lock only one writer respects is not a lock (lesson from #639).
 #
-# REPO SCOPING (issue #655)
-#   Handoff files are stored in a per-repo subdirectory to prevent two repos at
-#   the same PR number from sharing one file:
+# REPO SCOPING (issues #655, #1366)
+#   Handoff files are stored in a per-repo subdirectory so two repos at the same
+#   PR number can never share one file:
 #     ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
-#   Pass --owner-repo <owner/repo> (e.g., --owner-repo auerbachb/myrepo) as
-#   the FIRST argument (before the mode flag) to use the scoped path.  Without
-#   --owner-repo the legacy flat path is used:
+#
+#   EVERY mode resolves that scoped path, and owner/repo is resolved in the same
+#   precedence session-state.sh uses:
+#     1. --owner-repo <owner/repo>  (explicit; must precede the mode flag)
+#     2. $CLAUDE_SESSION_REPO
+#     3. the cwd's `origin` remote  (repo_identity(), lib/pr-scope-resolver.sh)
+#   When none of the three yields an owner/repo, the script exits 2 having
+#   written nothing.  It does NOT fall back to the flat path (issue #1366).
+#
+# LEGACY FLAT PATH (issues #1302, #1366)
 #     ~/.claude/handoffs/pr-{N}-handoff.json
-#   The flat path is preserved for backward compatibility during migration; new
-#   code should always pass --owner-repo.  The handoff-migrate.sh script moves
-#   existing flat files into the scoped layout.
+#   is reachable ONLY on explicit request — --legacy-flat, or
+#   CLAUDE_HANDOFF_FLAT_OK=1 for a caller that cannot add a flag.  Omission is
+#   NOT a request for it.
+#
+#   The two escapes differ in what they say.  --legacy-flat is silent: naming
+#   the flat path per call means you meant it (polling-state-gate.sh refreshing
+#   an already-flat handoff, /wrap's flat-layout delete sweep,
+#   handoff-migrate.sh).  CLAUDE_HANDOFF_FLAT_OK=1 is silent only when nothing
+#   was bypassed; when the context WOULD have resolved a scope it notes on
+#   stderr that it "sent --<mode> on PR #<N> to the legacy flat path, bypassing
+#   the scope '<owner/repo>' this context resolves to".  The variable is
+#   ambient, so it can cover calls its author never considered — that note is
+#   what keeps the #1366 defect visible when it is set wider than intended.
+#
+#   An explicit --owner-repo always wins over CLAUDE_HANDOFF_FLAT_OK=1, and says
+#   so on stderr.  The env var is ambient — /wrap exports it for a flat-layout
+#   sweep — so letting it silently redirect a call that named its repo would
+#   reintroduce the very defect #1366 closes, one scope wider.  --legacy-flat is
+#   a per-call flag, so combining it with --owner-repo is a usage error instead.
+#
+#   Why omission stopped being a fallback: the flat write reports success while
+#   every scoped reader sees nothing, so a phase's whole batch of updates is an
+#   invisible no-op.  Warning about it (the #1302 fix) left the wrong path
+#   reachable by the easy default; deriving the repo removes the default without
+#   removing the flat path.  Deriving a scoped path while an un-migrated flat
+#   file exists warns and names handoff-migrate.sh rather than orphaning it.
+#   Decision record: .claude/reference/handoff-missing-owner-repo-decision.md
 #
 # USAGE
-#   handoff-state.sh [--owner-repo <owner/repo>] --path   <pr_number>        # print canonical path (no lock)
-#   handoff-state.sh [--owner-repo <owner/repo>] --get    <pr_number>        # lock-free read
-#   handoff-state.sh [--owner-repo <owner/repo>] --create <pr_number> <json> # locked create/overwrite
-#   handoff-state.sh [--owner-repo <owner/repo>] --init   <pr_number> <json> # locked create-if-absent (no-op if exists)
-#   handoff-state.sh [--owner-repo <owner/repo>] --set    <pr_number> <jq-path>=<value>
-#   handoff-state.sh [--owner-repo <owner/repo>] --append <pr_number> <field> <value>
-#   handoff-state.sh [--owner-repo <owner/repo>] --delete <pr_number>        # locked delete
+#   Scope flags (optional, any order, before the mode flag):
+#     --owner-repo <owner/repo>   scope explicitly — preferred at every call site
+#     --legacy-flat               target the legacy flat path instead
+#     --require-existing          --set/--append/--delete existing only; exit 3 (nothing
+#                                 written) instead of seeding a new record from
+#                                 `{}` when the target is absent. Checked under
+#                                 the lock, so it is race-free where a caller's
+#                                 own -e test is not.
+#     --expect-pr N --expect-owner owner/repo --expect-head SHA
+#                                 Guard an existing --set/--append by embedded
+#                                 identity under its lock. All three flags and
+#                                 --require-existing are required together.
+#     --expect-content-sha SHA256  optional bounded content revision guard,
+#                                 under the same lock; requires the identity
+#                                 guards above. Needs python3 only when used.
+#
+#   handoff-state.sh [<scope-flags>] --path   <pr_number>        # print canonical path (no lock)
+#   handoff-state.sh [<scope-flags>] --get    <pr_number>        # lock-free read
+#   handoff-state.sh [<scope-flags>] --create <pr_number> <json> # locked create/overwrite
+#   handoff-state.sh [<scope-flags>] --init   <pr_number> <json> # locked create-if-absent (no-op if exists)
+#   handoff-state.sh [<scope-flags>] --repair <pr_number> <json> # locked replace-if-unusable
+#                               Writes only when the target is absent, or
+#                               present but unreadable / not valid JSON. A
+#                               present, parseable record is left untouched
+#                               (exit 0). The readability test happens under
+#                               the lock, so a concurrent writer that repairs
+#                               the file first is preserved rather than
+#                               overwritten — which a caller-side test before
+#                               --create cannot guarantee (CodeAnt, PR #1598).
+#   handoff-state.sh [<scope-flags>] --set    <pr_number> <jq-path>=<value>
+#   handoff-state.sh [<scope-flags>] --append <pr_number> <field> <value>
+#                               <field> must name one of the schema's array
+#                               fields — see --append FIELD NAMES below
+#   handoff-state.sh [<scope-flags>] --delete <pr_number>        # locked delete
 #
 # CONCURRENCY MODEL
 #   The lock is a `mkdir`-based advisory lock directory at
@@ -58,24 +117,69 @@
 #     • findings_dismissed: dedup by .id (object identity).
 #   Unknown fields are always preserved (forward compatibility).
 #
+# --append FIELD NAMES (issue #1514)
+#   <field> is checked against the array fields the handoff schema defines
+#   (HANDOFF_ARRAY_FIELDS below); anything else exits 2 having written nothing.
+#   The check closes two silent losses, both of which used to exit 0:
+#     • a MISORDERED FLAG — `--append 452 --owner-repo o/r` stored the literal
+#       key "--owner-repo", discarded the write the caller meant, and left a
+#       record that parses as valid JSON while holding no real field at all.
+#     • a TYPO — `threads_replyed` created its own field just as quietly.
+#
+#   This restricts only what --append may CREATE. The forward-compatibility rule
+#   above is untouched: unknown fields already in a record are still preserved
+#   verbatim across every read-modify-write. To add an array field, add it to
+#   .claude/reference/handoff-file-schema.json AND to HANDOFF_ARRAY_FIELDS —
+#   handoff-state.test.sh fails if the two drift apart.
+#
+#   --set needs no equivalent guard (audited under #1514, pinned by tests): its
+#   argument must contain `=` (exit 2 otherwise), and the path before the `=`
+#   must compile as a jq path, which no flag-shaped or bare-identifier key does
+#   — jq rejects it and the file is left unmodified (exit 4).
+#
+# --set VALUES (issue #1357)
+#   A value that parses as JSON is stored as that JSON literal; anything else is
+#   stored verbatim as a string.  The one exception is a raw jq PROGRAM
+#   (`.notes + " x"`, `(.a // [])`): it is REFUSED with exit 4, file unchanged,
+#   instead of storing its own source text over the previous value.  To store
+#   such text literally, pass it as a JSON string ("...").
+#
 # EXIT CODES
 #   0  Success.
-#   2  Usage error (missing args, unknown flag, malformed path=value).
-#   3  Handoff file not found (--get only; other modes create/seed from {}).
-#   4  jq parse or evaluation failure.
-#   5  Write failure (mktemp / mv).
+#   2  Usage error (missing args, unknown flag, malformed path=value,
+#      an --append <field> that is not one of the schema's array fields,
+#      including a misordered flag — see --append FIELD NAMES —
+#      unresolvable scope, see REPO SCOPING).
+#   3  Handoff file not found (--get always; --set/--append only under
+#      --require-existing, which otherwise create/seed from {}).
+#   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
+#      unevaluated jq expression rather than data (issue #1357) — the file is
+#      left unmodified. Evaluate the expression first and pass the result.
+#   5  Cannot complete the operation on disk. Causes, all leaving the
+#      handoff file exactly as it was: mktemp / temp-write / mv failure,
+#      rm failure under --delete, a REQUIRED sibling library missing at
+#      startup (see DEPENDENCIES), or HOME unset or empty. A missing HOME
+#      or library stops before any handoff is read or written.
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
+#   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
-#   jq, mktemp, mv (POSIX), .claude/scripts/state-lock.sh (sibling library).
+#   jq, mktemp, mv, rm (POSIX), plus THREE required sibling libraries. Each is
+#   sourced at startup and a missing one exits 5, so a copy of this script that
+#   carries only some of them cannot run at all:
+#     .claude/scripts/state-lock.sh             lock lifecycle (issue #639)
+#     .claude/scripts/lib/repo-normalizer.sh    owner/repo case key (issue #704)
+#     .claude/scripts/lib/pr-scope-resolver.sh  cwd -> owner/repo (issue #1366)
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
-  >> "${HOME}/.claude/script-usage.log" 2>/dev/null || true
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
+    2>/dev/null >> "${HOME}/.claude/script-usage.log" || true
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCK_LIB="${SCRIPT_DIR}/state-lock.sh"
-HANDOFF_DIR="${HOME}/.claude/handoffs"
+HANDOFF_DIR="${HOME:+$HOME/.claude/handoffs}"
 
 # Saved before any parsing shifts them, so a read-modify-write whose lock was
 # stolen mid-flight can be retried from scratch (see _rmw_retry_or_fail).
@@ -123,6 +227,18 @@ fi
 # shellcheck source=./lib/repo-normalizer.sh
 source "$NORMALIZER_LIB"
 
+# repo_identity()/is_owner_repo_identity() — the same cwd->owner/repo resolver
+# polling-state-gate.sh uses, so both agree on what "this checkout" is called.
+# Required, not optional (issue #1366): scope resolution now depends on it, and
+# a missing library must not silently reopen the flat-path default it replaced.
+SCOPE_LIB="${SCRIPT_DIR}/lib/pr-scope-resolver.sh"
+if [[ ! -f "$SCOPE_LIB" ]]; then
+  echo "handoff-state.sh: missing sibling library: $SCOPE_LIB" >&2
+  exit 5
+fi
+# shellcheck source=./lib/pr-scope-resolver.sh
+source "$SCOPE_LIB"
+
 # ---------------------------------------------------------------------------
 # Argument parsing.
 # ---------------------------------------------------------------------------
@@ -133,30 +249,102 @@ ARRAY_FIELD=""
 ARRAY_VALUE=""
 JSON_BODY=""
 OWNER_REPO=""
+OWNER_REPO_EXPLICIT=""
+LEGACY_FLAT=0
+REQUIRE_EXISTING=0
+EXPECTED_PR=""
+EXPECTED_OWNER=""
+EXPECTED_HEAD=""
+EXPECTED_CONTENT_SHA=""
+SCOPE_SOURCE=""
 
+# Every array field the handoff schema defines — the complete set --append may
+# create (issue #1514; see --append FIELD NAMES in the header for why this is an
+# allowlist rather than a bare "reject anything starting with -").
+#
+# Kept as a literal here rather than parsed out of
+# .claude/reference/handoff-file-schema.json at run time: that file is a
+# reference document, not a shipped dependency, so reading it would add a fourth
+# hard requirement and a new startup failure for a copy of this script that
+# carries only .claude/scripts/. handoff-state.test.sh compares this list against
+# the schema's array-typed keys instead, so the two cannot drift silently.
+HANDOFF_ARRAY_FIELDS="findings_fixed findings_dismissed threads_replied threads_resolved files_changed stale_bot_reviews_dismissed"
+
+# Print the whole leading comment block. Driven by the comment prefix rather
+# than a hardcoded line range so adding a header section can never silently
+# truncate the usage text (issue #1302 added one).
 print_usage() {
-  sed -n '2,67p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 if [[ $# -eq 0 ]]; then
   print_usage >&2; exit 2
 fi
 
-# Optional global flag: --owner-repo must come before the mode flag.
-# Enables per-repo path scoping: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
-# Without it the legacy flat path is used: ~/.claude/handoffs/pr-{N}-handoff.json
-if [[ "${1:-}" == "--owner-repo" ]]; then
-  OWNER_REPO="${2:-}"
-  if [[ -z "$OWNER_REPO" ]]; then
-    echo "handoff-state.sh: --owner-repo requires a value (e.g., --owner-repo owner/repo)" >&2; exit 2
-  fi
-  # Lowercase-normalize immediately so ~/.claude/handoffs/{owner}/{repo}/ paths
-  # are always lowercase (issue #704 — mirrors session-state.sh's key contract).
-  OWNER_REPO="$(normalize_repo_key "$OWNER_REPO")"
-  shift 2
-  if [[ $# -eq 0 ]]; then
-    echo "handoff-state.sh: --owner-repo requires a mode flag after it" >&2; exit 2
-  fi
+# Scope flags, in any order, before the mode flag. --owner-repo names the repo
+# explicitly; --legacy-flat is the explicit opt-in to the pre-#655 flat path.
+# They contradict each other, so passing both is a usage error rather than a
+# silent precedence rule (issue #1366).
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --owner-repo)
+      OWNER_REPO_EXPLICIT="${2:-}"
+      if [[ -z "$OWNER_REPO_EXPLICIT" ]]; then
+        echo "handoff-state.sh: --owner-repo requires a value (e.g., --owner-repo owner/repo)" >&2; exit 2
+      fi
+      # Lowercase-normalize immediately so ~/.claude/handoffs/{owner}/{repo}/ paths
+      # are always lowercase (issue #704 — mirrors session-state.sh's key contract).
+      OWNER_REPO_EXPLICIT="$(normalize_repo_key "$OWNER_REPO_EXPLICIT")"
+      # Validate the SHAPE, not just the presence of a slash. This value becomes
+      # a {owner}/{repo} directory pair, so `org/a/b`, `org/`, `/repo` and
+      # `org/repo name` have no valid target, and `./.` resolves back to the
+      # legacy flat path — reaching the target --legacy-flat exists to gate
+      # (CodeAnt, PR #1423). Refuse at the flag rather than deeper in.
+      if ! is_strict_owner_repo "$OWNER_REPO_EXPLICIT"; then
+        echo "handoff-state.sh: --owner-repo '${2:-}' is not a usable <owner>/<repo> value: it must be exactly two non-empty components drawn from [A-Za-z0-9._-] (no nested paths, no spaces, no . or .. components). Nothing was read or written. Pass --legacy-flat if you meant ${HANDOFF_DIR}/pr-<N>-handoff.json (issue #1366)." >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --legacy-flat)
+      LEGACY_FLAT=1
+      shift
+      ;;
+    --require-existing)
+      REQUIRE_EXISTING=1
+      shift
+      ;;
+    --expect-pr)
+      [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { echo "handoff-state.sh: --expect-pr requires a positive PR number" >&2; exit 2; }
+      EXPECTED_PR="$2"; shift 2 ;;
+    --expect-owner)
+      EXPECTED_OWNER="$(normalize_repo_key "${2:-}")"
+      is_strict_owner_repo "$EXPECTED_OWNER" || { echo "handoff-state.sh: --expect-owner requires owner/repo" >&2; exit 2; }
+      shift 2 ;;
+    --expect-content-sha)
+      [[ "$#" -ge 2 ]] && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { echo "handoff-state.sh: --expect-content-sha requires SHA256" >&2; exit 2; }
+      EXPECTED_CONTENT_SHA="$2"; shift 2 ;;
+    --expect-head)
+      [[ "${2:-}" =~ ^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$ ]] || { echo "handoff-state.sh: --expect-head requires a full SHA" >&2; exit 2; }
+      EXPECTED_HEAD="$2"; shift 2 ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ -n "$OWNER_REPO_EXPLICIT" && "$LEGACY_FLAT" -eq 1 ]]; then
+  echo "handoff-state.sh: --owner-repo and --legacy-flat are mutually exclusive — pass one" >&2; exit 2
+fi
+
+if [[ $# -eq 0 ]]; then
+  echo "handoff-state.sh: scope flags require a mode flag after them" >&2; exit 2
+fi
+
+if [[ -n "$OWNER_REPO_EXPLICIT" ]]; then
+  OWNER_REPO="$OWNER_REPO_EXPLICIT"
+  SCOPE_SOURCE="--owner-repo"
 fi
 
 case "$1" in
@@ -190,6 +378,14 @@ case "$1" in
       echo "handoff-state.sh: --init requires <pr_number> <json-body>" >&2; exit 2
     fi
     ;;
+  --repair)
+    MODE="repair"
+    PR_NUMBER="${2:-}"
+    JSON_BODY="${3:-}"
+    if [[ -z "$PR_NUMBER" || -z "$JSON_BODY" ]]; then
+      echo "handoff-state.sh: --repair requires <pr_number> <json-body>" >&2; exit 2
+    fi
+    ;;
   --set)
     MODE="set"
     PR_NUMBER="${2:-}"
@@ -209,6 +405,31 @@ case "$1" in
     if [[ -z "$PR_NUMBER" || -z "$ARRAY_FIELD" || -z "$ARRAY_VALUE" ]]; then
       echo "handoff-state.sh: --append requires <pr_number> <field> <value>" >&2; exit 2
     fi
+    # Validate <field> HERE — before scope resolution, before the lock, before
+    # anything is read (issue #1514). Non-emptiness was the only check, so any
+    # string became a schema field: the misordered call
+    # `--append 452 --owner-repo auerbachb/inventory` wrote
+    # {"--owner-repo":["auerbachb/inventory"]} and exited 0, and an artifact of
+    # exactly that shape sat in ~/.claude/handoffs/_unknown/ unattributable at
+    # migration time. Same class as #1357 (--set storing a raw jq expression):
+    # a write that reports success while storing nothing usable.
+    #
+    # The flag case gets its own message because its CAUSE is different from a
+    # typo's — the argument order is wrong, not the field name — and the fix is
+    # to move the flag, which the message has to say.
+    if [[ "$ARRAY_FIELD" == -* ]]; then
+      echo "handoff-state.sh: --append field name '$ARRAY_FIELD' starts with '-', so it is a misordered flag rather than a schema field. Scope flags (--owner-repo, --legacy-flat, --require-existing) must come BEFORE the mode flag — e.g. 'handoff-state.sh --owner-repo <owner>/<repo> --append ${PR_NUMBER} <field> <value>'. Nothing was read or written (issue #1514)." >&2
+      exit 2
+    fi
+    # Quoted inside the pattern so a field containing glob metacharacters is
+    # compared literally instead of being matched as a pattern.
+    case " $HANDOFF_ARRAY_FIELDS " in
+      *" $ARRAY_FIELD "*) ;;
+      *)
+        echo "handoff-state.sh: --append field '$ARRAY_FIELD' is not one of the handoff schema's array fields (${HANDOFF_ARRAY_FIELDS// /, }). Nothing was read or written. Check for a typo; to add a new array field, add it to .claude/reference/handoff-file-schema.json and to HANDOFF_ARRAY_FIELDS in this script (issue #1514)." >&2
+        exit 2
+        ;;
+    esac
     ;;
   --delete)
     MODE="delete"
@@ -229,12 +450,41 @@ if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "handoff-state.sh: pr_number must be a positive integer (got: $PR_NUMBER)" >&2; exit 2
 fi
 
+# Scope flags must PRECEDE the mode flag; the parse loop above stops at the mode.
+# Anything left over was ignored, and ignoring a misplaced --legacy-flat is the
+# worst possible silence: the caller explicitly asked for the flat path and the
+# write would land on the derived SCOPED one instead. Reject trailing arguments
+# rather than discarding them (issue #1366).
+case "$MODE" in
+  path|get|delete)  _expected_argc=2 ;;
+  create|init|repair|set) _expected_argc=3 ;;
+  append)           _expected_argc=4 ;;
+  *)                _expected_argc=$# ;;
+esac
+if [[ $# -gt "$_expected_argc" ]]; then
+  shift "$_expected_argc"
+  echo "handoff-state.sh: unexpected trailing argument(s) after --${MODE} ${PR_NUMBER}: $*" >&2
+  echo "handoff-state.sh: leading flags (--owner-repo, --legacy-flat, --require-existing) must come BEFORE the mode flag — e.g. 'handoff-state.sh --legacy-flat --${MODE} ${PR_NUMBER} ...'. Nothing was read or written (issue #1366)." >&2
+  exit 2
+fi
+
+if [[ -z "$HANDOFF_DIR" ]]; then
+  echo "handoff-state.sh: HOME is unset or empty; cannot resolve handoff storage. Nothing was read or written." >&2
+  exit 5
+fi
+
 # ---------------------------------------------------------------------------
 # Validate and resolve the handoff file path.
 #
-# With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
-# Without          : ~/.claude/handoffs/pr-{N}-handoff.json (legacy flat)
+# Scoped (owner/repo resolved): ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
+# Legacy flat (explicit only)  : ~/.claude/handoffs/pr-{N}-handoff.json
 # ---------------------------------------------------------------------------
+if [[ -n "$EXPECTED_PR$EXPECTED_OWNER$EXPECTED_HEAD$EXPECTED_CONTENT_SHA" ]]; then
+  if [[ "$REQUIRE_EXISTING" != 1 || "$EXPECTED_PR" != "$PR_NUMBER" || -z "$EXPECTED_OWNER" || -z "$EXPECTED_HEAD" || ( "$MODE" != set && "$MODE" != append && "$MODE" != delete ) ]]; then
+    echo "handoff-state.sh: identity guards require matching --expect-pr, --expect-owner, --expect-head and --require-existing before --set/--append/--delete; nothing written" >&2
+    exit 2
+  fi
+fi
 _resolve_handoff_path() {
   local pr="$1" owner_repo="$2"
   if [[ -n "$owner_repo" ]]; then
@@ -256,7 +506,122 @@ _resolve_handoff_path() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Resolve the scope when --owner-repo was omitted (issue #1366).
+#
+# Before this, omission silently selected the flat path: the write succeeded,
+# exited 0, and landed somewhere every scoped reader ignores — a whole phase's
+# updates gone with nothing to notice. PR #1337 made that case warn, which still
+# left the wrong path as the easy default. Deriving the repo removes the default
+# instead of the path: the flat path stays reachable, but only when asked for.
+#
+# Precedence mirrors session-state.sh (--repo / $CLAUDE_SESSION_REPO / cwd
+# origin) so one checkout cannot resolve to two different repo keys depending on
+# which helper is asked.
+# ---------------------------------------------------------------------------
+if [[ -n "$OWNER_REPO" ]]; then
+  # Explicitly scoped. An ambient CLAUDE_HANDOFF_FLAT_OK=1 does NOT get to
+  # redirect a call that named its repo — it is exported around flat-layout
+  # sweeps, and silently swallowing --owner-repo inside one would recreate the
+  # invisible wrong-path write this issue closes. Say so rather than picking
+  # quietly; the caller passed two contradictory instructions.
+  if [[ "${CLAUDE_HANDOFF_FLAT_OK:-0}" == "1" ]]; then
+    echo "handoff-state.sh: note: CLAUDE_HANDOFF_FLAT_OK=1 is set, but --owner-repo $OWNER_REPO was passed explicitly and wins — using the scoped path. Unset the variable, or drop --owner-repo, to target ${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json." >&2
+  fi
+elif [[ "$LEGACY_FLAT" -eq 1 ]]; then
+  # Explicit per-call legacy request. Silent by contract: this caller means it.
+  OWNER_REPO=""
+  SCOPE_SOURCE="legacy-flat"
+elif [[ "${CLAUDE_HANDOFF_FLAT_OK:-0}" == "1" ]]; then
+  # Same escape, but ambient rather than per-call: /wrap exports it around a
+  # flat-layout sweep, so it silently covers every omitting call in that process
+  # tree. When the cwd WOULD have resolved a scope, say which scoped path is
+  # being bypassed — the note that makes the #1366 defect visible if the
+  # variable is set wider than its author intended.
+  OWNER_REPO=""
+  SCOPE_SOURCE="legacy-flat"
+  _would_derive="$(repo_identity "$PWD" 2>/dev/null || true)"
+  if [[ -n "${CLAUDE_SESSION_REPO:-}" ]] || is_owner_repo_identity "$_would_derive"; then
+    _would_derive="${CLAUDE_SESSION_REPO:-$_would_derive}"
+    echo "handoff-state.sh: note: CLAUDE_HANDOFF_FLAT_OK=1 sent --${MODE} on PR #${PR_NUMBER} to the legacy flat path, bypassing the scope '$(normalize_repo_key "$_would_derive")' this context resolves to. Pass --legacy-flat per call instead of exporting the variable, or --owner-repo to scope it (issue #1366)." >&2
+  fi
+else
+  if [[ -n "${CLAUDE_SESSION_REPO:-}" ]]; then
+    OWNER_REPO="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
+    SCOPE_SOURCE="\$CLAUDE_SESSION_REPO"
+    # A set-but-unusable override is its own failure. Falling through to cwd
+    # derivation would answer a different question than the one the caller
+    # configured, so name the variable rather than quietly routing around it.
+    # Strict shape, same as --owner-repo above: a value that merely contains a
+    # slash can still name no valid {owner}/{repo} pair, or name one session
+    # state routes to `_unknown` — splitting the two halves of one session's
+    # records instead of joining them (CodeAnt, PR #1423).
+    if ! is_strict_owner_repo "$OWNER_REPO"; then
+      echo "handoff-state.sh: \$CLAUDE_SESSION_REPO='${CLAUDE_SESSION_REPO}' is not a usable <owner>/<repo> value (exactly two non-empty components from [A-Za-z0-9._-]) — refusing to guess a different scope for --${MODE} on PR #${PR_NUMBER}. Nothing was read or written. Fix the variable, or pass --owner-repo <owner/repo> (issue #1366)." >&2
+      exit 2
+    fi
+  else
+    _derived="$(repo_identity "$PWD" 2>/dev/null || true)"
+    # gitdir:/path:/_unknown/empty all mean "no owner/repo here".
+    if is_owner_repo_identity "$_derived"; then
+      OWNER_REPO="$_derived"
+      SCOPE_SOURCE="the 'origin' remote of $PWD"
+    fi
+  fi
+  if [[ -z "$OWNER_REPO" ]]; then
+    echo "handoff-state.sh: cannot resolve owner/repo for --${MODE} on PR #${PR_NUMBER} — $PWD is not a git checkout with an 'origin' remote, and neither --owner-repo nor \$CLAUDE_SESSION_REPO is set. Nothing was read or written. Pass --owner-repo <owner/repo>, or --legacy-flat if you really mean ${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json (issue #1366)." >&2
+    exit 2
+  fi
+fi
+
 HANDOFF_FILE="$(_resolve_handoff_path "$PR_NUMBER" "$OWNER_REPO")" || exit 2
+
+case "$MODE" in
+  create|init|repair|set|append|delete) MODE_IS_WRITE=1 ;;
+  *)                             MODE_IS_WRITE=0 ;;
+esac
+
+# A scope that was DERIVED (not named by --owner-repo, not --legacy-flat) is a
+# guess — a good one, but the caller never confirmed it. Two hazards follow, and
+# both stay silent without this block.
+if [[ -n "$OWNER_REPO" && "$SCOPE_SOURCE" != "--owner-repo" ]]; then
+  _flat_candidate="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+
+  # (1) An un-migrated flat record for this PR, with no scoped file yet.
+  #
+  # REFUSE every write here. Warning was not enough: --set/--append seed from
+  # `{}` when the scoped file is absent, so the write lands a PARTIAL record at
+  # the derived path while the complete flat record is orphaned — losing
+  # schema_version, reviewer, findings_fixed, and every array element the flat
+  # file held. Worse, the warning below is gated on the scoped file's absence,
+  # so it fires once and then goes quiet for the rest of the migration window:
+  # a transient warning guarding a permanent split. The old code wrote INTO the
+  # flat file and kept the record whole, so this would be a regression against
+  # the very contract #1366 exists to protect ("unknown fields are always
+  # preserved", handoff-files.md).
+  #
+  # Explicit --owner-repo and --legacy-flat callers are unaffected: both stated
+  # which record they meant, and either is the way past this refusal.
+  if [[ -f "$_flat_candidate" && ! -f "$HANDOFF_FILE" ]]; then
+    if [[ "$MODE_IS_WRITE" -eq 1 ]]; then
+      echo "handoff-state.sh: refusing --${MODE} on PR #${PR_NUMBER}: scope '$OWNER_REPO' was derived from ${SCOPE_SOURCE}, but this PR's handoff is still un-migrated at $_flat_candidate and no scoped record exists yet. Writing would strand that record and start a partial one at $HANDOFF_FILE. Nothing was written. Run handoff-migrate.sh, or name the target explicitly: --legacy-flat to update the existing record, --owner-repo $OWNER_REPO to start a scoped one (issue #1366)." >&2
+      exit 2
+    fi
+    echo "handoff-state.sh: WARNING: using $HANDOFF_FILE (owner/repo '$OWNER_REPO' from ${SCOPE_SOURCE}), but an un-migrated flat handoff exists at $_flat_candidate — run handoff-migrate.sh to move it, or pass --legacy-flat to act on it" >&2
+
+  # (2) Otherwise: name the derived scope on writes.
+  #
+  # The pre-#1366 code warned whenever a write omitted --owner-repo in a
+  # resolvable checkout. Deriving silently would be a strict LOSS of diagnostics
+  # for the case that actually bites — a write issued from a checkout whose
+  # origin is not the PR's repo (/fixpr and the polling gate both run from
+  # worktrees that need not match). One line naming the repo and where it came
+  # from keeps that visible. Reads stay silent: path resolution is used
+  # everywhere, and warning there was noise even under the old rule.
+  elif [[ "$MODE_IS_WRITE" -eq 1 ]]; then
+    echo "handoff-state.sh: note: --${MODE} on PR #${PR_NUMBER} used scope '$OWNER_REPO', derived from ${SCOPE_SOURCE} — no --owner-repo was passed. Pass it explicitly if this PR belongs to a different repo (issue #1366)." >&2
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # --path: print the canonical handoff file path and exit (no lock needed).
@@ -289,6 +654,15 @@ if [[ "$MODE" == "get" ]]; then
   exit 0
 fi
 
+# The #1302 write-time flat-path warning was removed here by issue #1366: it
+# fired when a write omitted --owner-repo in a repo-resolvable checkout, and
+# that case now resolves the scoped path instead of the flat one, so the
+# condition can no longer occur. The flat path is reached only through
+# --legacy-flat, where a warning would be noise because the caller named the
+# path on that very call, or through CLAUDE_HANDOFF_FLAT_OK=1, which is ambient
+# and therefore carries its own note at scope-resolution time whenever it
+# bypasses a scope this context resolves.
+
 # ---------------------------------------------------------------------------
 # All write modes: ensure the directory exists, then acquire the lock.
 # ---------------------------------------------------------------------------
@@ -296,6 +670,70 @@ _file_dir="$(dirname "$HANDOFF_FILE")"
 mkdir -p "$_file_dir"
 
 state_lock_acquire "$HANDOFF_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+
+# --require-existing: refuse to CREATE the record, only to update one.
+#
+# --set/--append seed from `{}` when the target is absent, which makes them
+# silently creating operations. A caller that has already decided "no handoff,
+# nothing to update" cannot express that today: it tests -e itself, outside this
+# lock, and a delete or migration landing in that window turns its skip into a
+# partial record holding only the field it appended — the same `{}`-seeded
+# split this file refuses for un-migrated flat records above (issue #1366).
+#
+# Checked HERE, inside the lock, because a caller-side test can only ever be a
+# TOCTOU (CodeAnt, PR #1423). Opt-in, so every existing caller keeps the
+# seed-on-absent behavior it was written against.
+#
+# Scoped to the seeding modes: --create and --init are meant to create, and
+# --delete already tolerates an absent target.
+if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" || "$MODE" == "delete" ) && ! -f "$HANDOFF_FILE" ]]; then
+  echo "handoff-state.sh: --${MODE} on PR #${PR_NUMBER} requires an existing handoff, but none is at $HANDOFF_FILE (--require-existing). Nothing was written; the record was never created, or was deleted/migrated after the caller checked." >&2
+  state_lock_release
+  exit 3
+fi
+
+if [[ -n "$EXPECTED_PR" && "$LEGACY_FLAT" == 1 ]]; then
+  _selected_scoped=$(_resolve_handoff_path "$PR_NUMBER" "$EXPECTED_OWNER")
+  if [[ -e "$_selected_scoped" || -L "$_selected_scoped" ]]; then
+    echo "handoff-state.sh: selected legacy lane changed: scoped handoff now exists at $_selected_scoped; restart selection; nothing written" >&2
+    state_lock_release
+    exit 4
+  fi
+fi
+# Optional content revision is checked under the same writer lock. A resumed
+# owner can change recovery state without changing PR/repo/HEAD.
+if [[ -n "$EXPECTED_CONTENT_SHA" ]]; then
+  ACTUAL_CONTENT_SHA=""
+  if ! ACTUAL_CONTENT_SHA=$(python3 - "$HANDOFF_FILE" <<'HANDOFF_CONTENT'
+import hashlib, os, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_size > 1024 * 1024:
+            sys.exit(1)
+        raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            sys.exit(1)
+    print(hashlib.sha256(raw).hexdigest())
+except OSError:
+    sys.exit(1)
+HANDOFF_CONTENT
+  ) || [[ "$ACTUAL_CONTENT_SHA" != "$EXPECTED_CONTENT_SHA" ]]; then
+    echo "handoff-state.sh: selected handoff revision changed or is unreadable; nothing written" >&2
+    state_lock_release
+    exit 4
+  fi
+fi
+
+if [[ -n "$EXPECTED_PR" ]] && ! jq -se --argjson pr "$EXPECTED_PR" --arg owner "$EXPECTED_OWNER" --arg head "$EXPECTED_HEAD" \
+  'length == 1 and (.[0] | type == "object" and .pr_number == $pr
+   and (.owner_repo | type == "string") and (.owner_repo | ascii_downcase) == $owner
+   and .head_sha == $head)' "$HANDOFF_FILE" >/dev/null 2>&1; then
+  echo "handoff-state.sh: selected handoff identity changed or is unknown at $HANDOFF_FILE; expected PR #$EXPECTED_PR, $EXPECTED_OWNER and HEAD $EXPECTED_HEAD; nothing written" >&2
+  state_lock_release
+  exit 4
+fi
 
 # Atomic write using a same-directory temp so mv is on the same filesystem
 # (the POSIX guarantee that mv is atomic only holds within one filesystem).
@@ -367,6 +805,37 @@ if [[ "$MODE" == "init" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# --repair: replace the handoff ONLY if it is absent or unusable (unreadable,
+# or present but not valid JSON). A usable record is preserved untouched.
+#
+# This exists because the corruption test and the overwrite have to be the same
+# critical section. A caller that reads the file, finds it corrupt, and then
+# calls --create has published its verdict before acting on it: a concurrent
+# Phase A writer can repair the record in that window, and the unconditional
+# --create then destroys a valid, richer handoff (CodeAnt Major, PR #1598).
+# Same reasoning — and same remedy — as --require-existing's under-lock check
+# (CodeAnt, PR #1423) and --init's under-lock existence test (#682).
+#
+# "Unusable" is deliberately the same predicate the caller would have tested,
+# so re-testing here changes only WHERE it runs, never what counts as corrupt.
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "repair" ]]; then
+  if ! printf '%s\n' "$JSON_BODY" | jq -e . >/dev/null 2>&1; then
+    echo "handoff-state.sh: --repair body is not valid JSON" >&2
+    state_lock_release; exit 4
+  fi
+  if [[ -f "$HANDOFF_FILE" && -r "$HANDOFF_FILE" ]] && jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; then
+    # Readable and parseable — another writer (Phase A/B, or a competing
+    # repair) got here first. Preserve it; report the no-op so a caller that
+    # expected to repair does not read silence as "repaired".
+    echo "handoff-state.sh: --repair on PR #${PR_NUMBER}: $HANDOFF_FILE is readable and valid JSON; left unchanged." >&2
+    state_lock_release; exit 0
+  fi
+  _atomic_write "$JSON_BODY"
+  state_lock_release; exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # --delete: lock-guarded delete to prevent a delete from racing a still-running
 # writer on the same PR. Idempotent — deleting an absent file exits 0.
 # ---------------------------------------------------------------------------
@@ -414,6 +883,91 @@ if [[ "$MODE" == "set" ]]; then
       state_lock_release; exit 4
     }
   else
+    # The value is not a JSON literal, so it is headed for the --arg string
+    # branch. Before storing it verbatim, refuse the one shape that is never
+    # data: an unevaluated jq PROGRAM the caller meant to have evaluated
+    # (issue #1357). `--set N .notes=.notes + " x"` used to exit 0 and store the
+    # expression SOURCE, clobbering the previous notes with no error — the loss
+    # only surfaced on read-back. A hard refusal leaves the old value intact.
+    #
+    # Three independent signals must ALL fire, because the string branch is the
+    # normal home of prose notes, SHAs, paths and URLs, and a false reject is a
+    # broken write for a legitimate value:
+    #   1. It STARTS like a jq path expression — optional whitespace, an
+    #      optional `(`, then `.` followed by an identifier character. The
+    #      identifier requirement is what keeps relative paths out: `./x`,
+    #      `../x` and `.github/workflows/ci.yml` are common values, and only the
+    #      last of those even reaches signal 2.
+    #   2. It CONTAINS a jq operator, so a bare path-shaped token
+    #      (`.claude/scripts/handoff-state.sh`) is still stored as a string.
+    #   3. It COMPILES as a jq program. Signals 1+2 alone would reject prose
+    #      like `.env + .env.local are ignored`; that text is not valid jq, so
+    #      this check keeps it on the string path. The probe wraps the value in
+    #      a `def` that is never invoked and leaves `empty` as the only
+    #      top-level expression, so nothing in the value is evaluated and no
+    #      input is read — a property the `#` and `;` bail-outs below are what
+    #      actually guarantee, since either character lets the value reach the
+    #      terminator and promote its own tail to top level.
+    # Anything short of all three keeps the pre-existing store-as-string
+    # behavior, so an unrecognized expression degrades to today's semantics
+    # rather than to a new failure.
+    #
+    # The probe must never EVALUATE the value, only compile it. Two different
+    # constructs can carry the value across the terminator and defeat that, so
+    # there are three defences (PR #1378 / issue #1357):
+    #
+    #   * The probe is assembled across FOUR LINES — the value gets a line of
+    #     its own; the `;` terminator and `empty` get theirs. On one line, a
+    #     value ending in `#` swallows the terminator and promotes its OWN
+    #     tail to top-level expression, which jq then EXECUTES during what is
+    #     supposed to be a compile: `.a + 1; def g: 1; last(repeat(1)) #` hung
+    #     a single-line probe indefinitely while this script held the state
+    #     lock, blocking every sibling pipeline (CodeAnt). Confined to its own
+    #     line, a comment can no longer reach the terminator. That closes the
+    #     COMMENT route only — on its own it does not make `empty` the
+    #     top-level expression, which is what the `;` bail-out below is for.
+    #
+    #   * A value containing `#` at all skips the probe. Line discipline stops
+    #     the comment at the value, but INSIDE the value it still hides
+    #     everything after it, so jq would be judging a PREFIX and reporting
+    #     "compiles" for text that is not an expression: `.claude/rules +
+    #     .claude/reference # see PR #1378` compiles down to `.claude/rules +
+    #     .claude/reference` and would be refused as an expression. Declining
+    #     to judge is the conservative branch — a `#` value stores as a string
+    #     exactly as it does today. It also costs a false NEGATIVE on real jq
+    #     carrying a `#` in a string literal (`.notes + "issue #1357"`), which
+    #     is the direction this guard is allowed to be wrong in.
+    #
+    #   * A value containing `;` at all skips the probe. Line discipline stops
+    #     a COMMENT from reaching the terminator, but a trailing unterminated
+    #     `def` absorbs it outright: jq's grammar admits `Exp := FuncDef Exp`,
+    #     so `.a ; last(repeat(1)) as $x | def h: 1` ends the probe's own `def`
+    #     early at its first `;`, hands the terminator to `def h` as ITS
+    #     terminator, and leaves `last(repeat(1))` a TOP-LEVEL expression that
+    #     jq executes — the same indefinite hang under the state lock, with no
+    #     `#` anywhere (CodeRabbit). Escaping the wrapper at all requires
+    #     ending the probe's `def` early, and that requires a `;`, so refusing
+    #     to judge any value containing one closes the class rather than one
+    #     shape: with no `;` in the value the terminator is either still ours
+    #     (`empty` is the only top-level expression, nothing evaluates) or is
+    #     absorbed by a trailing `def` that then leaves NO top-level expression
+    #     at all, which jq rejects at compile time — verified both ways. Same
+    #     conservative trade as `#`: a `;` value stores as a string exactly as
+    #     it does today, costing a false NEGATIVE on genuine jq that uses `;`
+    #     (`reduce .[] as $x (0; . + $x)`), the direction this guard is allowed
+    #     to be wrong in.
+    _JQ_EXPR_START='^[[:space:]]*\(?[[:space:]]*\.[A-Za-z_]'
+    _JQ_EXPR_OPS='(\||//|\+|map\(|select\()'
+    _JQ_PROBE="def _handoff_set_probe:
+${JQ_VAL}
+;
+empty"
+    if [[ "$JQ_VAL" != *'#'* ]] && [[ "$JQ_VAL" != *';'* ]] \
+       && [[ "$JQ_VAL" =~ $_JQ_EXPR_START ]] && [[ "$JQ_VAL" =~ $_JQ_EXPR_OPS ]] \
+       && jq -n "$_JQ_PROBE" </dev/null >/dev/null 2>&1; then
+      echo "handoff-state.sh: refusing to write — the value for '$JQ_PATH' is an unevaluated jq expression, not data: '$JQ_VAL' (see issue #1357); evaluate it first and pass the resulting scalar; $HANDOFF_FILE left unmodified" >&2
+      state_lock_release; exit 4
+    fi
     UPDATED="$(printf '%s\n' "$CURRENT" | jq --arg v "$JQ_VAL" "${JQ_PATH} = \$v")" || {
       echo "handoff-state.sh: jq --set (string) failed on path $JQ_PATH" >&2
       state_lock_release; exit 4
@@ -424,6 +978,12 @@ if [[ "$MODE" == "set" ]]; then
 fi
 
 if [[ "$MODE" == "append" ]]; then
+  # NOTE: the jq-expression refusal above is deliberately --set-only (issue
+  # #1357). --append does not share that value branch, its values are array
+  # ELEMENTS rather than whole-field replacements, and it cannot clobber a
+  # prior value — appending a bad element leaves everything already in the
+  # array intact. Widening the guard here is a separate decision, not an
+  # oversight.
   # findings_dismissed deduplicates by .id; all other arrays dedup by exact value.
   if [[ "$ARRAY_FIELD" == "findings_dismissed" ]]; then
     if ! printf '%s' "$ARRAY_VALUE" | jq -e 'type == "object" and has("id")' >/dev/null 2>&1; then

@@ -62,7 +62,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
     -h|--help)
-      awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+      awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0
       ;;
     *)
@@ -133,7 +134,7 @@ if [ "${#lints[@]}" -gt 0 ]; then
   while IFS= read -r _line; do
     _sorted+=("$_line")
   done < <(printf '%s\n' "${lints[@]}" | LC_ALL=C sort -u)
-  lints=("${_sorted[@]}")
+  lints=(${_sorted[@]+"${_sorted[@]}"})
   unset _sorted _line
 fi
 
