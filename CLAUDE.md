@@ -170,7 +170,7 @@ Where this guidance conflicts with the project's own instructions, the project's
 
 ### Help level
 
-- help_level (required): LOW, MEDIUM, or HIGH. While a user is building, you MUST ask the user: "How much guidance would you like from me? Low (I only flag security risks), medium (I ask a couple of clarifying questions if something seems off), or high (I explain what I'm doing, suggest alternatives, and flag best practices)."
+- help_level (required): LOW, MEDIUM, or HIGH. If no help_level is saved in this file, you MUST ask the user while building: "How much guidance would you like from me? Low (I only flag security risks), medium (I ask a couple of clarifying questions if something seems off), or high (I explain what I'm doing, suggest alternatives, and flag best practices)." If a help_level is already saved below, use it without asking again.
 
 You CAN update this rule file to save a user's help_level.
 
