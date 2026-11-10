@@ -3,6 +3,7 @@ import io
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -142,9 +143,22 @@ class QuotaResumeRosterTests(unittest.TestCase):
                 patch.object(roster.sys, "argv", ["roster", "list", "--target", "claude-work"]), \
                 contextlib.redirect_stdout(output):
             self.assertEqual(roster.main(), 0)
-        options = json.loads(output.getvalue())["entries"][0]["options"]
+            portable = json.loads(output.getvalue())
+            output.seek(0)
+            output.truncate(0)
+            (self.projects / "project-key" / (self.sid + ".jsonl")).unlink()
+            self.assertEqual(roster.main(), 0)
+            handoff_only = json.loads(output.getvalue())
+        options = portable["entries"][0]["options"]
         self.assertEqual([option["target_account"] for option in options], ["work@example.com"])
         self.assertIn("claude-work --resume", options[0]["command"])
+        prerequisite = portable["launcher_prerequisite"]
+        self.assertEqual(prerequisite["shell"], "zsh")
+        self.assertEqual(shlex.split(prerequisite["setup_command"]),
+                         [str(MODULE.parents[1] / "ai-quotas-setup.sh"), "launchers"])
+        self.assertIn("source line it prints", prerequisite["instruction"])
+        self.assertNotIn("launcher_prerequisite", handoff_only)
+        self.assertNotIn("command", handoff_only["entries"][0]["options"][0])
 
     def run_skill_block(self, name, anchor, env, trailer=""):
         skill = MODULE.parents[2] / "skills" / name / "SKILL.md"

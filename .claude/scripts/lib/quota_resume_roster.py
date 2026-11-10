@@ -362,8 +362,15 @@ def main():
             target = account_for_launcher(accounts, source, args.target)
             accounts = {target: accounts[target]}
         parked, park_lookup = read_park_records(setup.with_name("session-state.sh"))
-        print(json.dumps(list_records(root, accounts, source, profile, parked, park_lookup),
-                         ensure_ascii=False))
+        value = list_records(root, accounts, source, profile, parked, park_lookup)
+        if any("command" in option for entry in value["entries"] for option in entry["options"]):
+            value["launcher_prerequisite"] = {
+                "shell": "zsh",
+                "setup_command": f"{quote(str(setup))} launchers",
+                "instruction": "Load the named launcher in zsh first. If it is missing, run the setup command "
+                               "and use the source line it prints.",
+            }
+        print(json.dumps(value, ensure_ascii=False))
     except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as error:
         # A failed helper can contain private registry details in stderr.
         detail = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else "metadata unavailable"
