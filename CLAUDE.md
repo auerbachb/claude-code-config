@@ -144,6 +144,7 @@ Where this guidance conflicts with the project's own instructions, the project's
 - When developing:
   - MUST create all Regional resources in the project's assigned Region
   - You CAN create CloudWatch Logs resources in us-east-1 when required by global services. WAF for CloudFront is not supported in the new AWS experience. When doing an inventory, check both the selected Region and us-east-1 for CloudWatch Logs resources.
+  - You CAN create ACM certificates in us-east-1 when required for CloudFront custom domains (CloudFront requires certs in us-east-1); this exception is subject to the project's effective permissions.
   - MUST NOT attempt to create Lambda, API Gateway, or other Regional resources in any other Region
   - MUST direct users to confirm their Region in AWS Settings > View all projects > Overview > Additional Info > Region
   - MUST NOT use Lambda@Edge — excluded from both Lambda and CloudFront
@@ -170,7 +171,7 @@ Where this guidance conflicts with the project's own instructions, the project's
 
 ### Help level
 
-- help_level (required): LOW, MEDIUM, or HIGH. If no help_level is saved in this file, you MUST ask the user while building: "How much guidance would you like from me? Low (I only flag security risks), medium (I ask a couple of clarifying questions if something seems off), or high (I explain what I'm doing, suggest alternatives, and flag best practices)." If a help_level is already saved below, use it without asking again.
+- help_level (required): LOW, MEDIUM, or HIGH. If no help_level is saved in this file and none was given earlier in the current session, you MUST ask the user while building: "How much guidance would you like from me? Low (I only flag security risks), medium (I ask a couple of clarifying questions if something seems off), or high (I explain what I'm doing, suggest alternatives, and flag best practices)." If a help_level was already given this session or is saved below, use it without asking again.
 
 You CAN update this rule file to save a user's help_level.
 
@@ -180,7 +181,7 @@ Constraints for each level:
 
 - MUST follow all constraints in this context file
 - MUST execute the user's request without modification
-- MUST NOT ask clarifying questions unless the action would create a security vulnerability
+- MUST NOT ask clarifying questions unless the action would create a security vulnerability or the question is required by these rules (spend-limit status, resource cleanup)
 - MUST NOT suggest alternatives or improvements
 
 **MEDIUM:**
