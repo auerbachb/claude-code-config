@@ -172,12 +172,23 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
   fi
   with_lock "$SNAPSHOT"
 
+  remove_snapshot() {
+    state_lock_assert_held || die 6 "snapshot lock was lost; evidence retained at $SNAPSHOT"
+    rm -f "$SNAPSHOT" || die 5 "cannot remove $SNAPSHOT"
+  }
+
+  verify_snapshot_identity() {
+    jq -se --arg repo "$REPO" --argjson pr "$PR" '
+      length == 1 and (.[0] | .pr_number == $pr and (.owner_repo | ascii_downcase) == $repo)
+    ' "$1" >/dev/null 2>&1 || die 4 "gate JSON does not match $REPO PR #$PR"
+  }
+
   if [[ "$DISCARD" == 1 ]]; then
     [[ -e "$SNAPSHOT" ]] || exit 0
     PR_STATE="$(gh pr view "$PR" --repo "$REPO_RAW" --json state --jq .state)" \
       || die 4 "cannot verify PR state; snapshot retained at $SNAPSHOT"
     case "$PR_STATE" in
-      OPEN|CLOSED) rm -f "$SNAPSHOT" || die 5 "cannot remove $SNAPSHOT" ;;
+      OPEN|CLOSED) remove_snapshot ;;
       *) die 4 "PR state $PR_STATE does not allow discarding $SNAPSHOT" ;;
     esac
     exit 0
@@ -185,13 +196,14 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
 
   if [[ "$FROM_SNAPSHOT" == 1 ]]; then
     [[ -e "$SNAPSHOT" ]] || exit 7
+    verify_snapshot_identity "$SNAPSHOT"
     # A child acquires the independent ledger lock while we hold this snapshot lock.
     "$SCRIPT_DIR/unreviewed-merge-ledger.sh" record --pr "$PR" --repo "$REPO_RAW" --gate-json "$SNAPSHOT" || {
       record_rc=$?
       echo "unreviewed-merge-ledger.sh: snapshot retained at $SNAPSHOT" >&2
       exit "$record_rc"
     }
-    rm -f "$SNAPSHOT" || die 5 "cannot remove $SNAPSHOT"
+    remove_snapshot
     exit 0
   fi
 
@@ -203,8 +215,7 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
 
   if [[ -n "$SHA" ]]; then
     verify_open_head "$SHA"
-    state_lock_assert_held || die 6 "snapshot lock was lost before merge"
-    rm -f "$SNAPSHOT" || die 5 "cannot remove $SNAPSHOT"
+    remove_snapshot
     gh pr merge "$PR" --repo "$REPO_RAW" --squash --match-head-commit "$SHA"
     exit $?
   fi
@@ -224,6 +235,7 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
     and (.merge_state == "CLEAN" or (.merge_state == "UNSTABLE"
         and (.no_review_override.excluded_reviewer_checks | type == "array" and length > 0))))' \
     "$SNAPSHOT_TMP" >/dev/null 2>&1 || die 4 "snapshot requires the full authorizing override gate JSON"
+  verify_snapshot_identity "$SNAPSHOT_TMP"
   SNAPSHOT_HEAD="$(jq -er .head_sha "$SNAPSHOT_TMP")" || die 4 "cannot read snapshot HEAD"
   verify_open_head "$SNAPSHOT_HEAD"
   state_lock_commit "$SNAPSHOT_TMP" "$SNAPSHOT" || die 5 "cannot publish $SNAPSHOT"

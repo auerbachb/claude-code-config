@@ -80,6 +80,9 @@ case "$ARGS" in
     jq -cn --arg state "$(cat "$FAKE_NRO_STATE_PATH")" --arg head "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}"       '{state:$state,headRefOid:$head}'
     exit 0 ;;
   *" pr view 1 --repo solo/repo --json state --jq .state "*)
+    if [[ "${FAKE_NRO_BREAK_LOCK:-0}" == 1 ]]; then
+      mv "$CLAUDE_STATE_LOCK_HELD" "$CLAUDE_STATE_LOCK_HELD.changed" || exit 1
+    fi
     cat "$FAKE_NRO_STATE_PATH"
     exit $? ;;
   *" pr view 1 --repo solo/repo --json state,headRefOid,mergeCommit,mergedAt,title,url "*)
@@ -482,6 +485,10 @@ check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "invalid input leaves the PR ope
 run_wrap_fence "$MERGE_BLOCK" "$OUT" 1111111111111111111111111111111111111111 >/dev/null 2>"$TMP/snapshot.err"
 check_eq "4" "$?" "a new HEAD requires acceptance verification"
 check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "changed acceptance HEAD leaves the PR open"
+for mismatch in '.pr_number=2' '.owner_repo="other/repo"'; do
+  run_wrap_fence "$MERGE_BLOCK" "$(j "$mismatch")" >/dev/null 2>"$TMP/snapshot.err"
+  check_eq "4" "$?" "same HEAD cannot authorize a different repository or PR"
+done
 export FAKE_NRO_MERGE_READY="$TMP/override-merge-started"
 run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null &
 merge_pid=$!
@@ -523,6 +530,11 @@ export FAKE_NRO_REFUSE=1
 run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
 check_eq "1" "$?" "merge refusal is reported"
 test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "failed merge retains the snapshot"
+export FAKE_NRO_BREAK_LOCK=1
+PATH="$BIN:$PATH" "$LEDGER_SUT" snapshot --pr 1 --repo solo/repo --discard 2>"$TMP/snapshot.err"
+check_eq "6" "$?" "a writer that loses its lock cannot discard the snapshot"
+test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "lost lock retains the snapshot"
+unset FAKE_NRO_BREAK_LOCK
 unset FAKE_NRO_REFUSE
 export FAKE_NRO_EXPECT_REVIEWED=1
 MERGE_REPO_BLOCK=$(extract_skill_bash "$SKILLS_DIR/merge/SKILL.md" merge-ledger-repo-binding) || exit 1
