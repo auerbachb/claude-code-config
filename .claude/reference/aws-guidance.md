@@ -2,6 +2,8 @@
 
 Full guidance for working with AWS under the new experience. The auto-loaded summary in CLAUDE.md covers the essential behavioral hooks; this file holds the complete constraints and procedures. Read this file at the start of any AWS task.
 
+For AWS tasks use `aws___search_documentation(agent_skills)` + `aws___retrieve_skill`. If the AWS MCP server is unavailable, fall back to an installed AWS skill or the AWS documentation. Ask help_level once per session; reuse the answer without asking again.
+
 ## Terminology
 
 - Say "project" instead of "account" — a project contains an AWS account and settings for sharing with other collaborators
