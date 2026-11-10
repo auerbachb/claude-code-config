@@ -25,7 +25,7 @@ by default:
 ```
 
 Check the exit status and JSON together. Exit 0 means `outcome: verified` for
-independently observed CLOSED issues or a verified no-issue delivery, or
+scope-verified CLOSED issues or a verified no-issue delivery, or
 `outcome: retained` for deliberate retention. A retained issue can be OPEN.
 Exit 1 is pending completion, 3 is unverified or ineligible identity/scope,
 4 is an API/response failure, and 6 is unsafe or unavailable local receipt
@@ -122,7 +122,9 @@ explicitly assess that disposition, pinned to the verified merge:
 
 Allowed fixed reasons are `partial_scope`, `owner_decision` and `reopened`.
 Repeat `--retain-issue` for each deliberately retained same-repo issue; every
-other linked issue must already be CLOSED or the result stays pending. A missing
+other linked issue must already be CLOSED with its full scope attested using
+`--scope-verified`, or the result stays pending. A retained target that is
+already CLOSED also stays pending for scope reconciliation. A missing
 trailer requires explicit `--association-verified` after verifying the task's
 primary association. Foreign references stay pending for separate scoped
 reconciliation. This read-only mode independently verifies each selected typed
@@ -193,13 +195,17 @@ Retry the assessment and any individually verified completion on resume/day tick
 including a session interrupted after merge or after the close request. A stale
 scope assertion is not authorization to close newly added work: reread current
 criteria/comments and open associated work before retrying a write. A confirmed
-CLOSED issue needs no second close, only scoped state reconciliation.
+CLOSED issue needs no second close. After verifying full scope, record its
+disposition with `--scope-verified --expected-merge "$MERGE_SHA"` and no
+`--complete-issue` option. A plain assessment reports observed CLOSED status
+but leaves completion pending. This explicit read-only mode covers every
+closed link in scope. A single-issue close never attests for other links.
 
 Phase C reports `OUTCOME: merged` only after both GitHub merge verification and
 completion reconciliation are recorded. A merged PR with unresolved closure is
 `OUTCOME: blocked`, with an explicit `PR already merged; completion pending`
-reason and receipt path. The parent preserves the handoff/retry evidence and
-runs completion recovery; it must not launch another code/review/merge pipeline
+reason and receipt path. The parent checks the merge for that blocked result,
+preserves the handoff and runs completion recovery; it must not launch another code/review/merge pipeline
 for the already-merged PR. Delete the handoff only after reconciliation or after
 recording an explicitly justified retained issue with its remaining work.
 
@@ -219,7 +225,7 @@ publish_completed_handoff() {
   [[ "$PR_NUM" =~ ^[1-9][0-9]*$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 2
   if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" --arg head "$HEAD_SHA" \
       '.owner_repo == ($repo | ascii_downcase) and .pr == $pr and .head_sha == $head and .error_class == null and
-       (.outcome == "verified" or (.outcome == "retained" and (.retained_scope | type) == "object" and (.retained_scope | length) > 0))' >/dev/null; then
+       ((.outcome == "verified" and (.scope_verified == true or .no_associated_issues == true)) or (.outcome == "retained" and (.retained_scope | type) == "object" and (.retained_scope | length) > 0))' >/dev/null; then
     echo 'ERROR: final completion disposition unverified — handoff retained' >&2
     return 3
   fi

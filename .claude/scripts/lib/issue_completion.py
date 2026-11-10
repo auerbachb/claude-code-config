@@ -256,10 +256,12 @@ def assess(args, report):
                 target = dict(owner_repo=args.repo, issue=number)
                 candidates.append(target)
             current = issue(args.repo, number)
-            target.update(state=current['state'], disposition='closed' if current['state'] == 'CLOSED' else 'retained')
+            target.update(state=current['state'],
+                          disposition='retained' if current['state'] == 'OPEN' else 'retention_state_mismatch')
             retained[str(number)] = dict(owner_repo=args.repo, issue=number, reason=match[2])
         report['retained_scope'] = retained
-        report['outcome'] = 'retained' if all(x['disposition'] in ('closed', 'retained') for x in candidates) else 'pending'
+        resolved = ('retained', 'closed') if args.scope_verified else ('retained',)
+        report['outcome'] = 'retained' if all(x['disposition'] in resolved for x in candidates) else 'pending'
         return 0 if report['outcome'] == 'retained' else 1
     if args.no_issue_verified:
         if candidates or args.complete_issue is not None or args.association_verified or args.expected_merge != report["merge_sha"]:
@@ -267,8 +269,12 @@ def assess(args, report):
         report.update(outcome="verified", no_associated_issues=True)
         return 0
     if args.complete_issue is None:
-        report['outcome'] = 'pending' if not candidates or any(x['disposition'] != 'closed' for x in candidates) else 'verified'
-        return 1 if report['outcome'] == 'pending' else 0
+        if not candidates or any(x['disposition'] != 'closed' for x in candidates):
+            return 1
+        if not args.scope_verified or args.expected_merge != report['merge_sha']:
+            raise CompletionError('closed_scope_verification_required', 1)
+        report['outcome'] = 'verified'
+        return 0
     if not args.scope_verified or not args.expected_merge or args.expected_merge != report['merge_sha']:
         raise CompletionError('scope_or_merge_verification_required', 3)
     if (pr.get('author') or {}).get('login', '').lower() != data['viewer']['login'].lower():
@@ -284,7 +290,7 @@ def assess(args, report):
     target['state'] = current['state']
     if current['state'] == 'CLOSED':
         target['disposition'] = 'closed'
-        report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+        report['outcome'] = 'verified' if len(candidates) == 1 else 'pending'
         return 0 if report['outcome'] == 'verified' else 1
     if current['updatedAt'] != args.expected_issue_updated_at:
         raise CompletionError('issue_scope_revision_unverified', 3)
@@ -307,7 +313,7 @@ def assess(args, report):
     if preflight['state'] == 'CLOSED' and same_scope and same_history:
         args.race_hold.unlink(missing_ok=True)
         target.update(state='CLOSED', disposition='closed')
-        report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+        report['outcome'] = 'verified' if len(candidates) == 1 else 'pending'
         return 0 if report['outcome'] == 'verified' else 1
     if (preflight['state'] != 'OPEN' or preflight['updatedAt'] != args.expected_issue_updated_at
             or not same_scope or not same_history):
@@ -334,7 +340,7 @@ def assess(args, report):
         raise CompletionError('closure_visibility_pending', 1)
     args.race_hold.unlink()
     target['disposition'] = 'closed'
-    report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+    report['outcome'] = 'verified' if len(candidates) == 1 else 'pending'
     return 0 if report['outcome'] == 'verified' else 1
 
 

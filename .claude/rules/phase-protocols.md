@@ -68,11 +68,9 @@ A missing exit report is a crash **only** when the runtime's own structured clas
 
 **WHEN** a Phase C subagent returns, execute immediately:
 
-1. **Parse the exit report.** None: classify first (§Limit-parked), else silent failure — check GitHub API.
-2. **Branch on OUTCOME:**
-   - `merged` → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md); pending → preserve evidence and recover.
-   - `blocked` → report blocker details to user. Do NOT merge.
-After verified merge, the parent runs the [finished-only sweep](../reference/workspace-sweep-cadence.md) from its checkout:
+1. **Parse exit report.** Missing: classify (§Limit-parked), then verify GitHub.
+2. `merged` or `blocked` after merge → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md); pending → preserve evidence and recover without re-merging. Otherwise report blockers without merging.
+After verified merge, run the [finished-only sweep](../reference/workspace-sweep-cadence.md) from the parent's checkout:
 
 <!-- test-anchor: workspace-sweep-post-merge -->
 ```bash
@@ -84,7 +82,7 @@ fi
 ```
 
 3. **State:** Phase C completes only after verified merge and verified/justified-retained completion. Every outcome removes its returned agent: `session-state.sh --remove-agent <id>`.
-4. **Handoff cleanup.** Delete scoped handoff (`handoff-state.sh --owner-repo owner/repo --delete N`) only after verified merge and [completion reconciliation](../reference/issue-completion.md). Keep pending recovery evidence. Emit one line — `merged PR #N` — after a clean merge.
+4. Delete scoped handoff (`handoff-state.sh --owner-repo owner/repo --delete N`) only after verified merge and [completion reconciliation](../reference/issue-completion.md). Preserve pending evidence. Emit `merged PR #N` once.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 

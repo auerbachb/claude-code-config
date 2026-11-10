@@ -101,11 +101,18 @@ class Completion(unittest.TestCase):
     def writes(self):
         return json.loads((self.root/'state').read_text())['writes']
 
-    def test_audit_does_not_close_and_verifies_existing_closure(self):
+    def test_existing_closure_requires_scope_verification_without_a_write(self):
         rc,x=self.run_helper();self.assertEqual(rc,1);self.assertEqual(self.writes(),0)
         self.assertEqual(x['issues'][0]['disposition'],'scope_verification_required')
         self.state['state']='CLOSED';self.write_state()
-        rc,x=self.run_helper();self.assertEqual(rc,0);self.assertEqual(x['outcome'],'verified')
+        for flags in ((), ('--scope-verified','--expected-merge','c'*40)):
+            rc,x=self.run_helper(*flags);self.assertEqual(rc,1)
+            self.assertEqual(x['issues'][0]['state'],'CLOSED')
+            self.assertEqual(x['error_class'],'closed_scope_verification_required')
+        rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,1);self.assertEqual(x['outcome'],'pending')
+        rc,x=self.run_helper('--scope-verified','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertEqual(x['outcome'],'verified');self.assertEqual(self.writes(),0)
 
     def test_single_issue_completion_and_duplicate_resume(self):
         rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1)
@@ -131,6 +138,19 @@ class Completion(unittest.TestCase):
         pr=self.pr['data']['repository']['pullRequest'];pr['closingIssuesReferences']['nodes'].append(self.node(8));self.write_pr()
         rc,x=self.complete();self.assertEqual(rc,1);self.assertEqual(self.writes(),1)
         self.assertEqual(x['outcome'],'pending');self.assertEqual(x['issues'][1]['state'],'OPEN')
+
+    def test_single_close_does_not_attest_for_another_closed_link(self):
+        links = self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']
+        links.append(self.node(8, state='CLOSED'))
+        self.write_pr()
+        rc, report = self.complete()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['outcome'], 'pending')
+        self.assertEqual(self.writes(), 1)
+        rc, report = self.run_helper('--scope-verified', '--expected-merge', MERGE)
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['outcome'], 'verified')
+        self.assertEqual(self.writes(), 1)
 
     def test_same_number_foreign_repo_not_selected(self):
         pr=self.pr['data']['repository']['pullRequest'];pr['closingIssuesReferences']['nodes']=[self.node(7,'other/repo')];self.write_pr()
@@ -318,6 +338,8 @@ exit "$result"
                 self.assertEqual(state['repos']['owner/consumer']['prs']['99']['sentinel'],'unrelated')
         self.mode('normal'); self.state['state']='CLOSED'; self.write_state()
         result=subprocess.run(['bash','-c',harness,'completion'],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,1,result.stderr)
+        result=subprocess.run(['bash','-c',harness,'completion','--scope-verified','--expected-merge',MERGE],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
         state=json.loads((self.home/'.claude/session-state.json').read_text())
         self.assertEqual(state['repos']['owner/consumer']['prs']['20']['issue_completion']['outcome'],'verified')
@@ -371,7 +393,8 @@ exit "$result"
                              '--expected-issue-updated-at',ISSUE_REVISION).returncode,0)
         self.assertEqual(record.read_text().splitlines(),['20','--repo','Owner/Consumer']*2)
         self.assertEqual(self.writes(),1)
-        self.assertEqual(run().returncode,0)
+        self.assertEqual(run().returncode,1)
+        self.assertEqual(run('--scope-verified','--expected-merge',MERGE).returncode,0)
         self.assertEqual(self.writes(),1)
 
     def test_final_handoff_publication_is_guarded_and_keeps_pending_work(self):
@@ -386,7 +409,7 @@ exit "$result"
 """ + fence + '\npublish_completed_handoff\n'
         env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),PR_NUM='20',OWNER_REPO='Owner/Consumer',HEAD_SHA='b'*40)
         before=handoff.read_bytes()
-        for invalid in [dict(report,outcome='pending'),dict(report,head_sha='c'*40),dict(report,outcome='retained',retained_scope={}),dict(report,error_class='github_unavailable')]:
+        for invalid in [dict(report,outcome='pending'),dict(report,scope_verified=False),dict(report,head_sha='c'*40),dict(report,outcome='retained',retained_scope={}),dict(report,error_class='github_unavailable')]:
             p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(invalid)),text=True,capture_output=True,timeout=15)
             self.assertEqual(p.returncode,3);self.assertEqual(handoff.read_bytes(),before)
         p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
@@ -410,6 +433,7 @@ exit "$result"
         step=section.split('3. **State:**',1)[1].split('4.',1)[0]
         self.assertIn('only after verified merge and verified/justified-retained completion',step)
         self.assertIn('Every outcome removes its returned agent',step)
+        self.assertIn('`merged` or `blocked` after merge', section)
         self.assertIn('pending → preserve evidence and recover',section)
 
     def test_unsafe_receipt_lock_is_refused_without_github_calls(self):
