@@ -188,6 +188,19 @@ check_eq "$(reason_of)" "state-unreadable" "invalid state is not absence"
 run --observe 100 --session f1 --counter-never-seen
 check_eq "$RC" "4" "attestation cannot be passed on observe"
 
+reset_home
+chmod 000 "$FAKE_HOME/.claude"
+if [[ ! -x "$FAKE_HOME/.claude" ]]; then
+  run --check --session f1 --counter-never-seen
+  check_eq "$(reason_of)" "state-unreadable" "an inaccessible directory is not absence"
+  check_eq "$RC" "3" "an inaccessible directory holds unknown"
+fi
+chmod 700 "$FAKE_HOME/.claude"
+rmdir "$FAKE_HOME/.claude"
+printf '%s' 'not a directory' > "$FAKE_HOME/.claude"
+run --check --session f1 --counter-never-seen
+check_eq "$(reason_of)" "state-unreadable" "a non-directory state parent is not absence"
+
 # Stale beyond TTL.
 reset_home
 run --observe 14000000 --limit 15000000 --session f2

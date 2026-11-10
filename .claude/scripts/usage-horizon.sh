@@ -484,7 +484,10 @@ iso_to_epoch() {
 # "nothing recorded yet" from "state unreadable" without inspecting the payload.
 read_horizon_state() {
   if [[ ! -f "$STATE_FILE" ]]; then
-    # A directory or a broken symlink is not a clean absence.
+    # A non-file entry or a directory we cannot traverse is not absence.
+    # Setup above ensures the parent exists unless it could not be accessed.
+    local state_dir="${STATE_FILE%/*}"
+    [[ -d "$state_dir" && -x "$state_dir" ]] || return 4
     [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]] && return 4
     return 3
   fi
