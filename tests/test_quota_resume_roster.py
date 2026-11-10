@@ -85,6 +85,58 @@ class QuotaResumeRosterTests(unittest.TestCase):
         self.assertEqual([(x["session_id"], x["checkpoint"]) for x in value["entries"]], [(self.sid, "usage-limit-park")])
         self.assertNotIn("Other account", json.dumps(value))
 
+    def park(self, cwd, handoff):
+        return {"checkpoint": "usage-limit-park", "session_id": self.sid, "cwd": str(cwd),
+                "summary": "Parked review", "handoff": str(handoff), "source_profile": str(self.source)}
+
+    def test_missing_worktree_keeps_verified_handoff_without_resume(self):
+        self.put_transcript(self.sid)
+        missing = self.home / "missing worktree"
+        target = roster.account_for_launcher(self.accounts, self.label, "claude-work")
+        value = roster.list_records(self.root, {target: self.accounts[target]}, self.label, self.source,
+                                    [self.park(missing, self.handoff)], "read")
+        entry, = value["entries"]
+        self.assertEqual(value["unreadable_records"], 0)
+        self.assertEqual(entry["handoffs"], [{"path": str(self.handoff), "cwd": str(missing),
+                                              "cwd_available": False}])
+        self.assertEqual(entry["options"], [{"target_account": target, "status": "not portable",
+                                             "handoff": str(self.handoff)}])
+        self.assertFalse(missing.exists())
+
+    def test_same_worktree_preserves_distinct_handoffs_and_one_command(self):
+        self.put_transcript(self.sid)
+        self.record(self.sid, self.wt)
+        second = self.root.parent / "pr-102.md"
+        second.write_text("Second verified handoff")
+        records = [self.park(self.wt, self.handoff), self.park(self.wt, second), self.park(self.wt, second)]
+        value = roster.list_records(self.root, self.accounts, self.label, self.source, records, "read")
+        entry, = value["entries"]
+        self.assertEqual(entry["checkpoint"], "end")
+        self.assertEqual(entry["handoff"], str(self.handoff))
+        self.assertEqual([row["path"] for row in entry["handoffs"]], [str(self.handoff), str(second)])
+        self.assertTrue(all(row["cwd_available"] for row in entry["handoffs"]))
+        commands = [option["command"] for option in entry["options"] if "command" in option]
+        self.assertEqual(len(commands), 1)
+        self.assertNotIn("Second verified handoff", json.dumps(value))
+
+    def test_invalid_handoff_excluded_and_mixed_locations_never_authorize(self):
+        self.put_transcript(self.sid)
+        self.record(self.sid, self.wt)
+        second = self.root.parent / "pr-102.md"
+        second.write_text("Second verified handoff")
+        untrusted = self.home / "outside-handoffs.md"
+        untrusted.write_text("Outside handoff directory")
+        missing = self.home / "missing worktree"
+        records = [self.park(missing, second), self.park(self.wt, untrusted)]
+        value = roster.list_records(self.root, self.accounts, self.label, self.source, records, "read")
+        entry, = value["entries"]
+        self.assertEqual(value["unreadable_records"], 2)
+        self.assertEqual([(row["path"], row["cwd_available"]) for row in entry["handoffs"]],
+                         [(str(self.handoff), True), (str(second), False)])
+        self.assertTrue(all(option["status"] == "not portable" and "command" not in option
+                            for option in entry["options"]))
+        self.assertNotIn(str(untrusted), json.dumps(value))
+
     def test_park_summary_is_normalized_without_hiding_the_checkpoint(self):
         park = {"checkpoint": "usage-limit-park", "session_id": self.sid, "cwd": str(self.wt),
                 "summary": "  Adopted\n  park " + "a" * 200,
