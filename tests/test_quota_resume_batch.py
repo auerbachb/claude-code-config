@@ -1,5 +1,7 @@
 import os
+import re
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -67,6 +69,67 @@ class QuotaResumeBatchTests(unittest.TestCase):
 
     def candidates(self):
         return self.state.candidates(self.label, self.source, self.target)
+
+    def skill_block(self, name, anchor):
+        skill = LIB.parents[1] / "skills" / name / "SKILL.md"
+        value = skill.read_text()
+        return re.search(r"<!-- test-anchor: " + re.escape(anchor) + r" -->\s+```bash\n(.*?)\n```",
+                         value, re.S)[1]
+
+    def test_go_on_batch_routes_only_exact_preview_and_owner_token(self):
+        helper = self.home / ".claude/scripts/quota-resume-batch.sh"
+        helper.parent.mkdir()
+        helper.write_text('#!/bin/bash\nprintf "%s\\n" "$@" >> "$BATCH_TEST_CALLS"\n')
+        helper.chmod(0o700)
+        calls = self.home / "batch-calls"
+        # Point only the anchor's trusted-root reference at isolated fixtures.
+        block = re.sub(r"\bHOME\b", "BATCH_FIXTURE_ROOT", self.skill_block("go-on", "go-on-approved-quota-batch"))
+        token = "1000." + "a" * 64
+
+        def route(mode, value, installed=None):
+            env = dict(os.environ, BATCH_FIXTURE_ROOT=str(installed or self.home), BATCH_TEST_CALLS=str(calls),
+                       QUOTA_RESUME_BATCH_MODE=mode, QUOTA_RESUME_TARGET="claude-target",
+                       QUOTA_RESUME_BATCH_APPROVAL=value)
+            return subprocess.run(["/bin/bash", "-c", block], cwd=self.home, env=env,
+                                  capture_output=True, text=True, timeout=5)
+
+        self.assertEqual(route("preview", "").returncode, 0)
+        self.assertEqual(calls.read_text().splitlines(), ["preview", "--target", "claude-target"])
+        before = calls.read_bytes()
+        self.assertEqual(route("preview", token).returncode, 2)
+        self.assertEqual(route("approve", "invalid").returncode, 2)
+        self.assertEqual(route("preview", "", self.home / "no-install").returncode, 1)
+        self.assertEqual(calls.read_bytes(), before)
+        self.assertEqual(route("approve", token).returncode, 0)
+        self.assertEqual(calls.read_bytes()[len(before):].decode().splitlines(),
+                         ["approve", "--target", "claude-target", "--approval", token])
+
+    def test_end_records_batch_proof_only_after_the_manual_roster_write(self):
+        manual, automatic, calls = self.home / "manual", self.home / "automatic", self.home / "calls"
+
+        def fixture(path, status):
+            path.write_text('#!/bin/bash\nprintf "%s\\n" "$@" >> "$BATCH_TEST_CALLS"\nexit ' + str(status) + '\n')
+            path.chmod(0o700)
+
+        fixture(manual, 0)
+        fixture(automatic, 0)
+        block = self.skill_block("end", "end-quota-resume-record")
+        env = dict(os.environ, QUOTA_RESUME_ROSTER_SH=str(manual), QUOTA_RESUME_BATCH_SH=str(automatic),
+                   BATCH_TEST_CALLS=str(calls), REPO_KEY=self.repo, SESSION_ID=self.session,
+                   RESUME_SUMMARY="fixture", RESUME_CWD=str(self.cwd), OUT=str(self.handoff),
+                   RESUME_STOP_VERIFIED="true", PUBLISH_RC="0", EXECUTION_GATE_PERSISTED="1",
+                   WINDDOWN_PERSISTED="1")
+
+        def run():
+            return subprocess.run(["/bin/bash", "-c", block], cwd=self.home, env=env,
+                                  capture_output=True, text=True, timeout=5)
+
+        self.assertEqual(run().returncode, 0)
+        self.assertEqual(calls.read_text().splitlines().count("record"), 2)
+        before = calls.read_bytes()
+        fixture(manual, 7)
+        self.assertEqual(run().returncode, 7)
+        self.assertEqual(calls.read_bytes()[len(before):].decode().splitlines().count("record"), 1)
 
     def test_worker_context_contains_only_exact_local_path_selectors(self):
         selector = str(self.home / "owner's $state.json")

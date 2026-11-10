@@ -38,6 +38,7 @@ TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_
 HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh) || HANDOFF_CONTEXT_SH=""
 HANDOFF_PUBLISH_SH=$(resolve_script portable-handoff-publish.sh) || HANDOFF_PUBLISH_SH=""
 QUOTA_RESUME_ROSTER_SH=$(resolve_script quota-resume-roster.sh) || QUOTA_RESUME_ROSTER_SH=""
+QUOTA_RESUME_BATCH_SH=$(resolve_script quota-resume-batch.sh) || QUOTA_RESUME_BATCH_SH=""
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 
 # The collector is a document, not a script, so resolve it the same way but
@@ -386,12 +387,22 @@ if [[ "${RESUME_STOP_VERIFIED:-}" == true && -n "$QUOTA_RESUME_ROSTER_SH" ]] &&
    (( PUBLISH_RC == 0 && EXECUTION_GATE_PERSISTED == 1 && WINDDOWN_PERSISTED == 1 )); then
   if [[ "$SESSION_ID" =~ $resume_uuid ]]; then
     "$QUOTA_RESUME_ROSTER_SH" record --kind end --session "$SESSION_ID" \
-      --cwd "$RESUME_CWD" --summary "$RESUME_SUMMARY" --handoff "$OUT"
+      --cwd "$RESUME_CWD" --summary "$RESUME_SUMMARY" --handoff "$OUT" && {
+        if [[ -n "${QUOTA_RESUME_BATCH_SH:-}" && -n "${REPO_KEY:-}" ]]; then
+          "$QUOTA_RESUME_BATCH_SH" record --repo "$REPO_KEY" --session "$SESSION_ID" \
+            --cwd "$RESUME_CWD" --handoff "$OUT" ||
+            printf '%s\n' 'Batch resume evidence is unavailable; use the manual roster.' >&2
+        fi
+      }
   else
     printf '%s\n' 'Local resume roster not recorded: this shutdown has no verified Claude session UUID.' >&2
   fi
 fi
 ```
+
+The batch helper records metadata only, when it can verify this native /end.
+It never launches a session. Its proof is separate from the manual roster;
+if proof is unavailable, keep the manual handoff and command.
 
 If the helper, session identity, or checkpoint is unavailable, say the local
 resume roster was not recorded; never guess a command. On success, show the
