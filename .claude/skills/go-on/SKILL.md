@@ -7,14 +7,14 @@ triggers:
   - pick up where we left off
   - continue the interrupted work
   - what was I doing
-argument-hint: "[--resume-options | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
+argument-hint: "[--resume-options [--target LAUNCHER] | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
 ---
 
 Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
 
 ## Read-only Claude resume options
 
-If the only argument is `--resume-options`, use only a trusted installed
+For `--resume-options` alone or with `--target <launcher>`, use only a trusted installed
 `quota-resume-roster.sh` from the skills worktree or installed scripts directory.
 Never fall back to the current checkout or PATH: the helper reads account-wide
 local state and runs adjacent installed helpers.
@@ -23,17 +23,26 @@ local state and runs adjacent installed helpers.
 
 ```bash
 quota_resume_options() {
-  local candidate
+  local candidate target="${1:-}"
   [[ -n "${HOME:-}" ]] || return 1
+  [[ -z "$target" || "$target" =~ ^claude-[a-z0-9]+(-[a-z0-9]+)*$ ]] || return 1
   for candidate in \
     "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/quota-resume-roster.sh}" \
     "${HOME:+$HOME/.claude/scripts/quota-resume-roster.sh}"; do
-    if [[ -x "$candidate" ]]; then "$candidate" list; return; fi
+    if [[ -x "$candidate" ]]; then
+      if [[ -n "$target" ]]; then "$candidate" list --target "$target"; else "$candidate" list; fi
+      return
+    fi
   done
   return 1
 }
-quota_resume_options
+quota_resume_options "${QUOTA_RESUME_TARGET:-}"
 ```
+
+For a targeted invocation, bind `QUOTA_RESUME_TARGET` to the one literal
+registered launcher token from the argument before calling the block. For
+an untargeted invocation bind it empty. Reject a missing target or extra flags
+before invoking any helper; do not interpret `--target` as a resume command.
 
 Show its entries for the current registered Claude account: session ID, folder,
 account, summary, and manual resume options. Show each `not portable` option with its handoff path.

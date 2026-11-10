@@ -1,3 +1,5 @@
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -5,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 MODULE = Path(__file__).resolve().parents[1] / ".claude/scripts/lib/quota_resume_roster.py"
@@ -93,6 +96,55 @@ class QuotaResumeRosterTests(unittest.TestCase):
         value = roster.list_records(self.root, self.accounts, self.label, self.source, [park], "read")
         self.assertEqual(value["unreadable_records"], 1)
         self.assertEqual(value["entries"], [])
+
+    def test_suggestion_ranks_verified_weekly_headroom_and_fails_on_ambiguity(self):
+        def row(label, used, status="ok", window="7-day", reset=2000, provider="claude"):
+            return dict(label=label, used_pct=used, status=status, window=window,
+                        resets_at_epoch=reset, provider=provider)
+
+        def suggest(rows, observed=900):
+            return roster.suggest_account(self.accounts, self.label, rows, 95, observed, 1000, 120)
+
+        work, split = "work@example.com", "split@example.com"
+        ranked = [row(work, 18), row(work, 66, window="7-day sonnet"), row(split, 45),
+                  row(split, 99, window="5-hour"), row("codex@example.com", 0, provider="codex")]
+        self.assertEqual(suggest(ranked), {"decision": "suggested", "launcher": "claude-split"})
+        self.assertEqual(suggest([row(work, 35), row(split, 35)]),
+                         {"decision": "suggested", "launcher": "claude-split"})
+        self.assertEqual(suggest([row(work, 95), row(split, None, "needs-login")]), {"decision": "none"})
+        self.assertEqual(suggest([row(work, 25), row(split, None, "needs-login")]),
+                         {"decision": "suggested", "launcher": "claude-work"})
+        for rows in ([row(work, 25)], [row(work, 25), row(split, None, "rate-limited")],
+                     [row(work, 25), row(split, 10, reset=999)],
+                     [row(work, 25), row(split, 10), row(split, 20)],
+                     [row(work, 25), row(split, True)], [row(work, 25), row(split, float("nan"))]):
+            self.assertEqual(suggest(rows), {"decision": "unknown"})
+        self.assertEqual(suggest(ranked, observed=879), {"decision": "unknown"})
+        self.assertEqual(suggest(ranked, observed=1001), {"decision": "unknown"})
+
+    def test_target_launcher_must_be_an_exact_registered_alternative(self):
+        self.assertEqual(roster.account_for_launcher(self.accounts, self.label, "claude-work"),
+                         "work@example.com")
+        for wrong in ("claude-personal", "claude-wor", "claude-work; echo bad", "work@example.com"):
+            with self.assertRaises(ValueError):
+                roster.account_for_launcher(self.accounts, self.label, wrong)
+
+    def test_targeted_list_only_displays_the_selected_existing_option(self):
+        self.put_transcript(self.sid)
+        self.record(self.sid, self.wt)
+        registry = [{"label": label, "launcher": name, "profile_dir": str(path)}
+                    for label, (name, path) in self.accounts.items()]
+        output = io.StringIO()
+        with patch.object(Path, "home", return_value=self.home), \
+                patch.object(roster, "metadata", return_value=registry), \
+                patch.object(roster, "read_park_records", return_value=([], "read")), \
+                patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(self.source)), \
+                patch.object(roster.sys, "argv", ["roster", "list", "--target", "claude-work"]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(roster.main(), 0)
+        options = json.loads(output.getvalue())["entries"][0]["options"]
+        self.assertEqual([option["target_account"] for option in options], ["work@example.com"])
+        self.assertIn("claude-work --resume", options[0]["command"])
 
     def run_skill_block(self, name, anchor, env, trailer=""):
         skill = MODULE.parents[2] / "skills" / name / "SKILL.md"
@@ -195,6 +247,13 @@ class QuotaResumeRosterTests(unittest.TestCase):
         self.assertEqual((missing.returncode, missing.stdout), (1, ""))
         executable(self.home / relative, 'printf "installed %s\\n" "$1"')
         self.assertEqual(run().stdout, "installed list\n")
+        executable(self.home / relative, 'printf "%s\\n" "$@"')
+        env["QUOTA_RESUME_TARGET"] = "claude-work"
+        self.assertEqual(run().stdout.splitlines(), ["list", "--target", "claude-work"])
+        env["QUOTA_RESUME_TARGET"] = "claude-work; echo bad"
+        rejected = run()
+        self.assertEqual((rejected.returncode, rejected.stdout), (1, ""))
+        del env["QUOTA_RESUME_TARGET"]
         executable(self.home / ".claude/skills-worktree" / relative, 'printf "worktree %s\\n" "$1"; exit 5')
         broken = run()
         self.assertEqual((broken.returncode, broken.stdout), (5, "worktree list\n"))
