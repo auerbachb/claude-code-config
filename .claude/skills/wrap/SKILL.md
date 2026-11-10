@@ -358,6 +358,12 @@ Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** —
 
 ### Step 2.2: Verify acceptance criteria
 
+Verify the full issue scope for every native closing link before merging.
+GitHub can close linked issues itself at merge. If scope is partial, ambiguous
+or foreign, stop before merge until the closing association is removed or
+changed to a non-closing reference. Verify the updated links and rerun the gate.
+See [issue scope verification](../../reference/issue-completion.md#verify-scope-before-closing).
+
 ```bash
 ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
 AC_EXIT=$?

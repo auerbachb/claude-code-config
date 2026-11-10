@@ -59,6 +59,14 @@ def graphql(query, repo, number):
                '-f', 'name=' + name, '-F', 'number=' + str(number)])['data']
 
 
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def private_directory(path):
     """Reject aliases and unsafe existing state, including ancestor components."""
     current = Path(path.anchor)
@@ -68,6 +76,8 @@ def private_directory(path):
             current.mkdir(mode=0o700)
         except FileExistsError:
             pass
+        else:
+            sync_directory(current.parent)
         info = current.lstat()
         if not stat.S_ISDIR(info.st_mode):
             raise CompletionError('unsafe_completion_directory', 6)
@@ -86,6 +96,7 @@ def save(path, report):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         if temporary and os.path.lexists(temporary):
             os.unlink(temporary)
@@ -261,14 +272,11 @@ def assess(args, report):
         return 0 if report['outcome'] == 'verified' else 1
     if current['updatedAt'] != args.expected_issue_updated_at:
         raise CompletionError('issue_scope_revision_unverified', 3)
-    # Persist intent and arm the guard before the final GitHub read, so the
-    # state and revision comparison sits immediately before the close request.
+    # Persist intent before preflight. Arm the race guard only after the last
+    # read passes so a preflight failure can still be assessed or retained.
     target['disposition'] = 'closure_pending'
     report['outcome'] = 'pending'
     save(args.receipt, report)
-    hold = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'],
-                head_sha=report['head_sha'], issue=args.complete_issue, phase='closure_inflight')
-    save(args.race_hold, hold)
     latest, latest_pr = merged_delivery(args.repo, args.pr)
     if (latest_pr['mergeCommit']['oid'] != report['merge_sha']
             or latest_pr['headRefOid'] != report['head_sha']
@@ -278,13 +286,16 @@ def assess(args, report):
         raise CompletionError('delivery_changed_before_close', 3)
     preflight = issue(args.repo, args.complete_issue)
     if preflight['state'] == 'CLOSED' and preflight.get('timelineItems') == current.get('timelineItems'):
-        args.race_hold.unlink()
+        args.race_hold.unlink(missing_ok=True)
         target.update(state='CLOSED', disposition='closed')
         report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
         return 0 if report['outcome'] == 'verified' else 1
     if (preflight['state'] != 'OPEN' or preflight['updatedAt'] != args.expected_issue_updated_at
             or preflight.get('timelineItems') != current.get('timelineItems')):
         raise CompletionError('issue_changed_before_close', 3)
+    hold = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'],
+                head_sha=report['head_sha'], issue=args.complete_issue, phase='closure_inflight')
+    save(args.race_hold, hold)
     gh(['api', '--method', 'PATCH', 'repos/' + args.repo + '/issues/' + str(args.complete_issue),
         '-f', 'state=closed', '-f', 'state_reason=completed'])
     after = issue(args.repo, args.complete_issue)

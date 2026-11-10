@@ -24,11 +24,12 @@ by default:
 "$ISSUE_COMPLETION_SH" --repo "$OWNER_REPO" --pr "$PR_NUM"
 ```
 
-Check the exit status and JSON together. Exit 0 means the assessment's linked
-issues were independently observed CLOSED. Exit 1 is pending completion; 3 is
-unverified or ineligible identity/scope; 4 is an API/response failure; 6 is unsafe
-or unavailable local receipt state. Usage errors exit 2. Missing helper or any
-unreadable/unknown state is pending, never an empty successful assessment.
+Check the exit status and JSON together. Exit 0 means `outcome: verified` for
+independently observed CLOSED issues or a verified no-issue delivery, or
+`outcome: retained` for deliberate retention. A retained issue can be OPEN.
+Exit 1 is pending completion, 3 is unverified or ineligible identity/scope,
+4 is an API/response failure, and 6 is unsafe or unavailable local receipt
+state. Usage errors exit 2. A missing helper or unreadable state is pending.
 The receipt records fixed status and public identities; raw issue bodies,
 credentials, and private task content are not copied into it.
 

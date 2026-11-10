@@ -187,6 +187,13 @@ class Completion(unittest.TestCase):
         self.assertEqual(report['error_class'], 'issue_changed_before_close')
         self.assertEqual(self.writes(), 0)
 
+        self.assertFalse(list(self.home.rglob('pr-20.race-hold.json')))
+        rc, report = self.run_helper('--expected-merge', MERGE, '--retain-issue', '7=partial_scope')
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['outcome'], 'retained')
+        self.assertEqual(report['issues'][0]['state'], 'OPEN')
+        self.assertEqual(self.writes(), 0)
+
     def test_closing_link_removed_after_scope_read_never_closes(self):
         self.mode('unlinked-at-preflight')
         rc, report = self.complete()

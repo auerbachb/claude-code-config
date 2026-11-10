@@ -506,7 +506,7 @@ Do not duplicate the merge, main-sync, follow-up, or stale-cleanup rules here. `
 
 **On the clean-`BEHIND` path — and only that path — `/wrap` Step 2.4 is the
 merge executor** — it runs `admin-merge.sh {{PR_NUMBER}} --auto-plain
---ac-verified` itself, with no user turn (issue #754). **Do not run
+--ac-verified --defer-bookkeeping` itself, with no user turn (issue #754). **Do not run
 `admin-merge.sh` yourself:** `--auto-plain` carries a repeat guard, so your call
 would consume the one attempt and `/wrap`'s would then refuse with exit `8`,
 merging nothing.
@@ -523,13 +523,20 @@ Step 2.4 owns that script's semantics; all this table adds is the Phase C
 
 | `/wrap` Step 2.4 result | Phase C outcome |
 |---|---|
-| merged (`admin-merge.sh` exit `0`) | Relay its `AUTO_PLAIN_MERGED` evidence block, then `OUTCOME: merged`. |
+| merged (`admin-merge.sh` exit `0`) | Relay its `AUTO_PLAIN_MERGED` evidence and finish wrap and completion publication before `OUTCOME: merged`. |
 | refused, needs a **protection change** (exit `8`) | `OUTCOME: blocked` — surface `/admin-merge {{PR_NUMBER}}` and the printed command as a user choice, and **never auto-run it**: modifying branch protection is prohibited for you. |
 | clean state lost at merge time (exit `1`) | Step 2.4 rebases and re-enters its own recovery loop. If that ends without a merge, `OUTCOME: blocked` and the parent runs `/fixpr`. |
 
 ## Step 4: Print Exit Report and EXIT
 
-After all wrap phases finish and completion is verified or justifiably retained, run the canonical publish_completed_handoff adapter in [issue completion](../reference/issue-completion.md). Only then report OUTCOME merged. A guarded publication failure is blocked with PR already merged, completion pending; preserve the handoff and receipt for recovery.
+After all wrap phases finish, bind `PR_NUM` and `OWNER_REPO` to the verified task
+PR and repository, and `HEAD_SHA` to that merged PR's independently verified
+`headRefOid`. Pass the matching `COMPLETION_JSON` from wrap's final verified or
+retained assessment into the canonical `publish_completed_handoff` adapter in
+[issue completion](../reference/issue-completion.md). Only then report
+`OUTCOME: merged`. If an input is unavailable or guarded publication fails,
+report `PR already merged; completion pending` and preserve the handoff and
+receipt for recovery.
 
 Print this as your FINAL output:
 
