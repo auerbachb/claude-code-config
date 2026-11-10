@@ -87,7 +87,7 @@ In the base branch's `.claude/pm-config.md` `## Review policy` section, inside a
 - `BEHIND` → never the clean-`BEHIND` admin path. `admin-merge.sh` refuses (`AUTO_PLAIN_REFUSED: reason=no-review-override`, exit 1); rebase via `/fixpr`, re-enter Step 2.1 — the rebased HEAD gets its own window. An unreviewed merge never also takes an admin bypass.
 - A head-pin refusal re-enters Step 2.1.
 
-Before merging, save the complete authorizing gate with `unreviewed-merge-ledger.sh snapshot --pr N --repo OWNER/REPO --gate-json -`. After GitHub confirms the merge, run `unreviewed-merge-ledger.sh record --pr N --repo OWNER/REPO --from-snapshot`. The report line becomes `merged PR #N (no AI review — logged)` (or `… — ledger write failed)`).
+Run the merge through `unreviewed-merge-ledger.sh merge --pr N --repo OWNER/REPO --gate-json -`. It saves the complete gate and holds the repo/PR snapshot lock through the head-pinned merge. Reviewed squash merges use `merge --sha HEAD` under the same lock. After GitHub confirms the merge, run `unreviewed-merge-ledger.sh record --pr N --repo OWNER/REPO --from-snapshot`. The report line becomes `merged PR #N (no AI review — logged)` (or `… — ledger write failed)`).
 
 **Paid escalation.** `escalate-review.sh` asks `merge-gate.sh` at the two points that would spend on a paid reviewer (formerly `switch_bugbot`, `trigger_greptile`; since issue #1897 both answer `no_reviewer` — [Paid review authorization](review-policy.md#paid-review-authorization)); when the gate is met through the override it emits `gate_met` instead — so `gate_met` means "merge gate met on HEAD" (an approval or this override; stderr names which), and every consumer already branches on it the same way: stop escalating, let the merge gate end polling. The polling loop's own per-cycle `polling-state-gate.sh` → `merge-gate.sh` exit 0 then ends polling. Fails open to the old routing (a gate error changes nothing).
 
@@ -99,7 +99,7 @@ Before merging, save the complete authorizing gate with `unreviewed-merge-ledger
 
 **For the backfill (Issue #1900):** `unreviewed-merge-ledger.sh list [--repo R] [--pending]` reads it; `backfill --pr N --sha S --status <s> [--repo R]` updates `backfill_status` (starts `pending`) and stamps `backfill_updated_at`; `--detail-json` stores the outcome object. The runner is `backfill-review.sh` — `backfill-review.md`. A bot `CHANGES_REQUESTED` that lands after an override merge is not read by the runner — it reviews the merged diff afresh with the local CLIs.
 
-Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 8 `HOME` unset.
+Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 7 no snapshot, 8 `HOME` unset.
 
 ## Known limits
 

@@ -64,7 +64,16 @@ case "$ARGS" in
   *" pr merge 1 --repo solo/repo --squash --match-head-commit "*)
     [[ -n "${FAKE_NRO_STATE_PATH:-}" && "${*: -1}" == "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" ]] || exit 1
     [[ "$(cat "$FAKE_NRO_STATE_PATH")" == OPEN && "${FAKE_NRO_REFUSE:-0}" == 0 ]] || exit 1
-    [[ -s "$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json" ]] || exit 1
+    snapshot="$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json"
+    if [[ "${FAKE_NRO_EXPECT_REVIEWED:-0}" == 1 ]]; then
+      [[ ! -e "$snapshot" ]] || exit 1
+    else
+      [[ -s "$snapshot" ]] || exit 1
+    fi
+    if [[ -n "${FAKE_NRO_MERGE_READY:-}" ]]; then
+      touch "$FAKE_NRO_MERGE_READY"
+      sleep 1
+    fi
     printf '%s\n' MERGED >"$FAKE_NRO_STATE_PATH"
     exit 0 ;;
   *" pr view 1 --repo solo/repo --json state,headRefOid "*)
@@ -473,8 +482,19 @@ check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "invalid input leaves the PR ope
 run_wrap_fence "$MERGE_BLOCK" "$OUT" 1111111111111111111111111111111111111111 >/dev/null 2>"$TMP/snapshot.err"
 check_eq "4" "$?" "a new HEAD requires acceptance verification"
 check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "changed acceptance HEAD leaves the PR open"
-run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null
+export FAKE_NRO_MERGE_READY="$TMP/override-merge-started"
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null &
+merge_pid=$!
+for (( spin=0; spin<100; spin++ )); do
+  [[ -e "$FAKE_NRO_MERGE_READY" ]] && break
+  sleep 0.02
+done
+test -e "$FAKE_NRO_MERGE_READY"; check_eq "0" "$?" "override reached the merge request"
+PATH="$BIN:$PATH" "$LEDGER_SUT" snapshot --pr 1 --repo solo/repo --discard 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "concurrent discard waits for the merge and preserves merged evidence"
+wait "$merge_pid"
 check_eq "0" "$?" "the anchored override fence merges with the saved HEAD"
+unset FAKE_NRO_MERGE_READY
 check_eq "MERGED" "$(cat "$FAKE_NRO_STATE_PATH")" "native merge succeeded"
 check_eq "$OUT" "$(cat "$SNAPSHOT_PATH")" "the snapshot has the full gate"
 FAKE_PR_OVERRIDE=$(jq -cn --arg head "$HEAD_SHA" '{state:"MERGED",headRefOid:$head}')
@@ -503,10 +523,20 @@ export FAKE_NRO_REFUSE=1
 run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
 check_eq "1" "$?" "merge refusal is reported"
 test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "failed merge retains the snapshot"
-PATH="$BIN:$PATH" "$LEDGER_SUT" snapshot --pr 1 --repo solo/repo --discard
-check_eq "0" "$?" "a known unmerged PR can clear its unused snapshot"
-test ! -e "$SNAPSHOT_PATH"; check_eq "0" "$?" "reviewed merge starts without stale evidence"
-unset FAKE_NRO_STATE_PATH FAKE_MERGED_HEAD FAKE_NRO_REFUSE
+unset FAKE_NRO_REFUSE
+export FAKE_NRO_EXPECT_REVIEWED=1
+MERGE_REPO_BLOCK=$(extract_skill_bash "$SKILLS_DIR/merge/SKILL.md" merge-ledger-repo-binding) || exit 1
+(
+  export PATH="$BIN:$PATH"
+  PR_NUM=1 MERGE_PR_URL="https://github.com/solo/repo/pull/1"
+  unset CURRENT_REPO
+  resolve_script() { printf '%s\n' "$LEDGER_SUT"; }
+  eval "$MERGE_REPO_BLOCK"
+  "$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$HEAD_SHA"
+)
+check_eq "0" "$?" "reviewed merge binds its repo and clears unused evidence"
+test ! -e "$SNAPSHOT_PATH"; check_eq "0" "$?" "reviewed merge leaves no override snapshot"
+unset FAKE_NRO_STATE_PATH FAKE_MERGED_HEAD FAKE_NRO_EXPECT_REVIEWED
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

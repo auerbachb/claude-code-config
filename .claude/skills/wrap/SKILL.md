@@ -418,7 +418,7 @@ MERGE_STATE=$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // empty')
 
 `printf '%s'`, never `echo` — zsh's builtin corrupts the JSON payload (issue #574).
 
-- **`CLEAN`** (override not applied) → clear any unused override snapshot as below, then `gh pr merge "$PR_NUM" --squash`.
+- **`CLEAN`** (override not applied) → resolve the ledger helper, then run `"$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$AC_VERIFIED_HEAD"`. It clears unused override evidence and runs a head-pinned squash under the same lock.
 - **No-review override** (issue #1899) → after AC verification, run `wrap-capture-gate` and `wrap-persist-recovery-audit` again. Use the new full `GATE_JSON` only when the refreshed classification is `valid_pass`, the override still applies, and its refreshed `merge_state` still passes this same test (`CLEAN`, or `UNSTABLE` with nonempty `excluded_reviewer_checks`). Otherwise re-enter Step 2.1. An override on `BEHIND` never uses the admin path. Use /fixpr and return to Step 2.1 for the new HEAD.
 - **`BEHIND`** → the clean-`BEHIND` path below. A plain squash is **rejected** here by `required_status_checks.strict`.
 - **Anything else** → **not merge-ready** per `cr-merge-gate.md` Step 1d — stop with the state and the last `missing[]`. Never merge on an unenumerated state: `BLOCKED` and `UNSTABLE` add no `missing[]` entry, so a gate exit `0` does not by itself clear them.
@@ -428,23 +428,19 @@ For an eligible override, execute the following as one Bash call after the fresh
 <!-- test-anchor: wrap-no-review-override-merge -->
 ```bash
 wrap_merge_with_override() {
-  local ledger snapshot head
+  local ledger head
   ledger=$(resolve_script unreviewed-merge-ledger.sh) || return 5
   head=$(printf '%s' "$GATE_JSON" | jq -er '.head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))') || return 4
   if [[ "$head" != "${AC_VERIFIED_HEAD:-}" ]]; then
     echo "WARN: HEAD moved since acceptance verification; rerun the gate and verify the new HEAD" >&2
     return 4
   fi
-  snapshot=$(printf '%s' "$GATE_JSON" | "$ledger" snapshot --pr "$PR_NUM" --repo "$CURRENT_REPO" --gate-json -) || return $?
-  if ! gh pr merge "$PR_NUM" --repo "$CURRENT_REPO" --squash --match-head-commit "$head"; then
-    echo "WARN: merge was not confirmed; check GitHub and retain $snapshot until state is verified" >&2
-    return 1
-  fi
+  printf '%s' "$GATE_JSON" | "$ledger" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --gate-json -
 }
 wrap_merge_with_override
 ```
 
-A merge command error may still mean GitHub merged it. Verify native state before routing. On `MERGED` continue to the recorder. Otherwise stop or recover through Step 2.1. Before a reviewed squash or clean-BEHIND admin merge, resolve the same ledger helper and run `snapshot --pr "$PR_NUM" --repo "$CURRENT_REPO" --discard`. Continue only on success. This clears unused override evidence for a verified unmerged PR; if no snapshot exists it is a no-op.
+A merge command error may still mean GitHub merged it. Verify native state before routing. On `MERGED` continue to the recorder. Otherwise stop or recover through Step 2.1. Before a clean-BEHIND admin merge, resolve the same ledger helper and run `snapshot --pr "$PR_NUM" --repo "$CURRENT_REPO" --discard`. Continue only on success. This clears unused evidence for a verified unmerged PR. If no snapshot exists it is a no-op. Both plain squash paths hold the snapshot lock through the merge request.
 
 The merge-state mechanics are owned by `cr-merge-gate.md` Step 1d and implemented identically in `fixpr/SKILL.md` Step 6; the safety conditions live there and are not restated here.
 

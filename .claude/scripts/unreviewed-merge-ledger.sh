@@ -4,7 +4,7 @@
 # catalog: merge-gate-sequencing — Record, list, and mark backfill status of merges made without an AI review
 #
 # USAGE
-#   unreviewed-merge-ledger.sh snapshot --pr N [--repo owner/name] --gate-json <file|->
+#   unreviewed-merge-ledger.sh merge --pr N [--repo owner/name] (--gate-json <file|-> | --sha <reviewed_head>)
 #   unreviewed-merge-ledger.sh snapshot --pr N [--repo owner/name] --discard
 #   unreviewed-merge-ledger.sh record --pr N [--repo owner/name] (--gate-json <file|-> | --from-snapshot)
 #   unreviewed-merge-ledger.sh list [--repo owner/name] [--pending]
@@ -18,10 +18,13 @@
 #   and commits with temp + rename. One entry per (repo, pr, head_sha); a
 #   repeated `record` is a no-op (exit 0). Repo keys are lowercase owner/name.
 #
-# snapshot
-#   Save the complete final gate before attempting a head-pinned override merge.
-#   Private, atomic snapshots are scoped by normalized repository and PR.
-#   Discard only after GitHub confirms the PR is not merged.
+# merge
+#   After the workflow verifies the gate and acceptance criteria, merge at the
+#   supplied HEAD. For an override, publish the complete final gate first.
+#   Reviewed merges clear unused override snapshots before merging. Both paths
+#   hold the same repository/PR snapshot lock through the GitHub merge request.
+# snapshot --discard
+#   Remove unused evidence only after GitHub confirms the PR is not merged.
 #
 # record
 #   Run AFTER the merge, with the merge-gate.sh JSON that authorized it. Refuses
@@ -70,7 +73,7 @@ die() { local rc="$1"; shift; echo "unreviewed-merge-ledger.sh: $*" >&2; exit "$
 CMD="${1:-}"
 case "$CMD" in
   -h|--help) print_usage; exit 0 ;;
-  record|snapshot|list|backfill) shift ;;
+  record|merge|snapshot|list|backfill) shift ;;
   "") print_usage >&2; exit 2 ;;
   *) die 2 "unknown subcommand: $CMD" ;;
 esac
@@ -146,9 +149,17 @@ fi
 REPO_RAW="$REPO"
 REPO="$(normalize_repo "$REPO")"
 
-if [[ "$CMD" == snapshot || "$FROM_SNAPSHOT" == 1 ]]; then
+if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
   [[ "$REPO" =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9_.-]+$ && "${REPO#*/}" != . && "${REPO#*/}" != .. && "$PR" =~ ^[1-9][0-9]*$ ]] \
     || die 2 "snapshot requires an exact repository and positive PR number"
+  if [[ "$CMD" == snapshot && "$DISCARD" == 0 ]]; then
+    die 2 "snapshot requires --discard"
+  fi
+  if [[ "$CMD" == merge ]]; then
+    if [[ -n "$GATE_SRC" && -n "$SHA" ]] || [[ -z "$GATE_SRC" && ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+      die 2 "merge requires exactly one of --gate-json or --sha <reviewed_head>"
+    fi
+  fi
   SNAPSHOT_DIR="$HOME/.claude/unreviewed-merge-snapshots/$REPO"
   SNAPSHOT="$SNAPSHOT_DIR/pr-$PR.json"
   if [[ "$FROM_SNAPSHOT" == 1 || "$DISCARD" == 1 ]]; then
@@ -157,7 +168,6 @@ if [[ "$CMD" == snapshot || "$FROM_SNAPSHOT" == 1 ]]; then
       exit 7
     fi
   else
-    [[ -n "$GATE_SRC" ]] || die 2 "snapshot requires --gate-json <file|->"
     (umask 077; mkdir -p "$SNAPSHOT_DIR") || die 5 "cannot create $SNAPSHOT_DIR"
   fi
   with_lock "$SNAPSHOT"
@@ -185,6 +195,20 @@ if [[ "$CMD" == snapshot || "$FROM_SNAPSHOT" == 1 ]]; then
     exit 0
   fi
 
+  verify_open_head() {
+    local pr_view
+    pr_view="$(gh pr view "$PR" --repo "$REPO_RAW" --json state,headRefOid)"       || die 4 "cannot verify the open PR"
+    jq -e --arg head "$1" '.state == "OPEN" and .headRefOid == $head' <<<"$pr_view" >/dev/null       || die 4 "PR is not open at the authorizing HEAD"
+  }
+
+  if [[ -n "$SHA" ]]; then
+    verify_open_head "$SHA"
+    state_lock_assert_held || die 6 "snapshot lock was lost before merge"
+    rm -f "$SNAPSHOT" || die 5 "cannot remove $SNAPSHOT"
+    gh pr merge "$PR" --repo "$REPO_RAW" --squash --match-head-commit "$SHA"
+    exit $?
+  fi
+
   SNAPSHOT_TMP="$(mktemp "$SNAPSHOT.tmp.XXXXXX")" || die 5 "cannot create a snapshot temp file"
   trap 'rm -f "$SNAPSHOT_TMP"; state_lock_release' EXIT
   if [[ "$GATE_SRC" == - ]]; then
@@ -201,10 +225,12 @@ if [[ "$CMD" == snapshot || "$FROM_SNAPSHOT" == 1 ]]; then
         and (.no_review_override.excluded_reviewer_checks | type == "array" and length > 0))))' \
     "$SNAPSHOT_TMP" >/dev/null 2>&1 || die 4 "snapshot requires the full authorizing override gate JSON"
   SNAPSHOT_HEAD="$(jq -er .head_sha "$SNAPSHOT_TMP")" || die 4 "cannot read snapshot HEAD"
-  OPEN_PR="$(gh pr view "$PR" --repo "$REPO_RAW" --json state,headRefOid)"     || die 4 "cannot verify the open PR for the snapshot"
-  jq -e --arg head "$SNAPSHOT_HEAD" '.state == "OPEN" and .headRefOid == $head' <<<"$OPEN_PR" >/dev/null     || die 4 "PR is not open at the authorizing HEAD"
+  verify_open_head "$SNAPSHOT_HEAD"
   state_lock_commit "$SNAPSHOT_TMP" "$SNAPSHOT" || die 5 "cannot publish $SNAPSHOT"
-  printf '%s\n' "$SNAPSHOT"
+  if ! gh pr merge "$PR" --repo "$REPO_RAW" --squash --match-head-commit "$SNAPSHOT_HEAD"; then
+    echo "unreviewed-merge-ledger.sh: verify merge state; snapshot retained at $SNAPSHOT" >&2
+    exit 1
+  fi
   exit 0
 fi
 
