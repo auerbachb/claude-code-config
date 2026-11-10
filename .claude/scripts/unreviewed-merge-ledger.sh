@@ -207,14 +207,17 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
     exit 0
   fi
 
-  verify_open_head() {
-    local pr_view
-    pr_view="$(gh pr view "$PR" --repo "$REPO_RAW" --json state,headRefOid)"       || die 4 "cannot verify the open PR"
+  verify_merge_target() {
+    local pr_view allow_unstable="${2:-false}"
+    pr_view="$(gh pr view "$PR" --repo "$REPO_RAW" --json state,headRefOid,mergeStateStatus)"       || die 4 "cannot verify the open PR"
     jq -e --arg head "$1" '.state == "OPEN" and .headRefOid == $head' <<<"$pr_view" >/dev/null       || die 4 "PR is not open at the authorizing HEAD"
+    jq -e --argjson unstable "$allow_unstable" '
+      .mergeStateStatus == "CLEAN" or ($unstable and .mergeStateStatus == "UNSTABLE")
+    ' <<<"$pr_view" >/dev/null || die 4 "PR merge state changed; refresh the gate before merging"
   }
 
   if [[ -n "$SHA" ]]; then
-    verify_open_head "$SHA"
+    verify_merge_target "$SHA"
     remove_snapshot
     gh pr merge "$PR" --repo "$REPO_RAW" --squash --match-head-commit "$SHA"
     exit $?
@@ -237,7 +240,8 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
     "$SNAPSHOT_TMP" >/dev/null 2>&1 || die 4 "snapshot requires the full authorizing override gate JSON"
   verify_snapshot_identity "$SNAPSHOT_TMP"
   SNAPSHOT_HEAD="$(jq -er .head_sha "$SNAPSHOT_TMP")" || die 4 "cannot read snapshot HEAD"
-  verify_open_head "$SNAPSHOT_HEAD"
+  ALLOW_UNSTABLE="$(jq -r '.merge_state == "UNSTABLE"' "$SNAPSHOT_TMP")" || die 4 "cannot read snapshot merge state"
+  verify_merge_target "$SNAPSHOT_HEAD" "$ALLOW_UNSTABLE"
   state_lock_commit "$SNAPSHOT_TMP" "$SNAPSHOT" || die 5 "cannot publish $SNAPSHOT"
   if ! gh pr merge "$PR" --repo "$REPO_RAW" --squash --match-head-commit "$SNAPSHOT_HEAD"; then
     echo "unreviewed-merge-ledger.sh: verify merge state; snapshot retained at $SNAPSHOT" >&2
