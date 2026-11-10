@@ -62,6 +62,15 @@ SEED_JSON='{"schema_version":"1.0","pr_number":99,"head_sha":"aaa","reviewer":"c
   "threads_replied":[],"threads_resolved":[],
   "files_changed":[],"push_timestamp":"2026-01-01T00:00:00Z","notes":""}'
 
+NO_HOME_RC=0
+NO_HOME_OUT=$(env -u HOME bash "$SCRIPT" --help 2>&1) || NO_HOME_RC=$?
+check_eq "unset HOME: help still exits zero" 0 "$NO_HOME_RC"
+NO_HOME_RC=0
+NO_HOME_OUT=$(env -u HOME bash "$SCRIPT" --owner-repo acme/widgets --init "$PR" '{}' 2>&1) || NO_HOME_RC=$?
+check_eq "unset HOME: required handoff write refuses with exit 5" 5 "$NO_HOME_RC"
+check_eq "unset HOME: storage error names the cause"   "handoff-state.sh: HOME is unset or empty; cannot resolve handoff storage. Nothing was read or written." "$NO_HOME_OUT"
+check_eq "unset HOME: no private handoff was created" false "$(if [[ -e "$HANDOFF_FILE" ]]; then echo true; else echo false; fi)"
+
 echo "== --create: writes valid JSON =="
 reset_handoff
 run --create "$PR" "$SEED_JSON"

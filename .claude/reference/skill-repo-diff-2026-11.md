@@ -1,0 +1,23 @@
+# Skill Repo Diff — November 2026
+
+**Survey:** 2026-11-09 · **Tracker:** [#417](https://github.com/auerbachb/claude-code-config/issues/417) · **Previous cycle:** [August](skill-repo-diff-2026-08.md)
+
+The comparison uses complete Git tree inventories and a focused reading of 18 changed workflow and tooling files. It does not claim behavioral testing of either upstream. The upstream code was read as text, with no installation or execution.
+
+| Upstream | August ref | November ref | Inventory delta |
+|---|---|---|---|
+| Superpowers | [b36e0829](https://github.com/obra/superpowers/commit/b36e0829c6d0140e93cfef2ca599b1b07d4a7797) | [22f0b463](https://github.com/obra/superpowers/commit/22f0b463e7a5e579904dd6211a520321035526f7) | 195 → 236 tracked file paths; 14 → 15 top-level skills |
+| ECC (formerly everything-claude-code) | [569b1d5b](https://github.com/affaan-m/ECC/commit/569b1d5b32ebf4c32d0b965bb956b16713533e07) | [d2ef2680](https://github.com/affaan-m/ECC/commit/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b) | 3,465 → 4,701 tracked file paths; 287 → 314 top-level skills |
+
+Skill counts include paths matching `skills/<name>/SKILL.md` only. ECC added 32 and removed five at that depth. The local comparison used [c73bf0f1](https://github.com/auerbachb/claude-code-config/commit/c73bf0f1887e4ae5fd1e0987b13262819bdfe28a).
+
+| Dimension | Upstream finding | Local fit |
+|---|---|---|
+| Skill library | Superpowers added [session diagnosis](https://github.com/obra/superpowers/blob/22f0b463e7a5e579904dd6211a520321035526f7/skills/diagnosing-superpowers/SKILL.md). ECC added [issue triage](https://github.com/affaan-m/ECC/blob/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b/skills/issue-review/SKILL.md). | **Defer** a dedicated diagnosis workflow until a repeated gap justifies it. **Skip** importing generic triage: the local [issue maker](../skills/issue-maker/SKILL.md) and [PM](../skills/pm/SKILL.md) already handle capture and selection. |
+| Hooks | Superpowers changed its [session bootstrap](https://github.com/obra/superpowers/blob/22f0b463e7a5e579904dd6211a520321035526f7/hooks/session-start). ECC added a [gate report](https://github.com/affaan-m/ECC/blob/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b/scripts/gateguard-report.js). | **Skip** copying host-specific bootstrap or another reporting stack. The local [session sync](../hooks/session-start-sync.sh) and [review audit](review-stack-audit.md) own separate local contracts. |
+| CLAUDE.md and documentation | ECC's [docs governance](https://github.com/affaan-m/ECC/blob/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b/skills/docs-governance/SKILL.md) routes to existing owners; its [host check](https://github.com/affaan-m/ECC/blob/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b/skills/skill-host-compat/SKILL.md) handles distinct skill copies. | **Skip** a new governance router or cross-host copy lint. The local [reference index](README.md) and [portability lint](../../.github/scripts/skill-portability-lint.sh) already cover the local ownership and installed-helper failure modes. Revisit the host check if distinct Codex or Cursor skill copies are published. |
+| Prompts | Superpowers names [requirements a diff cannot prove](https://github.com/obra/superpowers/blob/22f0b463e7a5e579904dd6211a520321035526f7/skills/subagent-driven-development/references/cannot-verify.md) and uses a [builder question pass](https://github.com/obra/superpowers/blob/22f0b463e7a5e579904dd6211a520321035526f7/skills/brainstorming/builder-check-prompt.md). | **Adopt** the first in the [evidence guide](verification-evidence-patterns.md): name the requirement and next evidence. **Defer** a separate builder pass; local issue planning already evaluates plan gaps. |
+| MCP | ECC adds [static review of mutable package selectors](https://github.com/affaan-m/ECC/blob/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b/skills/mcp-dependency-review/SKILL.md). | **Defer** an automated check. This checkout does not track a repo-scoped MCP manifest; reconsider when it adds one. No live MCP settings changed. |
+| Utility scripts | Superpowers added a [task completion wrapper](https://github.com/obra/superpowers/blob/22f0b463e7a5e579904dd6211a520321035526f7/skills/executing-plans/scripts/task-done). ECC added [change impact](https://github.com/affaan-m/ECC/blob/d2ef2680594f9a17526a6e1a2e18b3d242c5d17b/skills/change-impact/SKILL.md) guidance. | **Skip** another state writer or approval path. [Scoped handoffs](../rules/handoff-files.md) and [phase decomposition](phase-decomposition.md) already provide owners for checkpoints and cross-phase evidence. |
+
+The one import is a short example in an on-demand guide. This cycle adds no auto-loaded rules, runtime dependencies, reviewer triggers, or new agents.

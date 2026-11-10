@@ -22,8 +22,8 @@ through `run_script`:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -498,13 +498,15 @@ After Step 1 and Step 2 both pass:
    - Phase 4: lessons/final report
 3. Treat every `/wrap` stop condition as `OUTCOME: blocked` and include the missing gate, failed AC, CI, unresolved finding, or command error details before the exit report.
 
+**Issue completion is part of terminal success.** Before `OUTCOME: merged`, record [completion reconciliation](../reference/issue-completion.md): verified CLOSED issues, a verified no-issue delivery, or justified retention for partial scope, an owner decision, or a reopen. Use the automatic close only for a GitHub-linked issue after verifying its full scope and revision. If the PR merged but closure verification/recovery is pending, report `OUTCOME: blocked`, explicitly `PR already merged; completion pending`, and its scoped receipt path. Preserve the handoff and retry completion; do not restart code/review/merge for an already-merged PR.
+
 A no-review-override merge (issue #1899) is still `OUTCOME: merged`; relay `/wrap`'s suffixed line unchanged — `merged PR #N (no AI review — logged)`, or `merged PR #N (no AI review — ledger write failed)` when the recorder failed (report that one so the row is added by hand).
 
 Do not duplicate the merge, main-sync, follow-up, or stale-cleanup rules here. `.claude/skills/wrap/SKILL.md` is the canonical source; Phase C only gates entry to that shared flow and reports the result.
 
 **On the clean-`BEHIND` path — and only that path — `/wrap` Step 2.4 is the
 merge executor** — it runs `admin-merge.sh {{PR_NUMBER}} --auto-plain
---ac-verified` itself, with no user turn (issue #754). **Do not run
+--ac-verified --defer-bookkeeping` itself, with no user turn (issue #754). **Do not run
 `admin-merge.sh` yourself:** `--auto-plain` carries a repeat guard, so your call
 would consume the one attempt and `/wrap`'s would then refuse with exit `8`,
 merging nothing.
@@ -521,11 +523,20 @@ Step 2.4 owns that script's semantics; all this table adds is the Phase C
 
 | `/wrap` Step 2.4 result | Phase C outcome |
 |---|---|
-| merged (`admin-merge.sh` exit `0`) | Relay its `AUTO_PLAIN_MERGED` evidence block, then `OUTCOME: merged`. |
+| merged (`admin-merge.sh` exit `0`) | Relay its `AUTO_PLAIN_MERGED` evidence and finish wrap and completion publication before `OUTCOME: merged`. |
 | refused, needs a **protection change** (exit `8`) | `OUTCOME: blocked` — surface `/admin-merge {{PR_NUMBER}}` and the printed command as a user choice, and **never auto-run it**: modifying branch protection is prohibited for you. |
 | clean state lost at merge time (exit `1`) | Step 2.4 rebases and re-enters its own recovery loop. If that ends without a merge, `OUTCOME: blocked` and the parent runs `/fixpr`. |
 
 ## Step 4: Print Exit Report and EXIT
+
+After all wrap phases finish, bind `PR_NUM` and `OWNER_REPO` to the verified task
+PR and repository, and `HEAD_SHA` to that merged PR's independently verified
+`headRefOid`. Pass the matching `COMPLETION_JSON` from wrap's final verified or
+retained assessment into the canonical `publish_completed_handoff` adapter in
+[issue completion](../reference/issue-completion.md). Only then report
+`OUTCOME: merged`. If an input is unavailable or guarded publication fails,
+report `PR already merged; completion pending` and preserve the handoff and
+receipt for recovery.
 
 Print this as your FINAL output:
 

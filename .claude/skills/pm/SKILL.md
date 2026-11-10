@@ -58,8 +58,8 @@ Day mode composes with everything above rather than replacing it: `/pm day` is a
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -330,6 +330,8 @@ Parse any found state into an assignments table:
 
 ### 1A.3: Verify against live GitHub
 
+For tracked merged PRs, run [completion reconciliation](../../reference/issue-completion.md) before re-ranking or relaunching their issues. Automatically close only an individually verified complete issue with a GitHub closing link and matching revision. Preserve pending evidence and update only the matching repo task.
+
 State files may be stale. Cross-reference with live data. When `$GH_USER` is set (Step 0a), also fetch the user-scoped views so resumed state can be annotated with "yours" vs. "others":
 
 ```bash
@@ -454,8 +456,8 @@ fi
 ```bash
 if [ -z "${SESSION_STATE_SH:-}" ]; then
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/session-state.sh" \
-    "$HOME/.claude/scripts/session-state.sh" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/session-state.sh}" \
+    "${HOME:+$HOME/.claude/scripts/session-state.sh}" \
     ".claude/scripts/session-state.sh"; do
     if [ -x "$candidate" ]; then SESSION_STATE_SH="$candidate"; break; fi
   done
@@ -837,7 +839,7 @@ Running the full flow means both of `/pm-clean`'s scans and both of its independ
 - **Issue-staleness scan** — `backlog-staleness.sh` (`/pm-clean` Step 1), presented then gated by its **Step 4.1 close gate** before any `gh issue close`.
 - **Workspace sweep** — `stale-cleanup.sh --check` (`/pm-clean` Step 2), then `--apply` only after its **Step 4.2 delete gate**.
 
-The two scans are independent — one finding nothing never suppresses the other — and each keeps its **own** confirmation. `/pm` still **NEVER auto-closes an issue or auto-deletes a worktree/branch**: every closure and every deletion waits on the user's explicit confirmation inside `/pm-clean`'s gates.
+The two scans are independent — one finding nothing never suppresses the other — and each keeps its **own** confirmation. For age/staleness cleanup, `/pm` still **never auto-closes an issue or auto-deletes an old workspace**: each action waits on `/pm-clean`'s explicit confirmation gates. [Verified completion reconciliation](../../reference/issue-completion.md) is separate: an individually verified finished issue may close after merge; partial/parent/ambiguous scope stays open. The finished-only workspace exception is defined by its own cadence contract.
 
 **No double-scan.** Because only `/pm-clean`'s single pass runs, `backlog-staleness.sh` and `stale-cleanup.sh` each execute **exactly once** per `/pm` invocation. `/pm` no longer calls `backlog-health.sh` on this default path — the count-only "Backlog health" summary it used to print (issue #598) is now subsumed by `/pm-clean`'s fuller, actionable report.
 
@@ -1143,6 +1145,8 @@ Six sub-steps, in order. This is the entry point for `DAY_TICK=true`.
 2. `day.active == true`.
 3. `day.stop_requested != true`.
 
+After D0 accepts the tick, reconcile tracked merged deliveries through [issue completion](../../reference/issue-completion.md) before refill. Never relaunch code for an already-merged delivery because closure is pending.
+
 After D0 accepts the tick, run the [finished-only cadence](../../reference/workspace-sweep-cadence.md); ticks still skip Step 1 and `/pm-clean`:
 
 <!-- test-anchor: workspace-sweep-pm-day -->
@@ -1322,7 +1326,7 @@ A day loop can outlive the context that armed it. After compaction, `monitor-mod
 
 **Also check the park record during recovery.** Reuse that same `DAY_SNAPSHOT` and `read_day` from the preceding step (the full `.day` is not in `--session-view`). Derive every park/wake-selection field from that same snapshot, including cause, fires, claim token and resume generation; do not issue independent field reads. Later publication ownership checks still re-read fresh state. Apply 3.4's exit-code table: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry a lock timeout (`6`) once at the snapshot boundary, then fail closed; other errors fail closed immediately: report the read failure and stop rather than treating an unreadable `parked_until` as null. A lock timeout or parse failure can hide an active park, allowing the tick Monitor to re-arm while the account limit is still active. If `parked_until` is non-null and in the future, **stop the generic stale-loop path before checking the kind**. A restart does not prove the old wake stopped. Run **Recover the captured wake** below against the same snapshot. Only a readable, exact `rolling_window` park can re-arm a wake. Weekly, null, unknown, or unreadable kinds all require manual resume; none may re-arm the tick Monitor or dispatch. **Read `limit_cause` and `limit_probe_fires_remaining` here too**, with the same exit-code table, and pick the wake exactly as 2D.1(b+) does over the same three-valued field (#1445): null fires-remaining → 2D.6's sleep-until-reset one-shot with the remaining time; `preemptive` cause with a positive integer → 2D.7's probe Monitor re-armed with that many fires left; zero, `-1`, or unreadable → stay parked and require manual resume. Re-arming a fresh twelve-fire bound on every restart would turn a bounded probe into an unbounded one. **Read `park_claim_token` here too** (#1596), with the same exit-code table, and pick the action exactly as 2D.1(b+) does: a non-null token with a null `limit_cause` is an unfinished 2D.7 Step 1 claim. Any non-null token or missing cause leaves the record parked for manual resume; recovery cannot complete the claim. **Read that pair before applying the expiry test, not after** — for the reason 2D.1(b+) gives: an unknown-reset park's `parked_until` is the same instant its last probe fires, so a spent bound always sits fractionally in the past, and an expiry-first test would call that resolved while the park is still standing and the execution gate still closed. A `preemptive` cause with `limit_probe_fires_remaining == 0` or `== -1` therefore stays parked whatever `parked_until` says — no re-arm, one line (`Day loop parked (probe bound spent) — resume manually with /pause-resume`, or `Day loop parked (no usable wake bound) — resume manually with /pause-resume` for `-1`, where no bound was ever spent), stop recovery. Only with those cases excluded may recovery continue normally when `parked_until` is in the past or null.
 
-**Recover the captured wake.** Run the shared [captured wake recovery](../../reference/pm-day-mode.md#recover-the-captured-wake) steps. They use the original typed binding and the installed publisher. Keep the park and require manual resume if the wake or its owning session cannot be verified. Only a successful publication permits an automatic-resume promise.
+**Recover the captured wake.** Run the shared [captured wake recovery](../../reference/pm-day-wake-recovery.md) steps. They use the original typed binding and the installed publisher. Keep the park and require manual resume if the wake or its owning session cannot be verified. Only a successful publication permits an automatic-resume promise.
 
 ### 2D.6: Usage-limit park and wake
 
@@ -1977,7 +1981,7 @@ Fix/implement issue #{N}: {title}
 9. Enter the review polling loop and fix any findings
 
 ## Constraints
-- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
+- Claim the issue before anything else. After the model guard, resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`, and resolve `chip-claim-receipt.sh` in the same order (skip installed paths if `HOME` is unset or empty; use absolute helper paths across checkouts). If the workflow delegates the listed issues directly to `/subagent`, only check ownership read-only for each issue before sizing or decomposition; skip live foreign or unreadable claims and let `/subagent` Step 6.0 acquire each eligible claim. For direct execution, give a fresh launch its own `CLAIM_HOLDER` (host, epoch, shell PID and two Bash random values) before any repo read, edit or planning. Run `<N> --check --holder "$CLAIM_HOLDER"` and, if it clears, `<N> --claim --holder "$CLAIM_HOLDER" --json`, both with `--repo <owner/repo>`. Report stale before takeover; stop on failure or unless the result is `mine` for the exact holder. Require the receipt helper before acquiring. Keep that acquisition JSON locally and, as soon as the launch creates its assigned worktree, pipe it to `chip-claim-receipt.sh save WORKTREE OWNER/REPO N "$CLAIM_HOLDER"` before switching or coding; stop if saving fails. On resume of that same launch, get the holder only from `chip-claim-receipt.sh read WORKTREE OWNER/REPO N` for its own known worktree and confirm with `<N> --renew --holder "$CLAIM_HOLDER"` (also pass `--repo`). Stop on missing or failed recovery; never read a receipt on a fresh launch or infer ownership from a GitHub marker. Renew before every review or CI wait and at least every 30 minutes of long coding; stop if renewal fails. Pass the issue and same holder to `/wrap` as `CLAIM_PAIRS`. If the claim helper is unavailable on a fresh direct launch, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue.
 - Do NOT work on main — use a worktree or feature branch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
@@ -2048,7 +2052,7 @@ A mid-session "re-prioritize" or "rank the backlog" request runs the same rankin
 
 Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
-- Mark issues as "PR open" or "Merged" accordingly
+- Record PR state separately from issue completion. For merged tracked work, run [completion reconciliation](../../reference/issue-completion.md); accept verified CLOSED issues, a verified no-issue delivery, or an explicitly justified retained disposition. Pending closure remains retryable and does not relaunch code.
 - Flag stale threads: if an issue was assigned > 30 minutes ago with no PR, note it
 - **Dismiss stale chips:** any issue sitting at `Chip offered` that now has an open PR is being worked already — withdraw its chip via `dismiss_task` (see `.claude/reference/chip-launching.md`). Reuse the open-PR result already fetched above and the same closing-keyword predicate — no extra API call. Only clear the tracked `task_id` after the dismiss succeeds.
 

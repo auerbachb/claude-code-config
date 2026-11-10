@@ -9,7 +9,7 @@
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
-**Two orderings sit under that rule, and neither weakens it.** (a) In a batch or chain, each create's URL line is **intermediate** output and only the **last** issue's URL closes the response (Step 6). (b) The summary table (Step 9a) is emitted **immediately before** that final URL, never after it. So the response still ends with an issue URL in every case — what varies is only which URL, and what precedes it.
+**Closing order for a filing.** Earlier `Created #N: …` links in a batch or chain are intermediate output. After the final issue is filed, finish all report prose and any applicable inline-run offer or deferral. Then print the one canonical summary table (Step 9a) immediately before the final `Created #N: …` link. The table and link are the last two parts of the response: no text goes between them or after the link.
 
 **Initialize `CHAIN_JSON` for drafting.** The emitted create receipt freezes the selected chain coordinates; recording below restores them so separate shell calls cannot inherit stale coordinates. `create:increment-draft` minted/restored the stable identity before dedup. Every record starts with null so ordinary issues cannot inherit a prior chain object:
 
@@ -115,7 +115,7 @@ filed today would carry Light-tier increments:
 | | | **Chain total** | | **6h** |
 ```
 
-Close by reminding the user the issue is cheap to change — a wrong call is one `/update #N …` or `close #N` away. This report is emitted **in addition to**, never in place of, the closing URL line (Step 9). **Rapid-fire** emits a terser version, in this order: the table, optionally a one-line summary, then the closing URL as the final line — and no decision-points elaboration. **Rapid-fire trims the decision points, never the table** — the table is the leanest part of the report and the reason the leaner mode is still readable. In both modes the closing URL is last: nothing in this report, the table included, is ever emitted after it.
+In default mode, remind the user before the closing table that they can change the issue with `/update #N …` or `close #N`. **Rapid-fire** keeps the table and can add an optional one-line summary. Omit the decision-point elaboration, including scope-change or assumption lists under other headings. In both modes follow Step 9 for the closing order.
 
 Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" framing and `issue-planning.md`'s number/title/rationale/link quartet. Keep the whole report to a few lines; its value is signal density, not length.
 
@@ -141,9 +141,9 @@ For a **large gap** (e.g. Heavy batch on a Haiku or Sonnet thread), additionally
 
 **Both the tier name and recommended model/effort reach Step 9c** — named in the offer text before the acceptance question. A tier computed here and then dropped is the defect #791 fixed.
 
-### Step 9c: Offer the inline run (default ending, alongside the closing link)
+### Step 9c: Offer the inline run before the closing table
 
-A capture session ends by **offering to run every open issue it filed, right here in this thread, via `/subagent`** — not by emitting a separate-thread chip. The offer is made **once per session** after the last issue is filed, **in addition to**, never in place of, each issue's closing URL line. No auto-start: execution begins only on an explicit "yes" in chat.
+A capture session **offers to run every open issue it filed, right here in this thread, via `/subagent`** — not by emitting a separate-thread chip. Make the offer **once per session**, after the last issue is filed and before the final table (Step 9). No auto-start: execution begins only on an explicit "yes" in chat.
 
 **Repo-wide cap (before the offer, for a single issue or batch).** Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, or `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory. Read the census once per session; the default output line gives `CAP`, `ACTIVE`, and `FREE` together. Offer inline while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope: `hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)`. If the script does not resolve, print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering inline without a repo-wide bound` and offer it anyway (the run applies its own ceiling; withholding it strands the issues). A **non-zero exit** from a script that did resolve means the count could not be read — treat it as `FREE = 0` and defer, naming the read failure rather than a fabricated count.
 

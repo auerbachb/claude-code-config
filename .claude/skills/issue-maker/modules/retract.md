@@ -139,7 +139,7 @@ if [ "$SHARERS" -eq 0 ] && { [ -n "$REG_TID" ] || [ "$HAS_HANDOFF" = true ]; }; 
   if [ -n "$REG_TID" ]; then
     # Resolve REGISTRY via the standard three executable paths; fail closed if absent.
     REGISTRY=""
-    for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+    for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh}" "${HOME:+$HOME/.claude/scripts/chip-offer-registry.sh}" ".claude/scripts/chip-offer-registry.sh"; do
       [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
     done
     [ -n "$REGISTRY" ] || { echo "ERROR: registry unavailable; preserve cleanup receipt" >&2; exit 1; }

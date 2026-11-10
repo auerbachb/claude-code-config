@@ -247,8 +247,8 @@ blocked exit report. Never mark a rejected submission ready for Phase B.
 : "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
 MODEL_ROUTE_SH=""
 for ROUTE_CANDIDATE in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh" \
-  "$HOME/.claude/scripts/model-route.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh}" \
+  "${HOME:+$HOME/.claude/scripts/model-route.sh}" \
   ".claude/scripts/model-route.sh"; do
   if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
 done

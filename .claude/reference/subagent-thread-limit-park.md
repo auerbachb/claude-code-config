@@ -281,6 +281,20 @@ it from scratch.
 For every pipeline this thread was running, write a per-PR park record in the
 existing token-exhaustion shape, with `handoff_reason: "usage_limit_park"`:
 
+A thread with `PARK_CLAIM=won` or `adopted` may include `PARK_RESUME_JSON` only
+on its own per-PR records for the local Claude resume roster. Set it to `null`
+unless this conversation's owned work is verified stopped and a readable,
+corroborated handoff exists. Never attach the wake owner's session to an
+adopting thread's pipeline. Otherwise
+supply an object with the exact top-level `session_id` (not a task ID),
+absolute `cwd`, `source_profile` from `CLAUDE_CONFIG_DIR` or the primary
+`~/.claude`, a one-line `summary` of the work, and the absolute local `handoff`
+path from the existing scoped handoff. No secrets or transcript text. Carry
+the metadata through the same scoped state write below; do not call a new
+helper while reserve is active. `/go-on --resume-options` resolves the actual
+source account and bounds the displayed summary later. This record never
+starts or selects an account.
+
 <!-- test-anchor: subagent-limit-pipeline-record -->
 
 ```bash
@@ -292,8 +306,14 @@ PARK_PR_JSON=$(jq -c -n \
   --arg sha   "$PARK_HEAD_SHA" \
   --arg until "$PARKED_UNTIL" \
   --argjson remaining "${PARK_REMAINING:-[]}" \
-  '{phase: $phase, needs: $needs, handoff_reason: "usage_limit_park",
-    head_sha: $sha, parked_until: $until, remaining_work: $remaining}')
+  --arg quota_resume "${PARK_RESUME_JSON:-null}" '
+  ($quota_resume | try fromjson catch null) as $resume
+  | {phase: $phase, needs: $needs, handoff_reason: "usage_limit_park",
+     head_sha: $sha, parked_until: $until, remaining_work: $remaining}
+  + (if ($resume | type) == "object" then
+       {quota_resume: ($resume | {session_id, cwd, source_profile, summary, handoff,
+                                  checkpoint: "usage-limit-park"})}
+     else {} end)')
 PR_PARK_RC=0
 write_pr_park() {
   "$SESSION_STATE_SH" \

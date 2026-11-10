@@ -38,7 +38,7 @@ paid-review-grant.sh --grant <pr> --vendor cursor --price-usd 1.58 --approved-vi
   --question "<the exact question shown>" [--head <sha>] [--repo owner/name]
 ```
 
-Then trigger it:
+For BugBot after a review tier changes on the same HEAD, rerun the tier-aware preflight. It checks the normal trigger prerequisites before spending the grant. When the applicable trigger checks have passed, the low-level grant spender is:
 
 ```bash
 paid-review-grant.sh --trigger <pr> --vendor cursor|greptile [--head <sha>] [--repo owner/name]

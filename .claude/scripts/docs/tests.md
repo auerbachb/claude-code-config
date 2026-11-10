@@ -187,6 +187,7 @@ opt-in of issue #1544.
 | [stale-cleanup.test.sh](../tests/stale-cleanup.test.sh) | Tests for `stale-cleanup.sh` |
 | [state-lock.test.sh](../tests/state-lock.test.sh) | Tests for `state-lock.sh` |
 | [statusline.test.sh](../tests/statusline.test.sh) | Tests for `statusline.sh` |
+| [subagent-decomposition-claim.test.sh](../tests/subagent-decomposition-claim.test.sh) | Check inherited parent ownership in the actual decomposition gate without writing GitHub state |
 | [subagent-limit-park.test.sh](../tests/subagent-limit-park.test.sh) | Tests the reactive subagent-thread usage-limit park (#1618) against the real fenced bash in `.claude/reference/subagent-thread-limit-park.md` and `/go-on` — structured-signal detection with its text-only negative controls, the compare-and-set park claim and its adoption of an existing day-mode or sibling park, per-pipeline phase records, the reset-plus-2-minute wake with its thrash cap and weekly branch, stale-generation rejection, and fail-closed recovery |
 | [table-freshness.test.sh](../tests/table-freshness.test.sh) | Tests for `table-freshness.sh` — the four `--check` verdicts, the tick's firing case with a negative control on each silent one, durability across a simulated compaction, and per-session clock isolation |
 | [task-packet-design.test.sh](../tests/task-packet-design.test.sh) | Offline task-packet design walkthrough: overlap, resume, source drift, unknown evidence and context bounds |

@@ -277,6 +277,21 @@ grant_for() { # <head>
 grant_status() {
   ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].paid_review_grants.cursor.status" 2>/dev/null ) || echo unreadable
 }
+
+echo "== a same-HEAD tier change does not authorize a paid review (#1737) =="
+reset "$(tier_json present ci-only)"
+run
+check_eq "ci-only completes the current round" "tier_excluded" "$(f .reason)"
+check_eq "the initial tier posts nothing" "" "$(posted)"
+export FIXTURE_TIER_OUT="$(tier_json present full)"
+run
+check_eq "the full tier uses the same HEAD" "$HEAD" "$(f .head_sha)"
+check_eq "a tier change alone does not reopen the completed poll" "duplicate_poll_tick" "$(f .reason)"
+check_eq "the tier change posts no reviewer comment" "" "$(posted)"
+run
+check_eq "an unchanged full-tier tick is still a duplicate" "duplicate_poll_tick" "$(f .reason)"
+check_eq "the duplicate tick posts nothing" "" "$(posted)"
+
 reset "$(tier_json absent legacy)"
 grant_for "$HEAD"
 run

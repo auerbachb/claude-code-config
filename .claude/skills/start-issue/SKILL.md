@@ -19,8 +19,8 @@ Automate the full issue-to-coding flow: create issue (if needed) → wait for CR
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -69,8 +69,8 @@ Only when a description was provided.
    Run `issue-dedup.sh` with a 2–6 keyword phrase from the draft title (`$ISSUE_DEDUP` from Step 0; the inline form below is the same candidate order):
    ```bash
    for DEDUP in \
-     "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-     "$HOME/.claude/scripts/issue-dedup.sh" \
+     "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+     "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
      ".claude/scripts/issue-dedup.sh"; do
      [ -x "$DEDUP" ] && break; DEDUP=""; done
    ```
@@ -285,6 +285,8 @@ This creates **one canonical planning document** the coding agent can work from.
 
 **PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". **`/start-issue` is always execution-capable** — a capture thread refuses it outright (`/issue-maker` Step 2), so every thread that reaches this step can run the work. A subagent-fit issue is therefore **adopted by this thread**, never handed to a new one; the absence of a `## Active Work` table is a bootstrap instruction, not a reason to chip (#1229). Busy slots do not change this — the issue queues inline rather than becoming a chip (#776, AC4). Route on what this thread is already doing:
 
+**Keep the Step 2b claim with either inline route that enters decomposition.** Pass the verified issue number and its captured holder from this launch as `INHERITED_PARENT_NUMBER` and `INHERITED_PARENT_HOLDER` to `/subagent` Step 5.1, whether invoking `/subagent #N` or applying that step here. These are caller context, not new slash-command arguments. If Step 2b acquired a claim but the verified pair is missing, stop before filing children. Do not rederive the holder from the new checkout or copy one from a GitHub marker.
+
 - **This thread is already orchestrating** — a `## Active Work` table with live rows, or subagents running (monitor mode forbids substantive work in the parent) → run the issue as a pipeline: `/subagent #N`. Recommending inline is not launching it (Execution boundary). Say in one line that the worktree Step 6 prepared goes unused on this branch — the pipeline's phases provision their own — so it can be removed with `git worktree remove` rather than sitting there unexplained.
 - **Any other thread** — the common front-door case → **this thread codes the issue**, in the worktree Step 6 just created. Bootstrap a one-row `## Active Work` table (`/pm` 3.2's schema, Thread `Inline`) so the work is tracked, then continue from the ready-to-code block below. No chip and no second tab: the thread that ran `/start-issue` is the thread that lands the issue.
 
@@ -333,7 +335,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 {unchecked checkbox items from the issue body}
 
 ### Constraints
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours; a non-zero exit means you do NOT hold it (exit 5: ownership lost), so stop and report rather than proceeding. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory — then run `<N> --renew --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours, without acquiring a new claim. Stop and report on any non-zero exit (exit 5: the claim is no longer held or the issue is closed). Before coding, separately verify native issue state with `gh issue view <N> --repo <owner/repo> --json state --jq .state`; proceed only on `OPEN`. A closed or unreadable issue stops the handoff. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 - Do NOT work on main — use the worktree above
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")

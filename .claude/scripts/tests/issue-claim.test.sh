@@ -295,6 +295,20 @@ check_eq "in-progress label written" "in-progress" "$(cat "$STATE/labels")"
 check_eq "assignee written" "alice" "$(cat "$STATE/assignees")"
 check_eq "one claim comment" 1 "$(claim_comment_count)"
 check_eq "label created in repo" "true" "$(grep -qxF in-progress "$STATE/repo_labels" && echo true)"
+
+# A repo-relative helper can run without a home. The optional usage ledger
+# must not prevent the actual check, write or independent read-back.
+reset_issue
+OUT=$(env -u HOME "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --check --repo acme/widgets --holder no-home 2>"$TMP/no-home.err"); RC=$?
+check_eq "unset HOME: check reaches the native stub" 0 "$RC"
+check_eq "unset HOME: unclaimed issue is still startable" unclaimed "$OUT"
+check_eq "unset HOME: no unbound-variable error" "" "$(cat "$TMP/no-home.err")"
+OUT=$(env -u HOME "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --repo acme/widgets --holder no-home 2>"$TMP/no-home.err"); RC=$?
+check_eq "unset HOME: claim succeeds" 0 "$RC"
+check_eq "unset HOME: exactly one marker is written" 1 "$(claim_comment_count)"
+OUT=$(env -u HOME "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --check --repo acme/widgets --holder no-home 2>"$TMP/no-home.err"); RC=$?
+check_eq "unset HOME: claim reads back as mine" "0|mine" "$RC|$OUT"
+check_eq "set HOME: usage ledger remains available" true "$(if grep -Fq issue-claim.sh "$HOME/.claude/script-usage.log"; then echo true; else echo false; fi)"
 # claimed_at/claimed_since come from the marker's GitHub created_at, not the
 # local clock, so they match what every later --check reports.
 reset_issue
@@ -1259,6 +1273,192 @@ unset FAKE_COMMENTS_FAIL_AFTER
 run 873 --release --expect-claim-id none
 check_eq "scoped cleanup retry completes" 0 "$RC"
 check_eq "scoped cleanup retry clears the index" "" "$(cat "$STATE/labels")"
+
+# Prose can quote the protocol without publishing a record. These comments
+# sort after the authentic marker and include same-account examples so an
+# overbroad renewal or release would actually try to delete them.
+seed_claim_examples() {
+  local at="$1"
+  jq --arg at "$at" '. + [
+    {id:901,created_at:$at,user:{login:"review-bot"},body:"The helper writes a `<!-- claude-claim: … -->` marker."},
+    {id:902,created_at:$at,user:{login:"alice"},body:("Example:\n\n````markdown\n```\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n````")},
+    {id:903,created_at:$at,user:{login:"alice"},body:("> <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")},
+    {id:904,created_at:$at,user:{login:"alice"},body:("    <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->")},
+    {id:905,created_at:$at,user:{login:"alice"},body:("   ~~~\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n   ~~~~")},
+    {id:906,created_at:$at,user:{login:"alice"},body:("- ```markdown\n  <!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\n  ```")},
+    {id:907,created_at:$at,user:{login:"alice"},body:("An example `opens\n<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\nand closes`.")}
+  ]' "$STATE/comments.json" > "$TMP/with-examples.json"
+  mv "$TMP/with-examples.json" "$STATE/comments.json"
+}
+claim_examples() { jq -c '[.[] | select(.id >= 901)]' "$STATE/comments.json"; }
+
+for example_id in 906 907; do
+  reset_issue
+  seed_claim_examples "$(date -u +%FT%TZ)"
+  jq --argjson id "$example_id" '[.[] | select(.id == $id)]' "$STATE/comments.json" > "$TMP/nested-example.json"
+  mv "$TMP/nested-example.json" "$STATE/comments.json"
+  run 873 --check --holder threadA --json
+  check_eq "nested code example $example_id never becomes a claim" unclaimed "$(jq -r .verdict <<<"$OUT")"
+done
+
+reset_issue
+seed_claim_examples "$(date -u +%FT%TZ)"
+jq '[.[] | select(.id == 901)]' "$STATE/comments.json" > "$TMP/inline-example.json"
+mv "$TMP/inline-example.json" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "inline CodeRabbit-style prose is startable" 0 "$RC"
+check_eq "inline prose does not create a claim" unclaimed "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+seed_claim_examples "$(date -u +%FT%TZ)"
+run 873 --check --holder threadA --json
+check_eq "quoted examples alone are unclaimed" 0 "$RC"
+check_eq "quoted examples alone are not protocol candidates" unclaimed "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+run 873 --claim --holder threadA --json
+check_eq "record-classification fixture claimed" 0 "$RC"
+run 873 --check --holder threadA --json
+AUTHENTIC_ID=$(jq -r .claim_comment_id <<<"$OUT")
+age_newest_marker 3
+seed_claim_examples "$(date -u +%FT%TZ)"
+EXAMPLES_BEFORE=$(claim_examples)
+run 873 --check --holder threadA --json
+check_eq "newer examples do not shadow authentic claim" 0 "$RC"
+check_eq "check returns the authentic claim ID" "$AUTHENTIC_ID" "$(jq -r .claim_comment_id <<<"$OUT")"
+run 873 --renew --holder threadA --json
+check_eq "renewal ignores quoted marker examples" 0 "$RC"
+check_eq "authentic claim is renewed when due" true "$(jq -r .renewed <<<"$OUT")"
+check_eq "renewal cleanup preserves all examples" "$EXAMPLES_BEFORE" "$(claim_examples)"
+run 873 --check --holder threadA --json
+OBSERVED_CLAIM_ID=$(jq -r .claim_comment_id <<<"$OUT")
+[[ "$OBSERVED_CLAIM_ID" != "$AUTHENTIC_ID" ]] || check_eq "renewed claim has new ID" different same
+run 873 --release --holder threadA --expect-claim-id "$OBSERVED_CLAIM_ID" --json
+check_eq "guarded release ignores quoted marker examples" 0 "$RC"
+check_eq "release preserves all examples" "$EXAMPLES_BEFORE" "$(claim_examples)"
+run 873 --check --holder threadA --json
+check_eq "release leaves the issue unclaimed despite prose" unclaimed "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+run 873 --claim --holder threadA
+age_newest_marker 3
+jq --arg at "$(date -u +%FT%TZ)" '. + [{id:901,created_at:$at,user:{login:"alice"},body:"<!-- claude-claim: incomplete"}]' \
+  "$STATE/comments.json" > "$TMP/newest-incomplete.json"
+mv "$TMP/newest-incomplete.json" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "newer standalone incomplete marker remains unreadable" 4 "$RC"
+check_eq "genuine unreadable candidate does not expose older owner" unknown "$(jq -r .verdict <<<"$OUT")"
+
+reset_issue
+jq -n --arg at "$(date -u +%FT%TZ)" '[{id:901,created_at:$at,user:{login:"alice"},
+  body:("🔒 Claimed by `alice` for active work. It will be released when this issue\u0027s PR merges, when the issue closes, or automatically after 4h of no activity.\r\n\r\n" +
+        "<!-- claude-claim: {\"holder\":\"threadA\",\"login\":\"alice\"} -->\r\n")}]' > "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "historic claim notice with CRLF still identifies the owner" mine "$(jq -r .verdict <<<"$OUT")"
+check_eq "historic notice preserves exact marker identity" 901 "$(jq -r .claim_comment_id <<<"$OUT")"
+
+reset_issue
+run 873 --claim --holder threadA
+jq '.[0].body = (.[0].body + "\n<!-- claude-claim: {\"holder\":\"threadB\",\"login\":\"alice\"} -->")' \
+  "$STATE/comments.json" > "$TMP/ambiguous-standalone.json"
+mv "$TMP/ambiguous-standalone.json" "$STATE/comments.json"
+run 873 --check --holder threadA --json
+check_eq "two standalone records in one comment are ambiguous" 4 "$RC"
+check_eq "ambiguous standalone records remain fail closed" unknown "$(jq -r .verdict <<<"$OUT")"
+
+echo
+echo "== Form A launch keeps one holder across a checkout change and resume =="
+# shellcheck source=lib/skill-bash.sh
+source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
+FORM_A_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/reference/chip-launching.md" chip-form-a-claim)
+RECEIPT="$REPO_ROOT/.claude/scripts/chip-claim-receipt.sh"
+ORIGINAL_CHECKOUT="$TMP/form-a-original"
+ALT_CHECKOUT="$TMP/form-a-assigned"
+SIBLING_CHECKOUT="$TMP/form-a-sibling"
+git init -q "$ORIGINAL_CHECKOUT"
+git -C "$ORIGINAL_CHECKOUT" -c user.name=Fixture -c user.email=fixture@example.test \
+  -c commit.gpgsign=false commit --allow-empty -qm seed
+run_form_a() {
+  RC=0
+  OUT=$(cd "$ORIGINAL_CHECKOUT" && CLAIM="$SCRIPT" ISSUE=873 ISSUE_REPO=acme/widgets \
+    "$CLAIM_TEST_SHELL" -u -c \
+    "$FORM_A_BLOCK"$'\n''printf "CLAIM_RESULT=%s\n" "$CLAIM_JSON"' 2>"$TMP/form-a.err") || RC=$?
+}
+receipt_run() {
+  RECEIPT_RC=0
+  RECEIPT_OUT=$("$CLAIM_TEST_SHELL" "$RECEIPT" "$@" 2>"$TMP/form-a-receipt.err") || RECEIPT_RC=$?
+}
+
+reset_issue
+run_form_a
+check_eq "fresh Form A acquisition succeeds" 0 "$RC"
+FORM_A_JSON="${OUT##*$'\nCLAIM_RESULT='}"
+FORM_A_HOLDER=$(jq -er .holder <<<"$FORM_A_JSON")
+check_contains "fresh Form A uses an explicit launch holder" chip: "$FORM_A_HOLDER"
+check_eq "the acquired marker has the saved holder" "$FORM_A_HOLDER" \
+  "$(newest_marker_field '.body | capture("claude-claim: (?<p>.*) -->").p | fromjson | .holder')"
+FORM_A_IDS=$(marker_ids)
+run_form_a
+check_eq "a sibling launch in the same checkout cannot take the claim" 1 "$RC"
+check_eq "the sibling did not replace the marker" "$FORM_A_IDS" "$(marker_ids)"
+
+git -C "$ORIGINAL_CHECKOUT" worktree add -qb issue-873 "$ALT_CHECKOUT"
+git -C "$ORIGINAL_CHECKOUT" worktree add -qb other-issue-873 "$SIBLING_CHECKOUT"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "missing receipt fails closed before acquisition is bound" 4 "$RECEIPT_RC"
+receipt_run save "$ORIGINAL_CHECKOUT" acme/widgets 873 "$FORM_A_HOLDER" <<<"$FORM_A_JSON"
+check_eq "primary checkout cannot store a launch receipt" 4 "$RECEIPT_RC"
+receipt_run save "$ALT_CHECKOUT" acme/other 873 "$FORM_A_HOLDER" <<<"$FORM_A_JSON"
+check_eq "cannot bind acquisition from the wrong repo" 4 "$RECEIPT_RC"
+OTHER_HOLDER=chip:fixture:1:2:3:4
+receipt_run save "$ALT_CHECKOUT" acme/widgets 873 "$OTHER_HOLDER" <<<"$FORM_A_JSON"
+check_eq "a remote result does not authorize a different holder" 4 "$RECEIPT_RC"
+receipt_run save "$ALT_CHECKOUT" acme/widgets 873 "$FORM_A_HOLDER" <<<"$FORM_A_JSON"
+check_eq "verified acquisition saves before changing checkouts" 0 "$RECEIPT_RC"
+check_eq "saving does not print the holder" "" "$RECEIPT_OUT"
+RECEIPT_PATH="$(git -C "$ALT_CHECKOUT" rev-parse --absolute-git-dir)/claude-chip-claim.json"
+check_eq "receipt is private in Git metadata" "$RECEIPT_PATH" "$(find "$RECEIPT_PATH" -perm 600)"
+check_eq "no receipt appears in the worktree status" "" "$(git -C "$ALT_CHECKOUT" status --porcelain)"
+receipt_run save "$ALT_CHECKOUT" acme/widgets 873 "$OTHER_HOLDER" \
+  <<<"$(jq --arg h "$OTHER_HOLDER" '.holder = $h | .claimant_holder = $h' <<<"$FORM_A_JSON")"
+check_eq "another successful result cannot overwrite the receipt" 4 "$RECEIPT_RC"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 874
+check_eq "wrong issue cannot load a receipt" 4 "$RECEIPT_RC"
+receipt_run read "$ALT_CHECKOUT" acme/other 873
+check_eq "wrong repo cannot load a receipt" 4 "$RECEIPT_RC"
+receipt_run read "$SIBLING_CHECKOUT" acme/widgets 873
+check_eq "sibling worktree cannot load a receipt from shared metadata" 4 "$RECEIPT_RC"
+cp "$RECEIPT_PATH" "$(git -C "$SIBLING_CHECKOUT" rev-parse --absolute-git-dir)/claude-chip-claim.json"
+receipt_run read "$SIBLING_CHECKOUT" acme/widgets 873
+check_eq "a copied receipt is bound to its original worktree" 4 "$RECEIPT_RC"
+git -C "$ALT_CHECKOUT" switch -qc another-branch
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "a different branch cannot load the old receipt" 4 "$RECEIPT_RC"
+git -C "$ALT_CHECKOUT" switch -q issue-873
+mv "$RECEIPT_PATH" "$RECEIPT_PATH.saved"
+ln -s "$RECEIPT_PATH.saved" "$RECEIPT_PATH"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "a symlink is not a valid receipt" 4 "$RECEIPT_RC"
+mv -f "$RECEIPT_PATH.saved" "$RECEIPT_PATH"
+receipt_run read "$ALT_CHECKOUT" acme/widgets 873
+check_eq "a fresh process can reload the exact launch holder" "$FORM_A_HOLDER" "$RECEIPT_OUT"
+
+FORM_A_RENEW=$(
+  cd "$ALT_CHECKOUT" || exit 1
+  unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_ID FORM_A_HOLDER FORM_A_JSON
+  run 873 --renew --repo acme/widgets
+  printf '%s|%s\n' "$RC" "$OUT"
+  restored=$("$CLAIM_TEST_SHELL" "$RECEIPT" read "$PWD" acme/widgets 873) || exit 1
+  run 873 --renew --repo acme/widgets --holder "$restored"
+  printf '%s|%s\n' "$RC" "$OUT"
+)
+check_eq "new checkout default loses ownership; recovered holder renews" \
+  $'5|claimed\n0|mine' "$FORM_A_RENEW"
+check_eq "renewal before due leaves one original marker" "$FORM_A_IDS" "$(marker_ids)"
+run 873 --release --repo acme/widgets --holder "$FORM_A_HOLDER"
+run 873 --claim --repo acme/widgets --holder "$OTHER_HOLDER"
+run 873 --renew --repo acme/widgets --holder "$RECEIPT_OUT"
+check_eq "a valid receipt cannot re-acquire a lost claim on resume" 5 "$RC"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
