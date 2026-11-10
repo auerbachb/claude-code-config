@@ -158,7 +158,7 @@ Where this guidance conflicts with the project's own instructions, the project's
   - MUST ask about spend limit status if the user reports sudden "Access Denied" errors on operations that previously worked
   - MUST direct users to check spend status in AWS Settings > Billing
   - MUST check if a user has upgraded their account to the paid plan
-  - MUST ask the user if they want to clean up the successfully created resources or keep them to reduce cost
+  - MUST ask the user if they want to clean up the successfully created resources (which reduces cost) or keep them
 - The user sets up billing, creates spend limits, and retrieves and pays invoices in AWS Settings. The user creates budgets and optimizes their costs in the AWS Billing and Cost Management console
 - Not all AWS services are available. If a service isn't working, do the following:
   1. Run the command `aws freetier get-account-plan-state`
@@ -166,7 +166,7 @@ Where this guidance conflicts with the project's own instructions, the project's
   3. If `accountPlanType: "PAID"`, check the [Paid Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-paid-plan).
   4. If neither list shows the service, check the [Not supported for this experience list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#unsupported-services). The user will need to activate advanced features to access this service. **Warning:** activating advanced features removes existing spend limits and reactivates paused projects — charges may resume immediately.
 - Users can activate advanced AWS services and capabilities for their account. The Region and service restrictions above apply before activation; activation may lift some constraints.
-- For any AWS task or question — building, configuring, migrating, debugging, or operating a service, writing SDK code, authoring CDK/CloudFormation, or answering how a service works — first call `aws___search_documentation` with topic `agent_skills` and load the matching skill with `aws___retrieve_skill`. Do this even when you believe you know the answer: skills carry current service behavior that your training may not. Prefer the skill's guidance over general knowledge. Skip it only for work that does not involve AWS.
+- For any AWS task or question — building, configuring, migrating, debugging, or operating a service, writing SDK code, authoring CDK/CloudFormation, or answering how a service works — first call `aws___search_documentation` with topic `agent_skills` and load the matching skill with `aws___retrieve_skill`. Do this even when you believe you know the answer: skills carry current service behavior that your training may not. Prefer the skill's guidance over general knowledge. Skip it only for work that does not involve AWS. If the MCP tools are unavailable, fall back to an installed matching skill or current AWS documentation, and disclose that the MCP skill could not be loaded.
 
 ### Help level
 
