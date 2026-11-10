@@ -316,8 +316,29 @@ write_state() {
   export FIXTURE_STATE_JSON="$TMP/state.json"
 }
 
-run_script() {
+# Raw stdout, exactly as a caller sees it.
+run_script_raw() {
   ( cd "$REPO_ROOT" && bash "$STUB_DIR/escalate-review.sh" "$PR_NUM" )
+}
+
+# The router's verdict, with the refused paid hand-off named (issue #1897).
+# Both paid points now print the same `STATUS=no_reviewer`; stderr's
+# `paid_route=<verdict>` says which one fired. Appending it keeps every
+# routing assertion as discriminating as it was when the two points printed
+# different verdicts — a parity control can still tell them apart. stderr is
+# passed through unchanged and the exit status preserved.
+run_script() {
+  local err rc=0 out route
+  err="$(mktemp "$TMP/esc-stderr.XXXXXX")"
+  out="$(run_script_raw 2>"$err")" || rc=$?
+  cat "$err" >&2
+  if [[ "$out" == "STATUS=no_reviewer" ]]; then
+    route="$(sed -n 's/.*paid_route=\([a-z_]*\).*/\1/p' "$err" | head -n 1)"
+    out="$out paid_route=${route:-missing}"
+  fi
+  rm -f "$err"
+  [[ -n "$out" ]] && printf '%s\n' "$out"
+  return "$rc"
 }
 
 # Every canonical BugBot check-run below carries the PUBLISHING APP the real one

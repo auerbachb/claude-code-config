@@ -13,8 +13,8 @@ Prefer the global install; fall back to the in-repo copy when developing the ski
 ```bash
 SCRIPT=""
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/memory-audit.py" \
-  "$HOME/.claude/scripts/memory-audit.py" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/memory-audit.py}" \
+  "${HOME:+$HOME/.claude/scripts/memory-audit.py}" \
   ".claude/scripts/memory-audit.py"; do
   if [[ -f "$candidate" ]]; then SCRIPT="$candidate"; break; fi
 done

@@ -12,15 +12,23 @@ explicit clear value: repo `refill.paused` false/null,
 `execution-pause.sh --status --session "${CLAUDE_SESSION_ID:-default}"` reporting
 `inactive`, and the armed-deadline gate (`/subagent` Step 7's
 `subagent-step7-deadline-decline` block) returning `LAUNCH_DECLINED=false`. A
-successor is a launch like any other: omitting the deadline here is how an
-A→A or queued-head start runs past a declared leave time through the one gate
-that never saw it. Anything else — paused, `active`, declined, a missing helper,
+caller resets `SUCCESSOR_KIND`: A→B/B→B `review` uses remaining work; verified
+B→C `merge` skips the original bound; A→A uses full-bound `retry`, new/queued empty.
+Pause points still apply. Anything else — paused, `active`, declined, a missing helper,
 a non-zero read, any other output — **fails closed**: persist the pending
 transition, report which control was unreadable, launch nothing. A launch the
 deadline gate declined stays queued and is **not** terminal: it frees no
 overlap-chain successor. This gate overrides every "within
 60 seconds" instruction below; only an explicit `/end-resume` or
 `/pause-resume` reopens it.
+
+## Routing evidence before successors
+
+Before each successor, append completed-attempt evidence to its scoped routing
+record and execute `task-model-routing.md`'s dispatch block. Persist refreshed
+eligibility and the decision before launch; failed writes launch nothing.
+Progress keeps the cheap model; diagnosis/escalation stays task-local and never
+skips the launch, review or acceptance gates.
 
 ## Structured Exit Report (MANDATORY — all phases)
 
@@ -60,13 +68,22 @@ A missing exit report is a crash **only** when the runtime's own structured clas
 
 **WHEN** a Phase C subagent returns, execute immediately:
 
-1. **Parse the exit report.** None: classify first (§Limit-parked), else silent failure — check GitHub API.
-2. **Branch on OUTCOME:**
-   - `merged` → verify `gh pr view N --json state --jq '.state'` is `MERGED`, then clean up.
-   - `blocked` → report blocker details to user. Do NOT merge.
-3. **Update `session-state.json`.** Mark Phase C complete; `session-state.sh --remove-agent <id>`.
-4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh --owner-repo owner/repo --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. Emit one line — `merged PR #N` — after a clean merge.
+1. **Parse exit report.** Missing: classify (§Limit-parked), then verify GitHub.
+2. `merged` or `blocked` after merge → verify GitHub `MERGED` and [issue completion](../reference/issue-completion.md); pending → preserve evidence and recover without re-merging. Otherwise report blockers without merging.
+After verified merge, run the [finished-only sweep](../reference/workspace-sweep-cadence.md) from the parent's checkout:
+
+<!-- test-anchor: workspace-sweep-post-merge -->
+```bash
+# workspace-sweep-post-merge
+SWEEP_SH=$(resolve_script workspace-sweep.sh || true)
+if [[ -n "$SWEEP_SH" ]]; then
+  "$SWEEP_SH" --trigger post-merge --repo-dir "$(git rev-parse --show-toplevel)" || true
+fi
+```
+
+3. **State:** Phase C completes only after verified merge and verified/justified-retained completion. Every outcome removes its returned agent: `session-state.sh --remove-agent <id>`.
+4. Delete scoped handoff (`handoff-state.sh --owner-repo owner/repo --delete N`) only after verified merge and [completion reconciliation](../reference/issue-completion.md). Preserve pending evidence. Emit `merged PR #N` once.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 
-`/wrap` Step 2.1 delegates recovery to the **full** `/fixpr` workflow — including when unresolved review threads are the only blocker. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+`/wrap` Step 2.1 delegates **full** `/fixpr` recovery, including threads-only blockers. Handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.

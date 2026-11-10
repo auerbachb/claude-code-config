@@ -6,8 +6,9 @@ Supersedes the role recommendations in [`ai-review-tool-audit-2026-06.md`](./ai-
 
 ## Decision
 
-Each of the five AI review tools holds exactly one role. **No tool is dropped**, so no rule or
-script may gate on, escalate to, or trigger a tool absent from this table.
+Each of the five AI review tools holds exactly one role. **No tool is dropped** — except Graphite,
+retired 2026-11-03 (§Graphite retirement, #1889) — so no rule or
+script may gate on, escalate to, or trigger a tool absent from this table, or one marked retired.
 
 | Tool | Bot login (REST) | **Role** | Gates the merge? | Cost rationale |
 |------|------------------|----------|------------------|----------------|
@@ -15,7 +16,7 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 | CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
 | BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
 | Greptile | `greptile-apps[bot]` | **Second fallback — retained; PAID, confirmed 2026-08-22** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org, flex overage now CAPPED at $100** (applied 2026-08-22, #1228). Read from the billing page that morning, before the cap: Active, 6 Aug–6 Sep invoice $72 → **$36** after discount, **"No cap on flex usage"**, 42 of 92 credits on flex. The owner's free-and-unpaid report (#1213) described `localmovers-com` and is **resolved**. Earns its keep on yield — **top sole-source finder in the stack, 40 PRs in the 2026-08-22 audit run's 240-PR window** (2026-07-23 → 2026-08-22; the earlier #1199 audit counted **41** over its own 244-PR window — quote the window with the count), with no cap hit and no `D2` paid-but-unused finding; the idle stretch since PR #1203 is a day, not disuse. *(Superseded: this cell read "Its OSS program is **self-serve**, so this repo can go to $0 without cancelling." Enrolment was exercised that evening and **refused** — 50-star minimum, this repo has 3. There is no $0 route, which is why the cap above was applied instead; see §Operator actions item 1.)* |
-| Graphite | `graphite-app[bot]` | **Supplemental — non-gating fallback (re-decided 2026-08-22, #1232)** | **No** | 2 sole-source PRs (PRs #1104, #1216) out of 10 Graphite-touched in 2026-07-23..2026-08-22; findings were prose/formatting quality. Re-decided on paid-plan evidence; see §Graphite role reconciliation (#1232). |
+| Graphite | `graphite-app[bot]` | **Retired 2026-11-03 (#1889)** — Team plan cancelled, $450 pro-rated refund; see §Graphite retirement. *(Superseded: "Supplemental — non-gating fallback (re-decided 2026-08-22, #1232)".)* | **No** | 2 sole-source PRs (PRs #1104, #1216) out of 10 Graphite-touched in 2026-07-23..2026-08-22; findings were prose/formatting quality. Re-decided on paid-plan evidence; see §Graphite role reconciliation (#1232). |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
 
@@ -30,7 +31,7 @@ GitHub:  CodeRabbit  ─┐
                       │
          self-review  ── terminal; never satisfies the gate
 
-         Graphite     ── parallel supplemental (non-gating fallback; never in the escalation chain)
+         (Graphite retired 2026-11-03 — no longer in the stack)
 ```
 
 ### The three assumptions this decision corrects
@@ -125,6 +126,8 @@ The payment is real and recent, and it may change the behaviour. That is a reaso
 not to promote on price. Price is not evidence of yield.
 
 ### Re-measure trigger (Graphite)
+
+> **Superseded 2026-11-03** by §Graphite retirement (#1889): Graphite is no longer polled or nudged. Historical below.
 
 Revisit Graphite's role at the next audit, or as soon as **≥30 PRs have merged under the paid plan**
 — whichever comes first. **Both conditions are now satisfied** (88 merged PRs, 7–21 Aug 2026), so
@@ -375,13 +378,15 @@ the same evidence next audit.
 - [`ai-review-tool-audit-2026-08.md`](./ai-review-tool-audit-2026-08.md) — the measurements every row above rests on
 - [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md) — CodeRabbit OSS tier vs paid Pro: side-by-side across every surface, the census mapping, the file-verified trigger-compatibility finding, and the break-even that selects annual billing (#1212). **Point-in-time (README §"Audits and research"), so it is not rewritten:** its annual recommendation was **declined by the owner 2026-08-23** and is superseded by §Operator actions item 6 here — read that file as the 2026-08-21 analysis, not as a live lever
 - [`merge-gate-reviewer-paths.md`](./merge-gate-reviewer-paths.md) — per-path gate semantics (authoritative for gate detail)
-- [`codeant-graphite-supplemental.md`](./codeant-graphite-supplemental.md) — CodeAnt + Graphite supplemental protocol and CLI install state
+- [`codeant-supplemental.md`](./codeant-supplemental.md) — CodeAnt supplemental protocol and CLI install state
 - [`cr-rate-limits.md`](./cr-rate-limits.md) — CodeRabbit cap model and the pacing-proxy caveat
 - [`local-review-cli-failure-modes.md`](./local-review-cli-failure-modes.md) — CLI-layer caps, 403 triage, false-clean shapes
 - Issue [#261](https://github.com/auerbachb/claude-code-config/issues/261) — Greptile dashboard auto-trigger disabled; confirmed still holding (0 auto-triggers in 130 reviews)
 - Issue [#1191](https://github.com/auerbachb/claude-code-config/issues/1191) — active-work ceiling derived from reviewer throughput; consumes the observed numbers in the audit, not the modelled ones
 
 ## Graphite role reconciliation (#1232, 2026-08-22)
+
+> **Superseded 2026-11-03** by §Graphite retirement (#1889). Historical below.
 
 **Trigger:** D1 drift finding from the first measured post-swap audit run (Issue #1228, 2026-07-23..2026-08-22, 240 PRs). `review-stack-baseline.json` records Graphite as `role: "advisory"` and `drift.sh` fires D1 on any non-zero sole-source count against an advisory role. The re-measure trigger noted in §Re-measure trigger (Graphite) was met at 88 PRs; this is that re-decision, resolved by Issue #1232.
 
@@ -473,3 +478,15 @@ The issue framed "raise the cap" and "move it down the chain" as equally legitim
 - Related: **#1199** (the chain realignment this reconciles against), **#1303** (the CodeRabbit cap reconciliation from the same window), **#1204**/**#1228** (the dashboard and billing readings every cost figure rests on).
 
 **Baseline updated:** `review-stack-baseline.json` BugBot entry: `expected_caps: []` → `["spend_limit"]`; `notes` rewritten with the measured window, the cap value and reset cadence with their dashboard citations, the 176/268 incidence, the 0/268 approval fact, and the `neutral`-not-`success` failure-shape correction. `role`, `gates_merge`, and `approves_via` unchanged. The `source` block now points at this record (previously #1287).
+
+## Graphite retirement (#1889, 2026-11-03)
+
+**Decision:** Graphite AI review is removed from the review stack. On 2026-11-03 Graphite support (ticket T-J15030) cancelled the Team plan effective immediately and issued a **pro-rated $450 refund**. This supersedes the 2026-08-22 `fallback` re-decision (§Graphite role reconciliation).
+
+**Reason — yield:** across 620 PRs (2026-08-21 → 2026-11-01) Graphite reviewed **30**, against **484–620** for CodeAnt, CodeRabbit and BugBot. A supplemental reviewer that sees under 5% of PRs costs auto-loaded rule budget and sends agents waiting for a reviewer that rarely answers.
+
+**What changed:** agents no longer trigger or wait for `graphite-app[bot]`, but still reply to and resolve any finding it posts until the App is uninstalled; CodeAnt is the only supplemental reviewer on the CR path (`codeant-supplemental.md`); `review-triggers-allowed.sh` never allows Graphite; setup no longer seeds the Graphite plugins or `gt` repo-init. Read-only parsers still recognise historical `graphite-app[bot]` comments so verdicts on old PRs do not change. `review-stack-baseline.json` keeps the row as `role: "off"`, `billed: "cancelled"`.
+
+**Provenance:** the support ticket above and Issue #1889. The cancellation, refund and 620-PR yield are not in any checked-in dashboard reading.
+
+**Owner action outside this repo:** uninstall the Graphite GitHub App from the org's repos (GitHub UI).

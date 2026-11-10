@@ -12,6 +12,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/bgwork-ceiling.sh"
 
 TMP_DIR="$(mktemp -d)"
+export HOME="$TMP_DIR/home" CLAUDE_SESSION_STATE_FILE="$TMP_DIR/session-state.json"
+mkdir -p "$HOME"
+printf '{"repos":{}}' > "$CLAUDE_SESSION_STATE_FILE"
 export CLAUDE_BGWORK_MARKER_DIR="$TMP_DIR/markers"
 export CLAUDE_BGWORK_LOG_DIR="$TMP_DIR/logs"
 mkdir -p "$CLAUDE_BGWORK_MARKER_DIR" "$CLAUDE_BGWORK_LOG_DIR"
@@ -108,8 +111,11 @@ OUT=$("$SCRIPT" --tick --session "$SID")
   fail "breach line must point at the monitor-mode.md Liveness section, got: '$OUT'"
 [[ "$OUT" != *"User Heartbeat"* ]] || \
   fail "breach line must NOT contain removed User Heartbeat section name, got: '$OUT'"
-[[ "$OUT" == *"nothing new"* ]] || \
-  fail "breach line must authorise a nothing-new status, got: '$OUT'"
+[[ "$OUT" != *"nothing new"* && "$OUT" != *"timestamp>]"* && "$OUT" != *"status NOW"* ]] || \
+  fail "breach must not demand routine status, got: '$OUT'"
+for required in 'parent heartbeat' 'verified stall' 'unknown health' 'safety event' 'stopped/exhausted recovery' 'explicit status request' 'requested periodic report'; do
+  [[ "$OUT" == *"$required"* ]] || fail "missing required notice: $required"
+done
 LINES=$(printf '%s' "$OUT" | wc -l | tr -d ' ')
 [[ "$LINES" -le 1 ]] || fail "breach output should be a single line, got $LINES newlines"
 ok "--tick emits a single one-line status instruction on breach"

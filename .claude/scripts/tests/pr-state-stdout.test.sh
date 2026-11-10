@@ -8,6 +8,7 @@ import json,os,pathlib,signal,subprocess,sys,tempfile,time
 root=pathlib.Path(sys.argv[1]);script=root/'.claude/scripts/pr-state.sh'
 with tempfile.TemporaryDirectory(prefix='pr-state-stdout-') as td:
  t=pathlib.Path(td);b=t/'bin';b.mkdir();h=t/'home';(h/'.claude').mkdir(parents=True)
+ scratch=t/'scratch';scratch.mkdir()
  stub=b/'gh';stub.write_text('''#!/usr/bin/env python3
 import json,os,sys,time
 a=sys.argv[1:]
@@ -29,28 +30,31 @@ else:sys.exit(2)
 ''');stub.chmod(0o755)
  date=b/'date';date.write_text('#!/bin/bash\ncase "$*" in *%s*) echo 1793412000;; *) echo 2026-10-31T02:00:00Z;; esac\n');date.chmod(0o755)
  mk=b/'mktemp';mk.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEMPS"\nexec /usr/bin/mktemp "$@"\n');mk.chmod(0o755)
- env=dict(os.environ,PATH=str(b)+':'+os.environ['PATH'],HOME=str(h),CALLS=str(t/'calls'),TEMPS=str(t/'temps'),READY=str(t/'ready'))
+ env=dict(os.environ,PATH=str(b)+':'+os.environ['PATH'],HOME=str(h),TMPDIR=str(scratch),CALLS=str(t/'calls'),TEMPS=str(t/'temps'),READY=str(t/'ready'))
  def run(*args,**extra):return subprocess.run(['bash',str(script),'--pr','7',*args],env=dict(env,**extra),capture_output=True,text=True)
  r=run();assert r.returncode==0,(r.stdout,r.stderr)
  retained=pathlib.Path(r.stdout.strip());assert retained.is_file() and retained.name.startswith('pr-state-7-')
- expected=json.loads(retained.read_text());retained.unlink();before=(t/'temps').read_bytes()
+ expected=json.loads(retained.read_text());retained.unlink()
+ def retained_allocations():
+  return [entry for entry in (t/'temps').read_text().splitlines() if entry.startswith('/tmp/pr-state-7-')]
+ before=retained_allocations();assert len(before)==1 and not list(scratch.iterdir())
  r=run('--stdout');assert r.returncode==0 and json.loads(r.stdout)==expected,(r.stdout,r.stderr)
- assert (t/'temps').read_bytes()==before,'stdout allocated a retained bundle'
- r=run('--stdout',FAIL='yes');assert r.returncode!=0 and not r.stdout and (t/'temps').read_bytes()==before,(r.stdout,r.stderr)
+ assert retained_allocations()==before and not list(scratch.iterdir()),'stdout allocated a retained bundle'
+ r=run('--stdout',FAIL='yes');assert r.returncode!=0 and not r.stdout and retained_allocations()==before and not list(scratch.iterdir()),(r.stdout,r.stderr)
  p=subprocess.Popen(['bash',str(script),'--pr','7','--stdout'],env=dict(env,BLOCK='yes'),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
  for _ in range(100):
   if (t/'ready').exists():break
   time.sleep(.02)
  assert (t/'ready').exists(),'interruption fixture never reached actual collection'
  os.killpg(p.pid,signal.SIGTERM);out,err=p.communicate(timeout=3)
- assert p.returncode!=0 and not out and (t/'temps').read_bytes()==before
+ assert p.returncode!=0 and not out and retained_allocations()==before and not list(scratch.iterdir())
  # Actual source assembly receives a projected history larger than ARG_MAX.
  # Bound fixture memory while accommodating Linux stack-dependent ARG_MAX.
  arg_max=os.sysconf('SC_ARG_MAX');assert 0<arg_max<=64*1024*1024,arg_max
  large=t/'large-inline.json';record={'body':'Minor fix','user':{'login':'coderabbitai[bot]'},'created_at':'2026-10-31T02:00:00Z','updated_at':'2026-10-31T02:00:00Z','path':'/'.join(['fixture']*max(180,arg_max//(2000*8)+2)),'html_url':'https://github.com/org/repo/pull/7#discussion_r1'}
  large.write_text(json.dumps([dict(record,id=10000+i) for i in range(2000)]))
  assert large.stat().st_size>os.sysconf('SC_ARG_MAX')
- r=run('--stdout',LARGE_INLINE=str(large));assert r.returncode==0 and len(json.loads(r.stdout)['comments']['inline'])==2000 and (t/'temps').read_bytes()==before,(r.stdout[:100],r.stderr)
+ r=run('--stdout',LARGE_INLINE=str(large));assert r.returncode==0 and len(json.loads(r.stdout)['comments']['inline'])==2000 and retained_allocations()==before and not list(scratch.iterdir()),(r.stdout[:100],r.stderr)
  print('PASS: actual pr-state streams2000 projected comments larger than ARG_MAX without E2BIG or retained bundle')
  r=run('--stdout','--since','2000-01-01T00:00:00Z',LARGE_INLINE=str(large));assert r.returncode==0 and json.loads(r.stdout)['new_since_baseline']['finding_count']==2000,(r.stdout[:100],r.stderr)
  r=run('--since','2000-01-01T00:00:00Z',LARGE_INLINE=str(large));assert r.returncode==0,(r.stdout,r.stderr)
@@ -62,7 +66,7 @@ else:sys.exit(2)
  print('PASS: oversized GraphQL thread page and final arrays also stream without E2BIG')
  r=subprocess.run(['/bin/bash',str(script),'--pr','7','--stdout','--since','2000-01-01T00:00:00Z'],env=dict(env,LARGE_INLINE=str(large)),capture_output=True,text=True)
  assert r.returncode==0 and json.loads(r.stdout)['new_since_baseline']['finding_count']==2000,(r.stdout[:100],r.stderr)
- print('PASS: system Bash executes large-history stdin/process-substitution classification')
+ print('PASS: system Bash executes large-history file-backed classification')
 
 
 

@@ -26,9 +26,9 @@
 #     2. The explicit list in the account config's `## Review repos` section,
 #        read with `pm-config-get.sh --file <config>`, where <config> is
 #        CLAUDE_ACCOUNT_CONFIG or, by default, ~/.claude/account-config.md.
-#        EVERY Markdown bullet in the section is a list entry, and its first
-#        token (backticks stripped) must be owner/name — a bullet that is not
-#        fails the whole list, so a typo such as `- acme-sales-kit` can never
+#        A bullet whose first token is empty after backtick removal is ignored
+#        (including empty, whitespace-only and backtick-only tokens). Every
+#        remaining token must be owner/name; an invalid token fails the whole list, so a typo such as `- acme-sales-kit` can never
 #        be skipped quietly. Notes belong in plain lines or HTML comments;
 #        comments are stripped first, so a bullet inside one is a note.
 #        PRIVATE OVERLAY (#1860): an untracked file, ~/.claude/account-config.local.md
@@ -40,7 +40,7 @@
 #        symlink into a checkout that may be public. Only bullets are read from
 #        the overlay; its `owner` and `discovery_marker` lines are ignored. A
 #        missing overlay is fine. One that exists but cannot be read, or holds a
-#        bullet that is not owner/name, fails the whole list.
+#        nonempty normalized token that is not owner/name, fails the whole list.
 #        The overlay's default path is a sibling of the config, so it lands
 #        inside a checkout when CLAUDE_ACCOUNT_CONFIG points at a checked-in
 #        file. This repo's .gitignore lists account-config.local.md so it
@@ -236,9 +236,9 @@ review_section_tags() {
       split(line, f, /[[:space:]]+/)
       tok = f[1]
       gsub(/`/, "", tok)
-      # Every bullet is an entry: emit it even when it is not owner/name,
-      # so emit_validated refuses the list instead of this parser dropping
-      # the bad line.
+      # Every nonempty normalized token is an entry, even when not owner/name.
+      # emit_validated ignores tokens empty after backtick removal and rejects invalid ones
+      # instead of this parser quietly dropping a malformed repo.
       print "repo\t" tok
       next
     }

@@ -10,6 +10,8 @@ unset SILENCE_TIME_INJECT_S
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOOK="$REPO_ROOT/.claude/hooks/silence-detector.sh"
+TEST_HOME=$(mktemp -d)
+export HOME="$TEST_HOME"
 
 # Relative timestamps (BSD/macOS then GNU date) — never a hard-coded calendar
 # date, which flips future/past depending on when the test runs.
@@ -35,9 +37,9 @@ tmp_files() {
 }
 
 SID="dedupe-test-$$-$RANDOM"
-cleanup() { rm -f $(tmp_files "$SID"); }
+cleanup() { rm -f $(tmp_files "$SID"); rm -rf "$TEST_HOME"; }
 trap cleanup EXIT
-cleanup
+rm -f $(tmp_files "$SID")
 
 # --- 1. First call in a session injects the time -----------------------------
 CTX=$(run_hook "$SID" | context_of)
@@ -65,13 +67,24 @@ CTX=$(run_hook "$SID" | context_of)
 touch -t "$PAST_STAMP" "/tmp/claude-heartbeat-${SID}"
 rm -f "/tmp/claude-silence-warned-${SID}"
 CTX=$(run_hook "$SID" | context_of)
-[[ "$CTX" == *"HEARTBEAT WARNING"* ]] || fail "stale heartbeat should warn, got: '$CTX'"
+[[ "$CTX" == *"SILENCE CHECK"* ]] || fail "stale heartbeat should warn, got: '$CTX'"
 [[ "$CTX" == Current\ system\ time:* ]] || fail "warning should include current time, got: '$CTX'"
+for required in 'explicit status request' 'requested periodic report' 'stopped or exhausted recovery' 'safety event' 'continue silently'; do
+  [[ "$CTX" == *"$required"* ]] || fail "warning lost notice contract: $required"
+done
+for obsolete in 'heartbeat rule' 'MUST send a status update' 'as your prefix'; do
+  [[ "$CTX" != *"$obsolete"* ]] || fail "warning retained obsolete narration: $obsolete"
+done
+jq -e --arg sid "$SID" 'select(.session_id==$sid) | has("ts") and has("cwd") and has("elapsed_s") and has("tool_name")' "$HOME/.claude/logs/silence.log" >/dev/null || fail 'raw silence record missing'
 
 # --- 5. Warned-cooldown path still emits {} ----------------------------------
 # Heartbeat still stale, warned file fresh from step 4 => cooldown suppression.
 CTX=$(run_hook "$SID" | context_of)
 [[ -z "$CTX" ]] || fail "warned-cooldown call should emit no context, got: '$CTX'"
+printf '{"session_id":"%s"}' "$SID" | "$REPO_ROOT/.claude/hooks/silence-detector-ack.sh"
+[[ ! -e "/tmp/claude-silence-warned-${SID}" && -e "/tmp/claude-time-injected-${SID}" ]] || fail 'ack must clear warning, retain time dedup'
+CTX=$(run_hook "$SID" | context_of)
+[[ -z "$CTX" ]] || fail 'ack cycle must suppress next warning without removing time dedup'
 
 # --- 5b. New session with a leftover marker still gets its first timestamp ---
 # Simulates same-session-id reuse (e.g. the shared "default" id): heartbeat

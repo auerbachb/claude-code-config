@@ -46,7 +46,7 @@ HEAD_SHA="deadbeef0000000000000000000000000000abcd"
 # ---- stub SCRIPT_DIR: real script + real state machinery + stubbed inputs ----
 STUB_DIR="$TMP/scripts"
 mkdir -p "$STUB_DIR/lib"
-cp "$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh" "$STUB_DIR/"
+cp "${MAYBE_TRIGGER_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh}" "$STUB_DIR/maybe-trigger-ai-review.sh"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/"
@@ -172,9 +172,18 @@ ordinary_cursor_comment() {
 }
 
 run_script() {
-  ( cd "$REPO_ROOT" && bash "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" >/dev/null 2>&1 )
+  ( cd "$REPO_ROOT" && "$BASH" "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" >/dev/null 2>"$TMP/run-stderr.txt" )
 }
 posted_cursor() { grep -cFx "@cursor review" "$POSTED" 2>/dev/null | tr -d ' '; }
+# Which skip ended the cursor step (issue #1897): the refusal guard, or the
+# owner-approval skip that is now the last step of the chain. Keeps every
+# "did the refusal guard fire?" assertion discriminating although neither
+# branch posts any more.
+cursor_skip() {
+  if grep -q "already refused this HEAD" "$TMP/run-stderr.txt" 2>/dev/null; then echo refused
+  elif grep -q "needs the owner's explicit approval" "$TMP/run-stderr.txt" 2>/dev/null; then echo approval
+  else echo none; fi
+}
 posted_count()  { wc -l < "$POSTED" | tr -d ' '; }
 read_step() {
   ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
@@ -185,29 +194,29 @@ read_step() {
 echo "== (a): refusal POSTDATES the HEAD commit -> @cursor review suppressed =="
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 run_script
-check_eq "no @cursor review posted" "0" "$(posted_cursor)"
-check_eq "the other two nudges still posted" "2" "$(posted_count)"
+check_eq "no @cursor review posted — the refusal guard fired" "refused:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the other free nudge still posted" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (b): refusal PREDATES the HEAD commit -> nudge posts (new push, clean slate) =="
 setup 60 "[$(refusal "$(ts_seconds_ago 600)")]"
 run_script
-check_eq "@cursor review posted once" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal once — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (c): cursor[bot] active but never refused -> nudge posts =="
 setup 600 "[$(ordinary_cursor_comment "$(ts_seconds_ago 60)")]"
 run_script
-check_eq "@cursor review posted once" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal once — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (d): no comments at all -> nudge posts =="
 setup 600 "[]"
 run_script
-check_eq "@cursor review posted once" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal once — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (e): FAILS OPEN — gh api unreadable -> nudge posts anyway =="
@@ -217,8 +226,8 @@ echo "== (e): FAILS OPEN — gh api unreadable -> nudge posts anyway =="
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 export FIXTURE_API_FAIL=1
 run_script
-check_eq "@cursor review posted despite the unreadable API" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal despite the unreadable API — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (g): refusal with NO BugBot check-run on HEAD -> not attributable, nudge posts =="
@@ -231,7 +240,7 @@ setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 printf '%s\n' '{"check_runs":[]}' > "$TMP/check-runs-empty.json"
 export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs-empty.json"
 run_script
-check_eq "@cursor review posted (refusal not attributable to this commit)" "1" "$(posted_cursor)"
+check_eq "@cursor review not suppressed as a refusal (refusal not attributable to this commit) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
 
 ############################################################################
 echo "== (g2): a FOREIGN app's same-named check-run is not BugBot's footprint =="
@@ -241,22 +250,22 @@ setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"github-actions"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs-foreign.json"
 export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs-foreign.json"
 run_script
-check_eq "@cursor review posted (foreign publisher is not BugBot)" "1" "$(posted_cursor)"
+check_eq "@cursor review not suppressed as a refusal (foreign publisher is not BugBot) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
 
 ############################################################################
-echo "== (f): suppression records the cursor step, so a resume cannot re-post it =="
-# A completed run clears the whole steps record (`ai_review_trigger_steps=null`),
-# so the resume hazard only exists when a LATER step fails. Failing the graphite
-# post keeps the record alive and makes the recorded cursor value observable.
+echo "== (f): a resumed partial record never re-posts the suppressed nudge =="
+# A completed run clears the whole steps record (`ai_review_trigger_steps=null`).
+# Before Graphite's retirement (2026-11-03, #1889) a failing graphite post was
+# the later step that kept a partial record alive; no step follows cursor now,
+# so the resume is driven from a seeded pre-#1889 record (graphite key included).
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
-export FIXTURE_POST_FAIL="@graphite-app re-review"
+( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" --set \
+    ".prs[\"$PR_NUM\"].ai_review_trigger_steps={\"head_sha\":\"$HEAD_SHA\",\"cr_rounds\":3,\"codeant\":true,\"cursor\":false,\"graphite\":false}" >/dev/null )
+check_eq "precondition: the seeded record is partial" "false" "$(read_step cursor)"
 run_script; RC_F=$?
-check_eq "run failed at the graphite step" "5" "$RC_F"
-check_eq "cursor step recorded true (suppressed counts as done)" "true" "$(read_step cursor)"
-# Negative control: the surviving record is genuinely partial, so the `true`
-# above is the value this branch wrote and not everything defaulting true.
-check_eq "graphite step still false (record is partial, not all-true)" "false" "$(read_step graphite)"
-check_eq "no @cursor review posted" "0" "$(posted_cursor)"
+check_eq "resume exits 0" "0" "$RC_F"
+check_eq "no @cursor review posted — the refusal guard fired" "refused:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "codeant not re-posted, nothing for the retired graphite step" "0" "$(posted_count)"
 
 ############################################################################
 # ISSUE #1517 — the normalised timestamps are VALIDATED before they are ordered.
@@ -278,8 +287,8 @@ echo "== (m): malformed refusal timestamp sorting ABOVE HEAD -> fail open, nudge
 # and suppressed. The only readable answer is "not comparable" -> post.
 setup 600 "[$(refusal "zzz-not-a-timestamp")]"
 run_script
-check_eq "@cursor review posted (unorderable refusal timestamp)" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal (unorderable refusal timestamp) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (n): norm_ts PASSTHROUGH — a non-UTC offset is valid output and still unorderable =="
@@ -292,8 +301,8 @@ echo "== (n): norm_ts PASSTHROUGH — a non-UTC offset is valid output and still
 # This is why the shape check is anchored at `$` rather than matching a prefix.
 setup 600 "[$(refusal "$(ts_with_offset -3000 '+05:00')")]"
 run_script
-check_eq "@cursor review posted (offset-bearing timestamp is not orderable)" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal (offset-bearing timestamp is not orderable) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (o): malformed HEAD timestamp -> fail open, nudge posts =="
@@ -304,8 +313,8 @@ echo "== (o): malformed HEAD timestamp -> fail open, nudge posts =="
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 export FIXTURE_HEAD_TS="0000-bad-head"
 run_script
-check_eq "@cursor review posted (unorderable HEAD timestamp)" "1" "$(posted_cursor)"
-check_eq "all three nudges posted" "3" "$(posted_count)"
+check_eq "@cursor review not suppressed as a refusal (unorderable HEAD timestamp) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (p): NEGATIVE CONTROL — fractional seconds are valid and STILL suppress =="
@@ -316,8 +325,100 @@ echo "== (p): NEGATIVE CONTROL — fractional seconds are valid and STILL suppre
 # postdating HEAD must behave exactly like the plain one in (a).
 setup 600 "[$(refusal "$(ts_fractional 60)")]"
 run_script
-check_eq "no @cursor review posted (fractional seconds are comparison-safe)" "0" "$(posted_cursor)"
-check_eq "the other two nudges still posted" "2" "$(posted_count)"
+check_eq "no @cursor review posted (fractional seconds are comparison-safe) — the refusal guard fired" "refused:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "the other free nudge still posted" "1" "$(posted_count)"
+
+
+echo "== (l): dry-run refusal agrees without posts, grants or state writes (#1735) =="
+dry_check() { # <description> <expected skip reason>
+  local desc="$1" reason="$2" same=no
+  (cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" --set ".prs[\"$PR_NUM\"].phase=\"B\"")
+  cp "$HOME/.claude/session-state.json" "$TMP/dry-before.json"
+  RC=0
+  OUT="$(cd "$REPO_ROOT" && "$BASH" "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" --dry-run --json 2>"$TMP/dry.err")" || RC=$?
+  check_eq "$desc: dry-run succeeds" "0" "$RC"
+  check_eq "$desc: JSON reports dry_run" "dry_run" "$(jq -r '.status' <<<"$OUT")"
+  check_eq "$desc: skip matches live precedence" "$reason" "$(jq -r '.bugbot_skipped.reason' <<<"$OUT")"
+  check_eq "$desc: no reviewer comment is posted" "0" "$(posted_count)"
+  cmp -s "$TMP/dry-before.json" "$HOME/.claude/session-state.json" && same=yes
+  check_eq "$desc: actual session state is byte-identical" "yes" "$same"
+}
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+dry_check "current refusal" refused_head
+check_eq "refused dry-run keeps gate null" "null" "$(jq -r '.bugbot_skipped.gate' <<<"$OUT")"
+RC=0
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" --dry-run 2>"$TMP/dry-text.err")" || RC=$?
+check_eq "refused dry-run text succeeds" "0" "$RC"
+check_eq "refused dry-run text retains one free comment" "1" "$([[ "$OUT" == *"would post 1 comment (codeant;"* ]] && echo 1 || echo 0)"
+check_eq "refused dry-run text names the actual refusal" "1" "$([[ "$OUT" == *"already refused this HEAD"* ]] && echo 1 || echo 0)"
+check_eq "text dry-run posts nothing" "0" "$(posted_count)"
+SAME=no
+cmp -s "$TMP/dry-before.json" "$HOME/.claude/session-state.json" && SAME=yes
+check_eq "text dry-run preserves actual session state" "yes" "$SAME"
+
+setup 600 "[$(refusal "$(ts_seconds_ago 1200)")]"
+dry_check "stale refusal" approval_required
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+export FIXTURE_API_FAIL=1
+dry_check "unreadable refusal API" approval_required
+setup 600 'not-json'
+dry_check "malformed refusal payload" approval_required
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+mv "$STUB_DIR/bugbot-refused-head.sh" "$STUB_DIR/bugbot-refused-head.saved"
+dry_check "missing refusal helper" approval_required
+mv "$STUB_DIR/bugbot-refused-head.saved" "$STUB_DIR/bugbot-refused-head.sh"
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+export FIXTURE_HEAD_TS=""
+dry_check "unreadable HEAD timestamp" approval_required
+
+# A confirmed refusal wins over the daily cap, as in the live path. Both
+# still leave the paid owner-approval boundary intact when no refusal exists.
+cat > "$STUB_DIR/review-daily-cap.sh" <<'DRY_CAP'
+#!/usr/bin/env bash
+if [[ "${2:-}" == --rate ]]; then echo 1.58; exit 0; fi
+printf '{"status":"over","spent_usd":8,"cap_usd":8,"add_usd":1.58}\n'
+exit 1
+DRY_CAP
+chmod +x "$STUB_DIR/review-daily-cap.sh"
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+dry_check "refusal precedes daily cap" refused_head
+setup 600 '[]'
+dry_check "daily cap without refusal" daily_cap
+rm -f "$STUB_DIR/review-daily-cap.sh"
+
+# Tier exclusion wins before any refusal read. Instrument only the private
+# helper boundary to prove a tier skip did not query the refusal API.
+cat > "$STUB_DIR/bugbot-tier-excluded.sh" <<'DRY_TIER'
+#!/usr/bin/env bash
+printf 'ci-only\n'
+exit 0
+DRY_TIER
+chmod +x "$STUB_DIR/bugbot-tier-excluded.sh"
+mv "$STUB_DIR/bugbot-refused-head.sh" "$STUB_DIR/bugbot-refused-head.real"
+cat > "$STUB_DIR/bugbot-refused-head.sh" <<'DRY_REFUSAL_READ'
+#!/usr/bin/env bash
+printf 'called\n' >> "$REFUSAL_CALLS"
+exec "$(dirname "$0")/bugbot-refused-head.real" "$@"
+DRY_REFUSAL_READ
+chmod +x "$STUB_DIR/bugbot-refused-head.sh"
+export REFUSAL_CALLS="$TMP/dry-refusal-calls"
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+dry_check "tier exclusion precedes refusal" review_tier
+check_eq "tier dry-run reports the excluded gate" "ci-only" "$(jq -r '.bugbot_skipped.gate' <<<"$OUT")"
+CALLED=no
+[[ -e "$REFUSAL_CALLS" ]] && CALLED=yes
+check_eq "excluded tier never asks the refusal helper" "no" "$CALLED"
+rm -f "$STUB_DIR/bugbot-tier-excluded.sh" "$STUB_DIR/bugbot-refused-head.sh"
+mv "$STUB_DIR/bugbot-refused-head.real" "$STUB_DIR/bugbot-refused-head.sh"
+unset REFUSAL_CALLS
+
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$STUB_DIR/maybe-trigger-ai-review.sh" "$PR_NUM" --dry-run --json 2>"$TMP/dry-absent.err")"
+EXISTS=no
+[[ -e "$HOME/.claude/session-state.json" ]] && EXISTS=yes
+check_eq "dry-run leaves an absent session file absent" "no" "$EXISTS"
+check_eq "absent-state dry-run still reports refusal" "refused_head" "$(jq -r '.bugbot_skipped.reason' <<<"$OUT")"
+check_eq "absent-state dry-run posts nothing" "0" "$(posted_count)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

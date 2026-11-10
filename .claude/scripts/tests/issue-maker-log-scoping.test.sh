@@ -17,7 +17,7 @@
 # WHAT THIS SUITE ASSERTS
 #   Every test runs the REAL production code, never a paraphrase:
 #     - scripts/resolve-log.sh is executed directly;
-#     - the SKILL.md bash is EXTRACTED by test-anchor via lib/skill-bash.sh, so
+#     - the phase-module bash is EXTRACTED by test-anchor via lib/skill-bash.sh, so
 #       the skill and the test cannot drift apart.
 #
 #   Each corruption gets a paired NEGATIVE CONTROL that replays the pre-fix
@@ -31,9 +31,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="${SCRIPT_DIR}/../../skills/issue-maker"
-SKILL_MD="${SKILL_DIR}/SKILL.md"
+SKILL_MD="${SKILL_DIR}/modules/session-state.md"
+POSTFILE_MD="${SKILL_DIR}/modules/create/postfile.md"
 RESOLVE_LOG="${SKILL_DIR}/scripts/resolve-log.sh"
 SET_LOG="${SKILL_DIR}/scripts/set-log.sh"
+DISPATCHER="${SKILL_DIR}/scripts/dispatch-module.sh"
 
 # shellcheck source=.claude/scripts/tests/lib/skill-bash.sh
 . "${SCRIPT_DIR}/lib/skill-bash.sh"
@@ -60,17 +62,20 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 # would stay green forever.
 # ---------------------------------------------------------------------------
 BLOCK_RESOLVE="$(extract_skill_bash "$SKILL_MD" issue-maker-step1-resolve-log)" || exit 1
+BLOCK_WRITER="$(sed -n '/^SET_LOG=""/,/^set_log() {.*; }/p' "$SKILL_MD")"
 BLOCK_HELPER="$(extract_skill_bash "$SKILL_MD" issue-maker-log-write-helper)"   || exit 1
-BLOCK_STAMP="$(extract_skill_bash "$SKILL_MD" issue-maker-step9c-offer-stamp)"  || exit 1
+BLOCK_STAMP="$(extract_skill_bash "$POSTFILE_MD" issue-maker-step9c-offer-stamp)"  || exit 1
 BLOCK_RETARGET="$(extract_skill_bash "$SKILL_MD" issue-maker-step1-retarget-guard)" || exit 1
-ok "all four SKILL.md test-anchors extract non-empty bash"
+BLOCK_HELPER="$BLOCK_WRITER"$'\n'"$BLOCK_HELPER"
+ok "all four phase-module test-anchors extract non-empty bash"
 
 # make_home — a temp HOME with the issue-maker skill "installed" where the
 # SKILL.md resolution loop looks for it.
 make_home() {
   local d="$TMP_DIR/home-$1"
-  mkdir -p "$d/.claude/handoffs" "$d/.claude/skills/issue-maker/scripts"
-  cp "$RESOLVE_LOG" "$SET_LOG" "$d/.claude/skills/issue-maker/scripts/"
+  mkdir -p "$d/.claude/handoffs" "$d/.claude/skills/issue-maker/scripts" "$d/.claude/scripts"
+  cp "$RESOLVE_LOG" "$SET_LOG" "$DISPATCHER" "$d/.claude/skills/issue-maker/scripts/"
+  cp "$SCRIPT_DIR/../state-lock.sh" "$d/.claude/scripts/state-lock.sh"
   chmod +x "$d/.claude/skills/issue-maker/scripts/"*.sh
   printf '%s' "$d"
 }
@@ -89,7 +94,8 @@ run_block() {
   printf '%s\n' "$body" > "$f"
   ( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID \
           ISSUE_MAKER_STABLE_ANCHOR
-    export HOME="$home" ISSUE_MAKER_CONV_ID="$conv"
+    export HOME="$home" ISSUE_MAKER_CONV_ID="$conv" \
+           DISPATCHER="$home/.claude/skills/issue-maker/scripts/dispatch-module.sh"
     if [[ -n "$anchor" ]]; then export ISSUE_MAKER_STABLE_ANCHOR="$anchor"; fi
     bash "$f" )
 }
@@ -429,6 +435,7 @@ race_once() { # race_once <cwd> <outfile>
   ( unset CLAUDE_SESSION_ID
     cd "$1" || exit 1
     HOME="$H_F" ISSUE_MAKER_CONV_ID="$CONV_F" \
+      DISPATCHER="$H_F/.claude/skills/issue-maker/scripts/dispatch-module.sh" \
       bash "$TMP_DIR/f-block.sh" 2>/dev/null | tail -n 1 ) > "$2"
 }
 
@@ -835,3 +842,6 @@ fi
 echo
 echo "issue-maker-log-scoping: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1
+
+# The discovered CI suite also exercises the incremental caller/behavior fixtures.
+bash "$SCRIPT_DIR/../../../tests/test-issue-maker-dispatch.sh"

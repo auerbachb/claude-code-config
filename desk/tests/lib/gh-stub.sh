@@ -72,6 +72,7 @@ case "${1:-} ${2:-}" in
     prev=""
     for a in "$@"; do
       if [ "$prev" = "--body-file" ] && [ -f "$a" ]; then cp "$a" "$dir/issue-create.body"; fi
+      case "$a" in --body-file=*) body=${a#--body-file=}; [ ! -f "$body" ] || cp "$body" "$dir/issue-create.body" ;; esac
       prev="$a"
     done
     ;;

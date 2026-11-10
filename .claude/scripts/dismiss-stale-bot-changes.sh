@@ -36,7 +36,7 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME}/.claude/script-usage.log" || true
 
 print_usage() {
-  awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
     { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
@@ -114,6 +114,7 @@ if [[ -z "$HEAD_SHA" ]]; then
 fi
 
 # Literal bot logins — must match dismiss targets; humans never appear here.
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still dismisses.
 ALLOWLIST_JSON='["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"]'
 
 if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then

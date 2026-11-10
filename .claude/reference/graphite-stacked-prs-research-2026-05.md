@@ -1,5 +1,7 @@
 # Graphite Stacked-PR Workflow — Research & Recommendation (2026-05)
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical. The `gt` repo-init setup step and the Graphite Claude Code plugins were removed at the same time.
+
 **Status:** RESEARCH — no functional changes proposed in this PR. The deliverable is this report and a list of follow-up issues for the user to triage.
 
 **Issue:** [#418](https://github.com/auerbachb/claude-code-config/issues/418)

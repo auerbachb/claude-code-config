@@ -296,7 +296,7 @@ ALLOW_HOLLOW=false
 ALLOW_UNVERIFIED_REQ=false
 
 print_usage() {
-  awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
     { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
@@ -399,7 +399,12 @@ emit_json() {
   local deferred_thread_count="${19:-0}"
   local deferred_issues="${20:-}"
   if [[ -z "$deferred_issues" ]]; then deferred_issues='[]'; fi
+  # no_review_override (issue #1899) — arg 21. `null` on the early error paths.
+  local no_review_override="${21:-}"
+  if [[ -z "$no_review_override" ]]; then no_review_override='null'; fi
   jq -cn \
+    --arg pr_number "$PR_NUMBER" \
+    --arg owner_repo "${OWNER_REPO:-}" \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
     --arg path "$path" \
@@ -420,8 +425,9 @@ emit_json() {
     --argjson review_tier "$review_tier" \
     --argjson deferred_thread_count "$deferred_thread_count" \
     --argjson deferred_issues "$deferred_issues" \
+    --argjson no_review_override "$no_review_override" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues}
+     {pr_number: ($pr_number | tonumber), owner_repo: $owner_repo, met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
      | scrub'
 }
 
@@ -478,6 +484,7 @@ REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
 REVIEW_TIER_GATE=""
 REVIEW_TIER_JSON="null"
 REVIEW_TIER_FAILURE=""
+NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
 if [[ ! -x "$REVIEW_TIER_SH" ]]; then
   REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
 else
@@ -492,6 +499,10 @@ else
     REVIEW_TIER_JSON="null"
   else
     REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
+    # No-review override window (issue #1899), minutes → seconds; read from the
+    # same base-branch policy. Absent, null, or non-integer → disabled.
+    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
+    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
   fi
 fi
 
@@ -1046,7 +1057,9 @@ if [[ "$MERGE_STATE" == "UNKNOWN" ]]; then
   MISSING+=("mergeStateStatus is UNKNOWN — GitHub still computing mergeability; wait and re-check")
 fi
 
-# CI gate (#270) — applies to all paths.
+# CI gate (#270) — applies to all paths. The index span is kept so the
+# no-review override (issue #1899) can re-read CI without pending reviewer runs.
+CI_MISSING_FROM=${#MISSING[@]}
 CI_INCOMPLETE=$(echo "$CI_STATUS" | jq -r '.in_progress')
 CI_FAILING=$(echo "$CI_STATUS" | jq -r '.failing')
 if [[ "$CI_INCOMPLETE" -gt 0 ]]; then
@@ -1057,6 +1070,7 @@ if [[ "$CI_FAILING" -gt 0 ]]; then
   BLOCKING_NAMES=$(echo "$CI_STATUS" | jq -r '.blocking | map("\(.name) (\(.conclusion))") | join(", ")')
   MISSING+=("CI has $CI_FAILING failing check-run(s): $BLOCKING_NAMES")
 fi
+CI_MISSING_TO=${#MISSING[@]}
 
 # Required-context gate (#1361) — applies to all paths; branch protection is a
 # property of the base branch, not of whichever bot happens to own the review.
@@ -1333,7 +1347,7 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review")
   fi
   if [[ "$GREPTILE_IS_CODE_OWNER" == true ]]; then
-    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai")
+    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, a Greptile re-review is paid: ask the owner to approve it in chat (#1897)")
   fi
   if [[ "$CODEANT_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review")
@@ -1672,6 +1686,10 @@ REVIEWER_DISPATCH="$REVIEWER"
 if [[ -n "$REVIEW_TIER_FAILURE" ]]; then
   MISSING+=("review tier unresolved: $REVIEW_TIER_FAILURE — the full reviewer gate is applied instead (issue #1726)")
 fi
+# Everything appended from here to the override block below is reviewer
+# COVERAGE — the only reasons the no-review override (issue #1899) may waive.
+# Every hard stop was appended above this line.
+REVIEW_BLOCKER_START=${#MISSING[@]}
 case "$REVIEW_TIER_GATE" in
   ci-only)
     REVIEWER_DISPATCH="none"
@@ -1993,7 +2011,7 @@ case "$REVIEWER_DISPATCH" in
               # Checked ahead of freshness because an unattributable run's timestamp
               # is not worth dating. Distinct reason so the block is legible rather
               # than reading as "BugBot never ran".
-              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or post @cursor review")
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or ask the owner to approve a paid BugBot re-review in chat (#1897)")
               BB_CHECK_APP_MISMATCH=true
             elif [[ -z "$LAST_COMMIT_TS" ]]; then
               # Fail-closed: cannot verify freshness without HEAD committer date.
@@ -2010,7 +2028,7 @@ case "$REVIEWER_DISPATCH" in
               # check-run completed before the HEAD commit — stale (force-push retargeting
               # or a prior push's run). Report explicitly so callers know to wait for a
               # new run rather than interpret as absent.
-              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run or post @cursor review")
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run, or ask the owner to approve a paid BugBot re-review in chat (#1897)")
               BB_CHECK_FRESHNESS_ERR=true
             else
               # Fresh success check-run, no failure comments — clean silent pass.
@@ -2048,7 +2066,7 @@ case "$REVIEWER_DISPATCH" in
             # to compare against; treat as unknown (fail-closed, issue #836).
             MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
           elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
+            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; a BugBot re-review is paid: ask the owner to approve it in chat (#1897)")
           else
             BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
             # Always check for inline findings — BugBot can post inline diff comments
@@ -2237,7 +2255,7 @@ case "$REVIEWER_DISPATCH" in
         G_ROUND_P0_COUNT=$(echo "$G_ROUND_BODIES" | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
 
         if [[ "$G_ROUND_P0_COUNT" -gt 0 ]]; then
-          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         else
           # A stale zero-P0 verdict is reusable only for a demonstrable fix-only
           # push. Every Greptile inline finding in the retained round must have a
@@ -2387,7 +2405,7 @@ case "$REVIEWER_DISPATCH" in
         # cannot drift: whatever Path A refuses to call clean is exactly what
         # gets reported here.
         if [[ "$G_FOOTER_CONTRADICTS" == true ]]; then
-          MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (trigger @greptileai)")
+          MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         fi
 
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
@@ -2404,7 +2422,7 @@ case "$REVIEWER_DISPATCH" in
         elif [[ "$UNRESOLVED_G" -eq 0 && "$P0_COUNT" -gt 0 ]]; then
           # Threads are resolved but P0 in latest review body / inline bodies.
           # A clean re-review would supersede this — require one.
-          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         fi
         # Unresolved G > 0 && P0 == 0: universal thread gate already covered.
         # Unresolved G == 0 && P0 == 0: only P1/P2 all resolved — gate met.
@@ -2412,6 +2430,20 @@ case "$REVIEWER_DISPATCH" in
     fi
     ;;
 esac
+
+# --------------------------------------------------------------------------
+# No-review override (issue #1899) — decided by no-review-override.sh. It may
+# waive only the reviewer-coverage reasons collected since REVIEW_BLOCKER_START,
+# and only when no reviewer bot has a verdict on HEAD and the window elapsed.
+# Any helper failure leaves missing[] untouched (fail closed: nothing waived).
+# --------------------------------------------------------------------------
+NRO_JSON='null'
+# shellcheck source=./lib/no-review-override-apply.sh
+if [[ -r "$SCRIPT_DIR/lib/no-review-override-apply.sh" ]] && source "$SCRIPT_DIR/lib/no-review-override-apply.sh"; then
+  nro_apply
+else
+  echo "[merge-gate] lib/no-review-override-apply.sh unavailable — no-review override off, gate unchanged (issue #1899)" >&2
+fi
 
 # --------------------------------------------------------------------------
 # Emit result
@@ -2424,6 +2456,7 @@ fi
 
 # Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
 # or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still counts.
 STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
   def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
   [.[]?
@@ -2456,7 +2489,9 @@ MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 # over a guard the bugbot path never consults.
 [[ "$REVIEWER_DISPATCH" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON" "${DEFERRED_TOTAL:-0}" "${DEFERRED_ISSUES_JSON:-[]}"
+GATE_PATH="$REVIEWER"
+[[ "$MET" == true && "$(printf '%s' "$NRO_JSON" | jq -r '.applied' 2>/dev/null)" == true ]] && GATE_PATH="no-review-override"
+emit_json "$MET" "$REVIEWER" "$GATE_PATH" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON" "${DEFERRED_TOTAL:-0}" "${DEFERRED_ISSUES_JSON:-[]}" "$NRO_JSON"
 
 if [[ "$MET" == true ]]; then
   exit 0

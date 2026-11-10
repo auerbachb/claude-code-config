@@ -6,7 +6,7 @@ sequenceDiagram
   participant CC as Claude Code
   participant H as Hooks
   CC->>H: SessionStart
-  Note over H: session-start-sync.sh
+  Note over H: session-start-sync.sh, spend-session-tracker.sh
   U->>CC: prompt
   CC->>H: UserPromptSubmit
   Note over H: timestamp-injector.sh, stale-worktree-warn.sh, issue-prefix-nudge.sh, skill-command-tracker.sh
@@ -15,13 +15,17 @@ sequenceDiagram
   CC->>H: PostToolUse
   Note over H: post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh, bgwork-ceiling-arm.sh, babysit-tick-watchdog.sh
   CC->>H: SubagentStop
-  Note over H: checkpoint-handoff.sh
+  Note over H: checkpoint-handoff.sh, spend-subagent-tracker.sh (assistant metadata only)
+  CC->>H: TaskCreated / TaskCompleted
+  Note over H: spend-task-tracker.sh (IDs only)
   CC->>H: PostCompact
   Note over H: post-compact-reconcile.sh
   CC->>H: Stop
   Note over H: silence-detector-ack.sh, bgwork-ceiling-guard.sh, trust-flag-repair.sh, dirty-main-warn.sh, skill-usage-snapshot-hook.sh, question-leak-warn.sh
   CC->>H: StopFailure (matcher: rate_limit)
   Note over H: usage-limit-record.sh
+  CC->>H: SessionEnd
+  Note over H: spend-session-tracker.sh (assistant metadata only)
 ```
 
 **`statusLine` is deliberately absent from this diagram.** It is a settings surface, not a hook event — Claude Code runs it from the interactive render loop on a timer, not from the event dispatcher — so it has no place in an event sequence. It is nonetheless *deployed* like a hook (same placeholder path, same `register-hooks.py` resolution). Give it its own box if this stub ever grows a config-surface diagram; do not add it as an event here. See ARCHITECTURE.md "Status Line" (#779).

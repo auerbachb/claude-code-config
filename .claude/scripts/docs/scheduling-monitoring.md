@@ -13,16 +13,21 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [active-work-cap.sh](../active-work-cap.sh) | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP` and the per-thread `PIPELINE_CEILING`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
 | [bgwork-ceiling.sh](../bgwork-ceiling.sh) | Hard ceiling on chat silence while background work (subagents, watchers) runs |
 | [gh-window.sh](../gh-window.sh) | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
+| [install-backfill-review.sh](../install-backfill-review.sh) | Register the overnight backfill review (`backfill-review.sh --repo-dir <checkout>`) as a macOS launchd LaunchAgent — every `--interval` seconds (default 1800); the runner gates on its own quiet window |
 | [install-config-sync.sh](../install-config-sync.sh) | Register the per-machine config sync (`claude-config-sync.sh`) as a macOS launchd LaunchAgent — one run at login, then every `--interval` seconds |
 | [install-silence-watchdog.sh](../install-silence-watchdog.sh) | Install the macOS launchd watchdog that monitors Claude heartbeat files |
+| [install-workspace-sweep.sh](../install-workspace-sweep.sh) | Install the daily finished-worktree LaunchAgent, with a side-effect-free dry run |
 | [off-peak-minute.sh](../off-peak-minute.sh) | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
 | [overrun-check.sh](../overrun-check.sh) | Per-pipeline planning-bound breach check for the monitor loop; emits one alert line on the first breach only |
+| [round-membership.sh](../round-membership.sh) | Reads a session's ordered round or an observer union without replacing another dispatch |
 | [session-scheduling-reconcile.sh](../session-scheduling-reconcile.sh) | Session-start reconciliation of durable scheduling state — purge dead in-memory job bookkeeping, surface the on-disk records that survived |
 | [silence-watchdog.sh](../silence-watchdog.sh) | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |
 | [statusline.sh](../statusline.sh) | Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0 |
 | [table-freshness.sh](../table-freshness.sh) | Hourly floor on "Running now" table freshness during active rounds — the complementary bound to the silence ceiling; mechanism in `.claude/reference/time-estimates.md` §"Table freshness" |
+| [uninstall-backfill-review.sh](../uninstall-backfill-review.sh) | Unload and remove the backfill-review LaunchAgent; always keeps the ledger (`~/.claude/unreviewed-merges.json`), locks and logs |
 | [uninstall-config-sync.sh](../uninstall-config-sync.sh) | Unload and remove the config-sync LaunchAgent; `--remove-state` also drops its state, logs and marker |
 | [uninstall-silence-watchdog.sh](../uninstall-silence-watchdog.sh) | Uninstall the macOS launchd silence watchdog |
+| [uninstall-workspace-sweep.sh](../uninstall-workspace-sweep.sh) | Uninstall the finished-worktree LaunchAgent while retaining logs and registry |
 | [wait-until.sh](../wait-until.sh) | In-turn poll loop with a hard cap — the non-refused equivalent of `until <check>; do sleep <n>; done` for a worktree-isolated agent (`.claude/reference/worktree-isolation-command-shapes.md`); blocks the calling turn only, never a substitute for a persistent `Monitor` |
 | [workday.sh](../workday.sh) | US business-day calculator (ET-anchored, macOS + GNU date) |
 <!-- catalog:rows:end -->

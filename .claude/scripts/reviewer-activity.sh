@@ -16,7 +16,7 @@
 #   PUSHED_AT  — ISO-8601 timestamp captured before git push (avoids race)
 #
 # Output: JSON object on stdout —
-#   { "coderabbit": <bool>, "graphite": <bool>, "codeant": <bool> }
+#   { "coderabbit": <bool>, "codeant": <bool> }
 #   true  = reviewer auto-triggered activity on PUSHED_SHA since PUSHED_AT
 #   false = no activity detected; caller should post a trigger comment
 #
@@ -109,11 +109,6 @@ jq -n \
        or any($inline[]?; .user.login == "coderabbitai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
        or convo_by("coderabbitai[bot]")
        or check_by(["CodeRabbit", "coderabbitai"])),
-    graphite:
-      (any($reviews[]?; .user.login == "graphite-app[bot]" and .commit_id == $sha and recent(.submitted_at))
-       or any($inline[]?; .user.login == "graphite-app[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or convo_by("graphite-app[bot]")
-       or check_by(["Graphite", "graphite-app"])),
     codeant:
       (any($reviews[]?; .user.login == "codeant-ai[bot]" and .commit_id == $sha and recent(.submitted_at))
        or any($inline[]?; .user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))

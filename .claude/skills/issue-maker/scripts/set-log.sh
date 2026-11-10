@@ -5,7 +5,9 @@
 # Usage: set-log.sh LOG_FILE JQ_FILTER [jq-args...]
 #
 # All jq-args are forwarded verbatim to jq (e.g. --arg, --argjson).
-# Exits 1 if the write fails; leaves LOG_FILE unchanged on failure.
+# Serializes the full read/modify/write with the bundled state-lock library.
+# jq guards therefore compare against current state while holding the lock.
+# Exits nonzero on lock/write failure; leaves LOG_FILE unchanged on failure.
 #
 # Example:
 #   set-log.sh "$LOG" '.mode = $v' --arg v rapid-fire
@@ -30,11 +32,24 @@ if [ ! -f "$LOG" ]; then
   exit 1
 fi
 
-NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-TMP=$(mktemp)
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+LOCK_LIB="$SCRIPT_DIR/../../../scripts/state-lock.sh"
+[ -r "$LOCK_LIB" ] || { echo "ERROR: state-lock.sh missing beside the selected skill installation" >&2; exit 1; }
+# shellcheck source=../../../scripts/state-lock.sh
+source "$LOCK_LIB"
+state_lock_acquire "$LOG" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+TMP=""
+trap '[ -z "$TMP" ] || rm -f "$TMP"; state_lock_release' EXIT
 
-if jq "$@" --arg __now "$NOW" "$FILTER | .last_updated_at = \$__now" "$LOG" > "$TMP"; then
-  mv "$TMP" "$LOG"
+NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+TMP=$(mktemp "${LOG}.tmp.XXXXXX")
+
+if jq -e "$@" --arg __now "$NOW" "$FILTER | .last_updated_at = \$__now" "$LOG" > "$TMP"; then
+  if ! jq -e -s 'length == 1 and (.[0] | type == "object")' "$TMP" >/dev/null || ! state_lock_assert_held || ! mv "$TMP" "$LOG"; then
+    rm -f "$TMP"
+    echo "WARN: failed to atomically replace session log: $LOG" >&2
+    exit 1
+  fi
 else
   rm -f "$TMP"
   echo "WARN: failed to update session log ($FILTER)" >&2

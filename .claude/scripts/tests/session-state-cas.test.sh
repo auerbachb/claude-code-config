@@ -722,6 +722,28 @@ PYROOT
 if [[ $? -ne 0 ]]; then FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi
 
 # ---------------------------------------------------------------------------
+# FAILS WITHOUT FIX: matching the CAS target alone would publish the answer
+# after a second guard changed. All read guards gate all companion writes.
+reset_state
+run --repo test/cas-repo --set '.prs["7"].prompt_guard=false' --set '.metadata={"hold":true}'
+BEFORE="$(cat "$STATE_FILE")"
+run --repo test/cas-repo --cas '.prompt="accepted"' --expect null \
+  --expect-at '.prs["7"].prompt_guard' false --expect-at '.metadata.hold' false \
+  --set '.result="published"' >/dev/null 2>&1; RC=$?
+check_eq "one extra guard mismatch exits 7" 7 "$RC"
+check_eq "extra guard mismatch leaves the entire batch unchanged" "$BEFORE" "$(cat "$STATE_FILE")"
+run --repo test/cas-repo --cas '.prompt="accepted"' --expect null \
+  --expect-at '.prs["7"].prompt_guard' false --expect-at '.metadata.hold' true \
+  --set '.result="published"' >/dev/null 2>&1; RC=$?
+check_eq "two extra guards match with scoped typed false" 0 "$RC"
+check_eq "all guards admit the whole batch" "accepted|published" "$(jq -r '.prompt+"|"+.result' "$STATE_FILE")"
+run --repo test/cas-repo --cas '.prompt="replaced"' --expect '"accepted"' \
+  --expect-at '.a,.b' null >/dev/null 2>&1; RC=$?
+check_eq "multi-location read guard is usage error" 2 "$RC"
+run --repo test/cas-repo --cas '.prompt="replaced"' --expect '"accepted"' \
+  --expect-at '.result' published >/dev/null 2>&1; RC=$?
+check_eq "read guard requires typed JSON" 2 "$RC"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then

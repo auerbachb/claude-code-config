@@ -25,12 +25,15 @@
 #
 # USAGE
 #   ai-quotas-setup.sh [list] [--json]
+#   ai-quotas-setup.sh doctor [--json]
+#   ai-quotas-setup.sh repair-layout <claude|codex>
 #   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
 #   ai-quotas-setup.sh nick <label> <name> [<provider>]
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
 #   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
-#   ai-quotas-setup.sh launchers
+#   ai-quotas-setup.sh launchers [--json]
+#   ai-quotas-setup.sh ledger-hooks
 #   ai-quotas-setup.sh share-config <label> [<provider>]
 #   ai-quotas-setup.sh --help | -h
 #
@@ -48,6 +51,7 @@
 #             launches it and waits — it never types or reads credentials.
 #             Refuses a (provider, label) pair that is already registered.
 #             `--nick <name>` records a short display name in the same step.
+#   sources   Configure <label> <comma-separated order|default>, or threshold <N>.
 #   nick      Set (or clear, with an empty name) an already-registered
 #             account's short display name. `/quotas` shows it in place of
 #             the label, which is what keeps a five-account table of full
@@ -70,6 +74,7 @@
 #             The job is a RECORDER, never a gate: it reads figures and
 #             appends them, and nothing in this repo consults them to decide
 #             whether work may proceed.
+#   ledger-hooks — Merge metadata-only Codex SessionStart hooks into per-profile hooks.json.
 #   launchers Write ~/.claude/ai-quotas/launchers.zsh (#1851): one zsh
 #             function per registered claude/codex account, named
 #             `<provider>-<nickname slug>` (`Claude Work` -> claude-work,
@@ -86,6 +91,8 @@
 #             the other. Prints the one `source` line to add to ~/.zshrc —
 #             this script never edits ~/.zshrc. A pre-existing file not
 #             written by this action is moved aside as launchers.zsh.pre-share.
+#             --json prints the validated launcher mapping without generating
+#             the file, probing credential status, or starting a provider.
 #   share-config
 #             Make a profile behave like the primary install. For a claude
 #             profile: symlink skills, agents, rules, hooks, plugins,
@@ -106,12 +113,13 @@
 #
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
-#             against it (the documented flow; `claude auth login` does not
-#             exist, and `setup-token` prints a credential instead of storing
-#             one). Credential lands in the macOS
+#             against it. Verified Claude Code 2.1.312 also supports auth-only
+#             login via AI_QUOTAS_CLAUDE_LOGIN_ARGS='auth login --claudeai'.
+#             `setup-token` prints a model-request token, not a profile login.
+#             Credential lands in the macOS
 #             Keychain (service `Claude Code-credentials-<suffix>`, whose
 #             suffix this script learns by observing which item the login
-#             created — it is never derived or guessed) or, on other
+#             created; verified cycle repair additionally checks the binding) or, on other
 #             platforms, in `<profile_dir>/.credentials.json`.
 #   codex     Per-account CODEX_HOME. Credential lands in
 #             `<profile_dir>/auth.json`.
@@ -126,6 +134,12 @@
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
+#   doctor reports layout mismatches without reading credentials; exit 8 means findings.
+#   repair-layout stages renames and atomically updates the registry. Stop affected
+#   sessions/readers first. Observed Claude Keychain cycles are supported on macOS
+#   with Swift/Python 3 and verified Claude Code 2.1.312; other bindings are refused.
+#   Exit 9 means rollback failed: preserve .layout-repair and its recovery plan.
+#
 #   Profiles  ~/.claude/ai-quotas/profiles/<label>/<provider>/   (mode 700)
 #   Both live under ~/.claude/, never in a worktree (hook-storage rule).
 #   Agent     ~/Library/LaunchAgents/com.claude.ai-quotas.plist  (mode 644,
@@ -217,11 +231,14 @@
 #   7   Contention, refused rather than raced; nothing is changed. Either the
 #       config write lock was unavailable (timeout) or broken mid-update, or a
 #       `relogin` found another relogin already running for the same account.
+#   8   doctor found layout problems (diagnostic only).
+#   9   Repair rollback incomplete: preserve .layout-repair for manual recovery.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   - bash 3.2+, jq
 #   - state-lock.sh (sibling library) for the config read-modify-write lock
+#   - macOS Swift compiler and Python 3 only for verified Keychain cycle repair
 #   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
 #     is sqlite3(1), which ships with macOS, and the Cursor IDE itself
 
@@ -267,6 +284,7 @@ HISTORY_FILE="${AI_QUOTAS_HISTORY:-${_HOME}/.claude/ai-quotas-history.jsonl}"
 # a day apart rather than a day plus however long the owner slept in.
 SCHEDULE_HOUR_DEFAULT="9"
 
+# ledger-hooks installs metadata-only Codex hooks.json entries; unsupported versions use backfill.
 # --- help / usage ------------------------------------------------------------
 
 print_help() {
@@ -341,8 +359,13 @@ else
 fi
 
 case "$ACTION" in
-  list)
-    [[ ${#POSITIONAL[@]} -le 1 ]] || die_usage "list takes no arguments"
+  list|doctor|ledger-hooks)
+    [[ ${#POSITIONAL[@]} -le 1 ]] || die_usage "$ACTION takes no arguments"
+    ;;
+  repair-layout)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] || die_usage "repair-layout requires <claude|codex>"
+    ARG_PROVIDER="${POSITIONAL[1]}"
+    case "$ARG_PROVIDER" in claude|codex) ;; *) die_usage "repair-layout supports claude or codex only" ;; esac
     ;;
   add)
     [[ ${#POSITIONAL[@]} -eq 3 ]] || die_usage "add requires <provider> <label>"
@@ -356,6 +379,11 @@ case "$ACTION" in
     if [[ ${#POSITIONAL[@]} -eq 3 ]]; then
       ARG_PROVIDER="${POSITIONAL[2]}"
     fi
+    ;;
+  sources)
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 4 ]] || die_usage "sources requires <label> <comma-separated sources|default> [<provider>], or sources threshold <N>"
+    ARG_LABEL="${POSITIONAL[1]}"; ARG_NICK="${POSITIONAL[2]}"
+    [[ ${#POSITIONAL[@]} -ne 4 ]] || ARG_PROVIDER="${POSITIONAL[3]}"
     ;;
   nick)
     # The name is POSITIONAL here — `nick <label> <name>` reads the way the
@@ -391,12 +419,12 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, add, nick, remove, relogin, schedule, launchers, share-config)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
     ;;
 esac
 
-if [[ $JSON -eq 1 && "$ACTION" != "list" ]]; then
-  die_usage "--json applies to list only"
+if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" && "$ACTION" != "launchers" ]]; then
+  die_usage "--json applies to list, doctor, or launchers"
 fi
 if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
   die_usage "--no-login applies to add only"
@@ -501,6 +529,9 @@ read_config() {
   printf '%s' "$raw" | jq -e '
       type == "object"
       and (.accounts | type == "array")
+      and ((.source_failure_threshold // 3) | type == "number" and . >= 1 and . == floor)
+      and (.accounts | all((.sources == null) or
+             (.sources | type == "array" and length > 0 and all(type == "string" and test("^[a-z][a-z0-9_-]{0,39}$")))))
       and (.accounts | all(
             type == "object"
             and (.provider    | type == "string" and length > 0)
@@ -544,12 +575,12 @@ write_config() { # <json>
     fi
     die 5 "could not install config: $CONFIG_FILE"
   fi
-  chmod 600 "$CONFIG_FILE" || die 5 "could not chmod 600 $CONFIG_FILE"
+  # The committed temp file already has mode 600. No fallible work after publish.
 }
 
 # --- keychain observation (macOS, claude only) -------------------------------
 # The Keychain service name Claude Code uses carries a suffix derived from
-# CLAUDE_CONFIG_DIR by an undocumented function. This script never derives it:
+# CLAUDE_CONFIG_DIR by an undocumented function. Registration observes names:
 # it lists the service NAMES before and after a login and records the one that
 # appeared. A name is not a secret, and `security` is never asked for a value
 # (`-w` is never passed), so nothing readable here is a credential.
@@ -769,17 +800,11 @@ run_login() { # <provider> <profile_dir>
   fi
   case "$provider" in
     claude)
-      # The DOCUMENTED way to authenticate a specific CLAUDE_CONFIG_DIR is to
-      # run `claude` against it with no arguments: an unauthenticated config
-      # dir opens the browser login, and Claude Code persists the credential
-      # scoped to that directory. Two rejected alternatives, so nobody
-      # "fixes" this back:
-      #   * `claude auth login` — no such subcommand exists.
-      #   * `claude setup-token` — real, but it PRINTS a one-year token to
-      #     stdout instead of persisting it. This tool must never have a
-      #     credential value pass through it.
-      # `/login` as an argument is widely used but undocumented, so it is
-      # available through AI_QUOTAS_CLAUDE_LOGIN_ARGS rather than hard-coded.
+      # Preserve the existing interactive default. Verified Claude Code 2.1.312
+      # also supports `auth login --claudeai` through the argument-list override
+      # below; the owner-run replacement runbook uses that auth-only flow.
+      # `setup-token` prints a model-request token instead of storing this login
+      # and must never be substituted here. Never capture a credential value.
       echo "${SELF_NAME}: when the login finishes, exit the session (/exit or Ctrl-D) to continue."
       local -a claude_args=()
       if [[ -n "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ]]; then
@@ -1214,6 +1239,34 @@ action_add() {
 
 # Set or clear an existing account's short display name. Registry-only: it
 # touches no profile directory, runs no login, and reads no credential.
+# Source configuration is independently locked and re-resolved, like nick/remove.
+action_sources() {
+  local config index provider allowed entry order
+  config="$(read_config)"
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  if [[ "$ARG_LABEL" == threshold && "$ARG_NICK" =~ ^[0-9]+$ && -z "$ARG_PROVIDER" ]]; then
+    [[ "$ARG_NICK" =~ ^[1-9][0-9]*$ && ${#ARG_NICK} -le 6 ]] || die_usage "threshold must be a positive integer (at most six digits)"
+    config="$(printf '%s' "$config" | jq --argjson n "$ARG_NICK" '.source_failure_threshold=$n')"
+  else
+    index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+    provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+    case "$provider" in claude) allowed=oauth-usage ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
+    if [[ "$ARG_NICK" == default ]]; then
+      config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
+    else
+      order="$(jq -nc --arg order "$ARG_NICK" --arg allowed "$allowed" '
+        ($order|split(",")) as $s | ($allowed|split(",")) as $a |
+        if ($s|length)>0 and ($s|unique|length)==($s|length) and all($s[]; . as $v | $a|index($v))
+        then $s else error("invalid source order") end')" || die_usage "invalid source order for this provider"
+      config="$(printf '%s' "$config" | jq --argjson i "$index" --argjson order "$order" '.accounts[$i].sources=$order')"
+    fi
+  fi
+  write_config "$config"
+  state_lock_release || true
+  echo "${SELF_NAME}: usage source configuration updated."
+}
+
 action_nick() {
   local config index provider label
 
@@ -1453,6 +1506,11 @@ action_relogin() {
   # leak the slot.
   claim_relogin_slot "$ARG_LABEL" "$provider"
   trap relogin_slot_trap EXIT
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$provider")"
+  entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
+  dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
+  service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
 
   # The cursor profile-retirement dance is gone with the browser it existed
   # for (#1703). It moved a Chromium profile aside so a second login could not
@@ -1491,6 +1549,10 @@ action_relogin() {
   if [[ -z "$index" ]]; then
     state_lock_release || true
     die 4 "account '$ARG_LABEL' disappeared from the registry while the login ran"
+  fi
+  if [[ "$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].profile_dir')" != "$dir" ]]; then
+    state_lock_release || true
+    die 7 "profile_dir changed during login; registry unchanged — retry"
   fi
   config="$(printf '%s' "$config" | jq --argjson i "$index" --arg service "$service" '
     .accounts[$i] = (.accounts[$i]
@@ -1855,6 +1917,7 @@ action_list() {
     else
       echo "No accounts registered yet."
       echo "Add one with: ${SELF_NAME} add <claude|codex|cursor> <label>"
+      layout_warning "$config"
     fi
     return 0
   fi
@@ -1874,14 +1937,17 @@ action_list() {
     account_status "$provider" "$dir" "$service"
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
+    local source_order
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
+    [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
-        --arg status "$status" --arg detail "$detail" --arg nickname "$nickname" \
+        --arg status "$status" --arg detail "$detail" --arg nickname "$nickname" --arg order "$source_order" \
         '. += [{provider: $provider, label: $label,
                 nickname: (if $nickname == "" then null else $nickname end),
                 profile_dir: $profile_dir,
-                status: $status, detail: $detail}]')"
+                status: $status, detail: $detail, sources: ($order|split(","))}]')"
     else
       rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
     fi
@@ -1900,6 +1966,7 @@ action_list() {
     printf '%s' "$rows"
   }
   echo
+  layout_warning "$config"
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
 }
 
@@ -1971,15 +2038,18 @@ launcher_name() { # <provider> <nickname|""> <label>
 
 # The octal mode of a file, portably. GNU `stat -f` means FILESYSTEM status
 # and exits 0 printing `?p` for the BSD directive, so the BSD-first
-# `stat -f … || stat -c …` chain never reached its fallback on Linux and the
-# merged file was silently forced to 600 there (Graphite). Each answer is
-# checked for shape instead of trusting an exit code.
-file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
+# `stat -f … || stat -c …` chain never reached its fallback on Linux. Check
+# the shape instead of trusting an exit code. An unreadable mode must not
+# authorize replacing a file with permissions from an older snapshot.
+file_mode() { # <path> -> octal mode on stdout, nonzero if unreadable
   local m
-  m="$(stat -c '%a' "$1" 2>/dev/null || true)"
-  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
-  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m=600
-  printf '%s' "$m"
+  if ! m="$(stat -c '%a' "$1" 2>/dev/null)" || [[ ! "$m" =~ ^[0-7]{1,4}$ ]]; then
+    m="$(stat -f '%Lp' "$1" 2>/dev/null)" || return 1
+  fi
+  [[ "$m" =~ ^[0-7]{1,4}$ ]] || return 1
+  # stat omits leading zeroes (064 can be printed as 64). Normalize once
+  # so the mode checks compare permission bits, not their spelling.
+  printf '%03o' "$((8#$m))"
 }
 
 # The keepsake name for <path>: <path>.pre-share, or — when that name is
@@ -2012,8 +2082,8 @@ move_aside() { # <path>
 }
 
 action_launchers() {
-  require_share_home launchers AI_QUOTAS_LAUNCHERS_FILE
-  local config count i provider label nickname name
+  if [[ $JSON -eq 0 ]]; then require_share_home launchers AI_QUOTAS_LAUNCHERS_FILE; fi
+  local config count i provider label nickname name profile metadata="[]"
   config="$(read_config)"
   count="$(printf '%s' "$config" | jq '.accounts | length')"
 
@@ -2045,7 +2115,16 @@ action_launchers() {
       fi
     done
     names+=("$name"); labels+=("$label"); providers+=("$provider"); nicks+=("${nickname:-$name}")
+    if [[ $JSON -eq 1 ]]; then
+      profile="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].profile_dir | if type == "string" then . else "" end')"
+      metadata="$(printf '%s' "$metadata" | jq -c --arg provider "$provider" --arg label "$label" \
+        --arg profile "$profile" --arg launcher "$name" '. + [{provider:$provider, label:$label, profile_dir:$profile, launcher:$launcher}]')"
+    fi
   done
+  if [[ $JSON -eq 1 ]]; then
+    printf '%s\n' "$metadata"
+    return 0
+  fi
 
   # Pass 2: render. Claude functions first, then Codex, registry order within
   # each — grouped so the file reads as two short blocks rather than one
@@ -2214,13 +2293,18 @@ share_copy() { # <profile_dir> <name> <source>
   echo "  copied  $2 from $source"
 }
 
+share_discard_staging() { # <private staging directory>
+  rm -f "$1/merged" "$1/backup" || return 1
+  rmdir "$1"
+}
+
 # Merges the primary `.claude.json`'s `mcpServers` into the profile's own,
 # primary entries winning on a shared name, and leaves EVERY other key of the
 # profile's file alone — its `oauthAccount`, onboarding flags, and project
 # list are what make it that account's. Nothing from either file is printed:
 # an MCP server entry can carry an API key in its env block.
 share_merge_mcp() { # <profile_dir> <primary_json>
-  local path="$1/.claude.json" primary="$2" servers n existing merged tmp mode dest
+  local path="$1/.claude.json" primary="$2" servers n existing merged staging tmp mode dest backup=""
   if [[ ! -f "$primary" ]]; then
     SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
     echo "  skipped .claude.json — $primary does not exist in the primary install"
@@ -2242,12 +2326,13 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     dest="$(move_aside "$path")"
     share_note_moved ".claude.json" "$dest"
   fi
-  local snapshot=""
-  if [[ -f "$path" ]]; then
+  local snapshot="" had_original=false
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    had_original=true
     snapshot="$(cat "$path")" || die 5 "could not read $path"
     existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
       || die 5 "$path is not a JSON object — refusing to touch it"
-    mode="$(file_mode "$path")"
+    mode="$(file_mode "$path")" || die 5 "could not read the mode of $path — this path was left alone"
   else
     existing='{}'
     mode=600
@@ -2259,31 +2344,54 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     echo "  kept    .claude.json (all $n primary mcpServers already present)"
     return 0
   fi
-  tmp="$(mktemp "$1/.claude.json.XXXXXX")" || die 5 "could not create a temp file in $1"
-  chmod "$mode" "$tmp" 2>/dev/null || chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
-  printf '%s\n' "$merged" | jq . > "$tmp" || { rm -f "$tmp"; die 5 "could not serialize $path"; }
-  if [[ -f "$path" ]]; then
-    # Claude Code rewrites its own .claude.json while a session runs, and it
-    # does not honour any lock this script could take. So the file is re-read
-    # right before it is replaced: a change since the snapshot means a live
-    # session wrote login or onboarding state the merge would overwrite with
-    # a stale copy — refused, nothing moved, re-run when the session is idle
-    # (CodeAnt). The window between this read and the rename is as small as
-    # it can be made without a lock the other writer would respect.
-    if [[ "$(cat "$path")" != "$snapshot" ]]; then
-      rm -f "$tmp"
-      die 5 "$path changed while the merge was computed (a Claude Code session on this profile is writing it) — nothing was replaced; re-run share-config when that session is idle"
-    fi
-    # The keepsake is a COPY, and the merged file is then renamed over the
-    # original: the path never disappears, so a session that recreates the
-    # file in a move-then-install gap has no gap to hit, and a failed rename
-    # leaves the original in place rather than only under .pre-share
-    # (CodeRabbit).
-    dest="$(pre_share_dest "$path")"
-    cp -p "$path" "$dest" || { rm -f "$tmp"; die 5 "could not keep $path as $dest"; }
-    share_note_moved ".claude.json" "$dest"
+  staging="$(mktemp -d "$1/.claude.json.share.XXXXXX")" || die 5 "could not stage a merge in $1"
+  tmp="$staging/merged"
+  printf '%s\n' "$merged" | jq . > "$tmp" || { share_discard_staging "$staging"; die 5 "could not serialize $path"; }
+  if ! chmod "$mode" "$tmp" 2>/dev/null || [[ "$(file_mode "$tmp")" != "$mode" ]]; then
+    share_discard_staging "$staging"
+    die 5 "could not preserve the mode of $path — this path was left alone"
   fi
-  mv -f "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
+  if [[ "$had_original" == true ]]; then
+    if [[ ! -f "$path" || -L "$path" ]] || [[ "$(cat "$path")" != "$snapshot" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed before backup — this path was left alone; re-run share-config when the profile is idle"
+    fi
+    # Copy to an owned name. `link` publishes at exactly the chosen name
+    # and refuses an existing entry, even a symlink or directory that
+    # appeared after pre_share_dest checked it.
+    dest="$(pre_share_dest "$path")" || { share_discard_staging "$staging"; die 5 "could not choose a backup name for $path"; }
+    backup="$staging/backup"
+    cp -p "$path" "$backup" || { share_discard_staging "$staging"; die 5 "could not copy backup of $path"; }
+    if [[ ! -f "$backup" || -L "$backup" || "$(cat "$backup")" != "$snapshot" ||
+          "$(file_mode "$backup")" != "$mode" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed during backup — live path retained; re-run share-config when the profile is idle"
+    fi
+    # The backup may survive a refusal. Do not publish an older, broader
+    # mode if the profile is being tightened while this copy is in flight.
+    if ! chmod go-rwx "$backup" || [[ ! "$(file_mode "$backup")" =~ ^[0-7]{1,2}00$ ]]; then
+      share_discard_staging "$staging"
+      die 5 "could not restrict backup of $path — live path retained"
+    fi
+    link "$backup" "$dest" || { share_discard_staging "$staging"; die 5 "could not publish backup at $dest — live path retained"; }
+    # Keep the private alias for the final comparison. An unrelated writer
+    # can still race this check and the rename, so the profile must be idle.
+    if [[ ! -f "$dest" || -L "$dest" || ! "$backup" -ef "$dest" ||
+          ! -f "$path" || -L "$path" ]] || ! cmp -s "$backup" "$path" ||
+          [[ "$(file_mode "$path")" != "$mode" ]]; then
+      share_discard_staging "$staging"
+      die 5 "$path changed during backup — live path and backup retained; re-run share-config when the profile is idle"
+    fi
+  elif [[ -e "$path" || -L "$path" ]]; then
+    share_discard_staging "$staging"
+    die 5 "$path appeared while the merge was computed — this path was left alone; re-run share-config when the profile is idle"
+  fi
+  if ! mv -f "$tmp" "$path"; then
+    share_discard_staging "$staging"
+    die 5 "could not install $path"
+  fi
+  share_discard_staging "$staging"
+  if [[ -n "$backup" ]]; then share_note_moved ".claude.json" "$dest"; fi
   SHARE_MERGED=$((SHARE_MERGED + 1))
   echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
 }
@@ -2358,10 +2466,23 @@ action_share_config() {
   echo "${SELF_NAME}: done — linked $SHARE_LINKED, copied $SHARE_COPIED, merged $SHARE_MERGED, kept $SHARE_KEPT, moved aside $SHARE_MOVED, skipped $SHARE_SKIPPED. Nothing was deleted; *.pre-share holds whatever was in the way."
 }
 
+# shellcheck source=./lib/ai-quotas-layout.sh
+source "$SELF_DIR/lib/ai-quotas-layout.sh"
+
 case "$ACTION" in
+  ledger-hooks)
+    if [[ -e "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
+      [[ -f "$CONFIG_FILE" && -r "$CONFIG_FILE" ]] || die 5 "registry must be a readable regular file — refusing ledger-hooks"
+    fi
+    read_config >/dev/null
+    "$SELF_DIR/ai-account-ledger.sh" install-codex-hooks
+    ;;
   list)     action_list ;;
+  doctor)   action_doctor ;;
+  repair-layout) action_repair_layout ;;
   add)      action_add ;;
   nick)     action_nick ;;
+  sources)  action_sources ;;
   remove)   action_remove ;;
   relogin)  action_relogin ;;
   schedule) action_schedule ;;

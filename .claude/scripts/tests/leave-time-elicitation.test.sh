@@ -386,198 +386,67 @@ if [ -n "$RECORD_BLOCK" ] && [ -n "$REOPEN_BLOCK" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Part 3 — "No deadline today" writes an ET end-of-day marker
+# Part 3 — "No deadline today" publishes a bounded suppression marker
 # ---------------------------------------------------------------------------
 ND_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-no-deadline-until)" \
   || { fail 'could not extract the /leave-by no-deadline-until block'; ND_BLOCK=""; }
 
-STUB_ND="$TMP/session-state-nd.sh"
+STUB_ND="$TMP/prompt-reservation-nd.sh"
 STUB_ND_ARGS="$TMP/nd-args.txt"
 cat >"$STUB_ND" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"${STUB_ARGS_FILE:-/dev/null}"
-if [ -n "${STUB_FLAKE_ONCE_FILE:-}" ] && [ ! -f "$STUB_FLAKE_ONCE_FILE" ]; then
-  : >"$STUB_FLAKE_ONCE_FILE"
-  exit 6
-fi
-# READS succeed and return a plausible object; STUB_SET_RC models the WRITE's outcome
-# only. The suppression branch now reads `.leave` before CAS-ing it (issue #1679), so a
-# stub that applied the write's failure code to the read too would make every
-# "failed write surfaces its code" case fail on the read instead and never reach the
-# write under test. STUB_GET_RC exists for the cases that DO want an unreadable read.
-case "$1" in
-  --get|--get-json)
-    if [ -n "${STUB_GET_RC:-}" ] && [ "${STUB_GET_RC}" -ne 0 ]; then exit "$STUB_GET_RC"; fi
-    case "$2" in
-      *.window) printf '%s\n' "${STUB_WINDOW_JSON:-null}" ;;
-      *) printf '%s\n' "${STUB_LEAVE_JSON:-{\"active\":false\}}" ;;
-    esac
-    exit 0
-    ;;
-esac
+printf '%s\n' "$@" >"${STUB_ARGS_FILE:?}"
 exit "${STUB_SET_RC:-0}"
 STUB
 chmod +x "$STUB_ND"
 
-# Independent check that an epoch really is an ET midnight — recomputing the block's
-# own idiom here would only prove the test can copy/paste.
-# GNU form first, then BSD: `-r` on GNU coreutils means "reference FILE", so leading with
-# it makes the common CI interpreter take the fallback on every call.
 et_clock() {
   TZ='America/New_York' date -d "@$1" +'%H:%M' 2>/dev/null \
     || TZ='America/New_York' date -r "$1" +'%H:%M' 2>/dev/null
 }
 
+nd_case() (
+  set -euo pipefail
+  export STUB_ARGS_FILE="$STUB_ND_ARGS" STUB_SET_RC="$2"
+  REPO_KEY=org/repo; ND_SCOPE="$1"
+  PROMPT_RESERVE_SH="$STUB_ND"
+  LEAVE_PROMPT_GENERATION=0123456789abcdef0123456789abcdef
+  ELICIT_BASELINE="$3"
+  eval "$ND_BLOCK"
+  printf '%s|%s\n' "$NO_DEADLINE_RC" "$NO_DEADLINE_UNTIL"
+)
+
 if [ -n "$ND_BLOCK" ]; then
   group_start
-  : >"$STUB_ND_ARGS"
-  ND_OUT=$(
-    set -euo pipefail
-    export STUB_ARGS_FILE="$STUB_ND_ARGS" STUB_SET_RC=0
-    SESSION_STATE_SH="$STUB_ND"
-    REPO_KEY="org/repo"
-    eval "$ND_BLOCK"
-    printf '%s|%s\n' "$NO_DEADLINE_RC" "$NO_DEADLINE_UNTIL"
-  )
-  ND_RC="${ND_OUT%%|*}"
-  ND_EPOCH="${ND_OUT##*|}"
-  [ "$ND_RC" = "0" ] || fail "a successful marker write must report rc 0 (got: $ND_RC)"
-  case "$ND_EPOCH" in
-    [1-9]*) : ;;
-    *) fail "the marker must be a positive epoch (got: '$ND_EPOCH')" ;;
-  esac
-  if [ -n "$ND_EPOCH" ] && [ "$ND_EPOCH" -gt 0 ] 2>/dev/null; then
-    [ "$ND_EPOCH" -gt "$NOW" ] || fail 'the marker must be in the future, or it suppresses nothing'
-    [ "$ND_EPOCH" -le $(( NOW + 86400 + 7200 )) ] \
-      || fail 'the marker must be TOMORROW ET midnight, not a day-and-a-bit of blanket silence'
-    CLOCK=$(et_clock "$ND_EPOCH")
-    [ "$CLOCK" = "00:00" ] \
-      || fail "the marker must land on an ET midnight boundary, not now+86400 (ET clock: '$CLOCK')"
-  fi
-  if [ ! -s "$STUB_ND_ARGS" ]; then
-    fail 'the no-deadline path never wrote state'
+  baseline='{"window":null,"leave":null}'
+  ND_OUT="$(nd_case day 0 "$baseline")"
+  ND_RC="${ND_OUT%%|*}"; ND_EPOCH="${ND_OUT##*|}"
+  [ "$ND_RC" = 0 ] || fail "a stored marker must report success (got: $ND_RC)"
+  if [[ "$ND_EPOCH" =~ ^[1-9][0-9]*$ ]]; then
+    [ "$ND_EPOCH" -gt "$NOW" ] || fail 'the suppression marker must be in the future'
+    [ "$ND_EPOCH" -le $(( NOW + 86400 + 7200 )) ] || fail 'marker is later than tomorrow ET midnight'
+    [ "$(et_clock "$ND_EPOCH")" = '00:00' ] || fail 'the day marker must be an ET midnight'
   else
-    WRITE="$(cat "$STUB_ND_ARGS")"
-    # A CAS, not a bare --set: this replaces `.leave` WHOLESALE, so an explicit
-    # declaration landing between the entry guard and this write would be erased —
-    # deadline, checkin_epoch, and the winddown_task_id that is the only handle on its
-    # live Monitor (issue #1679, round 4).
-    case "$WRITE" in
-      *'--cas .repos["org/repo"].leave='*) : ;;
-      *) fail "the marker must be CAS-written to .repos[KEY].leave (got: $WRITE)" ;;
-    esac
-    case "$WRITE" in
-      *'--expect'*) : ;;
-      *) fail 'the .leave replacement must carry an --expect snapshot, or it is not a CAS' ;;
-    esac
-    case "$WRITE" in
-      *'--set .repos["org/repo"].leave='*)
-        fail 'the .leave replacement must not also be written unconditionally' ;;
-      *) : ;;
-    esac
-    case "$WRITE" in
-      *'"active":false'*) : ;;
-      *) fail 'declining a deadline must write active:false — a true here reads as a live wind-down' ;;
-    esac
-    # ARMING a window is banned; RETIRING a spent one is required (issue #1679). The two
-    # are opposite operations on the same path, so the ban is on the arming shape — a
-    # `--set .window={…}` carrying a deadline — not on the path appearing at all. Banning
-    # the path outright is what would forbid the spent-window clear below, and a "no
-    # deadline today" that leaves an expired deadline armed declines every later launch.
-    case "$WRITE" in
-      *'--set .repos["org/repo"].window={'*) fail 'declining a deadline must arm NO window' ;;
-      *) : ;;
-    esac
-    # The clear itself must be a CAS to null, never a bare --set: `.window` is shared with
-    # /pm planning deadlines, so an unconditional write is how this retires somebody
-    # else's live window on its way out.
-    case "$WRITE" in
-      *'--set .repos["org/repo"].window=null'*)
-        fail 'the spent-window clear must be a --cas, not an unconditional --set' ;;
-      *) : ;;
-    esac
-    case "$WRITE" in
-      *"\"no_deadline_until\":${ND_EPOCH}"*) : ;;
-      *) fail "the written marker must be the computed epoch (got: $WRITE)" ;;
-    esac
+    fail "the marker must be a positive epoch (got: $ND_EPOCH)"
   fi
+  args="$(cat "$STUB_ND_ARGS")"
+  [[ "$args" == *'commit-leave'* && "$args" == *"$baseline"* ]] \
+    || fail 'marker write must carry the original scheduling snapshot to the guarded helper'
+  case "$args" in *$'--window\nnull\n--leave\n'*) : ;; *) fail 'the same write must clear the spent window' ;; esac
+  marker="$(tail -1 "$STUB_ND_ARGS")"
+  jq -e --argjson until "$ND_EPOCH" '.active==false and .no_deadline_until==$until and .winddown_task_id==null' \
+    <<<"$marker" >/dev/null || fail 'suppression marker must not arm a Monitor or a deadline'
 
-  # The spent-window clear must EXIST, and must be gated on the deadline being in the past.
-  # Without it "no deadline today" is the most restrictive answer on the menu: the launch
-  # gate reads .window.deadline_epoch, an expired epoch is still a valid epoch, so
-  # REMAINING_SEC goes negative and every pipeline is declined (issue #1679, round 3).
-  case "$ND_BLOCK" in
-    *'--cas ".repos[\"$REPO_KEY\"].window=null"'*) : ;;
-    *) fail 'the no-deadline branch must retire a SPENT window, or it declines every later launch' ;;
-  esac
-  case "$ND_BLOCK" in
-    *'-le "$(date -u +%s)"'*) : ;;
-    *) fail 'the spent-window clear must be gated on the deadline being in the past, never unconditional' ;;
-  esac
-
-  # A failed write is reported, never silently treated as "don't ask again".
-  ND_FAIL=$(
-    set -euo pipefail
-    export STUB_ARGS_FILE=/dev/null STUB_SET_RC=6
-    SESSION_STATE_SH="$STUB_ND"
-    REPO_KEY="org/repo"
-    eval "$ND_BLOCK"
-    printf '%s\n' "$NO_DEADLINE_RC"
-  )
-  [ "$ND_FAIL" = "6" ] \
-    || fail "a failed marker write must surface its exit code, not report success (got: $ND_FAIL)"
-
-  # A DISMISSED menu must still write a marker — writing nothing is the nag loop, since
-  # repo state is the only thing that suppresses the question. It is bounded at an hour,
-  # not the rest of the day: a dismissal is "not now", not "no deadline today".
-  DISMISS_ARGS="$TMP/nd-dismiss-args.txt"
-  : >"$DISMISS_ARGS"
-  # Read the clock HERE, not from the suite-level NOW: Parts 1-3 run real subprocesses,
-  # and a minute of elapsed time would push the marker past a bound measured from a
-  # timestamp taken before them, failing on machine speed rather than on behaviour.
-  DISMISS_NOW=$(date -u +%s)
-  DISMISS_OUT=$(
-    set -euo pipefail
-    export STUB_ARGS_FILE="$DISMISS_ARGS" STUB_SET_RC=0 STUB_FLAKE_ONCE_FILE=""
-    SESSION_STATE_SH="$STUB_ND"
-    REPO_KEY="org/repo"
-    ND_SCOPE=dismissed
-    eval "$ND_BLOCK"
-    printf '%s|%s\n' "$NO_DEADLINE_RC" "$NO_DEADLINE_UNTIL"
-  )
-  DISMISS_RC="${DISMISS_OUT%%|*}"
-  DISMISS_EPOCH="${DISMISS_OUT##*|}"
-  [ "$DISMISS_RC" = "0" ] \
-    || fail "a dismissed menu must still write its suppression marker (rc: $DISMISS_RC)"
-  [ -s "$DISMISS_ARGS" ] \
-    || fail 'a dismissed menu wrote nothing — the gate would re-ask on the very next launch'
-  if [ -n "$DISMISS_EPOCH" ] && [ "$DISMISS_EPOCH" -gt 0 ] 2>/dev/null; then
-    [ "$DISMISS_EPOCH" -gt "$DISMISS_NOW" ] || fail 'a dismissal marker must be in the future'
-    # Strictly shorter than the day marker: this is the assertion that would fail if the
-    # dismissal path were quietly reusing the end-of-day boundary.
-    [ "$DISMISS_EPOCH" -le $(( DISMISS_NOW + 3660 )) ] \
-      || fail "a dismissal must suppress for about an hour, not the rest of the day (got: $DISMISS_EPOCH)"
-  else
-    fail "a dismissed menu must produce a positive epoch (got: '$DISMISS_EPOCH')"
-  fi
-
-  # ...but a lock timeout that clears on the retry must NOT be reported as a failure, or
-  # the question fires again on the very next launch despite the marker being written.
-  ND_FLAKE_MARK="$TMP/nd-flake-once"
-  rm -f "$ND_FLAKE_MARK"
-  ND_RETRY=$(
-    set -euo pipefail
-    export STUB_ARGS_FILE=/dev/null STUB_SET_RC=0 STUB_FLAKE_ONCE_FILE="$ND_FLAKE_MARK"
-    SESSION_STATE_SH="$STUB_ND"
-    REPO_KEY="org/repo"
-    eval "$ND_BLOCK"
-    printf '%s\n' "$NO_DEADLINE_RC"
-  )
-  [ "$ND_RETRY" = "0" ] \
-    || fail "a lock timeout on the marker write must be retried once (got: $ND_RETRY)"
-  rm -f "$ND_FLAKE_MARK"
-
-  ok_group 'no-deadline-today: a DST-safe ET end-of-day marker, active:false, no window armed'
+  ND_OUT="$(nd_case dismissed 0 "$baseline")"; DISMISS="${ND_OUT##*|}"
+  [[ "${ND_OUT%%|*}" == 0 && "$DISMISS" -ge $((NOW + 3590)) && "$DISMISS" -le $((NOW + 3610)) ]] \
+    || fail "dismissal must suppress for about one hour (got: $ND_OUT)"
+  ND_OUT="$(nd_case day 10 "$baseline")"
+  [ "${ND_OUT%%|*}" = 10 ] || fail 'a competing declaration must be reported as a lost write'
+  : > "$STUB_ND_ARGS"
+  ND_OUT="$(nd_case day 0 '')"
+  [ "${ND_OUT%%|*}" = 20 ] && [ ! -s "$STUB_ND_ARGS" ] \
+    || fail 'no baseline must not authorize a write'
+  ok_group 'no deadline today: bounded marker, original snapshot, and atomic retirement request'
 fi
 
 # ---------------------------------------------------------------------------
@@ -719,34 +588,14 @@ if [ -n "$MARKER_BLOCK" ]; then
   [ "$(printf '%s' '{"winddown_scheduled":false}' | jq -r '.winddown_scheduled // empty')" = "" ] \
     || fail 'control failed: `// empty` was expected to swallow a literal false'
 
-  # The marker must ride in Step 5's `.leave` literal, not only in the re-assert above.
-  # A record carrying active:true with the field still absent reads as "arm as usual" to
-  # Step 11 and /pause-resume Step 5, so a recovery landing between the two writes arms a
-  # check-in the user never asked for (issue #1679, CodeAnt/Graphite round 2).
-  PRESET_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-elicit-planning-only-preset)" \
-    || { fail 'the elicited branch must preset WINDDOWN_SCHEDULED before Step 1'; PRESET_BLOCK=""; }
-  # Blank it on failure before the guard, so a partial extraction can never reach `eval`
-  # and turn a missing-anchor failure into a confusing shell error (same idiom as MARKER_BLOCK).
-  if [ -n "$PRESET_BLOCK" ]; then
-    PRESET_VAL=$(
-      set -euo pipefail
-      eval "$PRESET_BLOCK"
-      printf '%s\n' "$WINDDOWN_SCHEDULED"
-    )
-    [ "$PRESET_VAL" = "false" ] \
-      || fail "the elicited preset must set WINDDOWN_SCHEDULED=false (got: $PRESET_VAL)"
-  fi
-
+  # Step 5 derives its planning-only flag from an explicitly bound invocation
+  # mode in the same shell; neither a missing mode nor a missing token can
+  # select the direct declaration path.
   ARM_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-arm-state)" \
     || { fail 'could not extract the /leave-by arm-state block'; ARM_BLOCK=""; }
   case "$ARM_BLOCK" in
-    *'\"winddown_scheduled\":${WINDDOWN_SCHEDULED:-true}'*) : ;;
-    *) fail 'Step 5 must publish winddown_scheduled inside the .leave literal, defaulting to true' ;;
-  esac
-  # The default must keep every non-elicited caller arming as before.
-  case "$ARM_BLOCK" in
-    *'WINDDOWN_SCHEDULED:-true'*) : ;;
-    *) fail 'an unset WINDDOWN_SCHEDULED must default to true, or explicit declarations stop arming' ;;
+    *'elicited) WINDDOWN_SCHEDULED=false'*'direct) WINDDOWN_SCHEDULED=true'*'ARM_RC=20'*) : ;;
+    *) fail 'Step 5 must distinguish elicited, direct and unavailable mode' ;;
   esac
 
   # A whole-object `--expect` on `.window` can lose to a `launch_decisions` write that never
@@ -754,18 +603,10 @@ if [ -n "$MARKER_BLOCK" ]; then
   # armed and declines every later launch — the very outcome the deadline-identity comparison
   # was added to prevent, reintroduced by the guard meant to make the clear safe. Both window
   # CAS sites must re-read on exit 7 and retry while the deadline still matches.
-  for PAIR in 'RECHECK_DEADLINE:RETIRE_DEADLINE' 'ND_RECHECK_EPOCH:ND_WINDOW_EPOCH'; do
-    RECHECK_VAR="${PAIR%%:*}"; AGAINST_VAR="${PAIR##*:}"
-    grep -Fq "\"\$$RECHECK_VAR\" = \"\$$AGAINST_VAR\"" "$ROOT/$LEAVE_SKILL" \
-      || fail "a window CAS losing on exit 7 must re-read and compare $RECHECK_VAR against $AGAINST_VAR before standing down"
-  done
-  # Bounded: one re-read and one retry, never a loop that spins against real churn. A
-  # `while` keyed on either CAS rc would retry forever under sustained contention and hang
-  # the wind-down, so assert the retry is a plain `if` at both sites.
-  [ "$(grep -c 'RECHECK' "$ROOT/$LEAVE_SKILL")" -ge 4 ] \
-    || fail 'both window CAS sites need the exit-7 re-read, not just one'
-  [ "$(grep -cE 'while +\[ +"\$(WINDOW_CAS_RC|ND_CAS_RC)"' "$ROOT/$LEAVE_SKILL")" -eq 0 ] \
-    || fail 'the exit-7 CAS retry must be a single `if`, not an unbounded `while` loop'
+  grep -Fq '"$RECHECK_DEADLINE" = "$RETIRE_DEADLINE"' "$ROOT/$LEAVE_SKILL" \
+    || fail 'window retirement must recheck the deadline after a competing decision write'
+  [ "$(grep -cE 'while +\[ +"\$WINDOW_CAS_RC"' "$ROOT/$LEAVE_SKILL")" -eq 0 ] \
+    || fail 'window retirement must not spin indefinitely'
 
   ok_group 'planning-only marker: published atomically by Step 5, never re-asserted blindly'
 fi

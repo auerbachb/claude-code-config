@@ -24,19 +24,25 @@
 #
 #   mode legacy (no `## Review policy`), or that helper missing — exactly the
 #   pre-#1749 Step 3b, in this order:
-#     1. reviewer-activity.sh decides which of coderabbit / graphite / codeant
+#     1. reviewer-activity.sh decides which of coderabbit / codeant
 #        already auto-triggered on the pushed SHA since --pushed-at.
 #     2. coderabbit missing → `@coderabbitai full review`, unless 2 were posted
 #        on the PR in the trailing hour; a successful post records the slot
 #        with cr-review-hourly.sh --record-explicit.
-#     3. graphite missing → `@graphite-app re-review`.
-#     4. codeant missing → `@codeant-ai review`.
-#     5. `@cursor review` once per push, skipped when bugbot-tier-excluded.sh
+#     3. codeant missing → `@codeant-ai review`.
+#        (Graphite was a step here until its retirement on 2026-11-03, #1889.)
+#     4. BugBot (`@cursor review`): skipped when bugbot-tier-excluded.sh
 #        excludes BugBot, then when bugbot-refused-head.sh says BugBot already
 #        refused the pushed SHA, then — LAST — when review-daily-cap.sh answers
 #        a validated `over`, which also appends `BugBot skipped: daily cap ($X
 #        of $Y today)` once per HEAD under the PR body's `## Review notes`
-#        (pr-body-review-note.sh). An `unknown` cap or a missing helper posts.
+#        (pr-body-review-note.sh). Otherwise NOTHING is posted (issue #1897):
+#        BugBot is a paid review and needs the owner's explicit approval, so
+#        the step prints `BugBot not invited — paid review requires owner
+#        approval`. The tiered path below prints the same line for the
+#        helper's `approval_required`. At that same step an owner grant for
+#        this PR and pushed SHA (issue #1898) is spent instead:
+#        paid-review-grant.sh --trigger posts `@cursor review` once.
 #
 #   mode tiered / fail_closed — only what the review tier allows on the pushed
 #   SHA, same order: a reviewer that already auto-triggered is skipped; an
@@ -107,6 +113,28 @@ BUGBOT_TIER_SH="$(resolve bugbot-tier-excluded.sh || true)"
 REVIEW_DAILY_CAP_SH="$(resolve review-daily-cap.sh || true)"
 PR_BODY_NOTE_SH="$(resolve pr-body-review-note.sh || true)"
 TRIGGERS_SH="$(resolve review-triggers-allowed.sh || true)"
+PAID_GRANT_SH="$(resolve paid-review-grant.sh || true)"
+
+# BugBot's last step (issue #1898): spend an owner grant for this PR and pushed
+# SHA, or print the #1897 approval skip. paid-review-grant.sh posts the trigger
+# itself and answers `triggered` only after a successful post; every other
+# answer — and a missing helper — keeps the skip (fail closed).
+cursor_grant_or_skip() {
+  local st=""
+  if [[ -z "$PAID_GRANT_SH" ]]; then
+    echo "[REVIEWERS] paid-review-grant.sh not found (checked all three paths) — no owner grant can be spent"
+  else
+    # Refusals exit non-zero; keep the STATUS line whatever the exit code.
+    st="$("$PAID_GRANT_SH" --trigger "$PR_NUMBER" --vendor cursor --head "$PUSHED_SHA" --repo "$REPO_FULL" | sed -n 's/^STATUS=//p')" || true
+  fi
+  if [[ "$st" == "triggered" ]]; then
+    echo "[REVIEWERS] posted @cursor review under the owner's grant for ${PUSHED_SHA:0:7} (now used, #1898)"
+  elif [[ "$st" == "trigger_failed" ]]; then
+    echo "[REVIEWERS] FAILED to post @cursor review under the owner's grant (trigger_failed; the grant was released)" >&2
+  else
+    echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Which reviewers already auto-triggered on the pushed SHA (shared by both paths).
@@ -118,7 +146,7 @@ else
   echo "[REVIEWERS] reviewer-activity.sh not found — re-run after .claude/scripts/ is synced from main" >&2
 fi
 jq -e 'type == "object"' <<<"$REVIEWER_ACTIVITY" >/dev/null 2>&1 \
-  || REVIEWER_ACTIVITY='{"coderabbit":false,"graphite":false,"codeant":false}'
+  || REVIEWER_ACTIVITY='{"coderabbit":false,"codeant":false}'
 jq -r 'to_entries[] | "[REVIEWERS] \(.key): \(if .value then "auto-triggered" else "missing" end)"' <<<"$REVIEWER_ACTIVITY"
 active() { [[ "$(jq -r --arg k "$1" '.[$k] // false' <<<"$REVIEWER_ACTIVITY")" == "true" ]]; }
 
@@ -186,10 +214,6 @@ fi
 if [[ "$TRIGGER_MODE" == "legacy" ]]; then
   # ---- the pre-#1749 Step 3b, unchanged in order and conditions ----
   if ! active coderabbit; then post_cr || true; fi
-  if ! active graphite; then
-    gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@graphite-app re-review" \
-      || echo "[REVIEWERS] FAILED to post @graphite-app re-review" >&2
-  fi
   if ! active codeant; then
     gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@codeant-ai review" \
       || echo "[REVIEWERS] FAILED to post @codeant-ai review" >&2
@@ -218,15 +242,20 @@ if [[ "$TRIGGER_MODE" == "legacy" ]]; then
       || echo "[REVIEWERS] BugBot daily cap unknown (rc=$rc) — posting; the vendor cap stays the hard stop"
     return 1
   }
-  if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_GATE=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$REPO_FULL" 2>/dev/null); then
-    echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
+  if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_RESULT=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$REPO_FULL" --why 2>/dev/null); then
+    TIER_GATE="${TIER_RESULT%%$'\t'*}"
+    if [[ "$TIER_RESULT" == *$'\t'escalation_off ]]; then
+      echo "[REVIEWERS] skipping @cursor review — REVIEW_ESCALATION=off (repo turned escalation off; gate $TIER_GATE)"
+    else
+      echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
+    fi
   elif [[ -n "$BUGBOT_REFUSED_SH" ]] && GH_REPO="$REPO_FULL" "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
     echo "[REVIEWERS] skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1204)"
   elif bugbot_cap_over; then
     note_cap_skip "$BUGBOT_CAP_JSON"
   else
-    gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@cursor review" \
-      || echo "[REVIEWERS] FAILED to post @cursor review" >&2
+    # Last step of the chain (issue #1897): the earlier skips keep precedence.
+    cursor_grant_or_skip
   fi
   echo "TRIGGER_MODE=legacy"
   exit 0
@@ -235,10 +264,9 @@ fi
 # ---- tier-aware: only what the review tier allows on the pushed SHA ----
 GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
 echo "[REVIEWERS] review tier $GATE_TXT ($TRIGGER_MODE): posting only what it allows on ${PUSHED_SHA:0:7} (#1749)"
-for key in coderabbit graphite codeant cursor; do
+for key in coderabbit codeant cursor; do
   case "$key" in
     coderabbit) body="@coderabbitai full review" ;;
-    graphite) body="@graphite-app re-review" ;;
     codeant) body="@codeant-ai review" ;;
     cursor) body="@cursor review" ;;
   esac
@@ -251,6 +279,11 @@ for key in coderabbit graphite codeant cursor; do
   if [[ "$kind" == "allowed" && "$key" == "coderabbit" && "$CR_TRIGGER_COUNT_LAST_HOUR" -ge 2 ]]; then
     echo "[REVIEWERS] coderabbit trigger budget exhausted (>=2 in the last hour); skipping manual trigger"
     continue
+  fi
+  # Local guard (issue #1897): BugBot is paid — never claimed or posted here,
+  # whatever the helper answered.
+  if [[ "$key" == "cursor" && "$kind" == "allowed" ]]; then
+    kind="excluded"; reason="approval_required"
   fi
   if [[ "$kind" == "allowed" ]]; then
     C_RC=0
@@ -278,7 +311,9 @@ for key in coderabbit graphite codeant cursor; do
     TALLY="$(jq -c '.reviewers.cursor.daily_cap // empty' <<<"$TRIGGER_JSON")"
     if [[ -n "$TALLY" ]]; then note_cap_skip "$TALLY"; continue; fi
   fi
-  if [[ "$kind" == "excluded" ]]; then
+  if [[ "$key" == "cursor" && "$reason" == "approval_required" ]]; then
+    cursor_grant_or_skip
+  elif [[ "$kind" == "excluded" ]]; then
     echo "[REVIEWERS] skipping $body — review tier $GATE_TXT: $reason"
   else
     echo "[REVIEWERS] deferring $body — review tier $GATE_TXT: $reason (pr-preflight.sh asks again)"

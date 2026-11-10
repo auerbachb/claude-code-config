@@ -60,14 +60,16 @@ if [[ -n "$COMPACT_SUMMARY" ]]; then
 Context compaction just completed. Run the Post-Compaction Recovery sequence from
 .claude/rules/monitor-mode.md §\"Post-Compaction Recovery\" now:
 
-1. Timestamp and rerun session-start checks.
+1. Silently rerun session-start checks.
 2. Read session-state.json + handoffs; reconcile each open PR on GitHub (all 3
    endpoints per cr-github-review.md).
 3. Per polled PR: polling-state-gate.sh <N> --verify-state (optional --root-repo <path>),
    then polling-state-gate.sh <N> (shells merge-gate.sh).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled
    transitions; launch as needed.
-5. Resume monitoring — one heartbeat line, no report.
+5. Resume monitoring silently. Surface an explicit status request, requested periodic
+   report, blocker, failure, decision, safety event, stall/unknown health, stopped or
+   exhausted recovery, or defined exception; routine recovery needs no narration.
 
 Compact summary from the runtime:
 ${COMPACT_SUMMARY}"
@@ -77,14 +79,16 @@ else
 Context compaction just completed. Run the Post-Compaction Recovery sequence from
 .claude/rules/monitor-mode.md §\"Post-Compaction Recovery\" now:
 
-1. Timestamp and rerun session-start checks.
+1. Silently rerun session-start checks.
 2. Read session-state.json + handoffs; reconcile each open PR on GitHub (all 3
    endpoints per cr-github-review.md).
 3. Per polled PR: polling-state-gate.sh <N> --verify-state (optional --root-repo <path>),
    then polling-state-gate.sh <N> (shells merge-gate.sh).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled
    transitions; launch as needed.
-5. Resume monitoring — one heartbeat line, no report."
+5. Resume monitoring silently. Surface an explicit status request, requested periodic
+   report, blocker, failure, decision, safety event, stall/unknown health, stopped or
+   exhausted recovery, or defined exception; routine recovery needs no narration."
 fi
 
 # Emit the additionalContext. jq is preferred for correct JSON encoding; plain

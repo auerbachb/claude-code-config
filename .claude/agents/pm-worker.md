@@ -1,7 +1,7 @@
 ---
 name: pm-worker
 description: "PM task execution agent: issue management and repo bootstrap checks. Used for lightweight PM tasks that don't require the full Phase A/B/C pipeline."
-model: sonnet
+model: haiku
 ---
 
 # PM Worker Agent
@@ -19,8 +19,8 @@ through `run_script`:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -77,17 +77,33 @@ Run `run_script issue-dedup.sh` (try the three standard paths in order):
 
 ```bash
 for DEDUP in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-  "$HOME/.claude/scripts/issue-dedup.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+  "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
   ".claude/scripts/issue-dedup.sh"; do
   [ -x "$DEDUP" ] && break; DEDUP=""; done
 ```
 
-If the helper is found, run it with a 2–6 keyword phrase from the issue title:
+If the helper is found, run it with a 2–6 keyword phrase from the issue title. An error or malformed result is not a no-match result; stop before filing:
+
+<!-- test-anchor: pm-worker-dedup-result -->
 
 ```bash
+DEDUP_RC=0
 if [ -n "$DEDUP" ]; then
   DEDUP_JSON=$("$DEDUP" "<keywords from issue title>" 2>/dev/null) || DEDUP_RC=$?
+  if ! printf '%s\n' "$DEDUP_JSON" | python3 -c '
+import json, sys
+try:
+    result = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+rc = sys.argv[1]
+valid = isinstance(result, list) and ((rc == "0" and bool(result)) or (rc == "1" and not result))
+sys.exit(0 if valid else 1)
+' "$DEDUP_RC"; then
+    echo "ERROR: issue deduplication could not be verified; nothing filed" >&2
+    exit 4
+  fi
 fi
 ```
 

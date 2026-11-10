@@ -94,6 +94,15 @@
 #      that lists suggestions is deliberately NOT matched: it reaches the default as a finding.
 #      These shapes reach this file only since enrich() admitted every review bot (#1748); before
 #      that only poll-watermarks.sh's array mode classified them.
+#      CodeAnt's "PR Risk" summary (#1853) is the last of these, and the strictest: it is an
+#      acknowledgment ONLY when the body carries all of the "CodeAnt PR Risk" heading text (classify
+#      sees no author, so the heading is CodeAnt's identity), a "Low Risk" header, the explicit
+#      "no actionable issues" statement, and no "Medium Risk"/"High Risk" text. A Low Risk summary
+#      without that statement is NOT matched — the older "The PR appears safe to merge; ..." wording
+#      sometimes carries a real caveat (PR #1799) — so it stays a finding on purpose. Medium/High
+#      summaries carry a 🟡/🔴 badge caught above; the risk-level exclusion covers the badge-less
+#      template too. Late placement keeps a summary that adds finding language a finding, and any
+#      rewording of an anchor fails closed to the default.
 #   7. Default is finding — under-classifying is the failure mode this skill prevents.
 
 def classify:
@@ -125,6 +134,8 @@ def classify:
   elif (test("CodeAnt Nitpicks"; "i") and test("No threshold-suppressed suggestions found"; "i")) then {class: "acknowledgment", reason: "CodeAnt empty nitpicks summary"}
   elif test("Skipping CodeAnt AI review"; "i") then {class: "acknowledgment", reason: "CodeAnt review-skipped notice"}
   elif test("does not have a PR Review subscription"; "i") then {class: "acknowledgment", reason: "CodeAnt subscription notice"}
+  elif (test("CodeAnt PR Risk"; "i") and test("\\blow\\s+risk\\b"; "i") and test("no actionable issues"; "i")
+        and (test("\\b(medium|high)\\s+risk\\b"; "i") | not)) then {class: "acknowledgment", reason: "CodeAnt low-risk summary"}
   else {class: "finding", reason: "default — no pattern matched"}
   end;
 
@@ -135,6 +146,7 @@ def classify:
 # A shorter list here silently zeroes finding_count for the missing bot, and
 # with it --wait-state-eval's new_findings, so /fixpr's wait loop reports clean
 # while that bot's finding sits open on HEAD.
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical comments still classify.
 def review_bots:
   ["coderabbitai[bot]", "cursor[bot]", "codeant-ai[bot]", "greptile-apps[bot]", "graphite-app[bot]"];
 

@@ -72,8 +72,14 @@ echo "== Scenario (A): healthy control — the trap does not disturb a normal ru
 silent_fixture
 OUT=$(run_script 2>"$TMP/a-stderr.txt"); RC=$?
 check_eq "(A) exit 0" 0 "$RC"
-check_eq "(A) a real verdict is still printed" "STATUS=switch_bugbot" "$OUT"
-check_eq "(A) no diagnostic on a clean run" "0" "$(count_diag "$TMP/a-stderr.txt")"
+check_eq "(A) a real verdict is still printed" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
+PAID_NOTICE="escalate-review.sh: paid_route=switch_bugbot — a paid review (BugBot or Greptile) needs the owner's explicit approval in chat"
+# The paid-route notice (issue #1897) is part of the no_reviewer verdict, not a
+# failure diagnostic, so it is the one line excluded here.
+check_eq "(A) no diagnostic on a clean run" "0" \
+  "$(grep -vF "$PAID_NOTICE" "$TMP/a-stderr.txt" | grep -c '^escalate-review\.sh: ' || true)"
+check_eq "(A) the exact paid-route notice is printed once" "1" \
+  "$(grep -cF "$PAID_NOTICE" "$TMP/a-stderr.txt" || true)"
 
 ############################################################################
 echo "== Scenario (B): a genuine shell 126 at an unguarded substitution =="

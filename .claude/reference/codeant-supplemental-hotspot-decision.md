@@ -1,16 +1,18 @@
-<!-- churn-hotspot: .claude/reference/codeant-graphite-supplemental.md -->
-# Hotspot Decision — codeant-graphite-supplemental.md
+<!-- churn-hotspot: .claude/reference/codeant-supplemental.md -->
+# Hotspot Decision — codeant-supplemental.md
+
+> **Retired 2026-11-03 (Issue #1889):** Graphite AI review was cancelled (Team plan, $450 pro-rated refund) and this file's subject was renamed from `codeant-graphite-supplemental.md` to the CodeAnt-only `codeant-supplemental.md`. The decision below is historical.
 
 **Verdict:** KEEP + minor factual correction (Graphite status update)
 **Decided:** 2026-08-07
 **Issue:** #1083
 **Reporter:** `/wrap` post-merge churn report (PR #1082)
 
-Reference for Issue #1083 (`.claude/reference/codeant-graphite-supplemental.md` churn hotspot). Not auto-loaded — the rule corpus carries none of this.
+Reference for Issue #1083 (`.claude/reference/codeant-supplemental.md` churn hotspot). Not auto-loaded — the rule corpus carries none of this.
 
 ## Churn summary
 
-`churn-hotspots.sh` flagged `.claude/reference/codeant-graphite-supplemental.md` as touched by 3 distinct merged PRs since 2026-07-24: PRs #821, #858, and #946.
+`churn-hotspots.sh` flagged `.claude/reference/codeant-supplemental.md` as touched by 3 distinct merged PRs since 2026-07-24: PRs #821, #858, and #946.
 
 | PR | Title | Churn class | Sections affected |
 |----|-------|-------------|-------------------|
@@ -20,7 +22,7 @@ Reference for Issue #1083 (`.claude/reference/codeant-graphite-supplemental.md` 
 
 ## Per-section churn attribution (evidence)
 
-Attribution verified via `git log --follow -p -- .claude/reference/codeant-graphite-supplemental.md` and `gh pr diff` for all three PRs.
+Attribution verified via `git log --follow -p -- .claude/reference/codeant-supplemental.md` and `gh pr diff` for all three PRs.
 
 ### PR #821 — Install-state subsection creation (Issue #819)
 
@@ -37,7 +39,7 @@ The subsection introduced:
 PR #821 also added the same install-state facts as a "Standing state update" addendum in
 `.claude/memory/feedback_review_clis_down_app_independent.md` (adjudicated separately in
 Issue #1074). The `feedback-review-clis-down-app-independent-hotspot-decision.md` decision
-record confirmed this file (`codeant-graphite-supplemental.md`) §Install state as the
+record confirmed this file (`codeant-supplemental.md`) §Install state as the
 **canonical** owner; the memory addendum was later trimmed to a pointer by Issue #1074's PR.
 
 Conflict rounds: 0.
@@ -117,7 +119,7 @@ The Install state section is the canonical owner of these facts, as confirmed by
 
 2. `local-review-cli-failure-modes.md` §CodeAnt CLI not installed — cross-references the restore
    runbook here ("Full runbook with Option B (API key) and the proof-run stderr check:
-   `.claude/reference/codeant-graphite-supplemental.md` §Install state"). It does not restate
+   `.claude/reference/codeant-supplemental.md` §Install state"). It does not restate
    the runbook content; it delegates.
 
 3. The auth wall classification and restore runbook commands are unique to this file.
@@ -207,9 +209,9 @@ surrounding context warrants preservation.
 ## Remediation and verification
 
 Changes in this PR:
-1. `.claude/reference/codeant-graphite-supplemental.md` — Graphite status-update note appended
+1. `.claude/reference/codeant-supplemental.md` — Graphite status-update note appended
    to the Known Outage section.
-2. `.claude/reference/codeant-graphite-supplemental-hotspot-decision.md` — this decision record.
+2. `.claude/reference/codeant-supplemental-hotspot-decision.md` — this decision record.
 3. `.claude/reference/README.md` — one catalog bullet added.
 
 `reference-catalog-lint.sh` must pass. `rule-lint.sh` and `verbatim-block-lint.sh` must pass
@@ -225,7 +227,7 @@ unchanged. `git diff origin/main...HEAD --stat` shows only these three files.
 
 ## Related
 
-- `.claude/reference/codeant-graphite-supplemental.md` — the adjudicated file; CodeAnt and Graphite supplemental review protocol + CodeAnt CLI state
+- `.claude/reference/codeant-supplemental.md` — the adjudicated file; CodeAnt and Graphite supplemental review protocol + CodeAnt CLI state
 - `.claude/reference/feedback-review-clis-down-app-independent-hotspot-decision.md` — companion decision (Issue #1074); confirmed §Install state as canonical; the addendum in the memory file was trimmed to a pointer here
 - `.claude/reference/local-review-cli-failure-modes.md` — cross-references §Install state runbook; §CodeAnt CLI not installed is the sibling failure-mode doc
 - `.claude/reference/local-review-cli-failure-modes-hotspot-decision.md` — sibling file hotspot (similar 3-PR window, same contributing PRs #821 and #858); verdict KEEP

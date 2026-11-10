@@ -26,6 +26,7 @@ export QUOTA_RESERVE_DIR="$TMP/qr"
 export QUOTA_RESERVE_CLAUDE_JSON="$TMP/session-claude.json"
 export QUOTA_RESERVE_AI_QUOTAS_SH="$TMP/bin/ai-quotas.sh"
 export QUOTA_RESERVE_NOTIFY_CMD="$TMP/bin/notify.sh"
+export AI_QUOTAS_CONFIG="$TMP/quota-launchers.json"
 mkdir -p "$TMP/bin"
 
 PASS=0; FAILED=0
@@ -44,7 +45,7 @@ check_contains() { # <haystack> <needle> <label>
 STUB_ROWS="$TMP/rows.json"; STUB_FAIL="$TMP/reader-fails"; READER_LOG="$TMP/reader.log"; NOTIFY_LOG="$TMP/notify.log"
 cat > "$TMP/bin/ai-quotas.sh" <<EOF
 #!/usr/bin/env bash
-printf 'call history=%s args=%s\n' "\${AI_QUOTAS_HISTORY:-<unset>}" "\$*" >> "$READER_LOG"
+printf 'call history=%s source=%s args=%s\n' "\${AI_QUOTAS_HISTORY:-<unset>}" "\${AI_QUOTAS_SOURCE:-<unset>}" "\$*" >> "$READER_LOG"
 [[ -f "$STUB_FAIL" ]] && exit 1
 cat "$STUB_ROWS"
 EOF
@@ -86,7 +87,9 @@ decide() { # <payload-json> -> verdict line
   printf '%s' "$1" | "$SCRIPT" --decide 2>/dev/null
 }
 payload() { # <tool> [extra-json-object]
-  jq -nc --arg t "$1" --argjson x "${2:-{\}}" '{tool_name: $t, session_id: "sess-1", tool_input: {}, cwd: "/tmp"} + $x'
+  local extra="${2:-}"
+  [[ -n "$extra" ]] || extra='{}'
+  jq -nc --arg t "$1" --argjson x "$extra" '{tool_name: $t, session_id: "sess-1", tool_input: {}, cwd: "/tmp"} + $x'
 }
 
 CLAUDE_A="a@example.com"; CLAUDE_B="b@example.com"; CLAUDE_D="d@example.com"
@@ -119,6 +122,8 @@ check_eq "$(jq -r '[.accounts[].provider] | unique | join(",")' "$QUOTA_RESERVE_
 check_eq "$(ls -l "$QUOTA_RESERVE_DIR/marker.json" | cut -c1-10)" "-rw-------" "the marker is private to the owner"
 check_contains "$(cat "$READER_LOG")" "history=$QUOTA_RESERVE_DIR/reader-history.jsonl" \
   "the reader runs with its history redirected, so refreshes do not pollute the daily record"
+check_contains "$(cat "$READER_LOG")" "source=manual" \
+  "reserve refresh explicitly clears scheduled notification context"
 
 # threshold: env, config, precedence, garbage
 reset_state
@@ -210,6 +215,73 @@ check_contains "$(tail -n 1 "$NOTIFY_LOG")" "back under the limit" "saying work 
 rows "$(row claude a@example.com 'Claude A' $CLAUDE_A 7-day needs-login null)"
 "$SCRIPT" --refresh --force
 check_eq "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" "2" "ok to unknown is not announced"
+
+# Real roster helper and launcher registry, synthetic quotas and notifier.
+reset_state
+export QUOTA_RESERVE_NOW=2000000
+mkdir -p "$TMP/profile-a" "$TMP/profile-b" "$TMP/profile-d"
+jq -n --arg p "$TMP" '{schema_version:"1.0",accounts:[
+  {provider:"claude",label:"a@example.com",nickname:"Claude A",profile_dir:($p+"/profile-a")},
+  {provider:"claude",label:"b@example.com",nickname:"Claude B",profile_dir:($p+"/profile-b")},
+  {provider:"claude",label:"d@example.com",nickname:"Claude D",profile_dir:($p+"/profile-d")} ]}' > "$AI_QUOTAS_CONFIG"
+a_week() { row claude "$CLAUDE_A" 'Claude A' "$CLAUDE_A" 7-day "${2:-ok}" "$1"; }
+b_week() { row claude "$CLAUDE_B" 'Claude B' "$CLAUDE_B" 7-day "${2:-ok}" "$1"; }
+d_week() { row claude "$CLAUDE_D" 'Claude D' "$CLAUDE_D" 7-day "${2:-ok}" "$1"; }
+notices() { if [[ -f "$NOTIFY_LOG" ]]; then wc -l < "$NOTIFY_LOG" | tr -d ' '; else echo 0; fi; }
+rows "$(a_week 90)" "$(b_week 25)" "$(d_week 45)"
+"$SCRIPT" --refresh --force
+rows "$(a_week 96)" "$(b_week 25)" "$(d_week 45)"
+"$SCRIPT" --refresh --force
+check_eq "$(notices)" 1 "the suggestion is part of the single crossing notice"
+check_contains "$(cat "$NOTIFY_LOG")" "/go-on --resume-options --target claude-b" "the exact best alternate is passed to the manual list"
+check_eq "$(reader_calls)" 2 "the suggestion makes no extra quota read"
+session_as "$CLAUDE_A"
+decide "$(payload Agent)" >/dev/null
+decide "$(payload Bash)" >/dev/null
+check_eq "$(notices)" 1 "tool calls do not send extra suggestions"
+rows "$(a_week null unreachable)" "$(b_week 25)" "$(d_week 45)"
+"$SCRIPT" --refresh --force
+check_eq "$(state_of "$CLAUDE_A")" unknown "unreadable source still fails open in the guard"
+check_eq "$(decide "$(payload Agent)")" "allow unknown" "remembered notice state does not pause an unreadable account"
+check_eq "$(notices)" 1 "unreadable source does not send false recovery"
+rows "$(a_week 97)" "$(b_week 25)" "$(d_week 45)"
+"$SCRIPT" --refresh --force
+check_eq "$(notices)" 1 "return to the same confirmed state is not a duplicate crossing"
+rows "$(a_week 90)" "$(b_week 95)" "$(d_week null needs-login)"
+"$SCRIPT" --refresh --force
+check_contains "$(cat "$NOTIFY_LOG")" "Claude A is back under the limit" "confirmed recovery follows unreadable interval"
+check_contains "$(tail -n 1 "$NOTIFY_LOG")" "--target claude-a" "a simultaneous B crossing binds its own source and suggestion"
+rows "$(a_week 98)" "$(b_week 95)" "$(d_week null needs-login)"
+"$SCRIPT" --refresh --force
+check_contains "$(tail -n 1 "$NOTIFY_LOG")" "No other account has room" "definitively ineligible alternatives are distinguished"
+rows "$(a_week 90)" "$(b_week 25)" "$(d_week null unreachable)"
+"$SCRIPT" --refresh --force
+rows "$(a_week 98)" "$(b_week 25)" "$(d_week null unreachable)"
+"$SCRIPT" --refresh --force
+check_contains "$(tail -n 1 "$NOTIFY_LOG")" "Next account unknown" "an unreadable alternative can conceal the best account"
+rows "$(a_week 90)" "$(b_week 25)" "$(d_week 45 | jq '.resets_at_epoch = 1999999')"
+"$SCRIPT" --refresh --force
+rows "$(a_week 98)" "$(b_week 25)" "$(d_week 45 | jq '.resets_at_epoch = 1999999')"
+"$SCRIPT" --refresh --force
+check_contains "$(tail -n 1 "$NOTIFY_LOG")" "Next account unknown" "a spent provider window is not ranked"
+printf '{"accounts":["invalid old entry"]}\n' > "$QUOTA_RESERVE_DIR/marker.json"
+rows "$(a_week 90)" "$(b_week 25)" "$(d_week 45)"
+"$SCRIPT" --refresh --force
+check_eq "$(state_of "$CLAUDE_A")" ok "malformed old notice data cannot block a new guard reading"
+# A renderer failure is visible, but the installed reading still guards.
+QUOTA_TEST_REAL_JQ="$(command -v jq)"
+export QUOTA_TEST_REAL_JQ
+mkdir -p "$TMP/render-failure"
+cat > "$TMP/render-failure/jq" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == -nc && "$*" == *'--slurpfile n '* ]]; then exit 9; fi
+exec "$QUOTA_TEST_REAL_JQ" "$@"
+EOF
+chmod +x "$TMP/render-failure/jq"
+rows "$(a_week 98)" "$(b_week 25)" "$(d_week 45)"
+render_failure=$(PATH="$TMP/render-failure:$PATH" "$SCRIPT" --refresh --force 2>&1)
+check_contains "$render_failure" "could not prepare the reserve crossing notification" "notification renderer failure is visible"
+check_eq "$(state_of "$CLAUDE_A")" reserve "renderer failure does not discard the new guard state"
 
 # ------------------------------------------------------------------------------
 # 4. --decide

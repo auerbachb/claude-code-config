@@ -33,9 +33,9 @@ check_eq() {
   fi
 }
 
-echo "== premise: Step 3b's script exists and holds the cursor post =="
-check_eq "the script posts @cursor review" "yes" \
-  "$( [[ -r "$SRC" ]] && grep -qF -- '--body "@cursor review"' "$SRC" && echo yes || echo no )"
+echo "== premise: Step 3b's script exists and its last BugBot step is the owner-approval skip (#1897) =="
+check_eq "the script ends the BugBot chain in the approval skip, and never posts @cursor review" "yes" \
+  "$( [[ -r "$SRC" ]] && grep -qF -- 'BugBot not invited — paid review requires owner approval' "$SRC" && ! grep -qF -- '--body "@cursor review"' "$SRC" && echo yes || echo no )"
 if [[ ! -r "$SRC" ]]; then
   echo "== summary: $PASS passed, $((FAIL)) failed =="; exit 1
 fi
@@ -44,7 +44,7 @@ check_eq "the legacy block was located" "yes" "$( [[ -n "$LEGACY" && "$LEGACY" =
 
 echo "== static: the cap is the LAST gate and the note names the pushed HEAD =="
 ln_of() { grep -nF -- "$1" <<<"$LEGACY" | head -1 | cut -d: -f1; }
-TIER_LN="$(ln_of 'TIER_GATE=$("$BUGBOT_TIER_SH"')"
+TIER_LN="$(ln_of 'TIER_RESULT=$("$BUGBOT_TIER_SH"')"
 REFUSED_LN="$(ln_of '"$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA"')"
 CAP_LN="$(ln_of 'elif bugbot_cap_over; then')"
 check_eq "tier, then refused-HEAD, then the cap" "yes" \
@@ -145,25 +145,25 @@ check_eq "the cap was asked with 0" "cap bugbot --add-usd 0" "$(grep '^cap ' "$C
 echo "== ok: posts, writes nothing to the body =="
 reset "$ok" 0
 step3b "$SHA_A"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 check_eq "no note" "0" "$(grep -c 'Review notes' "$GH_BODY" | tr -d ' ')"
 
 echo "== unknown: posts and says the cap is unknown =="
 reset "$unknown" 0
 step3b "$SHA_A"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 check_eq "it says so" "yes" "$( [[ "$STDOUT" == *"BugBot daily cap unknown"* ]] && echo yes || echo no )"
 echo "== over with a disagreeing exit code: posts =="
 reset "$over" 0
 step3b "$SHA_A"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 
 echo "== the helper is missing: posts and says so =="
 reset "$over" 1
 mv "$S/review-daily-cap.sh" "$TMP/cap.bak"
 step3b "$SHA_A"
 mv "$TMP/cap.bak" "$S/review-daily-cap.sh"
-check_eq "@cursor review posted" "1" "$(cursor_posts)"
+check_eq "the cap does not skip, the owner-approval skip does (#1897)" "0:yes" "$(cursor_posts):$( [[ "$STDOUT" == *"BugBot not invited — paid review requires owner approval"* ]] && echo yes || echo no )"
 check_eq "DEGRADED line" "yes" "$( [[ "$STDOUT" == *"DEGRADED: review-daily-cap.sh not found"* ]] && echo yes || echo no )"
 
 echo "== the note helper is missing: still skips, warns, body untouched =="
@@ -182,7 +182,7 @@ step3b "$SHA_A"
 check_eq "no @cursor review" "0" "$(cursor_posts)"
 check_eq "no cap call" "0" "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
 check_eq "no note (the tier, not the cap, skipped)" "0" "$(note_lines)"
-check_eq "the tier helper was asked about this repo" "$PR_NUMBER --repo acme/one" "$(grep -v '^refused\|^cap' "$CALLS" | head -1)"
+check_eq "the tier helper was asked about this repo" "$PR_NUMBER --repo acme/one --why" "$(grep -v '^refused\|^cap' "$CALLS" | head -1)"
 echo "== precedence: a refused HEAD wins; the cap is never asked =="
 reset "$over" 1
 export FIXTURE_REFUSED=1
@@ -190,6 +190,15 @@ step3b "$SHA_A"
 check_eq "no @cursor review" "0" "$(cursor_posts)"
 check_eq "no cap call" "0" "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
 check_eq "the refusal guard was asked about the PUSHED SHA" "refused $PR_NUMBER $SHA_A" "$(grep '^refused ' "$CALLS")"
+
+for gate in full legacy; do
+  reset "$over" 1
+  export FIXTURE_TIER="$gate"$'\t'escalation_off
+  step3b "$SHA_A"
+  check_eq "fixpr names escalation off: $gate" yes "$( [[ "$STDOUT" == *'REVIEW_ESCALATION=off'* && "$STDOUT" != *'excludes BugBot'* ]] && echo yes || echo no )"
+  check_eq "fixpr skip posts no paid review: $gate" 0 "$(cursor_posts)"
+  check_eq "fixpr escalation skip does not consult cap: $gate" 0 "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
+done
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

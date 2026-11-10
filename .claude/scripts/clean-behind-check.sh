@@ -30,10 +30,19 @@
 #   5. no hunk-level overlap — the base delta's changed line ranges and the
 #      PR's changed line ranges share NO overlapping interval for every shared
 #      file. Detection uses GitHub's three-dot compare to get base-delta patches
-#      and the PR files API for PR patches, then intersects old-side hunk
-#      ranges. Conservative fallback to file-level applies when a patch is
-#      unavailable (binary, truncated, or API failure), so any ambiguity is
-#      treated as overlapping, never the reverse.
+#      and the PR files API for PR patches, then intersects zero-context
+#      changed-line ranges in old-side coordinates (issue #1859) — the ~3 lines
+#      of context each patch hunk carries never count. Adjacent or overlapping
+#      edits count as overlapping (git conflicts on touching edits); only edits
+#      separated by at least one line neither side changed are disjoint.
+#      Malformed, oversized, or missing patches (binary, truncated, API
+#      failure) fall back to file level, so any ambiguity is treated as
+#      overlapping, never the reverse. The PR files API serves the live head,
+#      so the head is re-read after that fetch; a moved or unreadable head keeps
+#      the file-level verdict. Both patches' old sides are assumed to
+#      be the same merge-base (true for compare head...base and the PR files
+#      API in normal cases); gate 3's mergeable == MERGEABLE is GitHub's own
+#      three-way merge test of the same pair and backstops this check.
 #
 # Churn / rebase-race signal is ADVISORY context only — it raises the value of
 # the offer but never gates it. `churn.advisory` is true when main has advanced
@@ -88,7 +97,7 @@
 #            "all_checked":true,"note":""},
 #     "file_overlap": {"count":0,"files":[],
 #            "granularity":"hunk",           // "hunk" | "file"
-#            "hunk_overlapping_files":[],    // files with intersecting hunk ranges
+#            "hunk_overlapping_files":[],    // files whose changed lines touch/overlap
 #            "fallback_files":[],            // files that fell back to file-level
 #            "note":"",
 #            "pr_file_count":N,
@@ -123,34 +132,112 @@ print_usage() {
 # Hunk-level overlap helpers
 # --------------------------------------------------------------------------
 
-# Extract old-side (merge-base-relative) hunk ranges from a unified-diff patch.
-# Prints one "start:end" pair per line. Empty output if no hunks found.
-# @@ -l,s +l,s @@ → old range is [l, l+s-1]; omitted `,s` means s=1; s=0 = pure addition.
+# Extract zero-context CHANGED-line ranges, in old-side (merge-base-relative)
+# coordinates, from a unified-diff patch (issue #1859). Prints one "start:end"
+# pair per change block. Context lines never count: the hunk header span
+# includes ~3 lines of context per side, so intersecting header spans made
+# edits up to ~6 lines apart read as overlapping.
+#
+# Walks each hunk body with an old-line cursor. A change block is a run of
+# consecutive `-`/`+` lines; a context line closes it.
+#   - a block with deletions → its deleted old-line span "first:last"
+#     (a replacement's added lines sit inside that span);
+#   - an insertion-only block → the EMPTY interval "p:p-1", where p is the old
+#     line the insertion lands before (insertion after old line N → "N+1:N").
+# Header `@@ -a[,b] +c[,d] @@`: an omitted count means 1; the cursor starts at
+# a, or at a+1 when b == 0 (GNU: `-a,0` inserts after old line a; `-0,0` too).
+#
+# Fail closed: returns 1 (output must be discarded) on any input it cannot
+# account for exactly — an unparseable header, a body whose context/deletion
+# lines disagree with b or whose context/addition lines disagree with d, an
+# unknown line prefix, an empty line before the patch end, text before the
+# first header, or no hunk at all. The caller treats that file as overlapping.
 _parse_old_side_ranges() {
   local patch="$1"
-  local line l s
+  local re='^@@ -([0-9]+)(,([0-9]+))? \+([0-9]+)(,([0-9]+))? @@'
+  local line a b d
+  local seen_hunk=0 saw_empty=0 old_left=0 new_left=0 cursor=0
+  local blk_open=0 blk_has_del=0 blk_first=0 blk_last=0 blk_ins=0
+  local out=""
+
   while IFS= read -r line; do
-    if [[ "$line" == @@* ]]; then
-      # Extract the old-side spec: first group matching -N or -N,M
-      local old_spec
-      old_spec="$(printf '%s\n' "$line" | grep -oE -- '-[0-9]+(,[0-9]+)?' | head -1)"
-      [[ -z "$old_spec" ]] && continue
-      l="${old_spec#-}"
-      if [[ "$l" == *,* ]]; then
-        s="${l#*,}"
-        l="${l%%,*}"
-      else
-        s=1
-      fi
-      # s=0 means a pure-addition hunk (no old lines touched) — no intersection possible
-      [[ "$s" -eq 0 ]] && continue
-      printf '%s:%s\n' "$l" "$((l + s - 1))"
+    # An empty line is legal only as trailing here-string padding: once one is
+    # seen, any later non-empty line means the body contained a bare empty line.
+    if [[ -z "$line" ]]; then
+      saw_empty=1
+      continue
     fi
+    [[ "$saw_empty" -eq 1 ]] && return 1
+
+    case "$line" in
+      @@*)
+        # The previous hunk must be fully consumed before a new header.
+        [[ "$old_left" -ne 0 || "$new_left" -ne 0 ]] && return 1
+        if [[ "$blk_open" -eq 1 ]]; then
+          if [[ "$blk_has_del" -eq 1 ]]; then out+="${blk_first}:${blk_last}"$'\n'
+          else out+="${blk_ins}:$((blk_ins - 1))"$'\n'; fi
+          blk_open=0 blk_has_del=0
+        fi
+        [[ "$line" =~ $re ]] || return 1
+        a=$((10#${BASH_REMATCH[1]}))
+        b=1; [[ -n "${BASH_REMATCH[3]}" ]] && b=$((10#${BASH_REMATCH[3]}))
+        d=1; [[ -n "${BASH_REMATCH[6]}" ]] && d=$((10#${BASH_REMATCH[6]}))
+        # A hunk that touches old lines must start at line >= 1.
+        [[ "$b" -gt 0 && "$a" -lt 1 ]] && return 1
+        cursor="$a"; [[ "$b" -eq 0 ]] && cursor=$((a + 1))
+        old_left="$b" new_left="$d" seen_hunk=1
+        ;;
+      ' '*)
+        [[ "$seen_hunk" -eq 1 && "$old_left" -gt 0 && "$new_left" -gt 0 ]] || return 1
+        if [[ "$blk_open" -eq 1 ]]; then
+          if [[ "$blk_has_del" -eq 1 ]]; then out+="${blk_first}:${blk_last}"$'\n'
+          else out+="${blk_ins}:$((blk_ins - 1))"$'\n'; fi
+          blk_open=0 blk_has_del=0
+        fi
+        cursor=$((cursor + 1)) old_left=$((old_left - 1)) new_left=$((new_left - 1))
+        ;;
+      -*)
+        [[ "$seen_hunk" -eq 1 && "$old_left" -gt 0 ]] || return 1
+        [[ "$blk_open" -eq 0 ]] && blk_open=1 blk_ins="$cursor"
+        [[ "$blk_has_del" -eq 0 ]] && blk_has_del=1 blk_first="$cursor"
+        blk_last="$cursor"
+        cursor=$((cursor + 1)) old_left=$((old_left - 1))
+        ;;
+      +*)
+        [[ "$seen_hunk" -eq 1 && "$new_left" -gt 0 ]] || return 1
+        [[ "$blk_open" -eq 0 ]] && blk_open=1 blk_ins="$cursor"
+        new_left=$((new_left - 1))
+        ;;
+      '\ No newline at end of file')
+        # The exact no-newline marker is neutral, but only inside a hunk. Any
+        # other backslash-prefixed line falls to the malformed catch-all below.
+        [[ "$seen_hunk" -eq 1 ]] || return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
   done <<<"$patch"
+
+  [[ "$seen_hunk" -eq 1 && "$old_left" -eq 0 && "$new_left" -eq 0 ]] || return 1
+  if [[ "$blk_open" -eq 1 ]]; then
+    if [[ "$blk_has_del" -eq 1 ]]; then out+="${blk_first}:${blk_last}"$'\n'
+    else out+="${blk_ins}:$((blk_ins - 1))"$'\n'; fi
+  fi
+  printf '%s' "$out"
 }
 
-# Test whether two newline-separated sets of "start:end" ranges intersect.
-# Returns 0 (true) if any pair intersects, 1 if not.
+# Test whether two newline-separated sets of zero-context "start:end" changed-
+# line ranges (from _parse_old_side_ranges) conflict. Returns 0 (true) if any
+# pair overlaps OR touches, 1 if not.
+#
+# Adjacency-inclusive, because git conflicts on edits to adjacent lines: two
+# ranges are disjoint only when at least one old line that NEITHER side
+# changed separates them. [as,ae] and [bs,be] conflict iff
+# as <= be+1 AND bs <= ae+1. This handles the empty insertion interval
+# "p:p-1" too: an insertion after line 5 ("6:5") conflicts with a deletion of
+# line 5 or 6, not of line 4 or 7, and two insertions at the same point
+# conflict.
 _ranges_intersect() {
   local a_ranges="$1" b_ranges="$2"
   local a b as ae bs be
@@ -160,8 +247,7 @@ _ranges_intersect() {
     while IFS= read -r b; do
       [[ "$b" == *:* ]] || continue
       bs="${b%%:*}" be="${b##*:}"
-      # [as,ae] and [bs,be] overlap iff as <= be AND ae >= bs
-      if [[ "$as" -le "$be" && "$ae" -ge "$bs" ]]; then
+      if [[ "$as" -le $((be + 1)) && "$bs" -le $((ae + 1)) ]]; then
         return 0
       fi
     done <<<"$b_ranges"
@@ -455,9 +541,10 @@ NO_OVERLAP=true
 # Hunk-level overlap refinement (only runs on file-level overlap candidates)
 # --------------------------------------------------------------------------
 # When the file-level check finds shared filenames, refine to hunk-level:
-# fetch patches for those files and test old-side line-range intersection.
+# fetch patches for those files and test zero-context changed-line ranges
+# (old side, adjacency-inclusive — see _ranges_intersect) for intersection.
 # Conservative fallback: if a patch is unavailable (binary, truncated, API
-# failure) or its length is at/above the GitHub character cap (i.e. the patch
+# failure), malformed (the parser cannot account for every line), or its length is at/above the GitHub character cap (i.e. the patch
 # may be non-empty but missing later hunks) → treat the file as overlapping
 # (file-level conservative behavior).
 # Ambiguity always resolves toward "not safe to offer", never the reverse.
@@ -480,9 +567,24 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
   RC_PF=0
   PR_FILES_PATCH_JSON="$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/files" --paginate 2>/dev/null)" || RC_PF=$?
 
+  # The files API has no SHA pin and serves the PR's CURRENT head, while the
+  # compare patches use the captured $HEAD_SHA. A push or rebase between the
+  # two fetches would put the patches in different coordinate spaces, so
+  # re-read the head after fetching and fail closed (keep the file-level
+  # verdict) unless it is provably unchanged.
+  HEAD_MOVED=false
+  if [[ "$RC_PF" -eq 0 ]]; then
+    HEAD_AFTER="$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null)" || HEAD_AFTER=""
+    if [[ "$HEAD_AFTER" != "$HEAD_SHA" ]]; then
+      HEAD_MOVED=true
+      RC_PF=1
+    fi
+  fi
+
   if [[ "$RC_PF" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"$PR_FILES_PATCH_JSON"; then
     HUNK_OVERLAPPING_FILES=()
     FALLBACK_FILES=()
+    MALFORMED_PATCH_COUNT=0
     PATCH_TRUNCATION_THRESHOLD=20000
 
     while IFS= read -r CANDIDATE_FILE; do
@@ -511,11 +613,20 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
         continue
       fi
 
-      BASE_RANGES="$(_parse_old_side_ranges "$BASE_PATCH")"
-      PR_RANGES="$(_parse_old_side_ranges "$PR_PATCH")"
+      # Zero-context changed-line ranges (issue #1859). A patch the parser
+      # cannot account for exactly is malformed → conservative fallback.
+      RC_BASE_RANGES=0 RC_PR_RANGES=0
+      BASE_RANGES="$(_parse_old_side_ranges "$BASE_PATCH")" || RC_BASE_RANGES=$?
+      PR_RANGES="$(_parse_old_side_ranges "$PR_PATCH")" || RC_PR_RANGES=$?
+      if [[ "$RC_BASE_RANGES" -ne 0 || "$RC_PR_RANGES" -ne 0 ]]; then
+        FALLBACK_FILES+=("$CANDIDATE_FILE")
+        HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
+        MALFORMED_PATCH_COUNT=$((MALFORMED_PATCH_COUNT + 1))
+        continue
+      fi
 
-      # No parseable ranges (e.g., pure additions or unrecognized format) →
-      # conservative fallback: treat file as overlapping.
+      # No ranges from a well-formed patch (defensive; insertion-only patches
+      # now emit empty-interval ranges) → conservative fallback.
       if [[ -z "$BASE_RANGES" || -z "$PR_RANGES" ]]; then
         FALLBACK_FILES+=("$CANDIDATE_FILE")
         HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
@@ -545,6 +656,9 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
     HUNK_GRANULARITY="hunk"
     if [[ "${#FALLBACK_FILES[@]}" -gt 0 ]]; then
       HUNK_NOTE="${#FALLBACK_FILES[@]} file(s) fell back to file-level (no usable patch)"
+      if [[ "$MALFORMED_PATCH_COUNT" -gt 0 ]]; then
+        HUNK_NOTE+="; ${MALFORMED_PATCH_COUNT} of them had a malformed patch"
+      fi
     fi
 
     # Recompute overlap based on hunk-level result
@@ -554,8 +668,13 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
     [[ "$OVERLAP_COUNT" -gt 0 ]] && NO_OVERLAP=false
 
   else
-    # PR files API call failed → hunk analysis unavailable; keep file-level result
-    HUNK_NOTE="hunk analysis unavailable (PR files API fetch failed) — file-level verdict kept"
+    # PR files API call failed, or the PR head moved / could not be re-read
+    # after the fetch → hunk analysis unavailable; keep file-level result.
+    if [[ "$HEAD_MOVED" == true ]]; then
+      HUNK_NOTE="hunk analysis unavailable (PR head changed or unverifiable after the patch fetch) — file-level verdict kept"
+    else
+      HUNK_NOTE="hunk analysis unavailable (PR files API fetch failed) — file-level verdict kept"
+    fi
     FALLBACK_FILES_JSON="$OVERLAP_JSON"
   fi
 fi

@@ -21,6 +21,44 @@ Shared code that hooks source (rather than run) lives in `lib/` and is deliberat
 
 `register-hooks.py` — the helper `session-start-sync.sh` calls — also syncs the top-level **`statusLine`** key by the same rules (issue #779). That key is not a hook event, but its `command` carries the same path placeholder and must resolve to the skills worktree the same way. It is seeded when absent, path-repaired when it points at our own `statusline.sh`, and left completely alone when the user has pointed it at their own script. `--statusline-only` runs that sync without touching hooks; `setup-skills-worktree.sh` Step 6b uses it so install-time and session-start behavior share one implementation. See [ARCHITECTURE.md](../../ARCHITECTURE.md#status-line).
 
+
+### Session-start test ownership (Issue #1834)
+
+The former 1,172-line session-start suite mixed independent registration,
+marker, resume and deadline contracts. Local commit diffs confirm the three
+reported touches: PR #1709 added deadline controls, PR #1752 changed lock
+eligibility, and PR #1817 added publisher-category coverage. Seven cumulative
+cleanup traps also required each new fixture to edit earlier ownership lists.
+This is evidence for separating test concerns, not measured conflict cost or
+proof of faster CI.
+
+| Suite | Original sections | Owns |
+|---|---|---|
+| [session-start-sync.test.sh](tests/session-start-sync.test.sh) | 1–10, 16–17 | Registration, migration and capture structure |
+| [session-start-sync-marker.test.sh](tests/session-start-sync-marker.test.sh) | 11–13b | Restart marker and lock eligibility |
+| [session-start-sync-resume.test.sh](tests/session-start-sync-resume.test.sh) | 14 | Fast-forward notices and publisher categories |
+| [session-start-sync-publish-bounds.test.sh](tests/session-start-sync-publish-bounds.test.sh) | 15 | Publisher/root-sync bounds and healthy controls |
+
+The split preserves all **20 scenario headings and 81 assertion sites**. The
+five moved scenario chunks remain byte-identical after excluding only cleanup
+registration and the old cumulative traps. Timeouts, sleeps, environment knobs,
+sentinels and child release/wait ordering are unchanged. Production hook logic, workflow configuration and the independent reconcile
+suite are unchanged; hook/workflow comments and the timing reference point at
+the concern suites.
+
+Shared setup and the single EXIT trap live in
+[the source-only fixture](tests/lib/session-start-sync-fixtures.sh). Register
+only freshly allocated private directories through `ssync_register_tmp`;
+suites retain their explicit process handoffs and teardown. `ctx_has`,
+`marker_state`, `build_ok_home` and `wait_for` stay local to the marker suite;
+`build_publish_fixture` stays local to publisher bounds. Add cases to their
+concern suite, create another suite for a new concern, and keep scenario logic
+out of the fixture. Do not add competing suite EXIT traps. The existing runner
+discovers every `*.test.sh`; the source-only `.sh` fixture is not a suite.
+
+No churn baseline or exemption is added. This changes test ownership while
+preserving coverage; it makes no claim about future recurrence or saved time.
+
 ---
 
 ## post-merge-pull.sh
@@ -222,16 +260,18 @@ Checkpoints older than 7 days are pruned. A canonical handoff written by `/end` 
 
 ## spend-session-tracker.sh
 
-Records a **thread-type telemetry** event each time a genuinely new Claude Code session starts. Part of the spend/thread-type telemetry pipeline introduced by Issue #710; pair with `spend-subagent-tracker.sh`.
+Records the runtime model on a genuinely new Claude Code session start and metadata-only assistant-message usage at SessionEnd. Repeated provider-response snapshots and parent/child mirrors are merged by message ID in the report so usage is counted once; missing components remain unknown. Part of the spend telemetry pipeline (#710, repaired in #1877); pair with `spend-subagent-tracker.sh`.
 
-Registered on **`SessionStart`** with a 5 s timeout.
+Registered on **`SessionStart`** with a 5 s timeout and **`SessionEnd`** with a 30 s timeout. SessionEnd has a larger bounded window for incremental metadata-only transcript scanning.
 
 **What it does:**
 
 - Reads the `source` field from the `SessionStart` payload (`startup`, `resume`, `compact`, `clear`).
 - **Only records on `startup` (or absent `source`)** — compact, resume, and clear fire inside an already-live session and must not inflate the thread count. An absent source is treated conservatively as startup for backward compatibility.
-- Extracts `session_id` and `model` from the payload; normalises `model` to a family tier (`opus`, `sonnet`, `haiku`, `fable`, `unknown`) via a substring match.
-- Appends one TSV line to `~/.claude/spend-telemetry.log` (schema: `ISO8601Z event_type exec_type model_tier agent_type session_id agent_id tokens`). The `agent_type` is always `session`; `agent_id` and `tokens` are always empty for this event.
+- Extracts `session_id` and the optional active `model` from SessionStart. The runtime model is recorded as actual with `session_start.model` provenance; an omitted model stays unknown.
+- SessionEnd reads only assistant-message IDs, timestamps, model, and usage from the main transcript. A hashed per-session cursor checks file identity and boundary metadata, checkpoints incremental progress, and records the latest complete/pending scan status; message text, prompts, code, tool input, and credentials are ignored.
+- Appends through the shared recorder. Legacy eight-column TSV rows remain readable; new rows carry `schema_version=3`, requested/actual model provenance, repo/session/worker/phase identifiers, per-field usage, and explicit unavailable cost/outcome fields. Explicit issue/PR correlation rows use the same writer.
+- If the bounded log lock is busy, metadata rows are durably queued in a private pending directory instead of being silently dropped. The report displays queued writes and partial child cursors; `spend-telemetry-report.sh --resume-pending` explicitly drains the queue and resumes child cursors within a 20-second total budget.
 - Always exits `0` and emits `{}` — never blocks the session.
 
 **Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
@@ -244,16 +284,17 @@ Registered on **`SessionStart`** with a 5 s timeout.
 
 ## spend-subagent-tracker.sh
 
-Records an **inline-type telemetry** event each time an inline `Agent`-tool subagent finishes. Part of the spend/thread-type telemetry pipeline introduced by Issue #710; pair with `spend-session-tracker.sh`.
+Records assistant-message metadata from the `agent_transcript_path` on each `SubagentStop`. Part of the spend telemetry pipeline (#710, repaired in #1877); pair with `spend-session-tracker.sh`.
 
 Registered on **`SubagentStop`** with a 5 s timeout.
 
 **What it does:**
 
-- Reads `session_id`, `agent_id`, `agent_type`, and `agent_transcript_path` from the `SubagentStop` payload.
-- Derives model tier from the agent definition frontmatter (`model:` field in `.claude/agents/<agent_type>.md`). Falls back to `unknown` if the file is absent or has no `model:` line. This is a **derived** value, not a runtime measurement — see reliability caveats in `.claude/reference/spend-telemetry-pipeline.md`.
-- Best-effort token extraction: if `agent_transcript_path` is set and the file exists, sums `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens` across all JSONL records with a `usage` key. The `tokens` field is left empty on any parse error or missing file. **Empty ≠ zero spend.**
-- Appends one TSV line to `~/.claude/spend-telemetry.log` (same schema as `spend-session-tracker.sh`; `exec_type` is always `inline`).
+- Reads only `session_id`, `cwd`, `agent_id`, `agent_type`, and `agent_transcript_path` from the hook payload.
+- Uses transcript `requestedModel` when available; otherwise treats an agent definition's frontmatter `model:` as a requested default with `agent_frontmatter_default` provenance. Actual model comes from each assistant transcript message's `model` field and is never filled from frontmatter.
+- Reads assistant-message `id`, `timestamp`, `model`, and nested `usage` fields (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). Missing fields remain blank and are reported against their own denominator.
+- Appends one v3 metadata row per assistant message to `~/.claude/spend-telemetry.log`; replayed transcript reads are skipped by the cursor, and report-level event-key dedup remains a second guard. Missing transcript path creates an explicit unavailable event row.
+- Cursor checkpoints keep private transcript-path/source metadata under `~/.claude/spend-telemetry-cursors/` (`0700` directory, `0600` files). Explicit refresh reuses the saved session/repository identity even if the recorded working directory is gone; it never borrows the report process session. A pending child scan can be resumed by the explicit bounded `spend-telemetry-report.sh --resume-pending` refresh; the normal report only shows the pending count.
 - Always exits `0` and emits `{}` — never blocks the session.
 
 **Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
@@ -263,6 +304,14 @@ Registered on **`SubagentStop`** with a 5 s timeout.
 **Reporting:** `bash .claude/scripts/spend-telemetry-report.sh [--days N]`
 
 **Schema and caveats:** `.claude/reference/spend-telemetry-pipeline.md`
+
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh` and `.claude/hooks/tests/spend-telemetry-maintenance.test.sh`
+
+## spend-task-tracker.sh
+
+Records task IDs and creator/completer actor IDs from `TaskCreated` and `TaskCompleted` without storing task subjects or descriptions. Actor IDs do not imply worker assignment; only explicit correlation records establish that mapping. `TaskCompleted` is a lifecycle event only; it does not prove issue acceptance criteria or tests passed. The hook is non-blocking and shares the single recorder.
+
+**Registration:** `global-settings.json` under `TaskCreated` and `TaskCompleted`.
 
 **Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh`
 

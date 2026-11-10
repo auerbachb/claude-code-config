@@ -41,6 +41,14 @@ isolated login profile, and report which are reachable.
 > neither do you. If a login needs the user's hands, say so and stop; do not offer to
 > type credentials.
 
+For a logged-out account, lead with the exact action supplied by `/quotas` and preserve
+its label/provider quoting. The human completes the provider's sign-in. Do not install
+`claude setup-token` for this usage reader: those long-lived tokens are model-request-only.
+Issue #1886 uses notification + one-line relogin as its explicit scope fallback, with
+no password storage or replay. See the reference and Issue #1970 for the deferred
+actual Codex-cause investigation; do not invent a cause or make it a prerequisite
+for the authorized notification/relogin fallback.
+
 ## Step 1 — Resolve the helper
 
 <!-- test-anchor: resolve-helper -->
@@ -48,8 +56,8 @@ isolated login profile, and report which are reachable.
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -67,10 +75,14 @@ profile directories drift apart.
 
 | The user asked | Run |
 |----------------|-----|
+| "doctor", "check profile layout" | `"$AI_QUOTAS_SETUP_SH" doctor [--json]` |
+| "repair-layout \<provider\>" | Complete [Layout mismatch recovery](#layout-mismatch-recovery), including profile-location and quiescence checks, before `"$AI_QUOTAS_SETUP_SH" repair-layout <provider>`. |
 | nothing, "list", "which accounts" | `"$AI_QUOTAS_SETUP_SH" list` |
 | "add \<provider\> \<label\>" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label>` |
 | "register it now, I'll log in later" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label> --no-login` |
 | "call it \<name\>", "nickname this account" | `"$AI_QUOTAS_SETUP_SH" nick <label> "<name>" [<provider>]` |
+| "use <order> for <label>", "reset source order" | `"$AI_QUOTAS_SETUP_SH" sources <label> <comma-separated order\|default> [<provider>]` |
+| "recommend a source change after N failures" | `"$AI_QUOTAS_SETUP_SH" sources threshold <N>` |
 | "remove \<label\>" | `"$AI_QUOTAS_SETUP_SH" remove <label> [<provider>]` |
 | "re-login \<label\>", an account showing `needs-login` | `"$AI_QUOTAS_SETUP_SH" relogin <label> [<provider>]` |
 | "take a reading every day", "install the snapshot job" | `"$AI_QUOTAS_SETUP_SH" schedule install` |
@@ -79,11 +91,12 @@ profile directories drift apart.
 | "generate the launchers", "give me a `claude-work` command", a new account was just added or renamed | `"$AI_QUOTAS_SETUP_SH" launchers` |
 | "share my skills/rules/MCP servers with \<label\>", "make the other profile behave like my main one" | `"$AI_QUOTAS_SETUP_SH" share-config <label> [<provider>]` |
 
-`list` is the default when no action is given. `--json` is available on `list` for
+`list` is the default when no action is given. `--json` is available on `list` and `doctor` for
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
 is available on `add`: it reserves the profile slot and records the account without
 launching a login, which is what you want when the user cannot complete an interactive
-flow right now. The account then reports `needs-login` until a `relogin`.
+flow right now. `list` reports whether the credential is present: a reserved slot can
+already report `ok` if the registered profile or Cursor IDE holds one.
 
 Providers are `claude`, `codex`, and `cursor`. The label is what the user types — for
 these accounts, the email on the subscription. Ask for it rather than guessing; the
@@ -94,8 +107,8 @@ later.
 
 `add` creates the isolated profile directory, launches that provider's own login
 against it, verifies a credential appeared, and only then records the account. One case
-records without a login: `--no-login`, which reserves the slot on purpose and lists as
-`needs-login` rather than `ok`.
+records without a login: `--no-login` reserves the slot without running the provider
+login. Its status still reflects the credential the helper can see.
 
 - **`claude`** — a per-account `CLAUDE_CONFIG_DIR` under
   `~/.claude/ai-quotas/profiles/<label>/claude`, then `claude` run against it. A bare
@@ -153,8 +166,10 @@ opens, and a second account is not possible.
   did not validate. Nothing was installed; relay the message and stop.
 - Exit `5` — the tool cannot use the config: `jq` is missing, the file is unparseable,
   or it was written by a different schema major. Report the helper's message and stop.
-- Exit `7` — the config write lock timed out or was broken mid-update. The config is
-  unchanged; say so and offer to retry.
+- Exit `7` — a registry write or relogin was blocked by contention, or the registered
+  profile changed during login. This run did not commit its registry update. A login
+  that already ran can have written credentials in its profile; relay the exact helper
+  message and check the current registry before retrying.
 
 On **any** non-zero exit above — 1, 3, 4, 5, 6, or 7 — **do not hand-edit
 `~/.claude/ai-quotas.json`**. A second writer is how
@@ -204,6 +219,9 @@ last unattended reading happened.
 - If `install` warns that it scheduled the reader from a checkout, relay it: the job
   keeps working until that worktree is removed. Re-run `schedule install` once the skills
   worktree is in place.
+- If `install` warns that launchd still holds the previous definition or did not load
+  the job, say that the new plist was written and relay the warning and its recovery
+  command. Do not report the new job as running.
 
 ## Step 3d — Launchers: one shell function per account (#1851)
 
@@ -258,24 +276,33 @@ linked to nowhere. Report the per-item lines as printed; they name paths only.
   install is missing, `HOME` is unset without the `AI_QUOTAS_PRIMARY_*` overrides (on top
   of the `AI_QUOTAS_CONFIG` and `AI_QUOTAS_PROFILE_ROOT` every HOME-less run already
   needs), the profile's `.claude.json` is not parseable JSON — which is never rewritten —
-  or that file changed while the merge was being computed, which means a Claude Code
-  session on that profile is writing it: nothing was replaced, re-run when it is idle.
-  Relay and stop; do not repair the file by hand.
+  or that file changed while the merge was being computed. In the race case, the
+  helper does not replace `.claude.json`; earlier share items may already have
+  changed. Relay the per-item lines and stop; do not repair the file by hand. Share
+  only with an idle profile: the check happens before the backup and replacement,
+  so a write after the check can still race the replacement.
 
 Neither action opens a login credential — `.credentials.json`, `auth.json`, and the
 Keychain are never touched — and nothing from `.claude.json` is printed. One thing the
 merge does carry across is the `mcpServers` block itself, and an MCP server entry can hold
-an API key in its `env` block: it is copied byte for byte into the profile, which is what
-sharing the server means, and the report line gives a count, never a name or a value.
+an API key in its `env` block. Sharing preserves those values in the merged JSON;
+serialization can change formatting. The report line gives a count, never a name or a value.
 
 ## Step 4 — Report the result
 
-After any action, run `list` and show the table. Each account reports as:
+After a successful action, run `"$AI_QUOTAS_SETUP_SH" list` and show the table.
+For a failed or interrupted `repair-layout`, follow
+[Layout mismatch recovery](#layout-mismatch-recovery) instead of running `list`.
+Each account reports as:
 
 | Status | Meaning | What to do |
 |--------|---------|------------|
 | `ok` | A credential is present for that profile | nothing |
-| `needs-login` | No credential is visible | `relogin <label>` |
+| `needs-login` | The helper could not verify credential presence | Read the note first |
+
+If the note says the credential is missing or the Cursor IDE is signed out, offer
+`relogin <label> [<provider>]`. If it names a missing probe tool or unreadable store,
+report that problem before suggesting sign-in.
 
 On a readable config `list` exits `0` whatever the statuses say. It is a report, never a
 gate: a `needs-login` row does not block anything, and you must not treat it as a reason
@@ -285,8 +312,8 @@ account.
 
 Never paste the config file's raw contents when a table will do, and never run a
 command that reads a credential value out of the keychain or a profile directory. The
-statuses above are derived from the *presence* of the artifact the provider's own tool
-wrote, which is all anyone needs.
+helper probes for the credential without reading its value. The note distinguishes
+a missing credential from a probe the helper could not complete.
 
 ## Reference
 
@@ -296,3 +323,48 @@ read and why no browser is involved, the LaunchAgent this skill writes — every
 why 09:00, and why the `PATH` has to name Homebrew — the generated `launchers.zsh` and
 what `share-config` links, copies, and merges, and the increment boundary:
 `.claude/reference/ai-quotas.md`.
+
+## Layout mismatch recovery
+
+If text `list` emits a layout warning, run `"$AI_QUOTAS_SETUP_SH" doctor`.
+Exit 8 is a diagnostic report, never a tool failure or a dispatch gate; do not
+pause or reroute unrelated work because of it. Report the findings. Run repair
+only when the user requested repair or already authorized it in the current
+task; a diagnostic warning alone is not repair authorization. Otherwise ask
+whether repair is desired before invoking either repair command. Honor standing
+authorization without asking again.
+First compare the current session’s `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+(including their default profile locations) with every affected `profile_dir`.
+If this session uses an affected profile, stop: ask the user to run repair from
+a shell outside those profiles, after this session has exited. If this session
+is still running, do not start repair from another shell. Establish that other affected sessions, setup
+commands and quota readers are stopped
+before `"$AI_QUOTAS_SETUP_SH" repair-layout claude` or `"$AI_QUOTAS_SETUP_SH" repair-layout codex`. Use available session
+evidence; if quiescence cannot be established, ask the user to confirm it. Never fix a mismatch by hand-editing `ai-quotas.json`:
+the credential directories must move together with their registry identities.
+Codex repair requires non-empty file-backed `auth.json`. Claude Keychain repair
+supports only fully observed homogeneous cycles with verified Claude Code 2.1.312
+service binding, matching refs/sidecars and no secure-storage override. It needs
+macOS Swift/Python 3 and accessible item metadata; no password is requested or
+replayed. Report a refusal; do not retry in-place repair. For mixed/non-cycle
+cases, the owner can use the fresh-profile reauthentication runbook in
+`.claude/reference/ai-quotas.md#fresh-profile-reauthentication`: preserve the old
+profile, verify a new canonical profile independently, then retire only the old
+registry row. This is an explicit owner sign-in; do not launch it from a diagnostic
+or treat this fallback as authorization to bypass managed authentication policy.
+Unknown client bindings and secure-storage overrides still refuse metadata repair.
+Doctor reports a journal but does not reconstruct rename
+steps. If exit 9 or `interrupted-repair` appears, preserve
+`.layout-repair/plan.json` and any recovery instructions printed by the failed
+repair; report the situation to the user and stop; never delete or automatically retry
+over the journal.
+
+## Usage source preferences
+
+Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+
+## Session ledger hooks
+
+For requests to install account-ledger hooks, run `"$AI_QUOTAS_SETUP_SH" ledger-hooks`. It merges per-profile Codex SessionStart entries while preserving unrelated hooks and config.toml. If the action fails, report its message and stop that action. Hook support and trust depend on the Codex version.
+
+For backfill requests or sessions missing live hook capture, resolve the ledger helper with `LEDGER_SH=$(resolve_script ai-account-ledger.sh || true)` and run `"$LEDGER_SH" backfill-codex` when it resolves. Otherwise report `ERROR: ai-account-ledger.sh not found (checked all three paths) — Codex backfill unavailable`. See `.claude/reference/ai-account-ledger.md` for privacy and historical ownership limits.

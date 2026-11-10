@@ -11,7 +11,7 @@
 #   `/quotas-setup` registered, in one table.
 #
 #   DISPLAY ONLY. Nothing here may gate dispatch, pause work, downgrade a
-#   model, or feed `credit-budget.sh`. It writes no state file: not
+#   model, or feed `credit-budget.sh`. It writes no dispatch state: not
 #   `session-state.json`, not `credit-budget.sh`'s inputs
 #   (`~/.claude/usage-limit-events.jsonl`, `~/.claude/usage-limit-last.json`,
 #   the `credit_budget` state key), not any dispatch gate. Quota and spend
@@ -31,7 +31,9 @@
 #   ai-quotas.sh [--json] [--five-hour] [--account <label>] [--quiet]
 #   ai-quotas.sh --help | -h
 #
-#   --json         Emit one JSON object per row instead of the table.
+#   --json         Emit the report document with rows, reliability and recommendations.
+#   --browser      Explicit interactive Cursor Chrome fallback (never scheduled).
+#   --browser-results FILE  Resume one --account from a private browser observation.
 #   --five-hour    Add each account's five-hour window, which arrives in the
 #                  same payload as the weekly one. Weekly rows are the
 #                  default because the weekly cap is what the switching
@@ -49,6 +51,12 @@
 #                  the LaunchAgent `/quotas-setup schedule install` writes
 #                  uses; `AI_QUOTAS_SOURCE=scheduled` does the same for a
 #                  caller that cannot pass a flag.
+#
+# Read outcomes (#1883): each supported account attempt also writes one row
+# to <history-stem>.outcomes.jsonl (45 days / 50,000 rows, mode 600). JSON
+# account_reliability and the RELIABILITY footer show 7d/30d failure rates
+# and consecutive failures. python3 is required for outcomes; successful
+# snapshot reporting keeps working if the helper is unavailable.
 #
 # HISTORY — ONE SNAPSHOT PER ROW PER RUN (#1700)
 #   Every run appends one JSON line per SUCCESSFULLY READ row to
@@ -185,7 +193,7 @@
 #   stdout: the table (default) or a JSON OBJECT (--json). Each JSON row
 #           carries provider, label, nickname, reported_email, window,
 #           used_pct, remaining_pct, resets_at_epoch, resets_at_et,
-#           resets_at_et_short, status,
+#           resets_at_et_short, status, action,
 #           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
 #           spend_limit_usd, overage, window_start_epoch, and the projection
@@ -240,6 +248,12 @@
 #                             a source nobody can interpret makes an
 #                             unattended reading indistinguishable from a
 #                             hand-run one.
+#   AI_QUOTAS_NOTIFY_STATE    Private local notification state path (default
+#                             ~/.claude/ai-quotas-notifications.json).
+#   AI_QUOTAS_NOTIFY_DAY      Local YYYY-MM-DD override for synthetic tests.
+#   AI_QUOTAS_NOTIFY_BIN      Notification adapter for tests; receives provider,
+#                             label, action as three argv values. Default:
+#                             bounded native macOS notification.
 #   AI_QUOTAS_CURL_BIN        Path to curl.
 #   AI_QUOTAS_SECURITY_BIN    Path to macOS security(1).
 #   AI_QUOTAS_CLAUDE_BIN      Path to the `claude` CLI (User-Agent version).
@@ -299,6 +313,9 @@
 #
 # DEPENDENCIES
 #   - bash 3.2+, jq, curl
+#   - Python 3.9+ (Unix) for bounded date capability checks/operations and the
+#     optional read-outcome ledger and reliability stats. Without the date
+#     adapter, reset formatting degrades explicitly rather than guessing a dialect.
 #   - macOS security(1) for the Keychain credential path
 #   - the `codex` CLI for the preferred Codex path (the HTTP fallback needs
 #     only curl)
@@ -357,11 +374,15 @@ JSON=0
 FIVE_HOUR=0
 QUIET=0
 ACCOUNT_FILTER=""
+BROWSER=0
+BROWSER_RESULTS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) print_help; exit 0 ;;
     --json) JSON=1; shift ;;
+    --browser) BROWSER=1; shift ;;
+    --browser-results) [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--browser-results requires a private file"; BROWSER_RESULTS="$2"; BROWSER=1; shift 2 ;;
     --five-hour) FIVE_HOUR=1; shift ;;
     --quiet) QUIET=1; shift ;;
     --account)
@@ -391,6 +412,9 @@ HISTORY_FILE="${AI_QUOTAS_HISTORY:-}"
 if [[ -z "$HISTORY_FILE" && -n "$_HOME" ]]; then
   HISTORY_FILE="${_HOME}/.claude/ai-quotas-history.jsonl"
 fi
+OUTCOMES_FILE=""
+[[ -z "$HISTORY_FILE" ]] || OUTCOMES_FILE="${HISTORY_FILE%.jsonl}.outcomes.jsonl"
+
 # `manual` unless this run says otherwise. The flag wins over the environment
 # so the LaunchAgent's argv is the readable record of what the job does, and
 # an unrecognised AI_QUOTAS_SOURCE is REFUSED rather than written through: a
@@ -404,6 +428,12 @@ if [[ -n "${AI_QUOTAS_SOURCE:-}" ]]; then
   esac
 fi
 [[ "$QUIET" -eq 0 ]] || SNAPSHOT_SOURCE="scheduled"
+if [[ "$SNAPSHOT_SOURCE" == scheduled ]]; then
+  [[ "$BROWSER" -eq 0 ]] || warn "browser flags ignored for unattended snapshot"
+  BROWSER=0; BROWSER_RESULTS=""
+elif [[ -n "$BROWSER_RESULTS" && -z "$ACCOUNT_FILTER" ]]; then
+  die_usage "--browser-results requires --account to resume exactly one account"
+fi
 PLATFORM="${AI_QUOTAS_PLATFORM:-$(uname -s 2>/dev/null || echo unknown)}"
 SECURITY_BIN="${AI_QUOTAS_SECURITY_BIN:-security}"
 CURL_BIN="${AI_QUOTAS_CURL_BIN:-curl}"
@@ -445,6 +475,28 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 ROWS="$TMP/rows.jsonl"
 : > "$ROWS"
+OUTCOMES_RUN="$TMP/outcomes.jsonl"
+RELIABILITY="$TMP/reliability.json"
+: > "$OUTCOMES_RUN"
+printf '[]' > "$RELIABILITY"
+OUTCOME_STATUS=""
+OUTCOME_SOURCE=""
+OUTCOME_ERROR_CLASS=""
+OUTCOME_USABLE=0
+
+# Only constants and structured numeric codes enter the outcome ledger. Never
+# infer an error class from a response body, diagnostic, path, or credential.
+set_outcome() { # <status> <source> <fixed-error-class>
+  case "$1" in ok|logged_out|unreadable|rate_limited|timeout|parse_error) OUTCOME_STATUS="$1" ;; *) OUTCOME_STATUS="unreadable" ;; esac
+  OUTCOME_SOURCE="$2"
+  OUTCOME_ERROR_CLASS="$3"
+}
+
+transport_outcome() { # <curl-exit> <source>
+  if [[ "$1" == "28" ]]; then set_outcome timeout "$2" curl_28
+  else set_outcome unreadable "$2" "curl_${1}"; fi
+}
+
 
 # The two local CLI probes below (`claude --version`, `codex login status`)
 # are cheap in I/O terms and still unbounded in wall-clock terms, which is
@@ -508,6 +560,9 @@ read_config() {
   printf '%s' "$raw" | jq -e '
       type == "object"
       and (.accounts | type == "array")
+      and ((.source_failure_threshold // 3) | type == "number" and . >= 1 and . == floor)
+      and (.accounts | all((.sources == null) or
+             (.sources | type == "array" and length > 0 and all(type == "string" and test("^[a-z][a-z0-9_-]{0,39}$")))))
       and (.accounts | all(
             type == "object"
             and (.provider    | type == "string" and length > 0)
@@ -561,52 +616,26 @@ NOW="$(report_now_epoch)"
 # quietly report `reset` for everything.
 [[ "$NOW" =~ ^[0-9]+$ ]] || die 5 "could not read the current time from date(1)"
 
-# Which date(1) dialect is on PATH, decided ONCE rather than by trying one
-# form and falling through when it fails. Falling through is safe for the
-# BSD-only `-j -f`, which GNU simply rejects — but it is NOT safe for `-r`:
-# GNU accepts `-r` and reads its argument as a FILENAME whose mtime to print.
-# A file named for the epoch second almost never exists, so the fallback
-# usually saves it; "usually" is the whole problem, because the day one does
-# exist the reset column silently shows that file's timestamp. Asking the
-# tool which dialect it is removes the coincidence from the answer.
-DATE_IS_GNU=0
-if grep -qi 'GNU coreutils' <<<"$(date --version 2>/dev/null)"; then
-  DATE_IS_GNU=1
+# Select operation capabilities once; unsupported tools remain explicit unknowns.
+QUOTA_DATE_DIALECT=unavailable
+if [[ -r "$SELF_DIR/lib/quota-date.sh" ]] && source "$SELF_DIR/lib/quota-date.sh"; then
+  QUOTA_DATE_DIALECT=$(quota_date_detect) || QUOTA_DATE_DIALECT=unavailable
+fi
+if [[ "$QUOTA_DATE_DIALECT" == unavailable ]]; then
+  warn "DEGRADED: quota date operations unavailable — reset dates/weekday or calendar validation may be unknown"
 fi
 
 # ISO-8601 (…Z or with an offset) → epoch seconds. Empty output means "not
 # parseable", which callers render as `-` rather than as a reset that has
 # already happened.
 iso_to_epoch() { # <iso>
-  local iso="$1" trimmed
-  [[ -n "$iso" ]] || return 0
-  # Drop fractional seconds and normalise the zone so either date(1) dialect
-  # sees a shape it accepts.
-  trimmed="$(printf '%s' "$iso" | sed -e 's/\.[0-9][0-9]*//' -e 's/+00:00$/Z/')"
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    date -u -d "$trimmed" +%s 2>/dev/null || true
-    return 0
-  fi
-  # BSD date needs the exact format, and GNU's `-d` accepts a numeric offset
-  # (`…+05:00`) that the `…Z` format below cannot match. Without the second
-  # attempt the SAME payload yields a reset time on Linux and a bare `-` on
-  # macOS — the fleet's primary platform — which reads as "the provider
-  # didn't say" rather than "this reader couldn't parse it". `%z` wants the
-  # offset without its colon.
-  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$trimmed" +%s 2>/dev/null && return 0
-  local offset_form
-  offset_form="$(printf '%s' "$trimmed" | sed -e 's/\([+-][0-9][0-9]\):\([0-9][0-9]\)$/\1\2/')"
-  date -u -j -f '%Y-%m-%dT%H:%M:%S%z' "$offset_form" +%s 2>/dev/null || true
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_iso "$QUOTA_DATE_DIALECT" "${1:-}" || true
 }
 
 epoch_to_et() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" && "$e" != "null" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%a %b %-d %-I:%M %p %Z' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%a %b %-d %-I:%M %p %Z' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%a %b %-d %-I:%M %p %Z' America/New_York || true
 }
 
 # `Thu 8:00 PM` — the same instant, for the table (#1701). The date is dropped
@@ -614,13 +643,8 @@ epoch_to_et() { # <epoch>
 # zone because the column heading says ET; what a reader needs from that cell
 # is which day and what time. The full string is still on every --json row.
 epoch_to_et_short() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" && "$e" != "null" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%a %-I:%M %p' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%a %-I:%M %p' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%a %-I:%M %p' America/New_York || true
 }
 
 # `Nov 6 6:31 PM ET` — a deadline as an instant (#1862). The provider states the
@@ -630,11 +654,8 @@ epoch_to_et_short() { # <epoch>
 epoch_to_et_datetime_short() { # <epoch>
   local e="${1:-}"
   [[ -n "$e" && "$e" =~ ^[0-9]+$ ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%b %-d %-I:%M %p ET' 2>/dev/null || true
-  else
-    TZ='America/New_York' date -r "$e" '+%b %-d %-I:%M %p ET' 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "$e" '+%b %-d %-I:%M %p ET' America/New_York || true
 }
 
 # `{"window_start_epoch": N}` merged into a provider's extra object, or that
@@ -706,6 +727,33 @@ ROW_NICKNAME=""
 
 emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|""> <status> <detail> <source> <plan> [<extra-json>]
   local used="${5:-}" resets="${6:-}"
+  local outcome_source="${9:-}"
+  if [[ -z "$outcome_source" ]]; then
+    case "$1:$7" in
+      claude:needs-login|codex:needs-login) outcome_source="credential-store" ;;
+      claude:*) outcome_source="oauth-usage" ;;
+      codex:*) outcome_source="app-server" ;;
+      cursor:*) outcome_source="ide-token" ;;
+    esac
+  fi
+  if [[ "$7" == "ok" ]]; then
+    # An account succeeds if at least one window supplies a usable figure.
+    # In particular, the intentional empty Codex short-window placeholder
+    # cannot turn an otherwise unreadable account into a successful read.
+    if [[ -n "$used" ]] && printf '%s' "$used" | jq -e 'type == "number" and (isinfinite | not) and (isnan | not)' >/dev/null 2>&1; then
+      OUTCOME_USABLE=1
+      set_outcome ok "$outcome_source" ""
+    elif [[ "$OUTCOME_USABLE" -eq 0 ]]; then
+      set_outcome parse_error "$outcome_source" invalid_usage
+    fi
+  elif [[ -z "$OUTCOME_STATUS" ]]; then
+    case "$7" in
+      needs-login) set_outcome logged_out "$outcome_source" credential_unavailable ;;
+      rate-limited) set_outcome rate_limited "$outcome_source" http_429 ;;
+      unreadable) set_outcome parse_error "$outcome_source" response_shape ;;
+      *) set_outcome unreadable "$outcome_source" reader_unavailable ;;
+    esac
+  fi
   # Optional 11th argument: a JSON OBJECT merged over the base row, which is
   # how a provider adds a field without forking the renderer (the cursor pool
   # rows use it, and #1669's overage column will). Validated here rather than
@@ -831,7 +879,10 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
 }
 
 relogin_hint() { # <provider> <label>
-  printf '/quotas-setup relogin %s %s' "$2" "$1"
+  local quoted
+  quoted="$(jq -nr --arg value "$2" '$value | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end')"
+  [[ "$2" != -* ]] || quoted="-- $quoted"
+  printf '/quotas-setup relogin %s %s' "$quoted" "$1"
 }
 
 # --- claude ------------------------------------------------------------------
@@ -1175,8 +1226,10 @@ claude_refresh_access_token() {
   local hdrs="$TMP/claude-refresh-hdrs.txt"
   local code rc=0 access refresh expires_in merged err retry wb=0
   CLAUDE_REFRESH_DETAIL=""
+  OUTCOME_STATUS=""
 
   if [[ -z "$CLAUDE_REFRESH_TOKEN" ]]; then
+    set_outcome logged_out credential-store credential_unavailable
     CLAUDE_REFRESH_DETAIL="the stored credential carries no refresh token"
     return 1
   fi
@@ -1214,6 +1267,7 @@ claude_refresh_access_token() {
 
   if [[ "$rc" -ne 0 || -z "$code" ]]; then
     rm -f "$bodyf" "$hdrs"
+    transport_outcome "$rc" oauth-refresh
     CLAUDE_REFRESH_DETAIL="could not reach the token endpoint (curl exit ${rc:-?})"
     return 2
   fi
@@ -1271,7 +1325,15 @@ claude_refresh_access_token() {
       CLAUDE_REFRESH_DETAIL="the stored refresh token was rejected (HTTP 401)"
       return 1
     fi
+    set_outcome unreadable oauth-refresh "http_${code}"
     CLAUDE_REFRESH_DETAIL="the token endpoint answered HTTP ${code}"
+    return 2
+  fi
+
+  if ! jq -e 'true' "$bodyf" >/dev/null 2>&1; then
+    set_outcome parse_error oauth-refresh invalid_json
+    CLAUDE_REFRESH_DETAIL="the token endpoint answered HTTP 200 with a body that is not JSON"
+    rm -f "$bodyf" "$hdrs"
     return 2
   fi
 
@@ -1284,6 +1346,7 @@ claude_refresh_access_token() {
     # HTTP 200 with no token in it is a CHANGED SHAPE, not a dead grant. Saying
     # needs-login here would send the owner through an interactive login that
     # could not fix it.
+    set_outcome parse_error oauth-refresh response_shape
     CLAUDE_REFRESH_DETAIL="the token endpoint answered HTTP 200 with no access token in it"
     return 2
   fi
@@ -1358,7 +1421,7 @@ claude_bin() {
   if candidate="$(command -v claude 2>/dev/null)" && [[ -n "$candidate" ]]; then
     printf '%s' "$candidate"; return 0
   fi
-  for candidate in "${_HOME}/.claude/local/claude" "/opt/homebrew/bin/claude" "/usr/local/bin/claude"; do
+  for candidate in "${_HOME}/.local/bin/claude" "${_HOME}/.claude/local/claude" "/opt/homebrew/bin/claude" "/usr/local/bin/claude"; do
     [[ -x "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
   done
   return 1
@@ -1536,6 +1599,7 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   claude_forget_credentials
 
   if [[ "$rc" -ne 0 || -z "$code" ]]; then
+    transport_outcome "$rc" oauth-usage
     emit_row claude "$label" "" "7-day" "" "" unreachable \
       "curl failed (exit ${rc:-?}) talking to ${ANTHROPIC_URL}" "oauth-usage" ""
     return 0
@@ -1575,12 +1639,14 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   fi
 
   if [[ "$code" != "200" ]]; then
+    set_outcome unreadable oauth-usage "http_${code}"
     emit_row claude "$label" "" "7-day" "" "" unreachable \
       "usage endpoint answered HTTP ${code}" "oauth-usage" ""
     return 0
   fi
 
   if ! jq -e . "$body" >/dev/null 2>&1; then
+    set_outcome parse_error oauth-usage invalid_json
     emit_row claude "$label" "" "7-day" "" "" unreachable \
       "usage endpoint answered HTTP 200 with a body that is not JSON" "oauth-usage" ""
     return 0
@@ -1602,6 +1668,7 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   fi
 
   if [[ "$rendered" -eq 0 ]]; then
+    set_outcome parse_error oauth-usage response_shape
     # Never a silent 0 %: say what the payload actually contained, so a
     # changed response shape is diagnosable from the output alone.
     keys="$(jq -r 'if type == "object" then (keys_unsorted | join(", ")) else type end' "$body" 2>/dev/null || echo "unreadable")"
@@ -1655,9 +1722,128 @@ codex_email_for() { # <profile_dir>
 # rather than the whole bound.
 CODEX_RESULT_FILE=""
 CODEX_FAIL_REASON=""
+# The background supervisor leads an isolated group for the entire read.
+# Verify that isolation before starting the provider. Cleanup runs in that
+# still-live group, so it never relies on a dead or recycled server PID.
+codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, output, response ticks
+  local control="$1" parent_group="$2" dir="$3" bin="$4" fifo="$5" out="$6" max_ticks="$7"
+  local group expected="" member snap ticks=0 started last now
+  # Disable monitor mode *inside* the new group so subsequent children inherit it.
+  set +m
+  group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  while [[ ! -s "$control/launch" && ! -e "$control/shutdown.request" && -d "$control" ]]; do
+    (( ticks < 40 )) || return 1
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  IFS= read -r expected < "$control/launch" || return 1
+  [[ ! -e "$control/shutdown.request" ]] || return 1
+  if [[ ! "$group" =~ ^[1-9][0-9]*$ || "$group" != "$expected" || "$group" == "$parent_group" ]]; then
+    : > "$control/unowned"
+    return 1
+  fi
+  started="${SECONDS:-}"
+  [[ "$started" =~ ^[0-9]{1,10}$ ]] || return 1
+  last="$started"
+  : > "$control/owned" || return 1
+  CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
+  member=$!
+  # Install the ignore only after the provider has inherited its normal
+  # disposition. This process keeps the group identity live through escalation.
+  trap '' TERM
+  ticks=0
+  while [[ ! -e "$control/shutdown.request" && -d "$control" ]]; do
+    if [[ ! -e "$control/exited" ]] && ! kill -0 "$member" 2>/dev/null; then
+      : > "$control/exited" || break
+    fi
+    now="${SECONDS:-}"
+    [[ "$now" =~ ^[0-9]{1,10}$ ]] || break
+    (( 10#$now >= 10#$last && 10#$now - 10#$started < CODEX_TIMEOUT + 3 )) || break
+    # Leave two seconds of slack for the caller's start and polling loop.
+    (( ticks < max_ticks || ticks - max_ticks < 40 )) || break
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  kill -s TERM 0 2>/dev/null || true
+  ticks=0; started="${SECONDS:-}"; last="$started"
+  while [[ "$started" =~ ^[0-9]{1,10}$ && -d "$control" ]]; do
+    # Only the launched server represents the provider among our direct children.
+    # Other direct children are the snapshot and its polling sleeps. Keep
+    # the provider and all other group members, including reparented ones.
+    ps -axo pid=,ppid=,pgid=,stat= > "$control/members" &
+    snap=$!
+    while kill -0 "$snap" 2>/dev/null; do
+      now="${SECONDS:-}"
+      [[ "$now" =~ ^[0-9]{1,10}$ ]] || break 2
+      (( 10#$now >= 10#$last && ticks < 20 && 10#$now - 10#$started < 2 )) || break 2
+      last="$now"
+      if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+      else sleep 1; ticks=$((ticks + 20)); fi
+    done
+    wait "$snap" 2>/dev/null || break
+    awk -v g="$group" -v provider="$member" '
+      $3 == g && $1 != g && $4 !~ /^Z/ && ($2 != g || $1 == provider) { live=1 }
+      END { exit !live }
+    ' "$control/members" || break
+    now="${SECONDS:-}"
+    [[ "$now" =~ ^[0-9]{1,10}$ ]] || break
+    (( 10#$now >= 10#$last && ticks < 20 && 10#$now - 10#$started < 2 )) || break
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  # Still inside the verified group. A final signal closes the snapshot race
+  # even if a remaining member forked while the process list was being read.
+  kill -s KILL 0
+}
+
+codex_stop_server() { # owned supervisor PID, private control dir
+  local pid="$1" control="${2:-}" ticks=0 started="${SECONDS:-}" last now
+  local waited=0 scan=0 live
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" && -d "$control" ]] || return 1
+  : > "$control/shutdown.request" || return 1
+  last="$started"
+  while :; do
+    if (( ! waited )) && ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      # No provider starts until the supervisor proves it owns the group.
+      [[ -e "$control/owned" ]] || return 0
+      waited=1
+    fi
+    if (( waited )); then
+      # Reaping the leader confirms only its exit. Observe the verified
+      # group's remaining members without sending any signal to that group.
+      # The snapshot child shares the cleanup budget if ps itself stalls.
+      if (( ! scan )); then
+        ps -axo pgid=,stat= > "$control/observed" 2>/dev/null &
+        scan=$!
+      elif ! kill -0 "$scan" 2>/dev/null; then
+        wait "$scan" 2>/dev/null || return 1
+        live="$(awk -v g="$pid" '$1 == g && $2 !~ /^Z/ { live=1 } END { print live+0 }' "$control/observed")" || return 1
+        [[ "$live" == 0 ]] && return 0
+        [[ "$live" == 1 ]] || return 1
+        scan=0
+      fi
+    fi
+    now="${SECONDS:-}"
+    # The supervisor has its own finite fuse; a broken caller clock still
+    # permits a bounded wait by tick count.
+    if [[ "$started" =~ ^[0-9]{1,10}$ && "$now" =~ ^[0-9]{1,10}$ &&
+          "$last" =~ ^[0-9]{1,10}$ ]] && (( 10#$now >= 10#$last && 10#$now - 10#$started >= 5 )); then
+      return 1
+    fi
+    (( ticks < 80 )) || return 1
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+}
+
 codex_app_server_read() { # <profile_dir> <codex_bin>
   local dir="$1" bin="$2"
-  local fifo="$TMP/codex.fifo" out="$TMP/codex.out" waited=0 srv=0
+  local fifo="$TMP/codex.fifo" out="$TMP/codex.out" poll_ticks=0 srv=0
+  local started="${SECONDS:-}" last now max_ticks control parent_group monitor="$-"
   # JSON permits whitespace on BOTH sides of the name separator, so a server
   # that writes `"id" : 2` is as valid as the compact `"id":2` we send. Matching
   # only the compact form makes a healthy account look like a timeout and sends
@@ -1669,22 +1855,51 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   # answer within Ns" for all of them sends the reader after a timeout that
   # never happened. Recorded here, reported in the row's note.
   CODEX_FAIL_REASON="app-server did not answer within ${CODEX_TIMEOUT}s"
+  if [[ ! "$started" =~ ^[0-9]{1,10}$ ]]; then
+    CODEX_FAIL_REASON="app-server response clock unavailable"
+    return 1
+  fi
+  last="$started"
+  max_ticks=$(( CODEX_TIMEOUT * 20 ))
+  if (( max_ticks <= 0 || max_ticks / 20 != CODEX_TIMEOUT )); then
+    CODEX_FAIL_REASON="app-server response timeout out of range"
+    return 1
+  fi
   rm -f "$fifo" "$out"
   if ! mkfifo "$fifo" 2>/dev/null; then
     CODEX_FAIL_REASON="could not create the app-server pipe in ${TMP}"
     return 1
   fi
   : > "$out"
+  parent_group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  if [[ ! "$parent_group" =~ ^[1-9][0-9]*$ ]] ||
+     ! control="$(mktemp -d "$TMP/codex-control.XXXXXX")"; then
+    CODEX_FAIL_REASON="could not establish app-server process ownership"
+    rm -f "$fifo"
+    return 1
+  fi
 
   # The server's read-open of the FIFO blocks until a writer appears; it is
   # the BACKGROUND process that waits, so the parent reaches the open below
   # and releases it. Opening read-write (`<>`) here is what makes that open
   # unable to block in turn, even when the server died on startup.
-  CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
-  srv=$!
+  # The monitor setting is scoped to this launch and restored before the read.
+  {
+    set -m 2>/dev/null || true
+    codex_supervise_server "$control" "$parent_group" "$dir" "$bin" "$fifo" "$out" "$max_ticks" >/dev/null &
+    srv=$!
+    [[ "$monitor" == *m* ]] || set +m
+  } 2>/dev/null
+  if ! printf '%s\n' "$srv" > "$control/launch"; then
+    CODEX_FAIL_REASON="could not bind app-server process ownership"
+    codex_stop_server "$srv" "$control" || true
+    rm -f "$fifo"
+    return 1
+  fi
   if ! exec 3<> "$fifo"; then
     CODEX_FAIL_REASON="could not open the app-server pipe"
-    kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+    codex_stop_server "$srv" "$control" || true
+    rm -f "$fifo"
     return 1
   fi
   printf '%s\n' \
@@ -1693,32 +1908,36 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
     '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}' >&3
 
   local exited_early=0
-  while [[ "$waited" -lt "$CODEX_TIMEOUT" ]]; do
+  # Twenty short sleeps retain a second of waiting. The elapsed deadline has
+  # one whole-second clock quantum of slack to avoid timing out early; the
+  # finite tick budget remains effective if SECONDS stops advancing.
+  while (( poll_ticks < max_ticks )); do
     if grep -q "$id2_re" "$out" 2>/dev/null; then break; fi
-    if ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
-    sleep 1
-    waited=$(( waited + 1 ))
+    if [[ -e "$control/exited" ]] || ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
+    now="${SECONDS:-}"
+    if [[ ! "$now" =~ ^[0-9]{1,10}$ ]] || (( 10#$now < 10#$last )); then
+      CODEX_FAIL_REASON="app-server response clock unavailable or moved backwards"
+      break
+    fi
+    last="$now"
+    (( 10#$now - 10#$started < CODEX_TIMEOUT + 1 )) || break
+    if sleep 0.05 2>/dev/null; then poll_ticks=$((poll_ticks + 1))
+    else sleep 1; poll_ticks=$((poll_ticks + 20)); fi
   done
 
   exec 3>&-
-  # Bounded reap, same reasoning as lib/bounded-run.sh's: SIGTERM is a request
-  # the real `codex app-server` is free to ignore, and SIGKILL is QUEUED rather
-  # than effective against a process wedged in uninterruptible I/O. An
-  # unconditional `wait` would then block forever HERE — at cleanup, after the
-  # answer is already in hand — and hang a report whose whole contract is that
-  # it comes back. So escalate TERM to KILL, poll a finite window for the exit,
-  # and give up on the status rather than the report. init reaps the orphan.
-  kill "$srv" 2>/dev/null || true
-  local reap=0 gone=0
-  while [[ "$reap" -lt 4 ]]; do
-    if ! kill -0 "$srv" 2>/dev/null; then gone=1; break; fi
-    [[ "$reap" -eq 1 ]] && kill -9 "$srv" 2>/dev/null
-    sleep 1
-    reap=$(( reap + 1 ))
-  done
-  # `kill -0` succeeds on a zombie, so only wait once the process is really
-  # gone — that call returns immediately and reaps it.
-  [[ "$gone" -eq 1 ]] && wait "$srv" 2>/dev/null
+  if codex_stop_server "$srv" "$control" 2>/dev/null; then
+    if [[ -e "$control/unowned" ]]; then
+      CODEX_FAIL_REASON="could not establish app-server process ownership"
+      exited_early=0
+    fi
+    rm -f "$control/launch" "$control/shutdown.request" "$control/exited" "$control/members" \
+      "$control/unowned" "$control/owned" "$control/observed"
+    rmdir "$control" 2>/dev/null || true
+  else
+    warn "could not confirm app-server group exit within its cleanup budget"
+  fi
+  rm -f "$fifo"
 
   if grep -q "$id2_re" "$out" 2>/dev/null; then
     CODEX_FAIL_REASON=""
@@ -1896,6 +2115,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
   token="$(jq -r '.tokens.access_token // empty' "$dir/auth.json" 2>/dev/null || true)"
   account="$(jq -r '.tokens.account_id // .account_id // empty' "$dir/auth.json" 2>/dev/null || true)"
   if [[ -z "$token" ]]; then
+    set_outcome logged_out credential-store credential_unavailable
     emit_row codex "$label" "$email" "7-day" "" "" needs-login \
       "${why}; auth.json holds no access token — run: $(relogin_hint codex "$label")" "http" ""
     return 0
@@ -1911,6 +2131,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
   token=""
 
   if [[ "$rc" -ne 0 || -z "$code" ]]; then
+    transport_outcome "$rc" http
     emit_row codex "$label" "$email" "7-day" "" "" unreachable \
       "${why}; curl failed (exit ${rc:-?}) talking to ${CHATGPT_URL}" "http" ""
     return 0
@@ -1926,20 +2147,61 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
     return 0
   fi
   if [[ "$code" != "200" ]] || ! jq -e . "$body" >/dev/null 2>&1; then
+    if [[ "$code" == "200" ]]; then set_outcome parse_error http invalid_json
+    else set_outcome unreadable http "http_${code}"; fi
     emit_row codex "$label" "$email" "7-day" "" "" unreachable \
       "${why}; usage endpoint answered HTTP ${code}" "http" ""
     return 0
   fi
 
-  # The HTTP payload nests the same snapshot one or two levels down
-  # depending on the caller; take the first object that carries a window.
-  # The reset-credit summary is a sibling of the window data here too, under
-  # `rate_limit_reset_credits` (#1862), so keep it when the windows are nested.
-  jq '. as $top | (.rate_limits // .rateLimits // .usage.rateLimits // .) as $s
+  # The captured wham wire body is snake_case and expresses duration in
+  # seconds. Normalize only this boundary; app-server keeps its own contract.
+  # A reset is an absolute Unix second when supplied, otherwise a validated
+  # relative interval on the reader's existing clock. Never invent USD from
+  # the unlabelled credits.balance or guess an unsupported duration's unit.
+  # The shared renderer labels whole hours; fractional-hour wire windows
+  # therefore remain unreadable rather than being truncated to a false label.
+  jq --argjson now "$NOW" '
+      def num:
+        if type == "number" then (if isfinite then . else null end)
+        elif type == "string" and test("^[0-9]+(\\.[0-9]+)?$")
+        then (tonumber | if isfinite then . else null end)
+        else null end;
+      def whole:
+        num | if . == null then null
+              elif . >= 0 and . == floor then . else null end;
+      def wire_window:
+        if type != "object" then null else
+          . as $w | ($w.used_percent | num) as $pct
+          | ($w.limit_window_seconds | whole) as $seconds
+          | ($w.reset_at | whole) as $absolute
+          | ($w.reset_after_seconds | whole) as $relative
+          | if $pct == null or $pct < 0
+               or ($w.limit_window_seconds != null and
+                   ($seconds == null or $seconds == 0 or $seconds % 3600 != 0))
+            then null else
+              {usedPercent:$pct,
+               windowDurationMins:(if $seconds != null then $seconds / 60 else null end),
+               resetsAt:(if $absolute != null then $absolute
+                         elif $relative != null then $now + $relative else null end)}
+            end
+        end;
+      . as $top
+      | (if (.rate_limit | type) == "object" then
+           (.rate_limit.primary_window | wire_window) as $primary
+           | (.rate_limit.secondary_window | wire_window) as $secondary
+           | if (.rate_limit.primary_window != null and $primary == null)
+                or (.rate_limit.secondary_window != null and $secondary == null)
+             then null
+             else {planType:(if (.plan_type | type) == "string" then .plan_type else null end),
+                   primary:$primary, secondary:$secondary}
+             end
+         else (.rate_limits // .rateLimits // .usage.rateLimits // .) end) as $s
       | if ($s | type) == "object" and ($top.rate_limit_reset_credits | type) == "object"
         then $s + {rate_limit_reset_credits: $top.rate_limit_reset_credits}
         else $s end' "$body" > "$snap" 2>/dev/null || : > "$snap"
   if ! codex_render_snapshot "$label" "$email" "$snap" "http" "$why"; then
+    set_outcome parse_error http response_shape
     local keys
     keys="$(jq -r 'if type == "object" then (keys_unsorted | join(", ")) else type end' "$body" 2>/dev/null || echo "unreadable")"
     emit_row codex "$label" "$email" "7-day" "" "" unreachable \
@@ -1949,7 +2211,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
 }
 
 read_codex_account() { # <label> <profile_dir>
-  local label="$1" dir="$2"
+  local label="$1" dir="$2" source="${3:-app-server}"
   local email bin snap="$TMP/codex-snap.json" logged_in=0
 
   email="$(codex_email_for "$dir")"
@@ -1965,6 +2227,10 @@ read_codex_account() { # <label> <profile_dir>
     return 0
   fi
 
+  if [[ "$source" == "http" ]]; then
+    codex_http_fallback "$label" "$dir" "$email" "${SOURCE_WHY:-preferred HTTP source}"
+    return 0
+  fi
   if bin="$(codex_bin)"; then
     if codex_app_server_read "$dir" "$bin"; then
       # The first match is picked INSIDE jq. Piping into `head -n 1` under
@@ -1985,16 +2251,14 @@ read_codex_account() { # <label> <profile_dir>
       local rpc_err
       rpc_err="$(jq -sr 'map(select(.id == 2) | (.error.message // empty)) | first // empty' \
         "$CODEX_RESULT_FILE" 2>/dev/null || true)"
-      codex_http_fallback "$label" "$dir" "$email" \
-        "app-server returned no rate limits${rpc_err:+ (${rpc_err})}"
+      emit_row codex "$label" "$email" "7-day" "" "" unreachable "app-server returned no rate limits${rpc_err:+ (${rpc_err})}" app-server ""
       return 0
     fi
-    codex_http_fallback "$label" "$dir" "$email" \
-      "${CODEX_FAIL_REASON:-app-server did not answer}"
+    emit_row codex "$label" "$email" "7-day" "" "" unreachable "${CODEX_FAIL_REASON:-app-server did not answer}" app-server ""
     return 0
   fi
 
-  codex_http_fallback "$label" "$dir" "$email" "no codex CLI found"
+  emit_row codex "$label" "$email" "7-day" "" "" unreachable "no codex CLI found" app-server ""
   return 0
 }
 
@@ -2062,8 +2326,16 @@ CURSOR_TOKEN_DETAIL=""
 # "sign in again" — the one instruction that cannot fix it.
 CURSOR_TOKEN_STATUS=""
 
+# Read display-only IDE identity, clearing terminal controls identically for every source.
+cursor_cached_email() { # <state-db>
+  local email cleaned
+  email="$("$SQLITE3_BIN" -readonly "$1" "select value from ItemTable where key='cursorAuth/cachedEmail';" 2>/dev/null || true)"
+  cleaned="$(printf '%s' "$email" | LC_ALL=C tr -d '[:cntrl:]')"
+  [[ "$email" != "$cleaned" ]] || printf '%s' "$email"
+}
+
 cursor_token_for() { # <state-db>
-  local db="$1" payload pad
+  local db="$1" payload pad identity_result identity_reason
   CURSOR_TOKEN=""
   CURSOR_EMAIL=""
   CURSOR_USER_ID=""
@@ -2099,19 +2371,31 @@ cursor_token_for() { # <state-db>
   fi
   # Best-effort: an account that reads fine but cannot name itself is still a
   # readable account, so a missing email falls back to the label in emit_row.
-  CURSOR_EMAIL="$("$SQLITE3_BIN" -readonly "$db" \
-    "select value from ItemTable where key='cursorAuth/cachedEmail';" 2>/dev/null || true)"
-  # Dropped if it carries a control character — the same invariant the main
-  # loop applies to ROW_NICKNAME, for the same reason: this value goes
-  # straight into a terminal table, where a tab splits the columns, a newline
-  # forges a row, and an escape sequence is executed by the terminal rather
-  # than shown. It comes from a local SQLite file this script does not own
-  # (CodeRabbit). CLEARED rather than sanitised, so emit_row falls back to the
-  # label exactly as it does for an account that reported no email at all.
-  if [[ -n "$CURSOR_EMAIL" ]]; then
-    local cleaned
-    cleaned="$(printf '%s' "$CURSOR_EMAIL" | LC_ALL=C tr -d '[:cntrl:]')"
-    [[ "$cleaned" == "$CURSOR_EMAIL" ]] || CURSOR_EMAIL=""
+  CURSOR_EMAIL="$(cursor_cached_email "$db")"
+
+  # Distinguish format changes from a missing subject without echoing any
+  # token/claim value. Do not guess identities from unrelated fields.
+  # Cursor 3.29.9's installed auth-storage codec seals these database values
+  # through Electron safeStorage; direct SQLite ciphertext is not a JWT.
+  case "$CURSOR_TOKEN" in
+    cursor-safe-storage:v1:*)
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+      CURSOR_TOKEN_DETAIL="the Cursor IDE stores this access token encrypted; use --browser with an already signed-in Chrome profile"
+      return 1
+      ;;
+  esac
+  if [[ ! "$CURSOR_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    CURSOR_TOKEN=""
+    CURSOR_USER_ID=""
+    CURSOR_TOKEN_STATUS="unreadable"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE state store holds an access token that is not shaped like a JWT"
+    return 1
+  fi
+  local jwt_shape='^[^.]+[.][^.]+[.][^.]+$'
+  if ! [[ "$CURSOR_TOKEN" =~ $jwt_shape ]]; then
+    CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE access token has an unsupported structure (expected three JWT parts)"
+    return 1
   fi
 
   # The user id is the token's `sub` claim. Decoding a claim is not reading a
@@ -2126,9 +2410,47 @@ cursor_token_for() { # <state-db>
     elif [[ "$pad" -eq 1 ]]; then payload=""
     fi
   fi
+  # Payload travels only through stdin, never jq argv. Failure objects contain
+  # fixed reasons only; validate a string subject before shell newline trimming.
+  identity_result='{"reason":"payload_base64_invalid"}'
   if [[ -n "$payload" ]]; then
-    CURSOR_USER_ID="$(jq -rn --arg p "$payload" '($p | @base64d | fromjson | .sub // empty)' 2>/dev/null || true)"
+    identity_result="$(printf '%s' "$payload" | jq -Rsc '
+      (try {decoded: @base64d} catch {reason:"payload_base64_invalid"})
+      | if has("reason") then .
+        else (try {claim:(.decoded | fromjson)} catch {reason:"payload_json_invalid"}) end
+      | if has("reason") then .
+        elif (.claim | type) != "object" then {reason:"payload_not_object"}
+        elif (.claim | has("sub") | not) then {reason:"subject_missing"}
+        elif (.claim.sub | type) != "string" then {reason:"subject_not_string"}
+        elif .claim.sub == "" then {reason:"subject_empty"}
+        elif (.claim.sub | test("[^A-Za-z0-9._@|-]")) then {reason:"subject_unsafe"}
+        else {reason:"ok",subject:.claim.sub} end
+    ' 2>/dev/null)" || identity_result='{"reason":"decoder_unavailable"}'
   fi
+  identity_reason="$(printf '%s' "$identity_result" | jq -r '.reason // "decoder_unavailable"' 2>/dev/null)"
+  case "$identity_reason" in
+    ok)
+      CURSOR_USER_ID="$(printf '%s' "$identity_result" | jq -r '.subject' 2>/dev/null)" || {
+        CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+        CURSOR_TOKEN_DETAIL="the Cursor IDE JWT subject decoder could not run"
+        return 1
+      }
+      ;;
+    *)
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+      case "$identity_reason" in
+        payload_base64_invalid) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not valid base64url" ;;
+        payload_json_invalid) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not valid JSON" ;;
+        payload_not_object) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not an object" ;;
+        subject_missing) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload has no sub claim" ;;
+        subject_not_string) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is not a string" ;;
+        subject_empty) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is empty" ;;
+        subject_unsafe) CURSOR_TOKEN_DETAIL="the token's sub claim carries characters this reader will not put in a request header" ;;
+        *) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT subject decoder could not run" ;;
+      esac
+      return 1
+      ;;
+  esac
   # Only a LEADING `auth0|` comes off. Taking the segment after the final `|`
   # instead — the obvious-looking reading of "strip the provider prefix" — is
   # wrong and was measured wrong: this account's `sub` is
@@ -2138,7 +2460,7 @@ cursor_token_for() { # <state-db>
   if [[ -z "$CURSOR_USER_ID" ]]; then
     CURSOR_TOKEN=""
     CURSOR_TOKEN_STATUS="unreadable"
-    CURSOR_TOKEN_DETAIL="the Cursor IDE holds an access token this reader cannot read a user id out of (no decodable JWT sub claim)"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is empty after its auth0 prefix"
     return 1
   fi
 
@@ -2160,13 +2482,6 @@ cursor_token_for() { # <state-db>
     CURSOR_TOKEN_DETAIL="the token's sub claim carries characters this reader will not put in a request header"
     return 1
   fi
-  if [[ ! "$CURSOR_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    CURSOR_TOKEN=""
-    CURSOR_USER_ID=""
-    CURSOR_TOKEN_STATUS="unreadable"
-    CURSOR_TOKEN_DETAIL="the Cursor IDE state store holds an access token that is not shaped like a JWT"
-    return 1
-  fi
   return 0
 }
 
@@ -2185,6 +2500,7 @@ cursor_api_call() { # <endpoint> <out-file>
         -H "Accept: application/json" \
         -d '{}' \
         -K - "${CURSOR_API_BASE}/${endpoint}" 2>/dev/null)" || rc=$?
+  printf '%s' "$rc" > "${out}.curl-status"
   if [[ "$rc" -ne 0 ]]; then
     printf '000'
     return 0
@@ -2267,6 +2583,7 @@ read_cursor_account() { # <label>
 
   case "$code" in
     000)
+      transport_outcome "$(cat "${usage_body}.curl-status" 2>/dev/null || echo 0)" "$source"
       # The email came from the local store, not the network, so a curl
       # failure has not invalidated it (CodeAnt). Every other failure branch
       # below carries it; dropping it here would blank the account identity on
@@ -2281,7 +2598,12 @@ read_cursor_account() { # <label>
         "the dashboard rejected the IDE token (HTTP ${code}) — ${CURSOR_SIGNIN_HINT}" "$source" ""
       return 0 ;;
     200) ;;
+    429)
+      set_outcome rate_limited "$source" http_429
+      emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" rate-limited "the usage endpoint answered HTTP 429" "$source" ""
+      return 0 ;;
     *)
+      set_outcome unreadable "$source" "http_${code}"
       emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" unreachable \
         "the usage endpoint answered HTTP ${code}" "$source" ""
       return 0 ;;
@@ -2425,10 +2747,114 @@ read_cursor_account() { # <label>
   return 0
 }
 
+# Ordered acquisition sources. Browser is activated only by an explicit agent run.
+effective_sources() { # <provider> <account-index>
+  printf '%s' "$CONFIG" | jq -r --arg p "$1" --argjson i "$2" '
+    .accounts[$i].sources // (if $p == "claude" then ["oauth-usage"]
+      elif $p == "codex" then ["app-server","http"] else ["ide-token","browser"] end) | .[]'
+}
+
+read_cursor_browser() { # <label>
+  local label="$1" email="$CURSOR_EMAIL" result row used reset window db browser_cli status error_class detail outcome_status
+  if [[ -z "$email" ]]; then
+    db="$(cursor_state_db)"
+    [[ ! -f "$db" ]] || email="$(cursor_cached_email "$db")"
+  fi
+  [[ -n "$email" || "$label" != *@* ]] || email="$label"
+  local identity_note="account not verified"
+  [[ -z "$email" ]] || identity_note="account verified"
+  browser_cli="${AI_QUOTAS_BROWSER_CLI:-}"
+  [[ -n "$browser_cli" ]] || browser_cli="$(claude_bin || true)"
+  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$email" "$NOW" "$browser_cli" 2>/dev/null)"
+  status="$(printf '%s' "$result" | jq -r '.status' 2>/dev/null)" || status=""
+  if [[ "$status" != "ok" ]]; then
+    if [[ "$status" == "logged_out" ]]; then
+      set_outcome logged_out browser browser_logged_out
+      emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" needs-login "browser is logged out; sign in yourself" browser ""
+    else
+      error_class="$(printf '%s' "$result" | jq -r '.error_class' 2>/dev/null)" || error_class=""
+      outcome_status=unreadable
+      case "$error_class" in
+        browser_launch_failed) detail="browser bridge could not launch" ;;
+        browser_connection_unavailable) detail="browser connection unavailable" ;;
+        browser_tool_denied) detail="browser tool denied by the read-only guard" ;;
+        browser_tab_create_failed) detail="browser owned-tab creation failed" ;;
+        browser_destination_unverified) detail="browser owned-tab destination could not be verified" ;;
+        browser_observation_rejected) detail="browser observation rejected" ;;
+        browser_read_unverified) detail="browser page read could not be verified" ;;
+        browser_timeout) detail="browser bridge reached its outer timeout"; outcome_status=timeout ;;
+        *) error_class=browser_stage_unknown; detail="browser unavailable; failure stage unknown" ;;
+      esac
+      set_outcome "$outcome_status" browser "$error_class"
+      emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" unreadable "$detail" browser ""
+    fi
+    return 0
+  fi
+  while IFS= read -r row; do
+    used="$(printf '%s' "$row" | jq -r '.used_pct // empty')"
+    reset="$(printf '%s' "$row" | jq -r '.resets_at_epoch | if type == "number" and . <= 253402300799 then floor else empty end')"
+    window="$(printf '%s' "$row" | jq -r '.window')"
+    emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email')" "$CURSOR_WINDOW" "$used" "$reset" ok \
+      "browser observation; $identity_note" browser "" \
+      "$(jq -nc --arg pool "$window" '{pool:$pool,plan_used_usd:null,plan_included_usd:null,spend_limit_used_usd:null,spend_limit_usd:null}')"
+  done < <(printf '%s' "$result" | jq -c '.rows[]')
+}
+
+read_source_chain() { # <provider> <label> <dir> <service> <index>
+  local provider="$1" label="$2" dir="$3" service="$4" index="$5"
+  local real_rows="$ROWS" attempts="$TMP/source-attempts.jsonl" last_rows="$TMP/source-last.jsonl"
+  local source skip last_index=-1 count=0 success=0
+  [[ "$provider" != cursor ]] || CURSOR_EMAIL=""
+  SOURCE_WHY=""; : > "$attempts"; : > "$last_rows"
+  while IFS= read -r source; do
+    # A result resumes at browser, so the earlier primary failure is not repeated.
+    [[ -z "$BROWSER_RESULTS" || "$source" == "browser" || "$success" -eq 2 ]] || continue
+    [[ -z "$BROWSER_RESULTS" || "$source" != "browser" ]] || success=2
+    ROWS="$TMP/source-rows.jsonl"; : > "$ROWS"
+    OUTCOME_STATUS=""; OUTCOME_SOURCE=""; OUTCOME_ERROR_CLASS=""; OUTCOME_USABLE=0; skip=""
+    if [[ "$source" == browser && ( "$BROWSER" -eq 0 || "$SNAPSHOT_SOURCE" == scheduled ) ]]; then
+      set_outcome unreadable browser browser_unattended; skip="browser-unattended"
+    else
+      case "$provider:$source" in
+        claude:oauth-usage) read_claude_account "$label" "$dir" "$service" ;;
+        codex:app-server|codex:http) read_codex_account "$label" "$dir" "$source" ;;
+        cursor:ide-token) read_cursor_account "$label" ;;
+        cursor:browser) read_cursor_browser "$label" ;;
+        *) set_outcome unreadable "$source" source_unsupported
+           emit_row "$provider" "$label" "" "7-day" "" "" unsupported "source is unavailable for this provider" "$source" "" ;;
+      esac
+    fi
+    [[ -n "$OUTCOME_STATUS" ]] || set_outcome unreadable "$source" unclassified
+    jq -nc --arg provider "$provider" --arg account_label "$label" --arg source "$OUTCOME_SOURCE" \
+      --arg requested_source "$source" --arg status "$OUTCOME_STATUS" --arg error_class "$OUTCOME_ERROR_CLASS" --arg trigger "$SNAPSHOT_SOURCE" --arg skip "$skip" '
+      {provider:$provider,label:$account_label,source:$source,requested_source:$requested_source,status:$status,error_class:$error_class,trigger:$trigger,terminal:false}
+      + (if $skip == "" then {} else {skip_reason:$skip} end)' >> "$attempts"
+    if [[ -z "$skip" ]]; then
+      cp "$ROWS" "$last_rows"; last_index=$count
+      if [[ "$OUTCOME_STATUS" == ok ]]; then success=1; break; fi
+      SOURCE_WHY="$(jq -sr 'first.detail // "source failed"' "$ROWS")"
+    fi
+    count=$((count+1))
+  done < <(effective_sources "$provider" "$index")
+  ROWS="$real_rows"
+  [[ "$last_index" -lt 0 ]] || jq -sc --argjson last "$last_index" 'to_entries[] | .value + (if .key == $last then {terminal:true} else {} end)' "$attempts" >> "$OUTCOMES_RUN"
+  if [[ "$last_index" -lt 0 ]]; then
+    cat "$attempts" >> "$OUTCOMES_RUN"
+    emit_row "$provider" "$label" "" "billing-cycle" "" "" unreachable "skipped:browser-unattended" browser ""
+  else
+    cat "$last_rows" >> "$ROWS"
+  fi
+}
+
 # --- main --------------------------------------------------------------------
 
 # Bare call: see read_config's own note on why this must not be a `$(…)`.
 read_config
+if [[ -n "$BROWSER_RESULTS" ]]; then
+  resume_targets="$(printf '%s' "$CONFIG" | jq --arg label "$ACCOUNT_FILTER" '[.accounts[] | select(.label == $label)]')"
+  printf '%s' "$resume_targets" | jq -e 'length == 1 and .[0].provider == "cursor" and ((.[0].sources // ["ide-token","browser"]) | index("browser") != null)' >/dev/null \
+    || die_usage "--browser-results requires one unambiguous Cursor label with browser configured"
+fi
 COUNT="$(printf '%s' "$CONFIG" | jq '.accounts | length' 2>/dev/null || true)"
 # read_config only returns on a config it has already validated, so a count
 # that is not a number here means the read itself failed in a way this
@@ -2475,15 +2901,8 @@ for (( i = 0; i < COUNT; i++ )); do
   # down with it and nothing else — which is the whole point of a report
   # across five subscriptions.
   case "$PROVIDER" in
-    claude) read_claude_account "$LABEL" "$DIR" "$SERVICE" ;;
-    codex)  read_codex_account "$LABEL" "$DIR" ;;
-    # No profile dir: the credential belongs to the IDE, not to a per-account
-    # directory this tool created (#1703).
-    cursor) read_cursor_account "$LABEL" ;;
-    *)
-      emit_row "$PROVIDER" "$LABEL" "" "7-day" "" "" unsupported \
-        "this reader knows claude, codex, and cursor; '${PROVIDER}' is not one of them" "" ""
-      ;;
+    claude|codex|cursor) read_source_chain "$PROVIDER" "$LABEL" "$DIR" "$SERVICE" "$i" ;;
+    *) emit_row "$PROVIDER" "$LABEL" "" "7-day" "" "" unsupported "provider unsupported" "" "" ;;
   esac
 done
 # Cleared with the loop that owns it, so nothing emitted later can inherit the
@@ -2724,13 +3143,8 @@ apply_forecast() {
 # with nothing saying why is exactly what #1701 would misread as a quiet day.
 
 epoch_to_utc_iso() { # <epoch>
-  local e="${1:-}"
-  [[ -n "$e" ]] || return 0
-  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
-  else
-    date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
-  fi
+  [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  quota_date_format "$QUOTA_DATE_DIALECT" "${1:-}" '+%Y-%m-%dT%H:%M:%SZ' UTC || true
 }
 
 # One `ts` for the whole run, taken from the SAME clock every countdown in
@@ -2895,13 +3309,43 @@ snapshot_footer() { # <iso|"">
   fi
 }
 
+# Persist attempts separately from successful window snapshots. The helper
+# returns account-level statistics including this run even if persistence fails.
+record_outcomes() {
+  local stamped="$TMP/outcomes.stamped.jsonl" ts
+  [[ -s "$OUTCOMES_RUN" ]] || return 0
+  ts="$(epoch_to_utc_iso "$NOW")"
+  if ! jq -c --arg ts "$ts" '. + {ts:$ts}' "$OUTCOMES_RUN" > "$stamped"; then
+    warn "could not timestamp read outcomes"; return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 && [[ -r "$SELF_DIR/lib/quotas-outcomes.py" ]]; then
+    if ! python3 "$SELF_DIR/lib/quotas-outcomes.py" "$OUTCOMES_FILE" "$stamped" "$NOW" > "$RELIABILITY"; then
+      printf '[]' > "$RELIABILITY"
+      warn "could not record read outcomes"
+    fi
+  else
+    warn "DEGRADED: python3 or lib/quotas-outcomes.py unavailable — read outcomes disabled"
+  fi
+}
+record_outcomes
+
 # Adds `last_scheduled_snapshot_at` to the document. Called on EVERY exit that
 # emits one, including the two empty ones, so --json has a single shape.
 stamp_snapshot_field() {
   local iso stamped="$TMP/doc.stamped.json"
+  local threshold
+  threshold="$(printf '%s' "$CONFIG" | jq '.source_failure_threshold // 3')" || threshold=3
   iso="$(last_scheduled_snapshot_at)"
-  if jq --arg v "$iso" \
-      '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end)}' \
+  if jq --arg v "$iso" --argjson threshold "$threshold" --argjson config "$CONFIG" --slurpfile reliability "$RELIABILITY" \
+      '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end), account_reliability: ($reliability[0] // []), recommendations: [($reliability[0] // [])[] |
+       . as $r | ($config.accounts | map(select(.provider == $r.provider and .label == $r.label)) | first) as $a |
+       ($a.sources // (if .provider == "claude" then ["oauth-usage"] elif .provider == "codex" then ["app-server","http"] else ["ide-token","browser"] end)) as $order |
+       (.sources | map(select(.source == $order[0] and .consecutive_failures >= $threshold)) | first) as $failed |
+       select($failed != null) |
+       {provider:.provider,label:.label,source:$failed.source,failures:$failed.consecutive_failures,
+        next_source:($order[1] // null), message:("SOURCE " + .label + ": " + $failed.source + " failed " + ($failed.consecutive_failures | tostring) + " consecutive reads; " +
+          (if $order[1] == null then "no alternate source configured" else "try " + $order[1] + " with /quotas-setup sources " + .label + " " + ($order | reverse | join(",")) + " " + .provider end))}
+       | .message |= gsub("[\u0000-\u001f\u007f]"; "")]}'  \
       "$DOC" > "$stamped" 2>/dev/null && [[ -s "$stamped" ]]; then
     mv "$stamped" "$DOC" 2>/dev/null || warn "could not stamp last_scheduled_snapshot_at onto the report"
   else
@@ -2947,6 +3391,16 @@ fi
 
 ROWS_JSON="$TMP/rows.json"
 jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the rows into an array"
+# Build actions from registered identity, never endpoint prose. The nullable
+# field is present on every final row, including successful fallback rows.
+jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001f\u007f]")) then null
+  elif .provider == "cursor" and .source == "browser" then "open the Cursor dashboard in Chrome and sign in"
+  elif .provider == "cursor" then "open the Cursor IDE and sign in"
+  elif .provider == "claude" or .provider == "codex" then
+    "/quotas-setup relogin " + (if (.label|startswith("-")) then "-- " else "" end) + (.label | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end) + " " + .provider
+  else null end)})' "$ROWS_JSON" > "$TMP/actions.json" \
+  || die 70 "could not build account actions"
+mv "$TMP/actions.json" "$ROWS_JSON"
 annotate_rows "$ROWS_JSON"
 
 # Recorded BEFORE the footer is read, so a scheduled run's own snapshot is the
@@ -2962,6 +3416,16 @@ append_history "$DOC"
 apply_forecast
 stamp_snapshot_field
 
+# Notify only final logged-out accounts, after all sources have finished. This
+# isolated helper owns its lock/trap; notification failure never changes output.
+if [[ "$SNAPSHOT_SOURCE" == scheduled ]]; then
+  if [[ -x "$SELF_DIR/quotas-notify.sh" ]]; then
+    "$SELF_DIR/quotas-notify.sh" "$DOC" >/dev/null 2>&1 || true
+  else
+    warn "DEGRADED: quotas-notify.sh unavailable — logout notifications disabled"
+  fi
+fi
+
 if [[ "$JSON" -eq 1 ]]; then
   cat "$DOC"
   exit 0
@@ -2972,6 +3436,9 @@ fi
 # falling back to `cat "$ROWS"` printed the TSV header over the raw JSON rows —
 # a fallback that does not degrade the output but replaces it.
 TABLE="$TMP/table.tsv"
+# Each action leads its account output and is printed once even for multi-pool
+# accounts. Keep the diagnostic detail unchanged in JSON for existing callers.
+jq -r '[.rows[] | select(.action != null) | {provider,label,action}] | unique[] | .action' "$DOC"
 {
   printf '%s\n' 'ACCOUNT	WINDOW	USED	START	%/DAY	LEFT	OVERAGE	RESETS (ET)	IN	NOTE'
   jq -r '
@@ -3061,7 +3528,7 @@ TABLE="$TMP/table.tsv"
       # still the field to branch on.
       ([ (if (.status // "ok") != "ok" then .status else empty end),
          (if .label != .reported_email then "registered as \(.label)" else empty end),
-         (.detail | if . == null or . == "" then empty else . end) ]
+         (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end) ]
        | join("; ") | if . == "" then "-" else . end)
     ] | @tsv' "$DOC"
 } > "$TABLE"
@@ -3094,8 +3561,19 @@ fi
 # its own log when it last ran says nothing.
 if [[ "$QUIET" -eq 0 ]]; then
   echo
+  jq -r '[.rows[] | select(.status == "ok" and .used_pct != null) | {name:(.nickname // .reported_email // .label),source}] | unique[] |
+    "SOURCE " + (.name | gsub("[\u0000-\u001f\u007f]"; "")) + ": via " + .source' "$DOC"
   printf '%s\n' "$(snapshot_footer "$(last_scheduled_snapshot_at)")"
+  jq -r '
+    .rows as $rows | (.account_reliability // [])[] |
+    . as $r | ($rows | map(select(.provider == $r.provider and .label == $r.label)) | first) as $row |
+    "RELIABILITY \($row.nickname // $row.reported_email // .label): " +
+    "7d \(.failures_7d)/\(.attempts_7d) failed (\(((.failure_rate_7d // 0) * 100) | round)%) · " +
+    "30d \(.failures_30d)/\(.attempts_30d) failed (\(((.failure_rate_30d // 0) * 100) | round)%) · " +
+    (if .streak_count == 0 then "no current streak"
+     else "\(.streak_status) × \(.streak_count) consecutive reads since \(.streak_since)" end)' "$DOC"
   echo
+  jq -r '.recommendations[]?.message' "$DOC"
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
 fi
 exit 0

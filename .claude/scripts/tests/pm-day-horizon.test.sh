@@ -43,6 +43,7 @@ PAUSE="$REPO_ROOT/.claude/skills/pause/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
 DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
+WAKE_RECOVERY_DOC="$REPO_ROOT/.claude/reference/pm-day-wake-recovery.md"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
 
 # shellcheck source=lib/skill-bash.sh
@@ -72,7 +73,12 @@ cleanup() {
 }
 trap cleanup EXIT
 export HOME="$TMP_HOME"
-mkdir -p "$HOME/.claude"
+mkdir -p "$HOME/.claude/scripts"
+# Fixtures install the same trusted helper locations as production.
+ln -s "$REPO_ROOT/.claude/scripts/park-generation.sh" "$HOME/.claude/scripts/park-generation.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-wake-publish.sh" "$HOME/.claude/scripts/park-wake-publish.sh"
+ln -s "$REPO_ROOT/.claude/scripts/background-task-registry.sh" "$HOME/.claude/scripts/background-task-registry.sh"
+ln -s "$REPO_ROOT/.claude/scripts/park-retire.sh" "$HOME/.claude/scripts/park-retire.sh"
 STATE_FILE="$HOME/.claude/session-state.json"
 REPO_KEY="auerbachb/claude-code-config"
 
@@ -113,6 +119,10 @@ BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
 BLOCK_2D6="$(extract_skill_bash "$SKILL" pm-day-2d6-park-claim)" || exit 1
 BLOCK_RELEASE="$(extract_skill_bash "$SKILL" pm-day-2d7-park-release)" || exit 1
 BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
+BLOCK_REC_SNAPSHOT="$(extract_skill_bash "$SKILL" pm-day-park-snapshot)" || exit 1
+BLOCK_REC_PREP="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-prepare)" || exit 1
+BLOCK_REC_AUTH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-authorize)" || exit 1
+BLOCK_REC_PUBLISH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-publish)" || exit 1
 BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
 
 # `TaskStop` is a harness tool, not a binary, so the wake-publish block cannot
@@ -172,6 +182,15 @@ seed_day_state() {
       limit_resume_generation: null, consecutive_limit_hits: 0}}}}' > "$STATE_FILE"
 }
 day_get() { jq -r --arg k "$REPO_KEY" ".repos[\$k].day.$1" "$STATE_FILE"; }
+seed_completed_park() {
+  seed_day_state
+  jq --arg k "$REPO_KEY" --arg cause "${1:-preemptive}" '
+    .repos[$k].day.parked_until="2026-11-08T17:00:00Z" |
+    .repos[$k].day.limit_cause=$cause |
+    .repos[$k].day.limit_kind="rolling_window" |
+    .repos[$k].day.limit_probe_fires_remaining=(if $cause=="preemptive" then 12 else null end)' "$STATE_FILE" > "$STATE_FILE.seed" && mv "$STATE_FILE.seed" "$STATE_FILE"
+}
+
 
 # ---------------------------------------------------------------------------
 echo "== D2 tick-branch matrix (AC 1) =="
@@ -391,8 +410,13 @@ seed_day_state
 CLAIM_TOK="$(claim_and_token)"
 check_eq "claim persists its token"       "$CLAIM_TOK"     "$(day_get park_claim_token)"
 check_eq "claim persists rolling_window"  "rolling_window" "$(day_get limit_kind)"
+GEN_BEFORE_RECORD=$(day_get park_generation)
 check_eq "record: writes on a park it still owns" "PARK_RECORD=written" "$(run_record false "$CLAIM_TOK" | tail -1)"
 check_eq "record: retires the claim token" "null" "$(day_get park_claim_token)"
+check_eq "record: durable generation survives completion" "$GEN_BEFORE_RECORD" "$(day_get park_generation)"
+if [[ "$GEN_BEFORE_RECORD" =~ ^parkgen-[0-9a-f]{32}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — preemptive claim minted strong durable identity"
+else FAIL=$((FAIL + 1)); echo "FAIL — preemptive claim durable identity"; fi
 check_eq "record: rolling_window kind"   "rolling_window" "$(day_get limit_kind)"
 check_eq "record: cause is preemptive"   "preemptive"     "$(day_get limit_cause)"
 check_eq "record: probe bound persisted" "12"             "$(day_get limit_probe_fires_remaining)"
@@ -539,6 +563,7 @@ check_eq "reuse: first claim released cleanly" "PARK_RELEASE=released" "$(run_re
 check_eq "reuse: release cleared parked_until" "null" "$(day_get parked_until)"
 check_eq "reuse: release cleared the kind"     "null" "$(day_get limit_kind)"
 check_eq "reuse: release retired the token"    "null" "$(day_get park_claim_token)"
+check_eq "reuse: owned abort retired durable generation" "null" "$(day_get park_generation)"
 
 TOK_2="$(claim_and_token)"
 if [[ -n "$TOK_2" && "$TOK_2" != "$TOK_1" ]]; then
@@ -754,15 +779,14 @@ require_text "pause-resume disarm covers the probe" "$PAUSE_RESUME" 'One registr
 # manual-resume escape hatch those branches name in their own message.
 refute_text  "pause-resume never restamps the -1 sentinel" "$PAUSE_RESUME" \
   'day\.limit_probe_fires_remaining=-1'
-# Since #1663 the retire enumerates the fields it clears and generates the
-# `--set …=null` flags from that list, so the literal assignments these three
-# assertions used to match no longer appear as text. The property is unchanged —
-# the enumeration IS the clear list — and that each field actually ends up null is
-# proved functionally in `park-retire-guard.test.sh`, which runs the block.
-require_text "pause-resume clears the probe bound"  "$PAUSE_RESUME" \
+# Retirement now delegates to the shared helper. Its real state effects and
+# metadata/replacement interleavings are exercised by park-retire-guard.test.sh.
+require_text "pause-resume invokes guarded retirement" "$PAUSE_RESUME" \
+  '"[$]PARK_RETIRE_SH" --repo "[$]REPO_KEY" --snapshot'
+require_text "shared retire clears the probe bound" "$REPO_ROOT/.claude/scripts/park-retire.sh" \
   'for field in .*limit_probe_fires_remaining'
-require_text "pause-resume clears limit_cause"      "$PAUSE_RESUME" '^ +limit_cause limit_kind'
-require_text "pause-resume clears parked_until"     "$PAUSE_RESUME" 'park_claim_token parked_until'
+require_text "shared retire clears the cause and generation" "$REPO_ROOT/.claude/scripts/park-retire.sh" \
+  'limit_cause limit_kind park_claim_token park_generation parked_until'
 require_text "pause-resume states why it retires"   "$PAUSE_RESUME" 'never restamp the .-1. sentinel'
 # The no-armed-wake branch matters on its own: /pause already nulled the task id,
 # so only this path can lift the park it left standing.
@@ -907,6 +931,8 @@ SET_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --get) op=get; get_arg="$2"; shift 2 ;;
+    --get-json) op=getjson; get_arg="$2"; shift 2 ;;
+    --repo-key) op=repokey; shift ;;
     --set) SET_ARGS+=("$2"); [ "$op" = cas ] || op=set; shift 2 ;;
     --cas) op=cas; cas_arg="$2"; shift 2 ;;
     --expect) expect="$2"; shift 2 ;;
@@ -924,6 +950,8 @@ apply_sets() {   # every --set in one pass, like the real single pipeline
 }
 case "$op" in
   get) jq -r "$get_arg" "$STATE_FILE" ;;
+  getjson) jq -c "$get_arg" "$STATE_FILE" ;;
+  repokey) printf '%s\n' "$REPO_KEY" ;;
   set) apply_sets ;;
   cas)
     cas_path="${cas_arg%%=*}"; cas_value="${cas_arg#*=}"
@@ -1091,14 +1119,14 @@ run_wake() {   # run_wake <task-id> <generation>
 }
 
 make_taskstop_stub 0
-seed_day_state
+seed_completed_park
 check_eq "wake: publishes on a free slot" "WAKE_PUBLISH=armed" "$(run_wake probe-task probe-gen-1)"
 check_eq "wake: task id written"   "probe-task"  "$(day_get limit_resume_task_id)"
 check_eq "wake: generation written with it" "probe-gen-1" "$(day_get limit_resume_generation)"
 
 # A wake already armed by the reactive path: our publish loses, our Monitor is
 # stopped, and — the atomicity half — our generation never lands beside their id.
-seed_day_state
+seed_completed_park reactive
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" \
   --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"limit-gen-1\"" >/dev/null
 check_eq "wake: loses to an armed wake" "WAKE_PUBLISH=lost" "$(run_wake probe-task probe-gen-2)"
@@ -1108,7 +1136,7 @@ check_eq "wake: the loser's generation was NOT written" "limit-gen-1" \
 
 # A write failure is not a lost race: the board is parked with no wake at all,
 # which the block must surface rather than report as armed.
-seed_day_state
+seed_completed_park
 check_eq "wake: a failed publish reports failed, not lost" "WAKE_PUBLISH=failed" \
   "$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
      WAKE_TASK_ID=probe-task WAKE_GENERATION=probe-gen-3 FAULT_ON=cas FAULT_RC=6 \
@@ -1117,11 +1145,138 @@ check_eq "wake: a failed publish wrote no generation" "null" "$(day_get limit_re
 
 # ...and when the orphaned Monitor cannot be stopped, the ID has to be surfaced.
 make_taskstop_stub 1
-seed_day_state
+seed_completed_park
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" >/dev/null
 check_eq "wake: an unstoppable orphan reports stranded" "WAKE_PUBLISH=stranded" \
   "$(run_wake probe-task probe-gen-4)"
 make_taskstop_stub 0
+
+# The native actions themselves are synthetic. Exercise the actual snapshot,
+# ownership preparation, stop-response authorization and installed publisher.
+echo "== PM wake recovery from the original park =="
+
+seed_recovery() { # cause, probe fires JSON, old task JSON
+  jq -n --arg repo "$REPO_KEY" --arg cause "$1" --argjson fires "$2" --argjson task "$3" '
+    {repos:{($repo):{day:{parked_until:"2099-01-01T00:00:00Z",limit_kind:"rolling_window",
+      limit_cause:$cause,park_claim_token:null,park_generation:"park-recovery",
+      limit_probe_fires_remaining:$fires,limit_resume_task_id:$task,
+      limit_resume_generation:(if $task==null then null else "old-wake" end)}}}}' > "$STATE_FILE"
+}
+recovery_read() {
+  "$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day"
+}
+recovery_prepare() { # native session, optional original snapshot
+  if [ "$#" -eq 2 ]; then
+    SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" PM_WAKE_NATIVE_SESSION="$1" \
+      DAY_SNAPSHOT="$2" DAY_SNAPSHOT_RC=0 bash -c "$BLOCK_REC_PREP" 2>/dev/null
+  else
+    SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" PM_WAKE_NATIVE_SESSION="$1" \
+      bash -c "$BLOCK_REC_SNAPSHOT"$'\n'"$BLOCK_REC_PREP" 2>/dev/null
+  fi
+}
+recovery_authorize() { # prepared, stop session, native stop response JSON
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" PM_WAKE_PREPARED="$1" \
+    PM_WAKE_STOP_SESSION="$2" PM_WAKE_STOP_RESPONSE="$3" bash -c "$BLOCK_REC_AUTH" 2>/dev/null
+}
+recovery_publish() { # authorized, new task, new generation
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" PM_WAKE_AUTHORIZED="$1" \
+    PM_WAKE_NEW_TASK="$2" PM_WAKE_NEW_GENERATION="$3" bash -c "$BLOCK_REC_PUBLISH" 2>/dev/null
+}
+recovery_json() { printf '%s\n' "$1" | jq -r "$2"; }
+record_recovery_candidate() { # exact string ID, native session
+  "$REPO_ROOT/.claude/scripts/background-task-registry.sh" --repo "$REPO_KEY" \
+    --register --task-id "$1" --session "$2" --type monitor >/dev/null
+}
+
+seed_recovery preemptive null null
+REC_PREP=$(recovery_prepare "")
+check_eq "empty slot needs no stop" empty "$(recovery_json "$REC_PREP" .route)"
+REC_AUTH=$(recovery_authorize "$REC_PREP" "" null)
+check_eq "known-reset preemptive park uses the one-shot shape" one-shot "$(recovery_json "$REC_AUTH" .shape)"
+REC_PUB=$(recovery_publish "$REC_AUTH" '11' new-oneshot)
+check_eq "one-shot registers with the captured preemptive owner" armed "$(recovery_json "$REC_PUB" .status)"
+check_eq "successful publication needs no cleanup" null "$(recovery_json "$REC_PUB" .stop_new_task)"
+check_eq "one-shot preserves an opaque Monitor ID and the captured cause" '["11","new-oneshot","preemptive"]' \
+  "$(recovery_read | jq -c '[.limit_resume_task_id,.limit_resume_generation,.limit_cause]')"
+record_recovery_candidate 11 native-owner || exit 1
+check_eq "a subsequent recovery can find the published Monitor in its owning session" stop \
+  "$(recovery_json "$(recovery_prepare native-owner)" .route)"
+
+seed_recovery preemptive null null
+REC_ORIGINAL=$(recovery_read)
+REC_AUTH=$(recovery_authorize "$(recovery_prepare "")" "" null)
+REC_PUB=$(recovery_publish "$REC_AUTH" null missing-id-wake)
+check_eq "a missing Monitor ID cannot be published as an opaque string" failed "$(recovery_json "$REC_PUB" .status)"
+check_eq "a missing Monitor ID leaves the empty park unchanged" "$REC_ORIGINAL" "$(recovery_read)"
+
+seed_recovery preemptive 3 '"7"'
+record_recovery_candidate 7 native-owner || exit 1
+REC_ORIGINAL=$(recovery_read)
+check_eq "restart alone cannot stop an occupied slot" manual "$(recovery_json "$(recovery_prepare "")" .route)"
+check_eq "default session cannot own an occupied slot" manual "$(recovery_json "$(recovery_prepare default)" .route)"
+check_eq "foreign native session cannot stop this wake" manual "$(recovery_json "$(recovery_prepare other-owner)" .route)"
+REC_PREP=$(recovery_prepare native-owner)
+check_eq "the exact same-session Monitor is a stop candidate" stop "$(recovery_json "$REC_PREP" .route)"
+check_eq "a candidate without a stop response cannot arm" manual \
+  "$(recovery_json "$(recovery_authorize "$REC_PREP" native-owner null)" .route)"
+check_eq "a failing native stop cannot arm" manual \
+  "$(recovery_json "$(recovery_authorize "$REC_PREP" native-owner '{"task_id":"7","task_type":"monitor","error":"not running"}')" .route)"
+check_eq "a native result from the wrong session cannot arm" manual \
+  "$(recovery_json "$(recovery_authorize "$REC_PREP" other-owner '{"task_id":"7","task_type":"monitor"}')" .route)"
+check_eq "number 7 does not prove that string 7 stopped" manual \
+  "$(recovery_json "$(recovery_authorize "$REC_PREP" native-owner '{"task_id":7,"task_type":"monitor"}')" .route)"
+check_eq "conflicting native identity aliases cannot authorize" manual \
+  "$(recovery_json "$(recovery_authorize "$REC_PREP" native-owner '{"task_id":"7","taskId":"other","task_type":"monitor"}')" .route)"
+check_eq "wrong-task proof leaves the original park byte-for-byte" "$REC_ORIGINAL" "$(recovery_read)"
+REC_AUTH=$(recovery_authorize "$REC_PREP" native-owner '{"task_id":"7","task_type":"monitor"}')
+check_eq "confirmed stop retains the original typed proof" '["7","old-wake",3]' \
+  "$(printf '%s\n' "$REC_AUTH" | jq -c '[.dead_task,.dead_generation,.binding.limit_probe_fires_remaining]')"
+REC_PUB=$(recovery_publish "$REC_AUTH" new-probe old-wake)
+check_eq "reusing the old generation refuses publication" failed "$(recovery_json "$REC_PUB" .status)"
+check_eq "refusal identifies only our new Monitor for cleanup" new-probe "$(recovery_json "$REC_PUB" .stop_new_task)"
+check_eq "a generation collision leaves the captured record intact" "$REC_ORIGINAL" "$(recovery_read)"
+REC_PUB=$(recovery_publish "$REC_AUTH" new-probe fresh-probe)
+check_eq "an exact stop permits publishing a fresh probe" armed "$(recovery_json "$REC_PUB" .status)"
+check_eq "probe publishes only the pair, without resetting the budget" '["new-probe","fresh-probe",3]' \
+  "$(recovery_read | jq -c '[.limit_resume_task_id,.limit_resume_generation,.limit_probe_fires_remaining]')"
+
+seed_recovery preemptive 3 '7'
+record_recovery_candidate 7 native-owner || exit 1
+check_eq "string-only registry cannot authorize a numeric wake stop" manual \
+  "$(recovery_json "$(recovery_prepare native-owner)" .route)"
+seed_recovery reactive null '"old-task"'
+record_recovery_candidate old-task native-owner || exit 1
+REC_ORIGINAL=$(recovery_read)
+REC_PREP=$(recovery_prepare native-owner)
+REC_AUTH=$(recovery_authorize "$REC_PREP" native-owner '{"task_id":"old-task","task_type":"monitor"}')
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"another-owner\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"another-generation\"" >/dev/null
+REC_REPLACED=$(recovery_read)
+check_eq "changed snapshot cannot authorize the old stop" manual \
+  "$(recovery_json "$(recovery_prepare native-owner "$REC_ORIGINAL")" .route)"
+check_eq "changed wake after stop cannot authorize arming" manual \
+  "$(recovery_json "$(recovery_authorize "$REC_PREP" native-owner '{"task_id":"old-task","task_type":"monitor"}')" .route)"
+REC_PUB=$(recovery_publish "$REC_AUTH" new-racer fresh-racer)
+check_eq "publication race reports lost with only the new cleanup target" '["lost","new-racer"]' \
+  "$(printf '%s\n' "$REC_PUB" | jq -c '[.status,.stop_new_task]')"
+check_eq "publication never adopts or overwrites the replacement" "$REC_REPLACED" "$(recovery_read)"
+
+for REC_KIND in '"weekly"' null '"unrecognized"' 42; do
+  seed_recovery reactive null null
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_kind=$REC_KIND" >/dev/null
+  REC_ORIGINAL=$(recovery_read)
+  check_eq "future park kind $REC_KIND refuses recovery" manual \
+    "$(recovery_json "$(recovery_prepare "")" .route)"
+  check_eq "future park kind $REC_KIND stays parked" "$REC_ORIGINAL" "$(recovery_read)"
+done
+
+seed_recovery preemptive 0 null
+check_eq "spent probe stays parked" manual "$(recovery_json "$(recovery_prepare "")" .route)"
+seed_recovery preemptive null null
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_cause=null" \
+  --set ".repos[\"$REPO_KEY\"].day.park_claim_token=\"incomplete\"" >/dev/null
+check_eq "unfinished claim cannot authorize a wake" manual "$(recovery_json "$(recovery_prepare "")" .route)"
+
 
 # The abort release must be keyed on the claim's own token (#1596), never on the
 # claim's timestamp (#1445's finding) and no longer on `limit_cause` alone. With
@@ -1335,7 +1490,7 @@ if [[ -n "$CTRL_DIR" ]]; then
     "PARK_CLAIM=error rc=2" "$CTRL_2D6_OUT"
   check_eq "control: and it claimed no reactive cause" "null" "$(day_get limit_cause)"
 
-  seed_day_state
+  seed_completed_park
   CTRL_WAKE_OUT=$(SESSION_STATE_SH="$CTRL_SS" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
     WAKE_TASK_ID=probe-task WAKE_GENERATION=probe-gen-ctl \
     bash -c "$BLOCK_WAKE" 2>/dev/null | tail -1)

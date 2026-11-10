@@ -45,8 +45,8 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    WORKDAY_SH=""
    GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
    for candidate in \
-     "$HOME/.claude/skills-worktree/.claude/scripts/workday.sh" \
-     "$HOME/.claude/scripts/workday.sh" \
+     "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/workday.sh}" \
+     "${HOME:+$HOME/.claude/scripts/workday.sh}" \
      "${GIT_ROOT:+$GIT_ROOT/.claude/scripts/workday.sh}" \
      ".claude/scripts/workday.sh"; do
      [ -n "$candidate" ] || continue
@@ -128,8 +128,8 @@ If a PR body is thin or template-only, extract the linked issue number via `pr-i
 PR_ISSUE_REF_SH=""
 GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/pr-issue-ref.sh" \
-  "$HOME/.claude/scripts/pr-issue-ref.sh" \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-issue-ref.sh}" \
+  "${HOME:+$HOME/.claude/scripts/pr-issue-ref.sh}" \
   "${GIT_ROOT:+$GIT_ROOT/.claude/scripts/pr-issue-ref.sh}" \
   ".claude/scripts/pr-issue-ref.sh"; do
   [ -n "$candidate" ] || continue

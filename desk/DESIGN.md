@@ -91,6 +91,15 @@ Closed as superseded: #1761 (cross-machine sync), because the store is on Neon f
 
 4.2.5 The fixed focus policy is gone; what survives is the order inside a set: parked agents first, then impact, then age. Ideas go through a one-shot entry into the issue-maker machinery so the desk never flips into capture mode.
 
+### 4.3 Control replacement and tick freshness
+
+Named desk ticks must match the registered control session. Registration and
+ticks serialize in tick-then-control lock order, so a preceding tick commits
+before replacement clears its freshness stamp. The argument-free compatibility
+tick remains a shared heartbeat: a later call can make a newly registered desk
+live without proving which session invoked it. Fencing that compatibility
+caller is outside this contract; use `tick --session` for session ownership.
+
 ## 5. Diagrams
 
 ### 5.1 System architecture: who is human, who is AI, what is software

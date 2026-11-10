@@ -75,13 +75,16 @@
 #                        beside this script; an absent DEFAULT leaves the feature
 #                        inactive, an unreadable or invalid EXPLICIT file exits 3,
 #                        and an EMPTY value exits 2 rather than quietly falling
-#                        back to the default the caller did not ask for.
-#   --no-exemptions      Disable the exemption list entirely. Previously exempt
-#                        files score and flag as ordinary hotspots — the
-#                        negative control for the feature. It WINS over
-#                        --exemptions (and the file is then never read); the
-#                        envelope reports `exemptions_file: null`, so the
-#                        disabled state is observable rather than silent.
+#                        back to the default the caller did not ask for. It
+#                        replaces the CATALOG kind only: the scanned repo's
+#                        POLICY EXEMPTIONS declaration is still read.
+#   --no-exemptions      Disable BOTH exemption kinds (catalog and policy).
+#                        Previously exempt files score and flag as ordinary
+#                        hotspots — the negative control for the feature. It
+#                        WINS over --exemptions (and neither file is then read);
+#                        the envelope reports `exemptions_file: null` and
+#                        `policy_exemptions_file: null`, so the disabled state
+#                        is observable rather than silent.
 #   --json               Emit a single JSON object. Default emits TSV rows.
 #
 # EMPTY VALUES (issue #1577):
@@ -191,10 +194,16 @@
 #
 # DEFAULT EXCLUSIONS:
 #   package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, poetry.lock,
-#   go.sum, CHANGELOG.md — generated or append-only files that churn by design
-#   and are never refactor candidates. The list is deliberately universal;
-#   repo-specific by-design churn is handled by CATALOG EXEMPTIONS below, and
-#   --exclude remains for per-invocation and generated files.
+#   go.sum, CHANGELOG.md, project.pbxproj, Package.resolved — generated or
+#   append-only files that churn by design and are never refactor candidates.
+#   project.pbxproj (written by Xcode or XcodeGen) and Package.resolved (written
+#   by SwiftPM) are the Xcode/SwiftPM equivalents of Cargo.lock and go.sum: the
+#   same basename in every repo of their ecosystem (issue #1855). Entries are
+#   literal basenames, so they match at any depth, root level included. The list
+#   is deliberately universal: tool-written files universal to an ecosystem go
+#   here; repo-specific by-design churn is handled by CATALOG EXEMPTIONS (lint-
+#   enforced) or POLICY EXEMPTIONS (a scanned repo's written rule) below, and
+#   --exclude remains for per-invocation and repo-specific generated files.
 #
 # CATALOG EXEMPTIONS (issue #1571):
 #   Some files churn because a LINT requires it: a catalog or index whose CI
@@ -232,6 +241,53 @@
 #
 #   Exclusion still wins over exemption: an excluded path never reaches
 #   aggregation, so it can never appear on the exempt line.
+#
+# POLICY EXEMPTIONS (issue #1858):
+#   A second exemption kind, for files a repo's OWN written process requires
+#   PRs of some kind to edit — a hand-kept ledger such as a parity checklist.
+#   No lint forces the edit and the file is specific to one repo, so neither the
+#   universal DEFAULT EXCLUSIONS nor the runner-local catalog above fits it.
+#
+#   The declaration lives IN THE SCANNED REPO, at a fixed repo-relative path:
+#
+#     .claude/reference/churn-hotspot-policy-exemptions.json
+#     {"schema": "churn-hotspot-policy-exemptions/v1",
+#      "exemptions": {"<path>": {"rule_source": "<repo file>", "reason": "<why>"}}}
+#
+#   It is read from the scanned repo AT THE SCANNED REF, never from this
+#   script's checkout and never from a working tree: on the git path from the
+#   commit SCAN_REF resolves to (an uncommitted declaration does not apply); on
+#   the gh path from the target repo's default-branch head, resolved once and
+#   pinned, so the declaration and every rule file come from one snapshot.
+#
+#   Guards (each exits 3 naming the declaration or the offending path; none
+#   ever falls back to scoring without the declaration):
+#     - the file exists but cannot be read (any git/gh failure other than a
+#       confirmed absence), is not valid JSON, has the wrong `schema`, or has a
+#       non-object `exemptions`;
+#     - an entry lacks a non-blank string `rule_source` or `reason`, or its
+#       path or `rule_source` holds a control character, or its `rule_source`
+#       is absolute, holds a `..`, `.` or empty segment, or is the declaration
+#       itself or the exempted file itself (either would "mention" the path
+#       trivially);
+#     - the cited `rule_source` does not exist at the same ref, or exists but
+#       does not mention the exempted path as a literal substring (catching
+#       typos and stale citations — exemption is never by assertion alone).
+#   Only a CONFIRMED absence (git: no such entry in the ref's tree; gh: HTTP 404
+#   on the contents request after the repo and commit lookups succeeded) means
+#   "no declaration", and the run then behaves exactly as before.
+#
+#   A policy exemption is a WEAKER claim than a catalog one: a written rule is
+#   not enforced by CI the way a lint is. The distinct `# exempt (policy)` line
+#   and the `kind` field exist so a reviewer can audit the two kinds apart.
+#
+#   Both kinds share one partition step: a policy-exempt file is scored exactly
+#   like any other and reclassified into `exemptions[]` with `kind: "policy"`,
+#   `rule_source` and `reason`. A path in both lists is reported once, as
+#   `kind: "catalog"`: the catalog is runner-local and applies to every scanned
+#   repo, so a collision is not the scanned repo's error. Catalog entries are
+#   not repo-scoped yet (a documented follow-up). --no-exemptions disables both
+#   kinds; --exemptions replaces the catalog only.
 #
 # ENUMERATION:
 #   DELIMITER — NUL, END TO END, ON BOTH BACKENDS (issue #1554). A filename may
@@ -276,7 +332,7 @@
 #   guard — a deleted file is not a refactor candidate regardless of its score).
 #
 # EXISTING-ISSUE LOOKUP:
-#   For each hotspot, issues in BOTH states (`--state all`) are searched for
+#   For each hotspot, issues in BOTH states are searched for
 #   `Refactor hotspot in:title` and matched CLIENT-SIDE on an exact title
 #   (`Refactor hotspot: <path>`) or an exact body marker
 #   (`<!-- churn-hotspot: <path> -->`). GitHub tokenizes paths in `in:title`
@@ -295,9 +351,12 @@
 #   chosen match on the next run. This detector still decides nothing — it only
 #   stops hiding the closed hit.
 #
-#   `--state all` enlarges the candidate set, so the ISSUE_LOOKUP_CAP guard below
-#   matters MORE, not less. It is unchanged: a capped lookup still sets
-#   `existing_lookup_failed` and blocks filing.
+#   Repo-scoped REST search reads creation-ascending pages of 100, at most 10
+#   pages. Stable totals, unique numbers, validated candidates and a short/empty
+#   final page prove completion; exactly 200 is complete after page 3. Totals
+#   >=1000 retain the conservative search ceiling and set both lookup-failed
+#   and truncated. Any page/matcher failure blocks filing. Closed matches are
+#   retained; do not close old tickets to fit the bound.
 #
 # OUTPUT:
 #   Default: one TSV row per hotspot, no header —
@@ -309,6 +368,7 @@
 #   handled.)
 #   Then, AFTER the hotspot rows, one line per touched exempt file —
 #     # exempt (catalog) <TAB> path <TAB> pr_count <TAB> score <TAB> pr_numbers <TAB> lint
+#     # exempt (policy) <TAB> path <TAB> pr_count <TAB> score <TAB> pr_numbers <TAB> rule_source
 #   The leading `#` marks the line so a column parser can tell it from a hotspot
 #   row (`grep -v '^#'` drops them); hotspot rows come first, so a caller reading
 #   the top N rows is unaffected. These lines are the "never silently omitted"
@@ -324,9 +384,13 @@
 #   `truncated`,
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
 #   `exemptions_file` (the resolved exemption file, or null when the feature is
-#   off or no file was found), `exempt_count`, `exemptions[]` (each: the same
-#   scored fields as a hotspot minus the issue-lookup pair, plus `lint` and
-#   `reason` from the entry — never bounded by --top or the threshold),
+#   off or no file was found), `policy_exemptions_file` (the scanned repo's
+#   declaration path, or null when absent or disabled), `policy_exemptions_ref`
+#   (the commit it was read at, or null), `exempt_count` (both kinds),
+#   `exemptions[]` (each: the same scored fields as a hotspot minus the
+#   issue-lookup pair, plus `kind` — `"catalog"` with `lint` and `reason`, or
+#   `"policy"` with `rule_source` and `reason` — never bounded by --top or the
+#   threshold),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
 #   `last_merged_at`, `created_in_window`, `creation_pr`,
@@ -344,7 +408,9 @@
 #   3  Environment error (missing dependency, not a git repo, no window,
 #      unresolvable --ref, a --ref the chosen enumeration path cannot honour,
 #      or an unreadable/invalid exemption file — including an entry that names
-#      no enforcing lint)
+#      no enforcing lint — or a scanned-repo policy declaration that cannot be
+#      read or validated, including an entry whose rule source is missing at
+#      the scanned ref or does not mention the exempted path)
 #   4  gh/API error during enumeration
 #   70  --help header extraction produced no output (internal defect).
 #
@@ -391,7 +457,10 @@ TOP=0
 AS_JSON=0
 SWEEP_THRESHOLD=20
 INCLUDE_CREATION=0
-ISSUE_LOOKUP_CAP=200
+# GitHub search is bounded to 1000 results; stop conservatively at that ceiling.
+ISSUE_SEARCH_PER_PAGE=100
+ISSUE_SEARCH_MAX_PAGES=10
+ISSUE_SEARCH_CEILING=$((ISSUE_SEARCH_PER_PAGE * ISSUE_SEARCH_MAX_PAGES))
 EXEMPTIONS_FILE=""
 NO_EXEMPTIONS=0
 
@@ -401,6 +470,16 @@ NO_EXEMPTIONS=0
 # against one checkout while classifying against another's policy.
 DEFAULT_EXEMPTIONS="$SCRIPT_DIR/../reference/churn-hotspot-exemptions.json"
 
+# Policy exemptions (issue #1858) are the OPPOSITE coupling: a repo-relative
+# path read from the SCANNED repo at the scanned ref, never resolved against
+# SCRIPT_DIR — the scanned repo owns its own written process. No flag overrides
+# it; --no-exemptions is the only switch. Initialised here so every exit path,
+# early ones included, reports them under `set -u`.
+POLICY_DECL_PATH=".claude/reference/churn-hotspot-policy-exemptions.json"
+POLICY_MAP='{}'
+POLICY_FILE_USED=""
+POLICY_REF=""
+
 # A literal newline, built with printf rather than ANSI-C quoting. `git log -z`
 # puts exactly one LF between a commit header and that commit's first
 # name-status token, and under bash 3.2 (macOS) `${token#$'\n'}` can silently
@@ -409,7 +488,7 @@ DEFAULT_EXEMPTIONS="$SCRIPT_DIR/../reference/churn-hotspot-exemptions.json"
 # newlines, so the value is built with a sentinel that is then removed.
 NL_CHAR=$(printf '\nx'); NL_CHAR="${NL_CHAR%x}"
 
-DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
+DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md,project.pbxproj,Package.resolved"
 
 # --exclude is the one guarded flag whose emptiness is not just "". Its value is
 # comma-split by is_excluded(), which `continue`s past blank fields, so `,` and
@@ -592,6 +671,7 @@ fi
 # Every exit path emits valid (possibly empty) output before returning.
 SOURCE_USED="$SOURCE_MODE"
 SCAN_REF=""
+SCAN_COMMIT=""
 SCAN_REF_SOURCE="n/a"
 SCANNED_PR_COUNT=0
 EXCLUDED_COUNT=0
@@ -659,6 +739,8 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --arg exemptions_file "$EXEMPTIONS_PATH" \
       --argjson exemptions "$exemptions" \
       --argjson exempt_count "$exempt_count" \
+      --arg policy_file "$POLICY_FILE_USED" \
+      --arg policy_ref "$POLICY_REF" \
       '{repo:$repo, since:$since, source:$source,
         scan_ref:$scan_ref, scan_ref_source:$scan_ref_source, threshold:$threshold,
         conflict_weight:$conflict_weight, min_prs:$min_prs,
@@ -669,6 +751,8 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
         truncated:$truncated, existing_lookup_failed:$lookup_failed,
         total_hotspot_count:$total,
         exemptions_file:(if $exemptions_file == "" then null else $exemptions_file end),
+        policy_exemptions_file:(if $policy_file == "" then null else $policy_file end),
+        policy_exemptions_ref:(if $policy_file == "" or $policy_ref == "" then null else $policy_ref end),
         exempt_count:$exempt_count, exemptions:$exemptions,
         hotspots:$hotspots}'
   else
@@ -685,9 +769,13 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
     # behind a `#` marker, so a column parser reading hotspot rows cannot mistake
     # one for the other and a caller taking the top N rows is unaffected.
     if [ "$exempt_count" -gt 0 ]; then
-      printf '%s' "$exemptions" | jq -r '.[] | [
-        "# exempt (catalog)", .file, (.pr_count|tostring), (.score|tostring),
-        (.pr_numbers|map(tostring)|join(",")), (.lint // "")
+      # The marker names the kind, and the last column carries that kind's
+      # authority: the enforcing lint for a catalog row, the cited rule file for
+      # a policy row. Same six columns either way, so one parser reads both.
+      printf '%s' "$exemptions" | jq -r '.[] | (.kind // "catalog") as $k | [
+        ("# exempt (" + $k + ")"), .file, (.pr_count|tostring), (.score|tostring),
+        (.pr_numbers|map(tostring)|join(",")),
+        (if $k == "policy" then (.rule_source // "") else (.lint // "") end)
       ] | @tsv'
     fi
   fi
@@ -839,29 +927,35 @@ if [ -n "$EXTRA_EXCLUDES" ]; then
 fi
 
 is_excluded() {  # $1 path -> 0 when excluded
-  local path="$1" pattern base
+  local path="$1" pattern base rc=1 restore_glob=0
   [ -n "$EXCLUDE_LIST" ] || return 1
   base="${path##*/}"
   local OLD_IFS="$IFS"
+  # The unquoted comma split below would also pathname-expand each entry against
+  # the invoking cwd, rewriting `*.md` into whatever Markdown sits there (issue
+  # #1856). Disable globbing for the split only, and restore the caller's state
+  # on the single exit path; `case` pattern matching is unaffected by noglob.
+  case "$-" in *f*) ;; *) set -f; restore_glob=1 ;; esac
   IFS=','
   for pattern in $EXCLUDE_LIST; do
     [ -n "$pattern" ] || continue
     # A bare filename pattern matches that file at any depth; a pattern with a
     # slash is matched against the full path.
     case "$pattern" in
-      */*) case "$path" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac ;;
-      *)   case "$base" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac
-           case "$path" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac ;;
+      */*) case "$path" in $pattern) rc=0; break ;; esac ;;
+      *)   case "$base" in $pattern) rc=0; break ;; esac
+           case "$path" in $pattern) rc=0; break ;; esac ;;
     esac
   done
   IFS="$OLD_IFS"
-  return 1
+  [ "$restore_glob" -eq 0 ] || set +f
+  return "$rc"
 }
 
 file_present() {  # $1 path -> 0 when the file exists at the scan target
   local file="$1"
   if [ -n "$SCAN_REF" ]; then
-    git cat-file -e "${SCAN_REF}:${file}" 2>/dev/null
+    git cat-file -e "${SCAN_COMMIT:-$SCAN_REF}:${file}" 2>/dev/null
   else
     [ -e "$file" ]
   fi
@@ -880,8 +974,236 @@ CREATION_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
 # substitution silently strips NUL bytes, which is exactly the byte carrying the
 # record boundary.
 GH_FILES=$(mktemp) || { err "could not create a temp file"; exit 3; }
-cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV" "$GH_FILES"; }
+# gh's stderr for the policy reads: the only place "HTTP 404" (a confirmed
+# absence) can be told apart from every other failure, which must exit 3.
+POLICY_ERR_FILE=$(mktemp) || { err "could not create a temp file"; exit 3; }
+# The NUL-delimited (path, rule_source) pairs of a policy declaration.
+POLICY_PAIRS=$(mktemp) || { err "could not create a temp file"; exit 3; }
+cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV" "$GH_FILES" "$POLICY_ERR_FILE" "$POLICY_PAIRS"; }
 trap cleanup EXIT
+
+# ---- policy exemptions: scanned-repo reader (issue #1858) --------------------
+# policy_read <repo-relative path> reads ONE file from the scanned repo at the
+# pinned policy ref and sets three globals rather than printing, so the caller
+# runs it in the current shell (a `$( )` subshell would lose the classification):
+#   POLICY_READ_STATUS  present | absent | error
+#   POLICY_READ_BODY    file contents when present
+#   POLICY_READ_ERR     why, when error
+# ABSENT is only ever a CONFIRMED absence. Everything else — an unresolvable
+# ref, a tree entry that is not a file, any gh failure other than a 404 on the
+# contents request itself — is an error, because treating an unreadable
+# declaration as a missing one is exactly the silent score the guard forbids.
+POLICY_READ_STATUS=""
+POLICY_READ_BODY=""
+POLICY_READ_ERR=""
+
+policy_pin_ref() {  # resolve POLICY_REF once per run -> 0 ok / 2 no commit at all / 1 error
+  local meta branch commit enc
+  [ -n "$POLICY_REF" ] && return 0
+  if [ "$SOURCE_USED" = "git" ]; then
+    # The commit the log was enumerated from, never a fresh resolve of the
+    # symbolic ref (which may have moved since).
+    POLICY_REF="$SCAN_COMMIT"
+    if [ -z "$POLICY_REF" ]; then
+      # The head-fallback on an unborn branch has no commit at all, so no
+      # declaration can exist there: that IS a confirmed absence. Any other
+      # unresolvable ref is not.
+      if [ "$SCAN_REF_SOURCE" = "head-fallback" ] && ! git rev-parse --verify --quiet HEAD >/dev/null 2>&1 </dev/null; then
+        return 2
+      fi
+      POLICY_READ_ERR="scan ref '$SCAN_REF' does not resolve to a commit"
+      return 1
+    fi
+    return 0
+  fi
+  # gh path: the target repo's default-branch head, pinned so the declaration
+  # and every rule file it cites are read from one snapshot.
+  command -v gh >/dev/null 2>&1 || { POLICY_READ_ERR="gh is not installed"; return 1; }
+  [ -n "$REPO" ] || { POLICY_READ_ERR="the target repo is unknown"; return 1; }
+  meta=$(gh api "repos/$REPO" 2>"$POLICY_ERR_FILE" </dev/null) ||
+    { POLICY_READ_ERR="gh api repos/$REPO failed: $(head -1 "$POLICY_ERR_FILE")"; return 1; }
+  branch=$(printf '%s' "$meta" | jq -r '.default_branch // empty' 2>/dev/null) || branch=""
+  [ -n "$branch" ] || { POLICY_READ_ERR="repos/$REPO reported no default_branch"; return 1; }
+  # A branch name may hold "/" (release/2.x): encode it whole, so the path
+  # segment cannot be misread as several.
+  enc=$(jq -rn --arg b "$branch" '$b | @uri' 2>/dev/null) && [ -n "$enc" ] ||
+    { POLICY_READ_ERR="could not encode default branch '$branch'"; return 1; }
+  commit=$(gh api "repos/$REPO/commits/$enc" 2>"$POLICY_ERR_FILE" </dev/null) ||
+    { POLICY_READ_ERR="gh api repos/$REPO/commits/$branch failed: $(head -1 "$POLICY_ERR_FILE")"; return 1; }
+  POLICY_REF=$(printf '%s' "$commit" | jq -r '.sha // empty' 2>/dev/null) || POLICY_REF=""
+  case "$POLICY_REF" in
+    *[!0-9a-f]*|'') POLICY_REF=""
+                    POLICY_READ_ERR="repos/$REPO/commits/$branch reported no commit sha"; return 1 ;;
+  esac
+  return 0
+}
+
+policy_read() {  # $1 repo-relative path
+  local path="$1" entry mode type blob enc rc
+  POLICY_READ_STATUS="error"; POLICY_READ_BODY=""; POLICY_READ_ERR=""
+  if [ "$SOURCE_USED" = "git" ]; then
+    # --literal-pathspecs: a path is a path, never a glob. Only the
+    # "<mode> <type> <sha>" prefix before the TAB is parsed, so however git
+    # quotes the path itself cannot matter (and no -z: `$( )` would warn about
+    # and drop the NUL anyway).
+    # --full-tree: the path is repo-root-relative even when the caller runs
+    # from a subdirectory (ls-tree otherwise resolves it against the cwd).
+    entry=$(git --literal-pathspecs ls-tree --full-tree "$POLICY_REF" -- "$path" 2>/dev/null </dev/null) ||
+      { POLICY_READ_ERR="git ls-tree failed at $POLICY_REF"; return 0; }
+    if [ -z "$entry" ]; then POLICY_READ_STATUS="absent"; return 0; fi
+    entry="${entry%%	*}"            # "<mode> <type> <sha>" (cut at the TAB)
+    mode="${entry%% *}"
+    type="${entry#* }"; type="${type%% *}"
+    blob="${entry##* }"
+    [ "$type" = "blob" ] || { POLICY_READ_ERR="'$path' is a $type, not a file, at $POLICY_REF"; return 0; }
+    # Regular-file modes only. A symlink (120000) is also typed "blob", but
+    # its body is the link TARGET text — `RULES.md -> LEDGER.md` would name the
+    # exempted path with no rule file behind it (the gh probe rejects
+    # "symlink" for the same reason).
+    case "$mode" in
+      100644|100755) ;;
+      *) POLICY_READ_ERR="'$path' is a mode-$mode entry (a symlink or other non-regular blob), not a file, at $POLICY_REF"; return 0 ;;
+    esac
+    POLICY_READ_BODY=$(git cat-file blob "$blob" 2>/dev/null </dev/null) ||
+      { POLICY_READ_ERR="git cat-file failed for '$path' at $POLICY_REF"; return 0; }
+    POLICY_READ_STATUS="present"; return 0
+  fi
+  enc=$(printf '%s' "$path" | jq -Rrs 'split("/") | map(@uri) | join("/")' 2>/dev/null) ||
+    { POLICY_READ_ERR="could not encode '$path' for the contents API"; return 0; }
+  # Entry type first, mirroring the git backend's blob check: the raw media
+  # type answers a DIRECTORY with its listing, and a listing names its
+  # children, so it would pass the mention check with no rule file behind it.
+  # Only "file" is accepted; a dir, symlink, submodule, or an answer that is
+  # not a contents object at all is an error (exit 3), never "present".
+  type=$(gh api "repos/$REPO/contents/$enc?ref=$POLICY_REF" \
+           --jq 'if type == "object" then (.type // "unknown") else "dir" end' \
+           2>"$POLICY_ERR_FILE" </dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if grep -q 'HTTP 404' "$POLICY_ERR_FILE" 2>/dev/null; then
+      POLICY_READ_STATUS="absent"; return 0
+    fi
+    POLICY_READ_ERR="gh api repos/$REPO/contents/$path failed: $(head -1 "$POLICY_ERR_FILE")"
+    return 0
+  fi
+  [ "$type" = "file" ] ||
+    { POLICY_READ_ERR="'$path' is a ${type:-entry of unknown type}, not a file, at $POLICY_REF"; return 0; }
+  POLICY_READ_BODY=$(gh api -H 'Accept: application/vnd.github.raw' \
+                       "repos/$REPO/contents/$enc?ref=$POLICY_REF" 2>"$POLICY_ERR_FILE" </dev/null)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then POLICY_READ_STATUS="present"; return 0; fi
+  # The entry was just confirmed to be a file at this pinned commit, so any
+  # failure now — a 404 included — is an error, never a confirmed absence.
+  POLICY_READ_BODY=""
+  POLICY_READ_ERR="gh api repos/$REPO/contents/$path failed: $(head -1 "$POLICY_ERR_FILE")"
+  return 0
+}
+
+# load_policy_exemptions — read, validate, and install POLICY_MAP. Called once,
+# after the enumeration backend is FINAL (an auto fallback reads from gh, not
+# from the abandoned git ref) and before the empty-touch early exit.
+load_policy_exemptions() {
+  local pin_rc decl invalid key rule offending="" where
+  [ "$NO_EXEMPTIONS" -eq 0 ] || return 0
+  policy_pin_ref; pin_rc=$?
+  [ "$pin_rc" -eq 2 ] && return 0
+  if [ "$pin_rc" -ne 0 ]; then
+    err "cannot read policy declaration $POLICY_DECL_PATH (backend: $SOURCE_USED): $POLICY_READ_ERR"
+    exit 3
+  fi
+  where="$SOURCE_USED backend at $POLICY_REF"
+  policy_read "$POLICY_DECL_PATH"
+  case "$POLICY_READ_STATUS" in
+    absent) POLICY_REF=""; return 0 ;;   # no declaration: behave exactly as before
+    present) ;;
+    *) err "cannot read policy declaration $POLICY_DECL_PATH ($where): $POLICY_READ_ERR"; exit 3 ;;
+  esac
+  decl="$POLICY_READ_BODY"
+
+  if ! printf '%s' "$decl" | jq -e '
+        .schema == "churn-hotspot-policy-exemptions/v1"
+        and ((.exemptions | type) == "object")
+        and (all(.exemptions | keys_unsorted[]; test("\\S")))
+      ' >/dev/null 2>&1; then
+    err "policy declaration is not a valid churn-hotspot-policy-exemptions/v1 document: $POLICY_DECL_PATH ($where)"
+    exit 3
+  fi
+
+  # Same fail-closed shape as the catalog validator: `$v` normalises a
+  # non-object entry to {} before any field is read, and a jq crash exits 3
+  # rather than reading as "no invalid entries".
+  invalid=$(printf '%s' "$decl" | jq -r --arg decl_path "$POLICY_DECL_PATH" '
+    def blank: ((type != "string") or ((. // "") | test("\\S") | not));
+    def ctrl: (type == "string" and test("[[:cntrl:]]"));
+    [ .exemptions | to_entries[]
+      | . as $e
+      | (if ($e.value | type) == "object" then $e.value else {} end) as $v
+      | (if ($v.rule_source | blank) then "no rule_source"
+         elif ($v.reason | blank) then "no reason"
+         elif ($e.key | ctrl) or ($v.rule_source | ctrl) then "control character in path or rule_source"
+         elif ($v.rule_source | startswith("/")) then "rule_source is absolute"
+         elif ($v.rule_source | split("/") | any(.[]; . == "..")) then "rule_source holds a .. segment"
+         elif ($v.rule_source | split("/") | any(.[]; . == "" or . == ".")) then "rule_source is not a normalised path"
+         # Either file trivially "mentions" the path, so citing it would let an
+         # entry satisfy the mention check by assertion alone.
+         elif $v.rule_source == $decl_path then "rule_source is the declaration itself"
+         elif $v.rule_source == $e.key then "rule_source is the exempted file itself"
+         else empty end) as $why
+      | "\($e.key) (\($why))" ]
+    | join("; ")' 2>/dev/null)
+  local jq_rc=$?
+  if [ "$jq_rc" -ne 0 ]; then
+    err "could not validate policy entries in $POLICY_DECL_PATH ($where; jq exited $jq_rc)"
+    exit 3
+  fi
+  if [ -n "$invalid" ]; then
+    err "policy exemption entries must cite a rule file in the scanned repo — non-empty \"rule_source\" and \"reason\" are both required. Offending path(s) in $POLICY_DECL_PATH ($where): $invalid"
+    exit 3
+  fi
+
+  # Every cited rule file must exist at the SAME ref and mention the exempted
+  # path literally. The pairs travel NUL-delimited through a temp file, never
+  # @tsv: @tsv escapes a backslash (legal in a filename) and `read -r` does not
+  # undo it, so the path and rule_source would be read back altered. A variable
+  # cannot hold the NULs and a process substitution would hide jq's exit
+  # status, hence the file. The pair count is checked against the entry count,
+  # so a short or desynchronised stream exits 3 instead of skipping an entry.
+  local want got=0
+  want=$(printf '%s' "$decl" | jq -r '.exemptions | length' 2>/dev/null) ||
+    { err "could not read policy entries from $POLICY_DECL_PATH ($where)"; exit 3; }
+  printf '%s' "$decl" | jq -j 'def z: [0] | implode;
+      .exemptions | to_entries[] | .key, z, .value.rule_source, z' \
+    > "$POLICY_PAIRS" 2>/dev/null ||
+    { err "could not read policy entries from $POLICY_DECL_PATH ($where)"; exit 3; }
+  while IFS= read -r -d '' key && IFS= read -r -d '' rule; do
+    got=$((got + 1))
+    [ -n "$key" ] || { err "could not read policy entries from $POLICY_DECL_PATH ($where): empty path"; exit 3; }
+    policy_read "$rule"
+    case "$POLICY_READ_STATUS" in
+      present)
+        case "$POLICY_READ_BODY" in
+          *"$key"*) ;;
+          *) offending="${offending:+$offending; }$key (rule_source $rule does not mention it)" ;;
+        esac ;;
+      absent) offending="${offending:+$offending; }$key (rule_source $rule does not exist)" ;;
+      *) err "cannot read rule_source $rule for $key ($where): $POLICY_READ_ERR"; exit 3 ;;
+    esac
+  done < "$POLICY_PAIRS"
+  if [ "$got" != "$want" ]; then
+    err "could not read policy entries from $POLICY_DECL_PATH ($where): read $got of $want"
+    exit 3
+  fi
+  if [ -n "$offending" ]; then
+    err "policy exemption rejected — each rule_source must exist at the scanned ref and mention the exempted path. Offending path(s) in $POLICY_DECL_PATH ($where): $offending"
+    exit 3
+  fi
+
+  POLICY_MAP=$(printf '%s' "$decl" | jq -c '.exemptions | map_values({rule_source, reason})' 2>/dev/null) ||
+    { err "could not read policy exemptions from $POLICY_DECL_PATH ($where)"; exit 3; }
+  case "$POLICY_MAP" in ''|null) err "could not read policy exemptions from $POLICY_DECL_PATH ($where)"; exit 3 ;; esac
+  POLICY_FILE_USED="$POLICY_DECL_PATH"
+  return 0
+}
 
 # is_creation_status — 0 when git's diff status marks the path as newly created.
 # `A` is an add. `C` (copy destination) is also a path that did not exist
@@ -1097,7 +1419,7 @@ enumerate_git() {
   # it means a future edit dropping `-z` fails the embedded-newline test loudly
   # instead of quietly mangling non-ASCII paths as well.
   done < <(git -c core.quotePath=false log -z --no-merges --since="$SINCE" --name-status -M \
-             --pretty=tformat:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
+             --pretty=tformat:'@@C@@%cI@@S@@%s' "${SCAN_COMMIT:-$SCAN_REF}" 2>/dev/null)
   flush_commit
 }
 
@@ -1227,6 +1549,11 @@ enumerate_gh() {
 if [ "$SOURCE_MODE" = "git" ] || [ "$SOURCE_MODE" = "auto" ]; then
   if [ "$IN_CHECKOUT" -eq 1 ]; then
     resolve_scan_ref
+    # Pin the symbolic ref to ONE commit before anything reads it: the log,
+    # the existence filter, and the policy declaration then all see the same
+    # snapshot even if the ref moves mid-run. Empty only on an unborn
+    # head-fallback, where every reader already finds nothing.
+    SCAN_COMMIT=$(git rev-parse --verify --quiet "${SCAN_REF}^{commit}" 2>/dev/null </dev/null) || SCAN_COMMIT=""
     enumerate_git
     SOURCE_USED="git"
   fi
@@ -1262,6 +1589,7 @@ if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_
   # The gh path enumerates merged PRs over the API — no ref is involved, and
   # reporting a leftover one would misdescribe what was scanned.
   SCAN_REF=""
+  SCAN_COMMIT=""
   SCAN_REF_SOURCE="n/a"
   enumerate_gh
   GH_RC=$?
@@ -1270,6 +1598,20 @@ if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_
   fi
   SOURCE_USED="gh"
 fi
+
+# The backend is final here, so the scanned repo's own policy declaration is
+# read from the snapshot this run actually measured — and BEFORE the
+# empty-touch exit below, so an unreadable declaration fails every run alike.
+load_policy_exemptions
+
+# One map for the partition step, each entry tagged with its kind. `+` lets the
+# right side win, so a path in both lists reports once as the CATALOG kind: the
+# stronger, lint-enforced claim, and one the scanned repo did not make.
+EXEMPT_ALL=$(jq -cn --argjson c "$EXEMPT_MAP" --argjson p "$POLICY_MAP" '
+  ($p | map_values({kind: "policy", rule_source, reason}))
+  + ($c | map_values({kind: "catalog", lint, reason}))' 2>/dev/null) ||
+  { err "could not merge catalog and policy exemptions"; exit 3; }
+case "$EXEMPT_ALL" in ''|null) err "could not merge catalog and policy exemptions"; exit 3 ;; esac
 
 # `grep -c` prints 0 AND exits 1 on an empty file, so a `|| echo 0` fallback
 # would emit "0\n0" and break the --argjson call downstream. wc -l always
@@ -1328,7 +1670,7 @@ case "$CREATION_MAP" in ''|null) CREATION_MAP='{}' ;; esac
 AGGREGATED=$(jq -Rs -c \
   --argjson conflicts "$CONFLICT_MAP" \
   --argjson creations "$CREATION_MAP" \
-  --argjson exempt "$EXEMPT_MAP" \
+  --argjson exempt "$EXEMPT_ALL" \
   --argjson threshold "$THRESHOLD" \
   --argjson weight "$CONFLICT_WEIGHT" \
   --argjson min_prs "$MIN_PRS" '
@@ -1369,8 +1711,10 @@ AGGREGATED=$(jq -Rs -c \
       # small its score, because the promise is "never silently omitted".
       exemptions: ( map(select(.file | in($exempt)))
                     | map(. as $e
-                          | $e + {lint:   $exempt[$e.file].lint,
-                                  reason: $exempt[$e.file].reason})
+                          | $exempt[$e.file] as $x
+                          | $e + (if $x.kind == "policy"
+                                  then {kind: "policy", rule_source: $x.rule_source, reason: $x.reason}
+                                  else {kind: "catalog", lint: $x.lint, reason: $x.reason} end))
                     | sort_by(-.score, -.pr_count, .file) )
     }
 ' < "$TOUCH_TSV" 2>/dev/null) || AGGREGATED=""
@@ -1399,30 +1743,88 @@ fi
 # GitHub tokenizes paths in `in:title`, so a server-side path query can match a
 # sibling file. When the lookup fails, callers must not file (duplicate risk).
 #
-# `--state all`, NOT `--state open` (issue #915). An open-only search hid every
-# hotspot issue the owner had already reviewed and closed, so the caller read the
-# path as never-ticketed and re-filed it on every run. Closed hits now come back
-# labelled (see the merge below) and the caller decides. `--state all` enlarges
-# the candidate set, which is exactly why the cap guard below stays.
+# Search both open and closed issues (issue #915). Hiding closed decisions made
+# previously ticketed paths look new and caused repeat filings. The complete
+# candidate set retains those decisions for the caller; the page-completeness
+# checks below replace the old fixed-limit guard and still block unsafe filing.
+# Explicit page reads expose completion evidence. Search is not a snapshot:
+# stable creation order and consistency checks detect some concurrent changes.
+lookup_existing_hotspot_issues() {
+  local page=1 response total=-1 page_total count items combined actual
+  local query="repo:$REPO is:issue Refactor hotspot in:title"
+  CANDIDATE_ISSUES='[]'
+  if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    err "issue lookup repository unresolved — not safe to file"
+    return 1
+  fi
+  while [ "$page" -le "$ISSUE_SEARCH_MAX_PAGES" ]; do
+    response=$(gh api --method GET search/issues \
+      -f "q=$query" -f "per_page=$ISSUE_SEARCH_PER_PAGE" -f "page=$page" \
+      -f sort=created -f order=asc 2>/dev/null) || {
+        err "issue lookup page $page failed — not safe to file"
+        return 1
+      }
+    # Slurp validates ONE JSON response, not a stream whose last object passed.
+    if ! printf '%s' "$response" | jq -e -s --argjson bound "$ISSUE_SEARCH_PER_PAGE" '
+      length == 1 and (.[0] |
+        type == "object"
+        and (.total_count | type == "number" and . >= 0 and floor == .)
+        and .incomplete_results == false
+        and (.items | type == "array" and length <= $bound)
+        and all(.items[];
+          type == "object"
+          and (.number | type == "number" and . > 0 and . <= 9007199254740991 and floor == .)
+          and (.title | type == "string")
+          and (.body | . == null or type == "string")
+          and (has("pull_request") | not)))
+    ' >/dev/null 2>&1; then
+      err "issue lookup page $page invalid or incomplete — not safe to file"
+      return 1
+    fi
+    if printf '%s' "$response" | jq -e --argjson ceiling "$ISSUE_SEARCH_CEILING" \
+      '.total_count >= $ceiling' >/dev/null; then
+      TRUNCATED=true
+      err "issue lookup page $page reaches the $ISSUE_SEARCH_CEILING-result search ceiling — not safe to file"
+      return 1
+    fi
+    page_total=$(printf '%s' "$response" | jq -r '.total_count') || return 1
+    if [ "$total" -eq -1 ]; then total=$page_total; fi
+    if [ "$page_total" -ne "$total" ]; then
+      err "issue lookup page $page changed total_count — not safe to file"
+      return 1
+    fi
+    items=$(printf '%s' "$response" | jq -c '[.items[] | {number,title,body,state}]') || return 1
+    count=$(printf '%s' "$items" | jq 'length') || return 1
+    combined=$(printf '%s\n%s\n' "$CANDIDATE_ISSUES" "$items" | jq -sc '.[0] + .[1]') || return 1
+    if ! printf '%s' "$combined" | jq -e 'length == (unique_by(.number) | length)' >/dev/null; then
+      err "issue lookup page $page repeated an issue number — not safe to file"
+      return 1
+    fi
+    CANDIDATE_ISSUES="$combined"
+    actual=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length') || return 1
+    if [ "$actual" -gt "$total" ]; then
+      err "issue lookup page $page exceeds total_count — not safe to file"
+      return 1
+    fi
+    if [ "$count" -lt "$ISSUE_SEARCH_PER_PAGE" ]; then
+      if [ "$actual" -ne "$total" ]; then
+        err "issue lookup page $page ended before total_count — not safe to file"
+        return 1
+      fi
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  TRUNCATED=true
+  err "issue lookup exhausted $ISSUE_SEARCH_MAX_PAGES pages — not safe to file"
+  return 1
+}
+
 CANDIDATE_ISSUES='[]'
 if command -v gh >/dev/null 2>&1; then
-  ISSUES_RAW=$(gh issue list --state all --search "Refactor hotspot in:title" \
-                 --limit "$ISSUE_LOOKUP_CAP" --json number,title,body,state $REPO_ARGS 2>/dev/null) || ISSUES_RAW=""
-  if [ -z "$ISSUES_RAW" ]; then
+  if ! lookup_existing_hotspot_issues; then
     LOOKUP_FAILED=true
-  else
-    CANDIDATE_ISSUES=$(printf '%s' "$ISSUES_RAW" | jq -c '.' 2>/dev/null) || { CANDIDATE_ISSUES='[]'; LOOKUP_FAILED=true; }
-    ISSUE_HITS=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length' 2>/dev/null || echo 0)
-    if [ "$ISSUE_HITS" -ge "$ISSUE_LOOKUP_CAP" ]; then
-      # A capped lookup is an INCOMPLETE lookup: an existing hotspot issue may
-      # sit beyond the cap, so absence of a match no longer proves absence of an
-      # issue. Callers gate filing on existing_lookup_failed, so it must be set
-      # here too — reporting only `truncated` would let a caller file a
-      # duplicate for a hotspot that already has one.
-      err "issue lookup hit the ${ISSUE_LOOKUP_CAP}-issue cap — an existing hotspot issue may have been missed; not safe to file"
-      TRUNCATED=true
-      LOOKUP_FAILED=true
-    fi
+    CANDIDATE_ISSUES='[]'
   fi
 else
   LOOKUP_FAILED=true
@@ -1442,7 +1844,9 @@ fi
 # norm_state type-checks instead of calling ascii_downcase blind: on a
 # non-string the whole program would abort, and this jq's failure mode is an
 # EMPTY hotspot list emitted under exit 0 — every hotspot lost, not just one.
-HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" '
+# Candidate bodies can exceed argv limits; both arrays travel on stdin.
+MATCHED_HOTSPOTS=$(printf '%s\n%s\n' "$CANDIDATE_ISSUES" "$HOTSPOTS" | jq -cs '
+  .[0] as $issues | .[1] |
   def norm_state: (if type == "string" then ascii_downcase else "" end);
   map(
     . as $h
@@ -1463,7 +1867,16 @@ HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" 
         end
       )
   )
-' 2>/dev/null) || HOTSPOTS='[]'
+' 2>/dev/null)
+MATCH_RC=$?
+if [ "$MATCH_RC" -eq 0 ]; then
+  HOTSPOTS="$MATCHED_HOTSPOTS"
+else
+  LOOKUP_FAILED=true
+  err "issue matching failed — not safe to file"
+  HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c \
+    'map(.existing_hotspot_issue = null | .existing_hotspot_issue_state = null)') || exit 4
+fi
 
 case "$HOTSPOTS" in ''|null) HOTSPOTS='[]' ;; esac
 

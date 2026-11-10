@@ -56,8 +56,9 @@ for a in "$@"; do [ "$a" = "--allow-nonauthor" ] && SAW_ALLOW_NONAUTHOR=1; done
 if [ -n "${FAKE_GATE_AUTHORSHIP_BLOCK:-}" ] && [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
   MISSING="$(printf '%s' "$MISSING" | jq -c '. + ["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]')"
 fi
-jq -cn --argjson m "$MISSING" --argjson h "$HUMAN" \
-  '{met:false, missing:$m, human_changes_requested:$h}'
+jq -cn --argjson m "$MISSING" --argjson h "$HUMAN" --arg nro "${FAKE_GATE_NRO_APPLIED:-}" \
+  '{met:false, missing:$m, human_changes_requested:$h}
+   + (if $nro == "1" then {no_review_override:{applied:true}} else {} end)'
 exit "${FAKE_GATE_EXIT:-1}"
 EOF
 chmod +x "$SCRIPTS/merge-gate.sh"
@@ -953,6 +954,16 @@ OUT="$( cd "$OTHER" && PATH="$GITSTUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
 expect_rc 3 "control: a pass-through stub still resolves the cwd repo (exit 3, as in 30b)"
 grep_absent "exceeded the 3s bound" "control: nothing is reported as timed out"
 pkill -f "$GITSTUB/stub-sleeper" >/dev/null 2>&1 || true
+
+# 40. No-review override (issue #1899): an unreviewed merge never takes an admin
+#     bypass — refused in every shape with the ordinary exit 1 (rebase path).
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_NRO_APPLIED=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 5 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "no-review override: --auto-plain refuses (exit 1, not 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=no-review-override" "no-review override refusal is named"
+log_absent "^pr merge" "no-review override: no merge call"
+log_absent "protection/enforce_admins" "no-review override: no protection API call"
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

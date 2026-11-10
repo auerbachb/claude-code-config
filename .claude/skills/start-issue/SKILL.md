@@ -19,14 +19,15 @@ Automate the full issue-to-coding flow: create issue (if needed) → wait for CR
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
@@ -39,6 +40,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering a chip; without the gate a subagent-fit issue routes to its own thread instead of the inline pipeline (#1189).
 - `ISSUE_CLAIM` empty → **optional**, but loud. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 2b gate cannot run, proceeding unclaimed` and continue. Say it once, in the visible output — an unclaimed start that nobody was told about is how two threads end up on one issue.
+- `SPEND_TELEMETRY_LINK` empty → **optional**. Record `DEGRADED: spend-telemetry-link.sh not found (checked all three paths) — issue/session correlation unavailable` and continue; telemetry must never gate starting work.
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and go straight to Step 4; Claude's own plan and the issue-body merge are still mandatory.
 - `ISSUE_DEDUP` empty → **optional**. Print `DEGRADED: issue-dedup.sh not found (checked all three paths) — duplicate search skipped` and continue.
 - `REPO_ROOT_SH` empty → **optional**. Fall back to `git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}'`; no warning needed, the inline form is equivalent.
@@ -67,8 +69,8 @@ Only when a description was provided.
    Run `issue-dedup.sh` with a 2–6 keyword phrase from the draft title (`$ISSUE_DEDUP` from Step 0; the inline form below is the same candidate order):
    ```bash
    for DEDUP in \
-     "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
-     "$HOME/.claude/scripts/issue-dedup.sh" \
+     "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh}" \
+     "${HOME:+$HOME/.claude/scripts/issue-dedup.sh}" \
      ".claude/scripts/issue-dedup.sh"; do
      [ -x "$DEDUP" ] && break; DEDUP=""; done
    ```
@@ -117,6 +119,16 @@ if ! "$ISSUE_CLAIM" "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
   # Either way the claim is NOT held — STOP, same as a `claimed` verdict above.
   echo "Issue #$ISSUE_NUMBER — could not take the claim; not starting." >&2
   exit 1
+fi
+```
+
+**Best-effort telemetry correlation.** After the claim succeeds, record only an explicit runtime session, repository slug, and issue number; do not infer a session ID from the claim holder or branch. The helper resolves and validates the repository from `GH_REPO` or the local `origin` remote. If the runtime session ID or helper is unavailable, continue without a session correlation. The recorder is metadata-only and non-blocking:
+
+```bash
+TELEMETRY_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+if [[ -n "$SPEND_TELEMETRY_LINK" && -n "$TELEMETRY_SESSION_ID" ]]; then
+  "$SPEND_TELEMETRY_LINK" --session "$TELEMETRY_SESSION_ID" \
+    --issue "$ISSUE_NUMBER" --source start_issue_claim >/dev/null 2>&1 || true
 fi
 ```
 
@@ -273,6 +285,8 @@ This creates **one canonical planning document** the coding agent can work from.
 
 **PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". **`/start-issue` is always execution-capable** — a capture thread refuses it outright (`/issue-maker` Step 2), so every thread that reaches this step can run the work. A subagent-fit issue is therefore **adopted by this thread**, never handed to a new one; the absence of a `## Active Work` table is a bootstrap instruction, not a reason to chip (#1229). Busy slots do not change this — the issue queues inline rather than becoming a chip (#776, AC4). Route on what this thread is already doing:
 
+**Keep the Step 2b claim with either inline route that enters decomposition.** Pass the verified issue number and its captured holder from this launch as `INHERITED_PARENT_NUMBER` and `INHERITED_PARENT_HOLDER` to `/subagent` Step 5.1, whether invoking `/subagent #N` or applying that step here. These are caller context, not new slash-command arguments. If Step 2b acquired a claim but the verified pair is missing, stop before filing children. Do not rederive the holder from the new checkout or copy one from a GitHub marker.
+
 - **This thread is already orchestrating** — a `## Active Work` table with live rows, or subagents running (monitor mode forbids substantive work in the parent) → run the issue as a pipeline: `/subagent #N`. Recommending inline is not launching it (Execution boundary). Say in one line that the worktree Step 6 prepared goes unused on this branch — the pipeline's phases provision their own — so it can be removed with `git worktree remove` rather than sitting there unexplained.
 - **Any other thread** — the common front-door case → **this thread codes the issue**, in the worktree Step 6 just created. Bootstrap a one-row `## Active Work` table (`/pm` 3.2's schema, Thread `Inline`) so the work is tracked, then continue from the ready-to-code block below. No chip and no second tab: the thread that ran `/start-issue` is the thread that lands the issue.
 
@@ -321,7 +335,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 {unchecked checkbox items from the issue body}
 
 ### Constraints
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory — then run `<N> --renew --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours, without acquiring a new claim. Stop and report on any non-zero exit (exit 5: the claim is no longer held or the issue is closed). Before coding, separately verify native issue state with `gh issue view <N> --repo <owner/repo> --json state --jq .state`; proceed only on `OPEN`. A closed or unreadable issue stops the handoff. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 - Do NOT work on main — use the worktree above
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")

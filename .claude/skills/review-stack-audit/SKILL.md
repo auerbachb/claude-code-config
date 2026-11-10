@@ -32,8 +32,8 @@ Resolve the repository locator before either engine runs:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -196,7 +196,15 @@ only then publish:
 
 ```bash
 TMP_SNAP="$STATE_DIR/.snapshot-$MONTH.json.tmp"
-if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --ledger --json > "$TMP_SNAP"; then
+# An array, not `${X:+--flag "$X"}`: zsh passes that as one word (issue #1857).
+MEASURE_ARGS=()
+[ -n "${SINCE:-}" ] && MEASURE_ARGS+=(--since "$SINCE")
+[ -n "${UNTIL:-}" ] && MEASURE_ARGS+=(--until "$UNTIL")
+[ -n "${DAYS:-}" ]  && MEASURE_ARGS+=(--days "$DAYS")
+[ -n "${LIMIT:-}" ] && MEASURE_ARGS+=(--limit "$LIMIT")
+[ -n "${REPOS:-}" ] && MEASURE_ARGS+=(--repos "$REPOS")
+[ -n "${ALL_REPOS:-}" ] && MEASURE_ARGS+=(--all-repos)
+if ! "$MEASURE" ${MEASURE_ARGS[@]+"${MEASURE_ARGS[@]}"} --ledger --json > "$TMP_SNAP"; then
   rm -f "$TMP_SNAP"
   echo "ERROR: measure.sh failed — aborting rather than auditing a partial window." >&2
   exit 1
@@ -540,7 +548,7 @@ run still answered the month's question.
 **No drift: one line, and nothing else** (issue #1201 AC4):
 
 ```
-[<ET timestamp>] review-stack-audit <MONTH>: no change — 6 tools, <N> PRs, 0 drift. Snapshot: <path>
+[<ET timestamp>] review-stack-audit <MONTH>: no change — 5 tools, <N> PRs, 0 drift. Snapshot: <path>
 ```
 
 **Drift found:** the count by severity, one line per finding (code, tool,
