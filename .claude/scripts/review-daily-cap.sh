@@ -73,6 +73,14 @@
 #   is read in part and noted on stderr: the figure is then a floor, like
 #   every receipt.
 #
+#   The repos are read concurrently, at most 6 at a time (a modest bound
+#   against GitHub's secondary rate limits; REVIEW_DAILY_CAP_FETCH_JOBS
+#   overrides it, 1 being the plain sequential read). Results are tallied in
+#   registry order, so the figure is the sequential read's. One repo that
+#   cannot be read makes the whole tally `unknown`, never the sum of the rest:
+#   repos not yet started are skipped, and reads already running finish or
+#   time out (90s per call) before the answer is printed.
+#
 # CACHE
 #   A known live tally is cached per platform and ET day in
 #   ~/.claude/review-daily-cap/<platform>-<YYYY-MM-DD>.json for 5 minutes. Only
@@ -125,6 +133,9 @@
 #   REVIEW_RATE_USD_<PLATFORM>       rate fallback when the block's rate is null
 #   REVIEW_DAILY_CAP_NOW             the clock, as epoch seconds or ISO-8601
 #                                    (tests); default: now
+#   REVIEW_DAILY_CAP_FETCH_JOBS      repos read at once (default 6, at most
+#                                    16); anything but a positive integer
+#                                    warns and uses the default
 #
 # DEPENDENCIES
 #   python3 (stdlib only) and lib/review_ledger.py; gh for the live tally;
@@ -368,7 +379,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -382,6 +395,8 @@ COMMITS_READ = 50
 SUITES_READ = 5     # Cursor Bugbot check suites per commit
 RUNS_READ = 20      # Cursor Bugbot check-runs per suite
 COMMENTS_READ = 100
+FETCH_WORKERS = 6   # repos read at once: a fraction of the sequential time,
+FETCH_WORKERS_MAX = 16  # and gentle on GitHub's secondary rate limits
 EXIT_USAGE = 2
 
 
@@ -626,6 +641,55 @@ def read_repo(repo, since):
     return prs
 
 
+def fetch_workers():
+    """The worker bound: REVIEW_DAILY_CAP_FETCH_JOBS when it is a usable count."""
+    raw = os.environ.get("REVIEW_DAILY_CAP_FETCH_JOBS", "").strip()
+    if not raw:
+        return FETCH_WORKERS
+    if raw.isascii() and raw.isdigit() and 0 < int(raw) <= FETCH_WORKERS_MAX:
+        return int(raw)
+    note("REVIEW_DAILY_CAP_FETCH_JOBS='%s' is not a count from 1 to %d; reading %d repos at once"
+         % (raw, FETCH_WORKERS_MAX, FETCH_WORKERS))
+    return FETCH_WORKERS
+
+
+class _Skipped(Exception):
+    """A repo never read because another repo's read already failed."""
+
+
+def read_repos(repos, since):
+    """[(repo, prs)] for every repo, in registry order, read a few at a time.
+
+    Any failed read fails the whole call — the tally is never a partial sum.
+    The pool bounds the reads in flight, not the elapsed time: after a failure,
+    repos not yet started are skipped, while reads already running finish their
+    current page or hit GH_TIMEOUT before the failure is raised.
+    """
+    workers = min(fetch_workers(), len(repos))
+    if workers <= 1:
+        return [(repo, read_repo(repo, since)) for repo in repos]
+    failed = threading.Event()
+
+    def job(repo):
+        if failed.is_set():
+            raise _Skipped(repo)
+        try:
+            return read_repo(repo, since)
+        except BaseException:
+            failed.set()   # in the worker, so no later repo starts on a stale view
+            raise
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(job, repo) for repo in repos]
+    # Leaving the block waited for every future; skipped ones end at once. The failure reported is the
+    # first in registry order, so the diagnostic does not depend on timing.
+    for future in futures:
+        exc = future.exception()
+        if exc is not None and not isinstance(exc, _Skipped):
+            raise exc
+    return [(repo, future.result()) for repo, future in zip(repos, futures)]
+
+
 def registered_repos():
     helper = os.environ.get("RDC_REVIEW_REPOS", "")
     if not helper:
@@ -791,7 +855,7 @@ def main():
             raise Unknown("the %s rate is null or unusable in the review-stack-rates block, so "
                           "today's spend cannot be priced" % PLATFORM)
         repos = registered_repos()
-        repos_prs = [(repo, read_repo(repo, start)) for repo in repos]
+        repos_prs = read_repos(repos, start)
         spent = tally(repos_prs, rates, start, end)
         cache_write(day, now, spent, repos)
         return emit(day, spent, cap)

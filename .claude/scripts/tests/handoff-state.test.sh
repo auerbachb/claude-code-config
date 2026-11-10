@@ -62,6 +62,15 @@ SEED_JSON='{"schema_version":"1.0","pr_number":99,"head_sha":"aaa","reviewer":"c
   "threads_replied":[],"threads_resolved":[],
   "files_changed":[],"push_timestamp":"2026-01-01T00:00:00Z","notes":""}'
 
+NO_HOME_RC=0
+NO_HOME_OUT=$(env -u HOME bash "$SCRIPT" --help 2>&1) || NO_HOME_RC=$?
+check_eq "unset HOME: help still exits zero" 0 "$NO_HOME_RC"
+NO_HOME_RC=0
+NO_HOME_OUT=$(env -u HOME bash "$SCRIPT" --owner-repo acme/widgets --init "$PR" '{}' 2>&1) || NO_HOME_RC=$?
+check_eq "unset HOME: required handoff write refuses with exit 5" 5 "$NO_HOME_RC"
+check_eq "unset HOME: storage error names the cause"   "handoff-state.sh: HOME is unset or empty; cannot resolve handoff storage. Nothing was read or written." "$NO_HOME_OUT"
+check_eq "unset HOME: no private handoff was created" false "$(if [[ -e "$HANDOFF_FILE" ]]; then echo true; else echo false; fi)"
+
 echo "== --create: writes valid JSON =="
 reset_handoff
 run --create "$PR" "$SEED_JSON"
@@ -1047,6 +1056,54 @@ rpr_rc=0
 bash "$SCRIPT" --legacy-flat --repair "$PR" 'not json{' >/dev/null 2>&1 || rpr_rc=$?
 check_eq "--repair rejects an invalid body with exit 4" "4" "$rpr_rc"
 check_eq "…without touching the target" "$rpr_before" "$(cat "$HANDOFF_FILE")"
+
+# Guarded terminal-artifact deletion shares the same under-lock identity check.
+DELETE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+DELETE_DOC=$(jq -nc --arg head "$DELETE_HEAD" '{pr_number:99,owner_repo:"fixture/repo",head_sha:$head}')
+bash "$SCRIPT" --owner-repo fixture/repo --create 99 "$DELETE_DOC" >/dev/null
+DELETE_FILE=$(bash "$SCRIPT" --owner-repo fixture/repo --path 99)
+DELETE_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 99 --expect-owner fixture/repo \
+  --expect-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --delete 99 >/dev/null 2>&1 || DELETE_RC=$?
+check_eq "guarded delete refuses a changed HEAD" 4 "$DELETE_RC"
+check_eq "guarded delete preserves the changed record" "$DELETE_DOC" "$(cat "$DELETE_FILE")"
+DELETE_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 99 --expect-owner fixture/repo \
+  --expect-head "$DELETE_HEAD" --delete 99 >/dev/null 2>&1 || DELETE_RC=$?
+check_eq "guarded delete accepts the exact identity" 0 "$DELETE_RC"
+check_eq "guarded delete removed only that record" 0 "$([[ -e "$DELETE_FILE" ]] && echo 1 || echo 0)"
+DELETE_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 99 --expect-owner fixture/repo \
+  --expect-head "$DELETE_HEAD" --delete 99 >/dev/null 2>&1 || DELETE_RC=$?
+check_eq "guarded delete reports an already absent record" 3 "$DELETE_RC"
+
+# A resumed handoff can keep its HEAD while its recovery state changes.
+bash "$SCRIPT" --owner-repo fixture/repo --create 99 "$DELETE_DOC" >/dev/null
+CONTENT_SHA=$(python3 - "$DELETE_FILE" <<'CONTENT_FIXTURE'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+CONTENT_FIXTURE
+)
+bash "$SCRIPT" --owner-repo fixture/repo --set 99 '.phase_completed="B"' >/dev/null
+CONTENT_BEFORE="$(cat "$DELETE_FILE")"
+CONTENT_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 99 --expect-owner fixture/repo \
+  --expect-head "$DELETE_HEAD" --expect-content-sha "$CONTENT_SHA" --delete 99 >/dev/null 2>&1 || CONTENT_RC=$?
+check_eq "revision guard retains a resumed same-HEAD handoff" 4 "$CONTENT_RC"
+check_eq "revision refusal preserves the newer recovery record" "$CONTENT_BEFORE" "$(cat "$DELETE_FILE")"
+CONTENT_SHA=$(python3 - "$DELETE_FILE" <<'CONTENT_FIXTURE'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+CONTENT_FIXTURE
+)
+CONTENT_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 99 --expect-owner fixture/repo \
+  --expect-head "$DELETE_HEAD" --expect-content-sha "$CONTENT_SHA" --delete 99 >/dev/null 2>&1 || CONTENT_RC=$?
+check_eq "revision guard accepts its exact selected content" 0 "$CONTENT_RC"
+check_eq "revision guard deletes the selected record only" 0 "$([[ -e "$DELETE_FILE" ]] && echo 1 || echo 0)"
+CONTENT_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --expect-content-sha "$CONTENT_SHA" --delete 99 >/dev/null 2>&1 || CONTENT_RC=$?
+check_eq "content precondition alone cannot bypass identity guards" 2 "$CONTENT_RC"
 
 echo
 echo "==================================="

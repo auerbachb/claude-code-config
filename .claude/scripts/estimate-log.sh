@@ -18,8 +18,8 @@
 #       timestamp as the start time; falls back to PR createdAt with
 #       start_source flagged. Idempotent: skips PRs already in the log.
 #       Then sweeps the log for rows missing the "rounds" field (written before
-#       that field existed) and patches each in place with the fetched round
-#       count. The sweep is driven off the log, not off --limit, because the
+#       that field existed) and patches them in one locked rewrite with the fetched round
+#       counts. The sweep is driven off the log, not off --limit, because the
 #       rows needing it are the oldest ones — outside any newest-first window.
 #       Default: the current repo; default limit: 50.
 #
@@ -27,6 +27,11 @@
 #       Read the log; compute per-tier median and ~P90 for both minutes and
 #       rounds; render a reference doc.
 #       Default output: .claude/reference/estimate-actuals.md (in cwd repo).
+#
+# Rollup reads one JSON object per physical line, skipping malformed or
+# non-schema rows; repo identity is parsed, never matched by text formatting.
+# Empty/nonmatching input exits 1; read/selection errors and detected output
+# aliases of the input ledger exit 5 before report publication.
 #
 # LOG FILE: ~/.claude/estimate-log.jsonl  (one JSON object per line)
 #
@@ -74,6 +79,7 @@
 # DEPENDENCIES
 #   - gh (authenticated)
 #   - jq >= 1.5
+#   - python3 (--rollup only, exact destination rename)
 #
 # EXAMPLES
 #   estimate-log.sh --append 1299
@@ -140,47 +146,110 @@ check_deps() {
 
 # ---------------------------------------------------------------------------
 # Advisory file lock (mkdir-based, portable)
-# Acquires LOG_LOCK directory; sets LOCK_TOKEN for release check.
-# Returns 0 on success, 5 on timeout.
+# Known live holders never expire by age. Unknown ownership is retained until
+# the caller's bounded wait ends; only a recorded same-host dead PID is reaped.
 # ---------------------------------------------------------------------------
 LOCK_TOKEN=""
+# A shell may die while its append/replace utility still owns a write. Publish
+# pending BEFORE forking; an interrupted PID publication remains unknown.
+lock_mutation_inactive() {
+  local token="$1" operation recorded extra seen rc
+  [[ -e "$LOG_LOCK/writer" ]] || return 0
+  IFS=' ' read -r operation recorded extra < "$LOG_LOCK/writer" || return 1
+  [[ "$recorded" == "$token" && -z "$extra" ]] || return 1
+  [[ "$operation" == "done" ]] && return 0
+  [[ "$operation" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$operation" 2>/dev/null && return 1
+  rc=0
+  seen=$(ps -p "$operation" -o pid= 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 1 && -z "$seen" ]]
+}
+
+run_log_mutation() {
+  local kind="$1" source="$2" writer rc=0 publication=0
+  [[ "$kind" == append || "$kind" == replace ]] || return 5
+  printf 'pending %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || {
+    # No child was started: an empty/truncated marker is ours to remove.
+    rm -f "$LOG_LOCK/writer" 2>/dev/null || true
+    return 5
+  }
+  case "$kind" in
+    append) cat "$source" >> "$LOG_FILE" & ;;
+    replace) mv "$source" "$LOG_FILE" & ;;
+  esac
+  writer=$!
+  printf '%s %s\n' "$writer" "$LOCK_TOKEN" > "$LOG_LOCK/writer" || publication=5
+  wait "$writer" || rc=$?
+  # Once wait completed, this generation cannot write again through this child.
+  printf 'done %s\n' "$LOCK_TOKEN" > "$LOG_LOCK/writer" || {
+    # wait has reaped the child, so removing our marker cannot expose a writer.
+    rm -f "$LOG_LOCK/writer" 2>/dev/null || true
+    publication=5
+  }
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  return "$publication"
+}
+
+lock_owner_dead() {
+  local snapshot="$1" pid host token extra seen rc
+  IFS=' ' read -r pid host token extra <<< "$snapshot"
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$host" == "$LOCK_HOST" \
+      && "$token" =~ ^[0-9]+-[0-9]+N?-[0-9]+$ && -z "$extra" \
+      && "$snapshot" == "$pid $host $token" ]] || return 1
+  kill -0 "$pid" 2>/dev/null && return 1
+  # Permission or inspection failures are not proof of death. Both BSD and GNU
+  # ps return 1 with no PID when the process is absent.
+  rc=0
+  seen=$(ps -p "$pid" -o pid= 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 1 && -z "$seen" ]] && lock_mutation_inactive "$token"
+}
+
+LOCK_HOST=""
 acquire_lock() {
   local deadline=$(( $(date +%s) + LOCK_STALE_SECS ))
+  local owner stored_token current retired reaper_guard
+  LOCK_HOST=$(hostname 2>/dev/null) || return 5
+  [[ "$LOCK_HOST" =~ ^[a-zA-Z0-9._-]+$ ]] || return 5
   LOCK_TOKEN="$$-$(date +%s%N 2>/dev/null || date +%s)-$RANDOM"
   while true; do
     if mkdir "$LOG_LOCK" 2>/dev/null; then
-      printf '%s\n' "$LOCK_TOKEN" > "$LOG_LOCK/token" 2>/dev/null || true
+      # Missing/partial metadata is never reaped, so publication cannot expose
+      # an apparently dead holder. Refuse the write if ownership cannot persist.
+      if ! printf '%s\n' "$LOCK_TOKEN" > "$LOG_LOCK/token" \
+          || ! printf '%s %s %s\n' "$$" "$LOCK_HOST" "$LOCK_TOKEN" > "$LOG_LOCK/owner.tmp" \
+          || ! mv "$LOG_LOCK/owner.tmp" "$LOG_LOCK/owner"; then
+        rm -rf "$LOG_LOCK" 2>/dev/null || true
+        return 5
+      fi
       return 0
     fi
-    # Stale lock check: only reap if the lock dir is old enough AND
-    # the recorded token (if any) differs from ours — avoids clobbering
-    # a live holder's lock on a re-entry path.
-    # Get lock directory mtime as epoch seconds, portable across BSD and GNU.
-    # stat -f %m is BSD (macOS); stat -c %Y is GNU (Linux).
-    # Validate the result is numeric before arithmetic to guard against
-    # GNU stat's -f flag returning a non-numeric mount-point string.
-    local lock_time _t
-    _t=$(stat -f %m "$LOG_LOCK" 2>/dev/null || true)
-    if ! [[ "$_t" =~ ^[0-9]+$ ]]; then
-      _t=$(stat -c %Y "$LOG_LOCK" 2>/dev/null || echo 0)
-    fi
-    [[ "$_t" =~ ^[0-9]+$ ]] && lock_time=$_t || lock_time=0
-    local lock_age=$(( $(date +%s) - lock_time ))
-    if [[ $lock_age -gt $LOCK_STALE_SECS ]]; then
-      # Read the stored token before removing to avoid clobbering a newly
-      # acquired lock from another writer. The window between reading the token
-      # and removing the directory is a theoretical race; in practice the lock
-      # is held for < 1 ms (append only), and LOCK_STALE_SECS=120 ensures
-      # only truly dead/stale holders are reaped. A re-try loop means any
-      # false-reap is self-correcting.
-      local stored_token
-      stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
-      # An empty token means the holder never recorded ownership (crash or
-      # failed write); treat it as stale just like a differing token.
-      if [[ "$stored_token" != "$LOCK_TOKEN" ]]; then
-        rm -rf "$LOG_LOCK" 2>/dev/null || true
-        continue
+    owner=$(cat "$LOG_LOCK/owner" 2>/dev/null || true)
+    stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || true)
+    reaper_guard="$LOG_LOCK/reaper-$stored_token"
+    if [[ -n "$stored_token" && "$owner" == *" $stored_token" ]] \
+        && lock_owner_dead "$owner" \
+        && mkdir "$reaper_guard" 2>/dev/null; then
+      # Only one reaper may move this dead generation. Recheck after obtaining
+      # the guard so a second contender cannot remove a new writer's lock.
+      current=$(cat "$LOG_LOCK/owner" 2>/dev/null || true)
+      if [[ "$current" == "$owner" \
+          && "$(cat "$LOG_LOCK/token" 2>/dev/null || true)" == "$stored_token" ]] \
+          && lock_owner_dead "$current"; then
+        retired=$(mktemp -d "${LOG_LOCK}.reaped.XXXXXX") || {
+          rmdir "$reaper_guard" 2>/dev/null || true
+          return 5
+        }
+        if mv "$LOG_LOCK" "$retired/lock" 2>/dev/null; then
+          rm -rf "$retired" 2>/dev/null || true
+          continue
+        fi
+        rmdir "$retired" 2>/dev/null || true
       fi
+      # Always release our guard, including when it landed in a successor's
+      # directory. Its name is tied to the observed acquisition token, so an
+      # obsolete/crashed guard can never block a different generation's reaper.
+      # A crash while guarding this same generation still fails closed.
+      rmdir "$reaper_guard" 2>/dev/null || true
     fi
     if [[ $(date +%s) -gt $deadline ]]; then
       return 5
@@ -190,11 +259,10 @@ acquire_lock() {
 }
 
 release_lock() {
-  # Release if this process owns the lock (token match) or if no token was
-  # ever recorded (crash between mkdir and token write): this process owns it.
   local stored_token
-  stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
-  if [[ -z "$stored_token" || "$stored_token" == "$LOCK_TOKEN" ]]; then
+  stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || true)
+  if [[ -n "$LOCK_TOKEN" && "$stored_token" == "$LOCK_TOKEN" ]] \
+      && lock_mutation_inactive "$LOCK_TOKEN"; then
     rm -rf "$LOG_LOCK" 2>/dev/null || true
   fi
 }
@@ -346,26 +414,14 @@ fetch_claim_ts() {
     return
   fi
 
-  # Fetch issue comments
-  local comments_json
-  comments_json=$(gh api "repos/$repo/issues/$issue_number/comments" \
-    --paginate 2>/dev/null || echo "[]")
-
-  local claim_ts
-  # gh api --paginate emits one JSON array per page, concatenated on stdout.
-  # jq -s (slurp) collects them into an outer array; .[] | .[] iterates all
-  # comment objects across every page.  .[]? guards against an empty page.
-  #
-  # Design note: we pick the LATEST claim comment at or before the merge
-  # timestamp.  Bounding by merge_ts prevents a post-merge re-claim (follow-up
-  # work) from producing a negative actual duration.  If no bound is supplied
-  # the filter is a no-op (empty string never satisfies <=).
-  claim_ts=$(printf '%s' "$comments_json" \
-    | jq -rs --arg merge_ts "$merge_ts" \
-         '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- claude-claim:")))
-                       | select($merge_ts == "" or .created_at <= $merge_ts) ]
-          | if length > 0 then (sort_by(.created_at) | last).created_at else "" end' \
-    2>/dev/null || echo "")
+  # Use the same protocol reader as claim checks. With no authentic, bounded
+  # marker, retain the PR-created estimate instead of timing explanatory prose.
+  local claim_ts="" claim_helper
+  claim_helper="$(dirname "${BASH_SOURCE[0]}")/issue-claim.sh"
+  if [[ -x "$claim_helper" ]]; then
+    claim_ts="$(gh api "repos/$repo/issues/$issue_number/comments" --paginate 2>/dev/null \
+      | "$claim_helper" --pickup-time "$merge_ts" 2>/dev/null)" || claim_ts=""
+  fi
 
   if [[ -n "$claim_ts" && "$claim_ts" != "null" && "$claim_ts" != "" ]]; then
     printf '%s claim_comment\n' "$claim_ts"
@@ -383,15 +439,12 @@ pr_in_log() {
   local repo="${2:-}"
   [[ -f "$LOG_FILE" ]] || return 1
   if [[ -n "$repo" ]]; then
-    # Match rows with both the pr number and repo fields.
-    # jq is the authoritative check; grep is a fast pre-filter.
-    # -R + fromjson? tolerates malformed lines the same way mode_rollup does,
-    # so a corrupt line never causes pr_in_log to false-report a miss and
-    # insert a duplicate row.
-    grep -q "\"pr\":${pr_num}[^0-9]" "$LOG_FILE" 2>/dev/null \
-      && jq -e -R --argjson pr "$pr_num" --arg repo "$repo" \
-           'fromjson? | select(.pr == $pr and .repo == $repo)' \
-           "$LOG_FILE" >/dev/null 2>&1
+    # One aggregate predicate over parsed object rows, independent of JSON
+    # whitespace or row position. Malformed/non-object siblings are ignored.
+    # Stream raw lines rather than slurping the whole ledger into memory.
+    jq -e -Rn --argjson pr "$pr_num" --arg repo "$repo" \
+      'any(inputs | fromjson? | objects; .pr == $pr and .repo == $repo)' \
+      "$LOG_FILE" >/dev/null 2>&1
   else
     # Legacy: pr number only (no repo filter)
     grep -q "\"pr\":${pr_num}[^0-9]" "$LOG_FILE" 2>/dev/null
@@ -449,7 +502,7 @@ append_row() {
   fi
 
   local cat_rc=0
-  cat "$tmp" >> "$LOG_FILE" || cat_rc=$?
+  run_log_mutation append "$tmp" || cat_rc=$?
   rm -f "$tmp"
 
   if [[ $cat_rc -ne 0 ]]; then
@@ -476,67 +529,98 @@ append_row() {
 }
 
 # ---------------------------------------------------------------------------
-# Patch the "rounds" field into an existing row, in place, under the lock.
+# Patch all collected rounds in one pass over the latest ledger, under one lock.
 # Only rows whose rounds is absent/null are touched, so a re-run is a no-op and
 # a measured value is never overwritten.
-# Returns 0 on a successful patch, 1 when there was nothing to patch, 5 on error.
+# PATCHED_PRS records distinct PRs changed by the committed batch.
+# Returns 0 on a successful batch, 1 when there was nothing to patch, 5 on error.
 # ---------------------------------------------------------------------------
-patch_row_rounds() {
-  local pr_num="$1"
-  local repo="$2"
-  local rounds="$3"
+patch_rows_rounds() {
+  local repo="$1"
+  local batch="$2"
+  PATCHED_PRS=""
 
   [[ -f "$LOG_FILE" ]] || return 1
-  [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || return 1
 
   if ! acquire_lock; then
-    echo "estimate-log.sh: WARN: could not acquire log lock to patch PR #$pr_num" >&2
+    echo "estimate-log.sh: WARN: could not acquire log lock to patch rounds batch" >&2
     return 5
   fi
 
-  local tmp
-  if ! tmp=$(mktemp "$(dirname "$LOG_FILE")/.estimate-log-tmp-XXXXXX"); then
+  local tmp="" batch_file="" matched_file=""
+  if ! tmp=$(mktemp "$(dirname "$LOG_FILE")/.estimate-log-tmp-XXXXXX") \
+     || ! batch_file=$(mktemp "$(dirname "$LOG_FILE")/.estimate-rounds-batch-XXXXXX") \
+     || ! matched_file=$(mktemp "$(dirname "$LOG_FILE")/.estimate-rounds-matched-XXXXXX"); then
+    rm -f -- "$tmp" "$batch_file" "$matched_file"
     release_lock
-    echo "estimate-log.sh: WARN: could not create temp file to patch PR #$pr_num" >&2
+    echo "estimate-log.sh: WARN: could not create temporary rounds batch files" >&2
     return 5
   fi
-  # shellcheck disable=SC2064
-  trap "release_lock; rm -f '$tmp'" EXIT
+  trap 'release_lock; rm -f -- "$tmp" "$batch_file" "$matched_file"' EXIT
+  # A builtin writes the map; no unbounded JSON value becomes an OS argument.
+  if ! printf '%s' "$batch" > "$batch_file"; then
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: could not write rounds patch map; log left unmodified" >&2
+    return 5
+  fi
 
-  # Fence the read-modify-write. `acquire_lock`'s age-based reaper can hand the
-  # lock to a second writer while this one still believes it holds it — harmless
-  # for an append (one atomic short write), but this path REPLACES the whole
-  # file, so a lost race would discard the other writer's rows. Snapshot the log
+  # Fence the read-modify-write independently of the holder-liveness lock. This
+  # path REPLACES the whole file, so any lost ownership or changed snapshot
+  # must refuse rather than discard another writer's rows. Snapshot the log
   # now and re-verify both the checksum and our lock token immediately before the
   # mv; either mismatch aborts with the log untouched.
   local fence_before
   fence_before=$(cksum < "$LOG_FILE" 2>/dev/null || echo "unreadable")
 
-  local patched=0 write_rc=0 line updated
-  # `|| [[ -n "$line" ]]` so a final line with no trailing newline is still read.
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if printf '%s' "$line" \
-         | jq -e --argjson pr "$pr_num" --arg repo "$repo" \
-              'select(.pr == $pr and .repo == $repo and (.rounds // null) == null)' \
-              >/dev/null 2>&1 \
-       && updated=$(printf '%s' "$line" | jq -c --argjson r "$rounds" '.rounds = $r' 2>/dev/null); then
-      printf '%s\n' "$updated" >> "$tmp" || { write_rc=5; break; }
-      patched=1
-      continue
-    fi
-    # Every other line is copied through byte-for-byte — including malformed
-    # ones, which this mode must preserve rather than quietly drop.
-    printf '%s\n' "$line" >> "$tmp" || { write_rc=5; break; }
-  done < "$LOG_FILE"
+  local patched=0 write_rc=0
+  local -a transform_status=(5 5)
+  # One jq process loads the map once and emits one selector per physical line.
+  # Read the original bytes alongside that stream: jq must never echo unchanged
+  # raw text, since its UTF-8 decoder can alter malformed/unselected bytes.
+  if exec 3< "$LOG_FILE"; then
+    jq -Rr --arg repo "$repo" --slurpfile patches "$batch_file" '
+      (try fromjson catch null) as $row |
+      if ($row | type) == "object" and ($row.pr | type) == "number"
+         and $row.repo == $repo and ($row.rounds // null) == null
+         and $patches[0][($row.pr | tostring)] != null
+      then ($row.pr | tostring) + "\t" +
+           ($row | .rounds = $patches[0][($row.pr | tostring)] | tojson)
+      else "" end' "$LOG_FILE" 2>/dev/null | {
+        local line result changed_pr updated
+        while IFS= read -r result; do
+          line=""
+          IFS= read -r line <&3 || [[ -n "$line" ]] || exit 5
+          if [[ -n "$result" ]]; then
+            changed_pr=${result%%$'\t'*}
+            updated=${result#*$'\t'}
+            printf '%s\n' "$changed_pr" >> "$matched_file" || exit 5
+          else
+            updated=$line
+          fi
+          printf '%s\n' "$updated" >> "$tmp" || exit 5
+        done
+      }
+    transform_status=("${PIPESTATUS[@]}")
+    exec 3<&-
+  else
+    write_rc=5
+  fi
+  if [[ "${transform_status[0]}" -ne 0 || "${transform_status[1]}" -ne 0 ]]; then
+    write_rc=5
+  elif ! PATCHED_PRS=$(sort -un "$matched_file"); then
+    write_rc=5
+  elif [[ -n "$PATCHED_PRS" ]]; then
+    patched=1
+  fi
 
   if [[ $write_rc -ne 0 ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: write failed while patching PR #$pr_num; log left unmodified" >&2
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: write failed while patching rounds batch; log left unmodified" >&2
     return 5
   fi
 
   if [[ $patched -eq 0 ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
     return 1
   fi
 
@@ -546,8 +630,8 @@ patch_row_rounds() {
   before=$(grep -c '' "$LOG_FILE" 2>/dev/null || echo 0)
   after=$(grep -c '' "$tmp" 2>/dev/null || echo 0)
   if [[ "$before" -ne "$after" ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: rounds patch for PR #$pr_num would change the row count ($before -> $after); log left unmodified" >&2
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: rounds batch would change the row count ($before -> $after); log left unmodified" >&2
     return 5
   fi
 
@@ -566,17 +650,18 @@ patch_row_rounds() {
   held_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
   if [[ "$fence_before" == "unreadable" || "$fence_after" != "$fence_before" \
         || "$held_token" != "$LOCK_TOKEN" ]]; then
-    rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: log changed or lock ownership lost while patching PR #$pr_num; log left unmodified" >&2
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: log changed or lock ownership lost while patching rounds batch; log left unmodified" >&2
     return 5
   fi
 
-  if ! mv "$tmp" "$LOG_FILE"; then
-    rm -f "$tmp"; release_lock; trap - EXIT
-    echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching PR #$pr_num" >&2
+  if ! run_log_mutation replace "$tmp"; then
+    rm -f -- "$tmp" "$batch_file" "$matched_file"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching rounds batch" >&2
     return 5
   fi
 
+  rm -f -- "$batch_file" "$matched_file"
   release_lock
   trap - EXIT
   return 0
@@ -809,20 +894,40 @@ mode_backfill() {
     local stale_count
     stale_count=$(printf '%s\n' "$stale_prs" | grep -c '' || true)
     echo "estimate-log.sh: patching rounds for $stale_count row(s) missing it ..." >&2
-    local stale_pr existing_rounds
+    local stale_pr existing_rounds batch="{" candidates=""
     while IFS= read -r stale_pr; do
       [[ "$stale_pr" =~ ^[0-9]+$ ]] || continue
-      existing_rounds=$(gh api "repos/$repo/pulls/$stale_pr" --jq '.commits // empty' \
-        2>/dev/null || true)
-      if [[ "$existing_rounds" =~ ^[1-9][0-9]*$ ]] \
-         && patch_row_rounds "$stale_pr" "$repo" "$existing_rounds"; then
-        (( patched++ )) || true
-        echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
+      if existing_rounds=$(gh api "repos/$repo/pulls/$stale_pr" --jq '.commits // empty' 2>/dev/null) \
+         && [[ "$existing_rounds" =~ ^[1-9][0-9]*$ ]]; then
+        batch="$batch\"$stale_pr\":$existing_rounds,"
+        candidates="${candidates}${candidates:+$'\n'}$stale_pr"$'\t'"$existing_rounds"
       else
         (( patch_failed++ )) || true
         echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
       fi
     done <<< "$stale_prs"
+
+    if [[ -n "$candidates" ]]; then
+      batch="${batch%,}}"
+      local batch_rc=0 PATCHED_PRS=""
+      patch_rows_rounds "$repo" "$batch" || batch_rc=$?
+      # Both candidate and committed IDs are sorted numerically. Merge them
+      # with one cursor instead of parsing/scanning the full map per candidate.
+      local next_patched=""
+      {
+        IFS= read -r next_patched <&5 || next_patched=""
+        while IFS=$'\t' read -r stale_pr existing_rounds; do
+          if [[ "$batch_rc" -eq 0 && "$stale_pr" == "$next_patched" ]]; then
+            (( patched++ )) || true
+            echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
+            IFS= read -r next_patched <&5 || next_patched=""
+          else
+            (( patch_failed++ )) || true
+            echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
+          fi
+        done <<< "$candidates"
+      } 5<<< "$PATCHED_PRS"
+    fi
   fi
 
   echo "estimate-log.sh: backfill done — appended=$appended skipped=$skipped patched=$patched patch_failed=$patch_failed failed=$failed" >&2
@@ -835,27 +940,48 @@ mode_backfill() {
 # MODE: --rollup
 # ===========================================================================
 mode_rollup() {
-  local output_file="$1"
+  local output_display="$1"
+  local output_file="$output_display"
+  # Keep a relative leading dash out of stat/dirname option parsing without
+  # changing the exact directory entry selected by the caller.
+  case "$output_file" in -*) output_file="./$output_file" ;; esac
   local repo="$2"
 
-  if [[ ! -f "$LOG_FILE" ]] || [[ ! -s "$LOG_FILE" ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "estimate-log.sh: python3 is required for rollup publication" >&2
+    return 4
+  fi
+  if [[ -d "$output_file" ]]; then
+    echo "estimate-log.sh: rollup output is a directory: $output_display" >&2
+    return 5
+  fi
+  if [[ ! -e "$LOG_FILE" ]]; then
+    echo "estimate-log.sh: log is empty or missing at $LOG_FILE — no rollup to generate" >&2
+    return 1
+  fi
+  if [[ ! -f "$LOG_FILE" ]]; then
+    echo "estimate-log.sh: rollup input is not a regular file: $LOG_FILE" >&2
+    return 5
+  fi
+  if [[ "$output_file" -ef "$LOG_FILE" ]]; then
+    echo "estimate-log.sh: rollup output aliases the input ledger: $output_display" >&2
+    return 5
+  fi
+  if [[ ! -s "$LOG_FILE" ]]; then
     echo "estimate-log.sh: log is empty or missing at $LOG_FILE — no rollup to generate" >&2
     return 1
   fi
 
-  # Collect only schema-valid JSON rows for this repo, skipping malformed lines.
-  # Checks: (1) valid JSON, (2) required numeric actual_min, (3) boolean outlier.
-  # Parse each line individually so a single corrupt row doesn't drop the rest.
+  # One JSON object per physical line. Parse before comparing top-level repo
+  # identity; malformed/non-schema siblings must not hide the valid rows.
   local repo_rows
-  repo_rows=$(grep -F "\"repo\":\"$repo\"" "$LOG_FILE" 2>/dev/null \
-    | while IFS= read -r line; do
-        if printf '%s' "$line" \
-            | jq -e '((.actual_min | type) == "number") and
-                     ((.outlier   | type) == "boolean")' >/dev/null 2>&1; then
-          printf '%s\n' "$line"
-        fi
-      done \
-    | jq -sc '.' 2>/dev/null || echo "[]")
+  if ! repo_rows=$(jq -Rnc --arg repo "$repo" '
+    [inputs | fromjson? | objects | select(.repo == $repo)
+     | select((.actual_min | type) == "number" and (.outlier | type) == "boolean")]
+  ' "$LOG_FILE"); then
+    echo "estimate-log.sh: failed to select rollup rows from $LOG_FILE" >&2
+    return 5
+  fi
 
   local row_count
   row_count=$(printf '%s' "$repo_rows" | jq 'length')
@@ -910,11 +1036,45 @@ mode_rollup() {
   local now
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+  # A redirect preserved an existing report's mode, or used 0666 & umask for
+  # a new report. Preserve that contract when publishing a private temp file.
+  # BSD's low portion alone omits setuid/setgid/sticky bits. Include the
+  # middle portion and pad the low portion so mode 1001 cannot become 11.
+  local report_mode report_umask
+  if [[ -e "$output_file" ]]; then
+    if ! report_mode=$(stat -L -c '%a' "$output_file" 2>/dev/null || stat -L -f '%Mp%03Lp' "$output_file" 2>/dev/null); then
+      echo "estimate-log.sh: could not read rollup output permissions" >&2
+      return 5
+    fi
+  else
+    report_umask=$(umask)
+    if [[ ! "$report_umask" =~ ^[0-7]{3,4}$ ]]; then
+      echo "estimate-log.sh: could not read rollup output umask" >&2
+      return 5
+    fi
+    printf -v report_mode '%03o' "$((0666 & ~(8#$report_umask)))"
+  fi
+  if [[ ! "$report_mode" =~ ^[0-7]{1,4}$ ]]; then
+    echo "estimate-log.sh: invalid rollup output permissions" >&2
+    return 5
+  fi
+
   # Ensure output directory exists
-  mkdir -p "$(dirname "$output_file")"
+  if ! mkdir -p "$(dirname "$output_file")"; then
+    echo "estimate-log.sh: could not create rollup output directory" >&2
+    return 5
+  fi
+  local report_tmp
+  if ! report_tmp=$(mktemp "$(dirname "$output_file")/.estimate-rollup-XXXXXX"); then
+    echo "estimate-log.sh: could not allocate rollup output" >&2
+    return 5
+  fi
 
   # Generate the markdown document
-  {
+  (
+    local render_rc=0
+    trap 'render_rc=$?; if [[ $render_rc -ne 0 ]]; then rm -f "$report_tmp"; echo "estimate-log.sh: could not render rollup output" >&2; exit 5; fi' EXIT
+    set -e
     printf '# Estimate Actuals — Guess vs. Reality\n\n'
     printf '> Auto-generated by `estimate-log.sh --rollup` on %s.\n' "$now"
     printf '> Source: `~/.claude/estimate-log.jsonl` (%s rows for `%s`).\n' \
@@ -928,6 +1088,10 @@ mode_rollup() {
     printf 'claim → merge (`pr_created` fallback), so they are the right comparison\n'
     printf 'for the planning bound but include the coding term the per-round unit\n'
     printf 'excludes. That unit is re-derived only from an open → merge measurement.\n'
+    printf 'The claim start is the claim marker'\''s payload `since` when valid, else the\n'
+    printf 'marker comment'\''s `created_at`, so a renewed claim does not shorten the duration.\n'
+    printf 'Quoted examples do not count. An unreadable newest eligible record falls back\n'
+    printf 'to PR creation.\n'
     printf 'The published tier table stays authoritative for tiers with fewer than ~5 rows.\n\n'
 
     printf '## Recalibrated Tier → Time Table\n\n'
@@ -990,9 +1154,14 @@ mode_rollup() {
     printf '>\n'
     printf '> _Generated by `estimate-log.sh --rollup`. Do not edit manually._\n'
 
-  } > "$output_file"
+  ) > "$report_tmp"
+  if ! chmod "$report_mode" "$report_tmp" || ! python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$report_tmp" "$output_file" 2>/dev/null; then
+    rm -f "$report_tmp"
+    echo "estimate-log.sh: could not publish rollup output" >&2
+    return 5
+  fi
 
-  echo "estimate-log.sh: rollup written to $output_file ($row_count rows)" >&2
+  echo "estimate-log.sh: rollup written to $output_display ($row_count rows)" >&2
   return 0
 }
 

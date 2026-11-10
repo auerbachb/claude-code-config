@@ -67,6 +67,8 @@
 #                       first. A value that cannot be entered is a hard error
 #                       (exit 7) in every mode, never a silent cwd fallback.
 #   --branch <name>     Protected branch (default: the PR's base branch).
+#   --defer-bookkeeping  In --auto-plain, leave post-merge bookkeeping to /wrap
+#                        after its issue completion assessment.
 #   --ac-verified       REQUIRED by --auto-plain. Caller attests it has completed
 #                       cr-merge-gate.md Step 2 — per-criterion Test Plan
 #                       verification against the code at the CURRENT SHA — for this
@@ -150,30 +152,16 @@ if [[ -r "$BOUNDED_RUN_LIB" ]]; then
   if source "$BOUNDED_RUN_LIB"; then BOUNDED_RUN_OK=1; fi
 fi
 
-# release_issue_claim — drop the pick-time claim on the PR's linked issue once
-# the merge is confirmed (issue #873). A merged PR is a terminal state, so the
-# issue becomes startable again.
-#
-# BEST-EFFORT BY DESIGN: this only ever runs AFTER a merge has already landed,
-# so it must never change the exit status. An unreleased claim ages out on its
-# own within CLAIM_STALE_HOURS; failing an already-completed merge would be the
-# far worse outcome. Every failure path here is a warning.
-# SET-VALUED BY DESIGN (issue #1492): pr-issue-ref.sh prints every issue this PR
-# closes, one per line. A PR with two `Closes` trailers must release BOTH claims —
-# taking a single value here stranded #1541 after PR #1546 merged. Releasing an
-# issue we do not hold is safe: issue-claim.sh --release compares logins and drops
-# only our own claim, never a collaborator's.
+# Post-merge only: preserve pickup evidence before any claim deletion.
+# Keep all three merge shapes on one retryable bookkeeping boundary.
 release_issue_claim() {
-  local issues issue
-  [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" && -x "$SCRIPT_DIR/issue-claim.sh" ]] || return 0
-  issues="$("$SCRIPT_DIR/pr-issue-ref.sh" "$PR_NUMBER" 2>/dev/null || true)"
-  [[ -n "$issues" ]] || return 0
-  while IFS= read -r issue; do
-    [[ -n "$issue" ]] || continue
-    if ! "$SCRIPT_DIR/issue-claim.sh" "$issue" --release >/dev/null 2>&1; then
-      echo "WARNING: could not release the claim on issue #$issue — it will expire on its own. Clear it early with: $SCRIPT_DIR/issue-claim.sh $issue --release" >&2
-    fi
-  done <<< "$issues"
+  [[ "$DEFER_BOOKKEEPING" != true ]] || return 0
+  if [[ -x "$SCRIPT_DIR/post-merge-bookkeeping.sh" ]]; then
+    "$SCRIPT_DIR/post-merge-bookkeeping.sh" "$PR_NUMBER" --repo "$OWNER_REPO" >/dev/null || \
+      echo "WARN: post-merge bookkeeping not confirmed for PR #$PR_NUMBER; retry /wrap" >&2
+  else
+    echo "WARN: post-merge-bookkeeping.sh missing for PR #$PR_NUMBER; retry /wrap after restoring helpers" >&2
+  fi
   return 0
 }
 
@@ -196,6 +184,7 @@ REVIEWER_OVERRIDE=""
 # not rest on clean-behind-check.sh's ticked-checkbox proxy alone. The caller
 # asserts it ran cr-merge-gate.md Step 2 against the code at the current SHA.
 AC_VERIFIED=false
+DEFER_BOOKKEEPING=false
 # Authorship guard (issue #733): a bypass merge is the most consequential PR
 # write. Refuse non-author PRs unless the caller passes --allow-nonauthor under
 # an explicit per-PR user override.
@@ -227,6 +216,7 @@ while [[ $# -gt 0 ]]; do
       shift 2 ;;
     --force-solo) FORCE_SOLO=true; shift ;;
     --ac-verified) AC_VERIFIED=true; shift ;;
+    --defer-bookkeeping) DEFER_BOOKKEEPING=true; shift ;;
     --allow-nonauthor) ALLOW_NONAUTHOR=true; shift ;;
     --reviewer)
       REVIEWER_OVERRIDE="${2:-}"
@@ -244,6 +234,11 @@ while [[ $# -gt 0 ]]; do
       PR_NUMBER="$1"; shift ;;
   esac
 done
+
+if [[ "$DEFER_BOOKKEEPING" == true && "$MODE" != "auto-plain" ]]; then
+  echo "ERROR: --defer-bookkeeping is only valid with --auto-plain" >&2
+  exit 2
+fi
 
 # --auto-plain + --allow-nonauthor hard refusal (issue #1251 review round).
 # --auto-plain is the one mode Claude may run UNATTENDED — no human confirms
@@ -526,6 +521,16 @@ if [[ -z "$GATE_JSON" ]] || ! echo "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   exit 4
 fi
 
+# No-review override (issue #1899): an unreviewed merge never also takes an
+# admin bypass. Refused in every shape with the ordinary not-merge-ready exit
+# (1), which callers route to rebase/recovery — the rebased HEAD then gets its
+# own window. Never exit 8: there is nothing for the repo admin to print.
+if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
+  echo "AUTO_PLAIN_REFUSED: reason=no-review-override" >&2
+  echo "REFUSED: PR #$PR_NUMBER would merge through the no-review override — admin bypass is never combined with an unreviewed merge. If the PR is CLEAN, merge it plainly via /wrap (gh pr merge --squash --match-head-commit, no admin); only if it is BEHIND, rebase via /fixpr — the new HEAD gets its own window." >&2
+  exit 1
+fi
+
 # Clean-BEHIND allowance (issue #631): a `mergeStateStatus: BEHIND` is normally a
 # hard blocker (rebase first). But when the base delta does NOT touch the PR's
 # files, rebasing is pure churn and an admin squash-merge is safe — `gh pr merge
@@ -536,7 +541,7 @@ fi
 # protection reviewDecision note that admin-merge is independently allowed to
 # bypass. Keep that note separate from the mechanical clean-BEHIND verdict so the
 # two gate filters cannot make --auto-plain unreachable (issue #947).
-REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
+REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, a Greptile re-review is paid: ask the owner to approve it in chat \(#1897\)|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
 
 clean_behind_evidence_allows_admin() {
   local json="$1" rc="$2"
@@ -663,6 +668,7 @@ if [[ "$FORCE_SOLO" != true ]]; then
     fi
   done
 
+  # graphite-app: retired 2026-11-03 (#1889); kept so a stale CODEOWNERS entry is never a human.
   HUMAN_OWNERS=$(printf '%s\n' "$CODEOWNERS_TEXT" \
     | sed 's/#.*$//' \
     | grep -oE '@[A-Za-z0-9/_-]+' \

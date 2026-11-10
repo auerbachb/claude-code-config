@@ -32,7 +32,7 @@ ENRICHMENT_540 = """<!-- This is an auto-generated issue plan by CodeRabbit -->
 <summary>🔗 Related PRs</summary>
 
 auerbachb/claude-code-config#210 - refactor: condense CLAUDE.md via deduplication into rule files [merged]
-auerbachb/claude-code-config#404 - Integrate CodeAnt merge gate + Graphite wiring docs (`#367`) [merged]
+auerbachb/claude-code-config#404 - Integrate CodeAnt merge gate wiring docs (`#367`) [merged]
 auerbachb/claude-code-config#406 - CR rate limits: batching, session-state tracking, cr-review-hourly.sh (`#28`) [merged]
 auerbachb/claude-code-config#441 - feat: complexity-gated AI review triggers after CR rounds (`#362`) [closed]
 auerbachb/claude-code-config#453 - feat(wrap): autonomous merge-gate recovery via /fixpr delegation (`#452`) [closed]

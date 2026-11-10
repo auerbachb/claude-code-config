@@ -1,7 +1,7 @@
 ---
 name: phase-a-fixer
 description: "Phase A subagent: fix review findings, push code, write handoff file, print exit report. Used after a PR receives CR/BugBot/Greptile review findings."
-model: opus
+model: haiku
 ---
 
 # Phase A: Fix + Push
@@ -39,8 +39,8 @@ through `run_script`:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -66,6 +66,14 @@ in one line and block the step that needed it. Full contract:
 `.claude/reference/portable-skill-resolution.md` (issue #1189).
 
 Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
+
+## Cost-first runtime context
+
+The parent supplies the stable routing task identity and current record/request
+file pointers. Load `MODEL_ROUTE_RECORD` into the shell from the record file;
+use its `.request` for `MODEL_ROUTE_REQUEST`, preserving attempts. If missing,
+resolve the current scoped session/handoff record rather than guessing a model.
+Follow `task-model-routing.md`, including the post-edit submission preflight.
 
 ## Runtime Context
 
@@ -96,7 +104,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
 gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
 ```
 
-Filter by `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
+Filter by `coderabbitai[bot]`, `cursor[bot]`, `codeant-ai[bot]`, `greptile-apps[bot]`, or the retired `graphite-app[bot]` (still posting until the App is uninstalled).
 
 ### Step 2: Verify and Fix
 
@@ -111,10 +119,18 @@ Fix ALL valid findings before committing. Also fix any lint/CI failures.
 
 Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit but **still proceed through Steps 4-6** (reply to any existing threads, resolve them, and write the handoff file). Only Step 3 itself is conditional — the handoff file MUST be written regardless of OUTCOME, or Phase B will have no state to read from.
 
+Before this step, run appropriate local checks/local review, batch related fixes,
+and compare the proposed tree with the last pushed tree. Refresh
+`MODEL_ROUTE_REQUEST`'s submission flags only from those results and persist the
+request/result and evidence pointers through the existing scoped phase record.
+The pre-spawn route does not count as this post-edit check. The push guard below
+is mandatory; on refusal preserve a recovery handoff and report the blocker.
+
 **Stage files explicitly by name.** NEVER use `git add -A` or `git add .` — those can accidentally include untracked sensitive files (`.env`, credentials) or large binaries. You already know exactly which files you modified in Step 2 (from the findings you fixed), so pass those paths explicitly:
 
 ```bash
 # Replace the placeholder list below with the actual paths you modified in Step 2
+SUBMISSION_BLOCKED=false
 git add path/to/file1 path/to/file2 ...
 
 if git diff --cached --quiet; then
@@ -122,7 +138,28 @@ if git diff --cached --quiet; then
   # Do NOT exit here. Steps 4-6 still run.
 else
   git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
-  git push origin {{BRANCH_NAME}}
+  if (
+# model-route-submission
+: "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+MODEL_ROUTE_SH=""
+for ROUTE_CANDIDATE in \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh}" \
+  "${HOME:+$HOME/.claude/scripts/model-route.sh}" \
+  ".claude/scripts/model-route.sh"; do
+  if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
+done
+if [ -z "$MODEL_ROUTE_SH" ]; then
+  echo "ERROR: model-route.sh not found (checked all three paths) — submission unavailable" >&2
+  exit 5
+fi
+SUBMISSION_RESULT=$("$MODEL_ROUTE_SH" --input "$MODEL_ROUTE_REQUEST") || exit 5
+jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
+  ); then
+    git push origin {{BRANCH_NAME}}
+  else
+    SUBMISSION_BLOCKED=true
+    echo "Submission blocked — retain unpushed HEAD and continue to recovery handoff" >&2
+  fi
 fi
 ```
 
@@ -130,32 +167,38 @@ One commit = one review consumed. Never push multiple commits for separate findi
 
 ### Step 4: Reply to Review Threads
 
-Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for Graphite — each mode strips only its own token, never another's):
+If `SUBMISSION_BLOCKED=true`, skip Steps 4–5: no pushed fix exists to acknowledge
+or resolve. Continue to Step 6 with the unpushed HEAD, `outcome: "blocked"`,
+`phase_completed: ""`, and notes identifying the submission refusal and recovery
+evidence. Then print Step 7 with `OUTCOME: blocked` and `NEXT_PHASE: none`.
+
+Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for the retired Graphite, which still posts until its App is uninstalled — each mode strips only its own token, never another's):
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
-  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
+  --verdict fixed --defect real --fix as-given
 ```
+
+**The verdict flags are mandatory on every reply to a bot finding** (issue #1842) — they stamp the `<!-- review-verdict: … -->` marker the review-cost ledger reads. Set `--verdict` to `fixed`, `deferred` (follow-up issue), or `declined`, and `--defect real` only when the finding named a behaviour the code would actually have gotten wrong — `--defect not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Leave `--agent` at its default. Mapping and rationale: `.claude/reference/review-stack-audit.md` §The marker.
 
 Exit codes: `0` reply posted — by either the inline endpoint or the PR-level fallback (the fallback also emits a note to stderr); `1` unused/reserved; `2` usage error (unknown `--reviewer`, or a body left empty after the @mention strip); `3` PR number could not be resolved from the comment and no `--pr` was supplied, OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error, including a non-404 failure of the PR-number lookup. Treat `0` as success. See `run_script reply-thread.sh --help` for the full contract.
 
 ### Step 5: Resolve Threads
 
-After replying, resolve **only** the threads whose first-comment author is `coderabbitai`, `cursor`, or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
+After replying, resolve **only** the threads you actually handled in Step 2, from any of the Step 1 bots. Do NOT resolve threads authored by human reviewers, or bot threads you did not handle — those may be active discussion unrelated to your fix work.
 
-Use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
+If you handled no threads (a clean or CI-only run), skip this step — `--thread-ids` rejects an empty list — and go to Step 6. Otherwise use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
 
 ```bash
-run_script resolve-review-threads.sh {{PR_NUMBER}}
-# or, when you already have thread IDs from a prior gh api call:
 run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
 ```
 
-The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.
+Pass the IDs of the threads you handled. Without `--thread-ids` the script resolves every unresolved thread whose first-comment author is in its default `--authors` list (`coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai`) — including bot threads you never saw when your findings were pre-fetched — so never run it bare. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent; a thread you handled but could not resolve blocks the move to Phase B. A bot thread you never handled (posted after your findings were pre-fetched) is not yours to resolve and does not block: leave it open, list its ID in the handoff `notes`, and Phase B processes it.
 
 ### Step 6: Write Handoff File
 
-Write the handoff file via `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --create {{PR_NUMBER}} <json>` so
+Write the handoff file via the locked `--init` and guarded literal `--set` operations below so
 the write lands at `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json` and is
 serialized under the shared state-lock.sh advisory lock (issues #655, #682).
 Never write the file inline with `jq … > tmp && mv tmp` — that bypasses the lock.
@@ -164,8 +207,8 @@ Never write the file inline with `jq … > tmp && mv tmp` — that bypasses the 
 # Resolve handoff-state.sh — try standard locations in order:
 HANDOFF_STATE_SH=""
 for _candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
-    "$HOME/.claude/scripts/handoff-state.sh" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh}" \
+    "${HOME:+$HOME/.claude/scripts/handoff-state.sh}" \
     ".claude/scripts/handoff-state.sh"; do
   if [[ -x "$_candidate" ]]; then
     HANDOFF_STATE_SH="$_candidate"; break
@@ -202,7 +245,27 @@ HANDOFF_JSON="$(jq -n \
     push_timestamp: $now,
     notes: $notes
   }')"
-"$HANDOFF_STATE_SH" --owner-repo {{OWNER}}/{{REPO}} --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
+if [[ "${SUBMISSION_BLOCKED:-false}" == true ]]; then
+  HANDOFF_JSON=$(jq --arg sha "$(git rev-parse HEAD)" ' .head_sha=$sha | .outcome="blocked" | .phase_completed="" | .notes="Submission refused; unpushed HEAD retained. Resume post-edit submission checks before replying or resolving."' <<<"$HANDOFF_JSON") || exit 5
+fi
+OWNER_REPO="{{OWNER}}/{{REPO}}"
+PR_NUMBER="{{PR_NUMBER}}"
+# routed-handoff-write
+: "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
+jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
+jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
+  '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
+ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+while IFS= read -r ROUTED_METADATA_ROW; do
+  [ -n "$ROUTED_METADATA_ROW" ] || continue
+  ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
+  "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_METADATA_ASSIGNMENT" || exit 5
+done <<<"$ROUTED_METADATA_ROWS"
+ROUTED_COMPLETION=$(jq -c '.phase_completed' <<<"$HANDOFF_JSON") || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" ".phase_completed=$ROUTED_COMPLETION" || exit 5
 ```
 
 `--owner-repo` is not optional here. Without it `handoff-state.sh` derives a scope
@@ -212,7 +275,7 @@ Confirm before exiting that `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --
 returns the JSON you just wrote — that is the assertion, and it is checked against
 the resolved scoped path directly.
 
-**This `--create` is the record's creation, so it does NOT take `--require-existing`.**
+**The initial `--init` creates only an absent record, so it does NOT take `--require-existing`.**
 Every write you make AFTER it — any `--set` or `--append` correcting or extending the
 record you just wrote — must pass `--require-existing` (issue #1603), because Phase C
 merges and the parent then deletes this record; without the flag a late write seeds a
@@ -242,6 +305,7 @@ HEAD_SHA: <pushed commit SHA for pushed_fixes, or current HEAD for no_findings/e
 REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <pushed_fixes|no_findings|exhaustion|blocked>
 FILES_CHANGED: <comma-separated file paths, empty if none>
+VERDICTS_POSTED: <N/M — replies carrying a review-verdict marker / replies posted to bot findings; 0/0 if none>
 NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>
 HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json
 ```

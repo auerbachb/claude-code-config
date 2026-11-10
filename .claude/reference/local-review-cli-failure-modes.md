@@ -113,7 +113,7 @@ npm list -g codeant-cli 2>/dev/null
 
 **Coverage-enum mapping:** CodeAnt `command not found` / not installed → CodeAnt **not covered** → `cr-only` coverage (see table below).
 
-**Restore path (capability-ladder rung 3 → 5).** The package name `codeant-cli` is confirmed in this doc and in `.claude/reference/codeant-graphite-supplemental.md`. Install is non-interactive and satisfies all rails (no `curl|sh`, no TLS bypass, no `sudo` required at the Homebrew npm prefix):
+**Restore path (capability-ladder rung 3 → 5).** The package name `codeant-cli` is confirmed in this doc and in `.claude/reference/codeant-supplemental.md`. Install is non-interactive and satisfies all rails (no `curl|sh`, no TLS bypass, no `sudo` required at the Homebrew npm prefix):
 
 ```bash
 npm install -g codeant-cli   # rung 3 — installs the binary
@@ -126,7 +126,7 @@ for a non-interactive agent because it requires a browser. `codeant set-codeant-
 is non-interactive (no browser needed) but is not documented in CodeAnt's CLI setup docs; it
 also exposes the key in shell history and process listings — prefer `codeant login` where
 possible. Full runbook with Option B (API key) and the proof-run stderr check:
-`.claude/reference/codeant-graphite-supplemental.md` §Install state. Ladder definition:
+`.claude/reference/codeant-supplemental.md` §Install state. Ladder definition:
 `.claude/rules/safety.md` §Capability Discovery.
 
 **Standing state on this machine:** binary installed (v0.5.1 at `/opt/homebrew/bin/codeant`).
@@ -242,6 +242,50 @@ Workarounds:
 - Split into multiple runs and union the findings
 - Always read `meta.capped` and `meta.skipped` before treating a run as full coverage
 
+## Contentless CodeAnt findings (issue #1913)
+
+**Symptom.** A CodeAnt run is `verified_run: true` — no stderr error, parseable JSON, files
+reviewed — and reports findings, but the `.issues[]` entries have an empty `issue_content` and
+carry only an opaque label and a line location. Observed on PR #831 and repeatedly on PR #1905.
+There is nothing to verify or fix, and rerunning the same diff reproduces the same empty entries.
+
+**What the wrapper reports.** `local-review.sh` counts these in `contentless_findings`. An entry
+is contentless unless it is an object whose `issue_content` is a string containing a
+non-whitespace character; labels and line locations never count as diagnostic text. The verdict
+stays `ok: false`, `verified_run: true`, `failure_mode: null`, exit `1` — a verified result that
+is neither a clean pass nor a confirmed defect. The field is an integer whenever CodeAnt's
+`.issues` was assessed (clean, findings, capped) and `null` for CodeRabbit and for every failed,
+timeout, or not-installed path. A jq fault falls back to counting every finding as contentless.
+
+**Schema caveat.** `issue_content` is *observed* output, not a vendor-documented field. CodeAnt's
+public docs say only that headless mode emits JSON, with a `.suggestions[]` / `severity` example.
+If `issue_content` is renamed while `.issues` stays, every entry counts as contentless — the safe
+direction: it forces a review instead of reading as clean. That guarantee covers only the entry
+field. A missing or renamed `.issues` key is a separate, still-open risk: the wrapper's existing
+`(.issues // [])` fallback would count zero findings, and nothing here changes that. Treat a
+CodeAnt `ok: true` on a change you expected findings on with suspicion. No extraction command is documented here, because nothing public
+establishes that any CodeAnt subcommand returns the detail a local `codeant review` omitted.
+
+**What to do** (`cr-local-review.md` points here):
+
+| Do | Do not |
+|---|---|
+| Treat it as verified findings, not a failed run — the retry/drop policy does not apply | Rerun CodeAnt only to get the missing text |
+| Review the flagged scope: the same diff (same `--scope`/`--base`). Open `log_path` locally and use its file/line locations as hints; read each indicated file, the adjacent context, and related tests | Read a label or a line location as a defect |
+| Fix any real defect found through the normal fix loop | Run `codeant logout`/`login`, or change a plan, credits, or a spend cap |
+| Record each unresolved entry as `unverified — diagnostic unavailable` (neither a defect nor clean) | Paste capture contents into a PR body, thread, comment, or commit |
+
+- **Mixed output.** Usable entries go through the normal verify-and-fix loop; only the
+  contentless ones get the flagged-scope review.
+- **Termination.** A CodeAnt rerun happens only as the fix loop's normal rerun after a code
+  change. If CodeAnt then returns only contentless findings (or the review changed no code), stop
+  CodeAnt for the session **without** a clean pass: coverage excludes it (`cr-only` or `none`).
+- **Disclosure.** Print e.g. `[COVERAGE] cr-only — CodeAnt returned N contentless findings;
+  flagged scope self-reviewed, no defect verified`, mirror it in the PR body's
+  `**Local review coverage:**` line, and cite the capture by path in handoff notes, never by content.
+- **Gate unchanged.** Local coverage is visibility only; the current-HEAD GitHub gate
+  (`cr-merge-gate.md`) is untouched by any of this.
+
 ## CodeRabbit: failure on stdout, exit 0
 
 `coderabbit review --agent` emits NDJSON on stdout. On rate-limit exhaustion it exits `0`
@@ -340,6 +384,7 @@ names the ceiling. Raising the wrong knob leaves the run killed at exactly the s
 | CodeAnt `meta.capped == true` (15-file cap) | CodeAnt **not covered** (partial coverage is not full coverage) |
 | CodeAnt `command not found` / not installed | CodeAnt **not covered** |
 | CodeAnt false-clean (stderr error, stdout `{"issues":[]}`) | CodeAnt **not covered** |
+| CodeAnt only `contentless_findings` left after the flagged-scope review | CodeAnt **not covered** (verified, but never a clean pass) |
 | Either CLI trips a wrapper bound (`failure_mode: timeout`) or errors twice (dropped) | That CLI **not covered** |
 
 Enforcement ownership stays in `cr-local-review.md`. This table only maps failure appearances to the enum.

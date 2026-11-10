@@ -122,6 +122,10 @@ for skill in "${CANONICAL_EMITTERS[@]}"; do
   else
     # Verbatim, not a prefix match — the whole point is that every emitter says
     # the same thing, so a reworded or truncated bullet must fail.
+    if [[ "$skill" == "issue-maker" ]]; then
+      skill_file="${SKILLS_DIR}/${skill}/modules/handoff.md"
+      require_file "$skill_file" || continue
+    fi
     require_literal "$skill_file" "$CANONICAL_BULLET" "${skill} merge-authority bullet"
   fi
 done

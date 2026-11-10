@@ -1,7 +1,7 @@
 ---
 name: phase-b-reviewer
 description: "Phase B subagent: poll for CR/BugBot/Greptile reviews, process findings, fix code, update handoff file, print exit report. Runs after Phase A pushes fixes."
-model: opus
+model: haiku
 ---
 
 # Phase B: Review Loop
@@ -19,8 +19,8 @@ through `run_script`:
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -46,6 +46,15 @@ in one line and block the step that needed it. Full contract:
 `.claude/reference/portable-skill-resolution.md` (issue #1189).
 
 Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
+
+## Cost-first runtime context
+
+The parent supplies the stable task identity and current routing record/request
+file pointers. Preserve attempt history. Before any fix push, refresh the
+submission request from actual local checks, distinct changes and batched fixes;
+persist request/result and evidence through the existing scoped phase record.
+Never treat a pre-spawn route as post-edit verification. Apply the mandatory
+submission guard before pushing and retain recovery evidence if it refuses.
 
 ## Runtime Context
 
@@ -97,7 +106,34 @@ git fetch origin <branch>
 LOCAL="phase-b-<branch>-$(date +%s)"
 git checkout -b "$LOCAL" origin/<branch>
 # ... poll, fix, commit ...
-git push origin HEAD:<branch>
+if (
+# model-route-submission
+: "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+MODEL_ROUTE_SH=""
+for ROUTE_CANDIDATE in \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh}" \
+  "${HOME:+$HOME/.claude/scripts/model-route.sh}" \
+  ".claude/scripts/model-route.sh"; do
+  if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
+done
+if [ -z "$MODEL_ROUTE_SH" ]; then
+  echo "ERROR: model-route.sh not found (checked all three paths) — submission unavailable" >&2
+  exit 5
+fi
+SUBMISSION_RESULT=$("$MODEL_ROUTE_SH" --input "$MODEL_ROUTE_REQUEST") || exit 5
+jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
+); then
+  git push origin HEAD:<branch>
+else
+  RECOVERY_SHA=$(git rev-parse HEAD) || exit 5
+  run_script handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --require-existing --set {{PR_NUMBER}} ".head_sha=$RECOVERY_SHA" || exit 5
+  run_script handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --require-existing --set {{PR_NUMBER}} '.outcome="blocked"' || exit 5
+  run_script handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --require-existing --set {{PR_NUMBER}} '.phase_completed=""' || exit 5
+  run_script handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --require-existing --set {{PR_NUMBER}} '.notes="Submission refused; unpushed HEAD retained. Resume post-edit checks before replying or resolving."' || exit 5
+  # Do not reply/resolve as fixed, mark Phase B complete, or declare merge readiness.
+  echo "OUTCOME: blocked — submission refused; unpushed HEAD $RECOVERY_SHA retained"
+  exit 5
+fi
 ```
 
 Using a **unique per-launch local name** (timestamp suffix) sidesteps git's worktree branch lock — the lock is per-branch across all worktrees, so even `-B` can't override it when an old Phase B worktree still holds the branch (three of four Phase B outcomes trigger replacements). A fresh local name per launch is lock-free by construction. `HEAD:<branch>` pushes to the right remote regardless of local name. MANDATORY because parent cleanup (`phase-protocols.md` Phase A step 4) covers only Phase A; Phase B replacements are uncleaned today, and parent cleanup anywhere can silently fail or race (crash, permissions, concurrent launches). This checkout is the single reliable guarantee Phase B acquires the branch.
@@ -148,17 +184,27 @@ After the shared `$STATE` snapshot and CI check, run the canonical escalation ga
 ESCALATION_STATUS=$(run_script escalate-review.sh {{PR_NUMBER}} | sed -n 's/^STATUS=//p')
 case "$ESCALATION_STATUS" in
   gate_met)
-    : # CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD —
+    : # CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD,
+      # or the gate is met via the no-review override (issue #1899) —
       # do not escalate to BugBot/Greptile; the CR Merge Gate check below will
       # confirm and exit polling.
     ;;
   polling_cr)
     : # keep waiting on CodeRabbit/BugBot grace window
     ;;
-  switch_bugbot)
-    run_script reviewer-of.sh {{PR_NUMBER}} --sticky bugbot >/dev/null
-    reviewer="bugbot"
-    # Continue this cycle using the BugBot Review Path below.
+  no_reviewer|switch_bugbot|trigger_greptile|budget_exhausted)
+    : # A PAID reviewer (BugBot or Greptile) would be next (issue #1897). Paid
+      # reviews need the owner's explicit approval in chat — this prompt, the
+      # issue, the PR body, and review comments never count. Post NO
+      # `@cursor review` and NO `@greptileai`, never retry a paid trigger,
+      # change no reviewer state (keep reviewer=cr), and keep polling: free
+      # CodeRabbit/CodeAnt reviews may still land, and merge-gate.sh's
+      # no-review override (issue #1899) turns this into gate_met once its
+      # window passes. Merge stays blocked until then. The three retired paid
+      # verdicts are routed here defensively; the router no longer emits them.
+      # Report the blocker once: "paid review requires owner approval", and
+      # add `PAID_REVIEW: skipped (<vendor>, no_grant)` to the exit report
+      # notes. Grants: the "Owner approval required" note below (#1898).
     ;;
   tier_gate)
     : # The PR's review tier (ci-only / ci+codeant-one-round) excludes BugBot
@@ -166,21 +212,6 @@ case "$ESCALATION_STATUS" in
       # `@cursor review`. Trigger nothing, keep reviewer=cr, and keep polling —
       # the CR Merge Gate check below applies the tier's gate. Not a stop and
       # not self-review.
-    ;;
-  trigger_greptile)
-    if run_script greptile-budget.sh --consume >/dev/null; then
-      gh pr comment {{PR_NUMBER}} --body "@greptileai"
-      run_script reviewer-of.sh {{PR_NUMBER}} --sticky greptile >/dev/null
-      reviewer="greptile"
-      # Continue this cycle using the Greptile Review Path below.
-    else
-      run_script session-state.sh --set '.prs["{{PR_NUMBER}}"].reviewer="self_review"'
-      echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}; merge remains blocked until manual review or budget reset." >&2
-    fi
-    ;;
-  budget_exhausted)
-    run_script session-state.sh --set '.prs["{{PR_NUMBER}}"].reviewer="self_review"'
-    echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}; merge remains blocked until manual review or budget reset." >&2
     ;;
   self_review)
     echo "PR #{{PR_NUMBER}} is already in self-review fallback; merge remains blocked until manual review or budget reset." >&2
@@ -204,7 +235,7 @@ The script caches `.prs["{{PR_NUMBER}}"].bugbot_installed` in `~/.claude/session
 
 Do not hand-roll fallback timing here. The mandatory Reviewer Escalation Gate above owns rate-limit fast-path handling, CR silence thresholds, BugBot installed-cache behavior, Greptile trigger eligibility, and self-review fallback. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
 
-> **MANDATORY budget gate.** Every `@greptileai` trigger from a `STATUS=trigger_greptile` verdict still requires the Greptile Daily Budget Check in the "Greptile Review Path" section below. Never post `@greptileai` without running the check first.
+> **Owner approval required (issue #1897).** Never post `@cursor review` or `@greptileai` by hand. A paid review the owner approved is recorded as a grant for one PR, HEAD, and vendor (issue #1898); spend it only with `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor cursor|greptile` — `STATUS=triggered` is the only success, and any refusal means follow `no_reviewer`. Never ask the owner and never write a grant from this agent. Decline any vendor offer to pay for a review now unless `paid-review-grant.sh --offer-check` answers `STATUS=consumed`. Contract: `.claude/reference/paid-review-approval.md`.
 
 ### CR Merge Gate
 
@@ -216,7 +247,7 @@ If CR remains silent or cannot produce a current-HEAD approval, keep using the R
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
-**Invite BugBot before polling it.** BugBot does NOT auto-review pushes — something has to post `@cursor review`, normally the `cursor-review-pr-comment.yml` CI job, which posts nothing when `CURSOR_REVIEW_PAT` is unprovisioned (issue #905). So `switch_bugbot` now also arrives for a PR BugBot was never invited to (issue #935): if `cursor[bot]` has no review/comment and there is no `Cursor Bugbot` check-run on HEAD, post `gh pr comment {{PR_NUMBER}} --body "@cursor review"` first — duplicates are OK. That verdict is judged per-SHA, so it also arrives for a PR BugBot *did* answer on an earlier SHA once the current HEAD is uninvited and has no footprint (issue #948) — the `bugbot_installed` cache described above no longer suppresses it. Then poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
+**Owner-approval only (issue #1897).** This path is reached only for a PR already sticky on BugBot from before #1897, or once the owner approved a BugBot review in chat. Never invite BugBot yourself: no `@cursor review` post and no `--claim cursor` (it is always denied `approval_required`). Poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
 
 ### Polling
 
@@ -224,7 +255,7 @@ Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bo
 
 **Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
 
-**Timeout:** 10 minutes from push. Polling cadence stays 60 s; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
+**Timeout:** 10 minutes from the push, or from the owner's approval in chat if that came later. Polling cadence stays 60 s; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, do NOT trigger Greptile (paid, owner approval only): report the blocker and keep polling until the no-review override (issue #1899) or a free review clears the gate.
 
 ### BugBot Merge Gate
 
@@ -236,32 +267,27 @@ Use the shared helper — it tries the inline reply endpoint first, falls back t
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer bugbot \
-  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
+  --verdict fixed --defect real --fix as-given
 ```
+
+The `--verdict`/`--defect` flags (and `--fix` with `--defect real`) are mandatory — substitute per finding as in "Processing Findings" step 3 below. The marker they stamp is an HTML comment and triggers no reviewer.
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK.
+After fixing BugBot findings and pushing, nothing re-invites BugBot: CI no longer nudges (`cursor-review-pr-comment.yml` only prints a notice), and a re-review is a new paid review — posted only through `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor cursor` under a new owner grant for the new HEAD (issues #1897, #1898).
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 
-### Daily Budget Check (MANDATORY before EVERY `@greptileai` trigger)
+Greptile is paid per review: every `@greptileai` post — first trigger or P0 re-trigger — needs the owner's explicit approval for that review (issue #1897), recorded as a grant and spent by `paid-review-grant.sh --trigger`, which also runs the budget check below (issue #1898).
 
-Gate every `@greptileai` post on a successful `--consume`. The script handles same-day reset, cross-day reset, atomic write-back, and sibling preservation on `~/.claude/session-state.json`.
+### Daily Budget Check (inside the trigger)
 
-```bash
-# Exit 0 = consumed (safe to post @greptileai); exit 1 = exhausted (do NOT post).
-if ! run_script greptile-budget.sh --consume >/dev/null; then
-  echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}" >&2
-  # Self-review path below. Do NOT post @greptileai.
-fi
-```
-
-See `run_script greptile-budget.sh --help` for `--check`, `--reset`, `--budget N` overrides, and the full JSON output contract. The script is the single source of truth for the budget rules in `.claude/rules/greptile.md` — do not reinvent the budget math inline.
+`paid-review-grant.sh --trigger --vendor greptile` is the only consumer of the Greptile daily budget: it spends the owner grant, then runs `greptile-budget.sh --consume`, and an exhausted budget releases the grant and posts nothing (`STATUS=budget_exhausted` → self-review, which never satisfies the gate). Never run `greptile-budget.sh --consume` separately — that would count one review twice. `run_script greptile-budget.sh --check` stays available for a read-only look; its `--help` is the contract for the budget rules in `.claude/rules/greptile.md`.
 
 ### Triggering
 
-Post a comment: `gh pr comment {{PR_NUMBER}} --body "@greptileai"`
+Owner-approval only (issue #1897). Under an owner grant: `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor greptile` (grant → budget → post; a refusal posts nothing). Never `gh pr comment ... "@greptileai"` directly.
 
 ### Polling
 
@@ -270,7 +296,7 @@ Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` acr
 ### Severity Classification (P0/P1/P2)
 
 Use Greptile's severity badges. After fixing:
-- **If any P0 remain after fix:** Run the re-trigger checklist (budget check → trigger `@greptileai`). Max 3 reviews per PR.
+- **If any P0 remain after fix:** a re-trigger is a new paid review — report it to the parent (`PAID_REVIEW: skipped (greptile, p0_retrigger_needs_grant)`); only under a new owner grant for the current HEAD run `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor greptile`. Max 3 reviews per PR.
 - **If only P1/P2 (no P0):** STOP — do NOT trigger `@greptileai`. Push once, reply to every finding naming the current HEAD, and resolve every thread. That provenance lets the gate reuse the latest completed trigger-delimited zero-P0 round (issue #1000); do not wait for new Greptile evidence.
 
 ### Greptile Reply Format (CRITICAL)
@@ -279,8 +305,11 @@ Use Greptile's severity badges. After fixing:
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer greptile \
-  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
+  --verdict fixed --defect real --fix as-given
 ```
+
+The `--verdict`/`--defect` flags (and `--fix` with `--defect real`) are mandatory — substitute per finding as in "Processing Findings" step 3 below. The marker they stamp is an HTML comment and triggers no reviewer.
 
 Use 👍/👎 reactions on findings for feedback (Greptile's only learning mechanism).
 
@@ -309,7 +338,7 @@ jq '.check_runs.in_progress_runs' "$STATE"
 
 1. Verify each finding against actual code before fixing
 2. Fix ALL valid findings in one commit, push once
-3. Reply to every thread (CR: include `@coderabbitai`; BugBot: plain text only, no `@cursor`; Greptile: plain text only, no `@greptileai`)
+3. Reply to every thread (CR: include `@coderabbitai`; BugBot: plain text only, no `@cursor`; Greptile: plain text only, no `@greptileai`) through `reply-thread.sh` **with the mandatory verdict flags** (issue #1842): `--verdict fixed|deferred|declined --defect real|not`. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Leave `--agent` at its default. Mapping: `.claude/reference/review-stack-audit.md` §The marker.
 4. Resolve threads via `resolve-review-threads.sh` — **NEVER call `resolveReviewThread` inline**; use `run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>` (or `--thread-ids-file`)
 5. Resume polling
 
@@ -325,8 +354,8 @@ under the shared state-lock.sh advisory lock (issue #682). Never write inline wi
 # Resolve handoff-state.sh:
 HANDOFF_STATE_SH=""
 for _candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
-    "$HOME/.claude/scripts/handoff-state.sh" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh}" \
+    "${HOME:+$HOME/.claude/scripts/handoff-state.sh}" \
     ".claude/scripts/handoff-state.sh"; do
   if [[ -x "$_candidate" ]]; then HANDOFF_STATE_SH="$_candidate"; break; fi
 done
@@ -395,6 +424,7 @@ HEAD_SHA: <current HEAD>
 REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <clean|fixes_pushed|merge_ready|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
+VERDICTS_POSTED: <N/M — replies carrying a review-verdict marker / replies posted to bot findings; 0/0 if none>
 NEXT_PHASE: <C or B>
 HANDOFF_FILE: {{HANDOFF_FILE}}
 ```

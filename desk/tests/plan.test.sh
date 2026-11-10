@@ -238,7 +238,8 @@ check "4.2 ... and stays live" "$(sql_in "SELECT (value::timestamptz > now() - i
 literal "$TMP/block-desk-interrupt-set.sh" "<away|everything>" "everything" > "$TMP/available.sh"
 OUT=$(run_block "$TMP/available.sh")
 check "4.2 available during a block: everything" "$(printf '%s\n' "$OUT" | sed -n 1p | jq -c '[.rule, .source]')" '["everything","desk"]'
-literal "$TMP/block-desk-release.sh" "<GEN>" "g1" > "$TMP/release.sh"
+literal "$TMP/block-desk-release.sh" "<GEN>" "g1" > "$TMP/release-gen.sh"
+literal "$TMP/release-gen.sh" "<DEFAULT>" "everything" > "$TMP/release.sh"
 OUT=$(run_block "$TMP/release.sh")
 check "4.2 available: the release shows what the block held" "$OUT" "desk-tick g1 new $D6"
 sleep 2

@@ -1,10 +1,12 @@
 # Review stack audit — mechanism and contracts
 
+> **Graphite retired 2026-11-03** (#1889): it is no longer measured or priced; `review-stack-baseline.json` keeps it as an `off` / `cancelled` row, reported as an unmatched baseline tool. Re-run audits no longer attribute historical Graphite findings.
+
 Mechanism, rationale, and the decision-record contract behind
 `/review-stack-audit` (issue #1201). Not auto-loaded: the operative contract is
-`.claude/skills/review-stack-audit/SKILL.md`, and the two engines document their
-own interfaces under `--help`. This file holds the reasoning that would
-otherwise bloat either.
+`.claude/skills/review-stack-audit/SKILL.md`. `measure.sh`, `drift.sh`, and
+`scorecard.sh` document their interfaces under `--help`. This reference keeps
+the audit rationale, measurement definitions, and report contracts together.
 
 ## Why a recurring audit at all
 
@@ -252,7 +254,7 @@ Each reply is read, in order of precedence:
 
 | Rule | Verdict |
 |---|---|
-| A marker `<!-- review-verdict: fixed\|deferred\|declined defect=real\|not agent=<name> -->` outside any code span or fenced block | the marker's verdict |
+| A marker `<!-- review-verdict: fixed\|deferred\|declined defect=real\|not agent=<name> [fix=as-given\|adapted\|wrong\|none] -->` outside any code span or fenced block | the marker's verdict |
 | The reply **starts** with `Declined`, `Not a defect`, or `Won't fix` (straight or curly apostrophe), after any leading @mentions, HTML comments, emphasis, or fenced code block | `declined` |
 | `Fixed in <sha>` anywhere outside a fenced code block (7–40 hex digits; backticks and a `commit` word tolerated) | `fixed` |
 | A follow-up link — `#N`, `owner/repo#N` for this repo, or an `/issues/N` URL | `deferred` |
@@ -262,7 +264,9 @@ the same character (backtick or tilde) at least as long as its opener, and an
 unclosed fence runs to the end of the reply. Emphasis is up to three `*` or `_`
 characters (`***Declined***`, `_Won't fix_`).
 
-Per thread, the **latest marker** wins over everything; with no marker, the
+Per thread, the **latest marker** wins over everything — and supplies every
+field, `fix` included: a later marker without `fix=` reads as unknown, never
+borrowing an older marker's value; with no marker, the
 **latest reply whose wording matched** wins ("Fixed in…" then "Declined: on
 reflection…" is declined); with neither, the thread is `unanswered`.
 
@@ -281,8 +285,8 @@ Two choices here are deliberate:
 
 A marker whose verdict is unknown is ignored and counted in a note; the reply is
 then read by its wording. Only `defect=real` counts as a real defect — an unknown
-or missing value reads as not real — and an `agent` outside a plain token shape
-reads as unnamed.
+or missing value reads as not real — an `agent` outside a plain token shape
+reads as unnamed, and a missing or unknown `fix` value reads as unknown.
 
 ### The marker
 
@@ -294,13 +298,90 @@ reader to build the wrong thing), and the fix closes a behavioral gap rather
 than style drift.
 
 `reply-thread.sh` writes the marker: `--verdict <v> --defect real|not` (plus
-`--agent <name>`, default `claude-code`) appends it as its own line after the
-reviewer's @mention rules run; without the flags a reply is byte-identical to
-before. A reply that ends inside an open fenced block gets that fence closed
+`--agent <name>`, default `claude-code`, and `--fix <q>`, issue #1843) appends
+it as its own line after the reviewer's @mention rules run; without the flags a
+reply is byte-identical to before, and without `--fix` the marker is
+byte-identical to its pre-#1843 form. An unknown `--fix` value exits 2. A reply that ends inside an open fenced block gets that fence closed
 first, so the marker never lands in code where the ledger would skip it. The
 `agent` field is recorded so a later study can split results by
 coding agent without a second collection pass; this increment does not
 aggregate by it.
+
+#### The mandate (issue #1842)
+
+The flags were optional at first, and adoption, not reviewer quality, set the
+numbers: the first ledger-mode snapshot (2026-10-09, four repos, 138 PRs, 473
+findings) had `real_defects` of 17 for CodeAnt, 4 for CodeRabbit, 2 for
+Graphite, and 0 for BugBot and Greptile. So **every agent reply to a bot
+finding now carries the marker.** Every reply path an agent follows spells the
+flags out — `cr-github-review.md` §Processing CR Feedback step 3, `bugbot.md`
+§Processing BugBot Findings, `greptile-reply-format.md`, the Phase A and
+Phase B agents (and their copies embedded in `/subagent`), `/fixpr` Step 4, and
+`/go-on`'s reply step:
+
+```bash
+reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant \
+  --body "Fixed in \`SHA\`: <what changed>" --pr N \
+  --verdict fixed|deferred|declined --defect real|not \
+  [--fix as-given|adapted|wrong|none]   # required when --defect real
+```
+
+`--agent` keeps its default, `claude-code`, so the study can still split by
+coding agent. A raw `gh api …/replies` or `gh pr comment` posts no marker, so
+agents reply through the helper only.
+
+**Choosing `defect`.** `real` when the finding named a behaviour the code would
+actually have gotten wrong; `not` for style, duplication, or a reviewer
+misreading. It is a judgment made at reply time, where the evidence is; the
+one-line rule keeps agents consistent rather than automating the call.
+
+**Choosing `fix`** (issue #1843; required with `--defect real`). It records the
+quality of the reviewer's suggested fix, the second of the study's criteria
+(issue #1747) — a reviewer that finds a real defect but proposes an unusable fix
+costs the agent a round of its own analysis:
+
+| `--fix` | Meaning |
+|---|---|
+| `as-given` | The suggestion was applied as proposed, or with trivial edits |
+| `adapted` | The direction was right, but the code had to be rewritten |
+| `wrong` | The proposed fix was incorrect or harmful |
+| `none` | The finding came with no fix suggestion |
+
+Four values rather than a score: at reply time an agent can tell "applied as
+written" from "rewrote it" reliably; it cannot calibrate a scalar across
+vendors. `none` is informative on its own — a reviewer that flags without
+proposing is cheaper to run but costs the agent more per finding. With
+`--defect not` the flag may be given but is never scored.
+
+**Choosing `verdict`** for `/fixpr`'s reply categories:
+
+| `/fixpr` category | `--verdict` | Usual `--defect` |
+|---|---|---|
+| fix, already-fixed | `fixed` | per the rule above |
+| deferred to a follow-up issue | `deferred` | per the rule above |
+| decline-high-confidence, surface-low-confidence, outdated | `declined` | `not` |
+
+**It triggers nothing.** The marker is an HTML comment on its own line with no
+`@mention`, so the plain-text rules for BugBot and Greptile replies (no
+`@cursor`, no `@greptileai`) are unchanged, and it cannot request a review.
+
+**Exit reports.** Phase A and Phase B print `VERDICTS_POSTED: N/M` — replies
+carrying a marker over replies posted to bot findings (`0/0` when none;
+`exit-report-format.md`). `N < M` is a reply that skipped the flags.
+
+**`unmarked_replies` (advisory).** `pr-state.sh` adds a top-level integer
+`unmarked_replies`: inline review comments written by a GitHub `User` account
+(login not ending `[bot]`) that reply (`in_reply_to_id`) to a root comment by
+one of the five review-bot logins, and carry no complete marker line —
+`<!-- review-verdict: <verdict> defect=<real|not> agent=<name>[ fix=<q>] -->`,
+exactly as `reply-thread.sh` writes it (an unknown `fix` value is not); a partial marker (no `defect`, no `agent`, or no
+closing `-->`) skipped the mandatory flags and counts. `/wrap` Step 1.2 prints the
+count when it is non-zero. It never blocks a merge, never joins the findings
+`/wrap` routes to `/fixpr`, and `merge-gate.sh` never reads it. It is a proxy in
+two ways: a human typing on the same account counts as an agent reply, and a
+PR-level fallback reply (the 404 path) is not an inline reply, so it is not
+counted by that inline-only advisory. The ledger separately attributes matching
+fallback replies (Limits below; Issue #1829).
 
 ### The fields
 
@@ -313,22 +394,76 @@ aggregate by it.
 | `precision` | `valid / (valid + declined)`, 3 decimals; `null` when both are 0. Unanswered findings are left out: no verdict is not a no |
 | `cost_per_real_defect_usd` | `spend_usd / real_defects`, in cents; `null` when either is null or 0 — a $0.00 receipt floor per defect would read as free |
 | `median_response_min` | The median, over the PRs the tool reviewed or commented on, of the minutes from the start of its clock to its first review or comment |
+| `fix_as_given`, `fix_adapted`, `fix_wrong`, `fix_none` | Fix-quality-eligible findings by the deciding marker's `fix=` value (Choosing `fix` above) |
+| `fix_unknown` | Eligible findings whose deciding marker has no `fix=`, or an unknown value — never counted as `none` |
+| `fix_quality` | `fix_as_given / (fix_as_given + fix_adapted + fix_wrong)`, 3 decimals; `null` when that sum is 0. `none` and `unknown` are left out: no suggestion, or no recorded judgment, is not a verdict on a suggestion |
+
+**Fix-quality eligibility.** `fix=` is scored only for a finding whose deciding
+marker says `defect=real` and whose verdict is not `declined` (`fixed` or
+`deferred`). A declined finding's fix quality is not scored, nor is a
+`defect=not` one, even when its marker carries `fix=`. A deferred finding is
+scored too: `fix=` judges the suggestion as the agent read it at reply time,
+whether or not the fix has landed yet. The fix counts are
+distinct from `real_defects` and `precision`, which they never change: a
+declined real defect still counts in `real_defects`.
 
 The clock starts at the earliest **trigger comment** for that tool that precedes
 its first response, and at PR open otherwise — so a tool that reviews at open on
 its own is never timed from a later re-request. Triggers are non-bot PR
 conversation comments outside quoted lines: `@coderabbitai review` or `@coderabbitai
 full review` (CodeRabbit), `@cursor review` (BugBot), `@codeant-ai review`
-(CodeAnt), `@graphite-app re-review` (Graphite), any `@greptileai` mention
+(CodeAnt), any `@greptileai` mention
 (Greptile). Vercel has none. A PR the tool cannot be timed on is left out of the
 median and counted in a note: one where any of its responses has no timestamp
 (that response may have been the first, so a later dated one never stands in),
 or one with nothing to start from.
 
 Multi-repo totals are recomputed, never averaged: counts are summed, precision
-comes from the summed counts, the median pools every repo's response times, and
+and fix quality come from the summed counts, the median pools every repo's response times, and
 the cost divides the total spend. Each repo's cost divides its own share of a
 flat fee after the split.
+
+### Velocity fields (issue #1844)
+
+`median_response_min` says how fast a reviewer *starts*. These say how many
+rounds it took and how long a PR waited between its last push and a satisfied
+gate — the "which reviewer slows merges" question.
+
+| Field | Where | Definition |
+|---|---|---|
+| `rounds_per_pr` | each tool | The median, over the PRs the tool posted a review object or inline comment on, of the distinct commits those were posted against — a review's `commit_id`, an inline comment's `original_commit_id` (else its `commit_id`). One round per HEAD it looked at. 1 decimal; `null` when the tool reviewed no PR |
+| `prs_with_3plus_rounds` | each tool | PRs where that count is 3 or more; `0`, never null, when there are none |
+| `push_to_gate_min` | `velocity.prs[]` (single-repo document) | Minutes from the committer date of the merged HEAD to the earliest gate signal on that HEAD (below); `null` when the PR is excluded, with `excluded` naming why |
+| `push_to_gate_min_median`, `push_to_gate_min_p90` | `velocity`, per repo and in the total | The median and the nearest-rank 90th percentile (the ⌈0.9·n⌉-th smallest) of the timed PRs, 1 decimal half-up; `null` when no PR was timed |
+| `prs_timed` | `velocity` | PRs with a duration |
+| `no_gate_signal` | `velocity` | PRs whose HEAD is dated but carries no gate signal — admin merges, relaxed tiers, a Greptile-only gate — excluded, never timed |
+| `no_head_date` | `velocity` | PRs whose HEAD is missing from the PR's commit list (the endpoint lists at most 250 commits) or has no committer date — excluded, never counted as no signal |
+
+A (tool, PR) whose review objects and inline comments name no commit at all is
+left out of `rounds_per_pr` and counted in a note.
+
+**The gate signal is a first cut.** It does not reuse `merge-gate.sh`'s whole
+reviewer-path logic (`merge-gate-reviewer-paths.md`): a signal is a CodeRabbit
+or CodeAnt `APPROVED` review whose `commit_id` is HEAD, or a `Cursor Bugbot`
+check-run from the Cursor app on HEAD with `status: completed` and `conclusion:
+success`, timed by `submitted_at` and `completed_at` (else `started_at`). A
+signal dated before the committer date is discarded. Not modelled: Greptile's
+summary footer and severity path, a later same-SHA `CHANGES_REQUESTED`
+retraction, hollow-approval checks, and relaxed tiers — a PR gated only by one
+of them lands in `no_gate_signal`.
+
+**Known distortion.** The committer date is a proxy for the push time — it is
+when the commit was made, and a rebase re-dates it — so `push_to_gate_min` is an
+upper bound after a rebase, never review latency alone. HEAD is GraphQL's
+`headRefOid`; its date comes from the commit list the BugBot spend already
+reads, so velocity adds no endpoint.
+
+**Pooling.** Per tool, rounds pool every repo's per-PR counts into one median.
+The total `velocity` pools every PR's exact duration once and sums the counts —
+never a median of repo medians. A PR's duration belongs to the PR and its fix
+loop, so it is never attributed to a tool; a per-tool "rounds it caused" figure
+is not measured, because attributing a round to one reviewer would be an
+estimate presented as a measurement.
 
 ### Limits
 
@@ -338,9 +473,24 @@ flat fee after the split.
   not line up exactly, so cost per real defect is an approximation there.
 - **100 comments per thread.** A reply past the 100th is unseen; a thread that
   long is counted in a note.
-- **Fallback replies are outside the thread.** `reply-thread.sh` posts a PR-level
-  comment when the inline reply 404s, and the ledger reads only thread replies,
-  so that finding reads `unanswered`.
+- **Fallback identity must be explicit.** A `User` account's PR-level comment
+  whose first nonempty line is `<!-- review-comment-id:N -->` joins the unique
+  matching first-comment REST/GraphQL identity in that same PR. Bot, unmatched,
+  ambiguous, quoted/fenced and later-line markers decide nothing. Inline and
+  fallback replies share the latest-marker, else latest-wording rule; timestamped
+  fallbacks merge chronologically without reordering inline replies. Historical
+  undated data retains supplied order, with undated fallbacks appended.
+- **`real_defects` is a floor before the mandate and a measurement after it.**
+  From **2026-10-09 (UTC)** — the landing of the issue #1842 mandate above; if
+  the `feat(#1842)` squash commit on `main` is dated later, its UTC date governs
+  — every agent reply to a bot finding carries a marker. Before that date a real
+  defect replied to without the flags reads as not real, so for earlier PRs
+  `real_defects` is a lower bound and `cost_per_real_defect_usd` — spend over
+  that undercounted figure — an upper bound; both reflect marker adoption. On
+  and after it, a missing marker is a process miss that `unmarked_replies`
+  surfaces, and both figures measure the marked thread replies. A PR-level
+  fallback can now decide a ledger verdict when explicitly attributed (above),
+  but still escapes the separate inline-only `unmarked_replies` advisory.
 
 ### Comparing with sales-kit Issue #184
 
@@ -381,9 +531,10 @@ way.
 | Column | Field | Notes |
 |---|---|---|
 | Spend | `spend_usd` (`spend_source`) | The label travels with the figure: `$62.00 (flat)`, `$3.30 (receipt)`, `— (none)` |
-| Real defects | `real_defects` | Marker-stamped only (Value fields above) |
-| Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect |
+| Real defects | `real_defects` | Marker-stamped only (Value fields above); a floor for PRs before the mandate cutoff (Limits above), a measurement of marked thread replies after it |
+| Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect; a ceiling for PRs before the mandate cutoff (Limits above) |
 | Precision | `precision` | As a percentage, one decimal |
+| Fix quality | `fix_quality` | As a percentage, one decimal; `—` when null. The four counts and `unknown` sit in a collapsed **Fix quality counts** table beneath |
 | Sole-source PRs | `sole_provider_on` | PRs where this tool alone posted an inline finding |
 
 **Ranking.** Tools with a cost per real defect come first, lowest cost first.
@@ -391,6 +542,13 @@ Tools with known spend but no cost follow, their spend still shown — "paid,
 found nothing" is a finding in its own right, so they stay in the table. Tools
 whose spend is unknown come last. Precision breaks ties inside each group
 (higher first, unknown last), then the tool key, so the order is deterministic.
+Fix quality is shown, never ranked on.
+
+**Velocity fold.** A collapsed **Velocity** fold follows the ranked table and
+its folds: per tool `rounds_per_pr` and `prs_with_3plus_rounds`, in the ranked
+order; then per repo and for the total (one repo row on a single-repo snapshot)
+the push-to-gate median and p90 with `prs_timed`, `no_gate_signal`, and
+`no_head_date` (Velocity fields above). A missing figure renders `—`.
 
 **`—` is no figure, never zero.** Every null renders `—`, and only a real zero
 renders `0` or `$0.00`. A table that turned an unknown into `0` would rank a

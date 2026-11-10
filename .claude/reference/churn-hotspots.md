@@ -119,18 +119,19 @@ The fallback is gated on *marker count*, not on an empty result. A run whose eve
 
 ## Exclusions
 
-Default: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, `CHANGELOG.md` — generated or append-only files that churn by design and are never refactor candidates.
+Default: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, `CHANGELOG.md`, `project.pbxproj`, `Package.resolved` — generated or append-only files that churn by design and are never refactor candidates. `project.pbxproj` (written by Xcode or XcodeGen) and `Package.resolved` (written by SwiftPM) joined in issue #1855: they are the Xcode and SwiftPM equivalents of `Cargo.lock` and `go.sum`, with the same basename in every repo of their ecosystem. Every entry is a literal basename, so it matches at any depth, root level included.
 
-The list is deliberately **universal**. Repo-specific by-design churn is not baked in here — a lint-enforced catalog belongs in the persisted **exemption file** below (which requires a stated lint), while `--exclude` stays what it always was: the per-invocation escape hatch, and the home for generated files.
+The list is deliberately **universal**: tool-written files universal to an ecosystem belong here. Repo-specific by-design churn is not baked in — a lint-enforced catalog belongs in the persisted **exemption file** below (which requires a stated lint), a hand-kept ledger a repo's own written rule requires PRs to edit belongs in that repo's **policy declaration** (also below, which requires a cited rule file), while `--exclude` stays what it always was: the per-invocation escape hatch, and the home for repo-specific generated files.
 
 ## Catalog exemptions (issue #1571)
 
-Three different things now keep a file quiet, and conflating them is how one of them ends up doing the wrong job:
+Four different things now keep a file quiet, and conflating them is how one of them ends up doing the wrong job:
 
 | Term | Who does it | What happens to the file |
 |------|-------------|--------------------------|
 | **excluded** | detector, `--exclude` / `DEFAULT_EXCLUDES` | The touch event is dropped before aggregation. The file is never scored and appears nowhere but `excluded_count`. |
 | **exempt (catalog)** | detector, `.claude/reference/churn-hotspot-exemptions.json` | The file is scored normally, then reclassified out of `hotspots[]` into `exemptions[]` and onto a distinct `# exempt (catalog)` TSV line. Score history stays complete; the **flag** is suppressed, not the fact. |
+| **exempt (policy)** | detector, the **scanned repo's** `.claude/reference/churn-hotspot-policy-exemptions.json` at the scanned ref | Same reclassification as the catalog kind (`kind: "policy"`, plus `rule_source`), onto a distinct `# exempt (policy)` TSV line. See [Policy exemptions](#policy-exemptions-issue-1858). |
 | **suppressed** | `churn-hotspot-wrap-plan.sh` | The file is a real hotspot with a closed issue and no conflict cost; `/wrap` hides the decision bullet until the 2× material-growth gate trips. |
 
 **The problem being solved.** Some files churn because a **lint requires it**. `.claude/scripts/README.md` and `.claude/scripts/docs/tests.md` are enforced by `scripts-catalog-lint.sh` (via `run-doc-lints.sh` in `rule-lint.yml`): the index must link every category doc exactly once and hold no per-script rows, and every `tests/*.test.sh` needs exactly one catalog row. Adding or renaming a script or a test suite therefore *has* to edit them, or CI fails. No refactor can retire that flag — the scripts README hit 3–5× its baseline twice in one week *after* its hotspot issue (#898) closed, each time producing an advisory flag and a needs-decision item. A flag that can never be resolved is not a signal; it is training to skim past churn warnings, which is how a real hotspot eventually gets missed.
@@ -147,7 +148,7 @@ Three different things now keep a file quiet, and conflating them is how one of 
 
 **No consumer change was needed.** `churn-hotspot-wrap-plan.sh` classifies `hotspots[]`; an exempt file is simply absent from it, so no comment, file, growth, unknown, or suppressed entry is produced and the wrap sweep stops asking the same keep-or-reopen question every run. The envelope validator checks named fields rather than rejecting unknown ones, so `exemptions`, `exempt_count`, and `exemptions_file` pass through untouched.
 
-**`--no-exemptions` is the negative control**, and it wins over `--exemptions` (the file is then not read at all). The disabled state is never silent: `exemptions_file` reports `null`.
+**`--no-exemptions` is the negative control**, and it wins over `--exemptions` (the file is then not read at all). It disables **both** kinds — this catalog and the scanned repo's policy declaration below — while `--exemptions FILE` replaces the catalog only. The disabled state is never silent: `exemptions_file` and `policy_exemptions_file` report `null`.
 
 **An explicit `--exemptions` is a promise about which policy the run applied**, so every way of breaking it is refused rather than downgraded: an unreadable or invalid file **exits 3**, and an *empty* value (`--exemptions ''` or `--exemptions=`) **exits 2** at parse time. The empty case needs its own guard because it is the one that fails quietly — the argument is present, so the "requires a value" check passes, but downstream an empty value is indistinguishable from never having passed the flag, and the run would silently score against the **default** catalog the caller did not name.
 
@@ -160,15 +161,52 @@ Three different things now keep a file quiet, and conflating them is how one of 
 
 Rationale and the rejected alternatives: `scripts-catalog-generation-decision.md`.
 
+## Policy exemptions (issue #1858)
+
+**The gap.** Some files churn because a repo's **own written process** requires PRs of some kind to edit them — a hand-kept ledger such as a web/iOS parity checklist, updated whenever a PR changes what the app does or where that code lives, including the refactors this detector asks for. None of the other mechanisms fits: the default skip list is universal and for tool-written files; the catalog lives beside the detector, applies to whatever repo is scanned, and every entry must name an enforcing lint (there is none); `--exclude` is per-invocation and hides the file entirely.
+
+**The declaration lives in the scanned repo**, at a fixed repo-relative path, in the same schema family as the catalog:
+
+```json
+{"schema": "churn-hotspot-policy-exemptions/v1",
+ "exemptions": {"ios/PARITY_CHECKLIST.md": {"rule_source": "ios/RELEASING.md",
+                                            "reason": "parity-affecting PRs must update the ledger"}}}
+```
+
+at `.claude/reference/churn-hotspot-policy-exemptions.json`. It is read **from the scanned repo at the scanned ref** — never from the detector's checkout, never from a working tree:
+
+- **git path:** the commit `scan_ref` resolves to. An uncommitted or untracked declaration does not apply.
+- **gh path:** the target repo's default-branch head, resolved once (`repos/{repo}` → `default_branch`, then `repos/{repo}/commits/{branch}`) and pinned, so the declaration and every rule file it cites come from one snapshot. After an `--source auto` fallback the read follows the backend actually used.
+
+The envelope reports `policy_exemptions_file` and `policy_exemptions_ref` (both `null` when there is no declaration or the feature is disabled). No repo-specific path is hard-coded in the detector or in `/wrap`.
+
+**Guards — each exits 3 naming the declaration or the offending path, and none silently scores without the declaration:**
+
+- The declaration exists but cannot be read, is not valid JSON, has the wrong `schema`, or a non-object `exemptions`. Only a **confirmed** absence counts as "no declaration": on git, no such entry in the ref's tree; on gh, an HTTP 404 on the contents request after the repo and commit lookups succeeded. Any other failure (rate limit, auth, network, a tree entry that is not a regular file — a directory, submodule, or symlink, whose "body" would only be its target text) is an error. On gh the entry type is probed before the raw read, because the raw media type answers a directory with a listing that names its children — enough to pass the mention check with no rule file behind it.
+- An entry lacks a non-blank string `rule_source` or `reason`; its path or `rule_source` holds a control character; its `rule_source` is absolute or holds a `..`, `.` or empty segment; or its `rule_source` is the declaration itself or the exempted file itself — either would satisfy the mention check below trivially.
+- The cited `rule_source` does not exist at the same ref, or exists but **does not mention the exempted path** as a literal substring. The mention check catches typos and stale citations, and it is the intended pressure: a repo cannot declare a ledger until a checked-in sentence says PRs must update it. That is issue #1571's "no exemption by assertion alone", carried over.
+
+**A weaker claim than the catalog kind, stated rather than hidden.** A lint is something CI enforces; a written rule is not. The cited file is checked to exist and to name the path, but nothing proves PRs actually follow it. The separate `kind` field and `# exempt (policy)` line exist so a reviewer can audit policy exemptions apart from lint-enforced ones.
+
+**Everything else matches the catalog kind.** The file is scored by the identical formula and reclassified at aggregation (reported regardless of threshold, never silently omitted); exclusion still wins; a run whose only reported paths are exempt exits 1; the issue lookup is skipped. `exemptions[]` items carry `kind` — `"catalog"` with `lint` and `reason`, or `"policy"` with `rule_source` and `reason` — and `exempt_count` counts both. The TSV line keeps the six columns, with the rule source in the last one. `--no-exemptions` disables **both** kinds; `--exemptions FILE` replaces the catalog only. A path in both lists is reported once as `kind: "catalog"`: the catalog is the stronger claim, and a collision is not the scanned repo's error.
+
+**Follow-up: catalog entries are not repo-scoped.** The catalog file is resolved beside the detector and matched by bare path, so an entry exempts that path in *every* scanned repo. That predates this kind and is unchanged here; repo-scoping it is separate work.
+
 ## The dedup key
 
 Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `issue-dedup.sh` ladder is the wrong instrument. Full rationale and the contract live in `autofile-dedup.md` under "Exact-artifact dedup". In short: title `Refactor hotspot: <path>` or body marker `<!-- churn-hotspot: <path> -->`, compared **client-side with string equality** because GitHub tokenizes paths in `in:title` search and would match sibling files. A failed lookup (`existing_lookup_failed`) blocks filing rather than risking a duplicate.
 
-**The lookup is `--state all`, and it reports which state matched** (issue #915). It was `--state open` at first, which quietly made the detector unable to see its own past output: once a hotspot issue was reviewed and closed, the path read as `existing_hotspot_issue: null` — a blank slate — so `/wrap` re-filed it, and re-filed it again on the next wrap, forever. It had already produced one duplicate in this repo — issue #815 closed and issue #881 open for the same file — and had two more queued in a sibling repo before the pattern was noticed. Each hotspot now carries `existing_hotspot_issue_state` beside the number: `open`, `closed`, `unknown` (matched, but the state could not be read), or `null` — and `null` means **no match at all**, never "matched but unclassifiable". That distinction is the same bug in miniature: a consumer branching on `state == null` would read a matched hotspot as a blank slate, so the unreadable case gets its own value rather than sharing null's.
+**The lookup includes both states, and it reports which state matched** (issue #915). It was `--state open` at first, which quietly made the detector unable to see its own past output: once a hotspot issue was reviewed and closed, the path read as `existing_hotspot_issue: null` — a blank slate — so `/wrap` re-filed it, and re-filed it again on the next wrap, forever. It had already produced one duplicate in this repo — issue #815 closed and issue #881 open for the same file — and had two more queued in a sibling repo before the pattern was noticed. Each hotspot now carries `existing_hotspot_issue_state` beside the number: `open`, `closed`, `unknown` (matched, but the state could not be read), or `null` — and `null` means **no match at all**, never "matched but unclassifiable". That distinction is the same bug in miniature: a consumer branching on `state == null` would read a matched hotspot as a blank slate, so the unreadable case gets its own value rather than sharing null's.
 
 **An open match beats a closed one for the same path.** That preference is not cosmetic — it is what terminates the loop. When `/wrap` re-files a closed hotspot, the new open issue becomes the chosen match on the following run, so the next wrap comments instead of filing again. Picking whichever the search returned first would leave the closed one winning at random and the loop half-alive.
 
-**A capped lookup counts as a failed one.** When the search hits `ISSUE_LOOKUP_CAP` (200), a matching issue may sit beyond the cap, so "no match" no longer proves "no issue". Setting only `truncated` would leave callers — which gate filing on `existing_lookup_failed` — free to file a duplicate for a hotspot that already has a ticket. Both flags are set. **`--state all` enlarges the candidate set**, so this guard matters more than it did, not less — closed issues alone can now fill the cap. The cap stays at 200 rather than being raised: the count-based guard already fails safe, and raising it trades a known-safe bound for tuning nobody has evidence for.
+**Page completeness is verified (issue #2034).** The detector calls REST `search/issues` with `q=repo:OWNER/REPO is:issue Refactor hotspot in:title`, `per_page=100`, `sort=created`, and `order=asc`. Both open and closed issues remain visible. Creation order is stable across ordinary edits; when no open match exists, the earliest-created matching issue is the deterministic fallback.
+
+The walk makes at most ten requests. Every response must be one JSON object with a nonnegative integral `total_count`, exactly `incomplete_results: false`, and an array no larger than 100. Every candidate must have a positive exact integer number, string title, nullable-string body and no pull-request key. State remains permissive: missing, non-string and unrecognized states still report `unknown`. Totals must stay equal across pages, numbers must be unique, and a short or empty final page must leave the unique count equal to `total_count`. Exactly 200 results therefore succeed after an empty third page. A later-page transport, parse, schema or consistency failure invalidates the whole lookup. Matching-filter failure retains the hotspot list with null issue fields and marks the lookup unsafe.
+
+**The remaining search ceiling is conservative.** GitHub [limits search results to 1000](https://docs.github.com/en/rest/search/search?apiVersion=2022-11-28). At `total_count >= 1000`, or exhaustion of the ten-page guard, both `existing_lookup_failed` and `truncated` are set; callers cannot file. Every other failed lookup also sets `existing_lookup_failed`. Old hotspot issues must never be bulk-closed to fit a bound.
+
+Search pagination is not a snapshot: the consistency checks detect some concurrent changes, not every possible edit. A marker-only issue whose title no longer matches the recall query is still outside that query. The final title/marker decision remains exact and client-side.
 
 ## Delimiters: why NUL, and nothing else
 
@@ -219,17 +257,19 @@ So neither backend told the truth and the two disagreed about identical history,
 | `creation_skipped_count` | number | Touches dropped because the commit created that path |
 | `sweep_commit_count` | number | Commits (git path) or PRs (gh path) classified as sweeps |
 | `sweep_skipped_count` | number | Touches dropped because their commit was a sweep |
-| `truncated` | boolean | True when `--top` or the issue-lookup cap clipped output |
+| `truncated` | boolean | True when `--top` clips output or the issue search reaches its safety ceiling |
 | `existing_lookup_failed` | boolean | True when the issue lookup was incomplete or errored |
 | `total_hotspot_count` | number | Full pre-truncation hotspot count |
 | `exemptions_file` | `string` or `null` | Resolved exemption file, or `null` when the feature is off or no file was found — issue #1571 |
-| `exempt_count` | number | Touched exempt files; always equals the length of `exemptions` |
-| `exemptions` | array | Scored catalog-exempt entries, never bounded by `--top` or the threshold |
+| `policy_exemptions_file` | `string` or `null` | The scanned repo's policy declaration, or `null` when there is none or the feature is off — issue #1858 |
+| `policy_exemptions_ref` | `string` or `null` | Commit the declaration and its rule files were read at, or `null` alongside `policy_exemptions_file` |
+| `exempt_count` | number | Touched exempt files of both kinds; always equals the length of `exemptions` |
+| `exemptions` | array | Scored catalog- and policy-exempt entries, never bounded by `--top` or the threshold |
 | `hotspots` | array | Scored hotspot entries (see fields below) |
 
 Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`, `last_merged_at`, `created_in_window`, `creation_pr`, `existing_hotspot_issue`, `existing_hotspot_issue_state`.
 
-Each `exemptions[]` entry carries the same scored fields **minus** the two issue-lookup fields (exempt files are never filed), **plus** `lint` and `reason` copied from the exemption entry.
+Each `exemptions[]` entry carries the same scored fields **minus** the two issue-lookup fields (exempt files are never filed), **plus** `kind` and the entry's justification: `lint` and `reason` for `kind: "catalog"`, `rule_source` and `reason` for `kind: "policy"`.
 
 A path dropped by exclusion is counted only as `excluded_count`, never also as swept — the filters are applied in order (exclusion, existence, sweep, creation) and each touch is counted exactly once. Exemption is not one of those filters: it runs *after* scoring, so an exempt path is counted exactly once as an ordinary touch and then reclassified.
 

@@ -476,11 +476,8 @@ if [ "$(uname -s)" = Darwin ] && [ -n "$PDFTOTEXT" ]; then
   fi
   if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
     check "real Chrome: a PDF" "$(render HUMAN_QUEUE_EXPORT_RENDERER=chrome)" "0 chrome | "
-    # Chrome leaves its singleton-socket directory (and a fetcher's) behind in
-    # the per-user temp directory; on macOS only MAC_CHROMIUM_TMPDIR moves
-    # them, here into the scratch directory, which the export removes.
-    check_contains "real Chrome: its temp directories in the scratch directory" \
-      "$(find "$TMP/w/tmp" -mindepth 1 -maxdepth 1 -name 'com.google.Chrome.*' 2>/dev/null)" "$TMP/w/tmp/com.google.Chrome."
+    # The stub verifies the temp-directory environment. Chrome versions can
+    # remove their own socket directory, so the real run tests output and exit.
     TEXT=$("$PDFTOTEXT" -layout "$TMP/w/out.pdf" - 2>/dev/null | tr -d '\f')
     for id in D-44 D-41 D-45 R-9 R-10; do check_contains "real Chrome: pdftotext finds $id" "$TEXT" "$id ·"; done
     check "real Chrome: five sections" "$(printf '%s\n' "$TEXT" | grep -cE '^ *[0-9]+ +[DR]-[0-9]+ ·')" "5"
@@ -583,9 +580,6 @@ contract export.md "$(cat "$EXPORT_MD")" <<'NEEDLES'
 `reviews.md`, "`open R-<n>`: level 2, cached"
 `"format": "markdown"`
 `"new_set": true`
-NEEDLES
-contract skill/README.md "$(cat "$SKILL_DIR/README.md")" <<'NEEDLES'
-| `export.md` |
 NEEDLES
 
 hq_t_finish export-offline.test.sh

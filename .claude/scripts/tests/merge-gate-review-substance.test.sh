@@ -392,6 +392,42 @@ OUT="$(run_gate)"
 check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.mismatched[0]')" "(v) newest POSTED self-report wins over an edited older one"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(v) gate blocks on the mismatch"
 
+echo "=== (1894a) an edited-in-place Review Status naming HEAD outranks an older-posted, never-edited PR Risk naming a stale SHA (issue #1894) ==="
+# Live PR #1845: CodeAnt opened its Review Status table first and edits it in
+# place on every run; GitHub freezes created_at on edit, so a never-edited
+# "PR Risk" summary posted seconds later (Assessed commit: <stale>) won the
+# self-report forever and no re-review could clear it.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:("## CodeAnt AI — Review Status\n| Status | Commit |\n|---|---|\n| Reviewed your PR | " + $sha[0:12] + " |\n<!-- codeant-review-status:[{\"label\":\"Reviewed your PR\",\"commit\":\"" + $sha + "\",\"started\":\"2026-07-31T10:01:30.000000\",\"finished\":\"2026-07-31T10:03:30.000000\",\"done\":true}] -->"),
+   created_at:"2026-07-31T09:00:00Z", updated_at:"2026-07-31T10:03:30Z"},
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:"## PR Risk\nRisk level: low. Assessed commit: 98f0bd0abc12 — the change is confined to documentation.",
+   created_at:"2026-07-31T09:00:05Z", updated_at:"2026-07-31T09:00:05Z"}]')"
+OUT="$(run_gate)"
+R1894A="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "false" "$(echo "$R1894A" | jq -r '.self_report_mismatch')" "(1894a) the latest-edited Review Status table is the self-report"
+check_not_contains "own status comment names" "$(echo "$OUT" | jq -r '.missing | join(" | ")')" "(1894a) no stale-SHA disqualifier in missing[]"
+check_eq "true" "$(echo "$R1894A" | jq -r '.counts_as_coverage')" "(1894a) the CodeAnt approval counts as coverage"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(1894a) CodeAnt path of the CR gate is met"
+
+echo "=== (1894b) a Review Status table whose latest edit names another SHA still disqualifies (issue #1894) ==="
+# The mirror: the in-place table, edited most recently, names only a different
+# commit; an older-posted comment naming HEAD must not rescue the approval.
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:"## CodeAnt AI — Review Status\n| Status | Commit |\n|---|---|\n| Reviewed your PR | 98f0bd0abc12 |\n<!-- codeant-review-status:[{\"label\":\"Reviewed your PR\",\"commit\":\"98f0bd0abc1234567890abcdef1234567890abcd\",\"started\":\"2026-07-31T10:01:30.000000\",\"finished\":\"2026-07-31T10:03:30.000000\",\"done\":true}] -->",
+   created_at:"2026-07-31T09:00:00Z", updated_at:"2026-07-31T10:03:30Z"},
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:("## PR Risk\nRisk level: low. Assessed commit: " + $sha[0:12] + " — the change is confined to documentation."),
+   created_at:"2026-07-31T09:00:05Z", updated_at:"2026-07-31T09:00:05Z"}]')"
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].self_report_mismatch')" "(1894b) the latest-edited table naming another SHA is the self-report"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.mismatched[0]')" "(1894b) evidence flags the mismatch"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(1894b) gate blocks on the mismatch"
+FAKE_ISSUE_COMMENTS='[]'
+
 echo "=== (w) same-second approval and run marker counts as inversion (BugBot, PR #883) ==="
 # GitHub timestamps are whole-second, so this ordering is unknowable from the
 # data — and no real review starts and finishes inside one second.
@@ -1213,6 +1249,12 @@ echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"
 printf '' | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) empty stdin exits 4"
+
+echo "=== (gr) retired Graphite stays a default corroborator (#1889) ==="
+# The echo filter excludes $approvers + $others, so dropping graphite-app[bot]
+# from the default list would turn its comments into author text whose lines are
+# stripped from CR/CodeAnt bodies — changing their verdicts. The App still posts.
+check_eq "1" "$(grep -cE '^CORROBORATORS="[^"]*graphite-app\[bot\]' "$EVAL_SUT")" "(gr) default CORROBORATORS keeps graphite-app[bot]"
 
 echo
 echo "----------------------------------------"

@@ -1,5 +1,7 @@
 # CodeAnt Code Quality Integration Evaluation — 2026-06
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Issue: [#444](https://github.com/auerbachb/claude-code-config/issues/444)
 
 Date reviewed: 2026-06-25

@@ -195,6 +195,7 @@ printf '%s\n' "$*" >> "$STUB_DIR/args"
 case "$1" in
   control-status) echo '{"session": "desk-1", "last_tick_at": null, "tick_age_seconds": null}' ;;
   tick|wake-due) echo '[]' ;;
+  interrupt) echo '{"held":false}' ;;
 esac
 EOF
 chmod +x "$TSTUB"
@@ -221,11 +222,11 @@ dtick() {
   if [ -n "$pol" ]; then
     env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
       HUMAN_QUEUE_POLICY="$pol" PATH="$TMP/sleepbin:$PATH" \
-      bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+      "${DTICK_SHELL:-bash}" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   else
     env -u HUMAN_QUEUE_POLICY STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
       PATH="$TMP/sleepbin:$PATH" \
-      bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+      "${DTICK_SHELL:-bash}" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   fi
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
@@ -253,6 +254,29 @@ check "--cadence overrides the policy's" "$RC:$(slept)" "0:420/30"
 dtick "$TMP/wide.json" --cadence 30
 check_contains "--cadence at the policy's live bound: refused" "$RC:$ERR" "4:desk-tick: --cadence must be shorter than the live-desk bound (30 min"
 
+# Explicit defaults survive a loop re-arm even after policy edits.
+for DTICK_SHELL in $SHELLS; do
+  dtick "" --interrupts away --once
+  check "[$DTICK_SHELL] captured away overrides edited everything" "$RC:$(sed -n 2p "$STUB_DIR/args")" \
+    "0:tick --session desk-1 --interrupts away"
+  dtick "$TMP/away.json" --interrupts everything --once
+  check "[$DTICK_SHELL] captured everything overrides edited away" "$RC:$(sed -n 2p "$STUB_DIR/args")" \
+    "0:tick --session desk-1 --interrupts everything"
+  for bad_rule in focus '' '<DEFAULT>'; do
+    dtick "" --interrupts "$bad_rule" --once
+    check "[$DTICK_SHELL] invalid captured default exits 4" "$RC" "4"
+    check "[$DTICK_SHELL] invalid default never reaches CLI" "$(cat "$STUB_DIR/args" 2>/dev/null)" ""
+  done
+  dtick "" --interrupts
+  check "[$DTICK_SHELL] missing --interrupts value exits 4" "$RC" "4"
+  for repeat_rule in away everything; do
+    dtick "" --interrupts away --interrupts "$repeat_rule" --once
+    check "[$DTICK_SHELL] duplicate --interrupts $repeat_rule exits 4" "$RC" "4"
+    check "[$DTICK_SHELL] duplicate --interrupts never reaches CLI" "$(cat "$STUB_DIR/args" 2>/dev/null)" ""
+  done
+done
+unset DTICK_SHELL
+
 # The loop reads the live bound again while it sleeps: a bound lowered to the
 # interval or below cuts short the sleep already under way. The rule is the
 # one the desk started with, whatever the edit says (an invalid edit is the
@@ -269,14 +293,16 @@ EOF
 chmod +x "$TMP/sleepbin2/sleep"
 printf '{"interrupt_rule": "away"}\n' > "$TMP/live-pol.json"
 printf '{"tick_cadence_min": 2, "live_desk_max_tick_age_min": 3}\n' > "$TMP/live-next.json"
-# midsleep START EDIT — the loop with policy START, edited to EDIT mid-sleep.
+# midsleep START EDIT [ARGS...] — the loop with policy START, edited to EDIT mid-sleep.
 midsleep() {
   rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
   cp "$1" "$TMP/live-run.json"
+  local next_policy="$2"
+  shift 2
   RC=0
   env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
-    HUMAN_QUEUE_POLICY="$TMP/live-run.json" NEXT_POLICY="$2" PATH="$TMP/sleepbin2:$PATH" \
-    bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+    HUMAN_QUEUE_POLICY="$TMP/live-run.json" NEXT_POLICY="$next_policy" PATH="$TMP/sleepbin2:$PATH" \
+    "${DTICK_SHELL:-bash}" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
 }
 midsleep "$TMP/live-pol.json" "$TMP/live-next.json"
 check "a live bound lowered mid-sleep: that sleep ends 30 s inside it (150 s, not 300)" \
@@ -289,6 +315,14 @@ check "an invalid edit mid-sleep: the bound is the hook's default again (300 s)"
   "$RC:$(slept)" "0:300/30"
 check "... and the rule stays away, never the defaults' everything" \
   "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
+
+for DTICK_SHELL in $SHELLS; do
+  midsleep "$TMP/away.json" "$TMP/live-next.json" --interrupts away
+  check "[$DTICK_SHELL] explicit away retains the lowered live bound" "$RC:$(slept)" "0:150/30"
+  check "[$DTICK_SHELL] explicit away survives mid-sleep everything edit" \
+    "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
+done
+unset DTICK_SHELL
 
 # --------------------------------------------------------------------- CLI
 printf '== CLI\n'
@@ -510,7 +544,16 @@ cat > "$HSTUB" <<'EOF'
 #!/usr/bin/env bash
 : > "$STUB_DIR/hq-args"
 for a in "$@"; do printf '%s\n' "$a" >> "$STUB_DIR/hq-args"; done
-echo '{"stub": true}'
+printf '%s\n' "$*" >> "$STUB_DIR/hq-calls"
+if [ "$1" = interrupt ] && [ "${2:-}" = get ]; then
+  if [ -f "$STUB_DIR/held-rc" ]; then
+    echo 'human-queue: store unavailable (fixture)' >&2
+    exit "$(cat "$STUB_DIR/held-rc")"
+  fi
+  if [ -f "$STUB_DIR/held-json" ]; then cat "$STUB_DIR/held-json"; else echo '{"stub": true}'; fi
+else
+  echo '{"stub": true}'
+fi
 EOF
 chmod +x "$HSTUB"
 
@@ -521,8 +564,9 @@ literal() { FROM="$2" TO="$3" perl -pe 's/\Q$ENV{FROM}\E/$ENV{TO}/g' "$1"; }
 # SID set, in $TMP/run, with its own TMPDIR.
 mkdir -p "$TMP/run" "$TMP/blocktmp"
 run_block() {
-  rm -f "$STUB_DIR/hq-args"
+  rm -f "$STUB_DIR/hq-args" "$STUB_DIR/hq-calls"
   (cd "$TMP/run" && env DESK="$HQ_T_DESK_DIR" HQ="$HSTUB" SID="desk-1" STUB_DIR="$STUB_DIR" \
+     HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
      TMPDIR="$TMP/blocktmp" HUMAN_QUEUE_POLICY="${3:-$TMP/missing.json}" "$1" "$2") 2>&1
 }
 args() { tr '\n' ' ' < "$STUB_DIR/hq-args" 2>/dev/null | sed 's/ $//'; }
@@ -540,7 +584,33 @@ awk -v ph="<the operator's message, verbatim>" '$0 == ph { print "1: good interr
   "$TMP/block-desk-feedback-parse.sh" > "$TMP/fb.sh"
 literal "$TMP/block-desk-interrupt-set.sh" "<away|everything>" "away" > "$TMP/set-away.sh"
 literal "$TMP/block-desk-feedback.sh" "<ref> <tag> --set <latest set_id>" "2 not-important --set 12" > "$TMP/fb-write.sh"
-literal "$TMP/block-desk-release.sh" "<GEN>" "g7" > "$TMP/release.sh"
+literal "$TMP/block-desk-release.sh" "<GEN>" "g7" > "$TMP/release-gen.sh"
+literal "$TMP/release-gen.sh" "<DEFAULT>" "away" > "$TMP/release.sh"
+literal "$TMP/block-desk-interrupt-get.sh" "<DEFAULT>" "everything" > "$TMP/get-everything.sh"
+literal "$TMP/block-desk-interrupt-get.sh" "<DEFAULT>" "away" > "$TMP/get-away.sh"
+# Execute the real startup and identity-record blocks with isolated stubs.
+hq_t_skill_block "$SKILL" desk-first-tick > "$TMP/first-raw.sh"
+literal "$TMP/first-raw.sh" "<N>" "5" > "$TMP/first-cadence.sh"
+literal "$TMP/first-cadence.sh" "<DEFAULT>" "away" > "$TMP/first.sh"
+hq_t_skill_block "$SKILL" desk-record > "$TMP/record-raw.sh"
+literal "$TMP/record-raw.sh" "<DEFAULT>" "away" > "$TMP/record-default.sh"
+literal "$TMP/record-default.sh" "<N>" "5" > "$TMP/record-cadence.sh"
+literal "$TMP/record-cadence.sh" "<TASK_ID>" "monitor-1" > "$TMP/record.sh"
+START_SKILL="${DESK_START_TEST_SOURCE:-$SKILL}"
+hq_t_skill_block "$START_SKILL" desk-start > "$TMP/start-held-raw.sh"
+literal "$TMP/start-held-raw.sh" "<DEFAULT>" "away" > "$TMP/start-held.sh"
+hq_t_skill_block "$SKILL" desk-monitor > "$TMP/monitor-raw.sh"
+literal "$TMP/monitor-raw.sh" "<DESK>" "$HQ_T_DESK_DIR" > "$TMP/monitor-desk.sh"
+literal "$TMP/monitor-desk.sh" "<SID>" "desk-1" > "$TMP/monitor-session.sh"
+literal "$TMP/monitor-session.sh" "<GEN>" "seed" > "$TMP/monitor-gen.sh"
+literal "$TMP/monitor-gen.sh" "<N>" "5" > "$TMP/monitor-cadence.sh"
+literal "$TMP/monitor-cadence.sh" "<DEFAULT>" "away" > "$TMP/monitor-default.sh"
+cat > "$TMP/state-stub" <<'STATE_STUB'
+#!/bin/sh
+printf '%s\n' "$@" > "$STATE_CAPTURE"
+STATE_STUB
+chmod +x "$TMP/state-stub"
+
 
 for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/block-desk-policy.sh" "$TMP/partial.json")
@@ -563,15 +633,19 @@ for SH in $BLOCK_SHELLS; do
   check "[$SH] desk-interrupt-focus block: nothing in it ran" "$(find "$TMP/run" -name '*pwned*' | wc -l | tr -d ' ')" "0"
   check "[$SH] desk-interrupt-focus block: removes its file" "$(find "$TMP/blocktmp" -type f | wc -l | tr -d ' ')" "0"
 
-  OUT=$(run_block "$SH" "$TMP/block-desk-interrupt-get.sh")
-  check "[$SH] desk-interrupt-get block: the default policy's rule" "$(args)" \
+  OUT=$(run_block "$SH" "$TMP/get-everything.sh" "$TMP/away.json")
+  check "[$SH] query keeps captured everything after policy edit to away" "$(args)" \
     "interrupt get --session desk-1 --default everything"
-  OUT=$(run_block "$SH" "$TMP/block-desk-interrupt-get.sh" "$TMP/away.json")
-  check "[$SH] desk-interrupt-get block: the policy's away" "$(args)" \
+  OUT=$(run_block "$SH" "$TMP/get-away.sh" "$TMP/missing.json")
+  check "[$SH] query keeps captured away without a policy file" "$(args)" \
     "interrupt get --session desk-1 --default away"
-  OUT=$(run_block "$SH" "$TMP/block-desk-interrupt-get.sh" "$TMP/array.json")
-  check "[$SH] desk-interrupt-get block: an invalid policy is everything" "$(args)" \
-    "interrupt get --session desk-1 --default everything"
+  OUT=$(run_block "$SH" "$TMP/get-away.sh" "$TMP/array.json")
+  check "[$SH] invalid edited policy cannot replace captured away" "$(args)" \
+    "interrupt get --session desk-1 --default away"
+  RC=0
+  OUT=$(run_block "$SH" "$TMP/block-desk-interrupt-get.sh") || RC=$?
+  check "[$SH] unknown legacy default refuses query" "$RC" "4"
+  check "[$SH] unknown default never reaches CLI" "$(args)" ""
 
   OUT=$(run_block "$SH" "$TMP/fb.sh")
   check "[$SH] desk-feedback-parse block: the tags" "$OUT" \
@@ -584,10 +658,71 @@ for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/fb-write.sh")
   check "[$SH] desk-feedback block: the command" "$(args)" "feedback 2 not-important --set 12 --json"
 
+  rm -f "$STUB_DIR/args"
+  OUT=$(run_block "$SH" "$TMP/first.sh" "$TMP/array.json")
+  check "[$SH] first tick uses captured away, not the edited policy" \
+    "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
+  env SID=desk-1 GEN=g7 SESSION_STATE_SH="$TMP/state-stub" STATE_CAPTURE="$TMP/recorded-state" \
+    "$SH" "$TMP/record.sh"
+  RECORDED=$(sed -n 2p "$TMP/recorded-state")
+  check "[$SH] actual state block persists this desk's default with its identity" \
+    "$(printf '%s' "${RECORDED#.desk=}" | jq -r '[.session,.interrupt_default,.cadence_minutes,.monitor_task_id] | @json')" \
+    '["desk-1","away",5,"monitor-1"]'
+
+  rm -f "$STUB_DIR/args"
+  OUT=$(run_block "$SH" "$TMP/release.sh" "$TMP/array.json")
+  check "[$SH] release tick retains captured away despite invalid edited policy" \
+    "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
+
+  for initial_held in true false; do
+    printf '{"rule":"focus","held":%s}\n' "$initial_held" > "$STUB_DIR/held-json"
+    RC=0
+    OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
+    if [ "$initial_held" = true ]; then expected_flag=--held; else expected_flag=""; fi
+    seed_flag=$(printf '%s\n' "$OUT" | sed -n 's/^HELD_FLAG=//p')
+    check "[$SH] activation validates the captured hold before registration" "$(cat "$STUB_DIR/hq-calls")" \
+      "$(printf 'migrate\ninterrupt get --session desk-1 --default away --json\nregister-control desk-1')"
+    check_contains "[$SH] successful activation emits an explicit seed receipt" "$OUT" 'HELD_FLAG='
+    check "[$SH] boolean $initial_held produces a typed seed" "$RC:$seed_flag" "0:$expected_flag"
+    literal "$TMP/monitor-default.sh" "<HELD_FLAG>" "$seed_flag" > "$TMP/monitor.sh"
+    rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
+    RC=0
+    OUT=$(PATH="$TMP/sleepbin:$PATH" HUMAN_QUEUE_TICK_SECONDS=1 run_block "$SH" "$TMP/monitor.sh") || RC=$?
+    if [ "$initial_held" = true ]; then expected_release='desk-tick seed released'; else expected_release=""; fi
+    check "[$SH] actual Monitor command carries or omits the seed" "$RC:$OUT" "0:$expected_release"
+    check "[$SH] Monitor observation retains the captured default" \
+      "$(grep '^interrupt ' "$STUB_DIR/args")" 'interrupt get --session desk-1 --default away --json'
+  done
+  for invalid_held in '[]' '{}' '{"held":0}' '{"held":"--held; touch seed-pwned"}'; do
+    printf '%s\n' "$invalid_held" > "$STUB_DIR/held-json"
+    RC=0
+    OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
+    check "[$SH] invalid startup hold is refused: $invalid_held" "$RC" 4
+    check_absent "[$SH] invalid startup hold creates no seed" "$OUT" 'HELD_FLAG='
+    check_absent "[$SH] invalid hold cannot replace the earlier control session" "$(cat "$STUB_DIR/hq-calls")" 'register-control'
+  done
+  printf '7\n' > "$STUB_DIR/held-rc"
+  RC=0
+  OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
+  check "[$SH] failed startup hold read retains its exit" "$RC" 7
+  check_absent "[$SH] failed startup hold read creates no seed" "$OUT" 'HELD_FLAG='
+  check "[$SH] failed hold read stops after migration and lookup" "$(cat "$STUB_DIR/hq-calls")" \
+    "$(printf 'migrate\ninterrupt get --session desk-1 --default away --json')"
+  check "[$SH] hostile hold text was never executed" "$(find "$TMP/run" -name 'seed-pwned' | wc -l | tr -d ' ')" 0
+  rm -f "$STUB_DIR/held-json" "$STUB_DIR/held-rc"
+
   # The release is one desk-tick cycle with the recorded generation.
   check_contains "[$SH] desk-release block: one tick, now" "$(cat "$TMP/release.sh")" \
-    '"$DESK/bin/desk-tick.sh" --session "$SID" --generation "g7" --once'
+    '"$DESK/bin/desk-tick.sh" --session "$SID" --generation "g7" --interrupts "away" --once'
 done
+
+ACTIVATION_LINE=$(grep -n 'START_HOLD=' "$START_SKILL" | cut -d: -f1)
+FIRST_TICK_LINE=$(grep -n 'test-anchor: desk-first-tick -->' "$START_SKILL" | cut -d: -f1)
+if [ -n "$ACTIVATION_LINE" ] && [ -n "$FIRST_TICK_LINE" ] && [ "$ACTIVATION_LINE" -lt "$FIRST_TICK_LINE" ]; then
+  ok 'startup hold validation precedes the inline tick stamp'
+else
+  bad 'startup hold validation precedes the inline tick stamp'
+fi
 
 # The router and the files around it.
 contract() {
@@ -603,6 +738,13 @@ contract SKILL.md "$(cat "$SKILL")" <<'NEEDLES'
 `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?`
 → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
 block `desk-policy`
+`desk-tick <GEN> released`
+The seed records an evidenced held start
+If it was already read, do nothing
+.desk.interrupt_default
+recover `interrupt_default` only when its `session` equals `SID`
+--cadence <N> --interrupts "<DEFAULT>"
+Never reread `policy.json` for a re-arm, release or `interrupts?`
 `008_event_session.sql`
 never the interrupt rule unasked
 the first `new` event after it drops any of those ids whose `updated_at` is unchanged

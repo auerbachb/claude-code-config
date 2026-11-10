@@ -1,12 +1,14 @@
 # Per-Repo Token Measurement Baseline — August 2026
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Issue:** [#781](https://github.com/auerbachb/claude-code-config/issues/781) (FU-6: `/context` + ccusage baseline, MCP prune list, `permissions.deny`)
 
 **Date:** 2026-08-10
 
-**Related precedent:** [`token-efficiency-audit-2026-07.md`](token-efficiency-audit-2026-07.md) (FU-6 source, MCP schema cost figures, `permissions.deny` rationale), [Issue #710](https://github.com/auerbachb/claude-code-config/issues/710) (spend/thread-type telemetry pipeline — in-flight; data from there will supersede the manual figures here once available), [`harness-model-audit-2026-06.md`](harness-model-audit-2026-06.md) (static-evidence convention this doc follows)
+**Related precedent:** [`token-efficiency-audit-2026-07.md`](token-efficiency-audit-2026-07.md) (FU-6 source, MCP schema cost figures, `permissions.deny` rationale), [Issue #710](https://github.com/auerbachb/claude-code-config/issues/710) (legacy spend telemetry, repaired by [#1877](https://github.com/auerbachb/claude-code-config/issues/1877)), [`harness-model-audit-2026-06.md`](harness-model-audit-2026-06.md) (static-evidence convention this doc follows)
 
-**Scope guard:** This document covers per-repo context-floor measurement, MCP prune inventory, and junk-dir read-denial. It is NOT Issue #710's spend/thread-type telemetry pipeline and does NOT build a new per-session settings-sync mechanism.
+**Scope guard:** This document covers per-repo context-floor measurement, MCP prune inventory, and junk-dir read-denial. Spend telemetry does not measure `/context` startup floors or MCP schema share. The first manual capture ([#1158](https://github.com/auerbachb/claude-code-config/issues/1158)) and the deferred-MCP comparison ([#1160](https://github.com/auerbachb/claude-code-config/issues/1160)) are recorded below.
 
 ---
 
@@ -18,7 +20,7 @@
 3. Append a dated row to the [Baseline Table](#baseline-table)
 4. Re-classify MCP servers if the installed set changes
 
-**Gap acknowledgment:** Until Issue #710's telemetry pipeline ships, context-floor figures come from the manual `/context` procedure below. The `ccusage` figures are accurate at run time; the `/context` figures depend on the session configuration at capture time.
+**Gap acknowledgment:** Context-floor figures still require the manual `/context` procedure below. The current spend telemetry repair records message-level model and token metadata but cannot report startup context floors or MCP schema share. The `ccusage` figures are accurate at run time; `/context` figures depend on the session configuration at capture time.
 
 ---
 
@@ -83,9 +85,11 @@ npm install -g ccusage
 
 | Date | Context floor (tokens) | MCP schema share (tokens) | Active block cost (USD) | Window cost (USD) | Window tokens | Notes |
 |------|----------------------|--------------------------|------------------------|-------------------|---------------|-------|
-| 2026-08-10 | PENDING MANUAL CAPTURE | See MCP Inventory below | run `ccusage-baseline.sh` | run `ccusage-baseline.sh` | run `ccusage-baseline.sh` | Initial baseline; Issue #710 telemetry not yet available |
+| 2026-11-09 | ≈67,700 | ≈11,800 | Not sampled | Not sampled | Not sampled | Claude Code 2.1.321, Sonnet 4.6, fresh interactive `/context all` before any chat prompt; MCP loaded on demand. See breakdown below. |
 
 **How to fill in the context floor:** Run `/context` during a session in this repo, copy the token counts from the System prompt + System tools + MCP tools + Memory sections, sum them, and enter here.
+
+**First capture, 2026-11-09 UTC:** At repository commit `c73bf0f1`, Claude Code estimated 7.8k system prompt, 12.2k system tools, 11.8k MCP tools, and 35.9k memory-file tokens. Their sum is about 67.7k. The UI's full reading was 72k/200k (36%); it also included 1.6k MCP server instructions, 514 custom-agent tokens, 2.2k skills tokens, and 8 message tokens. Those categories are outside the four-part floor. The on-demand MCP listing showed 15 loaded tools: documentation (3, ≈0.47k), meetings (5, ≈6.16k), and artifacts (7, ≈5.14k), summing to about 11.8k after rounding. The table's cost and window-token columns are for `ccusage`; this capture did not measure them.
 
 ---
 
@@ -99,7 +103,7 @@ npm install -g ccusage
 
 | Server key | Plugin | Referenced in harness | Classification |
 |-----------|--------|----------------------|----------------|
-| `graphite@claude-code-graphite` | graphite CLI plugin | Graphite CLI (`graphite-app[bot]`) as supplemental reviewer in `cr-github-review.md` and `codeant-graphite-supplemental.md` | **KEEP** — used in review chain |
+| `graphite@claude-code-graphite` | graphite CLI plugin | Graphite CLI (`graphite-app[bot]`) as supplemental reviewer in `cr-github-review.md` and `codeant-supplemental.md` | **KEEP** — used in review chain |
 | `graphite-mcp@claude-code-graphite` | graphite MCP plugin | No `mcp__graphite*` tool calls found in rules/skills | **PRUNE CANDIDATE** — MCP schema loaded but no tool calls; CLI path is sufficient |
 
 **User-configured MCP servers** (in `~/.claude.json`):
@@ -146,7 +150,22 @@ From `token-efficiency-audit-2026-07.md` §Quantitative benchmarks (tier B evide
 - ~10–20K tokens per MCP server (all its tools combined)
 - ~55K tokens observed for a 5-server session
 
-**Tool Search Tool** (Claude Code built-in): defers MCP schemas until needed, cutting schema overhead by ~85% (77K→8.7K tokens observed). Already available in this harness — no additional setup required.
+**Tool Search** defers MCP schemas until needed. The historical 77k→8.7k benchmark came from a different session. In the paired local measurement below, default deferral reduced the MCP category from 116.2k to 11.8k tokens.
+
+#### Paired Tool Search measurement (2026-11-09 UTC)
+
+Both fresh interactive terminals used the same checkout (`c73bf0f1`), signed-in profile, Claude Code 2.1.321, and Sonnet 4.6. Neither received a chat prompt. The default terminal reported **loaded on demand** in `/context all`. Only the comparison terminal set `ENABLE_TOOL_SEARCH=false` for its own process, the [documented upfront-loading control](https://code.claude.com/docs/en/mcp#configure-tool-search).
+
+| Estimated category | Default, on demand | Upfront loading |
+|--------------------|-------------------:|----------------:|
+| System prompt | 7.8k | 7.6k |
+| System tools | 12.2k | 32.5k |
+| MCP tools | 11.8k | 116.2k |
+| Memory files | 35.9k | 35.9k |
+| Four-category floor | **67.7k** | **192.2k** |
+| Full UI reading | 72k/200k (36%) | 196.5k/200k (98%) |
+
+Deferral saved about **104.4k MCP tokens** and **124.5k tokens across the four-category floor** in these sessions. Keep the default. This is a paired startup estimate for one profile and its connected tools, not a per-turn savings guarantee or a spend measurement. No settings file or installed MCP server was changed.
 
 ---
 
@@ -196,7 +215,7 @@ The `deny` array is added as a new sub-key under `permissions` in `global-settin
 
 ## Follow-Up Items
 
-- [ ] **FU-6a (this issue):** Capture first manual `/context` reading and fill in the Baseline Table
+- [x] **FU-6a:** First interactive capture recorded in the [Baseline Table](#baseline-table) (#1158)
 - [ ] **FU-6b:** Re-measure after disabling `graphite-mcp@claude-code-graphite` to quantify the schema savings
-- [ ] **FU-6c:** Once Issue #710 telemetry is live, replace manual context-floor rows with automated data and retire the manual procedure
-- [ ] **FU-6d:** Re-evaluate Tool Search Tool opt-in — check if the harness currently enables deferred MCP schemas and measure impact
+- [ ] **FU-6c:** Issue #1877 repairs message-usage telemetry but does not measure context-floor rows; keep manual `/context` capture until a supported source replaces it
+- [x] **FU-6d:** [Paired startup measurement](#paired-tool-search-measurement-2026-11-09-utc) verified default MCP deferral and measured its impact (#1160)

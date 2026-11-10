@@ -726,8 +726,8 @@ test_9_state_commit_failure_is_reported() {
       "grep -q 'success state not persisted' '$SYNC'"
     assert "(source) the failure path reports an uncommitted streak" \
       "grep -q 'failure streak not persisted' '$SYNC'"
-    assert "(source) both paths record a state_commit_failed event" \
-      "[ \"\$(grep -c 'state_commit_failed' '$SYNC')\" -eq 2 ]"
+    assert "(source) core and pending paths record a state_commit_failed event" \
+      "[ \"\$(grep -c 'state_commit_failed' '$SYNC')\" -eq 3 ]"
   fi
 
   assert "neither commit site still swallows the result with || true" \
@@ -752,14 +752,15 @@ test_10_legacy_hooks_dir_reaches_both_automated_paths() {
 
   assert "(control) install-time still sets it" \
     "grep -q 'MANAGED_LEGACY_HOOKS_DIR=' '$setup'"
-  assert "the scheduled sync sets it too" \
-    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=' '$SYNC'"
-  assert "the session-start hook sets it too" \
-    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=' '$hook'"
-  assert "the scheduled sync derives it from the resolved root repo" \
-    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=\"\$ROOT_REPO_HINT/.claude/hooks\"' '$SYNC'"
-  assert "the hook derives it from the resolved root repo" \
-    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=\"\$_root_repo/.claude/hooks\"' '$hook'"
+  local tail="$REPO_ROOT/.claude/scripts/config-sync-tail.sh"
+  assert "the bounded tail sets the legacy managed root" \
+    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=\"\$root_hint/.claude/hooks\"' '$tail'"
+  assert "the scheduled sync forwards its resolved root to the bounded tail" \
+    "grep -q -- '--root-repo-hint \"\$ROOT_REPO_HINT\"' '$SYNC'"
+  assert "the hook forwards its resolved root to the bounded tail" \
+    "grep -q -- '--root-repo-hint \"\$_root_repo\"' '$hook'"
+  assert "both parents use the shared bounded tail" \
+    "grep -q 'config-sync-tail.sh' '$SYNC' && grep -q 'config-sync-tail.sh' '$hook'"
 }
 
 # ── Test 11: the root-repo lookup survives pipefail + SIGPIPE ────────────────

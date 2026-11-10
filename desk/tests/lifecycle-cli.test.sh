@@ -18,8 +18,8 @@
 #     repeats, every malformed set-resolve reply, state actions and keys, and
 #     the reserved state keys
 #   - secret-shaped free text exits 5 without connecting and is never echoed,
-#     including the values that only reach psql's argv (a state get key, a
-#     pending-for session id); a state value too large for one Linux argument
+#     including values passed to psql (a state get key, a
+#     pending-for session id); a state value too large for one Linux environment entry
 #     exits 4; --set accepts any bigint set id and nothing past it; a reply
 #     over 8000 characters exits 4, and one at the cap (thousands of leading
 #     zeros or separators) still parses quickly
@@ -318,6 +318,17 @@ for SH in $SHELLS; do
   check "[$SH] parse drops leading zeros" "$(parse "$SH" "02: B")" "2=B|"
   check "[$SH] parse drops blank segments" "$(parse "$SH" "1: A,, 2: B,")" "1=A|2=B|"
   check "[$SH] parse trims each answer" "$(parse "$SH" "  3 :   spaced out   ")" "3=spaced out|"
+  check "[$SH] parse drops leading separator runs" "$(parse "$SH" "$(printf ',;\n'; repeat , 2000; printf '2: B')")" "2=B|"
+  check "[$SH] parse drops trailing mixed separator runs" "$(parse "$SH" "$(printf '1:A,;\n'; repeat ';' 2000)")" "1=A|"
+  check "[$SH] continuation keeps the last separator in a run" "$(parse "$SH" "1:A,;continued")" "1=A;continued|"
+  check "[$SH] continuation keeps the final newline in a run" \
+    "$(parse "$SH" "$(printf '1:A,;\ncontinued')")" '1=A\ncontinued|'
+  check "[$SH] whitespace-bearing empty segments keep continuation semantics" \
+    "$(parse "$SH" "$(printf '1:A,  ; \ncontinued')")" '1=A\ncontinued|'
+  check "[$SH] long mixed runs keep the final continuation separator" \
+    "$(parse "$SH" "$(printf '1:A'; repeat_str $',;\n' 1500; printf 'continued')")" '1=A\ncontinued|'
+  check "[$SH] a pair after a run starts a new answer" "$(parse "$SH" "1:A,;$(repeat , 2000)2:B")" "1=A|2=B|"
+  check_contains "[$SH] a separator-only reply still has no answer" "$(parse "$SH" ",;$(repeat , 2000)")" "expected a reply such as"
   check "[$SH] parse keeps a time inside an answer" "$(parse "$SH" "1: at 10:30 please")" "1=at 10:30 please|"
   check_contains "[$SH] parse refuses free text first" "$(parse "$SH" "B, 2: C")" "expected a reply such as"
 
@@ -338,9 +349,9 @@ for SH in $SHELLS; do
   expect_rc "$SH" 5 "state get with a token for a key" "state get: the key looks like" state get "$FAKE_GH"
   check_absent "[$SH] the state get key is not echoed" "$OUT$ERR" "$FAKE_GH"
   # 43688 three-byte characters and one more byte: under 65536 characters, but
-  # 131065 bytes — one argument still fits Linux's 131072, `hq_value=` + it
+  # 131065 bytes — one entry still fits Linux's 131072, `HQ_PSQL_TEXT_0=` + it
   # would not. (A C-locale shell counts bytes and stops at the character cap.)
-  expect_rc "$SH" 4 "state set of a value too large for one psql argument" "state set: the value is l" \
+  expect_rc "$SH" 4 "state set of a value too large for one psql environment entry" "state set: the value is l" \
     state set k "$(repeat_str '€' 43688)a"
   expect_db "$SH" "state get" state get day_plan:2026-10-05
   expect_db "$SH" "state get of a reserved key" state get tick_watermark

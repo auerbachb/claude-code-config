@@ -1,5 +1,7 @@
 # AI Review Billing — Dashboard Readings (2026-08-21)
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Issue: [#1204](https://github.com/auerbachb/claude-code-config/issues/1204)
 Interpretation and reconciliation against the GitHub-derived census: [`ai-review-tool-audit-2026-08.md`](./ai-review-tool-audit-2026-08.md) §Dashboard reconciliation
 Roles derived from both: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md)

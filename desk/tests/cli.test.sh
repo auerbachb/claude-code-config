@@ -49,12 +49,14 @@ fi
 # Stub psql that hangs: the watchdog must kill it.
 cat > "$TMP/psql-hang" <<'EOF'
 #!/bin/sh
+if [ "${1-}" = --version ]; then echo "psql (PostgreSQL) 15.0"; exit 0; fi
 exec sleep 10
 EOF
 # Stub psql that records what the probe saw, then fails like an unreachable
 # server (exit 2) so the CLI stops after the probe.
 cat > "$TMP/psql-record" <<'EOF'
 #!/bin/sh
+if [ "${1-}" = --version ]; then echo "psql (PostgreSQL) 15.0"; exit 0; fi
 {
   printf 'argv:'
   for a in "$@"; do printf ' [%s]' "$a"; done
@@ -87,11 +89,28 @@ EOF
 # connect-phase watchdog must kill it.
 cat > "$TMP/psql-probe-then-hang" <<'EOF'
 #!/bin/sh
+if [ "${1-}" = --version ]; then echo "psql (PostgreSQL) 15.0"; exit 0; fi
 for a in "$@"; do
   if [ "$a" = "SELECT 1" ]; then exit 0; fi
 done
 exec sleep 10
 EOF
+# Version output is untrusted metadata; unsupported/failing clients must stop
+# before the connection probe, and a metadata hang shares its 1.5 s deadline.
+cat > "$TMP/psql-version" <<'EOF'
+#!/bin/sh
+if [ "${1-}" = --version ]; then
+  case "$STUB_VERSION" in
+    hang) echo "$$" > "$STUB_VERSION_PID"; exec sleep 10 ;;
+    fail) echo 'untrusted version stderr' >&2; exit 1 ;;
+    malformed) echo 'not a psql version'; exit 0 ;;
+    *) printf 'psql (PostgreSQL) %s\n' "$STUB_VERSION"; exit 0 ;;
+  esac
+fi
+printf probe > "$STUB_PROBE"
+exit 2
+EOF
+chmod +x "$TMP/psql-version"
 chmod +x "$TMP/psql-hang" "$TMP/psql-record" "$TMP/psql-probe-then-hang"
 
 # run_cli SHELL [VAR=value | -u VAR]... -- ARGS...
@@ -193,6 +212,31 @@ for SH in $SHELLS; do
 
   run_cli "$SH" "HUMAN_QUEUE_DATABASE_URL=$BLACKHOLE_URL" "HUMAN_QUEUE_PSQL=$TMP/no-such-psql" -- migrate
   check "[$SH] missing psql override exits 7" "$RC" "7"
+
+  for VERSION in 14.17 malformed fail hang 15.0 17.9; do
+    rm -f "$TMP/version-probe" "$TMP/version-pid"
+    run_cli "$SH" "HUMAN_QUEUE_DATABASE_URL=$BLACKHOLE_URL" \
+      "HUMAN_QUEUE_PSQL=$TMP/psql-version" "STUB_VERSION=$VERSION" \
+      "STUB_PROBE=$TMP/version-probe" "STUB_VERSION_PID=$TMP/version-pid" -- migrate
+    check "[$SH] version $VERSION fails unavailable" "$RC" "7"
+    check "[$SH] version $VERSION has one error line" "$(hq_t_lines "$ERR")" "1"
+    check "[$SH] version $VERSION has no stdout" "$OUT" ""
+    check_absent "[$SH] version $VERSION hides raw stderr" "$ERR" "untrusted"
+    if hq_t_elapsed_under "$ELAPSED_START" "$ELAPSED_END" 2.0; then
+      ok "[$SH] version $VERSION shares the bounded probe"
+    else bad "[$SH] version $VERSION exceeded two seconds"; fi
+    case "$VERSION" in
+      15.0|17.9) check "[$SH] supported version reaches probe" "$(cat "$TMP/version-probe" 2>/dev/null)" probe ;;
+      *) if [ -e "$TMP/version-probe" ]; then bad "[$SH] unsupported version reached probe"; else ok "[$SH] unsupported version never connects"; fi ;;
+    esac
+    if [ "$VERSION" = hang ]; then
+      VERSION_PID=$(cat "$TMP/version-pid")
+      if kill -0 "$VERSION_PID" 2>/dev/null; then
+        bad "[$SH] version metadata child survived timeout"
+        kill -KILL "$VERSION_PID" 2>/dev/null || true
+      else ok "[$SH] timed-out metadata child was reaped"; fi
+    fi
+  done
 
   # --- unreachable: exit 7 within two seconds -----------------------------
   run_cli "$SH" "HUMAN_QUEUE_DATABASE_URL=$BLACKHOLE_URL" "HUMAN_QUEUE_PSQL=$TMP/psql-hang" -- migrate

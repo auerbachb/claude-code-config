@@ -1,6 +1,6 @@
 # Monitor Mode, Heartbeats & Recovery
 
-> **Always:** Enter monitor mode when subagents are active. Timestamp every user-visible message (CLAUDE.md #1; exception: the clean auto-merge line `merged PR #N` omits the timestamp per CLAUDE.md #3). Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Report subagent failures immediately. Recover state after compaction.
+> **Always:** Enter monitor mode when subagents are active. Apply `decision-only-output.md`; no routine timestamps or heartbeats. Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Record subagent failures immediately; surface owner-action blockers or exhausted recovery immediately. Recover state after compaction.
 > **Ask first:** Breaking monitor mode for explicit user requests — warn about paused monitoring first.
 > **Never:** Do substantive work while subagents are active. Let a stalled PR go unreported. Ask permission to monitor — babysitting an in-flight PR is the default (`CLAUDE.md`).
 
@@ -26,17 +26,17 @@ Every ~60s, in order:
 
 ## Subagent Health Monitoring (MANDATORY)
 
-Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work; successes stay silent. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
+Poll every cycle; never fire-and-forget. Record failures and blockers immediately — PR/issue, phase, failure mode, remaining work; recover automatically when authorized. Surface owner-only blockers, safety events, or stopped recovery immediately; successes stay silent. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
 Respawn permissions: crash asks, exhaustion auto, limit-parked neither — it parks the board and arms a wake (`phase-protocols.md` §Limit-parked).
 
 ## Liveness
 
-Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Drain-time closing message: `final-wrapup-format.md`.
+Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Parent freshness is not child progress. The ceiling tick independently checks exact-session Agent artifacts; `CHILD STALL SUSPECT` requests investigation, never proves a crash or authorizes stop/respawn. Missing evidence remains `CHILD PROGRESS UNKNOWN`. Coverage/limits: `bgwork-ceiling.md`. Drain-time closing message: `final-wrapup-format.md`.
 
-## File-Write Status Updates (MANDATORY)
+## File-Write Status
 
-Operations touching 4+ files: one-line status every 3 writes/edits; batches of 1–3 need none. Applies to parents and subagents.
+Record writes and verification in artifacts. File counts alone never trigger human-facing updates (`decision-only-output.md`).
 
 ## Post-Compaction Recovery (MANDATORY)
 

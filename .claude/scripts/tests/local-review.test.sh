@@ -189,6 +189,103 @@ check_eq 1 "$RC" "CodeAnt findings exits 1"
 check_eq "false" "$(field .ok)" "CodeAnt findings is not ok"
 check_eq "true" "$(field .verified_run)" "CodeAnt findings is still a verified run"
 check_eq "2" "$(field .findings)" "CodeAnt findings counts .issues"
+check_eq "2" "$(field .contentless_findings)" "labels are not diagnostic text — label-only entries are contentless"
+
+# 4h. Contentless findings (issue #1913) — a verified run whose entries carry only a
+#     label and a line, no diagnostic text. Must stay distinct from BOTH a clean pass
+#     (ok false, exit 1) and a failed run (verified true, failure_mode null — so the
+#     caller's retry/drop policy never fires on it). Synthetic payloads only.
+CA_META='"meta": {"capped": false, "skipped": []}, "error": null, "noFiles": false'
+BIN="$(make_stub codeant-contentless \
+  "{\"issues\": [{\"label\":\"MAJOR\",\"line\":12,\"issue_content\":\"\"}], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "contentless finding exits 1 (verified findings, not a failed run)"
+check_eq "false" "$(field .ok)" "contentless finding is not a clean pass"
+check_eq "true" "$(field .verified_run)" "contentless finding is still a verified run"
+check_eq "null" "$(field .failure_mode)" "contentless finding has no failure_mode (no retry/drop)"
+check_eq "1" "$(field .findings)" "contentless finding still counts as a finding"
+check_eq "1" "$(field .contentless_findings)" "empty issue_content is contentless"
+CONTENTLESS_LOG="$(field .log_path)"
+CONTENTLESS_ERR="$(field .stderr_path)"
+if [[ -f "$CONTENTLESS_LOG" && -f "$CONTENTLESS_ERR" ]]; then
+  ok "contentless run keeps both raw captures"
+else bad "contentless run capture missing: $CONTENTLESS_LOG / $CONTENTLESS_ERR"; fi
+if grep -q '"label":"MAJOR"' "$CONTENTLESS_LOG" 2>/dev/null; then
+  ok "contentless run preserves the raw payload at log_path"
+else bad "contentless payload did not reach log_path"; fi
+if printf '%s' "$OUT" | jq -e 'tostring | test("MAJOR") | not' >/dev/null; then
+  ok "verdict never echoes issue labels or content"
+else bad "verdict leaked issue labels into the compact result"; fi
+
+BIN="$(make_stub codeant-ws-missing \
+  "{\"issues\": [{\"label\":\"MINOR\",\"issue_content\":\"  \\n\\t \"},{\"label\":\"MINOR\",\"line\":3},{\"issue_content\":null},{\"issue_content\":7},\"bare-string\",{\"issue_content\":\"Real diagnostic.\"}], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "whitespace/missing/null/non-string/non-object entries exit 1"
+check_eq "6" "$(field .findings)" "every entry counts as a finding"
+check_eq "5" "$(field .contentless_findings)" "whitespace, missing, null, non-string and non-object are all contentless"
+
+# 4i. Usable finding — real diagnostic text.
+BIN="$(make_stub codeant-usable \
+  "{\"issues\": [{\"label\":\"MAJOR\",\"issue_content\":\"Unquoted variable expansion splits on spaces.\"}], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "usable finding exits 1"
+check_eq "1" "$(field .findings)" "usable finding counts as a finding"
+check_eq "0" "$(field .contentless_findings)" "usable finding is not contentless"
+
+# 4j. Mixed — contentless entries must not hide a real one, nor vice versa.
+BIN="$(make_stub codeant-mixed \
+  "{\"issues\": [{\"issue_content\":\"Missing error check on jq.\"},{\"label\":\"MINOR\",\"issue_content\":\"\"},42], $CA_META}" '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 1 "$RC" "mixed findings exit 1"
+check_eq "3" "$(field .findings)" "mixed findings count every entry"
+check_eq "2" "$(field .contentless_findings)" "mixed findings count only the contentless entry"
+
+# 4k. True clean, failed invocations, and the capped path keep their own shapes.
+BIN="$(make_stub codeant-bare-clean '{"issues":[]}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 0 "$RC" "bare issues-empty object is a clean pass"
+check_eq "true" "$(field .ok)" "true clean run is ok"
+check_eq "0" "$(field .contentless_findings)" "true clean run reports contentless_findings 0 (assessed)"
+
+BIN="$(make_stub codeant-contentless-403 \
+  "{\"issues\": [{\"label\":\"MAJOR\",\"issue_content\":\"\"}], $CA_META}" 'API Error: Access denied (403).' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "contentless stdout + stderr 403 is a failed run"
+check_eq "stderr_error" "$(field .failure_mode)" "stderr 403 outranks contentless issues"
+check_eq "false" "$(field .verified_run)" "failed run with contentless issues is not verified"
+check_eq "0" "$(field .findings)" "failed run reports 0 findings"
+check_eq "null" "$(field .contentless_findings)" "failed run never assessed contentless (null, not 0)"
+
+BIN="$(make_stub codeant-garbage-2 'not json at all' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "unparseable stdout exits 3"
+check_eq "no_review_records" "$(field .failure_mode)" "unparseable stdout stays no_review_records"
+check_eq "null" "$(field .contentless_findings)" "unparseable stdout reports null contentless"
+
+BIN="$(make_stub codeant-capped-contentless \
+  '{"issues": [{"label":"MAJOR","issue_content":""},{"issue_content":"real text"}], "meta": {"capped": true, "skipped": ["x.sh"]}, "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "capped run with contentless entries still exits 3"
+check_eq "capped" "$(field .failure_mode)" "capped run with contentless entries reports capped"
+check_eq "1" "$(field .contentless_findings)" "capped run still assesses contentless (integer)"
+
+BIN="$(make_stub codeant-capped-uncountable \
+  '{"issues": true, "meta": {"capped": true, "skipped": ["x.sh"]}, "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq "capped" "$(field .failure_mode)" "capped run with uncountable issues still reports capped"
+check_eq "null" "$(field .contentless_findings)" "uncountable issues leave contentless null, never 0"
+
+# Non-array .issues shapes: a string is countable but not iterable, so the contentless
+# query faults and falls back to the full count; an object's values are iterated as entries.
+BIN="$(make_stub codeant-issues-string '{"issues": "abc", "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq "3" "$(field .findings)" "string .issues keeps its existing length-based count"
+check_eq "3" "$(field .contentless_findings)" "string .issues falls back to all-contentless"
+BIN="$(make_stub codeant-issues-object \
+  '{"issues": {"a": {"issue_content": "Real diagnostic."}, "b": 1}, "error": null, "noFiles": false}' '' 0)"
+run --tool codeant --bin "$BIN"
+check_eq "2" "$(field .findings)" "object .issues counts its values"
+check_eq "1" "$(field .contentless_findings)" "object .issues treats a non-object value as contentless"
 
 # --------------------------------------------------------------------------
 # 5. CodeRabbit — failure hides in the stdout NDJSON stream, stderr stays clean.
@@ -227,6 +324,7 @@ run --tool coderabbit --bin "$BIN"
 check_eq 0 "$RC" "CR clean run exits 0"
 check_eq "true" "$(field .ok)" "CR clean run is ok"
 check_eq "coderabbit" "$(field .tool)" "contract names the tool"
+check_eq "null" "$(field .contentless_findings)" "CR clean run reports null contentless (CodeAnt-only field)"
 
 # 5e. Findings.
 BIN="$(make_stub coderabbit-findings "$CR_CTX
@@ -235,6 +333,7 @@ run --tool coderabbit --bin "$BIN"
 check_eq 1 "$RC" "CR findings exits 1"
 check_eq "3" "$(field .findings)" "CR findings count comes from the complete record"
 check_eq "true" "$(field .verified_run)" "CR findings is a verified run"
+check_eq "null" "$(field .contentless_findings)" "CR findings run reports null contentless"
 
 # 5f. An error record outranks a later clean complete record — an explicit failure
 #     always beats an empty result, because an empty result IS what failure looks like.
@@ -268,6 +367,15 @@ if grep -q '^codeant: ok=true findings=0 verified=true' <<<"$SUMMARY"; then
   ok "--format summary emits the one-line human shape"
 else bad "--format summary shape wrong: $SUMMARY"; fi
 check_eq 1 "$(printf '%s\n' "$SUMMARY" | wc -l | tr -d ' ')" "--format summary is a single line"
+if grep -q ' contentless=0 log=' <<<"$SUMMARY"; then
+  ok "--format summary carries contentless= immediately before log="
+else bad "--format summary missing contentless= before log=: $SUMMARY"; fi
+BIN="$(make_stub coderabbit-summary "$CR_CTX
+$CR_DONE" '' 0)"
+SUMMARY="$("$SUT" --tool coderabbit --bin "$BIN" --log-dir "$LOGS" --format summary 2>/dev/null)"
+if grep -q ' contentless=- log=' <<<"$SUMMARY"; then
+  ok "--format summary renders a null contentless as -"
+else bad "CR summary should show contentless=-: $SUMMARY"; fi
 
 # --------------------------------------------------------------------------
 # 8. The bound is IDLE time, not elapsed time (issue #1220).

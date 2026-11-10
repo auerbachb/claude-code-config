@@ -4,6 +4,8 @@ description: End-of-session command — verify no unresolved findings, squash me
 argument-hint: "[URL | #N | N] [--verbose]"
 ---
 
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
+
 Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, a full-session sweep for loose ends, and lessons.
 
 `/wrap` accepts an **optional** PR reference as its argument — a full URL, `#N`, `owner/repo#N`, or a bare number `N`. When invoked with no argument it resolves the target PR through the inference cascade in Step 1.1 (current branch → thread context → session-state). An explicit argument bypasses all inference.
@@ -62,12 +64,12 @@ Autonomy does not mean filing blind: every candidate goes through the body-aware
 | **Silent** | *(default)* | One line on a clean run: `merged PR #N` — no follow-up list, no lessons ack, no sweep summary. Only decision-requiring items print, one terse line each (Step 4.3 **Silent default**). |
 | **Verbose** | `--verbose` *(or an explicit request)* | The full report: the `## Wrapped up` merged + follow-ups block, per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). Full template: `references/wrap-report-templates.md`. |
 
-**Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Suppression is never deletion — the merge, the filings, the sweep, and the lessons are all recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory), so an explicit request re-renders the verbose report in full from that state. Four things always print regardless of mode:
+**Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Suppression is never deletion — the merge, the filings, the sweep, and the lessons are all recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory), so an explicit request re-renders the verbose report in full from that state. Required notices below follow `decision-only-output.md`; routine coverage and heartbeat details remain in records:
 
 - **State-changing blockers and stop conditions** — a merge that can't proceed, `CONFLICTING`, human `CHANGES_REQUESTED`, no PR found, the recovery cap — surface as a short one-line reason even on the silent default (Step 4.3 **Blocker path**).
 - **The `[INFERRED]` merge-safety checkpoint** (Step 1.1). Prints only on the inference path, never on the normal branch path.
-- **The CLAUDE.md 5-minute heartbeat** during long `/fixpr` waits. Silence never extends past the heartbeat — that is what keeps a suppressed run distinguishable from a stalled one (issue #803).
-- **`[COVERAGE]` when local review was degraded** (`cr-only`, `codeant-only`, or `none`). Full coverage (`both`) is suppressible.
+- **Genuine stalls or exhausted recovery** surface immediately. Routine `/fixpr` wait ticks remain silent; the bgwork ceiling and recorded tick state provide liveness.
+- **Local review coverage** (`both`, `cr-only`, `codeant-only`, `none`) is recorded in the PR and recovery state; notify only if it requires owner action.
 
 When `/wrap` is invoked by a phase-C subagent, the machine **`EXIT_REPORT`** block (per `phase-protocols.md`) is emitted **identically regardless of verbosity**.
 
@@ -79,8 +81,8 @@ Define once, use throughout all phases. The `resolve_script()` function finds th
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -91,15 +93,22 @@ INFER_PR=$(resolve_script infer-pr.sh || true)
 DISMISS=$(resolve_script dismiss-stale-bot-changes.sh || true)
 PR_STATE_SH=$(resolve_script pr-state.sh || true)
 MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+RECOVERY_EVIDENCE_SH=$(resolve_script recovery-evidence.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
+WRAP_AUDIT_STATE_SH=$(resolve_script session-state.sh || true)
 CI_STATUS_SH=$(resolve_script ci-status.sh || true)
 RELEASE_DECIDE=$(resolve_script release-decide.sh || true)
 RELEASE_SWEEP=$(resolve_script release-sweep.sh || true)
 PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
+ISSUE_COMPLETION_SH=$(resolve_script issue-completion.sh || true)
 ISSUE_CLAIM_SH=$(resolve_script issue-claim.sh || true)
+POST_MERGE_BOOKKEEPING_SH=$(resolve_script post-merge-bookkeeping.sh || true)
+SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 DIRTY_MAIN_GUARD_SH=$(resolve_script dirty-main-guard.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+MERGE_TARGET_ROOT_SH=$(resolve_script merge-target-root.sh || true)
 HHG_STATE_SH=$(resolve_script hhg-state.sh || true)
 CYCLE_COUNT_SH=$(resolve_script cycle-count.sh || true)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
@@ -107,6 +116,7 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 
 [[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — wrap PR state unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — wrap merge gate unavailable" >&2; exit 1; }
+[[ -n "$RECOVERY_EVIDENCE_SH" ]] || { echo "ERROR: recovery-evidence.sh not found (checked all three paths) — recovery capture unavailable; no gate accepted" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
 [[ -n "$CI_STATUS_SH" ]] || { echo "ERROR: ci-status.sh not found (checked all three paths) — CI diagnosis unavailable" >&2; exit 1; }
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — wrap authorship gate unavailable" >&2; exit 1; }
@@ -151,11 +161,11 @@ gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
   --jq '{number, title, headRefName, body, state}'
 ```
 
-If already merged or closed, skip to Phase 3.
+If already merged, use the Phase 3 merged entry below; it reconciles issue completion before bookkeeping. If closed without a merge, report that state and stop.
 
 ### Step 1.2: Scan for unresolved review findings
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. All review-state queries in this skill read from the `$BUNDLE` returned by `pr-state.sh` — do not add inline `gh api` calls to these three endpoints.
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. All review-state queries in this skill read from the `$BUNDLE` returned by `pr-state.sh` — do not add inline `gh api` calls to these three endpoints.
 
 Use the shared `pr-state.sh` helper to fetch and pre-classify review activity from all three endpoints in one call. It filters to the five review bots — `coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]` and `graphite-app[bot]` — and tags each comment with `classification.class` (`finding` vs `acknowledgment`). The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
@@ -179,6 +189,17 @@ For each finding:
 
 **Do not stop here.** Record whether any items remain classified as `finding` as **`WRAP_PHASE1_FINDINGS`** — count + short list. Unresolved bot findings are a **trigger** for Phase 2's `/fixpr` delegation path, not a hard stop.
 
+**Unmarked verdict replies (advisory — issue #1842).** Read the bundle's top-level count and print one line only when it is non-zero:
+
+```bash
+UNMARKED=$(jq -r '.unmarked_replies // 0' < "$BUNDLE")
+if [[ "$UNMARKED" =~ ^[0-9]+$ ]] && (( UNMARKED > 0 )); then
+  echo "Advisory: $UNMARKED User-account repl(y/ies) to review-bot threads carry no review-verdict marker (reply-thread.sh --verdict/--defect)"
+fi
+```
+
+It counts User-account replies to review-bot threads that skipped the mandatory `--verdict`/`--defect` flags, so the review-cost ledger cannot score them (`.claude/reference/review-stack-audit.md` §The marker). **Information only:** it never joins `WRAP_PHASE1_FINDINGS`, never changes an unresolved-thread count, never dispatches `/fixpr`, and never changes the merge-gate outcome or `/wrap`'s exit status.
+
 **Unresolved-threads detection (issue #455):**
 
 ```bash
@@ -188,6 +209,31 @@ WRAP_UNRESOLVED_THREADS=$(jq -r '.threads.unresolved_count // 0' < "$BUNDLE")
 If `> 0`, record it. In `--verbose` mode also emit a timestamped detection heartbeat. Do **not** assert threads are the sole blocker — that is Branch B's call once the gate's full `missing` set is known. Do **not** invoke `/fixpr` from Phase 1 — the single delegation point is Step 2.1 Branch B.
 
 Proceed immediately to Phase 2 — do not ask.
+
+### Bind the physical clone before merge work
+
+Use the absolute invocation/worktree path from this chat's workspace context, an explicit caller path, or a validated delegated handoff that matches this PR, repository, HEAD and holder. Set `WRAP_SOURCE_PATH` from that trusted context; never recover it from a later `pwd` or a shared per-repository/per-PR `.root_repo` hint. A remote identity cannot distinguish two clones of the same repository. Resolve `WRAP_PR_URL` from the identified PR's native `url` field, using that exact PR/repository rather than a later current-branch lookup.
+
+<!-- test-anchor: wrap-merge-root-binding -->
+
+```bash
+WRAP_BOUND_ROOT=""
+WRAP_BOUND_PR_URL="${WRAP_PR_URL:-}"
+WRAP_ROOT_BINDING_STATUS="failed: explicit clone binding unavailable"
+if [[ -n "$MERGE_TARGET_ROOT_SH" ]]; then
+  WRAP_BIND_RC=0
+  WRAP_BOUND_ROOT=$("$MERGE_TARGET_ROOT_SH" --repo-path "${WRAP_SOURCE_PATH:-}" \
+    --pr-url "${WRAP_BOUND_PR_URL:-}" 2>/dev/null) || WRAP_BIND_RC=$?
+  if [[ "$WRAP_BIND_RC" -eq 0 && -n "$WRAP_BOUND_ROOT" ]]; then
+    WRAP_ROOT_BINDING_STATUS="bound"
+  else
+    WRAP_BOUND_ROOT=""
+    WRAP_ROOT_BINDING_STATUS="failed: explicit clone binding invalid or unreadable (rc=$WRAP_BIND_RC)"
+  fi
+fi
+```
+
+Carry `WRAP_BOUND_ROOT` and `WRAP_BOUND_PR_URL` unchanged across later tool calls and delegated `/fixpr` work; persist them in the validated run handoff when handing off this invocation. On resume without that binding, keep local mutations skipped. Never repopulate it from whatever clone the tool happens to enter. Binding failure does not undo or bypass the remote merge gate; it makes post-merge local cleanup/sync report a failure without mutating a guessed clone.
 
 ## Phase 2: Merge
 
@@ -210,17 +256,91 @@ if [ "$WRAP_VERBOSE" = "1" ]; then
 fi
 ```
 
-**The silent default keeps three non-negotiable signals:** (a) the CLAUDE.md 5-minute heartbeat during `/fixpr` waits, (b) dispatch/blocker transitions always print, and (c) a clean merge emits `merged PR #N`.
+**The silent default preserves required signals:** owner-action blockers, safety events and exhausted recovery surface immediately; a clean merge emits `merged PR #N`. Dispatch transitions and ordinary waits remain recorded and silent.
 
-After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Always built; rendered to the user only under `--verbose`.
+After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Then run the write below before continuing or exiting, including cap/blocker exits. It saves the complete current-run audit and last gate JSON under `.prs["<PR>"].wrap_sweep.recovery_audit`; Step 3.13's sibling-field writes preserve it. The explicit `CURRENT_REPO` from Step 1.1's repo-scoping guard overrides an inherited `CLAUDE_SESSION_REPO`; never fall back to that ambient variable for this write. Later status/verbose requests read the target repo's record rather than relying on a child shell's variables. A failed write stops recovery with an evidence-storage error, never a clean result.
 
-**Merge-ready shortcut:** Run `merge-gate.sh` once before the loop, capturing its stdout into `GATE_JSON` exactly as the loop does. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2. Capturing is not optional — Step 2.4 reads `merge_state` out of `GATE_JSON`, so a shortcut that discarded the output would leave it unset there.
+<!-- test-anchor: wrap-persist-recovery-audit -->
+```bash
+[[ -n "${WRAP_AUDIT_STATE_SH:-}" ]] || { echo "ERROR: recovery audit storage unavailable" >&2; exit 1; }
+[[ -n "${CURRENT_REPO:-}" ]] || { echo "ERROR: verified PR repository unavailable; audit not saved" >&2; exit 1; }
+[[ -n "${RECOVERY_EVIDENCE_SH:-}" ]] || { echo "ERROR: raw recovery capture unavailable; no gate accepted" >&2; exit 1; }
+if [[ -z "${WRAP_GATE_CAPTURE:-}" ]]; then
+  WRAP_GATE_CAPTURE=$("$RECOVERY_EVIDENCE_SH" new --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM") || exit 1
+  printf '%s' "${GATE_JSON:-}" > "$WRAP_GATE_CAPTURE/stdout" || exit 1
+  printf '%s' "${GATE_STDERR:-}" > "$WRAP_GATE_CAPTURE/stderr" || exit 1
+fi
+"$RECOVERY_EVIDENCE_SH" check --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM" --directory "$WRAP_GATE_CAPTURE" || exit 1
+printf '%s' "${WRAP_RECOVERY_AUDIT:-}" > "$WRAP_GATE_CAPTURE/audit" || exit 1
+WRAP_AUDIT_JSON=$("$RECOVERY_EVIDENCE_SH" record --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM" \
+  --directory "$WRAP_GATE_CAPTURE" --exit-code "${GATE_RC:--1}") || exit 1
+GATE_CLASS=$(jq -r '.classification' <<<"$WRAP_AUDIT_JSON") || exit 1
+GATE_JSON=$(jq -c '.last_gate // empty' <<<"$WRAP_AUDIT_JSON") || exit 1
+WRAP_SAVE_ARGS=(--repo "$CURRENT_REPO" --set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_audit=$WRAP_AUDIT_JSON")
+if [[ "$(jq -r '.failure' <<<"$WRAP_AUDIT_JSON")" == true ]]; then
+  WRAP_CAPTURE_ID=$(jq -r '.capture_id' <<<"$WRAP_AUDIT_JSON") || exit 1
+  WRAP_SAVE_ARGS+=(--set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_failures[\"$WRAP_CAPTURE_ID\"]=$WRAP_AUDIT_JSON")
+fi
+"$WRAP_AUDIT_STATE_SH" "${WRAP_SAVE_ARGS[@]}" || {
+  echo "ERROR: recovery audit not saved; stopping; raw capture: $WRAP_GATE_CAPTURE" >&2
+  exit 1
+}
+case "$GATE_CLASS" in
+  valid_pass|valid_blocked|not_open) ;;
+  *) echo "ERROR: gate $GATE_CLASS; recovery stopped; evidence: $WRAP_GATE_CAPTURE" >&2; exit 1 ;;
+esac
+```
+
+Capture every gate execution with this block, including the merge-ready shortcut. Then execute the audit block above **before any routing or early exit**. A malformed/empty/error result is recorded and stops recovery; it can never reach AC/merge merely because a prior `GATE_JSON` was valid. Full raw captures and failure indexes survive later clean snapshots; retrieval/lifecycle: `recovery-evidence.md`.
+
+<!-- test-anchor: wrap-capture-gate -->
+```bash
+[[ -n "${CURRENT_REPO:-}" && -n "${RECOVERY_EVIDENCE_SH:-}" ]] || { echo "ERROR: verified recovery capture unavailable" >&2; exit 1; }
+WRAP_GATE_CAPTURE=$("$RECOVERY_EVIDENCE_SH" new --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM") || exit 1
+GATE_RC=0
+"$MERGE_GATE_SH" "$PR_NUM" > "$WRAP_GATE_CAPTURE/stdout" 2> "$WRAP_GATE_CAPTURE/stderr" || GATE_RC=$?
+GATE_JSON=""  # filled only from the newly classified record, never stale memory
+```
+
+**Merge-ready shortcut:** Use the capture and audit blocks once before the loop. Only `GATE_RC=0` **and** `GATE_CLASS=valid_pass`, with no pending findings or half-applied recovery, reaches Step 2.2. `GATE_JSON` is the complete parsed current verdict; Step 2.4 reads its merge state.
+
+**Claim renewal before every wait (issue #1927).** A `/fixpr` wait can outlast the claim's stale window, so before **each** Branch B/C/D dispatch below — the first and every later one, including the iterations Step 2.4's `BEHIND` re-entry adds — renew every linked issue whose holder this run was **handed**: the Phase C prompt (`/subagent`) or the `/start-issue` Form B handoff names the issue and its holder. Keep holders per issue; never apply one to every linked issue, never adopt a `claimant_holder` read off GitHub, never use `--claim` as a check.
+
+```bash
+# CLAIM_PAIRS: "<issue> <holder>" lines from the caller; empty in a standalone /wrap.
+CLAIM_PAIRS="${CLAIM_PAIRS:-}"
+WRAP_STOP=0
+if [[ -z "$CLAIM_PAIRS" ]]; then
+  echo "note: no claim holder handed to /wrap — claim not renewed before the wait"
+elif [[ -z "$ISSUE_CLAIM_SH" ]]; then
+  echo "DEGRADED: issue-claim.sh not found (checked all three paths) — claim not renewed"
+else
+  CLAIM_ERR=$(mktemp)
+  while read -r C_ISSUE C_HOLDER; do
+    [[ -n "$C_ISSUE" && -n "$C_HOLDER" ]] || continue
+    for attempt in 1 2; do
+      [[ "$attempt" -eq 2 ]] && sleep 5   # let a transient gh failure clear
+      "$ISSUE_CLAIM_SH" "$C_ISSUE" --renew --holder "$C_HOLDER" >/dev/null 2>"$CLAIM_ERR"; rc=$?
+      [[ "$rc" -eq 0 || "$rc" -eq 5 || "$rc" -eq 2 ]] && break
+    done
+    case "$rc" in
+      0) ;;
+      5) echo "BLOCKED: lost ownership of issue #$C_ISSUE — another thread holds or released the claim; not merging"; WRAP_STOP=1 ;;
+      2) echo "DEGRADED: issue-claim.sh --renew unavailable for #$C_ISSUE: $(head -1 "$CLAIM_ERR")" ;;
+      *) echo "WARN: claim renewal for #$C_ISSUE failed (exit $rc) — continuing to the wait" ;;
+    esac
+  done <<< "$CLAIM_PAIRS"
+  rm -f "$CLAIM_ERR"
+fi
+```
+
+Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** — stop and report; do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). Step 2.4 performs post-merge claim release through the shared bookkeeping boundary.
 
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
-1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → exit for Phase 3. `CLOSED` → stop.
-2. **Refresh gate** — `GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")`. Exit `3` → Phase 3. Exit `2`/`4` → surface stderr, stop. Exit `0` with no pending `WRAP_PHASE1_FINDINGS` → proceed to Step 2.2. Exit `0` with `WRAP_PHASE1_FINDINGS` pending → treat as Branch B dispatch (findings still unresolved despite clean gate — delegate to `/fixpr`).
-3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`):
+1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → use the Phase 3 merged entry. `CLOSED` → stop.
+2. **Refresh gate** — run `wrap-capture-gate`, then `wrap-persist-recovery-audit` before routing. Invalid/empty/error or exit/verdict mismatch stops after durable recording. Exit `3` rechecks the native state with `wrap-confirm-merged-entry`; only `MERGED` reaches Phase 3; exit `2`/`4` stops with its raw evidence pointer. Only exit `0` plus `GATE_CLASS=valid_pass` and no pending findings reaches Step2.2; pending findings still dispatch BranchB.
+3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`). Every B/C/D wait dispatch runs the claim renewal above first; its exit 5 stops here:
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
    - **`mergeable == CONFLICTING`** → stop; recommend `/merge-conflict`.
@@ -238,7 +358,14 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 
 ### Step 2.2: Verify acceptance criteria
 
+Verify the full issue scope for every native closing link before merging.
+GitHub can close linked issues itself at merge. If scope is partial, ambiguous
+or foreign, stop before merge until the closing association is removed or
+changed to a non-closing reference. Verify the updated links and rerun the gate.
+See [issue scope verification](../../reference/issue-completion.md#verify-scope-before-closing).
+
 ```bash
+AC_VERIFIED_HEAD=$(printf '%s' "$GATE_JSON" | jq -er '.head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))') || exit 4
 ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
 AC_EXIT=$?
 ```
@@ -291,9 +418,29 @@ MERGE_STATE=$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // empty')
 
 `printf '%s'`, never `echo` — zsh's builtin corrupts the JSON payload (issue #574).
 
-- **`CLEAN`** → `gh pr merge "$PR_NUM" --squash`, unchanged.
+- **`CLEAN`** (override not applied) → resolve the ledger helper, then run `"$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$AC_VERIFIED_HEAD"`. It clears unused override evidence and runs a head-pinned squash under the same lock.
+- **No-review override** (issue #1899) → after AC verification, run `wrap-capture-gate` and `wrap-persist-recovery-audit` again. Use the new full `GATE_JSON` only when the refreshed classification is `valid_pass`, the override still applies, and its refreshed `merge_state` still passes this same test (`CLEAN`, or `UNSTABLE` with nonempty `excluded_reviewer_checks`). Otherwise re-enter Step 2.1. An override on `BEHIND` never uses the admin path. Use /fixpr and return to Step 2.1 for the new HEAD.
 - **`BEHIND`** → the clean-`BEHIND` path below. A plain squash is **rejected** here by `required_status_checks.strict`.
 - **Anything else** → **not merge-ready** per `cr-merge-gate.md` Step 1d — stop with the state and the last `missing[]`. Never merge on an unenumerated state: `BLOCKED` and `UNSTABLE` add no `missing[]` entry, so a gate exit `0` does not by itself clear them.
+
+For an eligible override, execute the following as one Bash call after the fresh gate and audit. Use the complete refreshed gate and retain `AC_VERIFIED_HEAD` from Step 2.2. If they name different commits, rerun acceptance verification before any merge attempt.
+
+<!-- test-anchor: wrap-no-review-override-merge -->
+```bash
+wrap_merge_with_override() {
+  local ledger head
+  ledger=$(resolve_script unreviewed-merge-ledger.sh) || return 5
+  head=$(printf '%s' "$GATE_JSON" | jq -er '.head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))') || return 4
+  if [[ "$head" != "${AC_VERIFIED_HEAD:-}" ]]; then
+    echo "WARN: HEAD moved since acceptance verification; rerun the gate and verify the new HEAD" >&2
+    return 4
+  fi
+  printf '%s' "$GATE_JSON" | "$ledger" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --gate-json -
+}
+wrap_merge_with_override
+```
+
+A merge command error may still mean GitHub merged it. Verify native state before routing. On `MERGED` continue to the recorder. Otherwise stop or recover through Step 2.1. Before a clean-BEHIND admin merge, resolve the same ledger helper and run `snapshot --pr "$PR_NUM" --repo "$CURRENT_REPO" --discard`. Continue only on success. This clears unused evidence for a verified unmerged PR. If no snapshot exists it is a no-op. Both plain squash paths hold the snapshot lock through the merge request.
 
 The merge-state mechanics are owned by `cr-merge-gate.md` Step 1d and implemented identically in `fixpr/SKILL.md` Step 6; the safety conditions live there and are not restated here.
 
@@ -314,7 +461,7 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 
 | Exit | Action |
 |------|--------|
-| `0` (`safe_to_offer: true`) | Run `"$ADMIN_MERGE_SH" "$PR_NUM" --auto-plain --ac-verified`. On its exit `0` the PR is **already merged** — relay the `AUTO_PLAIN_MERGED` evidence block and continue to the post-merge actions below. No `AskUserQuestion`: the plain shape modifies no branch protection, so it needs no user turn. |
+| `0` (`safe_to_offer: true`) | Run `"$ADMIN_MERGE_SH" "$PR_NUM" --auto-plain --ac-verified --defer-bookkeeping`. On its exit `0` the PR is **already merged** — relay the `AUTO_PLAIN_MERGED` evidence block and continue to the post-merge actions below. No `AskUserQuestion`: the plain shape modifies no branch protection, so it needs no user turn. |
 | `1` (`safe_to_offer: false`) | Not clean — surface `reasons_not_safe`, then take the `/fixpr` non-clean `BEHIND` path (rebase + force-push, `fixpr/SKILL.md` Step 6) and **re-enter Step 2.1** (below). |
 | `2` / `3` / `4` | Tooling or usage failure — **stop** and surface stderr. Never merge on an indeterminate answer. |
 
@@ -324,52 +471,103 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 
 `--ac-verified` is justified because **Step 2.2 already ran unconditionally** — every Test Plan checkbox was verified against the source at this SHA on both paths. `clean-behind-check.sh` counts unchecked boxes as `reasons_not_safe`, so running it before Step 2.2 would report exit `1` for bookkeeping rather than for a real blocker.
 
-**Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
+**Override recorder (issue #1899).** Once GitHub confirms the merge, run this boundary before issue reconciliation. Use the saved snapshot, even if the merge and recovery are in different sessions.
 
-**Release every issue the PR closed, not just one.** `pr-issue-ref.sh` is set-valued: a PR carrying two `Closes` trailers prints both numbers, one per line. Loop over them — taking a single value here is exactly what stranded #1541's claim after PR #1546 merged, and #1407's after PR #1489 (issue #1492):
+<!-- test-anchor: wrap-record-no-review-merge -->
+```bash
+LEDGER_SH=$(resolve_script unreviewed-merge-ledger.sh || true)
+NRO_SUFFIX="${NRO_SUFFIX:-}"
+if [[ -z "$LEDGER_SH" ]]; then
+  echo "WARN: unreviewed-merge-ledger.sh unavailable; check retained override snapshots" >&2
+else
+  NRO_RECORD_RC=0
+  "$LEDGER_SH" record --pr "$PR_NUM" --repo "$CURRENT_REPO" --from-snapshot >/dev/null || NRO_RECORD_RC=$?
+  case "$NRO_RECORD_RC" in
+    0) NRO_SUFFIX=" (no AI review — logged)" ;;
+    7) ;;  # No snapshot, or already recorded earlier in this wrap.
+    *) NRO_SUFFIX=" (no AI review — ledger write failed)" ;;
+  esac
+fi
+```
+
+A failed record keeps the snapshot for retry. Do not run the gate on a merged PR to reconstruct this evidence, or pass a projection that dropped gate fields.
+
+**Reconcile issue completion first.** Load the canonical adapter from [verified issue completion](../../reference/issue-completion.md) in the same Bash invocation as the anchor below. If the assessment reports an open linked issue for this delivery, verify its full scope and rerun the boundary with the merge and issue revision from the evidence. Record deliberately retained scope with the reference’s retention flags. For an issue GitHub already closed, verify full scope and pass `--scope-verified --expected-merge "$MERGE_SHA"` without `--complete-issue` before reconciling it. A CLOSED issue with unfinished or ambiguous work remains pending for manual resolution. If completion is still pending, report `PR already merged; completion pending` with the receipt and preserve the claim and handoff. Continue after verified closure or justified retained scope.
+
+**Preserve pickup evidence before claim cleanup.** After either confirmed merge path, run the same retryable boundary. It verifies the explicit repo/PR is merged, appends the estimate while renewal `since` and the claim timestamp remain available, then releases every winning-tier linked issue claim only while its pre-log observed comment identity still matches. Logging failures warn with the observed pickup timestamp and still attempt cleanup. Repeat invocations deduplicate the estimate and safely retry partial cleanup; foreign-account claims remain protected by the claim helper.
+
+<!-- test-anchor: wrap-post-merge-bookkeeping -->
 
 ```bash
-MERGED_ISSUES=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/dev/null || true)
-if [ -n "$MERGED_ISSUES" ] && [ -n "$ISSUE_CLAIM_SH" ]; then
+wrap_post_merge_bookkeeping() {
+  local completion_rc=0
+  MERGED_ISSUES=""
+  if ! declare -F reconcile_issue_completion >/dev/null; then
+    echo 'ERROR: completion adapter unavailable — issue completion pending' >&2
+    return 6
+  fi
+  OWNER_REPO="$CURRENT_REPO" reconcile_issue_completion "$@" || completion_rc=$?
+  if [[ "$completion_rc" -ne 0 ]]; then
+    echo "WARN: PR #$PR_NUM already merged; issue completion pending (exit $completion_rc)" >&2
+    return "$completion_rc"
+  fi
+  if [[ -n "$POST_MERGE_BOOKKEEPING_SH" ]]; then
+    BOOKKEEPING_RC=0
+    BOOKKEEPING_JSON=$("$POST_MERGE_BOOKKEEPING_SH" "$PR_NUM" --repo "$CURRENT_REPO") || BOOKKEEPING_RC=$?
+    if [[ "$BOOKKEEPING_RC" -eq 0 ]]; then
+      MERGED_ISSUES=$(printf '%s' "$BOOKKEEPING_JSON" | jq -r '.issues[]?' 2>/dev/null || true)
+    else
+      echo "WARN: post-merge bookkeeping not confirmed for PR #$PR_NUM (exit $BOOKKEEPING_RC)" >&2
+    fi
+  else
+    echo "WARN: post-merge-bookkeeping.sh missing; restore helpers and retry /wrap for PR #$PR_NUM" >&2
+  fi
+  return 0
+}
+wrap_post_merge_bookkeeping
+```
+
+The estimate and claim boundary is warning-only after a confirmed merge and successful completion assessment. For a verified single-issue close, intentionally retained scope, or a delivery with no issue, call the same function with the corresponding flags from the reference. Reuse those exact flags on this run’s Phase 3 entry. It never authorizes a merge or changes historical estimate rows. A closed-unmerged or unreadable PR does no merged bookkeeping.
+
+**Record explicit telemetry correlation after the merge gate and AC verification.** This optional metadata-only helper is described in `.claude/reference/spend-telemetry-pipeline.md`. Pass `--gate-passed` only after Steps 2.1 and 2.2 succeed, with the full `head_sha` and structured result from that successful `GATE_JSON` (`met:true`). An already-merged or special-path run without that passing result remains unverified telemetry. Pass a session ID only when supplied by the runtime; never infer one. A merge alone is not verified completion. Failures are non-blocking.
+
+```bash
+if [[ -n "$SPEND_TELEMETRY_LINK" && -n "$MERGED_ISSUES" ]]; then
+  GATE_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.head_sha // empty' 2>/dev/null || true)
   printf '%s\n' "$MERGED_ISSUES" | while IFS= read -r MERGED_ISSUE; do
     [ -n "$MERGED_ISSUE" ] || continue
-    "$ISSUE_CLAIM_SH" "$MERGED_ISSUE" --release >/dev/null 2>&1 || true
+    TELEMETRY_ARGS=(--issue "$MERGED_ISSUE" --pr "$PR_NUM" \
+      --source wrap_post_merge)
+    if [[ "$GATE_HEAD_SHA" =~ ^[a-fA-F0-9]{40}$ ]] && printf '%s' "$GATE_JSON" | jq -e '.met == true' >/dev/null 2>&1; then
+      TELEMETRY_ARGS+=(--gate-passed --gate-head-sha "$GATE_HEAD_SHA" --gate-result "$GATE_JSON")
+    fi
+    TELEMETRY_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+    [[ -n "$TELEMETRY_SESSION_ID" ]] && TELEMETRY_ARGS+=(--session "$TELEMETRY_SESSION_ID")
+    "$SPEND_TELEMETRY_LINK" "${TELEMETRY_ARGS[@]}" >/dev/null 2>&1 || true
   done
 fi
 ```
 
-Releasing an issue you do not hold is safe and silent: `issue-claim.sh --release` compares logins and drops **your own** claim only, never a collaborator's, so an extra number in the set is a documented no-op rather than a stomp.
-
-Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
-
-**Append actuals log entry** — after the merge and claim-release, on either merge path, append one row to `~/.claude/estimate-log.jsonl`. This is best-effort: a logging failure prints one `WARN:` line and never blocks or delays anything downstream.
-
-```bash
-ESTIMATE_LOG_SH=$(resolve_script estimate-log.sh || true)
-if [[ -n "$ESTIMATE_LOG_SH" ]]; then
-  LOG_RC=0
-  LOG_OUT=$("$ESTIMATE_LOG_SH" --append "$PR_NUM" 2>&1) || LOG_RC=$?
-  if [[ $LOG_RC -ne 0 || -n "$LOG_OUT" ]]; then
-    echo "WARN: estimate-log.sh --append PR #$PR_NUM exited $LOG_RC: $LOG_OUT" >&2
-  fi
-fi
-```
-
-The script always exits 0 when called with `--append` (issue AC). The outer `|| LOG_RC=$?` captures unexpected failures; the `WARN:` line surfaces them without blocking the merge path.
-
 Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-clean` via `stale-cleanup.sh`.
 
-### Step 2.5: Sync root repo main (aggressive reset)
+### Step 2.5: Sync the bound root repo main (aggressive reset)
 
 **Both helpers take `--repo "$ROOT_REPO"`; neither may be wrapped in a `cd`.** A worktree-isolated Phase C agent — the caller on the normal A/B/C merge path — is refused both `(cd "$ROOT_REPO" && …)` ("too complex to verify that it stays inside the worktree") and `git -C "$ROOT_REPO" …`. A plain script call is an allowed shape, so passing the path as a flag is what makes this step reachable at all; the earlier `cd` form made every Phase C merge take the degraded branch below and leave root `main` unsynced (issue #1411). Keep the two calls symmetric — do not reintroduce a `cd`. Full catalog of refused vs allowed shapes, and the wrapper for each recurring case: `.claude/reference/worktree-isolation-command-shapes.md` (issue #1470).
 
+<!-- test-anchor: wrap-bound-main-sync -->
+
 ```bash
-ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
+ROOT_REPO=""
+if [[ -n "$MERGE_TARGET_ROOT_SH" && -n "${WRAP_BOUND_ROOT:-}" && -n "${WRAP_BOUND_PR_URL:-}" ]]; then
+  ROOT_REPO=$("$MERGE_TARGET_ROOT_SH" --repo-path "$WRAP_BOUND_ROOT" \
+    --pr-url "$WRAP_BOUND_PR_URL" 2>/dev/null) || ROOT_REPO=""
+  [[ "$ROOT_REPO" == "$WRAP_BOUND_ROOT" ]] || ROOT_REPO=""
+fi
 MAIN_SYNC_STATUS=""
 QUARANTINE_STATUS=""
 QUARANTINE_OK=0
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
-  MAIN_SYNC_STATUS="failed: could not determine root repo path"
+  MAIN_SYNC_STATUS="failed: bound clone unavailable or identity changed; local mutation skipped"
 else
   if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --check --repo "$ROOT_REPO" >/dev/null 2>&1; then
     QUARANTINE_STATUS="clean"
@@ -413,6 +611,23 @@ Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report.
 
 ## Phase 3: Follow-Up Detection and Full-Session Sweep
 
+**Confirm a real merge on every entry, including recovery.** Run this before bookkeeping or follow-up detection. A closed-unmerged PR stops without creating merged-work tickets; a read failure also stops.
+
+<!-- test-anchor: wrap-confirm-merged-entry -->
+
+```bash
+MERGED_ENTRY_STATE=$(gh pr view "$PR_NUM" --repo "$CURRENT_REPO" --json state --jq '.state') || {
+  echo "WARN: could not verify merged state for PR #$PR_NUM; no merged-work follow-ups" >&2
+  exit 4
+}
+if [[ "$MERGED_ENTRY_STATE" != MERGED ]]; then
+  echo "PR #$PR_NUM is $MERGED_ENTRY_STATE without a confirmed merge; no merged-work follow-ups."
+  exit 3
+fi
+```
+
+**Every merged entry, including resume:** run `wrap-record-no-review-merge` above, then execute `wrap-post-merge-bookkeeping` before the follow-up sweep, using the same scope checks, completion adapter and verified disposition flags as Step 2.4, even if it already ran. This also covers terminal recovery exits and interrupted/already-merged runs. Use the explicit `CURRENT_REPO` and `PR_NUM` from Phase 1; restore `POST_MERGE_BOOKKEEPING_SH` through the prelude resolver if needed. A closed-unmerged PR skips it. If assessment is pending, stop here and keep its receipt and handoff. Never release a claim or append actuals separately; the shared boundary owns that order.
+
 Phase 3 has **two parts**, run in order:
 
 - **Part A — Per-PR follow-up detection (Steps 3.1–3.4):** derive follow-ups from the merging PR and its linked issue, dedup, and auto-create GitHub issues.
@@ -436,7 +651,9 @@ dedup_search() {   # sets DEDUP_JSON/DUP_NUM/DUP_STATE
   DEDUP_JSON='[]'
   DEDUP_DEGRADED=""
   if [ -n "$ISSUE_DEDUP" ] && [ -n "$kw" ]; then
-    DEDUP_JSON=$("$ISSUE_DEDUP" "$kw" ${DEDUP_EXCLUDE:+--exclude "$DEDUP_EXCLUDE"}) || rc=$?
+    local dedup_args=("$kw")   # an array: zsh keeps `${X:+--flag "$X"}` as one word
+    [ -n "$DEDUP_EXCLUDE" ] && dedup_args+=(--exclude "$DEDUP_EXCLUDE")
+    DEDUP_JSON=$("$ISSUE_DEDUP" "${dedup_args[@]}") || rc=$?
     if [ "$rc" -gt 1 ]; then
       DEDUP_DEGRADED="helper exit $rc"
       DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
@@ -657,7 +874,7 @@ ACTIVE_AGENT_COUNT=$(jq -r 'if type == "object" or type == "array" then length e
 ```
 
 - **Dead Monitor tasks (auto-stop).** For each watcher whose target PR is merged/closed: read the complete `.prs["$N"].babysit.monitor_task_id` + `.monitor_generation` identity pair, stop that exact task with `TaskStop` when present, then atomically set `stop_requested=true`, `active=false`, `monitor_task_id=null`, and `monitor_generation=null` via one `session-state.sh --set` batch. Clear neither identity field unless exact `TaskStop` succeeds. Record `Stopped stale Monitor task (PR #N watcher — PR already merged)` in `SWEEP_AUTO_HANDLED`. A missing/incomplete identity or failed task stop is a decision item, never a claimed successful stop.
-- **Stale handoffs (auto-delete).** Scan both layout patterns (`~/.claude/handoffs/pr-*.json` and `~/.claude/handoffs/*/*/pr-*.json`). For each merged PR: resolve path with `handoff-state.sh --owner-repo <owner>/<repo> --path N` and delete via `handoff-state.sh --owner-repo <owner>/<repo> --delete N`. Never `rm -f` directly — that bypasses the state-lock advisory lock (issue #682). Deleting a **flat-layout** file is the one legitimate unscoped delete here: pass `--legacy-flat` on that call and only that call (issue #1366 — an omitted scope now derives owner/repo from the cwd, or exits 2 writing nothing; it no longer falls back to flat).
+- **Handoffs with pending completion (retain).** PR MERGED alone never authorizes a stale-handoff delete. Preserve the current handoff until completion is independently verified or its remaining scope is explicitly justified and Phase C publication succeeds. Parent cleanup deletes only that exact verified scoped handoff. Leave other or legacy handoffs to the finished-artifact cadence, which requires known ownership and inactive sessions; unavailable or uncertain cleanup retains them. Never delete all merged-PR handoffs from this sweep or discard recovery evidence after a failed reconciliation.
 - **Surface (never auto-act).** Add to `SWEEP_NEEDS_DECISION`: live `CronCreate` jobs, any `active_agents` entries (`ACTIVE_AGENT_COUNT` above 0), `monitoring_active=true`, and any `recovery/dirty-main-*` branches.
 
 #### Step 3.9: Category 4 — Memory persistence (defers to Phase 4)
@@ -666,7 +883,7 @@ Memory writes are owned by **Phase 4**. Category 4 only *flags* as `SWEEP_MEMORY
 
 #### Step 3.10: Category 5 — PM hygiene (all touched issues/PRs)
 
-Build the set of issues/PRs touched this session — session-state `.prs` keys, the merging PR + its linked issue, any issue/PR numbers from tool-call history. For each, check and flag drift under `SWEEP_NEEDS_DECISION` (do not auto-edit — shared state):
+Build the repo-qualified set of issues/PRs touched this session — scoped session-state PRs, the merging PR and its linked issue, and in-scope tool history. Use [completion reconciliation](../../reference/issue-completion.md) only for the current merged delivery. The rest of the sweep records missed closures without making issue writes. Preserve partial/parent work and unresolved retry evidence. For other shared-state drift, flag `SWEEP_NEEDS_DECISION` without auto-editing:
 
 - **Status accuracy** — issue still open but its work merged? PR merged but linked issue not auto-closed?
 - **Linkage** — PR missing `Closes #N` for work that clearly resolves an issue?
@@ -876,7 +1093,9 @@ done
 #    re-emitted below, one line each.
 MERGED_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
 if [ -x "$RELEASE_SWEEP" ]; then
-  SWEEP_OUT=$("$RELEASE_SWEEP" ${MERGED_REPO:+--repo "$MERGED_REPO"} --json 2>/dev/null) || true
+  SWEEP_ARGS=()   # an array: zsh keeps `${X:+--repo "$X"}` as one word (issue #1857)
+  [ -n "$MERGED_REPO" ] && SWEEP_ARGS=(--repo "$MERGED_REPO")
+  SWEEP_OUT=$("$RELEASE_SWEEP" ${SWEEP_ARGS[@]+"${SWEEP_ARGS[@]}"} --json 2>/dev/null) || true
   if [ -n "${SWEEP_OUT:-}" ]; then
     # A build the sweep cut folds into the single success line rather than adding
     # one of its own.
@@ -937,7 +1156,7 @@ Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode pr
 
 #### Silent default
 
-On a clean run, print exactly one line — `merged PR #N` — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
+On a clean run, print exactly one line — `merged PR #N`, plus `$NRO_SUFFIX` when the no-review override merged it (`merged PR #N (no AI review — logged)`, issue #1899) — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
 
 This bounds `/wrap`'s **own** output only. The thread's single end-of-task wrap-up (`.claude/reference/final-wrapup-format.md`) is a task-level always-emit exception under `CLAUDE.md` #3 — it is not `/wrap` output, and it does not violate this default. Its trigger is the **task** reaching terminal state, never a `/wrap` return: a fleet loop such as `/pr-monitor-and-manage`, which calls `/wrap` once per merge-ready PR and keeps managing the fleet, emits no wrap-up on those returns — only one when the fleet run itself ends.
 
@@ -957,7 +1176,7 @@ Print this block first:
 ```
 ## Wrapped up
 
-**Merged:** PR #{N} ({title}) — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
+**Merged:** PR #{N} ({title}){$NRO_SUFFIX — no-review override only} — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
 
 **Follow-ups:** {either "Opened [#{a}](url) — {one line}; [#{b}](url) — {one line}." listing every WRAP_FILED_ISSUES entry (≤3 sentences), or "No follow-ups opened."}{ When any filing was suppressed as a duplicate: " {M} finding(s) appended to existing issues."}
 

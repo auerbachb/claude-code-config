@@ -6,6 +6,8 @@ its reasoning are in [`DESIGN.md`](DESIGN.md); this file is the operating
 contract for the code. Everything for the queue lives in this folder so it can
 be spun out as its own project later.
 
+Quick links: [Setup](#provisioning-the-database-once) · [CLI](#items) · [Capture hook](#capture-hook) · [Tests](#tests).
+
 ## Layout
 
 | Path | What it holds |
@@ -87,7 +89,7 @@ URL, is refused with exit 7 rather than silently dropped.
 |----------|---------|
 | `HUMAN_QUEUE_DATABASE_URL` | `postgres://` URL of the store. Required; secret |
 | `HUMAN_QUEUE_SCHEMA` | Schema every statement runs in (default `public`), applied with `SET LOCAL search_path` inside each transaction. Tests set it to a throwaway schema |
-| `HUMAN_QUEUE_PSQL` | `psql` binary to use (default `/opt/homebrew/bin/psql`, else `psql` on `PATH`) |
+| `HUMAN_QUEUE_PSQL` | `psql` 15+ binary to use (installed Homebrew PostgreSQL 17/16/15 kegs preferred, then `PATH`, libpq kegs and linked Homebrew; explicit override wins) |
 | `HUMAN_QUEUE_EXPORT_RENDERER` | `export`'s PDF renderer: `auto` (default: pandoc, then headless Chrome, then cupsfilter), one of those three, or `markdown` (none) |
 | `HUMAN_QUEUE_PANDOC`, `HUMAN_QUEUE_CHROME`, `HUMAN_QUEUE_CUPSFILTER` | That renderer's binary; set to anything that is not an executable file, it counts as not installed (tests) |
 | `HUMAN_QUEUE_EXPORT_TIMEOUT` | Seconds each `export` renderer may run, 1 to 86400 (defaults: pandoc 120, Chrome 60, cupsfilter 30; any other value keeps them) |
@@ -99,7 +101,7 @@ URL, is refused with exit 7 rather than silently dropped.
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
 | `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, an item id that does not exist, or a write the item's state refuses (for example `ack` of an item with no answer) |
-| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `note`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session, repo, and key) |
+| `5` | secret refused: credential-shaped text is rejected before database access. Stored-text checks cover `add`, `bump --note`, `wake --note`, `answer`, `flag`’s positional note or `--note`, `comment`, `note`, `set-resolve`, `state set`, `register-control`, `review --comment`, `summary set`, `checkin set` (`--session` and `--planned`), `plan set` (plan text and `--session`), and `interrupt set --session`; lookup-only checks also cover `state get`’s key, `pending-for`’s session/repo/key, and `--session` for `tick`, `sweep due`, `checkin due`, `plan clear`, and `interrupt get`. |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
@@ -238,7 +240,7 @@ full contract.
 
 | Subcommand | What it does |
 |------------|--------------|
-| `state get KEY` / `state set KEY VALUE` | One key of operator state (the desk's bookkeeping; the day plan has `plan`). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
+| `state get KEY` / `state set KEY VALUE` | One key of operator state (the desk's bookkeeping; the day plan has `plan`). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one child environment entry, and Linux caps one at 128 KiB) |
 | `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
 | `tick [--session SESSION [--interrupts RULE]]` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick. With `--session`, only as the registered control session: checked inside the tick's transaction under `register-control`'s lock; any other session exits 4 with nothing read, the watermark unmoved, and no `tick_at` stamped. With `--interrupts`, honors the desk's interrupt rule: while it holds items back, prints `[]`, stamps `tick_at`, and leaves the watermark (see "Interrupts, policy, and feedback tags") |
 | `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
@@ -266,9 +268,11 @@ full contract.
 - **When the desk last ticked.** The watermark is not a time, so each tick
   also stores its own time (UTC ISO 8601) under `tick_at`. `control-status`
   turns it into an age; it reads any tick, and in practice only the desk
-  ticks. Registering a different control session clears `tick_at`, so a
-  replacement desk is live only after its own first tick, never on the
-  previous desk's.
+  ticks. Registering a different control session waits for preceding ticks
+  and clears `tick_at`. Named desk ticks (`--session`) are checked against the
+  registered owner under the same locks. The argument-free compatibility
+  command has no caller identity: any such tick committing after registration
+  can make it live, so its stamp does not prove the new session itself ticked.
 
 ## Capture hook
 
@@ -330,6 +334,58 @@ registers globally at the next session start.
   (about half a second against Neon); with a live desk, one `add` per
   question as well.
 
+### Decisions from Codex, Cursor, and other tools
+
+The same queue can accept a Decision explicitly marked in a Codex or Cursor
+assistant message. The hook reads the message field supplied by the tool,
+never its transcript. It sends only the Decision's fields to the existing
+queue when the desk is live. Native input dialogs still belong to the tool
+that showed them.
+
+Put one block at the end of the assistant's message. Keep the question and
+each field on one line, give two to four distinct options, and make the
+optional default match one option exactly. Omit credentials, transcript
+excerpts, and private data the desk does not need.
+
+```desk-decision
+{"question":"Ship the compatibility patch this week?","options":["Ship after CI","Wait for the next batch"],"default":"Ship after CI","context":["The existing API stays compatible."]}
+```
+
+Enable each adapter in the tool's **user** hook configuration, alongside
+existing entries. Set `<installed-desk>` to the absolute path of your trusted
+`desk` install. Configure the tool's own instructions to emit the block when
+it needs a Decision from the desk.
+
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks#stop): add a command
+  hook to `Stop` in the profile's `hooks.json` and approve it in Codex.
+  Command: `python3 "<installed-desk>/hooks/external_capture.py" codex`;
+  set a timeout of 15 seconds. To enable same-machine answer pointers, run
+  `python3 "<installed-desk>/hooks/external_capture.py" init-route` once
+  on that machine. Keep the private route file local; do not sync it.
+  Set `DESK_CODEX_BIN` to an absolute trusted launcher path if the control
+  thread's host installs Codex outside the standard locations.
+- [Cursor hooks](https://cursor.com/docs/hooks#afteragentresponse): add a
+  command to `afterAgentResponse` in the user `hooks.json`.
+  Command: `python3 "<installed-desk>/hooks/external_capture.py" cursor`.
+  The hook needs a single workspace root. Cursor answers stay in the queue.
+- **No hook:** Include the same block in a small local handoff file and tell
+  the control thread which repository and work key it belongs to. The control
+  thread can import it with
+  `python3 "$DESK/hooks/external_capture.py" import --repo owner/name --key issue-123 < "$DECISION_FILE"`.
+  Import reads that file only, and the answer stays in the queue.
+
+The item shows the tool and registered nickname; an absent or ambiguous
+match is `unknown`. Codex profile directories and Cursor account emails
+are matched locally and are not stored on the item. The Codex route sends
+only a Decision pointer to an exact thread on the same installation; it
+does not resume or start a thread. If a route cannot be used, the answer
+stays available through `pending-for --repo OWNER/NAME --key KEY`. Add this
+instruction to the Codex profile: on a `human-queue: D-<n> answered` pointer,
+read `human-queue.sh get D-<n> --json` from the installed desk and use the
+stored answer. Confirm the item belongs to the current work before acting.
+Acknowledge the stored answer with the queue's `ack` command; if reading fails,
+leave it parked. Apply the pending database migration before enabling either hook.
+
 ## Migrations
 
 - Name files `NNN_<name>.sql` with a lowercase `[a-z0-9_]` name, for example
@@ -366,7 +422,7 @@ not edit `human-queue.sh`. The file:
   selected schema) or `hq_psql`, mapping failures with `hq_db_fail`;
 - sources `lib/items.sh` for ids, input checks, and the item renderer, and
   `lib/secrets.sh` (`hq_refuse_secret`) for any free text it stores; values
-  reach SQL only as psql variables (`-v name=value`, used as `:'name'`).
+  reach SQL only as quoted psql variables (`:'name'`). Pass application bindings as `-v hq_name=value` to `hq_db_script`/`hq_psql`; the shared boundary removes them from argv and uses psql 15+ `\getenv` with exports scoped to the psql child. Never interpolate text into SQL. The client version check shares the connection probe's deadline and fails with exit 7 for older or unreadable clients. The server still requires PostgreSQL 16+.
 
 ## Tests
 
@@ -379,6 +435,8 @@ bash desk/tests/run.sh
   installed, an `.invalid` host and a TEST-NET address), and that the URL never
   reaches `psql`'s argv or any output. Each case runs under `bash` and, on
   macOS, under `/bin/bash` 3.2.
+- `psql-discovery.test.sh` checks isolated installed-client layouts, including a compatible PATH client beside an old linked/libpq client, explicit overrides and versioned kegs.
+- `psql-bindings.test.sh` inspects only its own running stub psql PID and verifies that multiline, Unicode, empty and large application values travel through the child environment, with none on argv or exported back to the parent.
 - `lifecycle-cli.test.sh` is offline: `human-queue.sh --help` lists all 18
   subcommands, every lifecycle, set, state, and control validation rule exits
   4 (and every secret 5) without a connection attempt, and the `set-resolve`

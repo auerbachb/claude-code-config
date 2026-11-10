@@ -354,5 +354,46 @@ else
 fi
 
 echo
+RC=0
+OUT=$(env -u HOME "$BASH" "$DEDUP" "codeant 403 re-authenticate daily cap") || RC=$?
+assert_eq "unset HOME: actual dedup still finds the stub candidate" 0 "$RC"
+assert_eq "unset HOME: duplicate number is retained" 643 "$(jq -r '.[0].number' <<<"$OUT")"
+
+# Run the worker's real anchored result gate; never call GitHub or file anything.
+# shellcheck source=lib/skill-bash.sh
+source "$SCRIPT_DIR/lib/skill-bash.sh"
+WORKER="$SCRIPT_DIR/../../agents/pm-worker.md"
+BLOCK=$(extract_skill_bash "$WORKER" pm-worker-dedup-result)
+DUP_FIXTURE="$WORK/result-fixture"
+cat > "$DUP_FIXTURE" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$DEDUP_FIXTURE_JSON"
+exit "$DEDUP_FIXTURE_RC"
+STUB
+chmod +x "$DUP_FIXTURE"
+# The worker's caller needs Python, but must not need jq on PATH.
+mkdir -p "$WORK/gate-bin"
+ln -s "$(command -v python3)" "$WORK/gate-bin/python3"
+run_worker_result() {
+  RC=0
+  OUT=$(PATH="$WORK/gate-bin" DEDUP="$DUP_FIXTURE" DEDUP_FIXTURE_RC="$1" DEDUP_FIXTURE_JSON="$2" \
+    "$BASH" -c "$BLOCK"$'\n''echo READY' 2>&1) || RC=$?
+}
+run_worker_result 1 '[]'
+assert_eq "explicit empty result permits normal classification" '0|READY' "$RC|$OUT"
+run_worker_result 0 '[{"number":643}]'
+assert_eq "valid candidate result permits normal classification" '0|READY' "$RC|$OUT"
+run_worker_result 4 '[]'
+assert_eq "dedup error cannot authorize filing" 4 "$RC"
+assert_eq "dedup error reports no filing" "ERROR: issue deduplication could not be verified; nothing filed" "$OUT"
+run_worker_result 1 '{'
+assert_eq "malformed no-match result cannot authorize filing" 4 "$RC"
+run_worker_result 0 '[]'
+assert_eq "success with an empty result cannot authorize filing" 4 "$RC"
+run_worker_result 1 '[{"number":643}]'
+assert_eq "no-match exit with a candidate cannot authorize filing" 4 "$RC"
+run_worker_result 1 '[] []'
+assert_eq "a second JSON value cannot authorize filing" 4 "$RC"
+
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -95,8 +95,8 @@ test_1_fresh_install() {
 
   # Check settings.json hooks have real paths (not placeholders)
   assert "No placeholder paths in settings.json" "! grep -q '/path/to/' '$HOME/.claude/settings.json'"
-  assert "Graphite plugin marketplace seeded" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'extraKnownMarketplaces' in d and 'claude-code-graphite' in d['extraKnownMarketplaces']\""
-  assert "Graphite plugins enabled in settings" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); ep=d.get('enabledPlugins',{}); assert ep.get('graphite@claude-code-graphite') is True and ep.get('graphite-mcp@claude-code-graphite') is True\""
+  # Graphite retired 2026-11-03 (#1889): a fresh install seeds none of its plugins.
+  assert "Graphite plugins not seeded" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'claude-code-graphite' not in d.get('extraKnownMarketplaces',{}) and not any('graphite' in k for k in d.get('enabledPlugins',{}))\""
 }
 
 # ── Test 2: Idempotent re-run ────────────────────────────────────────────────

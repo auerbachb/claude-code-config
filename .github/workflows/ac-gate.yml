@@ -1,5 +1,7 @@
 on:
-  pull_request: {}
+  pull_request:
+    # The gate reads the PR body, so checking AC boxes must rerun it.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
