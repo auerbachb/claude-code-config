@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import time
 
 REPO = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
+SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 QUERY = '''query($owner:String!,$name:String!,$number:Int!){
  viewer{login} repository(owner:$owner,name:$name){nameWithOwner defaultBranchRef{name}
  pullRequest(number:$number){number state mergedAt headRefOid baseRefName url author{login}
@@ -23,7 +25,7 @@ QUERY = '''query($owner:String!,$name:String!,$number:Int!){
  nodes{__typename number state closedAt url repository{nameWithOwner}}}}}}'''
 ISSUE_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
  repository(owner:$owner,name:$name){nameWithOwner issueOrPullRequest(number:$number){
- __typename ... on Issue{number state closedAt updatedAt url repository{nameWithOwner}
+ __typename ... on Issue{number state closedAt updatedAt title body comments(first:1){totalCount} url repository{nameWithOwner}
  timelineItems(last:1,itemTypes:[REOPENED_EVENT]){nodes{... on ReopenedEvent{createdAt}}}}}}}'''
 
 
@@ -128,9 +130,16 @@ def issue(repo, number):
             or node.get('__typename') != 'Issue' or node.get('number') != number
             or node.get('repository', {}).get('nameWithOwner', '').lower() != repo.lower()
             or node.get('state') not in ('OPEN', 'CLOSED')
-            or not isinstance(node.get('updatedAt'), str) or not node['updatedAt']):
+            or not isinstance(node.get('updatedAt'), str) or not node['updatedAt']
+            or not isinstance(node.get('title'), str) or not isinstance(node.get('body'), str)
+            or type(node.get('comments', {}).get('totalCount')) is not int):
         raise CompletionError('issue_identity_unverified', 3)
     return node
+
+
+def issue_scope_digest(node):
+    scope = [node['title'], node['body'], node['comments']['totalCount']]
+    return hashlib.sha256(json.dumps(scope).encode()).hexdigest()
 
 
 def reopened_after_merge(node, merged_at):
@@ -163,19 +172,26 @@ def check_race_hold(args, report):
         except (ValueError, UnicodeDecodeError):
             raise CompletionError('unsafe_completion_hold', 6)
     expected = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'], head_sha=report['head_sha'])
-    if (not isinstance(hold, dict) or set(hold) != set(expected) | {'issue', 'phase'}
+    if (not isinstance(hold, dict) or set(hold) != set(expected) | {'issue', 'phase', 'scope_digest'}
             or type(hold.get('pr')) is not int or any(hold.get(k) != v for k, v in expected.items())
             or type(hold.get('issue')) is not int or hold['issue'] <= 0
-            or hold.get('phase') not in ('closure_inflight', 'reopen_detected')):
+            or not isinstance(hold.get('scope_digest'), str) or not SHA256.fullmatch(hold['scope_digest'])
+            or hold.get('phase') not in ('closure_inflight', 'reopen_detected', 'scope_changed')):
         raise CompletionError('unsafe_completion_hold', 6)
     report['reopen_race_hold'] = hold
     if hold['phase'] == 'reopen_detected':
         raise CompletionError('concurrent_reopen_detected', 1)
+    if hold['phase'] == 'scope_changed':
+        raise CompletionError('concurrent_scope_change_detected', 1)
     current = issue(args.repo, hold['issue'])
     if reopened_after_merge(current, report['merged_at']):
         hold['phase'] = 'reopen_detected'
         save(args.race_hold, hold)
         raise CompletionError('concurrent_reopen_detected', 1)
+    if issue_scope_digest(current) != hold['scope_digest']:
+        hold['phase'] = 'scope_changed'
+        save(args.race_hold, hold)
+        raise CompletionError('concurrent_scope_change_detected', 1)
     if current['state'] == 'CLOSED':
         args.race_hold.unlink()
         report.pop('reopen_race_hold', None)
@@ -285,16 +301,20 @@ def assess(args, report):
             or candidate_states(closing_candidates(args.repo, latest_pr)) != candidate_states(candidates)):
         raise CompletionError('delivery_changed_before_close', 3)
     preflight = issue(args.repo, args.complete_issue)
-    if preflight['state'] == 'CLOSED' and preflight.get('timelineItems') == current.get('timelineItems'):
+    scope_digest = issue_scope_digest(preflight)
+    same_scope = scope_digest == issue_scope_digest(current)
+    same_history = preflight['timelineItems'] == current['timelineItems']
+    if preflight['state'] == 'CLOSED' and same_scope and same_history:
         args.race_hold.unlink(missing_ok=True)
         target.update(state='CLOSED', disposition='closed')
         report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
         return 0 if report['outcome'] == 'verified' else 1
     if (preflight['state'] != 'OPEN' or preflight['updatedAt'] != args.expected_issue_updated_at
-            or preflight.get('timelineItems') != current.get('timelineItems')):
+            or not same_scope or not same_history):
         raise CompletionError('issue_changed_before_close', 3)
     hold = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'],
-                head_sha=report['head_sha'], issue=args.complete_issue, phase='closure_inflight')
+                head_sha=report['head_sha'], issue=args.complete_issue, phase='closure_inflight',
+                scope_digest=scope_digest)
     save(args.race_hold, hold)
     gh(['api', '--method', 'PATCH', 'repos/' + args.repo + '/issues/' + str(args.complete_issue),
         '-f', 'state=closed', '-f', 'state_reason=completed'])
@@ -305,6 +325,11 @@ def assess(args, report):
         report['reopen_race_hold'] = hold
         save(args.race_hold, hold)
         raise CompletionError('concurrent_reopen_detected', 1)
+    if issue_scope_digest(after) != hold['scope_digest']:
+        hold['phase'] = 'scope_changed'
+        report['reopen_race_hold'] = hold
+        save(args.race_hold, hold)
+        raise CompletionError('concurrent_scope_change_detected', 1)
     if after['state'] != 'CLOSED':
         raise CompletionError('closure_visibility_pending', 1)
     args.race_hold.unlink()

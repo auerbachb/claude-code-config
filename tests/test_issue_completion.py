@@ -26,8 +26,9 @@ if '--method' in args:
  state['state']='CLOSED';state['writes']+=1
  if mode in ('reopen-during-close','reopen-after-close'):state['reopen_seen']=True
  if mode=='reopen-after-close':state['state']='OPEN'
+ if mode in ('edit-during-close','edit-with-interruption'):state['body']='Additional unfinished requirement'
  save()
- if mode=='interrupted':os.kill(os.getppid(),signal.SIGKILL)
+ if mode in ('interrupted','edit-with-interruption'):os.kill(os.getppid(),signal.SIGKILL)
  print(json.dumps({'state':'closed'}));sys.exit(0)
 query=next(a[6:] for a in args if a.startswith('query='))
 if 'pullRequest(number:' in query:
@@ -47,6 +48,7 @@ else:
  save()
  node=dict(__typename='PullRequest' if mode=='wrong-type' else 'Issue',number=number,
            state='OPEN' if mode=='delayed' else state['state'],closedAt=None,
+           title='Issue to verify',body=state.get('body','Accepted scope'),comments={'totalCount':0},
            updatedAt='2026-11-05T00:00:00Z' if reopened or (mode=='edited-at-preflight' and state['reads']>=2) else '2026-11-04T20:00:00Z',
            url='https://github.com/owner/consumer/issues/'+str(number),
            repository={'nameWithOwner':'owner/consumer'},
@@ -238,6 +240,29 @@ class Completion(unittest.TestCase):
                     self.assertEqual(rc,1);self.assertEqual(x['error_class'],'concurrent_reopen_detected')
                     self.assertEqual(x['outcome'],'pending');self.assertEqual(self.writes(),1)
                 self.assertTrue(next(self.home.rglob('pr-20.race-hold.json')).is_file())
+
+    def test_scope_change_during_close_keeps_completion_pending_on_retry(self):
+        for mode in ('edit-during-close', 'edit-with-interruption'):
+            with self.subTest(mode=mode):
+                self.home = self.root / ('home-' + mode)
+                self.home.mkdir(mode=0o700)
+                self.env['HOME'] = str(self.home)
+                self.state = dict(state='OPEN', writes=0)
+                self.write_state()
+                self.mode(mode)
+                rc, report = self.complete()
+                if mode == 'edit-during-close':
+                    self.assertEqual(rc, 1)
+                    self.assertEqual(report['error_class'], 'concurrent_scope_change_detected')
+                else:
+                    self.assertLess(rc, 0)
+                self.mode('normal')
+                for retry in (self.run_helper, self.complete):
+                    rc, report = retry()
+                    self.assertEqual(rc, 1)
+                    self.assertEqual(report['error_class'], 'concurrent_scope_change_detected')
+                    self.assertEqual(report['outcome'], 'pending')
+                    self.assertEqual(self.writes(), 1)
 
     def test_unsafe_or_malformed_race_hold_cannot_clear_completion(self):
         rc,x=self.complete();self.assertEqual(rc,0)

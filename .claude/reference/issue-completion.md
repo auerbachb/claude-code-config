@@ -44,6 +44,10 @@ no issue, and does not authorize silently skipping a missing trailer.
 
 ## Verify scope before closing
 
+Before a managed merge, [/wrap Step 2.2](../skills/wrap/SKILL.md#step-22-verify-acceptance-criteria)
+verifies scope for native closing links. Remove or replace closing links for
+partial or ambiguous work before merge because GitHub can close them itself.
+
 For each OPEN same-repo candidate, independently read the issue's current body,
 acceptance criteria and comments, the associated PRs and final merged code.
 Capture the issue’s GitHub `updatedAt` when you start verifying scope, then
@@ -97,9 +101,12 @@ in-flight write without another close. A detected reopen becomes a sticky
 the close request overwrote the owner's OPEN state. A malformed/unsafe guard is
 also pending. Do not delete or rewrite that evidence to clear Phase C; preserve
 it for an explicit owner decision or a separately verified subsequent fix.
-GitHub does not offer an atomic conditional issue close. A simultaneous
-manual reopen can still race the request. Report a detected conflict as
-pending and preserve the evidence for manual resolution.
+The guard also records a digest of the issue title, body and comment count.
+A mismatch on read-back or interrupted recovery leaves a sticky
+`scope_changed` hold. The digest does not include comment edits or PR changes.
+GitHub does not offer an atomic conditional issue close, so a simultaneous
+scope edit or manual reopen can still race the request. A detected conflict
+remains pending for manual resolution.
 
 ## Deliberately retained issue scope
 
@@ -175,8 +182,10 @@ Keep the merged PR identity separate from issue completion. A merged PR must not
 return to code dispatch or be merged again merely because closure is pending.
 Record the receipt path and exact pending issue/reason in the current repo's
 scoped PR/task state, using `session-state.sh`'s normal repo scoping. When GitHub
-is already CLOSED, reconcile only the matching task's status/queue entry and
-exact owned claim. Do not rewrite unrelated tasks or another repo's same number.
+is already CLOSED, independently verify the matching task's scope before
+reconciling its status, queue entry and exact owned claim. If scope is incomplete
+or uncertain despite CLOSED, preserve the discrepancy as pending for manual
+resolution. Never reopen from an assessment or rewrite another task.
 
 Retry the assessment and any individually verified completion on resume/day tick,
 including a session interrupted after merge or after the close request. A stale
