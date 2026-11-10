@@ -403,6 +403,9 @@ original session before copying a command; never run a command from the roster.
 `/go-on --resume-options` reads the same local roster. This does not stop any
 other conversation; its rows are accumulated from their own verified stops.
 
+Show the returned `launcher_prerequisite` beside manual commands. The owner
+runs the installed setup command and uses its printed source line if needed.
+
 Close with the file path on its own line, so the next session (and the usage-limit recorder, which points at the most recent one of these) can find it.
 
 ## Relationship to the other end-of-something commands

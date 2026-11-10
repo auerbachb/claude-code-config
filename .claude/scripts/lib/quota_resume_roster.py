@@ -275,7 +275,7 @@ def end_records(root):
     return rows, invalid
 
 
-def list_records(root, accounts, source, profile, parked=(), park_lookup="not requested"):
+def list_records(root, accounts, source, profile, parked=(), park_lookup="not requested", *, registry=None):
     projects = shared_projects(profile)
     end, invalid = end_records(root)
     sessions = {}
@@ -320,6 +320,7 @@ def list_records(root, accounts, source, profile, parked=(), park_lookup="not re
             invalid += 1
 
     entries = []
+    registry_env = f"AI_QUOTAS_CONFIG={quote(str(registry))} " if registry is not None else ""
     for sid, (entry, handoffs, locations) in sessions.items():
         if len({cwd for cwd, _ in locations}) > 1:
             invalid += 1
@@ -332,7 +333,7 @@ def list_records(root, accounts, source, profile, parked=(), park_lookup="not re
                 continue
             if portable and projects == shared_projects(target):
                 options.append({"target_account": label, "status": "portable",
-                                "command": f"cd -- {quote(entry['cwd'])} && {launcher} --resume {quote(sid)}"})
+                                "command": f"cd -- {quote(entry['cwd'])} && {registry_env}{launcher} --resume {quote(sid)}"})
             else:
                 options.append({"target_account": label, "status": "not portable", "handoff": entry["handoff"]})
         entry["handoffs"] = list(handoffs.values())
@@ -385,8 +386,18 @@ def main():
             target = account_for_launcher(accounts, source, args.target)
             accounts = {target: accounts[target]}
         parked, park_lookup = read_park_records(setup.with_name("session-state.sh"))
-        print(json.dumps(list_records(root, accounts, source, profile, parked, park_lookup),
-                         ensure_ascii=False))
+        # Generated launchers also consult the registry at execution time.
+        # Pin the same path for generation and resume, even after cd or in a new shell.
+        registry = Path(os.environ.get("AI_QUOTAS_CONFIG") or home / ".claude" / "ai-quotas.json").absolute()
+        value = list_records(root, accounts, source, profile, parked, park_lookup, registry=registry)
+        if any("command" in option for entry in value["entries"] for option in entry["options"]):
+            value["launcher_prerequisite"] = {
+                "shell": "zsh",
+                "setup_command": f"AI_QUOTAS_CONFIG={quote(str(registry))} {quote(str(setup))} launchers",
+                "instruction": "Load the named launcher in zsh first. If it is missing, run the setup command "
+                               "and use the source line it prints.",
+            }
+        print(json.dumps(value, ensure_ascii=False))
     except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as error:
         # A failed helper can contain private registry details in stderr.
         detail = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else "metadata unavailable"

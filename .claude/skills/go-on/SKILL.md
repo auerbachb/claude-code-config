@@ -56,6 +56,10 @@ If the helper cannot run, say the roster is unavailable. Do not guess a
 launcher or read credentials. Return here: do not classify, resume, clear a
 gate, or launch anything. Do not combine this flag with any resume flag.
 
+Beside the manual commands, show the returned `launcher_prerequisite`,
+including its installed setup command. The owner runs setup and uses the
+source line it prints; the roster never creates or sources launchers.
+
 ## Portable helper resolution (workflow lane)
 
 Resolve every lifecycle helper **before entering Steps 0b–10**, not before Step 0: classification needs only the stop-state helpers resolved in 0.2, and a resume that just routes to `/pause-resume` must not be blocked by a missing merge-gate helper it will never call. Inside the workflow lane a missing helper blocks rather than guessing which completed state is safe.
