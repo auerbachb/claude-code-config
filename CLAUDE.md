@@ -124,5 +124,5 @@ Persist durable insights at `~/.claude/projects/*/memory/` (never secrets/tokens
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance (new experience)
 
-Say "project" not account, "team member" not IAM user, "AWS Settings" for settings.aws.com, "selected Region". Regional resources in assigned Region — no Lambda@Edge, StackSets, cross-Region; ACM/CloudFront may use us-east-1. Access Denied → check spend limit. Ask about resource cleanup. AWS tasks: `aws___search_documentation(agent_skills)` + `aws___retrieve_skill`; MCP down → installed skill or docs. Ask help_level once; reuse. Full guidance: `.claude/reference/aws-guidance.md`.
+Say "project" not account, "team member" not IAM user, "AWS Settings" for settings.aws.com, "selected Region". Regional resources in assigned Region — no Lambda@Edge, StackSets, cross-Region; ACM/CloudFront may use us-east-1. Access Denied → check spend limit. Ask about resource cleanup. AWS tasks: `aws___search_documentation(agent_skills)` + `aws___retrieve_skill`; MCP down → installed skill or docs. Ask help_level once; reuse. Read `.claude/reference/aws-guidance.md` for full guidance.
 <!-- END AWS Agent Toolkit rules -->
