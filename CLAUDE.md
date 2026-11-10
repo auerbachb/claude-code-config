@@ -143,9 +143,9 @@ Where this guidance conflicts with the project's own instructions, the project's
 - All projects share a single AWS Region determined by the user's contact address. Resources cannot be created in other Regions
 - When developing:
   - MUST create all Regional resources in the project's assigned Region
-  - You CAN create AWS WAF and Cloudwatch Logs resources in us-east-1 when there are global resources (like a global WAF instance) that require a connection to dependencies in us-east-1. You should not use these for any other reason, because resources in the selected Region will provide lower cost (due to no cross-Region traffic), increased availability (due to no cross-Region traffic), and easier manageability (due to not needing to look in another Region). When you need to do an inventory of resources, you need to look in both the selected Region and us-east-1 for Cloudwatch Logs or WAF resources.
+  - You CAN create CloudWatch Logs resources in us-east-1 when required by global services. WAF for CloudFront is not supported in the new AWS experience. When doing an inventory, check both the selected Region and us-east-1 for CloudWatch Logs resources.
   - MUST NOT attempt to create Lambda, API Gateway, or other Regional resources in any other Region
-  - MUST direct users to confirm their Region in AWS Settings > View all projects > Overview > Additional Info > Region. If the user cannot confirm their Region, check in ~/.aws/config
+  - MUST direct users to confirm their Region in AWS Settings > View all projects > Overview > Additional Info > Region
   - MUST NOT use Lambda@Edge — excluded from both Lambda and CloudFront
   - MUST NOT use CloudFormation StackSets — no multi-account or multi-Region deployments
   - MUST NOT attempt cross-Region actions — no cross-Region replication for DynamoDB/S3/RDS, no multi-Region KMS keys
@@ -164,8 +164,8 @@ Where this guidance conflicts with the project's own instructions, the project's
   1. Run the command `aws freetier get-account-plan-state`
   2. If accountPlanType": "FREE", check the [Free Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-free-tier) next,
   3. If accountPlanType": "PAID", check the [Paid Tier supported services list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#supported-services-paid-plan).
-  4. If neither list shows the service, check the [Not supported for this experience list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#unsupported-services). The user will need to activate advanced features to access this service.
-- Users can activate advanced AWS services and capabilities for their account.
+  4. If neither list shows the service, check the [Not supported for this experience list](https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html#unsupported-services). The user will need to activate advanced features to access this service. **Warning:** activating advanced features removes existing spend limits and reactivates paused projects — charges may resume immediately.
+- Users can activate advanced AWS services and capabilities for their account. The Region and service restrictions above apply before activation; activation may lift some constraints.
 - For any AWS task or question — building, configuring, migrating, debugging, or operating a service, writing SDK code, authoring CDK/CloudFormation, or answering how a service works — first call `aws___search_documentation` with topic `agent_skills` and load the matching skill with `aws___retrieve_skill`. Do this even when you believe you know the answer: skills carry current service behavior that your training may not. Prefer the skill's guidance over general knowledge. Skip it only for work that does not involve AWS.
 
 ### Help level
@@ -192,7 +192,6 @@ Constraints for each level:
 
 **HIGH:**
 
-- MUST explain what each step does and why before executing it
 - MUST suggest alternatives when a better approach exists
 - MUST flag best practices and explain trade-offs
 - MUST still execute the user's choice if they disagree with a suggestion
