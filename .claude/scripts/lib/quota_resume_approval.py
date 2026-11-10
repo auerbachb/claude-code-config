@@ -17,6 +17,7 @@ ACCOUNT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\Z")
 REPO = re.compile(r"[a-z0-9][a-z0-9-]{0,38}/[a-z0-9_.-]{1,100}\Z")
 LAUNCHER = re.compile(r"claude-[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 APPROVAL = re.compile(r"(0|[1-9][0-9]{0,11})\.([0-9a-f]{64})\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 DESTINATION = re.compile(r"(terminal|tmux):[0-9a-f]{64}\Z")
 MAX_STOPS = 32
 APPROVAL_SECONDS = 600
@@ -65,6 +66,7 @@ class Target:
     launcher: str
     profile: str
     destination: str
+    launcher_proof: str
 
     def __post_init__(self):
         if not isinstance(self.launcher, str) or not LAUNCHER.fullmatch(self.launcher):
@@ -72,6 +74,8 @@ class Target:
         canonical_path(self.profile)
         if not isinstance(self.destination, str) or not DESTINATION.fullmatch(self.destination):
             raise ValueError("invalid approved terminal destination")
+        if not isinstance(self.launcher_proof, str) or not SHA256.fullmatch(self.launcher_proof):
+            raise ValueError("invalid approved launcher proof")
 
 
 @dataclass(frozen=True)

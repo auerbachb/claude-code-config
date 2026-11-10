@@ -22,7 +22,7 @@ class QuotaResumeApprovalTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name).resolve()
         self.receipts = self.root / "receipts"
-        self.target = approval.Target("claude-target", str(self.root / "target"), "terminal:" + "a" * 64)
+        self.target = approval.Target("claude-target", str(self.root / "target"), "terminal:" + "a" * 64, "c" * 64)
         self.stop = approval.Stop(
             "source@example.test", str(self.root / "source"), "owner/repo",
             "11111111-1111-4111-8111-111111111111", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -49,6 +49,7 @@ class QuotaResumeApprovalTests(unittest.TestCase):
         target = replace(self.target, profile=str(self.root / "replacement target"))
         for stops, selected, token, now in (
             ([self.stop, self.second], target, plan.approval, 1005),
+            ([self.stop, self.second], replace(self.target, launcher_proof="d" * 64), plan.approval, 1005),
             ([self.stop, self.second], replace(self.target, destination="tmux:" + "b" * 64), plan.approval, 1005),
             ([changed, self.second], self.target, plan.approval, 1005),
             ([self.stop], self.target, plan.approval, 1005),
@@ -68,7 +69,7 @@ class QuotaResumeApprovalTests(unittest.TestCase):
         self.assertEqual({x[0].cwd for x in self.calls}, {str(self.root / "a coworker's $repo")})
         self.assertEqual({x["status"] for x in self.run_batch(stops)}, {"already reserved"})
         changed_account = replace(self.stop, account="renamed@example.test", repo="other/repo")
-        alternate = approval.Target("claude-alternate", str(self.root / "alternate"), "terminal:" + "a" * 64)
+        alternate = approval.Target("claude-alternate", str(self.root / "alternate"), "terminal:" + "a" * 64, "c" * 64)
         self.assertEqual({x["status"] for x in self.run_batch([changed_account, self.second], target=alternate)},
                          {"already reserved"})
         self.assertEqual(len(self.calls), 2)

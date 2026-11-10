@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# catalog: tests — Verify exact read-only /end evidence across the pause marker and session state
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 GATE="$ROOT/.claude/scripts/execution-pause.sh"

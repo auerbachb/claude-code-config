@@ -57,6 +57,25 @@ missing, unreadable or stale evidence that could change the choice says
 "next account unknown." An unknown reading keeps the last confirmed notice
 state only to avoid duplicate alerts; the guard still uses the current reading.
 
+To open a batch of verified stops, run `/go-on --resume-batch --target LAUNCHER`.
+It lists the sessions, their original folders, the target launcher and the
+terminal destination. Approve that exact list to open one tab per eligible
+stop, or cancel to leave everything alone. A changed or expired preview
+requires a new approval. The notification itself never opens a tab.
+
+A batch requires a verified native `/end` record and an original session that
+has exited. Parked sessions, older stops without this evidence, and ambiguous
+or unavailable folders stay on the manual roster. The approved launcher uses
+the existing generated zsh definitions. Use the setup command's printed
+instructions if they are missing. In tmux, the batch creates new windows in
+the current verified session. On macOS outside tmux, it needs an open
+Terminal.app window with tab automation already available. If the terminal
+cannot confirm a dispatch, use the manual roster to inspect the result; do not
+repeat the batch to recover an uncertain attempt.
+
+The foreground resume leaves the execution and refill gates in place.
+Use the existing explicit recovery command if you want to resume gated work.
+
 ## Fails open
 
 | Condition | Result |
