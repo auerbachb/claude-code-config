@@ -19,7 +19,7 @@ cases = r'''
     recorder = tmp/'cleanup-recorder.sh'
     recorder.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$CADENCE_CALLS"\nexec /bin/bash "$CADENCE_REAL" "$@"\n')
     recorder.chmod(0o755)
-    env.update(WORKSPACE_SWEEP_CLEANUP_SH=str(recorder), CADENCE_CALLS=str(tmp/'calls'), CADENCE_REAL=actual_cleanup)
+    env.update(WORKSPACE_SWEEP_SCRATCH_ROOTS_JSON=json.dumps([str(tmp/'scratch')]), WORKSPACE_SWEEP_CLEANUP_SH=str(recorder), CADENCE_CALLS=str(tmp/'calls'), CADENCE_REAL=actual_cleanup)
     def cadence(*args, extra=None):
         return subprocess.run(['bash',str(runner),*args],cwd=root,env=dict(env,**(extra or {})),text=True,capture_output=True,timeout=120)
     def logs():
@@ -35,6 +35,10 @@ cases = r'''
     result=subprocess.run(['bash','-c',block],cwd=root,env=dict(env,CADENCE_RUNNER=str(runner)),text=True,capture_output=True,timeout=120)
     verify(result.returncode==0 and not result.stdout and not merged.exists(),'actual Phase C command silently reaps merged worktree')
     verify(active.exists() and root.exists(),'actual Phase C command protects unfinished and caller worktrees')
+    before=len(calls());reported=cadence('--repo-dir',str(root),'--report')
+    summary=json.loads(reported.stdout)
+    verify(reported.returncode==0 and summary['repositories'][0]['removed']==1 and summary['repositories'][0]['worktree_logical_bytes_reclaimed']>0,'on-demand report exposes actual reclaimed count/logical bytes')
+    verify(len(calls())==before,'on-demand report never invokes cleanup')
     verify(git('branch','--list','cadence-merged')=='','actual cleanup removes finished local branch')
     verify(logs()[-1]['removed']==1 and logs()[-1]['skipped_with_reason']>=1,'actual cleanup counts recorded')
     now=int(time.time())
@@ -156,6 +160,19 @@ cases = r'''
                 try:os.kill(pid,signal.SIGKILL)
                 except ProcessLookupError:pass
     verify(stopped and pending.returncode==130,'SIGTERM reaps helper and terminates its real descendant')
+    # Artifact counters are evidence, not a trusted summary detached from rows.
+    clean=tmp/'empty-finished.sh'
+    clean.write_text('#!/bin/bash\nprintf \'%s\\n\' \'{"finished_scan":"complete","finished_worktrees":[],"skipped_finished_worktrees":[],"unknown_finished_worktrees":[],"finished_apply":[]}\'\n')
+    forged=tmp/'forged-artifacts.py'
+    forged.write_text('import json\nprint(json.dumps(dict(artifacts=[],removed=9,known_removed=9,logical_bytes_reclaimed=0,known_logical_bytes_reclaimed=0,next_cursor=0,truncated=False)))\n')
+    result=cadence('--repo-dir',str(root),extra={'WORKSPACE_SWEEP_CLEANUP_SH':str(clean),'WORKSPACE_SWEEP_ARTIFACTS_PY':str(forged)})
+    verify(result.returncode==1 and 'inconsistent artifact removal counts' in result.stdout,'inflated artifact counters are rejected')
+    verify(logs()[-1]['artifact_removed'] is None,'invalid artifact evidence never claims zero removals')
+    uncertain={'artifacts':[dict(kind='orphan_registration',path='/synthetic/refused',removed=None,removal_attempted=True,outcome='unknown',reason='orphan_remove_refused',logical_bytes_reclaimed=0)],'removed':None,'known_removed':0,'logical_bytes_reclaimed':None,'known_logical_bytes_reclaimed':0,'next_cursor':0,'truncated':False}
+    forged.write_text('import json\nprint(json.dumps(json.loads('+repr(json.dumps(uncertain))+')))\n')
+    result=cadence('--repo-dir',str(root),extra={'WORKSPACE_SWEEP_CLEANUP_SH':str(clean),'WORKSPACE_SWEEP_ARTIFACTS_PY':str(forged)})
+    verify(result.returncode==1 and 'orphan_remove_refused' in result.stdout,'uncertain mutation stays actionable')
+    verify(logs()[-1]['artifact_removed'] is None and logs()[-1]['artifact_known_removed']==0,'unknown total and known lower bound survive cadence recording')
     # Malformed discovery metadata is not evidence that no repositories exist.
     explicit.unlink()  # Exercise default discovery rather than the earlier explicit override.
     env['WORKSPACE_SWEEP_CLEANUP_SH']=str(bad)

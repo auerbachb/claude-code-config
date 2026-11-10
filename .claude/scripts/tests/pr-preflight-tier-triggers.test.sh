@@ -79,7 +79,7 @@ cat > "$TMP/bin/gh" <<'EOF'
 args="$*"
 jqexpr=""; prev=""; body=""
 for a in "$@"; do
-  [[ "$prev" == "--jq" ]] && jqexpr="$a"
+  [[ "$prev" == "--jq" || "$prev" == "-q" ]] && jqexpr="$a"
   [[ "$prev" == "--body" ]] && body="$a"
   prev="$a"
 done
@@ -88,7 +88,9 @@ case "$args" in
   "repo view"*) echo "acme/one" ;;
   "api user"*) echo "me" ;;
   "pr view"*"isDraft"*) printf '{"isDraft":false,"author":{"login":"me"},"state":"OPEN","headRefOid":"%s"}\n' "$FIXTURE_HEAD" ;;
-  "pr view"*) printf '{"headRefOid":"%s","state":"OPEN"}\n' "$FIXTURE_HEAD" ;;
+  "pr view"*)
+    out="$(printf '{"headRefOid":"%s","state":"OPEN"}\n' "$FIXTURE_HEAD")"
+    if [[ -n "$jqexpr" ]]; then jq -r "$jqexpr" <<<"$out"; else printf '%s\n' "$out"; fi ;;
   "pr comment"*)
     [[ -n "${FIXTURE_POST_FAIL:-}" && "$body" == "$FIXTURE_POST_FAIL" ]] && exit 1
     echo "$body" >> "$POSTED_LOG"
@@ -226,6 +228,41 @@ printf '#!/usr/bin/env bash\necho garbage\n' > "$TMP/bad-helper.sh"; chmod +x "$
 PREFLIGHT_TRIGGERS_ALLOWED_SH="$TMP/bad-helper.sh" run
 check_eq "every reviewer skipped-tier-deferred" "skipped-tier-deferred,skipped-tier-deferred,skipped-tier-deferred" "$(statuses)"
 check_eq "nothing posted" "" "$(posted)"
+
+echo "== a same-HEAD BugBot grant still passes preflight gates (#1737) =="
+# Use the production preflight and grant helpers in the fixture, so the grant
+# resolves the stub authorship and rate checks alongside the real state helper.
+cp "$SCRIPT" "$REPO_ROOT/.claude/scripts/paid-review-grant.sh" "$S/"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$S/pr-authorship.sh"
+chmod +x "$S/pr-authorship.sh" "$S/paid-review-grant.sh"
+SCRIPT="$S/pr-preflight.sh"
+export CLAUDE_CODE_SESSION_ID="preflight-grant-test"
+unset CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ATTENDED
+grant_status() {
+  ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].paid_review_grants.cursor.status" 2>/dev/null ) || echo unreadable
+}
+reset "$(tier_json present ci-only)"
+run
+check_eq "preflight under ci-only posts nothing" "" "$(posted)"
+export FIXTURE_TIER_OUT="$(tier_json present full)"
+GRANT_RC=0
+( cd "$WORK" && bash "$S/paid-review-grant.sh" --grant "$PR" --vendor cursor --head "$HEAD" \
+    --price-usd 1.58 --approved-via chat --question "Approve one BugBot review?" --repo acme/one >/dev/null 2>&1 ) || GRANT_RC=$?
+check_eq "fixture owner approval matches the unchanged HEAD" "0" "$GRANT_RC"
+checks null 30 in_progress
+run
+check_eq "pending CI defers an approved BugBot review" "skipped-tier-deferred" "$(st cursor)"
+check_eq "pending CI leaves the grant unused and posts nothing" "unused:" "$(grant_status):$(posted)"
+checks success 30
+run
+check_eq "an unsettled HEAD still defers an approved BugBot review" "skipped-tier-deferred" "$(st cursor)"
+check_eq "the unsettled HEAD leaves the grant unused" "unused" "$(grant_status)"
+checks success 7200
+run
+check_eq "settled green preflight uses the approval on the same HEAD" "triggered" "$(st cursor)"
+check_eq "preflight posts one BugBot invitation and consumes the grant" "1:consumed" "$(grep -cFx '@cursor review' "$POSTED_LOG"):$(grant_status)"
+run
+check_eq "rerunning preflight does not spend a second grant or repost" "already-present:1" "$(st cursor):$(grep -cFx '@cursor review' "$POSTED_LOG")"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

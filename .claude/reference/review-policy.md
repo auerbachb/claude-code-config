@@ -194,7 +194,7 @@ Since #1749, the trigger paths below ask [`review-triggers-allowed.sh`](#trigger
 
 | Path | On a `ci-only` or `ci+codeant-one-round` PR, without the #1749 helper |
 |---|---|
-| `maybe-trigger-ai-review.sh` | Posts the CodeAnt nudge only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`, on real and `--dry-run` runs alike. On a real run only, the field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead: a dry run exits before that guard runs (Issue #1735). It is `null` when nothing was skipped. |
+| `maybe-trigger-ai-review.sh` | Posts the CodeAnt nudge only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`, on real and `--dry-run` runs alike. When escalation is off on full/legacy, the reason is `escalation_off` with the gate. On a real run only, the field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead: a dry run exits before that guard runs (Issue #1735). It is `null` when nothing was skipped. |
 | `pr-preflight.sh` | Gives the cursor reviewer status `skipped-tier-excluded`, which counts as clean. |
 | `/fixpr` Step 3b | Prints `[REVIEWERS] skipping @cursor review — review tier <gate> excludes BugBot`. |
 | `cursor-review-pr-comment.yml` | Never posts a comment and runs no helper (issue #1897): one notice step only. |
@@ -291,7 +291,7 @@ Issue #1749 section 2.4 proposed a per-repo daily spend check. It is superseded 
 
 | Path | On a tier-aware repo |
 |---|---|
-| `maybe-trigger-ai-review.sh` | After its round and complexity gates, each of its steps (CodeAnt, BugBot) posts only when allowed, and claims first. A refused HEAD marks the cursor step done, as before. A deferred step leaves the step record open. `--json` adds `trigger_mode`, `trigger_skips` (reviewer → `{kind, reason}`), and `deferred`. Its status is `triggered` when something posted, and otherwise `skipped` with reason `tier_deferred` or `tier_excluded`. `bugbot_skipped` keeps its shape: `review_tier`, `refused_head`, `daily_cap` with the tally, or the new reason with the gate. |
+| `maybe-trigger-ai-review.sh` | After its round and complexity gates, each of its steps (CodeAnt, BugBot) posts only when allowed, and claims first. A refused HEAD marks the cursor step done, as before. A deferred step leaves the step record open. `--json` adds `trigger_mode`, `trigger_skips` (reviewer → `{kind, reason}`), and `deferred`. Its status is `triggered` when something posted, and otherwise `skipped` with reason `tier_deferred` or `tier_excluded`. `bugbot_skipped` keeps its shape: `review_tier`, `escalation_off`, `refused_head`, `daily_cap` with the tally, or the new reason with the gate. |
 | `pr-preflight.sh` | After its HEAD-scoped already-present check, a reviewer is claimed and triggered when allowed (CodeRabbit is still behind `cr-review-hourly.sh`). Otherwise it is `skipped-tier-excluded` or `skipped-tier-deferred`. |
 | `/fixpr` Step 3b | `fixpr-reviewer-triggers.sh` skips reviewers already active on the pushed SHA and posts only the allowed ones, with claims. A `daily_cap` skip still writes the `## Review notes` line. Right after a push CI is usually still pending, so it often posts nothing; `pr-preflight.sh` and `maybe-trigger-ai-review.sh` ask again once CI is green. |
 | `cursor-review-pr-comment.yml` | Never posts a comment and runs no helper (issue #1897): one notice step only. |
@@ -447,6 +447,8 @@ Owner policy (issue #1897): **no paid AI review without the owner's explicit app
 A consumer of `no_reviewer` posts nothing, changes no reviewer state (the PR stays `cr`; nothing is persisted, so the router recomputes the verdict each cycle), reports "paid review requires owner approval" once, and keeps polling. Merge stays blocked until a free review lands or the [no-review override](no-review-override.md) (issue #1899) is met — at which point the same paid points answer `gate_met`, so a blocked paid path falls through to the override instead of stalling. Consumers keep a defensive arm routing the retired `switch_bugbot` / `trigger_greptile` / `budget_exhausted` to the same handling. `no_reviewer` stays the verdict even when a grant exists — `escalate-review.sh` triggers nothing — and in an attended session it is the point where the agent may ask for one ([paid-review-approval.md](paid-review-approval.md) §When to ask).
 
 ### Gated trigger inventory
+
+A change to the review tier on the same commit does not automatically invite BugBot (#1737). A label or policy change can make the PR eligible for BugBot; starting a paid review still needs the owner's explicit approval in chat. After approval, rerun the tier-aware preflight on the live HEAD. It checks CI, settle time, refused HEADs, and review caps before spending a grant. No push is needed.
 
 | Path | Behaviour now |
 |---|---|

@@ -49,7 +49,7 @@ Check every issue before writing anything: a `top` is all or nothing.
 
 ```bash
 PRIO=""
-for c in "$HOME/.claude/skills-worktree/.claude/scripts/pm-priority.sh" "$HOME/.claude/scripts/pm-priority.sh"; do
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pm-priority.sh}" "${HOME:+$HOME/.claude/scripts/pm-priority.sh}"; do
   if [ -x "$c" ]; then PRIO="$c"; break; fi
 done
 if [ -z "$PRIO" ]; then

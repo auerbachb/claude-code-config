@@ -1,6 +1,7 @@
 """Exercise the real completion CLI against an isolated, stateful GitHub fixture."""
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import unittest
 
 HELPER = Path(__file__).parents[1] / '.claude/scripts/lib/issue_completion.py'
 MERGE = 'a' * 40
+ISSUE_REVISION = '2026-11-04T20:00:00Z'
 FAKE_GH = r'''#!/usr/bin/env python3
 import json,os,signal,sys
 from pathlib import Path
@@ -31,7 +33,10 @@ query=next(a[6:] for a in args if a.startswith('query='))
 if 'pullRequest(number:' in query:
  d=json.loads((root/'pr').read_text())
  if d['data'].get('repository') is None:print(json.dumps(d));sys.exit(0)
- for node in d['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']:
+ links=d['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']
+ if mode=='unlinked-at-preflight' and state.get('reads',0)>=1:
+  links.clear()
+ for node in links:
   if node['number']==7 and node['repository']['nameWithOwner']=='owner/consumer':node['state']=state['state']
  print(json.dumps(d))
 else:
@@ -42,7 +47,7 @@ else:
  save()
  node=dict(__typename='PullRequest' if mode=='wrong-type' else 'Issue',number=number,
            state='OPEN' if mode=='delayed' else state['state'],closedAt=None,
-           updatedAt='2026-11-05T00:00:00Z' if reopened else '2026-11-04T20:00:00Z',
+           updatedAt='2026-11-05T00:00:00Z' if reopened or (mode=='edited-at-preflight' and state['reads']>=2) else '2026-11-04T20:00:00Z',
            url='https://github.com/owner/consumer/issues/'+str(number),
            repository={'nameWithOwner':'owner/consumer'},
            timelineItems={'nodes':[{'createdAt':'2026-11-05T00:00:00Z'}] if reopened else []})
@@ -89,7 +94,7 @@ class Completion(unittest.TestCase):
         return p.returncode, result
 
     def complete(self, *extra):
-        return self.run_helper('--complete-issue','7','--scope-verified','--expected-merge',MERGE,*extra)
+        return self.run_helper('--complete-issue','7','--scope-verified','--expected-merge',MERGE,'--expected-issue-updated-at',ISSUE_REVISION,*extra)
 
     def writes(self):
         return json.loads((self.root/'state').read_text())['writes']
@@ -161,10 +166,33 @@ class Completion(unittest.TestCase):
         rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
         self.assertEqual(rc,4);self.assertEqual(x['outcome'],'pending')
 
-    def test_missing_trailer_requires_explicit_association(self):
+    def test_missing_closing_link_never_authorizes_automatic_close(self):
         self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[];self.write_pr()
-        rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
-        rc,x=self.complete('--association-verified');self.assertEqual(rc,0);self.assertEqual(self.writes(),1)
+        for flags in [(), ('--association-verified',)]:
+            rc, report = self.complete(*flags)
+            self.assertEqual(rc, 3)
+            self.assertEqual(report['error_class'], 'issue_association_unverified')
+        self.assertEqual(self.writes(), 0)
+
+    def test_stale_scope_and_preflight_edit_never_close(self):
+        for flags in ((), ('--expected-issue-updated-at','2026-11-04T19:00:00Z')):
+            rc, report = self.run_helper('--complete-issue','7','--scope-verified','--expected-merge',MERGE,*flags)
+            self.assertEqual(rc, 3)
+            self.assertEqual(report['error_class'], 'issue_scope_revision_unverified')
+        self.state['reads'] = 0
+        self.write_state()
+        self.mode('edited-at-preflight')
+        rc, report = self.complete()
+        self.assertEqual(rc, 3)
+        self.assertEqual(report['error_class'], 'issue_changed_before_close')
+        self.assertEqual(self.writes(), 0)
+
+    def test_closing_link_removed_after_scope_read_never_closes(self):
+        self.mode('unlinked-at-preflight')
+        rc, report = self.complete()
+        self.assertEqual(rc, 3)
+        self.assertEqual(report['error_class'], 'delivery_changed_before_close')
+        self.assertEqual(self.writes(), 0)
 
     def test_api_write_and_delayed_verification_fail_recoverably(self):
         for mode,expected in [('api-error',4),('invalid-json',4),('write-error',4),('wrong-type',3),('delayed',1)]:
@@ -273,6 +301,46 @@ exit "$result"
                               env=dict(env,OWNER_REPO='other/repo'),text=True,capture_output=True,timeout=15)
         self.assertEqual(result.returncode,3)
         self.assertEqual((self.home/'.claude/session-state.json').read_bytes(),before)
+
+    def test_wrap_completion_gate_preserves_existing_bookkeeping_order(self):
+        def anchor(path, name):
+            body=path.read_text().split('<!-- test-anchor: '+name+' -->',1)[1]
+            return body.split(chr(96)*3+'bash\n',1)[1].split(chr(96)*3,1)[0]
+        scripts=HELPER.parents[1]
+        claude=scripts.parent
+        reconcile=anchor(claude/'reference/issue-completion.md','issue-completion-record')
+        wrap=anchor(claude/'skills/wrap/SKILL.md','wrap-post-merge-bookkeeping')
+        wrapper='resolve_script() { printf "%s/%s\\n" "$COMPLETION_SCRIPT_DIR" "$1"; }\n'
+        original='\nwrap_post_merge_bookkeeping\n'
+        self.assertIn(original,wrap)
+        harness=wrapper+reconcile+wrap.replace(original,'\nwrap_post_merge_bookkeeping "$@"\n')
+        repo=self.root/'consumer';repo.mkdir()
+        subprocess.run(['git','init','-q',str(repo)],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(repo),'remote','add','origin','https://github.com/owner/consumer.git'],check=True,capture_output=True)
+        record=self.root/'bookkeeping-arguments'
+        helper=self.root/'bookkeeping'
+        helper.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$BOOKKEEPING_RECORD"\nprintf "%s\\n" ' + shlex.quote(json.dumps({'issues':[7]})) + '\n')
+        helper.chmod(0o700)
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),CURRENT_REPO='owner/consumer',
+                 PR_NUM='20',POST_MERGE_BOOKKEEPING_SH=str(helper),BOOKKEEPING_RECORD=str(record))
+        def run(*args, **more):
+            return subprocess.run(['bash','-c',harness,'wrap',*args],cwd=repo,env=dict(env,**more),
+                                  text=True,capture_output=True,timeout=15)
+        self.assertEqual(run().returncode,1)
+        self.assertFalse(record.exists())
+        self.assertEqual(run('--complete-issue','7','--scope-verified','--expected-merge',MERGE).returncode,3)
+        self.assertFalse(record.exists())
+        self.assertEqual(run(CURRENT_REPO='foreign/repo').returncode,3)
+        self.assertFalse(record.exists())
+        self.assertEqual(run('--retain-issue','7=partial_scope','--expected-merge',MERGE).returncode,0)
+        self.assertEqual(record.read_text().splitlines(),['20','--repo','owner/consumer'])
+        self.assertEqual(self.writes(),0)
+        self.assertEqual(run('--complete-issue','7','--scope-verified','--expected-merge',MERGE,
+                             '--expected-issue-updated-at',ISSUE_REVISION).returncode,0)
+        self.assertEqual(record.read_text().splitlines(),['20','--repo','owner/consumer']*2)
+        self.assertEqual(self.writes(),1)
+        self.assertEqual(run().returncode,0)
+        self.assertEqual(self.writes(),1)
 
     def test_final_handoff_publication_is_guarded_and_keeps_pending_work(self):
         rc,report=self.complete();self.assertEqual(rc,0)

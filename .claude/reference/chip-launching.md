@@ -149,23 +149,54 @@ active model, so the check relies on the model naming itself accurately.
 
 ## Claim the issue on click (not on offer)
 
-A chip launches an independent thread that cannot see any sibling, so the launched thread claims the issue itself. Every issue-bearing `prompt` payload instructs the thread to run, as its **first actions after the MODEL GUARD preamble and before any repo read, file edit, or planning**:
+A chip launches an independent thread that cannot see any sibling. For direct execution the launched thread claims the issue; a handoff that delegates the listed issues to `/subagent` leaves acquisition to that workflow. Every issue-bearing `prompt` payload instructs the thread to run, as its **first actions after the MODEL GUARD preamble and before any repo read, file edit, or planning**:
 
 ```bash
-CLAIM=$(for c in "$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh" \
-                 "$HOME/.claude/scripts/issue-claim.sh" \
-                 ".claude/scripts/issue-claim.sh"; do
-          [ -x "$c" ] && { echo "$c"; break; }
-        done)
-"$CLAIM" <N> --check      # then, if it clears:
-"$CLAIM" <N> --claim
+chip_helper() {
+  local name="$1" candidate
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+                   "${HOME:+$HOME/.claude/scripts/$name}" \
+                   "$PWD/.claude/scripts/$name"; do
+    if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+CLAIM=$(chip_helper issue-claim.sh) || CLAIM=
+RECEIPT=$(chip_helper chip-claim-receipt.sh) || RECEIPT=
 ```
+
+For a fresh, direct Form A launch, first resolve `chip-claim-receipt.sh` in the same order as the claim helper. If the claim helper exists but the receipt helper is missing, stop before acquisition. Run acquisition together (`ISSUE` and `ISSUE_REPO` are the issue number and owner/repo from the prompt):
+
+<!-- test-anchor: chip-form-a-claim -->
+
+```bash
+CHIP_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf unknown-host)
+CLAIM_HOLDER="chip:$CHIP_HOST:$(date -u +%s):$$:$RANDOM:$RANDOM"
+"$CLAIM" "$ISSUE" --check --holder "$CLAIM_HOLDER" --repo "$ISSUE_REPO" || exit $?
+CLAIM_JSON=$("$CLAIM" "$ISSUE" --claim --holder "$CLAIM_HOLDER" --json --repo "$ISSUE_REPO") || exit $?
+if ! jq -e --arg h "$CLAIM_HOLDER" --arg r "$ISSUE_REPO" --argjson n "$ISSUE" \
+     '.issue == $n and .repo == $r and .verdict == "mine" and .holder == $h and .claimant_holder == $h' \
+     <<<"$CLAIM_JSON" >/dev/null; then
+  printf 'ERROR: issue #%s claim could not be verified for this launch\n' "$ISSUE" >&2
+  exit 4
+fi
+```
+
+Keep the acquisition result in the launch until its own linked worktree is created. Save it before changing directories or coding:
+
+```bash
+"$RECEIPT" save "$WORKTREE" "$ISSUE_REPO" "$ISSUE" "$CLAIM_HOLDER" <<<"$CLAIM_JSON" || exit $?
+```
+
+Use absolute helper paths. The receipt lives in the assigned worktree's private Git metadata, outside committed files and the automatic checkpoint. Keep the issue and assigned worktree in the resume context; the receipt is only a way to recover the holder for a launch already known to own that worktree. If interrupted before saving it, or if the launch's worktree cannot be established independently, stop and report the missing recovery evidence. Do not search sibling worktrees or use the GitHub claim as a source of holders. Renewal and wrap use the same verified pair.
 
 **The path is resolved, never assumed.** A chip lands in whatever repo the issue lives in, and most repos carry no `.claude/` directory — a bare `.claude/scripts/issue-claim.sh` simply fails there, and a failure the thread does not mention is a claim silently skipped (issue #1189). The order is the standard one from `portable-skill-resolution.md`: skills-worktree, then `$HOME/.claude/scripts/`, then repo-relative.
 
 - `claimed` (exit 1) or `unknown` (exit 4) → the thread **stops** and reports the claim instead of proceeding. `unknown` never reads as permission.
 - `stale` (exit 0) → surface the warning and proceed; `--claim` takes the claim over.
-- `mine` (exit 0) → no-op; a resumed or post-compaction thread re-runs this safely.
+- On resume, load `CLAIM_HOLDER` from `"$RECEIPT" read "$WORKTREE" "$ISSUE_REPO" "$ISSUE"`, then run `"$CLAIM" "$ISSUE" --renew --holder "$CLAIM_HOLDER" --repo "$ISSUE_REPO"`. Stop on a missing record or failed renewal. Never re-run fresh acquisition for a resumed launch. Use the same renewal before every review or CI wait and at least every 30 minutes of long coding.
+
+For a delegated handoff, perform the read-only check for every listed issue before `/subagent` sizes or decomposes it. Do not preclaim any issue or tracking parent. Step 6.0 owns acquisition and rechecks before Phase A.
 
 **Click time, never offer time.** Offering a chip is not launching one (`/start-issue` "Execution boundary"), and a chip may sit unclicked for days — claiming at offer time would park the issue for a thread that never starts. This claims at exactly the moment work begins. It also means two chips for the same issue are harmless: whichever is clicked first holds the claim, and the second stops.
 
@@ -175,19 +206,19 @@ Emitters spell out their own payload templates and copy only the **named** secti
 
 Two forms — pick by whether the emitter already holds the claim:
 
-**Form A — emitter holds no claim** (`/pm`, `/prompt`, `/wave`, `/issue-maker`): the launched thread takes it.
+**Form A — emitter holds no claim** (`/pm`, `/prompt`, `/wave`, `/issue-maker`): the launched thread acquires it for direct execution; when it delegates the listed issues to `/subagent`, it only checks them and Step 6.0 acquires eligible claims.
 
 ```text
-- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
+- Claim the issue before anything else. After the model guard, resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`, and resolve `chip-claim-receipt.sh` in the same order (skip installed paths if `HOME` is unset or empty; use absolute helper paths across checkouts). If the workflow delegates the listed issues directly to `/subagent`, only check ownership read-only for each issue before sizing or decomposition; skip live foreign or unreadable claims and let `/subagent` Step 6.0 acquire each eligible claim. For direct execution, give a fresh launch its own `CLAIM_HOLDER` (host, epoch, shell PID and two Bash random values) before any repo read, edit or planning. Run `<N> --check --holder "$CLAIM_HOLDER"` and, if it clears, `<N> --claim --holder "$CLAIM_HOLDER" --json`, both with `--repo <owner/repo>`. Report stale before takeover; stop on failure or unless the result is `mine` for the exact holder. Require the receipt helper before acquiring. Keep that acquisition JSON locally and, as soon as the launch creates its assigned worktree, pipe it to `chip-claim-receipt.sh save WORKTREE OWNER/REPO N "$CLAIM_HOLDER"` before switching or coding; stop if saving fails. On resume of that same launch, get the holder only from `chip-claim-receipt.sh read WORKTREE OWNER/REPO N` for its own known worktree and confirm with `<N> --renew --holder "$CLAIM_HOLDER"` (also pass `--repo`). Stop on missing or failed recovery; never read a receipt on a fresh launch or infer ownership from a GitHub marker. Renew before every review or CI wait and at least every 30 minutes of long coding; stop if renewal fails. Pass the issue and same holder to `/wrap` as `CLAIM_PAIRS`. If the claim helper is unavailable on a fresh direct launch, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue.
 ```
 
 **Form B — emitter already holds the claim** (`/start-issue`, which claims at its Step 2b): the launched thread **inherits** that holder instead of competing with it.
 
 ```text
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours; a non-zero exit means you do NOT hold it (exit 5: ownership lost), so stop and report rather than proceeding. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`; skip the installed candidates when `HOME` is unset or empty — this repo may carry no `.claude/` directory — then run `<N> --renew --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It renews the claim when due and otherwise confirms it is still yours, without acquiring a new claim. Stop and report on any non-zero exit (exit 5: the claim is no longer held or the issue is closed). Before coding, separately verify native issue state with `gh issue view <N> --repo <owner/repo> --json state --jq .state`; proceed only on `OPEN`. A closed or unreadable issue stops the handoff. Keep it renewed: before each review or CI wait, and at least every 30 minutes of long coding, run `<N> --renew --holder "{CLAIM_HOLDER}"` — exit 5 → stop and report lost ownership; 4 → warn and retry once; 2 → print `DEGRADED` with its first stderr line and continue — and hand the issue number and holder to `/wrap` so it renews before its own waits. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 ```
 
-**Why Form B exists.** A `/start-issue` run and the thread it hands off to are **one pickup of the issue, handed over** — not two independent threads racing. Without the inherited holder the launched thread would read its own predecessor's claim as a foreign one, exit 1, and refuse to start the work the chip exists to do. Passing the holder makes the re-claim `mine` — a no-op, or a renewal once due (`issue-claim.md` §Renewal) — while a genuinely different thread still sees `claimed`. `{CLAIM_HOLDER}` is the value the emitter passed to its own `--claim`.
+**Why Form B exists.** A `/start-issue` run and the thread it hands off to are **one pickup of the issue, handed over** — not two independent threads racing. Without the inherited holder the launched thread would read its predecessor's claim as foreign and refuse to start. Passing the holder lets renew-only mode confirm the existing claim or renew it once due (`issue-claim.md` §Renewal). If the claim was released or the issue closed before click, the thread stops without acquiring a new claim. `{CLAIM_HOLDER}` is the value the emitter passed to its own `--claim`.
 
 This does not touch the placement rule above — the claim instruction is *content following* the preamble, so the `**Model:**`-first / `**Effort:**`-next / no-blank-line ordering that `chip-model-guard-lint.sh` enforces is unchanged. Contract: `.claude/reference/issue-claim.md` (issue #873).
 

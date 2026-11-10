@@ -3,6 +3,8 @@
 Reference for `/quotas-setup` and `.claude/scripts/ai-quotas-setup.sh` (issue #1666).
 Not auto-loaded; read it when working on the quota tools.
 
+Quick links: [Configuration](#config-file) · [Provider credentials](#where-each-provider-keeps-its-credential) · [Report rows](#json-row-shape) · [History](#the-history-file) · [Profile recovery](#fresh-profile-reauthentication) · [Browser diagnosis](#browser-failure-diagnostics-issue-1906).
+
 **Display and configuration only.** Nothing in this file — and nothing any tool built on
 it produces — may gate dispatch, pause work, downgrade a model, or feed
 `credit-budget.sh`, with one exception: `quota-reserve.sh` may pause *autonomous* work on
@@ -243,7 +245,14 @@ ceiling that would then let another writer break it mid-login anyway.
 | Status | Meaning |
 |--------|---------|
 | `ok` | The provider's own credential artifact is present for that profile. |
-| `needs-login` | It is not — run `relogin`. Also what a `--no-login` reserved slot reports. |
+| `needs-login` | Credential presence could not be verified. Check the note, or `detail` in JSON. |
+
+Use `relogin` when the note identifies a missing credential or a signed-out IDE. A
+missing probe tool or unreadable store must be resolved before retrying sign-in.
+
+`--no-login` skips the login during registration. A reserved slot can still report `ok`
+if the registered profile or Cursor IDE already holds a credential.
+
 On a readable config `list` always exits `0` whatever the statuses say — it is a report,
 not a gate, and a `needs-login` row is not a failure. The one way `list` exits non-zero
 is exit `5`, when the config itself cannot be read (missing `jq`, unparseable file, or a
@@ -251,18 +260,23 @@ different schema major); that is a broken tool, not a verdict about an account.
 
 ## Re-login commands (exact)
 
-`/quotas-setup relogin <label> [<provider>]` runs these for you against the account's
-existing profile directory, then re-verifies. To run one by hand:
+`/quotas-setup relogin <label> [<provider>]` uses the registered profile and re-verifies
+it. Use that action for Claude on macOS: it discovers and records the Keychain service,
+which a manual login can leave unregistered.
+
+For a manual Codex login or a file-backed Claude login off macOS, set `profile_dir`
+to the exact value from `ai-quotas-setup.sh list --json` for the selected label and
+provider. The label alone does not determine the directory.
 
 ```bash
-# claude — replace <label> with the registered label.
+# claude, off macOS
 # A bare `claude` against an unauthenticated CLAUDE_CONFIG_DIR opens the browser
 # login and persists the credential scoped to that directory. Exit the session
 # (/exit or Ctrl-D) once the login completes.
-CLAUDE_CONFIG_DIR="$HOME/.claude/ai-quotas/profiles/<label>/claude" claude
+CLAUDE_CONFIG_DIR="$profile_dir" claude
 
 # codex
-CODEX_HOME="$HOME/.claude/ai-quotas/profiles/<label>/codex" codex login
+CODEX_HOME="$profile_dir" codex login
 
 # cursor — there is NO command. Open the Cursor IDE and sign in there.
 ```
@@ -297,7 +311,7 @@ Full flags and exit codes: `ai-quotas-setup.sh --help`. Summary:
 | 4 | No account matches that label. |
 | 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). Also a `repair-layout` preflight refusal: missing/shared sources, collisions, symlinks, unsupported credential backing or an interrupted repair; these refusals leave the registry and profiles unchanged. |
 | 6 | The provider's login CLI was not found — for `cursor`, `sqlite3`, which is what reads the IDE state store; the manual command is printed. |
-| 7 | Contention, refused rather than raced; nothing changed. The config write lock timed out or was broken mid-update, or a `relogin` found another relogin already running for the same account. |
+| 7 | A registry write or relogin was blocked by contention, or the profile changed during login. This run did not commit a registry update. An already-completed login can have written profile credentials; check the helper's exact message before retrying. |
 | 8 | `doctor` found layout problems; diagnostic only, never a dispatch gate. |
 | 9 | Incomplete `repair-layout` rollback; preserve `.layout-repair/` for manual recovery. |
 
@@ -1462,7 +1476,7 @@ Makes a profile behave like the primary install. For a **claude** profile:
 |------|--------|-----|
 | `skills`, `agents`, `rules`, `hooks`, `plugins`, `projects`, `CLAUDE.md`, `account-config.md` | symlink → `~/.claude/<name>` | One copy of the harness config and memory; a profile that lagged the primary would behave differently in ways nobody would think to check. The target is the primary *path* — `~/.claude/rules` is itself a symlink into the skills worktree, and linking to the path rather than its resolution keeps that indirection. |
 | `settings.json` | copy (`cp -p`, mode carried across) | Claude Code rewrites it in place; a symlink would make two installs fight over one file. |
-| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. Claude Code rewrites this file itself while a session runs and honours no lock, so the file is re-read right before it is replaced: if it changed since the snapshot the merge was computed from, the action refuses (exit `5`, nothing moved or replaced) rather than overwrite live login state with a stale copy — re-run when that session is idle. |
+| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. Claude Code rewrites this file itself while a session runs and honours no lock, so the helper re-reads the file before it makes the backup and installs the merge. If the re-read detects a change, the helper refuses to replace `.claude.json` (exit `5`); earlier share items may already have changed. A write after the check can still race the replacement. Share only with an idle profile, and inspect any per-item lines before retrying. |
 
 For a **codex** profile: `rules` symlinked to `~/.codex/rules`, `config.toml` copied from
 `~/.codex`. The primary locations default from `HOME` and are overridable
@@ -1496,9 +1510,9 @@ object — which is never rewritten.
 **No login credential, no printing.** `.credentials.json`, `auth.json`, and the Keychain
 are never opened. The only JSON parsed is `.claude.json`, and nothing from it is printed.
 What the merge does carry across is the `mcpServers` block, and an MCP server entry can
-hold an API key in its `env` block — that is copied byte for byte into the profile, since
-sharing the server is the point, and the merge line reports a count, never a name or a
-value. The suite plants a login-credential-shaped fixture in every profile and asserts it
+hold an API key in its `env` block. Its value is preserved in the merged JSON, while
+serialization can change formatting. The merge line reports a count, never a name or
+a value. The suite plants a login-credential-shaped fixture in every profile and asserts it
 reaches no output and no file either action writes.
 
 ## Symlink
@@ -1605,8 +1619,9 @@ production Keychain item was migrated during testing or development.
 
 No password is stored or replayed. The adapter disables interactive prompts;
 locked or inaccessible Keychain metadata fails before moves. Non-cycle and
-mixed-store migrations remain unsupported (Issue #1887). Use the supported
-diagnostic and repair commands rather than hand-editing the registry.
+mixed-store profiles use the explicit fresh-profile reauthentication alternative
+below (Issue #1887); in-place migration remains refused. Use supported commands
+rather than hand-editing the registry.
 
 Stored-path semantics: `add` alone derives `<root>/<label>/<provider>`;
 `relogin` uses the stored path, and `remove` retains the directory. Supported
@@ -1632,6 +1647,101 @@ directory. After a full rollback, the original label-mismatch findings are
 expected; there must be no new missing/shared findings. After completed repair,
 only the journal finding should remain. If publication or identity cannot be established, preserve
 everything for manual recovery; never guess or rerun repair over the journal.
+
+### Fresh-profile reauthentication
+
+When a non-cycle or mixed-store Claude layout cannot be rebound safely, the
+supported alternative is a **new permanent label and canonical profile**, with
+an owner-completed subscription login. This replaces the registry entry; it
+does not relocate an existing credential. Complete homogeneous observed cycles
+still use the repair above. No additional client version is admitted to that
+metadata repair. Unknown bindings, locked/inaccessible metadata, secure-storage
+overrides and managed authentication policies are reasons to stop and establish
+a supported login context, never to guess a service name or bypass a policy.
+
+Before starting, stop affected quota readers, setup processes and Claude sessions.
+If this chat uses an affected profile, exit it and work from an unaffected owner
+shell. Keep readers paused until the old row is retired, so the same account is
+not counted twice. Resolve the installed setup helper as `SETUP`, the actual
+registry and physical profile root using the configured `AI_QUOTAS_CONFIG` and
+`AI_QUOTAS_PROFILE_ROOT` (defaults are `~/.claude/ai-quotas.json` and
+`~/.claude/ai-quotas/profiles`). Record privately the original label, path,
+credential-ref service, sidecar and expected subscription email/account. Keep a
+private registry metadata snapshot for comparison; do not dump credential files,
+security password values, tokens or cookies. Preserve any interrupted-repair
+journal and finish its recovery before this procedure.
+
+1. Choose a new unused label, for example `work-recovered`, and its canonical
+   `<profile-root>/work-recovered/claude` path. Confirm the label is absent from
+   the registry and that neither that path nor its path-owned
+   `<profile-root>/work-recovered/.keychain-service-claude` sidecar exists
+   (including dangling links). `add` can reuse a directory, so these checks are
+   required; do not use the original label, a symlink or an existing path.
+   On macOS, for the verified 2.1.312 binding, also check **attributes only** that
+   the predicted `Claude Code-credentials-<SHA256(NFC(config-dir))[:8]>` service
+   is absent, using the exact physical config-dir string the CLI will receive.
+   An existing service, ambiguous result, locked store or access error requires
+   another verified unused destination or manual diagnosis. Do not interpret an
+   arbitrary command failure as absence. For an unverified client binding, first
+   establish the client's documented store/isolation behavior; this runbook
+   supplies no new-version binding guarantee.
+2. In that unaffected owner shell, reserve only the fresh slot:
+
+   ```bash
+   "$SETUP" add claude work-recovered --no-login
+   ```
+
+   Re-read the registry to verify the new canonical path and unchanged original
+   row. No login has run. Keep original directories, services, refs, sidecars and
+   ACLs untouched. Do not copy credentials, rename services or hand-edit paths.
+3. For the verified Claude Code 2.1.312 auth-only subscription flow, the owner runs:
+
+   ```bash
+   AI_QUOTAS_CLAUDE_LOGIN_ARGS='auth login --claudeai' \
+     "$SETUP" relogin work-recovered claude
+   ```
+
+   Use an ordinary subscription-login environment. Credential/API-key/cloud auth
+   overrides or `CLAUDE_SECURESTORAGE_CONFIG_DIR` can redirect the store or hide
+   which login is used; resolve them before continuing without changing managed
+   policy. This command does not clear such overrides for you. Do not substitute
+   `setup-token`: its documented one-year token is for model requests and does
+   not establish supported subscription usage-endpoint permission. Console OAuth
+   without an API key is stored outside the config directory and is not evidence
+   of an isolated subscription profile. See the official [authentication
+   guidance](https://code.claude.com/docs/en/authentication) and [CLI
+   reference](https://code.claude.com/docs/en/cli-reference).
+4. Confirm the new registry ref and path-owned sidecar agree with the newly
+   observed service. `list --json` reporting `ok` proves credential presence,
+   **not account identity**. Independently verify the expected subscription account
+   through the CLI's authenticated account display in the exact new config-dir;
+   `auth status` provides method/config context, and the owner must confirm the
+   expected email/account. Check the original account/path/binding stayed intact.
+   Run the same auth-only `relogin` once more and repeat identity, ref/sidecar and
+   original-binding checks. A mismatch or unreadable identity stops cutover.
+5. Only after both logins are independently verified, retire the original registry
+   row using `"$SETUP" remove OLD_LABEL claude`. This leaves its directory and
+   Keychain item on disk. Re-read the registry: the original row is absent and
+   the new verified row remains. Keep the originals for recovery. Update owner
+   aliases/nicknames or regenerate launchers for the new permanent label, then
+   resume readers. Historical ledger entries keep their old label; do not rewrite
+   them to imply the replacement was used historically.
+
+Failure/recovery boundaries: before final retirement, the original registry row
+and credential remain the recovery endpoint. Failed reservation/publication may
+leave a fresh directory but must not replace the original row. A canceled login,
+missing credential, ambiguous new service, failed relogin publication or failed
+identity check means **do not remove the original row**. Preserve the new path,
+sidecar and any newly created service for manual inspection; the provider may have
+written a credential even when setup failed. A retry at that existing destination
+must explicitly reconcile its actual service/ref/identity first; otherwise choose
+another unused destination. To abandon staging, remove only the replacement's
+registry row if it exists; retain its files/items. Do not delete arbitrary items
+or restore a whole stale registry snapshot over concurrent changes. Failed old-row
+retirement leaves both rows for inspection; readers stay paused. If retirement
+succeeds but alias updates fail, the verified replacement is the active endpoint
+and originals remain preserved. No secret-store rollback is promised because this
+procedure never rewrites the original store.
 
 ### Ordered usage sources (#1884)
 
@@ -1700,3 +1810,42 @@ omitted duration remains an honestly labelled generic window. Weekly selection
 still follows duration rather than slot position. The app-server path and older
 HTTP camelCase bodies retain their existing behavior. An unlabelled
 `credits.balance` is not evidence of a USD amount and is not converted.
+
+### Completed native browser reads
+
+Internal Chrome-CLI `ok` observations require a private per-attempt completion
+receipt, separate from diagnostics and permission booleans. The guard correlates a
+read's allowed `PreToolUse` with successful `PostToolUse` using its tool-use ID,
+owned tab and attempt nonce. Fresh native actual-URL metadata is still required
+before every read. Missing, mismatched, reused, denied, failed, interrupted or
+unknown read evidence cannot produce an `ok` quota row. A fixed
+`browser_read_unverified` class reports unreadable provenance; the six ledger
+statuses and source fallback order are unchanged.
+
+The native MCP boundary was exercised with installed Claude Code2.1.312, a private
+configuration, a synthetic stdio MCP tool and a loopback model stub, with no live
+browser, production credential or paid request. Successful MCP reads emitted
+`tool_response` as a nonempty text content-block list with `tool_use_id`; an
+`isError:true` tool emitted no successful post event. The committed synthetic
+fixture records that generic boundary, not a live Chrome capture. Other shapes
+remain unsupported. [Claude's hook reference](https://code.claude.com/docs/en/hooks#posttooluse-input)
+documents tool-specific responses and correlation IDs.
+
+Receipt files contain only schema version, attempt nonce and bounded completion
+count. They retain no page/error/tool payload, URL, tab ID, email or credential.
+Authorization state stays separate and private; diagnostics never grant access.
+This relies on the native CLI/hook boundary and preserves the existing identity,
+freshness and observation-schema checks. Independently mediated
+`--browser-results` files keep their separate explicit/private validation boundary
+and do not require internal-hook receipts. Sign-in is never automated.
+
+API-first assessment (2026-11-08 UTC): Cursor documents usage/spending endpoints in
+its [Admin API](https://cursor.com/docs/account/teams/admin-api). Its current
+[API overview](https://cursor.com/docs/api) lists Admin/Analytics availability for
+Enterprise teams and administrator-managed keys; the
+[Analytics documentation](https://cursor.com/docs/account/teams/analytics-api)
+also states Enterprise-only availability. No documented individual-subscription
+self-service usage endpoint was found in those references. This is a documentation
+finding, not a claim about private endpoints or this owner's eligibility. An
+eligible existing provider API remains preferable; this fix mints no key, changes
+no provider acquisition order and performs no sign-in or live verification.

@@ -16,7 +16,7 @@ cmd_usage() {
 human-queue.sh wake — record the result of waking the asking thread.
 
 USAGE
-  human-queue.sh wake ID --result sent|failed [--note TEXT] [--json]
+  human-queue.sh wake ID --result sent|failed|store-only [--note TEXT] [--json]
 
 ARGUMENTS
   ID              a Decision id, for example D-43 (d-43 is accepted)
@@ -24,6 +24,7 @@ ARGUMENTS
                   pointer message `human-queue: D-43 answered`
   --result failed it did not: no running session, no messaging tool, or the
                   send call failed
+  --result store-only       the external route is unavailable; park now
   --note TEXT     what happened, one line, <= 200 characters: the address and
                   the tool's own status word on success, the reason on
                   failure. Never the message body of anything but the pointer.
@@ -105,12 +106,13 @@ WITH f AS (
   UPDATE items t SET status = 'answer-parked'
     FROM f
    WHERE t.id = f.id AND :'hq_kind' = 'wake-failed' AND f.status = 'answered'
-     AND (f.failures > :hq_retries OR f.session_id IS NULL)
+     AND (f.failures > :hq_retries OR f.session_id IS NULL OR :'hq_store_only'::boolean)
   RETURNING t.id
 ), pev AS (
   INSERT INTO events (item_id, kind, note)
   SELECT p.id, 'answer-parked',
-         CASE WHEN f.session_id IS NULL THEN 'no return address'
+         CASE WHEN :'hq_store_only'::boolean THEN 'store-only answer'
+              WHEN f.session_id IS NULL THEN 'no return address'
               ELSE f.failures || ' wake-ups failed' END
     FROM park p CROSS JOIN f
   RETURNING item_id
@@ -122,7 +124,7 @@ SQL
     cat <<'SQL'
 SELECT jsonb_build_object(
          'id', r.id,
-         'result', CASE WHEN :'hq_kind' = 'woken' THEN 'sent' ELSE 'failed' END,
+         'result', :'hq_result',
          'failures', r.failures,
          'retries_left', CASE WHEN :'hq_kind' = 'wake-failed' AND NOT r.parked
                                    AND r.status = 'answered' AND r.session_id IS NOT NULL
@@ -142,7 +144,7 @@ SQL
 }
 
 cmd_run() {
-  local raw_id="" id="" have_id=0 result="" have_result=0 note="" have_note=0 json=0 kind errf out rc
+  local raw_id="" id="" have_id=0 result="" have_result=0 note="" have_note=0 json=0 kind errf out rc store_only=false
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -157,7 +159,7 @@ cmd_run() {
         ;;
       --result)
         if [ "$have_result" -eq 1 ]; then hq_die_validation "wake: --result given more than once"; fi
-        if [ "$#" -lt 2 ]; then hq_die_validation "wake: --result needs a value (sent or failed)"; fi
+        if [ "$#" -lt 2 ]; then hq_die_validation "wake: --result needs a value (sent, failed, or store-only)"; fi
         have_result=1
         result="$2"
         shift 2
@@ -186,8 +188,9 @@ cmd_run() {
   case "$have_result:$result" in
     1:sent) kind=woken ;;
     1:failed) kind=wake-failed ;;
-    0:*) hq_die_validation "wake: missing --result (sent or failed)" ;;
-    *) hq_die_validation "wake: --result must be sent or failed" ;;
+    1:store-only) kind=wake-failed; store_only=true ;;
+    0:*) hq_die_validation "wake: missing --result (sent, failed, or store-only)" ;;
+    *) hq_die_validation "wake: --result must be sent, failed, or store-only" ;;
   esac
   if [ "$have_note" -eq 1 ]; then
     hq_check_text "wake: the note" "$note" 200
@@ -198,7 +201,7 @@ cmd_run() {
   hq_mktemp errf
   rc=0
   out=$(hq__wake_sql "$json" | hq_db_script -At -v "hq_id=$id" -v "hq_kind=$kind" \
-    -v "hq_note=$note" -v "hq_retries=$(hq_wake_retries)" 2>"$errf") || rc=$?
+    -v "hq_note=$note" -v "hq_result=$result" -v "hq_store_only=$store_only" -v "hq_retries=$(hq_wake_retries)" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     # Before migration 005 the event kinds refuse woken / wake-failed, and
     # before 006 the store refuses answer-parked: CHECK violations, not a

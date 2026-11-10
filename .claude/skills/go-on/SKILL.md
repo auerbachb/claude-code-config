@@ -7,10 +7,58 @@ triggers:
   - pick up where we left off
   - continue the interrupted work
   - what was I doing
-argument-hint: "[--resume-refill] [--again] [--generation <id>] (refill stays paused without --resume-refill)"
+argument-hint: "[--resume-options [--target LAUNCHER] | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
 ---
 
 Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
+
+## Read-only Claude resume options
+
+For `--resume-options` alone or with `--target <launcher>`, use only a trusted installed
+`quota-resume-roster.sh` from the skills worktree or installed scripts directory.
+Never fall back to the current checkout or PATH: the helper reads account-wide
+local state and runs adjacent installed helpers.
+
+<!-- test-anchor: go-on-quota-resume-options -->
+
+```bash
+quota_resume_options() {
+  local candidate target="${1:-}"
+  [[ -n "${HOME:-}" ]] || return 1
+  [[ -z "$target" || "$target" =~ ^claude-[a-z0-9]+(-[a-z0-9]+)*$ ]] || return 1
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/quota-resume-roster.sh}" \
+    "${HOME:+$HOME/.claude/scripts/quota-resume-roster.sh}"; do
+    if [[ -x "$candidate" ]]; then
+      if [[ -n "$target" ]]; then "$candidate" list --target "$target"; else "$candidate" list; fi
+      return
+    fi
+  done
+  return 1
+}
+quota_resume_options "${QUOTA_RESUME_TARGET:-}"
+```
+
+For a targeted invocation, bind `QUOTA_RESUME_TARGET` to the one literal
+registered launcher token from the argument before calling the block. For
+an untargeted invocation bind it empty. Reject a missing target or extra flags
+before invoking any helper; do not interpret `--target` as a resume command.
+
+Show its entries for the current registered Claude account: session ID, folder,
+account, summary, and manual resume options. Show each verified path in
+`handoffs` once, including handoffs from parked PRs that share a worktree.
+When a handoff has `cwd_available: false`, show its path and say its worktree
+is unavailable. Show a `not portable` option with its handoff path and never
+infer a command from a different record. State the returned
+close-original-session precondition before any commands.
+Distinguish an unavailable park lookup or unreadable record from an empty list.
+If the helper cannot run, say the roster is unavailable. Do not guess a
+launcher or read credentials. Return here: do not classify, resume, clear a
+gate, or launch anything. Do not combine this flag with any resume flag.
+
+Beside the manual commands, show the returned `launcher_prerequisite`,
+including its installed setup command. The owner runs setup and uses the
+source line it prints; the roster never creates or sources launchers.
 
 ## Portable helper resolution (workflow lane)
 
@@ -20,8 +68,8 @@ Resolve every lifecycle helper **before entering Steps 0b–10**, not before Ste
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -63,6 +111,8 @@ Every stoppage leaves evidence. Read it, decide which class this is, and continu
 
 Evidence sources, the precedence table, the newest-wins tie-break, and the degradation contract: `.claude/reference/universal-resume.md`.
 
+**Direct Form A chip recovery.** When the recorded resume context identifies this launch's own issue and assigned worktree, recover its holder with `chip-claim-receipt.sh read WORKTREE OWNER/REPO ISSUE` and confirm it with `issue-claim.sh ISSUE --renew --holder HOLDER --repo OWNER/REPO` before resuming issue work. Resolve both helpers in the portable order below. Stop on missing or ambiguous launch context, a missing receipt, or failed renewal. A receipt alone cannot identify this launch; never search other worktrees, copy a GitHub marker, or acquire a fresh claim during recovery. The chip's original instructions also apply if resuming without `/go-on`.
+
 ### 0.1 Parse arguments
 
 - `--resume-refill` — forwarded **verbatim** to the delegated resume command. `/go-on` never writes `refill.paused` itself. Without the flag the refill pause stands on every lane and is reported, and on a lane with no planned-stop record the flag is reported as having had no effect (naming the command that clears it) — never acted on directly.
@@ -77,8 +127,8 @@ These read cross-session stop records, so they resolve from installed locations 
 resolve_installed() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name"; do
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
@@ -182,13 +232,32 @@ GATE_AT=$(jq -r '.at // ""' <<<"$GATE_JSON")
 
 `GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — ranks 2 through 5 are all barred outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Rank 3 is barred for the same reason as ranks 4 and 5 and on the same evidence — continuing a recorded phase is a resume like any other, and a token-exhaustion handoff is not evidence that no `pause` or `end` gate is armed. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through. The single exception is a validated `--generation` (0.2a), which names one specific park record rather than inferring the class from the gate.
 
-Also read this session's own gate — it decides whether new launches are blocked right now. The helper prints `active` | `inactive` and exits 0; an unresolved helper or a failed call is `unreadable`, which feeds the unclassifiable rule in 0.4, never `inactive`:
+Also read this session's own gate: `/end` uses the native UUID when available;
+older stop records and `/pause` use the original session key. Only the
+marker and resume receipt use the sanitized key. Either gate key reporting
+`active` is enough to hold launches. A failed or invalid read is
+`unreadable` unless another key proves an active gate.
+
+<!-- test-anchor: go-on-live-native-session-gate -->
 
 ```bash
 GATE_LIVE=unreadable
 if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
-  GATE_LIVE=$("$EXECUTION_PAUSE_SH" --status --session "$SESSION_ID" 2>/dev/null) || GATE_LIVE=unreadable
-  [[ "$GATE_LIVE" == active || "$GATE_LIVE" == inactive ]] || GATE_LIVE=unreadable
+  GATE_LIVE=inactive
+  NATIVE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+  LEGACY_GATE_SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+  if [[ ! "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ || "$NATIVE_SESSION_ID" == "$LEGACY_GATE_SESSION_ID" ]]; then
+    NATIVE_SESSION_ID=""
+  fi
+  for GATE_SESSION_ID in "$NATIVE_SESSION_ID" "$LEGACY_GATE_SESSION_ID"; do
+    [[ -n "$GATE_SESSION_ID" ]] || continue
+    gate_status=$("$EXECUTION_PAUSE_SH" --status --session "$GATE_SESSION_ID" 2>/dev/null) || gate_status=unreadable
+    case "$gate_status" in
+      active) GATE_LIVE=active; break ;;
+      inactive) ;;
+      *) GATE_LIVE=unreadable ;;
+    esac
+  done
 fi
 ```
 

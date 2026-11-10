@@ -81,8 +81,8 @@ Define once, use throughout all phases. The `resolve_script()` function finds th
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -102,11 +102,13 @@ RELEASE_SWEEP=$(resolve_script release-sweep.sh || true)
 PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
 ISSUE_COMPLETION_SH=$(resolve_script issue-completion.sh || true)
 ISSUE_CLAIM_SH=$(resolve_script issue-claim.sh || true)
+POST_MERGE_BOOKKEEPING_SH=$(resolve_script post-merge-bookkeeping.sh || true)
 SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 DIRTY_MAIN_GUARD_SH=$(resolve_script dirty-main-guard.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+MERGE_TARGET_ROOT_SH=$(resolve_script merge-target-root.sh || true)
 HHG_STATE_SH=$(resolve_script hhg-state.sh || true)
 CYCLE_COUNT_SH=$(resolve_script cycle-count.sh || true)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
@@ -159,7 +161,7 @@ gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
   --jq '{number, title, headRefName, body, state}'
 ```
 
-If already MERGED, run the [completion reconciliation](../../reference/issue-completion.md) before Phase 3, including retries after an interrupted wrap. A CLOSED-but-unmerged PR does not authorize issue closure; skip to Phase 3 without completion writes.
+If already merged, use the Phase 3 merged entry below; it reconciles issue completion before bookkeeping. If closed without a merge, report that state and stop.
 
 ### Step 1.2: Scan for unresolved review findings
 
@@ -207,6 +209,31 @@ WRAP_UNRESOLVED_THREADS=$(jq -r '.threads.unresolved_count // 0' < "$BUNDLE")
 If `> 0`, record it. In `--verbose` mode also emit a timestamped detection heartbeat. Do **not** assert threads are the sole blocker — that is Branch B's call once the gate's full `missing` set is known. Do **not** invoke `/fixpr` from Phase 1 — the single delegation point is Step 2.1 Branch B.
 
 Proceed immediately to Phase 2 — do not ask.
+
+### Bind the physical clone before merge work
+
+Use the absolute invocation/worktree path from this chat's workspace context, an explicit caller path, or a validated delegated handoff that matches this PR, repository, HEAD and holder. Set `WRAP_SOURCE_PATH` from that trusted context; never recover it from a later `pwd` or a shared per-repository/per-PR `.root_repo` hint. A remote identity cannot distinguish two clones of the same repository. Resolve `WRAP_PR_URL` from the identified PR's native `url` field, using that exact PR/repository rather than a later current-branch lookup.
+
+<!-- test-anchor: wrap-merge-root-binding -->
+
+```bash
+WRAP_BOUND_ROOT=""
+WRAP_BOUND_PR_URL="${WRAP_PR_URL:-}"
+WRAP_ROOT_BINDING_STATUS="failed: explicit clone binding unavailable"
+if [[ -n "$MERGE_TARGET_ROOT_SH" ]]; then
+  WRAP_BIND_RC=0
+  WRAP_BOUND_ROOT=$("$MERGE_TARGET_ROOT_SH" --repo-path "${WRAP_SOURCE_PATH:-}" \
+    --pr-url "${WRAP_BOUND_PR_URL:-}" 2>/dev/null) || WRAP_BIND_RC=$?
+  if [[ "$WRAP_BIND_RC" -eq 0 && -n "$WRAP_BOUND_ROOT" ]]; then
+    WRAP_ROOT_BINDING_STATUS="bound"
+  else
+    WRAP_BOUND_ROOT=""
+    WRAP_ROOT_BINDING_STATUS="failed: explicit clone binding invalid or unreadable (rc=$WRAP_BIND_RC)"
+  fi
+fi
+```
+
+Carry `WRAP_BOUND_ROOT` and `WRAP_BOUND_PR_URL` unchanged across later tool calls and delegated `/fixpr` work; persist them in the validated run handoff when handing off this invocation. On resume without that binding, keep local mutations skipped. Never repopulate it from whatever clone the tool happens to enter. Binding failure does not undo or bypass the remote merge gate; it makes post-merge local cleanup/sync report a failure without mutating a guessed clone.
 
 ## Phase 2: Merge
 
@@ -307,12 +334,12 @@ else
 fi
 ```
 
-Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** — stop and report; do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). The Step 2.4 claim release is unchanged.
+Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** — stop and report; do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). Step 2.4 performs post-merge claim release through the shared bookkeeping boundary.
 
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
-1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → exit for Phase 3. `CLOSED` → stop.
-2. **Refresh gate** — run `wrap-capture-gate`, then `wrap-persist-recovery-audit` before routing. Invalid/empty/error or exit/verdict mismatch stops after durable recording. Exit `3` keeps its existing Phase3 route; exit `2`/`4` stops with its raw evidence pointer. Only exit `0` plus `GATE_CLASS=valid_pass` and no pending findings reaches Step2.2; pending findings still dispatch BranchB.
+1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → use the Phase 3 merged entry. `CLOSED` → stop.
+2. **Refresh gate** — run `wrap-capture-gate`, then `wrap-persist-recovery-audit` before routing. Invalid/empty/error or exit/verdict mismatch stops after durable recording. Exit `3` rechecks the native state with `wrap-confirm-merged-entry`; only `MERGED` reaches Phase 3; exit `2`/`4` stops with its raw evidence pointer. Only exit `0` plus `GATE_CLASS=valid_pass` and no pending findings reaches Step2.2; pending findings still dispatch BranchB.
 3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`). Every B/C/D wait dispatch runs the claim renewal above first; its exit 5 stops here:
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
@@ -408,7 +435,7 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 
 | Exit | Action |
 |------|--------|
-| `0` (`safe_to_offer: true`) | Run `"$ADMIN_MERGE_SH" "$PR_NUM" --auto-plain --ac-verified`. On its exit `0` the PR is **already merged** — relay the `AUTO_PLAIN_MERGED` evidence block and continue to the post-merge actions below. No `AskUserQuestion`: the plain shape modifies no branch protection, so it needs no user turn. |
+| `0` (`safe_to_offer: true`) | Run `"$ADMIN_MERGE_SH" "$PR_NUM" --auto-plain --ac-verified --defer-bookkeeping`. On its exit `0` the PR is **already merged** — relay the `AUTO_PLAIN_MERGED` evidence block and continue to the post-merge actions below. No `AskUserQuestion`: the plain shape modifies no branch protection, so it needs no user turn. |
 | `1` (`safe_to_offer: false`) | Not clean — surface `reasons_not_safe`, then take the `/fixpr` non-clean `BEHIND` path (rebase + force-push, `fixpr/SKILL.md` Step 6) and **re-enter Step 2.1** (below). |
 | `2` / `3` / `4` | Tooling or usage failure — **stop** and surface stderr. Never merge on an indeterminate answer. |
 
@@ -435,25 +462,42 @@ fi
 
 A ledger failure never un-merges anything; `NRO_SUFFIX` carries it into the report line (`merged PR #N (no AI review — ledger write failed)`) so the row can be added by hand (`unreviewed-merge-ledger.sh record`).
 
-**Reconcile issue completion first.** Run [verified issue completion](../../reference/issue-completion.md) on both merge paths, before releasing claims or clearing handoffs. Independently verify CLOSED, or record why the issue intentionally retains unfinished scope. A pending API/closure failure keeps a durable scoped retry action; a merged PR never returns to code dispatch. PR Test Plan success and claim release are not full-issue completion proof.
+**Reconcile issue completion first.** Load the canonical adapter from [verified issue completion](../../reference/issue-completion.md) in the same Bash invocation as the anchor below. If the assessment reports an open linked issue for this delivery, verify its full scope and rerun the boundary with the merge and issue revision from the evidence. Record deliberately retained scope with the reference’s retention flags. If completion is still pending, report `PR already merged; completion pending` with the receipt and preserve the claim and handoff. Continue after verified closure or justified retained scope.
 
-**Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
+**Preserve pickup evidence before claim cleanup.** After either confirmed merge path, run the same retryable boundary. It verifies the explicit repo/PR is merged, appends the estimate while renewal `since` and the claim timestamp remain available, then releases every winning-tier linked issue claim only while its pre-log observed comment identity still matches. Logging failures warn with the observed pickup timestamp and still attempt cleanup. Repeat invocations deduplicate the estimate and safely retry partial cleanup; foreign-account claims remain protected by the claim helper.
 
-**Release every issue the PR closed, not just one.** `pr-issue-ref.sh` is set-valued: a PR carrying two `Closes` trailers prints both numbers, one per line. Loop over them — taking a single value here is exactly what stranded #1541's claim after PR #1546 merged, and #1407's after PR #1489 (issue #1492):
+<!-- test-anchor: wrap-post-merge-bookkeeping -->
 
 ```bash
-MERGED_ISSUES=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/dev/null || true)
-if [ -n "$MERGED_ISSUES" ] && [ -n "$ISSUE_CLAIM_SH" ]; then
-  printf '%s\n' "$MERGED_ISSUES" | while IFS= read -r MERGED_ISSUE; do
-    [ -n "$MERGED_ISSUE" ] || continue
-    "$ISSUE_CLAIM_SH" "$MERGED_ISSUE" --release >/dev/null 2>&1 || true
-  done
-fi
+wrap_post_merge_bookkeeping() {
+  local completion_rc=0
+  MERGED_ISSUES=""
+  if ! declare -F reconcile_issue_completion >/dev/null; then
+    echo 'ERROR: completion adapter unavailable — issue completion pending' >&2
+    return 6
+  fi
+  OWNER_REPO="$CURRENT_REPO" reconcile_issue_completion "$@" || completion_rc=$?
+  if [[ "$completion_rc" -ne 0 ]]; then
+    echo "WARN: PR #$PR_NUM already merged; issue completion pending (exit $completion_rc)" >&2
+    return "$completion_rc"
+  fi
+  if [[ -n "$POST_MERGE_BOOKKEEPING_SH" ]]; then
+    BOOKKEEPING_RC=0
+    BOOKKEEPING_JSON=$("$POST_MERGE_BOOKKEEPING_SH" "$PR_NUM" --repo "$CURRENT_REPO") || BOOKKEEPING_RC=$?
+    if [[ "$BOOKKEEPING_RC" -eq 0 ]]; then
+      MERGED_ISSUES=$(printf '%s' "$BOOKKEEPING_JSON" | jq -r '.issues[]?' 2>/dev/null || true)
+    else
+      echo "WARN: post-merge bookkeeping not confirmed for PR #$PR_NUM (exit $BOOKKEEPING_RC)" >&2
+    fi
+  else
+    echo "WARN: post-merge-bookkeeping.sh missing; restore helpers and retry /wrap for PR #$PR_NUM" >&2
+  fi
+  return 0
+}
+wrap_post_merge_bookkeeping
 ```
 
-Releasing an issue you do not hold is safe and silent: `issue-claim.sh --release` compares logins and drops **your own** claim only, never a collaborator's, so an extra number in the set is a documented no-op rather than a stomp.
-
-Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
+The estimate and claim boundary is warning-only after a confirmed merge and successful completion assessment. For a verified single-issue close, intentionally retained scope, or a delivery with no issue, call the same function with the corresponding flags from the reference. Reuse those exact flags on this run’s Phase 3 entry. It never authorizes a merge or changes historical estimate rows. A closed-unmerged or unreadable PR does no merged bookkeeping.
 
 **Record explicit telemetry correlation after the merge gate and AC verification.** This optional metadata-only helper is described in `.claude/reference/spend-telemetry-pipeline.md`. Pass `--gate-passed` only after Steps 2.1 and 2.2 succeed, with the full `head_sha` and structured result from that successful `GATE_JSON` (`met:true`). An already-merged or special-path run without that passing result remains unverified telemetry. Pass a session ID only when supplied by the runtime; never infer one. A merge alone is not verified completion. Failures are non-blocking.
 
@@ -474,34 +518,26 @@ if [[ -n "$SPEND_TELEMETRY_LINK" && -n "$MERGED_ISSUES" ]]; then
 fi
 ```
 
-**Append actuals log entry** — after the merge and claim-release, on either merge path, append one row to `~/.claude/estimate-log.jsonl`. This is best-effort: a logging failure prints one `WARN:` line and never blocks or delays anything downstream.
-
-```bash
-ESTIMATE_LOG_SH=$(resolve_script estimate-log.sh || true)
-if [[ -n "$ESTIMATE_LOG_SH" ]]; then
-  LOG_RC=0
-  LOG_OUT=$("$ESTIMATE_LOG_SH" --append "$PR_NUM" 2>&1) || LOG_RC=$?
-  if [[ $LOG_RC -ne 0 || -n "$LOG_OUT" ]]; then
-    echo "WARN: estimate-log.sh --append PR #$PR_NUM exited $LOG_RC: $LOG_OUT" >&2
-  fi
-fi
-```
-
-The script always exits 0 when called with `--append` (issue AC). The outer `|| LOG_RC=$?` captures unexpected failures; the `WARN:` line surfaces them without blocking the merge path.
-
 Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-clean` via `stale-cleanup.sh`.
 
-### Step 2.5: Sync root repo main (aggressive reset)
+### Step 2.5: Sync the bound root repo main (aggressive reset)
 
 **Both helpers take `--repo "$ROOT_REPO"`; neither may be wrapped in a `cd`.** A worktree-isolated Phase C agent — the caller on the normal A/B/C merge path — is refused both `(cd "$ROOT_REPO" && …)` ("too complex to verify that it stays inside the worktree") and `git -C "$ROOT_REPO" …`. A plain script call is an allowed shape, so passing the path as a flag is what makes this step reachable at all; the earlier `cd` form made every Phase C merge take the degraded branch below and leave root `main` unsynced (issue #1411). Keep the two calls symmetric — do not reintroduce a `cd`. Full catalog of refused vs allowed shapes, and the wrapper for each recurring case: `.claude/reference/worktree-isolation-command-shapes.md` (issue #1470).
 
+<!-- test-anchor: wrap-bound-main-sync -->
+
 ```bash
-ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
+ROOT_REPO=""
+if [[ -n "$MERGE_TARGET_ROOT_SH" && -n "${WRAP_BOUND_ROOT:-}" && -n "${WRAP_BOUND_PR_URL:-}" ]]; then
+  ROOT_REPO=$("$MERGE_TARGET_ROOT_SH" --repo-path "$WRAP_BOUND_ROOT" \
+    --pr-url "$WRAP_BOUND_PR_URL" 2>/dev/null) || ROOT_REPO=""
+  [[ "$ROOT_REPO" == "$WRAP_BOUND_ROOT" ]] || ROOT_REPO=""
+fi
 MAIN_SYNC_STATUS=""
 QUARANTINE_STATUS=""
 QUARANTINE_OK=0
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
-  MAIN_SYNC_STATUS="failed: could not determine root repo path"
+  MAIN_SYNC_STATUS="failed: bound clone unavailable or identity changed; local mutation skipped"
 else
   if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --check --repo "$ROOT_REPO" >/dev/null 2>&1; then
     QUARANTINE_STATUS="clean"
@@ -544,6 +580,23 @@ See `main-sync.sh --help` and `dirty-main-guard.sh --help` for full contracts.
 Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report.
 
 ## Phase 3: Follow-Up Detection and Full-Session Sweep
+
+**Confirm a real merge on every entry, including recovery.** Run this before bookkeeping or follow-up detection. A closed-unmerged PR stops without creating merged-work tickets; a read failure also stops.
+
+<!-- test-anchor: wrap-confirm-merged-entry -->
+
+```bash
+MERGED_ENTRY_STATE=$(gh pr view "$PR_NUM" --repo "$CURRENT_REPO" --json state --jq '.state') || {
+  echo "WARN: could not verify merged state for PR #$PR_NUM; no merged-work follow-ups" >&2
+  exit 4
+}
+if [[ "$MERGED_ENTRY_STATE" != MERGED ]]; then
+  echo "PR #$PR_NUM is $MERGED_ENTRY_STATE without a confirmed merge; no merged-work follow-ups."
+  exit 3
+fi
+```
+
+**Every merged entry, including resume:** execute `wrap-post-merge-bookkeeping` before the follow-up sweep, using the canonical completion adapter and any verified disposition flags for this exact delivery, even if Step 2.4 already ran it. This also covers terminal recovery exits and interrupted/already-merged runs. Use the explicit `CURRENT_REPO` and `PR_NUM` from Phase 1; restore `POST_MERGE_BOOKKEEPING_SH` through the prelude resolver if needed. A closed-unmerged PR skips it. If assessment is pending, stop here and keep its receipt and handoff. Never release a claim or append actuals separately; the shared boundary owns that order.
 
 Phase 3 has **two parts**, run in order:
 
@@ -800,7 +853,7 @@ Memory writes are owned by **Phase 4**. Category 4 only *flags* as `SWEEP_MEMORY
 
 #### Step 3.10: Category 5 — PM hygiene (all touched issues/PRs)
 
-Build the repo-qualified set of issues/PRs touched this session — scoped session-state PRs, the merging PR and its linked issue, and in-scope tool history. For a missed closure or interrupted completion, run [completion reconciliation](../../reference/issue-completion.md): verify full scope before closing a single eligible issue and update only its matching repo/task state. This authorized completion repair is distinct from stale-backlog cleanup. Preserve partial/parent work and unresolved retry evidence. For other shared-state drift, flag `SWEEP_NEEDS_DECISION` without auto-editing:
+Build the repo-qualified set of issues/PRs touched this session — scoped session-state PRs, the merging PR and its linked issue, and in-scope tool history. Use [completion reconciliation](../../reference/issue-completion.md) only for the current merged delivery. The rest of the sweep records missed closures without making issue writes. Preserve partial/parent work and unresolved retry evidence. For other shared-state drift, flag `SWEEP_NEEDS_DECISION` without auto-editing:
 
 - **Status accuracy** — issue still open but its work merged? PR merged but linked issue not auto-closed?
 - **Linkage** — PR missing `Closes #N` for work that clearly resolves an issue?

@@ -85,7 +85,7 @@ jobs:
   # both jobs with no edit here.
   hook-tests-macos:
     runs-on: macos-latest
-    # session-start-sync.test.sh's ample-budget control proves its stall
+    # session-start-sync-publish-bounds.test.sh's ample-budget control proves its stall
     # assertion is not vacuous by running a HEALTHY publisher inside the hook's
     # deadline. Every bound there is min(budget left, ceiling), so a slow runner
     # that spends the deadline on fixture git work leaves the publish leg too

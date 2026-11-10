@@ -104,6 +104,7 @@
 #   issue-claim.sh <issue_number> --check   [--repo owner/repo] [--holder ID] [--json]
 #   issue-claim.sh <issue_number> --claim   [--repo owner/repo] [--holder ID] [--json] [--allow-claimed]
 #   issue-claim.sh <issue_number> --release [--repo owner/repo] [--holder ID] [--json]
+#                    [--expect-claim-id ID|none]
 #   issue-claim.sh <issue_number> --renew   [--repo owner/repo] [--holder ID] [--json]
 #   issue-claim.sh --help | -h
 #
@@ -113,6 +114,8 @@
 #   --renew          Renew this holder's own claim when due; never acquires.
 #   --repo           Act on a named repo instead of the current checkout's.
 #   --holder ID      Override the holder token (see above).
+#   --expect-claim-id ID|none  Release only the observed winner (exit 5 if changed).
+#                    --check --json exposes claim_comment_id; none means no marker.
 #   --json           Machine-readable object on stdout instead of the verdict word.
 #   --allow-claimed  Explicit user override; only valid with --claim.
 #
@@ -128,7 +131,7 @@
 #            Human-readable refusal / warning / override lines go to stderr, so a
 #            caller reading only the exit code still surfaces a clear message.
 #   --json:  {"issue":N,"repo":...,"viewer":...,"holder":...,"verdict":...,
-#             "claimant":...,"claimant_holder":...,"claimed_at":...,
+#             "claimant":...,"claimant_holder":...,"claim_comment_id":...,"claimed_at":...,
 #             "claimed_since":...,"previous_claimed_at":...,"renewed":true|false,
 #             "stale":true|false,"overridden":true|false,"reason":"..."}
 #            claimed_at is the GitHub created_at of the live marker (after a
@@ -149,6 +152,8 @@
 #                  newer foreign marker (`superseded`) or released under it /
 #                  the issue closed (`released`). Stop and report lost
 #                  ownership; nothing of anyone else's was touched.
+#                  Also: --release --expect-claim-id observed a changed winner
+#                  or remaining markers; their metadata is retained.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
@@ -162,12 +167,79 @@
 #   issue-claim.sh 873 --claim --allow-claimed # -> mine      (exit 0, override stated)
 #   issue-claim.sh 873 --renew --holder "$H"   # -> mine      (exit 0; renewed when due)
 #   issue-claim.sh 873 --release               # -> unclaimed (exit 0)
+#   issue-claim.sh --pickup-time MERGED_AT < comments.json  # pure pickup-time lookup
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+
+CLAIM_MARKER="claude-claim"
+
+# Classify the two protocol envelopes, not arbitrary Markdown. The writer has
+# always used the claim notice, a blank line, then the hidden marker; a bare
+# marker comment is also accepted. Quoted examples cannot enter either form.
+# No output means "not a record". A null line is a recognized but damaged
+# envelope and must remain a candidate so the newest unreadable record blocks.
+filter_claim_comments() {
+  jq -s --arg m "$CLAIM_MARKER" '
+    def marker_start($prefix): test("^[ ]{0,3}" + $prefix);
+    def record_line($prefix):
+      (gsub("\r\n"; "\n") | sub("^\n+"; "") | sub("\n+$"; "") | split("\n")) as $lines
+      | if ($lines[0] | test("^🔒 Claimed by `[^`]+` for active work[.]")) then
+          if ($lines | length) == 3 and $lines[1] == ""
+             and ($lines[2] | marker_start($prefix))
+          then $lines[2] else null end
+        elif ($lines[0] | marker_start($prefix)) then
+          if ($lines | length) == 1 then $lines[0] else null end
+        else empty end;
+    def decode($line; $prefix):
+      if $line == null then null
+      else
+        (try ($line | capture("^[ ]{0,3}" + $prefix + " *(?<p>.*)-->[ \t]*$") | .p | fromjson)
+         catch null) // null
+      end
+      | if type == "object" then . else null end;
+    ("<!-- " + $m + ":") as $prefix
+    | [ .[] | .[]? | select(.body != null and (.body | contains($prefix) or contains("🔒 Claimed by ")))
+        | (.body | record_line($prefix)) as $line
+        | ._claim_payload = decode($line; $prefix) ]'
+}
+
+# Pure input mode for estimate logging. Take paginated GitHub comment arrays
+# on stdin. It does not resolve a repository, log usage, or change ownership.
+estimate_pickup_time() {
+  [[ $# == 1 ]] || { printf '%s\n' 'Usage: issue-claim.sh --pickup-time MERGED_AT < comments.json' >&2; return 2; }
+  local records result
+  records="$(filter_claim_comments)" || return 4
+  result="$(printf '%s' "$records" | jq -r --arg bound "$1" '
+    def utc:
+      . as $text
+      | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+        and ((try (fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch null) == $text);
+    def holder_ok: type == "string" and length > 0 and all(explode[]; . >= 32 and . != 127);
+    if ($bound != "" and ($bound | utc | not)) or any(.[]; (.created_at | utc | not)) then
+      empty
+    else
+      [.[] | select($bound == "" or .created_at <= $bound)]
+      | sort_by(.created_at, .id) | last as $record
+      | $record._claim_payload as $payload
+      | select($payload.holder | holder_ok)
+      | ($payload.since | select(utc and . <= $record.created_at)) // $record.created_at
+    end')" || return 4
+  [[ -n "$result" ]] || return 3
+  printf '%s\n' "$result"
+}
+
+if [[ "${1:-}" == --pickup-time ]]; then
+  shift
+  estimate_pickup_time "$@"
+  exit $?
+fi
+
+# The usage ledger is advisory; an unset HOME must not block ownership checks.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 CLAIM_LABEL="in-progress"
-CLAIM_MARKER="claude-claim"
 GUARD_REF="the issue-claim guard (.claude/rules/issue-planning.md)"
 
 print_help() {
@@ -190,6 +262,8 @@ ACTION=""
 HOLDER_ARG=""
 JSON=0
 ALLOW_CLAIMED=0
+EXPECT_CLAIM_ID_SET=0
+EXPECTED_CLAIM_ID=""
 
 set_action() {
   [[ -n "$ACTION" ]] && die_usage "only one of --check / --claim / --release / --renew may be given (got --$ACTION and $1)"
@@ -209,6 +283,11 @@ while [[ $# -gt 0 ]]; do
       REPO="${1#--repo=}"
       [[ -z "$REPO" ]] && die_usage "--repo requires a value (owner/repo)"
       shift ;;
+    --expect-claim-id)
+      [[ $# -ge 2 ]] || die_usage "--expect-claim-id requires an ID or none"
+      EXPECTED_CLAIM_ID="$2"; EXPECT_CLAIM_ID_SET=1; shift 2 ;;
+    --expect-claim-id=*)
+      EXPECTED_CLAIM_ID="${1#--expect-claim-id=}"; EXPECT_CLAIM_ID_SET=1; shift ;;
     --holder)
       [[ $# -lt 2 || -z "${2-}" ]] && die_usage "--holder requires a value"
       HOLDER_ARG="$2"; shift 2 ;;
@@ -227,6 +306,10 @@ done
 [[ -z "$ISSUE_NUMBER" ]] && die_usage "<issue_number> is required"
 [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] || die_usage "<issue_number> must be a positive integer, got: $ISSUE_NUMBER"
 [[ -z "$ACTION" ]] && die_usage "one of --check / --claim / --release / --renew is required"
+if (( EXPECT_CLAIM_ID_SET )); then
+  [[ "$ACTION" == release ]] || die_usage "--expect-claim-id is release-only"
+  [[ "$EXPECTED_CLAIM_ID" == none || "$EXPECTED_CLAIM_ID" =~ ^[1-9][0-9]*$ ]] || die_usage "--expect-claim-id requires a positive ID or none"
+fi
 if [[ -n "$REPO" ]] && ! [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   die_usage "--repo must be owner/repo, got: $REPO"
 fi
@@ -276,7 +359,11 @@ resolve_holder() {
   top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   printf '%s:%s' "$host" "$top"
 }
-HOLDER="$(resolve_holder)"
+# Append a sentinel so command substitution cannot silently trim a malformed
+# holder into the identity of a different thread.
+HOLDER="$(resolve_holder; printf '.')"
+HOLDER="${HOLDER%.}"
+[[ "$HOLDER" =~ [[:cntrl:]] ]] && die_usage "holder must not contain control characters"
 
 # --- API path helpers ----------------------------------------------------------
 # {owner}/{repo} resolves from the current checkout unless --repo names one.
@@ -307,7 +394,10 @@ OVERRIDDEN="false"
 
 # emit <verdict> <exit_code> <reason>
 emit() {
-  local verdict="$1" code="$2" reason="$3"
+  local verdict="$1" code="$2" reason="$3" observed_claim_id=null
+  if [[ "$ACTION" == check && "${W_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+    observed_claim_id="$W_ID"
+  fi
   if [[ "$JSON" -eq 1 ]]; then
     jq -cn \
       --argjson issue "$ISSUE_NUMBER" \
@@ -317,6 +407,7 @@ emit() {
       --arg verdict "$verdict" \
       --arg claimant "$CLAIMANT" \
       --arg claimant_holder "$CLAIMANT_HOLDER" \
+      --argjson claim_comment_id "$observed_claim_id" \
       --arg claimed_at "$CLAIMED_AT" \
       --arg claimed_since "$CLAIMED_SINCE" \
       --arg previous_claimed_at "$PREVIOUS_CLAIMED_AT" \
@@ -331,6 +422,7 @@ emit() {
         verdict: $verdict,
         claimant: (if $claimant == "" then null else $claimant end),
         claimant_holder: (if $claimant_holder == "" then null else $claimant_holder end),
+        claim_comment_id: $claim_comment_id,
         claimed_at: (if $claimed_at == "" then null else $claimed_at end),
         claimed_since: (if $claimed_since == "" then null else $claimed_since end),
         previous_claimed_at: (if $previous_claimed_at == "" then null else $previous_claimed_at end),
@@ -387,8 +479,7 @@ if ! COMMENTS_JSON="$(gh api --paginate "$REPO_PREFIX/issues/$ISSUE_NUMBER/comme
 fi
 
 # --paginate concatenates one JSON array per page; -s flattens them into one.
-CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | jq -s --arg m "$CLAIM_MARKER" \
-  '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- " + $m + ":"))) ]' 2>/dev/null || echo "ERR")"
+CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | filter_claim_comments 2>/dev/null || echo "ERR")"
 [[ "$CLAIM_COMMENTS" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER comments"
 
 # Select the winning (newest) claim comment and parse its payload. The payload
@@ -396,23 +487,26 @@ CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | jq -s --arg m "$CLAIM_MARKER" \
 # created_at break on the comment id, so "which marker wins" is deterministic —
 # renewal verification compares winners by id. One jq pass emits the winner's
 # fields separated by US (0x1f): a non-whitespace IFS keeps empty fields
-# positional, which a tab would not. An unparseable winner yields nothing (no
-# claim comment), exactly as before.
+# positional, which a tab would not. Reject control bytes before serialization:
+# a payload separator or NUL can shift or truncate a holder in Bash. A present
+# but unreadable winner is not an empty marker list.
 #
 # parse_winner <claim-comments-json> -> sets W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT
+# An empty array is a successful read of absence; any unreadable winner is nonzero.
 parse_winner() {
   W_ID=""; W_AUTHOR=""; W_HOLDER=""; W_LOGIN=""; W_SINCE=""; W_AT=""
+  [[ "$1" == '[]' ]] && return 0
   local rec
-  rec="$(printf '%s' "$1" | jq -r --arg m "$CLAIM_MARKER" '
-    if length == 0 then ""
-    else
-      (sort_by(.created_at, .id) | last) as $c
-      | ($c.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson) as $p
-      | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
-         ($p.since // ""), ($c.created_at // "")]
-      | map(tostring) | join("\u001f")
-    end' 2>/dev/null || printf '')"
-  [[ -z "$rec" ]] && return 0
+  rec="$(printf '%s' "$1" | jq -r '
+    (sort_by(.created_at, .id) | last) as $c
+    | $c._claim_payload as $p
+    | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
+    | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
+       ($p.since // ""), ($c.created_at // "")]
+    | map(tostring)
+    | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
+    | join("\u001f")' 2>/dev/null)" || return 1
+  [[ -n "$rec" ]] || return 1
   IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT <<<"$rec"
 }
 
@@ -423,11 +517,10 @@ parse_winner() {
 read_claim_comments() {
   local raw
   raw="$(gh api --paginate "$REPO_PREFIX/issues/$ISSUE_NUMBER/comments?per_page=100" 2>"$ERR_FILE")" || return 1
-  printf '%s' "$raw" | jq -s --arg m "$CLAIM_MARKER" \
-    '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- " + $m + ":"))) ]' 2>/dev/null
+  printf '%s' "$raw" | filter_claim_comments 2>/dev/null
 }
 
-parse_winner "$CLAIM_COMMENTS"
+parse_winner "$CLAIM_COMMENTS" || fail_closed "newest claim marker for issue #$ISSUE_NUMBER is unreadable"
 MARKER_ID="$W_ID"
 MARKER_AUTHOR="$W_AUTHOR"
 CLAIMANT_HOLDER="$W_HOLDER"
@@ -544,6 +637,12 @@ if [[ "$ACTION" == "release" ]]; then
   if (( ! CLAIM_EXISTS )); then
     emit unclaimed 0 "issue #$ISSUE_NUMBER holds no claim — nothing to release"
   fi
+  if (( EXPECT_CLAIM_ID_SET )); then
+    if [[ ( "$EXPECTED_CLAIM_ID" == none && "$HAS_CLAIM_COMMENT" -ne 0 ) \
+          || ( "$EXPECTED_CLAIM_ID" != none && "${W_ID:-}" != "$EXPECTED_CLAIM_ID" ) ]]; then
+      emit "$VERDICT" 5 "claim identity changed on issue #$ISSUE_NUMBER — observed claim $EXPECTED_CLAIM_ID is no longer current; nothing released"
+    fi
+  fi
   if ! viewer_owns_claim; then
     # Never touch a collaborator's claim (issue #732). Not an error: releasing
     # what isn't yours was never the job.
@@ -568,6 +667,15 @@ if [[ "$ACTION" == "release" ]]; then
     gh api -X DELETE "$REPO_PREFIX/issues/comments/$cid" >/dev/null 2>"$ERR_FILE" || RELEASE_ERRORS=1
   done < <(printf '%s' "$CLAIM_COMMENTS" | jq -r --arg v "$VIEWER" \
     '.[] | select((.user.login // "") == $v) | .id' 2>/dev/null || true)
+
+  # A scoped cleanup deletes only the IDs captured above. If a later marker
+  # appeared meanwhile, retain the index metadata for its owner.
+  if (( EXPECT_CLAIM_ID_SET && ! RELEASE_ERRORS )); then
+    REMAINING_CLAIMS=$(read_claim_comments) || fail_closed "could not verify scoped release on issue #$ISSUE_NUMBER; metadata retained"
+    if ! printf '%s' "$REMAINING_CLAIMS" | jq -e 'length == 0' >/dev/null 2>&1; then
+      emit unknown 5 "claim markers remain after scoped release on issue #$ISSUE_NUMBER; metadata retained"
+    fi
+  fi
 
   # Ordering alone is not enough — the label must also be WITHHELD when a comment
   # delete failed. Dropping it anyway would produce exactly the comment-without-
@@ -730,9 +838,8 @@ winner_is_ours() {
 # marker is otherwise indistinguishable, so nothing is ever reconciled or
 # withdrawn by holder or by id order.
 own_run_markers() {
-  printf '%s' "$1" | jq -r --arg v "$VIEWER" --arg r "$RUN_NONCE" --arg m "$CLAIM_MARKER" '
-    .[] | select((.user.login // "") == $v)
-    | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .run) catch "") == $r)
+  printf '%s' "$1" | jq -r --arg v "$VIEWER" --arg r "$RUN_NONCE" '
+    .[] | select((.user.login // "") == $v and ._claim_payload.run == $r)
     | .id' 2>/dev/null || true
 }
 
@@ -774,7 +881,7 @@ do_renew() {
     fi
     fail_closed "renew-unverified — posted renewal marker $new_id on issue #$ISSUE_NUMBER but could not re-read to verify it; no older marker was deleted"
   fi
-  parse_winner "$verify"
+  parse_winner "$verify" || fail_closed "renew-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable after posting; no marker was deleted"
 
   if [[ -z "$new_id" ]]; then
     # The POST reported failure but may have landed. Reconcile ONLY by this
@@ -834,9 +941,9 @@ do_renew() {
       [[ -z "$cid" ]] && continue
       gh api -X DELETE "$REPO_PREFIX/issues/comments/$cid" >/dev/null 2>&1 || cleanup_failed=1
     done < <(printf '%s' "$verify" | jq -r --arg v "$VIEWER" --arg h "$HOLDER" \
-      --arg keep "$new_id" --arg m "$CLAIM_MARKER" '
+      --arg keep "$new_id" '
       .[] | select((.user.login // "") == $v and ((.id | tostring) != $keep))
-      | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .holder) catch "") == $h)
+      | select(._claim_payload.holder == $h)
       | .id' 2>/dev/null || true)
     (( cleanup_failed )) && echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but could not delete an older marker of this holder; the duplicate is inert (the newest marker wins) and the next renewal or release removes it" >&2
 
@@ -856,7 +963,7 @@ do_renew() {
     if (( ! final_ok )); then
       echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but the final consistency re-read failed; the renewal was already verified, so it stands" >&2
     else
-      parse_winner "$final"
+      parse_winner "$final" || fail_closed "renew-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable on the final re-read; no further marker or metadata cleanup attempted"
       local f_closed=0 f_ours=0 kept_present=0
       issue_is_closed "$final_issue" && f_closed=1
       [[ -n "$W_ID" && "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" \
@@ -890,7 +997,7 @@ do_renew() {
         local rest
         rest="$(printf '%s' "$final" | jq -c --arg ids "$mine_ids" \
           '($ids | split("\n")) as $w | [ .[] | select(((.id | tostring) as $i | $w | index($i)) | not) ]' 2>/dev/null || printf '')"
-        parse_winner "${rest:-[]}"
+        parse_winner "$rest" || fail_closed "renew-unverified — remaining claim markers on issue #$ISSUE_NUMBER could not be interpreted; label and assignee retained"
         local note="the label left as found"
         local undo=()
         if [[ -n "$rest" && -z "$W_ID" ]]; then
@@ -1036,7 +1143,7 @@ CLAIMED_AT="$(date -u +%FT%TZ)"
 # Prefer the marker's GitHub created_at — the timestamp every later --check
 # reads — over the local clock. Best effort: a failed re-read keeps the clock.
 if POSTED_COMMENTS="$(read_claim_comments)"; then
-  parse_winner "$POSTED_COMMENTS"
+  parse_winner "$POSTED_COMMENTS" || fail_closed "claim-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable after posting; marker and metadata retained"
   if [[ "$W_AUTHOR" == "$VIEWER" && "$W_HOLDER" == "$HOLDER" && -n "$(iso_to_epoch "$W_AT")" ]]; then
     CLAIMED_AT="$W_AT"
   fi

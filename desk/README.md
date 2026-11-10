@@ -6,6 +6,8 @@ its reasoning are in [`DESIGN.md`](DESIGN.md); this file is the operating
 contract for the code. Everything for the queue lives in this folder so it can
 be spun out as its own project later.
 
+Quick links: [Setup](#provisioning-the-database-once) · [CLI](#items) · [Capture hook](#capture-hook) · [Tests](#tests).
+
 ## Layout
 
 | Path | What it holds |
@@ -95,7 +97,7 @@ URL, is refused with exit 7 rather than silently dropped.
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
 | `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, an item id that does not exist, or a write the item's state refuses (for example `ack` of an item with no answer) |
-| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `note`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session, repo, and key) |
+| `5` | secret refused: credential-shaped text is rejected before database access. Stored-text checks cover `add`, `bump --note`, `wake --note`, `answer`, `flag`’s positional note or `--note`, `comment`, `note`, `set-resolve`, `state set`, `register-control`, `review --comment`, `summary set`, `checkin set` (`--session` and `--planned`), `plan set` (plan text and `--session`), and `interrupt set --session`; lookup-only checks also cover `state get`’s key, `pending-for`’s session/repo/key, and `--session` for `tick`, `sweep due`, `checkin due`, `plan clear`, and `interrupt get`. |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
@@ -262,9 +264,11 @@ full contract.
 - **When the desk last ticked.** The watermark is not a time, so each tick
   also stores its own time (UTC ISO 8601) under `tick_at`. `control-status`
   turns it into an age; it reads any tick, and in practice only the desk
-  ticks. Registering a different control session clears `tick_at`, so a
-  replacement desk is live only after its own first tick, never on the
-  previous desk's.
+  ticks. Registering a different control session waits for preceding ticks
+  and clears `tick_at`. Named desk ticks (`--session`) are checked against the
+  registered owner under the same locks. The argument-free compatibility
+  command has no caller identity: any such tick committing after registration
+  can make it live, so its stamp does not prove the new session itself ticked.
 
 ## Capture hook
 
@@ -325,6 +329,58 @@ registers globally at the next session start.
 - **Cost.** With no live desk the hook makes one `control-status` call
   (about half a second against Neon); with a live desk, one `add` per
   question as well.
+
+### Decisions from Codex, Cursor, and other tools
+
+The same queue can accept a Decision explicitly marked in a Codex or Cursor
+assistant message. The hook reads the message field supplied by the tool,
+never its transcript. It sends only the Decision's fields to the existing
+queue when the desk is live. Native input dialogs still belong to the tool
+that showed them.
+
+Put one block at the end of the assistant's message. Keep the question and
+each field on one line, give two to four distinct options, and make the
+optional default match one option exactly. Omit credentials, transcript
+excerpts, and private data the desk does not need.
+
+```desk-decision
+{"question":"Ship the compatibility patch this week?","options":["Ship after CI","Wait for the next batch"],"default":"Ship after CI","context":["The existing API stays compatible."]}
+```
+
+Enable each adapter in the tool's **user** hook configuration, alongside
+existing entries. Set `<installed-desk>` to the absolute path of your trusted
+`desk` install. Configure the tool's own instructions to emit the block when
+it needs a Decision from the desk.
+
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks#stop): add a command
+  hook to `Stop` in the profile's `hooks.json` and approve it in Codex.
+  Command: `python3 "<installed-desk>/hooks/external_capture.py" codex`;
+  set a timeout of 15 seconds. To enable same-machine answer pointers, run
+  `python3 "<installed-desk>/hooks/external_capture.py" init-route` once
+  on that machine. Keep the private route file local; do not sync it.
+  Set `DESK_CODEX_BIN` to an absolute trusted launcher path if the control
+  thread's host installs Codex outside the standard locations.
+- [Cursor hooks](https://cursor.com/docs/hooks#afteragentresponse): add a
+  command to `afterAgentResponse` in the user `hooks.json`.
+  Command: `python3 "<installed-desk>/hooks/external_capture.py" cursor`.
+  The hook needs a single workspace root. Cursor answers stay in the queue.
+- **No hook:** Include the same block in a small local handoff file and tell
+  the control thread which repository and work key it belongs to. The control
+  thread can import it with
+  `python3 "$DESK/hooks/external_capture.py" import --repo owner/name --key issue-123 < "$DECISION_FILE"`.
+  Import reads that file only, and the answer stays in the queue.
+
+The item shows the tool and registered nickname; an absent or ambiguous
+match is `unknown`. Codex profile directories and Cursor account emails
+are matched locally and are not stored on the item. The Codex route sends
+only a Decision pointer to an exact thread on the same installation; it
+does not resume or start a thread. If a route cannot be used, the answer
+stays available through `pending-for --repo OWNER/NAME --key KEY`. Add this
+instruction to the Codex profile: on a `human-queue: D-<n> answered` pointer,
+read `human-queue.sh get D-<n> --json` from the installed desk and use the
+stored answer. Confirm the item belongs to the current work before acting.
+Acknowledge the stored answer with the queue's `ack` command; if reading fails,
+leave it parked. Apply the pending database migration before enabling either hook.
 
 ## Migrations
 

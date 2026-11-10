@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [background-task-registry.sh](../background-task-registry.sh) | Locked exact-runtime-ID registry for current and historical Agent, Bash, Monitor, and Workflow tasks |
+| [chip-claim-receipt.sh](../chip-claim-receipt.sh) | Save or recover an acquired Form A claim in its assigned Git worktree |
 | [execution-pause.sh](../execution-pause.sh) | Arm, inspect, or explicitly clear a repo/session-scoped background-launch gate |
 | [handoff-migrate.sh](../handoff-migrate.sh) | One-time migration of flat handoff files to per-repo scoped paths |
 | [handoff-state.sh](../handoff-state.sh) | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |

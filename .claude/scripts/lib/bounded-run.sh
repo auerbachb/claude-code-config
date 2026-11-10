@@ -31,7 +31,16 @@
 #     failures included, so an ordinary git error never arrives dressed as a
 #     hang. The exception to the exception is a status that is our own kill
 #     (143/137), which means the bound genuinely did cut the call short.
+#     Successful calls may leave descendants running; callers own them (Issue #1649).
 #     <secs> must be a positive integer; normalize_bound() produces one.
+#     Backward wall-clock corrections re-anchor start at the elapsed high-water
+#     mark, so later samples keep advancing instead of extending the call by
+#     the jump (Issue #1651, bounded-run.test.sh T12). Forward steps still count
+#     as wall-clock progress and may expire a call conservatively (T13); this
+#     does not promise a monotonic time allowance. Poll/clock granularity
+#     and termination grace still apply. A clock that stops or rewinds forever
+#     cannot measure elapsed time; this portable wall-clock design does not
+#     claim a bound in that case. Unreadable clocks still stop the child.
 #
 #     Never call this inside `$( )`. Command substitution runs the whole
 #     function in a subshell, which discards BOUNDED_TIMED_OUT, the capture
@@ -154,7 +163,7 @@ run_bounded() { # bound_secs, command...
   local pid=$!
   set +m 2>/dev/null || true
 
-  local start now rc=0 killed=0 waited=0 reaped=0
+  local start now measured elapsed=0 rc=0 killed=0 waited=0 reaped=0
   start="$(now_epoch)" || start=""
   # The bound reads the clock every pass, never a tick count: a tick is a sleep
   # plus a fork, so counting iterations drifts past the requested bound under
@@ -165,9 +174,21 @@ run_bounded() { # bound_secs, command...
     # stop the call and say why, rather than running it unbounded.
     if [[ -z "$start" || -z "$now" ]]; then
       BOUNDED_CLOCK_UNREADABLE=1
+    else
+      measured=$((now - start))
+      if (( measured < elapsed )); then
+        start=$((now - elapsed))
+      else
+        elapsed="$measured"
+      fi
     fi
-    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( now - start >= bound )); then
+    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( elapsed >= bound )); then
       killed=1
+      # Bash 3.2 can print its async termination notice at the next command,
+      # outside kill/wait redirections. Contain only the termination/grace
+      # block; child stderr remains in CAPTURE_ERR and wait retains status.
+      # Do not disown: it discards the status and can turn failure into success.
+      {
       kill_child TERM "$pid"
       # Polled grace so a child that dies at once does not hold the wrapper
       # past the bound it was just held to.
@@ -176,6 +197,7 @@ run_bounded() { # bound_secs, command...
         sleep 1
       done
       kill_child KILL "$pid"
+      } 2>/dev/null
       break
     fi
     # Sub-second polling keeps the healthy path (a few milliseconds) fast; these
@@ -242,6 +264,7 @@ run_bounded() { # bound_secs, command...
     return 124
   fi
 
+  # Success has no descendant-reaping guarantee; see CONTRACT (Issue #1649).
   # The child finished on its own, so `wait` returns its real exit status
   # rather than a zombie plus a guess.
   wait "$pid" 2>/dev/null || rc=$?

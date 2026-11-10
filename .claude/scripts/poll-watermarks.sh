@@ -129,9 +129,9 @@ run_pr_state() {
 read_watermarks() {
   local wm=""
   if [[ -n "$ROOT_REPO_ARG" ]]; then
-    wm="$(cd "$ROOT_REPO_ARG" && "$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks" 2>/dev/null || true)"
+    wm="$(cd "$ROOT_REPO_ARG" && "$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks")" || return 1
   else
-    wm="$("$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks" 2>/dev/null || true)"
+    wm="$("$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks")" || return 1
   fi
   if [[ -z "$wm" || "$wm" == "null" ]]; then
     wm='{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
@@ -152,9 +152,8 @@ write_watermarks() {
 # lib/pr-state-classify.jq (fixpr Step 5b). It watches the same five review bots
 # as pr-state.sh --since (issue #1748), then applies ID watermarks.
 eval_watermarks() {
-  local state_file="$1" stored_wm="$2"
-  local classified
-  classified="$(
+  local state_file="$1"
+  # Same file-input boundary as the producer (Issue #1565 / PR #2008).
     jq -c '[
       (.comments.reviews[]? | . + {__endpoint: "review"}),
       (.comments.inline[]? | . + {__endpoint: "inline"}),
@@ -164,12 +163,11 @@ eval_watermarks() {
       --argjson inline '[]' \
       --argjson conversation '[]' \
       --arg since '' \
-      -f "$PR_STATE_CLASSIFY_JQ"
-  )" || return 1
+      -f "$PR_STATE_CLASSIFY_JQ" > "$WORKDIR/classified.json" || return 1
   jq -n \
-    --argjson state "$(<"$state_file")" \
-    --argjson classified "$classified" \
-    --argjson stored "$stored_wm" \
+    --slurpfile state_file "$state_file" \
+    --slurpfile classified_file "$WORKDIR/classified.json" \
+    --slurpfile stored_file "$WORKDIR/stored.json" \
     '
     def is_bot:
       .user.login == "coderabbitai[bot]"
@@ -188,7 +186,10 @@ eval_watermarks() {
        | select((.id // 0) > ($wm // 0))
        | select(.classification.class == "finding")
       ] | length;
-    ($state.comments.reviews // []) as $reviews
+    $state_file[0] as $state
+    | $classified_file[0] as $classified
+    | $stored_file[0] as $stored
+    | ($state.comments.reviews // []) as $reviews
     | ($state.comments.inline // []) as $inline
     | ($state.comments.conversation // []) as $conversation
     | ($stored.last_review_id // 0) as $wm_review
@@ -212,9 +213,29 @@ eval_watermarks() {
     '
 }
 
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/poll-watermarks.XXXXXX") || exit 4
+trap 'rm -rf "$WORKDIR"' EXIT
 STATE_FILE="$(run_pr_state)"
-STORED_WM="$(read_watermarks)"
-EVAL="$(eval_watermarks "$STATE_FILE" "$STORED_WM")"
+# Read once into private scratch: validation and classification use the same
+# complete snapshot even if the producer's temporary file later disappears.
+if ! cat "$STATE_FILE" > "$WORKDIR/state.json" || ! jq -e -s '
+  length == 1 and (.[0] | type == "object")
+  and (.[0].comments | type == "object")
+  and (.[0].comments | [.reviews, .inline, .conversation]
+    | all(.[]; . == null or (type == "array" and all(.[];
+      type == "object" and (.id == null or (.id | type == "number" and . >= 0 and floor == .))))))
+' "$WORKDIR/state.json" >/dev/null; then
+  echo "poll-watermarks.sh: unreadable or invalid PR snapshot — watermarks unchanged" >&2
+  exit 4
+fi
+if ! read_watermarks > "$WORKDIR/stored.json"; then
+  echo "poll-watermarks.sh: could not stage stored watermarks" >&2
+  exit 4
+fi
+if ! EVAL="$(eval_watermarks "$WORKDIR/state.json")"; then
+  echo "poll-watermarks.sh: watermark evaluation failed — watermarks unchanged" >&2
+  exit 4
+fi
 
 CURRENT_WM="$(jq -c '.current' <<<"$EVAL")"
 NEW_FINDINGS="$(jq -r '.new_findings | if . then 1 else 0 end' <<<"$EVAL")"

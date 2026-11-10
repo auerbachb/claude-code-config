@@ -62,7 +62,7 @@
 #   Scope flags (optional, any order, before the mode flag):
 #     --owner-repo <owner/repo>   scope explicitly — preferred at every call site
 #     --legacy-flat               target the legacy flat path instead
-#     --require-existing          --set/--append update only; exit 3 (nothing
+#     --require-existing          --set/--append/--delete existing only; exit 3 (nothing
 #                                 written) instead of seeding a new record from
 #                                 `{}` when the target is absent. Checked under
 #                                 the lock, so it is race-free where a caller's
@@ -71,6 +71,9 @@
 #                                 Guard an existing --set/--append by embedded
 #                                 identity under its lock. All three flags and
 #                                 --require-existing are required together.
+#     --expect-content-sha SHA256  optional bounded content revision guard,
+#                                 under the same lock; requires the identity
+#                                 guards above. Needs python3 only when used.
 #
 #   handoff-state.sh [<scope-flags>] --path   <pr_number>        # print canonical path (no lock)
 #   handoff-state.sh [<scope-flags>] --get    <pr_number>        # lock-free read
@@ -152,10 +155,11 @@
 #   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
 #      unevaluated jq expression rather than data (issue #1357) — the file is
 #      left unmodified. Evaluate the expression first and pass the result.
-#   5  Cannot complete the operation on disk. Three causes, all leaving the
+#   5  Cannot complete the operation on disk. Causes, all leaving the
 #      handoff file exactly as it was: mktemp / temp-write / mv failure,
-#      rm failure under --delete, or a REQUIRED sibling library missing at
-#      startup (see DEPENDENCIES — that one fails before anything is read).
+#      rm failure under --delete, a REQUIRED sibling library missing at
+#      startup (see DEPENDENCIES), or HOME unset or empty. A missing HOME
+#      or library stops before any handoff is read or written.
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
 #   70  --help header extraction produced no output (internal defect).
 #
@@ -168,12 +172,14 @@
 #     .claude/scripts/lib/pr-scope-resolver.sh  cwd -> owner/repo (issue #1366)
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
-  2>/dev/null >> "${HOME}/.claude/script-usage.log" || true
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
+    2>/dev/null >> "${HOME}/.claude/script-usage.log" || true
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCK_LIB="${SCRIPT_DIR}/state-lock.sh"
-HANDOFF_DIR="${HOME}/.claude/handoffs"
+HANDOFF_DIR="${HOME:+$HOME/.claude/handoffs}"
 
 # Saved before any parsing shifts them, so a read-modify-write whose lock was
 # stolen mid-flight can be retried from scratch (see _rmw_retry_or_fail).
@@ -249,6 +255,7 @@ REQUIRE_EXISTING=0
 EXPECTED_PR=""
 EXPECTED_OWNER=""
 EXPECTED_HEAD=""
+EXPECTED_CONTENT_SHA=""
 SCOPE_SOURCE=""
 
 # Every array field the handoff schema defines — the complete set --append may
@@ -315,6 +322,9 @@ while [[ $# -gt 0 ]]; do
       EXPECTED_OWNER="$(normalize_repo_key "${2:-}")"
       is_strict_owner_repo "$EXPECTED_OWNER" || { echo "handoff-state.sh: --expect-owner requires owner/repo" >&2; exit 2; }
       shift 2 ;;
+    --expect-content-sha)
+      [[ "$#" -ge 2 ]] && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { echo "handoff-state.sh: --expect-content-sha requires SHA256" >&2; exit 2; }
+      EXPECTED_CONTENT_SHA="$2"; shift 2 ;;
     --expect-head)
       [[ "${2:-}" =~ ^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$ ]] || { echo "handoff-state.sh: --expect-head requires a full SHA" >&2; exit 2; }
       EXPECTED_HEAD="$2"; shift 2 ;;
@@ -458,15 +468,20 @@ if [[ $# -gt "$_expected_argc" ]]; then
   exit 2
 fi
 
+if [[ -z "$HANDOFF_DIR" ]]; then
+  echo "handoff-state.sh: HOME is unset or empty; cannot resolve handoff storage. Nothing was read or written." >&2
+  exit 5
+fi
+
 # ---------------------------------------------------------------------------
 # Validate and resolve the handoff file path.
 #
 # Scoped (owner/repo resolved): ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
 # Legacy flat (explicit only)  : ~/.claude/handoffs/pr-{N}-handoff.json
 # ---------------------------------------------------------------------------
-if [[ -n "$EXPECTED_PR$EXPECTED_OWNER$EXPECTED_HEAD" ]]; then
-  if [[ "$REQUIRE_EXISTING" != 1 || "$EXPECTED_PR" != "$PR_NUMBER" || -z "$EXPECTED_OWNER" || -z "$EXPECTED_HEAD" || ( "$MODE" != set && "$MODE" != append ) ]]; then
-    echo "handoff-state.sh: identity guards require matching --expect-pr, --expect-owner, --expect-head and --require-existing before --set/--append; nothing written" >&2
+if [[ -n "$EXPECTED_PR$EXPECTED_OWNER$EXPECTED_HEAD$EXPECTED_CONTENT_SHA" ]]; then
+  if [[ "$REQUIRE_EXISTING" != 1 || "$EXPECTED_PR" != "$PR_NUMBER" || -z "$EXPECTED_OWNER" || -z "$EXPECTED_HEAD" || ( "$MODE" != set && "$MODE" != append && "$MODE" != delete ) ]]; then
+    echo "handoff-state.sh: identity guards require matching --expect-pr, --expect-owner, --expect-head and --require-existing before --set/--append/--delete; nothing written" >&2
     exit 2
   fi
 fi
@@ -671,7 +686,7 @@ state_lock_acquire "$HANDOFF_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
 #
 # Scoped to the seeding modes: --create and --init are meant to create, and
 # --delete already tolerates an absent target.
-if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" ) && ! -f "$HANDOFF_FILE" ]]; then
+if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" || "$MODE" == "delete" ) && ! -f "$HANDOFF_FILE" ]]; then
   echo "handoff-state.sh: --${MODE} on PR #${PR_NUMBER} requires an existing handoff, but none is at $HANDOFF_FILE (--require-existing). Nothing was written; the record was never created, or was deleted/migrated after the caller checked." >&2
   state_lock_release
   exit 3
@@ -685,6 +700,32 @@ if [[ -n "$EXPECTED_PR" && "$LEGACY_FLAT" == 1 ]]; then
     exit 4
   fi
 fi
+# Optional content revision is checked under the same writer lock. A resumed
+# owner can change recovery state without changing PR/repo/HEAD.
+if [[ -n "$EXPECTED_CONTENT_SHA" ]]; then
+  ACTUAL_CONTENT_SHA=""
+  if ! ACTUAL_CONTENT_SHA=$(python3 - "$HANDOFF_FILE" <<'HANDOFF_CONTENT'
+import hashlib, os, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_size > 1024 * 1024:
+            sys.exit(1)
+        raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            sys.exit(1)
+    print(hashlib.sha256(raw).hexdigest())
+except OSError:
+    sys.exit(1)
+HANDOFF_CONTENT
+  ) || [[ "$ACTUAL_CONTENT_SHA" != "$EXPECTED_CONTENT_SHA" ]]; then
+    echo "handoff-state.sh: selected handoff revision changed or is unreadable; nothing written" >&2
+    state_lock_release
+    exit 4
+  fi
+fi
+
 if [[ -n "$EXPECTED_PR" ]] && ! jq -se --argjson pr "$EXPECTED_PR" --arg owner "$EXPECTED_OWNER" --arg head "$EXPECTED_HEAD" \
   'length == 1 and (.[0] | type == "object" and .pr_number == $pr
    and (.owner_repo | type == "string") and (.owner_repo | ascii_downcase) == $owner

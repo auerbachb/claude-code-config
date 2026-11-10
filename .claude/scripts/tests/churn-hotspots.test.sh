@@ -10,7 +10,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.claude/scripts/churn-hotspots.sh"
+SCRIPT="${CHURN_HOTSPOTS_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/churn-hotspots.sh}"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -58,12 +58,61 @@ has_text() {  # text, needle...
 # means those tests fail on `--state open` and pass on `--state all`.
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
+CHURN_TEST_REAL_JQ=$(command -v jq)
+cat > "$STUB_BIN/jq" <<JQ_STUB
+#!/usr/bin/env bash
+if [ -f "$TMP/fail-matcher" ]; then
+  for arg in "\$@"; do
+    case "\$arg" in *"def norm_state:"*) exit 9 ;; esac
+  done
+fi
+exec "$CHURN_TEST_REAL_JQ" "\$@"
+JQ_STUB
+chmod +x "$STUB_BIN/jq"
+
 GH_POLICY_SHA="0123456789abcdef0123456789abcdef01234567"
+cat > "$TMP/search-pages.py" <<'SEARCH_PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+fields = dict(a.split('=', 1) for a in sys.argv[2:] if '=' in a)
+assert fields.get('per_page') == '100' and fields.get('sort') == 'created' and fields.get('order') == 'asc', fields
+assert 'repo:' in fields.get('q', '') and 'is:issue' in fields['q'] and 'Refactor hotspot in:title' in fields['q'], fields
+page = int(fields['page'])
+with (root / 'search-requests.jsonl').open('a') as log:
+    log.write(json.dumps(fields) + '\n')
+all_items = json.loads((root / 'issue_list.json').read_text())
+items = all_items[(page - 1) * 100:page * 100]
+payload = dict(total_count=len(all_items), incomplete_results=False, items=items)
+fault_file = root / 'lookup-fault.json'
+fault = json.loads(fault_file.read_text()) if fault_file.exists() else {}
+if page == fault.get('page'):
+    kind = fault['kind']
+    if kind == 'transport': sys.exit(1)
+    if kind == 'malformed': print('{bad'); sys.exit(0)
+    if kind == 'empty': sys.exit(0)
+    if kind == 'scalar': print('"not an object"'); sys.exit(0)
+    if kind == 'incomplete': payload['incomplete_results'] = True
+    if kind == 'count-drift': payload['total_count'] += 1
+    if kind == 'duplicate': payload['items'][0] = all_items[0]
+    if kind == 'short': payload['items'] = items[:-1]
+    if kind == 'bad-title': payload['items'][0] = dict(items[0], title=7)
+    if kind == 'bad-number': payload['items'][0] = dict(items[0], number='7')
+    if kind == 'bad-body': payload['items'][0] = dict(items[0], body=[])
+    if kind == 'pr-item': payload['items'][0] = dict(items[0], pull_request={})
+    if kind == 'missing-items': del payload['items']
+    if kind == 'bad-total': payload['total_count'] = True
+    if kind == 'fractional-total': payload['total_count'] = 200.5
+    if kind == 'bad-items': payload['items'] = {}
+    if kind == 'multiple-json': print(json.dumps(payload))
+print(json.dumps(payload))
+SEARCH_PY
+
 cat > "$STUB_BIN/gh" <<STUB
 #!/usr/bin/env bash
 set -uo pipefail
 args="\$*"
 case "\$args" in
+  *"search/issues"*) python3 "$TMP/search-pages.py" "$TMP" "\$@" ;;
   *"repo view"*)      cat "$TMP/repo_view.txt" ;;
   *"issue list"*)
     case "\$args" in
@@ -487,23 +536,95 @@ run_in "$R1" --since "$WINDOW_START" --json
 check_jq "9a: a sibling-file hotspot issue does not match" "$OUT" \
   '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == null and .existing_hotspot_issue_state == null'
 
-# A capped issue lookup is an INCOMPLETE lookup: a matching issue may sit beyond
-# the cap, so absence of a match no longer proves absence of an issue. Callers
-# gate filing on existing_lookup_failed, so the cap must set it — reporting only
-# `truncated` would let a caller file a duplicate. `--state all` enlarges the
-# candidate set, so the fixture mixes both states: closed issues alone can now
-# fill the cap, which is why this guard matters more after #915, not less.
-python3 - "$TMP/issue_list.json" <<'PY'
+lookup_page_count() {
+  if [ -f "$TMP/search-requests.jsonl" ]; then
+    wc -l < "$TMP/search-requests.jsonl" | tr -d ' '
+  else
+    printf '0\n'
+  fi
+}
+
+# Exact-at-200 is complete after the empty third page; the 1000-result
+# GitHub search ceiling remains conservative and fail closed.
+python3 - "$TMP/issue_list.json" <<'PY_FIXTURE'
 import json, sys
-# 200 non-matching issues == ISSUE_LOOKUP_CAP, so the lookup is capped out.
 json.dump([{"number": 1000 + i, "title": "Refactor hotspot: src/Unrelated%d.ts" % i, "body": "",
             "state": "OPEN" if i % 2 else "CLOSED"}
            for i in range(200)], open(sys.argv[1], "w"))
-PY
+PY_FIXTURE
+rm -f "$TMP/search-requests.jsonl"
 run_in "$R1" --since "$WINDOW_START" --json
-check_jq "9b: a capped issue lookup sets existing_lookup_failed" "$OUT" '.existing_lookup_failed == true'
-check_jq "9c: a capped issue lookup is also reported as truncated" "$OUT" '.truncated == true'
+check_jq "9b: exactly 200 issues is a complete lookup" "$OUT" '.existing_lookup_failed == false and .truncated == false'
+check_eq "9c: exactly 200 proves completion with an empty third page" 3 "$(lookup_page_count)"
+
+# Page-three exact matches cannot be treated as absence. Numbered fixture rows
+# are already in creation order, as requested from the real API.
+for issue_count in 199 201 999 1000 1001; do
+  python3 - "$TMP/issue_list.json" "$issue_count" <<'PY_FIXTURE'
+import json, sys
+n=int(sys.argv[2])
+items=[dict(number=1000+i,title='Refactor hotspot: src/Unrelated%d.ts'%i,body='',state='CLOSED') for i in range(n)]
+if n>200:items[200]=dict(number=1200,title='Refactor hotspot: src/Form.tsx',body='',state='OPEN')
+json.dump(items,open(sys.argv[1],'w'))
+PY_FIXTURE
+  rm -f "$TMP/search-requests.jsonl"
+  run_in "$R1" --since "$WINDOW_START" --json
+  if [ "$issue_count" -lt 1000 ]; then
+    check_jq "9d: $issue_count candidates complete without lookup flags" "$OUT" '.existing_lookup_failed == false and .truncated == false'
+    expected_pages=$((issue_count / 100 + 1))
+    check_eq "9d: $issue_count visits exactly the required pages" "$expected_pages" "$(lookup_page_count)"
+    if [ "$issue_count" -gt 200 ]; then
+      check_jq "9d: $issue_count preserves a page-three exact match" "$OUT" '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 1200 and .existing_hotspot_issue_state == "open"'
+      printf '%s\n' "$OUT" > "$TMP/paged-envelope.json"
+      PLAN_RC=0
+      bash "$REPO_ROOT/.claude/scripts/churn-hotspot-wrap-plan.sh" --input "$TMP/paged-envelope.json" --pr 999 > "$TMP/paged-plan.json" 2> "$TMP/paged-plan.err" || PLAN_RC=$?
+      check_eq "9d: complete page-three envelope is accepted by planner" 0 "$PLAN_RC"
+      check_jq "9d: page-three existing match is never a new-issue candidate" "$(cat "$TMP/paged-plan.json")" 'all(.file_set[]?; .file != "src/Form.tsx")'
+    fi
+  else
+    check_jq "9e: $issue_count reaches the conservative search ceiling" "$OUT" '.existing_lookup_failed == true and .truncated == true'
+    check_eq "9e: $issue_count stops on first-page ceiling evidence" 1 "$(lookup_page_count)"
+  fi
+done
+
+# Real issue bodies make a complete candidate set much larger than argv.
+python3 - "$TMP/issue_list.json" <<'PY_FIXTURE'
+import json,sys
+items=[dict(number=1000+i,title='Refactor hotspot: src/Unrelated%d.ts'%i,body='x'*16384,state='CLOSED') for i in range(201)]
+items[200]['title']='Refactor hotspot: src/Form.tsx'
+items[200]['state']='OPEN'
+json.dump(items,open(sys.argv[1],'w'))
+PY_FIXTURE
+rm -f "$TMP/search-requests.jsonl"
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "9e: large candidate bodies stream without argv truncation" "$OUT" '.existing_lookup_failed == false and .truncated == false'
+check_jq "9e: large candidate bodies retain the page-three match" "$OUT" '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 1200'
+check_eq "9e: large candidate lookup remains exactly three pages" 3 "$(lookup_page_count)"
+
+# A fault in the last page invalidates the WHOLE candidate set, including
+# valid earlier pages. The unchanged planner must reject every unsafe envelope.
+python3 - "$TMP/issue_list.json" <<'PY_FIXTURE'
+import json,sys
+json.dump([dict(number=1000+i,title='Refactor hotspot: src/Unrelated%d.ts'%i,body='',state='OPEN') for i in range(201)],open(sys.argv[1],'w'))
+PY_FIXTURE
+for lookup_fault in transport malformed empty scalar incomplete count-drift duplicate short bad-title bad-number bad-body pr-item missing-items bad-total fractional-total bad-items multiple-json; do
+  jq -nc --arg kind "$lookup_fault" '{page:3,kind:$kind}' > "$TMP/lookup-fault.json"
+  rm -f "$TMP/search-requests.jsonl"
+  run_in "$R1" --since "$WINDOW_START" --json
+  check_jq "9f: later-page $lookup_fault fails closed" "$OUT" '.existing_lookup_failed == true and .total_hotspot_count > 0'
+  check_eq "9f: later-page $lookup_fault stays bounded" 3 "$(lookup_page_count)"
+  printf '%s\n' "$OUT" > "$TMP/unsafe-envelope.json"
+  PLAN_RC=0
+  bash "$REPO_ROOT/.claude/scripts/churn-hotspot-wrap-plan.sh" --input "$TMP/unsafe-envelope.json" --pr 999 > "$TMP/unsafe-plan.json" 2> "$TMP/unsafe-plan.err" || PLAN_RC=$?
+  check_eq "9f: planner rejects later-page $lookup_fault" 2 "$PLAN_RC"
+done
+rm -f "$TMP/lookup-fault.json"
 printf '[]\n' > "$TMP/issue_list.json"
+: > "$TMP/fail-matcher"
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "9g: matcher failure retains unsafe hotspots" "$OUT" '.existing_lookup_failed == true and .total_hotspot_count > 0'
+check_jq "9g: matcher failure preserves null issue fields" "$OUT" 'all(.hotspots[]; has("existing_hotspot_issue") and .existing_hotspot_issue == null and has("existing_hotspot_issue_state") and .existing_hotspot_issue_state == null)'
+rm -f "$TMP/fail-matcher"
 
 # =============================================================================
 # Scenario 10 — default exclusions

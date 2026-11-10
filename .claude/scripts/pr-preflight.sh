@@ -907,7 +907,7 @@ cursor_grant_or_skip() {
 # line on an unresolvable tier is kept out of --json callers' way.
 bugbot_tier_excluded() {
   [[ -n "$BUGBOT_TIER_SH" ]] || return 1
-  "$BUGBOT_TIER_SH" "$PR" 2>/dev/null
+  "$BUGBOT_TIER_SH" "$PR" --why 2>/dev/null
 }
 
 # Tier-aware triggers (issue #1749): ask the shared helper once.
@@ -1017,7 +1017,11 @@ for key in "${REVIEWER_KEYS[@]}"; do
     # The PR's review tier never needs BugBot (issue #1728): nothing to do and
     # nothing pending, so this status counts as clean below.
     set_status "$key" "skipped-tier-excluded"
-    surface "skipping @cursor review — review tier $tier_gate excludes BugBot"
+    if [[ "$tier_gate" == *$'\t'escalation_off ]]; then
+      surface "skipping @cursor review — REVIEW_ESCALATION=off (repo turned escalation off; gate ${tier_gate%%$'\t'*})"
+    else
+      surface "skipping @cursor review — review tier ${tier_gate%%$'\t'*} excludes BugBot"
+    fi
   elif [[ "$key" == "cursor" ]]; then
     # Last step of the BugBot chain (issue #1897): paid, so never posted
     # without the owner's explicit approval — an owner grant (#1898) or the

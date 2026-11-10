@@ -172,18 +172,20 @@ def check_race_hold(args, report):
         raise CompletionError('closure_visibility_pending', 1)
 
 
-def assess(args, report):
-    data = graphql(QUERY, args.repo, args.pr)
+def merged_delivery(repo, number):
+    data = graphql(QUERY, repo, number)
     repository = data['repository']
     pr = repository['pullRequest']
-    if (repository['nameWithOwner'].lower() != args.repo.lower() or not isinstance(pr, dict)
-            or pr.get('number') != args.pr or pr.get('state') != 'MERGED'
+    if (repository['nameWithOwner'].lower() != repo.lower() or not isinstance(pr, dict)
+            or pr.get('number') != number or pr.get('state') != 'MERGED'
             or not pr.get('mergedAt') or not SHA.fullmatch((pr.get('mergeCommit') or {}).get('oid', ''))):
         raise CompletionError('merged_pr_unverified', 3)
-    report.update(merge_sha=pr['mergeCommit']['oid'], head_sha=pr['headRefOid'], merged_at=pr['mergedAt'])
     if pr.get('baseRefName') != (repository.get('defaultBranchRef') or {}).get('name'):
         raise CompletionError('non_default_merge_target', 3)
-    check_race_hold(args, report)
+    return data, pr
+
+
+def closing_candidates(repo, pr):
     links = pr['closingIssuesReferences']
     if links['pageInfo']['hasNextPage']:
         raise CompletionError('closing_reference_limit', 3)
@@ -194,8 +196,20 @@ def assess(args, report):
                 or not REPO.fullmatch(owner_repo) or linked.get('state') not in ('OPEN', 'CLOSED')):
             raise CompletionError('closing_reference_invalid', 3)
         candidates.append(dict(owner_repo=owner_repo, issue=linked['number'],
-                               state=linked['state'], disposition='foreign_retained' if owner_repo.lower() != args.repo.lower()
+                               state=linked['state'], disposition='foreign_retained' if owner_repo.lower() != repo.lower()
                                else 'closed' if linked['state'] == 'CLOSED' else 'scope_verification_required'))
+    return candidates
+
+
+def candidate_states(candidates):
+    return {(entry['owner_repo'].lower(), entry['issue']): entry['state'] for entry in candidates}
+
+
+def assess(args, report):
+    data, pr = merged_delivery(args.repo, args.pr)
+    report.update(merge_sha=pr['mergeCommit']['oid'], head_sha=pr['headRefOid'], merged_at=pr['mergedAt'])
+    check_race_hold(args, report)
+    candidates = closing_candidates(args.repo, pr)
     report['issues'] = candidates
     if args.retain_issue:
         if (args.complete_issue is not None or args.no_issue_verified
@@ -233,13 +247,9 @@ def assess(args, report):
     if (pr.get('author') or {}).get('login', '').lower() != data['viewer']['login'].lower():
         raise CompletionError('pr_authorship_unverified', 3)
     target = next((x for x in candidates if x['owner_repo'].lower() == args.repo.lower() and x['issue'] == args.complete_issue), None)
-    if target is None:
-        # A task issue omitted from PR trailers must be bound explicitly after
-        # full-scope/source verification; never infer from titles or prose.
-        if not args.association_verified:
-            raise CompletionError('issue_association_unverified', 3)
-        target = dict(owner_repo=args.repo, issue=args.complete_issue, disposition='scope_verification_required')
-        candidates.append(target)
+    # Only GitHub's typed closing association authorizes an automatic write.
+    if target is None or args.association_verified:
+        raise CompletionError('issue_association_unverified', 3)
     current = issue(args.repo, args.complete_issue)
     reopened = reopened_after_merge(current, pr['mergedAt'])
     if current['state'] == 'OPEN' and reopened:
@@ -249,24 +259,32 @@ def assess(args, report):
         target['disposition'] = 'closed'
         report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
         return 0 if report['outcome'] == 'verified' else 1
-    # Durable intent precedes the write; an interrupted request is retryable.
+    if current['updatedAt'] != args.expected_issue_updated_at:
+        raise CompletionError('issue_scope_revision_unverified', 3)
+    # Persist intent and arm the guard before the final GitHub read, so the
+    # state and revision comparison sits immediately before the close request.
     target['disposition'] = 'closure_pending'
     report['outcome'] = 'pending'
     save(args.receipt, report)
-    # GitHub offers no conditional issue-state write. Recheck immediately
-    # before the request, and never call a changed preflight verified.
-    preflight = issue(args.repo, args.complete_issue)
-    if preflight['state'] == 'CLOSED':
-        target.update(state='CLOSED', disposition='closed')
-        report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
-        return 0 if report['outcome'] == 'verified' else 1
-    if preflight.get('updatedAt') != current.get('updatedAt') or preflight.get('timelineItems') != current.get('timelineItems'):
-        raise CompletionError('issue_changed_before_close', 3)
-    # Arm before the external write: process/disk failure after the write must
-    # not erase the need to recheck reopen history on any later assessment.
     hold = dict(owner_repo=args.repo, pr=args.pr, merge_sha=report['merge_sha'],
                 head_sha=report['head_sha'], issue=args.complete_issue, phase='closure_inflight')
     save(args.race_hold, hold)
+    latest, latest_pr = merged_delivery(args.repo, args.pr)
+    if (latest_pr['mergeCommit']['oid'] != report['merge_sha']
+            or latest_pr['headRefOid'] != report['head_sha']
+            or latest_pr['mergedAt'] != report['merged_at']
+            or latest_pr.get('author') != pr.get('author') or latest['viewer'] != data['viewer']
+            or candidate_states(closing_candidates(args.repo, latest_pr)) != candidate_states(candidates)):
+        raise CompletionError('delivery_changed_before_close', 3)
+    preflight = issue(args.repo, args.complete_issue)
+    if preflight['state'] == 'CLOSED' and preflight.get('timelineItems') == current.get('timelineItems'):
+        args.race_hold.unlink()
+        target.update(state='CLOSED', disposition='closed')
+        report['outcome'] = 'verified' if all(x['disposition'] == 'closed' for x in candidates) else 'pending'
+        return 0 if report['outcome'] == 'verified' else 1
+    if (preflight['state'] != 'OPEN' or preflight['updatedAt'] != args.expected_issue_updated_at
+            or preflight.get('timelineItems') != current.get('timelineItems')):
+        raise CompletionError('issue_changed_before_close', 3)
     gh(['api', '--method', 'PATCH', 'repos/' + args.repo + '/issues/' + str(args.complete_issue),
         '-f', 'state=closed', '-f', 'state_reason=completed'])
     after = issue(args.repo, args.complete_issue)
@@ -290,6 +308,7 @@ def main():
     parser.add_argument('--pr', required=True, type=int)
     parser.add_argument('--complete-issue', type=int)
     parser.add_argument('--expected-merge')
+    parser.add_argument('--expected-issue-updated-at')
     parser.add_argument('--scope-verified', action='store_true')
     parser.add_argument('--association-verified', action='store_true')
     parser.add_argument('--no-issue-verified', action='store_true')
@@ -306,7 +325,7 @@ def main():
     report = dict(schema_version='1.0', owner_host='github.com', owner_repo=args.repo, pr=args.pr, outcome='pending',
                   recorded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(), issues=[],
                   scope_verified=bool(args.scope_verified), association_verified=bool(args.association_verified),
-                  expected_merge=args.expected_merge)
+                  expected_merge=args.expected_merge, expected_issue_updated_at=args.expected_issue_updated_at)
     code = 4
     try:
         private_directory(directory)

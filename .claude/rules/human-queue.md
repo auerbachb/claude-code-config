@@ -6,7 +6,7 @@
 
 ## After asking
 
-With a live desk, the capture hook stores the question and denies the menu. Print the receipt its denial names, exactly (`question D-<n> sent to human queue`), then proceed on the recommended default if it is reversible and no rule requires confirmation; else park that step until the wake-up.
+With a live desk, the capture hook stores the question and denies the menu. Print the receipt its denial names, exactly (`question D-<n> sent to human queue.` or `questions D-<a>, D-<b> sent to human queue.`), then proceed on the recommended default if it is reversible and no rule requires confirmation; else park that step until the wake-up.
 
 No live desk, the desk's own session, or a failed hook: the menu renders as before. No question tool (headless, subagent): default or park, recorded in the handoff or exit report.
 

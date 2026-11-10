@@ -189,7 +189,8 @@ class Browser(unittest.TestCase):
         """The actual bridge enables Chrome and allows only navigation/page tools."""
         with mock.patch.object(browser.subprocess, 'run') as run:
             run.return_value.stdout = json.dumps({'structured_output': observation()})
-            browser.read_observation('', 'fixture', 'fixture@example.com', 1000, '/fake/claude')
+            with self.assertRaises(browser.ReadProvenanceError):
+                browser.read_observation('', 'fixture', 'fixture@example.com', 1000, '/fake/claude')
         args = run.call_args.args[0]
         self.assertIn('--chrome', args)
         allowed = args[args.index('--allowedTools') + 1]
@@ -252,7 +253,7 @@ class Browser(unittest.TestCase):
             def run(args, **kwargs):
                 if stage is not None:
                     settings = json.loads(args[args.index('--settings')+1])
-                    path = Path(shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])[-1])
+                    path = Path(shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])[3])
                     facts = dict(last_failure=stage, owned_tab=False, read_authorized=False)
                     path.write_text(json.dumps(facts));path.chmod(0o600)
                 if mode == 'timeout':
@@ -331,6 +332,114 @@ read_cursor_browser() {''' + function + '\n}\nread_cursor_browser fixture\n'
             self.assertIn('OUTCOME '+status+' browser '+expected, result.stdout)
             self.assertEqual(result.stderr,'')
             self.assertNotIn('RAW-SECRET-UNSAFE',result.stdout)
+
+    def test_actual_internal_cli_requires_completed_native_read(self):
+        """Plausible model JSON cannot replace actual correlated guard events."""
+        fixture = Path(__file__).parents[1] / '.claude/scripts/tests/fixtures/quotas-browser-native-post-2.1.312.json'
+        native = json.loads(fixture.read_text())
+        self.assertFalse(native['provenance']['live_chrome'])
+        self.assertIsInstance(native['success_event']['tool_response'], list)
+        script = r'''#!/usr/bin/env python3
+import json,os,shlex,subprocess,sys
+from pathlib import Path
+a=sys.argv[1:];settings=json.loads(a[a.index('--settings')+1])
+command=shlex.split(settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])
+state,stage,proof,attempt=Path(command[2]),Path(command[3]),Path(command[4]),command[5]
+mode=os.environ['BROWSER_PROOF_CASE'];tab=1234567
+url='https://cursor.com/dashboard?tab=usage'
+response=json.loads(os.environ['BROWSER_NATIVE_RESPONSE'])
+def event(name,params=None,phase='PreToolUse',response=None,identity='toolu_read_fixture'):
+ name=name if name=='Bash' else 'mcp__claude-in-chrome__'+name
+ data=dict(hook_event_name=phase,tool_name=name,tool_input=params or {},tool_response=response)
+ if identity is not None:data['tool_use_id']=identity
+ result=subprocess.run(command,input=json.dumps(data),text=True,capture_output=True,check=True)
+ return json.loads(result.stdout)
+def context():
+ event('tabs_context_mcp',identity='toolu_context_fixture')
+ event('tabs_context_mcp',phase='PostToolUse',response=[{'type':'text','text':json.dumps({'availableTabs':[{'tabId':tab,'url':url}]})}],identity='toolu_context_fixture')
+def prepare():
+ event('tabs_create_mcp',identity='toolu_create_fixture')
+ event('tabs_create_mcp',phase='PostToolUse',response=[{'type':'text','text':'Created new tab. Tab ID: '+str(tab)}],identity='toolu_create_fixture')
+ event('navigate',{'tabId':tab,'url':url},identity='toolu_nav_fixture')
+ event('navigate',{'tabId':tab,'url':url},'PostToolUse',[{'type':'text','text':'Navigated to '+url}],identity='toolu_nav_fixture')
+ if mode!='missing-url-proof':context()
+if mode=='diagnostics-only':
+ stage.write_text(json.dumps(dict(last_failure=None,owned_tab=True,read_authorized=True)));stage.chmod(0o600)
+elif mode=='foreign-proof':
+ proof.write_text(json.dumps(dict(schema_version='1.0',attempt=('a' if attempt[0]!='a' else 'b')+attempt[1:],completed_reads=1)));proof.chmod(0o600)
+elif mode not in ('zero-calls','logged-out'):
+ if mode in ('denied','valid-after-denial'):event('Bash',{'command':'SYNTHETIC-DO-NOT-EXECUTE'})
+ if mode!='denied':
+  prepare()
+  name='get_page_text' if mode=='get-page-text' else 'read_page'
+  params={'tabId':tab if mode!='wrong-tab' else tab+1}
+  if mode!='post-without-pre':event(name,params,identity=None if mode=='missing-id' else 'toolu_read_fixture')
+  if mode not in ('missing-post','missing-id'):
+   phase='PostToolUseFailure' if mode=='failed-post' else 'PostToolUse'
+   value={'content':response,'isError':False} if mode=='unknown-envelope' else response
+   event(name,params,phase,value,identity='toolu_other_fixture' if mode=='wrong-id' else 'toolu_read_fixture')
+  if mode=='late-failure':event(name,params,'PostToolUseFailure',None)
+  if mode in ('malformed-late-event','oversized-late-event','unknown-late-event'):
+   raw={'malformed-late-event':'{','oversized-late-event':'x'*(2*1024*1024+1),'unknown-late-event':json.dumps({'hook_event_name':'UNKNOWN'})}[mode]
+   subprocess.run(command,input=raw,text=True,capture_output=True,check=True)
+  if mode=='reused-id':
+   context();event(name,params);event(name,params,'PostToolUse',response)
+capture=Path(os.environ['BROWSER_PROOF_CAPTURE'])
+capture.write_text(json.dumps(dict(proof=json.loads(proof.read_text()),mode=proof.stat().st_mode&0o777)))
+doc=json.loads(os.environ['BROWSER_OBSERVATION'])
+if mode=='logged-out':doc.update(status='logged_out',email='',rows=[])
+print(json.dumps({'structured_output':doc}))
+'''
+        positive = {'success', 'get-page-text'}
+        negative = ['zero-calls', 'diagnostics-only', 'foreign-proof', 'denied', 'valid-after-denial',
+                    'missing-post', 'failed-post', 'post-without-pre', 'wrong-id', 'missing-id',
+                    'wrong-tab', 'unknown-envelope', 'missing-url-proof', 'late-failure', 'reused-id',
+                    'malformed-late-event', 'oversized-late-event', 'unknown-late-event']
+        with tempfile.TemporaryDirectory() as tmp:
+            cli, capture = Path(tmp)/'fake-cli', Path(tmp)/'captured-proof'
+            cli.write_text(script); cli.chmod(0o700)
+            for mode in sorted(positive) + negative + ['logged-out']:
+                with self.subTest(mode=mode), mock.patch.dict(os.environ, BROWSER_PROOF_CASE=mode,
+                        BROWSER_NATIVE_RESPONSE=json.dumps(native['success_event']['tool_response']),
+                        BROWSER_PROOF_CAPTURE=str(capture), BROWSER_OBSERVATION=json.dumps(observation())):
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        browser.main(['', 'fixture', 'fixture@example.com', '1000', str(cli)])
+                    value = json.loads(out.getvalue())
+                    self.assertEqual(err.getvalue(), '')
+                    if mode in positive:
+                        self.assertEqual(value['status'], 'ok')
+                        self.assertEqual(value['rows'][0]['used_pct'], 37)
+                    elif mode == 'logged-out':
+                        self.assertEqual(value['status'], 'logged_out')
+                    else:
+                        self.assertEqual(value['status'], 'unreadable')
+                        self.assertEqual(value['error_class'], 'browser_read_unverified')
+                    retained = json.loads(capture.read_text())
+                    self.assertEqual(retained['mode'], 0o600)
+                    self.assertEqual(set(retained['proof']), {'schema_version', 'attempt', 'completed_reads'})
+                    for private in ['fixture@example.com', 'synthetic fixture page content', 'cursor.com']:
+                        self.assertNotIn(private, json.dumps(retained['proof']))
+
+    def test_completion_proof_rejects_unsafe_or_stale_files(self):
+        """A stale, public, aliased or malformed proof never authorizes success."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'proof'
+            attempt = 'a'*64
+            valid = dict(schema_version='1.0', attempt=attempt, completed_reads=1)
+            path.write_text(json.dumps(valid)); path.chmod(0o600)
+            self.assertTrue(browser.completed_read(path, attempt))
+            self.assertFalse(browser.completed_read(path, 'b'*64))
+            for count in [True, 0, 2, '1']:
+                path.write_text(json.dumps(dict(valid, completed_reads=count)))
+                self.assertFalse(browser.completed_read(path, attempt))
+            path.write_text(json.dumps(valid)); path.chmod(0o644)
+            self.assertFalse(browser.completed_read(path, attempt))
+            path.chmod(0o600)
+            link = Path(tmp)/'link'; link.symlink_to(path)
+            self.assertFalse(browser.completed_read(link, attempt))
+            (Path(str(path)+'.failed')).touch()
+            self.assertFalse(browser.completed_read(path, attempt))
 
 
 if __name__ == '__main__':

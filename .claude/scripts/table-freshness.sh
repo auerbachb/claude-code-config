@@ -25,7 +25,7 @@
 #   hourly pulse, which would fight the stable-state backoff design in
 #   scheduling-reliability.md. Activity is caller-declared at render time
 #   (--active N, the count of running + queued pipelines). Round membership IS
-#   durable now (.repos[...].round.members, issue #1604), but deriving this
+#   durable now (.repos[...].rounds[session].members, issue #1604), but deriving this
 #   count from it still needs a live merge-state read per member to drop the
 #   terminal rows — exactly the work the freshness clock exists to avoid — and
 #   .repos[...].pipelines is append-only, so it cannot answer "still active?"

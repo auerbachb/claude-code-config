@@ -4,9 +4,9 @@
 
 Mechanism, rationale, and the decision-record contract behind
 `/review-stack-audit` (issue #1201). Not auto-loaded: the operative contract is
-`.claude/skills/review-stack-audit/SKILL.md`, and the two engines document their
-own interfaces under `--help`. This file holds the reasoning that would
-otherwise bloat either.
+`.claude/skills/review-stack-audit/SKILL.md`. `measure.sh`, `drift.sh`, and
+`scorecard.sh` document their interfaces under `--help`. This reference keeps
+the audit rationale, measurement definitions, and report contracts together.
 
 ## Why a recurring audit at all
 
@@ -380,7 +380,8 @@ count when it is non-zero. It never blocks a merge, never joins the findings
 `/wrap` routes to `/fixpr`, and `merge-gate.sh` never reads it. It is a proxy in
 two ways: a human typing on the same account counts as an agent reply, and a
 PR-level fallback reply (the 404 path) is not an inline reply, so it is not
-counted — the same gap the ledger has (Limits below; issue #1829).
+counted by that inline-only advisory. The ledger separately attributes matching
+fallback replies (Limits below; Issue #1829).
 
 ### The fields
 
@@ -472,9 +473,13 @@ estimate presented as a measurement.
   not line up exactly, so cost per real defect is an approximation there.
 - **100 comments per thread.** A reply past the 100th is unseen; a thread that
   long is counted in a note.
-- **Fallback replies are outside the thread.** `reply-thread.sh` posts a PR-level
-  comment when the inline reply 404s, and the ledger reads only thread replies,
-  so that finding reads `unanswered`.
+- **Fallback identity must be explicit.** A `User` account's PR-level comment
+  whose first nonempty line is `<!-- review-comment-id:N -->` joins the unique
+  matching first-comment REST/GraphQL identity in that same PR. Bot, unmatched,
+  ambiguous, quoted/fenced and later-line markers decide nothing. Inline and
+  fallback replies share the latest-marker, else latest-wording rule; timestamped
+  fallbacks merge chronologically without reordering inline replies. Historical
+  undated data retains supplied order, with undated fallbacks appended.
 - **`real_defects` is a floor before the mandate and a measurement after it.**
   From **2026-10-09 (UTC)** — the landing of the issue #1842 mandate above; if
   the `feat(#1842)` squash commit on `main` is dated later, its UTC date governs
@@ -484,8 +489,8 @@ estimate presented as a measurement.
   that undercounted figure — an upper bound; both reflect marker adoption. On
   and after it, a missing marker is a process miss that `unmarked_replies`
   surfaces, and both figures measure the marked thread replies. A PR-level
-  fallback reply (the bullet above) still escapes the ledger, so neither figure
-  is guaranteed complete after the cutoff either.
+  fallback can now decide a ledger verdict when explicitly attributed (above),
+  but still escapes the separate inline-only `unmarked_replies` advisory.
 
 ### Comparing with sales-kit Issue #184
 

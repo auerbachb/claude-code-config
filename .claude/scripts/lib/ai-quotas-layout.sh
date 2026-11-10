@@ -102,7 +102,7 @@ layout_report() { # <config-json> -> findings; paths and credential presence onl
           if [[ "$repairable" == true ]] && printf '%s' "$keychain_cycle" | jq -e --arg l "$label" 'any(.[]; .label == $l)' >/dev/null; then
             detail="$detail; observed Keychain cycle (native validation required)"
           else
-            repairable=false; detail="$detail; path-derived Keychain binding: unsupported cycle, repair refused"
+            repairable=false; detail="$detail; path-derived Keychain binding: unsupported cycle, repair refused; fresh-profile reauthentication: /quotas-setup (ai-quotas.md#fresh-profile-reauthentication)"
           fi
         fi
         ;;

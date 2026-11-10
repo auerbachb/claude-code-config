@@ -33,14 +33,14 @@ Run `/subagent #{a} #{b} …` in this thread. It claims each issue, serializes a
 If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's schema) and track the issues there. Do not open a separate thread per issue.
 
 ## Constraints
-- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
-  - The bullet above applies to **each** issue in the list, one at a time as you pick it up — `/subagent` Step 6.0 performs exactly that per issue, so running the workflow discharges it.
+- Claim the issue before anything else. After the model guard, resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh`, and resolve `chip-claim-receipt.sh` in the same order (skip installed paths if `HOME` is unset or empty; use absolute helper paths across checkouts). If the workflow delegates the listed issues directly to `/subagent`, only check ownership read-only for each issue before sizing or decomposition; skip live foreign or unreadable claims and let `/subagent` Step 6.0 acquire each eligible claim. For direct execution, give a fresh launch its own `CLAIM_HOLDER` (host, epoch, shell PID and two Bash random values) before any repo read, edit or planning. Run `<N> --check --holder "$CLAIM_HOLDER"` and, if it clears, `<N> --claim --holder "$CLAIM_HOLDER" --json`, both with `--repo <owner/repo>`. Report stale before takeover; stop on failure or unless the result is `mine` for the exact holder. Require the receipt helper before acquiring. Keep that acquisition JSON locally and, as soon as the launch creates its assigned worktree, pipe it to `chip-claim-receipt.sh save WORKTREE OWNER/REPO N "$CLAIM_HOLDER"` before switching or coding; stop if saving fails. On resume of that same launch, get the holder only from `chip-claim-receipt.sh read WORKTREE OWNER/REPO N` for its own known worktree and confirm with `<N> --renew --holder "$CLAIM_HOLDER"` (also pass `--repo`). Stop on missing or failed recovery; never read a receipt on a fresh launch or infer ownership from a GitHub marker. Renew before every review or CI wait and at least every 30 minutes of long coding; stop if renewal fails. Pass the issue and same holder to `/wrap` as `CLAIM_PAIRS`. If the claim helper is unavailable on a fresh direct launch, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue.
+  - Run the read-only claim check for **each** listed issue before `/subagent` sizes or decomposes it. Skip a live foreign or unreadable claim. Step 6.0 rechecks and acquires each eligible pipeline before Phase A; it does not replace this earlier check. Tracking parents remain unclaimed.
 - Do NOT work on main — each pipeline works in its own worktree
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
 ```
 
-The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — `/issue-maker` holds no claim, so the launched thread takes each one. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
+The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — the launched handoff runs the read-only checks, then `/subagent` Step 6.0 acquires each eligible claim. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
 
 **Reservation and launch receipts.** Replays use the saved payload and never reserve or launch again. A fresh handoff must have no outstanding registry/launch receipt. Registry `--reserve` creates an `offered` entry; that is capacity accounting, not proof that `spawn_task` happened. Every registry call, including reads and cleanup, uses the exact target `--repo "$REPO"`. Resolve the helpers and cap as below. Exit 7 defers without emitting or stamping an offer. Missing helpers/read failures before reservation retain the documented degraded uncounted path.
 
@@ -66,7 +66,7 @@ handoff_restore() {
   OFFER_TOKEN=$(printf '%s' "$EXPECTED_HANDOFF" | jq -r '.offer_token // empty') || return 1
   REGISTRY=""
   if [ -n "$REG_TID" ]; then
-    for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+    for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh}" "${HOME:+$HOME/.claude/scripts/chip-offer-registry.sh}" ".claude/scripts/chip-offer-registry.sh"; do
       [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
     done
     [ -n "$REGISTRY" ] || return 1
@@ -146,10 +146,10 @@ case "${CHIP_TOOL_AVAILABLE:-}" in
      CHIP_TOOL_AVAILABLE=false ;;
 esac
 if [ "$CHIP_TOOL_AVAILABLE" = true ]; then
-  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh" "$HOME/.claude/scripts/active-work-cap.sh" ".claude/scripts/active-work-cap.sh"; do
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh}" "${HOME:+$HOME/.claude/scripts/active-work-cap.sh}" ".claude/scripts/active-work-cap.sh"; do
     [ -x "$candidate" ] && { CAP_SH="$candidate"; break; }
   done
-  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+  for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh}" "${HOME:+$HOME/.claude/scripts/chip-offer-registry.sh}" ".claude/scripts/chip-offer-registry.sh"; do
     [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
   done
   if [ -z "$CAP_SH" ]; then

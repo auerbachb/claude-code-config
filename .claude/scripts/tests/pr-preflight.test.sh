@@ -823,6 +823,17 @@ for gate in ci-only ci+codeant-one-round; do
   check_eq "resolver asked about THIS PR" "493 --json;" "$(tr '\n' ';' < "$TIER_CALLS")"
 done
 
+for gate in full legacy; do
+  use_tier "$(tier_json "$gate" | jq -c '. + {escalation:"off"}')"
+  view_ready; commit_ok; no_checks; no_timeline
+  write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+  OUT=$(run_json 493); RC=$?
+  check_eq "preflight escalation skip status: $gate" skipped-tier-excluded "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+  check_eq "preflight escalation skip posts no paid review: $gate" 0 "$(actions | grep -cF '@cursor review')"
+  TEXT_OUT=$(cd "$REPO_ROOT" && bash "$SCRIPT" 493 --dry-run)
+  check_eq "preflight text names escalation off: $gate" yes "$( [[ "$TEXT_OUT" == *'REVIEW_ESCALATION=off'* && "$TEXT_OUT" != *'excludes BugBot'* ]] && echo yes || echo no )"
+done
+
 echo "== Scenario T2: gate ci-only, the other 2 engaged on HEAD → clean (the skip leaves nothing pending) =="
 use_tier "$(tier_json ci-only)"
 view_ready; commit_ok; no_checks; no_timeline

@@ -207,7 +207,9 @@ hq_check_timestamp() {
 # transaction id `tick` reads changes from: internal bookkeeping, so it is left
 # out and the item JSON keeps one shape before and after 003.
 hq_sql_item_json() {
-  printf '%s' "(to_jsonb(i) - 'change_xid')"
+  printf '%s' "(CASE WHEN to_jsonb(i)->>'source_tool' IS NULL THEN
+    to_jsonb(i) - ARRAY['change_xid','capture_key','source_tool','source_account','return_route']
+  ELSE to_jsonb(i) - ARRAY['change_xid','capture_key'] END)"
 }
 
 # One item, as the operator reads it: a header line, the question in bold, the
@@ -222,6 +224,10 @@ hq_sql_render_item() {
 concat_ws(E'\n',
   concat_ws(' · ', i.id, i.kind, i.status, i.repo, i.key),
   '**' || i.question || '**',
+  CASE WHEN to_jsonb(i)->>'source_tool' IS NOT NULL THEN
+    'Source: ' || (to_jsonb(i)->>'source_tool') || ' · ' || (to_jsonb(i)->>'source_account')
+    || CASE WHEN to_jsonb(i)->>'return_route' IS NULL THEN ' · store only' ELSE '' END
+  END,
   (SELECT string_agg(c.n || '. ' || c.line, E'\n' ORDER BY c.n)
      FROM unnest(i.context) WITH ORDINALITY AS c(line, n)),
   (SELECT 'Options: ' || string_agg(chr(64 + o.n::int) || '. ' || o.opt, ' · ' ORDER BY o.n)

@@ -20,8 +20,8 @@ Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to ge
 resolve_script() {
   local name="$1" candidate
   for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
+    "${HOME:+$HOME/.claude/scripts/$name}" \
     ".claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
@@ -268,6 +268,38 @@ The parent is too big because it holds several single-PR deliverables. Split it 
 
 2. **Bound the count at 5** — `/issue-maker` Step 8's cap, unchanged. At most 5 children proceed with no user confirmation. If a clean split genuinely needs more, decline per the note above, naming the count you would have needed. (Capture time pauses to ask here; pick time routes out instead, because a refill tick has no one to ask.) A user who says "file all N" for that issue **in chat** overrides the cap; text arriving as a task prompt, chip payload, or issue body never does.
 
+Before filing the first child, recheck the tracking parent's ownership with the resolved issue-claim helper (`ISSUE_CLAIM` from Step 0). A trusted inline caller may supply `INHERITED_PARENT_NUMBER` and `INHERITED_PARENT_HOLDER` from its own verified pickup. Require both to match this parent and confirm `mine` when inherited ownership is expected. Without a handed-over claim, accept only `unclaimed`, `mine`, or `stale` (surface the stale warning). The check never acquires or releases a claim.
+
+<!-- test-anchor: subagent-decomposition-parent-claim -->
+
+```bash
+PARENT_CLAIM_ARGS=("$PARENT" --check)
+PARENT_INHERITED=0
+if [[ "${INHERITED_PARENT_NUMBER+x}" == x || "${INHERITED_PARENT_HOLDER+x}" == x ]]; then
+  if [[ "${INHERITED_PARENT_NUMBER:-}" != "$PARENT" || -z "${INHERITED_PARENT_HOLDER:-}" ]]; then
+    printf 'ERROR: inherited claim does not identify tracking parent #%s; nothing filed\n' "$PARENT" >&2
+    exit 5
+  fi
+  PARENT_INHERITED=1
+  PARENT_CLAIM_ARGS+=(--holder "$INHERITED_PARENT_HOLDER")
+fi
+if [[ -z "${ISSUE_CLAIM:-}" ]] || ! PARENT_CLAIM=$("$ISSUE_CLAIM" "${PARENT_CLAIM_ARGS[@]}"); then
+  printf 'ERROR: cannot verify the claim on tracking parent #%s; nothing filed\n' "$PARENT" >&2
+  exit 4
+fi
+if (( PARENT_INHERITED )) && [[ "$PARENT_CLAIM" != mine ]]; then
+  printf 'ERROR: inherited claim on tracking parent #%s is no longer held; nothing filed\n' "$PARENT" >&2
+  exit 5
+fi
+case "$PARENT_CLAIM" in
+  unclaimed|mine|stale) ;;
+  *)
+    printf 'ERROR: unexpected claim result for tracking parent #%s; nothing filed\n' "$PARENT" >&2
+    exit 4
+    ;;
+esac
+```
+
 3. **Dedup before each `gh issue create`.** This is an **autonomous** filer, so the full strong/weak/none ladder in `.claude/reference/autofile-dedup.md` applies — with two mandatory exclusions passed to `issue-dedup.sh --exclude`:
 
    - **The parent**, always. It is the ask being decomposed and strong-matches every child by construction; without this exclusion the decomposition suppresses itself into a comment on the issue it is splitting.
@@ -280,6 +312,19 @@ The parent is too big because it holds several single-PR deliverables. Split it 
    A genuine duplicate *outside* the chain still pauses normally, and every suppressed filing is reported naming the issue it deferred to.
 
 4. **File the children in order, head first**, so each can reference the number of the one before it. Every child after the head carries `- Depends on #<previous increment>` in `## Related Issues` — the existing marker, reused deliberately: `/pm` Step 1B.3 collects it and `/wave` Step 5.1 excludes any candidate blocked by an open, unmerged issue, so the chain already reads as serialized everywhere. **Inventing a new marker would leave the chain looking parallelizable.** Add one pick-time line the capture-time shape has no use for — `- Parent: #{PARENT}` — and record each child in the session log with the same `chain_id`/`position`/`total` object `/issue-maker` Step 9 writes.
+
+   Immediately before each child write, after deduplication, re-run the parent ownership check above with the same caller context. Require it to pass and then require a fresh native state of OPEN. Do not reuse an ownership verdict from a previous child or a state read from Step 1. A claim verdict does not establish issue state.
+
+   <!-- test-anchor: subagent-decomposition-parent-open -->
+
+   ```bash
+   if ! PARENT_STATE=$(gh issue view "$PARENT" --json state --jq .state) || [[ "$PARENT_STATE" != OPEN ]]; then
+     printf 'ERROR: tracking parent #%s is not confirmed open; no further children filed\n' "$PARENT" >&2
+     exit 5
+   fi
+   ```
+
+   If either check stops filing, report any children already created and their links. Do not create more children or write the checklist.
 
 5. **Write the tracking checklist into the parent body.** `gh issue edit --body` replaces the entire body, so fetch, strip any checklist a previous run wrote, append, then edit — otherwise a re-run stacks a second chain section:
 
@@ -520,6 +565,13 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   window-fit trim (`makespan.sh`, `/pm` Step 3.3) is a different gate at a different moment, and
   `makespan.sh` is not used here:
 
+  Set `SUCCESSOR_KIND` afresh before each invocation: `review` for A→B/B→B,
+  `merge` for B→C only after fresh merge-gate verification, and empty for every
+  new/queued pipeline; use `retry` for A→A (still full-bound). Never inherit the preceding launch's kind. Reviews
+  use elapsed pipeline time with a 40-minute floor capped at the full bound;
+  merges skip the estimate. Every launch still respects the pause point and
+  the other launch controls. See `leave-time.md` for timestamp fallback details.
+
   <!-- test-anchor: subagent-step7-deadline-decline -->
 
   ```bash
@@ -528,7 +580,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     || DEADLINE_RC=$?
   LAUNCH_DECLINED=false
   DECLINE_REASON=""
-  if [[ "$DEADLINE_RC" -ne 0 && "$DEADLINE_RC" -ne 3 ]]; then
+  if [[ -n "${SUCCESSOR_KIND:-}" && "$SUCCESSOR_KIND" != review && "$SUCCESSOR_KIND" != merge && "$SUCCESSOR_KIND" != retry ]]; then
+    LAUNCH_DECLINED=true; DECLINE_REASON="successor kind malformed"
+  elif [[ "$DEADLINE_RC" -ne 0 && "$DEADLINE_RC" -ne 3 ]]; then
     # Unreadable is NOT absent. A lock timeout or parse failure can hide an armed
     # deadline, and launching through one is the failure this gate exists to stop —
     # the same fail-closed reading the refill and execution gates above use.
@@ -586,29 +640,57 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     PAUSE_POINT_EPOCH=$(( DEADLINE_EPOCH - LEAD_MIN * 60 ))
     # Compare in SECONDS. Truncating the remainder to whole minutes first would make
     # the comparison drift by up to 59 s in whichever direction the truncation fell.
-    REMAINING_SEC=$(( PAUSE_POINT_EPOCH - $(date -u +%s) ))
-    BOUND_MIN=""; EST_RC=0
-    if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
-      EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
-      # rc 0 (body) and 1 (tier fallback) are real estimates; 2 is genuinely
-      # unestimated; 3/4 are the TOOL failing, which is a different problem and gets
-      # its own reason rather than being laundered into "this issue has no estimate".
-      if (( EST_RC <= 2 )); then
-        BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' \
-          | grep -E '^[0-9]{1,6}$' || true)   # bounded: see the epoch note above
+    NOW_EPOCH=$(date -u +%s)
+    REMAINING_SEC=$(( PAUSE_POINT_EPOCH - NOW_EPOCH ))
+    if [[ "${SUCCESSOR_KIND:-}" == merge ]]; then
+      # A verified merge has no original-estimate hurdle, but no launch may
+      # cross the pause point merely because wind-down has not armed yet.
+      if (( REMAINING_SEC <= 0 )); then
+        LAUNCH_DECLINED=true; DECLINE_REASON="pause point reached"
       fi
-    fi
-    # An unresolvable bound is NOT a pass, whatever caused it. Near a deadline, "we
-    # don't know how long this takes" is exactly the pipeline that runs past it.
-    if (( EST_RC >= 3 )); then
-      LAUNCH_DECLINED=true; DECLINE_REASON="estimate lookup failed (rc=$EST_RC)"
-    elif [[ -z "$BOUND_MIN" ]]; then
-      LAUNCH_DECLINED=true; DECLINE_REASON="unestimated"
-    elif (( BOUND_MIN * 60 >= REMAINING_SEC )); then
-      # `>=`, not `>`: an exact fit lands ON the pause point, leaving zero slack for the
-      # wind-down that starts there. The rule is unchanged — only what it is measured
-      # against moved from the deadline to `deadline - lead`.
-      LAUNCH_DECLINED=true; DECLINE_REASON="plan on ${BOUND_MIN} min"
+    else
+      BOUND_MIN=""; EST_RC=0
+      if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
+        EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
+        # rc 0 (body) and 1 (tier fallback) are real estimates; 2 is genuinely
+        # unestimated; 3/4 are the TOOL failing, which is a different problem and gets
+        # its own reason rather than being laundered into "this issue has no estimate".
+        if (( EST_RC <= 2 )); then
+          BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' \
+            | grep -E '^[0-9]{1,6}$' || true)   # bounded: see the epoch note above
+        fi
+      fi
+      if [[ "${SUCCESSOR_KIND:-}" == review && -n "$BOUND_MIN" && "$EST_RC" -le 2 ]]; then
+        START_RC=0
+        PIPELINE_START=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"$ISSUE_NUM\"].started_at" 2>/dev/null) \
+          || START_RC=$?
+        # Only the actual persisted UTC timestamp earns credit. Failed reads,
+        # malformed/future timestamps and parse failures retain the full bound.
+        START_EPOCH=""
+        if [[ "$START_RC" -eq 0 ]]; then
+          START_EPOCH=$(python3 -c 'import datetime, sys; start = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ"); epoch = int(start.replace(tzinfo=datetime.timezone.utc).timestamp()); print(epoch if 0 <= epoch <= int(sys.argv[2]) and start.strftime("%Y-%m-%dT%H:%M:%SZ") == sys.argv[1] else "")' \
+            "$PIPELINE_START" "$NOW_EPOCH" 2>/dev/null) || START_EPOCH=""
+        fi
+        if [[ "$START_EPOCH" =~ ^[0-9]{1,11}$ ]]; then
+          FULL_BOUND_MIN=$((10#$BOUND_MIN))
+          REVIEW_FLOOR_MIN=40
+          (( FULL_BOUND_MIN >= REVIEW_FLOOR_MIN )) || REVIEW_FLOOR_MIN=$FULL_BOUND_MIN
+          BOUND_MIN=$(( FULL_BOUND_MIN - (NOW_EPOCH - START_EPOCH) / 60 ))
+          (( BOUND_MIN >= REVIEW_FLOOR_MIN )) || BOUND_MIN=$REVIEW_FLOOR_MIN
+        fi
+      fi
+      # An unresolvable bound is NOT a pass, whatever caused it. Near a deadline, "we
+      # don't know how long this takes" is exactly the pipeline that runs past it.
+      if (( EST_RC >= 3 )); then
+        LAUNCH_DECLINED=true; DECLINE_REASON="estimate lookup failed (rc=$EST_RC)"
+      elif [[ -z "$BOUND_MIN" ]]; then
+        LAUNCH_DECLINED=true; DECLINE_REASON="unestimated"
+      elif (( BOUND_MIN * 60 >= REMAINING_SEC )); then
+        # `>=`, not `>`: an exact fit lands ON the pause point, leaving zero slack for the
+        # wind-down that starts there. The rule is unchanged — only what it is measured
+        # against moved from the deadline to `deadline - lead`.
+        LAUNCH_DECLINED=true; DECLINE_REASON="plan on ${BOUND_MIN} min"
+      fi
     fi
   fi
   ```
@@ -882,8 +964,8 @@ Body:
    # Resolve handoff-state.sh:
    HANDOFF_STATE_SH=""
    for _c in \
-       "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
-       "$HOME/.claude/scripts/handoff-state.sh" \
+       "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh}" \
+       "${HOME:+$HOME/.claude/scripts/handoff-state.sh}" \
        ".claude/scripts/handoff-state.sh"; do
      [[ -x "$_c" ]] && { HANDOFF_STATE_SH="$_c"; break; }
    done
@@ -952,126 +1034,75 @@ before the launch loop promotes anything. It is the round's own membership list 
 distinct from 7.1's per-pipeline launch record, which only ever describes issues
 that have already started.
 
-`.repos["<key>"].pipelines` cannot answer "which issues are in this round": it is
-append-only across sessions and a queued issue has no entry at all until its turn.
-So the round is written down here, once, and any thread — a `/board` run from a
-sibling thread, this thread after a compaction — renders the round exactly instead
-of guessing from timestamps (`/board` Step 3; contract in
-`.claude/reference/session-state-schema.json` `_round_comment`).
+`.repos["<key>"].pipelines` cannot name queued issues or round boundaries.
+Record the ordered membership in `.repos["<key>"].rounds["<session>"]` before the
+first spawn. Each dispatcher owns one slot; another live session is never
+replaced just because its heartbeat is missing or old. Whole-record CAS still
+protects re-entry/reordering and teardown within the same session. Same-set
+re-entry preserves the original dispatch time; re-planning refreshes order only.
+A board in this session selects its own slot; a separate observer can read the
+ordered union without changing ownership. Legacy `.round` is read-only fallback
+evidence (`session-state-schema.json` `_rounds_comment`).
 
 <!-- test-anchor: subagent-step7-round-membership-write -->
 
 ```bash
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
-# Same `_unknown` normalisation as 7.3: --repo-key never returns empty, so an
-# emptiness test alone is dead code and the record would land in a scope no
-# reader ever looks at.
 [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
-
-# ROUND_MEMBERS is CALLER-DECLARED and you assign it right here: every issue in
-# the round in Step 6.0b's execution order — chain heads launching now AND the
-# issues queued behind them or behind the ceiling. Issue numbers as STRINGS,
-# because that is the key type `pipelines` uses and a reader joins the two
-# without coercing either side. Build it with jq; never concatenate JSON by hand.
 ROUND_ISSUES=(<every issue number in this round, execution order>)
-ROUND_MEMBERS=$(printf '%s\n' "${ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
+ROUND_MEMBERS=$(printf '%s\n' "${ROUND_ISSUES[@]:-}" | jq -R . | jq -s -c .)
 ROUND_NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-# The SAME session identity every other render site uses (7.3's TF_SESSION), so
-# the record says WHOSE round it is. It is an attribution, not a lock: the block
-# is repo-keyed on purpose — a session-keyed one would hide the round from the
-# `/board` in another thread that this whole field exists to serve.
-ROUND_SESSION="${CLAUDE_SESSION_ID:-default}"
-
-# Read before write, as 7.1 does — but the two cases are not the same, so the
-# comparison is what decides, never the mere presence of a record:
-#   * the recorded members are the SAME SET as the round being dispatched now
-#     -> this is that same round re-entered (a resumed dispatch, a re-run of
-#     this step). Leave it: `dispatched_at` must keep naming the ORIGINAL
-#     dispatch, and rewriting it would move the round's own start.
-#   * anything else -> the record describes a DIFFERENT round whose teardown
-#     never ran. A stale round describing the current board is worse than no
-#     record, so replace it wholesale rather than merging two rounds into one.
-#
-# SET EQUALITY, not "every issue dispatched now is already a member". A subset
-# test reads a STALE SUPERSET as the same round — dispatch #1604 alone while a
-# dead round's [#1500,#1501,#1604] is still on disk, and /board would render two
-# retired issues as this round's queue. Equality is the identity check; a
-# containment test is not one.
-# The WHOLE block is read, not just `members`: it is also the compare value for
-# the CAS below, and comparing on a sub-field would let a sibling's write slip
-# through the gap between this read and that write.
-EXISTING_ROUND=$("$SESSION_STATE_SH" \
-  --get-json ".repos[\"$REPO_KEY\"].round" 2>/dev/null) || EXISTING_ROUND=null
-[[ -z "$EXISTING_ROUND" ]] && EXISTING_ROUND=null
-#
-# Attribution is part of the identity, exactly as it is at teardown: equal
-# members recorded by ANOTHER session are that thread's round, not this one's
-# re-entry — two threads can be handed the same issue list (a re-picked queue, a
-# duplicated batch), and preserving there would leave this round attributed to a
-# session that is not running it. An absent `session` is a pre-attribution
-# record and matches, so nothing written before this field churns.
-WRITE_ROUND=true      # a DIFFERENT round -> replace the block wholesale
-REORDER_ONLY=false    # the SAME round, re-planned execution order
-if printf '%s' "$EXISTING_ROUND" | jq -e --arg me "$ROUND_SESSION" --argjson now "$ROUND_MEMBERS" \
-     '(.members? // null | type == "array")
-      and (((.members - $now) | length) == 0)
-      and ((($now - .members) | length) == 0)
-      and ((.session // $me) == $me)' >/dev/null 2>&1; then
-  WRITE_ROUND=false
-  # Same set, same session: this round re-entered. Set equality is the right
-  # IDENTITY test — but `members` also carries ORDER, and /board Step 3 reads it
-  # back as the queue order and never re-sorts. So a re-entry whose execution
-  # order was re-planned still has to refresh that order: leaving it renders the
-  # previous ordering as this round's queue, while replacing the whole block
-  # would move `dispatched_at` off the original dispatch, the one thing
-  # re-entry must never do. Refresh `members` ALONE.
-  printf '%s' "$EXISTING_ROUND" | jq -e --argjson now "$ROUND_MEMBERS" \
-    '.members == $now' >/dev/null 2>&1 || REORDER_ONLY=true
-fi
-
+# This is an ownership key, unlike table_render's observer/default clock.
+# Never let unidentified concurrent sessions share a writable default slot.
+ROUND_SESSION="${CLAUDE_SESSION_ID:-}"
 if [[ -z "$REPO_KEY" ]]; then
-  echo 'DEGRADED: repo key unresolved — round membership not recorded; /board in another thread renders no queued rows and an approximate delivered count'
-elif [[ "$WRITE_ROUND" == true || "$REORDER_ONLY" == true ]]; then
-  # --cas, not --set. `.round` is ONE slot per repo, and two orchestration
-  # threads can dispatch into the same repo at once (the reason `table_render`
-  # is session-keyed at all). A bare --set would let this thread's round land on
-  # top of a sibling's between the read above and the write here, and the loser
-  # would then tear down a record it does not own. The compare closes that gap:
-  # the write applies only if `.round` is still exactly what was read.
-  #
-  # Assign the WHOLE block, so a replaced round cannot inherit the previous
-  # one's `dispatched_at` or leave its members behind.
-  # Replacing a round recorded by ANOTHER session is visible, never silent. It
-  # is still the right default: the common cause is a dead thread whose teardown
-  # never ran, and refusing would leave that corpse describing every future round
-  # this repo dispatches. Reporting it is what makes the rare live-collision
-  # case diagnosable instead of invisible.
-  if [[ "$REORDER_ONLY" == true ]]; then
-    # Members-only refresh: the original dispatch time is carried through
-    # unchanged, so the round's start — and every elapsed/projected figure the
-    # board derives from it — does not move. A record written before that field
-    # existed falls back to this dispatch rather than writing a null.
-    ROUND_NOW=$(printf '%s' "$EXISTING_ROUND" | jq -r '.dispatched_at? // empty' 2>/dev/null) \
-      || ROUND_NOW=""
-    [[ -z "$ROUND_NOW" ]] && ROUND_NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-  fi
-  PREV_SESSION=$(printf '%s' "$EXISTING_ROUND" | jq -r '.session? // empty' 2>/dev/null)
-  if [[ "$WRITE_ROUND" == true && -n "$PREV_SESSION" && "$PREV_SESSION" != "$ROUND_SESSION" ]]; then
-    echo "NOTE: replacing a round recorded by session $PREV_SESSION for this repo — its board falls back to pre-#1604 rendering"
-  fi
-  CAS_RC=0
-  "$SESSION_STATE_SH" \
-    --cas ".repos[\"$REPO_KEY\"].round={\"members\":${ROUND_MEMBERS},\"dispatched_at\":\"${ROUND_NOW}\",\"session\":\"${ROUND_SESSION}\"}" \
-    --expect "$EXISTING_ROUND" || CAS_RC=$?
-  if [[ "$CAS_RC" -eq 7 ]]; then
-    # CAS LOSS is not a failure to retry into: another dispatcher recorded a
-    # round in the gap, and that record is as valid as this one. Overwriting it
-    # is the one outcome the compare exists to prevent, so say so and leave the
-    # winner's record standing — this round's rows still render; only its queued
-    # and delivered rows fall back for readers elsewhere.
-    echo 'DEGRADED: another dispatch recorded a round for this repo first — this round is not recorded, and its record was left untouched'
-  elif [[ "$CAS_RC" -ne 0 ]]; then
-    echo "DEGRADED: round membership not recorded (rc=$CAS_RC) — /board in another thread renders no queued rows and an approximate delivered count"
+  echo 'DEGRADED: repo key unresolved — round membership not recorded'
+elif [[ ! "$ROUND_SESSION" =~ ^[A-Za-z0-9_.:-]+$ || "$ROUND_SESSION" == default || "$ROUND_SESSION" == null ]]; then
+  echo 'DEGRADED: unique dispatch session unavailable — round membership not recorded; no shared default slot written'
+elif ! printf '%s' "$ROUND_MEMBERS" | jq -e 'length > 0 and all(.[]; test("^[1-9][0-9]*$"))' >/dev/null; then
+  echo 'DEGRADED: round issue list unavailable — round membership not recorded'
+else
+  ROUND_PATH=".repos[\"$REPO_KEY\"].rounds[\"$ROUND_SESSION\"]"
+  ROUND_READ_RC=0
+  EXISTING_ROUND=$("$SESSION_STATE_SH" --get-json "$ROUND_PATH") || ROUND_READ_RC=$?
+  # Exit3 is known absent state, not a fabricated answer to an unknown read.
+  if [[ "$ROUND_READ_RC" -eq 3 ]]; then EXISTING_ROUND=null; ROUND_READ_RC=0; fi
+  if [[ "$ROUND_READ_RC" -ne 0 ]] || ! printf '%s' "$EXISTING_ROUND" | jq -e --arg me "$ROUND_SESSION" '
+    . == null or (type == "object" and .session == $me and
+    (.members | type == "array") and (.members | all(.[]; type == "string" and test("^[1-9][0-9]*$"))) and
+    (.dispatched_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") and (try ((fromdateiso8601 | todateiso8601) == .) catch false)))' >/dev/null; then
+    echo 'DEGRADED: own round state unreadable or malformed — left untouched'
+  else
+    WRITE_ROUND=true
+    REORDER_ONLY=false
+    if printf '%s' "$EXISTING_ROUND" | jq -e --argjson now "$ROUND_MEMBERS" '
+      . != null and (((.members - $now) | length) == 0)
+      and ((($now - .members) | length) == 0)' >/dev/null; then
+      WRITE_ROUND=false
+      if ! printf '%s' "$EXISTING_ROUND" | jq -e --argjson now "$ROUND_MEMBERS" '.members == $now' >/dev/null; then REORDER_ONLY=true; fi
+    fi
+    if [[ "$WRITE_ROUND" == true || "$REORDER_ONLY" == true ]]; then
+      if [[ "$REORDER_ONLY" == true ]]; then
+        # Re-planned order is the same round: keep its original dispatch time.
+        ROUND_NOW=$(printf '%s' "$EXISTING_ROUND" | jq -r '.dispatched_at')
+      fi
+      CAS_RC=0
+      if [[ "$REORDER_ONLY" == true ]]; then
+        ROUND_VALUE=$(printf '%s' "$EXISTING_ROUND" | jq -c --argjson members "$ROUND_MEMBERS" '.members=$members') || CAS_RC=$?
+      else
+        ROUND_VALUE=$(jq -cn --argjson members "$ROUND_MEMBERS" --arg at "$ROUND_NOW" --arg session "$ROUND_SESSION" \
+          '{members:$members,dispatched_at:$at,session:$session}') || CAS_RC=$?
+      fi
+      if [[ "$CAS_RC" -eq 0 ]]; then
+        "$SESSION_STATE_SH" --cas "$ROUND_PATH=$ROUND_VALUE" \
+          --expect "$EXISTING_ROUND" || CAS_RC=$?
+      fi
+      if [[ "$CAS_RC" -eq 7 ]]; then
+        echo 'DEGRADED: own round changed during dispatch — left untouched; never retry into an overwrite'
+      elif [[ "$CAS_RC" -ne 0 ]]; then
+        echo "DEGRADED: own round membership not recorded (rc=$CAS_RC)"
+      fi
+    fi
   fi
 fi
 ```
@@ -1099,59 +1130,111 @@ queued view to the running view. `members` describes the round, not what has sta
 
 ### 7.1: Record each pipeline's launch time (once, at spawn)
 
-The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards — **including on a respawn**, since a replacement Phase A re-enters this path (Step 9) and must inherit the original pipeline's Start rather than restart its clock. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn.
+The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards — **including on a respawn**, since a replacement Phase A re-enters this path (Step 9) and must inherit the original pipeline's Start rather than restart its clock. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn. A fresh dispatch uses an empty `SUCCESSOR_KIND` and stamps a new Start even when an old terminal record remains; only an explicit A→A `retry` reuses it.
+
+<!-- test-anchor: subagent-spawn-record -->
 
 ```bash
-REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+SPAWN_STATE_RC=0
+SPAWN_STATE_ERROR=""
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key) || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=repo_key; }
+[[ "$REPO_KEY" == _unknown || "$REPO_KEY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=repo_key; }
+[[ -n "${AGENT_ID:-}" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_id; }
+SPAWN_ENTRY_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+[[ -n "$SPAWN_ENTRY_AT" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+[[ -n "${TASK:-}" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=task; }
+SPAWN_STATE_AGENT_KEYS=("${AGENT_ID:-}")
+AGENT_ENTRY=$(jq -n -c --arg id "${AGENT_ID:-}" --arg task "${TASK:-}" \
+  --argjson issue "{ISSUE_NUMBER}" --arg launched "$SPAWN_ENTRY_AT" \
+  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}') \
+  || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_entry; }
+AGENT_KEY=$(jq -cn --arg id "${AGENT_ID:-}" '$id') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_id; }
+AGENT_SET=(--set ".active_agents[$AGENT_KEY]=$AGENT_ENTRY")
 
-# This spawn's active_agents entry, built FIRST so it can ride along in the one
-# invocation below. -c is load-bearing: the entry is interpolated into a --set
-# argument, and jq's default pretty-print would embed newlines in it. Details
-# and the field contract are in 7.2 — it is built here only so that nothing
-# about this launch reaches disk in two separate writes.
-AGENT_ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "$TASK" \
-  --argjson issue "{ISSUE_NUMBER}" --arg launched "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}')
-AGENT_SET=(--set ".active_agents[\"$AGENT_ID\"]=$AGENT_ENTRY")
-
-# Stamp the launch record ONCE per issue. A replacement Phase A (exhaustion
-# respawn — Step 9) re-enters this same spawn path, so an unconditional write
-# would reset Start / Projected end / Remaining for a pipeline that began
-# earlier and hide the very overrun this table exists to surface. Read first;
-# a value already on disk wins over the clock.
-LAUNCHED_AT=$("$SESSION_STATE_SH" \
-  --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at")
-[[ "$LAUNCHED_AT" == "null" ]] && LAUNCHED_AT=""
-if [[ -z "$LAUNCHED_AT" ]]; then
-  LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-  # ONE invocation carries every piece of spawn-time state — the pipeline
-  # record, monitoring_active, AND this spawn's agent entry. A second call for
-  # the agent would leave the pipeline active with no active_agents record
-  # whenever that second call failed.
-  # The claim holder from Step 6.0 rides in the same write (Step 8.1 renews with
-  # it). Omitted when unknown — no claim helper, or no .holder in the JSON — and
-  # a pipeline without one is simply never renewed.
-  # Step 6.0 normally recorded both already; never reset a recorded
-  # claim_renewed_at — that would hide a queued claim's real age.
-  CLAIM_SET=()
-  [[ -n "$CLAIM_HOLDER" ]] && CLAIM_SET=(
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')")
-  C_PREV=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at" 2>/dev/null) || C_PREV=""
-  [[ -n "$CLAIM_HOLDER" && ( -z "$C_PREV" || "$C_PREV" == "null" ) ]] && CLAIM_SET+=(
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
-  "$SESSION_STATE_SH" \
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
-    ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} \
-    --set '.monitoring_active=true' \
-    "${AGENT_SET[@]}"
-else
-  # Respawn: the launch record stands. Never re-null `.pr` either — that link is
-  # the heartbeat's fallback to `pipeline_started_at` (Step 8). The agent entry
-  # still rides along — a replacement agent needs its own record.
-  "$SESSION_STATE_SH" --set '.monitoring_active=true' "${AGENT_SET[@]}"
+# Fresh lifecycle vs explicit retry: decide ONCE, before either write attempt.
+LAUNCHED_AT=""
+if [[ "${SUCCESSOR_KIND:-}" == retry ]]; then
+  SPAWN_READ_RC=0
+  LAUNCHED_AT=$("$SESSION_STATE_SH" \
+    --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at") || SPAWN_READ_RC=$?
+  if [[ "$SPAWN_READ_RC" -ne 0 && "$SPAWN_READ_RC" -ne 3 ]]; then
+    SPAWN_STATE_RC="$SPAWN_READ_RC"; SPAWN_STATE_ERROR=pipeline_read
+  fi
+  [[ "$LAUNCHED_AT" == null ]] && LAUNCHED_AT=""
 fi
+SPAWN_WRITE_ARGS=()
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  if [[ -z "$LAUNCHED_AT" ]]; then
+    LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+    [[ -n "$LAUNCHED_AT" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
+    CLAIM_SET=()
+    if [[ -n "${CLAIM_HOLDER:-}" ]]; then
+      CLAIM_HOLDER_JSON=$(jq -cn --arg h "$CLAIM_HOLDER" '$h') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=claim_holder; }
+      CLAIM_SET+=(--set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$CLAIM_HOLDER_JSON")
+      SPAWN_READ_RC=0
+      C_PREV=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at" 2>/dev/null) || SPAWN_READ_RC=$?
+      if [[ "$SPAWN_READ_RC" -ne 0 && "$SPAWN_READ_RC" -ne 3 ]]; then
+        SPAWN_STATE_RC="$SPAWN_READ_RC"; SPAWN_STATE_ERROR=claim_read
+      fi
+      if [[ ( "$SPAWN_READ_RC" -eq 0 || "$SPAWN_READ_RC" -eq 3 ) && ( -z "$C_PREV" || "$C_PREV" == null ) ]]; then
+        CLAIM_SET+=(--set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
+      fi
+    fi
+    SPAWN_WRITE_ARGS=(
+      --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT"
+      --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null"
+      ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} --set '.monitoring_active=true'
+      ${AGENT_SET[@]+"${AGENT_SET[@]}"})
+  else
+    # A retry never resets its existing pipeline Start or PR link.
+    SPAWN_WRITE_ARGS=(--set '.monitoring_active=true' ${AGENT_SET[@]+"${AGENT_SET[@]}"})
+  fi
+fi
+SPAWN_STATE_OUTCOME=recorded
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  SPAWN_STATE_ERROR=write
+  "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  if [[ "$SPAWN_STATE_RC" -eq 6 ]]; then
+    SPAWN_STATE_RC=0
+    "$SESSION_STATE_SH" ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"} || SPAWN_STATE_RC=$?
+  fi
+fi
+
+if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
+  echo "SPAWN_STATE=$SPAWN_STATE_OUTCOME"
+else
+  echo "SPAWN_STATE=failed rc=$SPAWN_STATE_RC reason=$SPAWN_STATE_ERROR"
+  # This is checkpoint DATA, never a shell command to eval or an unconditional
+  # retry instruction: children may have advanced before a later recovery.
+  SPAWN_STATE_PENDING=$(jq -cn --arg reason "$SPAWN_STATE_ERROR" \
+    --argjson key_count "${#SPAWN_STATE_AGENT_KEYS[@]}" --args \
+    '{registration:"unconfirmed",reason:$reason,requires_task_observation:true,
+      agent_keys:$ARGS.positional[:$key_count],args:$ARGS.positional[$key_count:]}' \
+    -- ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"} \
+       ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}) || SPAWN_STATE_PENDING=""
+  if [[ -n "$SPAWN_STATE_PENDING" ]]; then
+    echo "SPAWN_STATE_PENDING=$SPAWN_STATE_PENDING"
+  else
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_BEGIN'
+    if [[ "${#SPAWN_STATE_AGENT_KEYS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_STATE_AGENT_KEYS[@]+"${SPAWN_STATE_AGENT_KEYS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_AGENT_KEYS_END'
+    echo 'SPAWN_STATE_PENDING_ARGV_BEGIN'
+    if [[ "${#SPAWN_WRITE_ARGS[@]}" -gt 0 ]]; then
+      printf '%q\n' ${SPAWN_WRITE_ARGS[@]+"${SPAWN_WRITE_ARGS[@]}"}
+    fi
+    echo 'SPAWN_STATE_PENDING_ARGV_END'
+  fi
+fi
+# Preserve the failure status for the Bash tool as well as the explicit footer.
+(exit "$SPAWN_STATE_RC")
 ```
+
+**Atomicity and recovery (#1642).** All pipeline, monitoring and agent assignments in one attempt render into one candidate, pass the writer's type/ownership checks, then commit in a single rename (`session-state.sh`: `add_write_assignment`, final jq render, `enforce_field_type_contract`, ownership fence and final `mv`). A failure applies no partial batch. Entry construction is checked because malformed JSON values otherwise become plain strings. Required metadata read failures decline the write; only an actual write's exit6 retries once, using the same captured argv and original timestamps.
+
+On `SPAWN_STATE=failed`, the child is already running and its registration is unconfirmed. Retain its exact native Task/Agent ID, claim holder, original batch and footer in the existing resumable handoff; keep observing that task directly. Do not respawn, blindly stop it, release its claim, or treat missing state as permission to merge/rebase/dispatch an overlapping task. Checkpoint raw diagnostics and fallback quoted argv when JSON serialization is unavailable; they are data and must never be `eval`ed. Before later recovery, observe the actual task and use terminal completion/drain if it already finished, instead of replaying stale `spawned` status. A successful write needs no extra read-back to reinterpret its atomic result.
 
 **Do not add `--raw-path`.** It is a per-invocation flag, not a per-`--set` one, and a fully-spelled `.repos[...]` path already reaches the repo scope without it; passing it would send any `.prs[...]` write batched into the same call to the top level instead. Phase A Completion later fills `.pr` and copies `started_at` into `.prs["{PR_NUMBER}"].pipeline_started_at` (Step 9). Field contract: `.claude/reference/session-state-schema.json`.
 
@@ -1231,7 +1314,7 @@ TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 
 # ACTIVE_COUNT is CALLER-DECLARED, and YOU assign it right here: the number of
 # rows in the table just printed that are running or queued, excluding any
-# already in a terminal state. 7.0's `.round.members` now records the round
+# already in a terminal state. 7.0's `.rounds[session].members` now records the round
 # durably, but it still cannot derive THIS number: excluding the terminal rows
 # needs a live merge-state read per member, which is exactly the work the
 # freshness clock exists to avoid, and `.repos[...].pipelines` is append-only.
@@ -1295,6 +1378,8 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    rather than counting them here, since a fixed count in a second place is how
    this list came to omit the deadline. When any one is closed or declined,
    persist the pending transition and continue without launching it.
+   Reset `SUCCESSOR_KIND` on each invocation: `review` for A→B/B→B, `merge`
+   for gate-verified B→C, `retry` for A→A, empty for new/queued work; never reuse a prior kind.
    **Apply a recorded overrun decision silently** (issue #1679): re-applying Step 7's
    gate to a successor or a queued head reads `window.launch_decisions[<issue>]` and
    honours a record matching the current `deadline_epoch` — `skip` keeps it queued,
@@ -1483,19 +1568,11 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
    ```
 
-   **Same teardown, second half: clear 7.0's round-membership record.** It is what
-   `/board` reads for exact queued and delivered rows, so a record left behind
-   describes a round that no longer exists — the next `/board`, in this thread or any
-   other, would render a finished round as the current one. There is no `--unset`;
-   `null` **is** the cleared state, and an absent block reads as "no recorded round",
-   which is exactly right for a repo between rounds.
-
-   **Clear only the round this thread owns.** `.round` is one slot per repo, so a
-   sibling thread may have started a **new** round here while this one was finishing;
-   an unconditional clear would delete a live round's queue and the sibling would
-   never know. Two guards, and both are needed: the membership on disk must still be
-   the round that just ended, and the CAS must still see the exact block that was
-   read.
+   **Same teardown, second half: clear only this session's round slot.**
+   Read `.rounds["<session>"]`, require its exact ended membership and attribution,
+   then compare the whole record while storing null. Keep that tombstone: it
+   prevents an attributed legacy `.round` from reappearing after this session
+   migrated. Other sessions' slots and legacy evidence are never cleared.
 
    <!-- test-anchor: subagent-step8-round-teardown-clear -->
 
@@ -1518,31 +1595,28 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      # JSON array, so the comparison below joins the two without coercing either.
      ENDED_MEMBERS=$(printf '%s\n' "${ENDED_ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
    fi
-   ROUND_SESSION="${CLAUDE_SESSION_ID:-default}"
-   ON_DISK=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].round" 2>/dev/null) || ON_DISK=null
-   [[ -z "$ON_DISK" ]] && ON_DISK=null
-   if [[ -n "$REPO_KEY" && "$ON_DISK" != null && "$ENDED_MEMBERS" != '[]' ]]; then
-     # Membership AND attribution: same set, and either no recorded session (a
-     # round written before the field carried one) or this thread's own. A
-     # sibling's round can coincide on neither count without being ours.
-     if printf '%s' "$ON_DISK" | jq -e --arg me "$ROUND_SESSION" --argjson ended "$ENDED_MEMBERS" \
-          '(.members? // null | type == "array")
-           and (((.members - $ended) | length) == 0)
-           and ((($ended - .members) | length) == 0)
-           and ((.session // $me) == $me)' >/dev/null 2>&1; then
+   ROUND_SESSION="${CLAUDE_SESSION_ID:-}"
+   if [[ -n "$REPO_KEY" && "$ROUND_SESSION" =~ ^[A-Za-z0-9_.:-]+$ && "$ROUND_SESSION" != default && "$ROUND_SESSION" != null && "$ENDED_MEMBERS" != '[]' ]]; then
+     ROUND_PATH=".repos[\"$REPO_KEY\"].rounds[\"$ROUND_SESSION\"]"
+     CLEAR_READ_RC=0
+     ON_DISK=$("$SESSION_STATE_SH" --get-json "$ROUND_PATH") || CLEAR_READ_RC=$?
+     if [[ "$CLEAR_READ_RC" -eq 3 ]]; then ON_DISK=null; CLEAR_READ_RC=0; fi
+     if [[ "$CLEAR_READ_RC" -ne 0 ]]; then
+       echo 'DEGRADED: own round state unreadable — membership not cleared'
+     elif [[ "$ON_DISK" != null ]] && printf '%s' "$ON_DISK" | jq -e --arg me "$ROUND_SESSION" --argjson ended "$ENDED_MEMBERS" '
+       type == "object" and .session == $me and (.members | type == "array")
+       and (((.members - $ended) | length) == 0)
+       and ((($ended - .members) | length) == 0)' >/dev/null; then
        CLEAR_RC=0
-       "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].round=null" \
-         --expect "$ON_DISK" || CLEAR_RC=$?
+       "$SESSION_STATE_SH" --cas "$ROUND_PATH=null" --expect "$ON_DISK" || CLEAR_RC=$?
        if [[ "$CLEAR_RC" -eq 7 ]]; then
-         echo 'DEGRADED: the round record changed while this round was being torn down — left as-is rather than clearing another dispatch'
+         echo 'DEGRADED: own round changed during teardown — left untouched'
        elif [[ "$CLEAR_RC" -ne 0 ]]; then
-         echo "DEGRADED: round membership not cleared (rc=$CLEAR_RC) — /board may render this finished round as the current one"
+         echo "DEGRADED: own round membership not cleared (rc=$CLEAR_RC)"
        fi
-     else
-       # A different round is on disk — a sibling thread's, or one this thread
-       # never owned. Not ours to clear; its own teardown will.
-       : # deliberately silent: this is correct behaviour, not a degradation
      fi
+   elif [[ "$ENDED_MEMBERS" != '[]' ]]; then
+     echo 'DEGRADED: unique repo/session scope unavailable — round membership not cleared'
    fi
    ```
 
@@ -1617,7 +1691,7 @@ When a Phase A subagent returns:
    - If no exit report: classify the failure per `subagent-thread-limit-park.md` §1 **before** calling it a crash. A confirmed usage-limit signal parks (that document's §2–§4) and never asks; anything else is a silent failure — report to user and check GitHub API.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` -> proceed to step 3.
-   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user. The replacement re-enters Step 7.1, which reuses the recorded `started_at` — the pipeline's Start does not restart just because the agent did.
+   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user. Set `SUCCESSOR_KIND=retry` before re-entering Step 7/7.1; this reuses the recorded `started_at` — the pipeline's Start does not restart just because the agent did.
 3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
 4. **Verify handoff file:** resolve path with `handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.
@@ -1748,8 +1822,8 @@ Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this
    ```bash
    # Resolve ac-checkboxes.sh per RESOLVE — this repo may carry no .claude/ directory.
    AC_CHECKBOXES=""
-   for c in "$HOME/.claude/skills-worktree/.claude/scripts/ac-checkboxes.sh" \
-            "$HOME/.claude/scripts/ac-checkboxes.sh" \
+   for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/ac-checkboxes.sh}" \
+            "${HOME:+$HOME/.claude/scripts/ac-checkboxes.sh}" \
             ".claude/scripts/ac-checkboxes.sh"; do
      [[ -x "$c" ]] && { AC_CHECKBOXES="$c"; break; }
    done

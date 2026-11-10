@@ -19,6 +19,10 @@
 # Every discovered suite is parse-checked with `bash -n` before it is run, and a
 # suite that fails that check is reported as the syntax error it is rather than
 # as the last line it managed to print before aborting (issue #1675).
+# Runtime command-substitution parsing is not covered by bash -n (issue #1677).
+# Decision: retain execution as the behavioral gate and move problematic case
+# syntax / nested escaped-JSON construction out of substitutions in fixtures;
+# do not claim that a syntax-only precheck proves native Bash 3.2 compatibility.
 #
 # Usage (CI or local, runnable from anywhere):
 #   bash .github/scripts/run-hook-tests.sh            # human/CI folds (default)

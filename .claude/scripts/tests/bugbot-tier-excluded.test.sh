@@ -97,6 +97,19 @@ run '{"policy":"absent","gate":"legacy","tier":null,"source":"base:main","error"
 check_eq "exit 0" "0" "$RC"
 check_eq "stdout legacy" "legacy" "$STDOUT"
 
+for gate in full legacy ci-only ci+codeant-one-round; do
+  run "$(tier_json_esc "$gate" '"off"')" 0 42 --why
+  reason=escalation_off
+  case "$gate" in ci-only|ci+codeant-one-round) reason=tier_excluded ;; esac
+  check_eq "--why skip reason for $gate" "$gate"$'\t'"$reason" "$STDOUT"
+  check_eq "--why preserves skip exit for $gate" 0 "$RC"
+done
+for gate in full legacy; do
+  run "$(tier_json_esc "$gate" '"on"')" 0 42 --why
+  check_eq "--why invited reason for $gate" "$gate"$'\t'invited "$STDOUT"
+  check_eq "--why preserves invited exit for $gate" 1 "$RC"
+done
+
 for gate in full legacy; do
   echo "== gate $gate + escalation on -> exit 1 exactly as before =="
   run "$(tier_json_esc "$gate" '"on"')" 0 42

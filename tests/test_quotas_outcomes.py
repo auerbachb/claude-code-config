@@ -79,7 +79,7 @@ class Ledger(unittest.TestCase):
     def test_browser_classes_round_trip_without_new_statuses_or_fields(self):
         classes = ['browser_launch_failed','browser_connection_unavailable','browser_tool_denied',
                    'browser_tab_create_failed','browser_destination_unverified','browser_observation_rejected',
-                   'browser_timeout','browser_stage_unknown','browser_unavailable']
+                   'browser_timeout','browser_stage_unknown','browser_read_unverified','browser_unavailable']
         records = []
         for name in classes:
             item = row(status='timeout' if name == 'browser_timeout' else 'unreadable')

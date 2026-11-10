@@ -4,6 +4,18 @@ CI gate that reads a PR body and blocks merge when unchecked acceptance-criteria
 boxes remain unresolved. The agent-side check (`cr-merge-gate.md` Step 2) is the
 primary path; this workflow is the CI backstop that catches skipped or rushed reads.
 
+## Workflow triggers
+
+The `ac-gate` workflow runs on PR open, head update, reopen, and body/title
+edits. Checking boxes or adding a valid exemption reruns the gate without an
+empty commit. The required job id remains `ac-gate`; its trusted base checkout
+and read-only permissions are unchanged.
+
+GitHub suppresses edited-triggered runs caused by a workflow's `GITHUB_TOKEN`.
+For that case, rerun the existing AC Gate run with `gh run rerun RUN_ID`
+(or `--failed` for a failed run) so it reads the current body. See the official
+[PR event contract](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
+
 ## Scope
 
 The gate recognizes `- [ ]`, `* [ ]`, `+ [ ]`, `N. [ ]` and `N) [ ]`

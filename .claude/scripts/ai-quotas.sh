@@ -1722,9 +1722,128 @@ codex_email_for() { # <profile_dir>
 # rather than the whole bound.
 CODEX_RESULT_FILE=""
 CODEX_FAIL_REASON=""
+# The background supervisor leads an isolated group for the entire read.
+# Verify that isolation before starting the provider. Cleanup runs in that
+# still-live group, so it never relies on a dead or recycled server PID.
+codex_supervise_server() { # control dir, parent group, profile, binary, FIFO, output, response ticks
+  local control="$1" parent_group="$2" dir="$3" bin="$4" fifo="$5" out="$6" max_ticks="$7"
+  local group expected="" member snap ticks=0 started last now
+  # Disable monitor mode *inside* the new group so subsequent children inherit it.
+  set +m
+  group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  while [[ ! -s "$control/launch" && ! -e "$control/shutdown.request" && -d "$control" ]]; do
+    (( ticks < 40 )) || return 1
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  IFS= read -r expected < "$control/launch" || return 1
+  [[ ! -e "$control/shutdown.request" ]] || return 1
+  if [[ ! "$group" =~ ^[1-9][0-9]*$ || "$group" != "$expected" || "$group" == "$parent_group" ]]; then
+    : > "$control/unowned"
+    return 1
+  fi
+  started="${SECONDS:-}"
+  [[ "$started" =~ ^[0-9]{1,10}$ ]] || return 1
+  last="$started"
+  : > "$control/owned" || return 1
+  CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
+  member=$!
+  # Install the ignore only after the provider has inherited its normal
+  # disposition. This process keeps the group identity live through escalation.
+  trap '' TERM
+  ticks=0
+  while [[ ! -e "$control/shutdown.request" && -d "$control" ]]; do
+    if [[ ! -e "$control/exited" ]] && ! kill -0 "$member" 2>/dev/null; then
+      : > "$control/exited" || break
+    fi
+    now="${SECONDS:-}"
+    [[ "$now" =~ ^[0-9]{1,10}$ ]] || break
+    (( 10#$now >= 10#$last && 10#$now - 10#$started < CODEX_TIMEOUT + 3 )) || break
+    # Leave two seconds of slack for the caller's start and polling loop.
+    (( ticks < max_ticks || ticks - max_ticks < 40 )) || break
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  kill -s TERM 0 2>/dev/null || true
+  ticks=0; started="${SECONDS:-}"; last="$started"
+  while [[ "$started" =~ ^[0-9]{1,10}$ && -d "$control" ]]; do
+    # Only the launched server represents the provider among our direct children.
+    # Other direct children are the snapshot and its polling sleeps. Keep
+    # the provider and all other group members, including reparented ones.
+    ps -axo pid=,ppid=,pgid=,stat= > "$control/members" &
+    snap=$!
+    while kill -0 "$snap" 2>/dev/null; do
+      now="${SECONDS:-}"
+      [[ "$now" =~ ^[0-9]{1,10}$ ]] || break 2
+      (( 10#$now >= 10#$last && ticks < 20 && 10#$now - 10#$started < 2 )) || break 2
+      last="$now"
+      if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+      else sleep 1; ticks=$((ticks + 20)); fi
+    done
+    wait "$snap" 2>/dev/null || break
+    awk -v g="$group" -v provider="$member" '
+      $3 == g && $1 != g && $4 !~ /^Z/ && ($2 != g || $1 == provider) { live=1 }
+      END { exit !live }
+    ' "$control/members" || break
+    now="${SECONDS:-}"
+    [[ "$now" =~ ^[0-9]{1,10}$ ]] || break
+    (( 10#$now >= 10#$last && ticks < 20 && 10#$now - 10#$started < 2 )) || break
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+  # Still inside the verified group. A final signal closes the snapshot race
+  # even if a remaining member forked while the process list was being read.
+  kill -s KILL 0
+}
+
+codex_stop_server() { # owned supervisor PID, private control dir
+  local pid="$1" control="${2:-}" ticks=0 started="${SECONDS:-}" last now
+  local waited=0 scan=0 live
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" && -d "$control" ]] || return 1
+  : > "$control/shutdown.request" || return 1
+  last="$started"
+  while :; do
+    if (( ! waited )) && ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      # No provider starts until the supervisor proves it owns the group.
+      [[ -e "$control/owned" ]] || return 0
+      waited=1
+    fi
+    if (( waited )); then
+      # Reaping the leader confirms only its exit. Observe the verified
+      # group's remaining members without sending any signal to that group.
+      # The snapshot child shares the cleanup budget if ps itself stalls.
+      if (( ! scan )); then
+        ps -axo pgid=,stat= > "$control/observed" 2>/dev/null &
+        scan=$!
+      elif ! kill -0 "$scan" 2>/dev/null; then
+        wait "$scan" 2>/dev/null || return 1
+        live="$(awk -v g="$pid" '$1 == g && $2 !~ /^Z/ { live=1 } END { print live+0 }' "$control/observed")" || return 1
+        [[ "$live" == 0 ]] && return 0
+        [[ "$live" == 1 ]] || return 1
+        scan=0
+      fi
+    fi
+    now="${SECONDS:-}"
+    # The supervisor has its own finite fuse; a broken caller clock still
+    # permits a bounded wait by tick count.
+    if [[ "$started" =~ ^[0-9]{1,10}$ && "$now" =~ ^[0-9]{1,10}$ &&
+          "$last" =~ ^[0-9]{1,10}$ ]] && (( 10#$now >= 10#$last && 10#$now - 10#$started >= 5 )); then
+      return 1
+    fi
+    (( ticks < 80 )) || return 1
+    last="$now"
+    if sleep 0.05 2>/dev/null; then ticks=$((ticks + 1))
+    else sleep 1; ticks=$((ticks + 20)); fi
+  done
+}
+
 codex_app_server_read() { # <profile_dir> <codex_bin>
   local dir="$1" bin="$2"
-  local fifo="$TMP/codex.fifo" out="$TMP/codex.out" waited=0 srv=0
+  local fifo="$TMP/codex.fifo" out="$TMP/codex.out" poll_ticks=0 srv=0
+  local started="${SECONDS:-}" last now max_ticks control parent_group monitor="$-"
   # JSON permits whitespace on BOTH sides of the name separator, so a server
   # that writes `"id" : 2` is as valid as the compact `"id":2` we send. Matching
   # only the compact form makes a healthy account look like a timeout and sends
@@ -1736,22 +1855,51 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   # answer within Ns" for all of them sends the reader after a timeout that
   # never happened. Recorded here, reported in the row's note.
   CODEX_FAIL_REASON="app-server did not answer within ${CODEX_TIMEOUT}s"
+  if [[ ! "$started" =~ ^[0-9]{1,10}$ ]]; then
+    CODEX_FAIL_REASON="app-server response clock unavailable"
+    return 1
+  fi
+  last="$started"
+  max_ticks=$(( CODEX_TIMEOUT * 20 ))
+  if (( max_ticks <= 0 || max_ticks / 20 != CODEX_TIMEOUT )); then
+    CODEX_FAIL_REASON="app-server response timeout out of range"
+    return 1
+  fi
   rm -f "$fifo" "$out"
   if ! mkfifo "$fifo" 2>/dev/null; then
     CODEX_FAIL_REASON="could not create the app-server pipe in ${TMP}"
     return 1
   fi
   : > "$out"
+  parent_group="$(sh -c 'ps -o pgid= -p "$$"; :' | tr -d '[:space:]')"
+  if [[ ! "$parent_group" =~ ^[1-9][0-9]*$ ]] ||
+     ! control="$(mktemp -d "$TMP/codex-control.XXXXXX")"; then
+    CODEX_FAIL_REASON="could not establish app-server process ownership"
+    rm -f "$fifo"
+    return 1
+  fi
 
   # The server's read-open of the FIFO blocks until a writer appears; it is
   # the BACKGROUND process that waits, so the parent reaches the open below
   # and releases it. Opening read-write (`<>`) here is what makes that open
   # unable to block in turn, even when the server died on startup.
-  CODEX_HOME="$dir" "$bin" app-server <"$fifo" >"$out" 2>/dev/null &
-  srv=$!
+  # The monitor setting is scoped to this launch and restored before the read.
+  {
+    set -m 2>/dev/null || true
+    codex_supervise_server "$control" "$parent_group" "$dir" "$bin" "$fifo" "$out" "$max_ticks" >/dev/null &
+    srv=$!
+    [[ "$monitor" == *m* ]] || set +m
+  } 2>/dev/null
+  if ! printf '%s\n' "$srv" > "$control/launch"; then
+    CODEX_FAIL_REASON="could not bind app-server process ownership"
+    codex_stop_server "$srv" "$control" || true
+    rm -f "$fifo"
+    return 1
+  fi
   if ! exec 3<> "$fifo"; then
     CODEX_FAIL_REASON="could not open the app-server pipe"
-    kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+    codex_stop_server "$srv" "$control" || true
+    rm -f "$fifo"
     return 1
   fi
   printf '%s\n' \
@@ -1760,32 +1908,36 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
     '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}' >&3
 
   local exited_early=0
-  while [[ "$waited" -lt "$CODEX_TIMEOUT" ]]; do
+  # Twenty short sleeps retain a second of waiting. The elapsed deadline has
+  # one whole-second clock quantum of slack to avoid timing out early; the
+  # finite tick budget remains effective if SECONDS stops advancing.
+  while (( poll_ticks < max_ticks )); do
     if grep -q "$id2_re" "$out" 2>/dev/null; then break; fi
-    if ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
-    sleep 1
-    waited=$(( waited + 1 ))
+    if [[ -e "$control/exited" ]] || ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
+    now="${SECONDS:-}"
+    if [[ ! "$now" =~ ^[0-9]{1,10}$ ]] || (( 10#$now < 10#$last )); then
+      CODEX_FAIL_REASON="app-server response clock unavailable or moved backwards"
+      break
+    fi
+    last="$now"
+    (( 10#$now - 10#$started < CODEX_TIMEOUT + 1 )) || break
+    if sleep 0.05 2>/dev/null; then poll_ticks=$((poll_ticks + 1))
+    else sleep 1; poll_ticks=$((poll_ticks + 20)); fi
   done
 
   exec 3>&-
-  # Bounded reap, same reasoning as lib/bounded-run.sh's: SIGTERM is a request
-  # the real `codex app-server` is free to ignore, and SIGKILL is QUEUED rather
-  # than effective against a process wedged in uninterruptible I/O. An
-  # unconditional `wait` would then block forever HERE — at cleanup, after the
-  # answer is already in hand — and hang a report whose whole contract is that
-  # it comes back. So escalate TERM to KILL, poll a finite window for the exit,
-  # and give up on the status rather than the report. init reaps the orphan.
-  kill "$srv" 2>/dev/null || true
-  local reap=0 gone=0
-  while [[ "$reap" -lt 4 ]]; do
-    if ! kill -0 "$srv" 2>/dev/null; then gone=1; break; fi
-    [[ "$reap" -eq 1 ]] && kill -9 "$srv" 2>/dev/null
-    sleep 1
-    reap=$(( reap + 1 ))
-  done
-  # `kill -0` succeeds on a zombie, so only wait once the process is really
-  # gone — that call returns immediately and reaps it.
-  [[ "$gone" -eq 1 ]] && wait "$srv" 2>/dev/null
+  if codex_stop_server "$srv" "$control" 2>/dev/null; then
+    if [[ -e "$control/unowned" ]]; then
+      CODEX_FAIL_REASON="could not establish app-server process ownership"
+      exited_early=0
+    fi
+    rm -f "$control/launch" "$control/shutdown.request" "$control/exited" "$control/members" \
+      "$control/unowned" "$control/owned" "$control/observed"
+    rmdir "$control" 2>/dev/null || true
+  else
+    warn "could not confirm app-server group exit within its cleanup budget"
+  fi
+  rm -f "$fifo"
 
   if grep -q "$id2_re" "$out" 2>/dev/null; then
     CODEX_FAIL_REASON=""
@@ -2183,7 +2335,7 @@ cursor_cached_email() { # <state-db>
 }
 
 cursor_token_for() { # <state-db>
-  local db="$1" payload pad
+  local db="$1" payload pad identity_result identity_reason
   CURSOR_TOKEN=""
   CURSOR_EMAIL=""
   CURSOR_USER_ID=""
@@ -2221,6 +2373,31 @@ cursor_token_for() { # <state-db>
   # readable account, so a missing email falls back to the label in emit_row.
   CURSOR_EMAIL="$(cursor_cached_email "$db")"
 
+  # Distinguish format changes from a missing subject without echoing any
+  # token/claim value. Do not guess identities from unrelated fields.
+  # Cursor 3.29.9's installed auth-storage codec seals these database values
+  # through Electron safeStorage; direct SQLite ciphertext is not a JWT.
+  case "$CURSOR_TOKEN" in
+    cursor-safe-storage:v1:*)
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+      CURSOR_TOKEN_DETAIL="the Cursor IDE stores this access token encrypted; use --browser with an already signed-in Chrome profile"
+      return 1
+      ;;
+  esac
+  if [[ ! "$CURSOR_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    CURSOR_TOKEN=""
+    CURSOR_USER_ID=""
+    CURSOR_TOKEN_STATUS="unreadable"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE state store holds an access token that is not shaped like a JWT"
+    return 1
+  fi
+  local jwt_shape='^[^.]+[.][^.]+[.][^.]+$'
+  if ! [[ "$CURSOR_TOKEN" =~ $jwt_shape ]]; then
+    CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE access token has an unsupported structure (expected three JWT parts)"
+    return 1
+  fi
+
   # The user id is the token's `sub` claim. Decoding a claim is not reading a
   # secret — the same reasoning codex_email_for documents — but the token
   # itself still never leaves these globals.
@@ -2233,9 +2410,47 @@ cursor_token_for() { # <state-db>
     elif [[ "$pad" -eq 1 ]]; then payload=""
     fi
   fi
+  # Payload travels only through stdin, never jq argv. Failure objects contain
+  # fixed reasons only; validate a string subject before shell newline trimming.
+  identity_result='{"reason":"payload_base64_invalid"}'
   if [[ -n "$payload" ]]; then
-    CURSOR_USER_ID="$(jq -rn --arg p "$payload" '($p | @base64d | fromjson | .sub // empty)' 2>/dev/null || true)"
+    identity_result="$(printf '%s' "$payload" | jq -Rsc '
+      (try {decoded: @base64d} catch {reason:"payload_base64_invalid"})
+      | if has("reason") then .
+        else (try {claim:(.decoded | fromjson)} catch {reason:"payload_json_invalid"}) end
+      | if has("reason") then .
+        elif (.claim | type) != "object" then {reason:"payload_not_object"}
+        elif (.claim | has("sub") | not) then {reason:"subject_missing"}
+        elif (.claim.sub | type) != "string" then {reason:"subject_not_string"}
+        elif .claim.sub == "" then {reason:"subject_empty"}
+        elif (.claim.sub | test("[^A-Za-z0-9._@|-]")) then {reason:"subject_unsafe"}
+        else {reason:"ok",subject:.claim.sub} end
+    ' 2>/dev/null)" || identity_result='{"reason":"decoder_unavailable"}'
   fi
+  identity_reason="$(printf '%s' "$identity_result" | jq -r '.reason // "decoder_unavailable"' 2>/dev/null)"
+  case "$identity_reason" in
+    ok)
+      CURSOR_USER_ID="$(printf '%s' "$identity_result" | jq -r '.subject' 2>/dev/null)" || {
+        CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+        CURSOR_TOKEN_DETAIL="the Cursor IDE JWT subject decoder could not run"
+        return 1
+      }
+      ;;
+    *)
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
+      case "$identity_reason" in
+        payload_base64_invalid) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not valid base64url" ;;
+        payload_json_invalid) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not valid JSON" ;;
+        payload_not_object) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload is not an object" ;;
+        subject_missing) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT payload has no sub claim" ;;
+        subject_not_string) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is not a string" ;;
+        subject_empty) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is empty" ;;
+        subject_unsafe) CURSOR_TOKEN_DETAIL="the token's sub claim carries characters this reader will not put in a request header" ;;
+        *) CURSOR_TOKEN_DETAIL="the Cursor IDE JWT subject decoder could not run" ;;
+      esac
+      return 1
+      ;;
+  esac
   # Only a LEADING `auth0|` comes off. Taking the segment after the final `|`
   # instead — the obvious-looking reading of "strip the provider prefix" — is
   # wrong and was measured wrong: this account's `sub` is
@@ -2245,7 +2460,7 @@ cursor_token_for() { # <state-db>
   if [[ -z "$CURSOR_USER_ID" ]]; then
     CURSOR_TOKEN=""
     CURSOR_TOKEN_STATUS="unreadable"
-    CURSOR_TOKEN_DETAIL="the Cursor IDE holds an access token this reader cannot read a user id out of (no decodable JWT sub claim)"
+    CURSOR_TOKEN_DETAIL="the Cursor IDE JWT sub claim is empty after its auth0 prefix"
     return 1
   fi
 
@@ -2265,13 +2480,6 @@ cursor_token_for() { # <state-db>
     CURSOR_USER_ID=""
     CURSOR_TOKEN_STATUS="unreadable"
     CURSOR_TOKEN_DETAIL="the token's sub claim carries characters this reader will not put in a request header"
-    return 1
-  fi
-  if [[ ! "$CURSOR_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    CURSOR_TOKEN=""
-    CURSOR_USER_ID=""
-    CURSOR_TOKEN_STATUS="unreadable"
-    CURSOR_TOKEN_DETAIL="the Cursor IDE state store holds an access token that is not shaped like a JWT"
     return 1
   fi
   return 0
@@ -2573,6 +2781,7 @@ read_cursor_browser() { # <label>
         browser_tab_create_failed) detail="browser owned-tab creation failed" ;;
         browser_destination_unverified) detail="browser owned-tab destination could not be verified" ;;
         browser_observation_rejected) detail="browser observation rejected" ;;
+        browser_read_unverified) detail="browser page read could not be verified" ;;
         browser_timeout) detail="browser bridge reached its outer timeout"; outcome_status=timeout ;;
         *) error_class=browser_stage_unknown; detail="browser unavailable; failure stage unknown" ;;
       esac
@@ -3185,6 +3394,7 @@ jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the r
 # Build actions from registered identity, never endpoint prose. The nullable
 # field is present on every final row, including successful fallback rows.
 jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001f\u007f]")) then null
+  elif .provider == "cursor" and .source == "browser" then "open the Cursor dashboard in Chrome and sign in"
   elif .provider == "cursor" then "open the Cursor IDE and sign in"
   elif .provider == "claude" or .provider == "codex" then
     "/quotas-setup relogin " + (if (.label|startswith("-")) then "-- " else "" end) + (.label | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end) + " " + .provider

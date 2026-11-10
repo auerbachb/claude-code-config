@@ -329,20 +329,30 @@ class Sweep:
             raise Skip("untracked_files")
         # Ignored dotenv files are still protected by the repository's safety
         # policy. git worktree remove would otherwise delete them implicitly.
-        program = r'''import os,re,sys
+        program = r'''import os,re,stat,sys
 errors=[]
+logical_bytes=0
 for here, dirs, files in os.walk(sys.argv[1], onerror=errors.append):
     dirs[:]=[d for d in dirs if d != '.git']
     for name in dirs+files:
         if (name.lower()=='.env' or name.lower().startswith('.env.')) and not re.fullmatch(r'\.env\.(example|sample|template)', name, re.I):
             sys.exit(10)
+    for name in files:
+        try:
+            meta=os.lstat(os.path.join(here,name))
+            if stat.S_ISREG(meta.st_mode) or stat.S_ISLNK(meta.st_mode): logical_bytes+=meta.st_size
+        except OSError: errors.append(True)
+if not errors: print(logical_bytes)
 sys.exit(11 if errors else 0)
 '''
-        code, _, _ = run([sys.executable, "-c", program, path], self.root)
+        code, sizes, _ = run([sys.executable, "-c", program, path], self.root)
         if code == 10:
             raise Skip("protected_env_files")
         if code:
             raise Unknown("protected_file_check_unknown")
+        if not sizes.strip().isdigit():
+            raise Unknown("workspace_size_unknown")
+        return int(sizes.strip())
 
     def verify(self, row, refresh=False):
         path = canonical(row["path"], self.root)
@@ -454,7 +464,7 @@ sys.exit(11 if errors else 0)
                     raise Unknown("head_changed_before_remove")
                 # The cwd census can be slow; repeat protected-file/dirty checks
                 # after it, immediately before handing the path to Git.
-                self.check_files(candidate["path"])
+                logical_bytes = self.check_files(candidate["path"])
                 item["removal_attempted"] = True
                 code, _, errors = run(["git", "-C", self.root, "worktree", "remove", candidate["path"]], self.root, REMOVE_TIMEOUT)
                 if code:
@@ -467,6 +477,7 @@ sys.exit(11 if errors else 0)
                     outcomes.append(item)
                     continue
                 item["worktree_removed"] = True
+                item["logical_bytes_reclaimed"] = logical_bytes
                 # Recheck the ref after removal; never delete a branch whose
                 # tip changed underneath us. No remote branch operation exists.
                 current = self.git("rev-parse", "refs/heads/" + candidate["branch"]).strip()

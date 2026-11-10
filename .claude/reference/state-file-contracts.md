@@ -201,36 +201,39 @@ is most often got wrong — step 1's *only when*:
    the signpost that says so. A reader who finds a number there is looking at corruption, not at a
    second source of truth.
 
-#### Second pass: `.repos["<key>"].round` (issue #1604)
+#### Round membership: `.repos["<key>"].rounds["<session>"]` (issues #1604, #1712)
 
-The durable round-membership block walks the same four steps and lands the same way as
-`leave`, which is the point of recording it here — a repo-scoped sibling is the common
-shape, not the exception:
+The old repo-level singleton prevented write races but still let a second
+session replace an unchanged, active foreign round. New dispatchers own separate
+session slots; no stale or absent heartbeat authorizes a foreign overwrite.
 
-1. **No `_field_types` entry**, for the reason above: enforcement loads `top_level` and
-   `pr_nested` only, so `round` is unvalidatable today exactly like `leave`, `day`, and
-   `pause`. Adding keys for it would read like a guard while enforcing nothing.
-2. **Representative document updated** — the shape is a cross-agent contract:
-   `/subagent` Step 7.0 writes it, Step 8 item 6 clears it, and `/board` Step 3 reads it
-   from a different thread entirely. The `_round_comment` carries writer, reader,
-   lifecycle, and the two derivations (`members` minus `started_at` = queued; `members`
-   whose PR merged = delivered).
-3. **Alignment test added** (`board-round-membership.test.sh`) because writer, clear
-   site, and reader must change together: a reader that stops matching the written path
-   silently renders an empty round rather than failing. It runs the shipped blocks, so
-   the concurrency contract below is executed rather than asserted in prose.
-   **Concurrency is the field's one sharp edge:** `.round` is a single slot per repo,
-   unlike session-keyed `table_render`, so two threads dispatching into one repo are a
-   real collision. Both ends therefore use `--cas` rather than `--set` — first writer
-   keeps the round, and the clear fires only while the record is still the round that
-   ended. A session key would have avoided the collision and broken the point: `/board`
-   in *another* thread has to find the round, which a session-keyed record hides.
-4. **No `--migrate` step, and none is needed.** Unknown fields are forward-compatible,
-   and an absent block already has a defined meaning — *no recorded round* — which is
-   both the pre-#1604 state and the ordinary state between rounds. Back-filling it for
-   historical rounds is impossible in principle (the queue it would record is gone), so
-   the readers keep their pre-#1604 fallback for exactly that case rather than
-   pretending a migration could supply one.
+1. No inert `_field_types` entry: enforcement covers `top_level` and `pr_nested`,
+   not these repo siblings. The writer and reader validate the records they use.
+2. `/subagent` Step 7.0 self-compares its whole slot before writing; same-set
+   re-entry keeps `dispatched_at`, and reordering updates members without moving
+   that clock. A missing/ambiguous session identity records nothing, visibly.
+3. Step 8 clears only the matching ended membership and session through a whole
+   slot CAS. It stores null as a tombstone and never clears another slot.
+4. `round-membership.sh` reads one repo snapshot. `/board` selects its invoking
+   session's own ordered queue/completed membership, or an explicitly labelled,
+   deterministic recorded-round union for an observer. Running rows keep their
+   existing repo scope. Membership never proves liveness; queued-only and pre-PR
+   evidence rules remain. Unreadable/malformed state degrades, never invents an
+   empty successful round. `--all-repos` selects independently for each repo.
+5. Legacy `.round` remains read-only compatibility evidence. A new slot key,
+   including a null tombstone, shadows a legacy record attributed to that owner;
+   otherwise it remains visible. There is no destructive migration or stale-age
+   cleanup. Unknown ownership is retained.
+
+The representative schema carries both forms. Native controls execute the real
+writer/clear fences and locked state writer with two sessions, and verify own,
+observer, legacy, tombstone and repo-isolation reads. Generic CAS is unchanged.
+
+
+Membership selection requires an explicit valid session ID. An empty, default,
+null or malformed identity is a usage error; `/board` labels the degradation and
+uses its no-record fallbacks. A distinct identified observer can still read the
+recorded-round union. The table-freshness default clock remains unchanged.
 
 ## Handoff file migration
 

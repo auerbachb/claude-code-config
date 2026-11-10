@@ -45,9 +45,11 @@ no issue, and does not authorize silently skipping a missing trailer.
 
 For each OPEN same-repo candidate, independently read the issue's current body,
 acceptance criteria and comments, the associated PRs and final merged code.
-Record the criterion-by-criterion source/evidence and the disposition in the
-current task's scoped completion/handoff evidence. A checked PR Test Plan alone
-is insufficient: a PR may deliver only a slice of the issue.
+Capture the issue’s GitHub `updatedAt` when you start verifying scope, then
+read it again after checking the evidence. If it changed, recheck the scope.
+Record that revision, the criterion-by-criterion evidence and the disposition
+in the current task’s scoped completion or handoff evidence. A checked PR Test
+Plan alone is insufficient: a PR may deliver only a slice of the issue.
 
 Keep an issue OPEN when any acceptance scope remains, another associated PR is
 outstanding, an owner decision is unresolved, or completion cannot be verified.
@@ -57,27 +59,27 @@ do not strip their repository qualifier or act on the same number locally.
 A deliberately reopened issue is retained when its reopen event is at or after
 the merge; use a subsequent verified fix rather than replaying an old closure.
 
-After *full* scope verification, reconcile only that explicit issue, bound to the
-independently fetched merge commit:
+After full scope verification, automatically reconcile the single issue whose
+closing link GitHub recognizes. Bind the request to the merged commit and the
+issue revision from the scope evidence:
 
 ```bash
 "$ISSUE_COMPLETION_SH" --repo "$OWNER_REPO" --pr "$PR_NUM" \
-  --complete-issue "$ISSUE_NUM" --expected-merge "$MERGE_SHA" --scope-verified
+  --complete-issue "$ISSUE_NUM" --expected-merge "$MERGE_SHA" \
+  --expected-issue-updated-at "$VERIFIED_ISSUE_UPDATED_AT" --scope-verified
 ```
 
 `--scope-verified` is an assertion that the agent has performed and recorded all
 checks above. It is never synthesized from PR MERGED, claim release, a title,
-a closing trailer or a passing PR Test Plan. Do not loop this write over audit
-candidates without individual scope verification. The helper also requires the
-PR to be authored by the authenticated account and merged into the repo's current
-default branch. Non-default merges remain pending for default-branch delivery.
+a closing trailer or a passing PR Test Plan. Run the write only for the
+current tracked delivery. Backlog and consumer audit scans are read-only. The
+helper also requires the PR to be authored by the authenticated account and
+merged into the repo's current default branch. Non-default merges remain pending for default-branch delivery.
 
-A missing or malformed closing trailer does not justify guessing. If the explicit
-primary task/handoff proves the issue belongs to this delivery, verify the full
-scope and record the association evidence. Only then add
-`--association-verified` to the same command. This does not discover arbitrary
-issues. A foreign issue or an issue mentioned only as related work is never that
-same-repo primary association.
+A missing or malformed closing link leaves the issue open. GitHub must identify
+the same repository and exact issue in `closingIssuesReferences`. An explicit
+association can support a read-only retained disposition, such as a partial
+delivery documented in its handoff. It cannot authorize an automatic close.
 
 The helper saves closure intent before requesting the single issue closure,
 then independently reads the typed issue back. A write response alone is not
@@ -94,8 +96,9 @@ in-flight write without another close. A detected reopen becomes a sticky
 the close request overwrote the owner's OPEN state. A malformed/unsafe guard is
 also pending. Do not delete or rewrite that evidence to clear Phase C; preserve
 it for an explicit owner decision or a separately verified subsequent fix.
-These guards do not make GitHub's external issue-state update atomic. The owner
-policy choice on automatic corrective closes remains unresolved for this PR.
+GitHub does not offer an atomic conditional issue close. A simultaneous
+manual reopen can still race the request. Report a detected conflict as
+pending and preserve the evidence for manual resolution.
 
 ## Deliberately retained issue scope
 
