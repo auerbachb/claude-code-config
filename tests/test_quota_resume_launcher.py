@@ -52,12 +52,22 @@ claude-target() { _ai_launch claude 'target@example.test' 'Target' "$@"; }
         with tempfile.TemporaryFile(mode="w+b") as stream:
             stream.write(state.contents)
             stream.seek(0)
+            safe = {k: v for k, v in os.environ.items() if k not in launcher.AUTH_OVERRIDES}
+            safe["PATH"] = f"{self.root}:/usr/bin:/bin"
             result = subprocess.run(state.argv(stream.fileno(), self.session), cwd=self.worktree,
-                                    env=dict(os.environ, PATH=f"{self.root}:/usr/bin:/bin"),
+                                    env=safe,
                                     pass_fds=(stream.fileno(),), capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), [str(self.profile), str(self.worktree),
                                                       "2", "--resume", self.session])
+        with tempfile.TemporaryFile(mode="w+b") as stream:
+            stream.write(state.contents)
+            stream.seek(0)
+            refused = subprocess.run(state.argv(stream.fileno(), self.session), cwd=self.worktree,
+                                     env=dict(safe, ANTHROPIC_API_KEY="fixture-key"), pass_fds=(stream.fileno(),),
+                                     capture_output=True, text=True, timeout=5)
+        self.assertEqual(refused.returncode, 1)
+        self.assertEqual(refused.stdout, "")
 
     def test_rejects_untrusted_mapping_and_shared_or_symlink_file(self):
         with self.assertRaises(ValueError):
@@ -97,6 +107,11 @@ claude-target() { _ai_launch claude 'target@example.test' 'Target' "$@"; }
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-not-a-real-key"}):
                 with self.assertRaises(ValueError):
                     launcher.verify_subscription(selected, self.profile, run=runner(valid))
+            profile_settings = self.profile / "settings.json"
+            profile_settings.write_text('{"apiKeyHelper":"must-not-run"}')
+            with self.assertRaises(ValueError):
+                launcher.verify_subscription(selected, self.profile, run=runner(valid))
+            profile_settings.unlink()
             project = self.worktree / ".claude"
             project.mkdir()
             (project / "settings.json").write_text('{"apiKeyHelper":"must-not-run"}')

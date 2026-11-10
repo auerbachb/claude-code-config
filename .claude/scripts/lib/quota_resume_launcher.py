@@ -32,10 +32,18 @@ AUTH_OVERRIDES = {
 RUN_LAUNCHER = r'''
 setopt noaliases
 typeset -r qr_fd="$1" qr_name="$2" qr_label="$3" qr_profile="$4" qr_session="$5" qr_cli="$6"
+qr_require_profile_environment() {
+  local qr_key
+  for qr_key in QR_AUTH_OVERRIDE_NAMES; do
+    [[ -z ${(P)qr_key} ]] || return 1
+  done
+}
+qr_require_profile_environment || exit 1
 source "/dev/fd/$qr_fd" || exit 1
 exec {qr_fd}<&-
 (( $+functions[$qr_name] )) || exit 1
 [[ "$(whence -p -- claude)" == "$qr_cli" ]] || exit 1
+qr_require_profile_environment || exit 1
 
 # Keep the generated launcher and its title, but never let a later registry
 # read switch this one invocation to a different profile.
@@ -44,7 +52,7 @@ _ai_profile_dir() {
   print -r -- "$qr_profile"
 }
 "$qr_name" --resume "$qr_session"
-'''
+'''.replace("QR_AUTH_OVERRIDE_NAMES", " ".join(sorted(AUTH_OVERRIDES)))
 
 
 def require_profile_environment(environment=None):
@@ -53,41 +61,54 @@ def require_profile_environment(environment=None):
         raise ValueError("an alternate Claude authentication or provider override is active")
 
 
+def verify_auth_settings_file(path, shared_roots=()):
+    if path.is_symlink():
+        resolved = path.resolve(strict=True)
+        if not any(root in resolved.parents for root in shared_roots):
+            raise ValueError("the Claude authentication settings cannot be verified")
+        path = resolved
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.getuid()}
+                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > 1048576):
+            raise ValueError("the Claude authentication settings cannot be verified")
+        raw = stream.read(1048577)
+    if len(raw) > 1048576:
+        raise ValueError("the Claude authentication settings cannot be verified")
+    value = json.loads(raw)
+    if not isinstance(value, dict) or value.get("apiKeyHelper"):
+        raise ValueError("a configured helper can override the approved Claude account")
+    settings_env = value.get("env", {})
+    if not isinstance(settings_env, dict):
+        raise ValueError("the Claude authentication settings cannot be verified")
+    require_profile_environment(settings_env)
+
+
 def verify_project_auth_settings(cwd):
     # A project helper must not execute as part of our authentication probe.
     directory = Path(cwd)
+    home = Path.home().resolve(strict=True)
     for parent in (directory, *directory.parents):
-        if parent == Path.home():
+        if parent == home:
             break
         settings_dir = parent / ".claude"
         if settings_dir.is_symlink():
             raise ValueError("the project authentication settings cannot be verified")
         for name in ("settings.json", "settings.local.json"):
-            path = settings_dir / name
-            try:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            except FileNotFoundError:
-                continue
-            with os.fdopen(descriptor, "rb") as stream:
-                info = os.fstat(stream.fileno())
-                if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o022
-                        or info.st_size > 1048576):
-                    raise ValueError("the project authentication settings cannot be verified")
-                raw = stream.read(1048577)
-            if len(raw) > 1048576:
-                raise ValueError("the project authentication settings cannot be verified")
-            value = json.loads(raw)
-            if not isinstance(value, dict) or value.get("apiKeyHelper"):
-                raise ValueError("the project can override the approved Claude account")
-            settings_env = value.get("env", {})
-            if not isinstance(settings_env, dict):
-                raise ValueError("the project authentication settings cannot be verified")
-            require_profile_environment(settings_env)
+            verify_auth_settings_file(settings_dir / name)
 
 
 def verify_subscription(launcher, cwd, *, project=False, run=subprocess.run):
     """Require the exact account's first-party subscription; never log in."""
     require_profile_environment()
+    profile = Path(launcher.profile)
+    primary = (Path.home() / ".claude").resolve()
+    for name in ("settings.json", "settings.local.json"):
+        verify_auth_settings_file(profile / name, (profile, primary))
     if project:
         verify_project_auth_settings(cwd)
     env = dict(os.environ, CLAUDE_CONFIG_DIR=launcher.profile)
