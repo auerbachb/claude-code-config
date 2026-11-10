@@ -218,6 +218,15 @@ if [[ "$action" == claim ]]; then
   [[ "$generation" =~ ^[0-9a-f]{32}$ ]] || unavailable 'cannot generate a reservation token'
   owner_pid="$(jq -er .pid <<<"$owner")" || unavailable 'cannot identify reservation owner'
   process_stamp="$(read_process_stamp "$owner_pid")" || process_stamp=""
+  # Prove the stamp belongs to the Claude ancestor we are reserving for.
+  # Rediscover that ancestor between two native observations: a same-second
+  # PID replacement would pass a second coarse ps read alone.
+  confirmed_owner="$(session_owner)" || unavailable 'reservation owner disappeared'
+  [[ "$confirmed_owner" == "$owner" ]] || unavailable 'reservation owner changed'
+  if [[ -n "$process_stamp" ]]; then
+    confirmed_stamp="$(read_process_stamp "$owner_pid")" || unavailable 'cannot recheck reservation owner stamp'
+    [[ "$confirmed_stamp" == "$process_stamp" ]] || unavailable 'reservation owner stamp changed'
+  fi
   next="$(jq -cn --arg generation "$generation" --argjson owner "$owner" --arg stamp "$process_stamp" \
     '{version:1,generation:$generation,owner:$owner} + (if $stamp == "" then {} else {process_stamp:$stamp} end)')" \
     || unavailable 'cannot encode reservation'

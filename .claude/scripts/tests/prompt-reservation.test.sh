@@ -125,7 +125,18 @@ cat > "$tmp/bin/python3" <<'PYTHON'
 #!/usr/bin/env bash
 [[ "${1##*/}" == prompt_process_stamp.py ]] || exit 1
 case "$2" in
-  90000001) [[ -n "${PRECISE_STAMP:-}" ]] && printf '%s\n' "$PRECISE_STAMP" ;;
+  90000001)
+    if [[ -n "${CHANGING_STAMP_MARKER:-}" ]]; then
+      if [[ -e "$CHANGING_STAMP_MARKER" ]]; then
+        printf '%s\n' 'darwin-bsd:1794204000:000002'
+      else
+        : > "$CHANGING_STAMP_MARKER"
+        printf '%s\n' 'darwin-bsd:1794204000:000001'
+      fi
+    else
+      [[ -n "${PRECISE_STAMP:-}" ]] && printf '%s\n' "$PRECISE_STAMP"
+    fi
+    ;;
   90000002) printf '%s\n' 'darwin-bsd:1794204000:000003' ;;
   *) exit 1 ;;
 esac
@@ -145,6 +156,14 @@ new_generation="$out"
 call "$owner1" release --repo org/precise --kind leave --generation "$original_generation"
 check 10 "$rc" 'stale generation cannot clear the finer-stamp replacement'
 check "$new_generation" "$(read_slot org/precise leave | jq -r .generation)" 'new reservation survives stale release'
+CHANGING_STAMP_MARKER="$tmp/owner-raced" call "$owner1" claim --repo org/owner-raced --kind leave
+check 20 "$rc" 'a process stamp changing around ancestor confirmation refuses the claim'
+check "" "$out" 'the raced claim returns no generation'
+if read_slot org/owner-raced leave >"$tmp/raced-slot"; then
+  check null "$(cat "$tmp/raced-slot")" 'the raced claim publishes no reservation'
+else
+  check "" "$(cat "$tmp/raced-slot")" 'the raced claim publishes no reservation'
+fi
 rm "$tmp/bin/python3"
 
 subagent="$root/.claude/skills/subagent/SKILL.md"
