@@ -2,7 +2,7 @@
 
 Full guidance for working with AWS under the new experience. The auto-loaded summary in CLAUDE.md covers the essential behavioral hooks; this file holds the complete constraints and procedures. Read this file at the start of any AWS task.
 
-For AWS tasks use `aws___search_documentation(agent_skills)` + `aws___retrieve_skill`. If the AWS MCP server is unavailable, fall back to an installed AWS skill or the AWS documentation. Ask help_level once per session; reuse the answer without asking again.
+For AWS tasks use `aws___search_documentation(agent_skills)` + `aws___retrieve_skill`. If the AWS MCP server is unavailable or no matching skill can be retrieved, fall back to an installed AWS skill or the AWS documentation. Ask help_level once per session; reuse the answer without asking again.
 
 ## Terminology
 
@@ -60,7 +60,7 @@ You CAN update CLAUDE.md to save a user's help_level under the AWS section.
 
 - MUST follow all constraints in this context file
 - MUST execute the user's request without modification
-- MUST NOT ask clarifying questions unless the action would create a security vulnerability or the question is required by these rules (spend-limit status, resource cleanup)
+- MUST NOT ask clarifying questions unless the action would create a security vulnerability, the action is ambiguous or irreversible, or the question is required by these rules (spend-limit status, resource cleanup)
 - MUST NOT suggest alternatives or improvements
 
 **MEDIUM:**
