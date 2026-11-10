@@ -50,6 +50,26 @@ Skip a step = the claim is unsupported.
 | PR merge-ready | `merge-gate.sh` exit 0 **and** zero unresolved threads **and** CI clean on HEAD | Local review only |
 | Skill conventions OK | `bash .claude/scripts/skill-conventions-audit.sh` exit 0 when the script is present on the branch (issue #417); else `rule-lint.sh` + frontmatter spot-check | Eyeballing frontmatter |
 
+## When the diff cannot prove a requirement
+
+Name the requirement, why the diff cannot establish it, and the smallest
+next check on the exact proposed commit. Put that note in the existing
+review or handoff so the person verifying acceptance can act on it. A
+clean review is still useful for what it covered. It does not supply the
+missing evidence, and the acceptance item stays unchecked if the check
+cannot run or is inconclusive.
+
+For example, a PR changes a helper used by an unchanged installed caller.
+Report: **Requirement:** the caller still resolves and invokes the helper
+outside the config checkout. **Evidence needed:** at the proposed commit,
+run the existing portability fixture or invoke the unchanged caller with
+the installed helper layout from a checkout without `.claude/`. **If it
+cannot run:** report that the installed caller is unverified; leave its
+acceptance item unchecked.
+
+Adapted from [Superpowers' diff review guidance](https://github.com/obra/superpowers/blob/22f0b463e7a5e579904dd6211a520321035526f7/skills/subagent-driven-development/references/cannot-verify.md).
+The existing acceptance and merge gates still apply.
+
 ## Red flags — stop and verify
 
 - "Should pass now", "probably clean", "looks good"

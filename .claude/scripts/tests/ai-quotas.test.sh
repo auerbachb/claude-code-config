@@ -152,10 +152,15 @@ source "$SUITE_BOUND_LIB" || exit 1
 SUITE_TMP=$(mktemp -d) || exit 1
 CAPTURE="$SUITE_TMP/stdout"; CAPTURE_ERR="$SUITE_TMP/stderr"
 trap 'rm -rf -- "$SUITE_TMP"' EXIT
-# The requested sub-minute ceiling applies to native Bash 3.x. Current Bash
-# CI runners may have fewer cores; retain every assertion with a finite bound.
+# Preserve the sub-minute limit on native Bash 3.x. GitHub-hosted macOS
+# current Bash exhausted 180s with four groups still active (issue #2137).
+# Give that runner bounded headroom without dropping any fixtures.
 SUITE_BUDGET=180
-if (( BASH_VERSINFO[0] <= 3 )); then SUITE_BUDGET=52; fi
+if (( BASH_VERSINFO[0] <= 3 )); then
+  SUITE_BUDGET=52
+elif [[ "${RUNNER_ENVIRONMENT:-}" == github-hosted && "${RUNNER_OS:-}" == macOS ]]; then
+  SUITE_BUDGET=240
+fi
 SUITE_RC=0
 run_bounded "$SUITE_BUDGET" "$BASH" "$TEST_FILE" --fixture-batch || SUITE_RC=$?
 cat "$CAPTURE"

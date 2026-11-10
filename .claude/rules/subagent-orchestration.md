@@ -45,8 +45,6 @@ actual cost or unknown; routine retries stay silent.
 
 **Ask first only:** respawning a crashed/no-handoff subagent.
 
-> **Anti-pattern:** composing "Should I...?" for any "Always do" row — the answer is always yes (CLAUDE.md); execute immediately.
-
 ## Token/Turn Exhaustion Protocol (MANDATORY)
 
 Near token exhaustion: write the handoff per `handoff-files.md` and exit; parent auto-launches a replacement.
@@ -69,8 +67,3 @@ Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:
 ## Subagent Review Protocol
 
 Review protocol lives in its canonical sources — `cr-local-review.md`, `cr-github-review.md`, `cr-merge-gate.md`, `bugbot.md`, `greptile.md`. Do NOT duplicate them.
-
-**Three reminders for subagents:**
-1. **AUTONOMY:** every phase transition is automatic — do NOT ask "should I?" (table above).
-2. **EXIT REPORT:** print a Structured Exit Report as final output (`phase-protocols.md`).
-3. **HANDOFF FILE:** write/update/read `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` per `handoff-files.md`.
