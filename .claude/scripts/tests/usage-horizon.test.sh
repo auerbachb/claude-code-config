@@ -161,6 +161,33 @@ check_eq "$(reason_of)" "no-reading-this-session" "foreign-session reading names
 run --check --session s-one
 check_eq "$(status_of)" "clear" "the owning session still reads its own reading"
 
+# #2147: full-session absence is an attestation, never a clear verdict.
+run --check --session s-two --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=counter-never-seen' "attested absence distinguishes a valid foreign slot"
+check_eq "$RC" "3" "attested absence retains the unknown exit"
+run --check --session s-one --counter-never-seen
+check_eq "$(status_of)" "clear" "the flag does not mask a fresh current-session reading"
+
+jq '.usage_horizon.reading.ts = "invalid"' "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+run --check --session s-two --counter-never-seen
+check_eq "$(reason_of)" "timestamp-unparseable" "a malformed foreign slot is not absence"
+
+reset_home
+run --check --session f1 --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen" "attested absence works with no state file"
+check_absent "$(STATE)" "attested check does not create state"
+printf '%s' '{"monitoring_active":true}' > "$(STATE)"
+run --check --session f1 --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen" "attested absence works with no saved reading"
+printf '%s' '{"usage_horizon":false}' > "$(STATE)"
+run --check --session f1 --counter-never-seen
+check_eq "$(reason_of)" "reading-malformed" "a malformed reading is not absence"
+printf '%s' '{oops' > "$(STATE)"
+run --check --session f1 --counter-never-seen
+check_eq "$(reason_of)" "state-unreadable" "invalid state is not absence"
+run --observe 100 --session f1 --counter-never-seen
+check_eq "$RC" "4" "attestation cannot be passed on observe"
+
 # Stale beyond TTL.
 reset_home
 run --observe 14000000 --limit 15000000 --session f2
@@ -169,6 +196,8 @@ run --check --session f2
 check_not_clear "$(status_of)" "$RC" "a stale reading cannot yield clear"
 check_eq "$(reason_of)" "reading-stale" "stale reading names its reason"
 check_eq "$RC" "3" "stale reading exits 3"
+run --check --session f2 --counter-never-seen
+check_eq "$(reason_of)" "reading-stale" "attestation cannot hide a stale same-session reading"
 
 # A short TTL makes a fresh reading stale — proves the knob is actually read.
 reset_home
