@@ -498,7 +498,7 @@ After Step 1 and Step 2 both pass:
    - Phase 4: lessons/final report
 3. Treat every `/wrap` stop condition as `OUTCOME: blocked` and include the missing gate, failed AC, CI, unresolved finding, or command error details before the exit report.
 
-**Issue completion is part of terminal success.** Before `OUTCOME: merged`, record [completion reconciliation](../reference/issue-completion.md): independently CLOSED issues or justified retained partial scope. Use the automatic close only for a GitHub-linked issue after verifying its full scope and revision. If the PR merged but closure verification/recovery is pending, report `OUTCOME: blocked`, explicitly `PR already merged; completion pending`, and its scoped receipt path. Preserve the handoff and retry completion; do not restart code/review/merge for an already-merged PR.
+**Issue completion is part of terminal success.** Before `OUTCOME: merged`, record [completion reconciliation](../reference/issue-completion.md): verified CLOSED issues, a verified no-issue delivery, or justified retention for partial scope, an owner decision, or a reopen. Use the automatic close only for a GitHub-linked issue after verifying its full scope and revision. If the PR merged but closure verification/recovery is pending, report `OUTCOME: blocked`, explicitly `PR already merged; completion pending`, and its scoped receipt path. Preserve the handoff and retry completion; do not restart code/review/merge for an already-merged PR.
 
 A no-review-override merge (issue #1899) is still `OUTCOME: merged`; relay `/wrap`'s suffixed line unchanged — `merged PR #N (no AI review — logged)`, or `merged PR #N (no AI review — ledger write failed)` when the recorder failed (report that one so the row is added by hand).
 

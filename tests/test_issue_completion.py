@@ -257,7 +257,7 @@ class Completion(unittest.TestCase):
                 else:
                     self.assertLess(rc, 0)
                 self.mode('normal')
-                for retry in (self.run_helper, self.complete):
+                for retry in (self.run_helper, lambda: self.complete('--repo', 'Owner/Consumer')):
                     rc, report = retry()
                     self.assertEqual(rc, 1)
                     self.assertEqual(report['error_class'], 'concurrent_scope_change_detected')
@@ -353,7 +353,7 @@ exit "$result"
         helper=self.root/'bookkeeping'
         helper.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$BOOKKEEPING_RECORD"\nprintf "%s\\n" ' + shlex.quote(json.dumps({'issues':[7]})) + '\n')
         helper.chmod(0o700)
-        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),CURRENT_REPO='owner/consumer',
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),CURRENT_REPO='Owner/Consumer',
                  PR_NUM='20',POST_MERGE_BOOKKEEPING_SH=str(helper),BOOKKEEPING_RECORD=str(record))
         def run(*args, **more):
             return subprocess.run(['bash','-c',harness,'wrap',*args],cwd=repo,env=dict(env,**more),
@@ -365,11 +365,11 @@ exit "$result"
         self.assertEqual(run(CURRENT_REPO='foreign/repo').returncode,3)
         self.assertFalse(record.exists())
         self.assertEqual(run('--retain-issue','7=partial_scope','--expected-merge',MERGE).returncode,0)
-        self.assertEqual(record.read_text().splitlines(),['20','--repo','owner/consumer'])
+        self.assertEqual(record.read_text().splitlines(),['20','--repo','Owner/Consumer'])
         self.assertEqual(self.writes(),0)
         self.assertEqual(run('--complete-issue','7','--scope-verified','--expected-merge',MERGE,
                              '--expected-issue-updated-at',ISSUE_REVISION).returncode,0)
-        self.assertEqual(record.read_text().splitlines(),['20','--repo','owner/consumer']*2)
+        self.assertEqual(record.read_text().splitlines(),['20','--repo','Owner/Consumer']*2)
         self.assertEqual(self.writes(),1)
         self.assertEqual(run().returncode,0)
         self.assertEqual(self.writes(),1)
@@ -384,7 +384,7 @@ exit "$result"
         fence=source.split('<!-- test-anchor: issue-completion-publish -->',1)[1].split(chr(96)*3+'bash\n',1)[1].split(chr(96)*3,1)[0]
         harness="""resolve_script() { printf '%s/%s\\n' "$COMPLETION_SCRIPT_DIR" "$1"; }
 """ + fence + '\npublish_completed_handoff\n'
-        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),PR_NUM='20',OWNER_REPO='owner/consumer',HEAD_SHA='b'*40)
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),PR_NUM='20',OWNER_REPO='Owner/Consumer',HEAD_SHA='b'*40)
         before=handoff.read_bytes()
         for invalid in [dict(report,outcome='pending'),dict(report,head_sha='c'*40),dict(report,outcome='retained',retained_scope={}),dict(report,error_class='github_unavailable')]:
             p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(invalid)),text=True,capture_output=True,timeout=15)

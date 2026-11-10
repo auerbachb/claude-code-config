@@ -138,6 +138,7 @@ Use this canonical adapter for each assessment or individually verified write.
 It preserves the helper receipt and scopes PM bookkeeping to the invoking repo;
 a failed state write cannot clear a pending action. `PR_NUM` and `OWNER_REPO`
 come from the verified task identity, never from shared numeric-key inference.
+Normalize GitHub repository casing so all spellings use the same receipt and lock.
 Call it without extra arguments for assessment, or pass the explicitly verified
 single-issue flags shown above. Its JSON remains in `COMPLETION_JSON` for scope
 review and retained-work disposition.
@@ -155,16 +156,17 @@ reconcile_issue_completion() {
     return 6
   fi
   completion_repo=$("$completion_state" --repo-key) || return 6
-  if [[ "$completion_repo" != "$OWNER_REPO" ]]; then
+  if ! jq -en --arg repo "$OWNER_REPO" --arg key "$completion_repo" \
+      '($repo | ascii_downcase) == $key' >/dev/null; then
     echo 'ERROR: completion repository mismatch — state unchanged' >&2
     return 3
   fi
   COMPLETION_RC=0
-  COMPLETION_JSON=$("$completion_helper" --repo "$OWNER_REPO" --pr "$PR_NUM" "$@") || COMPLETION_RC=$?
-  if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" \
+  COMPLETION_JSON=$("$completion_helper" --repo "$completion_repo" --pr "$PR_NUM" "$@") || COMPLETION_RC=$?
+  if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$completion_repo" --argjson pr "$PR_NUM" \
       'type == "object" and .owner_repo == $repo and .pr == $pr and (.outcome == "verified" or .outcome == "pending" or
        (.outcome == "retained" and .error_class == null and (.retained_scope | type == "object" and length > 0)))' >/dev/null; then
-    COMPLETION_JSON=$(jq -cn --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" \
+    COMPLETION_JSON=$(jq -cn --arg repo "$completion_repo" --argjson pr "$PR_NUM" \
       '{owner_repo:$repo,pr:$pr,outcome:"pending",error_class:"completion_report_unreadable"}')
     COMPLETION_RC=4
   fi
@@ -216,7 +218,7 @@ publish_completed_handoff() {
   local completion_handoff
   [[ "$PR_NUM" =~ ^[1-9][0-9]*$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 2
   if ! printf '%s' "$COMPLETION_JSON" | jq -e --arg repo "$OWNER_REPO" --argjson pr "$PR_NUM" --arg head "$HEAD_SHA" \
-      '.owner_repo == $repo and .pr == $pr and .head_sha == $head and .error_class == null and
+      '.owner_repo == ($repo | ascii_downcase) and .pr == $pr and .head_sha == $head and .error_class == null and
        (.outcome == "verified" or (.outcome == "retained" and (.retained_scope | type) == "object" and (.retained_scope | length) > 0))' >/dev/null; then
     echo 'ERROR: final completion disposition unverified — handoff retained' >&2
     return 3

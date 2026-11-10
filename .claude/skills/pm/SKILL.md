@@ -2052,7 +2052,7 @@ A mid-session "re-prioritize" or "rank the backlog" request runs the same rankin
 
 Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
-- Record PR state separately from issue completion. For merged tracked work, run [completion reconciliation](../../reference/issue-completion.md); only verified CLOSED or an explicitly justified retained-scope disposition completes that action. Pending closure remains retryable and does not relaunch code.
+- Record PR state separately from issue completion. For merged tracked work, run [completion reconciliation](../../reference/issue-completion.md); accept verified CLOSED issues, a verified no-issue delivery, or an explicitly justified retained disposition. Pending closure remains retryable and does not relaunch code.
 - Flag stale threads: if an issue was assigned > 30 minutes ago with no PR, note it
 - **Dismiss stale chips:** any issue sitting at `Chip offered` that now has an open PR is being worked already — withdraw its chip via `dismiss_task` (see `.claude/reference/chip-launching.md`). Reuse the open-PR result already fetched above and the same closing-keyword predicate — no extra API call. Only clear the tracked `task_id` after the dismiss succeeds.
 

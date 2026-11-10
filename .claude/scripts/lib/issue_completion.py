@@ -354,6 +354,7 @@ def main():
             or (args.complete_issue is not None and args.complete_issue <= 0)
             or (args.expected_merge and not SHA.fullmatch(args.expected_merge))):
         parser.error('invalid repository, issue, PR or merge identity')
+    args.repo = args.repo.lower()
     directory = Path.home().resolve() / '.claude' / 'issue-completion' / 'github.com' / args.repo
     suffix = '.issue-' + str(args.complete_issue) if args.complete_issue else '.assessment'
     args.receipt = directory / ('pr-' + str(args.pr) + suffix + '.json')
