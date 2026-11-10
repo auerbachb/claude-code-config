@@ -61,8 +61,22 @@ case "$ARGS" in
     jq_arg() { local prev="" a; for a in "$@"; do [[ "$prev" == "--jq" ]] && { printf '%s' "$a"; return; }; prev="$a"; done; }
     jq -r "$(jq_arg "$@")" <<<"${FAKE_PR_FILES_JSON:-[]}"
     exit 0 ;;
+  *" pr merge 1 --repo solo/repo --squash --match-head-commit "*)
+    [[ -n "${FAKE_NRO_STATE_PATH:-}" && "${*: -1}" == "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" ]] || exit 1
+    [[ "$(cat "$FAKE_NRO_STATE_PATH")" == OPEN && "${FAKE_NRO_REFUSE:-0}" == 0 ]] || exit 1
+    [[ -s "$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json" ]] || exit 1
+    printf '%s\n' MERGED >"$FAKE_NRO_STATE_PATH"
+    exit 0 ;;
+  *" pr view 1 --repo solo/repo --json state,headRefOid "*)
+    jq -cn --arg state "$(cat "$FAKE_NRO_STATE_PATH")" --arg head "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}"       '{state:$state,headRefOid:$head}'
+    exit 0 ;;
+  *" pr view 1 --repo solo/repo --json state --jq .state "*)
+    cat "$FAKE_NRO_STATE_PATH"
+    exit $? ;;
   *" pr view 1 --repo solo/repo --json state,headRefOid,mergeCommit,mergedAt,title,url "*)
-    jq -cn --arg s "${FAKE_MERGED_STATE:-MERGED}" --arg h "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" \
+    state="${FAKE_MERGED_STATE:-MERGED}"
+    if [[ -n "${FAKE_NRO_STATE_PATH:-}" ]]; then state="$(cat "$FAKE_NRO_STATE_PATH")"; fi
+    jq -cn --arg s "$state" --arg h "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" \
       '{state:$s, headRefOid:$h, mergeCommit:{oid:"feedface00000000000000000000000000000001"},
         mergedAt:"2026-11-06T06:00:00Z", title:"Fixture PR", url:"https://github.com/solo/repo/pull/1"}'
     exit 0 ;;
@@ -428,10 +442,71 @@ check_eq "false" "$(j .no_review_override.applied)" "#1932 greptile: broken eval
 echo "=== merge-site contracts: refresh the gate right before an override merge ==="
 SKILLS_DIR="$SCRIPT_DIR/../../skills"
 prose_has() { grep -qF "$2" "$1" && echo yes || echo no; }
-check_eq "yes" "$(prose_has "$SKILLS_DIR/merge/SKILL.md" 'first **re-run `merge-gate.sh` into the gate JSON**')" \
+check_eq "yes" "$(prose_has "$SKILLS_DIR/merge/SKILL.md" 'First **re-run `merge-gate.sh` into the gate JSON** after AC verification')" \
   "/merge re-runs merge-gate.sh after AC verification before an override merge"
 check_eq "yes" "$(prose_has "$SKILLS_DIR/wrap/SKILL.md" 'its refreshed `merge_state` still passes this same test')" \
   "/wrap re-checks the allowed merge state on the refreshed gate"
+
+echo "=== Issue #2143: wrap replays the complete gate after the merge ==="
+source "$SCRIPT_DIR/lib/skill-bash.sh"
+MERGE_BLOCK=$(extract_skill_bash "$SKILLS_DIR/wrap/SKILL.md" wrap-no-review-override-merge) || exit 1
+RECORD_BLOCK=$(extract_skill_bash "$SKILLS_DIR/wrap/SKILL.md" wrap-record-no-review-merge) || exit 1
+reset
+rm -f "$LEDGER_FILE"
+run_gate "$GREEN_11"
+check_eq "0" "$RC" "fresh gate authorizes the override"
+export FAKE_NRO_STATE_PATH="$TMP/pr-state"
+printf '%s\n' OPEN >"$FAKE_NRO_STATE_PATH"
+run_wrap_fence() (
+  export PATH="$BIN:$PATH"
+  PR_NUM=1 CURRENT_REPO=solo/repo GATE_JSON="${2:-}" AC_VERIFIED_HEAD="${3:-$HEAD_SHA}"
+  resolve_script() { printf '%s\n' "$LEDGER_SUT"; }
+  eval "$1"
+  result=$?
+  printf '%s' "${NRO_SUFFIX:-}"
+  return "$result"
+)
+SNAPSHOT_PATH="$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json"
+run_wrap_fence "$MERGE_BLOCK" "$(j '{met,head_sha,no_review_override}')" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "a projected gate cannot authorize the merge"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "invalid input leaves the PR open"
+run_wrap_fence "$MERGE_BLOCK" "$OUT" 1111111111111111111111111111111111111111 >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "a new HEAD requires acceptance verification"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "changed acceptance HEAD leaves the PR open"
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null
+check_eq "0" "$?" "the anchored override fence merges with the saved HEAD"
+check_eq "MERGED" "$(cat "$FAKE_NRO_STATE_PATH")" "native merge succeeded"
+check_eq "$OUT" "$(cat "$SNAPSHOT_PATH")" "the snapshot has the full gate"
+FAKE_PR_OVERRIDE=$(jq -cn --arg head "$HEAD_SHA" '{state:"MERGED",headRefOid:$head}')
+export FAKE_PR_OVERRIDE
+run_gate "$GREEN_11"
+check_eq "3" "$RC" "a fresh gate after merge cannot authorize recording"
+export FAKE_MERGED_HEAD=1111111111111111111111111111111111111111
+check_eq " (no AI review — ledger write failed)" "$(run_wrap_fence "$RECORD_BLOCK" 2>"$TMP/snapshot.err")" "a mismatched merged HEAD blocks recording"
+test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "a failed record retains the snapshot"
+check_eq "0" "$(ledger_rows)" "a failed record adds no ledger row"
+unset FAKE_MERGED_HEAD
+check_eq " (no AI review — logged)" "$(run_wrap_fence "$RECORD_BLOCK")" "a separate wrap call replays and records"
+check_eq "1" "$(ledger_rows)" "exactly one ledger row after replay"
+check_eq "" "$(run_wrap_fence "$RECORD_BLOCK")" "no snapshot is a no-op on ordinary recovery"
+check_eq "1" "$(ledger_rows)" "repeated recovery does not duplicate the row"
+unset FAKE_PR_OVERRIDE
+
+printf '%s\n' OPEN >"$FAKE_NRO_STATE_PATH"
+run_gate "$GREEN_11"
+export FAKE_MERGED_HEAD=1111111111111111111111111111111111111111
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "head mismatch refuses the snapshot before the merge"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "head mismatch leaves the PR open"
+unset FAKE_MERGED_HEAD
+export FAKE_NRO_REFUSE=1
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "1" "$?" "merge refusal is reported"
+test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "failed merge retains the snapshot"
+PATH="$BIN:$PATH" "$LEDGER_SUT" snapshot --pr 1 --repo solo/repo --discard
+check_eq "0" "$?" "a known unmerged PR can clear its unused snapshot"
+test ! -e "$SNAPSHOT_PATH"; check_eq "0" "$?" "reviewed merge starts without stale evidence"
+unset FAKE_NRO_STATE_PATH FAKE_MERGED_HEAD FAKE_NRO_REFUSE
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

@@ -116,6 +116,8 @@ Reviewer assignment is resolved automatically from `~/.claude/session-state.json
 
 ### Step 3: Verify acceptance criteria
 
+Before acceptance verification, bind `AC_VERIFIED_HEAD` to the Step 2 gate’s `head_sha` and carry it into Step 5.
+
 Use the shared `ac-checkboxes.sh` helper to parse and tick Test Plan items. All Test Plan checkboxes must be checked off before proceeding. If any fail verification, stop and report — do NOT merge with unchecked boxes.
 
 ```bash
@@ -162,11 +164,9 @@ If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): .
 
 **Merge execution:** After Steps 2–3 pass, run `gh pr merge --squash` with no pre-merge prompt — per `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3. Gate/CI/AC/worktree failures still stop as above. `/merge` skips `/wrap`'s follow-ups and lessons only.
 
-```bash
-gh pr merge --squash
-```
+The reviewed path runs `gh pr merge "$PR_NUM" --repo "$CURRENT_REPO" --squash` after the unused-snapshot check below.
 
-**No-review override (issue #1899).** When the gate JSON shows `.no_review_override.applied == true`, this replaces the plain `gh pr merge --squash` above. The gate JSON from Step 2 predates AC verification, so first **re-run `merge-gate.sh` into the gate JSON** and continue only if it is still `met` with `.no_review_override.applied == true` (a same-HEAD `CHANGES_REQUESTED` or a bot verdict that landed meanwhile flips it — then stop and re-run from Step 2); the head pin does not protect review state. Then merge with the head pinned — `gh pr merge --squash --match-head-commit <gate head_sha>` — never through `admin-merge.sh`, then record it before branch cleanup: `unreviewed-merge-ledger.sh record --pr <N> --gate-json -` (gate JSON on stdin; it labels the PR `merged-unreviewed`). Report `merged PR #N (no AI review — logged)`, or `… — ledger write failed)` when the recorder exits non-zero. Mechanism: `.claude/reference/no-review-override.md`.
+**No-review override (issue #1899).** When `.no_review_override.applied == true`, replace the plain merge above. First **re-run `merge-gate.sh` into the gate JSON** after AC verification. Bind `CURRENT_REPO` to the repository from the verified PR URL. Require a met override and the refreshed merge state permitted in [wrap Step 2.4](../wrap/SKILL.md#step-24-squash-merge). Execute its `wrap-no-review-override-merge` boundary with the full refreshed JSON. Once GitHub confirms the merge, execute `wrap-record-no-review-merge` and relay its report suffix. Before a reviewed merge, run the unused-snapshot discard check from the same step. If recording fails, retain the snapshot and retry through /wrap's already-merged entry. See [the ledger contract](../../reference/no-review-override.md).
 
 Do NOT use `--delete-branch`. That flag attempts local branch deletion immediately, which fails when run from a worktree (the branch is still checked out). Handle branch cleanup in Step 5a below.
 
