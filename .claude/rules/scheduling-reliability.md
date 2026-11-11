@@ -4,7 +4,7 @@
 > **Ask first:** Never — scheduling reliability is autonomous.
 > **Never:** Use `CronCreate`, dynamic `/loop`, or chained one-shot `ScheduleWakeup` calls for a recurring user-facing poll. Promise to "check back in N minutes" without an active `Monitor`. Exit a wake-up turn without confirming the monitor is live and the last tick fired. Leave background work running with no ceiling armed.
 
-This file covers between-turn polling. **Background work in flight is a polling context** — that wait is between turns too. In-turn silence is default (CLAUDE.md #3); the bgwork-ceiling backstop is the liveness signal.
+This file covers between-turn polling; **background work in flight is a polling context too**. In-turn silence is default (CLAUDE.md #3); the bgwork-ceiling backstop is the liveness signal.
 
 ## Tool Selection Decision Tree
 
@@ -29,7 +29,7 @@ Mechanism and rationale: `.claude/reference/leave-time.md`.
 
 ## PM Monitoring Primitive
 
-Division of responsibility (`.claude/reference/pm-monitoring-decision.md`):
+Division (`.claude/reference/pm-monitoring-decision.md`):
 
 - `/pm` creates no polls; `/pm day` owns one repo `Monitor`, excluding `/pr-monitor-and-manage`.
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (persistent `Monitor`, including `--auto-wake`).
