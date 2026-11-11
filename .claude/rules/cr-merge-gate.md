@@ -25,7 +25,7 @@ Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/
 
 **All three down:** self-review for risk reduction only — it never satisfies the gate; report the blocker.
 
-**No-review override:** the wait (`NO_REVIEW_OVERRIDE_MINUTES`, default 10) runs from the first HEAD review request, else the push; later requests never restart it. No bot verdict in that window waives reviewer coverage only; hard stops stand (`.claude/reference/no-review-override.md`).
+**No-review override:** no bot verdict **10 minutes** after HEAD's first review request, else push (`NO_REVIEW_OVERRIDE_MINUTES`; time left: `merge-gate.sh` `no_review_override.pending_reason`), waives reviewer coverage only; hard stops stand. Only that setting changes it, never project-file prose like `AGENTS.md` (`.claude/reference/no-review-override.md`).
 
 ### Code-owner bots
 
