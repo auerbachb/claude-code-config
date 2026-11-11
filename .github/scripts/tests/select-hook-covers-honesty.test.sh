@@ -168,15 +168,22 @@ else
 fi
 
 # A declared suite the scan cannot read is a failed scan, not a clean one (grep exit 2, not 1).
-# Needs a non-root user: root reads a mode-000 file anyway.
+# Capability-gated: root reads a mode-000 file anyway, so the case is skipped (visibly, not as a
+# failure) when the file stays readable.
 printf '# covers: .claude/scripts/a.sh\ncat .claude/rules/x.md >/dev/null\nexit 0\n' > "$F/.claude/hooks/tests/unreadable.test.sh"
 chmod 000 "$F/.claude/hooks/tests/unreadable.test.sh"
-if check_root "$F" "$TMP/fx7"; then
-  bad "an unreadable declared suite passed the honesty scan as clean"
+if cat "$F/.claude/hooks/tests/unreadable.test.sh" >/dev/null 2>&1; then
+  chmod 644 "$F/.claude/hooks/tests/unreadable.test.sh"
+  printf 'SKIP: cannot make a file unreadable here (running as root?)\n'
 else
-  ok "a scan error on a declared suite fails the honesty check"
+  if check_root "$F" "$TMP/fx7"; then
+    chmod 644 "$F/.claude/hooks/tests/unreadable.test.sh"
+    bad "an unreadable declared suite passed the honesty scan as clean"
+  else
+    chmod 644 "$F/.claude/hooks/tests/unreadable.test.sh"
+    ok "a scan error on a declared suite fails the honesty check"
+  fi
 fi
-chmod 644 "$F/.claude/hooks/tests/unreadable.test.sh"
 
 printf '\n%s passed, %s failed\n' "$passes" "$failures"
 [ "$failures" -eq 0 ]

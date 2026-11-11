@@ -566,18 +566,23 @@ else
 fi
 
 # A suite the selector cannot read is a scan error, not a clean scan: the selection fails toward ALL
-# (grep exit 2 on the unreadable file, not exit 1 for "no match"). Needs a non-root user, since root
-# reads a mode-000 file anyway.
+# (grep exit 2 on the unreadable file, not exit 1 for "no match"). Capability-gated: root reads a
+# mode-000 file anyway, so the case is skipped (visibly, not as a failure) when the file stays readable.
 U="$TMP/unreadable"
 make_fixture "$U"
 printf '# reads .claude/hooks/a.sh\nexit 0\n' > "$U/.claude/hooks/tests/unreadable-scan.test.sh"
 chmod 000 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
-out="$(select_for "$U" .claude/hooks/b.sh)"
-chmod 644 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
-if is_all "$out"; then
-  ok "an unreadable suite makes the selection fail toward ALL"
+if cat "$U/.claude/hooks/tests/unreadable-scan.test.sh" >/dev/null 2>&1; then
+  chmod 644 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+  printf 'SKIP: cannot make a file unreadable here (running as root?)\n'
 else
-  bad "an unreadable suite did not select ALL: $out"
+  out="$(select_for "$U" .claude/hooks/b.sh)"
+  chmod 644 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+  if is_all "$out"; then
+    ok "an unreadable suite makes the selection fail toward ALL"
+  else
+    bad "an unreadable suite did not select ALL: $out"
+  fi
 fi
 
 printf '\n%s passed, %s failed\n' "$passes" "$failures"
