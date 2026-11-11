@@ -67,6 +67,42 @@ case "${1:-}:${2:-}" in
   -h:*|--help:*|help:*|*:-h|*:--help) dc_run "$@" ;;
 esac
 
+# The queue comes from the account's binding, never from a fallback (issue
+# #2183). `bindings` only reads the registry, so it runs with no store at all.
+# `bind` and `carry-over` must work in an unbound account, so they are exempt;
+# they migrate and record a binding themselves. Every other subcommand needs
+# the account's queue, or it refuses here, before any store contact or
+# register-control.
+# shellcheck source=../bin/lib/bindings.sh
+. "$dc_bin/lib/bindings.sh"
+case "${1:-}" in
+  bindings) dc_run "$@" ;;
+  bind|carry-over) ;;
+  *)
+    if ! dc_schema=$(hqb_test_schema); then
+      dc_schema=""
+    fi
+    if [ -z "$dc_schema" ]; then
+      if ! dc_dir=$(hqb_config_dir); then
+        dc_unavailable "cannot find this account's queue: neither CLAUDE_CONFIG_DIR nor HOME is set"
+      fi
+      dc_rc=0
+      hqb_lookup "$dc_dir" || dc_rc=$?
+      case "$dc_rc" in
+        0) dc_schema="$HQB_SCHEMA" ;;
+        3)
+          printf "desk-cli: You can't run the desk here until you configure a queue for this account. Bind it with: %s bind --name <name> --schema <schema>\n" "$dc_bin/desk-cli.sh" >&2
+          exit 4
+          ;;
+        *) dc_unavailable "$HQB_REASON" ;;
+      esac
+    fi
+    HUMAN_QUEUE_SCHEMA="$dc_schema"
+    export HUMAN_QUEUE_SCHEMA
+    unset dc_schema dc_dir dc_rc
+    ;;
+esac
+
 case "${HUMAN_QUEUE_DATABASE_URL:-}" in
   *[![:space:]]*) dc_run "$@" ;;
 esac
