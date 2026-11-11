@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from urllib.parse import parse_qs, urlsplit
 
 state = Path(os.environ["MOBILE_GH_STATE"])
@@ -17,6 +18,14 @@ owner = {"id": 77, "type": "User"}
 root = "/repos/owner/mobile"
 data = json.load(sys.stdin) if method != "GET" else None
 if method == "GET" and path == root:
+    barrier = os.environ.get("MOBILE_GH_BARRIER")
+    if barrier:
+        ready, release = Path(barrier) / "ready", Path(barrier) / "release"
+        if not ready.exists():
+            ready.touch()
+            deadline = time.monotonic() + 8
+            while not release.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
     out = {"id": d.get("repo_id", 101), "full_name": "owner/mobile", "private": d["private"],
            "visibility": "private" if d["private"] else "public", "has_issues": True,
            "archived": False, "permissions": {"admin": True}}

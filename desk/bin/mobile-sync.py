@@ -25,6 +25,7 @@ MARKER = re.compile(
     r"\A<!-- desk-mobile:v1 id=([DR]-[1-9][0-9]*) version=(\S+) sig=([a-f0-9]{64}) -->\n"
 )
 URL = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
+LOCAL_PATH = re.compile(r"""(?<![\w/])(?:[A-Za-z]:[\\/]|(?:~|\.\.?)?/)[^\s<>()\[\]{}"']+""")
 
 
 class Unavailable(Exception):
@@ -221,7 +222,8 @@ def verify_fields(runner, fields):
 
 
 def plain(value):
-    return URL.sub("[link omitted]", value).replace("@", "＠")
+    without_links = URL.sub("[link omitted]", value)
+    return LOCAL_PATH.sub("[path omitted]", without_links).replace("@", "＠")
 
 
 def display(value):
@@ -331,14 +333,18 @@ def sync(runner, queue, gh, config):
             if item_id in seen:
                 raise Unavailable("ambiguous signed mirror issues")
             seen[item_id] = issue, version
-    for item_id, (issue, version) in seen.items():
+    for item_id, (issue, version) in list(seen.items()):
         item = items.get(item_id)
         if not item or item["version"] != version:
             queue.current()
             gh.close(issue["number"])
             continue
         if issue.get("title") != item["title"] or issue["body"] != item["body"]:
-            continue  # An edited projection cannot authorize a reply.
+            # Retire this signed issue and create a clean copy without its replies.
+            queue.current()
+            gh.close(issue["number"])
+            del seen[item_id]
+            continue
         result = reply_from(gh, issue, item)
         if result:
             _, comment_id, action, answer = result

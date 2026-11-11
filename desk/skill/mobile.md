@@ -4,9 +4,10 @@ The desktop desk is the default. The phone inbox is an opt-in projection of
 the same queue to one dedicated **private** GitHub repository, reachable in
 [GitHub Mobile](https://docs.github.com/en/get-started/using-github/github-mobile).
 The queue is still the source of truth. A sync never scans transcripts and
-sends no task context, source repository paths, or session identities.
+sends only the projected fields, without task context or session identities.
 Decision issues show the question, choices and default; Reviews have a
-one-line title. Inline links and mentions are neutralized.
+one-line title. URLs and absolute or explicitly relative filesystem paths
+are omitted from those fields. Mentions render as literal text.
 
 ## Activation and use
 
@@ -35,14 +36,16 @@ and `gh api user --jq .id`. Generate the signing key locally, for example with
 `openssl rand -hex 32`, and keep it out of Git. If GitHub CLI is installed
 outside the standard locations, set `DESK_MOBILE_GH_BIN` to the absolute path
 of its trusted executable. The next desk tick verifies the destination is
-private and checks the pinned identities before it projects anything.
+private and checks the pinned identities before it projects anything. The
+Monitor runs at most one remote sync at a time while desktop ticks continue.
 It does not modify notification preferences. Use GitHub Mobile to open the
 inbox; push notification delivery depends on GitHub settings.
 
 - Reply `answer: A` to select an option or `answer: your text` to answer in
   words. A reply must be from the pinned operator and unedited. If the queue
   item changed since projection, use its new issue instead of replying to the
-  older one. A valid reply is recorded once and the existing desk wake sends
+  older one. If a signed mirror issue is edited, the desk closes it and
+  creates a fresh issue for the queue item. A valid reply is recorded once and the existing desk wake sends
   only the Decision pointer.
 - Reply `reviewed` to mark a Review read. The mirror closes that item's issue
   when the queue accepts the action. Closing the mirror issue by hand does not

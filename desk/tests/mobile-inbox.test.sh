@@ -63,8 +63,8 @@ check_absent "worker context is not exported" "$payload" 'never export this work
 check_absent "private repo identity is not exported" "$payload" 'owner/private-work'
 check_absent "projected mentions do not notify other users" "$payload" '@someone'
 check_absent "embedded links are omitted" "$payload" 'example.invalid'
-check_contains "relative Markdown links render as literal queue text" "$payload" \
-  '&#91;settings&#93;&#40;&#47;internal&#47;path&#41;'
+check_absent "local paths do not cross the mirror boundary" "$payload" 'internal'
+check_contains "the path omission renders as literal text" "$payload" 'path omitted'
 sync >/dev/null
 check "repeat sync does not create duplicates" "$(writes)" 3
 
@@ -77,7 +77,6 @@ def c(n, text, user=77, edited=False):
             "created_at": "2026-11-09T20:01:00Z",
             "updated_at": "2026-11-09T20:02:00Z" if edited else "2026-11-09T20:01:00Z"}
 issues={x["title"].split()[0]:x for x in d["issues"]}
-d["original_title"]=issues["D-1"]["title"]
 issues["D-1"]["title"]="D-1 · edited projection"
 d["comments"]={str(issues["D-1"]["number"]):[c(1000,"answer: B",66),c(1001,"answer: B",edited=True),c(1002,"answer: A")],
                str(issues["D-2"]["number"]):[c(1003,"answer: B")],
@@ -95,8 +94,13 @@ check "edited or stale projections do not apply a Decision" "$(sync)" '[]'
 check "the Review toggle uses the existing lifecycle" "$("$HQ_T_CLI" get R-1 --json | jq -r .status)" reviewed
 check "a stale phone reply cannot overwrite the source item" "$("$HQ_T_CLI" get D-2 --json | jq -r .status)" open
 check "an edited mirror cannot supply an answer" "$("$HQ_T_CLI" get D-1 --json | jq -r .status)" open
-# shellcheck disable=SC2016 # jq variable, not shell expansion
-set_remote '.original_title as $t|(.issues[]|select(.title=="D-1 · edited projection")|.title)=$t'
+check "an edited signed issue is replaced with a clean copy" \
+  "$(jq -r '[.issues[] | select(.title | startswith("D-1 ")) | .state] | join(",")' "$MOBILE_GH_STATE")" 'closed,open'
+set_remote '(.issues[] | select(.title | startswith("D-1 ")) | select(.state == "open")) as $fresh
+  | .comments[($fresh.number | tostring)] = [{
+      id:1007,user:{id:77,type:"User"},body:"answer: A",
+      created_at:"2026-11-09T20:01:00Z",updated_at:"2026-11-09T20:01:00Z"
+    }]'
 out=$("$HQ_BIN_DIR/desk-tick.sh" --session fixture-control --generation fixture-gen --once)
 check_contains "the normal desk tick emits the exact pending wake id" "$out" 'desk-tick fixture-gen mobile D-1'
 notice_order=$(printf '%s\n' "$out" | awk '$3=="new" || $3=="mobile" {print $3}')
@@ -129,6 +133,28 @@ PYFIX
 check "a refused answer does not halt the mobile pass" "$(sync)" '[]'
 check "the credential-shaped reply is not stored" "$("$HQ_T_CLI" get D-2 --json | jq -r .answer)" null
 check "an independent valid Review still updates" "$("$HQ_T_CLI" get R-2 --json | jq -r .status)" reviewed
+# A blocked GitHub call must not hold up the next desktop notification.
+mkdir "$tmp/slow"
+MOBILE_GH_BARRIER="$tmp/slow" HUMAN_QUEUE_TICK_SECONDS=1 \
+  "$HQ_BIN_DIR/desk-tick.sh" --session fixture-control --generation fixture-slow > "$tmp/slow/out" 2>&1 &
+loop=$!
+for _ in {1..50}; do
+  [ ! -e "$tmp/slow/ready" ] || break
+  sleep 0.1
+done
+check "the remote provider is waiting" "$(test -e "$tmp/slow/ready" && echo yes)" yes
+"$HQ_T_CLI" add --kind decision --repo owner/private-work --key issue-5 \
+  --question 'A desktop item arrived during sync' >/dev/null
+noticed=no
+for _ in {1..40}; do
+  if grep -F 'desk-tick fixture-slow new D-3' "$tmp/slow/out" >/dev/null; then noticed=yes; break; fi
+  sleep 0.1
+done
+check "desktop notices arrive while the remote pass is blocked" "$noticed" yes
+touch "$tmp/slow/release"
+kill -TERM "$loop" 2>/dev/null || true
+wait "$loop" 2>/dev/null || true
+
 # Hold the same lock registration uses, then replace the desk before the
 # waiting mobile transaction can read control_session.
 version=$("$HQ_T_CLI" mobile-reply snapshot fixture-control | jq -r '.[] | select(.id == "D-2") | .version')
