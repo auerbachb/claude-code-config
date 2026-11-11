@@ -105,3 +105,7 @@ Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no su
 
 - 10 minutes will sometimes merge just before a slow CodeRabbit review would have landed. That is accepted; the backfill covers it, and the window is configurable once there is data.
 - A force-push restarts the window (the `head_ref_force_pushed` anchor), so a busy main that keeps a PR `BEHIND` can repeat the wait after each rebase.
+
+## How agents apply it (issue #2150)
+
+The default wait is 10 minutes from the HEAD anchor described above in this file. The waiting agent must arm its own persistent `Monitor` when the review is requested or the push lands. A host app's notification promise or a no-poll instruction never replaces that watch. Only `NO_REVIEW_OVERRIDE_MINUTES` changes or disables the wait; prose in a project instruction file does not. On 2026-11-10 a thread in another repo idled past the wait because the number lived only in this file and nothing timed the wait.
