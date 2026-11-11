@@ -60,6 +60,116 @@ exec "$REAL_STATE" "$@"
     def race(self,mode):
         path=self.home/'race.json';path.write_text(json.dumps(self.foreign()));return dict(RACE_MODE=mode,RACE_JSON=str(path),RACE_ONCE=str(self.home/'once'),RACE_COUNT=str(self.home/'count'))
     def assert_foreign_bucket(self):self.assertEqual(json.loads(self.state.read_text())['repos']['foreign/repo'],{'sentinel':False})
+    def test_review_deadline_is_published_with_its_task(self):
+        gate = {"head_sha": "current", "no_review_override": {
+            "reason": "window_running", "eligible_at": "2026-11-11T07:00:00Z"}}
+        env = dict(HEAD_SHA="current", GATE_JSON=json.dumps(gate),
+                   CLASS="waiting-on-bots", EFFECTIVE_MIN="5")
+        decision = fence("babysit-pr-t5-rearm-decision")
+        check = '\nprintf "REARM=%s\\n" "$REARM"\n'
+        code = PERSIST + "\n" + decision + check + cadence("guard") + "\n" + cadence("publish")
+        result = self.run_block(code, env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("REARM=true", result.stdout)
+        watch = self.current()["babysit"]
+        epoch = watch["armed_review_deadline"]
+        self.assertEqual(watch["review_wait"], {"head_sha": "current", "eligible_at_epoch": epoch})
+        self.assertEqual(epoch, 1794380400)
+        self.assertEqual(watch["classification"], "waiting-on-bots")
+        self.assertEqual(watch["monitor_generation"], "new")
+        self.assertEqual(watch["monitor_task_id"], "replacement-task")
+        self.assertEqual(self.current()["last_cron_action"], {"type": "original"})
+
+        env["TICK_GENERATION"] = "new"
+        result = self.run_block(PERSIST + "\n" + decision + check, env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("REARM=false", result.stdout)
+        self.assertEqual(self.current()["babysit"]["armed_review_deadline"], epoch)
+
+        env["HEAD_SHA"] = "replaced"
+        result = self.run_block(PERSIST + "\n" + decision + check, env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("REARM=false", result.stdout)
+        self.assertIsNone(self.current()["babysit"]["review_wait"])
+
+    def test_existing_review_keeps_waiting_with_exhausted_budgets(self):
+        bundle = self.home / "pr-bundle.json"
+        code = (fence("babysit-pr-t2-review-budget")
+                + '\nprintf "blocked=%s\\n" "$REVIEW_BUDGET_BLOCKED"')
+        started = {"run_started_at": "2026-11-11T07:00:00Z", "run_done": False}
+        queued = {"app": {"slug": "codeant-ai"}, "status": "queued"}
+        lookalike = {"app": {"slug": "codeant-ai-build"}, "status": "queued"}
+        for marker, head, checks, window, expected in [
+                (started, "current", [], "false", "false"),
+                ({}, "current", [queued], "false", "false"),
+                ({}, "stale", [queued], "false", "true"),
+                ({}, "current", [lookalike], "false", "true"),
+                ({}, "current", [], "true", "false"),
+                (dict(started, run_done=True), "current", [], "false", "true")]:
+            with self.subTest(marker=marker, head=head, checks=checks, window=window):
+                bundle.write_text(json.dumps({"pr": {"head_sha": head}, "check_runs": {"all": checks}}))
+                gate = {"review_evidence": {"reviewers": {"codeant-ai[bot]": marker}}}
+                result = self.run_block(code, dict(HEAD_SHA="current", BUNDLE=str(bundle),
+                    GATE_JSON=json.dumps(gate), CR_BUDGET_OK="0", GREP_BUDGET_OK="0",
+                    NRO_WINDOW_RUNNING=window))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), f"blocked={expected}")
+
+    def test_pending_wait_outlasts_both_streak_limits(self):
+        check = ('\nprintf "result=%s:%s\\n" "$BLOCKER_STREAK" "$BACKOFF_STOP_REASON"\n')
+        code = (fence("babysit-pr-t5-blocker-streak") + "\n"
+                + fence("babysit-pr-t6-backoff-termination") + check)
+        env = dict(T0_SNAPSHOT='{"blocker_streak":9,"max_blocker_ticks":6}',
+                   PREV_DIGEST="sha256:after", STREAK="12")
+        for kind, suppressed, expected in [
+                ("waiting-on-bots", "false", "0:"),
+                ("has-recoverable-blockers", "false", "10:blocker-tick-cap"),
+                ("merge-ready", "true", "10:blocker-tick-cap"),
+                ("conflicting", "false", "0:stable-frozen")]:
+            with self.subTest(kind=kind, suppressed=suppressed):
+                result = self.run_block(code, dict(env, CLASS=kind, DISPATCH_SUPPRESSED=suppressed))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), f"result={expected}")
+
+    def test_required_retry_horizon_hold_uses_the_recovery_cap(self):
+        code = "\n".join([
+            fence("babysit-required-ci-rerun"),
+            fence("babysit-pr-t5-blocker-streak"),
+            fence("babysit-pr-t6-backoff-termination"),
+            'printf "%s:%s:%s\\n" "$DISPATCH_SUPPRESSED" "$BLOCKER_STREAK" "$BACKOFF_STOP_REASON"',
+        ])
+        result = self.run_block(code, dict(
+            CLASS="required-ci-rerun", WATCH_LAUNCH_OK="false",
+            PREV_DIGEST="sha256:after", STREAK="8",
+            T0_SNAPSHOT='{"blocker_streak":5,"max_blocker_ticks":6}',
+        ))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "true:6:blocker-tick-cap")
+
+    def test_monitor_emits_one_shortened_or_immediate_deadline_tick(self):
+        clock = r"""
+now=1000
+calls=0
+date() { printf '%s\n' "$now"; }
+sleep() {
+  (( calls < 3 )) || return 1
+  calls=$((calls + 1))
+  now=$((now + $1))
+  printf 'sleep=%s\n' "$1"
+}
+"""
+        for deadline, expected in [(0, [300, 300, 300]), (1100, [100, 300, 300]),
+                                   (999, [0, 300, 300]), (1450, [300, 150, 300])]:
+            with self.subTest(deadline=deadline):
+                result = self.run_block(clock + fence("babysit-pr-monitor-loop"), {
+                    "MONITOR_REVIEW_DEADLINE": str(deadline), "MONITOR_CADENCE": "5"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                waits = [int(line.split("=")[1]) for line in result.stdout.splitlines()
+                         if line.startswith("sleep=")]
+                self.assertEqual(waits, expected)
+                self.assertEqual(result.stdout.count(
+                    "/babysit-pr 123 --tick --monitor-generation old --cadence 5m"), 3)
+
     def test_old_tick_after_t0_cannot_persist(self):
         f=self.foreign();setup=self.run_block(self.mutate_command(f));self.assertEqual(setup.returncode,0,setup.stderr);self.assertEqual(self.current()['babysit'],f);before=self.state.read_bytes();p=self.run_block(PERSIST+'\necho REACHED_T6');self.assertEqual(p.returncode,0,p.stderr);self.assertNotIn('REACHED_T6',p.stdout);self.assertEqual(self.state.read_bytes(),before,'old tick overwrote replacement bookkeeping')
     def test_snapshot_to_cas_supersession_is_atomic(self):
