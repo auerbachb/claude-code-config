@@ -22,7 +22,7 @@ Before the first poll tick:
 Run before the first poll tick and before any new review trigger on push, resume, or post-compaction re-entry.
 
 1. Fetch all 3 comment endpoints (**Polling** below).
-2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or a leftover `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
+2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]` (no fix reply, code unchanged, not outdated/resolved).
 3. **If ANY unresolved: invoke `/fixpr` now** — no polling or new reviews until complete.
 
 ### Per-cycle check (every 60 seconds)
@@ -40,7 +40,7 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (tier-aware repos: only what `review-triggers-allowed.sh` allows).
 
-**Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
+**Keep polling while CI or review is pending.** Apply `scheduling-reliability.md` backoff and `cr-merge-gate.md` for merge readiness. After `/fixpr`, use its verified audit as the watermark boundary.
 
 ### Reviewer escalation gate (MANDATORY per cycle)
 

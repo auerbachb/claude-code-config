@@ -401,17 +401,15 @@ require_text "  keeping /wrap landable on approaching" \
 require_text "  and never orphaning an in-flight dispatch" \
   "$BABYSIT" 'In-flight dispatch is never orphaned'
 require_text "babysit widens its own cadence on critical" "$BABYSIT" 'HORIZON_HOLD_MIN'
-# A hold does not exempt the watcher from its own termination bounds, and the
-# skill must say so rather than promising a hold that outlasts the watch (#1653
-# review).
-require_text "  without exempting itself from the frozen-state terminate" \
-  "$BABYSIT" 'digest_streak >= 9.. is \*\*not\*\* relaxed'
-# --max-iter only bounds a hold if a suppressed tick counts, and a suppressed
-# merge-ready tick must not take the merge-ready reset (#1653 review).
-require_text "  counting a suppressed tick toward --max-iter whatever its class" \
-  "$BABYSIT" 'the horizon gate suppressed this tick.s dispatch'
-require_text "  and not letting a held merge-ready tick reset the streak" \
-  "$BABYSIT" 'only when the tick actually dispatched'
+# #2202 keeps ordinary waits active. A horizon hold that actually suppresses a
+# dispatch still spends the recovery budget (#1653). The generation-persist
+# suite executes both anchored blocks for held merge-ready and ordinary waits.
+require_text "  counting a suppressed dispatch toward --max-iter" \
+  "$BABYSIT" 'A suppressed dispatch counts toward .--max-iter.'
+require_text "  including suppressed dispatch in the blocker streak" \
+  "$BABYSIT" 'CLASS.*has-recoverable-blockers.*DISPATCH_SUPPRESSED'
+require_text "  applying termination bounds to classes outside the ordinary wait" \
+  "$BABYSIT" 'if \[\[ "\$CLASS" != waiting-on-bots \]\]; then'
 # horizon_held_since must be COMPUTED, not merely described: an unassigned
 # variable aborts under set -u and stores nothing without it (#1653 review).
 require_text "  computing HORIZON_HELD_SINCE rather than describing it" \

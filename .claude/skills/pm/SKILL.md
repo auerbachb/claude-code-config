@@ -1325,8 +1325,10 @@ printf 'HORIZON_STATUS=%s\nHORIZON_REFILL_OK=%s\nHORIZON_PARK=%s\nHORIZON_IDLE_R
 `unknown` never starts automatic work or triggers a park. An explicit live chat request to launch a current set of picks may proceed only on `counter-never-seen`, with §7.3's note and the remaining dispatch checks. This applies on the arming turn if the user actually requested those launches; periodic ticks and a request to keep the board full cannot inherit the exception. Use §7.3's hold line for the first requested dispatch when the horizon holds it.
 
 - **Automatic refill runs only when `HORIZON_REFILL_OK=true`.** Report the horizon reason on the idle line (`paused (horizon approaching)` / `paused (horizon critical)` / `paused (horizon unknown)`). On `unknown`, append ` — {HORIZON_REASON}` to chat only. Keep the bare `IDLE_REASON` for the digest so the annotation never perturbs the stable-state hash.
+- **Record every horizon-held refill evaluation.** For `approaching`, `unknown`, or `critical`, use 3.4’s Slot census with `CENSUS_GATE=horizon`, the observed `HORIZON_STATUS` as `CENSUS_HORIZON`, and an empty candidate ledger. Take the same author-scoped counts without running any selection or launch. Record `critical` before 2D.7 parks the tick. D0 rejections and standalone probes do not evaluate refill.
 - **Refill runs only when `day.refill_halted` is `false`.** This is day mode's own automatic halt, set in D1 the moment the streak crosses the threshold so it binds on the same tick, and it is deliberately a *separate* field from `.repos[<key>].refill`: that one is contractually human-written-only, and a machine writing it would blur the very distinction that keeps issue text from being able to halt a pipeline. Read both; refill needs both clear. Report a halt as `paused (pipeline failures)` on the idle line.
 - **Refill runs only when `credit-budget.sh --check` exits 0 (`ok`).** Read it once per D2 tick (same moment as the refill.paused read, not in a separate phase). Apply 3.4's exit-code table: exit 1 (`reached`) → land near-done work and park (3.4's budget gate above); exit 2 (`unknown`) → conservative posture — finish in-flight, start nothing new, report `paused (budget unknown)`. The budget check is re-read per pick exactly as refill.paused is.
+- **Record a census on other D2 holds too.** If failure halt, pause, priority, budget, or deadline prevents the normal 3.4 dispatch path, take the same counts and use 3.4’s gate mapping once before leaving the evaluation.
 - **At most one new chip per turn — counting the arming turn as tick 0.** Day mode runs for hours, so a thread-prompt issue deferred now is offered on the next tick, minutes later — spreading costs nothing, and a wall of chips is the exact failure day mode exists to end (#1190). `FREE` still bounds it from above; this is a second, tighter bound that applies only in day mode. **The bound covers Step 1's dispatch too, not just later ticks:** Step 1 runs inside the arming turn and reaches 3.1's chip path bounded only by `FREE`, so without this it would be the *first* turn of a run that emits six chips at once — the failure, on the turn most likely to be watched. Report the rest as deferred exactly as 3.1 already does, with `Deferred (cap)` rows so nothing is forgotten; they are re-offered one per tick as the run proceeds. Inline dispatch is **not** rate-limited — it fills to the ceiling on the turn it can.
 
 For the immediate tick of an arming invocation, a gate that prevents Step
@@ -2309,7 +2311,7 @@ SCOPE_JSON=$(jq -cn --arg s "<label>" --arg at "$NOW" \
 
 **Counting is author-scoped** (issue #733, `subagent-orchestration.md`): only pipelines you launched and PRs you authored occupy slots. A collaborator's open PR is context — never a slot, and never a reason to hold a launch.
 
-**A slot frees only on a terminal `OUTCOME` — `merged` or `blocked`.** A pipeline parked at `merge_ready` still has Phase C ahead, so it keeps its slot until it actually merges. If every slot is held at `merge_ready` or in Phase C there is no free capacity: say so and wait for a terminal outcome rather than starting anything.
+**A slot frees only on a terminal `OUTCOME` — `merged` or `blocked`.** A pipeline parked at `merge_ready` still has Phase C ahead, so it keeps its slot until it actually merges. When every slot is held at `merge_ready` or in Phase C, wait for a terminal outcome before starting anything.
 
 **Re-read the operator priority on every refill** (1B.1a, issue #1767) — once at the top of the tick, so a `/desk` edit takes effect on the next tick without restarting `/pm`. `PRIORITY_UNREADABLE=true` holds every autonomous launch this tick, idle reason `paused (priority unreadable)`; it clears by itself once the file reads cleanly.
 
@@ -2367,7 +2369,7 @@ WINDOW_BATCH_AFTER=$(jq -ce --arg issue "$ISSUE_NUM" '
 
 Redirecting after the fact is the correction mechanism that replaces the removed selection turn.
 
-**When a slot stays empty, name the reason** on that same line — never report an idle board without one. Exactly one of:
+**When a slot stays empty, keep one `IDLE_REASON` for the existing day digest and heartbeat.** The Slot census below owns the changed-only notice. Use the applicable reason:
 
 | Reason | Meaning |
 |--------|---------|
@@ -2380,6 +2382,50 @@ Redirecting after the fact is the correction mechanism that replaces the removed
 | `paused (priority unreadable)` | The operator-priority file exists but does not read (1B.1a) — it may be hiding a park, so nothing new starts. In-flight work finishes. Clears automatically on the first tick it reads cleanly (fixed with `/desk`, or removed) |
 
 A full board is `ceiling reached` and needs no explanation. The heartbeat carries the same reason in its `· slots {used}/{cap}` suffix (`monitor-mode.md`), where `{cap}` is the Step 0 `LIMIT` — `slots 3/4` on a default repo.
+
+#### Slot census
+
+Finish each refill evaluation with this record, including a full board and a pause, budget, priority, deadline, or horizon hold. The census observes the existing checks and launch results. Keep `IDLE_REASON` for the existing day digest. Emit the helper’s `Board below limit` line once when its slot counts or reasons change. A full-board evaluation resets that comparison quietly. A `refill_missed` line is a fault notice, and the next evaluation follows the existing refill rules.
+
+Start each evaluation with an empty ledger and no carried `CENSUS_GATE` or `CENSUS_HORIZON`. Set the horizon from this evaluation’s observation when available. Keep one `{issue, outcome}` entry per issue in effective pick order across override, queue, and backlog. Update the same entry after revalidation and dispatch.
+
+| Observed outcome | Ledger value |
+|---|---|
+| Closed, already has a PR, ownership skip, parked, outside scope, or otherwise ineligible for this refill | `ineligible` |
+| Chain successor or an undeclared footprint held by 6.0b | `chained` or `undeclared` |
+| Window fit or Step 7 holds this candidate, or repo-wide capacity holds its chip | `deadline` or `repo_wide_cap` |
+| Current checks cleared and this candidate could launch on this evaluation | `eligible` |
+| Live handle or recorded launch | `launched` |
+| Spawn happened but its record failed | `launch_unconfirmed` |
+| Missing or interrupted launch evidence | `launch_unknown` |
+
+Read `running` after the dispatch attempt from the same author-scoped pipeline count. Include merge-ready and Phase C work and observed launches with unconfirmed registration. Count the merge-ready/Phase C subset and the actual remaining queue separately. Queue or board membership alone is insufficient evidence of a launch.
+
+Pass the actual whole-evaluation hold when the gate prevented all remaining launches. Map the existing human pause, unreadable pause or scope, pipeline failure halt, budget reached or unknown, and unreadable priority to `paused`, `paused_state_unreadable`, `paused_pipeline_failures`, `paused_budget_reached`, `paused_budget_unknown`, and `paused_priority_unreadable`. Use `horizon`, `deadline`, or `repo_wide_cap` only when that gate held the whole evaluation. If a gate interrupted the evaluation after some launches, keep the completed outcomes and count the actual occupied slots before attributing the remaining capacity to that gate. Use `null` when there is no whole-evaluation gate. The helper bounds slot attribution by vacant capacity and records a missed refill only with affirmative eligibility and conclusive evidence that nothing launched. Unreadable counts or an incomplete evaluation must not be replaced with zeroes or a fabricated eligible row.
+
+Populate `CENSUS_RUNNING`, `CENSUS_PHASE_C`, `CENSUS_QUEUED`, and `CENSUS_CANDIDATES` from this evaluation. Run the following once for the exact dispatcher session, including before any early return that completed a refill evaluation. A failure reports that the census could not be persisted and leaves the launch decision with its existing gates.
+
+<!-- test-anchor: pm-refill-slot-census -->
+```bash
+CENSUS_RC=0
+CENSUS_TOOL="${SESSION_STATE_SH%/*}/lib/pm-slot-census.py"
+if [ -z "${CLAUDE_SESSION_ID:-}" ] || [ ! -r "$CENSUS_TOOL" ]; then
+  printf '%s\n' 'DEGRADED: slot census unavailable (dispatcher session or helper missing)' >&2
+elif CENSUS_JSON=$(jq -cn --argjson limit "$LIMIT" --argjson running "$CENSUS_RUNNING" \
+    --argjson phase_c "$CENSUS_PHASE_C" --argjson queued "$CENSUS_QUEUED" \
+    --arg gate "${CENSUS_GATE:-}" --arg horizon "${CENSUS_HORIZON:-}" \
+    --argjson candidates "$CENSUS_CANDIDATES" \
+    '{limit:$limit,running:$running,merge_ready_or_phase_c:$phase_c,queued:$queued,
+      global_gate:($gate|select(length>0) // null),horizon_status:($horizon|select(length>0) // null),candidates:$candidates}'); then
+  python3 "$CENSUS_TOOL" --record --repo "$REPO_KEY" --session "$CLAUDE_SESSION_ID" \
+    --state-helper "$SESSION_STATE_SH" <<< "$CENSUS_JSON" || CENSUS_RC=$?
+  if [ "$CENSUS_RC" -ne 0 ]; then
+    printf '%s\n' 'DEGRADED: slot census was not recorded' >&2
+  fi
+else
+  printf '%s\n' 'DEGRADED: slot census inputs could not be read' >&2
+fi
+```
 
 When one or more pipelines or threads finish (PRs merged, issues closed) — housekeeping that runs on a *finish*, separate from the capacity trigger above:
 

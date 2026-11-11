@@ -4,6 +4,7 @@
 # Stubs `gh` and `release-policy.sh`; uses the REAL session-state.sh against a
 # temp $HOME so the durable-state writes are exercised for real.
 # Run from repo root: bash .claude/scripts/tests/release-decide.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

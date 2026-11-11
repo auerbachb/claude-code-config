@@ -438,6 +438,13 @@ PR_OPEN=true
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 
+# Old check records may have a name and no publisher. Known publishers win.
+JQ_ACTIVE_CHECK='
+  def active_check:
+    ((.app.slug // "") as $slug
+      | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+        else $slug | IN("graphite-app", "graphite") end) | not;
+'
 COMMENTS="[]"; REVIEWS="[]"; CHECKS_RAW=""; CHECKS='{"check_runs":[]}'; CI="unknown"
 ANCHOR_TIMES="[]"
 [[ "$READ_FACTS" -eq 1 ]] || CI="not_read"
@@ -458,7 +465,7 @@ if [[ "$READ_FACTS" -eq 1 && "$FACTS_OK" -eq 1 ]]; then
     CHECKS_RAW="$(cat "$TMPD/k")"
     DEDUP="$SELF_DIR/check-runs-dedup.sh"
     if [[ -x "$DEDUP" ]] && D="$(printf '%s\n' "$CHECKS_RAW" | "$DEDUP" 2>/dev/null)" && [[ -n "$D" ]]; then
-      CHECKS="$(jq -c '{check_runs: .}' <<<"$D" 2>/dev/null || echo '{"check_runs":[]}')"
+      CHECKS="$(jq -c "$JQ_ACTIVE_CHECK"'{check_runs: map(select(active_check))}' <<<"$D" 2>/dev/null || echo '{"check_runs":[]}')"
     fi
     # Build CI only: a reviewer's own check never holds the gate (issue #1749).
     CI_RC=0
@@ -469,8 +476,9 @@ if [[ "$READ_FACTS" -eq 1 && "$FACTS_OK" -eq 1 ]]; then
       warn "ci-status.sh not found beside this script — CI unknown"
     fi
     # Earliest check-run on HEAD: GitHub's own clock, at about push time.
-    ANCHOR_TIMES="$(printf '%s\n' "$CHECKS_RAW" | jq -s -c '
-      [ .[]?.check_runs[]? | (.started_at // .created_at // empty) ] | sort | .[0:1]' 2>/dev/null || echo '[]')"
+    ANCHOR_TIMES="$(printf '%s\n' "$CHECKS_RAW" | jq -s -c "$JQ_ACTIVE_CHECK"'
+      [ .[]?.check_runs[]? | select(active_check)
+        | (.started_at // .created_at // empty) ] | sort | .[0:1]' 2>/dev/null || echo '[]')"
   else
     note_fact_failure "could not read the check-runs on ${HEAD_SHA:0:7}"
   fi
@@ -528,7 +536,7 @@ evaluate() {
       def trigger($r): {codeant: "@codeant-ai review", cursor: "@cursor review",
                         coderabbit: "@coderabbitai full review"}[$r];
       def invites($r): [ $comments[]?
-        | select(((.user.login // "") as $l | bots | any(. == $l)) | not)
+        | select(((.user.login // "") as $l | (bots + ["graphite-app[bot]"]) | any(. == $l)) | not)
         | select(((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == trigger($r)) ];
       def ledger_count($l): if ($l | type) == "object" and (($l.count // null) | type) == "number" then ([$l.count, 0] | max | floor) else 0 end;
       def count($r; $l): [ (invites($r) | length), ledger_count($l) ] | max;

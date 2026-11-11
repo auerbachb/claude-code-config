@@ -7,9 +7,9 @@
 
 ## Polling exit criterion
 
-Stop polling ONLY when the current-HEAD gate for the owning path is satisfied (Step 1 rules): **CR path** — an explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD, plus a clean CodeAnt where CodeAnt participated on that SHA; **BugBot** — a clean pass on current HEAD; **Greptile** — severity gate passed; **relaxed tier** or **no-review override** — `merge-gate.sh` `met`.
+A successful polling exit requires the current-HEAD gate (Step 1): **CR path** — an explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD, plus a clean CodeAnt where CodeAnt participated on that SHA; **BugBot** — a clean pass on current HEAD; **Greptile** — severity gate passed; **relaxed tier** or **no-review override** — `merge-gate.sh` `met`.
 
-"0 unresolved threads right now" is transient, not an exit condition — keep polling for a current-HEAD gate.
+Keep polling pending CI or review under `scheduling-reliability.md`. Zero unresolved threads alone cannot satisfy the gate.
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 

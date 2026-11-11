@@ -50,6 +50,7 @@
 #     checker that rejects everything would look like a passing suite.
 #
 # Run from anywhere: bash .claude/scripts/tests/help-output.test.sh
+# covers: .claude/reference/budget-source-probe.md .claude/reference/time-estimates.md .claude/rules/safety.md
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)" || { echo "cannot resolve repo root" >&2; exit 1; }

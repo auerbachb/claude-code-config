@@ -38,7 +38,7 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 |----------|---------|---------|
 | `<PR>` (required) | — | PR number to watch. Must be an open PR. |
 | `--cadence Nm` | `5m` | Base poll cadence. Floor `1m` (60s) — clamp anything lower. |
-| `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
+| `--max-iter N` | `6` | Hard termination after N unchanged recovery or dispatch-hold ticks. Pending CI and reviews keep polling. |
 | `--silent` | on | Compatibility flag: decision-only output is already the default; explicit status requests render the stored tick details. |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
 | ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped the session watcher for a `CronCreate` job to buy cross-session continuity that never existed. Issue #914 measured cron producing zero ticks; issue #924 found dynamic `/loop` unreliable too. The watcher is always a persistent `Monitor`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
@@ -170,6 +170,9 @@ bump_parse_failure_counter() {
   "last_tick_parse_failures": 0, // consecutive A2 to_epoch() failures on last_tick_at; treated as stale (reclaimed) at BABYSIT_PARSE_FAIL_LIMIT (default 3)
   "cadence_base_minutes": 5,
   "cadence_effective_minutes": 5,
+  "classification": null,     // last single-PR gate classification
+  "review_wait": null,        // {head_sha, eligible_at_epoch} from the current gate
+  "armed_review_deadline": 0, // epoch target in this Monitor command; 0 means regular cadence only
   "tick_count": 0,
   "blocker_streak": 0,          // consecutive blocker-state ticks (drives --max-iter)
   "max_blocker_ticks": 6,
@@ -292,13 +295,27 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
-Generate a fresh non-secret generation token, then arm a persistent `Monitor` with description
-`babysit PR #<PR>` and this command:
+Generate a fresh non-secret token with `MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"`.
+Arm a persistent `Monitor` with description `babysit PR #<PR>` and the loop below. Bind the
+validated PR number, generation and numeric cadence in the Monitor command as `PR`,
+`MONITOR_GENERATION` and `MONITOR_CADENCE` (initially `$BASE_MIN`). Set
+`MONITOR_REVIEW_DEADLINE=0` on first arm. T5 uses the same loop for replacements.
+
+<!-- test-anchor: babysit-pr-monitor-loop -->
 
 ```bash
-MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
-while sleep "$(( BASE_MIN * 60 ))"; do
-  printf '%s\n' "/babysit-pr $PR --tick --monitor-generation $MONITOR_GENERATION --cadence ${BASE_MIN}m"
+while true; do
+  delay=$(( MONITOR_CADENCE * 60 ))
+  if (( MONITOR_REVIEW_DEADLINE > 0 )); then
+    now=$(date +%s) || exit 1
+    if (( MONITOR_REVIEW_DEADLINE <= now + delay )); then
+      delay=$(( MONITOR_REVIEW_DEADLINE - now ))
+      if (( delay < 0 )); then delay=0; fi
+      MONITOR_REVIEW_DEADLINE=0
+    fi
+  fi
+  sleep "$delay" || break
+  printf '%s\n' "/babysit-pr $PR --tick --monitor-generation $MONITOR_GENERATION --cadence ${MONITOR_CADENCE}m"
 done
 ```
 
@@ -355,7 +372,7 @@ Then **run one tick immediately** (fall through to TICK MODE below) so the user 
 
 ## TICK MODE
 
-Run on every poll cycle (and once at the end of arm mode). One tick = classify → maybe dispatch → bookkeep → maybe re-arm cadence → heartbeat.
+Run on every poll cycle (and once at the end of arm mode). One tick = classify → maybe dispatch → bookkeep → check termination → maybe re-arm → heartbeat.
 
 ### T0. Stop / terminal short-circuit (check FIRST)
 
@@ -553,6 +570,7 @@ CI_FAILING=$(jq -r '.ci_status.failing // 0'       <<<"$GATE_JSON")
 CI_INCOMPLETE=$(jq -r '.ci_status.in_progress // 0' <<<"$GATE_JSON")
 STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE_JSON")
 MISSING=$(jq -r '.missing | join(" | ")'           <<<"$GATE_JSON")
+NRO_WINDOW_RUNNING=$(jq -r '.no_review_override.reason == "window_running"' <<<"$GATE_JSON")
 # Sorted blocking CI conclusions — the `ci_blocking_conclusions_sorted` field of
 # the T5 digest tuple. merge-gate.sh exposes blocking runs as .ci_status.blocking[].
 CI_BLOCKING_SORTED=$(jq -r '[.ci_status.blocking[].conclusion] | sort | join(",")' <<<"$GATE_JSON")
@@ -583,7 +601,26 @@ if [[ -n "$GREPTILE_SH" ]]; then "$GREPTILE_SH" --check >/dev/null 2>&1 || GREP_
 - **Greptile:** `greptile-budget.sh --check` exit `1` ⇒ `GREP_BUDGET_OK=0` (daily budget exhausted).
 - **BugBot (`@cursor review`):** per-seat and **spend-metered** (#1199) — never posted without the owner's explicit approval in chat (issue #1897) — recorded as a grant, spent only by `paid-review-grant.sh --trigger` (#1898) — so never gate the classifier on it.
 
-The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only gap is a fresh review becomes `hard-blocked` (budget exhaustion) **only** when CR **and** Greptile are both exhausted and there is no other recoverable work; otherwise it stays `waiting-on-bots` (a trigger path still exists). Re-running `/babysit-pr` after the window resets resumes cleanly.
+The classifier treats exhausted review budgets as a hard block only when no review is already running on this HEAD and the no-review window is closed. Keep waiting on a CodeAnt run identified by the current gate, or a pending review check from a known publisher on this HEAD.
+
+<!-- test-anchor: babysit-pr-t2-review-budget -->
+
+```bash
+ACTIVE_REVIEW_PENDING=$(jq -ncr --arg head "$HEAD_SHA" --argjson gate "$GATE_JSON" --slurpfile bundle "$BUNDLE" '
+  $gate.review_evidence.reviewers["codeant-ai[bot]"] as $ca
+  | (($ca.run_started_at // "") != "" and $ca.run_done == false)
+    or ($bundle[0] as $current
+        | $current.pr.head_sha == $head
+        and any($current.check_runs.all[]?;
+          ((.app.slug // "") | IN("codeant-ai", "codeant", "coderabbitai", "coderabbit",
+                                  "cursor", "cursor-com", "greptile-apps", "greptile"))
+          and .status != "completed"))') || exit 1
+REVIEW_BUDGET_BLOCKED=false
+if [[ "$CR_BUDGET_OK" == 0 && "$GREP_BUDGET_OK" == 0 &&
+      "$NRO_WINDOW_RUNNING" != true && "$ACTIVE_REVIEW_PENDING" != true ]]; then
+  REVIEW_BUDGET_BLOCKED=true
+fi
+```
 
 ### T3. Classify (first match wins, in this order)
 
@@ -598,11 +635,11 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 | # | Class | Condition | Action |
 |---|-------|-----------|--------|
 | 1 | `merged` | `PR_MERGED == true` (or gate exit 3 because merged) | **Exit** — terminal success. |
-| 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and both budgets are exhausted (`CR_BUDGET_OK == 0 && GREP_BUDGET_OK == 0`, from T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
+| 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and `REVIEW_BUDGET_BLOCKED == true` (T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
 | 4 | `conflicting` | `MERGEABLE == CONFLICTING` (checked before other recoverable signals; first-match priority) | See T4 `conflicting` dispatch — branches on `--auto-resolve-conflicts` flag and `conflict_streak` cap. |
 | 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `"$ADMIN_MERGE_SH" <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
-| 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI (and at least one review budget remains per T2) | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
+| 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or an active review or running no-review window, or a missing bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI and at least one review budget remaining | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.
 
@@ -610,7 +647,7 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 
 Only classes `merge-ready` (→ `/wrap`), `conflicting` (→ `/fixpr` in safe-only mode **or** terminate), and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
 
-**Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed tick is **not** a terminal state and **not** a `hard-blocked` classification: the watcher stays armed, `blocker_streak` still counts it as a blocker-state tick (no forward progress was made), and `--max-iter` still bounds the wait exactly as it does for a bot that never answers. T5's frozen-state terminate (`digest_streak >= 9`) is **not** relaxed either, and both bounds can expire before the window reopens — `--max-iter` first at its default `6`, since T5 counts a suppressed tick as a blocker-state tick whatever its class. That is deliberate: a watcher is not the right thing to keep armed across an arbitrarily long closed window, and a terminated watch is re-armed with one `/babysit-pr <PR>`. T5's "the hold releases itself" therefore means *while the watcher is still armed*; it is not a promise to outlast the window.
+**Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed dispatch counts toward `--max-iter`. An ordinary wait for CI or review continues because no dispatch was due. A hold can release itself while the watcher is armed.
 
 #### T4: `conflicting` dispatch
 
@@ -703,7 +740,7 @@ PREV_STREAK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].digest_streak" 2>/dev/nul
 if [[ "$DIGEST" == "$PREV_DIGEST" ]]; then STREAK=$((PREV_STREAK + 1)); else STREAK=1; fi
 ```
 
-**Cadence tiers** (`scheduling-reliability.md` widens a stable state and stops a frozen one). The widened cadence is **derived from the configured base**, never hard-coded, so it is **always slower than the base** regardless of `--cadence`:
+**Cadence tiers** (`scheduling-reliability.md` widens a stable state and keeps an active gate wait). The widened cadence is **derived from the configured base**, never hard-coded, so it is **always slower than the base** regardless of `--cadence`:
 
 ```bash
 # Widened cadence: at least 15m, and at least 3× the base — whichever is larger.
@@ -741,11 +778,24 @@ fi
 |-----------------|-------------------|
 | `< 3` | base (`--cadence`, default 5m) |
 | `>= 3` | `WIDE_MIN` = `max(15m, 3 × base)` — for the default 5m base this is **15m** (satisfies the AC) |
-| `>= 9` | **terminate** (truly frozen — stop the `Monitor`) |
+| `>= 9` | Retain the widened tier while CI or review is pending. Apply T6 to other states. |
 
 **Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
-**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when the digest did not change (no forward progress) **and** either `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **or** the horizon gate suppressed this tick's dispatch (T4, `WATCH_LAUNCH_OK=false` or `WATCH_FINISH_OK=false`). The suppressed clause is what makes `--max-iter` a real bound on a hold: without it a `critical` tick on a `merge-ready` PR would take the `merge-ready` reset below, zero the streak every tick, and leave the watcher held until the frozen-state terminate alone stopped it. Increment `blocker_streak` on such ticks; reset to `0` on any digest change, and on `merge-ready`/`merged` **only when the tick actually dispatched** — a held `merge-ready` tick did no work and resets nothing. A `conflicting` tick that successfully auto-resolved and pushed counts as forward progress — reset `blocker_streak` to `0` (the new SHA will change the digest on the next tick); `conflict_streak` is NOT reset by a SHA change, only by a non-`conflicting` tick (any class other than `conflicting`).
+**Blocker streak.** Count an unchanged recovery tick or a tick where T4 suppressed a dispatch. Ordinary pending CI or review clears the recovery streak. A changed digest or successful dispatch also clears it. Bind `DISPATCH_SUPPRESSED=true` only when T4 held a dispatch that otherwise would have run. Bind `DISPATCH_MADE_PROGRESS=true` when dispatch confirmed a merge or new HEAD. Read the prior recovery streak from the T0 snapshot.
+
+<!-- test-anchor: babysit-pr-t5-blocker-streak -->
+
+```bash
+BLOCKER_STREAK=0
+if [[ "$DIGEST" == "$PREV_DIGEST" && "${DISPATCH_MADE_PROGRESS:-false}" != true ]] &&
+   [[ "$CLASS" == has-recoverable-blockers || "${DISPATCH_SUPPRESSED:-false}" == true ]]; then
+  PREV_BLOCKER_STREAK=$(jq -r '
+    .blocker_streak | select(type == "number" and . >= 0 and floor == .)
+  ' <<<"$T0_SNAPSHOT") || exit 1
+  BLOCKER_STREAK=$(( ${PREV_BLOCKER_STREAK:-0} + 1 ))
+fi
+```
 
 **Conflict-streak** bookkeeping per tick:
 - `CLASS == conflicting` and dispatch status was `CONFLICTS` (complex hunk, aborted): `conflict_streak` was already incremented in T4 dispatch; tick terminates via T-END (no T5 persist needed).
@@ -764,7 +814,7 @@ else
 fi
 ```
 
-Persist all eight non-cadence bookkeeping fields atomically under the generation that authorized this tick. Re-read the whole watcher and self-compare that snapshot, so a stop, replacement or other revision between read and write discards the entire batch without refreshing a newer watcher or continuing to cadence/T6. A failed read/write is an error, never a clean supersession. Then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
+Persist the digest, classification, current review deadline and other bookkeeping atomically under the generation that authorized this tick. Re-read the whole watcher and self-compare that snapshot, so a stop, replacement or other revision between read and write discards the entire batch without refreshing a newer watcher or continuing to termination or re-arm. A failed read/write is an error, never a clean supersession. Then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing.
 
 <!-- test-anchor: babysit-pr-t5-persist -->
 
@@ -835,12 +885,24 @@ else
   HORIZON_HELD_SINCE=null
 fi
 
+# Record only a deadline from this tick's gate and HEAD.
+REVIEW_WAIT=$(printf '%s\n' "${GATE_JSON:-}" | jq -cs --arg head "${HEAD_SHA:-}" '
+  (.[0] // {}) as $gate
+  | if $head != "" and $gate.head_sha == $head
+      and $gate.no_review_override.reason == "window_running" then
+      ($gate.no_review_override.eligible_at | try fromdateiso8601 catch null) as $epoch
+      | if $epoch != null and $epoch > 0 then {head_sha:$head, eligible_at_epoch:$epoch}
+        else null end
+    else null end') || exit 1
+
 PERSIST_RC=0
 "$SESSION_STATE_SH" \
   --cas ".prs[\"$PR\"].babysit=$T5_SNAPSHOT" --expect "$T5_SNAPSHOT" \
   --set ".prs[\"$PR\"].digest=$DIGEST" \
   --set ".prs[\"$PR\"].digest_streak=$STREAK" \
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
+  --set ".prs[\"$PR\"].babysit.classification=${CLASS:-null}" \
+  --set ".prs[\"$PR\"].babysit.review_wait=$REVIEW_WAIT" \
   --set ".prs[\"$PR\"].babysit.conflict_streak=$CONFLICT_STREAK_NEW" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
   --set ".prs[\"$PR\"].babysit.horizon_status=\"${HORIZON_STATUS:-unknown}\"" \
@@ -857,11 +919,24 @@ fi
 
 `HORIZON_HELD_SINCE` is computed by the block above rather than assumed: on a `critical` tick it reuses the existing `.prs["<PR>"].babysit.horizon_held_since` when that is already a non-null string and stamps `"$NOW"` otherwise, and on every other verdict it is the literal `null`. Both fields are this watcher's own bookkeeping — nothing outside `.prs["<PR>"].babysit` is written on any verdict (#1444).
 
-**Re-arm cadence only when it crosses a tier boundary.** Compare `$EFFECTIVE_MIN` to
-`$PREV_EFFECTIVE_MIN` on every tick. If equal, retain the current Monitor. Otherwise,
-first capture the exact watcher this tick is authorized to stop and atomically set `cadence_transition=true`, distinct from the operator's `stop_requested` guard.
-A lost compare exits this tick without stopping any task or running T6. Never adopt a
-replacement generation observed after T0/T5.
+**Run T6 after persisting and before replacing the Monitor.** If T6 continues the watch, retain the current task when its cadence and review wake suffice. Re-arm on a cadence change or when a newly observed deadline needs a wake. The immediate A3 tick can discover a deadline after the first Monitor has begun sleeping. Replacing that sleep through the same generation fence ensures the deadline can shorten it. The Monitor consumes the deadline once, then resumes its regular period. A stale wake only asks for a fresh gate read.
+
+<!-- test-anchor: babysit-pr-t5-rearm-decision -->
+
+```bash
+NEXT_REVIEW_DEADLINE=$(jq -r '.eligible_at_epoch // 0' <<<"$REVIEW_WAIT") || exit 1
+ARMED_REVIEW_DEADLINE=$(jq -r '.armed_review_deadline // 0' <<<"$T5_SNAPSHOT") || exit 1
+REARM=false
+if [[ "$EFFECTIVE_MIN" != "$PREV_EFFECTIVE_MIN" ]] ||
+   [[ "$NEXT_REVIEW_DEADLINE" != 0 && "$NEXT_REVIEW_DEADLINE" != "$ARMED_REVIEW_DEADLINE" ]]; then
+  REARM=true
+fi
+```
+
+If `REARM=false`, continue to T7 with the same task. Otherwise capture the exact watcher
+this tick is authorized to stop and atomically set `cadence_transition=true`, distinct from
+the operator's `stop_requested` guard. A lost compare exits the tick. Keep the generation
+that authorized T0/T5.
 
 <!-- test-anchor: babysit-pr-t5-cadence-guard -->
 
@@ -909,12 +984,12 @@ fi
 ```
 
 Call `TaskStop` only for the captured `$CADENCE_TASK_ID`. If that exact stop fails,
-retain the guarded identity and old cadence, report incomplete teardown, and abort;
-never arm beside it. After success, mint a fresh `$NEW_MONITOR_GENERATION` and arm a
-replacement whose sleep and emitted `--cadence` use `$EFFECTIVE_MIN`, and whose event
-includes `--monitor-generation $NEW_MONITOR_GENERATION`. Then publish through the
-same captured ownership compare. An actual widen's advisory record joins this
-transaction, so a stale tick cannot publish a false cadence action separately.
+retain the guarded identity and old cadence, report incomplete teardown, and abort.
+After success, mint `$NEW_MONITOR_GENERATION` and arm the A3 loop with that token as
+`MONITOR_GENERATION`, `$EFFECTIVE_MIN` as `MONITOR_CADENCE` and
+`$NEXT_REVIEW_DEADLINE` as `MONITOR_REVIEW_DEADLINE`. Publish the task and wake
+through the same captured ownership compare. An actual widen's advisory record joins
+that transaction.
 
 <!-- test-anchor: babysit-pr-t5-cadence-publish -->
 
@@ -931,7 +1006,9 @@ if [[ -z "${NEW_MONITOR_GENERATION:-}" || "$NEW_MONITOR_GENERATION" == null || "
 fi
 PROPOSED_PUBLISH_JSON=$(printf '%s' "$CADENCE_GUARDED_JSON" | jq -c \
   --argjson task "$NEW_TASK_JSON" --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" \
-  '.monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence | .stop_requested=false | .cadence_transition=false') || exit 1
+  --argjson deadline "${NEXT_REVIEW_DEADLINE:-0}" \
+  '.monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence
+   | .armed_review_deadline=$deadline | .stop_requested=false | .cadence_transition=false') || exit 1
 PUBLISH_ARGS=(--cas ".prs[\"$PR\"].babysit=$PROPOSED_PUBLISH_JSON" --expect "$CADENCE_GUARDED_JSON")
 if [[ "$EFFECTIVE_MIN" -gt "$PREV_EFFECTIVE_MIN" ]]; then
   CADENCE_ACTION=$(jq -cn --arg interval "${EFFECTIVE_MIN}m" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -949,7 +1026,7 @@ else
 fi
 ```
 
-Only `armed` continues to T6. A nonzero block exit or absent/unreadable result is `failed`, never armed. On `lost` or `failed`, stop only this tick's exact
+Only `armed` continues to T7. A nonzero block exit or absent/unreadable result is `failed`, never armed. On `lost` or `failed`, stop only this tick's exact
 `$NEW_MONITOR_TASK_ID`, bind `REPLACEMENT_STOP_SUCCEEDED` to that tool result, and run
 the rollback below. If arming itself failed before a task existed, set that binding
 to true and run the same owned cleanup. Never call a successful stop from silence.
@@ -972,15 +1049,17 @@ if ! printf '%s' "$ROLLBACK_SNAPSHOT" | jq -e --argjson old "$CADENCE_GUARDED_JS
 fi
 if [[ "${REPLACEMENT_STOP_SUCCEEDED:-false}" == true ]]; then
   ROLLBACK_VALUE=$(printf '%s' "$ROLLBACK_SNAPSHOT" | jq -c --argjson cadence "$PREV_EFFECTIVE_MIN" \
-    '.active=false | .stop_requested=false | .cadence_transition=false | .monitor_task_id=null | .monitor_generation=null | .cadence_effective_minutes=$cadence') || exit 1
+    '.active=false | .stop_requested=false | .cadence_transition=false | .monitor_task_id=null
+     | .monitor_generation=null | .cadence_effective_minutes=$cadence | .armed_review_deadline=0') || exit 1
 else
   if [[ -z "${NEW_MONITOR_GENERATION:-}" || "$NEW_MONITOR_GENERATION" == null || "$NEW_MONITOR_GENERATION" == "$GATE_GENERATION" ]]; then
     echo 'ERROR: cannot register the stranded replacement generation; retain state and report its exact task ID.' >&2
     exit 1
   fi
   ROLLBACK_VALUE=$(printf '%s' "$ROLLBACK_SNAPSHOT" | jq -c --argjson task "$NEW_TASK_JSON" \
-    --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" \
-    '.active=true | .stop_requested=true | .cadence_transition=false | .monitor_task_id=$task | .monitor_generation=$gen | .cadence_effective_minutes=$cadence') || exit 1
+    --arg gen "$NEW_MONITOR_GENERATION" --argjson cadence "$EFFECTIVE_MIN" --argjson deadline "${NEXT_REVIEW_DEADLINE:-0}" \
+    '.active=true | .stop_requested=true | .cadence_transition=false | .monitor_task_id=$task
+     | .monitor_generation=$gen | .cadence_effective_minutes=$cadence | .armed_review_deadline=$deadline') || exit 1
 fi
 ROLLBACK_ARGS=(--cas ".prs[\"$PR\"].babysit=$ROLLBACK_VALUE" --expect "$ROLLBACK_SNAPSHOT")
 if [[ "${REPLACEMENT_STOP_SUCCEEDED:-false}" == true ]]; then
@@ -1006,11 +1085,27 @@ Terminate (→ T-END) when **any** hold:
 - `CLASS == conflicting` and `conflict_streak >= max_conflict_rounds` → reason `conflict-round-cap` (churn cap hit; see T-END for round count and blocker report).
 - `CLASS == conflicting` and dispatch returned `CONFLICTS` (complex hunk) → reason `hard-blocked`, blocker `merge-conflict-complex` (see T-END for per-hunk report).
 - PR `CLOSED` unmerged → reason `closed-unmerged`.
-- `blocker_streak >= max_blocker_ticks` (default 6) → reason `blocker-tick-cap` (≈90 min once backed off to 15m).
-- `digest_streak >= 9` → reason `stable-frozen` (`scheduling-reliability.md` ≥9 stop).
 - `stop_requested == true` / `active != true` → reason `user-stop`.
+- The recovery/backoff check below sets `blocker-tick-cap` or `stable-frozen`.
+  A pending CI/review wait keeps its Monitor even after either threshold.
 
-Otherwise the Monitor continues — its next stdout event re-enters tick mode.
+<!-- test-anchor: babysit-pr-t6-backoff-termination -->
+
+```bash
+BACKOFF_STOP_REASON=
+if [[ "$CLASS" != waiting-on-bots ]]; then
+  MAX_BLOCKER_TICKS=$(jq -r '
+    .max_blocker_ticks | select(type == "number" and . > 0 and floor == .)
+  ' <<<"$T0_SNAPSHOT") || exit 1
+  if (( BLOCKER_STREAK >= ${MAX_BLOCKER_TICKS:-6} )); then
+    BACKOFF_STOP_REASON=blocker-tick-cap
+  elif (( STREAK >= 9 )); then
+    BACKOFF_STOP_REASON=stable-frozen
+  fi
+fi
+```
+
+If `BACKOFF_STOP_REASON` is set, pass it to T-END. Otherwise finish T5’s cadence/deadline check. The next Monitor event re-enters tick mode.
 
 ### T7. Notification decision
 

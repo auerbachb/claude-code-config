@@ -48,6 +48,7 @@
 # check-runs-dedup.sh and session-state.sh are the real scripts.
 #
 # Run from repo root: bash .claude/scripts/tests/merge-gate-review-substance.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -1250,11 +1251,16 @@ check_eq "4" "$?" "(m) non-JSON stdin exits 4"
 printf '' | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) empty stdin exits 4"
 
-echo "=== (gr) retired Graphite stays a default corroborator (#1889) ==="
-# The echo filter excludes $approvers + $others, so dropping graphite-app[bot]
-# from the default list would turn its comments into author text whose lines are
-# stripped from CR/CodeAnt bodies — changing their verdicts. The App still posts.
-check_eq "1" "$(grep -cE '^CORROBORATORS="[^"]*graphite-app\[bot\]' "$EVAL_SUT")" "(gr) default CORROBORATORS keeps graphite-app[bot]"
+echo "=== (gr) retired Graphite is excluded from evidence and retained as an echo source (#2192) ==="
+GR="$(jq -cn --arg sha "$UUID_HEAD" --arg body "$WALKTHROUGH_BODY" \
+  '{head_sha:$sha, push_ts:"2026-07-31T10:00:00Z",
+    reviews:[{user:{login:"coderabbitai[bot]"},commit_id:$sha,state:"APPROVED",
+              submitted_at:"2026-07-31T10:06:00Z",body:""}],
+    issue_comments:[{user:{login:"graphite-app[bot]"},created_at:"2026-07-31T10:02:00Z",body:$body},
+                    {user:{login:"coderabbitai[bot]"},created_at:"2026-07-31T10:03:00Z",body:$body}]}' \
+  | "$EVAL_SUT")"
+check_eq "false" "$(jq -r '.reviewers["coderabbitai[bot]"].status_comment_names_head' <<<"$GR")" "(gr) active reviewer cannot borrow HEAD evidence by echoing a retired comment"
+check_eq "false" "$(jq -r '[.corroborating[]?] | index("graphite-app[bot]") != null' <<<"$GR")" "(gr) retired app contributes no corroboration"
 
 echo
 echo "----------------------------------------"

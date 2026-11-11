@@ -110,7 +110,7 @@ jq -n '[
 ] + [ range(1; 6) as $r
       | {id: (10 + $r), in_reply_to_id: $r, user: {login: "agent-owner", type: "User", id: 7}, body: "Fixed in abc1234."} ]' \
   > "$TMP/allbots.json"
-check_eq "unmarked replies to each of the five review bots -> 5" "5" "$(count "$TMP/allbots.json")"
+check_eq "unmarked replies to the four active reviewers only -> 4" "4" "$(count "$TMP/allbots.json")"
 
 # 3. Quoted, inline-code and fenced markers do not count.
 mk_fixture "$TMP/fakes.json" "> $MARK

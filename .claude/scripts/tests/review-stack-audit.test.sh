@@ -27,6 +27,7 @@
 # telemetry line to $HOME/.claude/script-usage.log on every invocation, so
 # without this the suite would write into the developer's own log — and this
 # header used to claim otherwise.
+# covers: .claude/reference/ai-review-vendor-claims.md .claude/reference/pricing-matrix.md .claude/skills/review-stack-audit/SKILL.md
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -17,7 +17,7 @@
 #     the override into the tier-1 group, which flips both to acknowledgment — the exact
 #     false-clean the placement prevents. Re-run that control if you touch the ordering.
 #   - #1748: enrich() admitted only three of the five review bots, so CodeAnt and
-#     Graphite findings never reached new_since_baseline (PR #1745). Bug11 pins the
+#     Graphite findings historically reached new_since_baseline. Bug11 pins the
 #     admission end to end, through pr-state.sh --wait-state-eval, plus a parity check
 #     against pr-state.sh's $botlist; Bug12 pins the CodeAnt non-finding shapes that
 #     admission exposed. Bug12a's late-placement guard fails if those branches are
@@ -928,7 +928,7 @@ else
   fail "Bug11a: --wait-state-eval — expected new_findings >= 1, got '$got'"
 fi
 
-# Bug11b: the same for Graphite. Abbreviated from a graphite-app[bot] inline finding (PR #1589).
+# Bug11b: retired Graphite is ignored. Abbreviated from a graphite-app[bot] inline finding (PR #1589).
 GRAPHITE_FINDING_BODY='The `marker_path()` test helper does not match the actual marker filename pattern when `cksum` is unavailable.
 
 ```suggestion
@@ -939,20 +939,19 @@ GRAPHITE_FINDING_BODY='The `marker_path()` test helper does not match the actual
 INLINE=$(jq -nc --arg body "$GRAPHITE_FINDING_BODY" \
   '[{id: 3001, user: {login: "graphite-app[bot]"}, created_at: "2026-10-01T15:45:00Z", body: $body}]')
 NSB=$(since_bundle '[]' "$INLINE" '[]' "$BASELINE")
-got=$(jq -r '[.inline[0].user, .inline[0].classification.class, .finding_count] | map(tostring) | join(" ")' <<<"$NSB")
-if [[ "$got" == "graphite-app[bot] finding 1" ]]; then
-  pass "Bug11b: Graphite inline finding after --since counted (finding_count 1)"
+got=$(jq -r '.finding_count' <<<"$NSB")
+if [[ "$got" == 0 ]]; then
+  pass "Bug11b: retired Graphite inline comments do not count as findings"
 else
-  fail "Bug11b: Graphite finding — expected 'graphite-app[bot] finding 1', got '$got'"
+  fail "Bug11b: retired Graphite produced $got findings"
 fi
-got=$(wait_new_findings "$NSB" '[]' "$INLINE" '[]')
-if [[ "$got" =~ ^[0-9]+$ ]] && [[ "$got" -ge 1 ]]; then
-  pass "Bug11b: --wait-state-eval on the Graphite classifier output reports new_findings $got (>= 1)"
+LEGACY_NSB=$(jq -cn '{finding_count:1,reviews:[],inline:[{user:"graphite-app[bot]",classification:{class:"finding"}}],conversation:[]}')
+got=$(wait_new_findings "$LEGACY_NSB" '[]' "$INLINE" '[]')
+if [[ "$got" == 0 ]]; then
+  pass "Bug11b: cached Graphite findings do not affect wait-state"
 else
-  fail "Bug11b: --wait-state-eval (Graphite) — expected new_findings >= 1, got '$got'"
+  fail "Bug11b: wait-state counted retired Graphite, got '$got'"
 fi
-# Retired Graphite (#1889) still counts as a finding but is never a participant
-# to wait for: it must not appear in bots_pending.
 got=$(WAIT_FIELD='.bots_pending | map(tostring) | join(",")' wait_new_findings "$NSB" '[]' "$INLINE" '[]')
 if [[ "$got" != *graphite* ]]; then
   pass "Bug11b: --wait-state-eval never lists retired Graphite in bots_pending"
@@ -1018,7 +1017,7 @@ else
   parity=$(jq -nr --argjson a "$REVIEW_BOTS" --argjson b "$BOTLIST" \
     '(($a | sort) == ($b | sort))
      and any($a[]; . == "codeant-ai[bot]")
-     and any($a[]; . == "graphite-app[bot]")' 2>&1 || true)
+     and (any($a[]; . == "graphite-app[bot]") | not)' 2>&1 || true)
   if [[ "$parity" == "true" ]]; then
     pass "Bug11e: parity — classifier review_bots equals pr-state.sh \$botlist"
   else

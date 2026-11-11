@@ -8,6 +8,7 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 |---|---|---|
 | Routine progress, successful check, launch or dispatch | Silent | Update existing issue/PR/session records and continue |
 | Unchanged monitoring, first/resume tick, backoff, table age | Silent | Persist tick, digest, watermarks, cadence; retain script-side filtering |
+| Board below limit after a refill evaluation | One line when occupied slots or reason counts change, including a verified `refill_missed` fault | Persist every census and keep unchanged notices and full boards quiet |
 | Ordinary recoverable failure | Silent during authorized recovery | Preserve full failure capture and nonzero exit; repair/retry within existing bounds |
 | Owner-only blocker, ambiguity, safety event, exhausted recovery or genuine stall | Immediate concise notice | State action, practical options/consequence, evidence; persist stop and resume state |
 | Explicit status, summary, board or verbose request | Answer the requested scope | Render from existing records; tables are available on request |

@@ -77,12 +77,11 @@ if [ -n "$DISMISS" ] && [ -n "$BASH4" ]; then
 else
   # Inline REST fallback (POSIX-safe, no mapfile) — same allowlist + semantics
   # as the script: dismiss only Bot-authored CHANGES_REQUESTED whose commit_id
-  # != current HEAD. NEVER touches human reviews. graphite-app[bot]: retired
-  # 2026-11-03; kept so a leftover stale review still dismisses.
+  # != current HEAD. The automatic recovery considers active reviewer bots.
   HEAD_SHA=$(gh pr view "$N" --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/$OWNER/$REPO/pulls/$N/reviews?per_page=100" | jq -s 'add // []' \
    | jq -r --arg sha "$HEAD_SHA" '
-       ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"] as $allow
+       ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]"] as $allow
        | .[] | select(.state=="CHANGES_REQUESTED")
        | select((.commit_id//"")!="" and .commit_id!=$sha)
        | select((.user.type//"")=="Bot")

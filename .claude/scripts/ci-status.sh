@@ -49,13 +49,12 @@
 #   Opt-in. Drop the AI reviewers' own check-runs before classifying, so the
 #   verdict is BUILD CI only. Matched by exact app slug, never by check name:
 #   codeant-ai, codeant, cursor, cursor-com, coderabbitai, coderabbit,
-#   graphite-app, graphite (retired 2026-11-03, #1889; kept for leftover runs),
 #   greptile-apps, greptile. Without it a reviewer that
 #   was never invited can hold CI "pending" forever, and one that failed can
 #   hold it "red" — so a trigger gated on green CI would deadlock waiting for
 #   itself (review-triggers-allowed.sh). Applied after the dedup. When no build
 #   check is left, the result is pending, exactly as for an empty run list.
-#   Without the flag the output and exit codes are unchanged.
+#   Both views ignore retired Graphite checks by app slug, with exact names for old data.
 #
 # Output (JSON, default):
 #   {
@@ -272,18 +271,18 @@ if [[ -z "$RUNS_JSON" ]]; then
   exit 5
 fi
 
-# Build-CI-only view (--exclude-reviewers, issue #1749). Exact slugs, so a
-# workflow job that merely NAMES itself after a reviewer still counts as build CI.
-if [[ "$EXCLUDE_REVIEWERS" -eq 1 ]]; then
-  RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c '
-    ["codeant-ai", "codeant", "cursor", "cursor-com", "coderabbitai", "coderabbit",
-     "graphite-app", "graphite", "greptile-apps", "greptile"] as $reviewers
-    | [ .[] | select((.app.slug // "") as $s | ($reviewers | any(. == $s)) | not) ]
-  ' 2>/dev/null || true)
-  if [[ -z "$RUNS_JSON" ]]; then
-    echo "ERROR: could not filter reviewer check-runs" >&2
-    exit 5
-  fi
+# Ignore the retired app in both views. Use exact check names only when the
+# publisher is absent (issues #1749, #2192).
+RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c --argjson exclude "$EXCLUDE_REVIEWERS" '
+  [ .[] | (.app.slug // "") as $slug
+    | select((if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+              else $slug | IN("graphite-app", "graphite") end) | not)
+    | select($exclude == 0 or (($slug | IN("codeant-ai", "codeant", "cursor", "cursor-com",
+        "coderabbitai", "coderabbit", "greptile-apps", "greptile")) | not)) ]
+' 2>/dev/null || true)
+if [[ -z "$RUNS_JSON" ]]; then
+  echo "ERROR: could not filter reviewer check-runs" >&2
+  exit 5
 fi
 
 # --------------------------------------------------------------------------

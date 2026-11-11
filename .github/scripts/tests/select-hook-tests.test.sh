@@ -251,6 +251,176 @@ else
   bad "broken # covers: mapping did not fail toward ALL: $out"
 fi
 
+# In batch mode (--per-path) the same broken mapping must NOT print per-path answers with exit 0:
+# the batch caller (the sweep) gets a non-zero exit and treats the whole run as a failure.
+printf '.claude/hooks/b.sh\n' | bash "$B/.github/scripts/select-hook-tests.sh" --per-path > "$TMP/broken-batch.out" 2>/dev/null
+BRC=$?
+if [ "$BRC" -ne 0 ]; then
+  ok "a broken # covers: mapping makes batch mode exit non-zero (no per-path answer)"
+else
+  bad "batch mode exited 0 on a broken # covers: mapping: $(cat "$TMP/broken-batch.out")"
+fi
+
+# The declaration-honesty and sweep suites always run: a docs-only change still selects them when
+# they exist (their checks read every suite and every covers target).
+AS="$TMP/always-suites"
+make_fixture "$AS"
+printf '# honesty\nexit 0\n' > "$AS/.github/scripts/tests/select-hook-covers-honesty.test.sh"
+printf '# sweep\nexit 0\n' > "$AS/.github/scripts/tests/select-hook-sweep.test.sh"
+out="$(select_for "$AS" .claude/reference/doc.md)"
+if has_line "$out" .github/scripts/tests/select-hook-covers-honesty.test.sh \
+  && has_line "$out" .github/scripts/tests/select-hook-sweep.test.sh && ! is_all "$out"; then
+  ok "a docs-only change still selects the honesty and sweep suites"
+else
+  bad "honesty or sweep suite not selected for a docs-only change: $out"
+fi
+
+# --- Comment mentions, heredoc data and declared suites (issue #2177) ----------------
+# A script that names a helper only in a comment is not a caller of it: the helper's own suite runs alone.
+CM="$TMP/comment-mention"
+make_fixture "$CM"
+echo ': helper' > "$CM/.claude/scripts/helper.sh"
+printf '# reads .claude/scripts/helper.sh\nexit 0\n' > "$CM/.github/scripts/tests/helper-reader.test.sh"
+printf '#!/usr/bin/env bash\n# this script used to source .claude/scripts/helper.sh\necho ok\n' > "$CM/.claude/scripts/comment-only.sh"
+out="$(select_for "$CM" .claude/scripts/helper.sh)"
+if ! is_all "$out" && has_line "$out" .github/scripts/tests/helper-reader.test.sh; then
+  ok "a helper named only in a script's comment does not force ALL"
+else
+  bad "a comment-only mention forced ALL or dropped the reader: $out"
+fi
+
+# A data-only heredoc (cat <<DELIM, read to DELIM, printed not run) is not a caller either.
+HD="$TMP/heredoc-data"
+make_fixture "$HD"
+echo ': helper' > "$HD/.claude/scripts/helper.sh"
+printf '# reads .claude/scripts/helper.sh\nexit 0\n' > "$HD/.github/scripts/tests/helper-reader.test.sh"
+cat > "$HD/.claude/scripts/usage-text.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat <<'EOF'
+Usage: run .claude/scripts/helper.sh first
+EOF
+FIXTURE
+out="$(select_for "$HD" .claude/scripts/helper.sh)"
+if ! is_all "$out" && has_line "$out" .github/scripts/tests/helper-reader.test.sh; then
+  ok "a helper named only inside a data-only heredoc does not force ALL"
+else
+  bad "a heredoc mention forced ALL: $out"
+fi
+
+# Counter-cases: code that executes the helper still forces ALL, including a trailing comment after code.
+HC="$TMP/heredoc-code"
+make_fixture "$HC"
+echo ': helper' > "$HC/.claude/scripts/helper.sh"
+printf 'echo go # uses .claude/scripts/helper.sh\n' > "$HC/.claude/scripts/trailing-comment.sh"
+out="$(select_for "$HC" .claude/scripts/helper.sh)"
+if is_all "$out"; then
+  ok "a code line with a trailing comment that names the helper still selects ALL"
+else
+  bad "a trailing-comment caller did not select ALL: $out"
+fi
+rm -f "$HC/.claude/scripts/trailing-comment.sh"
+cat > "$HC/.claude/scripts/heredoc-piped.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat <<'EOF' | bash
+. .claude/scripts/helper.sh
+EOF
+FIXTURE
+out="$(select_for "$HC" .claude/scripts/helper.sh)"
+if is_all "$out"; then
+  ok "a heredoc piped into a shell is code and still selects ALL"
+else
+  bad "a piped heredoc caller did not select ALL: $out"
+fi
+
+# An unquoted heredoc body is expanded by the shell, so it is code and still selects ALL.
+HU="$TMP/heredoc-unquoted"
+make_fixture "$HU"
+echo ': helper' > "$HU/.claude/scripts/helper.sh"
+cat > "$HU/.claude/scripts/unquoted-heredoc.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat <<EOF
+. .claude/scripts/helper.sh
+EOF
+FIXTURE
+out="$(select_for "$HU" .claude/scripts/helper.sh)"
+if is_all "$out"; then
+  ok "an unquoted heredoc body that names the helper still selects ALL"
+else
+  bad "an unquoted heredoc caller did not select ALL: $out"
+fi
+
+# A `#`-led line inside an unquoted heredoc body is code (the shell expands the body), so the helper
+# it names still forces ALL (issue #2177 review: the comment rule must not reach into a heredoc body).
+HH="$TMP/heredoc-hash-line"
+make_fixture "$HH"
+echo ': helper' > "$HH/.claude/scripts/helper3.sh"
+printf '# reads .claude/scripts/helper3.sh\nexit 0\n' > "$HH/.github/scripts/tests/helper3-reader.test.sh"
+cat > "$HH/.claude/scripts/hash-body.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat <<EOF
+# runs .claude/scripts/helper3.sh
+EOF
+FIXTURE
+out="$(select_for "$HH" .claude/scripts/helper3.sh)"
+if is_all "$out"; then
+  ok "a #-led line in an unquoted heredoc body that names the helper still selects ALL"
+else
+  bad "a #-led heredoc body line was misread as a comment: $out"
+fi
+
+# A shellcheck source directive is a dependency declaration, not an ordinary comment (issue #2177
+# review): a script whose only mention of a helper is the directive above a computed source line
+# still makes that helper a dependency of its readers, so the helper forces ALL.
+SD="$TMP/shellcheck-directive"
+make_fixture "$SD"
+echo ': helper' > "$SD/.claude/scripts/helper2.sh"
+printf '# reads .claude/scripts/helper2.sh\nexit 0\n' > "$SD/.github/scripts/tests/helper2-reader.test.sh"
+cat > "$SD/.claude/scripts/directive-only.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+MOD=helper2
+H="$DIR/${MOD}.sh"
+# shellcheck source=helper2.sh
+source "$H"
+FIXTURE
+out="$(select_for "$SD" .claude/scripts/helper2.sh)"
+if is_all "$out"; then
+  ok "a helper named only in a shellcheck source directive of a sourcing script forces ALL"
+else
+  bad "a shellcheck-directive caller did not select ALL: $out"
+fi
+
+# A declared suite is selected by what it declares, not by a prose mention of a markdown file.
+DP="$TMP/declared-prose"
+make_fixture "$DP"
+printf '%s %s\n' '# covers:' '.claude/scripts/x.sh' > "$DP/.github/scripts/tests/declared.test.sh"
+printf 'echo "see .claude/rules/r.md"\nexit 0\n' >> "$DP/.github/scripts/tests/declared.test.sh"
+printf 'echo "see .claude/rules/r.md"\nexit 0\n' > "$DP/.github/scripts/tests/undeclared.test.sh"
+out="$(select_for "$DP" .claude/rules/r.md)"
+if has_line "$out" .github/scripts/tests/undeclared.test.sh && ! has_line "$out" .github/scripts/tests/declared.test.sh \
+   && ! is_all "$out"; then
+  ok "a declared suite is not selected by a prose markdown mention; an undeclared one still is"
+else
+  bad "declared/undeclared prose-mention selection differs from the rule: $out"
+fi
+
+# A declared suite is still selected by a markdown file its covers line declares.
+printf '%s %s\n' '# covers:' '.claude/rules/r.md' > "$DP/.github/scripts/tests/declared-doc.test.sh"
+printf 'exit 0\n' >> "$DP/.github/scripts/tests/declared-doc.test.sh"
+out="$(select_for "$DP" .claude/rules/r.md)"
+if has_line "$out" .github/scripts/tests/declared-doc.test.sh && ! is_all "$out"; then
+  ok "a declared suite is selected by the markdown file its covers line declares"
+else
+  bad "a declared markdown dependency was not selected: $out"
+fi
+
+# A declared suite still depends on code basenames it names in code (only docs are narrowed).
+out="$(select_for "$DP" .claude/scripts/x.sh)"
+if has_line "$out" .github/scripts/tests/declared.test.sh && ! is_all "$out"; then
+  ok "a declared suite still selects on its code dependencies"
+else
+  bad "a declared suite lost its code dependency: $out"
+fi
+
 # --- Runners ----------------------------------------------------------------------
 RUN="$F/.github/scripts/run-hook-tests.sh"
 PYRUN="$F/.github/scripts/run-python-tests.sh"
@@ -393,6 +563,26 @@ if [ "$(fallback_unterminated "$MUT")" -eq 1 ]; then
   ok "negative control: a fallback without the terminator is detected"
 else
   bad "negative control did not detect an unterminated fallback"
+fi
+
+# A suite the selector cannot read is a scan error, not a clean scan: the selection fails toward ALL
+# (grep exit 2 on the unreadable file, not exit 1 for "no match"). Capability-gated: root reads a
+# mode-000 file anyway, so the case is skipped (visibly, not as a failure) when the file stays readable.
+U="$TMP/unreadable"
+make_fixture "$U"
+printf '# reads .claude/hooks/a.sh\nexit 0\n' > "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+chmod 000 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+if cat "$U/.claude/hooks/tests/unreadable-scan.test.sh" >/dev/null 2>&1; then
+  chmod 644 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+  printf 'SKIP: cannot make a file unreadable here (running as root?)\n'
+else
+  out="$(select_for "$U" .claude/hooks/b.sh)"
+  chmod 644 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+  if is_all "$out"; then
+    ok "an unreadable suite makes the selection fail toward ALL"
+  else
+    bad "an unreadable suite did not select ALL: $out"
+  fi
 fi
 
 printf '\n%s passed, %s failed\n' "$passes" "$failures"

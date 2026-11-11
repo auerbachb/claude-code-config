@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# /fixpr Step 5c buckets the retired Graphite check by app slug; Step 5d awaits BugBot only when invited (issue #1953).
-# catalog: tests — Runs `/fixpr` Step 5c's real check-bucket block and Step 5d's real BugBot-invited block on fixtures — a check another app names after Graphite stays CI while graphite-app's check is review and never awaited; BugBot silence is awaited only after a `@cursor review` posted since the push or under an unused owner grant, and an unreadable comment list fails closed
+# /fixpr Step 5c drops the retired Graphite check by app slug; Step 5d awaits BugBot only when invited (issue #1953).
+# catalog: tests — Runs `/fixpr` Step 5c's real check-bucket block and Step 5d's real BugBot-invited block on fixtures — a check another app names after Graphite stays CI while graphite-app's check is excluded; BugBot silence is awaited only after a `@cursor review` posted since the push or under an unused owner grant, and an unreadable comment list fails closed
 #
 # WHAT IS UNDER TEST
 #   The fenced bash under `<!-- test-anchor: fixpr-step-5c-check-buckets -->`
@@ -53,10 +53,14 @@ echo "COUNTS $IN_PROGRESS $FAILING $REVIEW_IN_PROGRESS"' 2>/dev/null | sed -n 's
 check_eq "premise: the 5c block runs and prints its counts on an empty run list" "0 0 0" "$(run_5c '[]')"
 check_eq "other app's pending 'Graphite integration' check is CI pending" "1 0 0" \
   "$(run_5c '[{"name":"Graphite integration","status":"in_progress","conclusion":null,"app":{"slug":"github-actions"}}]')"
-check_eq "graphite-app's pending check is review, never awaited" "0 0 0" \
+check_eq "graphite-app's pending check is excluded" "0 0 0" \
   "$(run_5c '[{"name":"r","status":"queued","conclusion":null,"app":{"slug":"graphite-app"}}]')"
 check_eq "graphite-app's failed check is not CI failing" "0 0 0" \
   "$(run_5c '[{"name":"Graphite / mergeability_check","status":"completed","conclusion":"failure","app":{"slug":"graphite-app"}}]')"
+check_eq "legacy Graphite AI review without a slug is excluded" "0 0 0" \
+  "$(run_5c '[{"name":"Graphite / AI Reviews","status":"queued","conclusion":null}]')"
+check_eq "known publisher takes precedence over the legacy Graphite name" "1 0 0" \
+  "$(run_5c '[{"name":"Graphite / AI Reviews","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]')"
 check_eq "a live reviewer's pending check is still review-pending" "0 0 1" \
   "$(run_5c '[{"name":"Cursor Bugbot","status":"in_progress","conclusion":null,"app":{"slug":"cursor"}}]')"
 check_eq "a GitHub Actions job named after a reviewer is CI pending" "1 0 0" \

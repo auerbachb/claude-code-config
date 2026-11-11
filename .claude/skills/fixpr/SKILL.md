@@ -428,7 +428,7 @@ if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
 fi
 ```
 
-The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, plus the retired `graphite-app[bot]`). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
+The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
 
 ---
 
@@ -474,7 +474,7 @@ The `cr-github-review.md` polling path invokes `maybe-trigger-ai-review.sh` with
 
 ## Step 4: Reply and resolve every thread
 
-For every entry in `.threads.unresolved` — fix, decline-high-confidence, surface-low-confidence, already-fixed, or outdated:
+For every entry in `.threads.unresolved` — fix, decline-high-confidence, surface-low-confidence, already-fixed, or outdated. For a retired Graphite thread, inspect the source and use `--reviewer graphite` for its reply. Include its exact thread ID in Step 4b only after handling it:
 
 ### 4a. Reply
 
@@ -496,7 +496,7 @@ Reply text by classification:
 Post the reply via the shared helper — it handles inline-first, PR-comment-fallback, and reviewer-specific `@mention` rules automatically:
 
 ```bash
-# $REVIEWER: cr | bugbot | greptile (from the audit classification)
+# $REVIEWER: cr | bugbot | greptile | codeant | graphite (from the audit author)
 # $VERDICT / $DEFECT: per entry, from the mapping below (mandatory — issue #1842)
 # $FIX: as-given | adapted | wrong | none — per entry (mandatory — issue #1843)
 "$REPLY_THREAD_SH" "$DBID" --reviewer "$REVIEWER" \
@@ -683,7 +683,7 @@ Keep this classifier in place. Do not substitute `wait-until.sh`. See `.claude/r
 Run the audit script again with `--since $RUN_STARTED_AT`. This picks up the new HEAD SHA (post-push) **and** pre-classifies any bot comment that landed between Step 0 and now:
 
 ```bash
-VERIFY=$("$SCRIPT" --since "$RUN_STARTED_AT")
+VERIFY=$("$SCRIPT" --pr "$PR_NUMBER" --since "$RUN_STARTED_AT")
 ```
 
 ### 5a. Threads
@@ -721,36 +721,35 @@ The verify audit's `.check_runs` reflects the new HEAD.
 
 <!-- test-anchor: fixpr-step-5c-check-buckets -->
 ```bash
-jq -r '.check_runs.all[] | "[CI] \(.name): \(.status)\(if .conclusion then " — \(.conclusion)" else "" end)"' "$VERIFY"
+ACTIVE_CHECKS=$(jq -c '
+  [.check_runs.all[]
+   | select(((.app.slug // "") as $slug
+       | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+         else $slug | IN("graphite-app", "graphite") end) | not)]
+' "$VERIFY")
+jq -r '.[] | "[CI] \(.name): \(.status)\(if .conclusion then " — \(.conclusion)" else "" end)"' <<<"$ACTIVE_CHECKS"
 
 CHECK_BUCKETS=$(jq '
-  # Graphite: retired 2026-11-03. Its leftover check-run is never CI, matched by the
-  # publishing app slug only (#1953) so another app naming a check "Graphite …" stays CI.
-  def is_graphite: (.app.slug // "") as $s | $s == "graphite-app" or $s == "graphite";
-  # Every review bot is identified by its publishing app when the run carries one:
-  # a GitHub Actions job named "post-cursor-review" is CI, not a reviewer. The check
-  # name decides only when no app slug is present at all.
+  # Prefer the publishing app slug. Older bundles may have only the check name.
   def is_review_bot:
     (.app.slug // "" | ascii_downcase) as $slug
     | if $slug != "" then
         ($slug | contains("coderabbit") or contains("codeant") or contains("cursor"))
-        or is_graphite
       else
         (.name // "" | ascii_downcase)
         | contains("coderabbit") or contains("codeant") or contains("cursor")
       end;
   {
-    ci: [.check_runs.all[] | select(is_review_bot | not)],
-    review: [.check_runs.all[] | select(is_review_bot)]
+    ci: [.[] | select(is_review_bot | not)],
+    review: [.[] | select(is_review_bot)]
   }
-' "$VERIFY")
+' <<<"$ACTIVE_CHECKS")
 CI_CHECKS=$(jq '.ci' <<<"$CHECK_BUCKETS")
 REVIEW_BOT_CHECKS=$(jq '.review' <<<"$CHECK_BUCKETS")
 
 FAILING=$(jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")] | length' <<<"$CI_CHECKS")
 IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$CI_CHECKS")
-# A retired Graphite check-run is bucketed as review but never awaited (matches 5d).
-REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed") | select((.app.slug // "") as $s | ($s == "graphite-app" or $s == "graphite") | not)] | length' <<<"$REVIEW_BOT_CHECKS")
+REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$REVIEW_BOT_CHECKS")
 ```
 
 Decide from the non-review CI counts before review-bot pending counts:
@@ -778,7 +777,7 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 
 - **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule.
 - `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
-- `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop. Not for a retired Graphite check-run: Step 5c already excludes it from CI and nothing waits on it.
+- `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop.
 - No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → expect the Step 3b trigger (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a CodeRabbit or CodeAnt that Step 3b logged as `skipping … — review tier …` (kind `excluded`) was never invited, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
 - **BugBot silence**: await `REVIEW_PENDING` only for a verified current-HEAD invitation or unused matching owner grant. Step 3b deferral or a daily-cap skip alone is not an invitation. Require the portable `bugbot-invitation.sh` reader; missing tooling or unknown/unreadable evidence remains awaited. On no-push reruns, ignore inherited `PUSHED_AT`/`PUSHED_SHA` and retain qualifying invitations posted before the rerun. Keep `BUGBOT_INVITATION_RESULT` and its `evidence_path` in Step 5 recovery evidence, never as future authorization. The reader only reads/checks grants; it never triggers or consumes. Window, bounds and diagnostic details: `bugbot-invitation.sh --help`.
 
@@ -883,6 +882,23 @@ Wait loop:       $FIXPR_WAIT_ITER iteration(s), total wait ${FIXPR_TOTAL_WAIT_SE
 Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | BEHIND | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
 FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable copy for /wrap issue #452>
 FIXPR_WAIT_SUMMARY: iterations=<N> total_wait_secs=<S> final=<clean|cap-exhausted|new-findings-pending>
+```
+
+After a push, when Step 5 accounted for every finding, advance the three poll watermarks through the exact verified audit. Use its current HEAD and leave any later arrivals for the next poll. If the audit is missing, has findings or unresolved threads, or was from a different push, keep the old watermarks.
+
+<!-- test-anchor: fixpr-verified-watermarks -->
+
+```bash
+if [[ "${DID_PUSH:-0}" == 1 && -n "${VERIFY:-}" && -n "${PUSHED_SHA:-}" ]] &&
+   jq -e --arg head "$PUSHED_SHA" '
+     .pr.head_sha == $head and .new_since_baseline.finding_count == 0 and .threads.unresolved_count == 0
+   ' "$VERIFY" >/dev/null; then
+  POLL_WATERMARKS_SH=$(resolve_script poll-watermarks.sh || true)
+  if [[ -n "$POLL_WATERMARKS_SH" ]]; then
+    "$POLL_WATERMARKS_SH" "$PR_NUMBER" --reset --audit-file "$VERIFY" >/dev/null ||
+      echo "[POLL] Verified audit watermark could not be saved; keep polling."
+  fi
+fi
 ```
 
 Render the **Pre-flight** line from the per-reviewer `.status` values in `$PREFLIGHT_SUMMARY_JSON` (Step 0c), never from `.clean` alone. Print `$PREFLIGHT_LINE` verbatim:

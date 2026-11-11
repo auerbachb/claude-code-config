@@ -12,6 +12,7 @@
 # load-bearing in the fail direction too.
 #
 # Auto-discovered by run-hook-tests.sh — no workflow edit needed.
+# covers:
 
 set -euo pipefail
 

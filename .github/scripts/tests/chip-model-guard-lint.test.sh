@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for chip-model-guard-lint.sh (issue #731)
+# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/harness-audit/SKILL.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 
