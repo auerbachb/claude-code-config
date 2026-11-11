@@ -7,10 +7,12 @@
 #       --command end|pause --window-minutes N
 #   execution-pause.sh [--repo owner/name] --clear --session ID
 #   execution-pause.sh [--repo owner/name] --status --session ID
+#   execution-pause.sh --repo owner/name --end-proof --session NATIVE_UUID
 #
 # `--status` prints active|inactive and exits 0. An on-disk marker mirrors an
 # active write so a corrupted/unreadable session-state file fails closed only
-# for a session that had positively armed the gate.
+# for a session that had positively armed the gate. --end-proof returns
+# matching positive /end evidence from both sources, without clearing either.
 
 set -uo pipefail
 
@@ -31,7 +33,7 @@ MODE=""; REPO_OPT=""; SESSION_ID="${CLAUDE_SESSION_ID:-}"; COMMAND_NAME=""; WIND
 while (( $# > 0 )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --activate|--clear|--status) [[ -z "$MODE" ]] || die "only one mode may be supplied"; MODE="${1#--}" ;;
+    --activate|--clear|--status|--end-proof) [[ -z "$MODE" ]] || die "only one mode may be supplied"; MODE="${1#--}" ;;
     --repo|--session|--command|--window-minutes)
       (( $# >= 2 )) || die "$1 requires a value"
       key="$1"; value="$2"; shift
@@ -62,6 +64,11 @@ session_state() {
   fi
 }
 REPO_KEY="$(session_state --repo-key 2>/dev/null)" || exit 5
+if [[ "$MODE" == end-proof ]]; then
+  [[ -n "$REPO_OPT" && "$REPO_KEY" =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9_.-]+$ &&
+     "$SESSION_ID" =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]] ||
+    die "--end-proof requires an explicit repository and native session UUID"
+fi
 scope_hash() {
   local digest=""
   if command -v sha256sum >/dev/null 2>&1; then
@@ -88,6 +95,16 @@ PATH_EXPR=".repos[\"$REPO_KEY\"].execution_pauses[\"$SESSION_ID\"]"
 source "$LOCK_LIB"
 state_lock_acquire "$STATE_FILE" || exit $?
 trap 'state_lock_release' EXIT
+
+read_end_proof() {
+  jq -Sce --arg session "$SESSION_ID" '
+    select(type == "object" and .active == true and .command == "end"
+           and .session_id == $session and .cleared_at == null)
+    | select((.at | type) == "string" and (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+             and (.deadline_epoch | type) == "number" and (.window_minutes | type) == "number")
+    | {session_id, command, at, deadline_epoch, window_minutes}
+  '
+}
 
 case "$MODE" in
   activate)
@@ -135,6 +152,21 @@ case "$MODE" in
       exit 5
     }
     state_lock_release
+    ;;
+  end-proof)
+    # A positive /end must have completed both writes. A marker alone
+    # continues to block launches, but is not permission to resume.
+    if [[ -f "$MARKER" && ! -L "$MARKER" && -O "$MARKER" ]] &&
+       MARKER_BYTES="$(wc -c < "$MARKER")" && (( MARKER_BYTES <= 4096 )) &&
+       MARKER_PROOF="$(read_end_proof < "$MARKER" 2>/dev/null)" &&
+       STATE_PROOF="$(session_state --raw-path --get "$PATH_EXPR" 2>/dev/null | read_end_proof 2>/dev/null)" &&
+       [[ -n "$MARKER_PROOF" && "$MARKER_PROOF" == "$STATE_PROOF" ]]; then
+      printf '%s\n' "$MARKER_PROOF"
+      state_lock_release
+      exit 0
+    fi
+    echo "execution-pause.sh: exact /end proof is unavailable" >&2
+    exit 4
     ;;
   status)
     RC=0
