@@ -82,6 +82,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `final-wrapup-format.md` — minimal terminal outcome or actionable blocker; explicit summaries and machine reports retain their formats (Issue #1396, Issue #1873)
 - `greptile-setup.md` — Greptile dashboard setup notes
 - `greptile-reply-format.md` — reply conventions for Greptile threads
+- `aws-guidance.md` — full AWS new-experience guidance: terminology, Region/service constraints, spend-limit rules, service-availability check procedure, and help-level definitions; condensed summary in `CLAUDE.md` points here
 
 ### Workflow decomposition and PM helpers
 

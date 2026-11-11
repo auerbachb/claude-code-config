@@ -19,7 +19,7 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 | `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 4 (built in step 3) | `-wake` Step 4a |
 | `.pmm.config_at_pause` | object | Main skill Pause step 4 (built in step 3) | Step 0a, `-wake` Step 4a, `-wake` Step 4b |
 
-`config_at_pause` fields: `author`, `repo`, `cadence`, `max_parallel`, `idle_pause_after`, `auto_wake`, `auto_wake_cadence`, `confirm_merges`.
+`config_at_pause` fields: `author`, `repo`, `cadence`, `max_parallel`, `max_deep_prs` (default25 for older records), `idle_pause_after`, `auto_wake`, `auto_wake_cadence`, `confirm_merges`.
 
 > **Wake coupling:** `/pr-monitor-and-manage-wake` Step 4b rebuilds `PMM_FLAGS` from the `config_at_pause` blob — including `--confirm-merges` when `confirm_merges` is true — before re-arming the Monitor. The main skill's Step 0a uses the same blob for flag merging on direct re-invocation. `-wake` Step 4a reads it too, but only for `author` / `repo`, to scope its lightweight fleet scan (issue #871) — which is why a missing blob fails that scan closed rather than resuming.
 
@@ -36,28 +36,81 @@ when `pmm_active != true` or `.pmm.stop_requested == true`. Direct user invocati
 while the stop marker is true. This prevents a queued pre-pause/pre-stop event from entering resume
 and makes incomplete exact teardown a hard re-arm block.
 
+Use main `pmm-resume-capture` first. Carry its emitted `PMM_RESUME_EXPECT` across tool calls;
+never replace it with a fresh owner's identity. For `main`, then `auto`, set
+`PMM_RESUME_TASK_KIND` and execute this authorization fence:
+
+<!-- test-anchor: pmm-resume-stop-authorize -->
 ```bash
-PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
-if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
-  # 1. Read saved config into the $SAVED shell variable (fallback defaults if missing) —
-  #    step 3 below clears .pmm.config_at_pause in session-state, so step 4 MUST use this
-  #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
-  #    session-state after step 3 has run (it will be null by then).
-  SAVED=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # 2. Read both task identities: .pmm_monitor_task_id paired with
-  #    .pmm_monitor_generation, and .pmm.auto_wake_monitor_task_id paired with
-  #    .pmm.auto_wake_monitor_generation. When present, stop each exact task.
-  #    Clear every successfully stopped ID+generation pair in one atomic state
-  #    write while leaving the pause marker/config/fleet intact. Any failed
-  #    TaskStop aborts resume and retains only the failed identity pair. This
-  #    covers degraded pauses without making the next retry stop a dead task.
-  # 3. Set a shell-only RESUMING_FROM_PAUSE=true marker. Do not publish active
-  #    state or clear any on-disk pause fields yet.
-  RESUMING_FROM_PAUSE=true
-  # 4. Merge flags: explicit $ARGUMENTS override the captured $SAVED value.
-  echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
+PMM_RESUME_ROOT=$(jq -c '.root' <<<"$PMM_RESUME_EXPECT") || exit 1
+case "$PMM_RESUME_TASK_KIND" in
+  main) PMM_RESUME_TASK_ID=$(jq -r '.pmm_monitor_task_id // "null"' <<<"$PMM_RESUME_ROOT")
+        PMM_RESUME_TASK_GENERATION=$(jq -r '.pmm_monitor_generation // "null"' <<<"$PMM_RESUME_ROOT") ;;
+  auto) PMM_RESUME_TASK_ID=$(jq -r '.pmm.auto_wake_monitor_task_id // "null"' <<<"$PMM_RESUME_ROOT")
+        PMM_RESUME_TASK_GENERATION=$(jq -r '.pmm.auto_wake_monitor_generation // "null"' <<<"$PMM_RESUME_ROOT") ;;
+  *) echo 'ERROR: invalid resume teardown kind' >&2; exit 2 ;;
+esac
+PMM_RESUME_STOP_REQUIRED=false
+if [[ "$PMM_RESUME_TASK_ID" == null && "$PMM_RESUME_TASK_GENERATION" == null ]]; then
+  echo '[PMM] Captured task identity absent; no TaskStop required.'
+elif [[ "$PMM_RESUME_TASK_ID" == null || "$PMM_RESUME_TASK_GENERATION" == null ]]; then
+  echo 'ERROR: incomplete captured task identity; reconcile before resume' >&2; exit 1
+else
+  PMM_RESUME_PMM=$(jq -c '.pmm' <<<"$PMM_RESUME_ROOT") || exit 1
+  PMM_RESUME_GUARDED_PMM=$(jq -c '.stop_requested=true' <<<"$PMM_RESUME_PMM") || exit 1
+  "$SESSION_STATE_SH" --cas ".pmm=$PMM_RESUME_GUARDED_PMM" --expect "$PMM_RESUME_PMM" --expect-root "$PMM_RESUME_ROOT" || {
+    echo '[PMM] Resume target changed; no TaskStop authorized.' >&2; exit 1; }
+  PMM_RESUME_ROOT=$(jq -c --argjson guarded "$PMM_RESUME_GUARDED_PMM" '.pmm=$guarded' <<<"$PMM_RESUME_ROOT") || exit 1
+  PMM_RESUME_EXPECT=$(jq -c --argjson root "$PMM_RESUME_ROOT" '.root=$root' <<<"$PMM_RESUME_EXPECT") || exit 1
+  PMM_RESUME_PMM="$PMM_RESUME_GUARDED_PMM"
+  PMM_RESUME_STOP_REQUIRED=true
 fi
+printf 'PMM_RESUME_EXPECT=%s\n' "$PMM_RESUME_EXPECT"
+printf 'PMM_RESUME_STOP_REQUIRED=%s TASK_ID=%s GENERATION=%s\n' "$PMM_RESUME_STOP_REQUIRED" "$PMM_RESUME_TASK_ID" "$PMM_RESUME_TASK_GENERATION"
 ```
+
+Only when `PMM_RESUME_STOP_REQUIRED=true`, call `TaskStop` on the exact printed ID as a
+**separate tool action**. A false guard does not mean a stop succeeded. Failed, missing, or
+unknown tool results retain the identity and abort resume. After confirmed success only, set
+`PMM_RESUME_STOP_CONFIRMED=true` and `PMM_CONFIRMED_STOP_TASK_ID` from the tool result, then execute this separate receipt/clear phase:
+
+<!-- test-anchor: pmm-resume-stop-record -->
+```bash
+[[ "${PMM_RESUME_STOP_REQUIRED:-false}" == true && "${PMM_RESUME_STOP_CONFIRMED:-false}" == true ]] || {
+  echo 'ERROR: exact stop is not confirmed; no identity clear authorized' >&2; exit 1; }
+# Reconstruct from the frozen receipt in a new shell, never from current state.
+PMM_RESUME_ROOT=$(jq -c '.root' <<<"$PMM_RESUME_EXPECT") || exit 1
+PMM_RESUME_PMM=$(jq -c '.pmm' <<<"$PMM_RESUME_ROOT") || exit 1
+case "$PMM_RESUME_TASK_KIND" in
+  main) PMM_RESUME_TASK_ID=$(jq -r '.pmm_monitor_task_id' <<<"$PMM_RESUME_ROOT")
+        PMM_RESUME_TASK_GENERATION=$(jq -r '.pmm_monitor_generation' <<<"$PMM_RESUME_ROOT") ;;
+  auto) PMM_RESUME_TASK_ID=$(jq -r '.pmm.auto_wake_monitor_task_id' <<<"$PMM_RESUME_ROOT")
+        PMM_RESUME_TASK_GENERATION=$(jq -r '.pmm.auto_wake_monitor_generation' <<<"$PMM_RESUME_ROOT") ;;
+  *) exit 2 ;;
+esac
+[[ "${PMM_CONFIRMED_STOP_TASK_ID:-}" == "$PMM_RESUME_TASK_ID" && "$PMM_RESUME_TASK_ID" != null ]] || {
+  echo 'ERROR: tool-confirmed task does not match captured identity' >&2; exit 1; }
+printf 'CONFIRMED_STOP kind=%s id=%s generation=%s; retry only local clear if it fails\n' "$PMM_RESUME_TASK_KIND" "$PMM_RESUME_TASK_ID" "$PMM_RESUME_TASK_GENERATION"
+case "$PMM_RESUME_TASK_KIND" in
+  main) PMM_RESUME_NEXT_ROOT=$(jq -c '.pmm_monitor_task_id=null | .pmm_monitor_generation=null' <<<"$PMM_RESUME_ROOT") ;;
+  auto) PMM_RESUME_NEXT_ROOT=$(jq -c '.pmm.auto_wake_monitor_task_id=null | .pmm.auto_wake_monitor_generation=null' <<<"$PMM_RESUME_ROOT") ;;
+  *) exit 2 ;;
+esac
+PMM_RESUME_NEXT_PMM=$(jq -c '.pmm' <<<"$PMM_RESUME_NEXT_ROOT") || exit 1
+"$SESSION_STATE_SH" --cas ".pmm=$PMM_RESUME_NEXT_PMM" --expect "$PMM_RESUME_PMM" --expect-root "$PMM_RESUME_ROOT" \
+  --set ".pmm_monitor_task_id=$(jq -c '.pmm_monitor_task_id' <<<"$PMM_RESUME_NEXT_ROOT")" \
+  --set ".pmm_monitor_generation=$(jq -c '.pmm_monitor_generation' <<<"$PMM_RESUME_NEXT_ROOT")" || {
+  echo 'ERROR: confirmed stop local clear lost ownership; preserve tool receipt and current state, do not repeat TaskStop' >&2; exit 1; }
+PMM_RESUME_EXPECT=$(jq -c --argjson root "$PMM_RESUME_NEXT_ROOT" '.root=$root' <<<"$PMM_RESUME_EXPECT") || exit 1
+printf 'PMM_RESUME_EXPECT=%s\n' "$PMM_RESUME_EXPECT"
+```
+
+The authorization atomically sets the stop guard before teardown, retaining it on failed/unknown
+results. It cannot make a remote tool call atomic with state. The immutable captured
+ID prevents stopping a new owner's different task; conditional clear never overwrites its state.
+A confirmed stop followed by failed local persistence is reconciled from the printed/tool receipt,
+never by blindly issuing the stop again. Both absent identities may proceed without a stop.
+The pause marker/config/fleet remain intact throughout teardown; only main Step7 clears them.
 
 Step 7 treats the old main-task ID as absent (it was stopped and cleared above) and arms the main
 Monitor at base cadence. Only after it returns a task ID does one atomic
@@ -73,13 +126,12 @@ Before that publication write, Step 4 treats the prior table digests as null **i
 current direct-resume tick renders the full table. It must not persist those nulls early: rendering
 state can be provisional, but destroying the durable pause marker cannot.
 
-> **The digest reset has two owners, one per resume path.** Step 7's publication transaction covers
-> **direct re-invocation** when `RESUMING_FROM_PAUSE=true`. On the **`-wake`** path, Step 4b clears the
-> marker before the next main-skill tick, so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest`
-> in its own atomic `--set` batch (Issue #872). The guarantee "both digests are null after **any**
-> resume" holds only while both sides do it; neither is redundant.
+> **The digest reset has one publication owner.** Direct re-invocation and `-wake` both
+> reach the main Step7 claim/publication with `RESUMING_FROM_PAUSE=true`. Wake Step4b delegates
+> without clearing the marker, so both digests are nulled with the new identity and marker clear.
+> No wake-specific unconditional Monitor loop or publication is permitted.
 
-Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3 (re-scan teardown) and Step 4b (marker clear + Monitor re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
+Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3 (re-scan teardown) and Step 4b (delegate to the canonical main lifecycle). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
 
 A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.
 
@@ -123,10 +175,11 @@ FLEET_AT_PAUSE=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .merg
 CONFIG_AT_PAUSE=$(jq -nc \
   --arg author "$PMM_AUTHOR" --arg repo "$OWNER_REPO" --arg cadence "$PMM_CADENCE" \
   --argjson max_parallel "$PMM_MAX_PARALLEL" \
+  --argjson max_deep_prs "${PMM_MAX_DEEP_PRS:-25}" \
   --argjson idle_pause_after "$PMM_IDLE_PAUSE_AFTER" \
   --argjson auto_wake "$PMM_AUTO_WAKE" --arg auto_wake_cadence "$PMM_AUTO_WAKE_CADENCE" \
   --argjson confirm_merges "$PMM_CONFIRM_MERGES" \
-  '{author:$author, repo:$repo, cadence:$cadence, max_parallel:$max_parallel, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence, confirm_merges:$confirm_merges}')
+  '{author:$author, repo:$repo, cadence:$cadence, max_parallel:$max_parallel, max_deep_prs:$max_deep_prs, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence, confirm_merges:$confirm_merges}')
 ```
 
 ### 4. Write pause marker (atomic batch)

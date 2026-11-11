@@ -476,7 +476,10 @@ run them in this order and wait once.
    `ac-gate` conclusion behind it. `merge-gate.sh` already required every
    check-run terminal and non-blocking per `.claude/rules/cr-merge-gate.md`
    Step 1b, where `cancelled`/`neutral`/`skipped` are **non-blocking by
-   policy** — and a `skipped` `ac-gate` is the designed outcome for an
+   policy** (for a branch-protection *required* context `cancelled` is
+   unsatisfied, so `GATE_EXIT == 0` already excludes a cancelled required
+   `ac-gate` — `.claude/reference/merge-gate-reviewer-paths.md`, issue #1846) —
+   and a `skipped` `ac-gate` is the designed outcome for an
    exemption (`.claude/reference/ac-gate.md`). Re-requiring `conclusion:
    "success"` here would block exactly those PRs and would fork this path's CI
    standard away from the clean-`BEHIND` path's.

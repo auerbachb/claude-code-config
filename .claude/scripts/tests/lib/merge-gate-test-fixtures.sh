@@ -9,6 +9,7 @@
 #   merge-gate-ci-dedup.test.sh           — CI check-run dedup + CodeAnt supplemental gate (issue #675)
 #   merge-gate-codeant-run-marker.test.sh — CodeAnt pre-run approval stubs (issues #1432, #1476)
 #   merge-gate-required-contexts.test.sh  — branch-protection required contexts (issue #1361)
+#   merge-gate-required-cancelled.test.sh — cancelled/unknown required conclusions (issue #1846)
 #
 # Source from repo root or any worktree — REPO_ROOT is resolved via git.
 #
@@ -70,7 +71,11 @@ check_eq() { # expected actual label
   if [[ "$1" == "$2" ]]; then ok "$3"; else bad "$3 (expected: $1, got: $2)"; fi
 }
 
-HEAD_SHA="deadbeefcafedeadbeefcafedeadbeefcafedead"
+# FAKE_HEAD_SHA lets a suite replay a real incident at its exact HEAD (issue
+# #1846). It is read once, here, because the stub below bakes the value in when
+# it is written. A distinct name rather than HEAD_SHA, so an ambient HEAD_SHA in
+# a developer's shell can never change what every other suite asserts against.
+HEAD_SHA="${FAKE_HEAD_SHA:-deadbeefcafedeadbeefcafedeadbeefcafedead}"
 
 # --- Fake gh: only the endpoints merge-gate.sh actually calls. ---------------
 BIN="$TMP/bin"; mkdir -p "$BIN"
@@ -85,8 +90,12 @@ case "\$ARGS" in
     # so authorship == "mine" and the merge is not blocked.
     echo "solouser"; exit 0 ;;
   *"pr view "*headRefOid*)
-    jq -cn '{number:1, state:"OPEN", headRefOid:"$HEAD_SHA", baseRefName:"main",
-             mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED",
+    # mergeStateStatus is CLEAN unless a suite sets FAKE_MERGE_STATE (issue
+    # #1846: replaying a PR GitHub reported BLOCKED). Every pre-existing suite
+    # leaves it unset, so none of their expectations move.
+    jq -cn --arg ms "\${FAKE_MERGE_STATE:-CLEAN}" \
+           '{number:1, state:"OPEN", headRefOid:"$HEAD_SHA", baseRefName:"main",
+             mergeStateStatus:\$ms, mergeable:"MERGEABLE", reviewDecision:"APPROVED",
              author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *check-runs*)

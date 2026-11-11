@@ -10,6 +10,7 @@
 # Usage:
 #   pr-state.sh                                  # Auto-detect PR from current branch
 #   pr-state.sh --pr 123                         # Use explicit PR number (skips branch detect)
+#   pr-state.sh --pr 123 --stdout                # JSON on stdout, no retained temp bundle
 #   pr-state.sh --since <iso-8601>               # Pre-classify bot comments posted since baseline
 #   pr-state.sh --pr 123 --since <iso>           # Combined
 #   pr-state.sh --infer-candidates               # List session-tracked PR candidates (no GitHub state)
@@ -112,6 +113,7 @@ run_gh() {
   printf '%s' "$output"
 }
 
+STDOUT_JSON=false
 PR_ARG=""
 SINCE=""
 INFER_CANDIDATES=0
@@ -120,6 +122,7 @@ WAIT_STATE_SHA=""
 WAIT_STATE_BUNDLE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --stdout) STDOUT_JSON=true; shift ;;
     --infer-candidates)
       INFER_CANDIDATES=1
       shift
@@ -469,9 +472,13 @@ RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # temp file without the .json suffix, then rename. Both the base tempfile and
 # the renamed target are unique per-invocation, so the rename cannot clobber
 # another concurrent run's output.
-OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
-OUT="${OUT_BASE}.json"
-mv "$OUT_BASE" "$OUT"
+if [[ "$STDOUT_JSON" == true ]]; then
+  OUT=/dev/stdout
+else
+  OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
+  OUT="${OUT_BASE}.json"
+  mv "$OUT_BASE" "$OUT"
+fi
 
 # Endpoint bodies must never travel through argv (Issue #1565; downstream
 # poll-watermarks has the same requirement in Issues #1557/#1562). Keep each
@@ -707,4 +714,4 @@ jq -n \
     }
   }' > "$OUT"
 
-echo "$OUT"
+if [[ "$STDOUT_JSON" != true ]]; then echo "$OUT"; fi
