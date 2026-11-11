@@ -110,3 +110,109 @@ higher-impact work to switch to. Omit entirely when current work is well-aligned
 Summarize rather than enumerate once a tier stops informing a decision — most often the Low tier: "68 additional issues are Low-priority relative to this goal". The tier still appears with its heading; it just carries a count instead of 68 bullets.
 
 The `## Operator order (desk)` section appears only when the operator ordered or parked something (`/pm` 1B.1a). Its rows are listed once, there, with the tier they would have ranked in (`ranked Medium`), and are left out of the tier sections below — so dropping one from the override puts it straight back in its tier.
+
+## Opt-in PM progress report
+
+A positive `report_every_min` in the repo's `## Reporting` section is a standing
+status request for `/pm`. The existing `/pm day` tick, PM-owned inline monitor
+tick and PM terminal completion turn are its only automatic entry points.
+Consolidate the turn's outcomes and evaluate once. Explicit status renders
+`/board` immediately. It does not consume an automatic report's outcomes.
+
+Use current, already collected board and phase evidence. Supply
+`PM_REPORT_BOARD_JSON` with four arrays:
+
+- `running` contains `{issue,phase,pr}` rows from this round. Phases are `A`,
+  `B` and `C`. Use null for a pipeline without a PR.
+- `queued` contains issue numbers in queue order.
+- `needs` contains `{issue,reason}` rows only for genuine owner actions.
+- `terminal` contains `{key,issue,pr,outcome}` rows for verified outcomes, with
+  `outcome` either `merged` or `blocked`. Build the key from the durable
+  pipeline start, issue number and outcome. Use the round's dispatch identity
+  when a terminal outcome occurred before a launch timestamp was recorded.
+  Preserve outcome evidence until it can be reported. Read all three phases'
+  terminal results. A Phase C success requires GitHub's merge confirmation.
+
+Exclude timestamps that only represent polling time, countdowns, and raw
+diagnostics from the input. A successful run with no terminal events still
+passes an explicit empty array. Skip the automatic report when the board
+evidence or current repo/session identity is unavailable.
+
+Run the gate in the PM thread with its resolved helpers. Keep `REPORT_RESULT`, `REPORT_BEFORE` and `REPORT_PATH` from this check for the receipt step. Rebind those exact values if delivery and receipt use separate shell calls.
+A malformed setting or unreadable report receipt yields a diagnostic and no
+automatic render. The absence of an initial receipt starts the cadence
+without emitting a startup report.
+
+<!-- test-anchor: pm-progress-report-check -->
+```bash
+REPORT_RESULT=''
+REPORT_BEFORE=''
+REPORT_PATH=''
+if [[ -n "${PM_CONFIG_GET:-}" && -n "${PM_REPORT_SH:-}" && -n "${SESSION_STATE_SH:-}" ]] \
+  && REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) \
+  && REPORT_MIN=$(printf '%s' "$REPORT_CONFIG" | "$PM_REPORT_SH" --config-only) \
+  && [[ "$REPORT_MIN" != 0 ]]; then
+  REPORT_REPO=$("$SESSION_STATE_SH" --repo-key) || REPORT_REPO=''
+  REPORT_SESSION="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+  if [[ "$REPORT_REPO" == */* && -n "$REPORT_SESSION" && "$REPORT_SESSION" != default ]]; then
+    REPORT_PATH=$(jq -nr --arg repo "$REPORT_REPO" --arg session "$REPORT_SESSION" \
+      '".repos[\($repo|tojson)].pm_reports[\($session|tojson)]"') || REPORT_PATH=''
+    if [[ -n "$REPORT_PATH" ]]; then
+      REPORT_RC=0
+      REPORT_BEFORE=$("$SESSION_STATE_SH" --get "$REPORT_PATH" 2>/dev/null) || REPORT_RC=$?
+      if [[ "$REPORT_RC" -eq 3 ]]; then
+        REPORT_BEFORE=null
+        REPORT_RC=0
+      fi
+      if [[ "$REPORT_RC" -eq 0 ]]; then
+        REPORT_RESULT=$(jq -cn --arg config "$REPORT_CONFIG" \
+          --argjson board "${PM_REPORT_BOARD_JSON:-null}" --argjson previous "$REPORT_BEFORE" \
+          '{config:$config,board:$board,previous:$previous}' | "$PM_REPORT_SH") || REPORT_RESULT=''
+      else
+        printf 'pm-report: unreadable report receipt (exit %s)\n' "$REPORT_RC" >&2
+      fi
+    fi
+  fi
+fi
+```
+
+A result with `due:true` is the only automatic render signal. Run `/board`
+once and append the nonempty groups in this order. Use its canonical
+`Running now` table. If the final outcome left an empty board, keep its
+canonical no-active-round line. Use the output's `groups` object for the list.
+Keep `blocked` visible as the outcome on its Done entry and use Needs you
+only when the blocker requires owner action.
+
+```markdown
+- **Done since last report**
+  - #42 — merged, PR #88
+- **Working**
+  - #38 → Phase B → PR #91
+- **Up next**
+  - #55
+- **Needs you**
+  - #67 — choose a delivery scope
+```
+
+After the whole report reaches the user, set `REPORT_DELIVERED=1`. Initialize
+it to zero before attempting delivery. Use the receipt snippet in the same
+turn. A reported event is remembered by its exact key, so repeating a
+completion callback cannot reset the clock or announce it again. A blocked
+outcome or final merge is immediately eligible even with an empty board.
+Preserve an unsuccessful receipt write as a diagnostic and reconcile the
+current record before attempting delivery again.
+
+<!-- test-anchor: pm-progress-report-receipt -->
+```bash
+REPORT_NEXT=''
+if [[ -n "${REPORT_RESULT:-}" && -n "${REPORT_PATH:-}" ]]; then
+  REPORT_NEXT=$(jq -c --arg delivered "${REPORT_DELIVERED:-0}" '
+    if .due == true and $delivered == "1" then .after_delivery
+    elif .due == false then .initialize // empty
+    else empty end
+  ' <<< "$REPORT_RESULT") || REPORT_NEXT=''
+fi
+if [[ -n "$REPORT_NEXT" ]]; then
+  "$SESSION_STATE_SH" --cas "$REPORT_PATH=$REPORT_NEXT" --expect "$REPORT_BEFORE"
+fi
+```
