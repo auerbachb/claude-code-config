@@ -557,15 +557,72 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   read_leave_eligibility
   ```
 
+  Define this release helper in the same Bash context as the reservation gate:
+
+  <!-- test-anchor: subagent-step7-leave-release -->
+
+  ```bash
+  # Keep one release receipt per repo, separate from the active menu token.
+  # Each line is a canonical repo key and a generation, separated by a colon.
+  leave_release_token() {
+    local receipt
+    while IFS= read -r receipt; do
+      if [[ "$receipt" == "$REPO_KEY:"* ]]; then
+        printf '%s\n' "${receipt#*:}"
+        return 0
+      fi
+    done <<<"${LEAVE_RELEASE_RECEIPTS:-}"
+    return 0
+  }
+
+  release_leave_prompt() {
+    local token="$1" pending receipt remaining="" rc=0
+    [[ "$token" =~ ^[0-9a-f]{32}$ ]] || return 1
+    pending="$(leave_release_token)"
+    if [[ -n "$pending" && "$pending" != "$token" ]]; then
+      return 1
+    fi
+    if [[ -z "$pending" ]]; then
+      LEAVE_RELEASE_RECEIPTS="${LEAVE_RELEASE_RECEIPTS:+$LEAVE_RELEASE_RECEIPTS$'\n'}$REPO_KEY:$token"
+    fi
+    [[ -n "${PROMPT_RESERVE_SH:-}" ]] || return 1
+    "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave --generation "$token" || rc=$?
+    case "$rc" in
+      0|10)
+        while IFS= read -r receipt; do
+          if [[ -n "$receipt" && "$receipt" != "$REPO_KEY:$token" ]]; then
+            remaining="${remaining:+$remaining$'\n'}$receipt"
+          fi
+        done <<<"$LEAVE_RELEASE_RECEIPTS"
+        LEAVE_RELEASE_RECEIPTS="$remaining"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  ```
+
   Reserve the repo's leave question only when the read says it still needs an answer. Run this in
-  the same Bash context as `read_leave_eligibility`:
+  the same Bash context as `read_leave_eligibility` and `release_leave_prompt`:
 
   <!-- test-anchor: subagent-step7-leave-reservation -->
 
   ```bash
   LEAVE_PROMPT_GENERATION=""
   LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
-  if [[ "${ELICIT_LEAVE_TIME:-false}" == true ]]; then
+  LEAVE_PENDING_RELEASE_TOKEN="$(leave_release_token)"
+  if [[ -n "$LEAVE_PENDING_RELEASE_TOKEN" ]]; then
+    if release_leave_prompt "$LEAVE_PENDING_RELEASE_TOKEN"; then
+      LEAVE_PENDING_RELEASE_TOKEN=""
+    else
+      echo 'Leave question release still pending' >&2
+    fi
+    read_leave_eligibility
+    LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
+  fi
+  if [[ "${ELICIT_LEAVE_TIME:-false}" == true && -n "$LEAVE_PENDING_RELEASE_TOKEN" ]]; then
+    ELICIT_LEAVE_TIME=false
+    LEAVE_PROMPT_PENDING=true
+  elif [[ "${ELICIT_LEAVE_TIME:-false}" == true ]]; then
     if [[ -n "${PROMPT_RESERVE_SH:-}" ]]; then
       LEAVE_PROMPT_GENERATION=$("$PROMPT_RESERVE_SH" claim --repo "$REPO_KEY" --kind leave) \
         || LEAVE_PROMPT_GENERATION=""
@@ -579,8 +636,8 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
       LEAVE_PROMPT_PENDING=true
     fi
     if [[ "$ELICIT_LEAVE_TIME" != true && -n "$LEAVE_PROMPT_GENERATION" ]]; then
-      "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave \
-        --generation "$LEAVE_PROMPT_GENERATION" || echo 'Leave question reservation could not be released' >&2
+      release_leave_prompt "$LEAVE_PROMPT_GENERATION" ||
+        echo 'Leave question release still pending' >&2
       LEAVE_PROMPT_GENERATION=""
     fi
   fi
@@ -591,10 +648,20 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   unrelated read that happens to succeed turn this unreadable decision into permission to launch.
   A later attempt re-reads the published decision. On `ELICIT_LEAVE_TIME`, carry the exact
   `LEAVE_PROMPT_GENERATION` into **`/leave-by --elicit --reservation <token>`** (Step 0e). It owns
-  the menu, normalization and writes. After it returns, including dismissal or failure, release that
-  exact generation with `"$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave
-  --generation "$LEAVE_PROMPT_GENERATION"`. Report a release failure without clearing another
-  generation. Re-run the leave eligibility read before the deadline gate; if it still says the
+  the menu, normalization and writes. After it returns, including dismissal or failure, call
+  `release_leave_prompt "$LEAVE_PROMPT_GENERATION"` with the same repo context. If this is
+  a new shell call, load only the release helper above and carry the exact token and any
+  outstanding receipts into it. Clear `LEAVE_PROMPT_GENERATION`: it can no longer authorize a menu.
+  Carry `LEAVE_RELEASE_RECEIPTS` across tool calls when available. The helper also records
+  the exact abandoned generation before trying to release it. A fresh invocation can reclaim
+  that generation only when the current reservation and repo still match its receipt and owner.
+  Other repos continue independently. If both the receipt write and the release fail, keep
+  carrying the exact token for retry. A fresh invocation without that token or a matching
+  receipt leaves the reservation in place until the owner is proven gone.
+  Report a pending release once per attempt. A later attempt may still use an already
+  published scheduling answer. Never use a release receipt
+  to resume or reopen the old menu. Re-run the leave eligibility read before the deadline gate;
+  if it still says the
   question needs an answer or its state is unreadable, leave this launch queued. Otherwise proceed
   with the published state. Do not parse or write the answer here.
 
