@@ -114,7 +114,8 @@
 #
 # EXIT CODES
 #   0  replaced by another control session, or --once finished
-#   4  usage error, including a cadence at or past the live-desk bound
+#   4  usage error, including a cadence at or past the live-desk bound; or the
+#      queue belongs to another account (issue #2184): one `stopped` line, no retry
 #   (the loop itself never ends on a store failure; the Monitor's own expiry
 #   or TaskStop ends it)
 #
@@ -433,6 +434,20 @@ sys.stdout.write(" ".join(ids))
 '
 }
 
+# dt_owner_stop — a tick refused because the queue belongs to another account
+# (issue #2184) prints one `stopped` line and ends the loop with exit 4: the
+# refusal does not clear on its own, so retrying every cadence only hides it.
+# Any other exit-4 refusal falls through to dt_still_ours.
+dt_owner_stop() {
+  local line
+  line=$(grep -m1 'human-queue: tick: this queue ' "$dt_err" 2>/dev/null || true)
+  if [ -n "$line" ]; then
+    printf 'desk-tick %s stopped: %s\n' "$dt_gen" "${line#human-queue: tick: }"
+    exit 4
+  fi
+  return 0
+}
+
 # dt_still_ours — after a refusal (exit 4), whether this session is still the
 # control session. Prints `replaced` and exits 0 when control-status names
 # another one; returns 0 when it is still ours or cannot tell (the refusal
@@ -638,6 +653,9 @@ dt_cycle() {
   rc=0
   out=$("$dt_cli" tick --session "$dt_session" --interrupts "$dt_rule" 2>"$dt_err") || rc=$?
   if [ "$rc" -eq 4 ]; then
+    # A queue that belongs to another account (issue #2184) never accepts
+    # this desk, so retrying is pointless: stop with one line.
+    dt_owner_stop
     # Refused: most likely another desk registered after step 1. Confirm
     # before stopping, so any other exit-4 cause stays an error line.
     dt_still_ours

@@ -8,6 +8,8 @@
 . "$HQ_BIN_DIR/lib/items.sh"
 # shellcheck source=../lib/secrets.sh
 . "$HQ_BIN_DIR/lib/secrets.sh"
+# shellcheck source=../lib/lifecycle.sh
+. "$HQ_BIN_DIR/lib/lifecycle.sh"
 
 cmd_usage() {
   cat <<'EOF'
@@ -42,7 +44,8 @@ EXIT CODES
   0  ok
   1  unexpected database failure
   4  a missing or invalid session, or a stray argument (before any
-     connection attempt)
+     connection attempt); or the queue belongs to another account (issue #2184:
+     after connecting, nothing written; the line names both accounts)
   5  the session id looks like a secret (before any connection attempt)
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF
@@ -55,6 +58,11 @@ SET LOCAL lock_timeout TO '30s';
 -- is serialized before the following statement rereads and clears its stamp.
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:tick:' || :'hq_schema', 0)) AS hq_tick_locked \gset
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_locked \gset
+SQL
+  # The queue owner check (issue #2184): a desk bound to another account is
+  # refused here, before the control session can be written.
+  hq_sql_owner_guard_open
+  cat <<'SQL'
 WITH prev AS (
   SELECT value FROM state WHERE key = 'control_session'
 ), up AS (
@@ -74,10 +82,11 @@ SELECT 'control session ' || :'hq_session'
        || coalesce(' (replaces ' || (SELECT value FROM prev WHERE value <> :'hq_session') || ')', '');
 SQL
   fi
+  hq_sql_owner_guard_close
 }
 
 cmd_run() {
-  local session="" have=0 json=0 errf out rc
+  local session="" have=0 json=0 errf out rc binding=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -101,15 +110,18 @@ cmd_run() {
   hq_check_text "register-control: the session id" "$session" 200
   hq_refuse_secret "register-control: the session id" "$session"
 
+  hq_binding_arg binding
+
   hq_db_connect
   hq_mktemp errf
   rc=0
-  out=$(hq__register_sql "$json" | hq_db_script -At -v "hq_session=$session" 2>"$errf") || rc=$?
+  out=$(hq__register_sql "$json" | hq_db_script -At -v "hq_session=$session" -v "hq_binding=$binding" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_db_fail "$rc" "$errf" "register-control: nothing was recorded"
   fi
   if [ -z "$out" ]; then
     hq_die_error "register-control: the store returned nothing"
   fi
+  hq_problem_check register-control "$out"
   printf '%s\n' "$out"
 }

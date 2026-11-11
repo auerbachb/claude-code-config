@@ -220,7 +220,12 @@ def event(tool, payload):
 
 
 def store_for(hook):
-    env = dict(os.environ, HUMAN_QUEUE_DATABASE_URL=capture.resolve_url(hook))
+    # The account's queue and binding name, as the capture hook resolves them
+    # (issue #2184): the queue refuses a call whose name is not its owner. An
+    # unbound account raises FailOpen here, as it does for the capture hook.
+    schema, binding = capture.queue_for_this_account()
+    env = dict(os.environ, HUMAN_QUEUE_DATABASE_URL=capture.resolve_url(hook),
+               HUMAN_QUEUE_SCHEMA=schema, HUMAN_QUEUE_BINDING=binding)
     return capture.Store(hook, capture.resolve_cli(), env)
 
 
