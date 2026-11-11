@@ -1,0 +1,119 @@
+<!-- pm-routing:begin -->
+Route `resume:load`. Load config and persisted work for a resume. Continue to resume:fetch after the existing state checks.
+<!-- pm-routing:end -->
+### 1A.1: Load pm-config.md
+
+```bash
+# Probe the config file via the shared parser. IMPORTANT: run the probe as a
+# direct call first, not via `mapfile < <(...)`. With mapfile, `$?` captures
+# mapfile's exit code (always 0 on success) — NOT the script's — so a probe
+# like `mapfile ...; LIST_RC=$?` would silently never see the rc=2
+# (config-missing) signal.
+"$PM_CONFIG_GET" --list >/dev/null 2>&1
+LIST_RC=$?
+```
+
+- If `LIST_RC == 2`: tell the user to run `/pm-handoff` first to bootstrap the config, mark `1A failed (resume config unavailable)`, and finish the invocation.
+- Otherwise: enumerate sections and iterate for bodies:
+
+  ```bash
+  mapfile -t SECTIONS < <("$PM_CONFIG_GET" --list 2>/dev/null)
+  for name in "${SECTIONS[@]}"; do
+    body="$("$PM_CONFIG_GET" --section "$name" 2>/dev/null)"
+    # store (name, body) — same loop as `/pm-handoff` Step 3
+  done
+  ```
+
+### 1A.2: Load in-flight state
+
+```bash
+# Session-wide orchestration state — SCOPED to the invoking repo (issue #687).
+# --session-view projects the whole state file down to THIS repo's `.prs`,
+# `.root_repo`, and the `.active_agents` map entries that belong here; another
+# repo's PRs, and the agents attributable to them, never appear in the default
+# view. Attribution is by `.owner_repo`, else `.pr`: an entry carrying NEITHER
+# is unattributable, so the projection keeps it rather than guessing — treat
+# such an entry as "possibly foreign", not as this repo's. Repo resolution reuses session-state.sh's
+# precedence (--repo / $CLAUDE_SESSION_REPO / cwd origin, per #638). NEVER use
+# `--get .` here — it dumps every repo's state and is the leak this scoping fixes.
+SESSION_VIEW=$("$SESSION_STATE_SH" --session-view 2>/dev/null || echo "NO_SESSION_STATE")
+echo "$SESSION_VIEW"
+
+# Refill pause (issue #823) — read it EXPLICITLY. --session-view lifts only
+# `.prs` and `.root_repo` out of the repo block and then deletes `.repos`, so a
+# repo-scoped `refill` never appears in the projection above. Skipping this read
+# is how a resumed thread silently resumes refilling after the user said stop.
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null)
+REFILL_RC=0
+REFILL_PAUSED=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.paused" 2>/dev/null) || REFILL_RC=$?
+echo "REFILL_PAUSED=${REFILL_PAUSED:-null} REFILL_RC=$REFILL_RC"
+
+# Day-mode posture (Step 2D) — read explicitly for exactly the same reason: it
+# lives under the repo block, which --session-view deletes after lifting `.prs`
+# and `.root_repo`, so it is invisible above. A resumed thread that skips this
+# read cannot tell an armed day loop from a dead one, and reports neither.
+# Keep the exit code: `|| echo null` here would render an unreadable state
+# identical to "no day loop has ever run", and 1A.4 would then report nothing
+# at all about a loop that may still be ticking.
+DAY_RC=0
+DAY_STATE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day") || DAY_RC=$?
+echo "DAY_STATE=${DAY_STATE:-null} DAY_RC=$DAY_RC"
+
+# Per-PR handoff files — read ONLY the ones for PRs in this repo's scope. The
+# handoff filename is still global (issue #655), so two repos at one PR number
+# share a file; gating on the scoped PR set AND verifying each payload's repo
+# bounds that leak on the read side without the rename #655 tracks.
+if [ "$SESSION_VIEW" != "NO_SESSION_STATE" ]; then
+  SCOPED_PRS=$(jq -r '(.prs // {}) | keys[]' <<<"$SESSION_VIEW" 2>/dev/null)
+  CUR_REPO=$(jq -r '.repo // ""' <<<"$SESSION_VIEW" 2>/dev/null)
+else
+  SCOPED_PRS=""
+  CUR_REPO=""
+fi
+found_handoffs=false
+# Read-safe iteration: quoted, one key per line, numeric PR keys only (never
+# word-split an unquoted list into the path below).
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  case "$n" in *[!0-9]*) continue ;; esac
+  # Resolve handoff path: scoped layout takes priority (issue #655); flat fallback for legacy files.
+  or=$([ -f "$HOME/.claude/session-state.json" ] && \
+    jq -r --arg n "$n" '(.repos // {}) | to_entries[] | select(.value.prs[$n].owner_repo?) | .value.prs[$n].owner_repo' \
+    "$HOME/.claude/session-state.json" 2>/dev/null | head -1 || true)
+  if [ -n "$or" ] && [ "$or" != "null" ]; then
+    f="$HOME/.claude/handoffs/${or}/pr-${n}-handoff.json"
+    [ -f "$f" ] || f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  else
+    f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  fi
+  [ -f "$f" ] || continue
+  # If the payload names a DIFFERENT repo than this one, it's the other repo's
+  # handoff colliding on this PR number (#655) — skip it. A null/absent
+  # owner_repo is unknown, not a mismatch, so fall back to the PR-number scope.
+  ho_repo=$(jq -r '.owner_repo // ""' "$f" 2>/dev/null)
+  if [ -n "$ho_repo" ] && [ -n "$CUR_REPO" ] && [ "$ho_repo" != "$CUR_REPO" ]; then
+    continue
+  fi
+  found_handoffs=true
+  echo "--- $f ---"
+  cat "$f"
+done < <(printf '%s\n' "$SCOPED_PRS")
+$found_handoffs || echo "NO_HANDOFF_FILES"
+```
+
+> **Invoking-repo scope (issue #687).** Every default surface of `/pm` — the
+> assignments table, rankings, suggestions, and offered actions — stays in the
+> invoking repo's lane. The scoped read above is where that starts; the GitHub
+> views (`gh pr/issue list`) are already cwd-repo-scoped by `gh`. **Cross-repo
+> reporting is opt-in:** only when the user explicitly asks to see other repos'
+> work, read `session-state.sh --session-view --all-repos` (or `--get .`) — and
+> never *offer or perform* a write action (cleanup, merge, rebase, close)
+> against a PR/issue outside the invoking repo.
+
+Interpret both together, exactly as 3.4's table does: `REFILL_RC=0` with `true` means a human stopped refilling in an earlier turn — it stays paused, and 1A.4 says so in the recovered-state report. `REFILL_RC=0` with `false`/`null`, or `REFILL_RC=3` (no state file ever written), is the default — refill is on. **Any other `REFILL_RC` is unreadable state, not permission:** treat refill as paused and report it that way until the state file is readable again.
+
+Parse any found state into an assignments table:
+
+| PR | Issue | Phase | Reviewer | Last SHA | Notes |
+|----|-------|-------|----------|----------|-------|
+

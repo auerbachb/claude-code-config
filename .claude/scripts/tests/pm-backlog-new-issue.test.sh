@@ -37,7 +37,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.claude/scripts/tests/lib/skill-bash.sh
 . "$TEST_DIR/lib/skill-bash.sh"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)"
-SKILL_MD="$SCRIPTS_DIR/../skills/pm/SKILL.md"
+SKILL_MD="$SCRIPTS_DIR/../skills/pm/modules/rank/fetch.md"
 
 PASS=0
 FAIL=0

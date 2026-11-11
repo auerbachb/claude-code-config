@@ -62,7 +62,7 @@ The startup/rule and schema baselines remain coordinated with Issues [#1158](htt
 | Skill | Entry guidance | Phase/branch inventory | Existing deterministic entry points | References loaded at their phase |
 |---|---|---|---|---|
 | `/issue-maker` | Capture boundary, classifier, resume contract | Session, reflect, dedup, file, postfile, chain, update, retract, export, requested handoff | `dispatch-module.sh`, `resolve-log.sh`, `set-log.sh`, `issue-file.sh`, `issue-dedup.sh` | Tier/estimate for drafting; duplicate policy for dedup; chip contract only for explicit handoff/export |
-| `/pm` | Intent, authority, tooling, and execution boundary | Day preconditions, arming, tick, teardown, recovery, reactive park, and pre-emptive park/probe are dispatched separately. Ranking, resume and orchestration remain in the entry for the next slices. | `scripts/dispatch-module.sh`, `active-work-cap.sh`, `issue-claim.sh` | Output templates when reporting, review/cap policy when routing work, and day references at the selected phase |
+| `/pm` | Intent, authority, tooling, and execution boundary | Day preconditions, arming, tick, teardown, recovery, reactive park, and pre-emptive park/probe are dispatched separately. Resume and rank use selected load, fetch, score and presentation phases. Orchestration stays in the entry until the next slice. | `scripts/dispatch-module.sh`, `active-work-cap.sh`, `issue-claim.sh` | Output templates when reporting, review/cap policy when routing work, and day references at the selected phase |
 | `/subagent` | Fit test, claims, orchestration boundaries | Planning, task prompt, execution, review, merge/handoff | `issue-claim.sh`, `issue-deps.sh`, existing review helpers | Phase guardrails at dispatch; reviewer contracts at review |
 | `/wrap` | PR target, authorship, merge authority | Discovery, gate verification, recovery, merge/sync, follow-ups, lessons | `merge-gate.sh`, `ci-status.sh`, `ac-checkboxes.sh`, `main-sync.sh` | Report templates when requested; duplicate policy for follow-up filing |
 | `/pr-monitor-and-manage` | Fleet selection, authority, stop criteria | Discovery, polling, triage, repair, completion | `pr-state.sh`, `polling-state-gate.sh`, `merge-gate.sh` | Polling commands during observation; reviewer/escalation policy when actionable |
@@ -82,7 +82,13 @@ For each slice, inventory content as (a) entry guidance, (b) branch/phase module
 
 Ordinary cold start and resume use the entry and existing procedures. An active day route resolves one module path at a time. Arming checks path availability before claiming work. Recovery uses the persisted day generation and park/wake identity and reads the matching phase. The 2D instructions retain their order and behavior. Three relative Markdown prefixes changed so the original link targets remain reachable from the modules.
 
-On baseline `475769d3`, the entry went from 38,107 to 24,561 words and from 258,458 to 165,186 bytes. The parity checker verifies the exact baseline with the seven modules. Fixture traces cover the installed symlink, unset HOME fallback, absent module, invalid phase and day/park/cadence behavior. The source measurements describe the instructions selected by the fixture. Runtime loader and token measurements remain part of the final PM increment.
+On baseline `475769d3`, the entry went from 38,107 to 24,573 words and from 258,458 to 165,258 bytes. The parity checker verifies the exact baseline with the seven modules. Fixture traces cover the installed symlink, unset HOME fallback, absent module, invalid phase and day/park/cadence behavior. The source measurements describe the instructions selected by the fixture. Runtime loader and token measurements remain part of the final PM increment.
+
+### PM ranking and resume slice (#2171)
+
+Resume loads three phases. Ranking loads four phases as it reaches them. A saved-queue refill uses the existing shared priority and ownership checks and reads window fit only when it applies. A bounded rescan additionally loads rank fetch and score. A passive status question reads no rank or resume phase. Ranking-only requests exit before the orchestration loop.
+
+The entry moves from 24,573 to 16,724 words and from 165,258 to 112,487 bytes on baseline `cccba0cb`. The parity check covers the line multiset and ordered phase contents, including previously extracted day modules. Its one ordered relocation puts the original pause and scope read before scoring as the block requires. The dispatcher fixture verifies the documented phase paths, including installed resolution. These measurements count source text.
 
 ## Behavior-preservation map
 

@@ -3,7 +3,11 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  printf '%s\n' 'Usage: dispatch-module.sh day preconditions|arm|tick|teardown|recovery|park-reactive|park-preemptive|probe-wake' >&2
+  printf '%s\n' \
+    'Usage: dispatch-module.sh day preconditions|arm|tick|teardown|recovery|park-reactive|park-preemptive|probe-wake' \
+    '       dispatch-module.sh resume load|fetch|present' \
+    '       dispatch-module.sh rank load|fetch|score|present' \
+    '       dispatch-module.sh shared priority|window-fit|ownership' >&2
   exit 2
 fi
 
@@ -15,6 +19,16 @@ case "$1:$2" in
   day:recovery) module=day-recovery.md ;;
   day:park-reactive) module=day-park-reactive.md ;;
   day:park-preemptive|day:probe-wake) module=day-park-preemptive.md ;;
+  resume:load) module=resume/load.md ;;
+  resume:fetch) module=resume/fetch.md ;;
+  resume:present) module=resume/present.md ;;
+  rank:load) module=rank/load.md ;;
+  rank:fetch) module=rank/fetch.md ;;
+  rank:score) module=rank/score.md ;;
+  rank:present) module=rank/present.md ;;
+  shared:priority) module=shared/priority.md ;;
+  shared:window-fit) module=shared/window-fit.md ;;
+  shared:ownership) module=shared/ownership.md ;;
   *) printf 'dispatch-module.sh: unsupported operation/phase: %s:%s\n' "$1" "$2" >&2; exit 2 ;;
 esac
 
