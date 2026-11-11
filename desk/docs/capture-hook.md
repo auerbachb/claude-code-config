@@ -80,6 +80,13 @@ existing entries. Set `<installed-desk>` to the absolute path of your trusted
 `desk` install. Configure the tool's own instructions to emit the block when
 it needs a Decision from the desk.
 
+External adapters use the database URL resolved by the hook and the schema
+in the tool process's `HUMAN_QUEUE_SCHEMA` environment variable, which defaults
+to `public`. Claude's account bindings apply to the Claude desk and capture
+entry points. Before enabling an adapter, verify that its URL and schema match
+the live desk's queue. For a custom schema, set it explicitly in the tool's
+environment. The source-account nickname on the Decision is attribution only.
+
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks#stop): add a command
   hook to `Stop` in the profile's `hooks.json` and approve it in Codex.
   Command: `python3 "<installed-desk>/hooks/external_capture.py" codex`;
