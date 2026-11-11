@@ -194,6 +194,8 @@ Then the same hint line as `open`, and remember R-2 as the item on screen.
 
   It prints the ids it marked, one per line. Reply in one line: `Marked 3 reviewed: R-12, R-13, R-14.`, or with none, `Nothing synced today is waiting.` Flagged items keep their flag (their follow-up is still open), and an item synced on an earlier day stays in the view.
 
+Keep the IDs returned by the latest successful review action in this conversation for `quiz` (#1772). For several individually reviewed IDs, include each successful ID. An empty batch clears the previous batch.
+
 ## `flag R-<n> "what to follow up"`
 
 The note is the operator's words: one line, at most 200 characters (longer → ask for a shorter one in one line, store nothing). It goes through a quoted here-document, never inside the command's quotes:

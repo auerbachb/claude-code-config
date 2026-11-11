@@ -36,6 +36,8 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `todo.md` | The operator's own to-do layer on items: `tag`, `untag`, `note`, `unnote`, `snooze … until\|for …`, `unsnooze`, `mine D-<n> 1-5\|off`, and `my list` (by personal priority, then age; snoozed items hidden until their time). Not `/pm`'s priorities | #1769 |
 | `checkin.md` | The morning check-in (the `morning` event, `check-in`, or a new plan with none today): hours at the desk, energy, plans, and yesterday's measured pace set today's reading budget; `budget?` | #1770 |
 | `export.md` | Paper: `export` (after a sweep, that sweep's set), `export decisions`, `export reviews` (`level 1`, `today`), `export D-43 R-9 …`, any of them `… to <path>.pdf`: a numbered PDF whose numbers are a set's, Markdown when no PDF renderer is installed | #1759 |
+| `import.md` | Paper replies: `import <scan.pdf>`, preview before confirming marked answers and comments | #1764 |
+| `quiz.md` | `quiz` after reviewing a batch, an opt-in comprehension check from cached summaries | #1772 |
 
 ## The prelude (every Bash call)
 
@@ -134,6 +136,8 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
 | `desk-tick <GEN> released` | A known hold ended. If step 8's initial backlog read still waits, do that read once, even when nothing changed in the store; apply the existing held/longform rules and shown-item deduplication. If it was already read, do nothing |
+| `desk-tick <GEN> mobile D-43 D-44` | An [opt-in mobile reply](mobile.md) is already stored. Re-read each exact ID with `get --json`; while it is still `answered`, follow `decisions.md`'s existing first wake path for the current return address. Send only the pointer. |
+| `desk-tick <GEN> mobile-unavailable` | Say once that the phone inbox could not sync. Keep the desktop desk and its normal wake flow running. |
 | `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
 | `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep", then "Friday" (the weekly report's offer); during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
 | `desk-tick <GEN> morning` | The first tick of the day (from 04:00 until `eod_time`), once a day. Load `checkin.md` and show the card; during a hold, or while a long-form prompt waits, keep it and show it after (`checkin.md`, "Held like a Decision") |
@@ -154,6 +158,8 @@ Read each operator message in this order:
    **A drill-down verb** as the whole message — `outline R-<n>`, `open R-<n>` followed by one or more node ids (`open R-<n> 2.3`, `open R-<n> 2 T1`; `open R-<n>` alone stays the Reviews view's level 2), or `ask R-<n>: <question>` → load `drilldown.md`. Also at any time, and nothing goes to the store.
    **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`** → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
    **An export verb** as the whole message — `export` (after a sweep: its set), `export decisions`, `export reviews` (`level 1`, `today`), or `export D-<n> R-<n> …`, any of them ending `to <path>.pdf` — → load `export.md` (#1759). Any time, the same way.
+   **`import <scan.pdf>`** (also `/inbox import <scan.pdf>`) → load `import.md`. While a scan confirmation waits, route only an explicit confirmation or correction for that preview to the import workflow.
+   **`quiz`** → load `quiz.md`. Route replies to the active quiz menu before ordinary typed Decision replies. Continue to process the desk's other explicit verbs and tick events.
    **`report`** (`report <YYYY-MM-DD>` for the week holding that day), as the whole message → load `attention.md`: the weekly attention report (#1771). Any time, like `history`, and nothing goes to the store.
    **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
    **A to-do verb** as the whole message — `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, or `mine` followed by an item id (`D-<n>` or `R-<n>`), or `my list` (`my list all`, `my list snoozed`, `my list tag <word>`) → load `todo.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after, and a to-do verb is never an answer.

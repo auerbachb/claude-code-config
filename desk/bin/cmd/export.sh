@@ -63,8 +63,8 @@ LAYOUT (ISO 2145)
   `n.1  A. Yes (Recommended)`, `n.2  B. No`, the default and when it applies,
   the operator's own priority, tags, and note when it carries them (#1769),
   its link, and a blank answer line (an item answered since: its answer).
-  A footer with the export time (from headless Chrome on every page, with
-  page numbers; from pandoc or cupsfilter once, at the end).
+  Pandoc and headless Chrome print the export-time footer and page numbers
+  on every page. Cupsfilter prints the footer at the end.
 
 RENDERERS
   The first that produces a PDF: pandoc (the Markdown), headless Google
@@ -524,9 +524,13 @@ cmd_run() {
        || ! printf '%s' "$data" | hq_export_jq -r 'export_html' > "$HQ_EXPORT_WORK/export.html"; then
       hq__export_fail "$data" "render the batch"
     fi
+    if ! printf '%s' "$data" | hq_export_jq -r 'export_markdown(false)' > "$HQ_EXPORT_WORK/pandoc.md" \
+       || ! printf '%s' "$data" | hq_export_jq -r 'export_tex_header' > "$HQ_EXPORT_WORK/export-header.tex"; then
+      hq__export_fail "$data" "render the pandoc batch"
+    fi
     path=$(hq__export_abs "$out")
-    if hq_export_pdf renderer "$HQ_EXPORT_WORK/export.md" "$HQ_EXPORT_WORK/export.txt" \
-         "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK"; then
+    if hq_export_pdf renderer "$HQ_EXPORT_WORK/pandoc.md" "$HQ_EXPORT_WORK/export.txt" \
+         "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK" "$HQ_EXPORT_WORK/export-header.tex"; then
       format=pdf
       hq__export_settle "$HQ_EXPORT_WORK/export.pdf" "$path" \
         || hq__export_fail "$data" "write the PDF"

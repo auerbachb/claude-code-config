@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# covers: .claude/scripts/fixpr-reviewer-triggers.sh
 # /fixpr Step 3b under a review tier, and its unchanged legacy order (issue #1749).
 # catalog: tests — Runs `fixpr-reviewer-triggers.sh` (/fixpr Step 3b) against fixture policies — ci-only posts no reviewer comment after a push, ci+codeant-one-round posts one CodeAnt invitation, full waits for green CI and posts CodeAnt and BugBot only, and a policy-free repo keeps the legacy four-trigger order
 #
