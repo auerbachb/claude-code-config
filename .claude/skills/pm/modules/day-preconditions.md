@@ -97,11 +97,62 @@ PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; PARK_RESUME_GENERATION="$DAY_VALUE"; RESUME_GENERATION_RC="$DAY_RC"
 ```
 
-Validate nullable timestamp/counter/identifier types before raw rendering; actual JSON null alone is absence. The string "null", wrong types and invalid timestamps are unreadable, so stop before normal arming. Apply 3.4's exit-code table to every field derived from this snapshot, including `PARK_GENERATION_RC` (an unreadable generation stops recovery): `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry `6` (a lock timeout; `handoff-files.md`) once at the snapshot boundary, then fail closed; other errors fail closed immediately: report the read failure and stop before normal arming. Do not treat an unreadable `parked_until` as "no park pending" — a lock timeout or parse failure can hide an active park, allowing Steps 1 and 2 to dispatch while the account limit is still active. If `PARKED_UNTIL` is non-null, non-JSON-`"null"`, and in the future (`date -u -d "$PARKED_UNTIL" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" '+%s'` is greater than `$(date -u +%s)` — **`-u` on the BSD fallback too**: without it macOS parses the `Z` timestamp as local time, so an ET machine reads every park as four hours longer than it is): the session restarted while a park was active. Only re-arm the limit-wake Monitor if `PARK_LIMIT_KIND == "rolling_window"` — weekly parks cannot be auto-woken because no in-session Monitor can outlast days. If limit_kind is readable and not "rolling_window" (or is readable and non-"rolling_window"), do not re-arm; print one line (`Session restarted during weekly-cap park; manual resume required when window reopens`) and stop. If limit_kind is unreadable (LIMIT_KIND_RC non-zero and non-3), fail closed: do not re-arm and print one line naming the read failure. For a confirmed rolling_window park: use 2D.5’s **Recover the captured wake** path, then **stop without running Steps 1 and 2**. Resolve the wake shape and ownership before arming anything. **Which wake** depends on how the park was recorded — use the snapshotted `PARK_LIMIT_CAUSE`, `PARK_LIMIT_FIRES`, and `PARK_CLAIM_TOKEN` (next paragraph, #1596), with the same exit-code table (`0` value, `3` no state file, anything else unreadable → fail closed and re-arm nothing): a null/absent `limit_probe_fires_remaining` selects 2D.6’s remaining-time one-shot; a `limit_cause == "preemptive"` park with positive fires remaining selects 2D.7’s probe **with that count**, not a fresh bound. Report automatic recovery only after the captured wake is published. Zero fires left means the bound was already spent — stay parked, manual resume, no re-arm. **`-1` is the third value** (#1445): the park stands but no probe bound is in force and no reset time is known — a claim whose record never completed, or a wake `/pause` / `/pause-resume` deliberately stopped. Handle it exactly as zero — stay parked, re-arm nothing, one line (`Day loop parked (no usable wake bound) — resume manually with /pause-resume`) — never as the null branch above, since re-arming a sleep-until-reset one-shot against a fabricated deadline is precisely the misread `-1` exists to end. Otherwise the board is parked and will resume when the wake fires.
+Classify that same snapshot before ordinary arming. A failed read can hide an
+active park. The snapshot already retries a lock timeout once. The clock is
+needed only when the route depends on a deadline.
 
-**An in-progress claim is a state, not an anomaly — use the snapshotted `PARK_CLAIM_TOKEN` too (#1596).** Apply the same exit-code table (`0` value, `3` no state file, anything else unreadable → fail closed and re-arm nothing). A **non-null token with a null `limit_cause`** is 2D.7 Step 1's claim caught mid-assembly: Step 1 persisted the bound and kind without a completed park. A completed park has a cause and a null token. An unfinished claim or leftover token does not authorize a replacement wake: keep the record and require manual `/pause-resume`.
+<!-- test-anchor: pm-day-park-route -->
 
-**A spent bound outlives its own deadline — check it before the expiry shortcut.** A pre-emptive park with an unknown reset sets `parked_until` to exactly `cadence x fires` ahead, which is the same instant the last probe fires. So the moment the bound is spent, `parked_until` is in the *past* — and an expiry-first test reads that as "the park resolved". It did not: `PROBE=exhausted` leaves the park in place, awaiting a manual `/pause-resume`, with the execution gate still closed. Arming normally there erases the manual-resume state and starts a loop whose every launch the gate then blocks — a live board that cannot dispatch and never says why. So when `limit_cause == "preemptive"` and `limit_probe_fires_remaining` reads `0` — or `-1`, whose park has no bound to spend and no deadline worth trusting either — stay parked **regardless of `parked_until`**: re-arm nothing, print one line (`Day loop parked (probe bound spent) — resume manually with /pause-resume`, or the `no usable wake bound` wording above for `-1`, where nothing was spent), and stop recovery. Only with those cases excluded does the expiry shortcut apply: if `parked_until` is in the past or null, the park resolved or never existed; continue arming normally.
+```bash
+pm_day_park_route() {
+  local rc now deadline
+  for rc in "$PARK_RC" "$LIMIT_KIND_RC" "$LIMIT_CAUSE_RC" "$LIMIT_FIRES_RC" \
+      "$CLAIM_TOKEN_RC" "$PARK_GENERATION_RC" "$RESUME_GENERATION_RC"; do
+    case "$rc" in 0|3) ;; *) echo manual:unreadable; return ;; esac
+  done
+
+  if [ "$PARK_CLAIM_TOKEN" != null ]; then echo manual:unfinished; return; fi
+  case "$PARK_LIMIT_FIRES" in
+    0) echo manual:spent; return ;;
+    -1) echo manual:no-bound; return ;;
+    null) ;;
+    *)
+      if [ "$PARK_LIMIT_CAUSE" = preemptive ] && [ "$PARK_LIMIT_KIND" = rolling_window ] \
+          && [ "$PARKED_UNTIL" != null ]; then
+        echo recover:probe
+      else
+        echo manual:unverified
+      fi
+      return ;;
+  esac
+
+  if [ "$PARKED_UNTIL" = null ]; then echo normal; return; fi
+  if ! now=$(date -u +%s) || ! [[ "$now" =~ ^[0-9]+$ ]] ||
+     ! deadline=$(date -u -d "$PARKED_UNTIL" +%s 2>/dev/null \
+       || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" +%s 2>/dev/null) ||
+     ! [[ "$deadline" =~ ^-?[0-9]+$ ]]; then
+    echo manual:unreadable
+  elif [ "$deadline" -le "$now" ]; then
+    echo normal
+  elif [ "$PARK_LIMIT_KIND" = rolling_window ]; then
+    echo recover:oneshot
+  else
+    echo manual:unverified
+  fi
+}
+PARK_ROUTE=$(pm_day_park_route)
+printf 'PARK_ROUTE=%s\n' "$PARK_ROUTE"
+```
+
+Only `normal` continues to the day claim and Steps 1 and 2. For either
+`recover:*` route, use 2D.5's **Recover the captured wake** with the same
+`DAY_SNAPSHOT`, then stop this invocation without running Steps 1 and 2.
+Promise automatic resume only after the wake is published. For `manual:*`,
+retain the park, arm nothing, and name the reason and `/pause-resume` in one
+line. A saved positive preemptive bound holds through the nominal deadline:
+wind-down can take time before the sleep-first probe starts. An unfinished
+claim, spent bound, or missing bound sentinel also takes precedence over
+deadline expiry.
 
 **(c) Settle the race before arming: publish, then re-read.** (a) and (b) are read-then-write across separate `session-state.sh` calls, so each call is locked but the pair is not: `/pm day` and `/pr-monitor-and-manage` starting within the same moment can each read the other as clear and both arm. Close it without inventing a lease — write your own claim **first**, then re-read theirs:
 
