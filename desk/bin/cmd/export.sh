@@ -524,7 +524,7 @@ cmd_run() {
        || ! printf '%s' "$data" | hq_export_jq -r 'export_html' > "$HQ_EXPORT_WORK/export.html"; then
       hq__export_fail "$data" "render the batch"
     fi
-    if ! printf '%s' "$data" | hq_export_jq -r 'export_markdown(false)' > "$HQ_EXPORT_WORK/pandoc.md" \
+    if ! printf '%s' "$data" | hq_export_jq -r 'export_pandoc_markdown' > "$HQ_EXPORT_WORK/pandoc.md" \
        || ! printf '%s' "$data" | hq_export_jq -r 'export_tex_header' > "$HQ_EXPORT_WORK/export-header.tex"; then
       hq__export_fail "$data" "render the pandoc batch"
     fi

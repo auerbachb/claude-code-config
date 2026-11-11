@@ -181,11 +181,18 @@ HEADER=$(ejq export_tex_header)
 check_contains "TeX header carries the export footer" "$HEADER" \
   'Exported Thu 2026-10-08 17:31 ET \textperiodcentered{} set 31 \textperiodcentered{} 5 items'
 check_absent "TeX header omits item text" "$HEADER" 'Retry the flaky upload test'
-check_absent "pandoc Markdown omits the duplicate footer" "$(ejq 'export_markdown(false)')" 'Exported Thu 2026-10-08 17:31 ET'
+check_absent "pandoc Markdown omits the duplicate footer" "$(ejq export_pandoc_markdown)" 'Exported Thu 2026-10-08 17:31 ET'
 check "TeX footer escapes metacharacters once" \
   "$(ejq '"\\{}#$%&_^~·\n" | ex_tex_esc')" \
   '\textbackslash{}\{\}\#\$\%\&\_\textasciicircum{}\textasciitilde{}\textperiodcentered{} '
 
+
+check "pandoc Markdown keeps the inline writing rules short" \
+  "$(ejq export_pandoc_markdown | sed -nE 's/^(Answer:|Reviewed .*why:) (_+)$/\2/p' | sort -u)" \
+  '____________________________'
+check "fallback Markdown keeps the full inline writing rules" \
+  "$(printf '%s\n' "$MD" | sed -nE 's/^(Answer:|Reviewed .*why:) (_+)$/\2/p' | sort -u)" \
+  '______________________________________________________________'
 
 check "md: the title" "$(printf '%s\n' "$MD" | sed -n 1p)" "# Desk export · Set 31"
 check "md: the header line" "$(printf '%s\n' "$MD" | sed -n 3p)" \
@@ -489,7 +496,7 @@ fi
 if [ -n "$PANDOC_TEST" ] && [ -n "$PDFTOTEXT" ]; then
   jq '.items |= [range(4) as $copy | .[] | .n += 5 * $copy]
       | .count = (.items | length)' "$FIX/batch.json" > "$TMP/multipage.json"
-  ejq 'export_markdown(false)' "$TMP/multipage.json" > "$TMP/r.md"
+  ejq export_pandoc_markdown "$TMP/multipage.json" > "$TMP/r.md"
   ejq export_tex_header "$TMP/multipage.json" > "$TMP/footer header.tex"
   check "real pandoc: a PDF" \
     "$(render HUMAN_QUEUE_EXPORT_RENDERER=pandoc HUMAN_QUEUE_PANDOC="$PANDOC_TEST" TEST_TEX_HEADER="$TMP/footer header.tex")" "0 pandoc | "
@@ -498,10 +505,40 @@ if [ -n "$PANDOC_TEST" ] && [ -n "$PDFTOTEXT" ]; then
     if [ "$pages" -ge 3 ]; then ok "real pandoc: at least three pages"; else bad "real pandoc: expected at least three pages"; fi
     for ((page=1; page<=pages; page++)); do
       footer=$("$PDFTOTEXT" -f "$page" -l "$page" -layout "$TMP/w/out.pdf" - | grep -F 'Exported Thu')
-      check_contains "real pandoc: footer metadata on page $page" "$footer" '20 items'
+      check_contains "real pandoc: export time on page $page" "$footer" 'Exported Thu 2026-10-08 17:31 ET'
+      check_contains "real pandoc: item count on page $page" "$footer" '20 items'
       check_contains "real pandoc: set on page $page" "$footer" 'set 31'
-      check_contains "real pandoc: numbering on page $page" "$footer" "Page $page of $pages"
+      check "real pandoc: numbering on page $page" \
+        "$(printf '%s\n' "$footer" | sed -nE 's/.*(Page [0-9]+ of [0-9]+)[[:space:]]*$/\1/p')" \
+        "Page $page of $pages"
     done
+  fi
+  if "$PDFTOTEXT" -bbox "$TMP/w/out.pdf" "$TMP/words.html"; then
+    bounds=$(python3 - "$TMP/words.html" <<'PYBOUNDS'
+import sys
+import xml.etree.ElementTree as ET
+
+def x_max(word):
+    return float(word.get("xMax"))
+
+kinds = set()
+for page in ET.parse(sys.argv[1]).iterfind(".//{*}page"):
+    words = page.findall("{*}word")
+    page_label = next(word for word in words if word.text == "Page")
+    margin = max(x_max(word) for word in words if word.get("yMin") == page_label.get("yMin"))
+    for word in words:
+        if word.text and len(word.text) >= 8 and set(word.text) == {"_"}:
+            if x_max(word) > margin + 0.1:
+                raise SystemExit("writing rule extends past the right text margin")
+            labels = {other.text for other in words if other.get("yMin") == word.get("yMin")}
+            if "Answer:" in labels:
+                kinds.add("Decision")
+            elif "Flag," in labels:
+                kinds.add("Review")
+print(",".join(sorted(kinds)))
+PYBOUNDS
+)
+    check "real pandoc: both types of writing lines fit" "$bounds" 'Decision,Review'
   fi
   printf '%s' "$MD" > "$TMP/r.md"
 else
