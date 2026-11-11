@@ -92,6 +92,13 @@ if [ -n "$ONLY_FILE" ]; then
     exit 2
   fi
   if grep -Fxq 'ALL' <<<"$SELECTION"; then SEL_ALL=1; fi
+  # The selector ends every selection with its terminator. A file without it was cut
+  # short by a failed write, so run every module rather than trust a partial list.
+  if ! grep -Fxq '# end-of-selection' <<<"$SELECTION"; then
+    echo "::warning::run-python-tests.sh: --only-file has no '# end-of-selection' terminator (truncated?): running ALL" >&2
+    SEL_ALL=1
+    SEL_REASON="truncated selection file: full run"
+  fi
 fi
 
 # A module runs when no selection was given, the selection is ALL, or it is listed.

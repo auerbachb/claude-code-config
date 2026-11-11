@@ -144,6 +144,13 @@ def check(doc):
         elif not (isinstance(on, dict) and isinstance(on.get("push"), dict)
                   and on["push"].get("branches") == ["main"]):
             errors.append("push trigger must be limited to branches: [main]")
+        # A paths/paths-ignore filter on either event can skip the main-push backstop or a
+        # pull_request run while every other assertion still passes.
+        if isinstance(on, dict):
+            for ev in ("push", "pull_request"):
+                spec = on.get(ev)
+                if isinstance(spec, dict) and ("paths" in spec or "paths-ignore" in spec):
+                    errors.append(f"{ev} trigger carries paths/paths-ignore: the run can be filtered out")
 
     for job_id, job in (doc.get("jobs") or {}).items():
         if isinstance(job, dict) and "concurrency" in job:
@@ -226,6 +233,15 @@ def set_cip(value):
     return lambda d: d["concurrency"].__setitem__("cancel-in-progress", value)
 
 
+def add_event_filter(event, key):
+    def fn(d):
+        trig = "on" if "on" in d else True
+        spec = d[trig].get(event) or {}
+        spec[key] = ["docs/**"]
+        d[trig][event] = spec
+    return fn
+
+
 def add_push_all_branches(d):
     key = "on" if "on" in d else True
     d[key] = {"pull_request": {}, "push": {}}
@@ -251,6 +267,9 @@ NEGATIVES = [
      set_group("${{ github.workflow }}-${{ github.event.pull_request.number }}")),
     ("unknown token in group", set_group("${{ github.workflow }}-${{ github.actor }}")),
     ("push trigger on every branch", add_push_all_branches),
+    ("push trigger with a paths filter", add_event_filter("push", "paths")),
+    ("push trigger with a paths-ignore filter", add_event_filter("push", "paths-ignore")),
+    ("pull_request trigger with a paths filter", add_event_filter("pull_request", "paths")),
     ("job-level concurrency", job_conc),
 ]
 

@@ -128,6 +128,29 @@ else
   bad "helper called by a hook under-selected (a.test.sh skipped): $out"
 fi
 
+# Basename is not coverage (PR #2154 review): a new code file whose basename appears only in an
+# unrelated suite's text, with no literal, declared, or caller link. The selector must answer ALL,
+# never that unrelated suite alone (which would skip the suite that really depends on the file).
+N="$TMP/basename"
+make_fixture "$N"
+printf '# unrelated: mentions newhook.sh in passing\nexit 0\n' > "$N/.github/scripts/tests/unrelated.test.sh"
+out="$(select_for "$N" .claude/hooks/newhook.sh)"
+if is_all "$out"; then
+  ok "a code path matched only by another suite's basename selects ALL"
+else
+  bad "basename-only match selected a partial list: $out"
+fi
+
+# A failed write of the selection (PR #2154 review): stdout on a full device must not exit 0.
+# The workflow turns a non-zero selector exit into ALL.
+printf '.claude/hooks/a.sh\n' | bash "$F/.github/scripts/select-hook-tests.sh" --event pull_request >&- 2>/dev/null
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  ok "a failed write of the selection exits non-zero (the workflow then runs ALL)"
+else
+  bad "selector exited 0 after a failed write of its output"
+fi
+
 out="$(select_for "$F" .claude/scripts/x.sh)"
 if is_all "$out"; then
   ok "a path matched only by a suite's glob selects ALL (a glob is not proof of coverage)"
@@ -171,7 +194,7 @@ else
   bad "no --only-file changed behaviour: $json"
 fi
 
-printf '# reason: test\nALL\n' > "$TMP/sel-all"
+printf '# reason: test\nALL\n# end-of-selection\n' > "$TMP/sel-all"
 json="$(bash "$RUN" --only-file "$TMP/sel-all" --json 2>/dev/null)"
 if printf '%s' "$json" | jq -e '.total == 5 and .failed == 1' >/dev/null; then
   ok "selection ALL runs every suite"
@@ -179,7 +202,7 @@ else
   bad "selection ALL did not run every suite: $json"
 fi
 
-printf '# reason: b only\n.claude/hooks/tests/b.test.sh\n' > "$TMP/sel-b"
+printf '# reason: b only\n.claude/hooks/tests/b.test.sh\n# end-of-selection\n' > "$TMP/sel-b"
 bash "$RUN" --only-file "$TMP/sel-b" --json >"$TMP/out-b" 2>/dev/null
 rc=$?
 if [ "$rc" -eq 0 ] && jq -e '.total == 1 and .failed == 0 and .skipped == 4 and .selection == "b only"' "$TMP/out-b" >/dev/null; then
@@ -188,7 +211,7 @@ else
   bad "selected subset ran the wrong set (rc=$rc): $(cat "$TMP/out-b")"
 fi
 
-printf '# reason: c\n.claude/hooks/tests/c.test.sh\n' > "$TMP/sel-c"
+printf '# reason: c\n.claude/hooks/tests/c.test.sh\n# end-of-selection\n' > "$TMP/sel-c"
 json="$(bash "$RUN" --only-file "$TMP/sel-c" --json 2>/dev/null)"
 rc=$?
 if [ "$rc" -eq 1 ] && printf '%s' "$json" | jq -e '.total == 1 and .failed == 1' >/dev/null; then
@@ -197,7 +220,7 @@ else
   bad "selected failing suite did not fail the run (rc=$rc): $json"
 fi
 
-printf '# reason: nothing touches a suite\n' > "$TMP/sel-none"
+printf '# reason: nothing touches a suite\n# end-of-selection\n' > "$TMP/sel-none"
 json="$(bash "$RUN" --only-file "$TMP/sel-none" --json 2>/dev/null)"
 rc=$?
 human="$(bash "$RUN" --only-file "$TMP/sel-none" 2>&1)"
@@ -206,6 +229,16 @@ if [ "$rc" -eq 0 ] && printf '%s' "$json" | jq -e '.ok == true and .total == 0' 
   ok "an empty selection exits 0 and says so in the summary"
 else
   bad "empty selection was not an explained zero-run (rc=$rc): $json"
+fi
+
+# A selection cut short by a failed write has a header but no terminator: it must run ALL.
+printf '# reason: cut short\n.claude/hooks/tests/b.test.sh\n' > "$TMP/sel-trunc"
+json="$(bash "$RUN" --only-file "$TMP/sel-trunc" --json 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$json" | jq -e '.total == 5 and .failed == 1' >/dev/null; then
+  ok "a selection without the end-of-selection terminator is cut short and runs ALL"
+else
+  bad "truncated selection did not run ALL (rc=$rc): $json"
 fi
 
 bash "$RUN" --only-file "$TMP/does-not-exist" >/dev/null 2>&1
@@ -229,7 +262,15 @@ if command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     bad "python no-selection run changed: $json"
   fi
 
-  printf '# reason: hook\ntests/test_a.py\n' > "$TMP/py-a"
+  printf '# reason: hook\ntests/test_a.py\n# end-of-selection\n' > "$TMP/py-a"
+  printf '# reason: cut short\ntests/test_a.py\n' > "$TMP/py-trunc"
+  json="$(bash "$PYRUN" --only-file "$TMP/py-trunc" --json 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -eq 0 ] && printf '%s' "$json" | jq -e '.ok == true and .modules == 2' >/dev/null; then
+    ok "python: a selection without the terminator is cut short and runs every module"
+  else
+    bad "python truncated selection did not run ALL (rc=$rc): $json"
+  fi
   json="$(bash "$PYRUN" --only-file "$TMP/py-a" --json 2>/dev/null)"
   rc=$?
   if [ "$rc" -eq 0 ] && printf '%s' "$json" | jq -e '.ok == true and .modules == 1' >/dev/null; then

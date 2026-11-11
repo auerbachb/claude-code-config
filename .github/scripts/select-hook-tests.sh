@@ -13,7 +13,9 @@
 #         <sha>...HEAD in this repo.
 # Output (stdout): one `# reason: ...` line, then EITHER the single line `ALL` OR one
 #         suite path per line (bash *.test.sh suites and python tests/test_*.py
-#         modules). The runners ignore `#` lines.
+#         modules), then the terminator line `# end-of-selection`. A selection without
+#         the terminator was cut short; the runners treat it as ALL. Other `#` lines
+#         are ignored by the runners.
 #
 # FAIL TOWARD ALL. The selector answers ALL, never a partial list, when:
 #   - the event is not pull_request (a push to main is the full backstop run);
@@ -35,12 +37,12 @@
 #             checks a given file, so an unnamed code path fails toward ALL;
 #   covers:   an optional `# covers: <path> <path> ...` line adds paths the text
 #             cannot spell out (for example, paths assembled from variables);
-#   basename: a changed file also matches a suite whose text contains that file's
-#             basename. This over-selects rather than under-selects, and catches
-#             paths built at runtime;
 #   self:     a suite always depends on its own file.
-# A new suite needs no registration: its literal path mentions are its dependencies.
-# If it reads a file only through a constructed path, add a `# covers:` line for it.
+# A basename mention is never coverage: a suite that names a code file's basename in
+# unrelated text does not depend on that file. A code path with no derived, declared,
+# or self match fails toward ALL. A new suite needs no registration: its literal path
+# mentions are its dependencies. If it reads a file only through a constructed path, add
+# a `# covers:` line for it.
 #
 # Docs allow-list: a *.md file outside any tests/ or fixtures/ directory never forces
 # ALL. Rules and references still select the suites that read them as fixtures,
@@ -55,14 +57,16 @@
 #   select-hook-tests.sh [--event <name>] [--base <sha>] < changed-paths
 #   select-hook-tests.sh --help
 #
-# Exit codes: 0 a selection was printed (ALL or a list); 1 internal error (callers
-# treat any non-zero exit as ALL); 2 usage error.
+# Exit codes: 0 a selection was printed in full (ALL or a list); 1 internal error or a
+# failed write of the output (callers treat any non-zero exit as ALL); 2 usage error.
 set -uo pipefail
 shopt -s nullglob
 
+END_MARK='# end-of-selection'
 emit_all() {
-  printf '# reason: %s\n' "$1"
-  printf 'ALL\n'
+  printf '# reason: %s\n' "$1" || exit 1
+  printf 'ALL\n' || exit 1
+  printf '%s\n' "$END_MARK" || exit 1
 }
 
 EVENT=""
@@ -204,13 +208,11 @@ while IFS= read -r P; do
     length($2) > 0 && ($2 == p || (d == 1 && index(p, $2 "/") == 1 && ($3 == "G" || $3 == "D"))) { print $1 }
   ' "$PAIRS" >> "$HIT"
   base="${P##*/}"
-  while IFS= read -r S; do
-    if [ "$S" = "$P" ]; then
-      printf '%s\n' "$S" >> "$HIT"
-    elif [ "$DOC" -eq 0 ] && grep -Fq -- "$base" "$S" 2>/dev/null; then
-      printf '%s\n' "$S" >> "$HIT"
-    fi
-  done < "$DISC"
+  # A suite always depends on its own file. A basename mention in another suite is NOT
+  # coverage (see header): with no literal, declared, or self match the path is unmapped.
+  if grep -Fxq -- "$P" "$DISC"; then
+    printf '%s\n' "$P" >> "$HIT" || { emit_all "could not record selection: full run"; exit 1; }
+  fi
   # Transitive dependencies (fail toward ALL). A suite names only what its own text names,
   # so a non-suite code file that mentions this path (a hook sourcing a helper, a script
   # invoking a script) can carry the path into suites that never name it. Any such caller
@@ -241,7 +243,7 @@ while IFS= read -r P; do
     UNMAPPED="$P"
     break
   fi
-  cat "$HIT" >> "$SEL"
+  cat "$HIT" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
 done < "$CHANGED"
 
 if [ -n "$UNMAPPED" ]; then
@@ -251,7 +253,7 @@ fi
 
 # Python modules run in full whenever a non-docs path changed (see header).
 if [ "$HAS_CODE" -eq 1 ]; then
-  grep -E '^tests/test_.*\.py$' "$DISC" >> "$SEL"
+  grep -E '^tests/test_.*\.py$' "$DISC" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
 fi
 
 SORTED="$(LC_ALL=C sort -u "$SEL" | sed '/^$/d')" || { emit_all "sort failed: full run"; exit 1; }
@@ -259,8 +261,9 @@ NSEL=0
 if [ -n "$SORTED" ]; then
   NSEL="$(printf '%s\n' "$SORTED" | awk 'END { print NR }')"
 fi
-printf '# reason: %s changed path(s), %s suite(s) selected\n' "$NCHANGED" "$NSEL"
+printf '# reason: %s changed path(s), %s suite(s) selected\n' "$NCHANGED" "$NSEL" || exit 1
 if [ -n "$SORTED" ]; then
-  printf '%s\n' "$SORTED"
+  printf '%s\n' "$SORTED" || exit 1
 fi
+printf '%s\n' "$END_MARK" || exit 1
 exit 0

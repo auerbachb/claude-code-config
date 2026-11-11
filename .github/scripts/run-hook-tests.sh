@@ -33,7 +33,8 @@
 # --only-file <file> (issue #2153): the file is the output of
 # .github/scripts/select-hook-tests.sh. A line `ALL` runs every suite, exactly as with no
 # argument. Otherwise only the suite paths listed in the file run; `# ...` lines are
-# comments. An empty selection runs nothing and exits 0 with a summary that says so.
+# comments. A file without the selector's `# end-of-selection` terminator was cut short
+# and runs ALL. An empty selection runs nothing and exits 0 with a summary that says so.
 # An unreadable file is a usage error (exit 2), never a silent full or empty run.
 #
 # --json (issue #782): emits the compact result contract from
@@ -103,6 +104,13 @@ if [ -n "$ONLY_FILE" ]; then
     exit 2
   fi
   if grep -Fxq 'ALL' <<<"$SELECTION"; then SEL_ALL=1; fi
+  # The selector ends every selection with its terminator. A file without it was cut
+  # short by a failed write, so run every suite rather than trust a partial list.
+  if ! grep -Fxq '# end-of-selection' <<<"$SELECTION"; then
+    echo "::warning::run-hook-tests.sh: --only-file has no '# end-of-selection' terminator (truncated?): running ALL" >&2
+    SEL_ALL=1
+    SEL_REASON="truncated selection file: full run"
+  fi
 fi
 
 # A suite runs when no selection was given, the selection is ALL, or it is listed.
