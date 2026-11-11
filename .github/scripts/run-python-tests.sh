@@ -87,17 +87,17 @@ if [ -n "$ONLY_FILE" ]; then
   SEL_REASON="$(printf '%s\n' "$SELECTION" | awk '/^# reason: / { sub(/^# reason: /, ""); print; exit }')"
   # The selector always writes a `# reason:` header. Its absence means an empty or
   # truncated file, which must never pass as an explained zero-run.
-  if ! printf '%s\n' "$SELECTION" | grep -q '^# reason: '; then
+  if ! grep -q '^# reason: ' <<<"$SELECTION"; then
     echo "::error::run-python-tests.sh: --only-file has no '# reason:' header (empty or truncated?): $ONLY_FILE" >&2
     exit 2
   fi
-  if printf '%s\n' "$SELECTION" | grep -Fxq 'ALL'; then SEL_ALL=1; fi
+  if grep -Fxq 'ALL' <<<"$SELECTION"; then SEL_ALL=1; fi
 fi
 
 # A module runs when no selection was given, the selection is ALL, or it is listed.
 is_selected() {
   if [ "$SELECT_MODE" -eq 0 ] || [ "$SEL_ALL" -eq 1 ]; then return 0; fi
-  printf '%s\n' "$SELECTION" | grep -Fxq -- "$1"
+  grep -Fxq -- "$1" <<<"$SELECTION"
 }
 
 # Resolve to the repo root regardless of caller cwd so the glob below resolves.

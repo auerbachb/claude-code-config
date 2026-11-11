@@ -64,8 +64,8 @@ select_for() {
   printf '%s\n' "$@" | bash "$d/.github/scripts/select-hook-tests.sh"
 }
 
-has_line() { printf '%s\n' "$1" | grep -Fxq -- "$2"; }
-is_all()   { printf '%s\n' "$1" | grep -Fxq 'ALL'; }
+has_line() { grep -Fxq -- "$2" <<<"$1"; }
+is_all()   { grep -Fxq 'ALL' <<<"$1"; }
 suite_count() { printf '%s\n' "$1" | awk '!/^#/ && NF { n++ } END { print n + 0 }'; }
 
 F="$TMP/main"
@@ -112,6 +112,22 @@ if is_all "$out"; then ok "runner change selects ALL"; else bad "runner change d
 out="$(select_for "$F" .claude/scripts/new-thing.sh)"
 if is_all "$out"; then ok "unmapped new path selects ALL"; else bad "unmapped path did not select ALL: $out"; fi
 
+# Transitive dependency (PR #2154 review): hook a.sh sources helper.sh, and a.test.sh names
+# only a.sh. An unrelated suite mentions helper.sh in passing, which used to suppress ALL and
+# select only that unrelated suite, so a regression in helper.sh merged green. The helper
+# change must select ALL.
+T="$TMP/transitive"
+make_fixture "$T"
+echo '. .claude/scripts/helper.sh' >> "$T/.claude/hooks/a.sh"
+echo ': helper' > "$T/.claude/scripts/helper.sh"
+printf '# mentions .claude/scripts/helper.sh in passing\nexit 0\n' > "$T/.github/scripts/tests/mentions-helper.test.sh"
+out="$(select_for "$T" .claude/scripts/helper.sh)"
+if is_all "$out"; then
+  ok "a helper sourced by a hook selects ALL, not only the suite that mentions it in passing"
+else
+  bad "helper called by a hook under-selected (a.test.sh skipped): $out"
+fi
+
 out="$(select_for "$F" .claude/scripts/x.sh)"
 if is_all "$out"; then
   ok "a path matched only by a suite's glob selects ALL (a glob is not proof of coverage)"
@@ -138,7 +154,7 @@ B="$TMP/broken"
 make_fixture "$B"
 printf '# covers: .claude/hooks/missing.sh\nexit 0\n' > "$B/.claude/hooks/tests/broken.test.sh"
 out="$(select_for "$B" .claude/hooks/b.sh)"
-if is_all "$out" && printf '%s\n' "$out" | grep -Fq 'broken mapping'; then
+if is_all "$out" && grep -Fq 'broken mapping' <<<"$out"; then
   ok "a broken # covers: mapping selects ALL and says why"
 else
   bad "broken # covers: mapping did not fail toward ALL: $out"
@@ -186,7 +202,7 @@ json="$(bash "$RUN" --only-file "$TMP/sel-none" --json 2>/dev/null)"
 rc=$?
 human="$(bash "$RUN" --only-file "$TMP/sel-none" 2>&1)"
 if [ "$rc" -eq 0 ] && printf '%s' "$json" | jq -e '.ok == true and .total == 0' >/dev/null \
-   && printf '%s\n' "$human" | grep -Fq 'No bash test suites selected'; then
+   && grep -Fq 'No bash test suites selected' <<<"$human"; then
   ok "an empty selection exits 0 and says so in the summary"
 else
   bad "empty selection was not an explained zero-run (rc=$rc): $json"

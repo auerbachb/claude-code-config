@@ -190,6 +190,7 @@ fi
 
 SEL="$TMP/selected"
 HIT="$TMP/hit"
+CALLERS="$TMP/callers"
 : > "$SEL"
 HAS_CODE=0
 UNMAPPED=""
@@ -206,10 +207,36 @@ while IFS= read -r P; do
   while IFS= read -r S; do
     if [ "$S" = "$P" ]; then
       printf '%s\n' "$S" >> "$HIT"
-    elif grep -Fq -- "$base" "$S" 2>/dev/null; then
+    elif [ "$DOC" -eq 0 ] && grep -Fq -- "$base" "$S" 2>/dev/null; then
       printf '%s\n' "$S" >> "$HIT"
     fi
   done < "$DISC"
+  # Transitive dependencies (fail toward ALL). A suite names only what its own text names,
+  # so a non-suite code file that mentions this path (a hook sourcing a helper, a script
+  # invoking a script) can carry the path into suites that never name it. Any such caller
+  # forces ALL, even when some suite already names the path. Docs and JSON execute nothing
+  # and are ignored. A failed scan forces ALL too.
+  if [ "$DOC" -eq 0 ] && ! grep -Fxq -- "$P" "$DISC"; then
+    grep -rIlF --exclude-dir=.git --exclude-dir=worktrees --exclude-dir=node_modules -- "$base" . > "$CALLERS" 2>/dev/null
+    CALL_RC=$?
+    if [ "$CALL_RC" -gt 1 ]; then
+      UNMAPPED="$P (caller scan failed)"
+      break
+    fi
+    CALLER=""
+    while IFS= read -r C; do
+      C="${C#./}"
+      case "$C" in *.md|*.json) continue ;; esac
+      [ "$C" = "$P" ] && continue
+      grep -Fxq -- "$C" "$DISC" && continue
+      CALLER="$C"
+      break
+    done < "$CALLERS"
+    if [ -n "$CALLER" ]; then
+      UNMAPPED="$P (called by $CALLER)"
+      break
+    fi
+  fi
   if [ "$DOC" -eq 0 ] && [ ! -s "$HIT" ]; then
     UNMAPPED="$P"
     break
