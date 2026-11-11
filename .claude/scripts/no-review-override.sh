@@ -114,6 +114,21 @@ JQ_DEFS='
           | if ($s | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
             then ($s | fromdateiso8601) else null end end;
   def failure_notice: test("usage limit|couldn.t run|could not run|rate limit|no PR Review subscription|review limit reached"; "i");
+  def issue_comment_verdicts($h):
+    [ .[]?
+        | select((.user.login // "") == "greptile-apps[bot]")
+        | select((.body // "") | test("Last reviewed commit"; "i"))
+        | select((.body // "") | contains($h) or contains($h[0:7]))
+        | {reviewer: .user.login, kind: "greptile_summary"} ]
+    + [ .[]?
+        | select((.user.login // "") == "codeant-ai[bot]")
+        | (.body // "")
+        | scan("<!--[[:space:]]*codeant-review-status:([\\s\\S]*?)-->")
+        | (if type == "array" then (.[0] // "") else . end)
+        | (fromjson? // empty)
+        | (if type == "array" then .[] else empty end)
+        | select(type == "object" and .done == true and (tostring | contains($h)))
+        | {reviewer: "codeant-ai[bot]", kind: "codeant_run_record"} ];
 '
 
 emit() { printf '%s\n' "$1"; exit 0; }
@@ -152,20 +167,7 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
       | select((.user.login // "") as $l | $bots | index($l))
       | select((.commit_id // "") == $h or (.original_commit_id // "") == $h)
       | {reviewer: .user.login, kind: "inline_comment"} ]
-  + [ (.issue_comments // [])[]?
-      | select((.user.login // "") == "greptile-apps[bot]")
-      | select((.body // "") | test("Last reviewed commit"; "i"))
-      | select((.body // "") | contains($h) or contains($h[0:7]))
-      | {reviewer: .user.login, kind: "greptile_summary"} ]
-  + [ (.issue_comments // [])[]?
-      | select((.user.login // "") == "codeant-ai[bot]")
-      | (.body // "")
-      | scan("<!--[[:space:]]*codeant-review-status:([\\s\\S]*?)-->")
-      | (if type == "array" then (.[0] // "") else . end)
-      | (fromjson? // empty)
-      | (if type == "array" then .[] else empty end)
-      | select(type == "object" and .done == true and (tostring | contains($h)))
-      | {reviewer: "codeant-ai[bot]", kind: "codeant_run_record"} ]
+  + ((.issue_comments // []) | issue_comment_verdicts($h))
   | unique')
 
 # Capability-failure notices are read per bot so a refused run's neutral
@@ -316,8 +318,8 @@ ANCHOR_ERR=$(printf '%s' "$ANCHOR" | jq -r '.error // ""')
 PR_AUTHOR=$(printf '%s' "$PULL_JSON" | jq -er '.user.login | select(type == "string" and test("[^[:space:]]"))' 2>/dev/null) \
   || ineligible "anchor_unavailable: PR author unreadable"
 PUSH_T=$(printf '%s' "$ANCHOR" | jq -c '.t')
-# The gate's initial comment snapshot is still coupled to the verdict inventory.
-# Refresh only the anchor input here, after the slower HEAD-anchor reads.
+# Read after the slower HEAD-anchor calls. Preserve the gate's initial verdict
+# inventory and check fresh comments separately for a late exact-HEAD verdict.
 REQUEST_PAGES=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/comments?per_page=100" 2>/dev/null) \
   || ineligible "anchor_unavailable: comment list unreadable"
 REQUEST_COMMENTS=$(printf '%s' "$REQUEST_PAGES" | jq -ces '
@@ -328,6 +330,13 @@ REQUEST_COMMENTS=$(printf '%s' "$REQUEST_PAGES" | jq -ces '
                (.body | type == "string")) then .
     else error("unreadable comment") end' 2>/dev/null) \
   || ineligible "anchor_unavailable: comment list unreadable"
+LATE_VERDICTS=$(printf '%s' "$REQUEST_COMMENTS" | jq -ce --arg h "$HEAD_SHA_P" "$JQ_DEFS"'
+  issue_comment_verdicts($h) | unique' 2>/dev/null) \
+  || ineligible "anchor_unavailable: fresh review verdicts unreadable"
+if [[ "$LATE_VERDICTS" != '[]' ]]; then
+  emit "$(printf '%s' "$OUT" | jq -c --argjson verdicts "$LATE_VERDICTS" '
+    .reason = "verdict_on_head" | .verdicts_on_head = $verdicts')"
+fi
 REQUEST=$(printf '%s' "$REQUEST_COMMENTS" | jq -c --arg author "$PR_AUTHOR" --argjson base "$PUSH_T" "$JQ_DEFS"'
   [ .[]
     | select((.user.login // "") == $author)

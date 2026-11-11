@@ -160,6 +160,20 @@ run_gate "$GREEN_11"
 check_eq "false" "$(j .met)" "late request keeps gate closed"
 check_eq "review_request" "$(j .no_review_override.anchor_source)" "late request replaces push anchor"
 check_eq "window_running" "$(j .no_review_override.reason)" "late request starts its own wait"
+
+rm -f "$FAKE_COMMENT_SEQUENCE"
+FAKE_LATE_COMMENTS=$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 30)" '
+  [{user:{login:"codeant-ai[bot]"},created_at:$t,
+    body:("<!-- codeant-review-status:" + ([{done:true,headSha:$sha}] | tojson) + "-->")}]')
+run_gate "$GREEN_11"
+check_eq "false" "$(j .met)" "late exact reviewer verdict keeps gate closed"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "late exact reviewer verdict holds the waiver"
+
+rm -f "$FAKE_COMMENT_SEQUENCE"
+FAKE_LATE_COMMENTS=$(jq -cn --arg t "$(ago 30)" '
+  [{user:{login:"codeant-ai[bot]"},created_at:$t,body:"The review is queued."}]')
+run_gate "$GREEN_11"
+check_eq "true" "$(j .no_review_override.applied)" "a fresh bot status without a verdict leaves the existing override available"
 unset FAKE_COMMENT_SEQUENCE FAKE_LATE_COMMENTS
 
 echo "=== TP1: green CI, no bot review, HEAD 11 min ago -> met via override + ledger row ==="
