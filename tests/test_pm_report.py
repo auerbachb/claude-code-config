@@ -120,8 +120,16 @@ class PMReportTest(unittest.TestCase):
             self.assertFalse(json.loads(execute(gate))["due"])
             env["CLAUDE_CODE_SESSION_ID"] = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
             self.assertTrue(json.loads(execute(gate))["due"])
+            env["PM_REPORT_SH"] = ""
+            missing = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", gate],
+                                     env=env, cwd=folder, text=True, capture_output=True, check=True)
+            self.assertFalse(missing.stdout.strip())
+            self.assertIn("PM report helper missing", missing.stderr)
             config.write_text("## Reporting\nreport_every_min: 0\n", encoding="utf-8")
-            self.assertEqual(execute(gate), "")
+            off = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", gate],
+                                 env=env, cwd=folder, text=True, capture_output=True, check=True)
+            self.assertFalse(off.stdout.strip())
+            self.assertFalse(off.stderr)
 
     def test_cli_reports_invalid_config_without_a_render_signal(self):
         result = subprocess.run([sys.executable, str(SCRIPT)],

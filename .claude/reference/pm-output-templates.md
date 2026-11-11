@@ -148,8 +148,15 @@ without emitting a startup report.
 REPORT_RESULT=''
 REPORT_BEFORE=''
 REPORT_PATH=''
-if [[ -n "${PM_CONFIG_GET:-}" && -n "${PM_REPORT_SH:-}" && -n "${SESSION_STATE_SH:-}" ]] \
-  && REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) \
+REPORT_CONFIG=''
+if [[ -n "${PM_CONFIG_GET:-}" ]]; then
+  REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) || REPORT_CONFIG=''
+fi
+if [[ -z "${PM_REPORT_SH:-}" ]] &&
+  grep -Eq '^[[:blank:]]*report_every_min[[:blank:]]*:[[:blank:]]*0*[1-9][0-9]*[[:blank:]]*$' <<< "$REPORT_CONFIG"; then
+  printf '%s\n' 'DEGRADED: PM report helper missing. Scheduled reports are paused and explicit /board remains available.' >&2
+fi
+if [[ -n "$REPORT_CONFIG" && -n "${PM_REPORT_SH:-}" && -n "${SESSION_STATE_SH:-}" ]] \
   && REPORT_MIN=$(printf '%s' "$REPORT_CONFIG" | "$PM_REPORT_SH" --config-only) \
   && [[ "$REPORT_MIN" != 0 ]]; then
   REPORT_REPO=$("$SESSION_STATE_SH" --repo-key) || REPORT_REPO=''
