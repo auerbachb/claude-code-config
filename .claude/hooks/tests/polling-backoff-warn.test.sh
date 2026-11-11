@@ -2,7 +2,7 @@
 # Tests for polling-backoff-warn.sh (issue #794).
 #
 # Verifies the base-relative stable-state backoff ladder:
-#   digest_streak >= 3 → widen to max(15m, 3×base); streak >= 9 → stop the poll
+#   digest_streak >= 3 → widen; known frozen state at streak >= 9 → stop
 # Covers multiple base cadences, the "already applied" no-op guard, and the
 # user_input blocker stop. Never touches real session state.
 set -euo pipefail
@@ -122,7 +122,7 @@ ok "delete already applied → no re-emit from widen branch"
 
 # ── 10b. Monitor path: no lifecycle record yet → STOP fires, and the marker
 #         /babysit-pr T-END writes suppresses the second one.
-write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
+write_state "$PR" '{"digest_streak":9,"blocker_kind":"has-recoverable-blockers","babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP on a Monitor poll with no last_cron_action"
 grep -q "TaskStop" <<<"$ctx" || fail "stop advisory must name TaskStop, got: $ctx"
@@ -131,7 +131,7 @@ grep -q "monitor_generation" <<<"$ctx" || fail "stop advisory must clear the mat
 grep -q "atomically clear" <<<"$ctx" || fail "stop advisory must clear the Monitor identity atomically, got: $ctx"
 ok "Monitor poll (no lifecycle record) → STOP emitted with exact teardown"
 
-write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
+write_state "$PR" '{"digest_streak":9,"blocker_kind":"has-recoverable-blockers","babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "the stop marker /babysit-pr T-END writes must suppress a second STOP, got: $ctx"
 ok "Monitor stop marker suppresses the repeat STOP"
@@ -154,22 +154,35 @@ grep -q "atomically persist the new monitor_task_id + monitor_generation + effec
 ok "widen advisory (streak 3..8) says keep running, never stop"
 
 # ── 11. Streak >= 9 → stop the poll ──────────────────────────────────────────
-write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
+write_state "$PR" '{"digest_streak":9,"blocker_kind":"has-recoverable-blockers","babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message at streak=9"
 grep -q "Stop the poll" <<<"$ctx" || fail "expected a stop-the-poll instruction, got: $ctx"
 grep -q "TaskStop" <<<"$ctx" || fail "stop message should name TaskStop for Monitor-backed polls, got: $ctx"
 ok "streak>=9 → STOP the recorded Monitor task"
 
+# A current pending classification beats a stale recovery marker.
+for state in   '{"digest_streak":11,"blocker_kind":"ci_external","babysit":{"active":true,"classification":"waiting-on-bots"}}'   '{"digest_streak":11,"blocker_kind":"waiting-on-bots","babysit":{"active":true}}'   '{"digest_streak":11,"babysit":{"active":true}}'; do
+  write_state "$PR" "$state"
+  ctx="$(run_hook "$PR" | context_of)"
+  [[ "$ctx" == WIDEN* ]] || fail "pending or legacy gate wait should keep polling, got: $ctx"
+done
+ok "streak >=9 with pending CI/review or missing classification keeps polling"
+
+write_state "$PR" '{"digest_streak":11,"babysit":{"active":true,"classification":"waiting-on-bots"},"last_cron_action":{"type":"update","interval":"15m"}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -z "$ctx" ]] || fail "pending gate already widened, got repeat advice: $ctx"
+ok "unchanged wait at the widened cadence remains silent"
+
 # ── 12. blocker_kind=user_input → stop immediately (any streak) ──────────────
-write_state "$PR" '{"digest_streak":1,"blocker_kind":"user_input","babysit":{"cadence_base_minutes":5}}'
+write_state "$PR" '{"digest_streak":1,"blocker_kind":"user_input","babysit":{"active":true,"classification":"waiting-on-bots","cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message on user_input even at streak=1"
 grep -q "Stop the poll" <<<"$ctx" || fail "expected a stop-the-poll instruction in user_input stop, got: $ctx"
 ok "blocker_kind=user_input → STOP the poll regardless of streak"
 
 # ── 13. Stop branch "already applied" guard ───────────────────────────────────
-write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
+write_state "$PR" '{"digest_streak":9,"blocker_kind":"has-recoverable-blockers","babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "expected no re-emit on stop branch when delete already applied, got: $ctx"
 ok "stop branch: stop already applied → no re-emit"

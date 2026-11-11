@@ -62,8 +62,8 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   'if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi' \
   'babysit-pr must derive the effective cadence before persisting or re-arming it'
 require_text .claude/skills/babysit-pr/SKILL.md \
-  ".cadence_effective_minutes=\$cadence | .stop_requested=false | .cadence_transition=false" \
-  'babysit-pr must publish replacement identity with its effective cadence'
+  ".armed_review_deadline=\$deadline | .stop_requested=false | .cadence_transition=false" \
+  'babysit-pr must publish its armed review deadline with replacement identity'
 require_text .claude/skills/babysit-pr/SKILL.md \
   '--monitor-generation $MONITOR_GENERATION' \
   'babysit-pr Monitor events must carry their arm generation'
@@ -100,6 +100,13 @@ require_text .claude/hooks/polling-backoff-warn.sh \
 require_text .claude/hooks/polling-backoff-warn.sh \
   'atomically persist the new monitor_task_id + monitor_generation + effective cadence' \
   'backoff widen guidance must publish replacement identity and cadence atomically'
+
+require_text .claude/rules/scheduling-reliability.md 'keep polling pending CI/review' \
+  'the loaded backoff rule must keep a pending gate watch alive'
+require_text .claude/rules/scheduling-reliability.md 'Cap the next tick at `eligible_at`' \
+  'the loaded backoff rule must preserve the exact review deadline'
+require_text .claude/rules/scheduling-reliability.md 'The advisory hook sees Bash calls only' \
+  'the loaded rule must describe the hook visibility limit'
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'

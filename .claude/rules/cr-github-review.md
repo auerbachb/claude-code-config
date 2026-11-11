@@ -40,7 +40,7 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (tier-aware repos: only what `review-triggers-allowed.sh` allows).
 
-**Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
+**Keep polling while CI or review is pending.** Apply `scheduling-reliability.md` backoff and `cr-merge-gate.md` for merge readiness. After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
 
 ### Reviewer escalation gate (MANDATORY per cycle)
 

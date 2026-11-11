@@ -54,7 +54,7 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
 
 ## Stable-State Backoff
 
-Hash each tick's `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 (`/pm day` pauses resumably instead) or on `blocker_kind == "user_input"`. Resume at base cadence after a user message or a changed digest. Enforced by `polling-backoff-warn.sh`. Backoff never reaches the ceiling watch — it widens or stops the poll; the watch is a `Monitor`.
+Hash each tick's `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (exclude free text). Widen at ≥3 to `max(15m, 3×base)`. At ≥9, keep polling pending CI/review, stop known frozen PRs, and pause `/pm day` resumably. Stop on user input required. Cap the next tick at `eligible_at` while `window_running`. Resume base cadence on progress. The advisory hook sees Bash calls only. Ceiling watches stay separate.
 
 ## Failure Recovery
 
