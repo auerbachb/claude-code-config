@@ -372,9 +372,20 @@ total=$n
 
 # --list (issue #2207): print the suites this invocation would run, pool first then serial, one
 # "<kind> <path>" line each, and exit without running anything. The shard test uses it.
+# With --json, stdout stays pure JSON: one {"pool":[...],"serial":[...]} object instead.
 if [ "$LIST_ONLY" -eq 1 ]; then
-  for s in ${POOL_SLOTS[@]+"${POOL_SLOTS[@]}"}; do printf 'pool %s\n' "${SUITE_PATH[$s]}"; done
-  for s in ${SERIAL_SLOTS[@]+"${SERIAL_SLOTS[@]}"}; do printf 'serial %s\n' "${SUITE_PATH[$s]}"; done
+  LIST_LINES="$(
+    for s in ${POOL_SLOTS[@]+"${POOL_SLOTS[@]}"}; do printf 'pool %s\n' "${SUITE_PATH[$s]}"; done
+    for s in ${SERIAL_SLOTS[@]+"${SERIAL_SLOTS[@]}"}; do printf 'serial %s\n' "${SUITE_PATH[$s]}"; done
+  )"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s' "$LIST_LINES" | jq -Rnc '
+      [inputs | select(length > 0) | capture("^(?<kind>pool|serial) (?<path>.*)$")]
+      | {pool: [.[] | select(.kind == "pool") | .path], serial: [.[] | select(.kind == "serial") | .path]}' \
+      || { echo "run-hook-tests: cannot render the suite list as JSON" >&2; exit 2; }
+  elif [ -n "$LIST_LINES" ]; then
+    printf '%s\n' "$LIST_LINES"
+  fi
   exit 0
 fi
 

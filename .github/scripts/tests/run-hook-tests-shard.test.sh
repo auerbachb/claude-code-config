@@ -46,6 +46,13 @@ check "serial entries in the shards equal the unsharded serial count" '[ "$(( $(
 check "pool entries in the shards equal the unsharded pool count" '[ "$(( $(grep -c "^pool " "$TMP/s1") + $(grep -c "^pool " "$TMP/s2") ))" -eq "$(grep -c "^pool " "$TMP/all")" ]'
 
 # --shard 1/1 is the default.
+# --json --list keeps stdout pure JSON, with the same entries as the plain list.
+bash "$RUNNER" --json --list --shard 1/2 > "$TMP/s1.json" 2>/dev/null; RCJ=$?
+check "--json --list exits 0" '[ "$RCJ" -eq 0 ]'
+check "--json --list stdout is one JSON object" 'jq -e "type == \"object\" and (.pool | type == \"array\") and (.serial | type == \"array\")" "$TMP/s1.json" >/dev/null'
+jq -r '(.pool[] | "pool " + .), (.serial[] | "serial " + .)' "$TMP/s1.json" > "$TMP/s1.fromjson" 2>/dev/null
+check "--json --list names the same suites as the plain list" 'cmp -s "$TMP/s1.fromjson" "$TMP/s1"'
+
 bash "$RUNNER" --list --shard 1/1 > "$TMP/one" 2>/dev/null
 check "--shard 1/1 equals the default list" 'cmp -s "$TMP/one" "$TMP/all"'
 
