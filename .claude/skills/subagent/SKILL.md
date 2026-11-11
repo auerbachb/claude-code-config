@@ -562,20 +562,40 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   <!-- test-anchor: subagent-step7-leave-release -->
 
   ```bash
-  # Carry a failed release separately from the token that authorizes a menu.
-  # The receipt is only usable by this repo and this live owner.
+  # Keep one release receipt per repo, separate from the active menu token.
+  # Each line is a canonical repo key and a generation, separated by a colon.
+  leave_release_token() {
+    local receipt
+    while IFS= read -r receipt; do
+      if [[ "$receipt" == "$REPO_KEY:"* ]]; then
+        printf '%s\n' "${receipt#*:}"
+        return 0
+      fi
+    done <<<"${LEAVE_RELEASE_RECEIPTS:-}"
+    return 0
+  }
+
   release_leave_prompt() {
-    local token="$1" rc=0
+    local token="$1" pending receipt remaining="" rc=0
     [[ "$token" =~ ^[0-9a-f]{32}$ ]] || return 1
-    if [[ -n "${LEAVE_RELEASE_RECEIPT:-}" &&
-          "$LEAVE_RELEASE_RECEIPT" != "$REPO_KEY:$token" ]]; then
+    pending="$(leave_release_token)"
+    if [[ -n "$pending" && "$pending" != "$token" ]]; then
       return 1
     fi
-    LEAVE_RELEASE_RECEIPT="$REPO_KEY:$token"
+    if [[ -z "$pending" ]]; then
+      LEAVE_RELEASE_RECEIPTS="${LEAVE_RELEASE_RECEIPTS:+$LEAVE_RELEASE_RECEIPTS$'\n'}$REPO_KEY:$token"
+    fi
     [[ -n "${PROMPT_RESERVE_SH:-}" ]] || return 1
     "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave --generation "$token" || rc=$?
     case "$rc" in
-      0|10) LEAVE_RELEASE_RECEIPT=""; return 0 ;;
+      0|10)
+        while IFS= read -r receipt; do
+          if [[ -n "$receipt" && "$receipt" != "$REPO_KEY:$token" ]]; then
+            remaining="${remaining:+$remaining$'\n'}$receipt"
+          fi
+        done <<<"$LEAVE_RELEASE_RECEIPTS"
+        LEAVE_RELEASE_RECEIPTS="$remaining"
+        ;;
       *) return 1 ;;
     esac
   }
@@ -589,13 +609,17 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   ```bash
   LEAVE_PROMPT_GENERATION=""
   LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
-  if [[ "${LEAVE_RELEASE_RECEIPT:-}" == "$REPO_KEY:"* ]]; then
-    release_leave_prompt "${LEAVE_RELEASE_RECEIPT#*:}" ||
+  LEAVE_PENDING_RELEASE_TOKEN="$(leave_release_token)"
+  if [[ -n "$LEAVE_PENDING_RELEASE_TOKEN" ]]; then
+    if release_leave_prompt "$LEAVE_PENDING_RELEASE_TOKEN"; then
+      LEAVE_PENDING_RELEASE_TOKEN=""
+    else
       echo 'Leave question release still pending' >&2
+    fi
     read_leave_eligibility
     LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
   fi
-  if [[ "${ELICIT_LEAVE_TIME:-false}" == true && -n "${LEAVE_RELEASE_RECEIPT:-}" ]]; then
+  if [[ "${ELICIT_LEAVE_TIME:-false}" == true && -n "$LEAVE_PENDING_RELEASE_TOKEN" ]]; then
     ELICIT_LEAVE_TIME=false
     LEAVE_PROMPT_PENDING=true
   elif [[ "${ELICIT_LEAVE_TIME:-false}" == true ]]; then
@@ -627,11 +651,11 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   the menu, normalization and writes. After it returns, including dismissal or failure, call
   `release_leave_prompt "$LEAVE_PROMPT_GENERATION"` with the same repo context. If this is
   a new shell call, load only the release helper above and carry the exact token and any
-  outstanding receipt into it. Clear `LEAVE_PROMPT_GENERATION`: it can no longer authorize a menu.
-  Carry any nonempty
-  `LEAVE_RELEASE_RECEIPT` with this repo's orchestration state across tool calls and continuation.
-  Report a pending release once per attempt. A later attempt retries that receipt before a fresh
-  claim; it may still use an already published scheduling answer. Never use a release receipt
+  outstanding receipts into it. Clear `LEAVE_PROMPT_GENERATION`: it can no longer authorize a menu.
+  Carry `LEAVE_RELEASE_RECEIPTS` across tool calls and continuation. Each repo retries its own
+  receipt before a fresh claim, while other repos continue independently.
+  Report a pending release once per attempt. A later attempt may still use an already
+  published scheduling answer. Never use a release receipt
   to resume or reopen the old menu. Re-run the leave eligibility read before the deadline gate;
   if it still says the
   question needs an answer or its state is unreadable, leave this launch queued. Otherwise proceed

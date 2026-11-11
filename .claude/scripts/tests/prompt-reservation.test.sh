@@ -267,20 +267,29 @@ RELEASE
 chmod +x "$tmp/release-helper/session-state.sh"
 release_helper="$tmp/release-helper/prompt-reservation.sh"
 release_gate_fixture() {
-  local saved_token saved_receipt
+  local saved_token saved_receipt other_token
   export FAKE_OWNER="$owner1"
   REPO_KEY=org/retained; ATTENDED=true
   PROMPT_RESERVE_SH="$release_helper"
   SESSION_STATE_SH="$tmp/transient-state"
   export READ_CASE=reread READ_MARKER="$tmp/release-read-marker" RELEASE_MODE=timeout
-  unset LEAVE_RELEASE_RECEIPT
+  unset LEAVE_RELEASE_RECEIPTS
   source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
   saved_token="$(read_slot org/retained leave | jq -r .generation)"
   [[ "$saved_token" =~ ^[0-9a-f]{32}$ ]] || return 1
   saved_receipt="org/retained:$saved_token"
-  check "$saved_receipt" "$LEAVE_RELEASE_RECEIPT" 'ambiguous release retains the exact repo and token'
+  check "$saved_receipt" "$LEAVE_RELEASE_RECEIPTS" 'ambiguous release retains the exact repo and token'
   check 'false|true|' "$ELICIT_LEAVE_TIME|$LEAVE_PROMPT_PENDING|$LEAVE_PROMPT_GENERATION" 'release receipt cannot authorize the old menu'
   check "$saved_token" "$(read_slot org/retained leave | jq -r .generation)" 'ambiguous release preserves the durable reservation'
+
+  # A different repo gets its own menu and can retain a second receipt.
+  REPO_KEY=org/independent; SESSION_STATE_SH="$state"
+  source "$tmp/leave-read"; source "$tmp/leave-reserve"
+  check true "$ELICIT_LEAVE_TIME" 'a pending receipt does not block another repo menu'
+  other_token="$LEAVE_PROMPT_GENERATION"
+  if release_leave_prompt "$other_token"; then return 1; fi
+  check "$saved_receipt"$'\n'"org/independent:$other_token" "$LEAVE_RELEASE_RECEIPTS" 'a second repo keeps its own receipt'
+  REPO_KEY=org/retained
 
   # Later an independently published answer can be used after cleanup. It must
   # not be turned into another menu by recovery.
@@ -288,9 +297,14 @@ release_gate_fixture() {
   SESSION_STATE_SH="$state"
   export RELEASE_MODE=once RELEASE_MARKER="$tmp/release-once"
   source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
-  check "" "$LEAVE_RELEASE_RECEIPT" 'acknowledged release clears only the carried receipt'
+  check "org/independent:$other_token" "$LEAVE_RELEASE_RECEIPTS" 'acknowledged release clears only its repo receipt'
   check 'false|false|' "$ELICIT_LEAVE_TIME|$LEAVE_PROMPT_PENDING|$LEAVE_PROMPT_GENERATION" 'recovery uses the published answer without reopening the menu'
   check null "$(read_slot org/retained leave)" 'a transient timeout recovers and frees the exact slot'
+  check "$other_token" "$(read_slot org/independent leave | jq -r .generation)" 'recovering one repo does not clear the other reservation'
+  REPO_KEY=org/independent
+  export RELEASE_MODE=normal
+  release_leave_prompt "$other_token"
+  check "" "$LEAVE_RELEASE_RECEIPTS" 'the second repo can finish its independent recovery'
 }
 release_gate_fixture
 
@@ -303,10 +317,10 @@ original_token="$out"
 (
   export FAKE_OWNER="$owner1" RELEASE_MODE=replaced
   REPO_KEY=org/release-lost PROMPT_RESERVE_SH="$release_helper"
-  LEAVE_RELEASE_RECEIPT="$REPO_KEY:$original_token"
+  LEAVE_RELEASE_RECEIPTS="$REPO_KEY:$original_token"
   ATTENDED=false SESSION_STATE_SH="$state"
   source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
-  [[ -z "$LEAVE_RELEASE_RECEIPT" ]] || exit 1
+  [[ -z "$LEAVE_RELEASE_RECEIPTS" ]] || exit 1
 )
 check "$replacement_token" "$(read_slot org/release-lost leave | jq -r .generation)" 'compare loss discards the old receipt without clearing the replacement'
 
