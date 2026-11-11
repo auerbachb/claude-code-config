@@ -655,7 +655,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   Carry `LEAVE_RELEASE_RECEIPTS` across tool calls when available. The helper also records
   the exact abandoned generation before trying to release it. A fresh invocation can reclaim
   that generation only when the current reservation and repo still match its receipt and owner.
-  Other repos continue independently.
+  Other repos continue independently. If both the receipt write and the release fail, keep
+  carrying the exact token for retry. A fresh invocation without that token or a matching
+  receipt leaves the reservation in place until the owner is proven gone.
   Report a pending release once per attempt. A later attempt may still use an already
   published scheduling answer. Never use a release receipt
   to resume or reopen the old menu. Re-run the leave eligibility read before the deadline gate;

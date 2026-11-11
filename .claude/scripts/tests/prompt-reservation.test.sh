@@ -350,6 +350,33 @@ call "$owner1" release --repo org/fresh-release --kind leave --generation "$fres
 check 10 "$rc" 'the old token cannot release the fresh generation'
 check "$fresh_new_token" "$(read_slot org/fresh-release leave | jq -r .generation)" 'fresh reservation survives old release'
 
+# Simultaneous failures of both stores cannot create proof of abandonment.
+# Keep the token for this caller and preserve the slot for every fresh caller.
+call "$owner1" claim --repo org/dual-failure --kind leave
+dual_token="$out"
+receipt_store="$HOME/.claude/prompt-release-receipts"
+mv "$receipt_store" "$tmp/saved-release-receipts"
+: > "$receipt_store"
+(
+  export FAKE_OWNER="$owner1" RELEASE_MODE=timeout
+  REPO_KEY=org/dual-failure PROMPT_RESERVE_SH="$release_helper"
+  unset LEAVE_RELEASE_RECEIPTS
+  source "$tmp/leave-release"
+  if release_leave_prompt "$dual_token" 2>"$tmp/dual.err"; then exit 1; fi
+  [[ "$LEAVE_RELEASE_RECEIPTS" == "$REPO_KEY:$dual_token" ]] || exit 1
+  [[ "$(read_slot "$REPO_KEY" leave | jq -r .generation)" == "$dual_token" ]] || exit 1
+  unset LEAVE_RELEASE_RECEIPTS
+  [[ "$(leave_gate "$owner1" "$REPO_KEY")" == 'false|true|' ]] || exit 1
+  LEAVE_RELEASE_RECEIPTS="$REPO_KEY:$dual_token"
+  rm "$receipt_store"
+  mv "$tmp/saved-release-receipts" "$receipt_store"
+  export RELEASE_MODE=normal
+  release_leave_prompt "$dual_token"
+  [[ -z "$LEAVE_RELEASE_RECEIPTS" ]] || exit 1
+)
+check true "$(if grep -q 'could not persist release receipt' "$tmp/dual.err"; then echo true; else echo false; fi)" 'dual failure reports the missing durable receipt'
+check null "$(read_slot org/dual-failure leave)" 'the carried token recovers after both stores return'
+
 overrun_gate() (
   export FAKE_OWNER="$1"
   REPO_KEY=org/gates; ISSUE_NUM="$2"; ATTENDED=true; DEADLINE_EPOCH="$deadline"
