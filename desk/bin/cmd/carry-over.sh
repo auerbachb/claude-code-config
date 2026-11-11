@@ -80,6 +80,11 @@ cmd_run() {
         if [ "$p" = "/" ]; then
           hq_die_validation "carry-over: --profile must name a directory below the root"
         fi
+        # The plan is tab- and newline-delimited; a path carrying either would
+        # split into the wrong fields after the default account is written.
+        case "$p" in
+          *"$tab"*|*$'\n'*) hq_die_validation "carry-over: --profile path must not contain a tab or newline" ;;
+        esac
         profiles="$profiles$p
 "
         shift 2
@@ -104,6 +109,11 @@ cmd_run() {
 
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    # The default directory is already the first bind; a second bind to it
+    # would be refused after that write, leaving a partial update.
+    if [ "$p" = "$HOME/.claude" ]; then
+      hq_die_validation "carry-over: $p is the default directory, carried over as personal; remove it from --profile"
+    fi
     settings="$p/settings.json"
     if [ ! -f "$settings" ]; then
       hq_die_validation "carry-over: $p has no settings.json; bind it by hand with bind --config-dir"

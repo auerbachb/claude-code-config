@@ -289,6 +289,27 @@ env -i HOME="$HOMEDIR" PATH="$MINPATH" TMPDIR="$TMP" STUB_LOG="$LOG" HUMAN_QUEUE
   bash "$BIN/human-queue.sh" carry-over --profile "$TMP/bare-profile" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
 check "carry-over refuses a profile with no interim entry (exit 4)" "$RC" "4"
 
+# The default directory named as a profile is refused before any write, so the
+# default bind does not land and then fail on the second bind to the same dir.
+REG_BEFORE_DEFAULT=$(cat "$REG")
+RC=0
+env -i HOME="$HOMEDIR" PATH="$MINPATH" TMPDIR="$TMP" STUB_LOG="$LOG" HUMAN_QUEUE_CLI="$STUB" \
+  HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_BINDINGS_FILE="$REG" \
+  bash "$BIN/human-queue.sh" carry-over --profile "$HOMEDIR/.claude" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+check "carry-over refuses the default directory as a profile (exit 4)" "$RC" "4"
+check "carry-over default-profile refusal: registry unchanged" "$(cat "$REG")" "$REG_BEFORE_DEFAULT"
+
+# A profile path with a tab is refused at parse time; the plan stays intact.
+TAB_PROFILE="$TMP/tab$(printf '\t')profile"
+mkdir -p "$TAB_PROFILE"
+printf '{"env": {"HUMAN_QUEUE_SCHEMA": "work"}}\n' >"$TAB_PROFILE/settings.json"
+RC=0
+env -i HOME="$HOMEDIR" PATH="$MINPATH" TMPDIR="$TMP" STUB_LOG="$LOG" HUMAN_QUEUE_CLI="$STUB" \
+  HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_BINDINGS_FILE="$REG" \
+  bash "$BIN/human-queue.sh" carry-over --profile "$TAB_PROFILE" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+check "carry-over refuses a profile path containing a tab (exit 4)" "$RC" "4"
+check "carry-over tab-path refusal: registry unchanged" "$(cat "$REG")" "$REG_BEFORE_DEFAULT"
+
 # A profile already bound to another queue is refused in preflight, before any
 # write: the registry keeps its row and the settings keep the interim entry.
 CONFLICT_PROFILE="$TMP/conflict-profile"
