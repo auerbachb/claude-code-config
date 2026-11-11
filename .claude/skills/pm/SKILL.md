@@ -2223,6 +2223,25 @@ Refill from three sources, in this order:
 
 **Re-validate every pick, from any source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5, **plus the 1B.5 ownership sweep** (`candidate-ownership.sh`, issue #1431). Closed, already has its own PR, now too big, or `action: skip` → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). `action: adopt` launches from the surviving state instead of a fresh start. Backlog refill reuses this validation rather than defining its own.
 
+**Recheck the active window for refill picks.** When 3.4 would promote a queued or newly ranked issue under an active window, run 1B.5's estimate and `makespan.sh` fit check for the candidate against the current deadline and stall margin. Skip a pick that does not fit or cannot be measured. Keep the existing Step 7 prelaunch check. Before handing a fitting issue to 3.1, append it to the same window's `batch_issues` so Step 8 monitors its overrun. Persist only after the existing ownership and eligibility checks. If the guarded write fails, leave the issue queued and recheck the current window before retrying.
+
+The following block runs only after a fit under `DEADLINE_EPOCH`, with the numeric `ISSUE_NUM` and the verified `REPO_KEY` from the current run:
+
+<!-- test-anchor: pm-refill-window-batch -->
+```bash
+WINDOW_BATCH_PATH=".repos[\"$REPO_KEY\"].window.batch_issues"
+WINDOW_DEADLINE_PATH=".repos[\"$REPO_KEY\"].window.deadline_epoch"
+WINDOW_BATCH_BEFORE=$("$SESSION_STATE_SH" --get-json "$WINDOW_BATCH_PATH") || exit 1
+WINDOW_BATCH_AFTER=$(jq -ce --arg issue "$ISSUE_NUM" '
+  if . == null then [] else . end
+  | if type != "array" then error("window batch invalid")
+  elif index($issue) != null then .
+  else . + [$issue] end
+' <<< "$WINDOW_BATCH_BEFORE") || exit 1
+"$SESSION_STATE_SH" --cas "$WINDOW_BATCH_PATH=$WINDOW_BATCH_AFTER" \
+  --expect "$WINDOW_BATCH_BEFORE" --expect-at "$WINDOW_DEADLINE_PATH" "$DEADLINE_EPOCH"
+```
+
 **Read ownership per pick, not once per tick** — the same discipline as the per-pick pause re-read below, and for the same reason: another thread can park or die inside the window between a re-scan and a launch. An owned pick never stalls the refill: skip it, print its one-line surface, and take the next unowned candidate until the free slots are filled or the candidate set is exhausted.
 
 **Refresh the session listing on the tick that sweeps, not once per session (issue #1459).** The sweep here runs 1B.5's blocks unchanged — the `list_sessions` call, the temp-file write that sets `SESSION_LISTING_PATH`, then the sweep block — because a listing captured hours ago is exactly the stale input that turns a thread which died since into `live` (no adoption, work stranded) or a thread that started since into `dead` (adoption underneath a running pipeline). Re-call the tool on any tick that sweeps and rebuild the file; the tool's schema stays loaded, so only the call repeats. When it is unavailable the same `DEGRADED:` line applies and the tick falls back to surface-and-skip.

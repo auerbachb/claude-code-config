@@ -113,6 +113,10 @@ reject_literal_pm_batch "$PM_LAUNCH" || fail '/pm Step 3.1 hard-codes an initial
 if reject_literal_pm_batch 'dispatch up to five inline issues'; then
   fail 'the hard-coded dispatch check missed its negative control'
 fi
+require_text "$PM" 'Recheck the active window for refill picks' \
+  '/pm queued refill must retain the active-window fit gate'
+require_text "$PM" '--expect-at "$WINDOW_DEADLINE_PATH" "$DEADLINE_EPOCH"' \
+  '/pm queued refill must register the monitored issue against the verified deadline'
 ok '/pm separates its short display from its LIMIT-sized initial dispatch'
 
 # --- MAX_WAVE may still only lower the ceiling ------------------------------
