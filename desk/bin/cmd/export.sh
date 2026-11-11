@@ -524,13 +524,9 @@ cmd_run() {
        || ! printf '%s' "$data" | hq_export_jq -r 'export_html' > "$HQ_EXPORT_WORK/export.html"; then
       hq__export_fail "$data" "render the batch"
     fi
-    if ! printf '%s' "$data" | hq_export_jq -r 'export_markdown(false)' > "$HQ_EXPORT_WORK/pandoc.md" \
-       || ! printf '%s' "$data" | hq_export_jq -r 'export_tex_header' > "$HQ_EXPORT_WORK/export-header.tex"; then
-      hq__export_fail "$data" "render the pandoc batch"
-    fi
     path=$(hq__export_abs "$out")
-    if hq_export_pdf renderer "$HQ_EXPORT_WORK/pandoc.md" "$HQ_EXPORT_WORK/export.txt" \
-         "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK" "$HQ_EXPORT_WORK/export-header.tex"; then
+    if hq_export_pdf renderer "$HQ_EXPORT_WORK/export.md" "$HQ_EXPORT_WORK/export.txt" \
+         "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK" "$data"; then
       format=pdf
       hq__export_settle "$HQ_EXPORT_WORK/export.pdf" "$path" \
         || hq__export_fail "$data" "write the PDF"

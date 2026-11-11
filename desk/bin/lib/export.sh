@@ -15,7 +15,7 @@
 # PUBLIC FUNCTIONS
 #   hq_export_check_env    exits 4 when HUMAN_QUEUE_EXPORT_RENDERER is not
 #                          auto, pandoc, chrome, cupsfilter, or markdown
-#   hq_export_pdf VAR MD TXT HTML PDF WORK [TEX_HEADER]
+#   hq_export_pdf VAR MD TXT HTML PDF WORK [BATCH_JSON]
 #                          writes the PDF from the first renderer that works;
 #                          sets VAR to its name and returns 0, or returns 1
 #                          (VAR empty) with HQ_EXPORT_TRIED naming what each
@@ -221,15 +221,26 @@ hq__export_file_url() {
 }
 
 hq__export_pandoc() {
-  local hq__md="$1" hq__pdf="$2" hq__work="$3" hq__header="$4" hq__bin rc=0
+  local hq__md="$1" hq__pdf="$2" hq__work="$3" hq__data="$4" hq__header hq__bin rc=0
   local hq__args=()
-  if [ -n "$hq__header" ]; then
-    hq__args+=( "--include-in-header=$hq__header" )
-  fi
   if ! hq__export_pick hq__bin "${HUMAN_QUEUE_PANDOC+x}" "${HUMAN_QUEUE_PANDOC:-}" \
        /opt/homebrew/bin/pandoc /usr/local/bin/pandoc pandoc; then
     hq__export_missing pandoc
     return 1
+  fi
+  # Only prepare Pandoc's files when that renderer will actually use them.
+  # Auto mode can still use the already prepared HTML or plain text.
+  if [ -n "$hq__data" ]; then
+    hq__md="$hq__work/pandoc.md"
+    hq__header="$hq__work/export-header.tex"
+    if ! {
+      printf '%s' "$hq__data" | hq_export_jq -r export_pandoc_markdown > "$hq__md" &&
+      printf '%s' "$hq__data" | hq_export_jq -r export_tex_header > "$hq__header"
+    } 2>"$hq__work/pandoc.err"; then
+      hq__export_note "pandoc preparation" 1
+      return 1
+    fi
+    hq__args+=( "--include-in-header=$hq__header" )
   fi
   rm -f "$hq__pdf"
   # The items' text comes from agent threads: export.jq escapes it, so it
