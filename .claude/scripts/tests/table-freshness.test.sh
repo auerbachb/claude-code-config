@@ -967,6 +967,39 @@ while read -r SKILL_FILE; do
 done < <(grep -rl 'table-freshness' "$REPO_ROOT/.claude/skills" --include='SKILL.md'; printf '%s\n' "$PM_PROGRESS")
 ok "every freshness wiring site normalises the '_unknown' sentinel its guards depend on"
 
+# The fallback may be entered after an earlier successful render. Use the
+# actual PM blocks to check which counts can reach the shared recorder.
+source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
+fallback_reset=$(extract_skill_bash "$PM_PROGRESS" pm-fallback-board-reset) || fail 'missing PM fallback reset'
+fallback_count=$(extract_skill_bash "$PM_PROGRESS" pm-fallback-board-count) || fail 'missing PM fallback count guard'
+fallback_record=$(awk '
+  /^REPO_KEY=/ { in_record = 1 }
+  in_record && /^```$/ { exit }
+  in_record { print }
+' "$PM_PROGRESS")
+[[ -n "$fallback_record" ]] || fail 'missing PM fallback recorder'
+fallback_fixture() {
+  local current_count="$1" drained="$2" fixture
+  printf -v fixture '%s\n%s\n%s\n%s\n' "$fallback_reset" '
+    [[ -z "${ACTIVE_COUNT+x}${PM_FALLBACK_PROVEN_COUNT+x}${PM_FALLBACK_DRAINED+x}" ]] || exit 3
+    PM_FALLBACK_PROVEN_COUNT=$1
+    PM_FALLBACK_DRAINED=$2
+    pm_state() { printf "%s\n" solo/repo; }
+    pm_freshness() { printf "recorded=%s\n" "$3"; }
+    SESSION_STATE_SH=pm_state
+    TABLE_FRESHNESS_SH=pm_freshness' "$fallback_count" "$fallback_record"
+  ACTIVE_COUNT=9 PM_FALLBACK_PROVEN_COUNT=8 PM_FALLBACK_DRAINED=true \
+    "$BASH" -u -c "$fixture" -- "$current_count" "$drained"
+}
+for count in '' 0 invalid; do
+  result=$(fallback_fixture "$count" false) || fail "PM fallback fixture failed ($count)"
+  [[ "$result" == 'DEGRADED: this render is not recorded against the table-freshness floor' ]] || \
+    fail "PM fallback recorded a stale or unproven count ($count): $result"
+done
+[[ $(fallback_fixture 2 false) == recorded=2 ]] || fail 'PM fallback lost proven live or queued work'
+[[ $(fallback_fixture 0 true) == recorded=0 ]] || fail 'PM fallback lost independent drain evidence'
+ok 'PM fallback discards old counts and records only proven live work or independent drain'
+
 # --- 24. A resumed round re-arms the floor -----------------------------------
 #         /pause disarms by data AND the shutdown stops the Monitor, so both
 #         halves are gone. /subagent arms "once per session" on the assumption

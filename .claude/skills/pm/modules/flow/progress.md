@@ -35,11 +35,29 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 <!-- pm-routing:begin -->
 Use the progress module's board section at its explicit or due gate.
 The normal /board path uses its own Step 5 freshness record. Only the
-inline fallback uses the local record below. Count confirmed running rows
-and queued rows. If no row is confirmed or queued and the fallback shows
-an unconfirmed Phase A, leave the previous freshness record alone and
-report the unknown liveness once. Supply a zero count only when a drained
-round is independently established.
+inline fallback uses the local record below. Before each fallback render,
+clear any count or drain evidence carried from an earlier render.
+
+<!-- test-anchor: pm-fallback-board-reset -->
+```bash
+unset ACTIVE_COUNT PM_FALLBACK_PROVEN_COUNT PM_FALLBACK_DRAINED
+```
+
+After a table reaches the user, set `PM_FALLBACK_PROVEN_COUNT` to the sum of
+confirmed running and queued rows from this render. Set `PM_FALLBACK_DRAINED`
+to `true` only when the round is independently known to be drained. If the
+only rows are unconfirmed, leave the previous freshness record in place and
+report that liveness is unknown. Run this block before the fallback recorder.
+
+<!-- test-anchor: pm-fallback-board-count -->
+```bash
+unset ACTIVE_COUNT
+if [[ "${PM_FALLBACK_PROVEN_COUNT:-}" =~ ^[1-9][0-9]{0,8}$ ]]; then
+  ACTIVE_COUNT=$PM_FALLBACK_PROVEN_COUNT
+elif [[ "${PM_FALLBACK_PROVEN_COUNT:-}" == 0 && "${PM_FALLBACK_DRAINED:-false}" == true ]]; then
+  ACTIVE_COUNT=0
+fi
+```
 <!-- pm-routing:end -->
 
 **When a progress render is requested or due, use the canonical "Running now" table** — the column set and cell semantics in `.claude/reference/time-estimates.md` §"Running now Table", covering the whole round in execution order with queued rows carrying `—` in all three clock columns. Never a bulleted list, never a per-pipeline prose readout, and never a second table shape of `/pm`'s own.
