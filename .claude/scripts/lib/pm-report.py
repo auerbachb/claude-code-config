@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate one opted-in PM report using an existing turn's board evidence."""
+"""Evaluate a PM report using an existing turn's board evidence."""
 import argparse
 import hashlib
 import json
@@ -8,10 +8,13 @@ import sys
 import time
 
 
+DEFAULT_REPORT_MINUTES = 30
+
+
 def interval(section):
     settings = re.findall(r"(?m)^[ \t]*report_every_min[ \t]*:([^\r\n]*)$", section)
     if not settings:
-        return 0
+        return DEFAULT_REPORT_MINUTES
     if len(settings) != 1 or not re.fullmatch(r"[0-9]+", settings[0].strip()):
         raise ValueError("report_every_min must be one nonnegative integer")
     return int(settings[0])
