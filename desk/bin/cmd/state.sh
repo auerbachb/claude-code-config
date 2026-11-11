@@ -155,7 +155,6 @@ cmd_run() {
   if [ "$action" = set ]; then
     if hq_in_list "$key" "$HQ_STATE_RESERVED"; then
       case "$key" in
-        quiz_count:*) hq_die_validation "state set: $key is reserved: only quiz complete writes it" ;;
         tick_watermark|tick_at) hq_die_validation "state set: $key is reserved: only tick writes it" ;;
         reviews_watermark) hq_die_validation "state set: reviews_watermark is reserved: only sync-reviews writes it (pass it --since instead)" ;;
         interrupt) hq_die_validation "state set: interrupt is reserved: use interrupt set" ;;
@@ -167,6 +166,7 @@ cmd_run() {
       esac
     fi
     case "$key" in
+      quiz_count:*) hq_die_validation "state set: $key is reserved: only quiz complete writes it" ;;
       filed:*) hq_die_validation "state set: filed:* keys are reserved: only filed writes them (and sync-reviews deletes them)" ;;
     esac
     if [ "${#value}" -gt "$HQ_STATE_VALUE_MAX" ]; then

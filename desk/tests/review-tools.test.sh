@@ -108,6 +108,8 @@ check "a cache question miss points to the cache Review's PR" \
 check "looking up quiz sources writes nothing" "$(sql "SELECT count(*) FROM state WHERE key LIKE 'quiz_count:%'")" 0
 check "completed quiz advances today's count" "$(hq quiz complete)" 1
 check "another completed quiz advances the same count" "$(hq quiz complete)" 2
+rc=0; hq state set quiz_count:2000-01-01 99 >/dev/null 2>&1 || rc=$?
+check "generic state writes cannot set quiz counts" "$rc" 4
 check "quiz stores only one daily counter" "$(sql "SELECT count(*) FROM state WHERE key LIKE 'quiz_count:%'")" 1
 
 hq_t_finish "review-tools.test.sh"
