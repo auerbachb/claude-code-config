@@ -56,6 +56,7 @@ FAIL=0; PASS=0
 
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq is required" >&2; exit 1; }
 BLOCK=$(extract_skill_bash "$SKILL_MD" pm-1b2-new-issues) || { echo "FATAL: could not extract pm-1b2-new-issues" >&2; exit 1; }
+PUBLISH=$(extract_skill_bash "$SKILL_MD" pm-new-issue-scan-publish) || exit 1
 case "$BLOCK" in
   *"gh issue list"*) ;;
   *) echo "FATAL: the block does not fetch with gh issue list — anchor drifted?" >&2; exit 1 ;;
@@ -67,6 +68,7 @@ trap 'rm -rf "$TMP" "$TMP_HOME"' EXIT
 export HOME="$TMP_HOME"
 mkdir -p "$HOME/.claude"
 printf '%s\n' "$BLOCK" > "$TMP/block.sh"
+printf '%s\n' "$PUBLISH" > "$TMP/publish.sh"
 
 STUB_SCRIPTS="$TMP/scripts"
 mkdir -p "$STUB_SCRIPTS/lib" "$TMP/bin"
@@ -111,7 +113,12 @@ backlog() { printf '%s\n' "$@" | jq -s . > "$BACKLOG_FILE"; }
 
 run_block() {
   : > "$GH_LOG"
-  OUT=$(cd "$TMP" && bash -c '. ./block.sh; printf "JSON=%s\n" "$NEW_ISSUES"' 2>&1)
+  OUT=$(cd "$TMP" && PM_TEST_COMPLETE="${1:-true}" bash -c '
+    . ./block.sh
+    printf "JSON=%s\n" "$NEW_ISSUES"
+    PM_SCAN_RANK_COMPLETE="$PM_TEST_COMPLETE"
+    . ./publish.sh
+  ' 2>&1)
   NEW=$(printf '%s\n' "$OUT" | sed -n 's/^JSON=//p' | jq -r 'map(.number) | join(",")')
 }
 baseline() { "$SESSION_STATE_SH" --get '.repos["acme/widgets"].pm_backlog_scan_at' 2>/dev/null; }
@@ -199,6 +206,49 @@ check_eq "no session-state.sh: the last 24 h still finds the new issues" "11,15"
 check_contains "no session-state.sh: says no baseline is kept" "no baseline is kept" "$OUT"
 check_eq "no session-state.sh: the fetch falls back to the current directory's repo" \
   "issue list --state open --json number,title,labels,assignees,createdAt --limit 500" "$(cat "$GH_LOG")"
+
+# ---- completed-rank watermark, with a fixed scan clock ----------------------
+REAL_SCAN_DATE=$(command -v date)
+export REAL_SCAN_DATE
+cat > "$TMP/bin/date" <<'SCAN_DATE'
+#!/usr/bin/env bash
+if [ -n "${FIXED_SCAN_NEXT:-}" ] && { [ "${3:-}" = '5 minutes ago' ] || [ "${2:-}" = -v-5M ]; }; then
+  printf '%s\n' "$FIXED_SCAN_NEXT"
+  exit 0
+fi
+exec "$REAL_SCAN_DATE" "$@"
+SCAN_DATE
+chmod +x "$TMP/bin/date"
+
+"$SESSION_STATE_SH" --set '.repos["acme/widgets"].pm_backlog_scan_at="2026-01-01T00:00:00Z"' >/dev/null
+QUIET=$(issue 999 'Quiet newly filed issue' 2026-01-01T00:10:00Z '[]' 'enhancement')
+backlog "$QUIET"
+FIXED_SCAN_NEXT=2026-01-01T00:20:00Z run_block false
+check_eq "an interrupted ranking does not move the scan watermark" 2026-01-01T00:00:00Z "$(baseline)"
+check_eq "the quiet issue joins the interrupted shortlist" 999 "$NEW"
+OLD_RECEIPT=$(printf '%s\n' "$OUT" | sed -n 's/^PM_SCAN_PENDING=//p')
+check_eq "the first scan remembers its typed prior watermark" '"2026-01-01T00:00:00Z"' \
+  "$(jq -c .prior <<< "$OLD_RECEIPT")"
+FIXED_SCAN_NEXT=2026-01-01T00:25:00Z run_block true
+check_eq "retry still picks up the quiet issue" 999 "$NEW"
+check_eq "a completed ranking advances the captured timestamp" 2026-01-01T00:25:00Z "$(baseline)"
+NEW_RECEIPT=$(printf '%s\n' "$OUT" | sed -n 's/^PM_SCAN_PENDING=//p')
+publish_receipt() {
+  ( cd "$TMP" && PM_SCAN_PENDING="$1" PM_SCAN_RANK_COMPLETE=true bash -c '. ./publish.sh' )
+}
+publish_receipt "$OLD_RECEIPT"
+check_eq "an older overlapping ranking cannot overwrite the newer watermark" 2026-01-01T00:25:00Z "$(baseline)"
+publish_receipt "$NEW_RECEIPT"
+check_eq "an already published receipt cannot advance again" 2026-01-01T00:25:00Z "$(baseline)"
+"$SESSION_STATE_SH" --set '.repos["acme/widgets"].pm_backlog_scan_at={"invalid":true}' >/dev/null
+FIXED_SCAN_NEXT=2026-01-01T00:30:00Z run_block true
+check_eq "malformed prior state remains unchanged" '{"invalid":true}' "$(baseline | jq -c .)"
+check_contains "malformed prior state holds publication" "watermark or clock could not be verified" "$OUT"
+"$SESSION_STATE_SH" --set '.repos["acme/widgets"].pm_backlog_scan_at="2026-01-01T00:00:00Z"' >/dev/null
+printf '%s\n' '[{"number":999,"title":"Unreadable creation time"}]' > "$BACKLOG_FILE"
+FIXED_SCAN_NEXT=2026-01-01T00:30:00Z run_block true
+check_eq "incomplete fetch never moves the watermark" 2026-01-01T00:00:00Z "$(baseline)"
+check_contains "incomplete fetch cannot produce a receipt" "PM_SCAN_PENDING=null" "$OUT"
 
 echo
 echo "pm-backlog-new-issue.test.sh: $PASS passed, $FAIL failed"
