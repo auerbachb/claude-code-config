@@ -251,6 +251,30 @@ else
   bad "broken # covers: mapping did not fail toward ALL: $out"
 fi
 
+# In batch mode (--per-path) the same broken mapping must NOT print per-path answers with exit 0:
+# the batch caller (the sweep) gets a non-zero exit and treats the whole run as a failure.
+printf '.claude/hooks/b.sh\n' | bash "$B/.github/scripts/select-hook-tests.sh" --per-path > "$TMP/broken-batch.out" 2>/dev/null
+BRC=$?
+if [ "$BRC" -ne 0 ]; then
+  ok "a broken # covers: mapping makes batch mode exit non-zero (no per-path answer)"
+else
+  bad "batch mode exited 0 on a broken # covers: mapping: $(cat "$TMP/broken-batch.out")"
+fi
+
+# The declaration-honesty and sweep suites always run: a docs-only change still selects them when
+# they exist (their checks read every suite and every covers target).
+AS="$TMP/always-suites"
+make_fixture "$AS"
+printf '# honesty\nexit 0\n' > "$AS/.github/scripts/tests/select-hook-covers-honesty.test.sh"
+printf '# sweep\nexit 0\n' > "$AS/.github/scripts/tests/select-hook-sweep.test.sh"
+out="$(select_for "$AS" .claude/reference/doc.md)"
+if has_line "$out" .github/scripts/tests/select-hook-covers-honesty.test.sh \
+  && has_line "$out" .github/scripts/tests/select-hook-sweep.test.sh && ! is_all "$out"; then
+  ok "a docs-only change still selects the honesty and sweep suites"
+else
+  bad "honesty or sweep suite not selected for a docs-only change: $out"
+fi
+
 # --- Comment mentions, heredoc data and declared suites (issue #2177) ----------------
 # A script that names a helper only in a comment is not a caller of it: the helper's own suite runs alone.
 CM="$TMP/comment-mention"
@@ -323,6 +347,46 @@ if is_all "$out"; then
   ok "an unquoted heredoc body that names the helper still selects ALL"
 else
   bad "an unquoted heredoc caller did not select ALL: $out"
+fi
+
+# A `#`-led line inside an unquoted heredoc body is code (the shell expands the body), so the helper
+# it names still forces ALL (issue #2177 review: the comment rule must not reach into a heredoc body).
+HH="$TMP/heredoc-hash-line"
+make_fixture "$HH"
+echo ': helper' > "$HH/.claude/scripts/helper3.sh"
+printf '# reads .claude/scripts/helper3.sh\nexit 0\n' > "$HH/.github/scripts/tests/helper3-reader.test.sh"
+cat > "$HH/.claude/scripts/hash-body.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat <<EOF
+# runs .claude/scripts/helper3.sh
+EOF
+FIXTURE
+out="$(select_for "$HH" .claude/scripts/helper3.sh)"
+if is_all "$out"; then
+  ok "a #-led line in an unquoted heredoc body that names the helper still selects ALL"
+else
+  bad "a #-led heredoc body line was misread as a comment: $out"
+fi
+
+# A shellcheck source directive is a dependency declaration, not an ordinary comment (issue #2177
+# review): a script whose only mention of a helper is the directive above a computed source line
+# still makes that helper a dependency of its readers, so the helper forces ALL.
+SD="$TMP/shellcheck-directive"
+make_fixture "$SD"
+echo ': helper' > "$SD/.claude/scripts/helper2.sh"
+printf '# reads .claude/scripts/helper2.sh\nexit 0\n' > "$SD/.github/scripts/tests/helper2-reader.test.sh"
+cat > "$SD/.claude/scripts/directive-only.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+MOD=helper2
+H="$DIR/${MOD}.sh"
+# shellcheck source=helper2.sh
+source "$H"
+FIXTURE
+out="$(select_for "$SD" .claude/scripts/helper2.sh)"
+if is_all "$out"; then
+  ok "a helper named only in a shellcheck source directive of a sourcing script forces ALL"
+else
+  bad "a shellcheck-directive caller did not select ALL: $out"
 fi
 
 # A declared suite is selected by what it declares, not by a prose mention of a markdown file.

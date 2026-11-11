@@ -63,11 +63,12 @@ NEXP="$(awk 'END { print NR }' "$TMP/expect-pairs")"
 
 # The batch answer for every file, in one run of the selector.
 bash "$SEL" --per-path < "$TMP/files" > "$TMP/answer" 2> "$TMP/answer-err"
+SELRC=$?
 NANS="$(awk 'END { print NR }' "$TMP/answer")"
-if [ "$NANS" -eq "$NFILES" ]; then
+if [ "$SELRC" -eq 0 ] && [ "$NANS" -eq "$NFILES" ]; then
   ok "batch selector answered every one of the $NFILES code files exactly once"
 else
-  bad "batch selector answered $NANS of $NFILES files: $(head -n 3 "$TMP/answer-err")"
+  bad "batch selector exit $SELRC, answered $NANS of $NFILES files: $(head -n 3 "$TMP/answer-err")"
 fi
 
 # Files answered ALL, and the "file<TAB>suite" pairs the answer lists for the other files.

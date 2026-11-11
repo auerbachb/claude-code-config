@@ -19,7 +19,7 @@
 #
 # The lint resolves repo-root-relative paths, so each drift case builds a
 # throwaway repo-shaped fixture and runs the script with that tree as cwd.
-# covers: .claude/reference/README.md .claude/rules/safety.md
+# covers: .claude/reference .claude/reference/README.md .claude/rules/safety.md
 
 set -euo pipefail
 

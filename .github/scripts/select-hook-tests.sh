@@ -67,7 +67,11 @@
 # CALLERS (issue #2177). A non-suite code file that mentions a changed code path's basename
 # makes that path a dependency of every suite (a hook sourcing a helper, a script invoking
 # a script), so the path fails toward ALL. A mention counts as a caller unless the line is
-# a comment (first non-blank character `#`) or the line sits inside a data-only heredoc
+# a comment (first non-blank character `#`) or the line sits inside a data-only heredoc.
+# A `# shellcheck source=<path>` directive is NOT an ordinary comment: it names the file the
+# next line sources, so it counts as a caller (issue #2177 review: a sourced helper named only
+# in the directive would otherwise lose its reader). Any other heredoc body (unquoted, or piped
+# into a command) is code too, so a body line that starts with `#` still counts.
 # (`cat <<'DELIM'` with a QUOTED delimiter, ending its line, with no pipe, redirect or other
 # command, read to the matching DELIM line; an unquoted heredoc body is expanded, so it counts). Any other line, including a trailing comment after code, counts.
 #
@@ -246,7 +250,8 @@ while IFS= read -r S; do
   done
 done < "$DISC"
 if [ -s "$BAD" ]; then
-  emit_all "suite covers a path that does not exist (broken mapping): $(head -n 1 "$BAD")"
+  # Batch mode exits non-zero (the sweep fails, no per-path answer is trusted); single mode answers ALL.
+  run_fail "suite covers a path that does not exist (broken mapping): $(head -n 1 "$BAD")"
   exit 0
 fi
 
@@ -310,6 +315,7 @@ if [ -s "$CBN" ]; then
           sub(/^\.\//, "", f)
           if (f ~ /\.(md|json)$/) continue
           heredoc = ""
+          uheredoc = ""
           ln = 0
           while ((getline content < fn) > 0) {
             ln++
@@ -319,13 +325,25 @@ if [ -s "$CBN" ]; then
               if (c == heredoc) heredoc = ""
               continue
             }
-            if (content ~ /^[[:space:]]*#/) continue
-            if (content ~ /(^|[ \t;&(])cat[ \t]+<<-?[\047\042][A-Za-z_][A-Za-z_0-9]*[\047\042][ \t]*$/) {
-              d = content
-              sub(/[ \t]*$/, "", d)
-              sub(/.*<<-?/, "", d)
-              gsub(/[\047\042]/, "", d)
-              heredoc = d
+            if (uheredoc != "") {
+              # A body the shell expands or feeds to a command is code, even a line that starts with `#`.
+              c = content
+              sub(/^[[:space:]]*/, "", c)
+              if (c == uheredoc) uheredoc = ""
+            } else {
+              if (content ~ /^[[:space:]]*#/ && content !~ /^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+source=/) continue
+              if (content ~ /(^|[ \t;&(])cat[ \t]+<<-?[\047\042][A-Za-z_][A-Za-z_0-9]*[\047\042][ \t]*$/) {
+                d = content
+                sub(/[ \t]*$/, "", d)
+                sub(/.*<<-?/, "", d)
+                gsub(/[\047\042]/, "", d)
+                heredoc = d
+              } else if (match(content, /<<-?[\047\042]?[A-Za-z_][A-Za-z_0-9]*/)) {
+                d = substr(content, RSTART, RLENGTH)
+                sub(/^<<-?/, "", d)
+                gsub(/[\047\042]/, "", d)
+                uheredoc = d
+              }
             }
             if (!((fn SUBSEP ln) in hit)) continue
             for (i = 1; i <= n; i++) if (index(content, bn[i]) > 0) printf "%s\t%s\n", bn[i], f
@@ -420,6 +438,13 @@ done < "$CHANGED"
 # Python modules run in full for every selection, docs-only and empty bash selections included
 # (see header). Listing them keeps the one-line-per-suite shape the runners already read.
 grep -E '^tests/test_.*\.py$' "$DISC" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
+
+# The declaration-honesty and sweep suites ALWAYS run (issue #2177 review). Their checks read every
+# suite and every `# covers:` target, so no per-path derivation sees a change that breaks them. The
+# sweep is about 70 s on 529 paths; a missing suite file (grep exit 1) is fine, a read error is not.
+grep -E '^\.github/scripts/tests/select-hook-(covers-honesty|sweep)\.test\.sh$' "$DISC" >> "$SEL"
+RC=$?
+[ "$RC" -le 1 ] || { emit_all "could not record always-run suites: full run"; exit 1; }
 
 SORTED="$(LC_ALL=C sort -u "$SEL" | sed '/^$/d')" || { emit_all "sort failed: full run"; exit 1; }
 NSEL=0
