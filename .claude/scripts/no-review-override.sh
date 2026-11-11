@@ -313,13 +313,23 @@ ANCHOR_ERR=$(printf '%s' "$ANCHOR" | jq -r '.error // ""')
 # only start the window later, never earlier. No qualifying request → the push anchor
 # is used unchanged. Fail closed: an unreadable comment list, an unknown author,
 # or a malformed timestamp on a matching request leaves the override off.
-[[ "$(printf '%s' "$PAYLOAD" | jq -r '(.issue_comments | type) == "array"')" == true ]] \
-  || ineligible "anchor_unavailable: comment list unreadable"
-PR_AUTHOR=$(printf '%s' "$PULL_JSON" | jq -r '.user.login // ""')
-[[ -n "$PR_AUTHOR" ]] || ineligible "anchor_unavailable: PR author unreadable"
+PR_AUTHOR=$(printf '%s' "$PULL_JSON" | jq -er '.user.login | select(type == "string" and test("[^[:space:]]"))' 2>/dev/null) \
+  || ineligible "anchor_unavailable: PR author unreadable"
 PUSH_T=$(printf '%s' "$ANCHOR" | jq -c '.t')
-REQUEST=$(printf '%s' "$PAYLOAD" | jq -c --arg author "$PR_AUTHOR" --argjson base "$PUSH_T" "$JQ_DEFS"'
-  [ (.issue_comments // [])[]?
+# The gate's initial comment snapshot is still coupled to the verdict inventory.
+# Refresh only the anchor input here, after the slower HEAD-anchor reads.
+REQUEST_PAGES=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/comments?per_page=100" 2>/dev/null) \
+  || ineligible "anchor_unavailable: comment list unreadable"
+REQUEST_COMMENTS=$(printf '%s' "$REQUEST_PAGES" | jq -ces '
+  if length > 0 and all(.[]; type == "array") then add
+  else error("expected comment pages") end
+  | if all(.[]; type == "object" and
+               (.user.login | type == "string" and test("[^[:space:]]")) and
+               (.body | type == "string")) then .
+    else error("unreadable comment") end' 2>/dev/null) \
+  || ineligible "anchor_unavailable: comment list unreadable"
+REQUEST=$(printf '%s' "$REQUEST_COMMENTS" | jq -c --arg author "$PR_AUTHOR" --argjson base "$PUSH_T" "$JQ_DEFS"'
+  [ .[]
     | select((.user.login // "") == $author)
     | select((.body // "") | split("\n") | any(test("^[ \t]*(@codeant-ai[ \t]+review|@coderabbitai[ \t]+(full[ \t]+)?review)[ \t]*\r?$"; "i")))
     | {raw: (.created_at // null),
