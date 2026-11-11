@@ -98,6 +98,30 @@ out=$(run "[$T_BOT,$T_HUMAN,$T_LONG,$T_RESOLVED,$T_NULL,$T_TWO]")
 check_eq "mixed set: count and ids derive from one selection" "3 T1,T3,T6" \
   "$(jq -r '"\(.count) \([.threads[].id] | join(","))"' <<<"$out")"
 
+# The cleanup inventory above can include retired-app threads. The resolver
+# only targets one after its exact ID is supplied (issue #2192).
+resolve_fixture() (
+  export THREAD_FIXTURE="$(jq -cn --argjson nodes "[$T_TWO,$T_GRAPHITE]" \
+    '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},
+       nodes:($nodes | map(.id as $id | .comments.nodes[0].id = ("C"+$id)))}}}}}')"
+  gh() {
+    case "$1 $2" in
+      'repo view') printf '%s\n' '{"owner":{"login":"fixture"},"name":"repo"}' ;;
+      'api graphql')
+        case "$*" in *mutation*) return 4 ;; esac
+        printf '%s\n' "$THREAD_FIXTURE" ;;
+      *) return 4 ;;
+    esac
+  }
+  export -f gh
+  "$BASH" "$REPO_ROOT/.claude/scripts/resolve-review-threads.sh" 1 --dry-run "$@"
+)
+out=$(resolve_fixture)
+check_eq "default resolver keeps active reviewer threads" 1 "$(grep -c 'T6  (cursor)' <<<"$out")"
+check_eq "default resolver excludes retired Graphite threads" 0 "$(grep -c 'T8  (graphite-app)' <<<"$out")"
+out=$(resolve_fixture --thread-ids T8)
+check_eq "explicit handled ID includes the retired Graphite thread" 1 "$(grep -c 'T8  (graphite-app)' <<<"$out")"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

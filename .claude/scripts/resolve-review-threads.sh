@@ -7,15 +7,15 @@
 # resolveReviewThread. On failure, falls back to minimizeComment(classifier: RESOLVED).
 #
 # Usage:
-#   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
+#   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
 #   resolve-review-threads.sh <pr_number> --thread-ids-file path --verify-only
 #   resolve-review-threads.sh --help
 #
 # Flags:
 #   --authors  Comma-separated list of GitHub logins (without [bot] suffix) whose
 #              threads are eligible for resolution. Default:
-#              coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai
-#              (graphite-app retired 2026-11-03, #1889; kept so leftover threads resolve)
+#              coderabbitai,cursor,greptile-apps,codeant-ai
+#              Retired Graphite threads require an explicit reviewed thread ID.
 #   --thread-ids
 #              Comma-separated GraphQL review thread node IDs that must be verified
 #              resolved after mutation attempts. When provided, these explicit IDs
@@ -45,7 +45,7 @@ set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
-AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
+AUTHORS="coderabbitai,cursor,greptile-apps,codeant-ai"
 DRY_RUN=0
 VERIFY_ONLY=0
 THREAD_IDS=""

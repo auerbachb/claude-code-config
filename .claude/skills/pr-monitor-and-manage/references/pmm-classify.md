@@ -180,7 +180,7 @@ gh api "repos/$OWNER/$REPO/pulls/$N/comments?per_page=100"
 gh api "repos/$OWNER/$REPO/issues/$N/comments?per_page=100"
 ```
 
-Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, plus the retired `graphite-app[bot]`, which still posts until its App is uninstalled). Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
+Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`). When the generic unresolved-thread gate dispatches Phase A, pass any unresolved retired-app thread IDs from `pr-state.sh` so Phase A can inspect them. Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
 
 ### Refinement pass: `fixpr` verdicts for concurrency + idempotency (still Step 3)
 

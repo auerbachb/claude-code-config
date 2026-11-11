@@ -297,20 +297,15 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
   fi
   jq -c --arg sha "$WAIT_STATE_SHA" '
     . as $root
-    # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
-    # with lib/pr-state-classify.jq, so historical comments still classify) and its
-    # leftover check-run is not CI, but it is never a participant to wait for — it
-    # will not answer a new push. Review checks are recognised by publishing-app
-    # slug, not by name (#1953): a GitHub Actions job named "post-cursor-review"
-    # or "Graphite …" stays CI. The name is consulted only when the bundle carries
-    # no slug at all (an old or hand-built bundle), and never for Graphite.
-    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
+    # Match reviewer checks by publisher when present, and by name only for
+    # older bundles without a slug (issue #1953).
+    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]"] as $botlist
     | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
        "greptile-apps[bot]":"greptile"} as $needles
     | def is_review_check:
         (.app.slug // "" | ascii_downcase) as $slug
         | if $slug != "" then
-            any("coderabbit","codeant","cursor","greptile","graphite";
+            any("coderabbit","codeant","cursor","greptile";
                 . as $x | $slug | contains($x))
           else
             (.name // "" | ascii_downcase) as $name
@@ -320,9 +315,9 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null))
-     | map(select(. != "graphite-app[bot]")) | unique) as $participants
-    | ($root.check_runs.all // []) as $checks
+     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+    | (($root.check_runs.all // [])
+       | map(select((.app.slug // "") | IN("graphite-app", "graphite") | not))) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot
         | $needles[$bot] as $needle
@@ -351,7 +346,12 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
                      and (.conclusion == "failure" or .conclusion == "timed_out"
                           or .conclusion == "action_required" or .conclusion == "startup_failure"
                           or .conclusion == "stale")) | .name ],
-       new_findings: ($root.new_since_baseline.finding_count // 0)}
+       new_findings: ($root.new_since_baseline // {} | . as $delta
+         | if has("reviews") and has("inline") and has("conversation") then
+             [ $delta.reviews[]?, $delta.inline[]?, $delta.conversation[]?
+               | select(.user as $login | $botlist | index($login) != null)
+               | select(.classification.class == "finding") ] | length
+           else .finding_count // 0 end)}
   ' "$WAIT_STATE_BUNDLE"
   exit 0
 fi

@@ -369,7 +369,7 @@ else
       (.comments.reviews[]? | . + {endpoint:"review"}),
       (.comments.inline[]? | . + {endpoint:"inline"}),
       (.comments.conversation[]? | . + {endpoint:"conversation"})
-      | select(.user==null or (.user.login as $login | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] | index($login)!=null))
+      | select(.user==null or (.user.login as $login | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]"] | index($login)!=null))
       | . + {url:(.html_url // .url),actor:(.user.login // null)}
     ]' <<<"$bundle_json" | jq --argjson reviews '[]' --argjson inline '[]' --argjson conversation '[]' --arg since '' -f "$CLASSIFIER")" || { ERROR="comment classification failed for PR #$number"; break; }
     # Complete source bodies/identities feed one aggregate via stdin. Only three

@@ -93,12 +93,13 @@ fi
 # `+00:00`, optional fractional seconds) to epoch seconds; anything else is
 # null, which the anchor step treats as malformed.
 JQ_DEFS='
-  def reviewer_bots: ["coderabbitai[bot]","codeant-ai[bot]","cursor[bot]","greptile-apps[bot]","graphite-app[bot]"];
+  def reviewer_bots: ["coderabbitai[bot]","codeant-ai[bot]","cursor[bot]","greptile-apps[bot]"];
   def reviewer_slugs: {"coderabbitai":"coderabbitai[bot]","coderabbit":"coderabbitai[bot]",
                        "codeant-ai":"codeant-ai[bot]","codeant":"codeant-ai[bot]",
                        "cursor":"cursor[bot]","cursor-com":"cursor[bot]",
-                       "greptile-apps":"greptile-apps[bot]","greptile":"greptile-apps[bot]",
-                       "graphite-app":"graphite-app[bot]","graphite":"graphite-app[bot]"};
+                       "greptile-apps":"greptile-apps[bot]","greptile":"greptile-apps[bot]"};
+  def active_check_runs: (.check_runs_raw // [])[]?
+    | select((.app.slug // "") | IN("graphite-app","graphite") | not);
   def ts: if type != "string" then null
           else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")) as $s
           | if ($s | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
@@ -191,7 +192,7 @@ DECISION=$(printf '%s' "$PAYLOAD_WITH_INV" | jq -c --argjson skew "$NOTICE_SKEW_
           names_head: (($named | index($h | ascii_downcase)) != null),
           for_head: (($named | length) == 0 or ($named | index($h | ascii_downcase)) != null),
           t: ([(.created_at | ts), (.updated_at | ts)] | map(select(. != null)) | max // 0)} ]) as $notices
-  | ([ (.check_runs_raw // [])[]?
+  | ([ active_check_runs
        | select((.app.slug // "") as $s | $slugs | has($s)) ]) as $rchecks
   | ([ $rchecks[]
        | select((.status // "") == "completed")
@@ -271,7 +272,7 @@ PUSH_AT=$(printf '%s' "$RUNS_RAW" | jq -rs --arg ref "$HEAD_REF" --arg hr "$HEAD
 
 ANCHOR=$(jq -cn --arg push "$PUSH_AT" "$JQ_DEFS"'
   input as $p | input as $pull | input as $tl
-  | ([ $p.check_runs_raw[]? | .started_at ] | map(select(. != null))) as $starts
+  | ([ $p | active_check_runs | .started_at ] | map(select(. != null))) as $starts
   | ($starts | map(ts)) as $start_ts
   | ([ $tl[]? | select((.event // "") | IN("ready_for_review","reopened","head_ref_force_pushed"))
        | {src: .event, raw: .created_at} ]) as $events

@@ -899,7 +899,7 @@ jq -c '["coderabbitai","cursor","codeant-ai","greptile-apps","graphite-app"] as 
 
 **Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments, starting from that thread's `comments.pageInfo.endCursor` (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks unresolved ones regardless of author (on `ci-only` / `ci+codeant-one-round` a non-severe finding deferred by a human reply's follow-up-issue link is exempt — `review-policy.md`), so this count never decides a merge.
 
-Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, plus the retired `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
+Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
 ```bash
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
@@ -930,10 +930,10 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
      Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
-  6. Resolve all bot threads with the shared helper (paginated; by default it selects threads whose **first** comment is from one of the review-bot authors — `coderabbitai`/`cursor`/`greptile-apps`/`codeant-ai`, plus the retired `graphite-app` — and falls back to `minimizeComment` on failure). The count above also includes a human-opened thread that a bot replied in; the default filter skips it, so pass its thread ID with `--thread-ids`, which bypasses the author filter:
+  6. Resolve the exact thread IDs you read and replied to. Write one handled thread ID per line to a temporary `$TOUCHED_THREADS` file. Include active-reviewer threads, retired Graphite threads, and human-opened threads containing a bot finding. Skip the call when there were no handled threads. The helper paginates and falls back to `minimizeComment` when resolution fails.
 
      ```bash
-     "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM"
+     "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM" --thread-ids-file "$TOUCHED_THREADS"
      ```
 
      Exit 1 means at least one thread failed both mutations — surface to the user and stop. Do not proceed with a non-zero exit.

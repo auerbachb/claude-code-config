@@ -104,7 +104,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
 gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
 ```
 
-Filter by `coderabbitai[bot]`, `cursor[bot]`, `codeant-ai[bot]`, `greptile-apps[bot]`, or the retired `graphite-app[bot]` (still posting until the App is uninstalled).
+Filter findings by `coderabbitai[bot]`, `cursor[bot]`, `codeant-ai[bot]`, or `greptile-apps[bot]`. For an unresolved-thread blocker, also read `pr-state.sh --pr {{PR_NUMBER}}` and inspect `.threads.unresolved` entries whose first comment author is `graphite-app`. Read the finding and source, then use `reply-thread.sh --reviewer graphite` and resolve only the exact thread ID after replying.
 
 ### Step 2: Verify and Fix
 
@@ -186,7 +186,7 @@ Exit codes: `0` reply posted — by either the inline endpoint or the PR-level f
 
 ### Step 5: Resolve Threads
 
-After replying, resolve **only** the threads you actually handled in Step 2, from any of the Step 1 bots. Do NOT resolve threads authored by human reviewers, or bot threads you did not handle — those may be active discussion unrelated to your fix work.
+After replying, resolve **only** the threads you actually handled in Step 2, from the Step 1 inventory. Do NOT resolve threads authored by human reviewers, or bot threads you did not handle — those may be active discussion unrelated to your fix work.
 
 If you handled no threads (a clean or CI-only run), skip this step — `--thread-ids` rejects an empty list — and go to Step 6. Otherwise use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
 
@@ -194,7 +194,7 @@ If you handled no threads (a clean or CI-only run), skip this step — `--thread
 run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
 ```
 
-Pass the IDs of the threads you handled. Without `--thread-ids` the script resolves every unresolved thread whose first-comment author is in its default `--authors` list (`coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai`) — including bot threads you never saw when your findings were pre-fetched — so never run it bare. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent; a thread you handled but could not resolve blocks the move to Phase B. A bot thread you never handled (posted after your findings were pre-fetched) is not yours to resolve and does not block: leave it open, list its ID in the handoff `notes`, and Phase B processes it.
+Pass the IDs of the threads you handled. Without `--thread-ids` the script resolves every unresolved thread whose first-comment author is in its default `--authors` list (`coderabbitai,cursor,greptile-apps,codeant-ai`) — including bot threads you never saw when your findings were pre-fetched — so never run it bare. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent; a thread you handled but could not resolve blocks the move to Phase B. A bot thread you never handled (posted after your findings were pre-fetched) is not yours to resolve and does not block: leave it open, list its ID in the handoff `notes`, and Phase B processes it.
 
 ### Step 6: Write Handoff File
 

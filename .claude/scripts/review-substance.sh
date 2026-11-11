@@ -286,8 +286,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 MIN_CHARS="${MERGE_GATE_SUBSTANCE_MIN_CHARS:-40}"
 REVIEWERS="coderabbitai[bot],codeant-ai[bot]"
-# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical PRs judge the same.
-CORROBORATORS="cursor[bot],greptile-apps[bot],graphite-app[bot]"
+CORROBORATORS="cursor[bot],greptile-apps[bot]"
 
 print_usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -444,11 +443,13 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
              then . else "" end
       end;
 
+  # Exclude retired comments before the echo index and all reviewer footprints.
+  def active_review_items: map(select((.user.login // "") != "graphite-app[bot]"));
   (.head_sha // "" | ascii_downcase)  as $sha
   | ((.push_ts // "") | canon_ts)     as $push
-  | (.reviews // [])                  as $reviews
-  | (.pr_comments // [])              as $inline
-  | (.issue_comments // [])           as $convo
+  | ((.reviews // []) | active_review_items)        as $reviews
+  | ((.pr_comments // []) | active_review_items)    as $inline
+  | ((.issue_comments // []) | active_review_items) as $convo
   # Issue #1632. Optional; see the input-schema note in the header. Built as a
   # lookup OBJECT rather than kept as an array so the membership test below is
   # O(1) per inline comment instead of O(threads). Ids are stringified on both

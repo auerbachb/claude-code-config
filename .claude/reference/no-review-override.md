@@ -22,7 +22,7 @@ The auto-loaded rule is the short paragraph in `cr-merge-gate.md` Step 1; this f
 
 Never waived (they sit before the mark): authorship, `BEHIND` / `CONFLICTING` / `DIRTY` / `UNKNOWN` merge state, failing or incomplete build CI, branch-protection required contexts, unresolved threads, human `CHANGES_REQUESTED` (on HEAD or stale), the CODEOWNERS `reviewDecision` note, and an unresolved review tier. Test Plan / AC verification is `/wrap` Step 2.2 and runs unchanged.
 
-**CI.** A pending reviewer check-run (CodeRabbit, CodeAnt, BugBot, Greptile, Graphite — matched by exact app slug, as `ci-status.sh --exclude-reviewers` does) would otherwise hold "CI incomplete" forever and extend the window without limit. When the override applies, the CI reasons are re-derived with `--exclude-reviewers`; the dropped runs are listed in `excluded_reviewer_checks`. A *completed* reviewer check is a verdict, so the override never applies with one present — unless that run is a refusal (rate limit, usage limit, no subscription), which is not a review; see "What counts as a verdict on HEAD" below. A pending reviewer check that branch protection **requires** still blocks through the required-context gate.
+**CI.** A pending reviewer check-run (CodeRabbit, CodeAnt, BugBot, Greptile — matched by exact app slug, as `ci-status.sh --exclude-reviewers` does) would otherwise hold "CI incomplete" forever and extend the window without limit. When the override applies, the CI reasons are re-derived with `--exclude-reviewers`; the dropped runs are listed in `excluded_reviewer_checks`. A *completed* reviewer check is a verdict, so the override never applies with one present — unless that run is a refusal (rate limit, usage limit, no subscription), which is not a review; see "What counts as a verdict on HEAD" below. A pending reviewer check that branch protection **requires** still blocks through the required-context gate. Retired Graphite checks are excluded from both CI views and the verdict inventory. The separate required-context gate still enforces any configured Graphite context.
 
 ## What counts as a verdict on HEAD
 
@@ -51,7 +51,7 @@ GitHub records no event for an ordinary push, and a committer date can be days o
 - the PR's `created_at`;
 - the newest `ready_for_review`, `reopened`, or `head_ref_force_pushed` timeline event;
 - the **earliest** `created_at` of a `pull_request`/`pull_request_target` workflow run for HEAD on the PR's own head repo and ref — **required**: those runs exist only once this PR points at HEAD, whereas check-runs on a SHA can predate the PR adopting it (an ordinary push of a SHA already built on another branch leaves no timeline event);
-- the **earliest** `started_at` of the raw (undeduped) HEAD check-runs.
+- the **earliest** `started_at` of the raw (undeduped) HEAD check-runs, excluding the retired Graphite app.
 
 The latest lower bound never understates the push time, so the window can expire late, never early. Ineligible (override off for this evaluation, gate exactly as before): a draft PR, unreadable PR metadata, timeline, or workflow-run list, no such `pull_request` run (so a repo without a `pull_request` workflow never takes the override), a malformed timestamp, no HEAD check-run start time. "Now" is the real clock — deliberately no flag or environment override, so ambient state cannot expire a merge-authorizing window. The anchor is reported as `head_anchor_ts` + `anchor_source`, never as an exact push time.
 

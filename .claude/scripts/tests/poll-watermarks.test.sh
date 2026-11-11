@@ -108,6 +108,14 @@ seed_state null
 check_eq "runtime resolves the seeded repo scope" "$SCOPE_REPO" \
   "$(cd "$REPO_ROOT" && "$SESSION" --session-view 2>/dev/null | jq -r '.repo')"
 
+echo "== Retired Graphite updates the watermark without waking a review (#2192) =="
+seed_state '{"last_review_id":100,"last_inline_comment_id":200,"last_issue_comment_id":50}'
+write_fixture '{"comments":{"reviews":[],"inline":[{"id":201,"user":{"login":"graphite-app[bot]"},"body":"This code can dereference a missing value."}],"conversation":[]}}'
+OUT=$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)
+check_eq "retired inline finding does not wake the poll" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
+STORED=$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")
+check_eq "retired comment still advances the endpoint watermark" "201" "$(jq -r '.last_inline_comment_id' <<<"$STORED")"
+
 echo "== Scenario 1: --init snapshots max IDs from all three endpoints =="
 write_fixture "$(jq -n '{
   comments: {
