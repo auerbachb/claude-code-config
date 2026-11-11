@@ -44,7 +44,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$TEST_DIR/lib/skill-bash.sh"
 
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)"
-SKILL_MD="$SCRIPTS_DIR/../skills/pm/SKILL.md"
+SKILL_MD="$SCRIPTS_DIR/../skills/pm/modules/shared/ownership.md"
 SWEEP_SCRIPT="$SCRIPTS_DIR/candidate-ownership.sh"
 REAL_SESSION_STATE="$SCRIPTS_DIR/session-state.sh"
 

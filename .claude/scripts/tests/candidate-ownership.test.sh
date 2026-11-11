@@ -931,7 +931,10 @@ check_eq "and the linked PR is the right one" "961" "$(field 952 '.adopt.pr')"
 # calls is indistinguishable from no sweep at all.
 echo
 echo "== (10) /pm wiring and output contract =="
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
+PM_ROOT="$REPO_ROOT/.claude/skills/pm"
+PM_SKILL="$TMP/pm-rank-source.md"
+cat "$PM_ROOT/SKILL.md" \
+  "$PM_ROOT/modules/shared/ownership.md" > "$PM_SKILL" || exit 1
 in_pm() { grep -qF -- "$1" "$PM_SKILL" && echo true || echo false; }
 
 # The needles are literal snippets containing `$(`, backticks, and braces. They
@@ -951,7 +954,7 @@ plus the 1B.5 ownership sweep
 NEEDLES
 while IFS= read -r needle; do
   [[ -z "$needle" ]] && continue
-  check_eq "pm/SKILL.md contains: $needle" "true" "$(in_pm "$needle")"
+  check_eq "PM entry or ownership module contains: $needle" "true" "$(in_pm "$needle")"
 done < "$NEEDLES_FILE"
 # Negative control for in_pm(): a string that is certainly absent must read false.
 check_eq "in_pm() control" "false" "$(in_pm 'candidate-ownership.sh --claim')"

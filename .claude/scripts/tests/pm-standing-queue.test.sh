@@ -15,6 +15,7 @@ ROOT = Path(sys.argv[1])
 BASH = sys.argv[2]
 SCRIPTS = ROOT / ".claude/scripts"
 PM = ROOT / ".claude/skills/pm/SKILL.md"
+RANK_PRESENT = PM.parent / "modules/rank/present.md"
 BOARD = ROOT / ".claude/skills/board/SKILL.md"
 REPO = "sample/project"
 SESSION = "session.a:1"
@@ -27,8 +28,8 @@ def block(document, anchor):
     ], text=True)
 
 
-INITIAL = block(PM, "pm-standing-queue-initial")
-INITIAL_PLAN = block(PM, "pm-standing-queue-initial-plan")
+INITIAL = block(RANK_PRESENT, "pm-standing-queue-initial")
+INITIAL_PLAN = block(RANK_PRESENT, "pm-standing-queue-initial-plan")
 READ = block(PM, "pm-standing-queue-read")
 REFILL = block(PM, "pm-standing-queue-refill")
 TOP_UP = block(PM, "pm-standing-queue-top-up")

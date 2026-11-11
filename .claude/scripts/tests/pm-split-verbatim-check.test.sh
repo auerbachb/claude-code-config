@@ -111,6 +111,63 @@ class Parity(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("day-tick.md", result.stderr)
 
+    def test_rank_split_preserves_shared_gates_and_existing_module_order(self):
+        separator = "---\n\n"
+        resume_head = "## Step 1A: Resume mode\n"
+        rank_head = "## Step 1B: Cold start (default)\n"
+        cleanup = "## Step 1C: Backlog & workspace cleanup (always-on)\n"
+        resume = (
+            "### 1A.1: Load\n### 1A.2: State\n",
+            "### 1A.3: Fetch\n",
+            "### 1A.4: Present\n",
+        )
+        priority = "### 1B.1a: Operator priority\n"
+        window = "**Window-fit gate\n"
+        ownership = "**Ownership sweep\n"
+        dispatch = "**Dispatch the selected batch by default.**\n"
+        pause = "**Read the refill pause before dispatching anything\n"
+        verify = "**This read gates the batch\n"
+        rank = (
+            "### 1B.1: Load\n",
+            "### 1B.2: Fetch\n",
+            "### 1B.3: Score\n### 1B.4: Rank\n",
+            "### 1B.5: Present\n",
+        )
+        entry = resume_head + "".join(resume) + separator + rank_head
+        entry += rank[0] + priority + "".join(rank[1:]) + window + ownership + dispatch
+        entry += pause + verify + separator + cleanup
+        self.write(ENTRY, entry)
+        self.write(MODULE, "D0 first\nD1 second\n")
+        self.git("add", str(ENTRY), str(MODULE))
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "baseline rank")
+        baseline = self.git("rev-parse", "HEAD").strip()
+        self.write(ENTRY, resume_head + separator + rank_head + separator + cleanup)
+        modules = ENTRY.parent / "modules"
+        for phase, block in zip(("load", "fetch", "present"), resume):
+            self.write(modules / "resume" / f"{phase}.md", block)
+        for phase, block in zip(("load", "fetch", "score", "present"),
+                                (rank[0] + pause, rank[1], rank[2], rank[3] + dispatch + verify)):
+            self.write(modules / "rank" / f"{phase}.md", block)
+        for phase, block in (("priority", priority), ("window-fit", window), ("ownership", ownership)):
+            self.write(modules / "shared" / f"{phase}.md", block)
+        result = self.check("--baseline-sha", baseline)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        self.write(MODULE, "D1 second\nD0 first\n")
+        result = self.check("--baseline-sha", baseline)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ordered baseline instructions differ", result.stderr)
+        self.assertIn("day-tick.md", result.stderr)
+
+        self.write(MODULE, "D0 first\nD1 second\n")
+        self.write(modules / "shared/priority.md", ownership)
+        self.write(modules / "shared/ownership.md", priority)
+        result = self.check("--baseline-sha", baseline)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("shared/priority.md", result.stderr)
+        self.assertIn("shared/ownership.md", result.stderr)
+
     def test_missing_ref_or_missing_historical_source(self):
         result = self.check("--base", "unknown")
         self.assertEqual(result.returncode, 2)

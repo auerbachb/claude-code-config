@@ -6,13 +6,17 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT="$REPO_ROOT/.claude/scripts/pm-rank-cache.sh"
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 # shellcheck source=lib/skill-bash.sh
 source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
+PM_ROOT="$REPO_ROOT/.claude/skills/pm"
+PM_SKILL="$TMP/pm-rank-source.md"
+cat "$PM_ROOT/SKILL.md" \
+  "$PM_ROOT/modules/rank/score.md" \
+  "$PM_ROOT/modules/rank/present.md" > "$PM_SKILL" || exit 1
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude"
 unset PM_RANK_DIR

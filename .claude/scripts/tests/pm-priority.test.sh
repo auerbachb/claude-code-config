@@ -12,7 +12,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$SCRIPT_DIR/../pm-priority.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 TEMPLATES="$REPO_ROOT/.claude/reference/pm-output-templates.md"
 
 PASS=0; FAIL=0
@@ -31,6 +30,11 @@ source "$SCRIPT_DIR/lib/skill-bash.sh"
 
 TMP="$(mktemp -d)" || die "mktemp -d failed"
 trap 'rm -rf "$TMP"' EXIT
+PM_ROOT="$REPO_ROOT/.claude/skills/pm"
+PM_SKILL="$TMP/pm-rank-source.md"
+cat "$PM_ROOT/SKILL.md" \
+  "$PM_ROOT/modules/rank/load.md" \
+  "$PM_ROOT/modules/rank/score.md" > "$PM_SKILL" || exit 1
 TMP="$(cd -P "$TMP" && pwd)"   # macOS: /var → /private/var, so paths compare equal
 
 export HOME="$TMP/home"
@@ -291,8 +295,8 @@ fi
 
 # ------------------------------------------------------------- /pm blocks
 echo "== /pm: the anchored read (1B.1a) and overlay (1B.4 item 7)"
-READ_BLOCK="$(extract_skill_bash "$PM_SKILL" pm-1b1a-priority-read)" || die "anchor pm-1b1a-priority-read missing"
-APPLY_BLOCK="$(extract_skill_bash "$PM_SKILL" pm-1b4-priority-apply)" || die "anchor pm-1b4-priority-apply missing"
+READ_BLOCK="$(extract_skill_bash "$PM_ROOT/modules/shared/priority.md" pm-1b1a-priority-read)" || die "anchor pm-1b1a-priority-read missing"
+APPLY_BLOCK="$(extract_skill_bash "$PM_ROOT/modules/rank/score.md" pm-1b4-priority-apply)" || die "anchor pm-1b4-priority-apply missing"
 
 # run_read DIR HELPER_PATH — runs 1B.1a's block; prints "<unreadable> <present> <order>".
 run_read() {
@@ -356,6 +360,7 @@ check_contains "3.4 takes the operator order before the queue" "$SKILL_TEXT" "**
 check_contains "3.4 defers parked issues in every source" "$SKILL_TEXT" "**Parked issues are deferred in every source:**"
 check_contains "3.4 names the idle reason" "$SKILL_TEXT" '| `paused (priority unreadable)` |'
 check_contains "day mode's digest knows the idle reason" \
+  "$(cat "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md")" '`paused (budget unknown)`, `paused (priority unreadable)` (3.4)'
   "$(cat "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md")" '`paused (budget unknown)`, `paused (priority unreadable)` (3.4)'
 check_contains "1B.4b leaves override rows alone" "$SKILL_TEXT" "**Operator-ordered rows are already decided**"
 check_contains "the templates mark override rows" "$TPL_TEXT" "Operator order (desk) #1"

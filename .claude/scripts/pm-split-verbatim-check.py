@@ -49,7 +49,8 @@ def instruction_lines(raw, relative):
     return lines
 
 
-def day_layout_mismatches(before, documents):
+def split_day(expected):
+    before = expected[ENTRY]
     starts = []
     for number in range(1, len(DAY_PHASES) + 1):
         positions = [i for i, line in enumerate(before) if line.startswith(f"### 2D.{number}:")]
@@ -58,18 +59,89 @@ def day_layout_mismatches(before, documents):
         if positions:
             starts.append(positions[0])
     if not starts:
-        return []
+        return
     if len(starts) != len(DAY_PHASES) or starts != sorted(starts):
         raise ValueError("baseline day phases are missing or out of order")
     end = before.index("## Step 3: Orchestration Loop\n")
     if end <= starts[-1] or before[end-2:end] != ["---\n", "\n"]:
         raise ValueError("could not identify the end of baseline Step 2D")
     starts.append(end - 2)
-    expected = {ENTRY: before[:starts[0]] + before[starts[-1]:]}
+    expected[ENTRY] = before[:starts[0]] + before[starts[-1]:]
     for index, phase in enumerate(DAY_PHASES):
         path = ENTRY.parent / "modules" / f"day-{phase}.md"
         expected[path] = before[starts[index]:starts[index + 1]]
-    return [path for path, lines in expected.items() if documents.get(path) != lines]
+
+
+RANK_PHASES = (
+    ("resume", (("load", "1A.1"), ("fetch", "1A.3"), ("present", "1A.4")),
+     "## Step 1B: Cold start"),
+    ("rank", (("load", "1B.1"), ("fetch", "1B.2"), ("score", "1B.3"), ("present", "1B.5")),
+     "## Step 1C: Backlog"),
+)
+
+
+def unique_prefix(lines, prefix):
+    matches = [index for index, line in enumerate(lines) if line.startswith(prefix)]
+    if len(matches) != 1:
+        raise ValueError(f"expected one baseline line starting with {prefix!r}")
+    return matches[0]
+
+
+def split_rank(expected, current):
+    module_dir = ENTRY.parent / "modules"
+    for operation, phases, following_step in RANK_PHASES:
+        paths = [module_dir / operation / f"{phase}.md" for phase, _ in phases]
+        if not any(path in current and path not in expected for path in paths):
+            continue
+
+        before = expected[ENTRY]
+        starts = [unique_prefix(before, f"### {step}:") for _, step in phases]
+        end = unique_prefix(before, following_step) - 2
+        starts.append(end)
+        if starts != sorted(set(starts)) or before[end:end + 2] != ["---\n", "\n"]:
+            raise ValueError(f"could not identify ordered baseline {operation} phases")
+
+        for index, path in enumerate(paths):
+            expected[path] = before[starts[index]:starts[index + 1]]
+        expected[ENTRY] = before[:starts[0]] + before[end:]
+
+        if operation == "rank":
+            # The existing presentation prose calls for this read before ranking.
+            present = expected[paths[-1]]
+            start = unique_prefix(present, "**Read the refill pause before dispatching anything")
+            end = unique_prefix(present, "**This read gates the batch")
+            if end <= start:
+                raise ValueError("could not identify the ordered baseline pause and scope gate")
+            expected[paths[0]].extend(present[start:end])
+            del present[start:end]
+
+
+            shared = (
+                ("priority", paths[0], "### 1B.1a:", "**Read the refill pause before dispatching anything"),
+                ("window-fit", paths[-1], "**Window-fit gate", "**Ownership sweep"),
+                ("ownership", paths[-1], "**Ownership sweep", "**Dispatch the selected batch by default."),
+            )
+            for name, source, first, following in shared:
+                contents = expected[source]
+                start = unique_prefix(contents, first)
+                end = unique_prefix(contents, following)
+                if end <= start:
+                    raise ValueError(f"could not identify the ordered baseline {name} gate")
+                expected[module_dir / "shared" / f"{name}.md"] = contents[start:end]
+                del contents[start:end]
+
+
+def ordered_mismatches(baseline, current):
+    expected = baseline.copy()
+    has_layout = len(baseline) > 1 or any(
+        line.startswith(("### 2D.1:", "### 1A.1:", "### 1B.1:")) for line in baseline[ENTRY]
+    )
+    if not has_layout:
+        return []
+    split_day(expected)
+    split_rank(expected, current)
+    return [path for path in sorted(expected.keys() | current.keys())
+            if expected.get(path) != current.get(path)]
 
 
 def git(root, *args):
@@ -100,13 +172,17 @@ def main():
             else:
                 raise ValueError("base ref is missing")
             baseline = git(root, "merge-base", "HEAD", commit).decode().strip()
-        baseline_lines = instruction_lines(git(root, "show", f"{baseline}:{ENTRY}"), ENTRY)
-        paths = [root / ENTRY, *sorted((root / ENTRY.parent / "modules").glob("*.md"))]
-        documents = {path.relative_to(root): instruction_lines(path.read_bytes(), path.relative_to(root))
-                     for path in paths}
-        before = Counter(baseline_lines)
+        module_dir = ENTRY.parent / "modules"
+        tracked = git(root, "ls-tree", "-r", "-z", "--name-only", baseline, "--", str(module_dir))
+        old_paths = [ENTRY, *(Path(os.fsdecode(raw)) for raw in tracked.split(b"\0")
+                             if raw.endswith(b".md"))]
+        original = {path: instruction_lines(git(root, "show", f"{baseline}:{path}"), path)
+                    for path in old_paths}
+        paths = [ENTRY, *(path.relative_to(root) for path in sorted((root / module_dir).rglob("*.md")))]
+        documents = {path: instruction_lines((root / path).read_bytes(), path) for path in paths}
+        before = Counter(line for lines in original.values() for line in lines)
         after = Counter(line for lines in documents.values() for line in lines)
-        mismatched = day_layout_mismatches(baseline_lines, documents)
+        mismatched = ordered_mismatches(original, documents)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"PM split parity unverifiable: {error}", file=sys.stderr)
         return 2
