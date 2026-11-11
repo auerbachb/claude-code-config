@@ -11,13 +11,14 @@
 #
 # Usage:
 #   poll-watermarks.sh <pr_number> --init [--root-repo <path>]
-#   poll-watermarks.sh <pr_number> --reset [--root-repo <path>]
+#   poll-watermarks.sh <pr_number> --reset [--audit-file <path>] [--root-repo <path>]
 #   poll-watermarks.sh <pr_number> --check [--root-repo <path>]
 #   poll-watermarks.sh --help
 #
 # Modes:
 #   --init   Snapshot current max IDs from all three endpoints (first poll tick).
-#   --reset  Same as --init — run after any /fixpr push (cr-github-review.md).
+#   --reset  With --audit-file, advance through a verified /fixpr snapshot.
+#            Without it, explicitly establish a new live baseline.
 #   --check  Compare stored watermarks to live endpoints; stdout lines:
 #              NEW_FINDINGS=0|1
 #              NEW_REVIEW_FINDINGS=0|1
@@ -42,6 +43,7 @@ PR_STATE_CLASSIFY_JQ="${SCRIPT_DIR}/lib/pr-state-classify.jq"
 PR_NUMBER=""
 MODE=""
 ROOT_REPO_ARG=""
+AUDIT_FILE=""
 
 usage() {
   sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
@@ -60,6 +62,14 @@ while [[ $# -gt 0 ]]; do
       fi
       MODE="${1#--}"
       shift
+      ;;
+    --audit-file)
+      AUDIT_FILE="${2:-}"
+      if [[ -z "$AUDIT_FILE" ]]; then
+        echo "poll-watermarks.sh: --audit-file requires a path" >&2
+        exit 2
+      fi
+      shift 2
       ;;
     --root-repo)
       ROOT_REPO_ARG="${2:-}"
@@ -93,13 +103,18 @@ if [[ -z "$MODE" ]]; then
   exit 2
 fi
 
+if [[ "$MODE" != reset && -n "$AUDIT_FILE" ]]; then
+  echo "poll-watermarks.sh: --audit-file requires --reset" >&2
+  exit 2
+fi
+
 for dep in jq; do
   if ! command -v "$dep" >/dev/null 2>&1; then
     echo "poll-watermarks.sh: requires $dep" >&2
     exit 4
   fi
 done
-if [[ ! -x "$PR_STATE" ]]; then
+if [[ -z "$AUDIT_FILE" && ! -x "$PR_STATE" ]]; then
   echo "poll-watermarks.sh: pr-state.sh not found at $PR_STATE" >&2
   exit 4
 fi
@@ -128,6 +143,10 @@ run_pr_state() {
 
 read_watermarks() {
   local wm=""
+  if [[ -n "$AUDIT_FILE" ]]; then
+    "$STATE_HELPER" --repo "$REPO" --get-json ".prs[\"$PR_NUMBER\"].poll_watermarks" || return 1
+    return 0
+  fi
   if [[ -n "$ROOT_REPO_ARG" ]]; then
     wm="$(cd "$ROOT_REPO_ARG" && "$STATE_HELPER" --get ".prs[\"$PR_NUMBER\"].poll_watermarks")" || return 1
   else
@@ -141,6 +160,11 @@ read_watermarks() {
 
 write_watermarks() {
   local json="$1"
+  if [[ -n "$AUDIT_FILE" ]]; then
+    "$STATE_HELPER" --repo "$REPO" --cas ".prs[\"$PR_NUMBER\"].poll_watermarks=$json" \
+      --expect "$(cat "$WORKDIR/stored.json")" || return 1
+    return 0
+  fi
   if [[ -n "$ROOT_REPO_ARG" ]]; then
     ( cd "$ROOT_REPO_ARG" && "$STATE_HELPER" --set ".prs[\"$PR_NUMBER\"].poll_watermarks=$json" ) || return 1
   else
@@ -215,10 +239,14 @@ eval_watermarks() {
 
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/poll-watermarks.XXXXXX") || exit 4
 trap 'rm -rf "$WORKDIR"' EXIT
-STATE_FILE="$(run_pr_state)"
+if [[ -n "$AUDIT_FILE" ]]; then
+  STATE_FILE="$AUDIT_FILE"
+else
+  STATE_FILE="$(run_pr_state)"
+fi
 # Read once into private scratch: validation and classification use the same
 # complete snapshot even if the producer's temporary file later disappears.
-if ! cat "$STATE_FILE" > "$WORKDIR/state.json" || ! jq -e -s '
+if ! cat -- "$STATE_FILE" > "$WORKDIR/state.json" || ! jq -e -s '
   length == 1 and (.[0] | type == "object")
   and (.[0].comments | type == "object")
   and (.[0].comments | [.reviews, .inline, .conversation]
@@ -228,7 +256,27 @@ if ! cat "$STATE_FILE" > "$WORKDIR/state.json" || ! jq -e -s '
   echo "poll-watermarks.sh: unreadable or invalid PR snapshot — watermarks unchanged" >&2
   exit 4
 fi
-if ! read_watermarks > "$WORKDIR/stored.json"; then
+if [[ -n "$AUDIT_FILE" ]]; then
+  if [[ -n "$ROOT_REPO_ARG" ]]; then
+    REPO=$(cd "$ROOT_REPO_ARG" && gh repo view --json nameWithOwner --jq .nameWithOwner) || exit 4
+  else
+    REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || exit 4
+  fi
+  if ! jq -e --arg repo "$REPO" --arg pr "$PR_NUMBER" '
+      .pr as $p | $repo != "" and (($p.owner + "/" + $p.repo) | ascii_downcase) == ($repo | ascii_downcase)
+      and ($p.number | tostring) == $pr and $p.state == "OPEN"
+      and ($p.head_sha | test("^[a-f0-9]{40}$"))
+      and (.new_since_baseline.finding_count == 0) and (.threads.unresolved_count == 0)
+    ' "$WORKDIR/state.json" >/dev/null; then
+    echo "poll-watermarks.sh: audit identity or verification does not match — watermarks unchanged" >&2
+    exit 4
+  fi
+fi
+if ! read_watermarks > "$WORKDIR/stored.json" || ! jq -e '
+    . == null or (type == "object" and
+      all([.last_review_id, .last_inline_comment_id, .last_issue_comment_id][];
+          . == null or (type == "number" and . >= 0 and floor == .)))
+  ' "$WORKDIR/stored.json" >/dev/null; then
   echo "poll-watermarks.sh: could not stage stored watermarks" >&2
   exit 4
 fi
@@ -238,6 +286,11 @@ if ! EVAL="$(eval_watermarks "$WORKDIR/state.json")"; then
 fi
 
 CURRENT_WM="$(jq -c '.current' <<<"$EVAL")"
+if [[ -n "$AUDIT_FILE" ]]; then
+  CURRENT_WM=$(jq -c --slurpfile stored "$WORKDIR/stored.json" '
+    with_entries(. as $entry | .value = ([$entry.value, ($stored[0][$entry.key] // 0)] | max))
+  ' <<<"$CURRENT_WM") || exit 4
+fi
 NEW_FINDINGS="$(jq -r '.new_findings | if . then 1 else 0 end' <<<"$EVAL")"
 NEW_REVIEW="$(jq -r '.new_review_findings | if . > 0 then 1 else 0 end' <<<"$EVAL")"
 NEW_INLINE="$(jq -r '.new_inline_findings | if . > 0 then 1 else 0 end' <<<"$EVAL")"

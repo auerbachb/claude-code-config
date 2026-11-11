@@ -683,7 +683,7 @@ Keep this classifier in place. Do not substitute `wait-until.sh`. See `.claude/r
 Run the audit script again with `--since $RUN_STARTED_AT`. This picks up the new HEAD SHA (post-push) **and** pre-classifies any bot comment that landed between Step 0 and now:
 
 ```bash
-VERIFY=$("$SCRIPT" --since "$RUN_STARTED_AT")
+VERIFY=$("$SCRIPT" --pr "$PR_NUMBER" --since "$RUN_STARTED_AT")
 ```
 
 ### 5a. Threads
@@ -883,6 +883,23 @@ Wait loop:       $FIXPR_WAIT_ITER iteration(s), total wait ${FIXPR_TOTAL_WAIT_SE
 Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | BEHIND | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
 FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable copy for /wrap issue #452>
 FIXPR_WAIT_SUMMARY: iterations=<N> total_wait_secs=<S> final=<clean|cap-exhausted|new-findings-pending>
+```
+
+After a push, when Step 5 accounted for every finding, advance the three poll watermarks through the exact verified audit. Use its current HEAD and leave any later arrivals for the next poll. If the audit is missing, has findings or unresolved threads, or was from a different push, keep the old watermarks.
+
+<!-- test-anchor: fixpr-verified-watermarks -->
+
+```bash
+if [[ "${DID_PUSH:-0}" == 1 && -n "${VERIFY:-}" && -n "${PUSHED_SHA:-}" ]] &&
+   jq -e --arg head "$PUSHED_SHA" '
+     .pr.head_sha == $head and .new_since_baseline.finding_count == 0 and .threads.unresolved_count == 0
+   ' "$VERIFY" >/dev/null; then
+  POLL_WATERMARKS_SH=$(resolve_script poll-watermarks.sh || true)
+  if [[ -n "$POLL_WATERMARKS_SH" ]]; then
+    "$POLL_WATERMARKS_SH" "$PR_NUMBER" --reset --audit-file "$VERIFY" >/dev/null ||
+      echo "[POLL] Verified audit watermark could not be saved; keep polling."
+  fi
+fi
 ```
 
 Render the **Pre-flight** line from the per-reviewer `.status` values in `$PREFLIGHT_SUMMARY_JSON` (Step 0c), never from `.clean` alone. Print `$PREFLIGHT_LINE` verbatim:

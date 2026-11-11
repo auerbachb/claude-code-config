@@ -174,7 +174,7 @@ jq '.comments.conversation | map(select(.user.login == "coderabbitai[bot]"))' "$
 
 **Filter by:** `.user.login == "coderabbitai[bot]"` (with `[bot]` suffix — NOT bare `coderabbitai`).
 
-**Track all three poll watermarks** via `poll-watermarks.sh <PR> --check` / `--reset` (highest review ID, highest inline comment ID, highest issue comment ID — see `cr-github-review.md` §Polling).
+**Track all three poll watermarks** via `poll-watermarks.sh <PR> --check`. `/fixpr` advances them through its verified audit when the audit is clean. See `cr-github-review.md` §Polling.
 
 ### Reviewer Escalation Gate (MANDATORY every CR poll cycle)
 
