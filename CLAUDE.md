@@ -120,3 +120,9 @@ Rules load every turn — redundant or contradictory rules misfire. Limits cover
 ## Memory System
 
 Persist durable insights at `~/.claude/projects/*/memory/` (never secrets/tokens/PII). Prefer: repo-specific CR false positives, stakeholder decisions, incident lessons, external dashboards. Skip: code/API details (read code), git facts, content already in rules, ephemeral work (use `~/.claude/handoffs/`). Dedupe and prune stale entries.
+
+<!-- BEGIN AWS Agent Toolkit rules -->
+# AWS Guidance (new experience)
+
+Say "project" not account, "team member" not IAM user, "AWS Settings" for settings.aws.com, "selected Region". No Lambda@Edge, StackSets, cross-Region; ACM/CloudFront may use us-east-1. Access Denied → check spend limit. AWS tasks: `aws___search_documentation(agent_skills)` + `aws___retrieve_skill`. Read `.claude/reference/aws-guidance.md` for full guidance.
+<!-- END AWS Agent Toolkit rules -->
