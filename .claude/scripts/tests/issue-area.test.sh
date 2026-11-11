@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # catalog: tests — Exercises optional area placement and the canonical wave pair check.
-# covers: .claude/scripts/issue-area.py .claude/skills/wave/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/pm-handoff/SKILL.md .claude/pm-config.md .claude/scripts/tests/lib/skill-bash.sh
+# covers: .claude/scripts/issue-area.py .claude/skills/wave/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/pm-handoff/SKILL.md .claude/pm-config.md .claude/scripts/tests/lib/skill-bash.sh CLAUDE.md
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 python3 - "$root" "$BASH" <<'PY'
