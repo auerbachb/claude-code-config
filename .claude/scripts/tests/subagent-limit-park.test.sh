@@ -44,7 +44,6 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 DOC="$REPO_ROOT/.claude/reference/subagent-thread-limit-park.md"
 GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
 SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
 DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
@@ -133,7 +132,7 @@ BLOCK_PIPELINE="$(extract_skill_bash "$DOC" subagent-limit-pipeline-record)" || 
 BLOCK_WAKE="$(extract_skill_bash     "$DOC" subagent-limit-wake-arm)"        || exit 1
 BLOCK_PUBLISH="$(extract_skill_bash  "$DOC" subagent-limit-wake-publish)"    || exit 1
 BLOCK_RECOVERY="$(extract_skill_bash "${PARK_SNAPSHOT_RECOVERY_TEST_SOURCE:-$DOC}" subagent-limit-park-recovery)"   || exit 1
-BLOCK_PM_SNAPSHOT="$(extract_skill_bash "${PARK_SNAPSHOT_PM_TEST_SOURCE:-$PM_SKILL}" pm-day-park-snapshot)" || exit 1
+BLOCK_PM_SNAPSHOT="$(extract_skill_bash "${PARK_SNAPSHOT_PM_TEST_SOURCE:-$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md}" pm-day-park-snapshot)" || exit 1
 BLOCK_GEN="$(extract_skill_bash    "$GO_ON" go-on-limit-generation-gate)"    || exit 1
 BLOCK_PROBE="$(extract_skill_bash  "$GO_ON" go-on-limit-park-probe)"         || exit 1
 
@@ -481,7 +480,7 @@ echo "== #1622: /pm 2D.6 landing between this park's claim and its wake publish 
 # winner then reached §4, also read null, and published. Two wakes over one
 # park. 2D.6 now claims `limit_cause` by the same compare-and-set, so the
 # interleaving costs it the slot instead of the park.
-BLOCK_PM_2D6="$(extract_skill_bash "$PM_SKILL" pm-day-2d6-park-claim)" || exit 1
+BLOCK_PM_2D6="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-park-claim)" || exit 1
 
 run_pm_2d6() {  # run_pm_2d6 <parked_until> <limit_kind> [new_hits]
   PARKED_UNTIL="$1" LIMIT_KIND="$2" NEW_HITS="${3-1}" bash -c "$BLOCK_PM_2D6" 2>/dev/null | tail -1
@@ -1117,7 +1116,7 @@ echo "== Pre-emptive (#1619): the horizon gate, and its parity with /pm 2D.7 =="
 
 BLOCK_HORIZON="$(extract_skill_bash "$DOC" subagent-limit-horizon-gate)"       || exit 1
 BLOCK_WINDOW="$(extract_skill_bash  "$DOC" subagent-limit-preemptive-window)"  || exit 1
-BLOCK_PM_D2="$(extract_skill_bash   "$PM_SKILL" pm-day-d2-horizon-branch)"     || exit 1
+BLOCK_PM_D2="$(extract_skill_bash   "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" pm-day-d2-horizon-branch)"     || exit 1
 
 # A stand-in for usage-horizon.sh: --check prints the STATUS/REASON pair and
 # exits on the documented code; --observe exits 0 whatever the verdict.
@@ -1537,16 +1536,16 @@ require_text "pm-monitoring-decision separates polling from parking" \
 
 # AC 5: both out-of-scope notes now name what is in scope.
 require_text "/pm 2D.7 names the newly in-scope loops" \
-  "$PM_SKILL" 'Now in scope elsewhere'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Now in scope elsewhere'
 # #1444 moved PMM and babysit from "out of scope" to "readers only". Assert the
 # NEW sentence and refute the old one — a presence-only check on the section
 # would still pass if the out-of-scope claim came back beside the new text.
 require_text "  and names #1444's two loops as readers only" \
-  "$PM_SKILL" 'Also in scope, as readers only \(#1444\)'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Also in scope, as readers only \(#1444\)'
 refute_text "  and no longer calls them out of scope" \
-  "$PM_SKILL" 'Still out of scope'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Still out of scope'
 refute_text "  and no longer calls the monitor-mode reflex an unfiled follow-up" \
-  "$PM_SKILL" 'is a named follow-up, not part of this change'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'is a named follow-up, not part of this change'
 require_text "pm-day-mode.md's scope boundary is updated" \
   "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'Scope boundary \(updated by #1619, then #1444\)'
 refute_text "  and no longer says the follow-up is unfiled" \

@@ -27,7 +27,10 @@ ARGUMENTS
                      session has just replaced can never consume the change
                      feed. When SESSION is not the control session, nothing
                      is read, the watermark is not moved, tick_at is not
-                     stamped, and the exit is 4. Without it, any caller ticks.
+                     stamped, and the exit is 4. Without it there is no session
+                     check, but the owner check (issue #2184) still applies: on
+                     a stamped queue a call that names no binding, or another
+                     one, exits 4 with nothing read or written.
   --interrupts RULE  honor the operator's interrupt rule (issue #1783; see
                      `interrupt --help`): RULE (everything or away) is the
                      default when SESSION has set none, and the desk passes
@@ -77,6 +80,9 @@ EXIT CODES
      or with a rule other than everything or away (before any connection
      attempt); --session names a session that is not the registered control
      session (after connecting, nothing read or written)
+  4  the queue belongs to another account (issue #2184; any tick, with or
+     without --session): after connecting, nothing read or written; the
+     line names both accounts
   5  the --session value looks like a secret (before any connection attempt)
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF
@@ -107,6 +113,14 @@ SQL
   if [ "$1" -eq 1 ]; then
     cat <<'SQL'
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_control_locked \gset
+SQL
+  fi
+  # The queue owner check (issue #2184) applies to EVERY tick, sessionless
+  # included: a caller that is not this queue's account cannot consume its
+  # change feed. It wraps the control check and the read below.
+  hq_sql_owner_guard_open
+  if [ "$1" -eq 1 ]; then
+    cat <<'SQL'
 SELECT coalesce((SELECT value FROM state WHERE key = 'control_session'), '') = :'hq_session' AS hq_ok \gset
 \if :hq_ok
 SQL
@@ -154,10 +168,11 @@ SELECT '!this session is not the registered control session; nothing was read an
 \endif
 SQL
   fi
+  hq_sql_owner_guard_close
 }
 
 cmd_run() {
-  local errf out rc session="" guard=0 hold=0 default_rule=""
+  local errf out rc session="" guard=0 hold=0 default_rule="" binding=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -h|--help)
@@ -195,10 +210,13 @@ cmd_run() {
     hq_refuse_secret "tick: the session id" "$session"
   fi
 
+  hq_binding_arg binding
+
   hq_db_connect
   hq_mktemp errf
   rc=0
   out=$(hq__tick_sql "$guard" "$hold" | hq_db_script -At -v "hq_session=$session" \
+          -v "hq_binding=$binding" \
           -v "hq_default=$default_rule" -v "hq_tz=$(hq_desk_tz)" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_fail_unmigrated "$rc" "$errf" "tick: the watermark was not moved" 'change_xid'

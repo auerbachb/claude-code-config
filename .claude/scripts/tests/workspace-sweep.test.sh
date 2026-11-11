@@ -42,7 +42,7 @@ cases = r'''
     verify(git('branch','--list','cadence-merged')=='','actual cleanup removes finished local branch')
     verify(logs()[-1]['removed']==1 and logs()[-1]['skipped_with_reason']>=1,'actual cleanup counts recorded')
     now=int(time.time())
-    tick=fence('.claude/skills/pm/SKILL.md','# workspace-sweep-pm-day\n')
+    tick=fence('.claude/skills/pm/modules/day-tick.md','# workspace-sweep-pm-day\n')
     for _ in range(2):
         result=subprocess.run(['bash','-c',tick],cwd=root,env=dict(env,CADENCE_RUNNER=str(runner)),text=True,capture_output=True,timeout=120)
         verify(result.returncode==0 and not result.stdout,'actual tick inside post-merge interval is silent')

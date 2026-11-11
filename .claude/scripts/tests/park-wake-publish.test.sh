@@ -17,7 +17,13 @@ import unittest
 
 ROOT = Path(sys.argv[1])
 SHELL = os.environ['PARK_WAKE_TEST_SHELL']
-SKILL = Path(os.environ.get('PARK_WAKE_TEST_SKILL_SOURCE', ROOT / '.claude/skills/pm/SKILL.md'))
+MODULES = ROOT / '.claude/skills/pm/modules'
+SKILL_OVERRIDE = os.environ.get('PARK_WAKE_TEST_SKILL_SOURCE')
+
+
+def park_text(cause):
+    path = Path(SKILL_OVERRIDE) if SKILL_OVERRIDE else MODULES / f'day-park-{cause}.md'
+    return path.read_text()
 HELPER = Path(os.environ.get('PARK_WAKE_TEST_HELPER_SOURCE', ROOT / '.claude/scripts/park-wake-publish.sh'))
 REAL_STATE = ROOT / '.claude/scripts/session-state.sh'
 REPO = 'owner/repo'
@@ -86,9 +92,8 @@ if '--cas' in args:
 os.execv(shell,[shell,real]+args)
 ''')
         self.blocks = {}
-        text = SKILL.read_text()
         for cause, anchor in [('reactive', 'pm-day-2d6-wake-publish'), ('preemptive', 'pm-day-2d7-wake-publish')]:
-            match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```', text, re.S)
+            match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```', park_text(cause), re.S)
             self.assertIsNotNone(match, anchor)
             self.blocks[cause] = match.group(1)
         subagent=(ROOT / '.claude/reference/subagent-thread-limit-park.md').read_text()
@@ -427,7 +432,7 @@ os.execv(shell,[shell,real]+args)
         for cause in ['reactive','preemptive']:
             self.seed(cause);self.set_day(parked_until=None,limit_cause=None,limit_probe_fires_remaining=None)
             def fence(anchor):
-                match=re.search(r'<!-- test-anchor: '+re.escape(anchor)+r' -->\s*```bash\n(.*?)\n```',SKILL.read_text(),re.S)
+                match=re.search(r'<!-- test-anchor: '+re.escape(anchor)+r' -->\s*```bash\n(.*?)\n```',park_text(cause),re.S)
                 self.assertIsNotNone(match,anchor);return match.group(1)
             code=fence('pm-day-2d6-park-claim' if cause=='reactive' else 'pm-day-2d7-park-claim')
             if cause=='preemptive':code+='\n'+fence('pm-day-2d7-park-record')

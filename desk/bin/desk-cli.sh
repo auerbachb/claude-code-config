@@ -82,6 +82,10 @@ case "${1:-}" in
     if ! dc_schema=$(hqb_test_schema); then
       dc_schema=""
     fi
+    # The caller's binding name travels with the schema (issue #2184): the
+    # queue checks it against the owner it recorded. A test schema takes the
+    # name only through hqb_test_binding (hq_test_ names); a real account's
+    # name always comes from the registry row, never from the environment.
     if [ -z "$dc_schema" ]; then
       if ! dc_dir=$(hqb_config_dir); then
         dc_unavailable "cannot find this account's queue: neither CLAUDE_CONFIG_DIR nor HOME is set"
@@ -89,17 +93,20 @@ case "${1:-}" in
       dc_rc=0
       hqb_lookup "$dc_dir" || dc_rc=$?
       case "$dc_rc" in
-        0) dc_schema="$HQB_SCHEMA" ;;
+        0) dc_schema="$HQB_SCHEMA"; dc_name="$HQB_NAME" ;;
         3)
           printf "desk-cli: You can't run the desk here until you configure a queue for this account. Bind it with: %s bind --name <name> --schema <schema>\n" "$dc_bin/desk-cli.sh" >&2
           exit 4
           ;;
         *) dc_unavailable "$HQB_REASON" ;;
       esac
+    else
+      dc_name=$(hqb_test_binding)
     fi
     HUMAN_QUEUE_SCHEMA="$dc_schema"
-    export HUMAN_QUEUE_SCHEMA
-    unset dc_schema dc_dir dc_rc
+    HUMAN_QUEUE_BINDING="$dc_name"
+    export HUMAN_QUEUE_SCHEMA HUMAN_QUEUE_BINDING
+    unset dc_schema dc_name dc_dir dc_rc
     ;;
 esac
 

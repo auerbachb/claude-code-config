@@ -3,7 +3,7 @@
 # catalog: tests — Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill
 #
 # WHAT IS UNDER TEST
-#   The REAL fenced bash in `.claude/skills/pm/SKILL.md`, pulled out at run time
+#   The real fenced Bash in the PM day modules, pulled out at run time
 #   by `lib/skill-bash.sh` through the `<!-- test-anchor: … -->` markers and
 #   executed against a stubbed `usage-horizon.sh` and a real `session-state.sh`
 #   driven by a throwaway $HOME. Nothing below is a transcription: edit the
@@ -38,7 +38,6 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 PAUSE="$REPO_ROOT/.claude/skills/pause/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
@@ -113,17 +112,17 @@ refute_text() {
 
 # Extract every anchored block once; a failed extraction is fatal, never skipped
 # (a suite that silently runs zero lines of skill bash passes green forever).
-BLOCK_D2="$(extract_skill_bash "$SKILL" pm-day-d2-horizon-branch)" || exit 1
-BLOCK_CLAIM="$(extract_skill_bash "$SKILL" pm-day-2d7-park-claim)" || exit 1
-BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
-BLOCK_2D6="$(extract_skill_bash "$SKILL" pm-day-2d6-park-claim)" || exit 1
-BLOCK_RELEASE="$(extract_skill_bash "$SKILL" pm-day-2d7-park-release)" || exit 1
-BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
-BLOCK_REC_SNAPSHOT="$(extract_skill_bash "$SKILL" pm-day-park-snapshot)" || exit 1
+BLOCK_D2="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" pm-day-d2-horizon-branch)" || exit 1
+BLOCK_CLAIM="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-claim)" || exit 1
+BLOCK_RECORD="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-record)" || exit 1
+BLOCK_2D6="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-park-claim)" || exit 1
+BLOCK_RELEASE="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-release)" || exit 1
+BLOCK_WAKE="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-wake-publish)" || exit 1
+BLOCK_REC_SNAPSHOT="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" pm-day-park-snapshot)" || exit 1
 BLOCK_REC_PREP="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-prepare)" || exit 1
 BLOCK_REC_AUTH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-authorize)" || exit 1
 BLOCK_REC_PUBLISH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-publish)" || exit 1
-BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
+BLOCK_PROBE="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-probe-fire)" || exit 1
 
 # `TaskStop` is a harness tool, not a binary, so the wake-publish block cannot
 # run without a stand-in. Two shapes are needed: one that stops the Monitor
@@ -396,7 +395,7 @@ fi
 # The fallback branch is unreachable in this harness, so the line above models the
 # skill's expression rather than running it. Anchor the model to the source, or a
 # changed SKILL.md fallback leaves this suite green while asserting nothing.
-require_text "the documented fallback is the four-draw %04x form this shape check models" "$SKILL" \
+require_text "the documented fallback is the four-draw %04x form this shape check models" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" \
   '%04x%04x%04x%04x'
 OLD_FALLBACK_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
 if [[ ! "$OLD_FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
@@ -707,45 +706,45 @@ check_eq "probe: non-integer bound fails closed" "PROBE=fail-closed" "$(run_prob
 echo "== Contract: teardown, recovery, schema, scope (AC 2, 5, 6, 7) =="
 # ---------------------------------------------------------------------------
 
-require_text "2D.7 exists as its own sub-step" "$SKILL" '^### 2D\.7: Usage-horizon pre-emptive park'
-require_text "2D.6 is still its own sub-step"  "$SKILL" '^### 2D\.6: Usage-limit park and wake'
-require_text "critical is the only park trigger" "$SKILL" 'Trigger:.*HORIZON_PARK=true.*critical'
-require_text "park reuses the execution gate"  "$SKILL" 'execution-pause\.sh --activate --command pause --window-minutes'
-require_text "park skips the refill.paused write" "$SKILL" 'skipping only Step 1.s `\.refill\.paused` write'
-require_text "wake never passes --resume-refill"  "$SKILL" 'Never pass `--resume-refill`'
-require_text "probe monitor is persistent"        "$SKILL" '/pm day --probe-wake --day-generation'
-require_text "probe defaults are 30m / 12 fires"  "$SKILL" 'CLAUDE_HORIZON_PROBE_CADENCE_MINUTES'
-require_text "probe fire bound knob documented"   "$SKILL" 'CLAUDE_HORIZON_PROBE_MAX_FIRES'
+require_text "2D.7 exists as its own sub-step" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" '^### 2D\.7: Usage-horizon pre-emptive park'
+require_text "2D.6 is still its own sub-step"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" '^### 2D\.6: Usage-limit park and wake'
+require_text "critical is the only park trigger" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Trigger:.*HORIZON_PARK=true.*critical'
+require_text "park reuses the execution gate"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'execution-pause\.sh --activate --command pause --window-minutes'
+require_text "park skips the refill.paused write" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'skipping only Step 1.s `\.refill\.paused` write'
+require_text "wake never passes --resume-refill"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Never pass `--resume-refill`'
+require_text "probe monitor is persistent"        "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" '/pm day --probe-wake --day-generation'
+require_text "probe defaults are 30m / 12 fires"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'CLAUDE_HORIZON_PROBE_CADENCE_MINUTES'
+require_text "probe fire bound knob documented"   "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'CLAUDE_HORIZON_PROBE_MAX_FIRES'
 # A zero cadence would make the Monitor's `sleep 0` a hot loop, and a zero bound
 # arms a wake that can only ever stop itself; a zero WINDOW is legal and is how
 # reactive parity is requested. The knobs therefore validate differently.
 # These three assert the DOCUMENTATION only — the behaviour they describe is
 # proven in the "Knob validation" and "rc propagation" sections below. A grep for
 # a sentence is not coverage of the rule that sentence describes.
-require_text "probe knobs documented as > 0" "$SKILL" 'and `> 0`'
-require_text "window knob documented as 0-legal" "$SKILL" '`0` is legal.*reactive parity'
-require_text "hot-loop rationale is stated"  "$SKILL" 'sleep 0.* hot loop'
+require_text "probe knobs documented as > 0" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'and `> 0`'
+require_text "window knob documented as 0-legal" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" '`0` is legal.*reactive parity'
+require_text "hot-loop rationale is stated"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'sleep 0.* hot loop'
 # A wake whose TaskStop failed — or whose registry could not be read — must keep
 # its identity: nulling it strands a ticking Monitor that nothing can name.
 # #1622 replaced 2D.6's TaskStop-then-overwrite guard with the same cause CAS
 # 2D.7 and the subagent leg use. Assert the NEW shape, and refute the old one —
 # a presence-only check would still pass if the override sentence came back.
-require_text "2D.6 claims the slot by compare-and-set" "$SKILL" \
+require_text "2D.6 claims the slot by compare-and-set" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" \
   '\-\-cas .*day\.limit_cause=.*reactive.* \-\-expect null'
-require_text "2D.6 adopts on a lost claim" "$SKILL" 'PARK_CLAIM=adopted'
-require_text "2D.6 states why the identity nulls are safe" "$SKILL" 'safe no-op'
-refute_text "the TaskStop-first override is gone" "$SKILL" 'ADOPT_ABORT'
-require_text "known reset arms the one-shot instead" "$SKILL" "arm 2D\.6's sleep-until-reset one-shot verbatim"
-require_text "reactive path tags its cause"       "$SKILL" 'day\.limit_cause=..reactive'
-refute_text "reactive path no longer stops the wake first" "$SKILL" 'Stop it BEFORE the write nulls its ID'
-require_text "recovery re-arms with remaining fires" "$SKILL" 'not a fresh bound'
+require_text "2D.6 adopts on a lost claim" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'PARK_CLAIM=adopted'
+require_text "2D.6 states why the identity nulls are safe" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'safe no-op'
+refute_text "the TaskStop-first override is gone" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'ADOPT_ABORT'
+require_text "known reset arms the one-shot instead" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" "arm 2D\.6's sleep-until-reset one-shot verbatim"
+require_text "reactive path tags its cause"       "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'day\.limit_cause=..reactive'
+refute_text "reactive path no longer stops the wake first" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'Stop it BEFORE the write nulls its ID'
+require_text "recovery re-arms with remaining fires" "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" 'not a fresh bound'
 # Restart recovery compares parked_until against `date -u +%s`, so its BSD
 # fallback must parse the Z timestamp as UTC. A bare `date -j -f` there reads
 # every park four hours long on an ET machine — silently, with no error.
-require_text "restart recovery parses parked_until as UTC" "$SKILL" \
+require_text "restart recovery parses parked_until as UTC" "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" \
   "date -u -j -f '%Y-%m-%dT%H:%M:%SZ'"
-require_text "weekly caps stay manual-resume"     "$SKILL" 'weekly caps remain the reactive path.s business and stay manual-resume'
-require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --check` exits 0'
+require_text "weekly caps stay manual-resume"     "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'weekly caps remain the reactive path.s business and stay manual-resume'
+require_text "credit budget still gates refill"   "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" 'credit-budget\.sh --check` exits 0'
 # #1619 narrowed this boundary; #1444 closed it. The monitor-loop reflex is in
 # scope (a subagent-running thread reads the same horizon and claims the same
 # repo park slot), and /pr-monitor-and-manage and /babysit-pr now read the same
@@ -753,14 +752,14 @@ require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --
 # Assert BOTH halves, and refute the retired out-of-scope wording: dropping the
 # assertion when the sentence changed would have retired the only check that the
 # boundary is stated at all.
-require_text "the monitor-loop reflex is now in scope (#1619)" "$SKILL" 'Now in scope elsewhere'
+require_text "the monitor-loop reflex is now in scope (#1619)" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Now in scope elsewhere'
 require_text "  and names the shared compare-and-set that prevents double-parking" \
-  "$SKILL" 'compare-and-set on `limit_cause`'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'compare-and-set on `limit_cause`'
 require_text "/pmm and /babysit-pr are named as readers only (#1444)" \
-  "$SKILL" 'Also in scope, as readers only.*pr-monitor-and-manage'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Also in scope, as readers only.*pr-monitor-and-manage'
 refute_text "  and are no longer called out of scope" \
-  "$SKILL" 'Still out of scope:.*pr-monitor-and-manage'
-require_text "park surfaces at most two lines"    "$SKILL" 'Two lines on park, one on resume'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Still out of scope:.*pr-monitor-and-manage'
+require_text "park surfaces at most two lines"    "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Two lines on park, one on resume'
 
 require_text "pause teardown covers the probe wake" "$PAUSE" 'both wake shapes'
 # -1, not null: the field is three-valued since #1445, and `null` means "reset
@@ -1016,13 +1015,13 @@ echo "== Greptile round: expired-but-unresolved park, and CAS interleaving =="
 # fractionally in the PAST. Both recovery sites must consult the bound before the
 # expiry shortcut, or they call a standing park "resolved", erase the
 # manual-resume state, and arm a loop the still-closed execution gate then blocks.
-require_text "2D.1(b+) checks the spent bound before expiry" "$SKILL" \
+require_text "2D.1(b+) checks the spent bound before expiry" "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" \
   'spent bound outlives its own deadline'
-require_text "2D.5 checks the spent bound before expiry" "$SKILL" \
+require_text "2D.5 checks the spent bound before expiry" "$REPO_ROOT/.claude/skills/pm/modules/day-recovery.md" \
   'Read that pair before applying the expiry test'
-require_text "spent bound stays parked whatever parked_until says" "$SKILL" \
+require_text "spent bound stays parked whatever parked_until says" "$REPO_ROOT/.claude/skills/pm/modules/day-recovery.md" \
   'stays parked whatever `parked_until` says'
-require_text "spent-bound recovery names the manual resume" "$SKILL" \
+require_text "spent-bound recovery names the manual resume" "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" \
   'probe bound spent.*resume manually with /pause-resume'
 # Non-vacuity for the ordering claim. The finding is ORDER, not presence: each
 # recovery paragraph is one long line, so take the line carrying the expiry
@@ -1030,8 +1029,8 @@ require_text "spent-bound recovery names the manual resume" "$SKILL" \
 # A test that merely greps both strings would pass with the guard written after
 # the shortcut it is supposed to qualify — i.e. with the bug still in place.
 assert_bound_precedes_expiry() {
-  local desc="$1" marker="$2" line off_bound off_expiry
-  line=$(grep -F -- "$marker" "$SKILL" | head -1)
+  local desc="$1" marker="$2" source="$3" line off_bound off_expiry
+  line=$(grep -F -- "$marker" "$source" | head -1)
   if [ -z "$line" ]; then
     FAIL=$((FAIL + 1)); echo "FAIL — $desc (no line carrying '$marker')"; return
   fi
@@ -1048,8 +1047,8 @@ assert_bound_precedes_expiry() {
     FAIL=$((FAIL + 1)); echo "FAIL — $desc (bound at $off_bound is NOT before expiry at $off_expiry)"
   fi
 }
-assert_bound_precedes_expiry "2D.1(b+) qualifies its expiry shortcut" 'the park resolved or never existed'
-assert_bound_precedes_expiry "2D.5 qualifies its expiry shortcut"     'may recovery continue normally'
+assert_bound_precedes_expiry "2D.1(b+) qualifies its expiry shortcut" 'the park resolved or never existed' "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md"
+assert_bound_precedes_expiry "2D.5 qualifies its expiry shortcut"     'may recovery continue normally' "$REPO_ROOT/.claude/skills/pm/modules/day-recovery.md"
 
 # P1: the cause CAS and the metadata write used to be two lock holds, so a
 # reactive kill landing between them could leave a record mixing both paths'
@@ -1321,7 +1320,7 @@ seed_day_state
 NOTOK_TOK="$(claim_and_token)"
 check_eq "release: an empty token fails closed" "PARK_RELEASE=error rc=token" "$(run_release "" | tail -1)"
 check_eq "release token guard: the claim survives" "$NOTOK_TOK" "$(day_get park_claim_token)"
-require_text "the release is keyed on the claim token, not the timestamp or the cause" "$SKILL" \
+require_text "the release is keyed on the claim token, not the timestamp or the cause" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" \
   'Gate the release on your claim token, not on your own timestamp and not on `limit_cause`'
 
 # Exit 6 is a lock timeout and documented as retryable, so the release retries it
@@ -1354,7 +1353,7 @@ NORETRY_OUT="$(SESSION_STATE_SH="$RETRY_STUB_DIR/session-state.sh" REPO_KEY="$RE
 check_eq "release retry: a retried non-owner still stands down" "PARK_RELEASE=superseded" "$NORETRY_OUT"
 check_eq "release retry control: the real claim survives it" "$NORETRY_TOK" "$(day_get park_claim_token)"
 rm -rf "$RETRY_STUB_DIR"
-require_text "the release retries a documented-retryable lock timeout" "$SKILL" \
+require_text "the release retries a documented-retryable lock timeout" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" \
   'Exit 6 is a lock timeout and documented as retryable'
 
 # ---------------------------------------------------------------------------
@@ -1390,9 +1389,9 @@ check_eq "probe: the sentinel is left untouched" "-1" "$(day_get limit_probe_fir
 
 # Recovery and teardown must know the third value, or -1 silently falls into the
 # null branch and re-arms the very wake the teardown stopped.
-require_text "2D.1(b+) handles the -1 sentinel"  "$SKILL" 'is the third value'
-require_text "2D.5 handles the -1 sentinel"      "$SKILL" 'zero, .-1., or unreadable'
-require_text "the bound is documented three-valued" "$SKILL" 'bound field is three-valued'
+require_text "2D.1(b+) handles the -1 sentinel"  "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" 'is the third value'
+require_text "2D.5 handles the -1 sentinel"      "$REPO_ROOT/.claude/skills/pm/modules/day-recovery.md" 'zero, .-1., or unreadable'
+require_text "the bound is documented three-valued" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'bound field is three-valued'
 require_text "schema documents the three-valued bound" "$SCHEMA" 'THREE-VALUED'
 require_text "day-mode doc records the sentinel"  "$DAY_MODE_DOC" 'probe bound is three-valued'
 
