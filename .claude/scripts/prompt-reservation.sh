@@ -194,6 +194,41 @@ if [[ "$action" == commit-leave ]]; then
     esac
   done
 fi
+# A leave release can fail because the state writer is locked. Record the
+# abandoned generation separately so a fresh invocation can recover it.
+# The receipt never authorizes a menu and must match the exact owner and repo.
+release_dir="$HOME/.claude/prompt-release-receipts"
+receipt_matches() {
+  local token="$1" expected_owner="$2" file="$release_dir/$1.json"
+  [[ ! -L "$release_dir" && -f "$file" && ! -L "$file" ]] &&
+    jq -e --arg repo "$repo_key" --arg token "$token" --argjson owner "$expected_owner" \
+      '.repo == $repo and .generation == $token and .owner == $owner' "$file" >/dev/null 2>&1
+}
+
+save_release_receipt() (
+  umask 077
+  mkdir -p "$release_dir" && [[ ! -L "$release_dir" ]] || return 1
+  local file="$release_dir/$generation.json" temporary
+  if [[ -e "$file" || -L "$file" ]]; then
+    receipt_matches "$generation" "$owner"
+    return
+  fi
+  temporary="$(mktemp "$release_dir/.receipt.XXXXXX")" || return 1
+  trap 'rm -f "$temporary"' EXIT
+  jq -cn --arg repo "$repo_key" --arg token "$generation" --argjson owner "$owner" \
+    '{repo:$repo,generation:$token,owner:$owner}' >"$temporary" || return 1
+  # Publish without overwriting an existing receipt.
+  ln "$temporary" "$file" 2>/dev/null || true
+  receipt_matches "$generation" "$owner"
+)
+
+drop_release_receipt() {
+  local token="$1" expected_owner="$2"
+  if receipt_matches "$token" "$expected_owner"; then
+    rm -f "$release_dir/$token.json" || printf 'prompt-reservation: could not retire release receipt\n' >&2
+  fi
+}
+
 read_reservation() {
   local rc=0
   current="$("$state" --repo "$repo" --get-json "$path" 2>/dev/null)" || rc=$?
@@ -209,32 +244,40 @@ read_reservation() {
       (.start | type == "string" and test("^[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$"))))' <<<"$current" >/dev/null 2>&1 ||
     unavailable 'reservation state is invalid'
 }
-require_owned_reservation() {
+owns_reservation() {
   local rc=0
   jq -e --arg token "$generation" --argjson owner "$owner" \
     '. != null and .generation == $token and .owner == $owner' <<<"$current" >/dev/null || rc=$?
   case "$rc" in
     0) return 0 ;;
-    1) exit 10 ;;
+    1) return 1 ;;
     *) unavailable 'cannot verify reservation ownership' ;;
   esac
 }
+if [[ "$action" == release && "$kind" == leave ]]; then
+  save_release_receipt || printf 'prompt-reservation: could not persist release receipt; retain the generation for retry\n' >&2
+fi
 read_reservation
+
+finish_release() {
+  if [[ "$kind" == leave ]]; then drop_release_receipt "$generation" "$owner"; fi
+  exit "$1"
+}
 
 # A compare loss can leave our token in place; only a conclusive re-read may
 # report it gone. One retry is enough for the common transient lock timeout.
 if [[ "$action" == release ]]; then
   for attempt in 1 2; do
-    require_owned_reservation
+    owns_reservation || finish_release 10
     release_rc=0
     "$state" --repo "$repo" --cas "$path=null" --expect "$current" >/dev/null || release_rc=$?
     case "$release_rc" in
-      0) exit 0 ;;
+      0) finish_release 0 ;;
       6|7) read_reservation ;;
       *) unavailable 'cannot release reservation' ;;
     esac
   done
-  require_owned_reservation
+  owns_reservation || finish_release 10
   unavailable 'reservation release did not complete'
 fi
 
@@ -245,7 +288,18 @@ cas() {
 }
 
 if [[ "$action" == claim ]]; then
-  if [[ "$current" != null ]] && ! owner_gone; then exit 10; fi
+  abandoned_generation=""
+  if [[ "$current" != null ]]; then
+    if [[ "$kind" == leave ]]; then
+      abandoned_generation="$(jq -er '.generation' <<<"$current")" || unavailable 'cannot read the prior generation'
+      abandoned_owner="$(jq -ec '.owner' <<<"$current")" || unavailable 'cannot read the prior owner'
+      receipt_matches "$abandoned_generation" "$abandoned_owner" || abandoned_generation=""
+    fi
+    if ! owner_gone; then
+      [[ -n "$abandoned_generation" ]] &&
+        jq -e --argjson owner "$owner" '.owner == $owner' <<<"$current" >/dev/null || exit 10
+    fi
+  fi
   generation="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || unavailable 'cannot generate a reservation token'
   [[ "$generation" =~ ^[0-9a-f]{32}$ ]] || unavailable 'cannot generate a reservation token'
   owner_pid="$(jq -er .pid <<<"$owner")" || unavailable 'cannot identify reservation owner'
@@ -263,8 +317,11 @@ if [[ "$action" == claim ]]; then
     '{version:1,generation:$generation,owner:$owner} + (if $stamp == "" then {} else {process_stamp:$stamp} end)')" \
     || unavailable 'cannot encode reservation'
   cas "$next"
+  if [[ -n "$abandoned_generation" ]]; then
+    drop_release_receipt "$abandoned_generation" "$abandoned_owner"
+  fi
   printf '%s\n' "$generation"
   exit 0
 fi
 
-require_owned_reservation
+owns_reservation || exit 10

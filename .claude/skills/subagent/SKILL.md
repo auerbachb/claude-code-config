@@ -652,8 +652,10 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   `release_leave_prompt "$LEAVE_PROMPT_GENERATION"` with the same repo context. If this is
   a new shell call, load only the release helper above and carry the exact token and any
   outstanding receipts into it. Clear `LEAVE_PROMPT_GENERATION`: it can no longer authorize a menu.
-  Carry `LEAVE_RELEASE_RECEIPTS` across tool calls and continuation. Each repo retries its own
-  receipt before a fresh claim, while other repos continue independently.
+  Carry `LEAVE_RELEASE_RECEIPTS` across tool calls when available. The helper also records
+  the exact abandoned generation before trying to release it. A fresh invocation can reclaim
+  that generation only when the current reservation and repo still match its receipt and owner.
+  Other repos continue independently.
   Report a pending release once per attempt. A later attempt may still use an already
   published scheduling answer. Never use a release receipt
   to resume or reopen the old menu. Re-run the leave eligibility read before the deadline gate;

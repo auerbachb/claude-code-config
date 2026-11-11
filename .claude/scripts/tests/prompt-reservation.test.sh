@@ -324,6 +324,29 @@ original_token="$out"
 )
 check "$replacement_token" "$(read_slot org/release-lost leave | jq -r .generation)" 'compare loss discards the old receipt without clearing the replacement'
 
+# The helper retains enough evidence even if a new /subagent invocation
+# has no orchestration variables from the call that abandoned the menu.
+call "$owner1" claim --repo org/fresh-release --kind leave
+check 0 "$rc" 'fresh-invocation fixture owns the original menu'
+fresh_old_token="$out"
+fresh_rc=0
+FAKE_OWNER="$owner1" RELEASE_MODE=timeout "$BASH" "$release_helper" \
+  release --repo org/fresh-release --kind leave --generation "$fresh_old_token" \
+  >"$tmp/fresh-release.out" 2>"$tmp/fresh-release.err" || fresh_rc=$?
+check 20 "$fresh_rc" 'two lock timeouts leave a release pending'
+fresh_receipt="$HOME/.claude/prompt-release-receipts/$fresh_old_token.json"
+check "$fresh_old_token" "$(jq -r .generation "$fresh_receipt")" 'the helper saved the receipt before the locked write'
+unset LEAVE_RELEASE_RECEIPTS
+check 'false|true|' "$(leave_gate "$owner2" org/fresh-release)" 'a different live owner cannot reclaim the abandoned generation'
+fresh_result="$(leave_gate "$owner1" org/fresh-release)"
+check 'true|false' "${fresh_result%|*}" 'a fresh same-owner attempt can open a new menu without carried shell state'
+fresh_new_token="${fresh_result##*|}"
+[[ "$fresh_new_token" =~ ^[0-9a-f]{32}$ && "$fresh_new_token" != "$fresh_old_token" ]] || exit 1
+check false "$([[ -e "$fresh_receipt" ]] && echo true || echo false)" 'the successful claim retires the old receipt'
+call "$owner1" release --repo org/fresh-release --kind leave --generation "$fresh_old_token"
+check 10 "$rc" 'the old token cannot release the fresh generation'
+check "$fresh_new_token" "$(read_slot org/fresh-release leave | jq -r .generation)" 'fresh reservation survives old release'
+
 overrun_gate() (
   export FAKE_OWNER="$1"
   REPO_KEY=org/gates; ISSUE_NUM="$2"; ATTENDED=true; DEADLINE_EPOCH="$deadline"
