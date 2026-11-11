@@ -1366,6 +1366,28 @@ check_fit_clock 2001 'ready 0'
 check_fit_clock 200 'ready 16'
 ok_group 'PM window fitting holds on unavailable time and preserves valid bounds'
 
+group_start
+WINDOW_STATE_BLOCK=$(extract_skill_bash "$ROOT/.claude/skills/pm/modules/shared/window-fit.md" pm-refill-window-state)
+WINDOW_STATE_SH="$ROOT/.claude/scripts/session-state.sh"
+WINDOW_KEY=acme/window-fixture
+WINDOW_PATH='.repos["acme/window-fixture"].window'
+WINDOW_HOME="$TMP/window-home"
+mkdir -p "$WINDOW_HOME/.claude"
+read_refill_window() {
+  HOME="$WINDOW_HOME" REPO_KEY="$WINDOW_KEY" SESSION_STATE_SH="$WINDOW_STATE_SH" \
+    "$BASH" -u -c "$WINDOW_STATE_BLOCK"$'\n''if [ "$WINDOW_STATE" = ready ]; then
+      date() { printf "%s\n" 1700; }'$'\n'"$FIT_BLOCK"$'\n''
+      printf "%s %s\n" "$WINDOW_FIT_CLOCK" "$EFFECTIVE_WINDOW_MIN"
+    fi'
+}
+[[ "$(read_refill_window)" == WINDOW_STATE=absent ]] || fail 'missing window state must be absent'
+HOME="$WINDOW_HOME" "$WINDOW_STATE_SH" --set "$WINDOW_PATH={\"deadline_epoch\":2000,\"window_minutes\":20,\"effective_window_min\":19}"
+[[ "$(read_refill_window)" == $'WINDOW_STATE=ready\nready 4' ]] ||
+  fail 'a tick without a flag must fit using its stored deadline and margin'
+HOME="$WINDOW_HOME" "$WINDOW_STATE_SH" --set "$WINDOW_PATH={\"deadline_epoch\":\"bad\",\"window_minutes\":20,\"effective_window_min\":19}"
+[[ "$(read_refill_window)" == WINDOW_STATE=unverified ]] || fail 'malformed persisted deadline must hold'
+ok_group 'refill checks persisted windows without an invocation flag'
+
 if [ "$FAILURES" -ne 0 ]; then
   printf 'FAIL: %d leave-time assertion(s) failed\n' "$FAILURES" >&2
   exit 1
