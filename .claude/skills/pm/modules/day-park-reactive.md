@@ -1,5 +1,5 @@
 <!-- pm-routing:begin -->
-Route `day:park-reactive`. Read after a verified structured account-cap signal in a day turn. The pre-emptive route can read this phase when it reaches shared gate and wake handling.
+Route `day:park-reactive`. Read after a verified structured account-cap signal in a day turn. The pre-emptive route can read this phase when it reaches shared gate and wake handling. A successful resume tick reads only the cleanup subsection before D5.
 <!-- pm-routing:end -->
 ### 2D.6: Usage-limit park and wake
 

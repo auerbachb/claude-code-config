@@ -72,6 +72,45 @@ class Parity(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("unverifiable", result.stderr)
 
+    def day_split(self):
+        phases = ("preconditions", "arm", "tick", "teardown", "recovery",
+                  "park-reactive", "park-preemptive")
+        modules = [ENTRY.parent / "modules" / f"day-{phase}.md" for phase in phases]
+        blocks = [
+            f"### 2D.{number}: {phase}\n\n```bash\nprintf first\nprintf second\n```\n\n"
+            for number, phase in enumerate(phases, 1)
+        ]
+        intro = "PM entry\n\n"
+        suffix = "---\n\n## Step 3: Orchestration Loop\n"
+        self.write(ENTRY, intro + "".join(blocks) + suffix)
+        self.git("add", str(ENTRY))
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "baseline day")
+        baseline = self.git("rev-parse", "HEAD").strip()
+        self.write(ENTRY, intro + suffix)
+        for path, block in zip(modules, blocks):
+            self.write(path, block)
+        self.assertEqual(self.check("--baseline-sha", baseline).returncode, 0)
+        return baseline, modules, blocks
+
+    def test_swapped_modules_fail_even_with_identical_multiset(self):
+        baseline, modules, blocks = self.day_split()
+        self.write(modules[1], blocks[3])
+        self.write(modules[3], blocks[1])
+        result = self.check("--baseline-sha", baseline)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ordered baseline instructions differ", result.stderr)
+        self.assertIn("day-arm.md", result.stderr)
+        self.assertIn("day-teardown.md", result.stderr)
+
+    def test_reordered_fenced_commands_fail_even_with_identical_multiset(self):
+        baseline, modules, blocks = self.day_split()
+        self.write(modules[2], blocks[2].replace("printf first\nprintf second",
+                                                "printf second\nprintf first"))
+        result = self.check("--baseline-sha", baseline)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("day-tick.md", result.stderr)
+
     def test_missing_ref_or_missing_historical_source(self):
         result = self.check("--base", "unknown")
         self.assertEqual(result.returncode, 2)

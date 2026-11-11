@@ -190,6 +190,9 @@ The fresh generation is what makes step 3 safe: a tick already queued by the old
 
 **Never pause or exit on a locally-estimated quota or spend figure.** `safety.md` §Anthropic Quota & Spend Authority makes Anthropic's in-app UI the sole authority, and a day loop that throttled itself on a local estimate would be exactly the invisible second stop condition that rule forbids. Usage-limit wind-down is #824's, and it lands through the handoff seam below rather than as a heuristic here.
 
+<!-- pm-routing:begin -->
+When this tick meets the existing successful-resume condition, resolve `day:park-reactive` before D5 and use only its **On a successful resume** cleanup and outcome branches. That subsection owns the identity-checked retirement and counter reset. Do not enter the reactive park procedure for this route.
+<!-- pm-routing:end -->
 **D5 — Persist status and evaluate opted-in reporting.** Record the tick, next cadence, slots, queue, digests and recovery outcomes in existing state. Run the 3.3a report gate on this tick's board and observed terminal outcomes before teardown. Follow `decision-only-output.md` for all other output, including immediate owner-action blockers, safety events and exhausted recovery. An explicit status/board request runs `/board` immediately.
 
 **Before the tick ends, run `scheduling-reliability.md`'s pre-exit checklist:** (1) the recorded Monitor task is active and this tick fired, (2) required owner-action notices were delivered, (3) `last_tick_at`, digests, streaks and cadence are written.

@@ -37,5 +37,14 @@ selected=$(cd "$root" && env -u HOME "$BASH" -eu -c "$trace")
 [[ "$selected" == '.claude/skills/pm/scripts/dispatch-module.sh' ]]
 
 grep -Fq 'Ordinary cold start and resume without day state read no day modules.' "$skill/SKILL.md"
-! grep -qE '^### 2D\.[1-7]:' "$skill/SKILL.md"
+if grep -qE '^### 2D\.[1-7]:' "$skill/SKILL.md"; then
+  printf '%s\n' 'FAIL: inline day procedures remain in SKILL.md' >&2
+  exit 1
+fi
+tick="$skill/modules/day-tick.md"
+resume_route=$(grep -nF 'successful-resume condition, resolve `day:park-reactive` before D5' "$tick" | cut -d: -f1)
+d5=$(grep -nF '**D5 — Persist status' "$tick" | cut -d: -f1)
+[[ "$resume_route" -lt "$d5" ]]
+grep -Fq 'use only its **On a successful resume** cleanup' "$tick"
+grep -Fq '<!-- test-anchor: pm-day-d5-resume-clear -->' "$skill/modules/day-park-reactive.md"
 printf '%s\n' 'PM module routes: 8 paths, invalid/missing guards, installed symlink and unset-HOME fallback'
