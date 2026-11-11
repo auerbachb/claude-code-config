@@ -1345,6 +1345,27 @@ require_order "$PAUSE_RESUME_SKILL" '## Step 5:' \
 
 ok_group 'CAS results are classified, not discarded; re-arm guard decides'
 
+group_start
+FIT_BLOCK=$(extract_skill_bash "$ROOT/.claude/skills/pm/modules/shared/window-fit.md" pm-window-fit-clock)
+check_fit_clock() {
+  local input="$1" expected="$2" actual
+  actual=$(CLOCK_INPUT="$input" DEADLINE_EPOCH=2000 STALL_MARGIN_MIN=1 EFFECTIVE_WINDOW_MIN=16 \
+    "$BASH" -u -c 'date() {
+      if [ "$CLOCK_INPUT" = failed ]; then return 2; fi
+      printf "%s\n" "$CLOCK_INPUT"
+    }'$'\n'"$FIT_BLOCK"$'\n''printf "%s %s\n" "$WINDOW_FIT_CLOCK" "$EFFECTIVE_WINDOW_MIN"')
+  if [ "$actual" != "$expected" ]; then
+    fail "window clock $input expected $expected, got $actual"
+  fi
+}
+check_fit_clock failed 'unverified 16'
+check_fit_clock 'bad-time' 'unverified 16'
+check_fit_clock '0' 'unverified 16'
+check_fit_clock 1700 'ready 4'
+check_fit_clock 2001 'ready 0'
+check_fit_clock 200 'ready 16'
+ok_group 'PM window fitting holds on unavailable time and preserves valid bounds'
+
 if [ "$FAILURES" -ne 0 ]; then
   printf 'FAIL: %d leave-time assertion(s) failed\n' "$FAILURES" >&2
   exit 1
