@@ -85,12 +85,17 @@ shopt -s nullglob
 #    Under pool load those wall-clock bounds become false failures, so they run alone.
 #  - .claude/scripts/tests/local-review.test.sh and worktree-isolation-shapes.test.sh: use
 #    1-3 s --timeout / --interval bounds as the behaviour under test.
+#  - .github/scripts/tests/scripts-catalog-gen.test.sh: its real-repo check runs the generator
+#    --check against the live checkout; with other suites in flight the first call reported
+#    drift and the second, in the same job, reported none (CI run 42969745313). It must not
+#    overlap a suite that touches the shared tree.
 #  - .claude/scripts/tests/pr-state-stdout.test.sh: counts /tmp/pr-state-7-* entries, and
 #    pr-state.sh writes its output under a fixed /tmp prefix, not TMPDIR, so a concurrent
 #    suite that runs pr-state.sh for the same PR number would change the count.
 SERIAL_GROUP="
 .claude/hooks/tests/silence-detector-time-dedupe.test.sh
 .claude/hooks/tests/session-start-sync-publish-bounds.test.sh
+.github/scripts/tests/scripts-catalog-gen.test.sh
 .claude/scripts/tests/pr-state-stdout.test.sh
 .claude/scripts/tests/local-review.test.sh
 .claude/scripts/tests/worktree-isolation-shapes.test.sh
