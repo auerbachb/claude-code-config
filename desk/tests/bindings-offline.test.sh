@@ -44,6 +44,17 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/hq-bindings-offline.XXXXXX")
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
+# file_mode PATH — the octal permission bits. Switch on uname: GNU `stat -f`
+# succeeds with filesystem output, so a `stat -f || stat -c` chain never reaches
+# the GNU form on Linux (the same pattern usage-limit-record.test.sh avoids).
+file_mode() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f '%Lp' "$1"
+  else
+    stat -c '%a' "$1"
+  fi
+}
+
 MINPATH="/usr/bin:/bin"
 T=$'\t'
 HOMEDIR="$TMP/home"
@@ -347,12 +358,12 @@ check "carry-over: the default directory is bound to public" "$(grep -c "^$HOMED
 check "carry-over: the profile is bound to its interim queue" "$(grep -c "^$PROFILE${T}work${T}work\$" "$REG")" "1"
 check "carry-over: the interim entry is removed" "$(grep -c HUMAN_QUEUE_SCHEMA "$PROFILE/settings.json")" "0"
 check "carry-over: other settings keys are kept" "$(grep -c '"OTHER"' "$PROFILE/settings.json")" "1"
-check "carry-over: the settings file keeps its mode" "$(stat -f '%Lp' "$PROFILE/settings.json" 2>/dev/null || stat -c '%a' "$PROFILE/settings.json")" "640"
+check "carry-over: the settings file keeps its mode" "$(file_mode "$PROFILE/settings.json")" "640"
 check "carry-over: the store was migrated for both queues" "$(grep -c '|migrate' "$LOG")" "2"
 
 # ------------------------------------------------------------ modes
 printf '== modes\n'
-check "modes: registry directory is 700" "$(stat -f '%Lp' "$(dirname "$REG")" 2>/dev/null || stat -c '%a' "$(dirname "$REG")")" "700"
-check "modes: registry file is 600" "$(stat -f '%Lp' "$REG" 2>/dev/null || stat -c '%a' "$REG")" "600"
+check "modes: registry directory is 700" "$(file_mode "$(dirname "$REG")")" "700"
+check "modes: registry file is 600" "$(file_mode "$REG")" "600"
 
 hq_t_finish "bindings-offline.test.sh"
