@@ -124,8 +124,13 @@ fi
 
 **Auto-wake (rolling window only, when `NEW_HITS < MAX_LIMIT_HITS`).** Arm one persistent `Monitor` that sleeps until the reset time plus a 2-minute buffer, fires once, then breaks. The fire command passes the generation so `/pause-resume` can reject a stale or duplicate wake. Do **not** pass `--resume-refill` — the automatic park did not write `.refill.paused`, so the wake must not clear it:
 
+If wind-down used the entire delay, allow a fresh two-minute sleep for the wake identity to be published before the one-shot fires.
+
+<!-- test-anchor: pm-day-2d6-reactive-wake-delay -->
+
 ```bash
 WAKE_SLEEP=$(( RESET_EPOCH - $(date -u +%s) + 120 ))  # reset + 2 min buffer
+if [ "$WAKE_SLEEP" -le 0 ]; then WAKE_SLEEP=120; fi
 # Exponential backoff for consecutive hits: 2^(NEW_HITS-1) * WAKE_SLEEP minimum
 BACKOFF_MULT=$(( 1 << (NEW_HITS - 1) ))
 WAKE_SLEEP=$(( WAKE_SLEEP * BACKOFF_MULT < WAKE_SLEEP ? WAKE_SLEEP : WAKE_SLEEP * BACKOFF_MULT ))

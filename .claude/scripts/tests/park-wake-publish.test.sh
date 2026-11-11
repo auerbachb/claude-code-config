@@ -449,5 +449,33 @@ os.execv(shell,[shell,real]+args)
             self.assertIsNotNone(generation,p.stdout);self.assertEqual(self.day()['park_generation'],generation[1])
             self.assertIsNone(self.day()['park_claim_token']);self.assertEqual(self.day()['limit_resume_task_id'],'own-task')
 
+class ReactiveWakeDelay(unittest.TestCase):
+    def test_buffer_and_existing_backoff(self):
+        marker = r'<!-- test-anchor: pm-day-2d6-reactive-wake-delay -->\s*```bash\n(.*?)\n```'
+        match = re.search(marker, park_text('reactive'), re.S)
+        self.assertIsNotNone(match)
+        stubs = r'''
+date() {
+  if [ "$*" = "-u +%s" ]; then printf '%s\n' "$FIXED_NOW"
+  else printf '%s\n' '20261111T210000Z'; fi
+}
+sleep() {
+  [ "$1" -gt 0 ] || return 1
+  printf 'delay=%s\n' "$1"
+}
+'''
+        for now, hits, expected in [(1080, 1, 40), (1080, 2, 80), (1120, 1, 120),
+                                    (1121, 1, 120), (1121, 2, 240)]:
+            with self.subTest(now=now, hits=hits):
+                env = dict(os.environ, FIXED_NOW=str(now), RESET_EPOCH='1000', NEW_HITS=str(hits))
+                result = subprocess.run([SHELL, '-u', '-c', stubs + match.group(1)],
+                                        cwd=ROOT, env=env, capture_output=True, text=True,
+                                        timeout=10, check=True)
+                lines = result.stdout.splitlines()
+                self.assertEqual(len(lines), 2, result.stdout)
+                self.assertEqual(lines[0], f'delay={expected}')
+                self.assertRegex(lines[1], r'^/pause-resume --generation limit-20261111T210000Z-[0-9]+-[0-9]+$')
+
+
 unittest.main(argv=[sys.argv[0]]+sys.argv[2:])
 PY
