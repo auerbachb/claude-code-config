@@ -74,7 +74,9 @@ pr_jq=".prs[\"${pr_number}\"]"
 streak=$("$state_helper" --get "${pr_jq}.digest_streak // 0" 2>/dev/null || printf '0')
 blocker=$("$state_helper" --get "${pr_jq}.blocker // empty" 2>/dev/null || true)
 blocker_kind=$("$state_helper" --get "${pr_jq}.blocker_kind // empty" 2>/dev/null || true)
-watch_kind=$("$state_helper" --get "${pr_jq}.babysit | select(.active == true) | .classification // empty" 2>/dev/null || true)
+# An active legacy watcher owns the observation even before it writes a class.
+# Do not inherit an older PR-level blocker in that case.
+watch_kind=$("$state_helper" --get "${pr_jq}.babysit | select(.active == true) | .classification // \"unknown\"" 2>/dev/null || true)
 effective_kind="${watch_kind:-$blocker_kind}"
 last_cron_type=$("$state_helper" --get "${pr_jq}.last_cron_action.type // empty" 2>/dev/null || true)
 last_cron_interval=$("$state_helper" --get "${pr_jq}.last_cron_action.interval // empty" 2>/dev/null || true)
@@ -106,7 +108,7 @@ fi
 
 # An absent marker cannot distinguish a legacy gate wait from a frozen state.
 if (( user_blocker == 1 )) ||
-   { (( streak >= 9 )) && [[ -n "$effective_kind" && "$effective_kind" != waiting-on-bots ]]; }; then
+   { (( streak >= 9 )) && [[ -n "$effective_kind" && "$effective_kind" != waiting-on-bots && "$effective_kind" != unknown ]]; }; then
   [[ "$last_cron_type" == "delete" ]] && exit 0
   emit_context "STOP - PR #${pr_number} is stable-blocked (digest_streak=${streak}, blocker_kind=${blocker_kind:-null}). Stop the poll before exiting this turn - stop this poll's recorded Monitor task with TaskStop, atomically clear its monitor_task_id + monitor_generation only after success, and leave unrelated Monitor tasks alone. Do not heartbeat again until the user nudges or the digest changes."
   exit 0

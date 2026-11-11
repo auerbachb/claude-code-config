@@ -92,6 +92,29 @@ exec "$REAL_STATE" "$@"
         self.assertIn("REARM=false", result.stdout)
         self.assertIsNone(self.current()["babysit"]["review_wait"])
 
+    def test_existing_review_keeps_waiting_with_exhausted_budgets(self):
+        bundle = self.home / "pr-bundle.json"
+        code = (fence("babysit-pr-t2-review-budget")
+                + '\nprintf "blocked=%s\\n" "$REVIEW_BUDGET_BLOCKED"')
+        started = {"run_started_at": "2026-11-11T07:00:00Z", "run_done": False}
+        queued = {"app": {"slug": "codeant-ai"}, "status": "queued"}
+        lookalike = {"app": {"slug": "codeant-ai-build"}, "status": "queued"}
+        for marker, head, checks, window, expected in [
+                (started, "current", [], "false", "false"),
+                ({}, "current", [queued], "false", "false"),
+                ({}, "stale", [queued], "false", "true"),
+                ({}, "current", [lookalike], "false", "true"),
+                ({}, "current", [], "true", "false"),
+                (dict(started, run_done=True), "current", [], "false", "true")]:
+            with self.subTest(marker=marker, head=head, checks=checks, window=window):
+                bundle.write_text(json.dumps({"pr": {"head_sha": head}, "check_runs": {"all": checks}}))
+                gate = {"review_evidence": {"reviewers": {"codeant-ai[bot]": marker}}}
+                result = self.run_block(code, dict(HEAD_SHA="current", BUNDLE=str(bundle),
+                    GATE_JSON=json.dumps(gate), CR_BUDGET_OK="0", GREP_BUDGET_OK="0",
+                    NRO_WINDOW_RUNNING=window))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), f"blocked={expected}")
+
     def test_pending_wait_outlasts_both_streak_limits(self):
         check = ('\nprintf "result=%s:%s\\n" "$BLOCKER_STREAK" "$BACKOFF_STOP_REASON"\n')
         code = (fence("babysit-pr-t5-blocker-streak") + "\n"

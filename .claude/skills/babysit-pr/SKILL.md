@@ -601,7 +601,26 @@ if [[ -n "$GREPTILE_SH" ]]; then "$GREPTILE_SH" --check >/dev/null 2>&1 || GREP_
 - **Greptile:** `greptile-budget.sh --check` exit `1` ⇒ `GREP_BUDGET_OK=0` (daily budget exhausted).
 - **BugBot (`@cursor review`):** per-seat and **spend-metered** (#1199) — never posted without the owner's explicit approval in chat (issue #1897) — recorded as a grant, spent only by `paid-review-grant.sh --trigger` (#1898) — so never gate the classifier on it.
 
-The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only gap is a fresh review becomes `hard-blocked` (budget exhaustion) **only** when both budgets are exhausted, there is no other recoverable work, and the no-review window is not running; otherwise it stays `waiting-on-bots` (a trigger path still exists). Re-running `/babysit-pr` after the window resets resumes cleanly.
+The classifier treats exhausted review budgets as a hard block only when no review is already running on this HEAD and the no-review window is closed. Keep waiting on a CodeAnt run identified by the current gate, or a pending review check from a known publisher on this HEAD.
+
+<!-- test-anchor: babysit-pr-t2-review-budget -->
+
+```bash
+ACTIVE_REVIEW_PENDING=$(jq -ncr --arg head "$HEAD_SHA" --argjson gate "$GATE_JSON" --slurpfile bundle "$BUNDLE" '
+  $gate.review_evidence.reviewers["codeant-ai[bot]"] as $ca
+  | (($ca.run_started_at // "") != "" and $ca.run_done == false)
+    or ($bundle[0] as $current
+        | $current.pr.head_sha == $head
+        and any($current.check_runs.all[]?;
+          ((.app.slug // "") | IN("codeant-ai", "codeant", "coderabbitai", "coderabbit",
+                                  "cursor", "cursor-com", "greptile-apps", "greptile"))
+          and .status != "completed"))') || exit 1
+REVIEW_BUDGET_BLOCKED=false
+if [[ "$CR_BUDGET_OK" == 0 && "$GREP_BUDGET_OK" == 0 &&
+      "$NRO_WINDOW_RUNNING" != true && "$ACTIVE_REVIEW_PENDING" != true ]]; then
+  REVIEW_BUDGET_BLOCKED=true
+fi
+```
 
 ### T3. Classify (first match wins, in this order)
 
@@ -616,11 +635,11 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 | # | Class | Condition | Action |
 |---|-------|-----------|--------|
 | 1 | `merged` | `PR_MERGED == true` (or gate exit 3 because merged) | **Exit** — terminal success. |
-| 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and both budgets are exhausted (`CR_BUDGET_OK == 0 && GREP_BUDGET_OK == 0`, from T2) and `NRO_WINDOW_RUNNING != true`, **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
+| 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and `REVIEW_BUDGET_BLOCKED == true` (T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
 | 4 | `conflicting` | `MERGEABLE == CONFLICTING` (checked before other recoverable signals; first-match priority) | See T4 `conflicting` dispatch — branches on `--auto-resolve-conflicts` flag and `conflict_streak` cap. |
 | 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `"$ADMIN_MERGE_SH" <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
-| 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a running no-review window, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI and at least one review budget remaining | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
+| 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or an active review or running no-review window, or a missing bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI and at least one review budget remaining | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.
 

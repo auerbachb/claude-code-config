@@ -162,7 +162,8 @@ grep -q "TaskStop" <<<"$ctx" || fail "stop message should name TaskStop for Moni
 ok "streak>=9 → STOP the recorded Monitor task"
 
 # A current pending classification beats a stale recovery marker.
-for state in   '{"digest_streak":11,"blocker_kind":"ci_external","babysit":{"active":true,"classification":"waiting-on-bots"}}'   '{"digest_streak":11,"blocker_kind":"waiting-on-bots","babysit":{"active":true}}'   '{"digest_streak":11,"babysit":{"active":true}}'; do
+for state in   '{"digest_streak":11,"blocker_kind":"ci_external","babysit":{"active":true,"classification":"waiting-on-bots"}}'   '{"digest_streak":11,"blocker_kind":"waiting-on-bots","babysit":{"active":true}}'   '{"digest_streak":11,"babysit":{"active":true}}' \
+  '{"digest_streak":11,"blocker_kind":"ci_external","babysit":{"active":true}}'; do
   write_state "$PR" "$state"
   ctx="$(run_hook "$PR" | context_of)"
   [[ "$ctx" == WIDEN* ]] || fail "pending or legacy gate wait should keep polling, got: $ctx"
