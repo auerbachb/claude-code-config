@@ -177,6 +177,15 @@ $1" "${2:-$FIX/batch.json}"; }
 MD=$(ejq export_markdown)
 TXT=$(ejq export_text)
 HTML=$(ejq export_html)
+HEADER=$(ejq export_tex_header)
+check_contains "TeX header carries the export footer" "$HEADER" \
+  'Exported Thu 2026-10-08 17:31 ET \textperiodcentered{} set 31 \textperiodcentered{} 5 items'
+check_absent "TeX header omits item text" "$HEADER" 'Retry the flaky upload test'
+check_absent "pandoc Markdown omits the duplicate footer" "$(ejq 'export_markdown(false)')" 'Exported Thu 2026-10-08 17:31 ET'
+check "TeX footer escapes metacharacters once" \
+  "$(ejq '"\\{}#$%&_^~·\n" | ex_tex_esc')" \
+  '\textbackslash{}\{\}\#\$\%\&\_\textasciicircum{}\textasciitilde{}\textperiodcentered{} '
+
 
 check "md: the title" "$(printf '%s\n' "$MD" | sed -n 1p)" "# Desk export · Set 31"
 check "md: the header line" "$(printf '%s\n' "$MD" | sed -n 3p)" \
@@ -371,7 +380,7 @@ render() {
   rm -f "$TMP/log"/*
   env HUMAN_QUEUE_DATABASE_URL="$BLACKHOLE_URL" STUB_LOG="$TMP/log" "$@" bash -c '
     HQ_BIN_DIR="$1"; . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/export.sh"
-    rc=0; hq_export_pdf used "$2/r.md" "$2/r.txt" "$2/r.html" "$2/w/out.pdf" "$2/w" || rc=$?
+    rc=0; hq_export_pdf used "$2/r.md" "$2/r.txt" "$2/r.html" "$2/w/out.pdf" "$2/w" "${TEST_TEX_HEADER:-}" || rc=$?
     printf "%s %s | %s\n" "$rc" "${used:--}" "$HQ_EXPORT_TRIED"' _ "$BIN" "$TMP"
 }
 printf '%s' "$MD" > "$TMP/r.md"
@@ -380,6 +389,11 @@ printf '%s' "$HTML" > "$TMP/r.html"
 P="$STUBS/pandoc" C="$STUBS/chrome" U="$STUBS/cupsfilter"
 
 check "pandoc first" "$(render HUMAN_QUEUE_PANDOC="$P" HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER="$U")" "0 pandoc | "
+printf '%s\n' "$HEADER" > "$TMP/footer header.tex"
+check_absent "pandoc without a header preserves its argument list" "$(cat "$TMP/log/pandoc.args")" "--include-in-header"
+check "pandoc with a header renders" \
+  "$(render HUMAN_QUEUE_PANDOC="$P" TEST_TEX_HEADER="$TMP/footer header.tex")" "0 pandoc | "
+check_contains "pandoc receives the generated header path" "$(cat "$TMP/log/pandoc.args")" "--include-in-header=$TMP/footer header.tex"
 check "pandoc gets the Markdown" "$(sed 's/.*--output [^ ]* //' "$TMP/log/pandoc.args")" "$TMP/r.md"
 check_contains "pandoc reads raw TeX, HTML, attributes, YAML blocks, and math as text, without smart punctuation" "$(cat "$TMP/log/pandoc.args")" \
   "--from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars-smart "
@@ -466,6 +480,33 @@ check "markdown: no renderer, by choice" "$(render HUMAN_QUEUE_EXPORT_RENDERER=m
 check "file URLs escape what a URL would misread" \
   "$(bash -c 'HQ_BIN_DIR="$1"; . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/export.sh"; hq__export_file_url "/a b/#c?%.html"' _ "$BIN")" \
   "file:///a%20b/%23c%3F%25.html"
+
+# The opt-in override also allows a Pandoc installation using another TeX engine.
+PANDOC_TEST=${DESK_TEST_PANDOC:-}
+if [ -z "$PANDOC_TEST" ] && command -v pdflatex >/dev/null 2>&1; then
+  PANDOC_TEST=$(command -v pandoc || true)
+fi
+if [ -n "$PANDOC_TEST" ] && [ -n "$PDFTOTEXT" ]; then
+  jq '.items |= [range(4) as $copy | .[] | .n += 5 * $copy]
+      | .count = (.items | length)' "$FIX/batch.json" > "$TMP/multipage.json"
+  ejq 'export_markdown(false)' "$TMP/multipage.json" > "$TMP/r.md"
+  ejq export_tex_header "$TMP/multipage.json" > "$TMP/footer header.tex"
+  check "real pandoc: a PDF" \
+    "$(render HUMAN_QUEUE_EXPORT_RENDERER=pandoc HUMAN_QUEUE_PANDOC="$PANDOC_TEST" TEST_TEX_HEADER="$TMP/footer header.tex")" "0 pandoc | "
+  if "$PDFTOTEXT" -layout "$TMP/w/out.pdf" "$TMP/pages.txt"; then
+    pages=$(tr -cd '\f' < "$TMP/pages.txt" | wc -c | tr -d ' ')
+    if [ "$pages" -ge 3 ]; then ok "real pandoc: at least three pages"; else bad "real pandoc: expected at least three pages"; fi
+    for ((page=1; page<=pages; page++)); do
+      footer=$("$PDFTOTEXT" -f "$page" -l "$page" -layout "$TMP/w/out.pdf" - | grep -F 'Exported Thu')
+      check_contains "real pandoc: footer metadata on page $page" "$footer" '20 items'
+      check_contains "real pandoc: set on page $page" "$footer" 'set 31'
+      check_contains "real pandoc: numbering on page $page" "$footer" "Page $page of $pages"
+    done
+  fi
+  printf '%s' "$MD" > "$TMP/r.md"
+else
+  echo "NOTICE: pandoc with a PDF engine or pdftotext unavailable — multipage check skipped"
+fi
 
 # The real ones, on macOS.
 if [ "$(uname -s)" = Darwin ] && [ -n "$PDFTOTEXT" ]; then

@@ -1335,9 +1335,8 @@ lands on the right item.
   A. Yes (Recommended)`, `n.2  B. No`, the default and when it applies, the
   operator's own priority, tags, and note when it carries them (#1769), the
   link, and a blank answer line (an item answered since shows its answer).
-  A footer carries the export time: from headless Chrome on every page, with
-  page numbers; from pandoc or the print system once, at the end (the
-  header line on the first page carries the time too).
+  Pandoc and headless Chrome print the export-time footer and page numbers
+  on every page. The print system prints the footer at the end.
   `bin/lib/export.jq` renders it three ways (Markdown, plain text, HTML)
   from one item model, reusing `skill/desk.jq`'s labels and links. It runs
   as the head of the main jq program (`lib/export.sh`'s `hq_export_jq`),
