@@ -1104,7 +1104,7 @@ Call `"$PM_DAY_DISPATCH" day PHASE` and read only the returned module. Reuse a m
 | User day invocation | `preconditions` | After Step 0a and before Step 1. Check that the dispatcher can resolve every day phase before 2D.1. This preflight reads no module bodies. |
 | Arm after Step 2 | `arm` | After the arming preconditions and normal Steps 1 and 2. |
 | Immediate tick or typed `--tick` | `tick` | After Step 0, enter D0 first. The immediate tick carries the arming invocation receipt. |
-| Typed `--probe-wake` | `probe-wake` | After Step 0, enter the bounded probe fire handler in 2D.7. |
+| Typed `--probe-wake` | `probe-wake` | After Step 0, enter the bounded probe fire handler in 2D.7. Read the tick module only for the horizon observe/check block it calls. |
 | Verified account-cap signal on a day turn | `park-reactive` | At the 2D.6 park edge. |
 | D2 critical horizon | `park-preemptive` | At the 2D.7 park edge. Load 2D.6 only where the selected procedure reaches its shared gate or wake handling. |
 | D3 cadence change | `arm` | When D3 reaches the Monitor template. |

@@ -47,4 +47,18 @@ d5=$(grep -nF '**D5 — Persist status' "$tick" | cut -d: -f1)
 [[ "$resume_route" -lt "$d5" ]]
 grep -Fq 'use only its **On a successful resume** cleanup' "$tick"
 grep -Fq '<!-- test-anchor: pm-day-d5-resume-clear -->' "$skill/modules/day-park-reactive.md"
+arm="$skill/modules/day-arm.md"
+generation_binding=$(extract_skill_bash "$arm" pm-day-arm-immediate-generation)
+[[ "$(DAY_GENERATION=published-generation "$BASH" -u -c "$generation_binding"$'\nprintf "%s\\n" "$TICK_GENERATION"')" == published-generation ]]
+publish_line=$(grep -nF "Check that write's exit code" "$arm" | cut -d: -f1)
+bind_line=$(grep -nF 'pm-day-arm-immediate-generation' "$arm" | cut -d: -f1)
+immediate_line=$(grep -nF 'Then **run one tick immediately**' "$arm" | cut -d: -f1)
+[[ "$publish_line" -lt "$bind_line" && "$bind_line" -lt "$immediate_line" ]]
+
+probe="$skill/modules/day-park-preemptive.md"
+probe_horizon=$(grep -nF 'For a probe fire, resolve `day:tick` and run only its `pm-day-d2-horizon-branch`' "$probe" | cut -d: -f1)
+probe_fire=$(grep -nF '<!-- test-anchor: pm-day-2d7-probe-fire -->' "$probe" | cut -d: -f1)
+[[ "$probe_horizon" -lt "$probe_fire" ]]
+extract_skill_bash "$tick" pm-day-d2-horizon-branch > "$scratch/probe-horizon"
+[[ -s "$scratch/probe-horizon" ]]
 printf '%s\n' 'PM module routes: 8 paths, invalid/missing guards, installed symlink and unset-HOME fallback'

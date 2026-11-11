@@ -80,5 +80,13 @@ PUBLISH_RC=0
 
 Either way, tell the user day mode is not running: a thread that believes it armed and did not is the silent-watcher failure `scheduling-reliability.md` exists to prevent. The pipelines Step 1 already started keep running; they just have no between-turn loop.
 
+<!-- pm-routing:begin -->
+Only after successful Monitor publication, bind the immediate tick to the exact generation published by this arming invocation. Pass it into the normal D0 gate. Preserve the user invocation's receipt.
+
+<!-- test-anchor: pm-day-arm-immediate-generation -->
+```bash
+TICK_GENERATION="$DAY_GENERATION"
+```
+<!-- pm-routing:end -->
 Then **run one tick immediately** (2D.3) — the `sleep` fires first, so without this the board sits idle for a full cadence.
 

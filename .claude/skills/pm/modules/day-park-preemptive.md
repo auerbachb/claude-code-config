@@ -295,6 +295,9 @@ That is the whole teardown story: the probe wake is not a new monitor class, it 
 
 **Step 5 — The probe fire (`--probe-wake`).** Validate the generation, re-observe the counter, then resume or decrement. The bound lives in state, not in the loop, so a session restart re-arms with the fires that are left rather than a fresh twelve:
 
+<!-- pm-routing:begin -->
+For a probe fire, resolve `day:tick` and run only its `pm-day-d2-horizon-branch` observe/check block with this turn's evidence. Use the resulting `HORIZON_STATUS` below. Do not run D0, the tick's refill gate, or any other tick procedure.
+<!-- pm-routing:end -->
 <!-- test-anchor: pm-day-2d7-probe-fire -->
 
 ```bash
