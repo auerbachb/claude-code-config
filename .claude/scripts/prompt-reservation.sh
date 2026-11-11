@@ -254,9 +254,6 @@ owns_reservation() {
     *) unavailable 'cannot verify reservation ownership' ;;
   esac
 }
-if [[ "$action" == release && "$kind" == leave ]]; then
-  save_release_receipt || printf 'prompt-reservation: could not persist release receipt; retain the generation for retry\n' >&2
-fi
 read_reservation
 
 finish_release() {
@@ -267,17 +264,22 @@ finish_release() {
 # A compare loss can leave our token in place; only a conclusive re-read may
 # report it gone. One retry is enough for the common transient lock timeout.
 if [[ "$action" == release ]]; then
+  owns_reservation || finish_release 10
+  if [[ "$kind" == leave ]]; then
+    save_release_receipt || printf 'prompt-reservation: could not persist release receipt; retain the generation for retry\n' >&2
+  fi
   for attempt in 1 2; do
-    owns_reservation || finish_release 10
     release_rc=0
     "$state" --repo "$repo" --cas "$path=null" --expect "$current" >/dev/null || release_rc=$?
     case "$release_rc" in
       0) finish_release 0 ;;
-      6|7) read_reservation ;;
+      6|7)
+        read_reservation
+        owns_reservation || finish_release 10
+        ;;
       *) unavailable 'cannot release reservation' ;;
     esac
   done
-  owns_reservation || finish_release 10
   unavailable 'reservation release did not complete'
 fi
 

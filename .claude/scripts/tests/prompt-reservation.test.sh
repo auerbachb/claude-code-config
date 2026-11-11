@@ -329,12 +329,15 @@ check "$replacement_token" "$(read_slot org/release-lost leave | jq -r .generati
 call "$owner1" claim --repo org/fresh-release --kind leave
 check 0 "$rc" 'fresh-invocation fixture owns the original menu'
 fresh_old_token="$out"
+fresh_receipt="$HOME/.claude/prompt-release-receipts/$fresh_old_token.json"
+call "$owner2" release --repo org/fresh-release --kind leave --generation "$fresh_old_token"
+check 10 "$rc" 'a different owner cannot release the known generation'
+check false "$([[ -e "$fresh_receipt" ]] && echo true || echo false)" 'a different owner cannot publish an abandonment receipt'
 fresh_rc=0
 FAKE_OWNER="$owner1" RELEASE_MODE=timeout "$BASH" "$release_helper" \
   release --repo org/fresh-release --kind leave --generation "$fresh_old_token" \
   >"$tmp/fresh-release.out" 2>"$tmp/fresh-release.err" || fresh_rc=$?
 check 20 "$fresh_rc" 'two lock timeouts leave a release pending'
-fresh_receipt="$HOME/.claude/prompt-release-receipts/$fresh_old_token.json"
 check "$fresh_old_token" "$(jq -r .generation "$fresh_receipt")" 'the helper saved the receipt before the locked write'
 unset LEAVE_RELEASE_RECEIPTS
 check 'false|true|' "$(leave_gate "$owner2" org/fresh-release)" 'a different live owner cannot reclaim the abandoned generation'
