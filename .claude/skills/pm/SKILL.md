@@ -1172,7 +1172,7 @@ The placement is the point: D2 reads `refill_halted` to decide whether to launch
 
 **D2 — Refill.** Run **Step 3.4 unchanged** — the pause read with its exit-code table, `$SCOPE` narrowing, operator order then queue then backlog (with the operator-priority re-read), per-pick re-validation, overlap chains, `FREE` from `active-work-cap.sh`, and the reported-not-proposed launch lines. Day-mode conditions sit **on top of** it, none replacing any part:
 
-**The usage-horizon gate runs first, before any pick is dispatched** (#1428). The harness prints the in-context remaining-token counter (`<total_tokens>N tokens left</total_tokens>`) into this turn's context and refreshes it after every tool result; read **that** number — never a count derived from the transcript or any local estimate — and hand it to `usage-horizon.sh --observe`, then branch on `--check`. This is the `safety.md` §"Anthropic Quota & Spend Authority" horizon carve-out: the figure is upstream-authoritative, and the script only compares it.
+**The usage-horizon gate runs first, before any pick is dispatched** (#1428, #2147). Use the counter (`<total_tokens>N tokens left</total_tokens>`) only if this turn's harness actually prints it. Never use a transcript-derived count or local estimate. Use §7.3 of `subagent-thread-limit-park.md` for the continuous first-hand absence attestation and launch policy.
 
 <!-- test-anchor: pm-day-d2-horizon-branch -->
 
@@ -1186,6 +1186,7 @@ The placement is the point: D2 reads `refill_halted` to decide whether to launch
 # only falls within a session, so the reading a fresh figure would have
 # corrected is stale only in the safe direction.
 HORIZON_STATUS=unknown
+HORIZON_REASON=helper-unavailable
 HORIZON_OBSERVE_RC=0
 if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
   if [ -n "${HORIZON_LIMIT:-}" ]; then
@@ -1195,14 +1196,26 @@ if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
     "$USAGE_HORIZON_SH" --observe "$HORIZON_REMAINING" >/dev/null 2>&1 || HORIZON_OBSERVE_RC=$?
   fi
 fi
-if [ -n "${USAGE_HORIZON_SH:-}" ] && [ "$HORIZON_OBSERVE_RC" -eq 0 ]; then
-  HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || true
+if [ "$HORIZON_OBSERVE_RC" -ne 0 ]; then
+  HORIZON_REASON=observe-failed
+elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
+  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation.
+  HORIZON_CHECK_RC=0
+  if [ "${HORIZON_COUNTER_NEVER_SEEN:-}" = true ] && [ -z "${HORIZON_REMAINING:-}" ] &&
+     [ -z "${HORIZON_LIMIT:-}" ]; then
+    HORIZON_OUT=$("$USAGE_HORIZON_SH" --check --counter-never-seen 2>/dev/null) || HORIZON_CHECK_RC=$?
+  else
+    HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || HORIZON_CHECK_RC=$?
+  fi
   _HS=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^STATUS=//p' | head -1)
   case "$_HS" in clear|approaching|critical) HORIZON_STATUS="$_HS" ;; *) HORIZON_STATUS=unknown ;; esac
-  # Keep the script's own REASON for the heartbeat. A run-long `unknown` otherwise
-  # looks identical whether the script is missing, its write is failing, the TTL
-  # expired, or a sibling session holds the slot — and only the last is benign.
   HORIZON_REASON=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^REASON=//p' | head -1)
+  HORIZON_REASON=${HORIZON_REASON:-helper-unavailable}
+  if [ "$HORIZON_REASON" = counter-never-seen ] &&
+     { [ "$HORIZON_CHECK_RC" -ne 3 ] || [ "$_HS" != unknown ] ||
+       [ "${HORIZON_COUNTER_NEVER_SEEN:-}" != true ] || [ -n "${HORIZON_REMAINING:-}${HORIZON_LIMIT:-}" ]; }; then
+    HORIZON_REASON=helper-unavailable
+  fi
 fi
 case "$HORIZON_STATUS" in
   clear)       HORIZON_REFILL_OK=true;  HORIZON_PARK=false; HORIZON_IDLE_REASON="" ;;
@@ -1223,11 +1236,11 @@ printf 'HORIZON_STATUS=%s\nHORIZON_REFILL_OK=%s\nHORIZON_PARK=%s\nHORIZON_IDLE_R
 | `clear` | normal | no | nothing — the tick proceeds unchanged |
 | `approaching` | **stop for this run** — start no new chip and dispatch no new pipeline | no | one always-emit heartbeat line naming the runway (`horizon approaching — ~N tokens left; starting nothing new`) |
 | `critical` | stop | **yes — run 2D.7 before this tick ends**, then stop the tick | 2D.7's ≤2-line park surface |
-| `unknown` | stop | **never** | nothing — `unknown` is reported on the idle line only |
+| `unknown` | no automatic refill | **never** | reason on the idle line; §7.3 message on first requested dispatch |
 
-`unknown` is a **posture, not an event**: in-flight work finishes, nothing new starts, and no park is ever triggered by it alone. On a machine running several sessions the horizon slot is machine-wide and a displaced session reads `unknown` routinely (`usage-horizon.sh --help` §CONCURRENT SESSIONS), so treating it as a park trigger would park healthy boards for the wrong reason. The one thing it must never do is read as `clear` — hence the `case` default above, not a `[ "$_HS" != critical ]` test.
+`unknown` never starts automatic work or triggers a park. An explicit live chat request to launch a current set of picks may proceed only on `counter-never-seen`, with §7.3's note and the remaining dispatch checks. This applies on the arming turn if the user actually requested those launches; periodic ticks and a request to keep the board full cannot inherit the exception. Use §7.3's hold line for the first requested dispatch when the horizon holds it.
 
-- **Refill runs only when the horizon gate above sets `HORIZON_REFILL_OK=true`.** Report the horizon reason on the idle line (`paused (horizon approaching)` / `paused (horizon critical)` / `paused (horizon unknown)`). When `HORIZON_REASON` is non-empty, append it parenthetically on the `unknown` idle line only — `paused (horizon unknown) — {HORIZON_REASON}`. The `IDLE_REASON` digest input stays the bare form above, so the annotation never perturbs the stable-state hash.
+- **Automatic refill runs only when `HORIZON_REFILL_OK=true`.** Report the horizon reason on the idle line (`paused (horizon approaching)` / `paused (horizon critical)` / `paused (horizon unknown)`). On `unknown`, append ` — {HORIZON_REASON}` to chat only. Keep the bare `IDLE_REASON` for the digest so the annotation never perturbs the stable-state hash.
 - **Refill runs only when `day.refill_halted` is `false`.** This is day mode's own automatic halt, set in D1 the moment the streak crosses the threshold so it binds on the same tick, and it is deliberately a *separate* field from `.repos[<key>].refill`: that one is contractually human-written-only, and a machine writing it would blur the very distinction that keeps issue text from being able to halt a pipeline. Read both; refill needs both clear. Report a halt as `paused (pipeline failures)` on the idle line.
 - **Refill runs only when `credit-budget.sh --check` exits 0 (`ok`).** Read it once per D2 tick (same moment as the refill.paused read, not in a separate phase). Apply 3.4's exit-code table: exit 1 (`reached`) → land near-done work and park (3.4's budget gate above); exit 2 (`unknown`) → conservative posture — finish in-flight, start nothing new, report `paused (budget unknown)`. The budget check is re-read per pick exactly as refill.paused is.
 - **At most one new chip per turn — counting the arming turn as tick 0.** Day mode runs for hours, so a thread-prompt issue deferred now is offered on the next tick, minutes later — spreading costs nothing, and a wall of chips is the exact failure day mode exists to end (#1190). `FREE` still bounds it from above; this is a second, tighter bound that applies only in day mode. **The bound covers Step 1's dispatch too, not just later ticks:** Step 1 runs inside the arming turn and reaches 3.1's chip path bounded only by `FREE`, so without this it would be the *first* turn of a run that emits six chips at once — the failure, on the turn most likely to be watched. Report the rest as deferred exactly as 3.1 already does, with `Deferred (cap)` rows so nothing is forgotten; they are re-offered one per tick as the run proceeds. Inline dispatch is **not** rate-limited — it fills to the ceiling on the turn it can.
