@@ -91,6 +91,14 @@ sql "UPDATE items SET summary_l2 = CASE id
      WHEN 'R-2' THEN 'The cache key is the commit SHA.'
      WHEN 'R-3' THEN 'Pandoc falls through to Chrome.'
      END WHERE kind = 'review';" >/dev/null
+# The same numbered sheet may include a Review that has since been marked read.
+sql "INSERT INTO sets (set_id, position, item_id) VALUES (31, 5, 'R-1')" >/dev/null
+jq '.entries = [{id:"R-1", page:1, position:5, option:null,
+                 printed_option:null, unreadable:false, comment:"Review note"}]' "$proposal" > "$tmp/comment.json"
+token=$(hq import preview "$scan" "$tmp/comment.json" | jq -er .confirmation)
+result=$(hq import apply "$scan" "$tmp/comment.json" "$token")
+check "a comment-only import can annotate a reviewed item" "$(jq -c '[.answers,.comments]' <<< "$result")" '[[],["R-1"]]'
+check "an imported comment leaves the Review reviewed" "$(hq get R-1 --json | jq -r .status)" reviewed
 sources=$(hq quiz sources R-4 R-3 R-2 R-3 R-1)
 check "three cached summaries in batch order with their own source" \
   "$(jq -c '[.[]|[.id,.key,.summary_l2]]' <<< "$sources")" \

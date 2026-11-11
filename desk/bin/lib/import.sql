@@ -21,9 +21,10 @@ WITH input AS (
               WHEN e.unreadable THEN 'ambiguous or illegible handwriting'
               WHEN s.item_id IS NULL THEN 'item number does not match this export set'
               WHEN r.item_id IS NOT NULL THEN 'already imported from this scan'
-              WHEN i.status <> 'open' THEN 'item is no longer open'
+              WHEN e.option IS NOT NULL AND i.status <> 'open' THEN 'item is no longer open'
               WHEN e.option IS NOT NULL AND
-                   (i.kind <> 'decision' OR i.options[e.option] IS DISTINCT FROM e.printed_option)
+                   (i.kind <> 'decision' OR btrim(regexp_replace(i.options[e.option], '[[:space:]]+', ' ', 'g'))
+                     IS DISTINCT FROM btrim(regexp_replace(e.printed_option, '[[:space:]]+', ' ', 'g')))
                 THEN 'printed choice does not match the current Decision'
           END AS reason
   FROM input e
