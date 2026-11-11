@@ -100,6 +100,15 @@ run_gate "$TMP/ci.json" > "$TMP/ci.out"
 CI_EVENT="$(event_from "$TMP/ci.out")"
 check "CI failure transition wakes with before/after evidence" '[[ "$(jq -r ".reasons|index(\"head_gate_ci_or_blocker\") != null" <<<"$CI_EVENT")" == true && "$(jq -r ".delta.changed[0].after.ci_status.failing" <<<"$CI_EVENT")" == 1 ]]'
 ack_event "$(jq -r .event_id <<<"$CI_EVENT")"
+# The same required-check blocker text can refer to a new job after a rerun.
+jq '.prs[0].gate.cancelled_required_job_id=101' "$TMP/ci.json" > "$TMP/cancelled-first.json"
+run_gate "$TMP/cancelled-first.json" > "$TMP/cancelled-first.out"
+ack_event "$(event_from "$TMP/cancelled-first.out" | jq -r .event_id)"
+jq '.prs[0].gate.cancelled_required_job_id=102' "$TMP/cancelled-first.json" > "$TMP/cancelled-again.json"
+run_gate "$TMP/cancelled-again.json" > "$TMP/cancelled-again.out"
+CANCELLED_EVENT="$(event_from "$TMP/cancelled-again.out")"
+check "new cancelled job wakes even when the required blocker text is unchanged" '[[ "$(jq -r ".delta.changed[0].before.cancelled_required_job_id" <<<"$CANCELLED_EVENT")" == 101 && "$(jq -r ".delta.changed[0].after.cancelled_required_job_id" <<<"$CANCELLED_EVENT")" == 102 ]]'
+ack_event "$(jq -r .event_id <<<"$CANCELLED_EVENT")"
 head_rows="$(jq -c '.prs[0].gate.head_sha="def456" | .prs' "$TMP/ci.json")"
 snapshot "$TMP/head.json" "$head_rows"
 run_gate "$TMP/head.json" > "$TMP/head.out"

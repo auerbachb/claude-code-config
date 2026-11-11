@@ -466,6 +466,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `human_changes_requested` non-empty (human CR on HEAD) | `BLOCKED:human(@login)` | **Hard block** → reported, dropped (name each login; never auto-dismiss) |
 | `mergeable == CONFLICTING` | `fixpr` (`merge-conflict`) | Spawn `phase-a-fixer` subagent for `/merge-conflict` workflow (Step 5c) |
 | `merge_state == BEHIND` | `rebase` | Rebase + force-push + stale-bot dismissal (Step 5a/5b) |
+| Gate reports a non-null `required_contexts.cancelled_retry` | `required-ci-rerun` | Run the shared exact-job retry in Step 5. |
 | `CI_FAILING > 0` **or** `UNRESOLVED > 0` | `fixpr` (`has-recoverable-blockers`) | Spawn `phase-a-fixer` subagent (Step 5c) |
 | `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ (when `STALE_BOT_CR > 0` only) dismisses stale bot reviews + re-triggers owning bot; spawn `phase-a-fixer` (Step 5c) when fix work remains |
 | `MET == true` (clean review on HEAD + CI green + 0 unresolved + no blockers) | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
@@ -601,7 +602,7 @@ When `PMM_SKIP_ACTIONS=true`, skip every Step 5 dispatch and release-sweep subst
 
 ### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
 
-**Skipped whole when `WATCH_LAUNCH_OK=false`** (Step 3.7 verdict `approaching`, `unknown`, or `critical`) — say so in the heartbeat so a held pre-flight is not read as "every reviewer was already fresh". Otherwise: run shared `pr-preflight.sh` once per discovered PR (skip `gone`/`error`). Flips draft PRs to ready and engages all four conditionally-triggered reviewers on the current HEAD SHA. Same script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never reimplements draft-flip or trigger logic.
+**Skipped whole when `WATCH_LAUNCH_OK=false`** (Step 3.7 verdict `approaching`, `unknown`, or `critical`) — say so in the heartbeat so a held pre-flight is not read as "every reviewer was already fresh". Otherwise: run shared `pr-preflight.sh` once per discovered PR (skip `gone`, `error`, and `required-ci-rerun`). Flips draft PRs to ready and engages all four conditionally-triggered reviewers on the current HEAD SHA. Same script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never reimplements draft-flip or trigger logic.
 
 ```bash
 PREFLIGHT_SH=""
@@ -611,7 +612,7 @@ for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh}
 done
 for N in $PR_NUMS; do
   _verdict=$(jq -r --arg n "$N" '.[$n].verdict // ""' <<<"$VERDICTS_JSON" 2>/dev/null || true)
-  [[ "$_verdict" == "gone" || "$_verdict" == "error" ]] && continue
+  case "$_verdict" in gone|error|required-ci-rerun) continue ;; esac
   if [ -n "$PREFLIGHT_SH" ]; then
     PF_OUT=$("$PREFLIGHT_SH" "$N") || echo "[PMM] pr-preflight.sh #$N exited non-zero — continuing"
     echo "$PF_OUT"
@@ -623,6 +624,28 @@ done
 ```
 
 `pr-preflight.sh` is idempotent, rate-cap safe, strictly per-PR, never triggers Greptile.
+
+### Cancelled required CI (verdict `required-ci-rerun`)
+
+Run before the remaining recovery dispatches for this verdict, under the existing launch horizon and shared Phase A gate. The helper verifies the current gate again and owns the once-per-HEAD claim. It produces the report even when the retry is exhausted.
+
+<!-- test-anchor: pmm-required-ci-rerun -->
+
+```bash
+if [[ "$VERDICT" == required-ci-rerun && "${WATCH_LAUNCH_OK:-true}" == true ]]; then
+  REQUIRED_CI_SH=$(resolve_script rerun-cancelled-required-ci.sh || true)
+  if [[ -n "$REQUIRED_CI_SH" ]]; then
+    REQUIRED_CI_RESULT=$("$REQUIRED_CI_SH" "$N") || true
+  else
+    REQUIRED_CI_RESULT='{"status":"validation_failed","reason":"required CI retry helper unavailable"}'
+  fi
+  if jq -e '.status == "requested"' >/dev/null <<<"$REQUIRED_CI_RESULT"; then
+    TICK_HAD_ACTION=true
+  fi
+fi
+```
+
+Report a failed or exhausted attempt as a blocker and re-read the gate on the next observation. Do not dispatch a fixer or wrap for this verdict.
 
 ### Step 5a: Rebase (verdict `rebase`)
 

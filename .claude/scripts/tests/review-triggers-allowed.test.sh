@@ -48,7 +48,7 @@ mkdir -p "$S/lib"
 for f in review-triggers-allowed.sh ci-status.sh check-runs-dedup.sh session-state.sh state-lock.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
-cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$S/lib/"
+cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" "$S/lib/"
 mkdir -p "$TMP/reference"
 cp "$REPO_ROOT/.claude/reference/session-state-schema.json" "$TMP/reference/"
 SUT="$S/review-triggers-allowed.sh"

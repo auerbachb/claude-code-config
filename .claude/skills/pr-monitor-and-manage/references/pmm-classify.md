@@ -138,6 +138,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `human_changes_requested` non-empty | `BLOCKED:human(@login)` | Human CR is a hard block — name each login; never auto-dismiss; requires human action to unblock |
 | `mergeable == CONFLICTING` | `fixpr` (`merge-conflict`) | Spawn `phase-a-fixer` tasked with `/merge-conflict` workflow; only `blocked` exit by the subagent turns it into `BLOCKED:conflicts(needs-human)` |
 | `merge_state == BEHIND` | `rebase` | Rebase + force-push is a parent-inline operation (Step 5a) — cheaper than a subagent spawn; rebase abort routes to `fixpr(merge-conflict)` in Step 5a |
+| Gate reports a non-null `required_contexts.cancelled_retry` | `required-ci-rerun` | Run the shared exact-job retry in Step 5. |
 | `CI_FAILING > 0` **or** `UNRESOLVED > 0` | `fixpr` (`has-recoverable-blockers`) | Delegate fix work to Phase A fixer subagent |
 | `MET == false` and (`STALE_BOT_CR > 0` or `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ dismisses stale bot reviews + re-triggers; spawn Phase A when fix work remains |
 | `MET == true` | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
@@ -306,7 +307,7 @@ Print the **full table** (below the lead line) when ANY of:
 - **Reviews** — literal `review_decision` (`APPROVED`/`CHANGES_REQUESTED`/`REVIEW_REQUIRED`).
 - **CI** — `passing`/`failing`/`in_progress` counts from the gate.
 - **Unresolved Threads** — count of `isResolved == false` (or `?` if the GraphQL fetch failed).
-- **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts(needs-human)`, `gone`, `error`, plus Step 3.6's merge-sequencing refinements `held(#A)` and `batch(#A)`.
+- **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `required-ci-rerun`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts(needs-human)`, `gone`, `error`, plus Step 3.6's merge-sequencing refinements `held(#A)` and `batch(#A)`.
 - **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `dispatched (merge-conflict)` (conflict-resolution fixer spawned this tick — transitions to `spawned`/`working`/`complete`/`failed` as the subagent runs), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
 
 A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.

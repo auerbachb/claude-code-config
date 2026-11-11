@@ -48,7 +48,7 @@ check_eq() {
 # ---- canonical production projection --------------------------------------
 FILTER_OK="yes"
 [[ -r "$FILTER" ]] || FILTER_OK="not readable"
-if [[ "$FILTER_OK" == "yes" ]] && ! jq -e -f "$FILTER" <<<'[]' >/dev/null 2>&1; then
+if [[ "$FILTER_OK" == "yes" ]] && ! jq -e -L "$TEST_DIR/../lib" -f "$FILTER" <<<'[]' >/dev/null 2>&1; then
   FILTER_OK="invalid jq"
 fi
 check_eq "canonical CR_SPLIT projection is readable jq" "yes" "$FILTER_OK"
@@ -61,7 +61,7 @@ fi
 # filter to its output.
 project() {
   # $1 = raw check-runs JSON array, $2 = jq filter over the projection output
-  jq -c -f "$FILTER" <<<"$1" | jq -c "$2"
+  jq -c -L "$TEST_DIR/../lib" -f "$FILTER" <<<"$1" | jq -c "$2"
 }
 
 # ---- fixtures ---------------------------------------------------------------
@@ -163,6 +163,16 @@ check_eq "counts unchanged (total/passing/failing/in_progress)" \
 check_eq "top-level bundle key set unchanged" \
   '["all","failing","failing_runs","in_progress","in_progress_runs","passing","total"]' \
   "$(project "$RUNS" 'keys')"
+
+UNRECOGNIZED='[
+  {"id":30,"name":"future","status":"completed","conclusion":"future_result"},
+  {"id":31,"name":"pending","status":"queued","conclusion":"failure"},
+  {"id":32,"name":"optional","status":"completed","conclusion":"cancelled"},
+  {"id":33,"name":"unknown","status":"completed","conclusion":null}
+]'
+check_eq "unknown conclusions fail closed and each check is classified once" \
+  '[4,1,2,1,[30,33],[31]]' \
+  "$(project "$UNRECOGNIZED" '[.total,.passing,.failing,.in_progress,[.failing_runs[].id],[.in_progress_runs[].id]]')"
 
 ############################################################################
 echo

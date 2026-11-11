@@ -365,7 +365,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_STATE_CR_SPLIT_JQ="$SCRIPT_DIR/lib/pr-state-cr-split.jq"
 PR_STATE_CLASSIFY_JQ="$SCRIPT_DIR/lib/pr-state-classify.jq"
 PR_STATE_UNMARKED_JQ="$SCRIPT_DIR/lib/pr-state-unmarked-replies.jq"
-for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ" "$PR_STATE_UNMARKED_JQ"; do
+for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ" "$PR_STATE_UNMARKED_JQ" "$SCRIPT_DIR/lib/check-run-conclusions.jq"; do
   if [[ ! -f "$required_filter" || ! -r "$required_filter" ]]; then
     echo "ERROR: required pr-state jq filter not readable: $required_filter" >&2
     exit 5
@@ -522,7 +522,7 @@ fi
 run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
   --jq '.check_runs[]' | "$CHECK_RUNS_DEDUP" > "$WORKDIR/check-runs.json"
 
-jq -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
+jq -L "$SCRIPT_DIR/lib" -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
 
 # ----------------------------------------------------------------------
 # 4. Commit statuses — latest per context, plus CR/Greptile bot rollup

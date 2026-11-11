@@ -21,6 +21,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [merge-gate.sh](../merge-gate.sh) | Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus) |
 | [merge-sequence.sh](../merge-sequence.sh) | Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet |
 | [no-review-override.sh](../no-review-override.sh) | Decide whether the merge gate may waive missing AI-review coverage after the no-review window |
+| [rerun-cancelled-required-ci.sh](../rerun-cancelled-required-ci.sh) | Re-run one verified cancelled required Actions job per PR HEAD. |
 | [review-substance.sh](../review-substance.sh) | Decide whether a bot's `APPROVED` on a SHA is real review coverage or a hollow rubber stamp |
 | [review-tier.sh](../review-tier.sh) | Resolve a PR's review tier (ci-only / ci+codeant-one-round / full / legacy) from pm-config |
 | [unreviewed-merge-ledger.sh](../unreviewed-merge-ledger.sh) | Record, list, and mark backfill status of merges made without an AI review |

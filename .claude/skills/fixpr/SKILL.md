@@ -301,6 +301,23 @@ For every `surface-low-confidence` item, capture file, finding, decision, ration
 
 ## Step 2: Classify every CI failure (judgment)
 
+Check cancelled Actions jobs before ordinary failure triage. The shared helper re-reads the current merge gate and requests a rerun only when one verified cancelled required job is the sole blocker. Optional cancellations follow normal triage.
+
+<!-- test-anchor: fixpr-required-ci-rerun -->
+
+```bash
+REQUIRED_CI_RESULT=null
+if jq -e 'any(.check_runs.all[]?;
+    .status == "completed" and .conclusion == "cancelled" and .app.slug == "github-actions")' "$AUDIT" >/dev/null; then
+  REQUIRED_CI_SH=$(resolve_script rerun-cancelled-required-ci.sh || true)
+  if [[ -n "$REQUIRED_CI_SH" ]]; then
+    REQUIRED_CI_RESULT=$("$REQUIRED_CI_SH" "$PR_NUMBER") || true
+  fi
+fi
+```
+
+When the result says `wait_for_ci=true`, carry the exact job ID into Step 7 with status `CI_PENDING`. Skip code edits, pushes, and merge attempts for this retry. A recorded failure or exhausted retry stays a CI blocker. Keep the result in the summary and do not repeat the request. A missing or ineligible result leaves ordinary triage in place.
+
 For each entry in `.check_runs.failing_runs` (blocking conclusions: `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`):
 
 1. Fetch the detailed output:

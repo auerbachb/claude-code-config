@@ -170,7 +170,8 @@
 #       "base": "main",
 #       "contexts": ["typecheck", "build", …],
 #       "unsatisfied": [{"context": "build", "state": "absent"}, …],
-#       "error": ""              # populated only when source == "unavailable"
+#       "error": "",             # unreadable protection or failed evaluation
+#       "cancelled_retry": null  # one otherwise-ready, cancelled Actions check
 #     }
 #   }
 #
@@ -1091,13 +1092,19 @@ CI_MISSING_TO=${#MISSING[@]}
 # to run, run". The outage that motivated #1361 is precisely the case where the
 # first question returns a confident yes and the second has never been asked.
 REQUIRED_UNSATISFIED_JSON='[]'
-REQUIRED_COUNT=$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)
+REQUIRED_COUNT=$(printf '%s\n' "$REQUIRED_CONTEXTS_JSON" | jq -er '
+  if type == "array" and all(.[]; type == "string") then length
+  else error("invalid required check list") end') || REQUIRED_COUNT=invalid
 if [[ "$REQUIRED_SOURCE" == "unavailable" ]]; then
   if [[ "$ALLOW_UNVERIFIED_REQ" == true ]]; then
     echo "[merge-gate] --allow-unverified-required-checks: proceeding without verifying branch-protection required contexts on ${BASE_REF:-<unknown base>} (${REQUIRED_ERROR}) — an absent required check cannot be distinguished from an absent requirement (issue #1361)." >&2
   else
     MISSING+=("cannot read branch-protection required status checks for base ${BASE_REF:-<unknown>} — required-context verification unavailable ($REQUIRED_ERROR); a required check that never reported is indistinguishable from no requirement, so this fails closed (issue #1361). Pass --allow-unverified-required-checks only under an explicit per-PR user override")
   fi
+elif [[ "$REQUIRED_COUNT" == invalid ]]; then
+  REQUIRED_ERROR="required check list is invalid"
+  REQUIRED_CONTEXTS_JSON='[]'
+  MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
 elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # Legacy commit statuses can satisfy a required context just as check-runs can
   # (Vercel, CircleCI and friends still post them), so a context absent from the
@@ -1138,57 +1145,32 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # — because the two have different fixes and "degraded means say so".
   # Commit statuses stay name-only on purpose: they carry no app_id, and the
   # app-scoped `checks[]` shape governs check-runs.
-  REQUIRED_STATE_JSON=$(jq -cn \
-    --argjson req "$REQUIRED_CONTEXTS_JSON" \
-    --argjson apps "$REQUIRED_APPS_JSON" \
-    --argjson runs "$CHECK_RUNS_JSON" \
-    --argjson statuses "$COMMIT_STATUSES_JSON" '
-      def satisfies: . == "success" or . == "neutral" or . == "skipped";
-      def unsatisfying: (.conclusion // "") | satisfies | not;
-      $req | map(
-        . as $c
-        | ($apps[$c] // null)                                          as $app
-        | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $named
-        | (if $app == null then $named
-           else [ $named[] | select((.app.id // null) == $app) ] end)  as $r
-        | ( [ $statuses[]? | select((.context // "") == $c) ] | first ) as $s
-        | (if (($r | length) == 0 and $s == null and ($named | length) > 0) then
-             {context: $c, state: "wrong_app", satisfied: false}
-           elif (($r | length) == 0 and $s == null) then
-             {context: $c, state: "absent", satisfied: false}
-           elif any($r[]; (.status // "") != "completed") then
-             {context: $c,
-              state: ([ $r[] | select((.status // "") != "completed")
-                        | ((.status // "") | if . == "" then "incomplete" else . end) ] | first),
-              satisfied: false}
-           elif any($r[]; unsatisfying) then
-             {context: $c,
-              state: ([ $r[] | select(unsatisfying)
-                        | ((.conclusion // "") | if . == "" then "none" else . end) ] | first),
-              satisfied: false}
-           elif ($r | length) == 0 and (($s.state // "") != "success") then
-             {context: $c,
-              state: (($s.state // "") | if . == "" then "unknown" else . end),
-              satisfied: false}
-           else
-             {context: $c, state: "passing", satisfied: true}
-           end))' 2>/dev/null || echo '[]')
-  if [[ -z "$REQUIRED_STATE_JSON" ]]; then REQUIRED_STATE_JSON='[]'; fi
-  REQUIRED_UNSATISFIED_JSON=$(echo "$REQUIRED_STATE_JSON" | jq -c '[.[] | select(.satisfied | not)]' 2>/dev/null || echo '[]')
-  if [[ -z "$REQUIRED_UNSATISFIED_JSON" ]]; then REQUIRED_UNSATISFIED_JSON='[]'; fi
-  if [[ "$(echo "$REQUIRED_UNSATISFIED_JSON" | jq 'length')" -gt 0 ]]; then
-    REQUIRED_UNSATISFIED_LIST=$(echo "$REQUIRED_UNSATISFIED_JSON" | jq -r 'map("\(.context) (\(.state))") | join(", ")')
-    MISSING+=("branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported, never finished, or ended in anything but success/neutral/skipped (cancelled included) is not a pass (issues #1361, #1846)")
+  if ! REQUIRED_STATE_JSON=$(jq -cen -L "$SCRIPT_DIR/lib" \
+      --argjson req "$REQUIRED_CONTEXTS_JSON" \
+      --argjson apps "$REQUIRED_APPS_JSON" \
+      --argjson runs "$CHECK_RUNS_JSON" \
+      --argjson statuses "$COMMIT_STATUSES_JSON" \
+      -f "$SCRIPT_DIR/lib/required-context-state.jq"); then
+    REQUIRED_ERROR="required check state evaluation failed"
+  elif ! REQUIRED_UNSATISFIED_JSON=$(printf '%s\n' "$REQUIRED_STATE_JSON" | jq -ce --argjson req "$REQUIRED_CONTEXTS_JSON" '
+      if type == "array" and map(.context) == $req and all(.[]; (.satisfied | type) == "boolean")
+      then [.[] | select(.satisfied | not)]
+      else error("required check state is invalid") end'); then
+    REQUIRED_ERROR="required check state projection failed"
+    REQUIRED_UNSATISFIED_JSON='[]'
+  fi
+  if [[ -n "$REQUIRED_ERROR" ]]; then
+    MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
+  elif [[ "$REQUIRED_UNSATISFIED_JSON" != '[]' ]]; then
+    if REQUIRED_UNSATISFIED_LIST=$(printf '%s\n' "$REQUIRED_UNSATISFIED_JSON" | jq -er 'map("\(.context) (\(.state))") | join(", ")'); then
+      REQUIRED_UNSATISFIED_REASON="branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported, never finished, or ended in anything but success/neutral/skipped (cancelled included) is not a pass (issues #1361, #1846)"
+      MISSING+=("$REQUIRED_UNSATISFIED_REASON")
+    else
+      REQUIRED_ERROR="required check state summary failed"
+      MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
+    fi
   fi
 fi
-
-REQUIRED_CONTEXTS_OUT=$(jq -cn \
-  --arg source "$REQUIRED_SOURCE" \
-  --arg base "$BASE_REF" \
-  --arg error "$REQUIRED_ERROR" \
-  --argjson contexts "$REQUIRED_CONTEXTS_JSON" \
-  --argjson unsatisfied "$REQUIRED_UNSATISFIED_JSON" \
-  '{source: $source, base: $base, contexts: $contexts, unsatisfied: $unsatisfied, error: $error}')
 
 # Universal unresolved-thread gate (#211) — applies to all paths regardless of
 # author. Catches threads from any reviewer (CR, BugBot, Greptile, Copilot,
@@ -2477,6 +2459,20 @@ if [[ "${#MISSING[@]}" -eq 0 ]]; then
 else
   MET=false
 fi
+
+# Admit a retry only after every other gate check has reported its blocker.
+CANCELLED_RETRY=null
+if [[ "$AUTHORSHIP" == mine && "$MERGEABLE" == MERGEABLE && "$MERGE_STATE" != DRAFT &&
+      "${#MISSING[@]}" -eq 1 &&
+      -n "${REQUIRED_UNSATISFIED_REASON:-}" && "${MISSING[0]}" == "$REQUIRED_UNSATISFIED_REASON" ]]; then
+  CANCELLED_RETRY=$(printf '%s\n' "$REQUIRED_UNSATISFIED_JSON" | jq -c '
+    if length == 1 then .[0].cancelled_check // null else null end') || CANCELLED_RETRY=null
+fi
+REQUIRED_CONTEXTS_OUT=$(jq -cn \
+  --arg source "$REQUIRED_SOURCE" --arg base "$BASE_REF" --arg error "$REQUIRED_ERROR" \
+  --argjson contexts "$REQUIRED_CONTEXTS_JSON" --argjson unsatisfied "$REQUIRED_UNSATISFIED_JSON" \
+  --argjson cancelled_retry "$CANCELLED_RETRY" \
+  '{source:$source,base:$base,contexts:$contexts,unsatisfied:$unsatisfied,error:$error,cancelled_retry:$cancelled_retry}')
 
 # Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
 # or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).

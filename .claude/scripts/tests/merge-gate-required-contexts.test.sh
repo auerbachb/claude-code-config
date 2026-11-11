@@ -315,6 +315,48 @@ check_eq "false" "$(echo "$OUT" | jq -r '.met')" \
   "(l) control: same PR, required context absent -> NOT met (the #1361 flip)"
 check_eq "true" "$(echo "$OUT" | jq -r '.primary_review_met')" \
   "(l) control: review coverage is unaffected — this is a CI-completeness blocker"
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 other success 100)")"
+check_eq '4' "$(jq -r '.required_contexts.cancelled_retry.id' <<<"$OUT")" "sole cancelled required Actions job is a retry candidate"
+check_eq false "$(jq -r .met <<<"$OUT")" "a retry candidate still blocks the gate"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 another-app)" "$(cr 5 other success 100)")"
+check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "another publisher never becomes an Actions retry candidate"
+check_eq cancelled "$(unsat_state build)" "another publisher's required cancellation still blocks"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 other failure 100)")"
+check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "ordinary CI failure preserves existing triage"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 build cancelled 100 github-actions)")"
+check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "multiple cancelled matrix legs are ambiguous"
+
+# Inject only the required-state evaluator failure. The old inline evaluator
+# matched by this shim converts this failure into an empty unsatisfied list.
+export REAL_REQUIRED_TEST_JQ="$(command -v jq)"
+cat > "$BIN/jq" <<'SH'
+#!/usr/bin/env bash
+for argument in "$@"; do
+  case "$argument" in
+    *required-context-state.jq|*"def satisfies:"*)
+      if [[ "${FAKE_REQUIRED_STATE_RESULT:-}" == fail ]]; then exit 3; fi
+      if [[ "${FAKE_REQUIRED_STATE_RESULT:-}" == empty ]]; then printf '[]\n'; exit 0; fi ;;
+  esac
+done
+exec "$REAL_REQUIRED_TEST_JQ" "$@"
+SH
+chmod +x "$BIN/jq"
+for result in fail empty; do
+  FAKE_REQUIRED_STATE_RESULT="$result" FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" \
+  FAKE_BRANCH_PROTECTED=true run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)")"
+  check_eq false "$(jq -r .met <<<"$OUT")" "required evaluator $result result fails closed"
+  check_eq 1 "$RC" "required evaluator $result result exits with gate blocked"
+  check_contains "cannot evaluate branch-protection" "$(jq -r '.missing | join(" | ")' <<<"$OUT")" "required evaluator $result result is visible"
+  check_contains "required check state" "$(jq -r '.required_contexts.error' <<<"$OUT")" "required evaluator $result sets structured error"
+  check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "required evaluator $result emits no retry candidate"
+done
 unset FAKE_REVIEWS
 
 echo "----------------------------------------"

@@ -1,7 +1,4 @@
-def is_blocking:
-  . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
-def is_passing:
-  . == "success" or . == "neutral" or . == "skipped" or . == "cancelled";
+include "check-run-conclusions";
 
 # Publishing GitHub App, retained on every projected entry (issue #956). The
 # preceding dedup step groups by [.app.slug, .app.id, .name] precisely because
@@ -12,12 +9,16 @@ def is_passing:
 def app_identity:
   {slug: (.app.slug // null), id: (.app.id // null)};
 
-{
-  total: length,
-  passing: ([.[] | select(.conclusion | is_passing)] | length),
-  failing: ([.[] | select(.conclusion | is_blocking)] | length),
-  in_progress: ([.[] | select(.status != "completed")] | length),
-  failing_runs: [.[] | select(.conclusion | is_blocking) | {id, name, conclusion, title: .output.title, details_url, html_url, app: app_identity}],
-  in_progress_runs: [.[] | select(.status != "completed") | {id, name, status, app: app_identity}],
+. as $runs
+| [$runs[] | select(completed_check | not)] as $incomplete
+| [$runs[] | select(completed_check and (.conclusion | optional_check_passes))] as $passing
+| [$runs[] | select(completed_check and (.conclusion | optional_check_passes | not))] as $failing
+| {
+  total: ($runs | length),
+  passing: ($passing | length),
+  failing: ($failing | length),
+  in_progress: ($incomplete | length),
+  failing_runs: [$failing[] | {id, name, conclusion, title: .output.title, details_url, html_url, app: app_identity}],
+  in_progress_runs: [$incomplete[] | {id, name, status, app: app_identity}],
   all: [.[] | {id, name, status, conclusion, title: .output.title, app: app_identity}]
 }
