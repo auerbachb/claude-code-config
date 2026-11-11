@@ -64,13 +64,13 @@ request=$(jq -cse -L "$scripts/lib" --argjson limit "$limit" '
 jq -e --argjson record "$record" '.expect == $record' <<<"$request" >/dev/null ||
   fail 7 'standing queue changed; re-read it before the next evaluation'
 issues=$(jq -c '.issues' <<<"$request")
-if jq -e --argjson issues "$issues" '. != null and .issues == $issues' <<<"$record" >/dev/null; then
+if jq -e --argjson issues "$issues" '($issues | length) > 0 and . != null and .issues == $issues' <<<"$record" >/dev/null; then
   printf '%s\n' "$record"
   exit 0
 fi
 
-# Retain the generation when the last pick leaves. A delayed writer that saw
-# null before the original plan cannot recreate it after retirement.
+# Every retirement advances the generation. A delayed writer cannot publish
+# from a snapshot taken before retirement, including an already-empty plan.
 epoch=$(date +%s) || fail 5 'could not generate a queue update identity'
 next=$(jq -cn --arg generation "$epoch:$$:$RANDOM:$RANDOM" --argjson issues "$issues" \
   '{generation:$generation,issues:$issues}')

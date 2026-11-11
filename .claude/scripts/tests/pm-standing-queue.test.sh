@@ -48,7 +48,7 @@ class StandingQueue(unittest.TestCase):
         (self.home / ".claude").mkdir()
         self.state = self.home / ".claude/session-state.json"
         self.env = dict(os.environ, HOME=str(self.home), REPO_KEY=REPO,
-                        CLAUDE_SESSION_ID=SESSION, LIMIT="6",
+                        CLAUDE_SESSION_ID=SESSION, LIMIT="6", PM_QUEUE_RUNNING_ISSUES="[]",
                         PM_STANDING_QUEUE_SH=str(SCRIPTS / "pm-standing-queue.sh"))
         self.env.pop("BASH_ENV", None)
         self.env.pop("ENV", None)
@@ -74,13 +74,14 @@ class StandingQueue(unittest.TestCase):
     def save(self, issues, expect=None, **scope):
         return self.queue("save", value={"expect": expect, "issues": issues}, **scope)
 
-    def evaluate(self, removed, vacancies=0, additions=()):
+    def evaluate(self, removed, vacancies=0, additions=(), running=()):
         code = "\n".join([READ, REFILL, TOP_UP, PUBLISH,
-                         'jq -cn --argjson plan "$PM_QUEUE_STATE" '
+                         'jq -cn --argjson plan "${PM_QUEUE_STATE:-null}" '
                          '--argjson scan "$PM_QUEUE_TOP_UP" \'{plan:$plan,scan:$scan}\''])
         return json.loads(self.shell(code, PM_QUEUE_REMOVED=json.dumps(removed),
                                     PM_QUEUE_VACANCIES=str(vacancies),
-                                    PM_QUEUE_ADDITIONS=json.dumps(additions)))
+                                    PM_QUEUE_ADDITIONS=json.dumps(additions),
+                                    PM_QUEUE_RUNNING_ISSUES=json.dumps(running)))
 
     def initial_selection(self, ranked):
         output = self.shell(INITIAL + '\nprintf "%s" "$PM_QUEUE_SELECTION"',
@@ -196,6 +197,31 @@ class StandingQueue(unittest.TestCase):
         self.assertEqual(retired["issues"], [])
         self.save(["7"], expect=None, expect_rc=7)
         self.assertEqual(self.queue("read"), retired)
+
+    def test_repeated_retirement_rejects_a_writer_that_saw_empty_plan(self):
+        first = self.save([])
+        second = self.save([], expect=first)
+        self.assertNotEqual(first["generation"], second["generation"])
+        self.save(["77"], expect=first, expect_rc=7)
+        self.assertEqual(self.queue("read"), second)
+
+    def test_recovered_plan_excludes_running_pick_before_dispatch_and_depth(self):
+        self.save(["7", "8", "9"])
+        result = self.shell(READ + '\nprintf "%s" "$PM_QUEUE_PICKS"',
+                            PM_QUEUE_RUNNING_ISSUES='["7"]')
+        self.assertEqual(json.loads(result), ["8", "9"])
+        evaluated = self.evaluate([], additions=ids(10, 13), running=["7"])
+        self.assertTrue(evaluated["scan"])
+        self.assertEqual(evaluated["plan"]["issues"], ids(8, 13))
+
+    def test_unreadable_running_evidence_preserves_the_queue(self):
+        original = self.save(["7"])
+        before = self.state.read_bytes()
+        result = self.evaluate([], running=None)
+        self.assertIsNone(result["plan"])
+        self.assertFalse(result["scan"])
+        self.assertEqual(self.state.read_bytes(), before)
+        self.assertEqual(self.queue("read"), original)
 
     def test_malformed_queue_and_invalid_scope_never_mutate_state(self):
         self.save(["7", "8"])

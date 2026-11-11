@@ -2384,7 +2384,16 @@ Read the saved plan once before the first pick, including before the initial
 selection or an explicit re-plan. Use the same actual dispatcher identity as the round record
 (`CLAUDE_SESSION_ID`) and the
 verified `REPO_KEY`. Carry the exact record across shell calls for this
-evaluation. Another session's plan is display evidence only.
+evaluation. Another session's plan is display evidence only. Set
+`PM_QUEUE_RUNNING_ISSUES` to the issue-number strings for this dispatcher's
+verified live pipelines, including launches that have yet to open a PR.
+Use the current Active Work evidence and pass `[]` for a verified empty
+set. Exclude those IDs before picking or counting queue depth, even if
+an earlier launch succeeded while publication failed. Recheck the same
+live-pipeline condition immediately before each launch and add a pick
+that is already running to `PM_QUEUE_REMOVED`. If the running evidence
+is unavailable, preserve the plan and use only fallback sources whose
+existing capacity and live-work checks pass.
 
 <!-- test-anchor: pm-standing-queue-read -->
 ```bash
@@ -2396,7 +2405,18 @@ if [[ -n "${PM_STANDING_QUEUE_SH:-}" ]]; then
     printf '%s\n' 'DEGRADED: standing queue unavailable; using the existing refill sources' >&2
   fi
 fi
-PM_QUEUE_PICKS=$(jq -c '.issues // []' <<<"${PM_QUEUE_STATE:-null}") || exit 1
+PM_QUEUE_PICKS='[]'
+if [[ -n "$PM_QUEUE_STATE" ]]; then
+  if ! PM_QUEUE_PICKS=$(jq -ce --argjson running "${PM_QUEUE_RUNNING_ISSUES:-null}" '
+    if ($running | type) != "array" or
+       any($running[]; (type == "string" and test("^[1-9][0-9]*$")) | not) then
+      error("invalid running issue evidence")
+    else (.issues // []) - $running end' <<<"$PM_QUEUE_STATE"); then
+    PM_QUEUE_PICKS='[]'
+    PM_QUEUE_STATE=''
+    printf '%s\n' 'DEGRADED: running issue evidence unavailable; standing queue preserved' >&2
+  fi
+fi
 ```
 
 **(b) Backlog top-up — after queue dispatch.** Pass the issue numbers consumed
