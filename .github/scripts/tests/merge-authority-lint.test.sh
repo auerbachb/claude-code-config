@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for merge-authority-lint.sh (issue #753)
-# covers: .claude/reference/chip-launching.md .claude/skills/issue-maker/modules/handoff.md .claude/skills/pm/SKILL.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
+# covers: .claude/reference/chip-launching.md .claude/skills/issue-maker/modules/handoff.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 
@@ -20,6 +20,8 @@ make_fixture() {
   cp "$REPO_ROOT/.claude/reference/chip-launching.md" "$dir/.claude/reference/"
   mkdir -p "$dir/.claude/skills/issue-maker/modules"
   cp "$REPO_ROOT/.claude/skills/issue-maker/modules/handoff.md" "$dir/.claude/skills/issue-maker/modules/"
+  mkdir -p "$dir/.claude/skills/pm/modules/flow"
+  cp "$REPO_ROOT/.claude/skills/pm/modules/flow/launch.md" "$dir/.claude/skills/pm/modules/flow/"
   cp "$REPO_ROOT/CLAUDE.md" "$dir/CLAUDE.md"
   for skill in pm prompt start-issue issue-maker wave subagent; do
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
@@ -66,7 +68,7 @@ plant_wording() {
 # Truncates the canonical bullet mid-sentence: a prefix match would still pass,
 # a verbatim comparison must not.
 truncate_canonical_bullet() {
-  local f=".claude/skills/pm/SKILL.md"
+  local f=".claude/skills/pm/modules/flow/launch.md"
   sed -i.bak 's|^- Merging is automatic and yours to do.*|- Merging is automatic and yours to do.|' "$f"
 }
 
@@ -102,7 +104,7 @@ expect "missing verbatim bullet in chip-launching fails" 1 \
 
 expect "missing merge-authority bullet in pm emitter fails" 1 \
   'pm merge-authority bullet' \
-  sed -i.bak '/Merging is automatic and yours to do/d' .claude/skills/pm/SKILL.md
+  sed -i.bak '/Merging is automatic and yours to do/d' .claude/skills/pm/modules/flow/launch.md
 
 expect "missing merge-authority bullet in start-issue emitter fails" 1 \
   'start-issue merge-authority bullet' \

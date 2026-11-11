@@ -559,7 +559,7 @@ fi
 #         value itself would fail the first three outright, so it is not part
 #         of the assertion.  The widest real gap is issue-maker's ~60 chars, so
 #         120 has headroom without spanning paragraphs.
-#     Fails closed when a SKILL.md is missing rather than skipping the emitter.
+#     Fails closed when an emitter procedure is missing.
 #
 #     Note: `producer | grep -q` is avoided deliberately — under `set -o
 #     pipefail` grep exits at the first match, the producer takes SIGPIPE, and
@@ -573,6 +573,9 @@ missing_reserve=()
 missing_file=()
 for emitter in "${CANONICAL_EMITTERS[@]}"; do
   skill_md="$SKILLS_DIR/$emitter/SKILL.md"
+  if [[ "$emitter" == pm ]]; then
+    skill_md="$SKILLS_DIR/pm/modules/flow/launch.md"
+  fi
   if [[ ! -f "$skill_md" ]]; then
     missing_file+=("$emitter")
     continue
@@ -587,7 +590,7 @@ for emitter in "${CANONICAL_EMITTERS[@]}"; do
   fi
 done
 if (( ${#missing_file[@]} > 0 )); then
-  fail "canonical emitter SKILL.md not found: ${missing_file[*]} (expected under $SKILLS_DIR)"
+  fail "canonical emitter procedure not found: ${missing_file[*]} (expected under $SKILLS_DIR)"
 elif (( ${#missing_reserve[@]} > 0 )); then
   fail "emitters without an explicit chip-offer-registry.sh --reserve call site: ${missing_reserve[*]}"
 else

@@ -954,11 +954,17 @@ REPO_KEY_OUT="$(cd "$TMP_DIR" && "$STATE_SH" --repo-key 2>/dev/null)"
 # were missed when the other four sites were fixed — the same drift test 21
 # already had to stop being a list. Every skill that touches table-freshness.sh
 # and resolves a repo key must normalise the sentinel.
+PM_ENTRY="$REPO_ROOT/.claude/skills/pm/SKILL.md"
+PM_PROGRESS="$REPO_ROOT/.claude/skills/pm/modules/flow/progress.md"
+grep -q 'flow:progress' "$PM_ENTRY" && grep -q 'table-freshness' "$PM_PROGRESS" && \
+  grep -q 'REPO_KEY' "$PM_PROGRESS" || \
+  fail "/pm must route to the progress module that owns table-freshness"
 while read -r SKILL_FILE; do
+  [[ "$SKILL_FILE" != "$PM_ENTRY" ]] || continue
   grep -q 'REPO_KEY' "$SKILL_FILE" || continue
   grep -qE '\[\[ *"\$REPO_KEY" *== *"_unknown" *\]\] *&& *REPO_KEY=""' "$SKILL_FILE" || \
-    fail "$(basename "$(dirname "$SKILL_FILE")") guards the freshness floor on an empty REPO_KEY, which --repo-key never returns — normalise '_unknown' to empty first"
-done < <(grep -rl 'table-freshness' "$REPO_ROOT/.claude/skills" --include='SKILL.md')
+    fail "$SKILL_FILE guards the freshness floor on an empty REPO_KEY, which --repo-key never returns — normalise '_unknown' to empty first"
+done < <(grep -rl 'table-freshness' "$REPO_ROOT/.claude/skills" --include='SKILL.md'; printf '%s\n' "$PM_PROGRESS")
 ok "every freshness wiring site normalises the '_unknown' sentinel its guards depend on"
 
 # --- 24. A resumed round re-arms the floor -----------------------------------
