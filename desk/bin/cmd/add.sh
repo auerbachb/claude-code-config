@@ -8,6 +8,8 @@
 . "$HQ_BIN_DIR/lib/items.sh"
 # shellcheck source=../lib/secrets.sh
 . "$HQ_BIN_DIR/lib/secrets.sh"
+# shellcheck source=../lib/lifecycle.sh
+. "$HQ_BIN_DIR/lib/lifecycle.sh"
 
 cmd_usage() {
   cat <<'EOF'
@@ -78,7 +80,9 @@ EXIT CODES
   0  ok
   1  unexpected database failure (for example the store is not migrated:
      run human-queue.sh migrate)
-  4  validation error, reported before any connection attempt
+  4  validation error, reported before any connection attempt; or, with
+     the owner check (issue #2184), the queue belongs to another account
+     (after connecting, nothing written; the line names both accounts)
   5  secret refused, before any connection attempt
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF
@@ -166,6 +170,9 @@ SELECT coalesce((SELECT id FROM items
                   FOR UPDATE), '') AS hq_found \gset
 SQL
   fi
+  # The queue owner check (issue #2184): a caller bound to another account
+  # is refused before the insert, the bump, or any event is written.
+  hq_sql_owner_guard_open
   cat <<'SQL'
 SELECT :'hq_found' = '' AS hq_is_new \gset
 \if :hq_is_new
@@ -194,6 +201,7 @@ SQL
 SELECT :'hq_found';
 \endif
 SQL
+    hq_sql_owner_guard_close
     return
   fi
   cat <<'SQL'
@@ -215,12 +223,13 @@ SQL
 SELECT id FROM bumped;
 \endif
 SQL
+  hq_sql_owner_guard_close
 }
 
 cmd_run() {
   local kind="" repo="" key="" question="" session="" default="" default_at=""
   local impact="" cost="" focus="" parked=false seen=" " flag i j total
-  local seq prefix errf out rc tool="" account="" capture="" route=""
+  local seq prefix errf out rc tool="" account="" capture="" route="" binding=""
   local -a ctx=() opts=() pv=()
 
   while [ "$#" -gt 0 ]; do
@@ -381,12 +390,14 @@ cmd_run() {
   hq_refuse_secret "add: --focus" "$focus"
 
   # --- write ----------------------------------------------------------------
+  hq_binding_arg binding
   pv=(-v "hq_kind=$kind" -v "hq_repo=$repo" -v "hq_key=$key"
       -v "hq_question=$question" -v "hq_session=$session"
       -v "hq_default=$default" -v "hq_default_at=$default_at"
       -v "hq_impact=$impact" -v "hq_parked=$parked"
       -v "hq_cost=$cost" -v "hq_focus=$focus"
-      -v "hq_tool=$tool" -v "hq_account=$account" -v "hq_capture=$capture" -v "hq_route=$route")
+      -v "hq_tool=$tool" -v "hq_account=$account" -v "hq_capture=$capture" -v "hq_route=$route"
+      -v "hq_binding=$binding")
   i=0
   while [ "$i" -lt "${#ctx[@]}" ]; do
     pv[${#pv[@]}]=-v
@@ -413,6 +424,7 @@ cmd_run() {
     fi
     hq_db_fail "$rc" "$errf" "add: nothing was stored"
   fi
+  hq_problem_check add "$out"
   if ! [[ $out =~ ^[DR]-[1-9][0-9]*$ ]]; then
     hq_die_error "add: the store returned no item id"
   fi

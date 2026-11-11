@@ -27,19 +27,24 @@ BEHAVIOR
      before any connection attempt). Binding again to the same queue is fine.
   3. Runs `migrate` in the schema (creating it if missing), as a subprocess
      with HUMAN_QUEUE_SCHEMA set to that schema.
-  4. Records the binding in the registry (names and schema only, never the
-     connection URL). Nothing is recorded if the migration fails.
+  4. Stamps the queue's owner with NAME (human-queue.sh owner set). A queue
+     that already belongs to a different name is refused (exit 4), so the
+     account cannot attach to someone else's queue. Setting the same name
+     again changes nothing.
+  5. Records the binding in the registry (names and schema only, never the
+     connection URL). Nothing is recorded if the migration or the stamp fails.
 
 EXIT CODES
   0  bound (or already bound to the same queue)
   1  the migration failed (nothing recorded)
-  4  invalid argument, or the account is bound to a different queue without --rebind
+  4  invalid argument, the account is bound to a different queue without
+     --rebind, or the queue belongs to another account (nothing recorded)
   7  the registry is unreadable or malformed, or the database is unreachable
 EOF
 }
 
 cmd_run() {
-  local name="" schema="" dir="" rebind=0 old_schema rc=0 cli
+  local name="" schema="" dir="" rebind=0 old_schema rc=0 cli owner_now=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -102,6 +107,35 @@ cmd_run() {
   # The migration runs in its own process so the connection URL and the
   # schema stay scoped to it. HUMAN_QUEUE_CLI is the offline test seam.
   cli="${HUMAN_QUEUE_CLI:-$HQ_BIN_DIR/human-queue.sh}"
+
+  # Read the owner before migrating (issue #2184): a queue that belongs to
+  # another account is not migrated at all. Fail closed: when the owner cannot
+  # be read, bind stops rather than migrating a queue whose ownership is
+  # unknown. The one read failure it may ignore is a schema with no state table
+  # yet ("does not exist"), which the migration below creates. An unreachable
+  # store (exit 7) stops here too.
+  owner_now="" rc=0 owner_err="" owner_errf=""
+  owner_errf=$(mktemp "${TMPDIR:-/tmp}/hq-bind-owner.XXXXXX") || hq_die_error "bind: cannot create a temp file to read the owner of '$schema'; nothing was recorded"
+  if [ -x "$cli" ]; then
+    owner_now=$(HUMAN_QUEUE_SCHEMA="$schema" "$cli" owner get 2>"$owner_errf") || rc=$?
+  else
+    owner_now=$(HUMAN_QUEUE_SCHEMA="$schema" bash "$cli" owner get 2>"$owner_errf") || rc=$?
+  fi
+  owner_err=$(cat "$owner_errf" 2>/dev/null || true)
+  rm -f "$owner_errf"
+  if [ "$rc" -eq 7 ]; then
+    hq_die_unavailable "bind: the store is unreachable (reading the owner of '$schema'); nothing was recorded"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    case "$owner_err" in
+      *"does not exist"*) owner_now="" rc=0 ;;
+      *) hq_die_error "bind: could not read the owner of '$schema' (exit $rc); nothing was migrated or recorded" ;;
+    esac
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$owner_now" ] && [ "$owner_now" != "no owner" ] && [ "$owner_now" != "$name" ]; then
+    hq_die_validation "bind: queue '$schema' belongs to '$owner_now', not '$name'; nothing was migrated or recorded (owner transfer moves a queue)"
+  fi
+
   rc=0
   if [ -x "$cli" ]; then
     HUMAN_QUEUE_SCHEMA="$schema" "$cli" migrate || rc=$?
@@ -113,6 +147,25 @@ cmd_run() {
   fi
   if [ "$rc" -ne 0 ]; then
     hq_die_error "bind: the migration in '$schema' failed (exit $rc); nothing was recorded"
+  fi
+
+  # Stamp the queue with this account's name (issue #2184). A queue that
+  # belongs to another account refuses here (exit 4, its line printed above),
+  # so the registry row below is never written for it.
+  rc=0
+  if [ -x "$cli" ]; then
+    HUMAN_QUEUE_SCHEMA="$schema" "$cli" owner set "$name" >/dev/null || rc=$?
+  else
+    HUMAN_QUEUE_SCHEMA="$schema" bash "$cli" owner set "$name" >/dev/null || rc=$?
+  fi
+  if [ "$rc" -eq 7 ]; then
+    hq_die_unavailable "bind: the store is unreachable (stamping the owner of '$schema'); nothing was recorded"
+  fi
+  if [ "$rc" -eq 4 ]; then
+    hq_die_validation "bind: queue '$schema' belongs to another account; nothing was recorded (owner transfer moves a queue)"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    hq_die_error "bind: stamping the owner of '$schema' failed (exit $rc); nothing was recorded"
   fi
 
   if ! hqb_store "$dir" "$name" "$schema"; then
