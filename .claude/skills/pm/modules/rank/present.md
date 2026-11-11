@@ -1,5 +1,9 @@
 <!-- pm-routing:begin -->
 Route `rank:present`. Present the ranked work and run the existing cleanup, triage and dispatch decisions. Return through the existing ranking-only exit when it applies.
+Once the complete ranking result is emitted, use rank:fetch's watermark
+publication block if this same attempt has a verified pending receipt.
+Do this before an applicable ranking-only return. An early health-only
+exit or incomplete ranking leaves the receipt unpublished.
 <!-- pm-routing:end -->
 ### 1B.5: Present recommendations
 
