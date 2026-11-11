@@ -44,7 +44,11 @@ FROM checked \gset
 SELECT encode(sha256(convert_to(:'hq_data' || :'hq_preview', 'UTF8')), 'hex') AS hq_token \gset
 
 \if :hq_apply
-  SELECT :'hq_token' = :'hq_confirmation' AS hq_confirmed \gset
+  -- psql runs the fixed command locally. The path stays in its environment,
+  -- and the second hash is captured after the transaction has locked the rows.
+  \set hq_current_sha `unset PGPASSWORD; test -f "$HQ_IMPORT_SCAN" && shasum -a 256 < "$HQ_IMPORT_SCAN" | cut -d ' ' -f 1`
+  SELECT :'hq_current_sha' = (:'hq_data'::jsonb->>'scan_sha') AS hq_same_scan \gset
+  SELECT :'hq_same_scan'::boolean AND :'hq_token' = :'hq_confirmation' AS hq_confirmed \gset
   \if :hq_confirmed
     WITH approved AS (
       SELECT * FROM jsonb_to_recordset(:'hq_preview'::jsonb) AS e(
@@ -68,7 +72,7 @@ SELECT encode(sha256(convert_to(:'hq_data' || :'hq_preview', 'UTF8')), 'hex') AS
         'id', id, 'answer', answer, 'session', session_id, 'changed', true) ORDER BY id) FROM answered), '[]'),
       'comments', coalesce((SELECT jsonb_agg(id ORDER BY id) FROM approved WHERE comment IS NOT NULL), '[]'));
   \else
-    SELECT '!proposal or queue changed since preview; nothing was recorded';
+    SELECT '!scan, proposal, or queue changed since preview; nothing was recorded';
   \endif
 \else
   SELECT jsonb_build_object('confirmation', :'hq_token', 'entries',

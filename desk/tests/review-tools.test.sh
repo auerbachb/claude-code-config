@@ -51,6 +51,14 @@ jq -n --arg hash "${sha%% *}" --arg note "$note" '{
 jq '.entries[0].printed_option = "Old choice" | .entries[2].position = 2' "$proposal" > "$tmp/invalid.json"
 invalid=$(hq import preview "$scan" "$tmp/invalid.json")
 check "bad option and section are refused" "$(jq '[.entries[]|select(.reason)]|length' <<< "$invalid")" 3
+sql "INSERT INTO sets (set_id, position, item_id)
+     SELECT 9223372036854775807, position, item_id FROM sets WHERE set_id = 31;" >/dev/null
+jq '.set_id = "9223372036854775807"' "$proposal" > "$tmp/max-set.json"
+check "the largest valid set ID resolves without rounding" \
+  "$(hq import preview "$scan" "$tmp/max-set.json" | jq -c '[.entries[].answer | strings]')" '["Yes","No","Yes"]'
+jq '.set_id = "9223372036854775808"' "$proposal" > "$tmp/invalid-set.json"
+rc=0; hq import preview "$scan" "$tmp/invalid-set.json" >/dev/null 2>&1 || rc=$?
+check "set IDs past bigint range are refused" "$rc" 4
 preview=$(hq import preview "$scan" "$proposal")
 token=$(jq -er .confirmation <<< "$preview")
 check "three choices resolve from the scan" "$(jq -c '[.entries[].answer | strings]' <<< "$preview")" '["Yes","No","Yes"]'
@@ -62,6 +70,22 @@ cp "$scan" "$tmp/changed.pdf"
 printf '\n%% extra scan content\n' >> "$tmp/changed.pdf"
 rc=0; hq import apply "$tmp/changed.pdf" "$proposal" "$token" >/dev/null 2>&1 || rc=$?
 check "changed scan is refused" "$rc" 4
+# Change the scan after the first hash, before the transaction's recheck.
+cp "$scan" "$tmp/racing.pdf"
+mkdir "$tmp/hash-bin"
+cat > "$tmp/hash-bin/shasum" <<'HASH_STUB'
+#!/usr/bin/env bash
+"$TEST_REAL_SHASUM" "$@" || exit $?
+if [ ! -e "$TEST_HASH_MARKER" ]; then
+  touch "$TEST_HASH_MARKER"
+  printf '\n%% changed after hash\n' >> "$TEST_HASH_SCAN"
+fi
+HASH_STUB
+chmod +x "$tmp/hash-bin/shasum"
+rc=0
+TEST_REAL_SHASUM=$(command -v shasum) TEST_HASH_MARKER="$tmp/hashed" TEST_HASH_SCAN="$tmp/racing.pdf" \
+  PATH="$tmp/hash-bin:$PATH" hq import apply "$tmp/racing.pdf" "$proposal" "$token" >/dev/null 2>&1 || rc=$?
+check "scan changed during apply is refused" "$rc" 4
 hq bump D-3 >/dev/null
 rc=0; hq import apply "$scan" "$proposal" "$token" >/dev/null 2>&1 || rc=$?
 check "changed item invalidates confirmation" "$rc" 4

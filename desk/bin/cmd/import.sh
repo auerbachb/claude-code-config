@@ -69,7 +69,7 @@ cmd_run() {
 
   hq_db_connect
   hq_mktemp errf
-  out=$(hq_db_script -At -v "hq_apply=$apply" -v "hq_data=$proposal" -v "hq_confirmation=$confirmation" \
+  out=$(HQ_IMPORT_SCAN="$2" hq_db_script -At -v "hq_apply=$apply" -v "hq_data=$proposal" -v "hq_confirmation=$confirmation" \
     < "$HQ_BIN_DIR/lib/import.sql" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then hq_db_fail "$rc" "$errf" "import: transaction failed"; fi
   hq_problem_check import "$out"

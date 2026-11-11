@@ -8,7 +8,8 @@ def clean($max):
 if length != 1 then error("expected one proposal") else .[0] end
 | select(type == "object")
 | select(.scan_sha | type == "string" and test("^[0-9a-f]{64}$"))
-| select(.set_id | type == "string" and test("^[1-9][0-9]{0,17}$"))
+| select(.set_id | type == "string" and test("^[1-9][0-9]{0,18}$")
+    and (length < 19 or . <= "9223372036854775807"))
 | select(.entries | type == "array" and length > 0 and length <= 99)
 | select(.entries | all(
     (.id | type == "string" and test("^[DR]-[1-9][0-9]{0,18}$"))
