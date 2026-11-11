@@ -1511,8 +1511,11 @@ DAY_PATH=".repos[\"$REPO_KEY\"].day"
 run_goal_arm() {
   local state_helper="${2:-$SESSION_STATE_SH}"
   SESSION_STATE_SH="$state_helper" REPO_KEY="$REPO_KEY" BUSINESS_GOAL="$1" \
-    NOW=2026-11-11T19:30:00Z DAY_CADENCE_MIN=5 MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 \
-    bash -u -c "$BLOCK_SAVED_GOAL"$'\n'"$BLOCK_GOAL_INIT"$'\n''exit "$INIT_RC"'
+    COMPETING_GOAL="${3:-}" NOW=2026-11-11T19:30:00Z DAY_CADENCE_MIN=5 \
+    MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 bash -u -c \
+    "$BLOCK_SAVED_GOAL"$'\n''if [ -n "$COMPETING_GOAL" ]; then
+      "$SESSION_STATE_SH" --set "$DAY_STATE_PATH.goal=$COMPETING_GOAL" || exit 99
+    fi'$'\n'"$BLOCK_GOAL_INIT"$'\n''exit "$INIT_RC"'
 }
 read_goal() { "$SESSION_STATE_SH" --get-json "$DAY_PATH.goal"; }
 write_goal() { "$SESSION_STATE_SH" --set "$DAY_PATH.goal=$1" >/dev/null; }
@@ -1532,6 +1535,11 @@ run_goal_arm "" || exit 1
 check_eq "literal null remains a string" '"null"' "$(read_goal)"
 run_goal_arm $'override\n' || exit 1
 check_eq "an explicit goal wins without losing trailing whitespace" '"override\n"' "$(read_goal)"
+write_goal '"older saved goal"'
+GOAL_RC=0
+run_goal_arm "" "$SESSION_STATE_SH" '"newer explicit goal"' >/dev/null 2>&1 || GOAL_RC=$?
+check_eq "a newer state write defeats stale resume initialization" 7 "$GOAL_RC"
+check_eq "the stale resume leaves the newer explicit goal" '"newer explicit goal"' "$(read_goal)"
 write_goal '{"wrong":"type"}'
 GOAL_RC=0
 GOAL_BEFORE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")

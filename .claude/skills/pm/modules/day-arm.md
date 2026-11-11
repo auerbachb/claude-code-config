@@ -9,16 +9,24 @@ By the time this runs, 2D.1 has settled ownership and **Steps 1 and 2 have alrea
 
 <!-- test-anchor: pm-day-arm-prior-goal -->
 ```bash
-PRIOR_GOAL_PATH=".repos[\"$REPO_KEY\"].day.goal"
+DAY_STATE_PATH=".repos[\"$REPO_KEY\"].day"
 PRIOR_GOAL_RC=0
-PRIOR_GOAL_JSON=$("$SESSION_STATE_SH" --get-json "$PRIOR_GOAL_PATH") || PRIOR_GOAL_RC=$?
+PRIOR_DAY_JSON=$("$SESSION_STATE_SH" --get-json "$DAY_STATE_PATH") || PRIOR_GOAL_RC=$?
 if [ "$PRIOR_GOAL_RC" -eq 6 ]; then
   PRIOR_GOAL_RC=0
-  PRIOR_GOAL_JSON=$("$SESSION_STATE_SH" --get-json "$PRIOR_GOAL_PATH") || PRIOR_GOAL_RC=$?
+  PRIOR_DAY_JSON=$("$SESSION_STATE_SH" --get-json "$DAY_STATE_PATH") || PRIOR_GOAL_RC=$?
 fi
 case "$PRIOR_GOAL_RC" in
-  0) jq -e 'type == "string" or type == "null"' >/dev/null <<< "$PRIOR_GOAL_JSON" || PRIOR_GOAL_RC=4 ;;
-  3) PRIOR_GOAL_JSON=null ;;
+  0)
+    PRIOR_GOAL_JSON=$(jq -cs '
+      if length != 1 then error("invalid day snapshot")
+      else .[0] |
+        if . == null then null
+        elif type == "object" and (.goal | type == "string" or type == "null") then .goal
+        else error("invalid saved day goal") end
+      end' <<< "$PRIOR_DAY_JSON") || PRIOR_GOAL_RC=4
+    ;;
+  3) PRIOR_DAY_JSON=null; PRIOR_GOAL_JSON=null ;;
 esac
 ```
 
@@ -34,7 +42,7 @@ PRIOR_HITS=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.consecutive_li
 [[ "$PRIOR_HITS" =~ ^[0-9]+$ ]] || PRIOR_HITS=0
 ```
 
-Take `BUSINESS_GOAL` when supplied, otherwise the saved JSON. Build the whole day object in one call so a second write cannot fail after initialization.
+Take `BUSINESS_GOAL` when supplied, otherwise the saved JSON. Build the whole day object in one call. Compare it against the same day snapshot that supplied the saved goal, so a newer arm or park keeps its state.
 
 <!-- test-anchor: pm-day-arm-init -->
 ```bash
@@ -59,14 +67,14 @@ if [ "$INIT_RC" -eq 0 ]; then
       goal:(if $new_goal == "" then $prior_goal else $new_goal end)}') || INIT_RC=$?
 
   if [ "$INIT_RC" -eq 0 ]; then
-    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$DAY_JSON" || INIT_RC=$?
+    "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$DAY_JSON" --expect "$PRIOR_DAY_JSON" || INIT_RC=$?
   fi
 fi
 ```
 
-The numeric `--argjson` arguments are why the preamble validates those flags as unsigned integers: `--argjson base 2.5` or a non-numeric value makes `jq` fail here and the whole object never gets written.
+The preamble validates the numeric arguments as unsigned integers before jq builds the state.
 
-**This write must succeed before anything is armed.** A non-zero `INIT_RC` means the ownership claim 2D.1(c) depends on was never published *and* there is no `day` object for the loop to tick against — so arm nothing, report that day mode did not start, and stop. Arming on an unwritten claim is the worst available order: the race protection is gone (the other side re-reads and sees nothing) and the Monitor would tick into state that does not exist.
+**This write must succeed before anything is armed.** Exit `7` means the day state changed after the read. Keep that state, report that this arm did not start, and stop. Any other nonzero `INIT_RC` also stops before a Monitor is armed.
 
 Use the goal in `DAY_JSON` for the first heartbeat, and say when it was carried forward from a previous run rather than given this time — a resumed goal the user cannot see is one they cannot correct.
 
