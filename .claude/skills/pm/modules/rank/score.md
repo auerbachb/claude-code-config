@@ -1,5 +1,6 @@
 <!-- pm-routing:begin -->
 Route `rank:score`. Read the selected issue evidence and score the candidates. Apply the pause, scope and operator order read in rank:load or the current refill gate.
+For a bounded rescan after context turnover, restore the current OKRs and `OKR_MODE` before scoring when either input is unavailable. Resolve `rank:load` for the read-only config and OKR rule in 1B.1. Keep the current refill scope and operator evidence.
 <!-- pm-routing:end -->
 ### 1B.3: Read issue bodies for top candidates
 

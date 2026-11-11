@@ -64,6 +64,11 @@ status_trace=$(trace_route 'Passive status')
 [[ -z "$status_trace" ]]
 [[ "$(trace_route 'Saved queue, operator order, or current evidence refill')" == 'shared/priority.md shared/ownership.md shared/window-fit.md' ]]
 [[ "$(trace_route 'Bounded backlog rescan')" == 'rank/fetch.md rank/score.md' ]]
+rank_score="$skill/modules/rank/score.md"
+restore_okr=$(grep -nF 'restore the current OKRs and `OKR_MODE` before scoring' "$rank_score" | cut -d: -f1)
+score_start=$(grep -nF '### 1B.3:' "$rank_score" | cut -d: -f1)
+[[ "$restore_okr" -lt "$score_start" ]]
+grep -Fq 'Resolve `rank:load` for the read-only config and OKR rule in 1B.1.' "$rank_score"
 grep -Fq 'At this gate, read `shared:priority`' "$skill/modules/rank/load.md"
 grep -Fq 'Step 0b parsed it successfully, read `shared:window-fit`' "$skill/modules/rank/present.md"
 grep -Fq 'At this gate, read `shared:ownership`' "$skill/modules/rank/present.md"
