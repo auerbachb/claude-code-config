@@ -57,21 +57,58 @@ def origin(cwd):
     return host.lower(), path
 
 
+def activation_arguments(command):
+    """Resolve only literal words and explicit assignments in the same tool call."""
+    lines = [line.strip() for line in command.splitlines() if line.strip()]
+    if not lines or any(character in command for character in "&|;<>#" + chr(96)):
+        return None
+    variables = {}
+    for line in lines[:-1]:
+        if "=" not in line:
+            return None
+        name, raw_value = line.split("=", 1)
+        values = shlex.split(raw_value)
+        if (name not in ("EXECUTION_PAUSE_SH", "SESSION_ID", "WINDOW_MINUTES")
+                or name in variables or "$" in raw_value or len(values) != 1):
+            return None
+        variables[name] = values[0]
+    arguments = []
+    for raw_word in shlex.split(lines[-1], posix=False):
+        if "$" in raw_word:
+            if raw_word.startswith("'"):
+                return None
+            variable = raw_word[1:-1] if raw_word.startswith('"') else raw_word
+            match = re.fullmatch(r"\$(?:\{([A-Z_]+)\}|([A-Z_]+))", variable)
+            if not match:
+                return None
+            name = match[1] or match[2]
+            if name not in variables:
+                return None
+            word = variables[name]
+            if not raw_word.startswith('"') and re.search(r"\s|[?*\[]", word):
+                return None
+        else:
+            values = shlex.split(raw_word)
+            if len(values) != 1:
+                return None
+            word = values[0]
+        arguments.append(word)
+    return arguments
+
+
 def activation_kind(command, legacy):
-    """A literal helper invocation can prove scope. Other forms can conflict."""
+    """A resolved helper invocation can prove scope. Other forms can conflict."""
     if not all(word in command for word in ("--activate", "--command", "end")):
         return None
     if "execution-pause" not in command and "EXECUTION_PAUSE_SH" not in command:
         return None
     try:
-        words = shlex.split(command)
+        words = activation_arguments(command)
     except ValueError:
         return "unknown"
     if words and words[0] == "exec":
         words = words[1:]
     if not words or not Path(words[0]).is_absolute() or Path(words[0]).name != "execution-pause.sh":
-        return "unknown"
-    if any(character in command for character in "$&|;<>#\n\r"):
         return "unknown"
     values = {}
     tail = words[1:]
@@ -237,20 +274,47 @@ def verify(repo, native, legacy, project_roots, cwd):
             "legacy_session": legacy, "gate_token": snapshot["token"]}
 
 
+def project_roots():
+    home_profile = Path.home() / ".claude"
+    profile = Path(os.environ.get("CLAUDE_CONFIG_DIR") or home_profile)
+    roots = [(profile / "projects").resolve(strict=True)]
+    profiles = [home_profile]
+    registry = Path(os.environ.get("AI_QUOTAS_CONFIG") or home_profile / "ai-quotas.json")
+    if registry.exists() or registry.is_symlink():
+        rows = json.loads(run(str(SCRIPTS / "ai-quotas-setup.sh"), "launchers", "--json"))
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise EvidenceError("Claude profile inventory is unreadable")
+        for row in rows:
+            if row.get("provider") != "claude":
+                continue
+            registered = Path(row.get("profile_dir", ""))
+            if not registered.is_absolute():
+                raise EvidenceError("registered Claude profile is invalid")
+            profiles.append(registered)
+    for registered in profiles:
+        projects = registered / "projects"
+        try:
+            resolved = projects.resolve(strict=True)
+        except FileNotFoundError:
+            if projects.is_symlink():
+                raise EvidenceError("linked Claude projects are unavailable") from None
+            continue
+        if not resolved.is_dir():
+            raise EvidenceError("registered Claude projects are unreadable")
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--native-session", required=True)
     parser.add_argument("--legacy-session", required=True)
     args = parser.parse_args()
-    primary = Path.home() / ".claude/projects"
-    profile = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
     try:
-        roots = [profile.resolve(strict=True)]
-        if primary.exists() and primary.resolve() not in roots:
-            roots.append(primary.resolve())
         verdict = verify(args.repo, args.native_session, args.legacy_session,
-                         roots, Path.cwd())
+                         project_roots(), Path.cwd())
     except EvidenceError as error:
         verdict = {"verdict": "held", "reason": str(error)}
     except (OSError, ValueError, TypeError):

@@ -56,10 +56,10 @@ repo and a nonempty session to registry and gate operations.
 
 Before inventory or any write, check the raw legacy key when it differs from
 the native UUID. An active legacy gate is eligible only when the installed
-verifier correlates one successful literal activation in the selected native
+verifier correlates one successful activation with literal or statically bound arguments in the selected native
 transcript with the same repo and gate. Ambiguous or unreadable evidence leaves
 both gates and all tasks untouched. Recover from the original session context
-if independent evidence is unavailable.
+if independent evidence is unavailable. The verifier scans the active, primary and registered Claude transcript roots. It holds when the bounded inventory cannot rule out a competing activation.
 
 <!-- test-anchor: end-resume-other-gate -->
 
@@ -176,7 +176,7 @@ rearmed`. Because the compare-and-set runs under the registry lock, concurrent
 `rearming` is a reservation, not a stoppable runtime identity, and is excluded
 from registry `--live` results. Immediately before launching, require exact `inactive` status for both the
 native runtime and raw legacy key in the verified repo. Check each distinct
-key once. For legacy recovery also revalidate the continuation receipt.
+key once. For legacy recovery also revalidate the continuation receipt. The PreToolUse launch hook checks the bound legacy gate again while a task is reserved.
 
 <!-- test-anchor: end-resume-prelaunch-gates -->
 

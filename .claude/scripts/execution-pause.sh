@@ -103,6 +103,10 @@ pause_path() {
   jq -nr --arg repo "$REPO_KEY" --arg session "$1" \
     '".repos[\($repo|tojson)].execution_pauses[\($session|tojson)]"'
 }
+legacy_launch_scope_path() {
+  jq -nr --arg repo "$REPO_KEY" --arg session "$1" \
+    '".repos[\($repo|tojson)].legacy_end_resume_scopes[\($session|tojson)]"'
+}
 
 SCOPE_HASH="$(scope_hash "$SESSION_ID")" || {
   echo "execution-pause.sh: no working SHA-256 utility for marker identity" >&2
@@ -122,24 +126,30 @@ state_lock_acquire "$STATE_FILE" || exit $?
 trap 'state_lock_release' EXIT
 
 legacy_snapshot() {
-  local state marker normalized_marker token
+  local state marker normalized_marker token pending
   state="$(session_state --raw-path --get-json "$PATH_EXPR")" || return 4
   [[ -f "$MARKER" && ! -L "$MARKER" ]] || return 4
   marker="$(cat "$MARKER")" || return 4
   normalized_marker="$(jq -cSe . <<< "$marker")" || return 4
+  pending="$(jq -c 'if type == "object" and .active == false then .legacy_resume // null else null end' \
+    <<< "$state")" || return 4
   state="$(jq -cSe --arg session "$SESSION_ID" '
-    select(type == "object" and .active == true and .command == "end"
-           and .session_id == $session and .cleared_at == null and (.at | type == "string"))
+    select(type == "object" and .command == "end" and .session_id == $session and (.at | type == "string"))
+    | if .active == true and .cleared_at == null then .
+      elif .active == false and (.legacy_resume | type == "object") then
+        del(.legacy_resume) | .active = true | .cleared_at = null
+      else empty end
   ' <<< "$state")" || return 4
   [[ "$normalized_marker" == "$state" ]] || return 4
   token="$(printf '%s\0%s\0%s' "$SCOPE_HASH" "$state" "$marker" | sha256_input)" || return 4
-  jq -nc --arg token "$token" --argjson state "$state" '{token:$token,at:$state.at}'
+  jq -nc --arg token "$token" --argjson state "$state" --argjson pending "$pending" \
+    '{token:$token,at:$state.at,pending:$pending}'
 }
 
 native_gate_token() {
-  local native_hash native_path state
-  native_hash="$(scope_hash "$NATIVE_SESSION")" || return 4
-  native_path="$(pause_path "$NATIVE_SESSION")" || return 4
+  local session="$1" native_hash native_path state
+  native_hash="$(scope_hash "$session")" || return 4
+  native_path="$(pause_path "$session")" || return 4
   if [[ -e "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ||
         -L "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ]]; then
     return 7
@@ -166,11 +176,39 @@ legacy_resume_scope() {
   expected="$(jq -er '.native_token | select(type == "string" and test("^[a-f0-9]{64}$"))' \
     <<< "$binding")" || return 4
   rc=0
-  current="$(native_gate_token)" || rc=$?
+  current="$(native_gate_token "$NATIVE_SESSION")" || rc=$?
   [[ "$rc" -ne 7 ]] || return 3
   [[ "$rc" -eq 0 ]] || return "$rc"
   [[ "$current" == "$expected" ]] || return 3
   printf '%s\n' "$SESSION_ID"
+}
+
+legacy_launch_held() {
+  local scope binding legacy recorded current tasks_path tasks legacy_hash legacy_path active
+  scope="$(legacy_launch_scope_path "$SESSION_ID")" || return 1
+  binding="$(session_state --raw-path --get-json "$scope")" || return 1
+  [[ "$binding" != null ]] || return 1
+  legacy="$(jq -er '.legacy | select(type == "string" and length > 0)' <<< "$binding")" || return 0
+  recorded="$(jq -er '.native_token | select(type == "string" and test("^[a-f0-9]{64}$"))' \
+    <<< "$binding")" || return 0
+  current="$(native_gate_token "$SESSION_ID")" || return 0
+  [[ "$current" == "$recorded" ]] || return 1
+  tasks_path="$(jq -nr --arg repo "$REPO_KEY" '".repos[\($repo|tojson)].background_tasks"')" || return 0
+  tasks="$(session_state --raw-path --get-json "$tasks_path")" || return 0
+  active="$(jq -r --arg legacy "$legacy" '
+    if . == null then false
+    elif type == "array" then any(.[]; .session_id == $legacy and .status == "rearming")
+    else error("task inventory malformed") end
+  ' <<< "$tasks")" || return 0
+  [[ "$active" == true ]] || return 1
+  legacy_hash="$(scope_hash "$legacy")" || return 0
+  if [[ -e "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ||
+        -L "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ]]; then
+    return 0
+  fi
+  legacy_path="$(pause_path "$legacy")" || return 0
+  active="$(session_state --raw-path --get-json "$legacy_path.active")" || return 0
+  [[ "$active" != false && "$active" != null ]]
 }
 
 case "$MODE" in
@@ -187,7 +225,7 @@ case "$MODE" in
     [[ "$GENERATION" =~ ^[0-9a-f]{32}$ ]] || exit 5
     VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
       --argjson window "$WINDOW" --argjson deadline "$DEADLINE_EPOCH" --arg generation "$GENERATION" \
-      '{generation:$generation,active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')"
+      '{generation:$generation,active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')" || exit 5
     mkdir -p "$MARKER_DIR" 2>/dev/null || {
       echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
       exit 5
@@ -224,10 +262,15 @@ case "$MODE" in
       CURRENT="$(legacy_snapshot)" || exit $?
       CURRENT_TOKEN="$(jq -er .token <<< "$CURRENT")" || exit 4
       [[ "$CURRENT_TOKEN" == "$EXPECT_LEGACY_TOKEN" ]] || exit 7
-      NATIVE_TOKEN="$(native_gate_token)" || exit $?
+      NATIVE_TOKEN="$(native_gate_token "$NATIVE_SESSION")" || exit $?
       BINDING="$(jq -nc --arg native "$NATIVE_SESSION" --arg token "$NATIVE_TOKEN" \
         '{native:$native,native_token:$token}')" || exit 4
-      EXTRA_CLEAR_ARGS=(--set "$PATH_EXPR.legacy_resume=$BINDING")
+      jq -e --argjson binding "$BINDING" '.pending == null or .pending == $binding' \
+        <<< "$CURRENT" >/dev/null || exit 7
+      LAUNCH_SCOPE="$(legacy_launch_scope_path "$NATIVE_SESSION")" || exit 4
+      LAUNCH_BINDING="$(jq -nc --arg legacy "$SESSION_ID" --arg token "$NATIVE_TOKEN" \
+        '{legacy:$legacy,native_token:$token}')" || exit 4
+      EXTRA_CLEAR_ARGS=(--set "$PATH_EXPR.legacy_resume=$BINDING" --set "$LAUNCH_SCOPE=$LAUNCH_BINDING")
     fi
     NOW="$(date -u +%FT%TZ)"
     session_state --raw-path \
@@ -247,7 +290,17 @@ case "$MODE" in
     # incomplete and launches must stay blocked until a successful retry.
     if [[ -f "$MARKER" ]]; then printf 'active\n'; state_lock_release; exit 0; fi
     if [[ "$RC" -eq 0 && "$VALUE" == true ]]; then printf 'active\n'; state_lock_release; exit 0; fi
-    if [[ "$RC" -eq 0 && ( "$VALUE" == false || "$VALUE" == null ) ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
+    if [[ "$RC" -eq 0 && ( "$VALUE" == false || "$VALUE" == null ) ]]; then
+      if [[ "${CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK:-}" == 1 &&
+            "$SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]] &&
+        legacy_launch_held; then
+        printf 'active\n'
+      else
+        printf 'inactive\n'
+      fi
+      state_lock_release
+      exit 0
+    fi
     if [[ "$RC" -eq 3 ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
     echo "execution-pause.sh: execution-pause state unreadable and no active marker exists" >&2
     exit 4

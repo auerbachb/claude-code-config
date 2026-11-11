@@ -72,6 +72,7 @@
           "cleared_at": null
         }
       },
+      "_legacy_end_resume_scopes_comment": "A guarded legacy /end clear publishes this map by native UUID with the exact legacy key and native gate fingerprint. While a task is reserved under that legacy key, the native launch hook also checks its gate under the execution-pause state lock.",
       "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. end-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
       "background_tasks": [
         {

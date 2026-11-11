@@ -37,6 +37,7 @@ class LegacyStopTest(unittest.TestCase):
                         CLAUDE_CONFIG_DIR=str(self.scratch / ".claude"),
                         CLAUDE_SESSION_STATE_FILE=str(self.state),
                         CLAUDE_EXECUTION_PAUSE_MARKER_DIR=str(self.scratch / "markers"))
+        self.env.pop("AI_QUOTAS_CONFIG", None)
 
     def invoke(self, *args, expected=0, env=None):
         result = subprocess.run([str(arg) for arg in args], cwd=self.checkout,
@@ -116,6 +117,51 @@ class LegacyStopTest(unittest.TestCase):
         self.assertEqual(self.state.read_bytes(), before)
         self.assertEqual(self.pause("--status", "--session", LEGACY), "active")
 
+    def test_registered_isolated_profile_can_hold_competing_evidence(self):
+        self.arm()
+        self.transcript()
+        other = self.transcript(OTHER)
+        separate = self.scratch / "isolated-profile/projects/fixture-repo"
+        separate.mkdir(parents=True)
+        other.rename(separate / other.name)
+        registry = self.scratch / ".claude/ai-quotas.json"
+        registry.write_text(json.dumps({"schema_version": "1.0", "accounts": [{
+            "provider": "claude", "label": "test@example.invalid",
+            "profile_dir": str(separate.parent.parent)
+        }]}), encoding="utf-8")
+        self.env["AI_QUOTAS_CONFIG"] = str(registry)
+        result = self.bind(expected=1)
+        self.assertIn("another activation", result["reason"])
+
+    def test_failed_marker_removal_leaves_exact_clear_retryable(self):
+        self.arm()
+        self.transcript()
+        token = self.bind()["gate_token"]
+        fake_bin = self.scratch / "bin"
+        fake_bin.mkdir()
+        rm = fake_bin / "rm"
+        rm.write_text('#!/bin/bash\ncase "$*" in *claude-execution-pause-v2-*) exit 1;; esac\nexec /bin/rm "$@"\n',
+                      encoding="utf-8")
+        rm.chmod(0o700)
+        env = dict(self.env, PATH=str(fake_bin) + os.pathsep + self.env["PATH"])
+        self.invoke(PAUSE, "--repo", REPO, "--clear", "--session", LEGACY,
+                    "--native-session", NATIVE, "--expect-legacy-token", token, expected=5, env=env)
+        self.assertEqual(self.pause("--status", "--session", LEGACY), "active")
+        self.assertEqual(self.bind()["gate_token"], token)
+        self.guarded_clear(token)
+        self.assertEqual(self.pause("--status", "--session", LEGACY), "inactive")
+
+    def test_transcript_resolves_only_same_call_literal_shell_assignments(self):
+        self.arm()
+        command = "\n".join([
+            f"EXECUTION_PAUSE_SH={shlex.quote(str(PAUSE))}", "SESSION_ID=default", "WINDOW_MINUTES=0",
+            '"$EXECUTION_PAUSE_SH" --activate --session "$SESSION_ID" --command end --window-minutes "$WINDOW_MINUTES"',
+        ])
+        self.transcript(command=command)
+        self.assertEqual(self.bind()["verdict"], "verified")
+        self.transcript(command=command.replace('"$SESSION_ID"', "'$SESSION_ID'"))
+        self.assertEqual(self.bind(expected=1)["verdict"], "held")
+
     def test_missing_malformed_and_dynamic_evidence_hold(self):
         self.arm()
         before = self.state.read_bytes()
@@ -174,6 +220,18 @@ class LegacyStopTest(unittest.TestCase):
         self.assertEqual(json.loads(self.invoke(registry, "--repo", REPO, "--list", "--session", NATIVE)), [])
         old = json.loads(self.invoke(registry, "--repo", REPO, "--list", "--session", LEGACY))
         self.assertEqual([(row["task_id"], row["status"]) for row in old], [("old-task", "rearming")])
+
+        # Rearm the legacy gate after the procedural check, just before the
+        # native tool launch reaches its PreToolUse hook.
+        self.arm(LEGACY)
+        self.assertEqual(self.pause("--status", "--session", NATIVE), "inactive")
+        gate = ROOT / ".claude/hooks/pause-launch-gate.sh"
+        payload = {"tool_name": "Agent", "cwd": str(self.checkout)}
+        for native, expected in ((NATIVE, 2), (OTHER, 0)):
+            result = subprocess.run([str(gate)], input=json.dumps(dict(payload, session_id=native)),
+                                    cwd=self.checkout, env=self.env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, expected, result.stderr)
+
 
         self.arm(NATIVE)
         before = self.state.read_bytes()
