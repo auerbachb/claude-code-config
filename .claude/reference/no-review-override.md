@@ -112,4 +112,10 @@ The default wait is 10 minutes from the HEAD anchor described above in this file
 
 ## Verified live (issue #2155)
 
-**2026-11-10 — in progress.** A fresh desktop-app session, started with the post-#2151 rules loaded, is running the live check on the PR that adds this section: it records whether the session armed its own `Monitor` in the turn that opened the PR, what `merge-gate.sh` reported for `no_review_override` on each tick, when the 10-minute window elapsed against when CI finished, and which `path` the merge took. Results, with timestamps, are in the comment thread of Issue #2155; a scenario that was not exercised is reported there as such and never as a pass.
+**2026-11-10/11 — one of three scenarios confirmed.** A fresh desktop-app session with the post-#2151 rules loaded ran the check on PR #2186. Full table, timestamps and per-tick gate output: the results comment on Issue #2155.
+
+- **Self-armed watch: confirmed, with caveats.** The session armed its own `Monitor` in the turn that opened the PR and acted on its first wake nine minutes before `eligible_at`. No host-app notification arrived in three hours, so the watch was the only thing that woke it. The session's brief named the scenario, so it was primed.
+- **Override merge: not exercised.** CodeAnt approved HEAD 90 seconds after the push, so `no_review_override.applied` stayed `false` on every tick and the merge took the reviewed path. On this repo a reviewer answers within about a minute, so the override path has still not been observed live.
+- **Project file demanding a completed review: not run.** It needs a second repository.
+
+Two gaps the run exposed, tracked separately: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201), and stable-state backoff tells a waiting thread to stop polling while the gate is unmet (Issue #2202).
