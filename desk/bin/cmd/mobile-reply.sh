@@ -8,6 +8,7 @@
 
 cmd_usage() {
   cat <<'USAGE'
+human-queue.sh mobile-reply snapshot SESSION
 human-queue.sh mobile-reply pending SESSION
 human-queue.sh mobile-reply apply SESSION REPO_ID COMMENT_ID ITEM VERSION answer|reviewed
 
@@ -16,6 +17,18 @@ that was shown on the phone. Decision reply text is read from stdin.
 Output: applied, replay, or stale. The pending form emits the Decision ids
 whose accepted mobile reply still needs the existing desk wake flow.
 USAGE
+}
+
+hq__mobile_snapshot_sql() {
+  cat <<'SQL'
+SELECT coalesce(jsonb_agg(jsonb_build_object(
+         'id', i.id, 'kind', i.kind, 'status', i.status, 'version', i.change_xid::text,
+         'question', i.question, 'options', i.options, 'default_option', i.default_option)
+         ORDER BY i.id), '[]'::jsonb)
+  FROM items i
+ WHERE i.status = 'open'
+   AND EXISTS (SELECT 1 FROM state WHERE key = 'control_session' AND value = :'hq_control');
+SQL
 }
 
 hq__mobile_pending_sql() {
@@ -34,7 +47,7 @@ SQL
 hq__mobile_apply_sql() {
   cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
-SELECT pg_advisory_xact_lock(hashtext('human-queue:control:' || :'hq_schema')) AS hq_guard \gset
+SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_guard \gset
 SQL
   hq_sql_lock_item UPDATE
   cat <<'SQL'
@@ -42,7 +55,7 @@ SELECT EXISTS (SELECT 1 FROM state WHERE key = 'control_session' AND value = :'h
        EXISTS (SELECT 1 FROM mobile_inbox_receipts
                 WHERE mirror_repo_id = :'hq_mirror'::bigint AND remote_comment_id = :'hq_comment'::bigint) AS hq_seen,
        EXISTS (SELECT 1 FROM items
-                WHERE id = :'hq_id' AND status = 'open' AND updated_at = :'hq_version'::timestamptz) AS hq_exact \gset
+                WHERE id = :'hq_id' AND status = 'open' AND change_xid = :'hq_version'::xid8) AS hq_exact \gset
 \if :hq_current
   \if :hq_seen
     SELECT 'replay';
@@ -67,6 +80,9 @@ VALUES (:'hq_mirror'::bigint, :'hq_comment'::bigint, :'hq_id', :'hq_action',
         (SELECT max(id) FROM events
           WHERE item_id = :'hq_id'
             AND kind = CASE WHEN :'hq_action' = 'answer' THEN 'answered' ELSE 'reviewed' END));
+INSERT INTO state (key, value)
+SELECT 'mobile_answers_imported', '1' WHERE :'hq_action' = 'answer'
+ON CONFLICT (key) DO NOTHING;
 SELECT 'applied';
 SQL
   if [ "$1" = answer ]; then
@@ -83,14 +99,15 @@ SQL
 }
 
 cmd_run() {
-  local mode="${1:-}" control="${2:-}" id mirror comment version action reply="" errf out rc=0
+  local mode="${1:-}" control="${2:-}" id mirror comment version action reply="" errf out query rc=0
   hq_check_text "mobile-reply: session" "$control" 200
   case "$mode" in
-    pending)
-      [ "$#" -eq 2 ] || hq_die_validation "mobile-reply: pending takes one session"
+    pending|snapshot)
+      [ "$#" -eq 2 ] || hq_die_validation "mobile-reply: $mode takes one session"
+      query="hq__mobile_${mode}_sql"
       hq_db_connect
       hq_mktemp errf
-      out=$(hq__mobile_pending_sql | hq_db_script -At -v "hq_control=$control" 2>"$errf") || rc=$?
+      out=$("$query" | hq_db_script -At -v "hq_control=$control" 2>"$errf") || rc=$?
       ;;
     apply)
       [ "$#" -eq 7 ] || hq_die_validation "mobile-reply: apply needs session, repo id, comment id, item, version, and action"
@@ -98,7 +115,8 @@ cmd_run() {
       [[ $mirror =~ ^[1-9][0-9]{0,17}$ && $comment =~ ^[1-9][0-9]{0,17}$ ]] \
         || hq_die_validation "mobile-reply: invalid repository or comment id"
       hq_item_id id "$5"
-      hq_check_timestamp "mobile-reply: version" "$version"
+      [[ $version =~ ^[1-9][0-9]{0,19}$ ]] \
+        || hq_die_validation "mobile-reply: invalid queue version"
       case "$action" in
         answer)
           hq_require_kind mobile-reply "$id" decision
@@ -117,7 +135,7 @@ cmd_run() {
         -v "hq_version=$version" -v "hq_action=$action" -v "hq_id_1=$id" -v "hq_reply_1=$reply" \
         2>"$errf") || rc=$?
       ;;
-    *) hq_die_validation "mobile-reply: expected pending or apply" ;;
+    *) hq_die_validation "mobile-reply: expected snapshot, pending or apply" ;;
   esac
   if [ "$rc" -ne 0 ]; then
     hq_db_fail "$rc" "$errf" "mobile-reply: operation failed"

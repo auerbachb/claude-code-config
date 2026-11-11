@@ -84,7 +84,13 @@ d["comments"]={str(issues["D-1"]["number"]):[c(1000,"answer: B",66),c(1001,"answ
                str(issues["R-1"]["number"]):[c(1004,"reviewed")]}
 p.write_text(json.dumps(d))
 PY
-"$HQ_T_CLI" bump D-2 --note 'newer source version' >/dev/null
+# A stale projection must fail even when the item timestamp is unchanged.
+before=$("$HQ_T_CLI" get D-2 --json | jq -r .updated_at)
+hq_psql -At -c "SET search_path TO $HUMAN_QUEUE_SCHEMA;
+  ALTER TABLE items DISABLE TRIGGER items_touch_updated_at;
+  UPDATE items SET question = 'Choose a newer fallback?' WHERE id = 'D-2';
+  ALTER TABLE items ENABLE TRIGGER items_touch_updated_at;" >/dev/null
+check "the changed Decision retained the same timestamp" "$("$HQ_T_CLI" get D-2 --json | jq -r .updated_at)" "$before"
 check "edited or stale projections do not apply a Decision" "$(sync)" '[]'
 check "the Review toggle uses the existing lifecycle" "$("$HQ_T_CLI" get R-1 --json | jq -r .status)" reviewed
 check "a stale phone reply cannot overwrite the source item" "$("$HQ_T_CLI" get D-2 --json | jq -r .status)" open
@@ -97,6 +103,12 @@ notice_order=$(printf '%s\n' "$out" | awk '$3=="new" || $3=="mobile" {print $3}'
 check "ordinary desk notices are emitted before the optional sync result" "$notice_order" $'new\nmobile'
 check "the authorized unedited reply is the stored answer" "$("$HQ_T_CLI" get D-1 --json | jq -r .answer)" Ship
 check "the pending wake is durable across another sync" "$(sync)" '["D-1"]'
+mv "$DESK_MOBILE_CONFIG" "$tmp/disabled.json"
+writes_before=$(writes)
+out=$("$HQ_BIN_DIR/desk-tick.sh" --session fixture-control --generation fixture-gen --once)
+check_contains "disabling the mirror still delivers a committed wake" "$out" 'desk-tick fixture-gen mobile D-1'
+check "disabling the mirror sends nothing to GitHub" "$(writes)" "$writes_before"
+mv "$tmp/disabled.json" "$DESK_MOBILE_CONFIG"
 "$HQ_T_CLI" wake D-1 --result sent >/dev/null
 check "the existing wake receipt removes the mobile pointer" "$(sync)" '[]'
 
@@ -117,4 +129,38 @@ PYFIX
 check "a refused answer does not halt the mobile pass" "$(sync)" '[]'
 check "the credential-shaped reply is not stored" "$("$HQ_T_CLI" get D-2 --json | jq -r .answer)" null
 check "an independent valid Review still updates" "$("$HQ_T_CLI" get R-2 --json | jq -r .status)" reviewed
+# Hold the same lock registration uses, then replace the desk before the
+# waiting mobile transaction can read control_session.
+version=$("$HQ_T_CLI" mobile-reply snapshot fixture-control | jq -r '.[] | select(.id == "D-2") | .version')
+hq_psql -At -f - >/dev/null <<SQL &
+SET search_path TO $HUMAN_QUEUE_SCHEMA;
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:$HUMAN_QUEUE_SCHEMA', 0));
+\! touch "$tmp/guard-held"
+\! i=0; while [ ! -e "$tmp/guard-release" ] && [ \$i -lt 100 ]; do sleep 0.1; i=\$((i+1)); done
+UPDATE state SET value = 'fixture-successor' WHERE key = 'control_session';
+COMMIT;
+SQL
+guard=$!
+for i in {1..100}; do
+  [ ! -e "$tmp/guard-held" ] || break
+  sleep 0.1
+done
+check "handover transaction acquired the control lock" "$(test -e "$tmp/guard-held" && echo yes)" yes
+printf 'A' | "$HQ_T_CLI" mobile-reply apply fixture-control 101 1010 D-2 "$version" answer > "$tmp/guarded-reply" &
+reply=$!
+waiting=f
+for i in {1..50}; do
+  waiting=$(hq_psql -At -c "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+    WHERE wait_event = 'advisory' AND query LIKE '%human-queue:control:%$HUMAN_QUEUE_SCHEMA%')")
+  [ "$waiting" != t ] || break
+  sleep 0.1
+done
+touch "$tmp/guard-release"
+wait "$guard"
+wait "$reply"
+check "mobile apply waited on the registration lock" "$waiting" t
+check "the replaced desk cannot apply a waiting phone answer" "$(cat "$tmp/guarded-reply")" stale
+check "the replaced desk left the Decision open" "$("$HQ_T_CLI" get D-2 --json | jq -r .status)" open
+
 hq_t_finish "mobile-inbox.test.sh"

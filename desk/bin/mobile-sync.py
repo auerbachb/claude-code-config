@@ -132,7 +132,7 @@ class Queue:
             raise Unavailable("control moved")
 
     def open_items(self):
-        return json.loads(self.call("list", "--status", "open", "--json"))
+        return json.loads(self.call("mobile-reply", "snapshot", self.session))
 
     def apply(self, repo_id, comment_id, item_id, version, action, reply):
         try:
@@ -236,12 +236,13 @@ def display(value):
 def projection(runner, config, item):
     if not isinstance(item, dict):
         raise Unavailable("invalid queue item")
-    item_id, kind, version = (item.get(k) for k in ("id", "kind", "updated_at"))
+    item_id, kind, version = (item.get(k) for k in ("id", "kind", "version"))
     if (not isinstance(item_id, str) or not ITEM.fullmatch(item_id)
             or (kind, item_id[0]) not in {("decision", "D"), ("review", "R")}
             or item.get("status") != "open"):
         raise Unavailable("unexpected queue item")
-    timestamp(version)
+    if not isinstance(version, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", version):
+        raise Unavailable("invalid queue version")
     question = field(item.get("question"), 500)
     options = item.get("options")
     if not isinstance(options, list) or len(options) > 26:
@@ -277,7 +278,6 @@ def signed_issue(gh, config, issue):
     item_id, version, mac = match.groups()
     if not hmac.compare_digest(mac, sign(config, item_id, version)):
         return None
-    timestamp(version)
     return item_id, version
 
 
@@ -362,7 +362,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", required=True)
     args = parser.parse_args()
-    queue = None
+    queue = Queue(Runner(), args.session)
     status = 0
     try:
         path = config_path()
@@ -378,24 +378,20 @@ def main():
                 raise Unavailable("mobile lock is not private")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             runner = Runner()
-            queue = Queue(runner, args.session)
+            queue.runner = runner
             sync(runner, queue, Github(runner, config), config)
     except BlockingIOError:
-        print("[]")
-        return 0
+        pass  # Another pass holds the remote lock. Pending wakes are still readable.
     except (Unavailable, OSError, ValueError, TypeError, RecursionError):
         print("desk mobile inbox: sync could not be verified", file=sys.stderr)
         status = 1
     try:
         # A provider outage cannot erase a previously committed wake pointer.
-        if queue is not None:
-            queue.runner = Runner(12)
-            ids = queue.pending()
-            if not isinstance(ids, list) or not all(isinstance(x, str) and ITEM.fullmatch(x) and x[0] == "D" for x in ids):
-                raise Unavailable("invalid wake ids")
-            print(json.dumps(ids, separators=(",", ":")))
-        else:
-            print("[]")
+        queue.runner = Runner(12)
+        ids = queue.pending()
+        if not isinstance(ids, list) or not all(isinstance(x, str) and ITEM.fullmatch(x) and x[0] == "D" for x in ids):
+            raise Unavailable("invalid wake ids")
+        print(json.dumps(ids, separators=(",", ":")))
     except (Unavailable, OSError, ValueError, TypeError):
         print("[]")
         status = 1

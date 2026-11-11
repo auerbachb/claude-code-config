@@ -363,9 +363,12 @@ except (ValueError, IndexError):
     sys.exit(1)
 if not isinstance(data, dict):
     sys.exit(1)
-s = data.get("session")
-sys.stdout.write(s if isinstance(s, str) else "")
-'
+if sys.argv[1] == "mobile":
+    sys.stdout.write("1" if data.get("mobile_answers_imported") is True else "")
+else:
+    s = data.get("session")
+    sys.stdout.write(s if isinstance(s, str) else "")
+' "${2:-}"
 }
 
 # dt_held JSON — the effective hold; unknown or malformed values are not releases.
@@ -553,8 +556,14 @@ dt_released() {
 dt_mobile_error=0
 dt_mobile() {
   local cfg="${DESK_MOBILE_CONFIG:-${HOME:+$HOME/.config/human-queue/mobile.json}}" out ids rc=0
-  [ -n "$cfg" ] && [ -e "$cfg" ] || return 0
-  out=$("$dt_py" -I "$dt_bin/mobile-sync.py" --session "$dt_session" 2>/dev/null) || rc=$?
+  if [ -n "$cfg" ] && [ -e "$cfg" ]; then
+    out=$("$dt_py" -I "$dt_bin/mobile-sync.py" --session "$dt_session" 2>/dev/null) || rc=$?
+  elif [ "$(dt_control "$1" mobile)" = 1 ]; then
+    # A committed reply still needs its first wake if the operator disabled sync.
+    out=$("$dt_cli" mobile-reply pending "$dt_session" 2>/dev/null) || rc=$?
+  else
+    return 0
+  fi
   ids=$(printf '%s' "$out" | "$dt_py" -I -c '
 import json, re, sys
 items = json.load(sys.stdin)
@@ -572,7 +581,7 @@ print(" ".join(items))
 }
 
 dt_cycle() {
-  local out rc control ids due held released hold_ok
+  local out rc control ids due held released hold_ok control_json
   released=""
   hold_ok=1
   rc=0
@@ -582,6 +591,7 @@ dt_cycle() {
     return 0
   fi
   rc=0
+  control_json="$out"
   control=$(dt_control "$out") || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'control-status printed something other than a JSON object\n' >"$dt_err"
@@ -676,7 +686,7 @@ dt_cycle() {
     printf '%s\n' "$dt_sweep_line"
   fi
   # A slow remote pass must not delay desktop notices from this tick.
-  dt_mobile
+  dt_mobile "$control_json"
 }
 
 if [ "$dt_once" -eq 1 ]; then
