@@ -7,12 +7,30 @@ By the time this runs, 2D.1 has settled ownership and **Steps 1 and 2 have alrea
 
 **Resolve the goal first — the init write below replaces the whole `day` object, so anything read after it reads what was just written, not what was there.** `/pm day resume` with no goal text must carry the interrupted run's goal forward rather than wiping it:
 
+<!-- test-anchor: pm-day-arm-prior-goal -->
 ```bash
+DAY_STATE_PATH=".repos[\"$REPO_KEY\"].day"
 PRIOR_GOAL_RC=0
-PRIOR_GOAL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.goal") || PRIOR_GOAL_RC=$?
+PRIOR_DAY_JSON=$("$SESSION_STATE_SH" --get-json "$DAY_STATE_PATH") || PRIOR_GOAL_RC=$?
+if [ "$PRIOR_GOAL_RC" -eq 6 ]; then
+  PRIOR_GOAL_RC=0
+  PRIOR_DAY_JSON=$("$SESSION_STATE_SH" --get-json "$DAY_STATE_PATH") || PRIOR_GOAL_RC=$?
+fi
+case "$PRIOR_GOAL_RC" in
+  0)
+    PRIOR_GOAL_JSON=$(jq -cs '
+      if length != 1 then error("invalid day snapshot")
+      else .[0] |
+        if . == null then null
+        elif type == "object" and (.goal | type == "string" or type == "null") then .goal
+        else error("invalid saved day goal") end
+      end' <<< "$PRIOR_DAY_JSON") || PRIOR_GOAL_RC=4
+    ;;
+  3) PRIOR_DAY_JSON=null; PRIOR_GOAL_JSON=null ;;
+esac
 ```
 
-Read `PRIOR_GOAL_RC` with 3.4's table: `0` is the stored value (possibly JSON `null`), `3` means no state file has ever been written, and **anything else is unreadable** — retry once, since exit `6` is a lock timeout and documented as retryable (`handoff-files.md`), then report and stop if it still fails. Do not `|| echo null` over it: that would make a failed read identical to "no goal was ever set", and a day loop that ranks against the wrong objective for six hours is precisely the error nobody is watching to catch.
+If `PRIOR_GOAL_RC` is neither `0` nor `3`, report that the saved goal could not be read and stop before initialization. Exit `3` means no state file. A stored JSON `null` means no saved goal. Retry a lock timeout (exit `6`) once, as documented in `handoff-files.md`. The saved JSON stays encoded so even a trailing newline or the literal word `null` survives.
 
 Also read `PRIOR_HITS` before the init write so the thrash-guard counter can be carried forward across re-arms (2D.6). Use a lenient default on failure — an unreadable counter resets to 0 rather than blocking the arm:
 
@@ -24,37 +42,41 @@ PRIOR_HITS=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.consecutive_li
 [[ "$PRIOR_HITS" =~ ^[0-9]+$ ]] || PRIOR_HITS=0
 ```
 
-Then take `BUSINESS_GOAL` when the user supplied one this invocation, otherwise `PRIOR_GOAL`, and build the whole `day` object in **one** `jq` call. Building it with `jq --arg` rather than string-interpolating it does two jobs at once: `goal` is the one field carrying the user's own words and must never reach a `--set` string directly (the same rule `refill.scope` follows in 3.4), and a single atomic write removes the second, separately-failing write that a follow-up `--set` would add.
+Take `BUSINESS_GOAL` when supplied, otherwise the saved JSON. Build the whole day object in one call. Compare it against the same day snapshot that supplied the saved goal, so a newer arm or park keeps its state.
 
+<!-- test-anchor: pm-day-arm-init -->
 ```bash
-DAY_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
-EFFECTIVE_GOAL="${BUSINESS_GOAL:-}"
-[ -z "$EFFECTIVE_GOAL" ] && [ "$PRIOR_GOAL" != null ] && EFFECTIVE_GOAL=$(jq -r . <<<"$PRIOR_GOAL")
+INIT_RC=$PRIOR_GOAL_RC
+if [ "$INIT_RC" -eq 3 ]; then INIT_RC=0; fi
+if [ "$INIT_RC" -eq 0 ]; then
+  DAY_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+  DAY_JSON=$(jq -cn \
+    --arg now "$NOW" --arg new_goal "${BUSINESS_GOAL:-}" \
+    --argjson prior_goal "$PRIOR_GOAL_JSON" \
+    --argjson base "$DAY_CADENCE_MIN" --argjson maxfail "$MAX_PIPELINE_FAILURES" \
+    --argjson phits "$PRIOR_HITS" \
+    '{active:true, started_at:$now, last_tick_at:$now,
+      cadence_base_minutes:$base, cadence_effective_minutes:$base,
+      tick_count:0, digest:null, digest_streak:0,
+      failure_streak:0, max_pipeline_failures:$maxfail,
+      refill_halted:false, halt_reason:null, stop_requested:false,
+      monitor_task_id:null, monitor_generation:null, paused_at:null,
+      parked_until:null, limit_kind:null, park_generation:null,
+      limit_resume_task_id:null, limit_resume_generation:null,
+      consecutive_limit_hits:$phits,
+      goal:(if $new_goal == "" then $prior_goal else $new_goal end)}') || INIT_RC=$?
 
-DAY_JSON=$(jq -cn \
-  --arg now "$NOW" --arg goal "$EFFECTIVE_GOAL" \
-  --argjson base "$DAY_CADENCE_MIN" --argjson maxfail "$MAX_PIPELINE_FAILURES" \
-  --argjson phits "$PRIOR_HITS" \
-  '{active:true, started_at:$now, last_tick_at:$now,
-    cadence_base_minutes:$base, cadence_effective_minutes:$base,
-    tick_count:0, digest:null, digest_streak:0,
-    failure_streak:0, max_pipeline_failures:$maxfail,
-    refill_halted:false, halt_reason:null, stop_requested:false,
-    monitor_task_id:null, monitor_generation:null, paused_at:null,
-    parked_until:null, limit_kind:null, park_generation:null,
-    limit_resume_task_id:null, limit_resume_generation:null,
-    consecutive_limit_hits:$phits,
-    goal:(if $goal == "" then null else $goal end)}')
-
-INIT_RC=0
-"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$DAY_JSON" || INIT_RC=$?
+  if [ "$INIT_RC" -eq 0 ]; then
+    "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$DAY_JSON" --expect "$PRIOR_DAY_JSON" || INIT_RC=$?
+  fi
+fi
 ```
 
-The two `--argjson` arguments are why the preamble validates those flags as unsigned integers: `--argjson base 2.5` or a non-numeric value makes `jq` fail here and the whole object never gets written.
+The preamble validates the numeric arguments as unsigned integers before jq builds the state.
 
-**This write must succeed before anything is armed.** A non-zero `INIT_RC` means the ownership claim 2D.1(c) depends on was never published *and* there is no `day` object for the loop to tick against — so arm nothing, report that day mode did not start, and stop. Arming on an unwritten claim is the worst available order: the race protection is gone (the other side re-reads and sees nothing) and the Monitor would tick into state that does not exist.
+**This write must succeed before anything is armed.** Exit `7` means the day state changed after the read. Keep that state, report that this arm did not start, and stop. Any other nonzero `INIT_RC` also stops before a Monitor is armed.
 
-Say which goal the run is using in the first heartbeat, and say when it was carried forward from a previous run rather than given this time — a resumed goal the user cannot see is one they cannot correct.
+Use the goal in `DAY_JSON` for the first heartbeat, and say when it was carried forward from a previous run rather than given this time — a resumed goal the user cannot see is one they cannot correct.
 
 Then arm the `Monitor` with `persistent: true` and description `PM day mode`, sleep-first so the loop's own first tick is the one run inline below:
 
