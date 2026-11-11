@@ -50,6 +50,7 @@ RESERVED KEYS (readable with get; `set` refuses them)
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
+  quiz_count:DATE  the daily quiz completion count; written by quiz complete
   control_session  the registered desk control session; written by
                    register-control
   reviews_watermark  the start of the last successful sync-reviews;
@@ -154,6 +155,7 @@ cmd_run() {
   if [ "$action" = set ]; then
     if hq_in_list "$key" "$HQ_STATE_RESERVED"; then
       case "$key" in
+        quiz_count:*) hq_die_validation "state set: $key is reserved: only quiz complete writes it" ;;
         tick_watermark|tick_at) hq_die_validation "state set: $key is reserved: only tick writes it" ;;
         reviews_watermark) hq_die_validation "state set: reviews_watermark is reserved: only sync-reviews writes it (pass it --since instead)" ;;
         interrupt) hq_die_validation "state set: interrupt is reserved: use interrupt set" ;;

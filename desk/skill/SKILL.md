@@ -36,6 +36,8 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `todo.md` | The operator's own to-do layer on items: `tag`, `untag`, `note`, `unnote`, `snooze … until\|for …`, `unsnooze`, `mine D-<n> 1-5\|off`, and `my list` (by personal priority, then age; snoozed items hidden until their time). Not `/pm`'s priorities | #1769 |
 | `checkin.md` | The morning check-in (the `morning` event, `check-in`, or a new plan with none today): hours at the desk, energy, plans, and yesterday's measured pace set today's reading budget; `budget?` | #1770 |
 | `export.md` | Paper: `export` (after a sweep, that sweep's set), `export decisions`, `export reviews` (`level 1`, `today`), `export D-43 R-9 …`, any of them `… to <path>.pdf`: a numbered PDF whose numbers are a set's, Markdown when no PDF renderer is installed | #1759 |
+| `import.md` | Paper replies: `import <scan.pdf>`, preview before confirming marked answers and comments | #1764 |
+| `quiz.md` | `quiz` after reviewing a batch, an opt-in comprehension check from cached summaries | #1772 |
 
 ## The prelude (every Bash call)
 
@@ -154,6 +156,8 @@ Read each operator message in this order:
    **A drill-down verb** as the whole message — `outline R-<n>`, `open R-<n>` followed by one or more node ids (`open R-<n> 2.3`, `open R-<n> 2 T1`; `open R-<n>` alone stays the Reviews view's level 2), or `ask R-<n>: <question>` → load `drilldown.md`. Also at any time, and nothing goes to the store.
    **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`** → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
    **An export verb** as the whole message — `export` (after a sweep: its set), `export decisions`, `export reviews` (`level 1`, `today`), or `export D-<n> R-<n> …`, any of them ending `to <path>.pdf` — → load `export.md` (#1759). Any time, the same way.
+   **`import <scan.pdf>`** (also `/inbox import <scan.pdf>`) → load `import.md`. While a scan confirmation waits, route only an explicit confirmation or correction for that preview to the import workflow.
+   **`quiz`** → load `quiz.md`. Route replies to the active quiz menu before ordinary typed Decision replies. Continue to process the desk's other explicit verbs and tick events.
    **`report`** (`report <YYYY-MM-DD>` for the week holding that day), as the whole message → load `attention.md`: the weekly attention report (#1771). Any time, like `history`, and nothing goes to the store.
    **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
    **A to-do verb** as the whole message — `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, or `mine` followed by an item id (`D-<n>` or `R-<n>`), or `my list` (`my list all`, `my list snoozed`, `my list tag <word>`) → load `todo.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after, and a to-do verb is never an answer.
