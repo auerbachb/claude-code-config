@@ -18,7 +18,7 @@ PRIVATE_NAMES = re.compile(r"^\.?env(?:\.|$)|credential|^auth\.|^account-config\
 
 
 def command(root, *args, allowed=(0,)):
-    result = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(args, cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30)
     if result.returncode not in allowed:
         raise RuntimeError(f"{args[0]} exited {result.returncode}")
     return result.stdout
@@ -31,7 +31,9 @@ def source_paths(root):
         path = Path(name)
         if path.suffix not in {".py", ".sh"} or set(path.parts) & EXCLUDED_PARTS:
             continue
-        if PRIVATE_NAMES.search(path.name) or (root / path).resolve() != root / path:
+        if any(PRIVATE_NAMES.search(part) for part in path.parts):
+            continue
+        if (root / path).resolve() != root / path:
             continue
         if (root / path).is_file():
             paths.append(name)
@@ -78,7 +80,7 @@ def confirmations(root, hits, task):
     support = {(name, line) for name, lines in task.get("support", {}).items()
                for line in lines}
     for name, line in sorted(set(hits) | support):
-        lines = (root / name).read_text().splitlines()
+        lines = (root / name).read_text(encoding="utf-8").splitlines()
         first = max(1, line - 1)
         excerpts.extend(f"{name}:{n}:{lines[n - 1]}\n"
                         for n in range(first, min(line + 2, len(lines)) + 1))
@@ -132,7 +134,8 @@ def freshness(root, scratch):
     original = probe(target, "definition", "cents")
     old_line = positions(original)[0][1]
     path = target / source
-    path.write_text("\n\n" + path.read_text() + "\n\ndef benchmark_caller(x):\n    return cents(x)\n")
+    path.write_text("\n\n" + path.read_text(encoding="utf-8")
+                    + "\n\ndef benchmark_caller(x):\n    return cents(x)\n", encoding="utf-8")
     edited = probe(target, "definition", "cents")
     assert positions(edited) == [(source, old_line + 2)] and original != edited
     assert source in grep(target, r"^def benchmark_caller\(", [source])
@@ -140,13 +143,13 @@ def freshness(root, scratch):
     command(target, "git", "switch", "-q", "-c", "symbol-benchmark")
     command(target, "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
             "commit", "-qm", "Shift fixture lines", "--", source)
-    command(target, "git", "switch", "-q", "--detach", json.loads(FIXTURE.read_text())["commit"])
+    command(target, "git", "switch", "-q", "--detach", json.loads(FIXTURE.read_text(encoding="utf-8"))["commit"])
     assert probe(target, "definition", "cents") == original
     other = scratch / "worktree"
     command(target, "git", "worktree", "add", "-q", str(other), "symbol-benchmark")
     assert probe(other, "definition", "cents") == edited
 
-    path.write_text("def cents(:\n")
+    path.write_text("def cents(:\n", encoding="utf-8")
     try:
         probe(target, "definition", "cents")
     except RuntimeError:
@@ -160,12 +163,12 @@ def freshness(root, scratch):
     else:
         raise AssertionError("missing interpreter unexpectedly started")
 
-    for name in ("lib/.credentials.py", "generated/benchmark.py"):
+    for name in ("lib/.credentials.py", "credentials/benchmark.py", "lib/.env/benchmark.sh", "generated/benchmark.py"):
         relative = SCOPE + name
         excluded = other / relative
         excluded.parent.mkdir(parents=True, exist_ok=True)
-        excluded.write_text("def benchmark_excluded():\n    pass\n")
-        command(other, "git", "add", "--", relative)
+        excluded.write_text("def benchmark_excluded():\n    pass\n", encoding="utf-8")
+        command(other, "git", "add", "-f", "--", relative)
     assert probe(other, "definition", "benchmark_excluded") == ""
     assert grep(other, r"benchmark_excluded", source_paths(other)) == ""
     assert grep(other, r'"mcp__\*"', ["global-settings.json"])
@@ -181,7 +184,7 @@ def main():
     parser.add_argument("--scratch", type=Path, help="empty directory for disposable freshness clones")
     args = parser.parse_args()
     root = args.root.resolve()
-    fixture = json.loads(FIXTURE.read_text())
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     if command(root, "git", "rev-parse", "HEAD").strip() != fixture["commit"]:
         parser.error("checkout the exact commit in tasks.json")
     if command(root, "git", "status", "--porcelain", "--untracked-files=no"):

@@ -18,8 +18,9 @@ then the same excerpts and text search for embedded Python and Bash. The
 fixture records expected coordinates independently of the query results.
 
 Seven repetitions per path ran on macOS arm64 with Python 3.15.2 and ripgrep
-15.2.0. Times include process launch, search or parse, and source confirmation.
-The common file allowlist took 21.73 ms once. The parser checks that allowlist
+15.2.0 under the C locale with Python UTF-8 mode disabled. The fixture
+uses explicit UTF-8 for source and subprocess I/O. Times include process launch, search or parse, and source confirmation.
+The common file allowlist took 19.36 ms once. The parser checks that allowlist
 again in each process. Both executables were present. There was no install,
 server startup, persistent index, or MCP schema. The pilot's on-demand command
 contract is 73 UTF-8 bytes. Output volume counts UTF-8 bytes from the result and
@@ -30,8 +31,8 @@ reasoning time, cache behavior, or an actual coding session.
 ## Fixed tasks and source answers
 
 1. **Definition.** `.claude/scripts/lib/review_ledger.py:479` rounds a Decimal
-   to `0.01` with `ROUND_HALF_UP`. Its import and quantum appear at lines 64
-   and 80. The result is a Decimal amount with two decimal places.
+   to `0.01` with `ROUND_HALF_UP`. Its import and quantum appear at lines 65
+   and 81. The result is a Decimal amount with two decimal places.
 2. **Callers.** The production calls in `review_ledger.py` are at 490, 507,
    512, 517, 531, 559, 560, 565, 570, and 1014. Five more are in the Python
    embedded in `.claude/scripts/review-daily-cap.sh` at 418, 790, 814, 821,
@@ -54,16 +55,16 @@ for each path. All three confirmed answers matched the fixed source answers.
 
 | Task | Path | Found | Candidates | First / median / max ms | Bytes / characters |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Definition | `rg` | 1/1 | 1 | 14.37 / 9.67 / 14.37 | 1,033 / 1,033 |
-| Definition | AST | 1/1 | 1 | 126.65 / 128.06 / 170.60 | 1,016 / 1,016 |
-| Callers | `rg` | 15/15 | 19 | 12.77 / 11.60 / 12.77 | 7,719 / 7,717 |
-| Callers | AST plus `rg` | 15/15 | 17 | 131.63 / 129.84 / 143.04 | 6,404 / 6,402 |
-| Change surface | `rg` | 6/6 | 8 | 10.59 / 10.15 / 10.82 | 3,208 / 3,208 |
-| Change surface | `rg` fallback | 6/6 | 8 | 10.03 / 9.74 / 11.36 | 3,208 / 3,208 |
+| Definition | `rg` | 1/1 | 1 | 9.09 / 9.10 / 9.87 | 981 / 981 |
+| Definition | AST | 1/1 | 1 | 111.76 / 115.20 / 124.89 | 964 / 964 |
+| Callers | `rg` | 15/15 | 19 | 10.49 / 10.49 / 11.70 | 7,719 / 7,717 |
+| Callers | AST plus `rg` | 15/15 | 17 | 121.67 / 120.97 / 122.18 | 6,404 / 6,402 |
+| Change surface | `rg` | 6/6 | 8 | 8.03 / 9.39 / 9.46 | 3,208 / 3,208 |
+| Change surface | `rg` fallback | 6/6 | 8 | 8.75 / 9.58 / 10.85 | 3,208 / 3,208 |
 
 AST alone found 10/15 callers and 0/6 Bash implementations. The mixed caller
 path saved 1,315 bytes before charging the shared command contract. Across the
-three tasks, the output was 11,960 bytes for `rg` and 10,701 bytes for the
+three tasks, the output was 11,908 bytes for `rg` and 10,649 bytes for the
 pilot with one contract load. Searching for a definition by name was already
 precise with `rg`. The candidate matched names and attributes syntactically
 and could still confuse unrelated same-name functions.
@@ -79,7 +80,7 @@ and could still confuse unrelated same-name functions.
   failed and the scoped `rg` query still found the corresponding line.
 - Bash required `rg` for all six production implementations. A direct text
   search also recovered the wildcard permission in `global-settings.json`.
-- The fixture staged synthetic credential and generated files in a disposable
+- The fixture staged synthetic credential files, credential directories, and generated files in a disposable
   worktree. The shared allowlist excluded both before either search. It admits
   tracked shell and Python sources only, excludes credential-like names and
   common generated, fixture, and build directories, and skips symlink paths.
