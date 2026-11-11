@@ -565,5 +565,20 @@ else
   bad "negative control did not detect an unterminated fallback"
 fi
 
+# A suite the selector cannot read is a scan error, not a clean scan: the selection fails toward ALL
+# (grep exit 2 on the unreadable file, not exit 1 for "no match"). Needs a non-root user, since root
+# reads a mode-000 file anyway.
+U="$TMP/unreadable"
+make_fixture "$U"
+printf '# reads .claude/hooks/a.sh\nexit 0\n' > "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+chmod 000 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+out="$(select_for "$U" .claude/hooks/b.sh)"
+chmod 644 "$U/.claude/hooks/tests/unreadable-scan.test.sh"
+if is_all "$out"; then
+  ok "an unreadable suite makes the selection fail toward ALL"
+else
+  bad "an unreadable suite did not select ALL: $out"
+fi
+
 printf '\n%s passed, %s failed\n' "$passes" "$failures"
 [ "$failures" -eq 0 ]

@@ -36,19 +36,32 @@ check_root() {
   local root="$1" out="$2" S
   : > "$out"
   ( cd "$root" || exit 1
-    find . -name '*.md' -not -path './.git/*' -not -path './worktrees/*' -not -path '*/node_modules/*' 2>/dev/null \
-      | sed 's#^\./##' | LC_ALL=C sort > "$TMP/docs" || exit 1
+    # Every scan below writes to a file and checks its status: grep exit 1 means no match, and exit
+    # 2 or more is a read or write error. An error fails the scan (exit 1), never an empty result.
+    find . -name '*.md' -not -path './.git/*' -not -path './worktrees/*' -not -path '*/node_modules/*' 2>/dev/null > "$TMP/docs-raw" || exit 1
+    sed 's#^\./##' "$TMP/docs-raw" > "$TMP/docs-rel" || exit 1
+    LC_ALL=C sort "$TMP/docs-rel" > "$TMP/docs" || exit 1
     for S in .claude/hooks/tests/*.test.sh .claude/scripts/tests/*.test.sh .github/scripts/tests/*.test.sh desk/tests/*.test.sh; do
       [ -f "$S" ] || continue
-      grep -q '^# covers:' "$S" || continue
-      sed -n 's/^# covers:[[:space:]]*//p' "$S" | awk '{ for (i = 1; i <= NF; i++) print $i }' > "$TMP/cov-raw"
-      : > "$TMP/cov"
+      grep -q '^# covers:' "$S"
+      case $? in
+        0) ;;
+        1) continue ;;
+        *) exit 1 ;;
+      esac
+      sed -n 's/^# covers:[[:space:]]*//p' "$S" > "$TMP/cov-s" || exit 1
+      awk '{ for (i = 1; i <= NF; i++) print $i }' "$TMP/cov-s" > "$TMP/cov-raw" || exit 1
+      : > "$TMP/cov" || exit 1
       while IFS= read -r c; do
         [ -n "$c" ] || continue
-        if [ -d "$c" ]; then printf 'D\t%s\n' "$c" >> "$TMP/cov"; else printf 'F\t%s\n' "$c" >> "$TMP/cov"; fi
+        if [ -d "$c" ]; then printf 'D\t%s\n' "$c" >> "$TMP/cov" || exit 1; else printf 'F\t%s\n' "$c" >> "$TMP/cov" || exit 1; fi
       done < "$TMP/cov-raw"
-      grep -vE '^[[:space:]]*#' "$S" | grep -oE '(\.claude|\.github|desk|tests)/[[:alnum:]_./-]+\.md' > "$TMP/lit" 2>/dev/null
-      grep -vE '^[[:space:]]*#' "$S" | grep -oE '[[:alnum:]_.-]+\.md' > "$TMP/bn" 2>/dev/null
+      grep -vE '^[[:space:]]*#' "$S" > "$TMP/body"
+      case $? in 0|1) ;; *) exit 1 ;; esac
+      grep -oE '(\.claude|\.github|desk|tests)/[[:alnum:]_./-]+\.md' "$TMP/body" > "$TMP/lit"
+      case $? in 0|1) ;; *) exit 1 ;; esac
+      grep -oE '[[:alnum:]_.-]+\.md' "$TMP/body" > "$TMP/bn"
+      case $? in 0|1) ;; *) exit 1 ;; esac
       awk -v S="$S" -v covf="$TMP/cov" -v docf="$TMP/docs" -v litf="$TMP/lit" -v bnf="$TMP/bn" '
         BEGIN { FS = "\t" }
         FILENAME == covf { if ($1 == "F") covset[$2] = 1; else covdir[$2] = 1; next }
@@ -153,6 +166,17 @@ if grep -Fq '.claude/rules/x.md' "$TMP/fx6"; then
 else
   bad "a basename-only read of an undeclared markdown file was not reported: $(cat "$TMP/fx6")"
 fi
+
+# A declared suite the scan cannot read is a failed scan, not a clean one (grep exit 2, not 1).
+# Needs a non-root user: root reads a mode-000 file anyway.
+printf '# covers: .claude/scripts/a.sh\ncat .claude/rules/x.md >/dev/null\nexit 0\n' > "$F/.claude/hooks/tests/unreadable.test.sh"
+chmod 000 "$F/.claude/hooks/tests/unreadable.test.sh"
+if check_root "$F" "$TMP/fx7"; then
+  bad "an unreadable declared suite passed the honesty scan as clean"
+else
+  ok "a scan error on a declared suite fails the honesty check"
+fi
+chmod 644 "$F/.claude/hooks/tests/unreadable.test.sh"
 
 printf '\n%s passed, %s failed\n' "$passes" "$failures"
 [ "$failures" -eq 0 ]

@@ -66,14 +66,13 @@
 #
 # CALLERS (issue #2177). A non-suite code file that mentions a changed code path's basename
 # makes that path a dependency of every suite (a hook sourcing a helper, a script invoking
-# a script), so the path fails toward ALL. A mention counts as a caller unless the line is
-# a comment (first non-blank character `#`) or the line sits inside a data-only heredoc.
-# A `# shellcheck source=<path>` directive is NOT an ordinary comment: it names the file the
-# next line sources, so it counts as a caller (issue #2177 review: a sourced helper named only
-# in the directive would otherwise lose its reader). Any other heredoc body (unquoted, or piped
-# into a command) is code too, so a body line that starts with `#` still counts.
-# (`cat <<'DELIM'` with a QUOTED delimiter, ending its line, with no pipe, redirect or other
-# command, read to the matching DELIM line; an unquoted heredoc body is expanded, so it counts). Any other line, including a trailing comment after code, counts.
+# a script), so the path fails toward ALL. A mention in a comment line (first non-blank
+# character `#`) or inside a data-only heredoc does not count. A `# shellcheck source=<path>`
+# directive is not an ordinary comment: it names the file the next line sources, so it counts.
+# A data-only heredoc is `cat <<'DELIM'` with a QUOTED delimiter that ends its line (no pipe,
+# redirect, or other command); its body runs to the matching DELIM line. Every other heredoc
+# body (unquoted, or piped into a command) is code, so a body line starting with `#` counts.
+# Any other line counts, including a trailing comment after code.
 #
 # Docs allow-list: a *.md file outside any tests/ or fixtures/ directory never forces
 # ALL. A docs file still selects the undeclared suites that read it: literal path
@@ -168,6 +167,27 @@ is_docs() {
   return 1
 }
 
+# is_suite PATH: 0 when PATH is a discovered suite, 1 when it is not. A read error on the
+# discovery list fails the whole run (grep exit 1 = not listed; 2 or more = read error).
+is_suite() {
+  grep -Fxq -- "$1" "$TMP/discovered"
+  case $? in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) run_fail "could not read the suite list: full run" ;;
+  esac
+}
+
+# grep_suite ERE OUT: the matches of ERE in suite $S into OUT. Exit 1 (no match) is an empty
+# result; exit 2 or more is a read or write error and fails the whole run.
+grep_suite() {
+  grep -oE "$1" "$S" > "$2"
+  case $? in
+    0|1) return 0 ;;
+    *) run_fail "could not scan suite $S: full run" ;;
+  esac
+}
+
 CHANGED="$TMP/changed"
 if [ -n "$BASE" ]; then
   git diff --name-only --no-renames "$BASE...HEAD" > "$CHANGED" 2>/dev/null || run_fail "git diff $BASE...HEAD failed: full run"
@@ -188,7 +208,7 @@ DISC="$TMP/discovered"
            .github/scripts/tests/*.test.sh desk/tests/*.test.sh tests/test_*.py; do
     printf '%s\n' "$f"
   done
-} > "$DISC"
+} > "$DISC" || run_fail "could not record suite discovery: full run"
 if [ ! -s "$DISC" ]; then
   run_fail "no suites discovered: full run"
 fi
@@ -213,46 +233,55 @@ PAIRS="$TMP/pairs"
 COVP="$TMP/covers-pairs"
 BAD="$TMP/bad-covers"
 DECLARED="$TMP/declared"
-: > "$PAIRS"
-: > "$COVP"
-: > "$BAD"
-: > "$DECLARED"
+: > "$PAIRS" || run_fail "could not create the pair index: full run"
+: > "$COVP" || run_fail "could not create the covers index: full run"
+: > "$BAD" || run_fail "could not create the covers index: full run"
+: > "$DECLARED" || run_fail "could not create the declaration index: full run"
+# Every suite is read through files, not pipelines, so each stage's status is checked (a pipeline
+# would report only its last stage, and a failed middle stage would under-select silently).
 while IFS= read -r S; do
   SP="$TMP/suite-pairs"
-  : > "$SP"
+  : > "$SP" || run_fail "could not write suite pairs: full run"
   DECL=0
-  if grep -q '^# covers:' "$S" 2>/dev/null; then DECL=1; printf '%s\n' "$S" >> "$DECLARED" || run_fail "could not record declarations: full run"; fi
-  grep -oE '(\.claude|\.github|desk|tests)/[[:alnum:]_./-]*\*' "$S" 2>/dev/null \
-    | sed 's#\*$##; s#[./]*$##' \
-    | awk -v s="$S" 'length($0) > 0 { printf "%s\t%s\tG\n", s, $0 }' >> "$SP"
-  grep -oE '(\.claude|\.github|desk|tests)/[[:alnum:]_./-]+' "$S" 2>/dev/null \
-    | sed 's#[./]*$##' \
-    | while IFS= read -r tok; do
-        [ -n "$tok" ] || continue
-        if [ -d "$tok" ]; then m=D; else m=F; fi
-        printf '%s\t%s\t%s\n' "$S" "$tok" "$m" >> "$SP"
-      done
+  grep -q '^# covers:' "$S"
+  case $? in
+    0) DECL=1 ;;
+    1) ;;
+    *) run_fail "could not read suite $S: full run" ;;
+  esac
+  if [ "$DECL" -eq 1 ]; then printf '%s\n' "$S" >> "$DECLARED" || run_fail "could not record declarations: full run"; fi
+  grep_suite '(\.claude|\.github|desk|tests)/[[:alnum:]_./-]*\*' "$TMP/glob-raw"
+  sed 's#\*$##; s#[./]*$##' "$TMP/glob-raw" > "$TMP/glob-clean" || run_fail "could not scan suite $S: full run"
+  awk -v s="$S" 'length($0) > 0 { printf "%s\t%s\tG\n", s, $0 }' "$TMP/glob-clean" >> "$SP" || run_fail "could not record suite pairs: full run"
+  grep_suite '(\.claude|\.github|desk|tests)/[[:alnum:]_./-]+' "$TMP/tok-raw-s"
+  sed 's#[./]*$##' "$TMP/tok-raw-s" > "$TMP/tok-clean" || run_fail "could not scan suite $S: full run"
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    if [ -d "$tok" ]; then m=D; else m=F; fi
+    printf '%s\t%s\t%s\n' "$S" "$tok" "$m" >> "$SP" || run_fail "could not record suite pairs: full run"
+  done < "$TMP/tok-clean"
   if [ "$DECL" -eq 1 ]; then
     # Declared: drop docs-only derivations (directory and glob matches, markdown file mentions).
-    awk -F'\t' -v OFS='\t' '!($3 == "G" || $3 == "D" || $2 ~ /\.md$/)' "$SP" >> "$PAIRS"
+    awk -F'\t' -v OFS='\t' '!($3 == "G" || $3 == "D" || $2 ~ /\.md$/)' "$SP" >> "$PAIRS" || run_fail "could not record suite pairs: full run"
   else
-    cat "$SP" >> "$PAIRS"
+    cat "$SP" >> "$PAIRS" || run_fail "could not record suite pairs: full run"
   fi
-  sed -n 's/^# covers:[[:space:]]*//p' "$S" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) print $i }' | while IFS= read -r tok; do
+  sed -n 's/^# covers:[[:space:]]*//p' "$S" > "$TMP/covers-raw" || run_fail "could not scan covers of $S: full run"
+  awk '{ for (i = 1; i <= NF; i++) print $i }' "$TMP/covers-raw" > "$TMP/covers-tok" || run_fail "could not scan covers of $S: full run"
+  while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     if [ -d "$tok" ]; then
-      printf '%s\t%s\tD\n' "$S" "$tok" >> "$COVP"
+      printf '%s\t%s\tD\n' "$S" "$tok" >> "$COVP" || run_fail "could not record covers: full run"
     elif [ -e "$tok" ]; then
-      printf '%s\t%s\tF\n' "$S" "$tok" >> "$COVP"
+      printf '%s\t%s\tF\n' "$S" "$tok" >> "$COVP" || run_fail "could not record covers: full run"
     else
-      printf '%s -> %s\n' "$S" "$tok" >> "$BAD"
+      printf '%s -> %s\n' "$S" "$tok" >> "$BAD" || run_fail "could not record covers: full run"
     fi
-  done
+  done < "$TMP/covers-tok"
 done < "$DISC"
 if [ -s "$BAD" ]; then
   # Batch mode exits non-zero (the sweep fails, no per-path answer is trusted); single mode answers ALL.
   run_fail "suite covers a path that does not exist (broken mapping): $(head -n 1 "$BAD")"
-  exit 0
 fi
 
 # Basename-token index, built once: every whole token of every suite, one "suite<TAB>token"
@@ -260,9 +289,13 @@ fi
 # which is exactly the whole-token rule (the character before and after a basename is not a
 # name character; a dot may follow only as the last character of the token).
 TOKIDX="$TMP/tokens"
-xargs grep -HoE '[[:alnum:]_.-]+' < "$DISC" > "$TMP/tok-raw" 2>/dev/null
-RC=$?
-[ "$RC" -le 1 ] || run_fail "basename scan of the suites failed: full run"
+: > "$TMP/tok-raw" || run_fail "could not record suite tokens: full run"
+while IFS= read -r F; do
+  grep -HoE '[[:alnum:]_.-]+' "$F" > "$TMP/tok-one"
+  RC=$?
+  [ "$RC" -le 1 ] || run_fail "basename scan of the suites failed: full run"
+  cat "$TMP/tok-one" >> "$TMP/tok-raw" || run_fail "could not record suite tokens: full run"
+done < "$DISC"
 awk -F: '{
     s = $1
     t = substr($0, length(s) + 2)
@@ -274,9 +307,11 @@ awk -F: '{
 # that names the basename as a whole token (any line). It is one pass over the token index.
 ABN="$TMP/all-basenames"
 BMAP="$TMP/basename-map"
-awk -F/ '{ print $NF }' "$CHANGED" | LC_ALL=C sort -u > "$ABN" || run_fail "could not record basenames: full run"
+awk -F/ '{ print $NF }' "$CHANGED" > "$TMP/abn-raw" || run_fail "could not record basenames: full run"
+LC_ALL=C sort -u "$TMP/abn-raw" > "$ABN" || run_fail "could not record basenames: full run"
 awk -F'\t' -v bf="$ABN" 'FILENAME == bf { want[$0] = 1; next } ($2 in want) { printf "%s\t%s\n", $2, $1 }' \
-  "$ABN" "$TOKIDX" | LC_ALL=C sort -u > "$BMAP" || run_fail "could not build basename map: full run"
+  "$ABN" "$TOKIDX" > "$TMP/bmap-raw" || run_fail "could not build basename map: full run"
+LC_ALL=C sort -u "$TMP/bmap-raw" > "$BMAP" || run_fail "could not build basename map: full run"
 
 # Caller index, built once for every changed code path that is not itself a suite. Two passes:
 # grep finds the lines that mention a changed basename anywhere in the tree (substring, as before);
@@ -286,38 +321,47 @@ awk -F'\t' -v bf="$ABN" 'FILENAME == bf { want[$0] = 1; next } ($2 in want) { pr
 CBN="$TMP/caller-basenames"
 CALLIDX="$TMP/callers"
 CALLER_FAIL=0
-: > "$CBN"
-: > "$CALLIDX"
+: > "$CBN" || run_fail "could not record caller basenames: full run"
+: > "$CALLIDX" || run_fail "could not record callers: full run"
 while IFS= read -r P; do
-  if is_docs "$P" || grep -Fxq -- "$P" "$DISC"; then continue; fi
-  printf '%s\n' "${P##*/}" >> "$CBN"
+  if is_docs "$P" || is_suite "$P"; then continue; fi
+  printf '%s\n' "${P##*/}" >> "$CBN" || run_fail "could not record caller basenames: full run"
 done < "$CHANGED"
 if [ -s "$CBN" ]; then
-  sort -u "$CBN" > "$CBN.u" && mv "$CBN.u" "$CBN" || run_fail "could not record caller basenames: full run"
+  if ! { LC_ALL=C sort -u "$CBN" > "$CBN.u" && mv "$CBN.u" "$CBN"; }; then
+    run_fail "could not record caller basenames: full run"
+  fi
   grep -rIn -F -f "$CBN" --exclude-dir=.git --exclude-dir=worktrees --exclude-dir=node_modules . > "$TMP/caller-hits" 2>/dev/null
   CRC=$?
   if [ "$CRC" -gt 1 ]; then
     CALLER_FAIL=1
   elif [ "$CRC" -eq 0 ]; then
-    awk -F: '{ print $1 }' "$TMP/caller-hits" | LC_ALL=C sort -u > "$TMP/cand-files" || run_fail "could not list candidates: full run"
+    awk -F: '{ print $1 }' "$TMP/caller-hits" > "$TMP/cand-raw" || run_fail "could not list candidates: full run"
+    LC_ALL=C sort -u "$TMP/cand-raw" > "$TMP/cand-files" || run_fail "could not list candidates: full run"
     awk -v bf="$CBN" -v hf="$TMP/caller-hits" -v lf="$TMP/cand-files" '
+      function read_fail(f) {
+        printf "caller scan could not read %s\n", f > "/dev/stderr"
+        exit 1
+      }
       BEGIN {
         n = 0
-        while ((getline b < bf) > 0) { if (b != "") bn[++n] = b }
-        while ((getline h < hf) > 0) {
+        while ((r = (getline b < bf)) > 0) { if (b != "") bn[++n] = b }
+        if (r < 0) read_fail(bf)
+        while ((r = (getline h < hf)) > 0) {
           p = index(h, ":")
           rest = substr(h, p + 1)
           q = index(rest, ":")
           hit[substr(h, 1, p - 1) SUBSEP substr(rest, 1, q - 1)] = 1
         }
-        while ((getline fn < lf) > 0) {
+        if (r < 0) read_fail(hf)
+        while ((r = (getline fn < lf)) > 0) {
           f = fn
           sub(/^\.\//, "", f)
           if (f ~ /\.(md|json)$/) continue
           heredoc = ""
           uheredoc = ""
           ln = 0
-          while ((getline content < fn) > 0) {
+          while ((rc = (getline content < fn)) > 0) {
             ln++
             if (heredoc != "") {
               c = content
@@ -348,8 +392,10 @@ if [ -s "$CBN" ]; then
             if (!((fn SUBSEP ln) in hit)) continue
             for (i = 1; i <= n; i++) if (index(content, bn[i]) > 0) printf "%s\t%s\n", bn[i], f
           }
+          if (rc < 0) read_fail(fn)
           close(fn)
         }
+        if (r < 0) read_fail(lf)
       }' /dev/null > "$CALLIDX" || run_fail "caller index failed: full run"
   fi
 fi
@@ -370,19 +416,20 @@ resolve_path() {
     length($2) > 0 && ($2 == p || (d == 1 && index(p, $2 "/") == 1 && ($3 == "G" || $3 == "D"))) { print $1 }
   ' "$PAIRS" "$COVP" >> "$H" || return 1
   # A suite always depends on its own file.
-  if grep -Fxq -- "$P" "$DISC"; then
+  if is_suite "$P"; then
     printf '%s\n' "$P" >> "$H" || return 1
   fi
   # Transitive dependencies (fail toward ALL): a non-suite code file that mentions the path
   # (a hook sourcing a helper, a script invoking a script) can carry the path into suites that
   # never name it. Docs and JSON execute nothing and are ignored.
-  if [ "$DOC" -eq 0 ] && ! grep -Fxq -- "$P" "$DISC"; then
+  if [ "$DOC" -eq 0 ] && ! is_suite "$P"; then
     if [ "$CALLER_FAIL" -eq 1 ]; then RES_ALL="$P (caller scan failed)"; return 0; fi
-    awk -F'\t' -v b="$base" '$1 == b { print $2 }' "$CALLIDX" | sort -u > "$TMP/callers-for-path" || return 1
+    awk -F'\t' -v b="$base" '$1 == b { print $2 }' "$CALLIDX" > "$TMP/callers-raw" || return 1
+    LC_ALL=C sort -u "$TMP/callers-raw" > "$TMP/callers-for-path" || return 1
     CALLER=""
     while IFS= read -r C; do
       [ "$C" = "$P" ] && continue
-      grep -Fxq -- "$C" "$DISC" && continue
+      is_suite "$C" && continue
       CALLER="$C"
       break
     done < "$TMP/callers-for-path"
@@ -392,7 +439,8 @@ resolve_path() {
   # Basename mentions are ADDITIVE (see the header). A declared suite is not selected by a
   # docs basename mention, so a docs path skips declared suites here.
   B="$TMP/bhit"
-  awk -F'\t' -v b="$base" '$1 == b { print $2 }' "$BMAP" | sort -u > "$B" || return 1
+  awk -F'\t' -v b="$base" '$1 == b { print $2 }' "$BMAP" > "$TMP/bhit-raw" || return 1
+  LC_ALL=C sort -u "$TMP/bhit-raw" > "$B" || return 1
   # Generic basenames (README.md, SKILL.md) name many files, and a constructed path to them is
   # indistinguishable from a prose mention, so they keep the undeclared derivation everywhere.
   case "$base" in
@@ -403,7 +451,8 @@ resolve_path() {
     awk 'NR == FNR { d[$0] = 1; next } !($0 in d)' "$DECLARED" "$B" > "$B.u" || return 1
     mv "$B.u" "$B" || return 1
   fi
-  cat "$H" "$B" | sort -u >> "$TMP/res" || return 1
+  cat "$H" "$B" > "$TMP/res-part" || return 1
+  LC_ALL=C sort -u "$TMP/res-part" >> "$TMP/res" || return 1
   return 0
 }
 
@@ -415,7 +464,8 @@ if [ "$BATCH" -eq 1 ]; then
     if [ -n "$RES_ALL" ]; then
       printf '%s\tALL\t%s\n' "$P" "$RES_ALL" >> "$OUT" || exit 1
     else
-      printf '%s\t%s\n' "$P" "$(tr '\n' ' ' < "$TMP/res" | sed 's/ *$//')" >> "$OUT" || exit 1
+      SUITES="$(tr '\n' ' ' < "$TMP/res")" || run_fail "could not read the selection for $P: full run"
+      printf '%s\t%s\n' "$P" "${SUITES% }" >> "$OUT" || exit 1
     fi
   done < "$CHANGED"
   cat "$OUT" || exit 1
@@ -437,20 +487,23 @@ done < "$CHANGED"
 
 # Python modules run in full for every selection, docs-only and empty bash selections included
 # (see header). Listing them keeps the one-line-per-suite shape the runners already read.
-grep -E '^tests/test_.*\.py$' "$DISC" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
+grep -E '^tests/test_.*\.py$' "$DISC" > "$TMP/py"
+RC=$?
+[ "$RC" -le 1 ] || { emit_all "could not list python modules: full run"; exit 1; }
+cat "$TMP/py" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
 
 # The declaration-honesty and sweep suites ALWAYS run (issue #2177 review). Their checks read every
 # suite and every `# covers:` target, so no per-path derivation sees a change that breaks them. The
 # sweep is about 70 s on 529 paths; a missing suite file (grep exit 1) is fine, a read error is not.
-grep -E '^\.github/scripts/tests/select-hook-(covers-honesty|sweep)\.test\.sh$' "$DISC" >> "$SEL"
+grep -E '^\.github/scripts/tests/select-hook-(covers-honesty|sweep)\.test\.sh$' "$DISC" > "$TMP/always"
 RC=$?
 [ "$RC" -le 1 ] || { emit_all "could not record always-run suites: full run"; exit 1; }
+cat "$TMP/always" >> "$SEL" || { emit_all "could not record always-run suites: full run"; exit 1; }
 
-SORTED="$(LC_ALL=C sort -u "$SEL" | sed '/^$/d')" || { emit_all "sort failed: full run"; exit 1; }
-NSEL=0
-if [ -n "$SORTED" ]; then
-  NSEL="$(printf '%s\n' "$SORTED" | awk 'END { print NR }')"
-fi
+LC_ALL=C sort -u "$SEL" > "$TMP/sorted-raw" || { emit_all "sort failed: full run"; exit 1; }
+sed '/^$/d' "$TMP/sorted-raw" > "$TMP/sorted" || { emit_all "sort failed: full run"; exit 1; }
+SORTED="$(cat "$TMP/sorted")" || { emit_all "could not read the selection: full run"; exit 1; }
+NSEL="$(awk 'END { print NR }' "$TMP/sorted")" || { emit_all "could not count the selection: full run"; exit 1; }
 printf '# reason: %s changed path(s), %s suite(s) selected\n' "$NCHANGED" "$NSEL" || exit 1
 if [ -n "$SORTED" ]; then
   printf '%s\n' "$SORTED" || exit 1
