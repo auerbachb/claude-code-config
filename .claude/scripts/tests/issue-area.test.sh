@@ -144,6 +144,7 @@ class IssueAreas(unittest.TestCase):
     def test_invalid_config_or_incomplete_issue_never_emits_partial_output(self):
         for content in (CONFIG + CONFIG, CONFIG + "| BILLING | other/ | | |\n",
                         CONFIG.replace("billing.toml", "../outside.toml"),
+                        CONFIG.replace("services/billing/", "services/billing//"),
                         CONFIG.replace("| Labels |", "| Other |"),
                         CONFIG + "\n| other | unrelated/ | | |\n"):
             with self.subTest(content=content):

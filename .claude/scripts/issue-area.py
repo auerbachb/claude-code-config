@@ -27,7 +27,7 @@ def entries(value):
 
 def path_pattern(glob):
     if (not GLOB.fullmatch(glob) or glob.startswith("/")
-            or any(part in ("", ".", "..") for part in glob.rstrip("/").split("/"))):
+            or any(part in ("", ".", "..") for part in glob.removesuffix("/").split("/"))):
         raise ValueError("area globs must be repository-relative paths")
     if glob.endswith("/"):
         glob += "*"
