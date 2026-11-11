@@ -112,6 +112,14 @@ check_eq "branch_protection" "$(req_field source)" "(a) outage trace: source is 
 check_contains "typecheck (absent)" "$(echo "$OUT" | jq -r '.missing | join(" | ")')" \
   "(a) outage trace: the missing[] reason names the context and its state"
 
+# A retired app is still enforced when branch protection explicitly requires it.
+FAKE_REQUIRED_STATUS_CHECKS='{"strict":true,"contexts":["Graphite / AI Reviews"],"checks":[]}' \
+FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 1 build success 100)" "$(cr 2 'Graphite / AI Reviews' null 100 graphite-app in_progress)")"
+check_eq "in_progress" "$(unsat_state 'Graphite / AI Reviews')" "required retired-app context remains pending"
+check_eq "yes" "$(has_required_entry)" "required retired-app context still blocks the merge"
+check_eq 0 "$(echo "$OUT" | jq -r '.ci_status.in_progress')" "ordinary CI view ignores the retired app"
+
 # --------------------------------------------------------------------------
 # (b) Negative control — required contexts PRESENT and successful.
 #     Without this, (a) could pass simply because the entry is always emitted.

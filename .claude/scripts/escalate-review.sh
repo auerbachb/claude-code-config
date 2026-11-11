@@ -939,14 +939,13 @@ BUGBOT_CHECK_PRESENT="$(jq -r '
 #
 # Newest matching comment only; the freshness compare happens in bash below.
 # Scoped to `.comments.conversation` (the PR conversation) because that is where
-# a trigger is posted, and to non-`cursor[bot]` authors because BugBot quoting
-# the phrase back is not an invitation. Narrow on purpose: a missed invite costs
+# a trigger is posted. Exclude BugBot quoting itself and the retired Graphite app. Narrow on purpose: a missed invite costs
 # one duplicate `@cursor review` (harmless per bugbot.md), while a false one
 # costs a paid Greptile review. No new gh api call — the bundle is already here
 # (meta-guard scenario L).
 BUGBOT_TRIGGER_TS="$(jq -r '
   [.comments.conversation[]?
-   | select((.user.login // "") != "cursor[bot]")
+   | select((.user.login // "") | IN("cursor[bot]", "graphite-app[bot]") | not)
    | select((.body // "") | test("@cursor\\s+review"; "i"))
    | (.created_at // .submitted_at // "")
    | select(. != "")]

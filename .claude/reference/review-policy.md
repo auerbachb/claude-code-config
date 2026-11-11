@@ -214,7 +214,7 @@ The merge gate honours the tier, and since #1749 so does every path that **invit
 .claude/scripts/review-triggers-allowed.sh <pr> --release <reviewer> [--repo …]
 ```
 
-`<reviewer>` is `codeant`, `cursor`, or `coderabbit` (Graphite was retired 2026-11-03, #1889, and is rejected). The full contract is in `--help`.
+`<reviewer>` is `codeant`, `cursor`, or `coderabbit`. Graphite was retired in #1889. Both CI views ignore checks published by the retired app. The native required-context gate still enforces a configured Graphite context, and changing that context follows the owner-approved protection workflow. See `--help` for trigger modes.
 
 ### Modes
 

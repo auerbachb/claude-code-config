@@ -481,6 +481,8 @@ The issue framed "raise the cap" and "move it down the chain" as equally legitim
 
 ## Graphite retirement (#1889, 2026-11-03)
 
+Issue #2192 removed the installed app’s remaining signals from automated review and CI decisions. Generic unresolved-thread handling and configured branch-protection requirements still apply. [Retired-app cleanup](codeant-supplemental.md)
+
 **Decision:** Graphite AI review is removed from the review stack. On 2026-11-03 Graphite support (ticket T-J15030) cancelled the Team plan effective immediately and issued a **pro-rated $450 refund**. This supersedes the 2026-08-22 `fallback` re-decision (§Graphite role reconciliation).
 
 **Reason — yield:** across 620 PRs (2026-08-21 → 2026-11-01) Graphite reviewed **30**, against **484–620** for CodeAnt, CodeRabbit and BugBot. A supplemental reviewer that sees under 5% of PRs costs auto-loaded rule budget and sends agents waiting for a reviewer that rarely answers.

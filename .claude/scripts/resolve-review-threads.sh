@@ -4,18 +4,19 @@
 #
 # Fetches all review threads on the given PR via GraphQL, filters to unresolved
 # threads whose first-comment author matches --authors, and resolves each via
-# resolveReviewThread. On failure, falls back to minimizeComment(classifier: RESOLVED).
+# resolveReviewThread. On failure, minimizeComment(classifier: RESOLVED) is
+# available only for a first comment whose GraphQL author type is Bot.
 #
 # Usage:
-#   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
+#   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
 #   resolve-review-threads.sh <pr_number> --thread-ids-file path --verify-only
 #   resolve-review-threads.sh --help
 #
 # Flags:
 #   --authors  Comma-separated list of GitHub logins (without [bot] suffix) whose
 #              threads are eligible for resolution. Default:
-#              coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai
-#              (graphite-app retired 2026-11-03, #1889; kept so leftover threads resolve)
+#              coderabbitai,cursor,greptile-apps,codeant-ai
+#              Retired Graphite threads require an explicit reviewed thread ID.
 #   --thread-ids
 #              Comma-separated GraphQL review thread node IDs that must be verified
 #              resolved after mutation attempts. When provided, these explicit IDs
@@ -45,7 +46,7 @@ set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
-AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
+AUTHORS="coderabbitai,cursor,greptile-apps,codeant-ai"
 DRY_RUN=0
 VERIFY_ONLY=0
 THREAD_IDS=""
@@ -222,7 +223,7 @@ collect_threads() {
                 nodes {
                   id
                   url
-                  author { login }
+                  author { login __typename }
                 }
               }
             }
@@ -301,7 +302,9 @@ write_unresolved_matches() {
           .[]
           | select(.id as $id | $expected | index($id))
           | select(.isResolved == false)
-          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+          | [.id,
+             (.comments.nodes[0] | if .author.__typename == "Bot" then (.id // "-") else "-" end),
+             (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
   elif [[ "$EXPLICIT_IDS_MODE" -eq 1 ]]; then
@@ -314,7 +317,9 @@ write_unresolved_matches() {
           .[]
           | select(.isResolved == false)
           | select((.comments.nodes[0].author.login // "") | test($re))
-          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+          | [.id,
+             (.comments.nodes[0] | if .author.__typename == "Bot" then (.id // "-") else "-" end),
+             (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
   fi
@@ -391,7 +396,7 @@ resolve_or_minimize() {
     return 0
   fi
 
-  if [[ -n "$comment_id" ]]; then
+  if [[ -n "$comment_id" && "$comment_id" != "-" ]]; then
     if resp2=$(gh api graphql -F subjectId="$comment_id" -f query='
       mutation($subjectId: ID!) {
         minimizeComment(input: {subjectId: $subjectId, classifier: RESOLVED}) { minimizedComment { isMinimized } }
@@ -403,7 +408,7 @@ resolve_or_minimize() {
     return 1
   fi
 
-  echo "[FAILED] attempt=$attempt $thread_id  ($author) — resolveReviewThread: $resp | no comment node id for fallback" >&2
+  echo "[FAILED] attempt=$attempt $thread_id  ($author) — resolveReviewThread: $resp | no verified bot comment for fallback" >&2
   return 1
 }
 
