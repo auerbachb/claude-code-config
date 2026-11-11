@@ -156,7 +156,7 @@ hook() {
   local sh="$1" input="$2"
   shift 2
   RC=0
-  env -i HOME="$HOMEDIR" PATH="$MINPATH" TMPDIR="$TMP" STUB_DIR="$STUB_DIR" "$@" \
+  env -i HOME="$HOMEDIR" PATH="$MINPATH" TMPDIR="$TMP" STUB_DIR="$STUB_DIR" HUMAN_QUEUE_SCHEMA=hq_test_offline_capture "$@" \
     "$sh" "$HOOK" >"$TMP/out" 2>"$TMP/err" <<<"$input" || RC=$?
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
@@ -375,24 +375,24 @@ for SH in $SHELLS; do
   expect_fail_open "[$SH] add refuses a secret" "looks like it holds a secret"
 
   reset_stub
-  hook "$SH" "this is not json" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB"
+  hook "$SH" "this is not json" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline
   expect_fail_open "[$SH] malformed input" "not JSON"
   check "[$SH] malformed input: the store is not asked" "$(n_calls control-status)" "0"
 
   reset_stub
   hook "$SH" '{"session_id": "w", "tool_name": "AskUserQuestion", "tool_input": {}}' \
-    HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB"
+    HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline
   expect_fail_open "[$SH] no questions" "no questions"
 
   reset_stub
   hook "$SH" '{"session_id": "w", "tool_name": "Bash", "tool_input": {"command": "ls"}}' \
-    HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB"
+    HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline
   expect_allow_silent "[$SH] another tool"
   check "[$SH] another tool: the store is not asked" "$(n_calls control-status)" "0"
 
   # ------------------------------------------------------------- 4.3a the URL
   reset_stub
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline
   expect_fail_open "[$SH] no URL anywhere" "HUMAN_QUEUE_DATABASE_URL is not in the environment"
   check "[$SH] no URL anywhere: the store is not asked" "$(n_calls control-status)" "0"
 
@@ -403,7 +403,7 @@ for SH in $SHELLS; do
               "  HUMAN_QUEUE_DATABASE_URL=$FAKE_URL"; do
     reset_stub
     printf '# profile\nexport EDITOR=vim\n%s\n' "$form" > "$HOMEDIR/.zprofile"
-    hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
+    hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
     check "[$SH] URL from a profile line ($(printf '%s' "$form" | cut -c1-34)…): captured" "$(decision)" "PreToolUse deny"
     check "[$SH] URL from a profile line: the CLI received it" "$(sort -u "$STUB_DIR/url" 2>/dev/null)" "url-ok"
     check_absent "[$SH] URL from a profile line: never printed" "$OUT$ERR" "db.invalid"
@@ -411,19 +411,19 @@ for SH in $SHELLS; do
 
   reset_stub
   printf "export HUMAN_QUEUE_DATABASE_URL='postgres://old@db.invalid/old'\nexport HUMAN_QUEUE_DATABASE_URL='%s'\n" "$FAKE_URL" > "$HOMEDIR/.zprofile"
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
   check "[$SH] the profile's last assignment wins" "$(sort -u "$STUB_DIR/url" 2>/dev/null)" "url-ok"
 
   reset_stub
   printf "export HUMAN_QUEUE_DATABASE_URL='%s'\nexport HUMAN_QUEUE_DATABASE_URL=\"\$(security find-generic-password -w -s hq)\"\n" "$FAKE_URL" > "$HOMEDIR/.zprofile"
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
   expect_fail_open "[$SH] a command substitution is never run" "other than a literal"
   check "[$SH] a command substitution: the store is not asked" "$(n_calls control-status)" "0"
   rm -f "$HOMEDIR/.zprofile"
 
   reset_stub
   printf "export HUMAN_QUEUE_DATABASE_URL='%s'\n" "$FAKE_URL" > "$HOMEDIR/.zshrc"
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
   check "[$SH] URL from ~/.zshrc: captured" "$(decision)" "PreToolUse deny"
 
   printf "export HUMAN_QUEUE_DATABASE_URL='postgres://other@db.invalid/other'\n" > "$HOMEDIR/.zshrc"
@@ -438,27 +438,27 @@ for SH in $SHELLS; do
   printf '%s\n' "$CONF_URL" > "$HOMEDIR/.config/human-queue/database_url"
   chmod 600 "$HOMEDIR/.config/human-queue/database_url"
   reset_stub
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$CONF_URL" STUB_STATUS="$LIVE"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$CONF_URL" STUB_STATUS="$LIVE"
   check "[$SH] owner-only config file: used first" "$(sort -u "$STUB_DIR/url" 2>/dev/null)" "url-ok"
   check "[$SH] owner-only config file: captured, quietly" "$(decision) [$ERR]" "PreToolUse deny []"
 
   chmod 644 "$HOMEDIR/.config/human-queue/database_url"
   reset_stub
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$FAKE_URL" STUB_STATUS="$LIVE"
   check "[$SH] group-readable config file: ignored, the profile is used" "$(sort -u "$STUB_DIR/url" 2>/dev/null)" "url-ok"
   check "[$SH] group-readable config file: one warning line" "$(hq_t_lines "$ERR")" "1"
   check_contains "[$SH] group-readable config file: says why" "$ERR" "mode 600"
 
   rm -f "$HOMEDIR/.zshrc"
   reset_stub
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_STATUS="$LIVE"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_STATUS="$LIVE"
   expect_fail_open "[$SH] group-readable config file and no profile" "mode 600"
 
   mkdir -p "$TMP/xdg/human-queue"
   printf '%s\n' "$CONF_URL" > "$TMP/xdg/human-queue/database_url"
   chmod 600 "$TMP/xdg/human-queue/database_url"
   reset_stub
-  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" STUB_EXPECT_URL="$CONF_URL" STUB_STATUS="$LIVE" XDG_CONFIG_HOME="$TMP/xdg"
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline STUB_EXPECT_URL="$CONF_URL" STUB_STATUS="$LIVE" XDG_CONFIG_HOME="$TMP/xdg"
   check "[$SH] XDG_CONFIG_HOME locates the config file" "$(sort -u "$STUB_DIR/url" 2>/dev/null)" "url-ok"
   rm -rf "$HOMEDIR/.config" "$TMP/xdg"
 
@@ -538,12 +538,12 @@ mkdir -p "$TMP/lonely" "$TMP/broken"
 cp "$HQ_T_DESK_DIR/hooks/capture.sh" "$TMP/lonely/capture.sh"
 SAVED_HOOK="$HOOK"
 HOOK="$TMP/lonely/capture.sh"
-hook bash "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB"
+hook bash "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline
 expect_fail_open "capture.py missing" "capture.py is missing"
 cp "$HQ_T_DESK_DIR/hooks/capture.sh" "$TMP/broken/capture.sh"
 printf 'raise SystemExit(3)\n' > "$TMP/broken/capture.py"
 HOOK="$TMP/broken/capture.sh"
-hook bash "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB"
+hook bash "$(input worker-1 "$REPO_DIR" "$Q1")" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline
 expect_fail_open "capture.py cannot run" "capture.py exited 3"
 HOOK="$SAVED_HOOK"
 
