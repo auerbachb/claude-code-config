@@ -54,7 +54,7 @@
 #   hold it "red" — so a trigger gated on green CI would deadlock waiting for
 #   itself (review-triggers-allowed.sh). Applied after the dedup. When no build
 #   check is left, the result is pending, exactly as for an empty run list.
-#   Both views ignore check-runs from the retired Graphite app by exact slug.
+#   Both views ignore retired Graphite checks by app slug, with exact names for old data.
 #
 # Output (JSON, default):
 #   {
@@ -271,11 +271,12 @@ if [[ -z "$RUNS_JSON" ]]; then
   exit 5
 fi
 
-# Ignore the retired app in both views. Exact slugs preserve checks published
-# by other apps even when their names mention a reviewer (issues #1749, #2192).
+# Ignore the retired app in both views. Use exact check names only when the
+# publisher is absent (issues #1749, #2192).
 RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c --argjson exclude "$EXCLUDE_REVIEWERS" '
   [ .[] | (.app.slug // "") as $slug
-    | select(($slug | IN("graphite-app", "graphite")) | not)
+    | select((if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+              else $slug | IN("graphite-app", "graphite") end) | not)
     | select($exclude == 0 or (($slug | IN("codeant-ai", "codeant", "cursor", "cursor-com",
         "coderabbitai", "coderabbit", "greptile-apps", "greptile")) | not)) ]
 ' 2>/dev/null || true)

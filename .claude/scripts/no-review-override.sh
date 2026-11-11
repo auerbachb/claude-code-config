@@ -99,7 +99,9 @@ JQ_DEFS='
                        "cursor":"cursor[bot]","cursor-com":"cursor[bot]",
                        "greptile-apps":"greptile-apps[bot]","greptile":"greptile-apps[bot]"};
   def active_check_runs: (.check_runs_raw // [])[]?
-    | select((.app.slug // "") | IN("graphite-app","graphite") | not);
+    | select(((.app.slug // "") as $slug
+      | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+        else $slug | IN("graphite-app", "graphite") end) | not);
   def ts: if type != "string" then null
           else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")) as $s
           | if ($s | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))

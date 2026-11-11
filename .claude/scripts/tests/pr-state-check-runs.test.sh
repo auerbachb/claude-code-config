@@ -136,6 +136,15 @@ check_eq "app key is present even when identity is unknown" \
 
 ############################################################################
 echo
+LEGACY_AND_FOREIGN_GRAPHITE='[
+  {"id":20,"name":"Graphite / AI Reviews","status":"completed","conclusion":"success"},
+  {"id":21,"name":"Graphite / mergeability_check","status":"queued","conclusion":null,"app":{"slug":null}},
+  {"id":22,"name":"Graphite / AI Reviews","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}
+]'
+check_eq "only the known non-Graphite publisher stays in the CI projection" \
+  '[1,0,1,0,[22]]' \
+  "$(project "$LEGACY_AND_FOREIGN_GRAPHITE" '[.total,.passing,.failing,.in_progress,[.all[].id]]')"
+
 echo "== backward compatibility: the change is purely additive =="
 # Exact key sets (jq `keys` sorts), so a dropped or renamed pre-#956 field fails
 # here instead of surfacing as a downstream consumer reading null.

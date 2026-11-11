@@ -277,6 +277,9 @@ set_checks "$(run_check build success github-actions 60)" "$(run_check 'Graphite
 set_comments "$(comment 'graphite-app[bot]' '@cursor review' 30)" "$(comment 'graphite-app[bot]' '@codeant-ai review' 30)"
 run
 check_eq "retired app cannot shorten the settle window" "false" "$(f .settled.settled)"
+set_checks "$(run_check build success github-actions 60)" "$(run_check 'Graphite / AI Reviews' success graphite-app 3600 | jq -c 'del(.app)')"
+run
+check_eq "legacy Graphite without a publisher cannot shorten the settle window" "false" "$(f .settled.settled)"
 check_eq "retired app cannot spend Cursor invitations" "0" "$(f .reviewers.cursor.invitations)"
 check_eq "retired app cannot spend CodeAnt invitations" "0" "$(f .reviewers.codeant.invitations)"
 

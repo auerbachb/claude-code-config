@@ -13,7 +13,10 @@ def app_identity:
   {slug: (.app.slug // null), id: (.app.id // null)};
 
 # The retired app is absent from all projected CI views (issue #2192).
-map(select((.app.slug // "") | IN("graphite-app", "graphite") | not))
+map(select(
+  ((.app.slug // "") as $slug
+   | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+     else $slug | IN("graphite-app", "graphite") end) | not))
 | {
   total: length,
   passing: ([.[] | select(.conclusion | is_passing)] | length),

@@ -263,6 +263,14 @@ for slug in graphite-app graphite; do
   done
 done
 
+LEGACY_GRAPHITE="$(cr 2 'Graphite / AI Reviews' success 200 graphite-app | jq -c 'del(.app)')"
+for view in run_stdin run_excl; do
+  "$view" "$(bundle "$LEGACY_GRAPHITE")"
+  check_eq 1 "$RC" "legacy Graphite-only success cannot pass $view"
+  "$view" "$(bundle "$(cr 2 'Graphite / AI Reviews' failure 200 github-actions)")"
+  check_eq 3 "$RC" "known publisher with the legacy Graphite name still blocks $view"
+done
+
 # A check NAMED after a reviewer but published by a workflow is build CI.
 run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 "CodeAnt AI" failure 200 github-actions)")"
 check_eq 3 "$RC" "exclude-reviewers: a reviewer-named check from another app still counts"

@@ -191,6 +191,8 @@ check_eq "window_running" "$(j .no_review_override.reason)" "an earlier retired 
 run_gate "$(bundle "$(run 2 'Graphite / AI Reviews' success 900 graphite-app)")"
 check_eq "false" "$(j .met)" "retired checks alone do not satisfy the gate"
 check_eq "anchor_unavailable: no HEAD check-run start time" "$(j .no_review_override.reason)" "retired check alone cannot anchor the override"
+run_gate "$(bundle "$(run 1 build success 540)" "$(run 2 'Graphite / AI Reviews' success 1200 graphite-app | jq -c 'del(.app)')")"
+check_eq "window_running" "$(j .no_review_override.reason)" "legacy Graphite without a publisher cannot anchor the override"
 
 echo "=== TP3: 11 min + human CHANGES_REQUESTED on HEAD -> blocked ==="
 reset
