@@ -15,7 +15,6 @@ CENSUS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CENSUS)
 REPO = "org/repo"
 PATH = '.repos["org/repo"].slot_census'
-SLOT = PATH + '["worker-1"]'
 
 
 class SlotCensusTest(unittest.TestCase):
@@ -29,9 +28,7 @@ class SlotCensusTest(unittest.TestCase):
 
     def state_call(self, helper, repo, mode, target, *args):
         if mode == "--get-json":
-            if target == PATH:
-                rows = {"worker-1": self.records[(repo, SLOT)]} if (repo, SLOT) in self.records else None
-                return CompletedProcess([], 0, json.dumps(rows))
+            self.assertEqual(target, PATH)
             return CompletedProcess([], 0, json.dumps(self.records.get((repo, target))))
         self.assertEqual(mode, "--cas")
         path, value = target.split("=", 1)
@@ -50,10 +47,10 @@ class SlotCensusTest(unittest.TestCase):
                     global_gate=gate, horizon_status=horizon,
                     candidates=[dict(issue=index, outcome=outcome) for index, outcome in enumerate(outcomes, 1)])
 
-    def record(self, data, repo=REPO):
+    def record(self, data, repo=REPO, session="worker-1"):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            CENSUS.record(None, repo, SLOT, CENSUS.make_census(data))
+            CENSUS.record(None, repo, PATH, session, CENSUS.make_census(data))
         return output.getvalue().strip()
 
     def board(self, repo=REPO, session="worker-1"):
@@ -69,7 +66,7 @@ class SlotCensusTest(unittest.TestCase):
         self.assertEqual(self.board(session="observer"), line + " (recorded session worker-1)")
         self.assertEqual(self.board(repo="other/repo"), "")
         self.assertEqual(self.writes, 1)
-        record = self.records[(REPO, SLOT)]
+        record = self.records[(REPO, PATH)]["worker-1"]
         self.assertEqual(record["merge_ready_or_phase_c"], 1)
         self.assertEqual(record["queued"], 4)
         self.assertEqual(sum(record["reasons"].values()), 4)
@@ -79,7 +76,7 @@ class SlotCensusTest(unittest.TestCase):
         self.assertTrue(self.record(state))
         self.conflicts = 1
         self.assertEqual(self.record(state), "")
-        record = self.records[(REPO, SLOT)]
+        record = self.records[(REPO, PATH)]["worker-1"]
         self.assertEqual(record["seq"], 2)
         self.assertEqual(len(record["history"]), 2)
         self.assertEqual(self.writes, 2)
@@ -87,11 +84,11 @@ class SlotCensusTest(unittest.TestCase):
     def test_eligible_work_and_no_launch_is_a_fault(self):
         line = self.record(self.observation(*(["eligible"] * 4)))
         self.assertIn("4 refill_missed", line)
-        self.assertTrue(self.records[(REPO, SLOT)]["refill_missed"])
+        self.assertTrue(self.records[(REPO, PATH)]["worker-1"]["refill_missed"])
         for evidence in ("launched", "launch_unconfirmed", "launch_unknown"):
             with self.subTest(evidence=evidence):
                 self.assertNotIn("refill_missed", self.record(self.observation(evidence, "eligible")))
-                self.assertFalse(self.records[(REPO, SLOT)]["refill_missed"])
+                self.assertFalse(self.records[(REPO, PATH)]["worker-1"]["refill_missed"])
 
     def test_full_board_is_quiet_and_a_later_taper_emits(self):
         partial = self.observation("chained")
@@ -103,7 +100,19 @@ class SlotCensusTest(unittest.TestCase):
     def test_global_gate_accounts_for_every_open_slot(self):
         self.assertIn("4 horizon (critical)", self.record(self.observation(gate="horizon", horizon="critical")))
         self.assertIn("4 paused (budget unknown)", self.record(self.observation("eligible", gate="paused_budget_unknown")))
-        self.assertFalse(self.records[(REPO, SLOT)]["refill_missed"])
+        self.assertFalse(self.records[(REPO, PATH)]["worker-1"]["refill_missed"])
+
+    def test_repo_retention_bounds_both_sessions_and_history(self):
+        data = self.observation("chained")
+        for index in range(CENSUS.SESSION_LIMIT + 1):
+            for _ in range(4):
+                self.record(data, session=f"session-{index:02}")
+        records = self.records[(REPO, PATH)]
+        self.assertEqual(len(records), CENSUS.SESSION_LIMIT)
+        self.assertNotIn("session-00", records)
+        self.assertEqual(records[f"session-{CENSUS.SESSION_LIMIT:02}"]["seq"], 4)
+        self.assertEqual(sum(len(record["history"]) for record in records.values()), CENSUS.REPO_HISTORY_LIMIT)
+        self.assertLess(len(CENSUS.compact(records)), 100_000)
 
     def test_invalid_observations_fail_before_the_cas(self):
         broken = self.observation("eligible", "chained")

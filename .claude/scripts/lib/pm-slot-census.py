@@ -34,7 +34,9 @@ STARTED = {"launched", "launch_unconfirmed"}
 OUTCOMES = STARTED | CANDIDATE_GATES | {"eligible", "ineligible"}
 HORIZONS = {"clear", "approaching", "critical", "unknown"}
 COUNT_FIELDS = ("limit", "running", "merge_ready_or_phase_c", "queued")
-HISTORY_LIMIT = 48
+SESSION_HISTORY_LIMIT = 48
+REPO_HISTORY_LIMIT = 96
+SESSION_LIMIT = 32
 
 
 def compact(value):
@@ -139,14 +141,35 @@ def read_state(helper, repo, path):
     return json.loads(result.stdout)
 
 
-def record(helper, repo, path, census):
+def retain_recent(records):
+    sessions = sorted(records, key=lambda session: (records[session]["evaluated_at"], session))[-SESSION_LIMIT:]
+    records = {session: records[session] for session in sessions}
+    history = sorted(
+        (entry["evaluated_at"], session, entry["seq"])
+        for session, record in records.items()
+        for entry in record["history"]
+    )
+    if len(history) <= REPO_HISTORY_LIMIT:
+        return records
+    retained = {(session, seq) for _, session, seq in history[-REPO_HISTORY_LIMIT:]}
+    return {
+        session: {**record, "history": [entry for entry in record["history"] if (session, entry["seq"]) in retained]}
+        for session, record in records.items()
+    }
+
+
+def record(helper, repo, path, session, census):
     line = format_line(census)
     for _ in range(4):
         previous = read_state(helper, repo, path)
-        if previous is None:
+        if previous is not None and not isinstance(previous, dict):
+            raise ValueError("invalid previous census records")
+        sessions = previous or {}
+        current = sessions.get(session)
+        if current is None:
             prior_seq, history, prior_line = 0, [], None
-        elif isinstance(previous, dict):
-            prior_seq, history, prior_line = previous.get("seq"), previous.get("history"), previous.get("line")
+        elif isinstance(current, dict):
+            prior_seq, history, prior_line = current.get("seq"), current.get("history"), current.get("line")
             if type(prior_seq) is not int or prior_seq < 1 or not isinstance(history, list) or not isinstance(prior_line, str):
                 raise ValueError("invalid previous census record")
         else:
@@ -156,7 +179,9 @@ def record(helper, repo, path, census):
             "seq": prior_seq + 1,
             "evaluated_at": datetime.now(timezone.utc).isoformat(),
         }
-        payload = {**entry, "line": line, "history": (history + [entry])[-HISTORY_LIMIT:]}
+        updated = {**entry, "line": line, "history": (history + [entry])[-SESSION_HISTORY_LIMIT:]}
+        payload = retain_recent({**sessions, session: updated})
+        # Compare the repo census map so a prune never drops a concurrent session update.
         result = state_call(helper, repo, "--cas", path + "=" + compact(payload), "--expect", compact(previous))
         if result.returncode == 7:
             continue
@@ -204,7 +229,7 @@ def main():
     path = f".repos[{compact(repo)}].slot_census"
     try:
         if args.record:
-            record(args.state_helper, repo, path + f"[{compact(args.session)}]", make_census(json.load(sys.stdin)))
+            record(args.state_helper, repo, path, args.session, make_census(json.load(sys.stdin)))
         else:
             render(args.state_helper, repo, path, args.session)
     except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:

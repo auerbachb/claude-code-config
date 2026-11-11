@@ -58,7 +58,7 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
-      "_slot_census_comment": "Author-scoped /pm Step 3.4 refill evaluations keyed by dispatcher session. `running` includes `merge_ready_or_phase_c`. Reasons partition vacant slots. `line` is the canonical notice and changed-only key, empty for a full board. A single CAS publishes the current record and the last 48 evaluations. /board only reads it (issue #2157).",
+      "_slot_census_comment": "Author-scoped /pm Step 3.4 refill evaluations keyed by dispatcher session. `running` includes `merge_ready_or_phase_c`. Reasons partition vacant slots. `line` is the canonical notice and changed-only key, empty for a full board. A repo-scoped CAS retains the latest 32 dispatcher sessions and 96 total history entries, up to 48 per session. /board only reads it (issue #2157).",
       "slot_census": {
         "session-example": {
           "limit": 6,
