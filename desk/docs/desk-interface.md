@@ -3,7 +3,7 @@
 `/desk` (`skill/SKILL.md`, published as `.claude/skills/desk`) is the control
 session: the one thread where questions render. Its first increment covers
 simple Decisions; long-form, multipart, and `discuss` are #1780, and wake-up
-retries, `answer-parked`, `show`, and `history` are #1781 (below).
+retries, `answer-parked`, `show`, and `history` are in [Wake-up retries and history](wake-up-retries.md) (#1781).
 
 - **Start.** `migrate`, then `register-control` with the session id the
   capture hook sees (`$CLAUDE_CODE_SESSION_ID`, never the desktop app's

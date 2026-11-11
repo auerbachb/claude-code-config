@@ -1,6 +1,6 @@
 ## Interrupts, policy, and feedback tags (issue #1783)
 
-The second of `/desk`'s attention increments (`skill/interrupts.md`, migration
+The second of `/desk`'s attention increments ([`desk/skill/interrupts.md`](../skill/interrupts.md), migration
 `008_event_session.sql`). The desk is **loud by default**: every new Decision
 is shown at the next tick, in sets. The operator tunes it down item by item
 with feedback tags, and holds it while away or focused. Agents ask exactly as
@@ -12,7 +12,7 @@ the store, never in a worker thread.
   America/New_York; the end-of-day sweep, issue #1784), `set_size` 4 (1 to
   4), `live_desk_max_tick_age_min` 15 (1 to 1440), and derived impact's
   `critical_path_rank_top_n` 3 and `critical_path_min_dependents` 2 (each 1
-  to 100; issue #1760, "Derived impact" below). One parser, `capture.py`'s
+  to 100; issue #1760, [Derived impact](derived-impact.md)). One parser, `capture.py`'s
   `load_policy()`, serves the capture hook, `desk-tick.sh`, and
   `bin/desk-policy.sh` (which prints the effective policy as JSON). A missing
   file is the defaults; an unreadable file, a non-object, or any invalid value
@@ -57,11 +57,11 @@ the store, never in a worker thread.
   `feedback` event whose note is the tag and whose `session_id` is the asking
   thread. The desk acknowledges in one line. Before 008, `feedback` exits 1
   naming `migrate`.
-- **Tests.** `tests/interrupts-offline.test.sh` (offline: the policy parser's
+- **Tests.** [`desk/tests/interrupts-offline.test.sh`](../tests/interrupts-offline.test.sh) (offline: the policy parser's
   shapes, `desk-policy.sh`, `desk-tick.sh` passing the policy's cadence and
   rule, `interrupt`/`tick --interrupts`/`feedback --set` validation before
   connecting, `desk_sets`, `desk_batch`, `desk_feedback`, and the skill's
-  anchors); `tests/interrupts.test.sh` (live, throwaway schema: three
+  anchors); [`desk/tests/interrupts.test.sh`](../tests/interrupts.test.sh) (live, throwaway schema: three
   Decisions in one set at the next tick; `away` holds and `available`
   releases; a focus in the future holds and one that has passed does not;
   another session's rule is ignored; an invalid stored value; a feedback tag

@@ -18,10 +18,19 @@ MD
 cat > "$TMP/desk/docs/feature.md" <<'MD'
 ## Feature
 ### Details
+~~~text
+~~~example
+### Example heading
+[An example link](feature.md#ignored)
+~~~
+### After the fence
 MD
 cat > "$TMP/.claude/reference/consumer.md" <<'MD'
 [Old section](../../desk/README.md#old-section)
 [Moved section](../../desk/docs/feature.md#details)
+[After the fence][desk-details]
+
+[desk-details]: <../../desk/docs/feature.md#after-the-fence> "Details"
 MD
 git -C "$TMP" init -q
 git -C "$TMP" add .claude desk
@@ -49,3 +58,12 @@ printf '[Broken link](../../desk/README.md#absent)\n' > "$TMP/.claude/reference/
 fail_lint "links to missing desk fragment ../../desk/README.md#absent"
 printf '[Broken link](../../desk/docs/feature.md#absent)\n' > "$TMP/.claude/reference/consumer.md"
 fail_lint "links to missing desk fragment ../../desk/docs/feature.md#absent"
+printf '[Broken link](<../../desk/docs/feature.md#absent> "Title")\n' > "$TMP/.claude/reference/consumer.md"
+fail_lint "links to missing desk fragment ../../desk/docs/feature.md#absent"
+cat > "$TMP/.claude/reference/consumer.md" <<'MD'
+[Broken link][desk-example]
+
+[desk-example]:
+  ../../desk/docs/feature.md#example-heading 'Example heading'
+MD
+fail_lint "links to missing desk fragment ../../desk/docs/feature.md#example-heading"

@@ -1,6 +1,6 @@
 ## Wake-up retries, `answer-parked`, `show`, and `history` (issue #1781)
 
-The desk's last part-1 increment (`skill/wakeups.md`, `skill/history.md`,
+The desk's last part-1 increment ([`desk/skill/wakeups.md`](../skill/wakeups.md), [`desk/skill/history.md`](../skill/history.md),
 migration `006_answer_parked.sql`). A dead thread loses nothing: its answer
 is retried, then parked for the next thread on that PR or issue.
 
@@ -39,7 +39,7 @@ is retried, then parked for the next thread on that PR or issue.
   status now. `--date YYYY-MM-DD` picks another day.
 - **No state line.** The skill prints `show`'s and `history`'s output and
   nothing else (DESIGN 4.1.4).
-- **Tests.** `tests/wakeups.test.sh` (live, throwaway schema; no wake-up is
+- **Tests.** [`desk/tests/wakeups.test.sh`](../tests/wakeups.test.sh) (live, throwaway schema; no wake-up is
   sent, because the sessions are ids nobody has, resolved against a fixture
   registry) covers test 5.1 through `desk-tick.sh --once` and the skill's
   blocks: the answer is stored, the first failure and three retries are
@@ -47,5 +47,5 @@ is retried, then parked for the next thread on that PR or issue.
   covers test 5.2 (two answers today, an answer at 23:30 ET yesterday left
   out, `--date`), `show`, `pending-for --repo --key`, `ack`, the
   no-return-address and new-answer cases, and a store without 006.
-  `tests/desk-offline.test.sh` covers the `retry` line and the new
+  [`desk/tests/desk-offline.test.sh`](../tests/desk-offline.test.sh) covers the `retry` line and the new
   validations against a stub CLI.

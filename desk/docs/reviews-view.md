@@ -1,11 +1,9 @@
 ## The Reviews view (issue #1782)
 
-The first of `/desk`'s attention increments (`skill/reviews.md`, migration
+The first of `/desk`'s attention increments ([`desk/skill/reviews.md`](../skill/reviews.md), migration
 `007_reviews_summary_l1.sql`). Interrupts, policy, and feedback tags are the
-second (issue #1783, "Interrupts, policy, and feedback tags" below), the day
-plan and end-of-day sweep the third (issue #1784, "Day plan and end-of-day
-sweep" below), and the numbered PR
-outline is issue #1768.
+second ([issue #1783](interrupts-policy-feedback.md)). The [day plan and
+end-of-day sweep](day-plan.md) (#1784) are third. The [numbered PR outline](pr-drill-down.md) is #1768.
 
 | The operator types | The desk runs |
 |--------------------|---------------|
@@ -31,10 +29,10 @@ outline is issue #1768.
 - **`reviewed all today`** marks only Reviews synced today that are still
   `open`: a flagged one keeps its flag (its follow-up is open), and
   reviewing an item twice records nothing.
-- **Tests.** `tests/reviews-view-offline.test.sh` checks the new validation
+- **Tests.** [`desk/tests/reviews-view-offline.test.sh`](../tests/reviews-view-offline.test.sh) checks the new validation
   (exit 4 or 5 before connecting), `reviews_view` and `review_header` on
-  `tests/fixtures/reviews/unreviewed.json`, and the skill's anchors.
-  `tests/reviews-view.test.sh` (live, throwaway schema, the `gh` stub)
+  [`desk/tests/fixtures/reviews/unreviewed.json`](../tests/fixtures/reviews/unreviewed.json), and the skill's anchors.
+  [`desk/tests/reviews-view.test.sh`](../tests/reviews-view.test.sh) (live, throwaway schema, the `gh` stub)
   runs the skill's own blocks: test 5.1 (the first `open R-2` calls GitHub,
   the cache block stores level 2, a second `open` makes no GitHub call), test
   5.2 (`reviewed all today` marks R-1 and R-2 only), the grouped view, a

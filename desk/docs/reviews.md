@@ -1,8 +1,7 @@
 ## Reviews (issue #1756)
 
-Reviews are pulled from GitHub, so no thread has to cooperate: a PR merged
-from any tool, and any issue filed through `/issue-maker` or the desk, becomes
-one `R-n` to look at. Summaries are lazy and layered, written by the desk only
+GitHub provides one `R-n` for each merged PR authored by the authenticated
+user and each captured issue they filed, independent of the tool used. Summaries are lazy and layered, written by the desk only
 when the operator asks, never at wrap time.
 
 | Piece | What it does |
@@ -10,9 +9,9 @@ when the operator asks, never at wrap time.
 | `sync-reviews [--since TIME] [--json]` | Adds one Review per PR you authored that merged in the window (`gh search prs --author @me --merged`) and per issue you filed in it whose body has the line `_Captured via /issue-maker._`, in any repository. Prints one line per new Review and a tally |
 | `bin/pr-summary-material.sh OWNER/REPO N --level 1\|2\|3 [--path FILE]` | Read-only: prints the raw material for one PR or issue at a depth (below). `N` may be the item's key, `pr-N` or `issue-N` |
 | `summary get ID [--level 1\|2]` / `summary set ID [--level 1\|2] [--file PATH]` | Reads, or caches once, a Review's level-2 summary (`items.summary_l2`, the default) or, with `--level 1`, its one line (`items.summary_l1`, migration 007, issue #1782) |
-| `review ID [--comment TEXT]` | As above, and the comment rides on the `reviewed` event (a comment on an already-reviewed item is a `commented` event) |
+| `review ID [--comment TEXT]` | Marks the Review reviewed. An optional comment rides on the `reviewed` event. A comment on an already-reviewed item is a `commented` event |
 | `review --synced-today [--comment TEXT]` | Every Review synced today (America/New_York) that is still unreviewed, in one transaction; prints the ids it marked (issue #1782) |
-| `flag ID "TEXT"` | As above; the note may follow the id (the form the desk writes) or come with `--note`, once |
+| `flag ID "TEXT"` | Flags the Review with a note. Pass the note after the ID (the form the desk writes) or with `--note` |
 | `list --kind reviews --unreviewed [--json]` | The Reviews still `open` (a flagged one was read), then `N unreviewed · ~M lines at level 2` (20 lines an item); `--json` prints `{count, level2_lines, today, items}`, the items without `summary_l2` (read a cached summary with `summary get`) and with `synced_on` (issue #1782). `--kind` also takes `decisions` and `reviews` |
 
 ### Sync
@@ -54,11 +53,11 @@ when the operator asks, never at wrap time.
 
 The desk's loop for level 2: `summary get R-n`; when it exits 4 (none
 cached), run `pr-summary-material.sh OWNER/REPO pr-N --level 2`, write the
-summary in the operator's shape, and `summary set R-n` it. The shape is
-checked: line 1 one bold statement (`**...**`), then numbered points for what
-changed functionally, the judgment calls, what was deferred, the tests, and the
-links (indented continuation lines and blank lines allowed), at most 40 lines
-and 4000 characters, secret-checked. A different second summary is refused, so
+summary and run `summary set R-n`. Cover the functional changes, judgment
+calls, deferrals, tests, and links. The CLI checks the shape and size: a bold
+first line (`**...**`), numbered points with optional indented continuations
+and blank lines, at most 40 lines and 4000 characters. It also checks for
+secrets. A different second summary is refused, so
 a cached summary is never regenerated; the same text again is a no-op.
 Migration `004_reviews_summary.sql` keeps `tick` from reporting an item whose
 only change is its cached summary (an annotation the desk writes itself, like
@@ -88,7 +87,7 @@ so they run offline.
   connecting, and `pr-summary-material.sh` prints the expected sections at
   each level from the fixtures (`--path` narrowing, caps, issues, not found,
   GitHub failures, the deadline). Both shells.
-- `reviews.test.sh` is live (throwaway schemas, like the suites above): three
+- `reviews.test.sh` uses throwaway schemas: three
   merged PRs and two captured issues make five Reviews and a second sync none;
   the watermark, the limit and failure paths, 120 rows across batches, two
   concurrent syncs, `flag`, `review --comment`, `summary`, `list

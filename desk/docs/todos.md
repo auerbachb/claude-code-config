@@ -36,11 +36,11 @@ item fields, one event per change, no new table, no state key.
   interrupt rule's job.
 - **Not `/pm`'s priorities.** `mine` orders the operator's list of desk
   items (`D-`/`R-` ids). `/pm`'s backlog order for GitHub issues is
-  `pm-priority.sh` (`top`, `bump`, `park`, `drop`; "Priorities" above).
+  `pm-priority.sh` (`top`, `bump`, `park`, `drop`; [Priorities](priorities.md)).
   Neither reads the other.
 - **On paper.** The end-of-day sweep's card prints each item's priority,
   tags, and note on a nested line under it (`desk.jq`'s `todo_line`); the
-  paper copy, `export` (issue #1759, "Export to paper" below), prints the
+  paper copy, `export` (issue #1759, [Export to paper](export-to-paper.md)), prints the
   same line in the item's section.
 - **The event kinds.** 010 adds `tagged`, `untagged`, `noted`, `snoozed`,
   `unsnoozed`, and `prioritized` to whatever `events_kind_check` allows when

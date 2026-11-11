@@ -1,8 +1,8 @@
 ## Capture hook
 
-`hooks/capture.sh` (with its logic in `hooks/capture.py`) is a `PreToolUse`
+[`desk/hooks/capture.sh`](../hooks/capture.sh) (with its logic in [`desk/hooks/capture.py`](../hooks/capture.py)) is a `PreToolUse`
 hook on `AskUserQuestion`, registered as `.claude/hooks/human-queue-capture.sh`,
-a symlink into this folder, through `global-settings.json` (timeout 15 s). It
+a symlink to the capture script in `desk/hooks/`, through `global-settings.json` (timeout 15 s). It
 registers globally at the next session start.
 
 | Situation | What the asking thread sees | What the store gets |

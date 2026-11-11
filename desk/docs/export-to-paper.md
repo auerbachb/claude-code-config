@@ -27,7 +27,7 @@ lands on the right item.
   Pandoc and headless Chrome print the export-time footer and page numbers
   on every page. The print system prints the footer at the end.
   `bin/lib/export.jq` renders it three ways (Markdown, plain text, HTML)
-  from one item model, reusing `skill/desk.jq`'s labels and links. It runs
+  from one item model, reusing [`desk/skill/desk.jq`](../skill/desk.jq)'s labels and links. It runs
   as the head of the main jq program (`lib/export.sh`'s `hq_export_jq`),
   never as an included module: jq 1.8 aborts when a module's def calls a
   `desk.jq` function that calls another one.
@@ -68,12 +68,12 @@ lands on the right item.
   dry run needs no migration. The weekly report does not count `exported`.
 - **The desk.** `export` after a sweep prints that sweep's set; otherwise
   `export`, `export decisions`, `export reviews` (`level 1`, `today`), and
-  `export D-43 R-9 …`, any of them `… to <path>.pdf` (`skill/export.md`).
+  `export D-43 R-9 …`, any of them `… to <path>.pdf` ([`desk/skill/export.md`](../skill/export.md)).
   Before Reviews go out at level 2, the desk writes any missing twenty-line
-  summary first (`reviews.md`'s `open` steps; summaries stay lazy). The
+  summary first (the [`open` steps in the Reviews skill](../skill/reviews.md); summaries stay lazy). The
   sweep no longer writes its own Markdown copy.
-- **Tests.** `tests/export-offline.test.sh` (offline: validation before
-  connecting, the three renderings of `tests/fixtures/export/batch.json`
+- **Tests.** [`desk/tests/export-offline.test.sh`](../tests/export-offline.test.sh) (offline: validation before
+  connecting, the three renderings of [`desk/tests/fixtures/export/batch.json`](../tests/fixtures/export/batch.json)
   — ISO 2145 numbering, the to-do line, a derived impact, escaping,
   levels — the renderer
   order and fallbacks against stub binaries, the URL kept out of their
@@ -82,7 +82,7 @@ lands on the right item.
   interrupted, images in the text escaped, the same paper from every jq
   on the machine (and `HQ_T_EXTRA_JQ`, for a jq 1.8), a real cupsfilter and Chrome
   PDF read back by `pdftotext` on macOS, and the skill's blocks under bash,
-  `/bin/bash` 3.2, and zsh); `tests/export.test.sh` (live, throwaway
+  `/bin/bash` 3.2, and zsh); [`desk/tests/export.test.sh`](../tests/export.test.sh) (live, throwaway
   schema: test 5.1, three fixture Decisions to a PDF with three sections
   whose ids `pdftotext` finds; test 5.2, the Markdown fallback and its
   warning; the set and its events, `--set`, `--ids`, Reviews at both

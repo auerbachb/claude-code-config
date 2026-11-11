@@ -1,7 +1,7 @@
 ## Long-form, multipart, and discuss (issue #1780)
 
-The desk's second increment (`skill/longform.md`, `skill/discuss.md`). The
-deterministic parts live in one jq library, `skill/desk.jq`, which both
+The desk's second increment ([`desk/skill/longform.md`](../skill/longform.md), [`desk/skill/discuss.md`](../skill/discuss.md)). The
+deterministic parts live in one jq library, [`desk/skill/desk.jq`](../skill/desk.jq), which both
 `decisions.md` and `longform.md` call (`jq -L "$DESK/skill" 'include
 "desk"; …'`), so the menus and the long-form view share one classification.
 
@@ -32,8 +32,8 @@ deterministic parts live in one jq library, `skill/desk.jq`, which both
   keys). Follow-ups are answered from the card and read-only reads of the
   link; discussion writes nothing to the store, then presents the item again
   for an answer.
-- **Tests.** `tests/longform-offline.test.sh` runs `desk.jq` on fixtures and
+- **Tests.** [`desk/tests/longform-offline.test.sh`](../tests/longform-offline.test.sh) runs `desk.jq` on fixtures and
   checks `answer --stdin/--json` validation offline;
-  `tests/longform.test.sh` (live, throwaway schema) stores a reply full of
+  [`desk/tests/longform.test.sh`](../tests/longform.test.sh) (live, throwaway schema) stores a reply full of
   shell metacharacters through the skill's own here-document and compares it
   byte for byte.

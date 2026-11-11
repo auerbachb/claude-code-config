@@ -15,14 +15,40 @@ root = Path(sys.argv[1]).resolve()
 readme = root / "desk/README.md"
 docs = root / "desk/docs"
 text = readme.read_text(encoding="utf-8")
-link = re.compile(r"\]\(([^\s)]+)\)")
+destination = r"(<[^<>\n]+>|[^\s)]+)"
+inline_link = re.compile(r"\]\(\s*" + destination + r"(?=[\s)])")
+reference_link = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?" + destination, re.M)
 reference = re.compile(r"`(desk/(?:README\.md|docs/[^\s`#]+\.md)(?:#[^\s`]+)?)`")
 index = re.findall(r"<!-- desk-docs-index:start -->(.*?)<!-- desk-docs-index:end -->", text, re.S)
 errors = []
+
+
+def markdown_lines(body):
+    fence = ""
+    for line in body.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            token, rest = marker.groups()
+            if not fence:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence) and not rest.strip(" \t"):
+                fence = ""
+            continue
+        if not fence:
+            yield line
+
+
+def link_targets(body):
+    content = "\n".join(markdown_lines(body))
+    for pattern in (inline_link, reference_link):
+        for target in pattern.findall(content):
+            yield target[1:-1] if target.startswith("<") else target
+
+
 if len(index) != 1:
     errors.append("desk/README.md must contain one desk-docs index")
 else:
-    indexed = Counter(target for target in link.findall(index[0]) if "#" not in target)
+    indexed = Counter(target for target in link_targets(index[0]) if "#" not in target)
     expected = {f"docs/{path.name}" for path in docs.glob("*.md")}
     if not expected:
         errors.append("desk/docs contains no feature documents")
@@ -38,18 +64,7 @@ else:
 def fragments(path):
     anchors = set()
     counts = Counter()
-    fence = ""
-    for line in path.read_text(encoding="utf-8").splitlines():
-        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if marker:
-            token = marker[1]
-            if not fence:
-                fence = token
-            elif token[0] == fence[0] and len(token) >= len(fence):
-                fence = ""
-            continue
-        if fence:
-            continue
+    for line in markdown_lines(path.read_text(encoding="utf-8")):
         anchors.update(re.findall(r'<a (?:name|id)="([^"]+)"', line))
         heading = re.match(r"^ {0,3}#{1,6}\s+(.+?)(?:\s+#+)?$", line)
         if heading:
@@ -88,7 +103,7 @@ for source in sorted(sources | {readme} | set(docs.glob("*.md"))):
         continue
     body = source.read_text(encoding="utf-8")
     if source.suffix == ".md":
-        for target in link.findall(body):
+        for target in link_targets(body):
             check_target(source, target)
     for target in reference.findall(body):
         check_target(source, target, repository_relative=True)
