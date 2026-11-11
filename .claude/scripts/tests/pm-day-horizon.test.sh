@@ -1498,6 +1498,85 @@ if [[ -n "$CTRL_DIR" ]]; then
   check_eq "control: and no task id was published" "null" "$(day_get limit_resume_task_id)"
 fi
 
+
+echo "== Saved day goal and digest streak =="
+
+DAY_ARM="$REPO_ROOT/.claude/skills/pm/modules/day-arm.md"
+DAY_TICK="$REPO_ROOT/.claude/skills/pm/modules/day-tick.md"
+BLOCK_SAVED_GOAL=$(extract_skill_bash "$DAY_ARM" pm-day-arm-prior-goal)
+BLOCK_GOAL_INIT=$(extract_skill_bash "$DAY_ARM" pm-day-arm-init)
+BLOCK_DIGEST_STREAK=$(extract_skill_bash "$DAY_TICK" pm-day-tick-digest-streak)
+BLOCK_DIGEST_CADENCE=$(extract_skill_bash "$DAY_TICK" pm-day-tick-effective-cadence)
+DAY_PATH=".repos[\"$REPO_KEY\"].day"
+run_goal_arm() {
+  local state_helper="${2:-$SESSION_STATE_SH}"
+  SESSION_STATE_SH="$state_helper" REPO_KEY="$REPO_KEY" BUSINESS_GOAL="$1" \
+    NOW=2026-11-11T19:30:00Z DAY_CADENCE_MIN=5 MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 \
+    bash -u -c "$BLOCK_SAVED_GOAL"$'\n'"$BLOCK_GOAL_INIT"$'\n''exit "$INIT_RC"'
+}
+read_goal() { "$SESSION_STATE_SH" --get-json "$DAY_PATH.goal"; }
+write_goal() { "$SESSION_STATE_SH" --set "$DAY_PATH.goal=$1" >/dev/null; }
+
+seed_day_state
+run_goal_arm "" || exit 1
+check_eq "an absent saved goal remains JSON null" null "$(read_goal)"
+write_goal '"stabilize incoming work"'
+run_goal_arm "" || exit 1
+check_eq "plain saved goal survives resume" '"stabilize incoming work"' "$(read_goal)"
+SAVED_GOAL=$(jq -cn --arg goal $'  quotes " and backslash \\; line\nUTF-8 π\n\n' '$goal')
+write_goal "$SAVED_GOAL"
+run_goal_arm "" || exit 1
+check_eq "resume preserves whitespace, escapes and trailing newlines" "$SAVED_GOAL" "$(read_goal)"
+write_goal '"null"'
+run_goal_arm "" || exit 1
+check_eq "literal null remains a string" '"null"' "$(read_goal)"
+run_goal_arm $'override\n' || exit 1
+check_eq "an explicit goal wins without losing trailing whitespace" '"override\n"' "$(read_goal)"
+write_goal '{"wrong":"type"}'
+GOAL_RC=0
+GOAL_BEFORE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+run_goal_arm 'new goal' || GOAL_RC=$?
+check_eq "an unreadable saved goal holds initialization" 4 "$GOAL_RC"
+check_eq "unreadable goal leaves the original state intact" "$GOAL_BEFORE" "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+GOAL_RETRY_WRAPPER="$STUB_DIR/goal-retry-state.sh"
+cat > "$GOAL_RETRY_WRAPPER" <<'GOAL_RETRY'
+#!/usr/bin/env bash
+[[ -x "${ACTUAL_STATE_HELPER:-}" && "$ACTUAL_STATE_HELPER" != "$0" ]] || exit 2
+if [[ "$1" == --get-json ]]; then
+  first=false
+  [[ -e "$GOAL_READ_LOG" ]] || first=true
+  printf '%s\n' read >> "$GOAL_READ_LOG"
+  [[ "$first" != true && "$GOAL_LOCK_PERSISTS" != true ]] || exit 6
+fi
+exec "$ACTUAL_STATE_HELPER" "$@"
+GOAL_RETRY
+chmod +x "$GOAL_RETRY_WRAPPER"
+write_goal '"keep on retry"'
+ACTUAL_STATE_HELPER="$SESSION_STATE_SH" GOAL_READ_LOG="$STUB_DIR/goal-read-retry" \
+  GOAL_LOCK_PERSISTS=false run_goal_arm "" "$GOAL_RETRY_WRAPPER" || exit 1
+check_eq "a transient lock timeout triggers one retry" 2 "$(grep -c '^read$' "$STUB_DIR/goal-read-retry")"
+check_eq "successful retry preserves the goal" '"keep on retry"' "$(read_goal)"
+GOAL_BEFORE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+GOAL_RC=0
+ACTUAL_STATE_HELPER="$SESSION_STATE_SH" GOAL_READ_LOG="$STUB_DIR/goal-read-timeout" \
+  GOAL_LOCK_PERSISTS=true run_goal_arm "override" "$GOAL_RETRY_WRAPPER" || GOAL_RC=$?
+check_eq "a persistent read timeout stops after one retry" 2 "$(grep -c '^read$' "$STUB_DIR/goal-read-timeout")"
+check_eq "persistent timeout remains the original read error" 6 "$GOAL_RC"
+check_eq "persistent timeout leaves state intact" "$GOAL_BEFORE" "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+run_digest_case() {
+  local prior_streak="$1" new_digest="$2" base="$3"
+  "$SESSION_STATE_SH" --set "$DAY_PATH.digest=\"sha256:same\"" \
+    --set "$DAY_PATH.digest_streak=$prior_streak" --set "$DAY_PATH.cadence_base_minutes=$base" >/dev/null
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" DAY_DIGEST="$new_digest" \
+    bash -u -c "$BLOCK_DIGEST_STREAK"$'\n'"$BLOCK_DIGEST_CADENCE"$'\n''printf "%s %s\n" "$DAY_STREAK" "$DAY_EFF_MIN"'
+}
+check_eq "same digest advances at base cadence" '2 4' "$(run_digest_case 1 sha256:same 4)"
+check_eq "third equal digest widens cadence to its floor" '3 15' "$(run_digest_case 2 sha256:same 4)"
+check_eq "ninth equal digest reaches the freeze threshold" '9 18' "$(run_digest_case 8 sha256:same 6)"
+check_eq "different digest resets streak and cadence" '0 6' "$(run_digest_case 8 sha256:different 6)"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]
