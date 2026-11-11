@@ -794,6 +794,14 @@ check_eq "exhaustion leaves the prior wake generation" "$GEN" "$(day_get limit_r
 
 seed_probe_state 0
 check_eq "zero never resumes even with a clear window" PROBE=exhausted "$(run_probe "$GEN" clear | tail -1)"
+seed_probe_state 2
+ENTROPY_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" TICK_GENERATION="$GEN" \
+  HORIZON_STATUS=clear bash -c 'od() { return 1; }'$'\n'"$BLOCK_PROBE")
+check_eq "entropy failure holds the clear probe" PROBE=fail-closed "$(printf '%s\n' "$ENTROPY_OUT" | tail -1)"
+ENTROPY_BINDING=$(printf '%s\n' "$ENTROPY_OUT" | sed -n 's/^PROBE_BINDING=//p')
+check_eq "entropy failure retains the exact wake for verified retirement" "task-abc $GEN" \
+  "$(jq -r '[.limit_resume_task_id,.limit_resume_generation] | join(" ")' <<< "$ENTROPY_BINDING")"
+check_eq "entropy failure does not spend a probe" 2 "$(day_get limit_probe_fires_remaining)"
 
 # A confirmed stop of the previous wake cannot clear a replacement.
 seed_probe_state 1
@@ -1790,6 +1798,25 @@ check_eq "failed claim preserves the new park" "$PARK_AFTER_ROUTE" \
 
 START_STALE='{"active":true,"last_tick_at":"2025-12-31T23:40:00Z","cadence_effective_minutes":5,"goal":"retained"}'
 check_eq "a stale day is reclaimable" DAY_START_ROUTE=stale "$(start_route "$START_STALE")"
+START_AGED=$(jq -c '.monitor_generation="day-0123456789abcdef0123456789abcdef" |
+  .monitor_task_id=null' <<< "$START_STALE")
+check_eq "an aged unpublished startup still owns dispatch" DAY_START_ROUTE=reserved \
+  "$(start_route "$START_AGED")"
+START_PUBLISHED=$(jq -c '.monitor_task_id="native-monitor"' <<< "$START_AGED")
+check_eq "a stale published loop keeps the usual recovery route" DAY_START_ROUTE=stale \
+  "$(start_route "$START_PUBLISHED")"
+FLEET_RESERVE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" \
+  pm-fleet-day-reservation) || exit 1
+fleet_reservation() {
+  "$SESSION_STATE_SH" --set "$DAY_PATH=$1" >/dev/null || return
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" bash -u -c "$FLEET_RESERVE"
+}
+check_eq "the fleet also holds on an aged day startup" DAY_RESERVATION_STATE=reserved \
+  "$(fleet_reservation "$START_AGED")"
+check_eq "the fleet keeps ordinary stale published-loop checks" DAY_RESERVATION_STATE=ordinary \
+  "$(fleet_reservation "$START_PUBLISHED")"
+check_eq "the fleet holds on unreadable reservation evidence" DAY_RESERVATION_STATE=unreadable \
+  "$(fleet_reservation '[]')"
 check_eq "a widened cadence preserves a live day" DAY_START_ROUTE=live \
   "$(start_route "$(jq -c '.cadence_effective_minutes=30' <<< "$START_STALE")")"
 "$SESSION_STATE_SH" --set "$DAY_PATH=$START_STALE" >/dev/null

@@ -378,7 +378,7 @@ pm_day_probe_fire() {
     if [ "$HORIZON_STATUS" = clear ]; then
       nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n') || nonce=""
       if ! [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]; then
-        printf '%s\n' 'PROBE=fail-closed'
+        printf 'PROBE_BINDING=%s\nPROBE=fail-closed\n' "$binding"
         return
       fi
       resume_generation="probe-resume-$nonce"

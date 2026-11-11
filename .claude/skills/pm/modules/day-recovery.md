@@ -8,9 +8,11 @@ A day loop can outlive the context that armed it. After compaction, `monitor-mod
 **Also check the park record during recovery.** Run 2D.1(b+)'s
 `pm-day-park-route` against the same `DAY_SNAPSHOT` before reclaiming or
 re-arming any stale day loop. Leave `PM_DAY_WEEKLY_RESUMED_SNAPSHOT` unset here.
-For `normal`, continue ordinary day reconciliation. Before reclaiming
-or re-arming a stale loop, obtain the 2D.1(c) reservation against the
-observed snapshot after running the 2D.1 preamble and fleet gate (a). For either `recover:*` route, run **Recover the captured wake**
+For `normal`, run 2D.1(b)'s `pm-day-start-freshness` against the same
+snapshot before ordinary day reconciliation. An unpublished reservation
+keeps ownership even after its heartbeat ages. Before reclaiming or
+re-arming a genuinely stale loop, obtain the 2D.1(c) reservation against
+the observed snapshot after running the 2D.1 preamble and fleet gate (a). For either `recover:*` route, run **Recover the captured wake**
 below and stop ordinary recovery. A restart alone cannot prove a previous
 wake stopped. For `manual:weekly`, retain the park, arm nothing, and name
 `/end-resume`. For other `manual:*` routes, retain the park, arm nothing,

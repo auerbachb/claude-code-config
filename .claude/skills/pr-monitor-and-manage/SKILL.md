@@ -240,6 +240,37 @@ Each exit code takes the same reading: `0` is the value; `3` means no state file
 
 With all three readable: `DAY_ACTIVE == true` **and** `DAY_LAST_TICK` inside `max(3 × DAY_EFF_MIN, 15m)` → a day loop is live: refuse to arm and stop, in one line — `A /pm day loop is running for this repo — say "stop" to it first, then /pr-monitor-and-manage.` `false`/`null`, or an `active: true` whose `last_tick_at` is outside the window (its session died — the freshness rule from `/pm` Step 2D.1(b)), mean no live loop: proceed.
 
+Before treating an active day as stale, check whether it holds an
+unpublished startup reservation. The first dispatch can still be running
+after the last heartbeat has aged. Use the same check on the post-claim
+reread before treating a day record as clear.
+
+<!-- test-anchor: pm-fleet-day-reservation -->
+```bash
+DAY_RESERVATION_STATE=unreadable
+DAY_RESERVATION_RC=0
+DAY_RESERVATION_JSON=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day") ||
+  DAY_RESERVATION_RC=$?
+case "$DAY_RESERVATION_RC" in
+  3) DAY_RESERVATION_STATE=ordinary ;;
+  0)
+    DAY_RESERVATION_STATE=$(jq -ers '
+      select(length == 1) | .[0] |
+      if . == null then "ordinary"
+      elif type != "object" then error("invalid day record")
+      elif .active == true and .monitor_task_id == null and
+        (.monitor_generation | type == "string" and test("^day-[0-9a-f]{32}$"))
+      then "reserved"
+      else "ordinary" end
+    ' <<< "$DAY_RESERVATION_JSON") || DAY_RESERVATION_STATE=unreadable ;;
+esac
+printf 'DAY_RESERVATION_STATE=%s\n' "$DAY_RESERVATION_STATE"
+```
+
+A `reserved` or unreadable day record blocks fleet arming. Report the
+existing day ownership or the read failure. Only `ordinary` continues the
+existing heartbeat and mutual-exclusion checks.
+
 **Then settle the race the same way `/pm day` does** — the two reads above and this skill's own `pmm_active` write are separate `session-state.sh` calls, so simultaneous starts could each read the other as clear. Mirror `/pm` Step 2D.1(c): publish `.pmm_active=true` **first**, then re-read `.repos[<key>].day.active`; if it is now live, the day loop won — roll `pmm_active` back to `false`, arm nothing, and stand down with the message above. Whoever writes second sees the other's claim, so two owners is unreachable; both standing down is possible, safe, and re-runnable.
 
 Decision and rationale: `.claude/reference/pm-monitoring-decision.md` "The day-mode carve-out".

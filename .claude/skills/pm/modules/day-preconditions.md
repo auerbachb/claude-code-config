@@ -87,7 +87,9 @@ read_day limit_resume_generation; PARK_RESUME_GENERATION="$DAY_VALUE"; RESUME_GE
 
 On an arming invocation, run the duplicate-day check before the park route
 in (b+). A fresh active day already owns dispatch. A stale heartbeat allows
-recovery, including an old unparseable or absent heartbeat. An unreadable
+recovery of an older loop, including an unparseable or absent heartbeat.
+An unpublished reservation is different. Its owner may still be running
+the first pipeline, so elapsed time alone cannot release it. An unreadable
 snapshot, malformed activity or cadence, or unavailable clock stops arming.
 
 <!-- test-anchor: pm-day-start-freshness -->
@@ -108,6 +110,9 @@ pm_day_start_route() {
     elif (.active | type) != "boolean" and .active != null then
       error("invalid day activity")
     elif .active != true then "inactive"
+    elif .monitor_task_id == null and
+      (.monitor_generation | type == "string" and test("^day-[0-9a-f]{32}$"))
+    then "reserved"
     else
       (.cadence_effective_minutes |
         if . == null then 5
@@ -125,7 +130,12 @@ printf 'DAY_START_ROUTE=%s\n' "$DAY_START_ROUTE"
 ```
 
 For `live`, say a day loop is already running and name how to stop it
-(`say "stop"`). For `unreadable`, say the state or clock could not be read.
+(`say "stop"`). For `reserved`, say a day start still owns dispatch and
+start nothing. Its owner can release it. If the prior owner's session has
+been verified ended, use the exact unpublished reservation in
+`pm_day_release_start` and rerun the fresh startup checks. A missing or
+ambiguous liveness check leaves the reservation standing.
+For `unreadable`, say the state or clock could not be read.
 For `stale`, report recovery and continue to (b+). For `inactive`, continue
 to (b+) normally. The freshness window is max(3 × effective cadence, 15m).
 A future heartbeat also holds ownership.
@@ -260,8 +270,8 @@ and your reservation. Run it again immediately before the arming turn
 dispatches from Step 1, even if ranking or cleanup took time. If either
 renewal fails, run `pm_day_release_start` once, report the conflict or
 unreadable state, and start no further work. A release comparison loss
-means the reservation changed and leaves it alone. The stale-heartbeat rule
-allows recovery of an interrupted reservation later. Report other release
+means the reservation changed and leaves it alone. A reserved startup
+keeps ownership across a long first turn, even if its heartbeat ages out. Report other release
 errors as unverified. The fleet still does its reciprocal read after its
 own claim.
 

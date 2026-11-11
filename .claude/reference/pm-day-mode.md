@@ -117,6 +117,10 @@ that snapshot and the inactive fleet state in the same write. It renews
 before dispatch, then uses the exact reservation for initialization and
 publication. A comparison loss stops that attempt and leaves the new
 state intact. Only the unpublished reservation can be released.
+An unpublished start holds through the first turn even if its heartbeat
+ages out. An ended owner can be reclaimed only after verified liveness
+evidence and an exact release. A published stale loop keeps the existing
+recovery rule.
 
 **Session-start reconciliation.** The original day snapshot carries the park and typed wake identity. For a completed rolling-window park, PM can re-arm an empty wake slot. Replacing an occupied slot requires native confirmation that the exact recorded task stopped in its owning session; restart alone cannot prove that. The recovery publisher compares the original binding and writes both new identity fields atomically. Unknown ownership, weekly parks, unreadable state, and an unfinished claim require manual resume.
 
