@@ -50,6 +50,7 @@ RESERVED KEYS (readable with get; `set` refuses them)
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
+  quiz_count:DATE  the daily quiz completion count; written by quiz complete
   control_session  the registered desk control session; written by
                    register-control
   reviews_watermark  the start of the last successful sync-reviews;
@@ -165,6 +166,7 @@ cmd_run() {
       esac
     fi
     case "$key" in
+      quiz_count:*) hq_die_validation "state set: $key is reserved: only quiz complete writes it" ;;
       filed:*) hq_die_validation "state set: filed:* keys are reserved: only filed writes them (and sync-reviews deletes them)" ;;
     esac
     if [ "${#value}" -gt "$HQ_STATE_VALUE_MAX" ]; then
