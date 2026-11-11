@@ -5,35 +5,55 @@ Route `resume:load`. Load config and persisted work for a resume. Continue to re
 
 <!-- test-anchor: pm-resume-load-config -->
 ```bash
-LIST_RC=0
-SECTION_NAMES=$("$PM_CONFIG_GET" --list 2>/dev/null) || LIST_RC=$?
-PM_RESUME_CONFIG=""
-if [ "$LIST_RC" -eq 0 ]; then
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    SECTION_RC=0
-    SECTION_BODY=$("$PM_CONFIG_GET" --section "$name" 2>/dev/null) || SECTION_RC=$?
-    case "$SECTION_RC" in
-      0|1)
-        printf -v PM_RESUME_CONFIG '%s## %s\n%s\n' "$PM_RESUME_CONFIG" "$name" "$SECTION_BODY"
-        ;;
-      *)
-        LIST_RC="$SECTION_RC"
-        PM_RESUME_CONFIG=""
-        break
-        ;;
-    esac
-  done <<< "$SECTION_NAMES"
-fi
-printf 'LIST_RC=%s\n' "$LIST_RC"
-if [ "$LIST_RC" -eq 0 ]; then printf '%s' "$PM_RESUME_CONFIG"; fi
+pm_resume_config() (
+  umask 077
+  local source_config=.claude/pm-config.md config_snapshot
+  local list_rc=0 section_rc=0 section_names section_name section_body config_body=""
+  if [ -z "${PM_CONFIG_GET:-}" ]; then
+    printf '%s\n' 'RESUME_CONFIG=defaults' 'LIST_RC=1'
+    return
+  fi
+  if [ ! -e "$source_config" ] && [ ! -L "$source_config" ]; then
+    printf '%s\n' 'RESUME_CONFIG=missing' 'LIST_RC=2'
+    return
+  fi
+  if [ ! -f "$source_config" ] || ! config_snapshot=$(mktemp "${TMPDIR:-/tmp}/pm-resume-config.XXXXXX"); then
+    printf '%s\n' 'RESUME_CONFIG=unreadable' 'LIST_RC=2'
+    return
+  fi
+  trap 'rm -f "$config_snapshot"' EXIT
+  if ! cat "$source_config" > "$config_snapshot"; then
+    printf '%s\n' 'RESUME_CONFIG=unreadable' 'LIST_RC=2'
+    return
+  fi
+
+  section_names=$("$PM_CONFIG_GET" --list --file "$config_snapshot" 2>/dev/null) || list_rc=$?
+  if [ "$list_rc" -eq 0 ]; then
+    while IFS= read -r section_name; do
+      [ -n "$section_name" ] || continue
+      section_rc=0
+      section_body=$("$PM_CONFIG_GET" --section "$section_name" --file "$config_snapshot" 2>/dev/null) ||
+        section_rc=$?
+      case "$section_rc" in
+        0|1) printf -v config_body '%s## %s\n%s\n' "$config_body" "$section_name" "$section_body" ;;
+        *) list_rc="$section_rc"; break ;;
+      esac
+    done <<< "$section_names"
+  fi
+  case "$list_rc" in
+    0) printf 'RESUME_CONFIG=ready\nLIST_RC=0\n%s' "$config_body" ;;
+    1) printf '%s\n' 'RESUME_CONFIG=empty' 'LIST_RC=1' ;;
+    *) printf 'RESUME_CONFIG=failed\nLIST_RC=%s\n' "$list_rc" ;;
+  esac
+)
+pm_resume_config
 ```
 
-- If `LIST_RC == 2`, tell the user to run `/pm-handoff` to bootstrap the
-  config, mark `1A failed (resume config unavailable)`, and finish the invocation.
-- If `LIST_RC == 1`, the config has no sections. Continue without section bodies.
-- If another nonzero code remains, report the failed config read and stop
-  resume. Do not proceed with partial config.
+Continue with defaults on `defaults` or with no section bodies on `empty`.
+On `missing`, tell the user to run `/pm-handoff` to bootstrap the config
+and finish this resume as config unavailable. On `unreadable` or `failed`,
+report the read failure and stop before using any section. The list and
+all section lookups use the same private snapshot.
 
 ### 1A.2: Load in-flight state
 
