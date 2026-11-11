@@ -203,6 +203,7 @@ only when the blocker requires owner action.
   - #67 — choose a delivery scope
 ```
 
+Refresh and link the [project board](#persistent-project-board) before delivery.
 After the whole report reaches the user, set `REPORT_DELIVERED=1`. Initialize
 it to zero before attempting delivery. Use the receipt snippet in the same
 turn. A reported event is remembered by its exact key, so repeating a
@@ -225,3 +226,137 @@ if [[ -n "$REPORT_NEXT" ]]; then
   "$SESSION_STATE_SH" --cas "$REPORT_PATH=$REPORT_NEXT" --expect "$REPORT_BEFORE"
 fi
 ```
+
+## Persistent project board
+
+A verified dispatch or refill, a verified `merged` or `blocked` outcome,
+or a due scheduled report refreshes the project page. Consolidate all
+three signals for the turn. Publishing the file has no chat-render
+effect and does not advance the `/board` freshness clock. Use the
+existing PM turn and its already gathered evidence.
+
+Set `PM_BOARD_DISPATCHED` and `PM_BOARD_TERMINAL` to `true` only for
+verified events this turn. Reuse the scheduled gate's `REPORT_RESULT`.
+Resolve the current file before gathering the display projection. This
+reads the last complete publication and provides a compare-and-set digest.
+
+<!-- test-anchor: pm-project-board-begin -->
+```bash
+PM_BOARD_REPO=''
+PM_BOARD_PATH=''
+PM_BOARD_EXPECT=''
+PM_BOARD_PAGE_SH=''
+if [[ "${PM_BOARD_DISPATCHED:-false}" == true || "${PM_BOARD_TERMINAL:-false}" == true ]] ||
+    jq -e '.due == true' <<<"${REPORT_RESULT:-null}" >/dev/null 2>&1; then
+  PM_BOARD_PAGE_SH=$(resolve_script pm-board-page.sh || true)
+  if [[ -z "$PM_BOARD_PAGE_SH" || -z "${SESSION_STATE_SH:-}" ]]; then
+    printf '%s\n' 'DEGRADED: project board helper unavailable' >&2
+  else
+    PM_BOARD_REPO=$("$SESSION_STATE_SH" --repo-key) || PM_BOARD_REPO=''
+    if [[ "$PM_BOARD_REPO" == */* ]]; then
+      PM_BOARD_CURRENT=$("$PM_BOARD_PAGE_SH" --repo "$PM_BOARD_REPO" --current) || PM_BOARD_CURRENT=''
+      PM_BOARD_EXPECT=$(jq -er --arg repo "$PM_BOARD_REPO" '
+        select(.repo == $repo)
+        | if .digest == null and .path == null then "absent"
+          elif (.digest | type == "string" and test("^[0-9a-f]{64}$")) and
+               (.path | type == "string" and startswith("/"))
+          then .digest else empty end
+      ' <<<"$PM_BOARD_CURRENT") || PM_BOARD_EXPECT=''
+      PM_BOARD_PATH=$(jq -r --arg repo "$PM_BOARD_REPO" '
+        select(.repo == $repo) | .path | select(type == "string" and startswith("/"))
+      ' <<<"$PM_BOARD_CURRENT") || PM_BOARD_PATH=''
+    fi
+  fi
+fi
+```
+
+With a valid `PM_BOARD_EXPECT`, assemble `PM_BOARD_PAGE_JSON` as an
+object with the exact `repo` and a `rows` array. Reuse `/board`'s
+positive running evidence, recorded round and queue order, current
+GitHub issue/PR state and estimate/projected-end lookup. Use the same
+repository's verified work across its dispatchers, including current
+terminal deliveries. A recorded queue or a stale pre-PR row alone cannot
+prove a live pipeline. Reuse verified titles and estimates from this
+turn's evidence. Obtain missing data only for the displayed rows.
+
+- Each row carries `repo`, positive integer `issue`, and `group` of
+  `needs`, `running`, `queued` or `done`. Include the title, integer `pr`
+  when available, phase `A`, `B` or `C`, `estimate` as integer
+  `{low,high,plan}` minutes, and the canonical `ends_at` in UTC where known.
+- A verified merge has `group:done`, `outcome:merged` and its merged PR
+  number. A verified blocked result has `outcome:blocked`. Use `needs`
+  when an owner action is required and point to `/desk` for decisions.
+  Use `done` for other terminal outcomes. A verified terminal result
+  replaces its older running or queued row. Deduplicate by issue after
+  scoping to the current repo.
+- For split work, use the tracked child set and verified parent links.
+  Include the visible chain's confirmed merged children and other
+  recorded children with their own states. Supply each child's integer
+  `parent`. A terminal block does not count as a merged child.
+- The renderer lists scoped local handoff filenames. Optional `notes`
+  entries are `{repo,name}` from an already scoped notes source. An optional
+  `receipt` contains the exact `repo` and `statuses` array. Project only
+  the latest verified run receipt's expected step statuses for this repo.
+  Use `unrecorded` for expected steps with no mark. Omit receipt reasons.
+- Exclude raw bodies, environment values, diagnostics, handoff contents
+  and full notes paths. If the scoped evidence is unreadable, preserve
+  the previous page. An affirmatively empty board uses `rows:[]`.
+
+The normal location is the private local file
+`~/.claude/boards/<owner>/<repo>/board.html`. A runtime with a private
+Artifact publisher can instead use it after the operator chooses publication.
+Run the renderer with `--repo "$PM_BOARD_REPO" --html` and the same
+scoped JSON for the publisher. Read the existing location before creating
+an artifact. Publish once per repo and update that artifact at its stable
+private URL. Use the local route when private publication is unavailable
+or the choice is unset.
+
+<!-- test-anchor: pm-project-board-publish -->
+```bash
+PM_BOARD_RESULT=''
+if [[ -n "${PM_BOARD_EXPECT:-}" ]]; then
+  if [[ -n "${PM_BOARD_PAGE_JSON:-}" ]]; then
+    PM_BOARD_RESULT=$(printf '%s' "$PM_BOARD_PAGE_JSON" |
+      "$PM_BOARD_PAGE_SH" --repo "$PM_BOARD_REPO" --expect-digest "$PM_BOARD_EXPECT") ||
+      PM_BOARD_RESULT=''
+  else
+    printf '%s\n' 'DEGRADED: project board evidence unavailable' >&2
+  fi
+fi
+if [[ -n "$PM_BOARD_RESULT" ]]; then
+  PM_BOARD_PUBLISHED_PATH=$(jq -er --arg repo "$PM_BOARD_REPO" '
+    select(.repo == $repo) | .path | select(type == "string" and startswith("/"))
+  ' <<<"$PM_BOARD_RESULT") || PM_BOARD_PUBLISHED_PATH=''
+  if [[ -n "$PM_BOARD_PUBLISHED_PATH" ]]; then
+    PM_BOARD_PATH="$PM_BOARD_PUBLISHED_PATH"
+    PM_BOARD_STATE_PATH=$(jq -nr --arg repo "$PM_BOARD_REPO" '".repos[\($repo|tojson)].pm_board_page"') ||
+      PM_BOARD_STATE_PATH=''
+    PM_BOARD_NEXT=$(jq -cn --arg location "$PM_BOARD_PATH" '{location:$location}') || PM_BOARD_NEXT=''
+    PM_BOARD_STATE_RC=4
+    if [[ -n "$PM_BOARD_STATE_PATH" && -n "$PM_BOARD_NEXT" ]]; then
+      PM_BOARD_STATE_RC=0
+      PM_BOARD_BEFORE=$("$SESSION_STATE_SH" --repo "$PM_BOARD_REPO" --get-json "$PM_BOARD_STATE_PATH") ||
+        PM_BOARD_STATE_RC=$?
+    fi
+    if [[ "$PM_BOARD_STATE_RC" -eq 3 ]]; then
+      PM_BOARD_BEFORE=null
+      PM_BOARD_STATE_RC=0
+    fi
+    if [[ "$PM_BOARD_STATE_RC" -ne 0 ]]; then
+      printf '%s\n' 'DEGRADED: project board location state unavailable' >&2
+    elif [[ "$PM_BOARD_BEFORE" != "$PM_BOARD_NEXT" ]]; then
+      "$SESSION_STATE_SH" --repo "$PM_BOARD_REPO" \
+        --cas "$PM_BOARD_STATE_PATH=$PM_BOARD_NEXT" --expect "$PM_BOARD_BEFORE" >/dev/null ||
+        printf '%s\n' 'DEGRADED: project board location could not be recorded' >&2
+    fi
+  fi
+fi
+```
+
+Record an explicitly selected private Artifact URL in the same `location`
+field after a verified update. Store neither the rows nor the HTML in
+session state. Add a **Project board** link to each scheduled report, using
+the path from this publication or the previously verified file if the
+refresh failed. Note a failed refresh when linking that prior file. If
+there is no verified location, surface that failure and deliver the
+progress report. The rendered page refreshes itself while visible.
