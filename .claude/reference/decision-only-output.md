@@ -13,6 +13,7 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 | Owner-only blocker, ambiguity, safety event, exhausted recovery or genuine stall | Immediate concise notice | State action, practical options/consequence, evidence; persist stop and resume state |
 | Explicit status, summary, board or verbose request | Answer the requested scope | Render from existing records; tables are available on request |
 | `/pm` repo with positive `report_every_min` | Report a changed active board when due and immediately on a terminal outcome | Use the existing PM turn, canonical board and exact report receipt |
+| Completion of a user `/pm` invocation | One step receipt, after the immediate tick on a day arming invocation | Render recorded outcomes and flag missing ones. Internal ticks and probes stay silent. |
 | Terminal completion | Minimal outcome; useful artifact link only | Preserve full verification in PR/issue/logs; emit clean merge line once |
 
 A stopped pipeline must never disappear: when recovery ends, surface why and how it can resume even if the owner cannot fix the underlying service. Do not repeat an unchanged notice every tick. A materially changed blocker, failed notification, or a new required decision may notify again. Never silence a safety event merely because recovery is possible.
