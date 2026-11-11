@@ -169,6 +169,7 @@ rm "$tmp/bin/python3"
 subagent="$root/.claude/skills/subagent/SKILL.md"
 leaveby="$root/.claude/skills/leave-by/SKILL.md"
 extract_skill_bash "$subagent" subagent-step7-leave-elicitation-gate > "$tmp/leave-read"
+extract_skill_bash "$subagent" subagent-step7-leave-release > "$tmp/leave-release"
 extract_skill_bash "$subagent" subagent-step7-leave-reservation > "$tmp/leave-reserve"
 extract_skill_bash "$subagent" subagent-step7-overrun-decision > "$tmp/overrun-read"
 extract_skill_bash "$subagent" subagent-step7-overrun-reservation > "$tmp/overrun-reserve"
@@ -179,7 +180,7 @@ leave_gate() (
   export FAKE_OWNER="$1"
   REPO_KEY="$2"; ATTENDED="${3:-true}"
   SESSION_STATE_SH="${5-$state}"; PROMPT_RESERVE_SH="${4-$helper}"
-  source "$tmp/leave-read"; source "$tmp/leave-reserve"
+  source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
   printf '%s|%s|%s\n' "$ELICIT_LEAVE_TIME" "$LEAVE_PROMPT_PENDING" "$LEAVE_PROMPT_GENERATION"
 )
 result="$(leave_gate "$owner1" org/gates)"
@@ -241,6 +242,140 @@ chmod +x "$tmp/publish-then-reserve"
 export GATE_STATE="$state" GATE_HELPER="$helper" GATE_DEADLINE="$deadline"
 check 'false|false|' "$(leave_gate "$owner1" org/interleave true "$tmp/publish-then-reserve")" 'winner rechecks after acquisition and skips a just-answered question'
 check null "$(read_slot org/interleave leave)" 'unused winning generation was released'
+
+# Inject lock/compare outcomes only on release; successful operations still
+# use the actual writer and persisted slot.
+mkdir "$tmp/release-helper"
+cp "$helper" "$tmp/release-helper/prompt-reservation.sh"
+cat > "$tmp/release-helper/session-state.sh" <<'RELEASE'
+#!/usr/bin/env bash
+set -eu
+if [[ "$3" == --cas && "$4" == *=null ]]; then
+  case "${RELEASE_MODE:-}" in
+    timeout) exit 6 ;;
+    once)
+      if [[ ! -e "$RELEASE_MARKER" ]]; then : > "$RELEASE_MARKER"; exit 6; fi
+      ;;
+    replaced)
+      "$GATE_STATE" --repo "$2" --set "${4%=null}=$REPLACEMENT_RECORD" >/dev/null
+      # Fall through to the real CAS so the mismatch comes from the writer.
+      ;;
+  esac
+fi
+exec "$GATE_STATE" "$@"
+RELEASE
+chmod +x "$tmp/release-helper/session-state.sh"
+release_helper="$tmp/release-helper/prompt-reservation.sh"
+release_gate_fixture() {
+  local saved_token saved_receipt other_token
+  export FAKE_OWNER="$owner1"
+  REPO_KEY=org/retained; ATTENDED=true
+  PROMPT_RESERVE_SH="$release_helper"
+  SESSION_STATE_SH="$tmp/transient-state"
+  export READ_CASE=reread READ_MARKER="$tmp/release-read-marker" RELEASE_MODE=timeout
+  unset LEAVE_RELEASE_RECEIPTS
+  source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
+  saved_token="$(read_slot org/retained leave | jq -r .generation)"
+  [[ "$saved_token" =~ ^[0-9a-f]{32}$ ]] || return 1
+  saved_receipt="org/retained:$saved_token"
+  check "$saved_receipt" "$LEAVE_RELEASE_RECEIPTS" 'ambiguous release retains the exact repo and token'
+  check 'false|true|' "$ELICIT_LEAVE_TIME|$LEAVE_PROMPT_PENDING|$LEAVE_PROMPT_GENERATION" 'release receipt cannot authorize the old menu'
+  check "$saved_token" "$(read_slot org/retained leave | jq -r .generation)" 'ambiguous release preserves the durable reservation'
+
+  # A different repo gets its own menu and can retain a second receipt.
+  REPO_KEY=org/independent; SESSION_STATE_SH="$state"
+  source "$tmp/leave-read"; source "$tmp/leave-reserve"
+  check true "$ELICIT_LEAVE_TIME" 'a pending receipt does not block another repo menu'
+  other_token="$LEAVE_PROMPT_GENERATION"
+  if release_leave_prompt "$other_token"; then return 1; fi
+  check "$saved_receipt"$'\n'"org/independent:$other_token" "$LEAVE_RELEASE_RECEIPTS" 'a second repo keeps its own receipt'
+  REPO_KEY=org/retained
+
+  # Later an independently published answer can be used after cleanup. It must
+  # not be turned into another menu by recovery.
+  "$state" --repo org/retained --set ".repos[\"org/retained\"].window.deadline_epoch=$deadline" >/dev/null
+  SESSION_STATE_SH="$state"
+  export RELEASE_MODE=once RELEASE_MARKER="$tmp/release-once"
+  source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
+  check "org/independent:$other_token" "$LEAVE_RELEASE_RECEIPTS" 'acknowledged release clears only its repo receipt'
+  check 'false|false|' "$ELICIT_LEAVE_TIME|$LEAVE_PROMPT_PENDING|$LEAVE_PROMPT_GENERATION" 'recovery uses the published answer without reopening the menu'
+  check null "$(read_slot org/retained leave)" 'a transient timeout recovers and frees the exact slot'
+  check "$other_token" "$(read_slot org/independent leave | jq -r .generation)" 'recovering one repo does not clear the other reservation'
+  REPO_KEY=org/independent
+  export RELEASE_MODE=normal
+  release_leave_prompt "$other_token"
+  check "" "$LEAVE_RELEASE_RECEIPTS" 'the second repo can finish its independent recovery'
+}
+release_gate_fixture
+
+call "$owner2" claim --repo org/replacement-fixture --kind leave
+replacement_token="$out"
+REPLACEMENT_RECORD="$(read_slot org/replacement-fixture leave)"
+export REPLACEMENT_RECORD
+call "$owner1" claim --repo org/release-lost --kind leave
+original_token="$out"
+(
+  export FAKE_OWNER="$owner1" RELEASE_MODE=replaced
+  REPO_KEY=org/release-lost PROMPT_RESERVE_SH="$release_helper"
+  LEAVE_RELEASE_RECEIPTS="$REPO_KEY:$original_token"
+  ATTENDED=false SESSION_STATE_SH="$state"
+  source "$tmp/leave-release"; source "$tmp/leave-read"; source "$tmp/leave-reserve"
+  [[ -z "$LEAVE_RELEASE_RECEIPTS" ]] || exit 1
+)
+check "$replacement_token" "$(read_slot org/release-lost leave | jq -r .generation)" 'compare loss discards the old receipt without clearing the replacement'
+
+# The helper retains enough evidence even if a new /subagent invocation
+# has no orchestration variables from the call that abandoned the menu.
+call "$owner1" claim --repo org/fresh-release --kind leave
+check 0 "$rc" 'fresh-invocation fixture owns the original menu'
+fresh_old_token="$out"
+fresh_receipt="$HOME/.claude/prompt-release-receipts/$fresh_old_token.json"
+call "$owner2" release --repo org/fresh-release --kind leave --generation "$fresh_old_token"
+check 10 "$rc" 'a different owner cannot release the known generation'
+check false "$([[ -e "$fresh_receipt" ]] && echo true || echo false)" 'a different owner cannot publish an abandonment receipt'
+fresh_rc=0
+FAKE_OWNER="$owner1" RELEASE_MODE=timeout "$BASH" "$release_helper" \
+  release --repo org/fresh-release --kind leave --generation "$fresh_old_token" \
+  >"$tmp/fresh-release.out" 2>"$tmp/fresh-release.err" || fresh_rc=$?
+check 20 "$fresh_rc" 'two lock timeouts leave a release pending'
+check "$fresh_old_token" "$(jq -r .generation "$fresh_receipt")" 'the helper saved the receipt before the locked write'
+unset LEAVE_RELEASE_RECEIPTS
+check 'false|true|' "$(leave_gate "$owner2" org/fresh-release)" 'a different live owner cannot reclaim the abandoned generation'
+fresh_result="$(leave_gate "$owner1" org/fresh-release)"
+check 'true|false' "${fresh_result%|*}" 'a fresh same-owner attempt can open a new menu without carried shell state'
+fresh_new_token="${fresh_result##*|}"
+[[ "$fresh_new_token" =~ ^[0-9a-f]{32}$ && "$fresh_new_token" != "$fresh_old_token" ]] || exit 1
+check false "$([[ -e "$fresh_receipt" ]] && echo true || echo false)" 'the successful claim retires the old receipt'
+call "$owner1" release --repo org/fresh-release --kind leave --generation "$fresh_old_token"
+check 10 "$rc" 'the old token cannot release the fresh generation'
+check "$fresh_new_token" "$(read_slot org/fresh-release leave | jq -r .generation)" 'fresh reservation survives old release'
+
+# Simultaneous failures of both stores cannot create proof of abandonment.
+# Keep the token for this caller and preserve the slot for every fresh caller.
+call "$owner1" claim --repo org/dual-failure --kind leave
+dual_token="$out"
+receipt_store="$HOME/.claude/prompt-release-receipts"
+mv "$receipt_store" "$tmp/saved-release-receipts"
+: > "$receipt_store"
+(
+  export FAKE_OWNER="$owner1" RELEASE_MODE=timeout
+  REPO_KEY=org/dual-failure PROMPT_RESERVE_SH="$release_helper"
+  unset LEAVE_RELEASE_RECEIPTS
+  source "$tmp/leave-release"
+  if release_leave_prompt "$dual_token" 2>"$tmp/dual.err"; then exit 1; fi
+  [[ "$LEAVE_RELEASE_RECEIPTS" == "$REPO_KEY:$dual_token" ]] || exit 1
+  [[ "$(read_slot "$REPO_KEY" leave | jq -r .generation)" == "$dual_token" ]] || exit 1
+  unset LEAVE_RELEASE_RECEIPTS
+  [[ "$(leave_gate "$owner1" "$REPO_KEY")" == 'false|true|' ]] || exit 1
+  LEAVE_RELEASE_RECEIPTS="$REPO_KEY:$dual_token"
+  rm "$receipt_store"
+  mv "$tmp/saved-release-receipts" "$receipt_store"
+  export RELEASE_MODE=normal
+  release_leave_prompt "$dual_token"
+  [[ -z "$LEAVE_RELEASE_RECEIPTS" ]] || exit 1
+)
+check true "$(if grep -q 'could not persist release receipt' "$tmp/dual.err"; then echo true; else echo false; fi)" 'dual failure reports the missing durable receipt'
+check null "$(read_slot org/dual-failure leave)" 'the carried token recovers after both stores return'
 
 overrun_gate() (
   export FAKE_OWNER="$1"
