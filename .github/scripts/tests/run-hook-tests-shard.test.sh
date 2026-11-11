@@ -46,6 +46,16 @@ check "serial entries in the shards equal the unsharded serial count" '[ "$(( $(
 check "pool entries in the shards equal the unsharded pool count" '[ "$(( $(grep -c "^pool " "$TMP/s1") + $(grep -c "^pool " "$TMP/s2") ))" -eq "$(grep -c "^pool " "$TMP/all")" ]'
 
 # --shard 1/1 is the default.
+# Fail closed: when sort is broken, a sharded run refuses instead of running a short list.
+mkdir -p "$TMP/badbin"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/badbin/sort"; chmod +x "$TMP/badbin/sort"
+PATH="$TMP/badbin:$PATH" bash "$RUNNER" --list --shard 1/2 > "$TMP/bad.out" 2>"$TMP/bad.err"; RCB=$?
+check "a failing sort makes a sharded run exit non-zero" '[ "$RCB" -ne 0 ]'
+check "a failing sort lists no suites" '[ ! -s "$TMP/bad.out" ]'
+printf '#!/bin/sh\nhead -n 3\n' > "$TMP/badbin/sort"
+PATH="$TMP/badbin:$PATH" bash "$RUNNER" --list --shard 1/2 > "$TMP/short.out" 2>"$TMP/short.err"; RCS=$?
+check "a sort that drops lines makes a sharded run exit non-zero" '[ "$RCS" -ne 0 ]'
+
 # --json --list keeps stdout pure JSON, with the same entries as the plain list.
 bash "$RUNNER" --json --list --shard 1/2 > "$TMP/s1.json" 2>/dev/null; RCJ=$?
 check "--json --list exits 0" '[ "$RCJ" -eq 0 ]'

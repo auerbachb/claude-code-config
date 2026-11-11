@@ -356,7 +356,20 @@ shard_slice() {
   done
 }
 if [ "$SHARD_N" -gt 1 ]; then
-  SEL_LIST="$(printf '%s' "$POOL_SEL" | LC_ALL=C sort | shard_slice)"$'\n'"$(printf '%s' "$SERIAL_SEL" | LC_ALL=C sort | shard_slice)"$'\n'
+  # Fail closed: a sort that fails or drops lines would leave this shard with a short list, and a
+  # runner that skipped suites would still exit 0. Sort each list on its own, check the status
+  # and the line count against the unsorted list, and only then slice.
+  count_lines() { printf '%s\n' "$1" | grep -c . || true; }
+  POOL_SORTED="$(printf '%s' "$POOL_SEL" | LC_ALL=C sort)" \
+    || { echo "run-hook-tests: cannot sort the pool list for --shard" >&2; exit 2; }
+  SERIAL_SORTED="$(printf '%s' "$SERIAL_SEL" | LC_ALL=C sort)" \
+    || { echo "run-hook-tests: cannot sort the serial list for --shard" >&2; exit 2; }
+  if [ "$(count_lines "$POOL_SORTED")" != "$(count_lines "$POOL_SEL")" ] \
+     || [ "$(count_lines "$SERIAL_SORTED")" != "$(count_lines "$SERIAL_SEL")" ]; then
+    echo "run-hook-tests: sorted suite list lost entries; refusing to run a partial shard" >&2
+    exit 2
+  fi
+  SEL_LIST="$(printf '%s\n' "$POOL_SORTED" | shard_slice)"$'\n'"$(printf '%s\n' "$SERIAL_SORTED" | shard_slice)"$'\n'
 fi
 while IFS= read -r t; do
   [ -n "$t" ] || continue
