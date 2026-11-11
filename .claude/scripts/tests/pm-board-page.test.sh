@@ -165,6 +165,7 @@ class ProjectBoard(unittest.TestCase):
         first = self.execute("--expect-digest", "absent", payload=fixture())
         for model in ({"repo": FOREIGN, "rows": []},
                       {"repo": REPO, "rows": [row(51, "done")]},
+                      {"repo": REPO, "rows": [row(51, "done", outcome="closed")]},
                       {"repo": REPO, "rows": [row(51, ["invalid"])]}):
             self.execute("--expect-digest", first["digest"], payload=model, expect=2)
         self.assertEqual(self.execute("--current")["digest"], first["digest"])

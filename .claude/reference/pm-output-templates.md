@@ -286,9 +286,10 @@ turn's evidence. Obtain missing data only for the displayed rows.
 - A verified merge has `group:done`, `outcome:merged` and its merged PR
   number. A verified blocked result has `outcome:blocked`. Use `needs`
   when an owner action is required and point to `/desk` for decisions.
-  Use `done` for other terminal outcomes. A verified terminal result
-  replaces its older running or queued row. Deduplicate by issue after
-  scoping to the current repo.
+  Use `done` for a verified block that needs no owner action. Follow
+  `/board`'s exclusion of closed-unmerged work unless PM verified a
+  blocked outcome for it. A verified merge or block replaces its older
+  running or queued row. Deduplicate after scoping to the current repo.
 - For split work, use the tracked child set and verified parent links.
   Include the visible chain's confirmed merged children and other
   recorded children with their own states. Supply each child's integer
