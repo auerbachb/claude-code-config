@@ -28,6 +28,7 @@
 #   bash .github/scripts/run-hook-tests.sh            # human/CI folds (default)
 #   bash .github/scripts/run-hook-tests.sh --json     # compact result contract
 #   bash .github/scripts/run-hook-tests.sh --only-file <file>   # run only the selected suites
+#   bash .github/scripts/run-hook-tests.sh --jobs <n>           # concurrent suites (default: CPU count)
 #   bash .github/scripts/run-hook-tests.sh --help
 #
 # --only-file <file> (issue #2153): the file is the output of
@@ -36,6 +37,15 @@
 # comments. A file without the selector's `# end-of-selection` terminator was cut short
 # and runs ALL. An empty selection runs nothing and exits 0 with a summary that says so.
 # An unreadable file is a usage error (exit 2), never a silent full or empty run.
+#
+# Parallel pool (issue #2176): selected suites run side by side, at most --jobs at a time
+# (default: the CPU count; HOOK_TEST_JOBS overrides, --jobs wins). Each suite gets its own
+# $TMPDIR under this run's work directory, its own captured output, and a per-suite
+# timeout (HOOK_TEST_SUITE_TIMEOUT seconds, default 900). A suite that exceeds the timeout
+# has its whole process group killed and is reported as failed (rc 124). Every selected
+# suite runs exactly once. Suites listed in SERIAL_GROUP below cannot share the machine
+# with other suites; they run after the pool, one at a time. Output is reported in
+# discovery order, so the log and --json are the same shape whatever the concurrency.
 #
 # --json (issue #782): emits the compact result contract from
 # .claude/reference/compact-result-contract.md as the ONLY thing on stdout:
@@ -54,8 +64,9 @@
 #
 # Exit codes:
 #   0  every discovered suite passed
-#   1  one or more suites failed
-#   2  usage error (unknown flag, or an unreadable --only-file)
+#   1  one or more suites failed (including a suite killed by the per-suite timeout)
+#   2  usage error (unknown flag, bad --jobs / HOOK_TEST_JOBS / HOOK_TEST_SUITE_TIMEOUT,
+#      or an unreadable --only-file)
 #   3  discovery found no suites — a glob is broken (issue #681); never a silent green
 #
 # Not `set -e`: the loop deliberately runs every suite and aggregates failures
@@ -63,15 +74,31 @@
 set -uo pipefail
 shopt -s nullglob
 
+# Suites that cannot share the machine with other suites. They run after the parallel pool,
+# one at a time, still under the per-suite timeout. One repo-relative path per line.
+#  - silence-detector-time-dedupe: its hook keeps fixed /tmp/claude-*-<session-id> sentinels
+#    (by design: sentinels live in /tmp), and the suite primes and clears those exact names.
+#  - session-start-sync-publish-bounds: asserts wall-clock budgets (the ample-budget control
+#    in CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS) that concurrent load can break.
+SERIAL_GROUP="
+.claude/hooks/tests/silence-detector-time-dedupe.test.sh
+.claude/hooks/tests/session-start-sync-publish-bounds.test.sh
+"
+
 JSON=0
 ONLY_FILE=""
 ONLY_FILE_GIVEN=0   # distinguishes "--only-file given (maybe empty)" from "not given"
+JOBS_ARG=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
     --only-file)
       [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --only-file needs a path" >&2; exit 2; }
       ONLY_FILE="$2"; ONLY_FILE_GIVEN=1; shift 2
+      ;;
+    --jobs)
+      [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --jobs needs a count" >&2; exit 2; }
+      JOBS_ARG="$2"; shift 2
       ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -84,6 +111,21 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# Concurrency and per-suite timeout. A positive integer or a usage error: a typo must never
+# silently fall back to a different concurrency or an unbounded wait.
+is_positive_int() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ]; }
+if [ -n "$JOBS_ARG" ]; then
+  JOBS="$JOBS_ARG"
+elif [ -n "${HOOK_TEST_JOBS:-}" ]; then
+  JOBS="$HOOK_TEST_JOBS"
+else
+  JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  is_positive_int "$JOBS" || JOBS=2
+fi
+is_positive_int "$JOBS" || { echo "::error::run-hook-tests.sh: --jobs / HOOK_TEST_JOBS must be a positive integer: $JOBS" >&2; exit 2; }
+SUITE_TIMEOUT="${HOOK_TEST_SUITE_TIMEOUT:-900}"
+is_positive_int "$SUITE_TIMEOUT" || { echo "::error::run-hook-tests.sh: HOOK_TEST_SUITE_TIMEOUT must be a positive integer of seconds: $SUITE_TIMEOUT" >&2; exit 2; }
 
 # Read the selection before the cd below, so a relative --only-file path still resolves
 # against the caller's directory.
@@ -137,16 +179,43 @@ LOG="$LOG_DIR/run-hook-tests-$(date -u +%s)-$$.log"
 # Every human-facing line goes to stderr in --json mode so stdout stays parseable.
 say() { if [ "$JSON" -eq 1 ]; then printf '%s\n' "$1" >&2; else printf '%s\n' "$1"; fi; }
 
-SUITE_OUT="$(mktemp "${TMPDIR:-/tmp}/run-hook-tests-suite-XXXXXX")"
-cleanup() { rm -f "$SUITE_OUT"; }
+# Per-run work directory: one slot per selected suite holds its captured output (out), its exit
+# code (rc, written last and atomically), and a private TMPDIR (tmp) so suites that mktemp
+# never collide. Removed on exit.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/run-hook-tests-work-XXXXXX")" || {
+  echo "::error::run-hook-tests.sh: cannot create the per-run work directory" >&2
+  exit 70
+}
+# On exit (including a TERM/INT from a cancelled CI job) stop every suite still running, so no
+# orphan keeps writing into the shared checkout, then remove the work directory. A suite is still
+# running when its slot has a pid file but no rc file.
+cleanup() {
+  local f p pids=""
+  for f in "$WORK"/*/pid; do
+    [ -f "$f" ] || continue
+    [ -f "${f%/pid}/rc" ] && continue
+    p="$(cat -- "$f")"
+    [ -n "$p" ] || continue
+    pids="$pids $p"
+    { kill -TERM -- "-$p"; kill_tree "$p" TERM; } 2>/dev/null
+  done
+  if [ -n "$pids" ]; then
+    sleep 1
+    for p in $pids; do { kill -KILL -- "-$p"; kill_tree "$p" KILL; } 2>/dev/null; done
+  fi
+  rm -rf "$WORK"
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-failed=0
-total=0
+# Discovery. SUITE_PATH is indexed by slot (the selected-suite position, in discovery order).
 discovered=0
 skipped=0
-FAILED_LIST=""
-RELEVANT=""
+n=0
+SUITE_PATH=()
+POOL_SLOTS=()
+SERIAL_SLOTS=()
 for t in .claude/hooks/tests/*.test.sh \
          .claude/scripts/tests/*.test.sh \
          .github/scripts/tests/*.test.sh \
@@ -156,35 +225,142 @@ for t in .claude/hooks/tests/*.test.sh \
     skipped=$((skipped + 1))
     continue
   fi
-  total=$((total + 1))
-  rc=0
-  # Parse-check BEFORE running (issue #1675). A suite that does not parse still
-  # executes every complete command ahead of the fault and then aborts, so its
-  # capture ends on whatever it happened to print last — and the reporting below
-  # (and `relevant_error`) names that line as the failure. The real cause, a
-  # syntax error, never appears. `bash -n` turns that into a parse failure that
-  # names itself, and it runs under the same PATH-resolved bash the suite would
-  # have run under, so a version-specific parse fault is caught on the platform
-  # that actually has it.
-  if SYNTAX_ERR="$(bash -n "$t" 2>&1)"; then
-    bash "$t" >"$SUITE_OUT" 2>&1 || rc=$?
+  SUITE_PATH[n]="$t"
+  if grep -Fxq -- "$t" <<<"$SERIAL_GROUP"; then
+    SERIAL_SLOTS[${#SERIAL_SLOTS[@]}]="$n"
+  else
+    POOL_SLOTS[${#POOL_SLOTS[@]}]="$n"
+  fi
+  n=$((n + 1))
+done
+total=$n
+
+# run_suite <slot> <path>: runs in a background subshell. Parse-checks the suite, runs it with
+# its own TMPDIR and stdin closed, and records the exit code last (its presence means "finished").
+run_suite() {
+  local slot="$1" t="$2" d="$WORK/$1" rc=0 syn=""
+  mkdir -p "$d/tmp" || { printf '%s\n' 70 > "$d/rc"; return 0; }
+  if syn="$(bash -n "$t" 2>&1)"; then
+    TMPDIR="$d/tmp" bash "$t" </dev/null >"$d/out" 2>&1 || rc=$?
   else
     rc=2
-    printf 'ERROR: %s does not parse — `bash -n` rejected it, so the suite never ran:\n%s\n' \
-      "$t" "$SYNTAX_ERR" >"$SUITE_OUT"
+    printf "ERROR: %s does not parse — \`bash -n\` rejected it, so the suite never ran:\n%s\n" \
+      "$t" "$syn" >"$d/out"
   fi
+  printf '%s\n' "$rc" > "$d/rc.tmp" && mv "$d/rc.tmp" "$d/rc"
+}
+
+# kill_tree <pid> <signal>: signals a process's descendants first, then the process itself.
+# Walks pgrep -P, so it works even where job control could not give the job its own group.
+kill_tree() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c" "$2"; done
+  kill "-$2" "$1" 2>/dev/null
+  return 0
+}
+
+# kill_group <pid>: TERM, a grace second, then KILL the job's whole process group and tree.
+# Job control gives each background job its own group, so the suite's children die with it.
+kill_group() {
+  {
+    kill -TERM -- "-$1"
+    kill_tree "$1" TERM
+    sleep 1
+    kill -KILL -- "-$1"
+    kill_tree "$1" KILL
+  } 2>/dev/null
+  return 0
+}
+
+# start_suite <slot>: launches one suite in its own process group; sets LAUNCHED_PID. The
+# subshell's stderr is discarded: the suite's own output is captured to its out file, and
+# bash's "child setpgid" notice (no controlling terminal) is job-control noise, not a result.
+start_suite() {
+  mkdir -p "$WORK/$1" || return 1
+  set -m
+  ( run_suite "$1" "${SUITE_PATH[$1]}" ) 2>/dev/null &
+  LAUNCHED_PID=$!
+  set +m
+  printf '%s\n' "$LAUNCHED_PID" > "$WORK/$1/pid"
+}
+
+# run_pool <concurrency> <slot...>: keeps at most <concurrency> suites running until every given
+# slot has an rc file. A suite past the timeout is killed and recorded as rc 124.
+run_pool() {
+  local conc="$1"; shift
+  local -a queue=("$@")
+  local nq="$#" next=0
+  local -a act_slot=() act_pid=() act_start=()
+  local -a keep_slot=() keep_pid=() keep_start=()
+  local k i p s now
+  while :; do
+    now="$(date +%s)"
+    keep_slot=(); keep_pid=(); keep_start=()
+    k=0
+    while [ "$k" -lt "${#act_slot[@]}" ]; do
+      i="${act_slot[$k]}"; p="${act_pid[$k]}"; s="${act_start[$k]}"
+      k=$((k + 1))
+      if [ -f "$WORK/$i/rc" ]; then
+        wait "$p" 2>/dev/null
+        continue
+      fi
+      if [ $((now - s)) -ge "$SUITE_TIMEOUT" ]; then
+        kill_group "$p"
+        wait "$p" 2>/dev/null
+        printf 'ERROR: %s exceeded the per-suite timeout (%ss) and was killed\n' \
+          "${SUITE_PATH[$i]}" "$SUITE_TIMEOUT" >> "$WORK/$i/out"
+        printf '%s\n' 124 > "$WORK/$i/rc"
+        continue
+      fi
+      keep_slot[${#keep_slot[@]}]="$i"
+      keep_pid[${#keep_pid[@]}]="$p"
+      keep_start[${#keep_start[@]}]="$s"
+    done
+    act_slot=(${keep_slot[@]+"${keep_slot[@]}"})
+    act_pid=(${keep_pid[@]+"${keep_pid[@]}"})
+    act_start=(${keep_start[@]+"${keep_start[@]}"})
+
+    while [ "${#act_slot[@]}" -lt "$conc" ] && [ "$next" -lt "$nq" ]; do
+      i="${queue[$next]}"
+      start_suite "$i" || { echo "::error::run-hook-tests.sh: cannot start suite slot $i" >&2; exit 70; }
+      act_slot[${#act_slot[@]}]="$i"
+      act_pid[${#act_pid[@]}]="$LAUNCHED_PID"
+      act_start[${#act_start[@]}]="$(date +%s)"
+      next=$((next + 1))
+    done
+
+    [ "${#act_slot[@]}" -gt 0 ] || break
+    sleep 0.2
+  done
+}
+
+# The pool first (bounded concurrency), then the serial group one at a time.
+run_pool "$JOBS" ${POOL_SLOTS[@]+"${POOL_SLOTS[@]}"}
+run_pool 1 ${SERIAL_SLOTS[@]+"${SERIAL_SLOTS[@]}"}
+
+failed=0
+FAILED_LIST=""
+RELEVANT=""
+slot=0
+while [ "$slot" -lt "$total" ]; do
+  t="${SUITE_PATH[$slot]}"
+  d="$WORK/$slot"
+  rc="$(cat -- "$d/rc" 2>/dev/null)"
+  [ -n "$rc" ] || rc=70
+  SUITE_OUT="$d/out"
+  slot=$((slot + 1))
 
   # The full capture always reaches the log, pass or fail, in both modes.
   {
     printf '===== %s (rc=%s) =====\n' "$t" "$rc"
-    cat "$SUITE_OUT"
+    cat "$SUITE_OUT" 2>/dev/null
     printf '\n'
   } >> "$LOG"
 
   if [ "$rc" -eq 0 ]; then
     if [ "$JSON" -eq 0 ]; then
       printf '::group::%s\n' "$t"
-      cat "$SUITE_OUT"
+      cat "$SUITE_OUT" 2>/dev/null
       printf 'PASS: %s\n' "$t"
       printf '::endgroup::\n'
     fi
@@ -192,13 +368,13 @@ for t in .claude/hooks/tests/*.test.sh \
     # Failures print in full in BOTH modes — compaction never hides a red test.
     if [ "$JSON" -eq 0 ]; then
       printf '::group::%s\n' "$t"
-      cat "$SUITE_OUT"
+      cat "$SUITE_OUT" 2>/dev/null
       printf '::endgroup::\n'
       printf '::error::FAIL (rc=%s): %s\n' "$rc" "$t"
     else
       {
         printf '::group::FAIL %s (rc=%s)\n' "$t" "$rc"
-        cat "$SUITE_OUT"
+        cat "$SUITE_OUT" 2>/dev/null
         printf '::endgroup::\n'
       } >&2
     fi
