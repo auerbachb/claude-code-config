@@ -205,6 +205,48 @@ check_eq "reset advances inline watermark" "305" "$(jq -r '.last_inline_comment_
 OUT2="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
 check_eq "clean after reset on ack-only comments" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT2")"
 
+echo "== Verified audit preserves a finding arriving after the final fixpr snapshot =="
+AUDIT="$TMP/verified-audit.json"
+jq --argjson pr "$PR" '. + {
+  pr:{number:$pr,owner:"auerbachb",repo:"claude-code-config",state:"OPEN",
+      head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  threads:{unresolved_count:0},new_since_baseline:{finding_count:0}
+}' "$STATE_JSON" > "$AUDIT"
+# Only this read is permitted on the audited path. pr-state still reads the
+# live fixture for the subsequent poll, where the new finding must be visible.
+gh() { [[ "$1 $2" == "repo view" ]] && printf '%s\n' "$CLAUDE_SESSION_REPO"; }
+export -f gh
+write_fixture "$(jq -c '.comments.inline += [
+  {id:306,user:{login:"cursor[bot]"},body:"critical bug: validation is missing"}
+]' "$AUDIT")"
+seed_state '{"last_review_id":100,"last_inline_comment_id":200,"last_issue_comment_id":50}'
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --reset --audit-file "$AUDIT")"
+check_eq "audited reset advances only to the verified inline ID" 305 "$(jq -r '.last_inline_comment_id' <<<"$OUT")"
+check_eq "audited reset retains a newer watermark for another endpoint" 50 "$(jq -r '.last_issue_comment_id' <<<"$OUT")"
+OUT2="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
+check_eq "late finding remains new at the next poll" NEW_INLINE_FINDINGS=1 "$(sed -n '3p' <<<"$OUT2")"
+
+for invalid in wrong_repo wrong_pr unreviewed; do
+  case "$invalid" in
+    wrong_repo) edit='.pr.owner = "other"' ;;
+    wrong_pr) edit='.pr.number += 1' ;;
+    unreviewed) edit='.new_since_baseline.finding_count = 1' ;;
+  esac
+  jq "$edit" "$AUDIT" > "$TMP/invalid-audit.json"
+  rc=0
+  (cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --reset --audit-file "$TMP/invalid-audit.json")     > "$TMP/invalid-audit.out" 2> "$TMP/invalid-audit.err" || rc=$?
+  check_eq "$invalid audit is rejected" 4 "$rc"
+done
+STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
+check_eq "invalid audits leave the verified boundary intact" 305 "$(jq -r '.last_inline_comment_id' <<<"$STORED_AFTER")"
+
+# A deliberate live baseline includes the later ID, reproducing the old
+# automatic reset sequence against the same fixture.
+OUT="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --reset)"
+check_eq "live baseline includes the newly arrived finding" 306 "$(jq -r '.last_inline_comment_id' <<<"$OUT")"
+OUT2="$(cd "$REPO_ROOT" && "$BASH" "$POLL_WM" "$PR" --check)"
+check_eq "old live reset sequence suppresses the late finding" NEW_INLINE_FINDINGS=0 "$(sed -n '3p' <<<"$OUT2")"
+
 echo "== Scenario 6: CodeAnt review-status table is NOT a finding (issue #1207) =="
 # Reproduces the exact failure mode: poll-watermarks.sh --check reported
 # NEW_ISSUE_COMMENT_FINDINGS=1 for a CodeAnt status comment (with the

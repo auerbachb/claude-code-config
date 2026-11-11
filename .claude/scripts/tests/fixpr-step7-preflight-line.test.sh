@@ -93,6 +93,31 @@ check_eq "empty reviewers object → unreadable (no vacuous 'all 0 engaged')" "$
 check_eq "a reviewer with no status → unreadable" "$UNREADABLE" \
   "$(render '{"clean":true,"draft_action":"not-draft","reviewers":{"codeant":{}}}')"
 
+# The final fixpr block forwards the verified file and never snapshots again.
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+WATERMARK_BLOCK=$(extract_skill_bash "$FIXPR" fixpr-verified-watermarks) || exit 1
+export VERIFY="$TMP/verified-audit.json" PR_NUMBER=11 HEAD_SHA=older PUSHED_SHA=current DID_PUSH=1
+export WATERMARK_STUB="$TMP/poll-watermarks.sh"
+cat > "$WATERMARK_STUB" <<'SH'
+#!/usr/bin/env bash
+[[ "$1" == 11 && "$2" == --reset && "$3" == --audit-file && "$4" == "$VERIFY" ]] || exit 1
+: > "$VERIFY.used"
+SH
+chmod +x "$WATERMARK_STUB"
+resolve_script() { [[ "$1" == poll-watermarks.sh ]] && printf '%s\n' "$WATERMARK_STUB"; }
+export -f resolve_script
+printf '%s\n' '{"pr":{"head_sha":"current"},"threads":{"unresolved_count":0},"new_since_baseline":{"finding_count":0}}' > "$VERIFY"
+bash -c "$WATERMARK_BLOCK"
+check_eq "verified current audit is passed intact" yes "$( [[ -f "$VERIFY.used" ]] && echo yes || echo no )"
+rm -f "$VERIFY.used"
+PUSHED_SHA=other bash -c "$WATERMARK_BLOCK"
+check_eq "changed HEAD cannot advance the watermark" no "$( [[ -f "$VERIFY.used" ]] && echo yes || echo no )"
+jq '.new_since_baseline.finding_count=1' "$VERIFY" > "$TMP/with-finding"
+mv "$TMP/with-finding" "$VERIFY"
+bash -c "$WATERMARK_BLOCK"
+check_eq "a new finding keeps the old watermark" no "$( [[ -f "$VERIFY.used" ]] && echo yes || echo no )"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]]
