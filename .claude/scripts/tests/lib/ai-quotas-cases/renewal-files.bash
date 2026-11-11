@@ -155,7 +155,10 @@ check_eq "$(printf '%s' "$COMBINED" | grep -cE 'sk-ant|eyJ|refresh_token=' || tr
 # `"${VAR}"` — the same leak, spelled differently, which is exactly how a
 # guard stops guarding.
 ARGV_PAT='--arg(json)?[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"?\$\{?(CLAUDE_TOKEN|CLAUDE_REFRESH_TOKEN|CLAUDE_CRED_PRIOR_ACCESS|CURSOR_TOKEN)\}?"?'
-if ! ARGV_LEAKS="$(argv_scan -n < "$SCRIPT")"; then ARGV_LEAKS=ARGV_SCAN_FAILED; fi
+READER_LIB="${SCRIPT%/*}/lib"
+if ! ARGV_LEAKS="$(cat "$SCRIPT" "$READER_LIB"/ai-quotas-{claude,codex,cursor,forecast,report}.sh | argv_scan -n)"; then
+  ARGV_LEAKS=ARGV_SCAN_FAILED
+fi
 check_eq "$ARGV_LEAKS" "" \
   "no credential global is passed to jq with --arg/--argjson, which would put it in argv"
 
@@ -248,7 +251,7 @@ check_not_contains "$COMBINED" "$CLAUDE_REFRESH_SECRET" \
 # The clear itself is in-process state, so the only level at which it is
 # observable is the source. Asserted on the IDENTIFIER, not on any prose: a
 # refactor that drops the call is what this catches.
-TOKEN_FOR_BODY="$(awk '/^claude_token_for\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$SCRIPT")"
+TOKEN_FOR_BODY="$(awk '/^claude_token_for\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$READER_LIB/ai-quotas-claude.sh")"
 # Anchored to the CALL shape — a bare identifier on its own line. A plain
 # substring match is satisfied by the comment above the call, so a refactor
 # that deleted the call and left the comment would still pass.
