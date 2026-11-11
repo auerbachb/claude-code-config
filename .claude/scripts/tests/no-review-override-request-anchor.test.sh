@@ -78,19 +78,31 @@ expect_eq "no request: request_ts null" "$(jq -r .request_ts <<<"$out")" "null"
 
 # --- 2. Request after slow CI: window starts at the request, not the push ---
 c=$(comment solo $((NOW - 300)) "@codeant-ai review")
+before=$(date -u +%s)
 out=$(run_helper "$(payload "[$c]")")
+after=$(date -u +%s)
 expect_eq "request after slow CI: anchor_source" "$(jq -r .anchor_source <<<"$out")" "review_request"
 expect_eq "request after slow CI: head_anchor_ts is the request" "$(jq -r .head_anchor_ts <<<"$out")" "$(iso $((NOW - 300)))"
 expect_eq "request after slow CI: request_ts" "$(jq -r .request_ts <<<"$out")" "$(iso $((NOW - 300)))"
 expect_eq "request after slow CI: window still running" "$(jq -r .reason <<<"$out")" "window_running"
 expect_eq "request after slow CI: not applied" "$(jq -r .applied <<<"$out")" "false"
 el=$(jq -r .elapsed_seconds <<<"$out")
-if (( el >= 299 && el <= 310 )); then ok "request after slow CI: elapsed from request (${el}s)"; else bad "request after slow CI: elapsed" "got $el want about 300"; fi
+if (( el >= 300 + before - NOW && el <= 300 + after - NOW )); then ok "request after slow CI: elapsed from request (${el}s)"; else bad "request after slow CI: elapsed" "got $el want $((300 + before - NOW))..$((300 + after - NOW))"; fi
 
 # --- 3. Full-review spelling and surrounding whitespace match ---
 c=$(comment solo $((NOW - 300)) "   @coderabbitai full review  ")
 out=$(run_helper "$(payload "[$c]")")
 expect_eq "full review trigger counts" "$(jq -r .anchor_source <<<"$out")" "review_request"
+
+# `full` is CodeRabbit's spelling only: `@codeant-ai full review` is not a request,
+# so it must not anchor the window ahead of a later valid one.
+c1=$(comment solo $((NOW - 900)) "@codeant-ai full review")
+c2=$(comment solo $((NOW - 120)) "@codeant-ai review")
+out=$(run_helper "$(payload "[$c1,$c2]")")
+expect_eq "codeant 'full review' is not a request: valid request anchors" "$(jq -r .head_anchor_ts <<<"$out")" "$(iso $((NOW - 120)))"
+expect_eq "codeant 'full review' is not a request: not applied" "$(jq -r .applied <<<"$out")" "false"
+out=$(run_helper "$(payload "[$c1]")")
+expect_eq "codeant 'full review' alone: push anchor" "$(jq -r .request_ts <<<"$out")" "null"
 
 # --- 4. Two requests on one HEAD: the first wins, later ones never extend ---
 c1=$(comment solo $((NOW - 400)) "@codeant-ai review")

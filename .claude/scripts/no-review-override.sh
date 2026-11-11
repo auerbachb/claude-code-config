@@ -304,6 +304,7 @@ ANCHOR_ERR=$(printf '%s' "$ANCHOR" | jq -r '.error // ""')
 # 4. Review-request stage (issue #2194). The wait runs from the first review
 # request on HEAD, not from the push. A request is a comment BY THE PR AUTHOR
 # that is a whole line `@codeant-ai review` or `@coderabbitai [full ]review`
+# (`full` is CodeRabbit's spelling only; `@codeant-ai full review` is no request)
 # (the harness's own trigger scripts post as the author too). It counts only
 # when posted at or after the push anchor above, so a request made on an older
 # HEAD never anchors this one. The FIRST such request wins: a later request
@@ -320,7 +321,7 @@ PUSH_T=$(printf '%s' "$ANCHOR" | jq -c '.t')
 REQUEST=$(printf '%s' "$PAYLOAD" | jq -c --arg author "$PR_AUTHOR" --argjson base "$PUSH_T" "$JQ_DEFS"'
   [ (.issue_comments // [])[]?
     | select((.user.login // "") == $author)
-    | select((.body // "") | split("\n") | any(test("^[ \t]*@(codeant-ai|coderabbitai)[ \t]+(full[ \t]+)?review[ \t]*\r?$"; "i")))
+    | select((.body // "") | split("\n") | any(test("^[ \t]*(@codeant-ai[ \t]+review|@coderabbitai[ \t]+(full[ \t]+)?review)[ \t]*\r?$"; "i")))
     | {raw: (.created_at // null),
        t: ([(.created_at | ts), ((.updated_at // .created_at) | ts)]
            | if any(. == null) then null else max end)} ] as $all
