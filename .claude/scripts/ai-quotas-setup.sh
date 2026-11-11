@@ -1598,35 +1598,41 @@ require_schedule_home() { # <operation>
   die 5 "HOME is unset, and every schedule path — the LaunchAgent, its log, the history file — derives from it; refusing to aim a per-user job at a system path. Set HOME and re-run 'schedule $1'."
 }
 
-# The path that goes INTO the plist. It has to outlive this checkout: a plist
-# pointing into a worktree keeps working until the worktree is removed and then
-# fails every night, logging to a file nobody reads. So the durable
-# ~/.claude/ locations are preferred over the sibling copy, and choosing the
-# sibling is said out loud rather than assumed to be fine.
+# Only readers that advertise the offline check understand its environment
+# switch. Keep older standalone readers and explicit legacy wrappers working.
+reader_is_schedulable() {
+  [[ -f "$1" && -x "$1" ]] || return 1
+  if grep -Fqx '# quota-reader-install-check-v1' "$1" 2>/dev/null; then
+    AI_QUOTAS_CHECK_INSTALL=1 "$1" >/dev/null || return 1
+  fi
+}
+
+# Prefer the durable installed layouts. Only use a checkout path with a warning
+# because removing its worktree also removes the scheduled reader.
 resolve_reader_bin() {
   local candidate
   if [[ -n "${AI_QUOTAS_READER_BIN:-}" ]]; then
-    # Used EXCLUSIVELY when set — no fall-through to the search. A seam that
-    # falls back finds the repo copy through the sibling candidate whenever
-    # the caller stands in a checkout, which is the only place the suite runs,
-    # so the "reader unresolvable" path could never be exercised.
-    if [[ -x "$AI_QUOTAS_READER_BIN" ]]; then
-      printf '%s' "$AI_QUOTAS_READER_BIN"
-      return 0
-    fi
-    die 5 "AI_QUOTAS_READER_BIN names '${AI_QUOTAS_READER_BIN}', which is not executable — refusing to schedule a job that cannot run"
+    # An explicit override is exclusive, including when its package is broken.
+    [[ -x "$AI_QUOTAS_READER_BIN" ]] ||
+      die 5 "AI_QUOTAS_READER_BIN names '${AI_QUOTAS_READER_BIN}', which is not executable — refusing to schedule a job that cannot run"
+    reader_is_schedulable "$AI_QUOTAS_READER_BIN" ||
+      die 5 "AI_QUOTAS_READER_BIN names a reader that failed its install check — no job was scheduled"
+    printf '%s' "$AI_QUOTAS_READER_BIN"
+    return 0
   fi
   for candidate in \
     "${_HOME}/.claude/skills-worktree/.claude/scripts/ai-quotas.sh" \
-    "${_HOME}/.claude/scripts/ai-quotas.sh"; do
-    if [[ -x "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
+    "${_HOME}/.claude/scripts/ai-quotas.sh" \
+    "$SELF_DIR/ai-quotas.sh"; do
+    if reader_is_schedulable "$candidate"; then
+      if [[ "$candidate" == "$SELF_DIR/ai-quotas.sh" ]]; then
+        echo "${SELF_NAME}: scheduling the reader at $candidate — the durable copies under ~/.claude/ are unavailable, and a job pointing into a checkout stops working the day that checkout is removed. Re-run 'schedule install' once the skills worktree is in place." >&2
+      fi
+      printf '%s' "$candidate"
+      return 0
+    fi
   done
-  if [[ -x "$SELF_DIR/ai-quotas.sh" ]]; then
-    echo "${SELF_NAME}: scheduling the reader at $SELF_DIR/ai-quotas.sh — the durable copies under ~/.claude/ are not there yet, and a job pointing into a checkout stops working the day that checkout is removed. Re-run 'schedule install' once the skills worktree is in place." >&2
-    printf '%s' "$SELF_DIR/ai-quotas.sh"
-    return 0
-  fi
-  die 5 "ai-quotas.sh not found (checked ~/.claude/skills-worktree/.claude/scripts, ~/.claude/scripts, and $SELF_DIR) — nothing to schedule"
+  die 5 "no runnable ai-quotas.sh found (checked ~/.claude/skills-worktree/.claude/scripts, ~/.claude/scripts, and $SELF_DIR) — nothing to schedule"
 }
 
 # `&` first: escaping it after `<` would re-escape the ampersand this function

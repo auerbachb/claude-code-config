@@ -72,7 +72,7 @@
 # can disambiguate matrix jobs that share a `name`. Synthesized "no check-runs
 # reported yet" sentinels have id: null.
 #
-# Output (summary, one line):
+# Output (summary, with an extra line if checks were cancelled):
 #   CI: <passing>/<total> passed, <failing> failing (names), <in_progress> in progress (names)
 #
 # Exit codes:
@@ -260,7 +260,8 @@ fi
 # check counts as currently blocking, and this script reports a commit as failing
 # that GitHub's own merge box shows as green (issue #675). Applies to both input
 # paths: the stdin caller hands us its raw fetch, same as the live fetch above.
-CHECK_RUNS_DEDUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-runs-dedup.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHECK_RUNS_DEDUP="$SCRIPT_DIR/check-runs-dedup.sh"
 if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
@@ -293,22 +294,21 @@ fi
 # downstream `/merge` / `/wrap` callers will proceed as if CI passed when no
 # checks have even started. Surface total==0 as in_progress in the JSON AND
 # via exit 1, not just implicitly via exit 0.
-SPLIT=$(echo "$RUNS_JSON" | jq -c --arg head_sha "$HEAD_SHA" '
-  # Whitelist of what does NOT block (issue #1846), so an unknown or missing
-  # conclusion fails closed. The explicit blocking set in the file header is a subset
-  # of what this rejects; it documents the known values and is not the test.
-  def non_blocking: . == "success" or . == "neutral" or . == "skipped" or . == "cancelled";
-  def is_blocking: non_blocking | not;
+SPLIT=$(printf '%s\n' "$RUNS_JSON" | jq -c -L "$SCRIPT_DIR/lib" --arg head_sha "$HEAD_SHA" '
+  include "check-run-conclusions";
   . as $runs
-  | ([$runs[] | select(.status != "completed")]) as $incomplete
+  | ([$runs[] | select(completed_check | not)]) as $incomplete
+  | ([$runs[] | select(completed_check and (.conclusion | optional_check_passes))]) as $passing
+  | ([$runs[] | select(completed_check and (.conclusion | optional_check_passes | not))]) as $failing
   | {
     head_sha: $head_sha,
     total: ($runs | length),
-    passing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking | not))] | length),
-    failing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking))] | length),
+    passing: ($passing | length),
+    failing: ($failing | length),
     in_progress: (($incomplete | length) + (if ($runs | length) == 0 then 1 else 0 end)),
-    blocking: [$runs[] | select(.status == "completed" and (.conclusion | is_blocking)) | {id, name, conclusion: (.conclusion // "none")}],
-    in_progress_runs: (($incomplete | map({id, name, status})) + (if ($runs | length) == 0 then [{id: null, name: "(no check-runs reported yet)", status: "queued"}] else [] end))
+    blocking: [$failing[] | {id, name, conclusion: (.conclusion // "none")}],
+    in_progress_runs: (($incomplete | map({id, name, status})) + (if ($runs | length) == 0 then [{id: null, name: "(no check-runs reported yet)", status: "queued"}] else [] end)),
+    cancelled_runs: [$passing[] | select(.conclusion == "cancelled") | {id, name}]
   }
 ' 2>/dev/null)
 
@@ -336,6 +336,10 @@ if [[ "$FORMAT" == "summary" ]]; then
     LINE="$LINE, $IN_PROGRESS in progress ($IN_PROG_NAMES)"
   fi
   echo "$LINE"
+  CANCELLED_NAMES=$(printf '%s\n' "$SPLIT" | jq -r '.cancelled_runs | map(.name) | join(", ")')
+  if [[ -n "$CANCELLED_NAMES" ]]; then
+    printf 'Cancelled checks: %s. Use merge-gate.sh to verify whether any are required.\n' "$CANCELLED_NAMES"
+  fi
 else
   echo "$SPLIT"
 fi

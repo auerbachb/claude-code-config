@@ -331,7 +331,7 @@ Registered on **`PreToolUse`** with matcher **`AskUserQuestion`** and a 15 s tim
 - Finds `HUMAN_QUEUE_DATABASE_URL` even when the app's environment lacks it: from an owner-only `~/.config/human-queue/database_url`, else a literal `export` line in the shell profile (read, never run). Never prints it.
 - **Fails open:** any failure (no URL, store unreachable, CLI missing, timeout, bad input) allows the menu with one `human-queue-capture:` line on stderr. Always exits `0`.
 
-**Contract:** `desk/README.md`, "Capture hook". **Tests:** `desk/tests/capture-offline.test.sh` (offline, CI) and `desk/tests/capture.test.sh` (live, throwaway schema).
+**Contract:** [Capture hook](../../desk/docs/capture-hook.md). **Tests:** `desk/tests/capture-offline.test.sh` (offline, CI) and `desk/tests/capture.test.sh` (live, throwaway schema).
 
 ---
 

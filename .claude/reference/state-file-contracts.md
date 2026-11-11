@@ -201,6 +201,20 @@ is most often got wrong — step 1's *only when*:
    the signpost that says so. A reader who finds a number there is looking at corruption, not at a
    second source of truth.
 
+#### PM run receipts
+
+`pm-run-receipt.sh` owns `.repos["<key>"].pm_receipts["<session>"]`.
+It keeps up to 20 recent receipts per repo, with one latest invocation per
+known dispatcher. A start compares and updates the repo's receipt map under
+the state lock.
+A step write compares the exact `run_id` and an absent finish stamp in the
+same transaction, preserving marks for other steps. An invocation with no
+session ID uses its run ID as the slot key and prints a diagnostic at start.
+Readers use the explicit repo path outside `--session-view`.
+Reasons are bounded and single-line. Keep secrets out of reasons because the
+state helper logs writes. A missing mark means the outcome was unrecorded.
+The common exit seals the run before rendering it.
+
 #### Round membership: `.repos["<key>"].rounds["<session>"]` (issues #1604, #1712)
 
 The old repo-level singleton prevented write races but still let a second

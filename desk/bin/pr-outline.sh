@@ -3,7 +3,7 @@
 # with context (issue #1768): the desk's drill-down below level 3. Files,
 # hunks, and the tests that touch them get numbers the operator can point
 # at ("open R-12 2.3"); nothing is stored, and the outline is rebuilt from
-# GitHub on every call. Contract: desk/README.md "PR drill-down"; skill:
+# GitHub on every call. Contract: desk/docs/pr-drill-down.md; skill:
 # desk/skill/drilldown.md.
 # catalog: utilities — Human-queue PR drill-down (`desk/bin/pr-outline.sh`): prints a PR's numbered outline (files, hunks, the tests touching each, with line counts) or opens nodes of it (a hunk with twenty lines of context, a whole file's patch); read-only, rebuilt on every call
 #

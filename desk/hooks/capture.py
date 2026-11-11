@@ -1,7 +1,7 @@
 """desk/hooks/capture.py — the capture hook's logic (issue #1755).
 
 Run by capture.sh (registered as .claude/hooks/human-queue-capture.sh, a
-PreToolUse hook with matcher AskUserQuestion). desk/README.md, "Capture hook",
+PreToolUse hook with matcher AskUserQuestion). desk/docs/capture-hook.md
 is the contract; this docstring is the summary.
 
   stdin   the hook input: {"session_id", "cwd", "tool_name",
@@ -86,7 +86,7 @@ TOTAL_BUDGET_S = 12.0
 CALL_TIMEOUT_S = 6.0
 GIT_TIMEOUT_S = 2.0
 
-# Store limits (desk/README.md, Items). Capped in UTF-8 bytes, so they hold
+# Store limits (desk/docs/items.md). Capped in UTF-8 bytes, so they hold
 # whether the CLI counts characters or, in the C locale, bytes.
 MAX_QUESTION = 500
 MAX_OPTION = 500

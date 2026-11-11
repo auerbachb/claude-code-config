@@ -16,6 +16,9 @@ argument-hint: "[day | --run] (optional — continuous mode: this thread becomes
 
 > **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests and opted-in `/pm` reports retain tables and reports (3.3a). Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery. Required successor handoff/turnover prompts remain complete artifacts; minimal terminal output never suppresses continuation context.
 
+
+**Run receipt (#2161).** Each user invocation starts one receipt in Step 0 and ends with the [receipt block](#finish-the-invocation). The arming invocation includes its immediate day tick. Internal `--tick` and `--probe-wake` calls never start, mark, or render receipts. Retain the resolved helper, repository and literal run ID across Bash calls. At each step's end, record the observed `ran`, `skipped`, or `failed` outcome. Give an explicit reason for skips and failures. A step without an outcome remains `not recorded`. A mark records what the run reached.
+
 Active PM orchestrator. Manages which issues are being worked on across coding threads, tracks progress, and suggests next work.
 
 **Two entry modes, plus one posture that wraps either:**
@@ -36,7 +39,7 @@ Parse `$ARGUMENTS` in this order — day tokens first (so they never fall throug
   **Validate both as unsigned integers with `[[ "$v" =~ ^[0-9]+$ ]]` before range-checking**, and reject anything failing either test — naming the rejected input and falling back to the documented default. The pattern test is not belt-and-braces: both values are interpolated into 2D.2's `--set` JSON payload and into 2D.3's shell arithmetic, so `2.5` or `abc` does not merely produce a bad cadence, it writes a malformed `day` object into session state that every later read then fails on.
 - **Cleanup escape hatch:** if the remaining `$ARGUMENTS` contains the `--no-clean` flag or a bare `fast` token (its own whitespace-delimited word, e.g. `/pm fast`), set `NO_CLEAN=true` and strip that flag/token from the arguments before the checks below (so it is never read as a business goal); otherwise `NO_CLEAN=false`. `NO_CLEAN=true` suppresses the always-on Step 1C inline cleanup in **both** modes — see Step 1C.
 - **Window flag:** if the remaining `$ARGUMENTS` contains `--window` followed by a value, extract the complete value as `WINDOW_STR` and strip `--window <value>` from the arguments so it never falls through to the business goal. Empty `WINDOW_STR` means no window. Step 0b processes it. **Multi-word values must be quoted** (e.g. `--window "3 hours"`, `--window "until 5:00 PM"`) — an unquoted multi-word value will be split by the shell, leaving the first token as the value and the remaining words misread as part of the business goal.
-- **Mode:** if the remaining `$ARGUMENTS` contains "resume" or "handoff", enter Resume mode (Step 1A). Otherwise enter Cold Start mode (Step 1B). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
+- **Mode:** if the remaining `$ARGUMENTS` contains "resume" or "handoff", enter Resume mode (Step 1A, `PM_ENTRY_MODE=resume`). Otherwise enter Cold Start mode (Step 1B, `PM_ENTRY_MODE=cold`). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
 
 Day mode composes with everything above rather than replacing it: `/pm day` is a cold start that then keeps running, `/pm day resume` resumes and then keeps running, and `/pm day increase scraping throughput` carries that goal into every re-rank for the whole run.
 
@@ -81,13 +84,46 @@ USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 PM_REPORT_SH=$(resolve_script lib/pm-report.py || true)
 PM_STANDING_QUEUE_SH=$(resolve_script pm-standing-queue.sh || true)
+PM_RECEIPT_SH=$(resolve_script pm-run-receipt.sh || true)
+```
+
+
+Start the receipt before checking the remaining dependencies. Bind `PM_ENTRY_MODE`
+and the day flags from the invocation and retain the returned ID as `PM_RUN_ID`.
+
+<!-- test-anchor: pm-run-receipt-start -->
+```bash
+PM_RUN_ID=
+PM_RECEIPT_REPO=
+if [[ "${DAY_TICK:-false}" != true && "${DAY_PROBE_WAKE:-false}" != true &&
+      -n "${PM_RECEIPT_SH:-}" && -n "${SESSION_STATE_SH:-}" ]]; then
+  PM_RECEIPT_DAY=
+  [[ "${DAY_MODE:-false}" != true ]] || PM_RECEIPT_DAY=--day
+  if PM_RECEIPT_REPO=$("$SESSION_STATE_SH" --repo-key) && [[ -n "$PM_RECEIPT_REPO" ]]; then
+    PM_RUN_ID=$("$PM_RECEIPT_SH" --start --mode "$PM_ENTRY_MODE" \
+      --repo "$PM_RECEIPT_REPO" ${PM_RECEIPT_DAY:+--day}) || PM_RUN_ID=
+  fi
+fi
+```
+
+For each mark below, set `PM_STEP` and `PM_OUTCOME` from that step and set
+`PM_REASON` to its non-secret reason, or empty for `ran`. Use this block
+with the literal run ID from start. Receipt errors leave orchestration alone.
+
+<!-- test-anchor: pm-run-receipt-mark -->
+```bash
+if [[ "${DAY_TICK:-false}" != true && "${DAY_PROBE_WAKE:-false}" != true &&
+      -n "${PM_RUN_ID:-}" && -n "${PM_RECEIPT_SH:-}" ]]; then
+  "$PM_RECEIPT_SH" --mark "$PM_STEP" "$PM_OUTCOME" --run "$PM_RUN_ID" \
+    --repo "$PM_RECEIPT_REPO" ${PM_REASON:+--why} ${PM_REASON:+"$PM_REASON"} >/dev/null || :
+fi
 ```
 
 Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
 
 **When something does not resolve, say so in one line; never skip the contract silently.**
 
-- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip. The gate is what keeps inline-first work inline; a `/pm` that cannot read it is precisely the run that spawns one thread per ready issue (#1189), so refusing to offer is the safe failure.
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable`, mark `0 failed (missing chip-launching reference)`, and finish the invocation before offering any chip. The gate is what keeps inline-first work inline; a `/pm` that cannot read it is precisely the run that spawns one thread per ready issue (#1189), so refusing to offer is the safe failure.
 - `SESSION_STATE_SH` empty → **required for orchestration state**. Print `ERROR: session-state.sh not found (checked all three paths) — refill pause, slot tracking, and monitoring state unavailable`. Rank and report, but do not start or refill pipelines: without persisted state a "stop" the user set earlier is invisible, and silently resuming refill against it is the worst available failure.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped; issues may already be held by another thread` and continue.
 - `CANDIDATE_OWNERSHIP` empty → **optional**. Print `DEGRADED: candidate-ownership.sh not found (checked all three paths) — ownership sweep skipped; a candidate paused in another thread may be re-dispatched here` and fall back to claim-gate-only behavior for every candidate (1B.5, 3.4). **Never block dispatch on this** — the sweep exists to stop duplicate work, and a sweep that cannot run must not also stop the work it was meant to protect.
@@ -121,6 +157,10 @@ fi
 
 `CEILING` is the repo's `PIPELINE_CEILING` (`.claude/pm-config.md` `## Active work`; both modes are network-free), default 4. `LIMIT = min(CEILING, ACTIVE_WORK_CAP)` is what a launch actually fills to — the ceiling never raises the cap (`active-work-cap.md` §Subordination).
 
+
+Mark `0 ran` after resolving dependencies and setting the limits. An unavailable
+state helper follows the existing dispatch hold.
+
 ---
 
 ## Step 0a: Identify the current gh user
@@ -150,6 +190,8 @@ When the user asks "what should I work on?", prioritize in this order:
 4. **Unassigned issues you could claim** — backlog pickup
 
 If `gh api user` fails (no auth, network error), degrade gracefully: skip the user-scoped filters and fall back to the repo-wide views below. Note the fallback in the output so the user knows filtering is unavailable.
+
+Mark `0a ran` with `repo-wide fallback` when GitHub identity was unavailable.
 
 ---
 
@@ -210,6 +252,12 @@ Where `HH:MM ET` is `$(TZ='America/New_York' date -j -f '%s' "$DEADLINE_EPOCH" +
 # STALL_MARGIN_MIN: 60   # minutes reserved for reviewer idle time in unattended runs (default 60 for windows > 6 h, 0 otherwise)
 ```
 
+
+Mark `0b ran` after a requested window is parsed and persisted. Mark
+`0b skipped (no window requested)` when the original arguments had no window,
+`skipped (window helper unavailable)` when it was unavailable, or `failed`
+with the parse or persistence failure.
+
 ---
 
 ## Step 1A: Resume mode
@@ -228,7 +276,7 @@ Read existing orchestration state to continue where a previous PM thread left of
 LIST_RC=$?
 ```
 
-- If `LIST_RC == 2`: tell the user to run `/pm-handoff` first to bootstrap the config, then stop.
+- If `LIST_RC == 2`: tell the user to run `/pm-handoff` first to bootstrap the config, mark `1A failed (resume config unavailable)`, and finish the invocation.
 - Otherwise: enumerate sections and iterate for bodies:
 
   ```bash
@@ -373,6 +421,11 @@ fi
 Proceed with current assignments by default — the recovered pipelines keep running, and this step starts nothing new on its own. **Anything this thread does launch from here — a refill into free capacity (3.4), or a batch you re-prioritize into — follows the same inline-first default as the cold-start path:** claim and dispatch the inline-eligible issues via Step 3.1 up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`), queue the remainder, and report the launches rather than proposing them. Prompts and chips only for a named `/subagent` Step 4 disqualifier or an explicit ask (3.1). The refill posture recovered in 1A.2 — reported in item 4 above — decides whether the **automatic** side of that happens: paused means no refill launches until a human resumes, and a non-null scope narrows every candidate before ranking picks one. As in 1B.5, the pause binds autonomous launches only — a live in-chat `re-prioritize` or a request naming issues is the human acting, so it proceeds, and it does not on its own lift the pause for future refills.
 
 State: "Continuing with current assignments. Say 're-prioritize' to change strategy, or 'give me prompts instead' for prompt blocks rather than inline runs."
+
+
+Mark `1A ran` after recovering assignments and deciding how to continue. If the
+invocation carries on with existing work and starts nothing, mark
+`3.1 skipped (resume existing work)`. An actual launch records 3.1 in that step.
 
 Then proceed to **Step 2: Active Monitoring Setup** (resume mode restores passive tracking — see Step 2).
 
@@ -881,6 +934,11 @@ fi
 
 State, **when the read cleared**: "Starting the top {N} inline — #{a}, #{b}, #{c}; {M} queued. Say 'adjust' to change the selection, or 'give me prompts instead' for prompt blocks rather than inline runs." Record each launch through 3.1 and the Active Work table (3.2). Apply the decision-only policy to the human-facing output and use 3.3a when a report is requested or due. **When it did not clear** — paused, or unreadable and therefore read as paused — emit the ranking-only message instead: the ranking, the pause, and how to lift it. Never announce launches that did not happen.
 
+
+Mark `1B ran` once ranking and its dispatch decision are complete. A ranking-only
+decision records `3.1 skipped` with the actual hold reason. If ranking ends
+early with a failure, mark `1B failed` with the reason and finish the invocation.
+
 Then proceed to **Step 2: Active Monitoring Setup**.
 
 ---
@@ -906,9 +964,14 @@ Once the cleanup is done (gates acted on or declined, or the clean-status line p
 
 **Reconcile the cleanup's effect before ranking.** If the inline cleanup closed any issues, remove those now-closed issues from the candidate set, the assignments table, and the ranking before the calling step (1A.4 / 1B.5) presents them — `/pm` must never suggest or list an issue the user just closed. This is a filter on the already-computed results, not a re-score, so the non-scoring contract above still holds (the dependency map and tiers are not recomputed). On the cold-start path, when a closed issue was in the order 1B.4c already persisted, drop it from `FINAL_ORDER` and run the 1B.4c block again, so the ranks the desk reads match the order 1B.5 shows (each later issue moves up one place per closed issue above it). Workspace deletions do not affect the issue ranking and need no reconciliation.
 
+
+Mark `1C ran` when the cleanup gates are resolved or both scans are clear.
+Mark a scan or cleanup error `1C failed` with its reason. Wait for any pending
+confirmation before recording a completed cleanup.
+
 ### Escape hatch: `--no-clean` / `fast`
 
-When `NO_CLEAN=true`, **skip the inline `/pm-clean` flow entirely** — none of its cleanup scans or confirm gates run, so there is no friction. For a lightweight, non-interactive health signal, still print the count-only Backlog-health line from the shared aggregator (`backlog-health.sh`, which wraps the same detector without any interactive gate), then proceed directly to ranking:
+When `NO_CLEAN=true`, mark `1C skipped (--no-clean)` and **skip the inline `/pm-clean` flow entirely** — none of its cleanup scans or confirm gates run, so there is no friction. For a lightweight, non-interactive health signal, still print the count-only Backlog-health line from the shared aggregator (`backlog-health.sh`, which wraps the same detector without any interactive gate), then proceed directly to ranking:
 
 ```bash
 "$BACKLOG_HEALTH" --json
@@ -940,6 +1003,10 @@ If `candidate_count` is 0, drop the "defer/close candidates" line rather than sh
 Runs on **every** `/pm` invocation, no flag required — both 1A.4 (resume) and 1B.5 (cold start) call it, rendering its block **immediately after `## Your Open PRs` and before `## Suggested Next Issues`**. Like Step 1C, it is informational-first: its block never alters 1B.3 narrowing, 1B.4 scoring, or the 1B.4b judgment check. Its scope is deliberately narrow — a **one-shot startup triage** of PRs you have likely forgotten, then a hand-off. It does **not** enter a monitoring loop; continuous PR-fleet monitoring remains `/pr-monitor-and-manage`'s job.
 
 **Execute the complete `.claude/skills/pm-forgotten-pr/SKILL.md` workflow inline** — detection, render, confirmation-gated close flow (with independent branch-delete gate), and confirmation-gated merge flow (sequenced via `merge-sequence.sh`, dispatched as `phase-c-merger` subagents, one-shot hand-off). This is the same "invoke the full SKILL.md workflow inline, no shortcuts" idiom Step 1C uses for `/pm-clean`. Pass `$GH_USER` and `$FORGOTTEN_PR_DAYS` from the current session; both have defaults in the skill itself.
+
+
+Mark `1D ran` when the triage and any required handoff finish, or `1D failed`
+with the reason if triage cannot run.
 
 ---
 
@@ -988,6 +1055,10 @@ If orchestration state is stale after context turnover, recover using `.claude/r
 
 Any `/pm`-created `CronCreate` jobs from before this change died with their originating session (`CronCreate` is session-scoped; `durable: true` has no effect). New `/pm` sessions do not create replacement polls, and `session-scheduling-reconcile.sh` clears the dead records at session start (issue #827). Day mode does not change this: it arms a persistent `Monitor`, never a cron job.
 
+
+On the passive path, mark `2 ran` when tracking setup finishes, or `2 failed`
+with its setup error. The day path records setup in `2D`.
+
 After setup, proceed to **Step 2D** when `DAY_MODE=true`, otherwise straight to **Step 3: Orchestration Loop**.
 
 ---
@@ -995,6 +1066,14 @@ After setup, proceed to **Step 2D** when `DAY_MODE=true`, otherwise straight to 
 ## Step 2D: Day mode — the standing worker (only when `DAY_MODE=true`)
 
 Day mode turns this thread into the repo's standing worker for the day: rank → claim → dispatch inline → monitor and transition phases → merge → refill → repeat, surfacing roughly one line per event and stopping only on a real terminal condition. **It introduces no new gate and relaxes none.** Everything about *what* may run and *how much* — claims (`/subagent` 6.0), overlap chains (6.0b), the `CEILING` pipeline ceiling (Step 0), the repo-wide `active_work_cap` (#1191), the too-big partition and #1193 decomposition (3.1), and the refill pause (3.4) — binds exactly as it does on the on-demand path. Day mode's own contribution is narrow and is only this: **between-turn persistence, and a contract for when to stop.** Rationale, the mutual-exclusion argument, and the exit taxonomy: `.claude/reference/pm-day-mode.md`.
+
+
+Record `2D ran` after arming and the immediate tick, or after a verified
+existing wake is recovered. Record `2D skipped` for an explicit ownership or
+park hold and `2D failed` for an unreadable state, arming or publication error.
+Finish the invocation after those early returns or after the immediate tick.
+Keep the run ID and the invocation flags in that inline tick. Recurring
+Monitor ticks and probes carry no receipt context.
 
 ### 2D.1: Arm-time preconditions (non-tick invocation only)
 
@@ -1303,6 +1382,10 @@ printf 'HORIZON_STATUS=%s\nHORIZON_REFILL_OK=%s\nHORIZON_PARK=%s\nHORIZON_IDLE_R
 - **Refill runs only when `credit-budget.sh --check` exits 0 (`ok`).** Read it once per D2 tick (same moment as the refill.paused read, not in a separate phase). Apply 3.4's exit-code table: exit 1 (`reached`) → land near-done work and park (3.4's budget gate above); exit 2 (`unknown`) → conservative posture — finish in-flight, start nothing new, report `paused (budget unknown)`. The budget check is re-read per pick exactly as refill.paused is.
 - **Record a census on other D2 holds too.** If failure halt, pause, priority, budget, or deadline prevents the normal 3.4 dispatch path, take the same counts and use 3.4’s gate mapping once before leaving the evaluation.
 - **At most one new chip per turn — counting the arming turn as tick 0.** Day mode runs for hours, so a thread-prompt issue deferred now is offered on the next tick, minutes later — spreading costs nothing, and a wall of chips is the exact failure day mode exists to end (#1190). `FREE` still bounds it from above; this is a second, tighter bound that applies only in day mode. **The bound covers Step 1's dispatch too, not just later ticks:** Step 1 runs inside the arming turn and reaches 3.1's chip path bounded only by `FREE`, so without this it would be the *first* turn of a run that emits six chips at once — the failure, on the turn most likely to be watched. Report the rest as deferred exactly as 3.1 already does, with `Deferred (cap)` rows so nothing is forgotten; they are re-offered one per tick as the run proceeds. Inline dispatch is **not** rate-limited — it fills to the ceiling on the turn it can.
+
+For the immediate tick of an arming invocation, a gate that prevents Step
+3.4 records `3.4 skipped` with the observed hold reason before any early
+return. When Step 3.4 runs, use its own outcome.
 
 **D3 — Backoff and bookkeeping.** Hash the board, then apply `scheduling-reliability.md`'s stable-state backoff.
 
@@ -2065,6 +2148,11 @@ The merge-authority bullet is the shared contract from `chip-launching.md` "Merg
 
 For thread-prompt issues, offer or present the prompt — never execute it: in chip mode the user's click is the only launch path, and in fallback mode the user pastes the block into a thread. Inline-eligible issues are the opposite — PM runs them itself via `/subagent` per the default at the top of 3.1, no extra "go ahead and run those" required.
 
+
+Mark `3.1 ran` when the dispatch or offer and its required records are verified.
+Mark `3.1 failed` for a launch or record failure and `3.1 skipped` for a known
+hold or an empty selection. Use the actual reason.
+
 ### 3.2: Track assignments
 
 Maintain a state table in the conversation. Update it as work progresses:
@@ -2099,6 +2187,11 @@ Maintain a state table in the conversation. Update it as work progresses:
 **Task ID column:** every `Chip offered` row MUST carry the `task_id` returned by its `spawn_task` call — it is the only handle for dismissing that chip later, and a chip whose `task_id` was not recorded cannot be withdrawn. `Prompt generated` and `Active` rows leave it empty (`—`).
 
 `Chip offered` and `Prompt generated` are the same state from the pipeline's view — offered, not yet started — and both pair with the `Awaiting thread start` status. Both are excluded from re-offering: `/prompt`'s Path B scan treats an offered-but-unstarted chip exactly as it treats `Prompt generated`, so a re-run never double-offers the same issue.
+
+
+Mark `3.2 ran` when the invocation records or reconciles its assignment ledger.
+Mark `3.2 skipped` when it had no assignment work, or `3.2 failed` with the
+ledger error.
 
 ### 3.3: Progress detection
 
@@ -2491,6 +2584,12 @@ When one or more pipelines or threads finish (PRs merged, issues closed) — hou
 
    **Read the dismiss outcome — "gone" is not "failed".** If `dismiss_task` reports the chip was already clicked or already dismissed, the offer is withdrawn or acted on and the goal is met: treat it as a successful no-op, clear the old `task_id`, and move on. Only a genuine failure (the chip is still live and was not withdrawn) needs recovery: withdraw the replacement to restore a single offer, and if that also fails, keep both `task_id`s tracked and tell the user which one is stale rather than silently dropping either. Update the Active Work table only after the outcome is known.
 
+
+Mark `3.4 ran` when the invocation completes its refill evaluation. If a gate
+explicitly held the evaluation, mark `3.4 skipped` with that gate's reason. A
+failed evaluation is `3.4 failed`. Leave an unreached, unexplained evaluation
+unrecorded.
+
 ### 3.5: Handoff awareness
 
 When the conversation is getting long (many back-and-forth cycles, multiple batches of work completed), proactively suggest:
@@ -2528,3 +2627,28 @@ When the conversation is getting long (many back-and-forth cycles, multiple batc
 - **Do not narrate the scoring process.** Rankings read as a confident recommendation, not a methodology walkthrough. The tiers and rationales are the output; the signals that produced them are not.
 - **Thread prompts (for too-big and explicitly requested issues) should be complete and self-contained.** The receiving thread has zero prior context — give it everything it needs.
 - **Do not list every issue.** If 80 of 100 issues are low-priority, say "75 additional issues deferred" rather than listing them.
+
+
+## Finish the invocation
+
+Use this common exit after cold start or resume setup, after the day arming
+turn and its immediate tick, and before any terminal early return. Complete
+the current step's mark if its outcome is known. Print the helper output as
+the last human-facing block, once for this invocation. An unavailable or
+superseded receipt has a single line. Preserve required machine footers.
+Seal the receipt and retire the run ID at this exit. A later adjustment,
+Monitor tick or probe wake cannot mark or render this invocation again.
+
+<!-- test-anchor: pm-run-receipt-render -->
+```bash
+if [[ "${DAY_TICK:-false}" != true && "${DAY_PROBE_WAKE:-false}" != true && "${PM_RUN_ID+x}" == x ]]; then
+  if [[ -n "${PM_RUN_ID:-}" && -n "${PM_RECEIPT_SH:-}" ]] &&
+     PM_RECEIPT=$("$PM_RECEIPT_SH" --finish --run "$PM_RUN_ID" \
+       --repo "$PM_RECEIPT_REPO" 2>/dev/null); then
+    printf '%s\n' "$PM_RECEIPT"
+  else
+    printf '%s\n' 'PM receipt unavailable for this run.'
+  fi
+  unset PM_RUN_ID
+fi
+```
