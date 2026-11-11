@@ -53,12 +53,13 @@ shopt -s nullglob
 
 JSON=0
 ONLY_FILE=""
+ONLY_FILE_GIVEN=0   # distinguishes "--only-file given (maybe empty)" from "not given"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
     --only-file)
       [ "$#" -ge 2 ] || { echo "::error::run-python-tests.sh: --only-file needs a path" >&2; exit 2; }
-      ONLY_FILE="$2"; shift 2
+      ONLY_FILE="$2"; ONLY_FILE_GIVEN=1; shift 2
       ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -78,7 +79,9 @@ SELECT_MODE=0
 SELECTION=""
 SEL_ALL=0
 SEL_REASON=""
-if [ -n "$ONLY_FILE" ]; then
+if [ "$ONLY_FILE_GIVEN" -eq 1 ]; then
+  # An explicitly empty path is an unreadable selection, never a silent full run.
+  [ -n "$ONLY_FILE" ] || { echo "::error::run-python-tests.sh: --only-file was given an empty path" >&2; exit 2; }
   SELECT_MODE=1
   SELECTION="$(cat -- "$ONLY_FILE" 2>/dev/null)" || {
     echo "::error::run-python-tests.sh: cannot read --only-file: $ONLY_FILE" >&2

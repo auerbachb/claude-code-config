@@ -43,19 +43,22 @@
 # or self match fails toward ALL. A new suite needs no registration: its literal path
 # mentions are its dependencies. If it reads a file only through a constructed path, add
 # a `# covers:` line for it.
-# A basename mention is ADDITIVE for a code path: every suite that names the file's
+# A basename mention is ADDITIVE for a code or docs path: every suite that names the file's
 # basename as a whole token is selected too, even when another suite names the literal
 # path (a constructed path like "$DIR/x.sh" would otherwise be skipped). It still adds
 # nothing to coverage, so a code path with only basename mentions fails toward ALL.
 #
 # Docs allow-list: a *.md file outside any tests/ or fixtures/ directory never forces
-# ALL. Rules and references still select the suites that read them as fixtures,
-# because the derivation above applies to them too.
+# ALL. A docs file still selects the suites that read it: its literal path mentions
+# (rules and references read as fixtures) AND every suite that names its basename as a
+# whole token (a suite reading it through a constructed path names only the basename).
+# Generic basenames (SKILL.md, README.md) therefore over-select; that is accepted. A docs
+# file no suite mentions selects nothing and does not force ALL.
 #
-# Python modules (tests/test_*.py) run in full whenever any non-docs path changes:
-# they reach hooks through path construction the derivation cannot see, and the
-# whole python run is short. A docs-only change selects only the modules that
-# mention the changed path.
+# Python modules (tests/test_*.py) ALWAYS run in full, for every selection, including a
+# docs-only change and an empty bash selection. They reach hooks through path construction
+# the derivation cannot see, and the whole python run takes a few minutes, so selecting
+# among them is not worth the risk.
 #
 # Usage:
 #   select-hook-tests.sh [--event <name>] [--base <sha>] < changed-paths
@@ -206,13 +209,12 @@ CALLERS="$TMP/callers"
 BRE_PRE='(^|[^[:alnum:]_.-])'
 BRE_POST='($|[^[:alnum:]_.-]|\.($|[^[:alnum:]_.-]))'
 : > "$SEL"
-HAS_CODE=0
 UNMAPPED=""
 NCHANGED=0
 while IFS= read -r P; do
   NCHANGED=$((NCHANGED + 1))
   DOC=0
-  if is_docs "$P"; then DOC=1; else HAS_CODE=1; fi
+  if is_docs "$P"; then DOC=1; fi
   : > "$HIT"
   awk -F'\t' -v p="$P" -v d="$DOC" '
     length($2) > 0 && ($2 == p || (d == 1 && index(p, $2 "/") == 1 && ($3 == "G" || $3 == "D"))) { print $1 }
@@ -253,27 +255,26 @@ while IFS= read -r P; do
     UNMAPPED="$P"
     break
   fi
-  # Basename mentions are ADDITIVE for a code path (issue #2153 review): a suite that reaches the
+  # Basename mentions are ADDITIVE for code AND docs (issue #2153 review): a suite that reaches the
   # file through a constructed path (a "$DIR/<name>" expansion) names only its basename,
   # and it must still run even when another suite names the literal path. A basename hit adds
   # the suite but is never coverage, so the unmapped check above is unchanged. Matched as a
-  # whole token: never inside a longer name that ends in the same letters. Docs never match here.
+  # whole token: never inside a longer name that ends in the same letters. For a docs file this
+  # is the only way a suite reading it through a constructed path is found.
   : > "$BHIT"
-  if [ "$DOC" -eq 0 ]; then
-    ESC="$(printf '%s' "$base" | sed 's/[][\.*^$+?(){}|]/\\&/g')" || { emit_all "basename escape failed: full run"; exit 0; }
-    BRE="$BRE_PRE$ESC$BRE_POST"
-    while IFS= read -r S; do
-      grep -qE -- "$BRE" "$S"
-      RC=$?
-      if [ "$RC" -eq 0 ]; then
-        printf '%s\n' "$S" >> "$BHIT" || { emit_all "could not record selection: full run"; exit 1; }
-      elif [ "$RC" -gt 1 ]; then
-        UNMAPPED="$P (basename scan failed)"
-        break
-      fi
-    done < "$DISC"
-    if [ -n "$UNMAPPED" ]; then break; fi
-  fi
+  ESC="$(printf '%s' "$base" | sed 's/[][\.*^$+?(){}|]/\\&/g')" || { emit_all "basename escape failed: full run"; exit 0; }
+  BRE="$BRE_PRE$ESC$BRE_POST"
+  while IFS= read -r S; do
+    grep -qE -- "$BRE" "$S"
+    RC=$?
+    if [ "$RC" -eq 0 ]; then
+      printf '%s\n' "$S" >> "$BHIT" || { emit_all "could not record selection: full run"; exit 1; }
+    elif [ "$RC" -gt 1 ]; then
+      UNMAPPED="$P (basename scan failed)"
+      break
+    fi
+  done < "$DISC"
+  if [ -n "$UNMAPPED" ]; then break; fi
   cat "$HIT" "$BHIT" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
 done < "$CHANGED"
 
@@ -282,10 +283,9 @@ if [ -n "$UNMAPPED" ]; then
   exit 0
 fi
 
-# Python modules run in full whenever a non-docs path changed (see header).
-if [ "$HAS_CODE" -eq 1 ]; then
-  grep -E '^tests/test_.*\.py$' "$DISC" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
-fi
+# Python modules run in full for every selection, docs-only and empty bash selections included
+# (see header). Listing them keeps the one-line-per-suite shape the runners already read.
+grep -E '^tests/test_.*\.py$' "$DISC" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
 
 SORTED="$(LC_ALL=C sort -u "$SEL" | sed '/^$/d')" || { emit_all "sort failed: full run"; exit 1; }
 NSEL=0

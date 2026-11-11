@@ -73,10 +73,39 @@ make_fixture "$F"
 
 # --- Selection --------------------------------------------------------------------
 out="$(select_for "$F" .claude/reference/doc.md)"
-if [ "$(suite_count "$out")" -eq 0 ] && ! is_all "$out"; then
-  ok "docs-only change selects no suite (and does not force ALL)"
+if [ "$(printf '%s\n' "$out" | grep -c '\.test\.sh$')" -eq 0 ] && ! is_all "$out"; then
+  ok "docs-only change selects no bash suite (and does not force ALL)"
 else
-  bad "docs-only change selects no suite: $out"
+  bad "docs-only change selects a bash suite: $out"
+fi
+
+# Docs-only changes run EVERY Python module (issue #2153 review): the python run is short and
+# reaches hooks through paths the derivation cannot see, so a docs change never skips it.
+if has_line "$out" tests/test_a.py && has_line "$out" tests/test_c.py; then
+  ok "docs-only change selects ALL Python modules"
+else
+  bad "docs-only change did not select every Python module: $out"
+fi
+
+# A docs file reached by a bash suite through a constructed path (suite text names only the
+# basename) must select that suite; a docs file that no suite mentions selects nothing bash-side.
+D="$TMP/docs-basename"
+make_fixture "$D"
+echo '# guide' > "$D/.claude/reference/guide.md"
+# The suite spells no literal path: the directory is assembled from variables, so only the
+# basename "guide.md" appears in its text.
+printf 'DOC_DIR="reference"\ncat "$ROOT/$DOC_DIR/guide.md" >/dev/null 2>&1\nexit 0\n' > "$D/.claude/hooks/tests/guide.test.sh"
+out="$(select_for "$D" .claude/reference/guide.md)"
+if has_line "$out" .claude/hooks/tests/guide.test.sh && ! is_all "$out"; then
+  ok "a docs file read through a constructed path selects the suite that names its basename"
+else
+  bad "docs file read through a constructed path did not select its suite: $out"
+fi
+out="$(select_for "$D" .claude/reference/unmentioned-notes.md)"
+if [ "$(printf '%s\n' "$out" | grep -c '\.test\.sh$')" -eq 0 ] && ! is_all "$out"; then
+  ok "a docs file no suite mentions selects no bash suite and does not force ALL"
+else
+  bad "unmentioned docs file selected bash suites or ALL: $out"
 fi
 
 out="$(select_for "$F" .claude/rules/r.md)"
@@ -327,6 +356,23 @@ if command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   fi
 else
   echo "SKIP: python3 or jq not available; python runner cases not run"
+fi
+
+# --- Empty --only-file value (CodeAnt nitpick, PR #2154) ---------------------------------
+# An explicitly empty path must be the documented usage error (exit 2) in both runners, never
+# a silent full run. The flag absent keeps today's behaviour; the workflow's own ALL fallback is
+# what guarantees a full run when the selector fails.
+out_h="$(bash "$F/.github/scripts/run-hook-tests.sh" --only-file "" 2>&1)"; rc_h=$?
+if [ "$rc_h" -eq 2 ] && grep -q 'empty path' <<<"$out_h"; then
+  ok "run-hook-tests.sh: --only-file with an empty value is a usage error (exit 2)"
+else
+  bad "run-hook-tests.sh accepted an empty --only-file (rc=$rc_h): $out_h"
+fi
+out_p="$(bash "$F/.github/scripts/run-python-tests.sh" --only-file "" 2>&1)"; rc_p=$?
+if [ "$rc_p" -eq 2 ] && grep -q 'empty path' <<<"$out_p"; then
+  ok "run-python-tests.sh: --only-file with an empty value is a usage error (exit 2)"
+else
+  bad "run-python-tests.sh accepted an empty --only-file (rc=$rc_p): $out_p"
 fi
 
 # --- Workflow fallback (Graphite review, PR #2154) --------------------------------------
