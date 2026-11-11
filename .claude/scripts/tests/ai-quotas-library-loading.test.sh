@@ -46,8 +46,12 @@ assert_load_failure() {
   local reader="$1" name="$2" result=0
   "$BASH" "$reader" --json > failed.out 2> failed.err || result=$?
   [[ "$result" -eq 5 && ! -s failed.out ]]
-  grep -Fxq "ai-quotas.sh: required quota library could not load: lib/$name" failed.err
+  grep -Fq "ai-quotas.sh: required quota library could not load: lib/$name —" failed.err
 }
+
+AI_QUOTAS_CHECK_INSTALL=1 "$BASH" "$INSTALLED" > probe.out 2> probe.err
+[[ ! -s probe.out && ! -s probe.err ]]
+printf '%s\n' 'PASS: the offline install probe succeeds with an invalid registry'
 
 for module in claude codex cursor forecast report; do
   library="ai-quotas-$module.sh"

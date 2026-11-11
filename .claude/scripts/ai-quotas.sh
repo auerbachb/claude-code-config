@@ -338,14 +338,17 @@
 
 set -uo pipefail
 
+# quota-reader-install-check-v1
 SELF_NAME="$(basename "$0")"
 
 # Telemetry logs the script name and the ACTION WORD ONLY, never "$*": the
 # arguments carry an account label — the owner's subscription email — and
 # script-usage.log is a long-lived plaintext file. Same reasoning as
 # ai-quotas-setup.sh.
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$SELF_NAME" "read" \
-  2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
+if [[ "${AI_QUOTAS_CHECK_INSTALL:-}" != 1 ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$SELF_NAME" "read" \
+    2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
+fi
 
 # --- help --------------------------------------------------------------------
 
@@ -407,6 +410,18 @@ while [[ -L "$SELF_PATH" ]]; do
 done
 SELF_DIR="$(cd -P "$(dirname "$SELF_PATH")" && pwd -P)" \
   || die 5 "could not resolve quota reader directory"
+
+# Require the modules before reading any provider or writing usage history.
+for quota_library in "$SELF_DIR/lib/ai-quotas-"{claude,codex,cursor,forecast,report}.sh; do
+  # shellcheck source=/dev/null
+  if [[ ! -f "$quota_library" || ! -r "$quota_library" ]] || ! source "$quota_library" 2>/dev/null; then
+    die 5 "required quota library could not load: lib/${quota_library##*/} — install the complete scripts directory or link to the skills worktree"
+  fi
+done
+unset quota_library
+
+# The setup script uses this offline probe before writing a LaunchAgent.
+[[ "${AI_QUOTAS_CHECK_INSTALL:-}" != 1 ]] || exit 0
 
 # --- defaults ----------------------------------------------------------------
 
@@ -897,15 +912,6 @@ relogin_hint() { # <provider> <label>
   [[ "$2" != -* ]] || quoted="-- $quoted"
   printf '/quotas-setup relogin %s %s' "$quoted" "$1"
 }
-
-# Require the modules before reading any provider or writing usage history.
-for quota_library in "$SELF_DIR/lib/ai-quotas-"{claude,codex,cursor,forecast,report}.sh; do
-  # shellcheck source=/dev/null
-  if [[ ! -f "$quota_library" || ! -r "$quota_library" ]] || ! source "$quota_library" 2>/dev/null; then
-    die 5 "required quota library could not load: lib/${quota_library##*/}"
-  fi
-done
-unset quota_library
 
 # Ordered acquisition sources. Browser is activated only by an explicit agent run.
 effective_sources() { # <provider> <account-index>

@@ -36,7 +36,7 @@ apply_forecast() {
     AI_QUOTAS_NOW="$NOW" "$FORECAST_SH" < "$DOC" > "$out" 2>"$TMP/forecast.err" || rc=$?
   fi
   if [[ "$rc" -eq 0 && -s "$out" && -n "$want" ]] &&
-     jq -e --slurpfile sent "$DOC" \
+     jq -se --slurpfile sent "$DOC" \
        '# The ONLY fields this helper is here to write. A blank anywhere else —
         # `overage`, already null on every row when the cheapest-next helper
         # degraded, or a reset this run could not read — is a blank the
@@ -57,7 +57,7 @@ apply_forecast() {
             elif $k == "usage_start_day" then (($v | type) == "number" and $v >= 1)
             else (($v | type) == "number" and $v >= 0) end;
         ($sent[0]) as $i
-        | . as $o
+        | length == 1 and (.[0] as $o
         | ($o | type) == "object"
           and ($o.rows | type) == "array"
           and ($o.rows | length) == ($i.rows | length)
@@ -89,7 +89,7 @@ apply_forecast() {
                                   | ($e.value == null
                                      and ($writable | index($e.key)) != null
                                      and okval($e.key; $o.rows[$ix][$e.key]))
-                                    or $o.rows[$ix][$e.key] == $e.value))))' \
+                                    or $o.rows[$ix][$e.key] == $e.value)))))' \
        "$out" >/dev/null 2>&1; then
     [[ ! -s "$TMP/forecast.err" ]] || cat "$TMP/forecast.err" >&2
     mv "$out" "$DOC" 2>/dev/null || warn "DEGRADED: could not apply the projection to this report"

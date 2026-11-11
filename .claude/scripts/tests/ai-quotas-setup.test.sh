@@ -1702,6 +1702,30 @@ check_eq "$(test -e "$(plist_path)" && echo present || echo absent)" "absent" \
 check_eq "$(grep -c 'bootstrap\|load' "$STUB_LAUNCHCTL_LOG" || true)" "0" \
   "control(-): nothing was loaded either"
 
+# A standalone copy of the new entry point needs its sibling libraries.
+# Default discovery skips a broken legacy copy; an explicit path is exclusive.
+new_case "schedule-reader-incomplete"
+PLATFORM_UNDER_TEST="Darwin"
+READER_BIN_UNDER_TEST=""
+LEGACY_READER="$CASE_DIR/home/.claude/scripts/ai-quotas.sh"
+mkdir -p "$(dirname "$LEGACY_READER")"
+cp "${SCRIPT%/*}/ai-quotas.sh" "$LEGACY_READER"
+run schedule install
+check_eq "$RC" "0" "schedule skips an incomplete legacy copy and finds the complete sibling"
+check_contains "$OUT" "required quota library could not load" "the incomplete copy has a clear diagnostic"
+check_contains "$(cat "$(plist_path)")" "<string>${SCRIPT%/*}/ai-quotas.sh</string>" "the plist points at the complete sibling"
+
+new_case "schedule-reader-incomplete-override"
+PLATFORM_UNDER_TEST="Darwin"
+READER_BIN_UNDER_TEST="$CASE_DIR/ai-quotas.sh"
+cp "${SCRIPT%/*}/ai-quotas.sh" "$READER_BIN_UNDER_TEST"
+run schedule install
+check_eq "$RC" "5" "an explicitly selected incomplete reader fails the install"
+check_eq "$(test -e "$(plist_path)" && echo present || echo absent)" "absent" \
+  "no plist is written for the incomplete reader"
+check_eq "$(grep -c 'bootstrap\|load' "$STUB_LAUNCHCTL_LOG" || true)" "0" \
+  "nothing is loaded when the explicit reader cannot load its libraries"
+
 # HOME unset is ACCEPTED by this script when both path overrides are given, and
 # every schedule path derives from HOME — so without this guard the LaunchAgent
 # would resolve to `/Library/LaunchAgents/…`, a machine-wide location. Driven
