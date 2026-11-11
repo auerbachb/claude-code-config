@@ -300,17 +300,20 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
     # Match reviewer checks by publisher when present, and by name only for
     # older bundles without a slug (issue #1953).
     | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]"] as $botlist
-    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile"} as $needles
-    | def is_review_check:
+    | def check_reviewer:
         (.app.slug // "" | ascii_downcase) as $slug
         | if $slug != "" then
-            any("coderabbit","codeant","cursor","greptile";
-                . as $x | $slug | contains($x))
+            {"coderabbit":"coderabbitai[bot]","coderabbitai":"coderabbitai[bot]",
+             "codeant":"codeant-ai[bot]","codeant-ai":"codeant-ai[bot]",
+             "cursor":"cursor[bot]","cursor-com":"cursor[bot]",
+             "greptile":"greptile-apps[bot]","greptile-apps":"greptile-apps[bot]"}[$slug] // ""
           else
-            (.name // "" | ascii_downcase) as $name
-            | any("coderabbit","codeant","cursor","bugbot","greptile";
-                  . as $x | $name | contains($x))
+            (.name // "" | ascii_downcase)
+            | if contains("coderabbit") then "coderabbitai[bot]"
+              elif contains("codeant") then "codeant-ai[bot]"
+              elif contains("cursor") or contains("bugbot") then "cursor[bot]"
+              elif contains("greptile") then "greptile-apps[bot]"
+              else "" end
           end;
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
@@ -323,7 +326,6 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
               else $slug | IN("graphite-app", "graphite") end) | not))) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot
-        | $needles[$bot] as $needle
         | {bot: $bot,
            done: (
              # Review object pinned to the watched SHA. EXCLUDED for BugBot:
@@ -336,7 +338,7 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
              # HEAD SHA, so SHA scoping is implicit). conclusion neutral still
              # counts as complete — BugBot uses neutral for "findings posted".
              or any($checks[]?;
-                    ((.name // "") | ascii_downcase | contains($needle))
+                    check_reviewer == $bot
                     and .status == "completed")
              # CR/Greptile also report via commit statuses on the watched SHA.
              or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
@@ -344,8 +346,8 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
            )})) as $bots
     | {head_moved: ($root.pr.head_sha != $sha),
        bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check | not)
+       ci_pending: [ $checks[] | select(check_reviewer == "" and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select(check_reviewer == ""
                      and (.conclusion == "failure" or .conclusion == "timed_out"
                           or .conclusion == "action_required" or .conclusion == "startup_failure"
                           or .conclusion == "stale")) | .name ],

@@ -930,7 +930,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
      Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
-  6. Resolve the exact thread IDs you read and replied to. Write one handled thread ID per line to a temporary `$TOUCHED_THREADS` file. Include active-reviewer threads, retired Graphite threads, and human-opened threads containing a bot finding. Skip the call when there were no handled threads. The helper paginates and falls back to `minimizeComment` when resolution fails.
+  6. Resolve the exact thread IDs you read and replied to. Write one handled thread ID per line to a temporary `$TOUCHED_THREADS` file. Include active-reviewer threads, retired Graphite threads, and human-opened threads containing a bot finding. Skip the call when there were no handled threads. The helper paginates. If resolution fails, its minimize fallback requires a bot-authored opening comment. Human-opened threads stay unresolved.
 
      ```bash
      "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM" --thread-ids-file "$TOUCHED_THREADS"

@@ -4,7 +4,8 @@
 #
 # Fetches all review threads on the given PR via GraphQL, filters to unresolved
 # threads whose first-comment author matches --authors, and resolves each via
-# resolveReviewThread. On failure, falls back to minimizeComment(classifier: RESOLVED).
+# resolveReviewThread. On failure, minimizeComment(classifier: RESOLVED) is
+# available only for a first comment whose GraphQL author type is Bot.
 #
 # Usage:
 #   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
@@ -222,7 +223,7 @@ collect_threads() {
                 nodes {
                   id
                   url
-                  author { login }
+                  author { login __typename }
                 }
               }
             }
@@ -301,7 +302,9 @@ write_unresolved_matches() {
           .[]
           | select(.id as $id | $expected | index($id))
           | select(.isResolved == false)
-          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+          | [.id,
+             (.comments.nodes[0] | if .author.__typename == "Bot" then (.id // "-") else "-" end),
+             (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
   elif [[ "$EXPLICIT_IDS_MODE" -eq 1 ]]; then
@@ -314,7 +317,9 @@ write_unresolved_matches() {
           .[]
           | select(.isResolved == false)
           | select((.comments.nodes[0].author.login // "") | test($re))
-          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+          | [.id,
+             (.comments.nodes[0] | if .author.__typename == "Bot" then (.id // "-") else "-" end),
+             (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
   fi
@@ -391,7 +396,7 @@ resolve_or_minimize() {
     return 0
   fi
 
-  if [[ -n "$comment_id" ]]; then
+  if [[ -n "$comment_id" && "$comment_id" != "-" ]]; then
     if resp2=$(gh api graphql -F subjectId="$comment_id" -f query='
       mutation($subjectId: ID!) {
         minimizeComment(input: {subjectId: $subjectId, classifier: RESOLVED}) { minimizedComment { isMinimized } }
@@ -403,7 +408,7 @@ resolve_or_minimize() {
     return 1
   fi
 
-  echo "[FAILED] attempt=$attempt $thread_id  ($author) — resolveReviewThread: $resp | no comment node id for fallback" >&2
+  echo "[FAILED] attempt=$attempt $thread_id  ($author) — resolveReviewThread: $resp | no verified bot comment for fallback" >&2
   return 1
 }
 

@@ -234,6 +234,9 @@ check_eq "a GitHub Actions job named after a reviewer stays CI pending" \
 check_eq "another app's failed 'codeant lint' build check stays CI failing" \
   '{"ci_pending":[],"ci_failing":["codeant lint"]}' \
   "$(wait_ci '[{"name":"codeant lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
+check_eq "look-alike Cursor publisher stays in build CI" \
+  '{"ci_pending":["lint"],"ci_failing":["security"]}' \
+  "$(wait_ci '[{"name":"lint","status":"queued","app":{"slug":"cursor-integrations"}},{"name":"security","status":"completed","conclusion":"failure","app":{"slug":"cursor-integrations"}}]')"
 check_eq "the real CodeRabbit check (by slug) is not CI" \
   '{"ci_pending":[],"ci_failing":[]}' \
   "$(wait_ci '[{"name":"CodeRabbit","status":"in_progress","conclusion":null,"app":{"slug":"coderabbitai","id":173846}}]')"
