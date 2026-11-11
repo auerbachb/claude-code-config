@@ -22,7 +22,8 @@ pm_resume_config() (
     return
   fi
   trap 'rm -f "$config_snapshot"' EXIT
-  if ! cat "$source_config" > "$config_snapshot"; then
+  # A copy that spans an in-place edit can contain more than one version.
+  if ! cat "$source_config" > "$config_snapshot" || ! cmp -s "$source_config" "$config_snapshot"; then
     printf '%s\n' 'RESUME_CONFIG=unreadable' 'LIST_RC=2'
     return
   fi
@@ -53,7 +54,7 @@ Continue with defaults on `defaults` or with no section bodies on `empty`.
 On `missing`, tell the user to run `/pm-handoff` to bootstrap the config
 and finish this resume as config unavailable. On `unreadable` or `failed`,
 report the read failure and stop before using any section. The list and
-all section lookups use the same private snapshot.
+all section lookups use one private snapshot whose bytes matched a second read before parsing.
 
 ### 1A.2: Load in-flight state
 

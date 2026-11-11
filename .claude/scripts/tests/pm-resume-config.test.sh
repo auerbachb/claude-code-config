@@ -64,6 +64,23 @@ RACE
 assert_result "$expected" "$(read_resume_config "$shim")" 'mid-read config edit cannot mix versions'
 assert_result 'changed after listing' "$("$parser" --section Project)" 'fixture really changed the original config'
 
+# Force the snapshot copy to span an in-place rewrite of the real input.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/cat" <<'RACE'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "$REAL_CONFIG_FIXTURE" ]; then
+  printf '%s\n' '## Project' 'old prefix'
+  printf '%s\n' '## Project' 'new prefix' '## Business Goal' 'new tail' > "$1"
+  printf '%s\n' '## Business Goal' 'new tail'
+  exit 0
+fi
+exec /bin/cat "$@"
+RACE
+chmod +x "$tmp/bin/cat"
+assert_result $'RESUME_CONFIG=unreadable\nLIST_RC=2' \
+  "$(PATH="$tmp/bin:$PATH" read_resume_config "$parser")" 'mixed snapshot from an in-place rewrite is rejected'
+assert_result 'new prefix' "$("$parser" --section Project)" 'fixture actually rewrote the source while copying'
+
 printf '%s\n' '# No sections' > "$config"
 assert_result $'RESUME_CONFIG=empty
 LIST_RC=1' "$(read_resume_config "$parser")" 'empty config has no section bodies'
