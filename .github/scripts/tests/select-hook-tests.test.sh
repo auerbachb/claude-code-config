@@ -329,5 +329,25 @@ else
   echo "SKIP: python3 or jq not available; python runner cases not run"
 fi
 
+# --- Workflow fallback (Graphite review, PR #2154) --------------------------------------
+# When the selector exits non-zero, every job writes an ALL fallback. The runners treat a
+# selection without `# end-of-selection` as truncated, so each fallback must write the
+# terminator too. Checked with awk over the real workflow, and against a mutant with it removed.
+WF="$ROOT/.github/workflows/hook-scripts.yml"
+fallback_total() { awk '/selector exited non-zero/ { n++ } END { print n + 0 }' "$1"; }
+fallback_unterminated() { awk '/selector exited non-zero/ && !/end-of-selection/ { n++ } END { print n + 0 }' "$1"; }
+if [ "$(fallback_total "$WF")" -eq 3 ] && [ "$(fallback_unterminated "$WF")" -eq 0 ]; then
+  ok "every workflow ALL fallback (3 jobs) writes # end-of-selection"
+else
+  bad "workflow ALL fallback is missing # end-of-selection: total=$(fallback_total "$WF") unterminated=$(fallback_unterminated "$WF")"
+fi
+MUT="$TMP/mutant-hook-scripts.yml"
+printf '%s\n' "            printf '# reason: selector exited non-zero: full run\nALL\n' > \"\$SEL\"" > "$MUT"
+if [ "$(fallback_unterminated "$MUT")" -eq 1 ]; then
+  ok "negative control: a fallback without the terminator is detected"
+else
+  bad "negative control did not detect an unterminated fallback"
+fi
+
 printf '\n%s passed, %s failed\n' "$passes" "$failures"
 [ "$failures" -eq 0 ]

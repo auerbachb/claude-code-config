@@ -57,7 +57,7 @@ jobs:
         run: |
           SEL="$RUNNER_TEMP/hook-test-selection.txt"
           if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
-            printf '# reason: selector exited non-zero: full run\nALL\n' > "$SEL"
+            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
           fi
           echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
           cat "$SEL"
@@ -134,7 +134,7 @@ jobs:
         run: |
           SEL="$RUNNER_TEMP/hook-test-selection.txt"
           if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
-            printf '# reason: selector exited non-zero: full run\nALL\n' > "$SEL"
+            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
           fi
           echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
           cat "$SEL"
@@ -204,7 +204,7 @@ jobs:
         run: |
           SEL="$RUNNER_TEMP/hook-test-selection.txt"
           if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
-            printf '# reason: selector exited non-zero: full run\nALL\n' > "$SEL"
+            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
           fi
           echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
           cat "$SEL"
