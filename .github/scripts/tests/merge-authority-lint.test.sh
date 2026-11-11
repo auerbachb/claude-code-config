@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for merge-authority-lint.sh (issue #753)
+# covers: .claude/reference/chip-launching.md .claude/skills/issue-maker/modules/handoff.md .claude/skills/pm/SKILL.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 

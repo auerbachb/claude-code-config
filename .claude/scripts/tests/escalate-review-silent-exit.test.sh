@@ -34,6 +34,7 @@
 # issue #1556) runs no in-script trap and is out of reach here by construction.
 #
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
+# covers:
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/escalate-review-fixtures.sh
 source "$TEST_DIR/lib/escalate-review-fixtures.sh"

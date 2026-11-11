@@ -5,6 +5,7 @@
 # asserts the lint catches it. The clean case asserts the shipped corpus passes,
 # so a fixture that stops reproducing its own premise shows up as a failure
 # rather than a silent green.
+# covers: .claude/skills .claude/agents/phase-b-reviewer.md .claude/reference/chip-launching.md .claude/reference/portable-skill-resolution.md .claude/reference/subagent-phase-guardrails.md .claude/skills/fixpr/SKILL.md .claude/skills/issue-maker/modules/update.md .claude/skills/pause-resume/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pr-monitor-and-manage/references/pmm-act.md .claude/skills/prompt/SKILL.md .claude/skills/wave/SKILL.md
 
 set -euo pipefail
 
