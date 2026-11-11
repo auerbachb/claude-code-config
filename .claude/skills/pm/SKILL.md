@@ -2563,7 +2563,7 @@ Start each evaluation with an empty ledger and no carried `CENSUS_GATE` or `CENS
 | Observed outcome | Ledger value |
 |---|---|
 | Closed, already has a PR, ownership skip, parked, outside scope, or otherwise ineligible for this refill | `ineligible` |
-| Chain successor or an undeclared footprint held by 6.0b | `chained` or `undeclared` |
+| Chain successor or a footprint still undeclared after [area resolution](../wave/SKILL.md#step-3-extract-each-candidates-file-footprint), held by 6.0b | `chained` or `undeclared` |
 | Window fit or Step 7 holds this candidate, or repo-wide capacity holds its chip | `deadline` or `repo_wide_cap` |
 | Current checks cleared and this candidate could launch on this evaluation | `eligible` |
 | Live handle or recorded launch | `launched` |

@@ -101,7 +101,7 @@ Scan the directory structure (depth 2) and identify patterns:
 - **CI patterns:** `.github/workflows/` (list workflow names)
 - **Config files:** `.coderabbit.yaml`, `tsconfig.json`, `pyproject.toml`, etc.
 
-Record the directory layout and notable patterns.
+Record the directory layout and notable patterns. When that evidence identifies independent services, propose their repo-relative globs under [Independent areas](../../reference/independent-areas.md). Prefer separate service entry points or manifests. Generic shared folders and ambiguous service boundaries are insufficient evidence. Use lowercase unique names, leave speculative hints blank, and show the proposed areas in the bootstrap summary.
 
 ### 2d: Generate pm-config.md
 
@@ -129,6 +129,14 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 4. When threads finish, verify PRs merged, then identify next batch
 5. Create new GitHub issues when gaps are identified
 6. **Do NOT spawn subagents or use the Agent tool to execute work.** Your job is to write prompts and present them to the user. The user will paste them into new Claude Code threads (web or CLI). Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
+
+## Independent areas
+
+<!--
+| Area | Paths | Labels | Keywords |
+| --- | --- | --- | --- |
+{Add one row per proposed service, with its repo-relative folder glob.}
+-->
 
 ## Active work
 
@@ -246,7 +254,7 @@ Only **0** (section present, non-empty body) and **1** (section missing or body 
 - **Canonical** — one of the eight names above. Handled by Step 3b (preserved) or Steps 3c-3d (regenerated).
 - **Non-canonical** — any other name (e.g. `Complexity triggers`). Store its body verbatim, and record its **anchor**: the nearest canonical section name that precedes it in `SECTIONS`' original order. If no canonical section precedes it (it appears before the first canonical section in the file), anchor it to `TOP` (immediately below the title line, before Role).
 
-The `Active work` and `Budget` sections that Step 2d's bootstrap template emits are **non-canonical by this definition** — neither name is in the eight-name list, so both take the non-canonical path here and are preserved verbatim at their recorded anchors like any other. A config this skill bootstrapped therefore round-trips through a refresh unchanged apart from Infrastructure and Architecture.
+The `Independent areas`, `Active work`, and `Budget` sections that Step 2d's bootstrap template emits are **non-canonical by this definition** — neither name is in the eight-name list, so both take the non-canonical path here and are preserved verbatim at their recorded anchors like any other. A config this skill bootstrapped therefore round-trips through a refresh unchanged apart from Infrastructure and Architecture.
 
 Non-canonical sections are never dropped — Step 3f re-inserts each one immediately after its recorded anchor. Sections sharing the same anchor keep their original relative order. Order is **not** guaranteed across different anchors: Step 3f emits canonical sections in the fixed schema order regardless of how they appeared in the original file, so two non-canonical sections anchored to canonical sections that were themselves out of fixed order will follow their anchors' fixed-schema order, not their original file order.
 
