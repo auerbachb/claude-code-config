@@ -54,43 +54,41 @@ fi
 
 ### Batching before burning CR quota (Issue #28)
 
-CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** consumes one. **Multi-round PRs** exhaust that budget fast if you fix-and-push repeatedly.
-
-**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run the dual-CLI local review (**`"$LOCAL_REVIEW_SH" --tool coderabbit --scope uncommitted`** + **`--tool codeant --scope uncommitted`**) per `cr-local-review.md` on uncommitted changes when feasible — catch issues **before** they cost a GitHub review. The wrapper returns one compact line per CLI; the raw capture stays at its `log_path`.
+**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run the dual-CLI local review (**`"$LOCAL_REVIEW_SH" --tool coderabbit --scope uncommitted`** + **`--tool codeant --scope uncommitted`**) per `cr-local-review.md` on uncommitted changes when feasible. The wrapper returns one compact line per CLI; the raw capture stays at its `log_path`.
 
 **Coalesce inside `/fixpr`:** Steps 1–3 intentionally gather **every** unresolved finding + every failing CI check, then fix **all** actionable items and **`git push` once**. Never push once per finding. One `/fixpr` cycle should produce **at most one** consume-side CR review per completed push (tracked below).
 
 ## How this skill is structured
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. Inline `gh api` calls for these three endpoints are permitted only inside `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` (Step 3b delegates), which need a custom post-push timestamp filter, and Step 5d's projected all-author invitation check: `pr-state.sh` keeps reviewer-bot comments, so it cannot detect a human's paid-review invitation. Every other polling or review-state lookup MUST go through `pr-state.sh`.
+[Workflow history and rationale](../../reference/fixpr-workflow-history.md)
 
-All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared `pr-state.sh` script. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. Inline `gh api` calls for these three endpoints are permitted only inside `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` (Step 3b delegates), using their post-push timestamp filter, and Step 5d's projected all-author invitation check. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
 | Step | Kind | Done by |
 |------|------|---------|
-| 0a. Resolve target PR (arg or infer) | Judgment + Mechanical | AI thread scan + `pr-state.sh --infer-candidates` (no-arg inference, issue #447) |
+| 0a. Resolve target PR (arg or infer) | Judgment + Mechanical | AI thread scan + `pr-state.sh --infer-candidates` |
 | 0. Gather PR state | Mechanical | `pr-state.sh` writes `/tmp/pr-state-<PR>-<epoch>.json` |
 | 1. Classify review findings | Judgment | AI reads JSON + source files |
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
 | 3a. Dismiss stale bot `CHANGES_REQUESTED` | Mechanical | `dismiss-stale-bot-changes.sh` after push when `DID_PUSH=1`; optional `--handoff-file` append |
-| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, then `fixpr-reviewer-triggers.sh` on the pushed SHA: no review policy → post triggers for missing free bots, `@cursor review` only by spending an owner grant for that SHA (paid — #1897, #1898); tier-aware repo → only what `review-triggers-allowed.sh` allows (#1749) |
+| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, then `fixpr-reviewer-triggers.sh` on the pushed SHA: no review policy → post triggers for missing free bots, `@cursor review` only by spending an owner grant for that SHA; tier-aware repo → only what `review-triggers-allowed.sh` allows |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
-| 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
-| 4d. Review-wait loop (issue #454) | Mechanical | Poll `pr-state.sh` on the pushed SHA every 30–60s, capped at 20 min; early-exit on full bot+CI verdict; new findings → next sweep |
+| 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false`, then `--verify-only` |
+| 4d. Review-wait loop | Mechanical | Poll `pr-state.sh` on the pushed SHA every 30–60s, capped at 20 min; early-exit on full bot+CI verdict; new findings → next sweep |
 | 5. Verify | Mechanical | Re-run `pr-state.sh --since $RUN_STARTED_AT` |
 | 6. Merge blockers | Judgment | AI reads `.merge_state` from the JSON |
 | 7. Final summary | Judgment | AI emits the status |
 
 Execute the steps sequentially. Steps 0–4c form one **fix sweep**. After a sweep that pushed, Step 4d waits — bounded — for bot verdicts and CI on the **new HEAD SHA**; when new findings or blocking CI arrive mid-wait, start the next sweep at Step 0 (outer cap: `FIXPR_MAX_ITERATIONS`, default 5). `/fixpr` exits when the wait predicate is clean, a cap fires, or a non-loopable status arises (conflicts, human changes requested, stuck threads). This in-turn loop runs within a single agent turn — no `/loop`, `CronCreate`, or `ScheduleWakeup`.
 
-**Environment knobs (issue #454):**
+**Environment knobs:**
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `FIXPR_WAIT_CAP_SECS` | `1200` | Hard cap per wait iteration (20 min = P93 of bot-response times from a 30-PR sample) |
+| `FIXPR_WAIT_CAP_SECS` | `1200` | Hard cap per wait iteration (20 min) |
 | `FIXPR_WAIT_POLL_SECS` | `60` | Poll cadence inside the wait loop (valid range 30–60) |
-| `FIXPR_MAX_ITERATIONS` | `5` | Outer cap on fix-sweep + wait iterations (matches `/wrap` recovery cap, issue #452) |
+| `FIXPR_MAX_ITERATIONS` | `5` | Outer cap on fix-sweep + wait iterations |
 
 ---
 
@@ -133,7 +131,7 @@ fi
 
 ### Step 0a: Resolve the target PR (explicit argument → thread/session inference)
 
-`/fixpr` may be invoked **with** a PR (`/fixpr <url>` or `/fixpr <N>`) or **with no argument**. Resolve the target into `$PR_NUMBER_ARG` *before* calling `pr-state.sh`, so a no-argument re-run is a fast convenience instead of a dead end (issue #447). The session-state half of this inference is shared verbatim with `/wrap` (issue #448) via `pr-state.sh --infer-candidates` — do not re-implement it.
+`/fixpr` may be invoked **with** a PR (`/fixpr <url>` or `/fixpr <N>`) or **with no argument**. Resolve the target into `$PR_NUMBER_ARG` *before* calling `pr-state.sh`. The session-state half of this inference is shared verbatim with `/wrap` via `pr-state.sh --infer-candidates` — do not re-implement it.
 
 **1. Capture and parse the explicit argument.** Put whatever the user typed after `/fixpr` into `$FIXPR_ARG` (empty when none). Accept a full PR URL or a bare PR number:
 
@@ -154,7 +152,7 @@ fi
 
 **2. When no argument was given, infer the target.** Skip this entire step when `$PR_NUMBER_ARG` is already set. Build a candidate set from two sources, then resolve:
 
-- **Thread scan (AI layer).** Read back through *this* conversation for the most recent `/fixpr <url-or-number>` and `/wrap <url-or-number>` invocations and any PR the thread just operated on (pushed to, audited). Extract PR numbers from the `pull/<N>` pattern. Record them **in order, most-recently-mentioned first** — thread recency is the strongest signal (the issue's motivating case: a `/fixpr <url>` ran moments ago, then a bare `/fixpr`).
+- **Thread scan (AI layer).** Read back through *this* conversation for the most recent `/fixpr <url-or-number>` and `/wrap <url-or-number>` invocations and any PR the thread just operated on (pushed to, audited). Extract PR numbers from the `pull/<N>` pattern. Record them **in order, most-recently-mentioned first** — thread recency is the strongest signal.
 - **Session state (script layer).** Pull the PRs this session is actively tracking, newest activity first:
 
 ```bash
@@ -164,7 +162,7 @@ SESSION_CANDIDATES=$(jq -c '[ .[] | select(.same_repo != false) ]' <<<"$CANDIDAT
 jq -r '.[] | "  session-candidate: #\(.number) (phase=\(.phase // "?"), needs=\(.needs // "?"), last_action=\(.last_action_at // "?"))"' <<<"$SESSION_CANDIDATES"
 ```
 
-(`--infer-candidates` is a pure read of `~/.claude/session-state.json`; a global `pr-state.sh` too old to know the flag exits non-zero and the `|| echo "[]"` fallback degrades gracefully to thread-only inference.)
+`--infer-candidates` reads `~/.claude/session-state.json`. A nonzero exit leaves thread-only inference.
 
 **3. Resolve candidates → `$PR_NUMBER_ARG` (or prompt).** Merge the thread list and `SESSION_CANDIDATES` into a unique set keyed by PR number, tracking each PR's source(s) (`thread`, `session`) and recency:
 
@@ -172,10 +170,10 @@ jq -r '.[] | "  session-candidate: #\(.number) (phase=\(.phase // "?"), needs=\(
 |-----------|--------|
 | **Exactly one unique candidate** (from either source) | Select it. Set `PR_NUMBER_ARG=<N>` and print the `[INFERRED]` line (formats below). Proceed — do **not** ask. |
 | **Multiple candidates, one clearly most recent** | Pick the most-recently-mentioned. **Thread recency outranks session timestamps:** if any PR appeared in the thread scan, the newest thread mention wins; otherwise use the session candidate with the newest `last_action_at` (only when it is strictly newer than the next — not tied). Set `PR_NUMBER_ARG`, print the `[INFERRED]` line **and** the one-line `Also tracking:` note. |
-| **Genuinely ambiguous** (two+ tied on recency, e.g. two thread PRs mentioned equally recently or session candidates tied on `last_action_at`) | Do **not** guess. Print `[CONTEXT] No PR argument and no branch PR; multiple candidates:` followed by the candidate list with sources, and ask the user which PR they meant — same behavior as before #447. Leave `PR_NUMBER_ARG` empty. |
-| **No candidates at all** | Leave `PR_NUMBER_ARG` empty and fall through to branch auto-detection below — `pr-state.sh` with no `--pr` either finds the branch's PR or exits `3`/`4` and you report it (unchanged pre-#447 behavior). |
+| **Genuinely ambiguous** (two+ tied on recency) | Do **not** guess. Print `[CONTEXT] No PR argument and no branch PR; multiple candidates:` followed by the candidate list with sources, and ask the user which PR they meant. Leave `PR_NUMBER_ARG` empty. |
+| **No candidates at all** | Leave `PR_NUMBER_ARG` empty and fall through to branch auto-detection below — `pr-state.sh` with no `--pr` either finds the branch's PR or exits `3`/`4` and you report it. |
 
-`[INFERRED]` log formats (print exactly one, before the `[CONTEXT]`/audit output below — it is the user's only catch point for a misfire):
+`[INFERRED]` log formats (print exactly one, before the `[CONTEXT]`/audit output below):
 
 ```text
 [INFERRED] PR #462 from thread context (last /fixpr invocation)
@@ -189,7 +187,7 @@ When inference picked from multiple candidates, append the override hint on its 
 Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 ```
 
-> **Authorship guard (issue #733, `safety.md`) — gate before Step 0c.** `/fixpr` pushes commits, force-pushes rebases, posts review triggers, and resolves threads — all writes. Once `$PR_NUMBER_ARG` is resolved, confirm you authored it:
+> **Authorship guard (issue #733, `safety.md`) — gate before Step 0c.** Once `$PR_NUMBER_ARG` is resolved, confirm you authored it:
 > ```bash
 > "$PR_AUTHORSHIP_SH" "$PR_NUMBER_ARG"   # exit 0 = yours
 > ```
@@ -197,7 +195,7 @@ Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 
 ### Step 0c: Pre-flight — draft→ready + reviewer trigger (issue #493)
 
-Run the shared pre-flight **before** the audit so the PR is out of draft and each conditionally-triggered reviewer (CodeAnt, CodeRabbit, Cursor) gets a recorded per-reviewer status on the current SHA — engaged (already present or triggered), skipped (excluded by the PR's review tier — on `ci-only`, all three — tier-deferred, rate-capped, or awaiting owner approval for BugBot), or trigger-failed — before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
+Run the shared pre-flight **before** the audit so the PR is out of draft and each conditionally-triggered reviewer (CodeAnt, CodeRabbit, Cursor) gets a recorded per-reviewer status on the current SHA — engaged (already present or triggered), skipped (excluded by the PR's review tier — on `ci-only`, all three — tier-deferred, rate-capped, or awaiting owner approval for BugBot), or trigger-failed — before any finding-classification work begins. Use `pr-preflight.sh` for the draft flip and reviewer triggers.
 
 ```bash
 PREFLIGHT_SH=""
@@ -223,7 +221,7 @@ elif [[ -z "$PREFLIGHT_SH" ]]; then
 fi
 ```
 
-`pr-preflight.sh` is idempotent and rate-cap safe: it marks the PR ready only when **you** authored it, never overrides someone else's intentional draft, never triggers Greptile, posts `@cursor review` only by spending an owner grant for HEAD (paid — #1897, #1898), and skips `@coderabbitai full review` (still posting the other free reviewers) when `cr-review-hourly.sh` reports the cap hit. On a PR that is already ready with every reviewer already engaged **on the current HEAD SHA** or skipped (BugBot without owner approval and no grant, a tier-excluded reviewer) it prints `Pre-flight clean — proceeding` and does nothing — so a clean pre-flight does **not** mean any reviewer was engaged (on `ci-only`, none is). Since #576 engagement is judged against HEAD rather than PR-wide history, a reviewer whose only artifact is on a superseded commit — the normal state after `/fixpr`'s own rebase + force-push — is re-triggered instead of being counted as present. Keep `$PREFLIGHT_SUMMARY_JSON` for the Step 7 "Pre-flight" line.
+`pr-preflight.sh` is idempotent and rate-cap safe: it marks the PR ready only when **you** authored it, never overrides someone else's intentional draft, never triggers Greptile, posts `@cursor review` only by spending an owner grant for HEAD, and skips `@coderabbitai full review` (still posting the other free reviewers) when `cr-review-hourly.sh` reports the cap hit. On a PR that is already ready with every reviewer already engaged **on the current HEAD SHA** or skipped (BugBot without owner approval and no grant, a tier-excluded reviewer) it prints `Pre-flight clean — proceeding` and does nothing — so a clean pre-flight does **not** mean any reviewer was engaged (on `ci-only`, none is). The helper evaluates engagement on current HEAD and applies the same trigger gates when earlier artifacts are stale. Keep `$PREFLIGHT_SUMMARY_JSON` for the Step 7 "Pre-flight" line.
 
 ### Step 0b: Run the audit
 
@@ -237,7 +235,7 @@ else
 fi
 ```
 
-If `pr-state.sh` itself exits non-zero it prints the reason to stderr (no PR, closed PR, detached HEAD, etc.). Stop and report. Exit codes: `0` OK, `2` usage error, `3` no branch and no `--pr`, `4` PR closed/not found, `5` gh/network error. With Step 0a in place, exit `3` (no branch and no `--pr`) only reaches you when inference also found **no** candidate — that is the genuine "which PR did you mean?" case.
+If `pr-state.sh` itself exits non-zero it prints the reason to stderr. Stop and report. Exit codes: `0` OK, `2` usage error, `3` no branch and no `--pr`, `4` PR closed/not found, `5` gh/network error. With Step 0a in place, exit `3` (no branch and no `--pr`) only reaches you when inference also found **no** candidate.
 
 Pull the values that the later steps need out of the JSON once:
 
@@ -245,16 +243,7 @@ Pull the values that the later steps need out of the JSON once:
 PR_NUMBER=$(jq -r '.pr.number' "$AUDIT")
 OWNER=$(jq -r '.pr.owner' "$AUDIT")
 REPO=$(jq -r '.pr.repo' "$AUDIT")
-# Combined form for handoff scoping. Step 3a's path resolution reads
-# ${OWNER_REPO:-}; leaving it unset skips handoff-state.sh entirely and takes
-# Step 3a's own hard-coded literal flat path, which the phase agents never read
-# back (issue #1302) — that is this skill's last-ditch fallback, not a helper
-# fall-through. Since issue #1366 the helper resolves an omitted --owner-repo
-# from $CLAUDE_SESSION_REPO, then the cwd's `origin`, and when neither yields an
-# owner/repo it "exits 2 having written nothing.  It does NOT fall back to the
-# flat path" (handoff-state.sh header) — reaching that path through the helper
-# takes an explicit --legacy-flat. Set OWNER_REPO here so both branches stay
-# scoped.
+# Scope the Step 3a handoff to the PR repository.
 OWNER_REPO="$OWNER/$REPO"
 BRANCH=$(jq -r '.pr.branch' "$AUDIT")
 HEAD_SHA=$(jq -r '.pr.head_sha' "$AUDIT")
@@ -289,7 +278,7 @@ For each entry in `.threads.unresolved`:
    - **already-fixed** — code no longer matches the finding → resolve only
    - **outdated** — file/line no longer exists → resolve only
 
-Do not ask the user before deciding. GitHub is the audit surface and chat is the decision surface: every thread touched by `/fixpr` must end resolved on GitHub, whether the decision was fix or decline.
+Do not ask the user before deciding. Every thread touched by `/fixpr` must end resolved on GitHub, whether the decision was fix or decline.
 
 Print the numbered list:
 
@@ -390,7 +379,7 @@ fi
 
 ## Step 3a: Dismiss stale bot `CHANGES_REQUESTED` reviews (Issue #426)
 
-Only run when Step 3 made a push (`DID_PUSH=1`). Runs **after** `git push` and **before** Step 3b (reviewer triggers) so GitHub does not keep `reviewDecision: CHANGES_REQUESTED` from an obsolete bot review on an older commit.
+Only run when Step 3 made a push (`DID_PUSH=1`). Runs **after** `git push` and **before** Step 3b (reviewer triggers).
 
 Resolve the helper (same pattern as `pr-state.sh` / `cr-review-hourly.sh`):
 
@@ -410,14 +399,7 @@ done
 Optional handoff path (per `handoff-files.md`, one JSON file per PR):
 
 ```bash
-# Resolve the canonical handoff path (issue #655: scoped per repo when owner_repo is known).
-# OWNER_REPO is set in Step 0b from the pr-state.sh bundle; the `gh repo view
-# --json nameWithOwner` form works too for a standalone invocation.
-# With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
-# The literal flat path below is only a fallback for when handoff-state.sh cannot
-# be resolved at all — it is NOT what omitting --owner-repo does. Since issue
-# #1366 an omitted scope derives owner/repo from the cwd, or exits 2 writing
-# nothing; reaching the flat path through the helper needs --legacy-flat.
+# Use the scoped handoff when the repo is known. This caller owns the flat fallback.
 if [[ -n "${OWNER_REPO:-}" ]]; then
   HANDOFF_JSON="${HANDOFF_JSON:-$([[ -n "$HANDOFF_STATE_SH" ]] && "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --path "$PR_NUMBER" 2>/dev/null || echo "$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json")}"
 else
@@ -431,15 +413,7 @@ Run dismissal (idempotent where PUT succeeds or review already **DISMISSED**; ge
 if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
   if [[ -n "$DISMISS_STALE_SCRIPT" ]]; then
     if [[ -n "${HANDOFF_JSON:-}" ]]; then
-      # --owner-repo scopes the handoff append to the same file --handoff-file
-      # names. Step 0b sets OWNER_REPO on every /fixpr run, so this is the
-      # branch taken here. Without the flag dismiss-stale-bot-changes.sh
-      # "[d]efaults to the `gh repo view` value" (its own header), which for a
-      # /fixpr worktree need not match the PR being dismissed — so the IDs can
-      # land in a different repo's scoped file, the split-brain that issue #1302
-      # is about. Omission does not reach the flat path: that branch fires only
-      # when --handoff-file already IS the flat path, and declares itself
-      # --legacy-flat (issue #1366).
+      # Scope dismissal to the same repo as the handoff file.
       if [[ -n "${OWNER_REPO:-}" ]]; then
         "$DISMISS_STALE_SCRIPT" "$PR_NUMBER" --handoff-file "$HANDOFF_JSON" --owner-repo "$OWNER_REPO"
       else
@@ -454,7 +428,7 @@ if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
 fi
 ```
 
-The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, plus the retired `graphite-app[bot]` so a leftover review still clears). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
+The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, plus the retired `graphite-app[bot]`). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
 
 ---
 
@@ -462,7 +436,7 @@ The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` �
 
 Only run this step when Step 3 made a push. If Step 3 skipped the commit/push, skip this step too.
 
-Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — post `@cursor review` once per push, but not again on a HEAD it has already refused for spend; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
+Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. After the push completes, wait exactly 2 minutes before checking reviewer status (BugBot is covered separately — post `@cursor review` once per push, but not again on a HEAD it has already refused for spend; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
 
 ```bash
 PUSHED_SHA=$(git rev-parse HEAD)
@@ -470,7 +444,7 @@ echo "[REVIEWERS] waiting 120s for auto-triggered reviewers on ${PUSHED_SHA:0:7}
 sleep 120
 ```
 
-Then run the extracted trigger script once, with the SHA you just pushed (issue #1749 — it was inline bash here, which no test could run against a fixture policy). It detects which reviewers already auto-triggered on the pushed SHA (`reviewer-activity.sh`) and posts one dedicated PR-level comment per missing reviewer — never batched; combined-mention comments fail to trigger reliably:
+Then run the extracted trigger script once, with the SHA you just pushed. It detects which reviewers already auto-triggered on the pushed SHA (`reviewer-activity.sh`) and posts one dedicated PR-level comment per missing reviewer — never batched:
 
 ```bash
 FIXPR_TRIGGERS_SH=""
@@ -489,12 +463,12 @@ fi
 
 What it posts depends on the repo's review policy (`.claude/reference/review-policy.md` "Trigger eligibility"):
 
-- **No `## Review policy` (`legacy`)** — the pre-#1749 Step 3b, unchanged: `@coderabbitai full review` for a missing CodeRabbit unless 2 were posted on the PR in the trailing hour (a successful post records the slot via `cr-review-hourly.sh --record-explicit`), then `@codeant-ai review`, each only when missing on the pushed SHA, then BugBot — posted **only** by spending an owner grant for the pushed SHA through `paid-review-grant.sh --trigger` (#1898); otherwise the step prints `BugBot not invited — paid review requires owner approval` (issue #1897: paid, owner approval only). The earlier BugBot skips still apply first and keep their wording: when `bugbot-tier-excluded.sh` excludes it, then when `bugbot-refused-head.sh` says BugBot already refused the pushed SHA, then — **last** — when the account daily cap (`review-daily-cap.sh`, #1812) answers a validated `over`; that skip appends `BugBot skipped: daily cap ($X of $Y today)` once per HEAD under the PR body's `## Review notes`.
-- **A tier-aware repo** — only what `review-triggers-allowed.sh` allows on the pushed SHA: CodeAnt once per PR, BugBot only by spending an owner grant at its `approval_required` step (#1897, #1898), CodeRabbit only as the CodeAnt-unavailable fallback. Each post is claimed first and released if it fails; the BugBot refusal and daily-cap guards run inside the helper, and a daily-cap skip still writes the PR-body note. CI is usually still running two minutes after a push, so this step often posts **nothing** on such a repo — expected: `pr-preflight.sh` (Step 0c, every `/babysit-pr` and `/pr-monitor-and-manage` tick) and `maybe-trigger-ai-review.sh` ask again once CI is green.
+- **No `## Review policy` (`legacy`)** — `@coderabbitai full review` for a missing CodeRabbit unless 2 were posted on the PR in the trailing hour (a successful post records the slot via `cr-review-hourly.sh --record-explicit`), then `@codeant-ai review`, each only when missing on the pushed SHA, then BugBot — posted **only** by spending an owner grant for the pushed SHA through `paid-review-grant.sh --trigger`; otherwise the step prints `BugBot not invited — paid review requires owner approval`. The earlier BugBot skips still apply first and keep their wording: when `bugbot-tier-excluded.sh` excludes it, then when `bugbot-refused-head.sh` says BugBot already refused the pushed SHA, then — **last** — when the account daily cap (`review-daily-cap.sh`) answers a validated `over`; that skip appends `BugBot skipped: daily cap ($X of $Y today)` once per HEAD under the PR body's `## Review notes`.
+- **A tier-aware repo** — only what `review-triggers-allowed.sh` allows on the pushed SHA: CodeAnt once per PR, BugBot only by spending an owner grant at its `approval_required` step, CodeRabbit only as the CodeAnt-unavailable fallback. Each post is claimed first and released if it fails; the BugBot refusal and daily-cap guards run inside the helper, and a daily-cap skip still writes the PR-body note. `pr-preflight.sh` (Step 0c, every `/babysit-pr` and `/pr-monitor-and-manage` tick) and `maybe-trigger-ai-review.sh` ask again once CI is green.
 
-Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so it is skipped when auto-trigger activity is already present on the new SHA. BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit; it auto-runs on push, so a refusal can land before this step even executes, which is why the refusal check is asked about `$PUSHED_SHA`. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
+Skip the CodeAnt nudge if it already acted on this HEAD. Respect any BugBot spend refusal on `$PUSHED_SHA`. Greptile stays last-resort only per `greptile.md`.
 
-**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires single-mention comments — `@codeant-ai review`, `@cursor review` — for **complexity + CR round count**, not because of a push, and asks the same review-tier helper on a tier-aware repo. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
+The `cr-github-review.md` polling path invokes `maybe-trigger-ai-review.sh` with no `/fixpr` trigger, no new findings, green CI, and a non-`BEHIND`/`CONFLICTING` merge state. Its individual CodeAnt and Cursor comments follow complexity and CR-round thresholds and the tier helper. It records state in `session-state.json` to avoid duplicate triggers for the same cause. Step 3b separately applies the pushed-HEAD and CodeRabbit hourly rules above.
 
 ---
 
@@ -530,9 +504,9 @@ Post the reply via the shared helper — it handles inline-first, PR-comment-fal
   --verdict "$VERDICT" --defect "$DEFECT" --fix "$FIX"
 ```
 
-**`--verdict` and `--defect` are mandatory on every reply** — they stamp the hidden `<!-- review-verdict: … -->` marker the review-cost ledger reads, and only the marker can record `defect=real`. Set them per entry: **fix** and **already-fixed** → `--verdict fixed`; **decline-high-confidence**, **surface-low-confidence**, and **outdated** → `--verdict declined` (usually `--defect not`); a finding deferred to a follow-up issue → `--verdict deferred`. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `--defect not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Set `$FIX` on every entry (it is ignored unless `--defect real`). Leave `--agent` at its default. Rationale and the mandate's landing date: `.claude/reference/review-stack-audit.md` §The marker.
+**`--verdict` and `--defect` are mandatory on every reply**. Set them per entry: **fix** and **already-fixed** → `--verdict fixed`; **decline-high-confidence**, **surface-low-confidence**, and **outdated** → `--verdict declined` (usually `--defect not`); a finding deferred to a follow-up issue → `--verdict deferred`. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `--defect not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real`: `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Set `$FIX` on every entry (it is ignored unless `--defect real`). Leave `--agent` at its default. The helper writes the review ledger marker. Rationale and the mandate's landing date: `.claude/reference/review-stack-audit.md` §The marker.
 
-The script strips any `@greptileai` tokens from the body in greptile mode and any `@cursor` tokens in bugbot mode — so even a stray mention in `$REPLY` cannot trigger a paid Greptile re-review ($0.50–$1.00). `@greptileai` is reserved exclusively for intentionally requesting a new review. See `reply-thread.sh --help` for the full exit-code contract.
+The script strips any `@greptileai` tokens from the body in greptile mode and any `@cursor` tokens in bugbot mode — so even a stray mention in `$REPLY` cannot trigger a paid Greptile re-review. `@greptileai` is reserved exclusively for intentionally requesting a new review. See `reply-thread.sh --help` for the full exit-code contract.
 
 ### 4b. Resolve via shared helper
 
@@ -550,15 +524,15 @@ echo "$THREAD_RESOLUTION_OUTPUT"
 
 > **NEVER call `resolveReviewThread` inline** (e.g., `for TID in ...; do gh api graphql resolveReviewThread ...; done`). Always use `resolve-review-threads.sh <PR> --thread-ids <id1,id2>` (or `--thread-ids-file`). The script handles retries and the `minimizeComment` fallback automatically.
 
-**Unchanged-line threads:** GitHub only auto-resolves a review thread when the **exact** commented line changes. If `/fixpr` fixed the issue by editing nearby code (or declined/OBE), the thread can stay `isResolved: false` after Step 4b until the script runs `resolveReviewThread` / `minimizeComment` on that thread id. The explicit `--thread-ids-file` set forces resolution for **every** addressed thread, not only those GitHub auto-closed.
+Pass every addressed thread to `--thread-ids-file`, including threads on unchanged lines, declined findings, and threads GitHub already closed.
 
-The script re-fetches `pullRequest.reviewThreads` via GraphQL after each mutation pass and again before exit. For any touched thread still reporting `isResolved: false`, it retries `resolveReviewThread` and falls back to `minimizeComment(classifier: RESOLVED)`. Exit codes: `0` means every touched thread was verified resolved; `1` means at least one dangling thread remains and `/fixpr` must not declare success; `3` PR not found; `4` gh error. It prints `[VERIFY] addressed=N resolved=M dangling=K` plus `[STUCK]` lines with URLs/reasons for every dangling thread.
+The resolver re-fetches `pullRequest.reviewThreads` after each mutation pass and before exit, retrying `resolveReviewThread` and falling back to `minimizeComment(classifier: RESOLVED)` for touched threads still unresolved. Exit codes: `0` means every touched thread was verified resolved; `1` means at least one dangling thread remains and `/fixpr` must not declare success; `3` PR not found; `4` gh error. It prints `[VERIFY] addressed=N resolved=M dangling=K` plus `[STUCK]` lines with URLs/reasons for every dangling thread.
 
 Keep `$TOUCHED_THREADS` until after Step 4c (same path as Step 4b).
 
 ### 4c. Post-push: re-resolve and verify touched threads on the new HEAD
 
-Run **only when Step 3 pushed** (`DID_PUSH=1`). A new commit can reopen threads that were resolved on the prior HEAD (or leave unchanged-line threads still open until an explicit resolve sees the post-push graph).
+Run **only when Step 3 pushed** (`DID_PUSH=1`).
 
 1. Run the same resolve pass again against the **same** `TOUCHED_THREADS` file (fresh GraphQL fetch on current HEAD).
 2. Run a read-only verification pass so completion is blocked until a **second** GraphQL read shows every addressed id as `isResolved: true`.
@@ -593,9 +567,9 @@ Wait — bounded — for the bots and CI to deliver a verdict on the **current H
 **Entry conditions:**
 
 - `DID_PUSH=1` → always enter. Watch the pushed SHA: `WATCH_SHA=$PUSHED_SHA`, baseline `WAIT_BASELINE=$PUSHED_AT`. Step 3b's fixed 120s reviewer-trigger wait already ran; it does **not** count against this loop's cap (the cap clock starts at loop entry).
-- `DID_PUSH=0` (idempotent path) → run **one** snapshot tick first on the current HEAD (`WATCH_SHA=$HEAD_SHA`, `WAIT_BASELINE=$RUN_STARTED_AT`) using the same `pr-state.sh` + jq predicate as the loop below, **without incrementing `FIXPR_WAIT_ITER`**. If `bots_pending`, `ci_pending`, and `ci_failing` are all empty and `new_findings == 0`, set `FIXPR_WAIT_FINAL=clean` and **skip the wait loop entirely — zero wait, zero iterations, no push** — proceed to Step 5. If bots or CI are still pending on the current SHA (e.g. `/wrap` delegated here mid-review), fall through to the wait loop (which increments `FIXPR_WAIT_ITER` once at entry).
+- `DID_PUSH=0` (idempotent path) → run **one** snapshot tick first on the current HEAD (`WATCH_SHA=$HEAD_SHA`, `WAIT_BASELINE=$RUN_STARTED_AT`) using the same `pr-state.sh` + jq predicate as the loop below, **without incrementing `FIXPR_WAIT_ITER`**. If `bots_pending`, `ci_pending`, and `ci_failing` are all empty and `new_findings == 0`, set `FIXPR_WAIT_FINAL=clean` and **skip the wait loop entirely — zero wait, zero iterations, no push** — proceed to Step 5. If bots or CI are still pending on the current SHA, fall through to the wait loop (which increments `FIXPR_WAIT_ITER` once at entry).
 
-**Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Set `WATCH_SHA` / `WAIT_BASELINE` from the entry path above (`PUSHED_SHA`/`PUSHED_AT` when `DID_PUSH=1`, else `HEAD_SHA`/`RUN_STARTED_AT`). Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
+**Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Set `WATCH_SHA` / `WAIT_BASELINE` from the entry path above (`PUSHED_SHA`/`PUSHED_AT` when `DID_PUSH=1`, else `HEAD_SHA`/`RUN_STARTED_AT`). Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline):
 
 Persist the latest snapshot before classifying it, including the zero-wait pre-check. The per-PR handoff must already exist (initialize it through `polling-state-gate.sh --ensure-session`); an unavailable helper or failed write stops this wait without a clean verdict. Pin the selected handoff for this wait; verified legacy records use guarded in-place writes. Missing attribution requires explicit repair, not a scoped shadow. Raw stdout/stderr and a private copy of each readable bundle remain at recorded paths. Failed snapshots are indexed separately from the latest status, so a later clean tick cannot erase them. A failed evaluator/fetch or malformed verdict stops after recording, never becomes clean. Lifecycle and read-only retrieval: `recovery-evidence.md`.
 
@@ -680,13 +654,13 @@ FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))
 fi   # end SKIP_WAIT_LOOP
 ```
 
-**Running this block as a worktree-isolated subagent.** The block above is a multi-line loop, which the harness's worktree-isolation guard refuses when pasted directly — it classifies by command shape, and the refusal names git operations that are not in it (issue #1470). Write the block to a file in the session scratchpad and run `bash <file>`: a single plain call is an allowed shape, and everything inside it then runs in a child process the guard does not gate.
+**Running this block as a worktree-isolated subagent.** Write the loop to a session scratchpad file and run `bash <file>` as one plain call.
 
-**Include the persistence helper in the child file.** Copy the **entire** `fixpr-persist-wait-evidence` loader block (it sources the canonical wait functions) into that same file before the pre-check/loop, and pass `HANDOFF_STATE_SH` plus the verified `OWNER_REPO` alongside the inputs below. Neither a parent-shell function nor unexported helper/scope variables exist in `bash <file>`. Keep `WAIT_BASELINE` and the entry-path inputs (`DID_PUSH`, `HEAD_SHA`, `PUSHED_SHA`, `PUSHED_AT`) available there too; the snapshots assign `TICK` and `WAIT_STATE` inside the child. Missing helper/scope or failed evidence writes must stop, never fabricate a clean wait.
+**Include the persistence helper in the child file.** Copy the **entire** `fixpr-persist-wait-evidence` loader block into that same file before the pre-check/loop, and pass `HANDOFF_STATE_SH` plus the verified `OWNER_REPO` alongside the inputs below. Keep `WAIT_BASELINE` and the entry-path inputs (`DID_PUSH`, `HEAD_SHA`, `PUSHED_SHA`, `PUSHED_AT`) available there too; the snapshots assign `TICK` and `WAIT_STATE` inside the child. Missing helper/scope or failed evidence writes must stop, never fabricate a clean wait.
 
-**`bash <file>` is a FRESH shell — it inherits nothing you set in earlier steps.** `PR_NUMBER`, `WATCH_SHA`, `SCRIPT`, `RUN_STARTED_AT`, `FIXPR_WAIT_ITER`, `FIXPR_MAX_ITERATIONS`, `FIXPR_WAIT_CAP_SECS`, `FIXPR_WAIT_POLL_SECS` and `FIXPR_TOTAL_WAIT_SECS` are plain shell variables, so every one of them arrives empty. Under `set -u` that aborts; without it the loop watches an empty PR, compares against an empty cap, and reports a verdict it never measured. So write their current values into the top of the file (or pass them on the command line as `PR_NUMBER=… WATCH_SHA=… bash <file>`) — and read the outcome back out of the child, which cannot assign your variables: have the file print `WAIT_OUTCOME` and `ELAPSED` on its last line and capture that, rather than expecting the assignments above to survive. That includes the accumulator: `FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))` runs in the child and is discarded with it, so the CALLER must re-apply it to the `ELAPSED` it captured — otherwise every summary that quotes total wait under-reports it by exactly the time this loop spent.
+**Child inputs and outputs.** Pass `PR_NUMBER`, `WATCH_SHA`, `SCRIPT`, `RUN_STARTED_AT`, `FIXPR_WAIT_ITER`, `FIXPR_MAX_ITERATIONS`, `FIXPR_WAIT_CAP_SECS`, `FIXPR_WAIT_POLL_SECS` and `FIXPR_TOTAL_WAIT_SECS` into the child file or its invocation environment. Print `WAIT_OUTCOME` and `ELAPSED` on its last line and capture them in the caller. Reapply `FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))` in the caller.
 
-Do **not** try to flatten this onto `wait-until.sh` — that wrapper answers met/not-met, while this loop is a five-way classifier (`clean` / `new-findings` / `ci-failing` / `head-moved` / `cap-exhausted`) whose outcome routes the rest of the skill. Catalog of refused vs allowed shapes: `.claude/reference/worktree-isolation-command-shapes.md`.
+Keep this classifier in place. Do not substitute `wait-until.sh`. See `.claude/reference/worktree-isolation-command-shapes.md` for allowed command shapes.
 
 **Participating-bot set is DYNAMIC** — computed fresh each tick from the bot logins seen in any review or comment on this PR, intersected with the allowlist. A CR-only PR never waits on Greptile/BugBot signals. Never use a static list.
 
@@ -697,7 +671,7 @@ Do **not** try to flatten this onto `wait-until.sh` — that wrapper answers met
 | Outcome | Action |
 |---------|--------|
 | `clean` | Set `FIXPR_WAIT_FINAL=clean`. Proceed to Step 5 — the verify pass gives the authoritative classification of what the bots posted. |
-| `new-findings`, `ci-failing`, or `head-moved` | If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` → start the **next sweep at Step 0** (fresh `$RUN_STARTED_AT` picks up the new findings; the sweep fixes, pushes once, and re-enters this wait on the new SHA). Else at outer cap, set `FIXPR_WAIT_FINAL` and Status **per outcome** — do not blanket-label everything `new-findings-pending`: `new-findings` → `FIXPR_WAIT_FINAL=new-findings-pending`, Status `NEW_FINDINGS`; `ci-failing` → `FIXPR_WAIT_FINAL=cap-exhausted`, Status `CI_FAILING`; `head-moved` → `FIXPR_WAIT_FINAL=cap-exhausted`, Status note external push in summary (re-run `/fixpr`). |
+| `new-findings`, `ci-failing`, or `head-moved` | If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` → start the **next sweep at Step 0** with a fresh `$RUN_STARTED_AT`. Else at outer cap, set `FIXPR_WAIT_FINAL` and Status **per outcome** — do not blanket-label everything `new-findings-pending`: `new-findings` → `FIXPR_WAIT_FINAL=new-findings-pending`, Status `NEW_FINDINGS`; `ci-failing` → `FIXPR_WAIT_FINAL=cap-exhausted`, Status `CI_FAILING`; `head-moved` → `FIXPR_WAIT_FINAL=cap-exhausted`, Status note external push in summary (re-run `/fixpr`). |
 | `cap-exhausted` | Set `FIXPR_WAIT_FINAL=cap-exhausted`. Proceed to Step 5/7 — the cap-hit lines above (pending bots + incomplete CI) MUST appear in the final summary; the status will be `REVIEW_PENDING` or `CI_PENDING` per what is outstanding. |
 
 **Safety (non-negotiable, issues #450/#452/#454):** this loop is read-only plus the single rate-capped CR re-trigger above. It never calls branch-protection APIs, never dismisses human reviews, and never resolves threads — thread resolution happens only in Steps 1–4 after code-verification.
@@ -714,7 +688,7 @@ VERIFY=$("$SCRIPT" --since "$RUN_STARTED_AT")
 
 ### 5a. Threads
 
-The Step 4b resolver (and, when `DID_PUSH=1`, Step 4c’s resolve + `--verify-only` passes) re-fetched `pullRequest.reviewThreads` via GraphQL, retried `resolveReviewThread`, used `minimizeComment(classifier: RESOLVED)` as fallback, and printed addressed/resolved/dangling counts. Re-state the **latest** `[VERIFY]` line(s) here from `THREAD_RESOLUTION_OUTPUT` plus `POST_PUSH_THREAD_OUTPUT` / `POST_PUSH_VERIFY_OUTPUT` when Step 4c ran; do not recompute from `.threads.unresolved_count` alone because `/fixpr` must verify the specific threads it replied to.
+Re-state the latest `[VERIFY]` from `THREAD_RESOLUTION_OUTPUT` and, if Step 4c ran, `POST_PUSH_THREAD_OUTPUT` / `POST_PUSH_VERIFY_OUTPUT`. Verify those exact threads independently of `.threads.unresolved_count`.
 
 ```bash
 UNRESOLVED=$(jq -r '.threads.unresolved_count' "$VERIFY")
@@ -737,9 +711,9 @@ jq -r '
 ' "$VERIFY"
 ```
 
-**Classification rules** live in `.claude/scripts/lib/pr-state-classify.jq` (the block comment above `def classify:` is the authoritative contract — do NOT duplicate it here). `pr-state.sh --since` supplies the endpoint arrays and timestamp bindings, then exposes the result through the unchanged `new_since_baseline` bundle fields. Key ordering invariants: tier-1 explicit-resolution overrides (addressed/withdrawn markers, zero-actionable phrases, rate-limit notices, BugBot usage-limit notices, full-review-triggered ack, clean-pass phrases, error stub, auto-reply ack) are checked first and win even if finding language appears in quoted context. Finding patterns (severity, badges, actionable phrases, suggestion blocks) come next. Weak-ack fallbacks (lgtm variants) follow. The CR walkthrough summary override, Greptile clean-pass summary and CodeAnt's prose-only boilerplate (#1748) come LAST — their late placement is load-bearing (a walkthrough can carry N>0 finding count; hoisting it would produce false-clean verdicts). Default → finding (under-classifying is the failure mode).
+Use `pr-state.sh --since`'s unchanged `new_since_baseline` classification fields. `.claude/scripts/lib/pr-state-classify.jq` defines and applies the authoritative precedence, including the default finding classification. Use that result without reimplementing the rules.
 
-**If `finding_count > 0`:** findings landed between the Step 4d wait exit and this verify. If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, start the next sweep at Step 0 (a fresh `$RUN_STARTED_AT` re-audits and picks them up). At the outer cap: set `FIXPR_WAIT_FINAL=new-findings-pending`, emit `NEW_FINDINGS` in Step 7, and stop — re-running `/fixpr` resets the iteration budget.
+**If `finding_count > 0`:** If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, start the next sweep at Step 0. At the outer cap: set `FIXPR_WAIT_FINAL=new-findings-pending`, emit `NEW_FINDINGS` in Step 7, and stop — re-running `/fixpr` resets the iteration budget.
 
 ### 5c. CI (if a push was made; exclude review-bot check-runs from CI pending)
 
@@ -792,7 +766,7 @@ Do NOT poll here — Step 4d is the single owner of post-push polling. CI still 
 
 ### 5d. Review-bot commit statuses on the current HEAD
 
-CR and Greptile report review completion via commit *statuses*, while CodeAnt and Cursor may report via check-runs. `pending` means a bot is still analyzing the current HEAD — declaring CLEAN while pending is the exact failure mode this verify step was built to prevent.
+CR and Greptile report review completion via commit *statuses*, while CodeAnt and Cursor may report via check-runs. `pending` means a bot is still analyzing the current HEAD.
 
 ```bash
 jq -r '
@@ -802,11 +776,11 @@ jq -r '
 
 For each bot present in `.bot_statuses` or the current-head check-runs:
 
-- **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule — a Greptile or other status whose text happens to contain "rate limit" is not CR rate-limiting and falls through to the rules below.
+- **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule.
 - `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
 - `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop. Not for a retired Graphite check-run: Step 5c already excludes it from CI and nothing waits on it.
-- No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a CodeRabbit or CodeAnt that Step 3b logged as `skipping … — review tier …` (kind `excluded`) was never invited, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
-- **BugBot silence** (#1953): await `REVIEW_PENDING` only for a verified current-HEAD invitation or unused matching owner grant. Step 3b deferral or a daily-cap skip alone is not an invitation. Require the portable `bugbot-invitation.sh` reader; missing tooling or unknown/unreadable evidence remains awaited. On no-push reruns, ignore inherited `PUSHED_AT`/`PUSHED_SHA` and retain qualifying invitations posted before the rerun. Keep `BUGBOT_INVITATION_RESULT` and its `evidence_path` in Step 5 recovery evidence, never as future authorization. The reader only reads/checks grants; it never triggers or consumes. Window, bounds and diagnostic details: `bugbot-invitation.sh --help`.
+- No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → expect the Step 3b trigger (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a CodeRabbit or CodeAnt that Step 3b logged as `skipping … — review tier …` (kind `excluded`) was never invited, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
+- **BugBot silence**: await `REVIEW_PENDING` only for a verified current-HEAD invitation or unused matching owner grant. Step 3b deferral or a daily-cap skip alone is not an invitation. Require the portable `bugbot-invitation.sh` reader; missing tooling or unknown/unreadable evidence remains awaited. On no-push reruns, ignore inherited `PUSHED_AT`/`PUSHED_SHA` and retain qualifying invitations posted before the rerun. Keep `BUGBOT_INVITATION_RESULT` and its `evidence_path` in Step 5 recovery evidence, never as future authorization. The reader only reads/checks grants; it never triggers or consumes. Window, bounds and diagnostic details: `bugbot-invitation.sh --help`.
 
 <!-- test-anchor: fixpr-step-5d-bugbot-invited -->
 ```bash
@@ -849,7 +823,7 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 
 ### 6a. Diff-survival guard — MANDATORY around every rebase (issue #757)
 
-A conflict resolution with no markers still satisfies git even when it silently kept the other side and dropped the entire change the PR exists to deliver. Nothing else in this workflow catches that: status is clean, CI is green, review sees a PR that no longer contains its own fix. Wrap **every** rebase below — interactive and safe-only alike — in this pair:
+Wrap **every** rebase below — interactive and safe-only alike — in this pair:
 
 ```bash
 GUARD="$DIFF_SURVIVAL_SH"
@@ -866,17 +840,17 @@ Branch on `GUARD_RC`:
 
 - **`0`** — intact (or `deferred`, meaning commits are still queued for replay; finish the rebase and re-run). Proceed to the force-push.
 - **`1`** — the branch's entire diff vanished. **Do not force-push.** Report the guard's output verbatim; it names the one legitimate case (main independently landed the identical change → **close the PR**, never force-push an empty branch). Return `Status: CONFLICTS` / `FIXPR_WRAP_STATUS: CONFLICTS`.
-- **`2`** — named files lost their changes. **Do not force-push, do not trigger reviewers, do not run Step 3a/3b/4d.** Report the named files and return `Status: CONFLICTS` / `FIXPR_WRAP_STATUS: CONFLICTS` — a vaporized diff is an *unresolved* conflict, not a push.
-- **`4`** — unresolved conflicts remain, the snapshot is for another branch, or verdict `unverifiable`. On `unverifiable` the snapshot's baseline commit *is* the commit being checked, so the comparison proves nothing: **do not force-push** — report the resolution as UNVERIFIED and treat it as unresolved.
-- **`5`** — no snapshot exists (the rebase was started by an earlier session). Run `"$GUARD" snapshot --if-absent`, then `verify`. **This only reconstructs a real baseline while the rebase is still in progress** — mid-rebase the guard reads the rebase's `orig-head` rather than the half-replayed HEAD. If the rebase has **already finished**, no baseline can be reconstructed after the fact: `verify` returns `unverifiable` (exit 4) rather than a false pass. Do not push on that verdict — say the resolution could not be verified and let a human decide.
+- **`2`** — named files lost their changes. **Do not force-push, do not trigger reviewers, do not run Step 3a/3b/4d.** Report the named files and return `Status: CONFLICTS` / `FIXPR_WRAP_STATUS: CONFLICTS`.
+- **`4`** — unresolved conflicts remain, the snapshot is for another branch, or verdict `unverifiable`. On `unverifiable` **do not force-push** — report the resolution as UNVERIFIED and treat it as unresolved.
+- **`5`** — no snapshot exists. Run `"$GUARD" snapshot --if-absent`, then `verify`. **This only reconstructs a real baseline while the rebase is still in progress**. If the rebase has **already finished**, no baseline can be reconstructed after the fact: `verify` returns `unverifiable` (exit 4). Do not push on that verdict — say the resolution could not be verified and let a human decide.
 
-The guard **never repairs anything**; recovery (`git rebase --abort`, or resetting to `ORIG_HEAD`) stays a deliberate human step. In **safe-only mode** (`BABYSIT_SAFE_CONFLICT_MODE=1`) a non-zero verify is surfaced upstream exactly like a complex hunk — emit the `CONFLICT_COMPLEX_REPORT_JSON:` line (use the guard's `--json` object as the value) plus `FIXPR_WRAP_STATUS: CONFLICTS`, so `/babysit-pr` T4 terminates `hard-blocked` with the lost-file report instead of counting a vaporized push as forward progress. Full contract: `.claude/reference/diff-survival-guard.md`.
+The guard **never repairs anything**; recovery (`git rebase --abort`, or resetting to `ORIG_HEAD`) stays a deliberate human step. In **safe-only mode** (`BABYSIT_SAFE_CONFLICT_MODE=1`) a non-zero verify is surfaced upstream exactly like a complex hunk — emit the `CONFLICT_COMPLEX_REPORT_JSON:` line (use the guard's `--json` object as the value) plus `FIXPR_WRAP_STATUS: CONFLICTS`, so `/babysit-pr` T4 terminates `hard-blocked` with the lost-file report. Full contract: `.claude/reference/diff-survival-guard.md`.
 
 | Field | Blocking value | Action |
 |-------|---------------|--------|
 | `mergeable` | `CONFLICTING` | **Run `diff-survival-check.sh snapshot` before the rebase and `verify` before the force-push — Step 6a is mandatory on both branches of this row.** **Default (interactive):** Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts (optionally run **`/merge-conflict`** — `.claude/skills/merge-conflict/SKILL.md` — to fetch main, auto-resolve *simple* hunks, stage clean files, and list *complex* hunks), continue, force-push. **Safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`):** invoked by `/babysit-pr --auto-resolve-conflicts` for unattended resolution. After `git fetch origin main && git rebase origin/main` stops on conflicts, locate and invoke `resolve_merge_conflicts.py --repo "$(git rev-parse --show-toplevel)" --json` directly (candidate-path lookup: skills-worktree first, then in-repo). Branch on exit code: exit `0` (all hunks simple, files staged, empty `complex_report`) → run `git rebase --continue`, then **run the Step 6a `verify` gate before anything else** and only on `GUARD_RC == 0` treat it as push-equivalent (force-push, run Step 3a + Step 3b + Step 4d on the new SHA); exit `1` (any complex hunk, partial resolution, or stage failure) → run `git rebase --abort`, do NOT attempt any manual/semantic resolution, and emit the following lines so the caller can capture the structured report — then return with `Status: CONFLICTS` and `FIXPR_WRAP_STATUS: CONFLICTS`: <br><br>```text`<br>CONFLICT_COMPLEX_REPORT_JSON: <the raw JSON value of complex_report from the resolver's --json output>`<br>```<br><br>Store the emitted `CONFLICT_COMPLEX_REPORT_JSON` line into `.babysit.last_dispatch.complex_report` (or parse it from the fixpr output) so T-END can render each `{file, location, reason}` entry verbatim in the termination report. In safe-only mode, **never** attempt to hand-resolve or semantically merge a complex hunk — abort and report only. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
-| `mergeStateStatus` | `BEHIND` | **First run `"$CLEAN_BEHIND_SH" "$PR_NUMBER"` (issues #631, #667).** Exit 0 (`safe_to_offer`: gate green except BEHIND, not CONFLICTING, AC verified, no touching or overlapping changed lines between the base delta and the PR — rules: the `clean-behind-check.sh` header) → **stop looping rebases and run `"$ADMIN_MERGE_SH" "$PR_NUMBER" --auto-plain --ac-verified`** (issue #754) — but **only after completing `cr-merge-gate.md` Step 2** (verify every Test Plan checkbox against the source at this SHA; ticked boxes are the proxy `clean-behind-check.sh` already checked, not verification). Any criterion that fails → fix it, do not merge; the script refuses without `--ac-verified`. Exit 0 → merged; relay its `AUTO_PLAIN_MERGED` evidence block. **No `AskUserQuestion`** — the plain shape modifies no branch protection, so it needs no user turn. Exit 8 → the shape needs a protection change (or an auto attempt already ran): **offer `/admin-merge` as a user choice** (AskUserQuestion, or print the command when running non-interactively) and **never auto-run** it. Exit 1 → not safe after re-validation (e.g. main advanced); fall through to the rebase path below. The `churn.advisory` field is context, not a gate (sensitivity configurable via `--churn-threshold N` or `CHURN_THRESHOLD` env var, default 1). Exit 1 (not safe — especially a base-delta↔PR-file overlap, or any residual blocker) → **capture the Step 6a snapshot (`diff-survival-check.sh snapshot`), then** rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. **Run the Step 6a `verify` gate; force-push only on `GUARD_RC == 0`** — a non-zero verdict blocks the push and returns `Status: CONFLICTS`. When `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, treat the force-push as push-equivalent: set `PUSHED_SHA=$(git rev-parse HEAD)`, `PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`, `DID_PUSH=1`, run **Step 3a** (dismiss stale bot reviews), **Step 3b** (reviewer triggers + 120s wait), then **Step 4d** on the new SHA. Do **not** jump straight to Step 4d without 3a/3b — bots are never kicked on the rebased SHA otherwise. |
+| `mergeStateStatus` | `BEHIND` | **First run `"$CLEAN_BEHIND_SH" "$PR_NUMBER"`.** Exit 0 (`safe_to_offer`: gate green except BEHIND, not CONFLICTING, AC verified, no touching or overlapping changed lines between the base delta and the PR — rules: the `clean-behind-check.sh` header) → **stop looping rebases and run `"$ADMIN_MERGE_SH" "$PR_NUMBER" --auto-plain --ac-verified`** — but **only after completing `cr-merge-gate.md` Step 2** (verify every Test Plan checkbox against the source at this SHA; ticked boxes are the proxy `clean-behind-check.sh` already checked, not verification). Any criterion that fails → fix it, do not merge; the script refuses without `--ac-verified`. Exit 0 → merged; relay its `AUTO_PLAIN_MERGED` evidence block. **No `AskUserQuestion`** — the plain shape modifies no branch protection, so it needs no user turn. Exit 8 → the shape needs a protection change (or an auto attempt already ran): **offer `/admin-merge` as a user choice** (AskUserQuestion, or print the command when running non-interactively) and **never auto-run** it. Exit 1 → not safe after re-validation (e.g. main advanced); fall through to the rebase path below. The `churn.advisory` field is context, not a gate (sensitivity configurable via `--churn-threshold N` or `CHURN_THRESHOLD` env var, default 1). Exit 1 (not safe — especially a base-delta↔PR-file overlap, or any residual blocker) → **capture the Step 6a snapshot (`diff-survival-check.sh snapshot`), then** rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase, resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. **Run the Step 6a `verify` gate; force-push only on `GUARD_RC == 0`** — a non-zero verdict blocks the push and returns `Status: CONFLICTS`. When `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, treat the force-push as push-equivalent: set `PUSHED_SHA=$(git rev-parse HEAD)`, `PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`, `DID_PUSH=1`, run **Step 3a** (dismiss stale bot reviews), **Step 3b** (reviewer triggers + 120s wait), then **Step 4d** on the new SHA. Do **not** jump straight to Step 4d without 3a/3b. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review` or `@codeant-ai review`; `@greptileai` is paid: only under an owner grant via `"$PAID_GRANT_SH" --trigger <PR> --vendor greptile` (#1898; an empty `PAID_GRANT_SH` is `DEGRADED: paid-review-grant.sh not found (checked all three paths)` — report it, never read it as "no grant"); otherwise ask for one (attended sessions only — `paid-review-approval.md`) or report a human blocker — never emit a pending review for a trigger that did not run, #1897) instead of escalating to the author — on a tier-aware repo, only a CodeRabbit or CodeAnt trigger `review-triggers-allowed.sh` allows (claim it first). |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. **Stale** bot `CHANGES_REQUESTED` (wrong `commit_id` vs HEAD) are cleared by Step 3a after each push — not escalation. If a **human** left `CHANGES_REQUESTED` on the current HEAD, report as non-automatable. |
@@ -911,14 +885,10 @@ FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable
 FIXPR_WAIT_SUMMARY: iterations=<N> total_wait_secs=<S> final=<clean|cap-exhausted|new-findings-pending>
 ```
 
-Render the **Pre-flight** line from the per-reviewer `.status` values in `$PREFLIGHT_SUMMARY_JSON` (Step 0c), never from `.clean` alone, which is also true when the review tier excluded every reviewer (issue #1839). Print `$PREFLIGHT_LINE` verbatim:
+Render the **Pre-flight** line from the per-reviewer `.status` values in `$PREFLIGHT_SUMMARY_JSON` (Step 0c), never from `.clean` alone. Print `$PREFLIGHT_LINE` verbatim:
 
 <!-- test-anchor: fixpr-step-7-preflight-line -->
 ```bash
-# Head: "clean — already ready" or the draft action. Then "all N reviewers
-# engaged" only when every reviewer is already-present; otherwise "K of N
-# reviewers engaged" plus each other status naming its reviewers, e.g.
-# "clean — already ready, 0 of 3 reviewers engaged; review tier excludes codeant, coderabbit, cursor".
 if [[ -z "${PREFLIGHT_SUMMARY_JSON:-}" ]]; then
   PREFLIGHT_LINE="skipped"   # no PR resolved yet, or pr-preflight.sh missing
 else
@@ -958,9 +928,9 @@ else
 fi
 ```
 
-Legacy repos (no `## Review policy`) never produce `skipped-tier-excluded`, so a fully engaged legacy PR still reads `all N reviewers engaged`. N is counted from the summary (three since Graphite's retirement), never a literal.
+Legacy repos (no `## Review policy`) never produce `skipped-tier-excluded`, so a fully engaged legacy PR still reads `all N reviewers engaged`. N is counted from the summary, never a literal.
 
-`/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** and **`FIXPR_WAIT_SUMMARY:`** (and echo **`Status:`**) into heartbeats without re-parsing prose. `FIXPR_WAIT_SUMMARY` is the issue #454 contract: `/wrap` trusts this verdict — the bots and CI were already waited on here, so `/wrap` re-runs `merge-gate.sh` immediately with no polling of its own. `final=clean` when the last wait exited on a full bot+CI verdict (or the idempotent no-push path was already clean — `iterations=0`); `final=cap-exhausted` when the last wait hit `FIXPR_WAIT_CAP_SECS`; `final=new-findings-pending` when the outer iteration cap exhausted with findings still arriving.
+`/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** and **`FIXPR_WAIT_SUMMARY:`** (and echo **`Status:`**) into heartbeats without re-parsing prose. `/wrap` re-runs `merge-gate.sh` immediately with no polling of its own. `final=clean` when the last wait exited on a full bot+CI verdict (or the idempotent no-push path was already clean — `iterations=0`); `final=cap-exhausted` when the last wait hit `FIXPR_WAIT_CAP_SECS`; `final=new-findings-pending` when the outer iteration cap exhausted with findings still arriving.
 
 **Status definitions:**
 
