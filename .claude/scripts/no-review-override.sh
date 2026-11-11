@@ -71,6 +71,13 @@
 #   exactly what it was before this helper existed. "Now" is the real clock;
 #   there is deliberately no environment or flag override for it.
 #
+# REVIEW-REQUEST ANCHOR (issue #2194): when the PR author has requested a review
+# on HEAD (a whole line `@codeant-ai review` / `@coderabbitai [full ]review`
+# posted at or after the push anchor above), the window runs from the FIRST such
+# request instead (anchor_source "review_request", request_ts set). Later requests
+# never move it. Fail closed on an unreadable comment list, an unknown author, or
+# a malformed request timestamp.
+#
 # Mechanism and rationale: .claude/reference/no-review-override.md
 
 set -uo pipefail
@@ -114,7 +121,8 @@ emit() { printf '%s\n' "$1"; exit 0; }
 BASE=$(printf '%s' "$PAYLOAD" | jq -c '
   {enabled: (.window_seconds != null), window_seconds: .window_seconds,
    eligible: false, applied: false, reason: "", pending_reason: "",
-   head_anchor_ts: null, anchor_source: null, elapsed_seconds: null, eligible_at: null,
+   head_anchor_ts: null, anchor_source: null, request_ts: null, push_anchor_ts: null,
+   elapsed_seconds: null, eligible_at: null,
    verdicts_on_head: [], missing_reviewers: [], waived_reasons: [], excluded_reviewer_checks: []}')
 
 # 1. Disabled, nothing to waive, or a tier that requires no reviewer.
@@ -293,12 +301,46 @@ $TIMELINE_JSON" 2>/dev/null) || ANCHOR=""
 ANCHOR_ERR=$(printf '%s' "$ANCHOR" | jq -r '.error // ""')
 [[ -z "$ANCHOR_ERR" ]] || ineligible "$ANCHOR_ERR"
 
+# 4. Review-request stage (issue #2194). The wait runs from the first review
+# request on HEAD, not from the push. A request is a comment BY THE PR AUTHOR
+# that is a whole line `@codeant-ai review` or `@coderabbitai [full ]review`
+# (the harness's own trigger scripts post as the author too). It counts only
+# when posted at or after the push anchor above, so a request made on an older
+# HEAD never anchors this one. The FIRST such request wins: a later request
+# never restarts or extends the window. A comment counts at its latest edit
+# (max of created_at and updated_at), so an edit that adds a trigger line can
+# only start the window later, never earlier. No qualifying request → the push anchor
+# is used unchanged. Fail closed: an unreadable comment list, an unknown author,
+# or a malformed timestamp on a matching request leaves the override off.
+[[ "$(printf '%s' "$PAYLOAD" | jq -r '(.issue_comments | type) == "array"')" == true ]] \
+  || ineligible "anchor_unavailable: comment list unreadable"
+PR_AUTHOR=$(printf '%s' "$PULL_JSON" | jq -r '.user.login // ""')
+[[ -n "$PR_AUTHOR" ]] || ineligible "anchor_unavailable: PR author unreadable"
+PUSH_T=$(printf '%s' "$ANCHOR" | jq -c '.t')
+REQUEST=$(printf '%s' "$PAYLOAD" | jq -c --arg author "$PR_AUTHOR" --argjson base "$PUSH_T" "$JQ_DEFS"'
+  [ (.issue_comments // [])[]?
+    | select((.user.login // "") == $author)
+    | select((.body // "") | split("\n") | any(test("^[ \t]*@(codeant-ai|coderabbitai)[ \t]+(full[ \t]+)?review[ \t]*\r?$"; "i")))
+    | {raw: (.created_at // null),
+       t: ([(.created_at | ts), ((.updated_at // .created_at) | ts)]
+           | if any(. == null) then null else max end)} ] as $all
+  | if any($all[]; .t == null) then {error: "anchor_malformed: review request created_at"}
+    else {request: ([$all[] | select(.t >= $base)] | sort_by(.t) | first)}
+    end' 2>/dev/null) || REQUEST=""
+[[ -n "$REQUEST" ]] || ineligible "anchor_malformed: could not evaluate review requests"
+REQUEST_ERR=$(printf '%s' "$REQUEST" | jq -r '.error // ""')
+[[ -z "$REQUEST_ERR" ]] || ineligible "$REQUEST_ERR"
+REQUEST_T=$(printf '%s' "$REQUEST" | jq -c '.request.t // null')
+
 NOW=$(date -u +%s)
 BLOCKERS=$(printf '%s' "$PAYLOAD" | jq -c '.review_blockers // []')
-emit "$(printf '%s' "$OUT" | jq -c --argjson a "$ANCHOR" --argjson now "$NOW" --argjson rb "$BLOCKERS" '
-  ($now - $a.t) as $el
-  | .head_anchor_ts = ($a.t | todateiso8601) | .anchor_source = $a.src
-  | .elapsed_seconds = $el | .eligible_at = (($a.t + .window_seconds) | todateiso8601)
+emit "$(printf '%s' "$OUT" | jq -c --argjson a "$ANCHOR" --argjson rt "$REQUEST_T" --argjson now "$NOW" --argjson rb "$BLOCKERS" '
+  (if $rt != null then {t: $rt, src: "review_request"} else {t: $a.t, src: $a.src} end) as $h
+  | ($now - $h.t) as $el
+  | .head_anchor_ts = ($h.t | todateiso8601) | .anchor_source = $h.src
+  | .request_ts = (if $rt != null then ($rt | todateiso8601) else null end)
+  | .push_anchor_ts = ($a.t | todateiso8601)
+  | .elapsed_seconds = $el | .eligible_at = (($h.t + .window_seconds) | todateiso8601)
   | .eligible = true
   | if $el >= .window_seconds then
       .applied = true | .reason = "window_elapsed" | .waived_reasons = $rb
