@@ -14,8 +14,8 @@
 #     - runs without a PR number (a future non-pull_request trigger) get a
 #       per-run group, never one global group, and never a PR's group;
 #     - `cancel-in-progress` is the YAML boolean true (not the string "true");
-#     - the trigger set is exactly {pull_request} and no job declares its own
-#       concurrency, so push/main runs cannot join a PR's group unnoticed.
+#     - the trigger set is exactly {pull_request, push limited to main} and no job
+#       declares its own concurrency, so push/main runs cannot join a PR's group.
 #   The evaluator knows only a handful of `github.*` names and the `||`
 #   operator; any other token is an error, so a new key ingredient forces this
 #   test to be revisited rather than passing on an unmodelled value.
@@ -137,10 +137,13 @@ def check(doc):
     else:
         on = doc[trigger_keys[0]]
         events = set(on) if isinstance(on, (dict, list)) else {on}
-        if events != {"pull_request"}:
+        if events != {"pull_request", "push"}:
             errors.append(
-                f"trigger set must be exactly {{pull_request}}, got {sorted(map(str, events))}"
+                f"trigger set must be exactly {{pull_request, push}}, got {sorted(map(str, events))}"
             )
+        elif not (isinstance(on, dict) and isinstance(on.get("push"), dict)
+                  and on["push"].get("branches") == ["main"]):
+            errors.append("push trigger must be limited to branches: [main]")
 
     for job_id, job in (doc.get("jobs") or {}).items():
         if isinstance(job, dict) and "concurrency" in job:
@@ -223,9 +226,9 @@ def set_cip(value):
     return lambda d: d["concurrency"].__setitem__("cancel-in-progress", value)
 
 
-def add_push(d):
+def add_push_all_branches(d):
     key = "on" if "on" in d else True
-    d[key] = {"pull_request": {}, "push": {"branches": ["main"]}}
+    d[key] = {"pull_request": {}, "push": {}}
 
 
 def job_conc(d):
@@ -247,7 +250,7 @@ NEGATIVES = [
     ("group without run_id fallback",
      set_group("${{ github.workflow }}-${{ github.event.pull_request.number }}")),
     ("unknown token in group", set_group("${{ github.workflow }}-${{ github.actor }}")),
-    ("push trigger added", add_push),
+    ("push trigger on every branch", add_push_all_branches),
     ("job-level concurrency", job_conc),
 ]
 

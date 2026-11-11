@@ -1,7 +1,12 @@
 name: Hook scripts
 
+# Every PR runs all three hook-test jobs, but each job runs only the suites the PR can
+# affect (issue #2153; selector: .github/scripts/select-hook-tests.sh). A push to main
+# runs the full set as the backstop: the selector answers ALL for any non-PR event.
 on:
   pull_request: {}
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -39,7 +44,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Full history: the selector diffs the PR against its base SHA (issue #2153).
+          fetch-depth: 0
           persist-credentials: false
+
+      # Decide once per job which suites this PR can affect (issue #2153). Fail toward the
+      # full run: a selector that exits non-zero hands the runners ALL, never a partial list.
+      - name: Select hook test suites this PR can affect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SEL="$RUNNER_TEMP/hook-test-selection.txt"
+          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
+            printf '# reason: selector exited non-zero: full run\nALL\n' > "$SEL"
+          fi
+          echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
+          cat "$SEL"
 
       - name: Configure git (worktree tests)
         run: |
@@ -72,10 +93,10 @@ jobs:
           python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", f"PyYAML {yaml.__version__} on sys.path, expected 6.0.3"; print("PyYAML", yaml.__version__)'
 
       - name: Run bash hook + script test suites (auto-discovered)
-        run: bash .github/scripts/summarize-test-run.sh "Bash test suites" .github/scripts/run-hook-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites" .github/scripts/run-hook-tests.sh --only-file "$HOOK_TEST_SELECTION"
 
       - name: Run Python hook unit tests (auto-discovered)
-        run: bash .github/scripts/summarize-test-run.sh "Python unit tests" .github/scripts/run-python-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Python unit tests" .github/scripts/run-python-tests.sh --only-file "$HOOK_TEST_SELECTION"
 
   # The fleet's primary platform is macOS (state-lock.sh: no flock(1), BSD
   # userland, ~8ms forks) while the job above runs on ubuntu-latest only — so a
@@ -100,7 +121,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Full history: the selector diffs the PR against its base SHA (issue #2153).
+          fetch-depth: 0
           persist-credentials: false
+
+      # Decide once per job which suites this PR can affect (issue #2153). Fail toward the
+      # full run: a selector that exits non-zero hands the runners ALL, never a partial list.
+      - name: Select hook test suites this PR can affect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SEL="$RUNNER_TEMP/hook-test-selection.txt"
+          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
+            printf '# reason: selector exited non-zero: full run\nALL\n' > "$SEL"
+          fi
+          echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
+          cat "$SEL"
 
       - name: Configure git (worktree tests)
         run: |
@@ -142,7 +179,7 @@ jobs:
           python3 -c 'import yaml; print("PyYAML available:", yaml.__version__)'
 
       - name: Run bash hook + script test suites (auto-discovered, macOS)
-        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh --only-file "$HOOK_TEST_SELECTION"
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
@@ -156,7 +193,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Full history: the selector diffs the PR against its base SHA (issue #2153).
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Select hook test suites this PR can affect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SEL="$RUNNER_TEMP/hook-test-selection.txt"
+          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
+            printf '# reason: selector exited non-zero: full run\nALL\n' > "$SEL"
+          fi
+          echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
+          cat "$SEL"
 
       - name: Set up Python 3.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -164,7 +215,7 @@ jobs:
           python-version: '3.9'
 
       - name: Python hook unit tests (3.9, auto-discovered)
-        run: bash .github/scripts/summarize-test-run.sh "Python unit tests (3.9)" .github/scripts/run-python-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Python unit tests (3.9)" .github/scripts/run-python-tests.sh --only-file "$HOOK_TEST_SELECTION"
 
       - name: Hooks import smoke (3.9)
         run: |
