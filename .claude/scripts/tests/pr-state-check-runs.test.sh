@@ -210,6 +210,12 @@ check_eq "graphite-app's pending check (any name) is not CI" \
 check_eq "graphite-app's failed check is not CI failing" \
   '{"ci_pending":[],"ci_failing":[]}' \
   "$(wait_ci '[{"name":"Graphite / mergeability_check","status":"completed","conclusion":"failure","app":{"slug":"graphite-app","id":158384}}]')"
+check_eq "legacy failed Graphite AI review without a slug is excluded" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Graphite / AI Reviews","status":"completed","conclusion":"failure"}]')"
+check_eq "known publisher takes precedence over the legacy Graphite name" \
+  '{"ci_pending":["Graphite / AI Reviews"],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Graphite / AI Reviews","status":"in_progress","app":{"slug":"github-actions"}}]')"
 check_eq "other app's failed 'graphite' check stays CI failing" \
   '{"ci_pending":[],"ci_failing":["graphite-lint"]}' \
   "$(wait_ci '[{"name":"graphite-lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"

@@ -57,6 +57,10 @@ check_eq "graphite-app's pending check is excluded" "0 0 0" \
   "$(run_5c '[{"name":"r","status":"queued","conclusion":null,"app":{"slug":"graphite-app"}}]')"
 check_eq "graphite-app's failed check is not CI failing" "0 0 0" \
   "$(run_5c '[{"name":"Graphite / mergeability_check","status":"completed","conclusion":"failure","app":{"slug":"graphite-app"}}]')"
+check_eq "legacy Graphite AI review without a slug is excluded" "0 0 0" \
+  "$(run_5c '[{"name":"Graphite / AI Reviews","status":"queued","conclusion":null}]')"
+check_eq "known publisher takes precedence over the legacy Graphite name" "1 0 0" \
+  "$(run_5c '[{"name":"Graphite / AI Reviews","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]')"
 check_eq "a live reviewer's pending check is still review-pending" "0 0 1" \
   "$(run_5c '[{"name":"Cursor Bugbot","status":"in_progress","conclusion":null,"app":{"slug":"cursor"}}]')"
 check_eq "a GitHub Actions job named after a reviewer is CI pending" "1 0 0" \

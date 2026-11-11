@@ -1250,7 +1250,7 @@ check_eq "4" "$?" "(m) non-JSON stdin exits 4"
 printf '' | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) empty stdin exits 4"
 
-echo "=== (gr) retired Graphite is excluded from evidence and echo matching (#2192) ==="
+echo "=== (gr) retired Graphite is excluded from evidence and retained as an echo source (#2192) ==="
 GR="$(jq -cn --arg sha "$UUID_HEAD" --arg body "$WALKTHROUGH_BODY" \
   '{head_sha:$sha, push_ts:"2026-07-31T10:00:00Z",
     reviews:[{user:{login:"coderabbitai[bot]"},commit_id:$sha,state:"APPROVED",
@@ -1258,7 +1258,7 @@ GR="$(jq -cn --arg sha "$UUID_HEAD" --arg body "$WALKTHROUGH_BODY" \
     issue_comments:[{user:{login:"graphite-app[bot]"},created_at:"2026-07-31T10:02:00Z",body:$body},
                     {user:{login:"coderabbitai[bot]"},created_at:"2026-07-31T10:03:00Z",body:$body}]}' \
   | "$EVAL_SUT")"
-check_eq "true" "$(jq -r '.reviewers["coderabbitai[bot]"].status_comment_names_head' <<<"$GR")" "(gr) retired app text cannot erase an active reviewer’s HEAD evidence"
+check_eq "false" "$(jq -r '.reviewers["coderabbitai[bot]"].status_comment_names_head' <<<"$GR")" "(gr) active reviewer cannot borrow HEAD evidence by echoing a retired comment"
 check_eq "false" "$(jq -r '[.corroborating[]?] | index("graphite-app[bot]") != null' <<<"$GR")" "(gr) retired app contributes no corroboration"
 
 echo

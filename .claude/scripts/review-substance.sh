@@ -443,13 +443,15 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
              then . else "" end
       end;
 
-  # Exclude retired comments before the echo index and all reviewer footprints.
+  # Retired items cannot supply a reviewer footprint. Keep conversation text
+  # available to identify lines copied by an active reviewer.
   def active_review_items: map(select((.user.login // "") != "graphite-app[bot]"));
   (.head_sha // "" | ascii_downcase)  as $sha
   | ((.push_ts // "") | canon_ts)     as $push
   | ((.reviews // []) | active_review_items)        as $reviews
   | ((.pr_comments // []) | active_review_items)    as $inline
-  | ((.issue_comments // []) | active_review_items) as $convo
+  | (.issue_comments // []) as $conversation_sources
+  | ($conversation_sources | active_review_items) as $convo
   # Issue #1632. Optional; see the input-schema note in the header. Built as a
   # lookup OBJECT rather than kept as an array so the membership test below is
   # O(1) per inline comment instead of O(threads). Ids are stringified on both
@@ -531,7 +533,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   | def norm_line:
       sub("^[ \t]*(>[ \t]*)+"; "") | sub("^[ \t]+"; "") | sub("[ \t\r]+$"; "");
 
-    ( reduce ( $convo[]?
+    ( reduce ( $conversation_sources[]?
                | ((.user.login // "")) as $l
                | select((($approvers + $others) | index($l)) == null)
                | ((((.created_at // .updated_at) // "") | canon_ts)) as $t

@@ -721,7 +721,12 @@ The verify audit's `.check_runs` reflects the new HEAD.
 
 <!-- test-anchor: fixpr-step-5c-check-buckets -->
 ```bash
-ACTIVE_CHECKS=$(jq -c '[.check_runs.all[] | select((.app.slug // "") | IN("graphite-app", "graphite") | not)]' "$VERIFY")
+ACTIVE_CHECKS=$(jq -c '
+  [.check_runs.all[]
+   | select(((.app.slug // "") as $slug
+       | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+         else $slug | IN("graphite-app", "graphite") end) | not)]
+' "$VERIFY")
 jq -r '.[] | "[CI] \(.name): \(.status)\(if .conclusion then " — \(.conclusion)" else "" end)"' <<<"$ACTIVE_CHECKS"
 
 CHECK_BUCKETS=$(jq '

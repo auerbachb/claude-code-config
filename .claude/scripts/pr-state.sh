@@ -317,7 +317,10 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
       $root.comments.conversation[]?.user.login]
      | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
     | (($root.check_runs.all // [])
-       | map(select((.app.slug // "") | IN("graphite-app", "graphite") | not))) as $checks
+       | map(select(
+           ((.app.slug // "") as $slug
+            | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+              else $slug | IN("graphite-app", "graphite") end) | not))) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot
         | $needles[$bot] as $needle
