@@ -48,6 +48,7 @@
 # check-runs-dedup.sh and session-state.sh are the real scripts.
 #
 # Run from repo root: bash .claude/scripts/tests/merge-gate-review-substance.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -19,6 +19,7 @@
 # Uses a temporary HOME so it never touches the real ~/.claude/. Requires jq and
 # git. Run from repo root:
 #   bash .claude/scripts/tests/session-state-migration.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

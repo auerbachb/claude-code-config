@@ -33,6 +33,7 @@
 #
 # Uses --verify-state, the offline mode (no gh, no merge-gate), so the test is
 # hermetic. Temporary HOME; never touches the real ~/.claude/. Requires git+jq.
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

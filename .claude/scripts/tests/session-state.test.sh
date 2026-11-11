@@ -6,6 +6,7 @@
 # it never touches the real ~/.claude/. Requires jq. Run from repo root:
 #   bash .claude/scripts/tests/session-state.test.sh
 # catalog: tests — Tests for `session-state.sh`
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

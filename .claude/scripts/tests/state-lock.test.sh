@@ -7,6 +7,7 @@
 # Uses a temporary HOME so it never touches the real ~/.claude/. Requires jq.
 # Run from repo root:
 #   bash .claude/scripts/tests/state-lock.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

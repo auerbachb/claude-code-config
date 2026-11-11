@@ -4,6 +4,7 @@
 # Stubs `gh`, `release-policy.sh`, and `release-decide.sh`; uses the REAL
 # session-state.sh against a temp $HOME so durable reads and writes are exercised.
 # Run from repo root: bash .claude/scripts/tests/release-sweep.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
