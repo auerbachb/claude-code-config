@@ -124,7 +124,7 @@ after a delayed event are compared on a later tick.
 
 The repository documents Monitor stdout-to-chat-event behavior, but a Codex-hosted implementation
 task cannot live-arm Claude Code's Monitor tool. Local replay verifies that the gated Monitor
-command emits zero bytes for unchanged state and emits a retryable event for changes/errors. The
+command emits zero bytes for unchanged state and reports changes and errors. A collector still alive after the bounded termination attempt makes the loop report one diagnostic and exit. An unreadable completion receipt leaves the event queued for retry. The
 PMM skill bumps `.pmm_pre_dispatch_version` so its first tick replaces an older Monitor command
 that directly emitted a model event without this shell gate.
 

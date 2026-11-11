@@ -181,8 +181,19 @@ fi
 PMM_SKIP_ACTIONS=false
 PMM_DUPLICATE_COMPLETED_EVENT=false
 if [[ -n "$PMM_DISPATCH_EVENT" ]]; then
-  PMM_ACTIONS_COMPLETED_EVENT_ID=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.actions_completed_event_id' 2>/dev/null || echo null)
-  PMM_LIFECYCLE_COMPLETED_EVENT_ID=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.lifecycle_completed_event_id' 2>/dev/null || echo null)
+  PMM_RECEIPTS=$("$SESSION_STATE_SH" --get-json \
+    '.pmm_pre_dispatch | {actions: .actions_completed_event_id, lifecycle: .lifecycle_completed_event_id}' 2>/dev/null) || {
+    echo "ERROR: pre-dispatch completion receipts are unreadable — leaving event queued" >&2
+    exit 1
+  }
+  if ! jq -e 'type == "object" and has("actions") and has("lifecycle") and
+    all((.actions, .lifecycle); . == null or (type == "string" and test("^[a-f0-9]{64}$")))' \
+    <<<"$PMM_RECEIPTS" >/dev/null; then
+    echo "ERROR: pre-dispatch completion receipts are invalid — leaving event queued" >&2
+    exit 1
+  fi
+  PMM_ACTIONS_COMPLETED_EVENT_ID=$(jq -r '.actions // ""' <<<"$PMM_RECEIPTS") || exit 1
+  PMM_LIFECYCLE_COMPLETED_EVENT_ID=$(jq -r '.lifecycle // ""' <<<"$PMM_RECEIPTS") || exit 1
   if [[ "$PMM_ACTIONS_COMPLETED_EVENT_ID" == "$PMM_DISPATCH_EVENT" ]]; then
     PMM_SKIP_ACTIONS=true
     [[ "$PMM_LIFECYCLE_COMPLETED_EVENT_ID" == "$PMM_DISPATCH_EVENT" ]] && PMM_DUPLICATE_COMPLETED_EVENT=true

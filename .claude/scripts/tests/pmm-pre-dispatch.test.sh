@@ -309,7 +309,7 @@ check "missing PR-state comment/check data wakes diagnostically rather than as u
 check "completed-event receipts distinguish actions from lifecycle completion" 'grep -Fq "actions_completed_event_id" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "lifecycle_completed_event_id" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "last_acknowledged_event_id" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "fresh gate is unreadable" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "PMM_SKIP_ACTIONS=true" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md"'
 
 python3 - "$ROOT" "$TMP" "$LIVE" "$BIN" "$BASE_GATE" <<'PYTEST'
-import datetime, hashlib, json, os, pathlib, subprocess, sys, re, shlex, shutil
+import datetime, hashlib, json, os, pathlib, subprocess, sys, re, shlex, shutil, time
 root,tmp,live,binpath,gate=sys.argv[1:];root=pathlib.Path(root);tmp=pathlib.Path(tmp);live=pathlib.Path(live)
 real_gate=json.loads(gate)
 now=lambda: datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -349,24 +349,18 @@ print('PASS: missing jq/shasum/helper acknowledge with exit4 and no event; colle
 
 # Run the exact generated loop and real bounded-run, suppressing only signal
 # delivery to emulate an I/O-wedged child that survives the bounded reap.
-# The old collector writes after the next collector starts: its descriptors
-# must never be the next poll's files. No shared helper source is changed.
+# The orphan writes only after the loop exits. The loop must emit one diagnostic
+# and leave before another collector can start.
 orphan_dir=tmp/'orphan-replay';orphan_dir.mkdir();orphan_bin=orphan_dir/'bin';orphan_bin.mkdir();orphan_captures=orphan_dir/'captures';orphan_captures.mkdir()
 orphan_bound=orphan_dir/'bounded-run.sh';orphan_bound.write_text((live/'lib/bounded-run.sh').read_text()+'\nkill_child() { :; }\n')
-orphan_gate=orphan_dir/'collector.sh';orphan_calls=orphan_dir/'calls';orphan_done=orphan_dir/'late-write-done';orphan_next=orphan_dir/'next-poll-started'
+orphan_gate=orphan_dir/'collector.sh';orphan_calls=orphan_dir/'calls';orphan_done=orphan_dir/'late-write-done';orphan_release=orphan_dir/'release-orphan'
 orphan_gate.write_text('''#!/usr/bin/env bash
 n=0; [[ ! -f "$ORPHAN_CALLS" ]] || n=$(cat "$ORPHAN_CALLS"); n=$((n+1)); printf '%s' "$n" > "$ORPHAN_CALLS"
-if [[ "$n" == 1 ]]; then
-  # Handshake proves the late write occurs after the fresh poll starts.
-  for i in {1..200}; do [[ ! -f "$ORPHAN_NEXT" ]] || break; /bin/sleep .05; done
-  [[ -f "$ORPHAN_NEXT" ]] || exit 9
-  printf '/pr-monitor-and-manage --stale-orphan-event\n'; printf 'stale-orphan-error\n' >&2
-  : > "$ORPHAN_DONE"
-else
-  : > "$ORPHAN_NEXT"
-  for i in {1..60}; do [[ ! -f "$ORPHAN_DONE" ]] || exit 0; /bin/sleep .05; done
-  exit 9
-fi
+[[ "$n" == 1 ]] || exit 9
+for i in {1..300}; do [[ ! -f "$ORPHAN_RELEASE" ]] || break; /bin/sleep .05; done
+[[ -f "$ORPHAN_RELEASE" ]] || exit 9
+printf '/pr-monitor-and-manage --stale-orphan-event\n'; printf 'stale-orphan-error\n' >&2
+: > "$ORPHAN_DONE"
 ''');orphan_gate.chmod(0o755)
 (orphan_bin/'sleep').write_text('''#!/usr/bin/env bash
 if [[ "$1" =~ ^[0-9]+$ && "$1" -ge 60 ]]; then
@@ -378,12 +372,19 @@ orphan_command=run([str(live/'pmm-pre-dispatch.sh'),'--monitor-command','--repo'
 assert 'while :; do' in orphan_command
 orphan_command=re.sub(r'^GATE=.*$',lambda m:'GATE='+shlex.quote(str(orphan_gate)),orphan_command,flags=re.M)
 orphan_command=re.sub(r'^BOUND_RUN_LIB=.*$',lambda m:'BOUND_RUN_LIB='+shlex.quote(str(orphan_bound)),orphan_command,flags=re.M)
-orphan_env=dict(env,PATH=str(orphan_bin)+':'+env['PATH'],TMPDIR=str(orphan_captures),PMM_PRE_DISPATCH_TIMEOUT_SECS='1',ORPHAN_CALLS=str(orphan_calls),ORPHAN_DONE=str(orphan_done),ORPHAN_NEXT=str(orphan_next),ORPHAN_SLEEPS=str(orphan_dir/'sleeps'))
-r=subprocess.run(['bash','-c',orphan_command],env=orphan_env,text=True,capture_output=True,timeout=20)
-assert r.returncode==0 and orphan_calls.read_text()=='2' and orphan_done.exists(),(r.stdout,r.stderr)
+orphan_env=dict(env,PATH=str(orphan_bin)+':'+env['PATH'],TMPDIR=str(orphan_captures),PMM_PRE_DISPATCH_TIMEOUT_SECS='1',ORPHAN_CALLS=str(orphan_calls),ORPHAN_DONE=str(orphan_done),ORPHAN_RELEASE=str(orphan_release),ORPHAN_SLEEPS=str(orphan_dir/'sleeps'))
+try:
+    r=subprocess.run(['bash','-c',orphan_command],env=orphan_env,text=True,capture_output=True,timeout=20)
+finally:
+    orphan_release.touch()
+for _ in range(100):
+    if orphan_done.exists(): break
+    time.sleep(.05)
+assert r.returncode==1 and orphan_calls.read_text()=='1' and orphan_done.exists(),(r.stdout,r.stderr)
+assert (orphan_dir/'sleeps').read_text()=='1' and 'still alive after termination' in r.stderr
 assert len(r.stdout.splitlines())==1 and '--pre-dispatch-diagnostic' in r.stdout and 'stale-orphan' not in r.stdout+r.stderr,(r.stdout,r.stderr)
 assert not list(orphan_captures.iterdir()),list(orphan_captures.iterdir())
-print('PASS: exact generated loop isolates unreaped-child late stdout/stderr from the next quiet poll and cleans captures')
+print('PASS: exact generated loop stops after an unreaped collector and cleans captures before the late write')
 
 # Capture allocation failures on either first/second poll stop with one diagnosis
 # and remove any already-created owned file. They cannot relay prior output.
@@ -473,6 +474,16 @@ r=skill_run('PMM_DISPATCH_EVENT='+eid+'\n'+block('pmm-pre-dispatch-actions-recei
 receipt_stage6='PMM_DISPATCH_EVENT='+eid+'\nPMM_TICK_GENERATION=gen-live\nPMM_INTERNAL_TICK=true\nDIGEST=receipt-digest\nROW_DIGEST=receipt-row\nPMM_CADENCE=5m\nTICK_HAD_ACTION=true\nSEQ=""\n'
 r=skill_run(receipt_stage6+block('pmm-pre-dispatch-backoff')+'\n'+block('pmm-pre-dispatch-idle')+'\n'+block('pmm-pre-dispatch-actions-receipt'));assert r.returncode==0,r.stderr
 r=skill_run(block('pmm-pre-dispatch-tick-gate')+'\nprintf "%s|%s" "$PMM_SKIP_ACTIONS" "$PMM_DUPLICATE_COMPLETED_EVENT"');assert r.returncode==0 and r.stdout=='true|false',(r.stdout,r.stderr)
+receipt_fault=tmp/'receipt-read-fault'
+receipt_fault.write_text('''#!/usr/bin/env bash
+case "$*" in *'actions: .actions_completed_event_id'*) exit 6 ;; esac
+exec '''+shlex.quote(str(live/'session-state.sh'))+' "$@"\n')
+receipt_fault.chmod(0o755)
+receipt_state=hs/'.claude/session-state.json';before=receipt_state.read_bytes()
+r=skill_run('SESSION_STATE_SH='+shlex.quote(str(receipt_fault))+'\n'+block('pmm-pre-dispatch-tick-gate')+'\nprintf "would-run-actions"')
+assert r.returncode==1 and not r.stdout and 'completion receipts are unreadable' in r.stderr,(r.stdout,r.stderr)
+assert receipt_state.read_bytes()==before
+print('PASS: unreadable completed-event receipts refuse action replay and preserve the pending event')
 r=skill_run('PMM_DISPATCH_EVENT='+eid+'\n'+block('pmm-pre-dispatch-lifecycle-receipt'));assert r.returncode==0,r.stderr
 r=skill_run(block('pmm-pre-dispatch-tick-gate'));assert r.returncode==0 and 'already-acknowledged' in r.stdout
 print('PASS: actual tick/actions/lifecycle blocks distinguish action replay and late acknowledged delivery')

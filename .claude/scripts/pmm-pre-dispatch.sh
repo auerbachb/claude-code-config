@@ -171,7 +171,12 @@ while :; do
   run_bounded "$TIMEOUT_SECS" "$GATE" --repo "$REPO" --author "$AUTHOR" --generation "$GENERATION" \
     --base-cadence-min "$BASE" --idle-pause-after "$IDLE" --max-deep-prs "$MAX_DEEP" --skill-args "$FORWARD" || rc=$?
   [[ ! -s "$CAPTURE_ERR" ]] || cat "$CAPTURE_ERR" >&2 || true
-  if [[ "$BOUNDED_TIMED_OUT" == 1 || "$BOUNDED_CLOCK_UNREADABLE" == 1 ]]; then
+  if [[ "${BOUNDED_CHILD_UNREAPED:-0}" == 1 ]]; then
+    echo "pmm-pre-dispatch Monitor: collector is still alive after termination; waking for diagnosis and stopping this loop" >&2
+    printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+      "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+    exit 1
+  elif [[ "$BOUNDED_TIMED_OUT" == 1 || "$BOUNDED_CLOCK_UNREADABLE" == 1 ]]; then
     echo "pmm-pre-dispatch Monitor: collector did not complete inside its bound; waking for diagnosis and retry" >&2
     printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
       "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
