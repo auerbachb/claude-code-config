@@ -9,7 +9,12 @@ include "check-run-conclusions";
 def app_identity:
   {slug: (.app.slug // null), id: (.app.id // null)};
 
-. as $runs
+# The retired app is absent from all projected CI views (issue #2192).
+map(select(
+  ((.app.slug // "") as $slug
+   | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+     else $slug | IN("graphite-app", "graphite") end) | not))
+| . as $runs
 | [$runs[] | select(completed_check | not)] as $incomplete
 | [$runs[] | select(completed_check and (.conclusion | optional_check_passes))] as $passing
 | [$runs[] | select(completed_check and (.conclusion | optional_check_passes | not))] as $failing

@@ -74,6 +74,18 @@
 #   Cannot be combined with --pr, --since, or --infer-candidates.
 #   Exit code 0 on success; 2 on usage error.
 #
+# Platform notes:
+#   Windows Git Bash quirk (issue #1161): process substitution (`< <(...)`) reads
+#   through a FIFO/temp path that appears to append a trailing `\r` to each line
+#   of jq output, so a plain `read` populates variables with the CR still attached
+#   (e.g. `PR_STATE="OPEN\r"` instead of `"OPEN"`). String comparisons like
+#   `[[ "$PR_STATE" != "OPEN" ]]` then fail spuriously, and any variable spliced
+#   into a URL or API path carries a stray CR. Every variable populated by the
+#   post-`gh pr view` read block below is stripped with `"${var%$'\r'}"` — a
+#   no-op on macOS/Linux, safe cross-platform. A blanket `tr -d '\r'` at the
+#   pipeline source was rejected because it would strip legitimate CRs from
+#   comment bodies flowing through the REST endpoints downstream.
+#
 # Exit codes:
 #   0  OK
 #   2  usage error (unknown flag, --since missing value, incompatible flag combo)
@@ -297,35 +309,35 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
   fi
   jq -c --arg sha "$WAIT_STATE_SHA" '
     . as $root
-    # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
-    # with lib/pr-state-classify.jq, so historical comments still classify) and its
-    # leftover check-run is not CI, but it is never a participant to wait for — it
-    # will not answer a new push. Review checks are recognised by publishing-app
-    # slug, not by name (#1953): a GitHub Actions job named "post-cursor-review"
-    # or "Graphite …" stays CI. The name is consulted only when the bundle carries
-    # no slug at all (an old or hand-built bundle), and never for Graphite.
-    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
-    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile"} as $needles
-    | def is_review_check:
+    # Match reviewer checks by publisher when present, and by name only for
+    # older bundles without a slug (issue #1953).
+    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]"] as $botlist
+    | def check_reviewer:
         (.app.slug // "" | ascii_downcase) as $slug
         | if $slug != "" then
-            any("coderabbit","codeant","cursor","greptile","graphite";
-                . as $x | $slug | contains($x))
+            {"coderabbit":"coderabbitai[bot]","coderabbitai":"coderabbitai[bot]",
+             "codeant":"codeant-ai[bot]","codeant-ai":"codeant-ai[bot]",
+             "cursor":"cursor[bot]","cursor-com":"cursor[bot]",
+             "greptile":"greptile-apps[bot]","greptile-apps":"greptile-apps[bot]"}[$slug] // ""
           else
-            (.name // "" | ascii_downcase) as $name
-            | any("coderabbit","codeant","cursor","bugbot","greptile";
-                  . as $x | $name | contains($x))
+            (.name // "" | ascii_downcase)
+            | if contains("coderabbit") then "coderabbitai[bot]"
+              elif contains("codeant") then "codeant-ai[bot]"
+              elif contains("cursor") or contains("bugbot") then "cursor[bot]"
+              elif contains("greptile") then "greptile-apps[bot]"
+              else "" end
           end;
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null))
-     | map(select(. != "graphite-app[bot]")) | unique) as $participants
-    | ($root.check_runs.all // []) as $checks
+     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+    | (($root.check_runs.all // [])
+       | map(select(
+           ((.app.slug // "") as $slug
+            | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+              else $slug | IN("graphite-app", "graphite") end) | not))) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot
-        | $needles[$bot] as $needle
         | {bot: $bot,
            done: (
              # Review object pinned to the watched SHA. EXCLUDED for BugBot:
@@ -338,7 +350,7 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
              # HEAD SHA, so SHA scoping is implicit). conclusion neutral still
              # counts as complete — BugBot uses neutral for "findings posted".
              or any($checks[]?;
-                    ((.name // "") | ascii_downcase | contains($needle))
+                    check_reviewer == $bot
                     and .status == "completed")
              # CR/Greptile also report via commit statuses on the watched SHA.
              or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
@@ -346,12 +358,17 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
            )})) as $bots
     | {head_moved: ($root.pr.head_sha != $sha),
        bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check | not)
+       ci_pending: [ $checks[] | select(check_reviewer == "" and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select(check_reviewer == ""
                      and (.conclusion == "failure" or .conclusion == "timed_out"
                           or .conclusion == "action_required" or .conclusion == "startup_failure"
                           or .conclusion == "stale")) | .name ],
-       new_findings: ($root.new_since_baseline.finding_count // 0)}
+       new_findings: ($root.new_since_baseline // {} | . as $delta
+         | if has("reviews") and has("inline") and has("conversation") then
+             [ $delta.reviews[]?, $delta.inline[]?, $delta.conversation[]?
+               | select(.user as $login | $botlist | index($login) != null)
+               | select(.classification.class == "finding") ] | length
+           else .finding_count // 0 end)}
   ' "$WAIT_STATE_BUNDLE"
   exit 0
 fi
@@ -428,6 +445,18 @@ fi
   (.mergeStateStatus // ""),
   (.mergeable // ""),
   (.reviewDecision // "")')
+
+# Strip trailing CR that Windows Git Bash process substitution injects on each
+# line of jq output. Without this, comparisons like `[[ "$PR_STATE" != "OPEN" ]]`
+# fire spuriously and API path fragments (HEAD_SHA, etc.) carry a stray \r.
+# No-op on macOS/Linux. See "Platform notes" in the file header.
+PR_NUMBER="${PR_NUMBER%$'\r'}"
+PR_STATE="${PR_STATE%$'\r'}"
+HEAD_SHA="${HEAD_SHA%$'\r'}"
+PR_URL="${PR_URL%$'\r'}"
+MERGE_STATE="${MERGE_STATE%$'\r'}"
+MERGEABLE="${MERGEABLE%$'\r'}"
+REVIEW_DECISION="${REVIEW_DECISION%$'\r'}"
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
   echo "ERROR: PR #$PR_NUMBER is $PR_STATE — nothing to audit" >&2

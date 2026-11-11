@@ -272,6 +272,17 @@ check_eq "the refusal guard was asked about HEAD in this repo" "refused $PR $HEA
 check_eq "the daily cap was asked with the rate" "cap bugbot --add-usd 1.58" "$(grep '^cap' "$GUARD_CALLS")"
 check_eq "the tally rides on the cursor decision" "ok" "$(f .reviewers.cursor.daily_cap.status)"
 
+reset "$(tier_json present full)"
+set_checks "$(run_check build success github-actions 60)" "$(run_check 'Graphite / AI Reviews' success graphite-app 3600)"
+set_comments "$(comment 'graphite-app[bot]' '@cursor review' 30)" "$(comment 'graphite-app[bot]' '@codeant-ai review' 30)"
+run
+check_eq "retired app cannot shorten the settle window" "false" "$(f .settled.settled)"
+set_checks "$(run_check build success github-actions 60)" "$(run_check 'Graphite / AI Reviews' success graphite-app 3600 | jq -c 'del(.app)')"
+run
+check_eq "legacy Graphite without a publisher cannot shorten the settle window" "false" "$(f .settled.settled)"
+check_eq "retired app cannot spend Cursor invitations" "0" "$(f .reviewers.cursor.invitations)"
+check_eq "retired app cannot spend CodeAnt invitations" "0" "$(f .reviewers.codeant.invitations)"
+
 reset "$(tier_json invalid full)"
 run
 check_eq "an invalid policy is tiered full" "tiered:full" "$(f '"\(.mode):\(.gate)"')"

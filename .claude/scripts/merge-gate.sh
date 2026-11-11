@@ -583,7 +583,9 @@ fi
 if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
 fi
-REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s 'add // []')
+# GitHub still reports its native review decision. Retired-app review objects
+# never participate in the gate’s classification of active or human reviews.
+REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s '(add // []) | map(select((.user.login // "") != "graphite-app[bot]"))')
 if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "reviews parse"
 fi
@@ -2476,9 +2478,8 @@ REQUIRED_CONTEXTS_OUT=$(jq -cn \
 
 # Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
 # or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).
-# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still counts.
 STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-  def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
+  def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]"];
   [.[]?
     | select(.state == "CHANGES_REQUESTED")
     | select((.commit_id // "") != "" and .commit_id != $sha)

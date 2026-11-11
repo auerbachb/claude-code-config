@@ -175,6 +175,25 @@ check_eq "yes"   "$(has_missing "$NEED_APPROVAL")"      "TP2 the normal reviewer
 record >/dev/null; check_eq "4" "$?" "TP2 ledger refuses an unmet gate"
 check_eq "0"     "$(ledger_rows)"                       "TP2 no ledger row"
 
+echo "=== Retired app signals do not enter the override or its anchor (#2192) ==="
+reset
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 300)" \
+  '[{user:{login:"graphite-app[bot]",type:"Bot"}, commit_id:$sha, state:"APPROVED", body:"Graphite result", submitted_at:$t}]')"
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[{id:915,user:{login:"graphite-app[bot]"},commit_id:$sha,body:"Graphite finding"}]')"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 'Graphite / AI Reviews' success 900 graphite-app)")"
+check_eq "window_elapsed" "$(j .no_review_override.reason)" "retired app cannot veto an elapsed override"
+check_eq "true" "$(j .no_review_override.applied)" "green build with retired app signals still applies the override"
+check_eq "0" "$(j '.no_review_override.verdicts_on_head | length')" "retired review, comment, and check are not verdicts"
+check_eq "false" "$(j '[.no_review_override.missing_reviewers[]?.reviewer] | index("graphite-app[bot]") != null')" "retired app is absent from the reviewer inventory"
+reset
+run_gate "$(bundle "$(run 1 build success 540)" "$(run 2 'Graphite / AI Reviews' success 1200 graphite)")"
+check_eq "window_running" "$(j .no_review_override.reason)" "an earlier retired check does not shorten the build-anchored window"
+run_gate "$(bundle "$(run 2 'Graphite / AI Reviews' success 900 graphite-app)")"
+check_eq "false" "$(j .met)" "retired checks alone do not satisfy the gate"
+check_eq "anchor_unavailable: no HEAD check-run start time" "$(j .no_review_override.reason)" "retired check alone cannot anchor the override"
+run_gate "$(bundle "$(run 1 build success 540)" "$(run 2 'Graphite / AI Reviews' success 1200 graphite-app | jq -c 'del(.app)')")"
+check_eq "window_running" "$(j .no_review_override.reason)" "legacy Graphite without a publisher cannot anchor the override"
+
 echo "=== TP3: 11 min + human CHANGES_REQUESTED on HEAD -> blocked ==="
 reset
 FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 300)" \

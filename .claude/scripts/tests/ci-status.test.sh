@@ -254,9 +254,28 @@ check_eq 3 "$RC" "exclude-reviewers control: without the flag a failed reviewer 
 run_excl "$FAILED_REVIEWER"
 check_eq 0 "$RC" "exclude-reviewers: failed reviewer checks with green build checks are clean"
 
-for slug in codeant cursor-com coderabbit graphite-app graphite greptile-apps greptile; do
+for slug in codeant cursor-com coderabbit greptile-apps greptile; do
   run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 r failure 200 "$slug")")"
   check_eq 0 "$RC" "exclude-reviewers: slug $slug is a reviewer"
+done
+
+for slug in graphite-app graphite; do
+  for view in run_stdin run_excl; do
+    "$view" "$(bundle "$(cr 1 build success 100)" "$(cr 2 retired failure 200 "$slug")" "$(cr 3 pending null 300 "$slug" in_progress)")"
+    check_eq 0 "$RC" "retired $slug failure and pending runs cannot block $view"
+    check_eq 1 "$(field .total)" "only build remains in $view after retired $slug runs"
+    "$view" "$(bundle "$(cr 2 retired success 200 "$slug")")"
+    check_eq 1 "$RC" "retired $slug success alone cannot pass $view"
+    check_eq 0 "$(field .total)" "no active checks remain in $view"
+  done
+done
+
+LEGACY_GRAPHITE="$(cr 2 'Graphite / AI Reviews' success 200 graphite-app | jq -c 'del(.app)')"
+for view in run_stdin run_excl; do
+  "$view" "$(bundle "$LEGACY_GRAPHITE")"
+  check_eq 1 "$RC" "legacy Graphite-only success cannot pass $view"
+  "$view" "$(bundle "$(cr 2 'Graphite / AI Reviews' failure 200 github-actions)")"
+  check_eq 3 "$RC" "known publisher with the legacy Graphite name still blocks $view"
 done
 
 # A check NAMED after a reviewer but published by a workflow is build CI.

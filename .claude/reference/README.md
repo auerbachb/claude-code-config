@@ -47,7 +47,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `review-policy.md` — per-repo review tiers declared in pm-config `## Review policy`: table format, strictest-wins resolution across paths and labels, fail-closed invalid policies, base-branch reads, and what each gate (`ci-only` / `ci+codeant-one-round` / `full` / `legacy`) means; resolved by `review-tier.sh` (#1724, #1725)
 - `merge-gate-stale-approval-redemption.md` — CodeAnt in-place review edit: how `merge-gate.sh` redeems a stale approval by evidence rather than by reviewer identity (#876)
 - `merge-sequencing.md` — mechanism and state machine for `merge-sequence.sh`; overlap-aware merge sequencing for PRs touching the same file (#756)
-- `codeant-supplemental.md` — CodeAnt supplemental polling on the CR path, plus CodeAnt CLI install state (Graphite retired 2026-11-03, #1889)
+- `codeant-supplemental.md` — CodeAnt supplemental polling on the CR path, plus CodeAnt CLI install state (Graphite retirement and retired-thread cleanup, #1889 and #2192)
 - `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap, and binary-absent detection (#642, #819)
 - `repo-bootstrap-protection.md` — branch-protection remediation mechanism: CI check-name discovery, the confirmation prompt, and the read-then-PUT payload that never downgrades existing protection (`repo-bootstrap.md`; #918)
 - `repo-bootstrap-workflows.md` — provisioned-file design: the one-list guarantee, `get_file_content()` mechanism, drift guard, and `BOOTSTRAP_FILES` as the single authoritative list (`repo-bootstrap.md`; #1282)
@@ -298,6 +298,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `usage-limit-signal-audit-2026-07.md` — audit finding: no trustworthy approaching-limit signal exists for hooks/skills/sessions; the status-line signal has no path into model context (#824)
 - `hook-events-evaluation-2026-08.md` — evaluation of newer Claude Code hook events (WorktreeCreate/Remove, CwdChanged, SubagentStart/Stop, PreCompact/PostCompact, InstructionsLoaded) against indirect-detection mechanisms; PostCompact adopted, rest deferred with rationale (#813)
 - `spend-telemetry-pipeline.md` — schema contract, two capture paths (SessionStart + SubagentStop hooks), reliability caveats (best-effort tokens, derived model tier, approximate thread classification), reporting commands, and re-runnable AC1 audit methodology for `pm-routing-audit-2026-07.md` (#710)
+- `codex-desk-decision.md` — Codex desk capabilities, controller handoff, answer routing, and the heartbeat decision (Issue #2175)
 
 ### Diagrams (mermaid stubs and indexes)
 
