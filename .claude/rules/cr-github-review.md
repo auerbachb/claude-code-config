@@ -2,7 +2,7 @@
 
 > **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (§Three-Tier below). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
-> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
+> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask — on a persistent `Monitor` you arm yourself; app notifications (Auto-fix, `<ci-monitor-event>`) and no-poll instructions never replace it. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging, and any paid review (`safety.md`).
 > **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger BugBot or Greptile without owner approval in chat (`safety.md`). Merge without meeting the merge gate. Exit polling on "nothing unresolved right now."
 
@@ -76,11 +76,11 @@ Verdicts: `gate_met`, `polling_cr`, `no_reviewer`, `tier_gate`, `self_review` (`
 
 ### Timeout & Fallback — Free Review, Then No Reviewer
 
-**Chain:** CR (free allowance) → `no_reviewer` (issue #1897). BugBot and Greptile are paid — owner approval in chat only, never automatic fallbacks. **Decline** CodeRabbit's paid on-demand review offer; wait out its free retry window or the no-review override, whichever comes first (`.claude/reference/cr-rate-limits.md`). **Supplemental (CR path):** CodeAnt — `.claude/reference/codeant-supplemental.md`. **Sticky:** a PR already on BugBot or Greptile never moves back up. Roles + cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
+**Chain:** CR (free allowance) → `no_reviewer` (issue #1897). BugBot and Greptile are paid — owner approval in chat only, never automatic fallbacks. **Decline** CodeRabbit's paid on-demand review offer; wait out its free retry window or the no-review override, whichever comes first (`.claude/reference/cr-rate-limits.md`). **Supplemental (CR path):** CodeAnt — `.claude/reference/codeant-supplemental.md`. **Sticky:** a PR already on BugBot or Greptile never moves back up. Rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 ### Processing CR Feedback
 
-1. Fetch latest CR comments via `gh api`, verify each finding against the actual file (for the judgment layer — when to accept, decline, or push back — invoke `/receiving-code-review`)
+1. Fetch latest CR comments via `gh api`, verify each finding against the actual file (judgment on accept, decline, or push back: `/receiving-code-review`)
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** via `reply-thread.sh … --verdict <fixed|deferred|declined> --defect <real|not>` — flags mandatory on every bot-finding reply. `real` = a behaviour the code would actually have gotten wrong; never style, duplication, or a reviewer misreading. `--defect real` also requires `--fix <as-given|adapted|wrong|none>`. Mechanism: `.claude/reference/review-stack-audit.md` §The marker
 4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** — **NEVER call `resolveReviewThread` inline** (mutations: `.claude/reference/graphql-thread-resolution.md`)

@@ -35,6 +35,7 @@ ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 SPLIT_THRESHOLDS_SH=$(resolve_script split-thresholds.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
+PROMPT_RESERVE_SH=$(resolve_script prompt-reservation.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
@@ -50,6 +51,7 @@ ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 6 claim gate skipped` and continue.
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
+- `PROMPT_RESERVE_SH` empty → an attended launch that would need a new Step 7 question stays queued; already-answered and unattended paths keep their normal gates. Say the reservation helper is unavailable and do not open an unreserved prompt.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
 - `SPLIT_THRESHOLDS_SH` empty → **optional**. Print `DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120` and continue with those documented defaults. The time trigger still fires (Step 4 criterion 3); it just cannot see a repo that retuned the knobs. Silently skipping the trigger instead would be worse — it would turn a missing config reader into a missing sizing check.
 - `USAGE_HORIZON_SH` empty → **optional**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — pre-emptive usage-horizon park unavailable; the reactive park still applies` and continue. Step 8's gate then holds `unknown` on every cycle, which starts nothing new and parks nothing — the conservative direction, and the same posture a displaced session already reads.
@@ -483,7 +485,7 @@ fi
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 - **Respect Step 6.0b's chains.** Only the head of each overlap chain is launchable; a queued chain member waits for the one ahead of it to reach `merged`/`blocked`, even when a ceiling slot is free. Overlap serialization and the concurrency ceiling are separate limits — a free slot is permission to launch *some* issue, never permission to launch one whose file is still contested.
 - **A free slot is a trigger, not a resting state** (`CLAUDE.md` "KEEP THE PIPELINE FULL"). Below the ceiling with issues still queued, launch eligible chain heads on the current monitor tick — don't wait to be asked, and keep launching within the tick until slots are full or no eligible head remains (fill, don't ramp one-per-tick). Below the ceiling with the queue **empty**: under `/pm`, hand the free capacity to `/pm` Step 3.4's backlog refill; standalone, report the free slots and the idle reason (backlog ranking is `/pm`'s job, not this skill's) rather than sitting on them silently.
-- **Check the usage horizon before every one of those launches too** (#1619). The verdict binds here on the first dispatch as much as on a refill tick — and the first dispatch runs *before* Step 8 has ever ticked, so there is no verdict waiting to be inherited: **run the gate block at `subagent-thread-limit-park.md` §7.1 right here** to produce one, the same block Step 8 item 0 runs on every later tick. Then: `approaching` and `unknown` start nothing new (running pipelines and their A→B / B→C successors continue), and `critical` parks per `subagent-thread-limit-park.md` §7.4 instead of launching. Never read a missing or unreadable verdict as `clear`.
+- **Check the usage horizon before every one of those launches** (#1619, #2147). Run `subagent-thread-limit-park.md` §7.1 here, including on the first dispatch before Step 8 has ticked. `clear` allows the horizon gate to pass; `critical` parks per §7.4. For `approaching` or `unknown`, apply §7.3 and print its hold line once on the first dispatch. Only `counter-never-seen` allows a live chat request to launch its current picks, with the §7.3 note. The exception does not carry into refill or override the checks below. A→B / B→C successors continue on `approaching` or `unknown`.
 - **Check the refill pause before every one of those launches — standalone runs included.** The stop the user said in a `/pm` thread is persisted, not remembered, so it binds here too:
 
   ```bash
@@ -519,45 +521,88 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   <!-- test-anchor: subagent-step7-leave-elicitation-gate -->
 
   ```bash
-  ELICIT_LEAVE_TIME=false
-  ELICIT_SKIP_REASON=""
-  ELICIT_NOW=$(date -u +%s)
-  ELICIT_WINDOW_RC=0
-  ELICIT_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
-    || ELICIT_WINDOW_RC=$?
-  ELICIT_ND_RC=0
-  ELICIT_NO_DEADLINE_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.no_deadline_until" 2>/dev/null) \
-    || ELICIT_ND_RC=$?
-  if [[ "${ATTENDED:-false}" != "true" ]]; then
-    # Not a failure — a SKIP. The decline gate below still runs, unchanged.
-    ELICIT_SKIP_REASON="unattended"
-  elif [[ "$ELICIT_WINDOW_RC" -ne 0 && "$ELICIT_WINDOW_RC" -ne 3 ]]; then
-    # Unreadable is not absent, here as everywhere: a lock timeout can hide an armed
-    # deadline, and asking for one the repo already has would overwrite a live plan
-    # with a guess. rc 3 (no state file yet) IS absent and does elicit.
-    ELICIT_SKIP_REASON="deadline state unreadable (rc=$ELICIT_WINDOW_RC)"
-  elif [[ "$ELICIT_DEADLINE" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_DEADLINE > ELICIT_NOW )); then
-    # Armed AND unexpired. A deadline already in the past is spent, not armed, and asks again.
-    ELICIT_SKIP_REASON="deadline already armed"
-  elif [[ "$ELICIT_ND_RC" -ne 0 && "$ELICIT_ND_RC" -ne 3 ]]; then
-    ELICIT_SKIP_REASON="no-deadline marker unreadable (rc=$ELICIT_ND_RC)"
-  elif [[ "$ELICIT_NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_NO_DEADLINE_UNTIL > ELICIT_NOW )); then
-    # "No deadline today", still inside the ET day it was written for.
-    ELICIT_SKIP_REASON="no deadline today"
-  else
-    ELICIT_LEAVE_TIME=true
+  read_leave_eligibility() {
+    ELICIT_LEAVE_TIME=false
+    ELICIT_STATE_UNKNOWN=false
+    ELICIT_SKIP_REASON=""
+    ELICIT_NOW=$(date -u +%s)
+    ELICIT_WINDOW_RC=0
+    ELICIT_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
+      || ELICIT_WINDOW_RC=$?
+    ELICIT_ND_RC=0
+    ELICIT_NO_DEADLINE_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.no_deadline_until" 2>/dev/null) \
+      || ELICIT_ND_RC=$?
+    if [[ "${ATTENDED:-false}" != "true" ]]; then
+      # Not a failure — a SKIP. The decline gate below still runs, unchanged.
+      ELICIT_SKIP_REASON="unattended"
+    elif [[ "$ELICIT_WINDOW_RC" -ne 0 && "$ELICIT_WINDOW_RC" -ne 3 ]]; then
+      # Unreadable is not absent, here as everywhere: a lock timeout can hide an armed
+      # deadline, and asking for one the repo already has would overwrite a live plan
+      # with a guess. rc 3 (no state file yet) IS absent and does elicit.
+      ELICIT_STATE_UNKNOWN=true
+      ELICIT_SKIP_REASON="deadline state unreadable (rc=$ELICIT_WINDOW_RC)"
+    elif [[ "$ELICIT_DEADLINE" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_DEADLINE > ELICIT_NOW )); then
+      # Armed AND unexpired. A deadline already in the past is spent, not armed, and asks again.
+      ELICIT_SKIP_REASON="deadline already armed"
+    elif [[ "$ELICIT_ND_RC" -ne 0 && "$ELICIT_ND_RC" -ne 3 ]]; then
+      ELICIT_STATE_UNKNOWN=true
+      ELICIT_SKIP_REASON="no-deadline marker unreadable (rc=$ELICIT_ND_RC)"
+    elif [[ "$ELICIT_NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_NO_DEADLINE_UNTIL > ELICIT_NOW )); then
+      # "No deadline today", still inside the ET day it was written for.
+      ELICIT_SKIP_REASON="no deadline today"
+    else
+      ELICIT_LEAVE_TIME=true
+    fi
+  }
+  read_leave_eligibility
+  ```
+
+  Reserve the repo's leave question only when the read says it still needs an answer. Run this in
+  the same Bash context as `read_leave_eligibility`:
+
+  <!-- test-anchor: subagent-step7-leave-reservation -->
+
+  ```bash
+  LEAVE_PROMPT_GENERATION=""
+  LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
+  if [[ "${ELICIT_LEAVE_TIME:-false}" == true ]]; then
+    if [[ -n "${PROMPT_RESERVE_SH:-}" ]]; then
+      LEAVE_PROMPT_GENERATION=$("$PROMPT_RESERVE_SH" claim --repo "$REPO_KEY" --kind leave) \
+        || LEAVE_PROMPT_GENERATION=""
+    fi
+    [[ "$LEAVE_PROMPT_GENERATION" =~ ^[0-9a-f]{32}$ ]] || LEAVE_PROMPT_GENERATION=""
+    # Read again even on a win: a sibling may have answered and released
+    # between the first read and our claim. A loser can adopt that answer too.
+    read_leave_eligibility
+    if [[ "$ELICIT_STATE_UNKNOWN" == true || ( "$ELICIT_LEAVE_TIME" == true && -z "$LEAVE_PROMPT_GENERATION" ) ]]; then
+      ELICIT_LEAVE_TIME=false
+      LEAVE_PROMPT_PENDING=true
+    fi
+    if [[ "$ELICIT_LEAVE_TIME" != true && -n "$LEAVE_PROMPT_GENERATION" ]]; then
+      "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave \
+        --generation "$LEAVE_PROMPT_GENERATION" || echo 'Leave question reservation could not be released' >&2
+      LEAVE_PROMPT_GENERATION=""
+    fi
   fi
   ```
 
-  On `ELICIT_LEAVE_TIME`, invoke **`/leave-by --elicit`** (Step 0e) and let it own the menu, the
-  normalization, and every write; when it returns, **re-read `.window` and `.leave`** and continue
-  into the decline gate below with the fresh values. Never parse the answer here and never write
-  `.window` from this skill — one parser, one deadline home.
+  On `LEAVE_PROMPT_PENDING`, leave this attempt queued. Say that scheduling state could not
+  be read, or that the leave question is already pending or unavailable. Do not let a later
+  unrelated read that happens to succeed turn this unreadable decision into permission to launch.
+  A later attempt re-reads the published decision. On `ELICIT_LEAVE_TIME`, carry the exact
+  `LEAVE_PROMPT_GENERATION` into **`/leave-by --elicit --reservation <token>`** (Step 0e). It owns
+  the menu, normalization and writes. After it returns, including dismissal or failure, release that
+  exact generation with `"$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave
+  --generation "$LEAVE_PROMPT_GENERATION"`. Report a release failure without clearing another
+  generation. Re-run the leave eligibility read before the deadline gate; if it still says the
+  question needs an answer or its state is unreadable, leave this launch queued. Otherwise proceed
+  with the published state. Do not parse or write the answer here.
 
-  **No separate "already asked" flag exists, deliberately.** The repo-scoped state *is* the record:
-  an armed unexpired deadline or an unexpired `no_deadline_until` suppresses the question, and an
-  expired deadline or a new ET day brings it back. A session flag would need recovering after every
-  compaction and would still ask twice from two threads on the same repo.
+  The reservation is only for an in-flight question; an unexpired deadline or `no_deadline_until`
+  remains the record of the answer. A compacted session can continue with its exact token. It
+  must never infer permission to reopen a question from a lost token. A later contender can replace
+  a reservation only after the exact local owner process is proven gone. No timer displaces a live
+  user while a menu is open.
 
 - **Then check the armed deadline — one pipeline at a time (issue #1525).** A planning window set by
   `/pm --window` or a leave time set by `/leave-by` writes one `deadline_epoch`; a pipeline whose
@@ -722,54 +767,106 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   <!-- test-anchor: subagent-step7-overrun-decision -->
 
   ```bash
-  OVERRUN_ASK=false
-  OVERRUN_DECISION=""
-  # ATTENDED gates the QUESTION, never the record. A decision the user already made is
-  # theirs on every later cycle, and most of those cycles are unattended — gating the read
-  # on attendance is how "Launch anyway" gets honoured once and then quietly forgotten,
-  # leaving the issue declined forever by the very monitor loop meant to act on it.
-  if [[ "$LAUNCH_DECLINED" == true && "$DECLINE_REASON" == "plan on "* \
-        && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
-    DECISION_RC=0
-    DECISION_JSON=$("$SESSION_STATE_SH" \
-      --get-json ".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]" 2>/dev/null) \
-      || DECISION_RC=$?
-    if [[ "$DECISION_RC" -ne 0 && "$DECISION_RC" -ne 3 ]]; then
-      # Unreadable is not "never asked". Asking again on an unreadable record would nag
-      # every monitor cycle — the exact behaviour the record exists to stop — so the
-      # decline that is already standing holds, and nothing is asked.
-      #
-      # Its OWN value, never a borrowed "skip": "we could not read the record" and "the
-      # user chose to skip" are different facts, and writing the second when only the
-      # first is true makes a failed read indistinguishable from an answer in every
-      # report that quotes this variable. It is not in the write allow-list either, so
-      # a fabricated answer can never reach state.
-      OVERRUN_DECISION="unreadable"
-    else
-      # The recorded answer counts ONLY against the deadline it was given for. A bare
-      # decision would keep applying after the user re-declared a different time, which
-      # is an answer about a clock that no longer exists.
-      OVERRUN_DECISION=$(printf '%s' "$DECISION_JSON" | jq -r \
-        --argjson d "$DEADLINE_EPOCH" \
-        'if type == "object" and .deadline_epoch == $d
-            and (.decision == "skip" or .decision == "launch_anyway" or .decision == "split")
-         then .decision else "" end' 2>/dev/null) || OVERRUN_DECISION=""
-      # No record yet: ask only if someone is there to answer. Unattended, the decline
-      # simply stands — today's behaviour, unchanged.
-      if [[ -z "$OVERRUN_DECISION" && "${ATTENDED:-false}" == "true" ]]; then OVERRUN_ASK=true; fi
+  read_overrun_decision() {
+    OVERRUN_ASK=false
+    OVERRUN_DECISION=""
+    # ATTENDED gates the QUESTION, never the record. A decision the user already made is
+    # theirs on every later cycle, and most of those cycles are unattended — gating the read
+    # on attendance is how "Launch anyway" gets honoured once and then quietly forgotten,
+    # leaving the issue declined forever by the very monitor loop meant to act on it.
+    if [[ "$LAUNCH_DECLINED" == true && "$DECLINE_REASON" == "plan on "* \
+          && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
+      DECISION_RC=0
+      DECISION_JSON=$("$SESSION_STATE_SH" \
+        --get-json ".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]" 2>/dev/null) \
+        || DECISION_RC=$?
+      if [[ "$DECISION_RC" -ne 0 && "$DECISION_RC" -ne 3 ]]; then
+        # Unreadable is not "never asked". Asking again on an unreadable record would nag
+        # every monitor cycle — the exact behaviour the record exists to stop — so the
+        # decline that is already standing holds, and nothing is asked.
+        #
+        # Its OWN value, never a borrowed "skip": "we could not read the record" and "the
+        # user chose to skip" are different facts, and writing the second when only the
+        # first is true makes a failed read indistinguishable from an answer in every
+        # report that quotes this variable. It is not in the write allow-list either, so
+        # a fabricated answer can never reach state.
+        OVERRUN_DECISION="unreadable"
+      else
+        # The recorded answer counts ONLY against the deadline it was given for. A bare
+        # decision would keep applying after the user re-declared a different time, which
+        # is an answer about a clock that no longer exists.
+        OVERRUN_DECISION=$(printf '%s' "$DECISION_JSON" | jq -r \
+          --argjson d "$DEADLINE_EPOCH" \
+          'if type == "object" and .deadline_epoch == $d
+              and (.decision == "skip" or .decision == "launch_anyway" or .decision == "split")
+           then .decision else "" end' 2>/dev/null) || OVERRUN_DECISION=""
+        # No record yet: ask only if someone is there to answer. Unattended, the decline
+        # simply stands — today's behaviour, unchanged.
+        if [[ -z "$OVERRUN_DECISION" && "${ATTENDED:-false}" == "true" ]]; then OVERRUN_ASK=true; fi
+      fi
     fi
-  fi
-  # A recorded (or re-asked and answered) `launch_anyway` is the ONLY thing that reopens
-  # the gate, and it reopens it for this issue alone. Written as an `if`, not a
-  # `[[ … ]] && { … }`: the short-circuit form returns 1 whenever the test is false, and
-  # this is the block's last statement — so under a `set -e` caller the common case
-  # (no recorded decision) would abort the launch path instead of falling through it.
-  if [[ "$OVERRUN_DECISION" == "launch_anyway" ]]; then
-    LAUNCH_DECLINED=false; DECLINE_REASON=""
+    # A recorded (or re-asked and answered) `launch_anyway` is the ONLY thing that reopens
+    # the gate, and it reopens it for this issue alone. Written as an `if`, not a
+    # `[[ … ]] && { … }`: the short-circuit form returns 1 whenever the test is false, and
+    # this is the block's last statement — so under a `set -e` caller the common case
+    # (no recorded decision) would abort the launch path instead of falling through it.
+    if [[ "$OVERRUN_DECISION" == "launch_anyway" ]]; then
+      LAUNCH_DECLINED=false; DECLINE_REASON=""
+    fi
+  }
+  read_overrun_decision
+  ```
+
+  If the read says to ask, reserve this issue's overrun question. Re-read the decision with the
+  same issue and deadline after the attempt:
+
+  <!-- test-anchor: subagent-step7-overrun-reservation -->
+
+  ```bash
+  OVERRUN_PROMPT_GENERATION=""
+  if [[ "$OVERRUN_ASK" == true ]]; then
+    if [[ -n "${PROMPT_RESERVE_SH:-}" ]]; then
+      OVERRUN_PROMPT_GENERATION=$("$PROMPT_RESERVE_SH" claim --repo "$REPO_KEY" --kind overrun --issue "$ISSUE_NUM") \
+        || OVERRUN_PROMPT_GENERATION=""
+    fi
+    [[ "$OVERRUN_PROMPT_GENERATION" =~ ^[0-9a-f]{32}$ ]] || OVERRUN_PROMPT_GENERATION=""
+    read_overrun_decision
+    if [[ -z "$OVERRUN_PROMPT_GENERATION" ]]; then
+      # A matching published launch_anyway has already reopened the gate.
+      # Otherwise leave the decline standing; never show a second menu.
+      OVERRUN_ASK=false
+    elif [[ "$OVERRUN_ASK" != true ]]; then
+      "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind overrun --issue "$ISSUE_NUM" \
+        --generation "$OVERRUN_PROMPT_GENERATION" || echo 'Overrun question reservation could not be released' >&2
+      OVERRUN_PROMPT_GENERATION=""
+    fi
   fi
   ```
 
-  On `OVERRUN_ASK`, present **one** `AskUserQuestion` (`ask-menu.md`) naming the issue, its bound,
+  Check the exact owner, generation and still-current deadline immediately before opening the menu
+  and again before recording or acting on its answer:
+
+  <!-- test-anchor: subagent-step7-overrun-verify-reservation -->
+
+  ```bash
+  OVERRUN_RESERVATION_VERIFIED=false
+  if [[ "${OVERRUN_ASK:-false}" == true && -n "${PROMPT_RESERVE_SH:-}" &&
+        -n "${OVERRUN_PROMPT_GENERATION:-}" ]] &&
+     "$PROMPT_RESERVE_SH" verify --repo "$REPO_KEY" --kind overrun --issue "$ISSUE_NUM" \
+       --generation "$OVERRUN_PROMPT_GENERATION" &&
+     OVERRUN_CURRENT_DEADLINE=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].window.deadline_epoch") &&
+     [[ "$OVERRUN_CURRENT_DEADLINE" == "$DEADLINE_EPOCH" ]]; then
+    OVERRUN_RESERVATION_VERIFIED=true
+  fi
+  ```
+
+  Require `OVERRUN_RESERVATION_VERIFIED=true`; otherwise discard any local answer and leave the
+  decline standing. Hold the reservation through the answer's durable write (or dismissal).
+  Release it with the same arguments and action `release` before returning to the launch gate,
+  including before re-entering after a split or leave-time change. If release fails, say so and
+  retain the existing record; never clear the slot without its generation.
+
+  On verified `OVERRUN_ASK`, present **one** `AskUserQuestion` (`ask-menu.md`) naming the issue, its bound,
   and the pause-point clock, with exactly these options in this order:
 
   | Option label | Effect |
@@ -1364,10 +1461,10 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 ### Monitor loop (repeat every ~60 seconds):
 
-0. **Read the usage horizon** (#1619). Hand the counter the **harness** printed into this turn's context — `<total_tokens>N tokens left</total_tokens>`, refreshed after every tool result — to `usage-horizon.sh --observe`, then branch on `--check`. Never a figure derived from the transcript, from this thread's own accounting, or remembered from an earlier turn: an absent counter is an absent reading, which is `unknown`. Resolve `subagent-thread-limit-park.md` through Step 0.1's candidate order and run its **§7.1 gate block** rather than re-deriving the branch here.
+0. **Read the usage horizon** (#1619, #2147). Run `subagent-thread-limit-park.md` §7.1, resolved through Step 0.1's candidate order. Pass only a counter this turn's harness actually printed to `usage-horizon.sh --observe` before `--check`; otherwise check with the §7.3 attestation only if you observed the session from the start without one. Never estimate or reuse a remembered figure.
    - `clear` → the cycle proceeds unchanged.
    - `approaching` → **step 4 refills nothing** this cycle: no queued chain head, no backlog pick, no replacement for a slot that just freed. Running pipelines are untouched and steps 2–3's A→B / B→C transitions still run — a successor finishes work already in flight, it does not start new work. Report `paused (horizon approaching)` on the idle line.
-   - `unknown` → identical to `approaching` in what it stops, and it writes nothing and parks nothing. Report `paused (horizon unknown)`.
+   - `unknown` → step 4 refills nothing; successors continue and no park is written. Report the §7.3 reason on the idle line. A new explicit chat launch request is evaluated by Step 7; the tick itself never uses the exception.
    - `critical` → run §7.4 **before this cycle ends**, then end the loop: claim the park (`PARK_CAUSE=preemptive`), wind down through `/pause` with the landing window, record each surviving pipeline's phase, and arm the wake. A park already claimed by day mode or a sibling thread is **adopted**, not duplicated (§8) — record the pipelines, arm no second `Monitor`.
    - `USAGE_HORIZON_SH` unresolved (Step 0) → the gate holds `unknown`; it never reads as `clear`.
 1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2). **A subagent that died carries a classification, not just an absence:** run `subagent-thread-limit-park.md` §1 on the runtime's structured failure payload first, resolving that document through Step 0.1's candidate order rather than a bare `.claude/reference/` path — most repos carry no `.claude/`, and an unresolvable reference here is the same stop Step 0.1 defines, not a silent fall-through to the crash path. `LIMIT_SIGNAL=true` is an account wall, not a crash — run that document's §2–§4 (claim the park, stop the remaining subagents through `/pause` Steps 2–7 with `--window 0`, record each pipeline's phase, arm the wake) and end the loop; the siblings still running are about to hit the same wall, and the ask-before-respawn crash path reaches a human who cannot help until the window reopens. **Classify every returned status before processing any of them.** If ANY carries `LIMIT_SIGNAL=true`, park on that tick: persist the other completed results as pending transitions and launch no successor this cycle. Processing a healthy sibling's completion first would launch its next phase into the same closed window the park is being opened for. `LIMIT_SIGNAL=false` on every status is the ordinary crash path, unchanged.

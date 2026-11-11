@@ -383,6 +383,22 @@ check_eq "  head sha recorded"              "abc1234"                "$(pr_get 1
 check_eq "  handoff_reason at the PR level" "usage_limit_park"        "$(pr_get 1616 handoff_reason)"
 check_eq "  remaining work carried"         "poll for CR review"      "$(pr_get 1616 'usage_limit_park.remaining_work[0]')"
 
+ADOPT_OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window | tail -1)
+check_eq "the second thread adopts the existing park" "PARK_CLAIM=adopted" "$ADOPT_OUT"
+OUT=$(PR_NUM=1617 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
+      PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" \
+      PARK_RESUME_JSON='{"session_id":"11111111-aaaa-4aaa-8aaa-111111111111","cwd":"/tmp/work","source_profile":"/tmp/account","summary":"Review work","handoff":"/tmp/handoff","ignored":"not serialized"}' \
+      bash -c "$BLOCK_PIPELINE" 2>/dev/null | tail -1)
+check_eq "adopting thread records its own resume metadata" "PR_PARK=1617:recorded" "$OUT"
+check_eq "  exact conversation ID retained" "11111111-aaaa-4aaa-8aaa-111111111111" "$(pr_get 1617 usage_limit_park.quota_resume.session_id)"
+check_eq "  the original pipeline is not given the adopter identity" "null" "$(pr_get 1616 usage_limit_park.quota_resume)"
+check_eq "  metadata excludes extra fields" "null" "$(pr_get 1617 usage_limit_park.quota_resume.ignored)"
+OUT=$(PR_NUM=1618 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
+      PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" PARK_RESUME_JSON='malformed' \
+      bash -c "$BLOCK_PIPELINE" 2>/dev/null | tail -1)
+check_eq "malformed optional metadata does not lose the park" "PR_PARK=1618:recorded" "$OUT"
+
+
 # ---------------------------------------------------------------------------
 echo "== Wake: deadline, thrash cap, weekly branch (AC 5) =="
 # ---------------------------------------------------------------------------
@@ -1185,6 +1201,20 @@ for SCRIPT in "$STUB_DIR/does-not-exist.sh" "$GARBAGE" ""; do
     | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK)=')
   check_eq "parity on degraded input '${SCRIPT:-<unresolved>}'" "$THEIRS" "$MINE"
 done
+# The two callers report the real helper's absence reason while keeping the
+# automatic refill and park outputs unchanged. The chat exception is separate.
+REAL_HORIZON="$REPO_ROOT/.claude/scripts/usage-horizon.sh"
+EMPTY_HOME="$TMP_HOME/unused-horizon-home"
+mkdir -p "$EMPTY_HOME/.claude"
+MINE=$(CLAUDE_SESSION_ID=absence-case HOME="$EMPTY_HOME" \
+  HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON")
+THEIRS=$(CLAUDE_SESSION_ID=absence-case HOME="$EMPTY_HOME" \
+  HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON")
+check_eq "attested absence: full gate output parity" "$THEIRS" "$MINE"
+check_eq "attested absence: named reason" "counter-never-seen" "$(field "$MINE" HORIZON_REASON)"
+check_eq "attested absence: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
+check_eq "attested absence: no park" "false" "$(field "$MINE" HORIZON_PARK)"
+
 # Negative control for the parity comparison itself: two DIFFERENT verdicts must
 # not compare equal, or every check above would pass vacuously.
 MINE=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear)" 900000 1000000 \

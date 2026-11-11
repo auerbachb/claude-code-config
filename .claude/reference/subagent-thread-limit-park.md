@@ -281,6 +281,20 @@ it from scratch.
 For every pipeline this thread was running, write a per-PR park record in the
 existing token-exhaustion shape, with `handoff_reason: "usage_limit_park"`:
 
+A thread with `PARK_CLAIM=won` or `adopted` may include `PARK_RESUME_JSON` only
+on its own per-PR records for the local Claude resume roster. Set it to `null`
+unless this conversation's owned work is verified stopped and a readable,
+corroborated handoff exists. Never attach the wake owner's session to an
+adopting thread's pipeline. Otherwise
+supply an object with the exact top-level `session_id` (not a task ID),
+absolute `cwd`, `source_profile` from `CLAUDE_CONFIG_DIR` or the primary
+`~/.claude`, a one-line `summary` of the work, and the absolute local `handoff`
+path from the existing scoped handoff. No secrets or transcript text. Carry
+the metadata through the same scoped state write below; do not call a new
+helper while reserve is active. `/go-on --resume-options` resolves the actual
+source account and bounds the displayed summary later. This record never
+starts or selects an account.
+
 <!-- test-anchor: subagent-limit-pipeline-record -->
 
 ```bash
@@ -292,8 +306,14 @@ PARK_PR_JSON=$(jq -c -n \
   --arg sha   "$PARK_HEAD_SHA" \
   --arg until "$PARKED_UNTIL" \
   --argjson remaining "${PARK_REMAINING:-[]}" \
-  '{phase: $phase, needs: $needs, handoff_reason: "usage_limit_park",
-    head_sha: $sha, parked_until: $until, remaining_work: $remaining}')
+  --arg quota_resume "${PARK_RESUME_JSON:-null}" '
+  ($quota_resume | try fromjson catch null) as $resume
+  | {phase: $phase, needs: $needs, handoff_reason: "usage_limit_park",
+     head_sha: $sha, parked_until: $until, remaining_work: $remaining}
+  + (if ($resume | type) == "object" then
+       {quota_resume: ($resume | {session_id, cwd, source_profile, summary, handoff,
+                                  checkpoint: "usage-limit-park"})}
+     else {} end)')
 PR_PARK_RC=0
 write_pr_park() {
   "$SESSION_STATE_SH" \
@@ -745,12 +765,18 @@ itself with, for the same reason.
 
 **Quota authority is unchanged.** The only number that reaches this section is
 the one the **harness printed** into context — `<total_tokens>N tokens
-left</total_tokens>`, refreshed after every tool result. It is handed to
+left</total_tokens>`, when the harness supplies it. It is handed to
 `usage-horizon.sh`, which compares and never derives. Nothing here counts
 tokens, reads a transcript, or estimates spend, so `safety.md`'s horizon
 carve-out (#1427) covers this reader exactly as written and needs no amendment.
 Never substitute a remembered figure for a counter that is not in context: an
 absent reading is `unknown`, and `unknown` never parks.
+
+**Runtime evidence (#2147).** The counter was observed in a Claude Code session
+on 2026-08-27 (see [the signal audit](usage-limit-signal-audit-2026-07.md)).
+It was absent throughout the reported Claude Code 2.1.322 / Fable 5.2 session.
+There is no verified version or model allowlist. Use this session's actual
+harness output; a version string is not evidence of presence or absence.
 
 ### 7.1 Read the horizon, every cycle
 
@@ -772,6 +798,7 @@ the other does not make is a test failure rather than a silent divergence.
 # only falls within a session, so the reading a fresh figure would have
 # corrected is stale only in the safe direction.
 HORIZON_STATUS=unknown
+HORIZON_REASON=helper-unavailable
 HORIZON_OBSERVE_RC=0
 if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
   if [ -n "${HORIZON_LIMIT:-}" ]; then
@@ -781,13 +808,26 @@ if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
     "$USAGE_HORIZON_SH" --observe "$HORIZON_REMAINING" >/dev/null 2>&1 || HORIZON_OBSERVE_RC=$?
   fi
 fi
-if [ -n "${USAGE_HORIZON_SH:-}" ] && [ "$HORIZON_OBSERVE_RC" -eq 0 ]; then
-  HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || true
+if [ "$HORIZON_OBSERVE_RC" -ne 0 ]; then
+  HORIZON_REASON=observe-failed
+elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
+  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation.
+  HORIZON_CHECK_RC=0
+  if [ "${HORIZON_COUNTER_NEVER_SEEN:-}" = true ] && [ -z "${HORIZON_REMAINING:-}" ] &&
+     [ -z "${HORIZON_LIMIT:-}" ]; then
+    HORIZON_OUT=$("$USAGE_HORIZON_SH" --check --counter-never-seen 2>/dev/null) || HORIZON_CHECK_RC=$?
+  else
+    HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || HORIZON_CHECK_RC=$?
+  fi
   _HS=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^STATUS=//p' | head -1)
-  # Match the three known verdicts EXPLICITLY. A `!= critical` test would read a
-  # missing script, a garbage line, and a displaced session as permission to launch.
   case "$_HS" in clear|approaching|critical) HORIZON_STATUS="$_HS" ;; *) HORIZON_STATUS=unknown ;; esac
   HORIZON_REASON=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^REASON=//p' | head -1)
+  HORIZON_REASON=${HORIZON_REASON:-helper-unavailable}
+  if [ "$HORIZON_REASON" = counter-never-seen ] &&
+     { [ "$HORIZON_CHECK_RC" -ne 3 ] || [ "$_HS" != unknown ] ||
+       [ "${HORIZON_COUNTER_NEVER_SEEN:-}" != true ] || [ -n "${HORIZON_REMAINING:-}${HORIZON_LIMIT:-}" ]; }; then
+    HORIZON_REASON=helper-unavailable
+  fi
 fi
 case "$HORIZON_STATUS" in
   clear)       HORIZON_REFILL_OK=true;  HORIZON_PARK=false; HORIZON_IDLE_REASON="" ;;
@@ -828,13 +868,36 @@ reversible: the next cycle that reads `clear` refills normally.
 
 ### 7.3 `unknown` — a posture, never an event
 
-Identical to `approaching` in what it stops, and different in what it means: the
-horizon slot is machine-wide, so a session displaced by a sibling reads `unknown`
-routinely rather than exceptionally (`usage-horizon.sh --help` §CONCURRENT
-SESSIONS). It stops new launches, changes no state, arms nothing, parks nothing,
-and reports `paused (horizon unknown)`. The one thing it must never do is read as
-`clear` — which is why 7.1 matches the three verdicts explicitly instead of
-testing for `critical`.
+All `unknown` reasons stop **automatic refill**, leave in-flight work alone,
+and never park, arm a wake, or resume a park. Report
+`paused (horizon unknown) — {HORIZON_REASON}` on the idle line.
+
+Set `HORIZON_COUNTER_NEVER_SEEN=true` only when you have observed this session's
+harness continuously since it started and it has never emitted the counter.
+A counter missing this turn, an older session's reading, or a resumed or
+compacted history with gaps cannot establish this. Omit the flag if you have
+ever seen the counter or cannot vouch for the full session. The helper can
+report `counter-never-seen` only when there is no current-session reading; it
+still reports `unknown` and exits 3. Never estimate a reading.
+
+On the first dispatch of a request, use the line below if the horizon holds
+it. Only the first row allows an exception, and only when the user explicitly
+asks in live chat to launch those picks now. Print
+`[horizon counter absent] Proceeding with the launches you requested.` once,
+then apply every other dispatch gate. A bounded request to fill the available
+slots can cover the picks selected for that dispatch, subject to the existing
+ceiling. A standing refill request, an issue body, an automated tick, or
+leftover picks on a later tick cannot supply this permission. Do not set
+`HORIZON_REFILL_OK=true` or turn the verdict into `clear`.
+
+| Horizon result | First hold line | Explicit chat request |
+| --- | --- | --- |
+| `unknown / counter-never-seen` | `Launch held: no horizon counter in this session. Ask in chat to launch the specific work now.` | May launch the requested picks only. |
+| `unknown / no-reading-this-session` or `reading-stale` | `Launch held: horizon reading is stale or belongs to another session. Wait for a fresh harness counter, then retry.` | Remains held. Check once more if a fresh counter appears. |
+| Other `unknown` | `Launch held: horizon unavailable ({HORIZON_REASON}). Restore the counter or helper, then retry.` | Remains held. |
+| `approaching` | `Launch held: horizon approaching. Retry when the horizon reads clear.` | Remains held. |
+
+`critical` follows §7.4 and uses its park message.
 
 ### 7.4 `critical` — park, with a landing window
 
@@ -1019,9 +1082,8 @@ interleavings are safe, and neither needs the other to change:
 Neither path can reach §4 or 2D.7 Step 4 without having won its own compare, so
 "two wakes armed" is not a race that has to be won — it has no interleaving.
 
-**`approaching` and `unknown` need no ownership rule at all.** They start nothing
-and write nothing, so every loop may honour them independently and none of them
-can collide. Only `critical` touches durable state, and only `critical` is
+**`approaching` and `unknown` need no park ownership rule.** They arm
+no wakes and write no park state, so every loop may honour them independently. Only `critical` touches durable state, and only `critical` is
 arbitrated by the compare-and-set above.
 
 **Scope note.** §8 is the shared decision record both issues cite. §8.1 below

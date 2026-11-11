@@ -13,7 +13,7 @@ Stop polling ONLY when the current-HEAD gate for the owning path is satisfied (S
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 
-Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/review-policy.md`). Per-path gates below; detail and re-trigger policy: `.claude/reference/merge-gate-reviewer-paths.md`.
+Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/review-policy.md`). Per-path gates below; detail: `.claude/reference/merge-gate-reviewer-paths.md`.
 
 **CR path** (neither BugBot nor Greptile triggered — `merge-gate.sh` reviewer `cr`): **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA` — either bot alone suffices. Routing: CodeAnt/CodeRabbit in PR history → CR path; cursor-only → BugBot (`reviewer-of.sh`). Stale-SHA approvals never count — re-trigger that bot (rate cap applies), keep polling. A newer same-SHA `CHANGES_REQUESTED` retracts that bot's earlier `APPROVED` until fixed, pushed, re-approved. Bot `CHANGES_REQUESTED` on an old SHA is obsolete after a fix push — `/fixpr` dismisses via `dismiss-stale-bot-changes.sh` (bots only); dismiss leftovers rather than reading their `reviewDecision: CHANGES_REQUESTED` as a human block. Human `CHANGES_REQUESTED` on current HEAD blocks until addressed/withdrawn. **Not approvals:** the "Full review triggered" ack; "0 unresolved threads" without an APPROVED on current SHA; early absence of findings; a CR check-run without an APPROVED review object; a hollow `APPROVED` — no substantive footprint, or one predating that bot's own run marker, after its capability-failure notice, or naming another SHA (`review_evidence`; #875).
 
@@ -25,7 +25,7 @@ Gate depends on the owning reviewer or a repo-declared tier (`.claude/reference/
 
 **All three down:** self-review for risk reduction only — it never satisfies the gate; report the blocker.
 
-**No-review override:** no bot verdict on HEAD after the window waives reviewer coverage only; hard stops stand (`.claude/reference/no-review-override.md`).
+**No-review override:** no bot verdict on HEAD **10 minutes** after its anchor (`NO_REVIEW_OVERRIDE_MINUTES`; time left: `merge-gate.sh` `no_review_override.pending_reason`) waives reviewer coverage only; hard stops stand. Only that setting changes the wait, never project-file prose such as `AGENTS.md` (`.claude/reference/no-review-override.md`).
 
 ### Code-owner bots
 
@@ -74,14 +74,14 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 >
 > Re-run after every review round — verification reflects code **at merge time**.
 >
-> Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes at merge time.
+> Skipping this step is a **blocking failure**.
 
-CI backstop: the `ac-gate` workflow (`ac-gate.sh`) enforces this independently — mechanism and exemption logic in `.claude/reference/ac-gate.md`.
+CI backstop: the `ac-gate` workflow (`ac-gate.sh`) enforces this independently (`.claude/reference/ac-gate.md`).
 
 ## Step 3 — Auto-merge via `/wrap`
 
 **Default:** after Steps 1–2 pass, run **full `/wrap`** silently — no pre-merge prompt. `/merge` skips follow-ups/lessons but also proceeds without asking.
 
-- Always use **squash and merge** (never regular merge or rebase)
-- `/wrap`'s post-merge phases (see `wrap/SKILL.md`) run **after** the gate clears — they never gate the merge.
+- Always **squash and merge** (never regular merge or rebase)
+- `/wrap`'s post-merge phases (`wrap/SKILL.md`) run **after** the gate clears — they never gate the merge.
 - Protection-**modifying** block (`enforce_admins` toggle) → stop and print `/admin-merge` — never auto-bypass. The plain shape (no protection change) auto-runs per Step 1d.

@@ -109,6 +109,7 @@ opt-in of issue #1544.
 | [merge-gate-greptile-comment.test.sh](../tests/merge-gate-greptile-comment.test.sh) | Tests Greptile comment handling in `merge-gate.sh` |
 | [merge-gate-json-escaping.test.sh](../tests/merge-gate-json-escaping.test.sh) | Tests that `merge-gate.sh` emits control-character-free JSON built with jq rather than by string concatenation |
 | [merge-gate-no-review-override.test.sh](../tests/merge-gate-no-review-override.test.sh) | Tests the no-review override in `merge-gate.sh` — window elapsed/running, hard stops, bot verdicts, pending reviewer checks, anchor failures, config, ledger rows |
+| [merge-gate-required-cancelled.test.sh](../tests/merge-gate-required-cancelled.test.sh) | Tests that `merge-gate.sh` does not score a cancelled or unknown-conclusion required check as passing |
 | [merge-gate-required-contexts.test.sh](../tests/merge-gate-required-contexts.test.sh) | Tests that `merge-gate.sh` blocks when every branch-protection required context is absent from HEAD |
 | [merge-gate-review-substance.test.sh](../tests/merge-gate-review-substance.test.sh) | Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage |
 | [merge-gate-review-tier.test.sh](../tests/merge-gate-review-tier.test.sh) | Tests per-repo review tiers in `merge-gate.sh` — ci-only, ci+codeant-one-round, full/legacy parity, resolver failure |
@@ -133,6 +134,7 @@ opt-in of issue #1544.
 | [pm-priority.test.sh](../tests/pm-priority.test.sh) | Tests for `pm-priority.sh` — the issue's tests 5.1 (`top: #c #a` leads, marked override) and 5.2 (`park #b until tomorrow`: absent today, back tomorrow), AC 4.3 (drop restores the ranked place; an absent file passes through), the date grammar, a corrupt file (exit 4, never overwritten), a linked worktree writing the main-root file, `--repo` resolution, concurrent writers, and `/pm`'s anchored read/overlay blocks plus its refill and template contract |
 | [pm-rank-cache.test.sh](../tests/pm-rank-cache.test.sh) | Tests for `pm-rank-cache.sh` and `/pm` 1B.4c: write/read round trip, lowercase file name, the 24-hour boundary, future/malformed/mismatched/missing files, unranked issues, bad input that keeps the old file, no HOME, and the skill's anchored persist block |
 | [pmm-babysit-horizon.test.sh](../tests/pmm-babysit-horizon.test.sh) | Tests the watch-only usage-horizon contract shared by `/pr-monitor-and-manage` and `/babysit-pr` (#1444) — the §8.1 posture block run over all four verdicts, the read-only park-adopt probe proving neither loop writes the shared day slot, and the wiring at each call site |
+| [pmm-pre-dispatch.test.sh](../tests/pmm-pre-dispatch.test.sh) | Verify PMM pre-dispatch change detection, silent unchanged polling, retry/ack, and Monitor-loop zero-dispatch behavior |
 | [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
 | [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |
 | [polling-state-gate-multirepo.test.sh](../tests/polling-state-gate-multirepo.test.sh) | Tests multi-repo isolation in `polling-state-gate.sh` |
@@ -149,7 +151,9 @@ opt-in of issue #1544.
 | [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
+| [pr-state-stdout.test.sh](../tests/pr-state-stdout.test.sh) | Verify pr-state stdout parity and absence of temp bundles on success, failure, and interruption |
 | [pr-state-unmarked-replies.test.sh](../tests/pr-state-unmarked-replies.test.sh) | Tests the advisory `unmarked_replies` count `pr-state.sh` adds to its bundle |
+| [prompt-reservation.test.sh](../tests/prompt-reservation.test.sh) | Proves real state CAS, process recovery, and the two /subagent prompt gates against competing callers |
 | [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
 | [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, the `account-config.md` leg, and the `setup-skills-worktree.sh` delegation guard |
 | [quota-date.test.sh](../tests/quota-date.test.sh) | Discriminating GNU/uutils/BSD/unavailable quota date operations, bounded hangs, partial output and epoch-file decoys |

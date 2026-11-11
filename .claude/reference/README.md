@@ -73,6 +73,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `issue-claim.md` — `issue-claim.sh` mechanism: the three GitHub claim artifacts, why the holder token is finer-grained than the login, block-at-holder / release-at-account, staleness, the `--allow-claimed` override, and every call site (`issue-planning.md` step 0; #873)
 - `issue-claim-script-hotspot-decision.md` — KEEP claim discovery, renewal and guarded release together (Issue #2072); five counted changes and no recorded conflicts
 - `issue-claim-fixture-hotspot-decision.md` — KEEP the shared claim lifecycle fixture (Issue #2074); six counted changes, no recorded conflicts, and the fixture is unchanged.
+- `issue-completion.md` — repo-qualified post-merge issue verification, full-scope missed closure recovery, interrupted/resumed PM reconciliation, and consumer audit (Issue #1973)
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3, `/harness-audit` Step 7); strong/weak/none classification, exact-artifact dedup, and the comment-vs-file rule
 - `harness-audit.md` — `/harness-audit` design record: two-pass split, the step-up chip that preserves the top-tier spawn invariant, the model-fleet resolver, dual watermarks, and the out-of-repo report default (#770)
 - `review-stack-audit.md` — `/review-stack-audit` rationale and contracts: measured versus declared billing state, roles and deduplication, reply verdict and fallback attribution, value and velocity fields, scorecard, and study limits (Issues #1201 and #1949).
@@ -81,6 +82,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `final-wrapup-format.md` — minimal terminal outcome or actionable blocker; explicit summaries and machine reports retain their formats (Issue #1396, Issue #1873)
 - `greptile-setup.md` — Greptile dashboard setup notes
 - `greptile-reply-format.md` — reply conventions for Greptile threads
+- `aws-guidance.md` — full AWS new-experience guidance: terminology, Region/service constraints, spend-limit rules, service-availability check procedure, and help-level definitions; condensed summary in `CLAUDE.md` points here
 
 ### Workflow decomposition and PM helpers
 
@@ -146,6 +148,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 > **Exempt from corpus-wide rewrites (#791).** Every file in this section is a dated snapshot of what was true when it was written. Sweeping renames — the versionless model-name rename is the standing example — **must skip them**: rewriting a record to match today's vocabulary falsifies the history it exists to preserve. A versioned model name (`Opus 5`, `Haiku 4.5`) inside one of these files is correct by construction, not drift. The rename applies to the operative corpus — `CLAUDE.md`, `.claude/rules/`, `.claude/skills/`, `.claude/agents/` — plus the living contract docs in this directory that those files consume normatively (`chip-launching.md`, `chip-model-guard-decision.md`). Enforced by `.github/scripts/chip-model-guard-lint.sh`, whose scan is scoped to exactly that set.
 
 - `skill-repo-diff-2026-08.md` — August 2026 point-in-time survey of obra/superpowers @ `b36e0829` and affaan-m/everything-claude-code @ `569b1d5b` vs our repo; six-dimension gap analysis, prioritized backlog, and import log stub for second harvest cycle (#417)
+- `skill-repo-diff-2026-11.md` — November upstream survey (#417): pinned Superpowers and ECC changes, six comparison dimensions, and one evidence pattern to adopt
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
 - `ai-review-tool-audit-2026-08.md` — 244-PR/30-day subscription + cap reconciliation audit; billed-vs-observed state, refusal rates, and sole-source yield for all five reviewers (#1199)

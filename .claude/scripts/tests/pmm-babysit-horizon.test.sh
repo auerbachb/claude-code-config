@@ -361,7 +361,7 @@ require_text "  mirrored in the lifecycle reference" "$PMM_LIFECYCLE" '\.pmm\.pa
 require_text "  and documented in the marker schema" "$PMM_LIFECYCLE" '\| .\.pmm\.pause_cause. \|'
 require_text "resume clears the cause with the rest of the marker" \
   "$PMM" '\.pmm\.pause_cause=null'
-require_text "  on the -wake path too" "$PMM_WAKE" "set '\.pmm\.pause_cause=null'"
+require_text "  wake delegates clearing to the canonical main lifecycle" "$PMM_WAKE" 'pmm-wake-resume-request'
 
 # The wake must re-consult BEFORE teardown, or a refusal is not a no-op.
 require_text "the wake re-consults the horizon" "$PMM_WAKE" '## Step 3\.5: Re-consult the usage horizon'

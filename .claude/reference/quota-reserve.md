@@ -47,6 +47,16 @@ An **automated turn** is one whose prompt arrives wrapped by the app or harness:
 
 Nothing needs to be switched back. When the provider's reset brings the reading under the threshold, the first refresh after it (started by the next tool call once the marker is ten minutes old) clears the state and the guard allows everything. Parked pipelines resume with `/go-on`. On macOS the owner also gets a desktop notification once when an account crosses in either direction, on a best-effort basis: a notifier that is missing or fails is ignored, and a crossing is only noticed when a session is active to trigger a refresh. `QUOTA_RESERVE_NOTIFY_CMD` points it at another notifier.
 
+A confirmed Claude reserve crossing uses the same fresh weekly quota read to
+suggest the registered Claude launcher with the most room. The notice points
+from the stopped account to `/go-on --resume-options --target <launcher>`.
+That opens the read-only list with the existing manual commands or handoffs
+for that account. It never opens a session or queries a provider again. If all
+compatible alternatives are known ineligible, the notice says none has room;
+missing, unreadable or stale evidence that could change the choice says
+"next account unknown." An unknown reading keeps the last confirmed notice
+state only to avoid duplicate alerts; the guard still uses the current reading.
+
 ## Fails open
 
 | Condition | Result |
