@@ -1,0 +1,9 @@
+## Account bindings (issue #2183)
+
+Every Claude account is explicitly bound to one queue. There is no fallback to `public`.
+
+- **Identity.** An account is its config directory: `CLAUDE_CONFIG_DIR` when set and non-empty, else `$HOME/.claude`, with `~` expanded, made absolute, and trailing slashes removed. The match is lexical on purpose (no symlink resolution, no case folding), because Claude Code derives a credential realm from the spelling. A differently spelled alias is unbound and refused, never mapped.
+- **Registry.** `${XDG_CONFIG_HOME:-~/.config}/human-queue/bindings.tsv` (outside every profile, so copying a profile's `settings.json` never copies a binding), directory 700, file 600. One row per account: directory, name, queue schema, tab separated. It holds no connection URL.
+- **Guard.** `desk-cli.sh` resolves the queue from the registry before every subcommand except `bindings`, `bind`, and `carry-over`. An unbound account exits 4 with "You can't run the desk here until you configure a queue for this account" and the bind command, before any store contact or `register-control`. The capture hook renders the menu, queues nothing, and prints one warning line naming the bind command. A malformed registry (a duplicate or bad row) fails closed.
+- **Commands.** `desk-cli.sh bind --name <name> --schema <schema> [--config-dir <dir>] [--rebind]` migrates the queue, then records the binding; a different existing queue needs `--rebind`. `desk-cli.sh bindings` lists accounts and queues. `desk-cli.sh carry-over [--profile <dir>]... [--dry-run]` binds the default directory to `public` as `personal`, and each profile to the `HUMAN_QUEUE_SCHEMA` in its `settings.json`, then removes that interim entry.
+- **Tests.** `desk/tests/bindings-offline.test.sh` covers the guard, isolation, `bind`, `bindings`, the hook, bash/python agreement, corruption, and carry-over, all against temp directories.

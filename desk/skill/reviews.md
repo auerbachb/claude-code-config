@@ -35,7 +35,7 @@ Loaded when the operator's whole message is one of the Reviews verbs below (`SKI
 "$HQ" sync-reviews >/dev/null; echo "exit=$?"
 ```
 
-It adds a Review for each PR merged and each captured issue filed since the last sync (`desk/README.md`, "Sync"); its own output is not shown, because the view shows every item.
+It adds a Review for each PR merged and each captured issue filed since the last sync (`desk/docs/reviews.md#sync`); its own output is not shown, because the view shows every item.
 
 - `exit=0` → step 2.
 - `exit=4` naming `--since` → Reviews have never been synced, and where they begin is the operator's call: say `Reviews have never been synced. Reply "reviews since 2026-10-01" (any date) to choose where they begin.` and stop. On `reviews since <date>`, accept only a `YYYY-MM-DD` date (anything else → one line asking for one), run `"$HQ" sync-reviews --since <date> >/dev/null; echo "exit=$?"`, then step 2.

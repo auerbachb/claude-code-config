@@ -66,7 +66,7 @@ THE TICK TIME
   Each tick also stores its own time, UTC ISO 8601, under the reserved state
   key tick_at. `control-status` reads it: a control session that has ticked
   recently is a live desk, which is what the capture hook checks before it
-  queues a question (desk/README.md, "Capture hook"). Registering a
+  queues a question (desk/docs/capture-hook.md). Registering a
   different control session clears it, so only a tick after that counts.
 
 EXIT CODES
