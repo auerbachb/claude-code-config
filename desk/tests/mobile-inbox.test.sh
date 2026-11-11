@@ -142,7 +142,7 @@ UPDATE state SET value = 'fixture-successor' WHERE key = 'control_session';
 COMMIT;
 SQL
 guard=$!
-for i in {1..100}; do
+for _ in {1..100}; do
   [ ! -e "$tmp/guard-held" ] || break
   sleep 0.1
 done
@@ -150,7 +150,7 @@ check "handover transaction acquired the control lock" "$(test -e "$tmp/guard-he
 printf 'A' | "$HQ_T_CLI" mobile-reply apply fixture-control 101 1010 D-2 "$version" answer > "$tmp/guarded-reply" &
 reply=$!
 waiting=f
-for i in {1..50}; do
+for _ in {1..50}; do
   waiting=$(hq_psql -At -c "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
     WHERE wait_event = 'advisory' AND query LIKE '%human-queue:control:%$HUMAN_QUEUE_SCHEMA%')")
   [ "$waiting" != t ] || break

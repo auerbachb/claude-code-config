@@ -45,12 +45,12 @@ RESERVED KEYS (readable with get; `set` refuses them)
                    written by `sweep due`
   checkin          today's morning check-in and reading budget (JSON);
                    written by `checkin set`
+  mobile_answers_imported  set once when a mobile answer is accepted
   checkin_asked    the day the morning check-in was last due (YYYY-MM-DD);
                    written by `checkin due`
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
-  mobile_answers_imported  set once when a mobile answer is accepted
   control_session  the registered desk control session; written by
                    register-control
   reviews_watermark  the start of the last successful sync-reviews;
