@@ -306,7 +306,7 @@ For a probe fire, resolve `day:tick` and run only its `pm-day-d2-horizon-branch`
 ```bash
 pm_day_probe_fire() {
   local day_path snapshot binding generation observed identity field expected
-  local fires next probe_rc attempt lock_retried
+  local fires next write_path prior nonce resume_generation probe_rc attempt lock_retried
   local -a guards
   day_path=".repos[\"$REPO_KEY\"].day"
   generation=$(jq -cn --arg id "$TICK_GENERATION" '$id') ||
@@ -369,24 +369,38 @@ pm_day_probe_fire() {
       printf 'PROBE_BINDING=%s\nPROBE=exhausted\n' "$binding"
       return
     fi
-    if [ "$HORIZON_STATUS" = clear ]; then
-      printf 'PROBE_BINDING=%s\nPROBE=resume\n' "$binding"
-      return
-    fi
-
     guards=()
-    for field in park_generation parked_until limit_cause limit_kind limit_resume_task_id limit_resume_generation; do
+    for field in park_generation parked_until limit_cause limit_kind limit_resume_task_id; do
       expected=$(jq -c --arg field "$field" '.[$field]' <<< "$identity") ||
         { printf '%s\n' 'PROBE=fail-closed'; return; }
       guards+=("--expect-at" "$day_path.$field" "$expected")
     done
-    next=$(( fires - 1 ))
+    if [ "$HORIZON_STATUS" = clear ]; then
+      nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n') || nonce=""
+      if ! [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]; then
+        printf '%s\n' 'PROBE=fail-closed'
+        return
+      fi
+      resume_generation="probe-resume-$nonce"
+      next=$(jq -cn --arg gen "$resume_generation" '$gen') ||
+        { printf '%s\n' 'PROBE=fail-closed'; return; }
+      write_path="$day_path.limit_resume_generation"
+      prior="$generation"
+      guards+=("--expect-at" "$day_path.limit_probe_fires_remaining" "$fires")
+    else
+      next=$(( fires - 1 ))
+      write_path="$day_path.limit_probe_fires_remaining"
+      prior="$fires"
+      guards+=("--expect-at" "$day_path.limit_resume_generation" "$generation")
+    fi
     probe_rc=0
-    "$SESSION_STATE_SH" --cas "$day_path.limit_probe_fires_remaining=$next" --expect "$fires" \
+    "$SESSION_STATE_SH" --cas "$write_path=$next" --expect "$prior" \
       "${guards[@]}" || probe_rc=$?
     case "$probe_rc" in
       0)
-        if [ "$next" -eq 0 ]; then
+        if [ "$HORIZON_STATUS" = clear ]; then
+          printf 'PROBE_RESUME_GENERATION=%s\nPROBE=resume\n' "$resume_generation"
+        elif [ "$next" -eq 0 ]; then
           printf 'PROBE_BINDING=%s\nPROBE=exhausted\n' "$binding"
         else
           printf '%s\n' 'PROBE=continue'
@@ -409,7 +423,7 @@ pm_day_probe_fire
 
 `HORIZON_STATUS` comes from re-running D2's horizon block (observe, then `--check`) at the top of the fire — the same gate, so `unknown` cannot resume any more than it can park. Only `clear` resumes: `approaching` means the window has begun refilling but has not recovered, and resuming there walks straight back into the wall the thrash guard exists to prevent.
 
-- `PROBE=resume` → invoke `/pause-resume --generation "$TICK_GENERATION"`, which validates the token, reopens the gate, and re-arms the day loop through `/pm day resume`. **Never pass `--resume-refill`** — this park never wrote `.refill.paused`.
+- `PROBE=resume` → invoke `/pause-resume --generation "$PROBE_RESUME_GENERATION"` with the newly emitted token. The CAS replaced the old wake generation while the bound was still positive, so a concurrent final decrement cannot also win. If the handoff is interrupted, use captured-wake recovery or manual resume. **Never pass `--resume-refill`** — this park never wrote `.refill.paused`.
 - `PROBE=exhausted` / `PROBE=fail-closed` → keep the park in place. Stop and clear only the wake captured in `PROBE_BINDING`, using the identity gate below. Report a spent bound or the failure and say to resume manually with `/pause-resume`.
 - `PROBE=contended` → leave the wake and park in place. A later fire can retry; this turn did not record a decrement.
 - `PROBE=stale` → exit silently, exactly as D0 does for a superseded tick.

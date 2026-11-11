@@ -654,8 +654,16 @@ check_eq "probe: still-critical fire continues" "PROBE=continue" "$(run_probe "$
 check_eq "probe: bound decremented"             "11"             "$(day_get limit_probe_fires_remaining)"
 
 seed_probe_state 12
-check_eq "probe: replenished window resumes" "PROBE=resume" "$(run_probe "$GEN" clear | tail -1)"
-check_eq "probe: resume spends no fire"      "12"           "$(day_get limit_probe_fires_remaining)"
+CLEAR_OUT=$(run_probe "$GEN" clear)
+check_eq "probe: replenished window reserves a resume" PROBE=resume "$(printf '%s\n' "$CLEAR_OUT" | tail -1)"
+CLEAR_GENERATION=$(printf '%s\n' "$CLEAR_OUT" | sed -n 's/^PROBE_RESUME_GENERATION=//p')
+check_eq "probe: resume publishes the fresh exact generation" \
+  "$CLEAR_GENERATION" "$(day_get limit_resume_generation)"
+[[ "$CLEAR_GENERATION" =~ ^probe-resume-[0-9a-f]{32}$ ]] ||
+  { echo "FAIL — a clear probe did not mint a resume generation"; exit 1; }
+check_eq "probe: resume spends no fire" 12 "$(day_get limit_probe_fires_remaining)"
+check_eq "the previous wake cannot spend after resume is reserved" PROBE=stale \
+  "$(run_probe "$GEN" critical | tail -1)"
 
 # `approaching` is a partial refill, not a recovery — resuming there walks back
 # into the wall the thrash guard exists to prevent.
@@ -728,7 +736,7 @@ run_parallel_probe() {
   local state_helper="$SESSION_STATE_SH"
   ACTUAL_STATE_HELPER="$state_helper" SESSION_STATE_SH="$PROBE_BARRIER_HELPER" \
     PROBE_BARRIER="$PROBE_BARRIER" PROBE_SIDE="$1" REPO_KEY="$REPO_KEY" \
-    TICK_GENERATION="$GEN" HORIZON_STATUS=critical bash -c "$BLOCK_PROBE" 2>/dev/null
+    TICK_GENERATION="$GEN" HORIZON_STATUS="${2:-critical}" bash -c "$BLOCK_PROBE" 2>/dev/null
 }
 run_parallel_probe first > "$TMP_HOME/probe-first.log" & FIRST_PROBE_PID=$!
 run_parallel_probe second > "$TMP_HOME/probe-second.log" & SECOND_PROBE_PID=$!
@@ -766,6 +774,23 @@ check_eq "a changed task under the old generation makes the probe stale" \
   PROBE=stale "$(tail -1 "$TMP_HOME/probe-first.log")"
 check_eq "stale probe leaves the full replacement unchanged" \
   "$PROBE_REPLACEMENT" "$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")"
+
+seed_probe_state 1
+rm -f "$PROBE_BARRIER/first" "$PROBE_BARRIER/second"
+run_parallel_probe first clear > "$TMP_HOME/probe-first.log" & FIRST_PROBE_PID=$!
+for ((probe_wait=0; probe_wait<100; probe_wait++)); do
+  [ ! -e "$PROBE_BARRIER/first" ] || break
+  kill -0 "$FIRST_PROBE_PID" 2>/dev/null || break
+  sleep 0.05
+done
+check_eq "the clear probe captured the final positive count" 0 "$(test -e "$PROBE_BARRIER/first"; echo "$?")"
+check_eq "a concurrent non-clear probe spends the final count" PROBE=exhausted \
+  "$(run_probe "$GEN" critical | tail -1)"
+: > "$PROBE_BARRIER/second"
+wait "$FIRST_PROBE_PID" || exit 1
+check_eq "the clear probe cannot reserve resume after exhaustion" PROBE=exhausted \
+  "$(tail -1 "$TMP_HOME/probe-first.log")"
+check_eq "exhaustion leaves the prior wake generation" "$GEN" "$(day_get limit_resume_generation)"
 
 seed_probe_state 0
 check_eq "zero never resumes even with a clear window" PROBE=exhausted "$(run_probe "$GEN" clear | tail -1)"

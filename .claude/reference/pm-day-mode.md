@@ -194,7 +194,9 @@ A generated park also requires the original claim's generation before the public
 **The probe wake, and why a Monitor cannot do it alone.** With no reset time there is nothing to sleep until, so the wake is one persistent Monitor at 30 minutes, at most 12 fires (≈6 hours, comfortably outside the 5-hour rolling window). Each fire re-invokes `/pm day --probe-wake` rather than checking anything itself: the counter lives in the model's context, so only a turn can read it. A `clear` verdict fires the existing generation-checked `/pause-resume --generation …`; `approaching` deliberately does **not** resume, since a window that has begun refilling but not recovered is exactly what the thrash guard exists to keep the loop out of. The bound lives in `limit_probe_fires_remaining`, not in the loop, so a session restart re-arms with the fires that are left — re-arming a fresh twelve on every restart would make a bounded probe unbounded. A positive bound keeps the park active after its nominal deadline and
 permits only verified captured-wake recovery or manual resume. A non-clear
 fire consumes one unit atomically against the captured park and wake. A stale
-identity makes no write, and a zero count cannot resume. Exhausting it stops
+identity makes no write. A clear fire must claim a fresh resume generation
+while the count is positive. It races the final decrement under the same
+comparison, so an exhausted park stays closed. Exhausting it stops
 the Monitor, keeps the park, and says so in one line; a park that never comes back and never mentions it is the silent-watcher failure.
 
 **No new monitor class.** The probe records its identity in `limit_resume_task_id` / `limit_resume_generation` — the fields `/pause` Step 2 item 4 already tears down, `/pause-resume` Step 5 already disarms, and `/pause-resume` Step 0 already generation-checks. Teardown, restart recovery, and stale-wake rejection therefore needed no new code paths, only the extra field reads that pick *which* wake to re-arm — and, since #1445, the `-1` those two teardown sites write instead of `null` so a restart does not re-arm the wake they stopped.
