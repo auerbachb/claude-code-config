@@ -309,7 +309,7 @@ refute_text "pm-day-mode.md no longer excludes the two loops" \
 require_text "  and names them as readers instead" \
   "$DAY_MODE_DOC" 'run the consult too since #1444, but strictly as readers'
 refute_text "/pm 2D.7 no longer says they do not consult the horizon" \
-  "$REPO_ROOT/.claude/skills/pm/SKILL.md" 'They do not consult the horizon'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'They do not consult the horizon'
 
 # PMM: consult before action, gate the dispatch, stand down on critical.
 require_text "PMM resolves usage-horizon.sh" "$PMM" 'USAGE_HORIZON_SH=\$\(resolve_script usage-horizon\.sh'
@@ -435,7 +435,7 @@ for F in "$PMM" "$PMM_LIFECYCLE" "$PMM_WAKE" "$BABYSIT"; do
     "$F" "$DAY_WRITE_RE"
 done
 require_text "positive control — the matcher DOES catch day mode's own day-slot writes" \
-  "$REPO_ROOT/.claude/skills/pm/SKILL.md" "$DAY_WRITE_RE"
+  "$REPO_ROOT/.claude/skills/pm/modules/day-arm.md" "$DAY_WRITE_RE"
 # And the read the two loops ARE allowed is still there: PMM reads the day block
 # to refuse arming beside a live day loop, so a blanket ban on the path would be
 # the wrong fix and this pins the distinction between --get and --set/--cas.

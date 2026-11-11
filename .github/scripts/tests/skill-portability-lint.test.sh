@@ -32,7 +32,7 @@ make_fixture() {
   while IFS= read -r skill; do
     mkdir -p "$dir/.claude/skills/${skill}"
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
-    if [[ "$skill" == "issue-maker" ]]; then
+    if [[ "$skill" == "issue-maker" || "$skill" == "pm" ]]; then
       cp -R "$REPO_ROOT/.claude/skills/${skill}/modules" "$dir/.claude/skills/${skill}/"
     fi
     if [[ -d "$REPO_ROOT/.claude/skills/${skill}/references" ]]; then
@@ -75,6 +75,16 @@ hide_issue_modules() {
   mv .claude/skills/issue-maker/modules .claude/skills/issue-maker/modules-missing
 }
 expect "missing issue-maker module directory fails closed" 3 'Guarded module directory missing' hide_issue_modules
+
+poison_pm_module() {
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> .claude/skills/pm/modules/day-tick.md
+}
+expect "PM day module gets portable-path enforcement" 1 'day-tick.md.*issue-claim.sh|issue-claim.sh' poison_pm_module
+
+hide_pm_modules() {
+  mv .claude/skills/pm/modules .claude/skills/pm/modules-missing
+}
+expect "missing PM module directory fails closed" 3 'Guarded module directory missing: .claude/skills/pm/modules' hide_pm_modules
 
 noop() { :; }
 

@@ -355,7 +355,8 @@ check_contains "3.4 re-reads the file on every refill" "$SKILL_TEXT" "**Re-read 
 check_contains "3.4 takes the operator order before the queue" "$SKILL_TEXT" "**(o) Operator order — first.**"
 check_contains "3.4 defers parked issues in every source" "$SKILL_TEXT" "**Parked issues are deferred in every source:**"
 check_contains "3.4 names the idle reason" "$SKILL_TEXT" '| `paused (priority unreadable)` |'
-check_contains "day mode's digest knows the idle reason" "$SKILL_TEXT" '`paused (budget unknown)`, `paused (priority unreadable)` (3.4)'
+check_contains "day mode's digest knows the idle reason" \
+  "$(cat "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md")" '`paused (budget unknown)`, `paused (priority unreadable)` (3.4)'
 check_contains "1B.4b leaves override rows alone" "$SKILL_TEXT" "**Operator-ordered rows are already decided**"
 check_contains "the templates mark override rows" "$TPL_TEXT" "Operator order (desk) #1"
 check_contains "the templates carry the Parked (desk) line" "$TPL_TEXT" "Parked (desk): #57 until 2026-10-09"

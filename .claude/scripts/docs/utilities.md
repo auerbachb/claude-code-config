@@ -38,6 +38,7 @@ Called by other scripts; run `python3 .claude/scripts/<name>.py --help` for usag
 | [cr-plan-filter.py](../cr-plan-filter.py) | Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`) |
 | [issue-area.py](../issue-area.py) | Resolve configured issue areas and tag declared paths for launch overlap. |
 | [memory-audit.py](../memory-audit.py) | Memory-store audit engine behind `/memory-clean` |
+| [pm-split-verbatim-check.py](../pm-split-verbatim-check.py) | Verify that PM entry and module text preserves its committed baseline. |
 <!-- catalog:rows:end -->
 
 ---

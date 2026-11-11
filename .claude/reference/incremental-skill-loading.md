@@ -62,12 +62,12 @@ The startup/rule and schema baselines remain coordinated with Issues [#1158](htt
 | Skill | Entry guidance | Phase/branch inventory | Existing deterministic entry points | References loaded at their phase |
 |---|---|---|---|---|
 | `/issue-maker` | Capture boundary, classifier, resume contract | Session, reflect, dedup, file, postfile, chain, update, retract, export, requested handoff | `dispatch-module.sh`, `resolve-log.sh`, `set-log.sh`, `issue-file.sh`, `issue-dedup.sh` | Tier/estimate for drafting; duplicate policy for dedup; chip contract only for explicit handoff/export |
-| `/pm` | Intent, authority, ranking/execution selection | Backlog scan, ranking, routing, active-work observation, reporting | `active-work-cap.sh`, `issue-claim.sh`, existing backlog helpers | Output templates when reporting; review/cap policy when routing work |
+| `/pm` | Intent, authority, tooling, and execution boundary | Day preconditions, arming, tick, teardown, recovery, reactive park, and pre-emptive park/probe are dispatched separately. Ranking, resume and orchestration remain in the entry for the next slices. | `scripts/dispatch-module.sh`, `active-work-cap.sh`, `issue-claim.sh` | Output templates when reporting, review/cap policy when routing work, and day references at the selected phase |
 | `/subagent` | Fit test, claims, orchestration boundaries | Planning, task prompt, execution, review, merge/handoff | `issue-claim.sh`, `issue-deps.sh`, existing review helpers | Phase guardrails at dispatch; reviewer contracts at review |
 | `/wrap` | PR target, authorship, merge authority | Discovery, gate verification, recovery, merge/sync, follow-ups, lessons | `merge-gate.sh`, `ci-status.sh`, `ac-checkboxes.sh`, `main-sync.sh` | Report templates when requested; duplicate policy for follow-up filing |
 | `/pr-monitor-and-manage` | Fleet selection, authority, stop criteria | Discovery, polling, triage, repair, completion | `pr-state.sh`, `polling-state-gate.sh`, `merge-gate.sh` | Polling commands during observation; reviewer/escalation policy when actionable |
 
-This is a migration inventory for the four remaining skills, not a claim that they are already split. Their proposed module prerequisites are established in the ordered slices below, and safety/required gates stay available regardless of source layout.
+The `/pm` day-mode slice follows this inventory. The remaining rows describe planned migrations. Their proposed module prerequisites are established in the ordered slices below, and safety/required gates stay available regardless of source layout.
 
 This issue establishes the contract and pilots it on `/issue-maker`; it does not rewrite the other giant skills. Migrate the rest as separately reviewable slices in this order:
 
@@ -77,6 +77,12 @@ This issue establishes the contract and pilots it on `/issue-maker`; it does not
 4. **`/pr-monitor-and-manage`** — separate discovery, active polling, triage, repair, and completion. Preserve no-unchanged-tick inference, telemetry boundaries, and monitoring stop conditions. Confirm a single observation tick reads only its monitor phase and required state.
 
 For each slice, inventory content as (a) entry guidance, (b) branch/phase modules, (c) deterministic scripts, and (d) optional references. State each module's trigger and prerequisites in its header; prove with a trace fixture that a description/index does not read siblings or nested references. Add before/after source measurements and runtime evidence where available. Compare behavioral outputs, ownership, safety and merge gates, compaction recovery, missing-module handling, and retry overhead with the pre-split workflow before claiming parity.
+
+### PM day-mode slice (#2170)
+
+Ordinary cold start and resume use the entry and existing procedures. An active day route resolves one module path at a time. Arming checks path availability before claiming work. Recovery uses the persisted day generation and park/wake identity and reads the matching phase. The 2D instructions retain their order and behavior. Three relative Markdown prefixes changed so the original link targets remain reachable from the modules.
+
+On baseline `475769d3`, the entry went from 38,107 to 24,561 words and from 258,458 to 165,186 bytes. The parity checker verifies the exact baseline with the seven modules. Fixture traces cover the installed symlink, unset HOME fallback, absent module, invalid phase and day/park/cadence behavior. The source measurements describe the instructions selected by the fixture. Runtime loader and token measurements remain part of the final PM increment.
 
 ## Behavior-preservation map
 
