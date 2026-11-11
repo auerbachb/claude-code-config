@@ -365,6 +365,7 @@ changed to a non-closing reference. Verify the updated links and rerun the gate.
 See [issue scope verification](../../reference/issue-completion.md#verify-scope-before-closing).
 
 ```bash
+AC_VERIFIED_HEAD=$(printf '%s' "$GATE_JSON" | jq -er '.head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))') || exit 4
 ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
 AC_EXIT=$?
 ```
@@ -417,10 +418,29 @@ MERGE_STATE=$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // empty')
 
 `printf '%s'`, never `echo` — zsh's builtin corrupts the JSON payload (issue #574).
 
-- **`CLEAN`** (override not applied) → `gh pr merge "$PR_NUM" --squash`, unchanged.
-- **No-review override** (issue #1899) — `GATE_JSON` has `.no_review_override.applied == true`: on `CLEAN`, or on `UNSTABLE` only when `.no_review_override.excluded_reviewer_checks` is non-empty (a pending, non-required reviewer check is then what makes it unstable; the gate already cleared build CI and required contexts — any other `UNSTABLE` stops as below) first **re-run `merge-gate.sh` into `GATE_JSON`** (the gate can flip between Step 2.1 and here) and proceed only if it is still `met` with the override applied **and** its refreshed `merge_state` still passes this same test (`CLEAN`, or `UNSTABLE` with a non-empty refreshed `excluded_reviewer_checks`) — otherwise re-enter Step 2.1 — then run `gh pr merge "$PR_NUM" --squash --match-head-commit "$(printf '%s' "$GATE_JSON" | jq -r .head_sha)"` with that refreshed `head_sha`. On `BEHIND` **never** take the clean-`BEHIND` admin path (`admin-merge.sh` refuses it anyway) — rebase via `/fixpr` and re-enter Step 2.1; the new HEAD gets its own window. A head-pin refusal re-enters Step 2.1 the same way. After a confirmed merge, run the **override recorder** below before the claim release.
+- **`CLEAN`** (override not applied) → resolve the ledger helper, then run `"$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$AC_VERIFIED_HEAD"`. It clears unused override evidence and runs a head-pinned squash under the same lock.
+- **No-review override** (issue #1899) → after AC verification, run `wrap-capture-gate` and `wrap-persist-recovery-audit` again. Use the new full `GATE_JSON` only when the refreshed classification is `valid_pass`, the override still applies, and its refreshed `merge_state` still passes this same test (`CLEAN`, or `UNSTABLE` with nonempty `excluded_reviewer_checks`). Otherwise re-enter Step 2.1. An override on `BEHIND` never uses the admin path. Use /fixpr and return to Step 2.1 for the new HEAD.
 - **`BEHIND`** → the clean-`BEHIND` path below. A plain squash is **rejected** here by `required_status_checks.strict`.
 - **Anything else** → **not merge-ready** per `cr-merge-gate.md` Step 1d — stop with the state and the last `missing[]`. Never merge on an unenumerated state: `BLOCKED` and `UNSTABLE` add no `missing[]` entry, so a gate exit `0` does not by itself clear them.
+
+For an eligible override, execute the following as one Bash call after the fresh gate and audit. Use the complete refreshed gate and retain `AC_VERIFIED_HEAD` from Step 2.2. If they name different commits, rerun acceptance verification before any merge attempt.
+
+<!-- test-anchor: wrap-no-review-override-merge -->
+```bash
+wrap_merge_with_override() {
+  local ledger head
+  ledger=$(resolve_script unreviewed-merge-ledger.sh) || return 5
+  head=$(printf '%s' "$GATE_JSON" | jq -er '.head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))') || return 4
+  if [[ "$head" != "${AC_VERIFIED_HEAD:-}" ]]; then
+    echo "WARN: HEAD moved since acceptance verification; rerun the gate and verify the new HEAD" >&2
+    return 4
+  fi
+  printf '%s' "$GATE_JSON" | "$ledger" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --gate-json -
+}
+wrap_merge_with_override
+```
+
+A merge command error may still mean GitHub merged it. Verify native state before routing. On `MERGED` continue to the recorder. Otherwise stop or recover through Step 2.1. Before a clean-BEHIND admin merge, resolve the same ledger helper and run `snapshot --pr "$PR_NUM" --repo "$CURRENT_REPO" --discard`. Continue only on success. This clears unused evidence for a verified unmerged PR. If no snapshot exists it is a no-op. Both plain squash paths hold the snapshot lock through the merge request.
 
 The merge-state mechanics are owned by `cr-merge-gate.md` Step 1d and implemented identically in `fixpr/SKILL.md` Step 6; the safety conditions live there and are not restated here.
 
@@ -451,22 +471,26 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 
 `--ac-verified` is justified because **Step 2.2 already ran unconditionally** — every Test Plan checkbox was verified against the source at this SHA on both paths. `clean-behind-check.sh` counts unchecked boxes as `reasons_not_safe`, so running it before Step 2.2 would report exit `1` for bookkeeping rather than for a real blocker.
 
-**Override recorder (issue #1899) — only when `.no_review_override.applied == true`.** Log the merge in the cross-repo ledger, which also labels the PR `merged-unreviewed`; the result picks the report suffix (`NRO_SUFFIX`):
+**Override recorder (issue #1899).** Once GitHub confirms the merge, run this boundary before issue reconciliation. Use the saved snapshot, even if the merge and recovery are in different sessions.
 
+<!-- test-anchor: wrap-record-no-review-merge -->
 ```bash
-NRO_SUFFIX=""
-if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
-  LEDGER_SH=$(resolve_script unreviewed-merge-ledger.sh || true)
-  if [[ -n "$LEDGER_SH" ]] && printf '%s' "$GATE_JSON" | "$LEDGER_SH" record --pr "$PR_NUM" --gate-json - >/dev/null; then
-    NRO_SUFFIX=" (no AI review — logged)"
-  else
-    NRO_SUFFIX=" (no AI review — ledger write failed)"
-    [[ -n "$LEDGER_SH" ]] || echo "ERROR: unreviewed-merge-ledger.sh not found (checked all three paths) — no-review merge ledger unavailable" >&2
-  fi
+LEDGER_SH=$(resolve_script unreviewed-merge-ledger.sh || true)
+NRO_SUFFIX="${NRO_SUFFIX:-}"
+if [[ -z "$LEDGER_SH" ]]; then
+  echo "WARN: unreviewed-merge-ledger.sh unavailable; check retained override snapshots" >&2
+else
+  NRO_RECORD_RC=0
+  "$LEDGER_SH" record --pr "$PR_NUM" --repo "$CURRENT_REPO" --from-snapshot >/dev/null || NRO_RECORD_RC=$?
+  case "$NRO_RECORD_RC" in
+    0) NRO_SUFFIX=" (no AI review — logged)" ;;
+    7) ;;  # No snapshot, or already recorded earlier in this wrap.
+    *) NRO_SUFFIX=" (no AI review — ledger write failed)" ;;
+  esac
 fi
 ```
 
-A ledger failure never un-merges anything; `NRO_SUFFIX` carries it into the report line (`merged PR #N (no AI review — ledger write failed)`) so the row can be added by hand (`unreviewed-merge-ledger.sh record`).
+A failed record keeps the snapshot for retry. Do not run the gate on a merged PR to reconstruct this evidence, or pass a projection that dropped gate fields.
 
 **Reconcile issue completion first.** Load the canonical adapter from [verified issue completion](../../reference/issue-completion.md) in the same Bash invocation as the anchor below. If the assessment reports an open linked issue for this delivery, verify its full scope and rerun the boundary with the merge and issue revision from the evidence. Record deliberately retained scope with the reference’s retention flags. For an issue GitHub already closed, verify full scope and pass `--scope-verified --expected-merge "$MERGE_SHA"` without `--complete-issue` before reconciling it. A CLOSED issue with unfinished or ambiguous work remains pending for manual resolution. If completion is still pending, report `PR already merged; completion pending` with the receipt and preserve the claim and handoff. Continue after verified closure or justified retained scope.
 
@@ -602,7 +626,7 @@ if [[ "$MERGED_ENTRY_STATE" != MERGED ]]; then
 fi
 ```
 
-**Every merged entry, including resume:** execute `wrap-post-merge-bookkeeping` before the follow-up sweep, using the same scope checks, completion adapter and verified disposition flags as Step 2.4, even if it already ran. This also covers terminal recovery exits and interrupted/already-merged runs. Use the explicit `CURRENT_REPO` and `PR_NUM` from Phase 1; restore `POST_MERGE_BOOKKEEPING_SH` through the prelude resolver if needed. A closed-unmerged PR skips it. If assessment is pending, stop here and keep its receipt and handoff. Never release a claim or append actuals separately; the shared boundary owns that order.
+**Every merged entry, including resume:** run `wrap-record-no-review-merge` above, then execute `wrap-post-merge-bookkeeping` before the follow-up sweep, using the same scope checks, completion adapter and verified disposition flags as Step 2.4, even if it already ran. This also covers terminal recovery exits and interrupted/already-merged runs. Use the explicit `CURRENT_REPO` and `PR_NUM` from Phase 1; restore `POST_MERGE_BOOKKEEPING_SH` through the prelude resolver if needed. A closed-unmerged PR skips it. If assessment is pending, stop here and keep its receipt and handoff. Never release a claim or append actuals separately; the shared boundary owns that order.
 
 Phase 3 has **two parts**, run in order:
 

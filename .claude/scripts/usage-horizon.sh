@@ -4,8 +4,8 @@
 #
 # PURPOSE
 #   Turn the harness-injected in-context remaining-token counter
-#   (`<total_tokens>N tokens left</total_tokens>`, present at session start and
-#   refreshed after every tool result) into a stable, configurable verdict:
+#   (`<total_tokens>N tokens left</total_tokens>`, when the harness supplies it)
+#   into a stable, configurable verdict:
 #   clear | approaching | critical | unknown.
 #
 #   The model reads the number the HARNESS printed into its context and hands
@@ -24,7 +24,7 @@
 #
 # USAGE
 #   usage-horizon.sh --observe <remaining> [--limit <total>] [--session <id>]
-#   usage-horizon.sh --check [--session <id>]
+#   usage-horizon.sh --check [--session <id>] [--counter-never-seen]
 #   usage-horizon.sh --help | -h
 #
 # MODES
@@ -55,6 +55,20 @@
 #   --session <id>    Session identity override. Resolution order is
 #                     --session, then $CLAUDE_SESSION_ID, then a digest of the
 #                     nearest ancestor `claude` process (pid + start time).
+#   --counter-never-seen
+#                     With --check only: caller attests the harness has not
+#                     emitted a counter at any point in this session, based
+#                     on continuous first-hand observation since session start.
+#                     Missing or foreign-only readings can then report
+#                     REASON=counter-never-seen. STATUS remains unknown, exit 3.
+#                     Omit on uncertain history (including resume/compaction),
+#                     after any counter, or if the only evidence is this turn.
+#
+# RUNTIME COVERAGE
+#   The counter was observed in a Claude Code session on 2026-08-27 (see the
+#   signal audit above). It did not appear in the Claude Code 2.1.322 /
+#   Fable 5.2 session reported in #2147. Neither observation generalizes to
+#   a version, model, or other runtime; check this session, not its label.
 #
 # OUTPUT
 #   stdout: exactly two lines —
@@ -72,7 +86,7 @@
 #   6  Lock timeout (CLAUDE_STATE_LOCK_TIMEOUT; nothing written)
 #   70  --help header extraction produced no output (internal defect).
 #
-#   `clear` is the ONLY code a caller may read as permission. Every degraded
+#   `clear` is the ONLY code a caller may read as refill permission. Every degraded
 #   input lands on 3, which is a distinct code precisely so `unknown` can never
 #   be mistaken for `clear` by an `if script; then proceed; fi` caller.
 #
@@ -206,7 +220,13 @@ emit() {
 # property of the code rather than a convention.
 unknown() {
   echo "usage-horizon.sh: $2" >&2
-  emit unknown "$1"
+  local reason="$1"
+  if [[ "$COUNTER_NEVER_SEEN" == true ]]; then
+    case "$reason" in
+      no-state-file|no-reading|no-reading-this-session) reason=counter-never-seen ;;
+    esac
+  fi
+  emit unknown "$reason"
   exit "$EXIT_UNKNOWN"
 }
 
@@ -215,6 +235,7 @@ MODE=""
 OBS_REMAINING=""
 OBS_LIMIT=""
 SESSION_OVERRIDE=""
+COUNTER_NEVER_SEEN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -232,6 +253,10 @@ while [[ $# -gt 0 ]]; do
     --check)
       [[ -n "$MODE" ]] && die_usage "only one of --observe, --check may be given"
       MODE="check"
+      shift
+      ;;
+    --counter-never-seen)
+      COUNTER_NEVER_SEEN=true
       shift
       ;;
     --limit)
@@ -259,6 +284,7 @@ done
 
 [[ -z "$MODE" ]] && die_usage "one of --observe, --check is required"
 [[ "$MODE" == "check" && -n "$OBS_LIMIT" ]] && die_usage "--limit applies to --observe only"
+[[ "$MODE" == "observe" && "$COUNTER_NEVER_SEEN" == true ]] && die_usage "--counter-never-seen applies to --check only"
 
 # --- dependency check ----------------------------------------------------------
 # jq missing is an environment failure, not permission. --check degrades to the
@@ -457,9 +483,18 @@ iso_to_epoch() {
 # non-zero when the file is absent or does not parse, so the caller can tell
 # "nothing recorded yet" from "state unreadable" without inspecting the payload.
 read_horizon_state() {
-  [[ -f "$STATE_FILE" ]] || return 3
-  jq -e . "$STATE_FILE" >/dev/null 2>&1 || return 4
-  jq -c '.usage_horizon // null' "$STATE_FILE" 2>/dev/null || return 4
+  if [[ ! -f "$STATE_FILE" ]]; then
+    # A non-file entry or a directory we cannot traverse is not absence.
+    # Setup above ensures the parent exists unless it could not be accessed.
+    local state_dir="${STATE_FILE%/*}"
+    [[ -d "$state_dir" && -x "$state_dir" ]] || return 4
+    [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]] && return 4
+    return 3
+  fi
+  jq -cs 'if length == 1 and (.[0] | type) == "object"
+          then .[0].usage_horizon
+          else error("expected one state object")
+          end' "$STATE_FILE" 2>/dev/null || return 4
 }
 
 # prior_reading_is_fresh <horizon-json> — true when the stored reading is still
@@ -665,7 +700,7 @@ case "$MODE" in
     PRIOR_STATUS=""
     PRIOR_RAW=""
     if PRIOR_RAW="$(read_horizon_state)"; then
-      PRIOR_SESSION="$(printf '%s' "$PRIOR_RAW" | jq -r '.reading.session_id // ""' 2>/dev/null)" || PRIOR_SESSION=""
+      PRIOR_SESSION="$(printf '%s' "$PRIOR_RAW" | jq -r '.reading.session_id | select(type == "string")' 2>/dev/null)" || PRIOR_SESSION=""
       if [[ "$PRIOR_SESSION" == "$SESSION_ID" ]] && prior_reading_is_fresh "$PRIOR_RAW"; then
         PRIOR_STATUS="$(printf '%s' "$PRIOR_RAW" | jq -r '.status // ""' 2>/dev/null)" || PRIOR_STATUS=""
       fi
@@ -752,12 +787,12 @@ case "$MODE" in
       unknown no-reading "no usage_horizon reading has been recorded"
     fi
 
-    READ_SESSION="$(printf '%s' "$HORIZON_RAW" | jq -r '.reading.session_id // ""' 2>/dev/null)" || \
+    READ_SESSION="$(printf '%s' "$HORIZON_RAW" | jq -r '.reading.session_id | select(type == "string")' 2>/dev/null)" || \
       unknown reading-malformed "stored usage_horizon does not parse"
     if [[ -z "$READ_SESSION" ]]; then
       unknown reading-malformed "stored reading carries no session_id"
     fi
-    if [[ "$READ_SESSION" != "$SESSION_ID" ]]; then
+    if [[ "$READ_SESSION" != "$SESSION_ID" && "$COUNTER_NEVER_SEEN" != true ]]; then
       unknown no-reading-this-session \
         "stored reading belongs to session $READ_SESSION, not $SESSION_ID"
     fi
@@ -797,6 +832,12 @@ case "$MODE" in
       # An age that cannot be computed is treated as older than any TTL. This
       # is the whole point of not reusing a fail-open age helper.
       unknown timestamp-unparseable "stored reading timestamp is unparseable (got: ${READ_TS:-<empty>})"
+    fi
+    # A foreign reading need not be fresh, but must be structurally valid
+    # before we use it to distinguish absence from damaged state.
+    if [[ "$READ_SESSION" != "$SESSION_ID" ]]; then
+      unknown no-reading-this-session \
+        "stored reading belongs to session $READ_SESSION, not $SESSION_ID"
     fi
     NOW_EPOCH="$(date -u +%s 2>/dev/null)" || NOW_EPOCH=""
     if [[ -z "$NOW_EPOCH" || ! "$NOW_EPOCH" =~ ^[0-9]+$ ]]; then

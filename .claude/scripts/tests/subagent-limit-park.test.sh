@@ -1201,6 +1201,20 @@ for SCRIPT in "$STUB_DIR/does-not-exist.sh" "$GARBAGE" ""; do
     | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK)=')
   check_eq "parity on degraded input '${SCRIPT:-<unresolved>}'" "$THEIRS" "$MINE"
 done
+# The two callers report the real helper's absence reason while keeping the
+# automatic refill and park outputs unchanged. The chat exception is separate.
+REAL_HORIZON="$REPO_ROOT/.claude/scripts/usage-horizon.sh"
+EMPTY_HOME="$TMP_HOME/unused-horizon-home"
+mkdir -p "$EMPTY_HOME/.claude"
+MINE=$(CLAUDE_SESSION_ID=absence-case HOME="$EMPTY_HOME" \
+  HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON")
+THEIRS=$(CLAUDE_SESSION_ID=absence-case HOME="$EMPTY_HOME" \
+  HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON")
+check_eq "attested absence: full gate output parity" "$THEIRS" "$MINE"
+check_eq "attested absence: named reason" "counter-never-seen" "$(field "$MINE" HORIZON_REASON)"
+check_eq "attested absence: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
+check_eq "attested absence: no park" "false" "$(field "$MINE" HORIZON_PARK)"
+
 # Negative control for the parity comparison itself: two DIFFERENT verdicts must
 # not compare equal, or every check above would pass vacuously.
 MINE=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear)" 900000 1000000 \

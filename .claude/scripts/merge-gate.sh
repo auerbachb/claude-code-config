@@ -403,6 +403,8 @@ emit_json() {
   local no_review_override="${21:-}"
   if [[ -z "$no_review_override" ]]; then no_review_override='null'; fi
   jq -cn \
+    --arg pr_number "$PR_NUMBER" \
+    --arg owner_repo "${OWNER_REPO:-}" \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
     --arg path "$path" \
@@ -425,7 +427,7 @@ emit_json() {
     --argjson deferred_issues "$deferred_issues" \
     --argjson no_review_override "$no_review_override" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
+     {pr_number: ($pr_number | tonumber), owner_repo: $owner_repo, met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
      | scrub'
 }
 
