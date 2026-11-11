@@ -89,7 +89,7 @@ session="${CLAUDE_SESSION_ID:-$run}"
 if [[ "$action" == --start && -z "${CLAUDE_SESSION_ID:-}" ]]; then
   printf 'pm-run-receipt.sh: CLAUDE_SESSION_ID missing; scoping receipt to the run ID\n' >&2
 fi
-[[ "$session" =~ ^[A-Za-z0-9_-]{1,120}$ ]] || die 2 'invalid session ID'
+[[ "$session" =~ ^[A-Za-z0-9_.:-]{1,120}$ ]] || die 2 'invalid session ID'
 repo_json=$(jq -cn --arg v "$repo" '$v') || die 5 'cannot encode repository key'
 session_json=$(jq -cn --arg v "$session" '$v') || die 5 'cannot encode session ID'
 receipts_path=".repos[$repo_json].pm_receipts"

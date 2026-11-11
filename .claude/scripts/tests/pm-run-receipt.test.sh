@@ -66,6 +66,11 @@ fi
 [[ "$resume_output" == "$("$receipt" --render --run "$resume")" ]]
 expect_exit 3 "$receipt" --render --repo demo/foreign --run "$resume"
 
+punctuated=$(CLAUDE_SESSION_ID=local.dispatch:one "$receipt" --start --mode resume)
+CLAUDE_SESSION_ID=local.dispatch:one "$receipt" --mark 1A ran --run "$punctuated"
+grep -Fxq '1A ran' <<<"$(CLAUDE_SESSION_ID=local.dispatch:one "$receipt" --render --run "$punctuated")"
+expect_exit 3 "$receipt" --render --run "$punctuated"
+
 "$receipt" --mark 0 ran --run "$resume" &
 mark_a=$!
 "$receipt" --mark 0a ran --run "$resume" &
