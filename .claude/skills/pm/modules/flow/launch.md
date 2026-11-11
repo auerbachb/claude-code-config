@@ -15,10 +15,11 @@ for candidate in \
   ".claude/scripts/credit-budget.sh"; do
   if [ -x "$candidate" ]; then
     CREDIT_RC=0
-    "$candidate" --check >/dev/null || CREDIT_RC=$?
-    case "$CREDIT_RC" in
-      0) PM_INITIAL_BUDGET=ok ;;
-      1) PM_INITIAL_BUDGET=reached ;;
+    CREDIT_RESULT=$("$candidate" --check) || CREDIT_RC=$?
+    CREDIT_STATUS=$(jq -ser 'select(length == 1) | .[0].status | strings' <<<"$CREDIT_RESULT" 2>/dev/null) || CREDIT_STATUS=""
+    case "$CREDIT_RC:$CREDIT_STATUS" in
+      0:ok) PM_INITIAL_BUDGET=ok ;;
+      1:reached) PM_INITIAL_BUDGET=reached ;;
     esac
     break
   fi
