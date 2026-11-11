@@ -95,7 +95,7 @@ Verdict values are exactly one of `split`, `trim`, `leave`. "Follow-up" names th
 
 **`desk/README.md` (15,199) — split.** 25 PRs in 60 days, almost all adding or editing one feature's own section (export to paper, derived impact, to-do layer, day plan, interrupts and policy, PR drill-down). Those sections share little, so concurrent desk issues queue on one file. Seam: overview and index plus one file per feature under `desk/docs/`. Filed as Issue #2178.
 
-**`.claude/reference/README.md` (9,856) — split.** 56 PRs in 60 days, the highest of any file: every new reference doc adds a line, and 94% of its words are index entries citing issues. Seam: thin index plus one file per category, as `.claude/scripts/README.md` already does. Open Issue #1996 is only the owner's keep-or-change question and prescribes no split, and Issue #816 chose an append-only catalog, so this is pending an owner decision. Filed as Issue #2188, whose first criterion is that decision.
+**`.claude/reference/README.md` (9,856) — split.** 56 PRs in 60 days, the highest of any file: every new reference doc adds a line, and 94% of its words are index entries citing issues. Seam: thin index plus one file per category, as `.claude/scripts/README.md` already does. The split needs `reference-catalog-lint.sh` changed first, because it requires every root-level reference file to have one bullet in this README's `## Contents` section; it must check the category files instead, and Issue #2188 already lists that change. Open Issue #1996 is only the owner's keep-or-change question and prescribes no split, and Issue #816 chose an append-only catalog, so this is pending an owner decision. Filed as Issue #2188, whose first criterion is that decision.
 
 **`.claude/reference/ai-quotas.md` (19,073) — split.** 17 PRs in 60 days; sections serve different readers (provider readers, token renewal and re-login, the history file and daily job, label/path repair). Seam: overview plus provider readers, renewal/re-login, and operations. Filed as Issue #2180; sequence it with the `ai-quotas.sh` split.
 
@@ -131,7 +131,7 @@ Verdict values are exactly one of `split`, `trim`, `leave`. "Follow-up" names th
 
 ## Verdicts: test files
 
-All 14 test files are listed in the ranked table and default to `leave`. None blocks parallel work: each is named by at most 6 other files, and the largest, `review-stack-audit.test.sh` (19,842), is named by only 2 other files (8 PRs). The slow-suite concern is a separate issue (Issue #2176, parallel hook-test runs), not a size one.
+All 14 test files are listed in the ranked table and default to `leave`. No test file shows churn that queues work: the largest, `review-stack-audit.test.sh` (19,842), had 8 PRs in 60 days, and none of the 14 is a split candidate on that evidence. File-mention counts measure references, not concurrent edits, so they are not used here, and this audit does not claim that no test blocks parallel work. The slow-suite concern is a separate issue (Issue #2176, parallel hook-test runs), not a size one.
 
 ## Follow-up work
 
