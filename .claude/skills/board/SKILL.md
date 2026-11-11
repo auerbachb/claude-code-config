@@ -771,6 +771,35 @@ an exact count must never be hedged into either.
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
 ```
 
+### Refill slot census
+
+Print the latest recorded census below the table, or after the no-round line. Read the exact repo and prefer this session’s record. The helper labels an observed session when the current thread has no census. Set `BOARD_ALL_REPOS=true` for the explicit `--all-repos` mode, otherwise `false`. Under `--all-repos`, label each line with its own repo. An absent or full-board record adds no line. Do not re-evaluate refill or mark a census notified during a board render.
+
+<!-- test-anchor: board-slot-census -->
+```bash
+CENSUS_TOOL="${SESSION_STATE_SH%/*}/lib/pm-slot-census.py"
+CENSUS_REPOS="${EFFECTIVE_REPO:-}"
+if [ "${BOARD_ALL_REPOS:-false}" = true ]; then
+  CENSUS_REPOS="${BOARD_REPOS:-}"
+fi
+if [ -r "$CENSUS_TOOL" ]; then
+  while IFS= read -r CENSUS_REPO; do
+    case "$CENSUS_REPO" in */*) ;; *) continue ;; esac
+    CENSUS_ARGS=(--render --repo "$CENSUS_REPO" --state-helper "$SESSION_STATE_SH")
+    if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+      CENSUS_ARGS+=(--session "$CLAUDE_SESSION_ID")
+    fi
+    if CENSUS_LINE=$(python3 "$CENSUS_TOOL" "${CENSUS_ARGS[@]}") && [ -n "$CENSUS_LINE" ]; then
+      if [ "${BOARD_ALL_REPOS:-false}" = true ]; then
+        printf '%s · %s\n' "$CENSUS_REPO" "$CENSUS_LINE"
+      else
+        printf '%s\n' "$CENSUS_LINE"
+      fi
+    fi
+  done <<< "$CENSUS_REPOS"
+fi
+```
+
 ---
 
 ## Step 5: Record the render against the freshness floor
