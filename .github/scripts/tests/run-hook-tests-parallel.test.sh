@@ -297,6 +297,7 @@ export RAN_RECORD="$FIX/ran.txt"
 : > "$RAN_RECORD"
 HUMAN="$(RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 2>/dev/null)"
 if grep -Fq '[CONCURRENCY] pool jobs=2 ' <<<"$HUMAN"; then ok "timing: human mode names the worker count"; else bad "timing: worker count line missing"; fi
+if grep -Eq '^\[CONCURRENCY\] pool jobs=2 .*$' <<<"$HUMAN" && grep -Eq '^\[TIMING\] wall=' <<<"$HUMAN" && ! grep -Eq '\[CONCURRENCY\].*\[TIMING\]' <<<"$HUMAN"; then ok "timing: CONCURRENCY and TIMING wall lines are separate lines"; else bad "timing: CONCURRENCY and TIMING wall lines are joined"; fi
 if grep -Fq '[TIMING] slowest 30 suites:' <<<"$HUMAN"; then ok "timing: human mode prints the slowest-suites table"; else bad "timing: slowest-suites table missing"; fi
 if grep -Eq '\[TIMING\] pool: 7 suites, sum [0-9]+s, effective concurrency [0-9.]+ of 2 jobs' <<<"$HUMAN"; then ok "timing: pool summary counts suites and concurrency"; else bad "timing: pool summary wrong"; fi
 if grep -Eq '\[TIMING\] serial: 0 suites, sum 0s' <<<"$HUMAN"; then ok "timing: serial summary is zero when no suite is serial"; else bad "timing: serial summary wrong"; fi

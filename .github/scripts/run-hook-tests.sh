@@ -388,7 +388,7 @@ run_pool() {
         printf 'ERROR: %s exceeded the per-suite timeout (%ss) and was killed\n' \
           "${SUITE_PATH[$i]}" "$SUITE_TIMEOUT" >> "$WORK/$i/out"
         # Record the elapsed time the timing table needs, in the same format run_suite writes.
-        printf '%s %s\n' "$s" "$now" > "$WORK/$i/time"
+        printf '%s %s\n' "$s" "$(date +%s)" > "$WORK/$i/time"
         printf '%s\n' 124 > "$WORK/$i/rc"
         continue
       fi
@@ -497,7 +497,7 @@ if [ "$total" -gt 0 ]; then
   TOTAL_WALL=$((RUN_T1 - RUN_T0))
   CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo unknown)"
   timing_report="$(printf '\n[CONCURRENCY] pool jobs=%s cpus=%s runner=%s/%s\n' "$JOBS" "$CPUS" "$(uname -s)" "$(uname -m)")"
-  timing_report="${timing_report}$(awk -F'\t' -v pw="$POOL_WALL" -v sw="$SERIAL_WALL" -v tw="$TOTAL_WALL" -v jobs="$JOBS" '
+  timing_report="${timing_report}"$'\n'"$(awk -F'\t' -v pw="$POOL_WALL" -v sw="$SERIAL_WALL" -v tw="$TOTAL_WALL" -v jobs="$JOBS" '
       $2 == "pool"   { pn++; ps += $1 }
       $2 == "serial" { sn++; ss += $1 }
       END {
