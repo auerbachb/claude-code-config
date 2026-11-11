@@ -38,7 +38,7 @@ case "$ARGS" in
   *" api repos/solo/repo/pulls/1 "*)
     [[ "${FAKE_PULL_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
     jq -cn --arg c "${FAKE_CREATED_AT:-2026-07-21T09:58:00Z}" --argjson d "${FAKE_DRAFT:-false}" \
-      '{number:1, created_at:$c, draft:$d, head:{ref:"feature", repo:{full_name:"solo/repo"}}}'
+      '{number:1, created_at:$c, draft:$d, user:{login:"solo"}, head:{ref:"feature", repo:{full_name:"solo/repo"}}}'
     exit 0 ;;
   *" repos/solo/repo/actions/runs?head_sha="*)
     if [[ -n "${FAKE_RUNS:-}" ]]; then printf '%s' "$FAKE_RUNS"; exit 0; fi

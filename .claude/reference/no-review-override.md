@@ -55,6 +55,25 @@ GitHub records no event for an ordinary push, and a committer date can be days o
 
 The latest lower bound never understates the push time, so the window can expire late, never early. Ineligible (override off for this evaluation, gate exactly as before): a draft PR, unreadable PR metadata, timeline, or workflow-run list, no such `pull_request` run (so a repo without a `pull_request` workflow never takes the override), a malformed timestamp, no HEAD check-run start time. "Now" is the real clock — deliberately no flag or environment override, so ambient state cannot expire a merge-authorizing window. The anchor is reported as `head_anchor_ts` + `anchor_source`, never as an exact push time.
 
+## Review-request anchor (issue #2194)
+
+The window is counted from the **first review request on HEAD** when one exists, because a reviewer requested after slow CI would otherwise have its wait already spent before anyone asked. The anchor order is:
+
+1. **Review request** — the first comment on HEAD by the PR author whose body has a line that is exactly `@codeant-ai review`, `@coderabbitai review`, or `@coderabbitai full review` (surrounding spaces allowed), posted at or after the push anchor above. `anchor_source` is `review_request`; `request_ts` carries the request time and `push_anchor_ts` the push anchor.
+2. **Push anchor** — otherwise, the HEAD anchor above, unchanged (`anchor_source` is the candidate that won, e.g. `earliest_head_check_start`).
+
+Rules:
+
+- **First request wins.** A later request on the same HEAD never restarts or extends the window.
+- **Old HEAD ignored.** A request posted before the push anchor belongs to an earlier commit and never counts.
+- **Edits count at the edit.** A request is timed at the later of `created_at` and `updated_at`, so an edit that adds a trigger line can only start the window later, never earlier.
+- **Author only.** A request by anyone other than the PR author is ignored. So is trigger text inside a bot comment, and trigger text inside prose or a quote (only a whole line counts). The harness's own trigger scripts post as the author, so their requests count.
+- **Fail closed.** An unreadable comment list, an unknown PR author, or a malformed `created_at` on a matching request makes the override ineligible (reason `anchor_unavailable` or `anchor_malformed`).
+
+A request does not make a review happen. Whether or when reviews are requested is a separate concern (increment 2 of #2194). A refused review (rate or usage limit) is still "no verdict", and the clock still runs from the request.
+
+Tests: `.claude/scripts/tests/no-review-override-request-anchor.test.sh` (direct helper cases) and `.claude/scripts/tests/merge-gate-no-review-override.test.sh` (gate-level cases).
+
 ## Configuration
 
 ```ini
