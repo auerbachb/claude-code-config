@@ -539,6 +539,8 @@ print(",".join(sorted(kinds)))
 PYBOUNDS
 )
     check "real pandoc: both types of writing lines fit" "$bounds" 'Decision,Review'
+  else
+    bad "real pandoc: could not extract writing-line coordinates"
   fi
   printf '%s' "$MD" > "$TMP/r.md"
 else
@@ -560,6 +562,11 @@ if [ "$(uname -s)" = Darwin ] && [ -n "$PDFTOTEXT" ]; then
     for id in D-44 D-41 D-45 R-9 R-10; do check_contains "real Chrome: pdftotext finds $id" "$TEXT" "$id ·"; done
     check "real Chrome: five sections" "$(printf '%s\n' "$TEXT" | grep -cE '^ *[0-9]+ +[DR]-[0-9]+ ·')" "5"
     check_contains "real Chrome: the footer" "$TEXT" "Exported Thu 2026-10-08 17:31 ET"
+    # The browser exits before its last helper finishes shutting down.
+    for _ in {1..10}; do
+      if ! pgrep -f "$TMP/w/chrome-profile" >/dev/null; then break; fi
+      sleep 0.2
+    done
     check "real Chrome: none left running" "$(pgrep -f "$TMP/w/chrome-profile" | wc -l | tr -d ' ')" "0"
   fi
 else
