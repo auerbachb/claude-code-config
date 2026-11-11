@@ -124,7 +124,7 @@ fi
 
 **Auto-wake (rolling window only, when `NEW_HITS < MAX_LIMIT_HITS`).** Arm one persistent `Monitor` that sleeps until the reset time plus a 2-minute buffer, fires once, then breaks. The fire command passes the generation so `/pause-resume` can reject a stale or duplicate wake. Do **not** pass `--resume-refill` — the automatic park did not write `.refill.paused`, so the wake must not clear it:
 
-If wind-down used the entire delay, allow a fresh two-minute sleep for the wake identity to be published before the one-shot fires.
+If wind-down used the entire delay, start a fresh two-minute sleep. After the sleep, the one-shot waits briefly for its exact wake identity to be published. Bind the verified absolute `SESSION_STATE_SH` path, `REPO_KEY`, and the captured `PARK_GENERATION` into the Monitor with its delay and wake generation. A replacement park or wake ends this Monitor's attempt. If publication cannot be verified within the bounded wait, report that the park needs manual resume.
 
 <!-- test-anchor: pm-day-2d6-reactive-wake-delay -->
 
@@ -135,10 +135,31 @@ if [ "$WAKE_SLEEP" -le 0 ]; then WAKE_SLEEP=120; fi
 BACKOFF_MULT=$(( 1 << (NEW_HITS - 1) ))
 WAKE_SLEEP=$(( WAKE_SLEEP * BACKOFF_MULT < WAKE_SLEEP ? WAKE_SLEEP : WAKE_SLEEP * BACKOFF_MULT ))
 LIMIT_GENERATION="limit-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
-# One-shot Monitor: sleep then fire once
-while sleep "$WAKE_SLEEP"; do
-  printf '%s\n' "/pause-resume --generation $LIMIT_GENERATION"
-  break
+# One-shot Monitor: wait for both the reset delay and the published identity.
+sleep "$WAKE_SLEEP" || exit 0
+for ((WAKE_CHECK=0; WAKE_CHECK<=12; WAKE_CHECK++)); do
+  WAKE_ROUTE=unreadable
+  if WAKE_STATE=$("$SESSION_STATE_SH" --repo "$REPO_KEY" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null); then
+    WAKE_ROUTE=$(jq -r --arg park "$PARK_GENERATION" --arg wake "$LIMIT_GENERATION" '
+      if type != "object" then "unreadable"
+      elif .park_generation != $park or .limit_cause != "reactive" or .limit_kind != "rolling_window"
+      then "superseded"
+      elif .limit_resume_generation == $wake and
+        (.limit_resume_task_id | (type == "string" and length > 0 and . != "null") or
+          (type == "number" and . >= 0 and . <= 9007199254740991 and floor == .))
+      then "ready"
+      elif .limit_resume_generation == null and .limit_resume_task_id == null then "pending"
+      else "superseded" end' <<< "$WAKE_STATE") || WAKE_ROUTE=unreadable
+  fi
+  case "$WAKE_ROUTE" in
+    ready) printf '%s\n' "/pause-resume --generation $LIMIT_GENERATION"; break ;;
+    superseded) break ;;
+  esac
+  if [ "$WAKE_CHECK" -eq 12 ]; then
+    printf '%s\n' 'PM day wake could not verify publication. The park is still active. Resume manually with /pause-resume.'
+    break
+  fi
+  sleep 10 || break
 done
 ```
 
