@@ -29,7 +29,7 @@
 #
 # Guarded surfaces:
 #   Every directory published by setup-skills-worktree.sh from
-#   .claude/skills/*/ (SKILL.md + references/*.md, plus the issue-maker pilot modules/**/*.md)
+#   .claude/skills/*/ (SKILL.md + references/*.md, plus dispatcher modules/**/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
 #
@@ -105,9 +105,9 @@ for skill in "${SKILLS[@]}"; do
     continue
   fi
   guarded_files+=("$f")
-  # Only the issue-maker pilot currently uses the dispatcher modules/ layout.
+  # The issue-maker and PM dispatchers resolve Markdown modules in this layout.
   # Treat a failed enumeration as missing coverage, never an empty clean set.
-  if [[ "$skill" == "issue-maker" ]]; then
+  if [[ "$skill" == "issue-maker" || "$skill" == "pm" ]]; then
     module_files=""
     if [[ ! -d ".claude/skills/${skill}/modules" ]]; then
       echo "::error::Guarded module directory missing: .claude/skills/${skill}/modules"
