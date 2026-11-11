@@ -5,7 +5,9 @@
 # header). So a declared suite that reads a markdown file the declaration does not list would be
 # skipped for a change to that file. This check fails when a declared suite names a repo markdown
 # file on a non-comment line (a literal path, or a basename that matches a repo markdown file)
-# without the declaration covering it. Comment lines are prose and are not reads.
+# without the declaration covering it. A bare basename shared by several repo markdown files is
+# taken to name the covered one when any of them is covered; it is reported (each document) only
+# when none is. Comment lines are prose and are not reads.
 #
 # Mechanical limits: the check reads text, not behaviour. It cannot see a file a suite reads
 # through a path that never appears in its text, nor tell a string literal from a read. Both are
@@ -79,6 +81,11 @@ check_root() {
           }
           for (B in bnt) {
             if (B == "README.md" || B == "SKILL.md") continue   # generic: keeps the derivation (selector header)
+            # A bare name that some same-named document the declaration covers can refer to is taken
+            # to mean that covered document; it is reported only when no same-named document is covered.
+            named = 0
+            for (i = 1; i <= ndoc; i++) if (base[i] == B && covered(docs[i])) named = 1
+            if (named) continue
             for (i = 1; i <= ndoc; i++) {
               if (base[i] == B && !covered(docs[i]) && !(("B:" docs[i]) in seen)) {
                 seen["B:" docs[i]] = 1
@@ -165,6 +172,30 @@ if grep -Fq '.claude/rules/x.md' "$TMP/fx6"; then
   ok "a declared suite that names an undeclared markdown file by basename fails the check"
 else
   bad "a basename-only read of an undeclared markdown file was not reported: $(cat "$TMP/fx6")"
+fi
+
+# Two markdown files share a basename in different directories. The suite declares one and names
+# only the bare basename: the bare name refers to the covered file, so no violation.
+G="$TMP/fixture-dup"
+mkdir -p "$G/.claude/scripts/docs" "$G/desk/docs" "$G/.claude/hooks/tests" "$G/.claude/scripts"
+echo '# a' > "$G/.claude/scripts/docs/tests.md"
+echo '# b' > "$G/desk/docs/tests.md"
+echo 'echo a' > "$G/.claude/scripts/a.sh"
+printf '# covers: .claude/scripts/docs/tests.md\necho tests.md >/dev/null\nexit 0\n' > "$G/.claude/hooks/tests/dup.test.sh"
+check_root "$G" "$TMP/fx8"
+if [ "$(awk 'END { print NR }' "$TMP/fx8")" -eq 0 ]; then
+  ok "a bare basename whose same-named document is covered by the declaration is not reported"
+else
+  bad "a bare basename with a covered same-named document was reported: $(cat "$TMP/fx8")"
+fi
+
+# Same layout, but the declaration covers neither document: the bare name is reported, naming both.
+printf '# covers: .claude/scripts/a.sh\necho tests.md >/dev/null\nexit 0\n' > "$G/.claude/hooks/tests/dup.test.sh"
+check_root "$G" "$TMP/fx9"
+if grep -Fq '.claude/scripts/docs/tests.md' "$TMP/fx9" && grep -Fq 'desk/docs/tests.md' "$TMP/fx9"; then
+  ok "a bare basename with no covered same-named document is reported for each document"
+else
+  bad "a bare basename shared by uncovered documents was not reported for both: $(cat "$TMP/fx9")"
 fi
 
 # A declared suite the scan cannot read is a failed scan, not a clean one (grep exit 2, not 1).
