@@ -647,6 +647,6 @@ check_contains "SKILL.md handles the morning event" "$SKILL_MD" '| `desk-tick <G
 check_contains "SKILL.md: the check-in verbs" "$SKILL_MD" '**A check-in verb**'
 check_contains "plan.md: a new plan checks in first" "$(cat "$SKILL_DIR/plan.md")" '`checkin.md` first'
 check_contains "reviews.md: the running count" "$(cat "$SKILL_DIR/reviews.md")" '**The running count** (#1770'
-check_contains "the README documents it" "$(cat "$HQ_T_DESK_DIR/README.md")" "## Morning check-in and reading budget (issue #1770)"
+check_contains "the check-in guide documents it" "$(cat "$HQ_T_DESK_DIR/docs/morning-check-in.md")" "## Morning check-in and reading budget (issue #1770)"
 
 hq_t_finish "checkin-offline.test.sh"

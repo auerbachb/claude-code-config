@@ -67,7 +67,7 @@ If the path holds a line that is exactly `DESK_EXPORT_PATH`, pick another delimi
   - `"new_set": true` → first `Numbered as set <set_id>: reply by number while it is the latest set here, or by id any time.` The set is now the latest set this session opened (`decisions.md`): typed numbers resolve against it.
   - `"more"` above 0 → `<more> more were left out (an export holds 99).`
   - `"format": "pdf"` → the path, alone on the closing line.
-  - `"format": "markdown"` → `No PDF renderer here, so the Markdown is saved instead; open it to print:` then the path. (The `warning` names what each renderer did; `desk/README.md`, "Export to paper", says how to add one.)
+  - `"format": "markdown"` → `No PDF renderer here, so the Markdown is saved instead; open it to print:` then the path. (The `warning` names what each renderer did; `desk/docs/export-to-paper.md` says how to add one.)
   - `"path": null` → `Nothing to export.` (the batch is empty: nothing was written, no set opened).
 - **Exit 4** → its one stderr line, once: an id with no item, a set that does not exist, or a path the CLI refused (`--out must name a .pdf file`, `--out's directory does not exist`). Nothing was recorded.
 - **Exit 1** naming `migrate` → run `"$HQ" migrate; echo "exit=$?"` once, then this block again. Another `exit=1` → its one stderr line.

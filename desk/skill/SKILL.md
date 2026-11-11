@@ -11,7 +11,7 @@ argument-hint: "[--cadence Nm]"
 
 # /desk — the human queue's control session
 
-The desk is the operator's single point of contact (`desk/DESIGN.md` 2.3, 2.6). Worker threads' questions are captured into the store by the capture hook (`desk/README.md`, "Capture hook") and render **only here**, as the same clickable menus a normal session shows. Answers go to the store; the asking thread gets a pointer and reads the store.
+The desk is the operator's single point of contact (`desk/DESIGN.md` 2.3, 2.6). Worker threads' questions are captured into the store by the capture hook (`desk/docs/capture-hook.md`) and render **only here**, as the same clickable menus a normal session shows. Answers go to the store; the asking thread gets a pointer and reads the store.
 
 The hook queues a question only while a desk is **live**: a registered control session whose last tick is at most 15 minutes old. Running `/desk` is what makes it live, so the steps below are exact — a desk that believes it is ticking and is not leaves every worker's questions with nobody to show them to.
 

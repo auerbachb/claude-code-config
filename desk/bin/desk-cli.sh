@@ -10,7 +10,7 @@
 #   The desktop app starts the Bash tool and Monitor commands without the
 #   operator's login profile, so HUMAN_QUEUE_DATABASE_URL is often unset there
 #   and every human-queue.sh call would exit 7. The capture hook already solves
-#   this (desk/README.md, "Capture hook", "Finding the store"): the
+#   this (desk/docs/capture-hook.md, "Finding the store"): the
 #   environment, then ${XDG_CONFIG_HOME:-~/.config}/human-queue/database_url
 #   (a file you own, mode 600), then the last literal
 #   `export HUMAN_QUEUE_DATABASE_URL=...` line of the first shell profile that
