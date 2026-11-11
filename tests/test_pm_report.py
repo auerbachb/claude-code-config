@@ -166,6 +166,15 @@ class PMReportTest(unittest.TestCase):
             # A missing file uses the default. A present unreadable config fails closed.
             config.unlink()
             self.assertTrue(json.loads(execute(gate))["due"])
+            reader = env.pop("PM_CONFIG_GET")
+            self.assertTrue(json.loads(execute(gate))["due"])
+            config.write_text("## Reporting\nreport_every_min: 0\n", encoding="utf-8")
+            unavailable = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", gate],
+                                         env=env, cwd=folder, text=True, capture_output=True, check=True)
+            self.assertFalse(unavailable.stdout.strip())
+            self.assertIn("Reporting configuration unavailable", unavailable.stderr)
+            env["PM_CONFIG_GET"] = reader
+            config.unlink()
             config.mkdir()
             bad_config = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", gate],
                                         env=env, cwd=folder, text=True, capture_output=True, check=True)

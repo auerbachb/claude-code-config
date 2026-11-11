@@ -152,13 +152,14 @@ REPORT_RESULT=''
 REPORT_BEFORE=''
 REPORT_PATH=''
 REPORT_CONFIG=''
-REPORT_CONFIG_RC=4
-if [[ -n "${PM_CONFIG_GET:-}" ]]; then
-  REPORT_CONFIG_RC=0
-  REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) || REPORT_CONFIG_RC=$?
-  # The reader returns 2 for both missing and unreadable files.
-  if [[ "$REPORT_CONFIG_RC" -eq 2 && ! -e .claude/pm-config.md && ! -L .claude/pm-config.md ]]; then
-    REPORT_CONFIG_RC=1
+REPORT_CONFIG_RC=0
+# A missing config supplies the default even when the optional reader is absent.
+# An existing path needs a real read so its opt-out cannot be skipped.
+if [[ -e .claude/pm-config.md || -L .claude/pm-config.md ]]; then
+  if [[ -n "${PM_CONFIG_GET:-}" ]]; then
+    REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) || REPORT_CONFIG_RC=$?
+  else
+    REPORT_CONFIG_RC=4
   fi
 fi
 if [[ "$REPORT_CONFIG_RC" -gt 1 ]]; then
