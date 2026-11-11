@@ -2499,17 +2499,19 @@ turn and its immediate tick, and before any terminal early return. Complete
 the current step's mark if its outcome is known. Print the helper output as
 the last human-facing block, once for this invocation. An unavailable or
 superseded receipt has a single line. Preserve required machine footers.
-Follow-up messages, Monitor ticks and probe wakes do not render it again.
+Seal the receipt and retire the run ID at this exit. A later adjustment,
+Monitor tick or probe wake cannot mark or render this invocation again.
 
 <!-- test-anchor: pm-run-receipt-render -->
 ```bash
-if [[ "${DAY_TICK:-false}" != true && "${DAY_PROBE_WAKE:-false}" != true ]]; then
+if [[ "${DAY_TICK:-false}" != true && "${DAY_PROBE_WAKE:-false}" != true && "${PM_RUN_ID+x}" == x ]]; then
   if [[ -n "${PM_RUN_ID:-}" && -n "${PM_RECEIPT_SH:-}" ]] &&
-     PM_RECEIPT=$("$PM_RECEIPT_SH" --render --run "$PM_RUN_ID" \
+     PM_RECEIPT=$("$PM_RECEIPT_SH" --finish --run "$PM_RUN_ID" \
        --repo "$PM_RECEIPT_REPO" 2>/dev/null); then
     printf '%s\n' "$PM_RECEIPT"
   else
     printf '%s\n' 'PM receipt unavailable for this run.'
   fi
+  unset PM_RUN_ID
 fi
 ```

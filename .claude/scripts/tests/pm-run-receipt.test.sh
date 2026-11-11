@@ -93,10 +93,43 @@ mark_block=$(extract_skill_bash "$skill" pm-run-receipt-mark)
 render_block=$(extract_skill_bash "$skill" pm-run-receipt-render)
 export PM_RECEIPT_SH="$receipt" SESSION_STATE_SH="$state" PM_ENTRY_MODE=resume DAY_MODE=true
 combined=$(printf '%s\n' "$start_block" 'PM_STEP=0 PM_OUTCOME=ran PM_REASON=""' "$mark_block" "$render_block")
-wired=$(CLAUDE_SESSION_ID=wiring /bin/bash -eu -c "$combined")
+wired=$(CLAUDE_SESSION_ID=wiring /bin/bash -eu -c "$combined
+[[ -z \"\${PM_RUN_ID:-}\" ]]
+PM_STEP=3.1 PM_OUTCOME=ran PM_REASON=\"\"
+$mark_block
+$render_block")
 grep -Fxq 'PM receipt · demo/repo · resume day' <<<"$wired"
 grep -Fxq '0 ran' <<<"$wired"
 grep -Fxq '2D not recorded ⚠' <<<"$wired"
+wire_path='.repos["demo/repo"].pm_receipts["wiring"]'
+wire_state=$("$state" --get-json "$wire_path")
+wire_run=$(jq -r '.run_id' <<<"$wire_state")
+jq -e '.finished_at != null and .steps["3.1"] == null' <<<"$wire_state" >/dev/null
+expect_exit 3 env CLAUDE_SESSION_ID=wiring "$receipt" --mark 3.1 ran --run "$wire_run"
+[[ "$wire_state" == "$("$state" --get-json "$wire_path")" ]]
+[[ "$wired" == "$(CLAUDE_SESSION_ID=wiring "$receipt" --render --run "$wire_run")" ]]
+
+# A finish published after the marker's initial read must still win the CAS.
+race_run=$(CLAUDE_SESSION_ID=race "$receipt" --start --mode cold)
+mkdir "$scratch/race"
+cp "$receipt" "$scratch/race/pm-run-receipt.sh"
+cat > "$scratch/race/session-state.sh" <<'RACE'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == --set ]]; then
+    "$PM_TEST_REAL_STATE" --repo demo/repo --set \
+      '.repos["demo/repo"].pm_receipts["race"].finished_at="2026-11-11T12:45:00Z"' || exit 1
+    break
+  fi
+done
+exec "$PM_TEST_REAL_STATE" "$@"
+RACE
+chmod +x "$scratch/race/session-state.sh"
+expect_exit 3 env CLAUDE_SESSION_ID=race PM_TEST_REAL_STATE="$state" \
+  "$scratch/race/pm-run-receipt.sh" --mark 3.1 ran --run "$race_run"
+race_state=$("$state" --get-json '.repos["demo/repo"].pm_receipts["race"]')
+jq -e '.finished_at != null and .steps["3.1"] == null' <<<"$race_state" >/dev/null
+
 before=$("$state" --get-json '.repos["demo/repo"].pm_receipts')
 [[ -z "$(DAY_TICK=true /bin/bash -eu -c "$combined")" ]]
 [[ -z "$(DAY_PROBE_WAKE=true /bin/bash -eu -c "$combined")" ]]

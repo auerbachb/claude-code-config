@@ -7,13 +7,15 @@ usage() {
 Usage:
   pm-run-receipt.sh --start --mode cold|resume [--day] [--repo OWNER/REPO]
   pm-run-receipt.sh --mark STEP ran|skipped|failed [--why TEXT] [--run ID] [--repo OWNER/REPO]
+  pm-run-receipt.sh --finish [--run ID] [--repo OWNER/REPO]
   pm-run-receipt.sh --render [--run ID] [--repo OWNER/REPO]
 
---start prints a new run ID. --mark and --render take that ID or PM_RUN_ID.
+--start prints a new run ID. --mark, --finish and --render take that ID or
+PM_RUN_ID. --finish seals and renders the current receipt. --render reads it.
 Receipts are scoped to the repo and CLAUDE_SESSION_ID, or to the run ID when
 the session ID is unavailable. Use non-secret reasons because session-state.sh
 logs writes. A skipped or failed step needs a reason.
-Exit codes: 0 success, 2 usage, 3 missing or superseded run, 4 unreadable state,
+Exit codes: 0 success, 2 usage, 3 missing, superseded or sealed run, 4 unreadable state,
 5 helper or write failure, 6 state contention.
 EOF
 }
@@ -27,8 +29,8 @@ die() {
 
 case "${1:-}" in
   --help|-h) usage; exit 0 ;;
-  --start|--mark|--render) action="$1"; shift ;;
-  *) die 2 'choose --start, --mark or --render' ;;
+  --start|--mark|--finish|--render) action="$1"; shift ;;
+  *) die 2 'choose --start, --mark, --finish or --render' ;;
 esac
 
 step="" outcome="" mode="" repo="" why="" day=false
@@ -54,7 +56,7 @@ while (( $# > 0 )); do
       [[ "$action" == --start ]] || die 2 '--day is for --start'
       day=true; shift ;;
     --run)
-      [[ "$action" != --start && -n "${2:-}" ]] || die 2 '--run is for --mark and --render'
+      [[ "$action" != --start && -n "${2:-}" ]] || die 2 '--run is for --mark, --finish and --render'
       run="$2"; shift 2 ;;
     --why)
       [[ "$action" == --mark && -n "${2:-}" ]] || die 2 '--why is for --mark'
@@ -140,11 +142,12 @@ receipt=$(read_state "$receipt_path") || die 4 'cannot read the receipt'
 if ! jq -e --arg run "$run" --arg session "$session" '
     type == "object" and .run_id == $run and .session == $session
   ' <<<"$receipt" >/dev/null; then
-  if [[ "$action" == --render ]]; then printf 'PM receipt unavailable for this run.\n'; fi
+  if [[ "$action" == --render || "$action" == --finish ]]; then printf 'PM receipt unavailable for this run.\n'; fi
   die 3 'receipt is missing or superseded'
 fi
 if ! jq -e '
     (.mode | IN("cold", "resume")) and (.day | type == "boolean")
+    and (.finished_at | . == null or (type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")))
     and (.expected | type == "array" and length == 10 and (unique | length == 10)
       and all(.[]; IN("0", "0a", "0b", "1A", "1B", "1C", "1D", "2", "2D", "3.1", "3.2", "3.4")))
     and (.steps | type == "object" and all(.[];
@@ -154,7 +157,26 @@ if ! jq -e '
   die 4 'invalid receipt shape'
 fi
 
-if [[ "$action" == --render ]]; then
+run_json=$(jq -cn --arg value "$run" '$value') || die 5 'cannot encode the run ID'
+if [[ "$action" == --finish ]] && jq -e '.finished_at == null' <<<"$receipt" >/dev/null; then
+  finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) || die 5 'cannot read UTC time'
+  finished_json=$(jq -cn --arg value "$finished_at" '$value') || die 5 'cannot encode finish time'
+  status=0
+  "$state" --repo "$repo" --cas "$receipt_path.finished_at=$finished_json" --expect null \
+    --expect-at "$receipt_path.run_id" "$run_json" >/dev/null || status=$?
+  case "$status" in
+    0) ;;
+    6) die 6 'receipt state is locked' ;;
+    7) die 3 'receipt changed before it could finish' ;;
+    *) die 5 'cannot finish the receipt' ;;
+  esac
+  receipt=$(read_state "$receipt_path") || die 4 'cannot read the finished receipt'
+  jq -e --arg run "$run" --arg finished "$finished_at" '
+    .run_id == $run and .finished_at == $finished
+  ' <<<"$receipt" >/dev/null || die 3 'finished receipt was superseded'
+fi
+
+if [[ "$action" == --render || "$action" == --finish ]]; then
   jq -r --arg repo "$repo" '
     . as $receipt
     | (["PM receipt · \($repo) · \(.mode)\(if .day then " day" else "" end)"]
@@ -166,6 +188,7 @@ if [[ "$action" == --render ]]; then
   exit 0
 fi
 
+jq -e '.finished_at == null' <<<"$receipt" >/dev/null || die 3 'receipt is already sealed'
 jq -e --arg step "$step" '.expected | index($step) != null' <<<"$receipt" >/dev/null ||
   die 2 'step is outside this invocation mode'
 mark=$(jq -cn --arg outcome "$outcome" --arg why "$why" '
@@ -174,14 +197,13 @@ mark=$(jq -cn --arg outcome "$outcome" --arg why "$why" '
 if [[ "$outcome" != ran ]] && ! jq -e '.why | length > 0' <<<"$mark" >/dev/null; then
   die 2 'a skipped or failed step needs --why'
 fi
-run_json=$(jq -cn --arg value "$run" '$value') || die 5 'cannot encode the run ID'
 step_json=$(jq -cn --arg value "$step" '$value') || die 5 'cannot encode the step ID'
 status=0
 "$state" --repo "$repo" --cas "$receipt_path.run_id=$run_json" --expect "$run_json" \
-  --set "$receipt_path.steps[$step_json]=$mark" >/dev/null || status=$?
+  --expect-at "$receipt_path.finished_at" null --set "$receipt_path.steps[$step_json]=$mark" >/dev/null || status=$?
 case "$status" in
   0) ;;
   6) die 6 'receipt state is locked' ;;
-  7) die 3 'receipt was superseded before the mark' ;;
+  7) die 3 'receipt was sealed or superseded before the mark' ;;
   *) die 5 'cannot write the step outcome' ;;
 esac
