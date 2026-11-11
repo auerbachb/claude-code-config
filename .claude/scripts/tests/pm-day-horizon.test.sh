@@ -795,7 +795,7 @@ check_eq "replacement bound survives the old cleanup" 3 "$(day_get limit_probe_f
 BLOCK_PRIOR_HITS=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-prior-hits)
 run_prior_hits() {
   SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" bash -c \
-    'read_hits() {'$'\n'"$BLOCK_PRIOR_HITS"$'\n''printf "NEW_HITS=%s\n" "$NEW_HITS"; }; read_hits'
+    "$BLOCK_PRIOR_HITS"$'\n''printf "NEW_HITS=%s\n" "$NEW_HITS"'
 }
 seed_probe_state 3
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=null" >/dev/null
@@ -807,8 +807,14 @@ check_eq "legacy decimal hit count still reaches the threshold" NEW_HITS=3 "$(ru
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=\"\"" >/dev/null
 check_eq "legacy empty hit count still starts at one" NEW_HITS=1 "$(run_prior_hits)"
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=\"bad\"" >/dev/null
-check_eq "readable invalid hit count takes the fail-closed branch" \
-  'Parked (usage limit) — consecutive_limit_hits unreadable (rc=4); staying parked to avoid thrash. Resume manually.' "$(run_prior_hits)"
+HITS_BEFORE=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+HITS_TEST_RC=0
+HITS_RESULT=$(run_prior_hits) || HITS_TEST_RC=$?
+check_eq "an invalid hit count stops the top-level Bash block" 4 "$HITS_TEST_RC"
+check_eq "the next command after the invalid read never runs" \
+  'Parked (usage limit) — consecutive_limit_hits unreadable (rc=4); staying parked to avoid thrash. Resume manually.' "$HITS_RESULT"
+check_eq "the failed count read leaves the park unchanged" \
+  "$HITS_BEFORE" "$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")"
 
 # ---------------------------------------------------------------------------
 echo "== Contract: teardown, recovery, schema, scope (AC 2, 5, 6, 7) =="
