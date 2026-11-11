@@ -101,6 +101,8 @@ shopt -s nullglob
 #    register-hooks, spend-telemetry-maintenance, spend-telemetry-tracker and workspace-sweep, and
 #    the 1-5 s desk deadlines in capture-offline, drilldown-offline, migrate, psql-bindings and
 #    psql-discovery. Lock-timeout environment knobs are not deadline assertions and stay pooled.
+#  - Per-entry review (issue #2207): .claude/reference/hook-test-serial-group.md records, for each
+#    entry, the reason it stays serial and what must change before it can return to the pool.
 SERIAL_GROUP="
 .claude/hooks/tests/silence-detector-time-dedupe.test.sh
 .claude/hooks/tests/session-start-sync-publish-bounds.test.sh
