@@ -6,7 +6,7 @@ the same queue to one dedicated **private** GitHub repository, reachable in
 The queue is still the source of truth. A sync never scans transcripts and
 sends only the projected fields, without task context or session identities.
 Decision issues show the question, choices and default; Reviews have a
-one-line title. URLs and absolute or explicitly relative filesystem paths
+one-line title. Links, email addresses, and absolute or explicitly relative filesystem paths
 are omitted from those fields. Mentions render as literal text.
 
 ## Activation and use

@@ -34,8 +34,11 @@ check "inactive mirror never calls the destination" "$(writes)" 0
 "$HQ_T_CLI" migrate >/dev/null
 "$HQ_T_CLI" register-control fixture-control >/dev/null
 "$HQ_T_CLI" add --kind decision --repo owner/private-work --key issue-1 --session private-worker \
-  --question 'Ready to ship @someone? https://example.invalid/private [settings](/internal/path)' --option Ship --option Wait \
+  --question 'Ready to ship @someone? https://example.invalid/private [settings](/internal/path) ftp://transfer.invalid/data file:///private/notes mailto:reader@inbox.invalid intranet.example.com/run' --option Ship --option Wait \
   --default Wait --context 'never export this worker context' >/dev/null
+# Existing rows may contain joined glyphs accepted by the store.
+hq_psql -At -c "SET search_path TO $HUMAN_QUEUE_SCHEMA;
+  UPDATE items SET question = replace(question, 'Ready to ship', 'Ready to ship 👩‍💻') WHERE id = 'D-1';" >/dev/null
 "$HQ_T_CLI" add --kind decision --repo owner/private-work --key issue-2 --session other-worker \
   --question 'Choose a fallback?' --option Local --option Remote >/dev/null
 "$HQ_T_CLI" add --kind review --repo owner/private-work --key pr-3 --question 'Review the fixture' >/dev/null
@@ -63,6 +66,10 @@ check_absent "worker context is not exported" "$payload" 'never export this work
 check_absent "private repo identity is not exported" "$payload" 'owner/private-work'
 check_absent "projected mentions do not notify other users" "$payload" '@someone'
 check_absent "embedded links are omitted" "$payload" 'example.invalid'
+check_contains "joined emoji survives projection" "$payload" '👩‍💻'
+for link in transfer.invalid /private/notes reader inbox.invalid intranet.example.com; do
+  check_absent "alternate link formats are omitted ($link)" "$payload" "$link"
+done
 check_absent "local paths do not cross the mirror boundary" "$payload" 'internal'
 check_contains "the path omission renders as literal text" "$payload" 'path omitted'
 sync >/dev/null

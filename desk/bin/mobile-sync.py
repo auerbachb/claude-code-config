@@ -24,7 +24,14 @@ VERSION = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:Z|[+-][0-9:]+)")
 MARKER = re.compile(
     r"\A<!-- desk-mobile:v1 id=([DR]-[1-9][0-9]*) version=(\S+) sig=([a-f0-9]{64}) -->\n"
 )
-URL = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
+LINK = re.compile(
+    r"(?<![\w+.-])(?:[a-z][a-z0-9+.-]*://|mailto:|tel:)[^\s<>()\[\]{}\"']+"
+    r"|(?<![\w.-])(?:[\w.+-]+@)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z]{2,63}(?:[:/?#][^\s<>()\[\]{}\"']+)?(?![\w.-])",
+    re.IGNORECASE,
+)
+JOINERS = "\u200c\u200d"
+STRIP_JOINERS = str.maketrans("", "", JOINERS)
 LOCAL_PATH = re.compile(r"""(?<![\w/])(?:[A-Za-z]:[\\/]|(?:~|\.\.?)?/)[^\s<>()\[\]{}"']+""")
 
 
@@ -206,10 +213,16 @@ def sign(config, item_id, version):
 
 
 def field(value, limit):
-    if (not isinstance(value, str) or not 0 < len(value) <= limit
-            or any(unicodedata.category(ch).startswith("C") or ch in "\u2028\u2029" for ch in value)):
+    if not isinstance(value, str) or not 0 < len(value) <= limit:
         raise Unavailable("invalid projected text")
-    return value
+    # Keep joining characters used by emoji and some writing systems. Strip
+    # direction overrides and other controls, and keep every field one line.
+    cleaned = "".join(
+        " " if ch in "\r\n\t\u2028\u2029" else ch
+        for ch in value
+        if ch in "\r\n\t\u2028\u2029" + JOINERS or unicodedata.category(ch) not in {"Cc", "Cf", "Cs"}
+    )
+    return cleaned.strip() or "[text omitted]"
 
 
 def verify_fields(runner, fields):
@@ -218,11 +231,12 @@ def verify_fields(runner, fields):
     check = ('source "$1"; while IFS= read -r -d "" value; do '
              'if hq__secret_class "$value"; then exit 5; fi; done')
     runner.call(["/bin/bash", "-c", check, "mobile-check", DESK_BIN / "lib/secrets.sh"],
-                input_text="\0".join(fields) + "\0", env={"PATH": os.defpath})
+                input_text="\0".join(value.translate(STRIP_JOINERS) for value in fields) + "\0",
+                env={"PATH": os.defpath})
 
 
 def plain(value):
-    without_links = URL.sub("[link omitted]", value)
+    without_links = LINK.sub("[link omitted]", value)
     return LOCAL_PATH.sub("[path omitted]", without_links).replace("@", "＠")
 
 
@@ -252,7 +266,7 @@ def projection(runner, config, item):
     options = [field(o, 500) for o in options]
     default = item.get("default_option")
     if default is not None:
-        field(default, 500)
+        default = field(default, 500)
         if options and default not in options:
             raise Unavailable("invalid default")
     verify_fields(runner, [question, *options, *([default] if default else [])])
