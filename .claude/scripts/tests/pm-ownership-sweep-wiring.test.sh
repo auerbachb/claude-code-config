@@ -350,6 +350,18 @@ check_eq "surface-and-skip, not adopt" "skip" \
 
 ############################################################################
 echo
+echo "== standing plans use the same read-only ownership sweep =="
+run_blocks "PM_OWNERSHIP_ISSUES=(314 315)
+export SESSION_LISTING_RAW_PATH='$RAW_LISTING'"
+OUT_JSON="$(sweep_json)"
+check_eq "the standing sweep runs clean" 0 "$RUN_RC"
+check_contains "the helper received the two prospective picks" "314 315 --json" "$(cat "$ARGV_LOG")"
+check_not_contains "the launch batch was not substituted" "311" "$(cat "$ARGV_LOG")"
+check_eq "read-only dispositions cover both standing picks in order" '[314,315]' \
+  "$(printf '%s\n' "$OUT_JSON" | jq -cs '[.[].issue]')"
+
+############################################################################
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [ "$FAIL" -gt 0 ]; then
   echo "FAILED: /pm ownership-sweep wiring tests" >&2

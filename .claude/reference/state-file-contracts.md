@@ -249,6 +249,17 @@ null or malformed identity is a usage error; `/board` labels the degradation and
 uses its no-record fallbacks. A distinct identified observer can still read the
 recorded-round union. The table-freshness default clock remains unchanged.
 
+#### PM standing refill queue
+
+`.repos["<key>"].pm_standing_queues["<session>"]` is the ranked unclaimed
+plan used by `/pm` Step 3.4. The writer compares the prior generation and
+the repo map before publishing. Retirement retains an empty generation
+so a delayed writer cannot recreate a plan from an older absent read.
+`/board` projects the plan from the same snapshot as round membership.
+Claims, pipeline state, and active-work counts still come from their
+existing records.
+
+
 ## Handoff file migration
 
 The legacy flat layout `~/.claude/handoffs/pr-{N}-handoff.json` is preserved for compatibility. `handoff-migrate.sh --apply` moves flat files into the scoped `{owner}/{repo}/` layout.
