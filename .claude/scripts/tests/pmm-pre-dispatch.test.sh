@@ -100,6 +100,15 @@ run_gate "$TMP/ci.json" > "$TMP/ci.out"
 CI_EVENT="$(event_from "$TMP/ci.out")"
 check "CI failure transition wakes with before/after evidence" '[[ "$(jq -r ".reasons|index(\"head_gate_ci_or_blocker\") != null" <<<"$CI_EVENT")" == true && "$(jq -r ".delta.changed[0].after.ci_status.failing" <<<"$CI_EVENT")" == 1 ]]'
 ack_event "$(jq -r .event_id <<<"$CI_EVENT")"
+# The same required-check blocker text can refer to a new job after a rerun.
+jq '.prs[0].gate.cancelled_required_job_id=101' "$TMP/ci.json" > "$TMP/cancelled-first.json"
+run_gate "$TMP/cancelled-first.json" > "$TMP/cancelled-first.out"
+ack_event "$(event_from "$TMP/cancelled-first.out" | jq -r .event_id)"
+jq '.prs[0].gate.cancelled_required_job_id=102' "$TMP/cancelled-first.json" > "$TMP/cancelled-again.json"
+run_gate "$TMP/cancelled-again.json" > "$TMP/cancelled-again.out"
+CANCELLED_EVENT="$(event_from "$TMP/cancelled-again.out")"
+check "new cancelled job wakes even when the required blocker text is unchanged" '[[ "$(jq -r ".delta.changed[0].before.cancelled_required_job_id" <<<"$CANCELLED_EVENT")" == 101 && "$(jq -r ".delta.changed[0].after.cancelled_required_job_id" <<<"$CANCELLED_EVENT")" == 102 ]]'
+ack_event "$(jq -r .event_id <<<"$CANCELLED_EVENT")"
 head_rows="$(jq -c '.prs[0].gate.head_sha="def456" | .prs' "$TMP/ci.json")"
 snapshot "$TMP/head.json" "$head_rows"
 run_gate "$TMP/head.json" > "$TMP/head.out"
@@ -576,6 +585,14 @@ print('PASS: failed/stale Step6 atomic commit cannot advance counters or fabrica
 # commit, suppress idle routing, and leave the original counters untouched.
 step6_delayed=json.loads(json.dumps(step6_done));step6_delayed['pmm_idle_streak']=9;step6_file.write_text(json.dumps(step6_delayed));step6_before=step6_file.read_bytes()
 r=step6_call(step6_code+'\nprintf "%s" "$IDLE_STREAK"',extra='PMM_SKIP_ACTIONS=true\n');assert r.returncode==0 and r.stdout=='0' and step6_file.read_bytes()==step6_before,(r.stdout,r.stderr)
+
+# A retry owned by another caller prevents idle pause without creating a new action.
+step6_pending=json.loads(json.dumps(step6_seed));step6_pending['pmm_idle_streak']=9
+step6_file.write_text(json.dumps(step6_pending))
+r=step6_call(step6_code+'\nprintf "%s" "$TICK_HAD_ACTION"',extra='TICK_HAS_PENDING_CI_RETRY=true\n')
+step6_result=json.loads(step6_file.read_text())
+assert r.returncode==0 and r.stdout=='false' and step6_result['pmm_idle_streak']==0,(r.stdout,r.stderr,step6_result)
+print('PASS: pending required CI rerun resets idle without recording another action')
 
 # Canonical live-work classes, with stale shell flags deliberately set to zero.
 for step6_name,step6_work,step6_idle_expected in [

@@ -114,6 +114,13 @@ for concl in success neutral skipped cancelled; do
   check_eq 0 "$RC" "non-blocking conclusion '$concl' on the newest run exits 0"
 done
 
+CANCELLED="$(bundle "$(cr 2 test cancelled 200)")"
+run_stdin "$CANCELLED"
+check_eq '[{"id":2,"name":"test"}]' "$(jq -c '.cancelled_runs' <<<"$OUT")" "optional cancellation remains visible in JSON"
+SUMMARY=$(printf '%s' "$CANCELLED" | "$SUT" "$SHA" --format summary --check-runs-stdin)
+check_eq "CI: 1/1 passed"$'\n'"Cancelled checks: test. Use merge-gate.sh to verify whether any are required." \
+  "$SUMMARY" "summary directs cancelled checks to the required-context gate"
+
 # Fail closed (issue #1846): the non-blocking set is a whitelist, so a conclusion
 # nobody has listed — one GitHub adds later — blocks instead of passing silently.
 run_stdin "$(bundle "$(cr 1 test success 100)" "$(cr 2 test brand_new_conclusion 200)")"

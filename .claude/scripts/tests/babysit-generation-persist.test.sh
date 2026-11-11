@@ -131,6 +131,21 @@ exec "$REAL_STATE" "$@"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), f"result={expected}")
 
+    def test_required_retry_horizon_hold_uses_the_recovery_cap(self):
+        code = "\n".join([
+            fence("babysit-required-ci-rerun"),
+            fence("babysit-pr-t5-blocker-streak"),
+            fence("babysit-pr-t6-backoff-termination"),
+            'printf "%s:%s:%s\\n" "$DISPATCH_SUPPRESSED" "$BLOCKER_STREAK" "$BACKOFF_STOP_REASON"',
+        ])
+        result = self.run_block(code, dict(
+            CLASS="required-ci-rerun", WATCH_LAUNCH_OK="false",
+            PREV_DIGEST="sha256:after", STREAK="8",
+            T0_SNAPSHOT='{"blocker_streak":5,"max_blocker_ticks":6}',
+        ))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "true:6:blocker-tick-cap")
+
     def test_monitor_emits_one_shortened_or_immediate_deadline_tick(self):
         clock = r"""
 now=1000

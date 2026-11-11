@@ -466,6 +466,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `human_changes_requested` non-empty (human CR on HEAD) | `BLOCKED:human(@login)` | **Hard block** → reported, dropped (name each login; never auto-dismiss) |
 | `mergeable == CONFLICTING` | `fixpr` (`merge-conflict`) | Spawn `phase-a-fixer` subagent for `/merge-conflict` workflow (Step 5c) |
 | `merge_state == BEHIND` | `rebase` | Rebase + force-push + stale-bot dismissal (Step 5a/5b) |
+| Gate reports a non-null `required_contexts.cancelled_retry` | `required-ci-rerun` | Run the shared exact-job retry in Step 5. |
 | `CI_FAILING > 0` **or** `UNRESOLVED > 0` | `fixpr` (`has-recoverable-blockers`) | Spawn `phase-a-fixer` subagent (Step 5c) |
 | `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ (when `STALE_BOT_CR > 0` only) dismisses stale bot reviews + re-triggers owning bot; spawn `phase-a-fixer` (Step 5c) when fix work remains |
 | `MET == true` (clean review on HEAD + CI green + 0 unresolved + no blockers) | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
@@ -593,7 +594,7 @@ Exact block format and the gap-line wording: `references/pmm-classify.md` "Revie
 
 **Shared gate idiom:** a blocking Phase A `active_agents` entry (the field is a map keyed by agent id) blocks rebase, `/wrap`, and fix-dispatch gates. PMM-owned (`pmm-fix-` prefix) — blocking until drained by Step 2.5/5e. Foreign — blocking only while not stale (`PMM_LOCK_STALE_SECS` default 3600s with no progress evidence). All gate checks use this idiom consistently.
 
-Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
+Initialize `TICK_HAD_ACTION=false`, `TICK_HAS_PENDING_CI_RETRY=false`, and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
 
 When `PMM_SKIP_ACTIONS=true`, skip every Step 5 dispatch and release-sweep substep. Reuse completed Step 6 state and continue with Step 7 so a replay can finish pause/stop/re-arm state after actions already completed.
 
@@ -601,7 +602,7 @@ When `PMM_SKIP_ACTIONS=true`, skip every Step 5 dispatch and release-sweep subst
 
 ### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
 
-**Skipped whole when `WATCH_LAUNCH_OK=false`** (Step 3.7 verdict `approaching`, `unknown`, or `critical`) — say so in the heartbeat so a held pre-flight is not read as "every reviewer was already fresh". Otherwise: run shared `pr-preflight.sh` once per discovered PR (skip `gone`/`error`). Flips draft PRs to ready and engages all four conditionally-triggered reviewers on the current HEAD SHA. Same script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never reimplements draft-flip or trigger logic.
+**Skipped whole when `WATCH_LAUNCH_OK=false`** (Step 3.7 verdict `approaching`, `unknown`, or `critical`) — say so in the heartbeat so a held pre-flight is not read as "every reviewer was already fresh". Otherwise: run shared `pr-preflight.sh` once per discovered PR (skip `gone`, `error`, and `required-ci-rerun`). Flips draft PRs to ready and engages all four conditionally-triggered reviewers on the current HEAD SHA. Same script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never reimplements draft-flip or trigger logic.
 
 ```bash
 PREFLIGHT_SH=""
@@ -611,7 +612,7 @@ for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh}
 done
 for N in $PR_NUMS; do
   _verdict=$(jq -r --arg n "$N" '.[$n].verdict // ""' <<<"$VERDICTS_JSON" 2>/dev/null || true)
-  [[ "$_verdict" == "gone" || "$_verdict" == "error" ]] && continue
+  case "$_verdict" in gone|error|required-ci-rerun) continue ;; esac
   if [ -n "$PREFLIGHT_SH" ]; then
     PF_OUT=$("$PREFLIGHT_SH" "$N") || echo "[PMM] pr-preflight.sh #$N exited non-zero — continuing"
     echo "$PF_OUT"
@@ -623,6 +624,31 @@ done
 ```
 
 `pr-preflight.sh` is idempotent, rate-cap safe, strictly per-PR, never triggers Greptile.
+
+### Cancelled required CI (verdict `required-ci-rerun`)
+
+Run before the remaining recovery dispatches for this verdict, under the existing launch horizon and shared Phase A gate. The helper verifies the current gate again and owns the once-per-HEAD claim. It produces the report even when the retry is exhausted.
+
+<!-- test-anchor: pmm-required-ci-rerun -->
+
+```bash
+if [[ "$VERDICT" == required-ci-rerun && "${WATCH_LAUNCH_OK:-true}" == true ]]; then
+  REQUIRED_CI_SH=$(resolve_script rerun-cancelled-required-ci.sh || true)
+  if [[ -n "$REQUIRED_CI_SH" ]]; then
+    REQUIRED_CI_RESULT=$("$REQUIRED_CI_SH" "$N") || true
+  else
+    REQUIRED_CI_RESULT='{"status":"validation_failed","reason":"required CI retry helper unavailable"}'
+  fi
+  if jq -e '.status == "requested"' >/dev/null <<<"$REQUIRED_CI_RESULT"; then
+    TICK_HAD_ACTION=true
+  fi
+  if jq -e '.wait_for_ci == true' >/dev/null <<<"$REQUIRED_CI_RESULT"; then
+    TICK_HAS_PENDING_CI_RETRY=true
+  fi
+fi
+```
+
+Report a failed or exhausted attempt as a blocker and re-read the gate on the next observation. Do not dispatch a fixer or wrap for this verdict.
 
 ### Step 5a: Rebase (verdict `rebase`)
 
@@ -731,12 +757,12 @@ fi
 
 Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. See [PMM pre-dispatch](references/pmm-pre-dispatch.md#runtime-integration-limits) for the supported cadence bounds.
 
-**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
+**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing; (6) no exact required CI retry awaiting observation in Step 5. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
 On a quiet shell-only poll, no model action ran by construction; the gate advances the idle counter
 only when the state digest is unchanged and there are no active Phase A agents, PMM locks, or merge
 holds. A wake at `--idle-pause-after` returns a lifecycle event so this skill can execute the
-ordinary Pause route.
+ordinary Pause route after Steps 5 and 6 check for current work.
 
 <!-- test-anchor: pmm-pre-dispatch-idle -->
 ```bash
@@ -744,7 +770,7 @@ if [ "${PMM_SKIP_ACTIONS:-false}" != true ]; then
   : "${PMM_STEP6_ROOT:?run Step6 backoff and idle together}"
   IDLE_PREV=$(jq -r '.pmm_idle_streak // 0' <<<"$PMM_STEP6_ROOT") || exit 1
   [[ "$IDLE_PREV" =~ ^[0-9]{1,8}$ ]] || { echo 'ERROR: invalid idle streak' >&2; exit 1; }
-  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "$PMM_STEP6_SAME_DIGEST" = true ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$ACTIVE_WRAPS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
+  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "${TICK_HAS_PENDING_CI_RETRY:-false}" = false ] && [ "$PMM_STEP6_SAME_DIGEST" = true ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$ACTIVE_WRAPS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
     IDLE_STREAK=$((10#$IDLE_PREV+1))
   else
     IDLE_STREAK=0

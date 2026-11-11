@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, records each tick and surfaces owner-action blockers, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
+description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, required-ci-rerun, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, records each tick and surfaces owner-action blockers, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
 triggers:
   - babysit pr
   - babysit this pr
@@ -571,6 +571,7 @@ CI_INCOMPLETE=$(jq -r '.ci_status.in_progress // 0' <<<"$GATE_JSON")
 STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE_JSON")
 MISSING=$(jq -r '.missing | join(" | ")'           <<<"$GATE_JSON")
 NRO_WINDOW_RUNNING=$(jq -r '.no_review_override.reason == "window_running"' <<<"$GATE_JSON")
+CANCELLED_RETRY=$(jq -r '(.required_contexts.cancelled_retry // null) != null' <<<"$GATE_JSON")
 # Sorted blocking CI conclusions — the `ci_blocking_conclusions_sorted` field of
 # the T5 digest tuple. merge-gate.sh exposes blocking runs as .ci_status.blocking[].
 CI_BLOCKING_SORTED=$(jq -r '[.ci_status.blocking[].conclusion] | sort | join(",")' <<<"$GATE_JSON")
@@ -639,15 +640,43 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
 | 4 | `conflicting` | `MERGEABLE == CONFLICTING` (checked before other recoverable signals; first-match priority) | See T4 `conflicting` dispatch — branches on `--auto-resolve-conflicts` flag and `conflict_streak` cap. |
 | 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `"$ADMIN_MERGE_SH" <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
-| 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or an active review or running no-review window, or a missing bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI and at least one review budget remaining | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
+| 6 | `required-ci-rerun` | `CANCELLED_RETRY == true` | Use T4's shared exact-job retry. |
+| 7 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or an active review or running no-review window, or a missing bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI and at least one review budget remaining | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.
 
 ### T4. Dispatch with idempotency (`session-state.json` is the source of truth)
 
-Only classes `merge-ready` (→ `/wrap`), `conflicting` (→ `/fixpr` in safe-only mode **or** terminate), and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
+Dispatch `/wrap` for `merge-ready` and `/fixpr` for recoverable blockers. Conflicts may dispatch safe-only `/fixpr` or terminate. `required-ci-rerun` uses the exact-job helper.
 
 **Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed dispatch counts toward `--max-iter`. An ordinary wait for CI or review continues because no dispatch was due. A hold can release itself while the watcher is armed.
+
+#### T4: `required-ci-rerun`
+
+Apply T0's ownership/in-flight checks and the launch horizon before requesting CI. When a launch is held, retain the verdict for the next tick. For an authorized rerun, execute the shared helper, which revalidates the gate and owns the repo/PR/HEAD claim.
+
+<!-- test-anchor: babysit-required-ci-rerun -->
+
+```bash
+if [[ "$CLASS" == required-ci-rerun && "${WATCH_LAUNCH_OK:-true}" != true ]]; then
+  DISPATCH_SUPPRESSED=true
+elif [[ "$CLASS" == required-ci-rerun ]]; then
+  REQUIRED_CI_SH=$(resolve_script rerun-cancelled-required-ci.sh || true)
+  if [[ -n "$REQUIRED_CI_SH" ]]; then
+    REQUIRED_CI_RESULT=$("$REQUIRED_CI_SH" "$PR") || true
+  else
+    REQUIRED_CI_RESULT='{"status":"validation_failed","reason":"required CI retry helper unavailable"}'
+  fi
+  if jq -e '.wait_for_ci == true or .status == "not_eligible" or .status == "superseded"' \
+      >/dev/null <<<"$REQUIRED_CI_RESULT"; then
+    CLASS=waiting-on-bots
+  else
+    CLASS=hard-blocked
+  fi
+fi
+```
+
+Then continue with bookkeeping. Include any recorded retry failure or exhausted request in the terminal blocker reason. A requested job waits for a fresh gate, with no fix or merge dispatch on that tick.
 
 #### T4: `conflicting` dispatch
 

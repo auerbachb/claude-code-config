@@ -389,7 +389,9 @@ else
       key=$(jq -c --arg hash "$body_hash" --arg observed "$observed" '{endpoint,id,url,actor,observed_at:$observed,body_hash:$hash}' <<<"$candidate")
       finding_keys=$(jq -c --argjson key "$key" '. + [$key] | sort_by(.endpoint,.id)' <<<"$finding_keys")
     done <<< "$candidates"
-    gate_projection="$(jq -cS '{head_sha,met,reviewer,path,missing:(.missing|sort),ci_status:(.ci_status|{total,passing,failing,in_progress,blocking:(.blocking // []|sort),incomplete:(.incomplete // []|sort)}),merge_state,mergeable,review_decision,stale_bot_changes_requested_count:(.stale_bot_changes_requested_count // 0),human_changes_requested:(.human_changes_requested|sort),unresolved_thread_count,authorship}' <<<"$gate")"
+    gate_projection="$(jq -cS '(.required_contexts.cancelled_retry.id // null) as $retry_job
+      | {head_sha,met,reviewer,path,missing:(.missing|sort),ci_status:(.ci_status|{total,passing,failing,in_progress,blocking:(.blocking // []|sort),incomplete:(.incomplete // []|sort)}),merge_state,mergeable,review_decision,stale_bot_changes_requested_count:(.stale_bot_changes_requested_count // 0),human_changes_requested:(.human_changes_requested|sort),unresolved_thread_count,authorship}
+      | if ($retry_job | type) == "number" then . + {cancelled_required_job_id:$retry_job} else . end' <<<"$gate")"
     row="$(jq -cn --argjson number "$number" --arg url "$(jq -r --argjson n "$number" '.[]|select(.number==$n)|.url' <<<"$pulls")" \
       --argjson gate "$gate_projection" --argjson findings "$finding_keys" --arg fingerprint "$finding_fingerprint" --argjson count "$finding_count" \
       '{number:$number,url:$url,gate:$gate,findings:$findings,finding_fingerprint:$fingerprint,finding_count:$count}')"
@@ -525,8 +527,8 @@ delta="$(jq -cn --argjson old "$previous" --argjson new "$CURRENT" --argjson dea
      removed:([$a|keys[] | select($b[.] == null)]),
      removed_prs:([$a|keys[] as $k | select($b[$k] == null) | {pr:($k|tonumber),head_sha:$a[$k].gate.head_sha,url:$a[$k].url}]),
      changed:([$b|keys[] as $k | select($a[$k] != null and $a[$k].gate != $b[$k].gate)
-       | {pr:($k|tonumber),before:($a[$k].gate|{head_sha,met,reviewer,path,missing,human_changes_requested,stale_bot_changes_requested_count,ci_status,merge_state,mergeable,review_decision,unresolved_thread_count,authorship}),
-          after:($b[$k].gate|{head_sha,met,reviewer,path,missing,human_changes_requested,stale_bot_changes_requested_count,ci_status,merge_state,mergeable,review_decision,unresolved_thread_count,authorship})}]),
+       | {pr:($k|tonumber),before:($a[$k].gate|{head_sha,met,reviewer,path,missing,human_changes_requested,stale_bot_changes_requested_count,ci_status,merge_state,mergeable,review_decision,unresolved_thread_count,authorship,cancelled_required_job_id}),
+          after:($b[$k].gate|{head_sha,met,reviewer,path,missing,human_changes_requested,stale_bot_changes_requested_count,ci_status,merge_state,mergeable,review_decision,unresolved_thread_count,authorship,cancelled_required_job_id})}]),
      new_findings:([$b|to_entries[] as $p
        | [($p.value.findings // [])[] as $f | select((($a[$p.key].findings // []) | index($f)) == null) | $f] as $sample
        | if ($sample|length)>0 then $sample[] as $f

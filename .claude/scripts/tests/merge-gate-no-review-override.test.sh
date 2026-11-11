@@ -465,7 +465,7 @@ done
 # so the hollow approval is still a verdict and the override stays off.
 reset; FAKE_REVIEWS="$(head_approval "")"
 mkdir -p "$TMP/nro-sut/lib"
-cp "$(dirname "$SUT")"/*.sh "$TMP/nro-sut/"; cp "$(dirname "$SUT")"/lib/*.sh "$TMP/nro-sut/lib/"
+cp "$(dirname "$SUT")"/*.sh "$TMP/nro-sut/"; cp "$(dirname "$SUT")"/lib/*.sh "$(dirname "$SUT")"/lib/*.jq "$TMP/nro-sut/lib/"
 printf '#!/usr/bin/env bash\necho "not json"\n' > "$TMP/nro-sut/review-substance.sh"; chmod +x "$TMP/nro-sut/review-substance.sh"
 run_gate_on greptile "$GREEN_11" "$TMP/nro-sut/merge-gate.sh"
 check_eq "false" "$(j .no_review_override.applied)" "#1932 greptile: broken evaluator -> hollow approval still a verdict, override off"

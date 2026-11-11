@@ -93,9 +93,9 @@ case "\$ARGS" in
     # mergeStateStatus is CLEAN unless a suite sets FAKE_MERGE_STATE (issue
     # #1846: replaying a PR GitHub reported BLOCKED). Every pre-existing suite
     # leaves it unset, so none of their expectations move.
-    jq -cn --arg ms "\${FAKE_MERGE_STATE:-CLEAN}" \
+    jq -cn --arg ms "\${FAKE_MERGE_STATE:-CLEAN}" --argjson draft "\${FAKE_DRAFT:-false}" \
            '{number:1, state:"OPEN", headRefOid:"$HEAD_SHA", baseRefName:"main",
-             mergeStateStatus:\$ms, mergeable:"MERGEABLE", reviewDecision:"APPROVED",
+             mergeStateStatus:\$ms, isDraft:\$draft, mergeable:"MERGEABLE", reviewDecision:"APPROVED",
              author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *check-runs*)
@@ -103,6 +103,7 @@ case "\$ARGS" in
   *commits/*/statuses*)
     # Legacy commit statuses (issue #1361) — a required context can be satisfied
     # by one of these instead of a check-run. Empty unless a test supplies them.
+    [[ "\${FAKE_COMMIT_STATUS_ERROR:-false}" == false ]] || exit 1
     printf '%s' "\${FAKE_COMMIT_STATUSES:-[]}"; exit 0 ;;
   *pulls/*/reviews*)
     printf '%s' "\${FAKE_REVIEWS:-[]}"; exit 0 ;;
