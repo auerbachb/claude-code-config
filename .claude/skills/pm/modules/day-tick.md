@@ -137,11 +137,12 @@ Use that `sha256sum`-or-`shasum` form rather than a bare `sha256sum`: `/pm` is s
 
 Compare against the stored digest and hold the result in `DAY_STREAK`, which the tier computation below reads:
 
+<!-- test-anchor: pm-day-tick-digest-streak -->
 ```bash
 PREV_DIGEST=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.digest")
 PREV_STREAK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.digest_streak")
 [ "$PREV_STREAK" = null ] && PREV_STREAK=0
-if [ "\"$DAY_DIGEST\"" = "$PREV_DIGEST" ]; then DAY_STREAK=$(( PREV_STREAK + 1 )); else DAY_STREAK=0; fi
+if [ "$DAY_DIGEST" = "$PREV_DIGEST" ]; then DAY_STREAK=$(( PREV_STREAK + 1 )); else DAY_STREAK=0; fi
 ```
 
 **Reset to `0`, not `1`** — day mode's streak is fleet-shaped like `/pr-monitor-and-manage`'s, and unlike `/babysit-pr` it writes nothing `polling-backoff-warn.sh` reads (that hook watches `.prs[N].*`), so PMM's convention is the one to match. Then:
@@ -154,6 +155,7 @@ if [ "\"$DAY_DIGEST\"" = "$PREV_DIGEST" ]; then DAY_STREAK=$(( PREV_STREAK + 1 )
 
 Compute the tier into an explicit variable, because the re-arm below must sleep for the **effective** cadence and 2D.2's arming template names only the base one:
 
+<!-- test-anchor: pm-day-tick-effective-cadence -->
 ```bash
 DAY_BASE_MIN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.cadence_base_minutes")
 DAY_EFF_MIN=$DAY_BASE_MIN

@@ -449,5 +449,81 @@ os.execv(shell,[shell,real]+args)
             self.assertIsNotNone(generation,p.stdout);self.assertEqual(self.day()['park_generation'],generation[1])
             self.assertIsNone(self.day()['park_claim_token']);self.assertEqual(self.day()['limit_resume_task_id'],'own-task')
 
+class ReactiveWakeDelay(unittest.TestCase):
+    def run_wake(self, now, hits, mode='ready'):
+        marker = r'<!-- test-anchor: pm-day-2d6-reactive-wake-delay -->\s*```bash\n(.*?)\n```'
+        match = re.search(marker, park_text('reactive'), re.S)
+        self.assertIsNotNone(match)
+        stubs = r'''
+date() {
+  if [ "$*" = "-u +%s" ]; then printf '%s\n' "$FIXED_NOW"
+  else printf '%s\n' '20261111T210000Z'; fi
+}
+sleep() {
+  [ "$1" -gt 0 ] || return 1
+  printf 'delay=%s\n' "$1"
+}
+state_read() {
+  [ "$*" = '--repo owner/repo --get-json .repos["owner/repo"].day' ] || return 4
+  reads=0
+  if [ -r "$WAKE_READS" ]; then reads=$(cat "$WAKE_READS"); fi
+  printf '%s\n' "$((reads + 1))" > "$WAKE_READS"
+  park="$PARK_GENERATION"
+  wake="$LIMIT_GENERATION"
+  task='task-live'
+  case "$WAKE_MODE" in
+    delayed) if [ "$reads" -lt 2 ]; then wake=""; task=""; fi ;;
+    replacement-park) park='park-other' ;;
+    replacement-wake) wake='wake-other' ;;
+    unreadable) return 4 ;;
+  esac
+  jq -cn --arg park "$park" --arg wake "$wake" --arg task "$task" '
+    def optional: if . == "" then null else . end;
+    {park_generation:$park,limit_cause:"reactive",limit_kind:"rolling_window",
+     limit_resume_generation:($wake|optional),limit_resume_task_id:($task|optional)}'
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='park-wake-delay-') as folder:
+            reads = Path(folder) / 'reads'
+            env = dict(os.environ, FIXED_NOW=str(now), RESET_EPOCH='1000', NEW_HITS=str(hits),
+                       SESSION_STATE_SH='state_read', REPO_KEY=REPO, PARK_GENERATION='park-fixture',
+                       WAKE_READS=str(reads), WAKE_MODE=mode)
+            result = subprocess.run([SHELL, '-u', '-c', stubs + match.group(1)],
+                                    cwd=ROOT, env=env, capture_output=True, text=True,
+                                    timeout=10, check=True)
+            return result.stdout.splitlines(), int(reads.read_text()) if reads.exists() else 0
+
+    def assert_resume(self, output):
+        self.assertRegex(output, r'^/pause-resume --generation limit-20261111T210000Z-[0-9]+-[0-9]+$')
+
+    def test_buffer_and_existing_backoff(self):
+        for now, hits, expected in [(1080, 1, 40), (1080, 2, 80), (1120, 1, 120),
+                                    (1121, 1, 120), (1121, 2, 240)]:
+            with self.subTest(now=now, hits=hits):
+                lines, reads = self.run_wake(now, hits)
+                self.assertEqual(reads, 1)
+                self.assertEqual(len(lines), 2, lines)
+                self.assertEqual(lines[0], f'delay={expected}')
+                self.assert_resume(lines[1])
+
+    def test_delayed_publication_waits_for_exact_wake(self):
+        lines, reads = self.run_wake(1121, 1, 'delayed')
+        self.assertEqual(reads, 3)
+        self.assertEqual(lines[:-1], ['delay=120', 'delay=10', 'delay=10'])
+        self.assert_resume(lines[-1])
+
+    def test_replaced_park_or_wake_stops_silently(self):
+        for mode in ('replacement-park', 'replacement-wake'):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.run_wake(1121, 1, mode), (['delay=120'], 1))
+
+    def test_unreadable_publication_is_bounded(self):
+        lines, reads = self.run_wake(1121, 1, 'unreadable')
+        self.assertEqual(reads, 13)
+        self.assertEqual(lines[:-1], ['delay=120'] + ['delay=10'] * 12)
+        self.assertIn('Resume manually with /pause-resume.', lines[-1])
+        self.assertFalse(any(line.startswith('/pause-resume ') for line in lines))
+
+
 unittest.main(argv=[sys.argv[0]]+sys.argv[2:])
 PY
