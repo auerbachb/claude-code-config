@@ -941,7 +941,7 @@ NEEDLES_FILE="$TMP/pm-needles.txt"
 cat > "$NEEDLES_FILE" <<'NEEDLES'
 CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
 DEGRADED: candidate-ownership.sh not found
-**Ownership sweep (runs after ranking and window-fit selection, before dispatch).**
+**Ownership sweep (read-only when planning, rechecked before dispatch).**
 - `#N` — owned by {owner_label} ({state}); resume with {resume_route}
 - `#N` — adopted from {owner_label} (archived); resuming from {adopt.from} #{adopt.pr}
 - `#N` — sweep degraded: {degraded[0]}; using claim gate only
