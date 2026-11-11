@@ -134,8 +134,8 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `ISSUE_DEPS_SH` empty → **optional**. Print `DEGRADED: issue-deps.sh not found (checked all three paths) — dependency markers read by eye (1B.3)` and read the markers 1B.3 lists from the bodies and comments yourself.
 - `USAGE_HORIZON_SH` empty → **optional, degrades to `unknown`** (day mode only). Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — runway verdict unavailable, day mode holds the conservative posture` on the arming turn and treat every tick's verdict as `unknown` (D2's horizon gate): in-flight work finishes, nothing new starts, and **no pre-emptive park ever fires** — an absent signal must not park a healthy board any more than it may green-light a dying one.
 - `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
-- `PM_REPORT_SH` empty → **optional**. If the repo enabled scheduled reports, surface the report gate's missing-helper diagnostic once per PM run. Explicit `/board` remains available.
-- `TABLE_FRESHNESS_SH` empty → **optional**. Keep explicit and opted-in reports available. Preserve the diagnostic when a rendered table's freshness clock cannot be written.
+- `PM_REPORT_SH` empty → **optional**. When scheduled reports are enabled, surface the report gate's missing-helper diagnostic once per PM run. Explicit `/board` remains available.
+- `TABLE_FRESHNESS_SH` empty → **optional**. Keep explicit and scheduled reports available. Preserve the diagnostic when a rendered table's freshness clock cannot be written.
 - `MAKESPAN_SH` / `ESTIMATE_RESOLVE_SH` empty → **optional** (needed only for window batch fitting and estimate display). **If a window is active (`WINDOW_STR` set) and either helper is unavailable, do NOT dispatch the full untrimmed batch — fail closed: print `DEGRADED: <helper> not found — dispatch paused; cannot verify batch fits the requested window` and skip dispatch for this run.** Without an active window, show estimates inline where available and continue normally.
 
 The autonomy grants, the monitor-mode rules, and the pipeline ceiling's default need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project (`portable-skill-resolution.md`), so they are already in context wherever `/pm` runs.
@@ -2235,10 +2235,11 @@ Render only for an explicit status request or a due opted-in report. Keep the co
 
 **The Active Work table (3.2) is a different table and neither replaces the other.** Active Work is the **assignment ledger**: every issue `/pm` is responsible for, including rows that are not pipelines at all — `Chip offered` and `Prompt generated` (awaiting a click or a paste), `Active` (a separate thread's work), `Tracking` parents, `Deferred (cap)` — each keyed by thread and, where one exists, by `task_id`. The canonical Status vocabulary is `queued` / `Phase A|B|C` / `merged`, which has no cell for "awaiting a click" and no column for a chip handle, so the ledger cannot be folded into it. "Running now" is the **round's progress view**: pipelines only, with clocks. Keep both, and keep the boundary — one answers *who is doing what*, the other *when will it land*.
 
-**Opt-in reports.** A positive `report_every_min` in `## Reporting` is a standing
-status request for this repo's `/pm`. Read the config through `PM_CONFIG_GET`.
-Absent or zero leaves decision-only output in effect. Follow
-[Opt-in PM progress report](../../reference/pm-output-templates.md#opt-in-pm-progress-report)
+**Scheduled reports.** The owner requests a changed-board report every
+30 minutes for `/pm`. Read `report_every_min` in `## Reporting` through
+`PM_CONFIG_GET`. Zero opts out, and a positive value sets a different
+interval. Follow
+[PM progress report](../../reference/pm-output-templates.md#pm-progress-report)
 for the script gate, delivery receipt and exact groups. Evaluate it on D5,
 on the existing PM-owned inline monitor tick after processing outcomes and
 refills, and when a verified terminal outcome reaches the PM parent outside

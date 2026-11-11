@@ -42,13 +42,10 @@ PIPELINE_CEILING=6
 
 ## Reporting
 
-```yaml
-report_every_min: 0
-```
-
-Set a positive number of minutes to receive changed-board reports from `/pm`
-and immediate reports on merged or blocked outcomes. Zero or an absent
-section keeps decision-only output. An explicit status request always works.
+`/pm` reports changed boards every 30 minutes by default and reports
+merged or blocked outcomes immediately. Set `report_every_min: 0` to opt out
+or a positive number to choose another interval. An explicit status request
+always works.
 
 ## Budget
 

@@ -12,7 +12,7 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 | Ordinary recoverable failure | Silent during authorized recovery | Preserve full failure capture and nonzero exit; repair/retry within existing bounds |
 | Owner-only blocker, ambiguity, safety event, exhausted recovery or genuine stall | Immediate concise notice | State action, practical options/consequence, evidence; persist stop and resume state |
 | Explicit status, summary, board or verbose request | Answer the requested scope | Render from existing records; tables are available on request |
-| `/pm` repo with positive `report_every_min` | Report a changed active board when due and immediately on a terminal outcome | Use the existing PM turn, canonical board and exact report receipt |
+| `/pm` standing status request | Report a changed active board every 30 minutes by default and immediately on a terminal outcome | Set `report_every_min: 0` to opt out or a positive value to change cadence. Use the existing PM turn, canonical board and exact report receipt |
 | Completion of a user `/pm` invocation | One step receipt, after the immediate tick on a day arming invocation | Render recorded outcomes and flag missing ones. Internal ticks and probes stay silent. |
 | Terminal completion | Minimal outcome; useful artifact link only | Preserve full verification in PR/issue/logs; emit clean merge line once |
 
