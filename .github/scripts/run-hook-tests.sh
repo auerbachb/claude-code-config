@@ -29,7 +29,14 @@
 #   bash .github/scripts/run-hook-tests.sh --json     # compact result contract
 #   bash .github/scripts/run-hook-tests.sh --only-file <file>   # run only the selected suites
 #   bash .github/scripts/run-hook-tests.sh --jobs <n>           # concurrent suites (default: CPU count)
+#   bash .github/scripts/run-hook-tests.sh --shard <i>/<n>      # run only shard i of n (issue #2207)
+#   bash .github/scripts/run-hook-tests.sh --list               # print the suites it would run, no run
 #   bash .github/scripts/run-hook-tests.sh --help
+#
+# --shard i/n (issue #2207): the pool and the serial group (after --only-file) are each sorted with
+# LC_ALL=C, and shard i runs every n-th entry of each list starting at position i. The n shards
+# together run each selected suite exactly once, and each shard gets about its share of the serial
+# group. --shard 1/1 is the default.
 #
 # --only-file <file> (issue #2153): the file is the output of
 # .github/scripts/select-hook-tests.sh. A line `ALL` runs every suite, exactly as with no
@@ -151,9 +158,17 @@ ONLY_FILE=""
 ONLY_FILE_GIVEN=0   # distinguishes "--only-file given (maybe empty)" from "not given"
 JOBS_ARG=""
 JOBS_GIVEN=0        # distinguishes "--jobs given (maybe empty)" from "not given"
+SHARD_ARG=""
+SHARD_GIVEN=0       # distinguishes "--shard given (maybe empty)" from "not given"
+LIST_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
+    --list) LIST_ONLY=1; shift ;;
+    --shard)
+      [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --shard needs i/n" >&2; exit 2; }
+      SHARD_ARG="$2"; SHARD_GIVEN=1; shift 2
+      ;;
     --only-file)
       [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --only-file needs a path" >&2; exit 2; }
       ONLY_FILE="$2"; ONLY_FILE_GIVEN=1; shift 2
@@ -190,6 +205,27 @@ else
 fi
 SUITE_TIMEOUT="${HOOK_TEST_SUITE_TIMEOUT:-900}"
 is_positive_int "$SUITE_TIMEOUT" || { echo "::error::run-hook-tests.sh: HOOK_TEST_SUITE_TIMEOUT must be a positive integer of seconds: $SUITE_TIMEOUT" >&2; exit 2; }
+
+# --shard i/n (issue #2207): run only shard i of n. Default 1/1 is the whole selection in
+# discovery order, exactly as before. For n > 1 the selected suites (pool and serial alike) are
+# sorted with LC_ALL=C and shard i takes every n-th entry starting at position i, so the shards
+# partition the selection: each suite runs in exactly one shard.
+SHARD_I=1
+SHARD_N=1
+if [ "$SHARD_GIVEN" -eq 1 ]; then
+  case "$SHARD_ARG" in
+    */*)
+      SHARD_I="${SHARD_ARG%%/*}"
+      SHARD_N="${SHARD_ARG#*/}"
+      ;;
+    *) SHARD_N=0 ;;
+  esac
+  is_positive_int "$SHARD_N" && is_positive_int "$SHARD_I" && [ "$SHARD_I" -le "$SHARD_N" ] ||
+    { echo "::error::run-hook-tests.sh: --shard must be i/n with 1 <= i <= n, got: '$SHARD_ARG'" >&2; exit 2; }
+  # Force decimal: a leading zero (08/10) would otherwise be read as octal by the arithmetic below.
+  SHARD_I=$((10#$SHARD_I))
+  SHARD_N=$((10#$SHARD_N))
+fi
 
 # Read the selection before the cd below, so a relative --only-file path still resolves
 # against the caller's directory.
@@ -288,6 +324,9 @@ n=0
 SUITE_PATH=()
 POOL_SLOTS=()
 SERIAL_SLOTS=()
+SEL_LIST=""
+POOL_SEL=""
+SERIAL_SEL=""
 for t in .claude/hooks/tests/*.test.sh \
          .claude/scripts/tests/*.test.sh \
          .github/scripts/tests/*.test.sh \
@@ -297,6 +336,30 @@ for t in .claude/hooks/tests/*.test.sh \
     skipped=$((skipped + 1))
     continue
   fi
+  SEL_LIST="${SEL_LIST}${t}"$'\n'
+  if grep -Fxq -- "$t" <<<"$SERIAL_GROUP"; then
+    SERIAL_SEL="${SERIAL_SEL}${t}"$'\n'
+  else
+    POOL_SEL="${POOL_SEL}${t}"$'\n'
+  fi
+done
+# Sharded runs split the pool and the serial group SEPARATELY: each list is sorted in a
+# locale-independent order, then shard i takes every n-th entry from it. Splitting by kind keeps
+# both shards at about half of the serial group, which runs one suite at a time, so neither shard
+# inherits the whole serial tail. Shard 1/1 keeps discovery order and is unchanged.
+shard_slice() {
+  local k=0 t
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if [ $(( k % SHARD_N )) -eq $(( SHARD_I - 1 )) ]; then printf '%s\n' "$t"; fi
+    k=$((k + 1))
+  done
+}
+if [ "$SHARD_N" -gt 1 ]; then
+  SEL_LIST="$(printf '%s' "$POOL_SEL" | LC_ALL=C sort | shard_slice)"$'\n'"$(printf '%s' "$SERIAL_SEL" | LC_ALL=C sort | shard_slice)"$'\n'
+fi
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
   SUITE_PATH[n]="$t"
   if grep -Fxq -- "$t" <<<"$SERIAL_GROUP"; then
     SERIAL_SLOTS[${#SERIAL_SLOTS[@]}]="$n"
@@ -304,8 +367,16 @@ for t in .claude/hooks/tests/*.test.sh \
     POOL_SLOTS[${#POOL_SLOTS[@]}]="$n"
   fi
   n=$((n + 1))
-done
+done <<<"$SEL_LIST"
 total=$n
+
+# --list (issue #2207): print the suites this invocation would run, pool first then serial, one
+# "<kind> <path>" line each, and exit without running anything. The shard test uses it.
+if [ "$LIST_ONLY" -eq 1 ]; then
+  for s in ${POOL_SLOTS[@]+"${POOL_SLOTS[@]}"}; do printf 'pool %s\n' "${SUITE_PATH[$s]}"; done
+  for s in ${SERIAL_SLOTS[@]+"${SERIAL_SLOTS[@]}"}; do printf 'serial %s\n' "${SUITE_PATH[$s]}"; done
+  exit 0
+fi
 
 # run_suite <slot> <path>: runs in a background subshell. Parse-checks the suite, runs it with
 # its own TMPDIR and stdin closed, and records the exit code last (its presence means "finished").
