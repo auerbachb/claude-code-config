@@ -111,6 +111,13 @@ A usage limit is an explicit upstream signal — different in kind from a local 
 nonnegative integer or legacy decimal string increments normally. A malformed
 or unreadable counter keeps the park closed for manual resume.
 
+**Day startup ownership.** Freshness and park routing use one typed snapshot.
+The day start reserves its Monitor generation and heartbeat by comparing
+that snapshot and the inactive fleet state in the same write. It renews
+before dispatch, then uses the exact reservation for initialization and
+publication. A comparison loss stops that attempt and leaves the new
+state intact. Only the unpublished reservation can be released.
+
 **Session-start reconciliation.** The original day snapshot carries the park and typed wake identity. For a completed rolling-window park, PM can re-arm an empty wake slot. Replacing an occupied slot requires native confirmation that the exact recorded task stopped in its owning session; restart alone cannot prove that. The recovery publisher compares the original binding and writes both new identity fields atomically. Unknown ownership, weekly parks, unreadable state, and an unfinished claim require manual resume.
 
 **Disarm on manual resume.** A manual `/pause-resume` while the auto-wake Monitor is armed reads `day.limit_resume_task_id` and `TaskStop`s it before delegating to `/pm day resume`. The disarm must happen first; the re-arm comes after. This prevents a double resume.

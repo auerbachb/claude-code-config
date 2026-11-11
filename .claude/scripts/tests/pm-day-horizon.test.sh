@@ -1131,14 +1131,18 @@ require_text "2D.5 runs the shared route" "$REPO_ROOT/.claude/skills/pm/modules/
 BLOCK_PARK_ROUTE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" pm-day-park-route) || exit 1
 park_route() {
   "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$1" >/dev/null || return
-  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" WEEKLY_FIXTURE="${2:-false}" \
     bash -c "$BLOCK_REC_SNAPSHOT"$'\n''date() {
       if [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%s ]; then
         printf "%s\n" 1767225600
       else
         command date "$@"
       fi
-    }'$'\n'"$BLOCK_PARK_ROUTE"
+    }
+    case "$WEEKLY_FIXTURE" in
+      true) PM_DAY_WEEKLY_RESUMED_SNAPSHOT="$DAY_SNAPSHOT" ;;
+      stale) PM_DAY_WEEKLY_RESUMED_SNAPSHOT="{}" ;;
+    esac'$'\n'"$BLOCK_PARK_ROUTE"
 }
 for day_deadline in 2025-12-31T23:59:59Z 2026-01-01T00:00:00Z 2026-01-01T00:00:01Z; do
   route_day=$(jq -nc --arg deadline "$day_deadline" '{
@@ -1152,7 +1156,7 @@ for day_deadline in 2025-12-31T23:59:59Z 2026-01-01T00:00:00Z 2026-01-01T00:00:0
 done
 check_eq "positive bound without a deadline needs manual recovery" PARK_ROUTE=manual:unverified \
   "$(park_route '{"limit_kind":"rolling_window","limit_cause":"preemptive","limit_probe_fires_remaining":2}')"
-check_eq "positive bound on a weekly park needs manual recovery" PARK_ROUTE=manual:unverified \
+check_eq "positive bound on a weekly park needs manual recovery" PARK_ROUTE=manual:weekly \
   "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","limit_kind":"weekly","limit_cause":"preemptive","limit_probe_fires_remaining":2}')"
 check_eq "unfinished claim precedes bound and expiry" PARK_ROUTE=manual:unfinished \
   "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","park_claim_token":"in-flight","limit_probe_fires_remaining":2}')"
@@ -1163,6 +1167,18 @@ check_eq "expired reactive park without a bound allows ordinary arming" PARK_ROU
 check_eq "future rolling park without a bound selects one-shot recovery" PARK_ROUTE=recover:oneshot \
   "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":"reactive"}')"
 check_eq "missing park allows ordinary arming" PARK_ROUTE=normal "$(park_route '{}')"
+WEEKLY_EXPIRED='{"parked_until":"2025-12-31T23:59:59Z","limit_kind":"weekly","limit_cause":"reactive"}'
+check_eq "expired weekly park requires explicit end resume" PARK_ROUTE=manual:weekly \
+  "$(park_route "$WEEKLY_EXPIRED")"
+check_eq "explicit end resume can release an expired weekly park for arming" PARK_ROUTE=normal \
+  "$(park_route "$WEEKLY_EXPIRED" true)"
+check_eq "manual resume proof cannot release a replacement weekly park" PARK_ROUTE=manual:weekly \
+  "$(park_route "$WEEKLY_EXPIRED" stale)"
+WEEKLY_FUTURE=$(jq -c '.parked_until="2026-01-01T00:00:01Z"' <<< "$WEEKLY_EXPIRED")
+check_eq "explicit end resume does not bypass a future weekly deadline" PARK_ROUTE=manual:weekly \
+  "$(park_route "$WEEKLY_FUTURE" true)"
+check_eq "weekly park with missing deadline cannot be cleared by arming" PARK_ROUTE=manual:weekly \
+  "$(park_route '{"limit_kind":"weekly"}' true)"
 
 # P1: the cause CAS and the metadata write used to be two lock holds, so a
 # reactive kill landing between them could leave a record mixing both paths'
@@ -1634,7 +1650,9 @@ BLOCK_DIGEST_STREAK=$(extract_skill_bash "$DAY_TICK" pm-day-tick-digest-streak)
 BLOCK_DIGEST_CADENCE=$(extract_skill_bash "$DAY_TICK" pm-day-tick-effective-cadence)
 DAY_PATH=".repos[\"$REPO_KEY\"].day"
 run_goal_arm() {
-  local state_helper="${2:-$SESSION_STATE_SH}"
+  local state_helper="${2:-$SESSION_STATE_SH}" reservation
+  reservation=$("$SESSION_STATE_SH" --get-json "$DAY_PATH") || return
+  DAY_ARM_GENERATION=goal-test DAY_RESERVATION="$reservation" PMM_EXPECTED=false \
   SESSION_STATE_SH="$state_helper" REPO_KEY="$REPO_KEY" BUSINESS_GOAL="$1" \
     COMPETING_GOAL="${3:-}" NOW=2026-11-11T19:30:00Z DAY_CADENCE_MIN=5 \
     MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 bash -u -c \
@@ -1646,6 +1664,9 @@ read_goal() { "$SESSION_STATE_SH" --get-json "$DAY_PATH.goal"; }
 write_goal() { "$SESSION_STATE_SH" --set "$DAY_PATH.goal=$1" >/dev/null; }
 
 seed_day_state
+"$SESSION_STATE_SH" --set '.pmm_active=false' --set "$DAY_PATH.active=true" \
+  --set "$DAY_PATH.stop_requested=false" --set "$DAY_PATH.monitor_generation=\"goal-test\"" \
+  --set "$DAY_PATH.monitor_task_id=null" >/dev/null
 run_goal_arm "" || exit 1
 check_eq "an absent saved goal remains JSON null" null "$(read_goal)"
 write_goal '"stabilize incoming work"'
@@ -1697,6 +1718,99 @@ ACTUAL_STATE_HELPER="$SESSION_STATE_SH" GOAL_READ_LOG="$STUB_DIR/goal-read-timeo
 check_eq "a persistent read timeout stops after one retry" 2 "$(grep -c '^read$' "$STUB_DIR/goal-read-timeout")"
 check_eq "persistent timeout remains the original read error" 6 "$GOAL_RC"
 check_eq "persistent timeout leaves state intact" "$GOAL_BEFORE" "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+echo "== Atomic day startup reservation =="
+
+DAY_PRE="$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md"
+BLOCK_START_FRESH=$(extract_skill_bash "$DAY_PRE" pm-day-start-freshness) || exit 1
+BLOCK_START_OWNER=$(extract_skill_bash "$DAY_PRE" pm-day-start-ownership) || exit 1
+BLOCK_START_PUBLISH=$(extract_skill_bash "$DAY_ARM" pm-day-start-publish) || exit 1
+run_start() {
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    DAY_SNAPSHOT="$1" DAY_SNAPSHOT_RC=0 PMM_EXPECTED=false DAY_CADENCE_MIN=5 \
+    NOW=2026-01-01T00:00:00Z MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 \
+    bash -u -c "$BLOCK_START_OWNER"$'\n'"$2"
+}
+start_route() {
+  DAY_SNAPSHOT="$1" DAY_SNAPSHOT_RC=0 bash -u -c \
+    'date() { printf "%s\n" 1767225600; }'$'\n'"$BLOCK_START_FRESH"
+}
+
+START_INACTIVE='{"active":false,"goal":"retained"}'
+"$SESSION_STATE_SH" --set ".pmm_active=false" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_ATTEMPT='rc=0; pm_day_claim_start || rc=$?; printf "%s %s\n" "$rc" "$DAY_ARM_GENERATION"'
+run_start "$START_SNAPSHOT" "$START_ATTEMPT" > "$TMP_HOME/start-first.log" & START_FIRST_PID=$!
+run_start "$START_SNAPSHOT" "$START_ATTEMPT" > "$TMP_HOME/start-second.log" & START_SECOND_PID=$!
+wait "$START_FIRST_PID" || exit 1
+wait "$START_SECOND_PID" || exit 1
+check_eq "exactly one simultaneous day reservation wins" $'0\n7' \
+  "$(cut -d ' ' -f1 "$TMP_HOME/start-first.log" "$TMP_HOME/start-second.log" | sort)"
+START_WINNER=$(awk '$1 == 0 {print $2}' "$TMP_HOME/start-first.log" "$TMP_HOME/start-second.log")
+START_WINNER_DAY=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+check_eq "the loser leaves the winner and its empty task slot intact" \
+  "$START_WINNER null retained" \
+  "$(jq -r '[.monitor_generation, (.monitor_task_id | tostring), .goal] | join(" ")' <<< "$START_WINNER_DAY")"
+
+# A park can arrive after the normal route and before the startup claim.
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+"$SESSION_STATE_SH" --set "$DAY_PATH.parked_until=\"2026-01-01T00:10:00Z\"" \
+  --set "$DAY_PATH.limit_kind=\"rolling_window\"" >/dev/null
+PARK_AFTER_ROUTE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_LOST=$(run_start "$START_SNAPSHOT" "$START_ATTEMPT" | cut -d ' ' -f1)
+check_eq "a park created after normal routing defeats the claim" 7 "$START_LOST"
+check_eq "failed claim preserves the new park" "$PARK_AFTER_ROUTE" \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+START_STALE='{"active":true,"last_tick_at":"2025-12-31T23:40:00Z","cadence_effective_minutes":5,"goal":"retained"}'
+check_eq "a stale day is reclaimable" DAY_START_ROUTE=stale "$(start_route "$START_STALE")"
+check_eq "a widened cadence preserves a live day" DAY_START_ROUTE=live \
+  "$(start_route "$(jq -c '.cadence_effective_minutes=30' <<< "$START_STALE")")"
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_STALE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_RACE=$(run_start "$START_SNAPSHOT" 'pm_day_claim_start || exit $?
+  "$SESSION_STATE_SH" --set ".pmm_active=true" || exit $?
+  renewed=0; pm_day_renew_start || renewed=$?
+  pm_day_release_start || exit $?
+  printf "%s\n" "$renewed"')
+check_eq "stale recovery claims but a fleet conflict stops dispatch" 7 "$START_RACE"
+check_eq "fleet-conflict release keeps the saved goal" '[false,null,"retained"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.active,.monitor_generation,.goal]')"
+
+"$SESSION_STATE_SH" --set '.pmm_active=false' --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_REPLACED=$(run_start "$START_SNAPSHOT" 'pm_day_claim_start || exit $?
+  "$SESSION_STATE_SH" --set "$DAY_STATE_PATH.monitor_generation=\"new-owner\"" \
+    --set "$DAY_STATE_PATH.monitor_task_id=\"new-task\"" || exit $?
+  renew_rc=0; pm_day_renew_start || renew_rc=$?
+  release_rc=0; pm_day_release_start || release_rc=$?
+  printf "%s %s\n" "$renew_rc" "$release_rc"')
+check_eq "a replacement defeats both renewal and cleanup" "7 7" "$START_REPLACED"
+check_eq "replacement identity is preserved" '["new-owner","new-task"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.monitor_generation,.monitor_task_id]')"
+
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_INIT='pm_day_claim_start || exit $?
+  pm_day_renew_start || exit $?'$'\n'"$BLOCK_SAVED_GOAL"$'\n'"$BLOCK_GOAL_INIT"$'\n''[ "$INIT_RC" -eq 0 ] || exit "$INIT_RC"'
+START_PUBLISH=$(run_start "$START_SNAPSHOT" "$START_INIT"$'\n''MONITOR_TASK_ID=own-task'$'\n'"$BLOCK_START_PUBLISH"$'\n''printf "%s %s\n" "$PUBLISH_RC" "$DAY_GENERATION"')
+check_eq "the owned initialization publishes exactly its task and generation" \
+  "0 $("$SESSION_STATE_SH" --get "$DAY_PATH.monitor_generation")" "$START_PUBLISH"
+check_eq "the task and goal remain bound to the published day" '["own-task","retained"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.monitor_task_id,.goal]')"
+
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_AFTER_INIT=$(run_start "$START_SNAPSHOT" "$START_INIT"$'\n''
+  "$SESSION_STATE_SH" --set "$DAY_STATE_PATH.monitor_generation=\"new-owner\"" \
+    --set "$DAY_STATE_PATH.monitor_task_id=\"new-task\"" || exit $?
+  MONITOR_TASK_ID=own-task'$'\n'"$BLOCK_START_PUBLISH"$'\n''
+  release_rc=0; pm_day_release_start || release_rc=$?
+  printf "%s %s\n" "$PUBLISH_RC" "$release_rc"')
+check_eq "replacement between initialization and publication wins" '7 7' "$START_AFTER_INIT"
+check_eq "failed publication leaves the replacement wake untouched" '["new-owner","new-task"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.monitor_generation,.monitor_task_id]')"
 
 run_digest_case() {
   local prior_streak="$1" new_digest="$2" base="$3"

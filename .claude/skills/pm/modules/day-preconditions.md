@@ -14,7 +14,8 @@ NOW=$(date -u +%FT%TZ)
 
 ```bash
 PMM_RC=0
-PMM_ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active') || PMM_RC=$?
+PMM_EXPECTED=$("$SESSION_STATE_SH" --get-json '.pmm_active') || PMM_RC=$?
+if [ "$PMM_RC" -eq 3 ]; then PMM_EXPECTED=null; fi
 ```
 
 | `PMM_RC` | Value | Arm? |
@@ -22,26 +23,13 @@ PMM_ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active') || PMM_RC=$?
 | 0 | `true` | **No** — a fleet monitor is live |
 | 0 | `false` / `null` | Yes |
 | 3 | — | Yes — no state file has ever been written |
-| 4, 6, other | — | **No** — unreadable state is not permission |
+| 4, 6, other, or another value | — | **No** — unreadable state is not permission |
 
 When it refuses, say it in one line and stop: `Day mode and /pr-monitor-and-manage are the same lane — run /pmm-stop first, then /pm day.` A **paused** fleet (`pmm_active` false with `.pmm.paused_at` set) is not dispatching and does **not** block: arm, and say in the same heartbeat that the paused fleet stays paused and day mode now owns the PRs.
 
-**(b) Duplicate-day check, with a freshness window.** A day loop whose session died leaves `active: true` behind forever, and a naive check would then refuse to ever arm again. Borrow `/babysit-pr`'s A2 rule: `active` counts only while its last tick is fresh.
-
-Read all three fields **with their exit codes**, and never `|| echo` a default over a failure — a substituted value is indistinguishable from a real one, so a failed read would present itself as fact:
-
-```bash
-ACTIVE_RC=0; TICK_RC=0; EFF_RC=0
-DAY_ACTIVE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.active") || ACTIVE_RC=$?
-DAY_LAST_TICK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.last_tick_at") || TICK_RC=$?
-DAY_EFF_MIN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.cadence_effective_minutes") || EFF_RC=$?
-```
-
-Apply 3.4's exit-code table to each: `0` is the value, `3` means no state file has ever been written (genuinely absent — arm), and **anything else is unreadable state, so refuse to arm** and say the read failed. `DAY_EFF_MIN` is the one that most repays this care: defaulting it to `5` on a failed read shrinks the freshness window from `max(3 × 30, 15) = 90m` to `15m` for a loop running at a 30-minute widened cadence, so a live loop that ticked 20 minutes ago reads as dead and gets a second owner. A fabricated default does not merely lose information — it makes "we failed to look" indistinguishable from "nothing is there" (`safety.md` fail-closed posture).
-
-With three readable values: freshness window is `max(3 × cadence_effective_minutes, 15m)`. `active == true` **and** `last_tick_at` inside that window → a live loop is already running: refuse, one line, and name how to stop it (`say "stop"`). `active == true` with a stale — or unparseable, which is stale for this purpose — `last_tick_at` → the previous loop died with its session: **reclaim it**, say so in one line, and continue arming. Anything else → arm normally.
-
-**(b+) Session-restart during a usage-limit park.** After resolving the `active` / freshness question, take one `.day` snapshot for every park/wake-selection field and retain its exit code:
+**(b) Read the day once for duplicate detection and park selection.**
+Keep this snapshot for the claim in (c). A change after this read invalidates
+the claim. Recovery can also run the same snapshot block without claiming.
 
 <!-- test-anchor: pm-day-park-snapshot -->
 
@@ -97,9 +85,60 @@ PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; PARK_RESUME_GENERATION="$DAY_VALUE"; RESUME_GENERATION_RC="$DAY_RC"
 ```
 
-Classify that same snapshot before ordinary arming. A failed read can hide an
+On an arming invocation, run the duplicate-day check before the park route
+in (b+). A fresh active day already owns dispatch. A stale heartbeat allows
+recovery, including an old unparseable or absent heartbeat. An unreadable
+snapshot, malformed activity or cadence, or unavailable clock stops arming.
+
+<!-- test-anchor: pm-day-start-freshness -->
+
+```bash
+pm_day_start_route() {
+  local now
+  case "$DAY_SNAPSHOT_RC" in
+    3) printf '%s\n' inactive; return ;;
+    0) ;;
+    *) return 4 ;;
+  esac
+  now=$(date -u +%s) || return 4
+  [[ "$now" =~ ^[0-9]+$ ]] || return 4
+  jq -ers --argjson now "$now" '
+    select(length == 1) | .[0] |
+    if . == null then "inactive"
+    elif (.active | type) != "boolean" and .active != null then
+      error("invalid day activity")
+    elif .active != true then "inactive"
+    else
+      (.cadence_effective_minutes |
+        if . == null then 5
+        elif type == "string" then select(test("^[0-9]+$")) | tonumber
+        else . end |
+        select(type == "number" and . >= 0 and floor == .)
+      ) as $cadence |
+      (try (.last_tick_at | fromdateiso8601) catch null) as $last |
+      if $last == null or $now - $last > ([3 * $cadence, 15] | max) * 60 then "stale"
+      else "live" end
+    end' <<< "$DAY_SNAPSHOT"
+}
+DAY_START_ROUTE=$(pm_day_start_route) || DAY_START_ROUTE=unreadable
+printf 'DAY_START_ROUTE=%s\n' "$DAY_START_ROUTE"
+```
+
+For `live`, say a day loop is already running and name how to stop it
+(`say "stop"`). For `unreadable`, say the state or clock could not be read.
+For `stale`, report recovery and continue to (b+). For `inactive`, continue
+to (b+) normally. The freshness window is max(3 × effective cadence, 15m).
+A future heartbeat also holds ownership.
+
+**(b+) Session-restart during a usage-limit park.** Classify that same snapshot before ordinary arming. A failed read can hide an
 active park. The snapshot already retries a lock timeout once. The clock is
-needed only when the route depends on a deadline.
+needed only when the route depends on a deadline. A weekly park requires a
+successful explicit `/end-resume` for the same repository. Keep the typed
+weekly snapshot captured when asking the user to resume. On a later explicit
+arming invocation, supply that snapshot as `PM_DAY_WEEKLY_RESUMED_SNAPSHOT`
+only after verifying the manual resume succeeded for that park. The exact
+comparison leaves a replacement park alone. Automatic recovery leaves this
+input unset. A future or missing weekly deadline still holds.
 
 <!-- test-anchor: pm-day-park-route -->
 
@@ -112,6 +151,11 @@ pm_day_park_route() {
   done
 
   if [ "$PARK_CLAIM_TOKEN" != null ]; then echo manual:unfinished; return; fi
+  if [ "$PARK_LIMIT_KIND" = weekly ] &&
+      { [ "${PM_DAY_WEEKLY_RESUMED_SNAPSHOT:-}" != "$DAY_SNAPSHOT" ] || [ "$PARKED_UNTIL" = null ]; }; then
+    echo manual:weekly
+    return
+  fi
   case "$PARK_LIMIT_FIRES" in
     0) echo manual:spent; return ;;
     -1) echo manual:no-bound; return ;;
@@ -134,6 +178,8 @@ pm_day_park_route() {
     echo manual:unreadable
   elif [ "$deadline" -le "$now" ]; then
     echo normal
+  elif [ "$PARK_LIMIT_KIND" = weekly ]; then
+    echo manual:weekly
   elif [ "$PARK_LIMIT_KIND" = rolling_window ]; then
     echo recover:oneshot
   else
@@ -147,24 +193,78 @@ printf 'PARK_ROUTE=%s\n' "$PARK_ROUTE"
 Only `normal` continues to the day claim and Steps 1 and 2. For either
 `recover:*` route, use 2D.5's **Recover the captured wake** with the same
 `DAY_SNAPSHOT`, then stop this invocation without running Steps 1 and 2.
-Promise automatic resume only after the wake is published. For `manual:*`,
-retain the park, arm nothing, and name the reason and `/pause-resume` in one
-line. A saved positive preemptive bound holds through the nominal deadline:
+Promise automatic resume only after the wake is published. For
+`manual:weekly`, retain the park, arm nothing, and name `/end-resume`.
+For other `manual:*` routes, retain the park, arm nothing, and name the
+reason and `/pause-resume` in one line. A saved positive preemptive bound holds through the nominal deadline:
 wind-down can take time before the sleep-first probe starts. An unfinished
 claim, spent bound, or missing bound sentinel also takes precedence over
 deadline expiry.
 
-**(c) Settle the race before arming: publish, then re-read.** (a) and (b) are read-then-write across separate `session-state.sh` calls, so each call is locked but the pair is not: `/pm day` and `/pr-monitor-and-manage` starting within the same moment can each read the other as clear and both arm. Close it without inventing a lease — write your own claim **first**, then re-read theirs:
+**(c) Reserve one day dispatcher.** Only the `normal` park route can enter
+this step. Compare the whole observed day and the typed inactive fleet value
+in the same write. Publish a fresh heartbeat and the existing Monitor
+generation immediately. Leave its task slot empty until 2D.2 publishes the
+native ID. The reservation preserves the saved goal and other day fields.
 
-1. Write **only** `.repos[<key>].day.active=true` — a bare ownership claim, nothing else:
+<!-- test-anchor: pm-day-start-ownership -->
 
-   ```bash
-   "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.active=true"
-   ```
+```bash
+pm_day_claim_start() {
+  local prior now nonce
+  [[ "$REPO_KEY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 4
+  case "$DAY_SNAPSHOT_RC" in
+    0) prior="$DAY_SNAPSHOT" ;;
+    3) prior=null ;;
+    *) return 4 ;;
+  esac
+  case "$PMM_EXPECTED" in false|null) ;; *) return 4 ;; esac
+  now=$(date -u +%FT%TZ) || return 4
+  nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n') || return 4
+  [[ "$nonce" =~ ^[0-9a-f]{32}$ ]] || return 4
+  DAY_ARM_GENERATION="day-$nonce"
+  DAY_STATE_PATH=".repos[\"$REPO_KEY\"].day"
+  DAY_RESERVATION=$(jq -cn --argjson prior "$prior" --arg gen "$DAY_ARM_GENERATION" \
+    --arg now "$now" --argjson cadence "$DAY_CADENCE_MIN" '
+      ($prior // {}) | .active=true | .monitor_generation=$gen |
+      .monitor_task_id=null | .last_tick_at=$now | .cadence_effective_minutes=$cadence |
+      .stop_requested=false') || return 4
+  "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$DAY_RESERVATION" --expect "$prior" \
+    --expect-at '.pmm_active' "$PMM_EXPECTED"
+}
 
-   Not the full init object: that runs in 2D.2, after Steps 1 and 2, and it *replaces* the whole `day` object — writing it here would destroy any goal a previous run stored before 2D.2 gets the chance to read and carry it forward.
-2. **Re-read `.pmm_active`.** Still clear → you own the repo; continue (Steps 1 and 2, then 2D.2 arms the `Monitor`).
-3. Set → the fleet won the race: write `.repos[<key>].day.active=false` to release the claim, arm nothing, run no part of Step 1, and stand down with the same one-line message as (a).
+pm_day_renew_start() {
+  local now next
+  now=$(date -u +%FT%TZ) || return 4
+  next=$(jq -c --arg now "$now" '.last_tick_at=$now' <<< "$DAY_RESERVATION") || return 4
+  "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$next" --expect "$DAY_RESERVATION" \
+    --expect-at '.pmm_active' "$PMM_EXPECTED" || return $?
+  DAY_RESERVATION="$next"
+}
 
-Whoever writes second is guaranteed to see the other's claim, so this can never leave two owners. It *can* leave zero — both stand down if they interleave exactly — which is safe and re-runnable, and far cheaper than the lease protocol that would be needed to also guarantee a winner. `/pr-monitor-and-manage` Step 0-pre runs the mirror of this sequence.
+pm_day_release_start() {
+  local released
+  released=$(jq -c '.active=false | .monitor_generation=null | .last_tick_at=null' \
+    <<< "$DAY_RESERVATION") || return 4
+  "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$released" --expect "$DAY_RESERVATION"
+}
+```
+
+Run `pm_day_claim_start` once. A comparison loss means the state changed.
+Report that the start was skipped, and run no work or cleanup for that
+attempt. On any other failure, report the failed claim and stop.
+Do not rerun the claim against state you have not re-evaluated.
+
+After a successful claim, run `pm_day_renew_start` to recheck the fleet
+and your reservation. Run it again immediately before the arming turn
+dispatches from Step 1, even if ranking or cleanup took time. If either
+renewal fails, run `pm_day_release_start` once, report the conflict or
+unreadable state, and start no further work. A release comparison loss
+means the reservation changed and leaves it alone. The stale-heartbeat rule
+allows recovery of an interrupted reservation later. Report other release
+errors as unverified. The fleet still does its reciprocal read after its
+own claim.
+
+Carry `DAY_ARM_GENERATION`, `DAY_RESERVATION`, `DAY_STATE_PATH`,
+`PMM_EXPECTED`, and the release operation into 2D.2.
 

@@ -7,11 +7,14 @@ A day loop can outlive the context that armed it. After compaction, `monitor-mod
 
 **Also check the park record during recovery.** Run 2D.1(b+)'s
 `pm-day-park-route` against the same `DAY_SNAPSHOT` before reclaiming or
-re-arming any stale day loop. For `normal`, continue the ordinary day
-reconciliation. For either `recover:*` route, run **Recover the captured wake**
+re-arming any stale day loop. Leave `PM_DAY_WEEKLY_RESUMED_SNAPSHOT` unset here.
+For `normal`, continue ordinary day reconciliation. Before reclaiming
+or re-arming a stale loop, obtain the 2D.1(c) reservation against the
+observed snapshot after running the 2D.1 preamble and fleet gate (a). For either `recover:*` route, run **Recover the captured wake**
 below and stop ordinary recovery. A restart alone cannot prove a previous
-wake stopped. For `manual:*`, retain the park, arm nothing, and name the
-reason and `/pause-resume` in one line.
+wake stopped. For `manual:weekly`, retain the park, arm nothing, and name
+`/end-resume`. For other `manual:*` routes, retain the park, arm nothing,
+and name the reason and `/pause-resume` in one line.
 
 **Recover the captured wake.** Run the shared [captured wake recovery](../../../reference/pm-day-wake-recovery.md) steps. They use the original typed binding and the installed publisher. Keep the park and require manual resume if the wake or its owning session cannot be verified. Only a successful publication permits an automatic-resume promise.
 

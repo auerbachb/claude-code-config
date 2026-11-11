@@ -30,7 +30,7 @@ case "$PRIOR_GOAL_RC" in
 esac
 ```
 
-If `PRIOR_GOAL_RC` is neither `0` nor `3`, report that the saved goal could not be read and stop before initialization. Exit `3` means no state file. A stored JSON `null` means no saved goal. Retry a lock timeout (exit `6`) once, as documented in `handoff-files.md`. The saved JSON stays encoded so even a trailing newline or the literal word `null` survives.
+If `PRIOR_GOAL_RC` is neither `0` nor `3`, report that the saved goal could not be read and stop before initialization. Exit `3` means no state file. Initialization still requires the active reservation. A stored JSON `null` means no saved goal. Retry a lock timeout (exit `6`) once, as documented in `handoff-files.md`. The saved JSON stays encoded so even a trailing newline or the literal word `null` survives.
 
 Also read `PRIOR_HITS` before the init write so the thrash-guard counter can be carried forward across re-arms (2D.6). Use a lenient default on failure — an unreadable counter resets to 0 rather than blocking the arm:
 
@@ -47,34 +47,48 @@ Take `BUSINESS_GOAL` when supplied, otherwise the saved JSON. Build the whole da
 <!-- test-anchor: pm-day-arm-init -->
 ```bash
 INIT_RC=$PRIOR_GOAL_RC
-if [ "$INIT_RC" -eq 3 ]; then INIT_RC=0; fi
+if [ "$INIT_RC" -eq 0 ] &&
+    ! jq -e --arg gen "${DAY_ARM_GENERATION:-}" --argjson reserved "${DAY_RESERVATION:-null}" '
+      $gen != "" and . == $reserved and .active == true and
+      .stop_requested == false and .monitor_generation == $gen and .monitor_task_id == null
+    ' >/dev/null <<< "$PRIOR_DAY_JSON"; then
+  INIT_RC=7
+fi
 if [ "$INIT_RC" -eq 0 ]; then
-  DAY_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+  ARM_NOW=$(date -u +%FT%TZ) || INIT_RC=4
+fi
+if [ "$INIT_RC" -eq 0 ]; then
+  DAY_GENERATION="$DAY_ARM_GENERATION"
   DAY_JSON=$(jq -cn \
-    --arg now "$NOW" --arg new_goal "${BUSINESS_GOAL:-}" \
+    --arg now "$NOW" --arg heartbeat "$ARM_NOW" --arg generation "$DAY_GENERATION" --arg new_goal "${BUSINESS_GOAL:-}" \
     --argjson prior_goal "$PRIOR_GOAL_JSON" \
     --argjson base "$DAY_CADENCE_MIN" --argjson maxfail "$MAX_PIPELINE_FAILURES" \
     --argjson phits "$PRIOR_HITS" \
-    '{active:true, started_at:$now, last_tick_at:$now,
+    '{active:true, started_at:$now, last_tick_at:$heartbeat,
       cadence_base_minutes:$base, cadence_effective_minutes:$base,
       tick_count:0, digest:null, digest_streak:0,
       failure_streak:0, max_pipeline_failures:$maxfail,
       refill_halted:false, halt_reason:null, stop_requested:false,
-      monitor_task_id:null, monitor_generation:null, paused_at:null,
+      monitor_task_id:null, monitor_generation:$generation, paused_at:null,
       parked_until:null, limit_kind:null, park_generation:null,
       limit_resume_task_id:null, limit_resume_generation:null,
       consecutive_limit_hits:$phits,
       goal:(if $new_goal == "" then $prior_goal else $new_goal end)}') || INIT_RC=$?
 
   if [ "$INIT_RC" -eq 0 ]; then
-    "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$DAY_JSON" --expect "$PRIOR_DAY_JSON" || INIT_RC=$?
+    "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$DAY_JSON" --expect "$PRIOR_DAY_JSON" \
+      --expect-at '.pmm_active' "$PMM_EXPECTED" || INIT_RC=$?
   fi
 fi
+if [ "$INIT_RC" -eq 0 ]; then DAY_RESERVATION="$DAY_JSON"; fi
 ```
 
 The preamble validates the numeric arguments as unsigned integers before jq builds the state.
 
-**This write must succeed before anything is armed.** Exit `7` means the day state changed after the read. Keep that state, report that this arm did not start, and stop. Any other nonzero `INIT_RC` also stops before a Monitor is armed.
+**This write must succeed before anything is armed.** A changed reservation,
+a newer day update, a fleet conflict, or a failed read or write stops this
+attempt. Release only this invocation's unpublished reservation with
+`pm_day_release_start`, if it still matches. Report the failure and stop.
 
 Use the goal in `DAY_JSON` for the first heartbeat, and say when it was carried forward from a previous run rather than given this time — a resumed goal the user cannot see is one they cannot correct.
 
@@ -86,19 +100,27 @@ while sleep "$(( DAY_CADENCE_MIN * 60 ))"; do
 done
 ```
 
-Record the returned task ID **immediately** — an unrecorded Monitor cannot be stopped, so a day loop with no recorded ID is one nothing can turn off:
+Record the returned task ID immediately under the same active reservation.
+
+<!-- test-anchor: pm-day-start-publish -->
 
 ```bash
+pm_day_publish_start() {
+  local published
+  [[ -n "${MONITOR_TASK_ID:-}" && "$MONITOR_TASK_ID" != null ]] || return 4
+  published=$(jq -c --arg task "$MONITOR_TASK_ID" '.monitor_task_id=$task' \
+    <<< "$DAY_RESERVATION") || return 4
+  "$SESSION_STATE_SH" --cas "$DAY_STATE_PATH=$published" --expect "$DAY_RESERVATION" \
+    --expect-at '.pmm_active' "$PMM_EXPECTED"
+}
 PUBLISH_RC=0
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].day.monitor_task_id=$MONITOR_TASK_ID" \
-  --set ".repos[\"$REPO_KEY\"].day.monitor_generation=\"$DAY_GENERATION\"" || PUBLISH_RC=$?
+pm_day_publish_start || PUBLISH_RC=$?
 ```
 
-**Check that write's exit code — do not assume it landed.** The two failures need opposite handling and both end with day mode reported as not running:
-
-- **Arming failed** (no task ID): roll the state back — `active=false`, `last_tick_at=null`, both identity fields `null`.
-- **Arming succeeded but the publish failed** (`PUBLISH_RC` non-zero): a Monitor is now running that state does not know about, so **`TaskStop` it using the ID you hold in hand right now**, then roll back the same fields. That ID exists only in this shell; letting the turn end without using it strands a live Monitor re-invoking `/pm day --tick` on a repo with no `day` state, forever, with nothing left that can name it to `TaskStop`. If the `TaskStop` also fails, say so explicitly and name the task ID in the message so a human can stop it — a stranded loop the user cannot see is strictly worse than one they can.
+- If arming failed, release only this invocation's unpublished reservation.
+- If publication failed, stop only the native task returned by this attempt,
+  then release only the unpublished reservation still owned by this attempt.
+  Leave a replacement record untouched. Name the task ID if the stop failed.
 
 Either way, tell the user day mode is not running: a thread that believes it armed and did not is the silent-watcher failure `scheduling-reliability.md` exists to prevent. The pipelines Step 1 already started keep running; they just have no between-turn loop.
 
