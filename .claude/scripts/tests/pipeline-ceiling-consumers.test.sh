@@ -32,6 +32,10 @@ reject_pattern() {
 
 SUBAGENT=.claude/skills/subagent/SKILL.md
 PM=.claude/skills/pm/SKILL.md
+PM_RANK_PRESENT=.claude/skills/pm/modules/rank/present.md
+PM_RANK_SCORE=.claude/skills/pm/modules/rank/score.md
+PM_WINDOW_FIT=.claude/skills/pm/modules/shared/window-fit.md
+PM_OWNERSHIP=.claude/skills/pm/modules/shared/ownership.md
 WAVE=.claude/skills/wave/SKILL.md
 FORGOTTEN=.claude/skills/pm-forgotten-pr/SKILL.md
 
@@ -56,7 +60,7 @@ ok "/subagent, /pm, /wave, and /pm-forgotten-pr resolve the ceiling from active-
 # `CEILING    = <n>` (spaces around `=`, which no shell assignment has), is not.
 # /pm-forgotten-pr's merge dispatch honours the same ceiling, so it is held to
 # the literal checks too.
-for FILE in "$SUBAGENT" "$PM" "$WAVE" "$FORGOTTEN"; do
+for FILE in "$SUBAGENT" "$PM" "$PM_RANK_PRESENT" "$PM_RANK_SCORE" "$PM_WINDOW_FIT" "$WAVE" "$FORGOTTEN"; do
   reject_pattern "$FILE" '3(–|-)4 (concurrent|pipeline|ceiling|active|slots?|parallel|band)' \
     "$FILE still hard-codes the 3–4 band"
   reject_pattern "$FILE" 'CEILING[[:space:]]+=[[:space:]]*[0-9]' \
@@ -72,21 +76,23 @@ require_text "$FORGOTTEN" 'min(PIPELINE_CEILING, ACTIVE_WORK_CAP)' \
   '/pm-forgotten-pr merge dispatch must launch up to min(PIPELINE_CEILING, ACTIVE_WORK_CAP)'
 require_text "$FORGOTTEN" '`--cap`' \
   '/pm-forgotten-pr must read the cap as well as the ceiling'
-require_text "$PM" 'up to the **`LIMIT` concurrent-pipeline** limit' \
+require_text "$PM_RANK_PRESENT" 'up to the **`LIMIT` concurrent-pipeline** limit' \
   '/pm launch guidance must fill up to Step 0 LIMIT'
 require_text "$PM" 'below the effective limit (`LIMIT`, Step 0)' \
   '/pm 3.4 refill must trigger below Step 0 LIMIT'
 require_text "$PM" '1-of-{LIMIT}' \
   '/pm 3.4 must describe an under-filled board against LIMIT'
-reject_pattern "$PM" 'up to the \*\*`CEILING`' \
-  '/pm must launch up to Step 0 LIMIT, not the raw CEILING'
+for FILE in "$PM" "$PM_RANK_PRESENT"; do
+  reject_pattern "$FILE" 'up to the \*\*`CEILING`' \
+    '/pm must launch up to Step 0 LIMIT, not the raw CEILING'
+done
 reject_pattern "$PM" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
   '/pm 3.4 refill must trigger below Step 0 LIMIT, not the raw CEILING'
 ok "/pm and /pm-forgotten-pr launch up to min(CEILING, CAP), not the raw ceiling"
 
 # --- the short recommendation list cannot become the cold-start batch ---
-PM_SHORTLIST=$(sed -n '/^### 1B\.3:/,/^### 1B\.4:/p' "$ROOT/$PM")
-PM_BATCH=$(sed -n '/^### 1B\.5:/,/^### 1C:/p' "$ROOT/$PM")
+PM_SHORTLIST=$(sed -n '/^### 1B\.3:/,/^### 1B\.4:/p' "$ROOT/$PM_RANK_SCORE")
+PM_BATCH=$(cat "$ROOT/$PM_RANK_PRESENT" "$ROOT/$PM_WINDOW_FIT" "$ROOT/$PM_OWNERSHIP")
 PM_LAUNCH=$(sed -n '/^### 3\.1:/,/^### 3\.2:/p' "$ROOT/$PM")
 
 [[ "$PM_SHORTLIST" == *'shortlist the top `max(20, 2 × LIMIT)`'* ]] \
