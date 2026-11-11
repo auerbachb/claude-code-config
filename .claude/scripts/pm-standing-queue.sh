@@ -64,7 +64,7 @@ request=$(jq -cse -L "$scripts/lib" --argjson limit "$limit" '
 jq -e --argjson record "$record" '.expect == $record' <<<"$request" >/dev/null ||
   fail 7 'standing queue changed; re-read it before the next evaluation'
 issues=$(jq -c '.issues' <<<"$request")
-if jq -e --argjson issues "$issues" '(.issues // []) == $issues' <<<"$record" >/dev/null; then
+if jq -e --argjson issues "$issues" '. != null and .issues == $issues' <<<"$record" >/dev/null; then
   printf '%s\n' "$record"
   exit 0
 fi

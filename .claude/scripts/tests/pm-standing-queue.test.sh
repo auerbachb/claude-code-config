@@ -152,6 +152,13 @@ class StandingQueue(unittest.TestCase):
         self.assertEqual(self.queue("read", session="sibling"), sibling)
         self.assertEqual(self.queue("read", repo="foreign/elsewhere"), foreign)
 
+    def test_retire_absent_plan_blocks_a_stale_first_writer(self):
+        self.assertIsNone(self.queue("read"))
+        retired = self.save([])
+        self.assertEqual(retired["issues"], [])
+        self.save(["7"], expect=None, expect_rc=7)
+        self.assertEqual(self.queue("read"), retired)
+
     def test_malformed_queue_and_invalid_scope_never_mutate_state(self):
         self.save(["7", "8"])
         before = self.state.read_bytes()
