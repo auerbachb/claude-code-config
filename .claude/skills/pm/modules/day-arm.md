@@ -117,6 +117,9 @@ PUBLISH_RC=0
 pm_day_publish_start || PUBLISH_RC=$?
 ```
 
+Check that write's exit code before entering the immediate tick. A nonzero
+`PUBLISH_RC` takes the publication failure path.
+
 - If arming failed, release only this invocation's unpublished reservation.
 - If publication failed, stop only the native task returned by this attempt,
   then release only the unpublished reservation still owned by this attempt.
