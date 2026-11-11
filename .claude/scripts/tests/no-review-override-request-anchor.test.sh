@@ -3,6 +3,7 @@
 # anchor in no-review-override.sh (issue #2194). Drives the helper directly with
 # a fake gh; the helper runs under the same bash that runs this file. Run under
 # /bin/bash (3.2) and a 5.x bash.
+# catalog: tests — Tests the review-request anchor of the no-review override in `no-review-override.sh` — anchor selection, fallbacks, window timing
 # Run from repo root: bash .claude/scripts/tests/no-review-override-request-anchor.test.sh
 set -uo pipefail
 
