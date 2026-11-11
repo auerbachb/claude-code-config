@@ -108,4 +108,29 @@ probe_fire=$(grep -nF '<!-- test-anchor: pm-day-2d7-probe-fire -->' "$probe" | c
 [[ "$probe_horizon" -lt "$probe_fire" ]]
 extract_skill_bash "$tick" pm-day-d2-horizon-branch > "$scratch/probe-horizon"
 [[ -s "$scratch/probe-horizon" ]]
+launch="$skill/modules/flow/launch.md"
+budget=$(extract_skill_bash "$launch" pm-initial-launch-credit-budget)
+budget_dir="$scratch/budget-project"
+mkdir -p "$budget_dir/.claude/scripts"
+budget_check="$budget_dir/.claude/scripts/credit-budget.sh"
+cat > "$budget_check" <<'BUDGET'
+#!/usr/bin/env bash
+[ "$#" -eq 1 ] && [ "$1" = --check ] || exit 3
+exit "$FIXTURE_BUDGET_RC"
+BUDGET
+chmod +x "$budget_check"
+check_budget() {
+  local rc="$1" explicit="$2" expected="$3"
+  [[ "$(cd "$budget_dir" && env -u HOME FIXTURE_BUDGET_RC="$rc" \
+    PM_INITIAL_USER_DIRECTED="$explicit" "$BASH" -u -c "$budget")" == "PM_INITIAL_BUDGET=$expected" ]]
+}
+check_budget 0 false ok
+check_budget 1 false reached
+check_budget 2 false unknown
+check_budget 3 false unknown
+check_budget 1 true explicit-override
+rm -f "$budget_check"
+check_budget 0 false unknown
+grep -Fq 'Initial 1B.5 dispatch checks the credit budget in flow:launch' "$skill/SKILL.md"
+
 printf '%s\n' 'PM module routes: 26 operation/phase pairs, invalid/missing guards, installed symlink and unset-HOME fallback'

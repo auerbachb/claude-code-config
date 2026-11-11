@@ -1,5 +1,7 @@
 <!-- pm-routing:begin -->
 Evaluate available capacity using the existing persisted pause, scope, and admission gates.
+Before promoting a pick, check the current persisted window through
+shared:window-fit even on a tick with no window flag.
 <!-- pm-routing:end -->
 
 **The trigger is available capacity, not a finish.** On every monitor tick (`monitor-mode.md` per-cycle checklist), count your own running pipelines. Any time that count is below the effective limit (`LIMIT`, Step 0) — a slot that just freed **or one that was never filled**, because the first batch was small or earlier picks got filtered out — refill on that tick, with no completion event and no user message in between. Sitting at 1-of-{LIMIT} with an empty queue is a defect, not a resting state. This is the scoped default granted by `CLAUDE.md` "KEEP THE PIPELINE FULL"; only a live in-chat stop pauses it (Execution Boundary).

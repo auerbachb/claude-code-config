@@ -1,5 +1,39 @@
 <!-- pm-routing:begin -->
 Start the selected eligible work only after the universal launch gates.
+For an initial batch from 1B.5, including a day arming turn, check the
+authoritative credit budget immediately before delegating a new launch.
+Use the same helper as 3.4. Set `PM_INITIAL_USER_DIRECTED=true` only for work
+explicitly named for launch by the user in chat. The default batch is
+autonomous. Refill uses its existing 3.4 gate.
+
+<!-- test-anchor: pm-initial-launch-credit-budget -->
+```bash
+PM_INITIAL_BUDGET=unknown
+for candidate in \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/credit-budget.sh}" \
+  "${HOME:+$HOME/.claude/scripts/credit-budget.sh}" \
+  ".claude/scripts/credit-budget.sh"; do
+  if [ -x "$candidate" ]; then
+    CREDIT_RC=0
+    "$candidate" --check >/dev/null || CREDIT_RC=$?
+    case "$CREDIT_RC" in
+      0) PM_INITIAL_BUDGET=ok ;;
+      1) PM_INITIAL_BUDGET=reached ;;
+    esac
+    break
+  fi
+done
+if [ "$PM_INITIAL_BUDGET" != ok ] && [ "${PM_INITIAL_USER_DIRECTED:-false}" = true ]; then
+  PM_INITIAL_BUDGET=explicit-override
+fi
+printf 'PM_INITIAL_BUDGET=%s\n' "$PM_INITIAL_BUDGET"
+```
+
+Proceed on `ok`. On `explicit-override`, use the existing
+`[budget spent/unknown today] Proceeding at your request.` note once.
+On `reached` or `unknown`, report the corresponding budget hold and
+start no new pipeline from this batch. Keep the ranked plan and finish
+already-running work.
 <!-- pm-routing:end -->
 
 On cold start, only surviving `BATCH_ISSUES` are eligible for immediate inline launch. Keep ranked overflow in the unclaimed standing queue for 3.4. Before an overflow pick can launch, 3.4 revalidates it, including the ownership sweep and current gates. Apply the existing thread-prompt and decomposition paths to the separately routed picks.

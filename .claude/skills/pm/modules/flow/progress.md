@@ -34,6 +34,12 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 
 <!-- pm-routing:begin -->
 Use the progress module's board section at its explicit or due gate.
+The normal /board path uses its own Step 5 freshness record. Only the
+inline fallback uses the local record below. Count confirmed running rows
+and queued rows. If no row is confirmed or queued and the fallback shows
+an unconfirmed Phase A, leave the previous freshness record alone and
+report the unknown liveness once. Supply a zero count only when a drained
+round is independently established.
 <!-- pm-routing:end -->
 
 **When a progress render is requested or due, use the canonical "Running now" table** — the column set and cell semantics in `.claude/reference/time-estimates.md` §"Running now Table", covering the whole round in execution order with queued rows carrying `—` in all three clock columns. Never a bulleted list, never a per-pipeline prose readout, and never a second table shape of `/pm`'s own.
