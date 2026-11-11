@@ -386,8 +386,12 @@ render() {
   mkdir -p "$TMP/w"
   rm -f "$TMP/log"/*
   env HUMAN_QUEUE_DATABASE_URL="$BLACKHOLE_URL" STUB_LOG="$TMP/log" "$@" bash -c '
-    HQ_BIN_DIR="$1"; . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/export.sh"
-    rc=0; hq_export_pdf used "$2/r.md" "$2/r.txt" "$2/r.html" "$2/w/out.pdf" "$2/w" "${TEST_TEX_HEADER:-}" || rc=$?
+    HQ_BIN_DIR="$1"; HQ_DESK_DIR="${HQ_BIN_DIR%/bin}"
+    . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/github.sh"; . "$HQ_BIN_DIR/lib/export.sh"
+    hq_jq_find || exit 1
+    data=""
+    if [ -n "${TEST_EXPORT_DATA:-}" ]; then data=$(cat "$TEST_EXPORT_DATA") || exit 1; fi
+    rc=0; hq_export_pdf used "$2/r.md" "$2/r.txt" "$2/r.html" "$2/w/out.pdf" "$2/w" "$data" || rc=$?
     printf "%s %s | %s\n" "$rc" "${used:--}" "$HQ_EXPORT_TRIED"' _ "$BIN" "$TMP"
 }
 printf '%s' "$MD" > "$TMP/r.md"
@@ -396,12 +400,13 @@ printf '%s' "$HTML" > "$TMP/r.html"
 P="$STUBS/pandoc" C="$STUBS/chrome" U="$STUBS/cupsfilter"
 
 check "pandoc first" "$(render HUMAN_QUEUE_PANDOC="$P" HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER="$U")" "0 pandoc | "
-printf '%s\n' "$HEADER" > "$TMP/footer header.tex"
-check_absent "pandoc without a header preserves its argument list" "$(cat "$TMP/log/pandoc.args")" "--include-in-header"
-check "pandoc with a header renders" \
-  "$(render HUMAN_QUEUE_PANDOC="$P" TEST_TEX_HEADER="$TMP/footer header.tex")" "0 pandoc | "
-check_contains "pandoc receives the generated header path" "$(cat "$TMP/log/pandoc.args")" "--include-in-header=$TMP/footer header.tex"
-check "pandoc gets the Markdown" "$(sed 's/.*--output [^ ]* //' "$TMP/log/pandoc.args")" "$TMP/r.md"
+check_absent "pandoc without batch data preserves its argument list" "$(cat "$TMP/log/pandoc.args")" "--include-in-header"
+check "pandoc gets the supplied Markdown when no batch was given" "$(sed 's/.*--output [^ ]* //' "$TMP/log/pandoc.args")" "$TMP/r.md"
+check "pandoc with batch data renders" \
+  "$(render HUMAN_QUEUE_PANDOC="$P" TEST_EXPORT_DATA="$FIX/batch.json")" "0 pandoc | "
+check_contains "pandoc receives the generated header path" "$(cat "$TMP/log/pandoc.args")" "--include-in-header=$TMP/w/export-header.tex"
+check "pandoc receives its generated Markdown" "$(sed 's/.*--output [^ ]* //' "$TMP/log/pandoc.args")" "$TMP/w/pandoc.md"
+check "pandoc header is generated from the batch" "$(cat "$TMP/w/export-header.tex")" "$HEADER"
 check_contains "pandoc reads raw TeX, HTML, attributes, YAML blocks, and math as text, without smart punctuation" "$(cat "$TMP/log/pandoc.args")" \
   "--from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars-smart "
 check "pandoc: its temp files in the scratch directory" "$(cat "$TMP/log/pandoc.tmp")" "$TMP/w/tmp $TMP/w/tmp"
@@ -410,6 +415,14 @@ check "the store's URL never reaches a renderer" "$(cat "$TMP/log/pandoc.env")" 
 check "a failing renderer falls through to the next" \
   "$(render STUB_MODE=fail HUMAN_QUEUE_PANDOC="$P" HUMAN_QUEUE_CHROME="$P" HUMAN_QUEUE_CUPSFILTER="$U")" \
   "1 - | pandoc: exit 3; chrome: exit 3; cupsfilter: exit 3"
+printf '%s\n' '{invalid json' > "$TMP/invalid-batch.json"
+check "Pandoc input preparation failure falls through to Chrome" \
+  "$(render HUMAN_QUEUE_PANDOC="$P" HUMAN_QUEUE_CHROME="$C" TEST_EXPORT_DATA="$TMP/invalid-batch.json")" \
+  "0 chrome | pandoc preparation: exit 1"
+check "forced Chrome does not prepare Pandoc input" \
+  "$(render HUMAN_QUEUE_EXPORT_RENDERER=chrome HUMAN_QUEUE_CHROME="$C" TEST_EXPORT_DATA="$TMP/invalid-batch.json")" \
+  "0 chrome | "
+if [ -e "$TMP/w/pandoc.md" ]; then bad "forced Chrome made a Pandoc file"; else ok "forced Chrome made no Pandoc file"; fi
 check "pandoc not installed: Chrome" "$(render HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER="$U")" \
   "0 chrome | pandoc: not installed"
 ARGS=$(cat "$TMP/log/chrome.args")
@@ -496,10 +509,8 @@ fi
 if [ -n "$PANDOC_TEST" ] && [ -n "$PDFTOTEXT" ]; then
   jq '.items |= [range(4) as $copy | .[] | .n += 5 * $copy]
       | .count = (.items | length)' "$FIX/batch.json" > "$TMP/multipage.json"
-  ejq export_pandoc_markdown "$TMP/multipage.json" > "$TMP/r.md"
-  ejq export_tex_header "$TMP/multipage.json" > "$TMP/footer header.tex"
   check "real pandoc: a PDF" \
-    "$(render HUMAN_QUEUE_EXPORT_RENDERER=pandoc HUMAN_QUEUE_PANDOC="$PANDOC_TEST" TEST_TEX_HEADER="$TMP/footer header.tex")" "0 pandoc | "
+    "$(render HUMAN_QUEUE_EXPORT_RENDERER=pandoc HUMAN_QUEUE_PANDOC="$PANDOC_TEST" TEST_EXPORT_DATA="$TMP/multipage.json")" "0 pandoc | "
   if "$PDFTOTEXT" -layout "$TMP/w/out.pdf" "$TMP/pages.txt"; then
     pages=$(tr -cd '\f' < "$TMP/pages.txt" | wc -c | tr -d ' ')
     if [ "$pages" -ge 3 ]; then ok "real pandoc: at least three pages"; else bad "real pandoc: expected at least three pages"; fi
@@ -542,7 +553,6 @@ PYBOUNDS
   else
     bad "real pandoc: could not extract writing-line coordinates"
   fi
-  printf '%s' "$MD" > "$TMP/r.md"
 else
   echo "NOTICE: pandoc with a PDF engine or pdftotext unavailable — multipage check skipped"
 fi
