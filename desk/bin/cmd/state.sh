@@ -15,7 +15,7 @@ HQ_STATE_VALUE_MAX=65536
 # text can exceed that, so the UTF-8 size is capped too, with room to spare.
 HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
-HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt plan eod_sweep checkin checkin_asked"
+HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt plan eod_sweep checkin checkin_asked mobile_answers_imported"
 
 cmd_usage() {
   cat <<'EOF'
@@ -45,6 +45,7 @@ RESERVED KEYS (readable with get; `set` refuses them)
                    written by `sweep due`
   checkin          today's morning check-in and reading budget (JSON);
                    written by `checkin set`
+  mobile_answers_imported  set once when a mobile answer is accepted
   checkin_asked    the day the morning check-in was last due (YYYY-MM-DD);
                    written by `checkin due`
   tick_watermark   the snapshot the last `tick` read under; written by tick
@@ -162,6 +163,7 @@ cmd_run() {
         eod_sweep) hq_die_validation "state set: eod_sweep is reserved: only sweep due writes it" ;;
         checkin) hq_die_validation "state set: checkin is reserved: use checkin set" ;;
         checkin_asked) hq_die_validation "state set: checkin_asked is reserved: only checkin due writes it" ;;
+        mobile_answers_imported) hq_die_validation "state set: $key is reserved: only mobile-reply writes it" ;;
         *) hq_die_validation "state set: control_session is reserved: use register-control" ;;
       esac
     fi

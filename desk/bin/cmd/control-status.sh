@@ -75,6 +75,8 @@ SELECT jsonb_build_object(
          'session', session,
          'last_tick_at', to_char(tick_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
          'tick_age_seconds', age)
+       || CASE WHEN EXISTS (SELECT 1 FROM state WHERE key = 'mobile_answers_imported')
+               THEN '{"mobile_answers_imported":true}'::jsonb ELSE '{}'::jsonb END
   FROM a;
 SQL
   else
