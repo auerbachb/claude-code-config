@@ -144,6 +144,16 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 - **PIPELINE_CEILING** — per-thread concurrent-pipeline ceiling for `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch. Positive integer in **[1, 20]**, **default 4**; same silent-when-absent, warn-when-invalid fallback. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `active-work-cap.sh --ceiling`. Uncomment it only in a repo that should run wider (or narrower) than the default.
 - Governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)` — the cap never raises a thread's own pipeline band, and the ceiling never raises the cap: running 10 wide means raising both.
 
+## Reporting
+
+```yaml
+report_every_min: 0
+```
+
+Set a positive number of minutes to receive changed-board reports from `/pm`
+and immediate reports on merged or blocked outcomes. Zero or an absent
+section keeps decision-only output. An explicit status request always works.
+
 ## Budget
 
 ```ini
