@@ -27,7 +27,15 @@
 # Usage (CI or local, runnable from anywhere):
 #   bash .github/scripts/run-hook-tests.sh            # human/CI folds (default)
 #   bash .github/scripts/run-hook-tests.sh --json     # compact result contract
+#   bash .github/scripts/run-hook-tests.sh --only-file <file>   # run only the selected suites
 #   bash .github/scripts/run-hook-tests.sh --help
+#
+# --only-file <file> (issue #2153): the file is the output of
+# .github/scripts/select-hook-tests.sh. A line `ALL` runs every suite, exactly as with no
+# argument. Otherwise only the suite paths listed in the file run; `# ...` lines are
+# comments. A file without the selector's `# end-of-selection` terminator was cut short
+# and runs ALL. An empty selection runs nothing and exits 0 with a summary that says so.
+# An unreadable file is a usage error (exit 2), never a silent full or empty run.
 #
 # --json (issue #782): emits the compact result contract from
 # .claude/reference/compact-result-contract.md as the ONLY thing on stdout:
@@ -47,7 +55,7 @@
 # Exit codes:
 #   0  every discovered suite passed
 #   1  one or more suites failed
-#   2  usage error (unknown flag)
+#   2  usage error (unknown flag, or an unreadable --only-file)
 #   3  discovery found no suites — a glob is broken (issue #681); never a silent green
 #
 # Not `set -e`: the loop deliberately runs every suite and aggregates failures
@@ -56,9 +64,15 @@ set -uo pipefail
 shopt -s nullglob
 
 JSON=0
+ONLY_FILE=""
+ONLY_FILE_GIVEN=0   # distinguishes "--only-file given (maybe empty)" from "not given"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
+    --only-file)
+      [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --only-file needs a path" >&2; exit 2; }
+      ONLY_FILE="$2"; ONLY_FILE_GIVEN=1; shift 2
+      ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
         { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
@@ -70,6 +84,43 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# Read the selection before the cd below, so a relative --only-file path still resolves
+# against the caller's directory.
+SELECT_MODE=0
+SELECTION=""
+SEL_ALL=0
+SEL_REASON=""
+if [ "$ONLY_FILE_GIVEN" -eq 1 ]; then
+  # An explicitly empty path is an unreadable selection, never a silent full run.
+  [ -n "$ONLY_FILE" ] || { echo "::error::run-hook-tests.sh: --only-file was given an empty path" >&2; exit 2; }
+  SELECT_MODE=1
+  SELECTION="$(cat -- "$ONLY_FILE" 2>/dev/null)" || {
+    echo "::error::run-hook-tests.sh: cannot read --only-file: $ONLY_FILE" >&2
+    exit 2
+  }
+  SEL_REASON="$(printf '%s\n' "$SELECTION" | awk '/^# reason: / { sub(/^# reason: /, ""); print; exit }')"
+  # The selector always writes a `# reason:` header. Its absence means an empty or
+  # truncated file, which must never pass as an explained zero-run.
+  if ! grep -q '^# reason: ' <<<"$SELECTION"; then
+    echo "::error::run-hook-tests.sh: --only-file has no '# reason:' header (empty or truncated?): $ONLY_FILE" >&2
+    exit 2
+  fi
+  if grep -Fxq 'ALL' <<<"$SELECTION"; then SEL_ALL=1; fi
+  # The selector ends every selection with its terminator. A file without it was cut
+  # short by a failed write, so run every suite rather than trust a partial list.
+  if ! grep -Fxq '# end-of-selection' <<<"$SELECTION"; then
+    echo "::warning::run-hook-tests.sh: --only-file has no '# end-of-selection' terminator (truncated?): running ALL" >&2
+    SEL_ALL=1
+    SEL_REASON="truncated selection file: full run"
+  fi
+fi
+
+# A suite runs when no selection was given, the selection is ALL, or it is listed.
+is_selected() {
+  if [ "$SELECT_MODE" -eq 0 ] || [ "$SEL_ALL" -eq 1 ]; then return 0; fi
+  grep -Fxq -- "$1" <<<"$SELECTION"
+}
 
 # Resolve to the repo root regardless of caller cwd so the globs below resolve.
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || {
@@ -92,12 +143,19 @@ trap cleanup EXIT
 
 failed=0
 total=0
+discovered=0
+skipped=0
 FAILED_LIST=""
 RELEVANT=""
 for t in .claude/hooks/tests/*.test.sh \
          .claude/scripts/tests/*.test.sh \
          .github/scripts/tests/*.test.sh \
          desk/tests/*.test.sh; do
+  discovered=$((discovered + 1))
+  if ! is_selected "$t"; then
+    skipped=$((skipped + 1))
+    continue
+  fi
   total=$((total + 1))
   rc=0
   # Parse-check BEFORE running (issue #1675). A suite that does not parse still
@@ -158,11 +216,18 @@ for t in .claude/hooks/tests/*.test.sh \
   fi
 done
 
-say "$(printf '\nDiscovered and ran %s bash test suite(s); %s failed.\nFull output: %s' "$total" "$failed" "$LOG")"
+if [ "$SELECT_MODE" -eq 0 ]; then
+  say "$(printf '\nDiscovered and ran %s bash test suite(s); %s failed.\nFull output: %s' "$total" "$failed" "$LOG")"
+elif [ "$total" -eq 0 ]; then
+  say "$(printf '\nNo bash test suites selected (%s); none run, %s discovered.\nFull output: %s' "$SEL_REASON" "$discovered" "$LOG")"
+else
+  say "$(printf '\nSelected and ran %s of %s bash test suite(s) (%s); %s failed.\nFull output: %s' "$total" "$discovered" "$SEL_REASON" "$failed" "$LOG")"
+fi
 
 # Fail loud if discovery found nothing — a silently-empty run must never pass
-# green and masquerade as "all tests passed" (issue #681).
-if [ "$total" -eq 0 ]; then
+# green and masquerade as "all tests passed" (issue #681). Judged on discovery,
+# not the selection: an empty selection is a legitimate, explained zero-run.
+if [ "$discovered" -eq 0 ]; then
   if [ "$JSON" -eq 1 ]; then
     jq -cn --arg log "$LOG" \
       '{ok: false, failed_tests: [], relevant_error: "run-hook-tests.sh discovered no test suites — a glob is broken", log_path: $log, total: 0, failed: 0}'
@@ -178,6 +243,12 @@ if [ "$JSON" -eq 1 ]; then
   # A suite can fail without printing any recognized marker (e.g. a bare non-zero
   # exit). Naming it is still better than a null error.
   [ -n "$RELEVANT" ] || RELEVANT="$(printf '%s' "$FAILED_LIST" | sed '/^$/d' | sed 's/^/failed suite: /' | head -n 20)"
+  # Selection fields appear only when --only-file was given; without it the shape is unchanged.
+  EXTRA_JSON='{}'
+  if [ "$SELECT_MODE" -eq 1 ]; then
+    EXTRA_JSON="$(jq -cn --arg r "$SEL_REASON" --argjson d "$discovered" --argjson s "$skipped" \
+      '{selection: $r, discovered: $d, skipped: $s}')"
+  fi
   jq -cn \
     --argjson ok "$( [ "$failed" -eq 0 ] && echo true || echo false )" \
     --arg failed_list "$FAILED_LIST" \
@@ -185,10 +256,11 @@ if [ "$JSON" -eq 1 ]; then
     --arg log "$LOG" \
     --argjson total "$total" \
     --argjson failed "$failed" \
+    --argjson extra "$EXTRA_JSON" \
     '{ok: $ok,
       failed_tests: ($failed_list | split("\n") | map(select(length > 0))),
       relevant_error: (if $relevant == "" then null else $relevant end),
-      log_path: $log, total: $total, failed: $failed}'
+      log_path: $log, total: $total, failed: $failed} + $extra'
 fi
 
 [ "$failed" -eq 0 ]
