@@ -92,6 +92,15 @@ shopt -s nullglob
 #  - .claude/scripts/tests/pr-state-stdout.test.sh: counts /tmp/pr-state-7-* entries, and
 #    pr-state.sh writes its output under a fixed /tmp prefix, not TMPDIR, so a concurrent
 #    suite that runs pr-state.sh for the same PR number would change the count.
+#  - Wall-clock bounds of 10 s or less (issue #2200 review): a suite that measures an elapsed time
+#    against a limit of 10 s or less, or runs a subprocess under a 10 s or shorter deadline, reports
+#    a false failure when the pool is loaded. Covered: pause-lifecycle-hooks (lock contention under
+#    5 s), ai-account-session-start (hook latency under 1 s), bounded-run (a 4 s bound inside 7 s),
+#    help-output (--help returns inside 10 s), the 2-10 s subprocess deadlines in ac-checkboxes,
+#    ai-account-ledger, estimate-log/rounds-bash, park-wake-publish, pmm-pre-dispatch,
+#    register-hooks, spend-telemetry-maintenance, spend-telemetry-tracker and workspace-sweep, and
+#    the 1-5 s desk deadlines in capture-offline, drilldown-offline, migrate, psql-bindings and
+#    psql-discovery. Lock-timeout environment knobs are not deadline assertions and stay pooled.
 SERIAL_GROUP="
 .claude/hooks/tests/silence-detector-time-dedupe.test.sh
 .claude/hooks/tests/session-start-sync-publish-bounds.test.sh
@@ -114,6 +123,25 @@ desk/tests/report-offline.test.sh
 desk/tests/reviews-cli.test.sh
 desk/tests/reviews-view-offline.test.sh
 desk/tests/todo-offline.test.sh
+.claude/hooks/tests/pause-lifecycle-hooks.test.sh
+.claude/hooks/tests/ai-account-session-start.test.sh
+.claude/hooks/tests/register-hooks.test.sh
+.claude/hooks/tests/spend-telemetry-maintenance.test.sh
+.claude/hooks/tests/spend-telemetry-tracker.test.sh
+.claude/scripts/tests/bounded-run.test.sh
+.claude/scripts/tests/help-output.test.sh
+.claude/scripts/tests/ac-checkboxes.test.sh
+.claude/scripts/tests/ai-account-ledger.test.sh
+.claude/scripts/tests/estimate-log-locks-bash.test.sh
+.claude/scripts/tests/estimate-rounds-batch-bash.test.sh
+.claude/scripts/tests/park-wake-publish.test.sh
+.claude/scripts/tests/pmm-pre-dispatch.test.sh
+.claude/scripts/tests/workspace-sweep.test.sh
+desk/tests/capture-offline.test.sh
+desk/tests/drilldown-offline.test.sh
+desk/tests/migrate.test.sh
+desk/tests/psql-bindings.test.sh
+desk/tests/psql-discovery.test.sh
 "
 
 JSON=0
@@ -240,8 +268,16 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# A signal that lands while a suite is being launched (between the fork and the pid-file write)
+# is held until that suite's pid is recorded, so cleanup always sees every live suite.
+LAUNCHING=0
+PENDING_SIGNAL=""
+on_signal() {
+  if [ "$LAUNCHING" -eq 1 ]; then PENDING_SIGNAL="$1"; return 0; fi
+  exit "$1"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 # Discovery. SUITE_PATH is indexed by slot (the selected-suite position, in discovery order).
 discovered=0
@@ -311,11 +347,14 @@ kill_group() {
 # bash's "child setpgid" notice (no controlling terminal) is job-control noise, not a result.
 start_suite() {
   mkdir -p "$WORK/$1" || return 1
+  LAUNCHING=1
   set -m
   ( run_suite "$1" "${SUITE_PATH[$1]}" ) 2>/dev/null &
   LAUNCHED_PID=$!
   set +m
   printf '%s\n' "$LAUNCHED_PID" > "$WORK/$1/pid"
+  LAUNCHING=0
+  if [ -n "$PENDING_SIGNAL" ]; then exit "$PENDING_SIGNAL"; fi
 }
 
 # run_pool <concurrency> <slot...>: keeps at most <concurrency> suites running until every given
