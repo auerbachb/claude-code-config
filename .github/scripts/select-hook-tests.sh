@@ -43,6 +43,10 @@
 # or self match fails toward ALL. A new suite needs no registration: its literal path
 # mentions are its dependencies. If it reads a file only through a constructed path, add
 # a `# covers:` line for it.
+# A basename mention is ADDITIVE for a code path: every suite that names the file's
+# basename as a whole token is selected too, even when another suite names the literal
+# path (a constructed path like "$DIR/x.sh" would otherwise be skipped). It still adds
+# nothing to coverage, so a code path with only basename mentions fails toward ALL.
 #
 # Docs allow-list: a *.md file outside any tests/ or fixtures/ directory never forces
 # ALL. Rules and references still select the suites that read them as fixtures,
@@ -176,7 +180,7 @@ while IFS= read -r S; do
         if [ -d "$tok" ]; then m=D; else m=F; fi
         printf '%s\t%s\t%s\n' "$S" "$tok" "$m" >> "$PAIRS"
       done
-  sed -n 's/^# covers:[[:space:]]*//p' "$S" 2>/dev/null | tr ' \t' '\n\n' | while IFS= read -r tok; do
+  sed -n 's/^# covers:[[:space:]]*//p' "$S" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) print $i }' | while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     if [ -d "$tok" ]; then
       printf '%s\t%s\tD\n' "$S" "$tok" >> "$PAIRS"
@@ -194,7 +198,13 @@ fi
 
 SEL="$TMP/selected"
 HIT="$TMP/hit"
+BHIT="$TMP/basename-hit"
 CALLERS="$TMP/callers"
+# A basename is a whole token: the character before it is not a name character (a path
+# separator, quote, space or line start is fine); the character after it is not one either,
+# and a dot may follow only when it ends the token (a sentence-final dot, not a further suffix).
+BRE_PRE='(^|[^[:alnum:]_.-])'
+BRE_POST='($|[^[:alnum:]_.-]|\.($|[^[:alnum:]_.-]))'
 : > "$SEL"
 HAS_CODE=0
 UNMAPPED=""
@@ -243,7 +253,28 @@ while IFS= read -r P; do
     UNMAPPED="$P"
     break
   fi
-  cat "$HIT" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
+  # Basename mentions are ADDITIVE for a code path (issue #2153 review): a suite that reaches the
+  # file through a constructed path (a "$DIR/<name>" expansion) names only its basename,
+  # and it must still run even when another suite names the literal path. A basename hit adds
+  # the suite but is never coverage, so the unmapped check above is unchanged. Matched as a
+  # whole token: never inside a longer name that ends in the same letters. Docs never match here.
+  : > "$BHIT"
+  if [ "$DOC" -eq 0 ]; then
+    ESC="$(printf '%s' "$base" | sed 's/[][\.*^$+?(){}|]/\\&/g')" || { emit_all "basename escape failed: full run"; exit 0; }
+    BRE="$BRE_PRE$ESC$BRE_POST"
+    while IFS= read -r S; do
+      grep -qE -- "$BRE" "$S"
+      RC=$?
+      if [ "$RC" -eq 0 ]; then
+        printf '%s\n' "$S" >> "$BHIT" || { emit_all "could not record selection: full run"; exit 1; }
+      elif [ "$RC" -gt 1 ]; then
+        UNMAPPED="$P (basename scan failed)"
+        break
+      fi
+    done < "$DISC"
+    if [ -n "$UNMAPPED" ]; then break; fi
+  fi
+  cat "$HIT" "$BHIT" >> "$SEL" || { emit_all "could not record selection: full run"; exit 1; }
 done < "$CHANGED"
 
 if [ -n "$UNMAPPED" ]; then

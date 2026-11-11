@@ -141,6 +141,45 @@ else
   bad "basename-only match selected a partial list: $out"
 fi
 
+# Constructed-path reader (PR #2154 round-3 review): a suite reaches a script through a
+# variable path, so it names only the basename, while another suite names the literal path.
+# The basename suite must still be selected alongside the literal one, never skipped.
+K="$TMP/constructed"
+make_fixture "$K"
+printf 'D=.claude/hooks\nbash "$D/a.sh"\nexit 0\n' > "$K/.github/scripts/tests/constructed.test.sh"
+out="$(select_for "$K" .claude/hooks/a.sh)"
+if ! is_all "$out" && has_line "$out" .claude/hooks/tests/a.test.sh \
+   && has_line "$out" .github/scripts/tests/constructed.test.sh; then
+  ok "a basename-only constructed-path suite is selected alongside the suite that names the literal path"
+else
+  bad "constructed-path suite skipped beside a literal suite: $out"
+fi
+
+# Round-2 rule intact: a code path whose only mention is a basename in a constructed path
+# (no literal, declared, or self match) still fails toward ALL.
+J="$TMP/constructed-only"
+make_fixture "$J"
+printf 'D=.claude/hooks\nbash "$D/b.sh"\nexit 0\n' > "$J/.github/scripts/tests/constructed-only.test.sh"
+rm -f "$J/.claude/hooks/tests/b.test.sh"
+out="$(select_for "$J" .claude/hooks/b.sh)"
+if is_all "$out"; then
+  ok "a path with only a constructed-path basename mention still selects ALL"
+else
+  bad "basename-only constructed path did not select ALL: $out"
+fi
+
+# Whole-token only: a longer filename that merely contains the basename is not a mention.
+L="$TMP/whole-token"
+make_fixture "$L"
+printf 'bash "$D/extra-a.sh" "$D/xa.sh" "$D/a.sh.bak"\nexit 0\n' > "$L/.github/scripts/tests/longer.test.sh"
+out="$(select_for "$L" .claude/hooks/a.sh)"
+if ! has_line "$out" .github/scripts/tests/longer.test.sh && ! is_all "$out" \
+   && has_line "$out" .claude/hooks/tests/a.test.sh; then
+  ok "a longer filename that contains the basename as a substring is not a mention"
+else
+  bad "substring of a longer filename was matched as a mention: $out"
+fi
+
 # A failed write of the selection (PR #2154 review): stdout on a full device must not exit 0.
 # The workflow turns a non-zero selector exit into ALL.
 printf '.claude/hooks/a.sh\n' | bash "$F/.github/scripts/select-hook-tests.sh" --event pull_request >&- 2>/dev/null
