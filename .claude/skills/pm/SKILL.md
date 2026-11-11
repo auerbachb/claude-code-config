@@ -519,7 +519,7 @@ fi
 
 Reading all issue bodies is expensive. Use a two-pass approach:
 
-**Pass 1 — Quick scan:** From the issue list, identify the top ~20 candidates using fast signals:
+**Pass 1 — Quick scan:** From the issue list, shortlist the top `max(20, 2 × LIMIT)` candidates (Step 0), or all available candidates if fewer exist. Use fast signals:
 - Labels containing `bug`, `critical`, `P0`, `P1`, `urgent`, `blocked`
 - Issues with no assignee (available for pickup)
 - Issues not already covered by an open PR (cross-reference PR branch names and bodies for `#N` references)
@@ -527,9 +527,9 @@ Reading all issue bodies is expensive. Use a two-pass approach:
 - Oldest unassigned (may be neglected but important)
 - **Operator order (1B.1a):** every open issue in `PRIO_JSON.order` is a candidate whatever the signals above say, and every issue in `PRIO_JSON.parked` is dropped here, before any deep read. An ordered issue missing from 1B.2's list (past its 500-issue cap) is fetched directly — `gh issue view N --json number,title,labels,assignees,state,createdAt,updatedAt` — and joins when open, so the cap never silently drops an operator pick
 
-**Every issue in `NEW_ISSUES` (1B.2) joins the shortlist on top of the ~20**, so an issue filed since the last scan is always read, scored, and tiered on the first scan after it was filed. The 1B.5 output then **names each of them with its tier**, even when it ranks below the top 3–5, as one line after the ranked list: `New since the last scan: #N — title (Tier)` (several joined with `; `). A new issue the 1B.3 / 1B.4 checks later drop (an open PR, a dependency) is named the same way with that reason in place of the tier, so the operator sees it was picked up.
+**Every issue in `NEW_ISSUES` (1B.2) joins the shortlist in addition to the quick-scan candidates**, so an issue filed since the last scan is always read, scored, and tiered on the first scan after it was filed. The 1B.5 output then **names each of them with its tier**, even when it ranks below the top 3–5, as one line after the ranked list: `New since the last scan: #N — title (Tier)` (several joined with `; `). A new issue the 1B.3 / 1B.4 checks later drop (an open PR, a dependency) is named the same way with that reason in place of the tier, so the operator sees it was picked up.
 
-**Pass 2 — Deep read:** For the top ~20 candidates, fetch full bodies:
+**Pass 2 — Deep read:** Fetch full bodies and score the entire shortlist in 1B.4:
 
 ```bash
 # For each candidate issue number:
@@ -603,6 +603,8 @@ Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
 
 **Misaligned effort ("stop doing"):** cross-reference the user's current work (their open PRs and assigned issues from 1B.2) against the tiers. If they are actively on Low/Medium work while Critical/High issues sit unassigned and within their scope, flag it — name the low-impact work and the higher-impact work to switch to. Only flag when the misalignment is clear and the alternative is materially better; when their current work is already Critical/High, say it is well-aligned instead.
 
+If exclusions and inline eligibility leave fewer than `LIMIT` candidates, read and score at most one more `max(20, 2 × LIMIT)` page from the unexamined issue list. Apply the same scope, scoring, exclusion, and operator-order rules to the combined set before writing the rank cache. If the list is exhausted or the batch is still short, use the available eligible issues.
+
 ### 1B.4b: Judgment check (ask only when the ranking turns on a judgment call)
 
 Ranking is a recommendation, not arithmetic. Before presenting, check whether the **top** of the list depends on a call only the user can make. Any one of these triggers is enough:
@@ -652,13 +654,15 @@ Best-effort, never a gate: a failed write prints that one line and ranking, pres
 
 See `.claude/reference/pm-output-templates.md` §User-Scoped Sections for the block format (Your Open PRs, Forgotten PRs, PRs Awaiting Your Review, Issues Assigned to You).
 
-Then output the top 3-5 backlog issues (unassigned / up for pickup) as a ranked list — see `.claude/reference/pm-output-templates.md` §Suggested Next Issues for the block format.
+Then display a short list of the top 3–5 backlog issues (unassigned / up for pickup) — see `.claude/reference/pm-output-templates.md` §Suggested Next Issues for the block format.
 
-**Operator order first (1B.4 item 7).** Every eligible override row leads, marked `Operator order (desk) #k`, before any ranked row — then ranked rows up to five in all. The context line carries `PRIORITY_STATUS` (1B.1a); a `Parked (desk):` line names each parked issue with its return date, and a `Not eligible (desk):` line names each ordered issue that was excluded, with its reason. The full ranking below opens with an `## Operator order (desk)` section above the tiers. Formats: `pm-output-templates.md`.
+**Operator order first (1B.4 item 7).** Every eligible override row leads, marked `Operator order (desk) #k`, before filling the remaining display rows from the ranking. The context line carries `PRIORITY_STATUS` (1B.1a); a `Parked (desk):` line names each parked issue with its return date, and a `Not eligible (desk):` line names each ordered issue that was excluded, with its reason. The full ranking below opens with an `## Operator order (desk)` section above the tiers. Formats: `pm-output-templates.md`.
 
 **Full ranking (on request only).** When the user asked to rank the backlog rather than "what's next" — "rank the backlog", "priority list", "full ranking" — replace the top 3-5 list with the tiered view. "Full" means **every tier is covered**, not that every issue is listed: name the issues that earn a decision in each tier and summarize the rest. Omit any tier with no issues. See `.claude/reference/pm-output-templates.md` §Full Ranking / Tiered View for the block format.
 
 Summarize rather than enumerate once a tier stops informing a decision — most often the Low tier: "68 additional issues are Low-priority relative to this goal". The tier still appears with its heading; it just carries a count instead of 68 bullets.
+
+**Select the initial batch from the full ranking.** After the pause and scope reads below, walk the retained ranking in operator-first order (1B.4c). Apply Step 3.1's inline eligibility test, then put the first `LIMIT` inline-eligible issues in `BATCH_ISSUES` for both ordinary and windowed runs. Keep the remaining eligible issues in ranked order for the existing inline queue and refill. Send issues encountered before the batch fills that require a prompt or decomposition to their existing Step 3.1 paths. They consume no inline slot. Keep the existing window, ownership, budget, horizon, pause, and overlap checks on every proposed launch.
 
 **Window-fit gate (when `WINDOW_STR` is set and Step 0b parsed it successfully).** After ranking and before dispatch, trim the ranked batch to fit inside the remaining window using `makespan.sh`. This is a pure trim gate — it never reorders the batch.
 
@@ -676,7 +680,7 @@ fi
 ```
 
 1. For each ranked candidate, call `estimate-resolve.sh <N>` to get `est_lo`/`est_hi`, and **branch on its exit code — the stdout line is only meaningful for `0` and `1`**: `0` (from the issue body) and `1` (tier-table fallback) are both real estimates, so parse `est_lo`/`est_hi` from the `Est:` line. `2` (`unestimated`) means send `null`/`null` and let `makespan.sh` apply the Standard fallback (120/180 min — the canonical value, `time-estimates.md` §Unestimated issues); never parse the literal `unestimated` string into the batch JSON. `3` (usage) and `4` (gh/jq error) are **read failures, not estimates** — do not feed their output to `makespan.sh`, which would silently miscalculate the window fit. Treat the issue as unestimated for fitting, and name the failing issue and exit code in one line so the plan is not read as fully measured.
-2. Build the batch JSON and pipe to `makespan.sh --ceiling "$LIMIT"` (Step 0 — the batch cannot run wider than `min(CEILING, ACTIVE_WORK_CAP)`). If `makespan_hi <= EFFECTIVE_WINDOW_MIN` (freshly recomputed above), the full batch fits — proceed to dispatch.
+2. Build the JSON from `BATCH_ISSUES` and pipe to `makespan.sh --ceiling "$LIMIT"` (Step 0 — the batch cannot run wider than `min(CEILING, ACTIVE_WORK_CAP)`). If `makespan_hi <= EFFECTIVE_WINDOW_MIN` (freshly recomputed above), the full batch fits — proceed to dispatch.
 3. If `makespan_hi > effective_window_min`, drop the **lowest-ranked** candidate and recompute. Repeat until the remaining batch fits or only one issue remains. If that single remaining issue **still** exceeds the window, do **not** dispatch anything — emit a no-fit message instead: `No batch fits in the remaining window ({EFFECTIVE_WINDOW_MIN} min). Suggest a longer window or a narrower selection.` and list all exclusions.
 4. Each dropped issue is an **exclusion** — name it with the math:
    `#N (90 min plan) — excluded: batch would overshoot window by {delta} min`
@@ -692,7 +696,7 @@ fi
    BATCH_NUMS="[$(printf '"%s",' "${BATCH_ISSUES[@]}" | sed 's/,$//')]"
    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].window.batch_issues=${BATCH_NUMS}" 2>/dev/null || true
    ```
-   When `MAKESPAN_SH` or `ESTIMATE_RESOLVE_SH` is unavailable: print `DEGRADED: makespan unavailable — window fit skipped; dispatching full ranked batch`.
+   When `MAKESPAN_SH` or `ESTIMATE_RESOLVE_SH` is unavailable, follow Step 0's dispatch pause for the active window.
 
 **Ownership sweep (runs after ranking and window-fit selection, before dispatch).** In-flight work does not live only on GitHub — it also lives in other threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state on disk. The claim gate alone cannot see any of that, and a stale claim is re-picked with only a warning, which is how issue #652 shipped twice. Run the sweep over the selected inline-eligible candidates and branch three ways (issue #1431):
 
@@ -750,8 +754,7 @@ fi
 
 <!-- test-anchor: pm-1b5-ownership-sweep -->
 ```bash
-# The issue numbers about to be dispatched: the window-fit batch when a window
-# is armed (BATCH_ISSUES above), otherwise the ranked inline-eligible picks.
+# Initial inline picks from BATCH_ISSUES, after any window-fit trim.
 CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})
 
 SWEEP=""; SWEEP_RC=0; SWEEP_ERR=""
@@ -802,7 +805,7 @@ Rules that bind this step:
 
 Mechanism, reader set, and verdict table: `.claude/reference/pm-ownership-sweep.md`.
 
-**Dispatch the top batch — the default, with no confirmation turn.** The ranking **is** the selection. Take the top-ranked batch and hand its **inline-eligible** issues to **Step 3.1**, which claims each one and runs it through the `/subagent` A→B→C flow up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`), queueing the remainder. Do not ask "should I start these?" — free capacity is a trigger, not a question (`CLAUDE.md` "KEEP THE PIPELINE FULL"), and the launches are **reported, never proposed**, exactly as 3.4 reports a refill. Step 3.1 owns the mechanics — issue claims (`/subagent` 6.0), overlap chains (6.0b), the ceiling and the inline queue (Step 7) — and this step restates none of them. **Prompts and chips are the exception, not the act:** an issue produces one only when it carries a named `/subagent` Step 4 disqualifier (quoted in the offer) or the user explicitly asks for prompts — see 3.1.
+**Dispatch the selected batch by default.** Hand the surviving `BATCH_ISSUES` to **Step 3.1** for immediate inline dispatch, with ranked overflow marked for the queue. Keep window exclusions and ownership skips out of the launch set. Step 3.1 claims the launch picks and runs them through the `/subagent` A→B→C flow up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`). Do not ask "should I start these?" — free capacity is a trigger, not a question (`CLAUDE.md` "KEEP THE PIPELINE FULL"), and the launches are **reported, never proposed**, exactly as 3.4 reports a refill. Step 3.1 owns the mechanics — issue claims (`/subagent` 6.0), overlap chains (6.0b), the ceiling and the inline queue (Step 7) — and this step restates none of them. **Prompts and chips are the exception, not the act:** an issue produces one only when it carries a named `/subagent` Step 4 disqualifier (quoted in the offer) or the user explicitly asks for prompts — see 3.1.
 
 **Read the refill pause before dispatching anything — and before composing the ranking output above**, the way Step 1C runs ahead of everything else in this step. Cold start is the default mode for a bare `/pm`, so this path runs in repos where a human already said "stop" and that stop was persisted. The resume path reads it in 1A.2 and this path reads it here — dispatching without the same read is how an inverted default silently relaunches against an explicit stop:
 
@@ -1930,6 +1933,8 @@ This is the core PM behavior. Enter the orchestration loop as soon as Step 1 has
 
 ### 3.1: Launch selected issues (inline by default)
 
+On cold start, only surviving `BATCH_ISSUES` are eligible for immediate inline launch. Carry the ranked overflow in the current run's existing inline queue for 3.4. Before an overflow pick can launch, 3.4 revalidates it, including the ownership sweep and current gates. Apply the existing thread-prompt and decomposition paths to the separately routed picks.
+
 **The selection arrives already made.** 1B.5 hands over the top-ranked batch by default, 1A.4/3.4 hand over refill picks the same way, and an `adjust` from the user replaces the set — there is no separate "which of these?" turn to wait for. **Partition the batch** with the "too big for any subagent" test from `/subagent` Step 4 — the implementation can't be carried across sequential subagent turns, needs interactive human judgment mid-build, or should be split into multiple PRs. This is a judgment call about *resumability and interactivity*, not tier, and not file/AC/dependency counts. Neither sheer size, nor touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, nor a full inline pipeline makes an issue too big — past-ceiling work queues inline (#776). **The partition is three-way, not two:** the third criterion decomposes rather than routing out (#1193), so only criteria 1 and 2 produce a thread. Then:
 
 - **Inline-eligible issues (the default — most issues):** run them inline through the `/subagent` A→B→C flow. This is the default action; the issue landing in the batch **is** the go-ahead — neither a selection turn nor a "go ahead and run those" is waited on. Invoke `/subagent #{a} #{b} …` with the eligible set **through the Skill tool** (`skill: "subagent"`) — never by starting a `phase-a-fixer` / `phase-b-reviewer` / `phase-c-merger` with the `Agent` tool from this thread, which skips Step 7.1's launch record (no Start, no estimate, no table). A repo rule that lets the parent merge directly replaces Phase C only, never this launch (#1903). It runs Phase A then Phase B under Dedicated Monitor Mode, driving each to `merge_ready`, then **auto-launches Phase C** (full `/wrap`, silent merge). Launch up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`) from `subagent-orchestration.md` and queue the rest, starting a queued pipeline as each running one **merges or blocks** — a pipeline parked at `merge_ready` keeps its slot through Phase C (see 3.4, which refills on free capacity, not only on a finish). Mark each such issue `Inline` in the Active Work table (3.2). **The dispatch report for this batch is `/subagent` Step 7.2's "Running now" table** — the canonical shape, covering the whole round in execution order with queued rows carrying `—` clocks; `/pm` adds no second table on that turn and no prose enumeration of the launched set (3.3a). **A dispatch is not finished until that table has printed for the round.** If it did not — for any reason, a dispatch that bypassed `/subagent` included — render it via `/board` (3.3a) on the same turn. `/board` shows every recorded Step 7.1 clock; name the launches with no record separately in one line — `/board` may show them as a queued row or not at all (`No active round`), so a row never proves a launch happened — and never backfill a Start. If `/board` renders no table, the dispatch stays incomplete: say so and launch nothing more this round. Issues in the set that **overlap on a file** are serialized rather than started together — `/subagent` Step 6.0b owns that; expect a chained issue to start later than a free slot alone would suggest.
@@ -2217,6 +2222,25 @@ Refill from three sources, in this order:
 4. Launch them through 3.1's inline path (`/subagent` A→B→C) and mark each `Inline` in the Active Work table (3.2).
 
 **Re-validate every pick, from any source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5, **plus the 1B.5 ownership sweep** (`candidate-ownership.sh`, issue #1431). Closed, already has its own PR, now too big, or `action: skip` → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). `action: adopt` launches from the surviving state instead of a fresh start. Backlog refill reuses this validation rather than defining its own.
+
+**Recheck the active window for refill picks.** When 3.4 would promote a queued or newly ranked issue under an active window, run 1B.5's estimate and `makespan.sh` fit check for the candidate against the current deadline and stall margin. Skip a pick that does not fit or cannot be measured. Keep the existing Step 7 prelaunch check. Before handing a fitting issue to 3.1, append it to the same window's `batch_issues` so Step 8 monitors its overrun. Persist only after the existing ownership and eligibility checks. If the guarded write fails, leave the issue queued and recheck the current window before retrying.
+
+The following block runs only after a fit under `DEADLINE_EPOCH`, with the numeric `ISSUE_NUM` and the verified `REPO_KEY` from the current run:
+
+<!-- test-anchor: pm-refill-window-batch -->
+```bash
+WINDOW_BATCH_PATH=".repos[\"$REPO_KEY\"].window.batch_issues"
+WINDOW_DEADLINE_PATH=".repos[\"$REPO_KEY\"].window.deadline_epoch"
+WINDOW_BATCH_BEFORE=$("$SESSION_STATE_SH" --get-json "$WINDOW_BATCH_PATH") || exit 1
+WINDOW_BATCH_AFTER=$(jq -ce --arg issue "$ISSUE_NUM" '
+  if . == null then [] else . end
+  | if type != "array" then error("window batch invalid")
+  elif index($issue) != null then .
+  else . + [$issue] end
+' <<< "$WINDOW_BATCH_BEFORE") || exit 1
+"$SESSION_STATE_SH" --cas "$WINDOW_BATCH_PATH=$WINDOW_BATCH_AFTER" \
+  --expect "$WINDOW_BATCH_BEFORE" --expect-at "$WINDOW_DEADLINE_PATH" "$DEADLINE_EPOCH"
+```
 
 **Read ownership per pick, not once per tick** — the same discipline as the per-pick pause re-read below, and for the same reason: another thread can park or die inside the window between a re-scan and a launch. An owned pick never stalls the refill: skip it, print its one-line surface, and take the next unowned candidate until the free slots are filled or the candidate set is exhausted.
 

@@ -28,12 +28,14 @@ When `$GH_USER` is set, render all four in this order before the backlog ranking
 
 ## Suggested Next Issues (Step 1B.5)
 
-Top 3-5 backlog issues for pickup. Each issue shows its per-issue estimate resolved via
+Display the top 3–5 backlog issues for pickup. The initial inline batch uses
+Step 0's `LIMIT` from the full operator-first ranking, subject to the launch
+gates. Each displayed issue shows its per-issue estimate resolved via
 `estimate-resolve.sh` (body `## Estimate` section → tier-label fallback → `unestimated`).
 
 Rows from the operator's `/desk` order (`/pm` 1B.4 item 7, issue #1767) come first, each marked
 `Operator order (desk) #k` beside its other annotations — k is its place among the override rows —
-then ranked rows up to five in all. The context line names the operator-priority status:
+then fill the remaining display rows from the ranking. The context line names the operator-priority status:
 `N ordered, M parked`, `none`, or `unreadable`. The `Parked (desk):` and `Not eligible (desk):`
 lines appear only when they have entries.
 

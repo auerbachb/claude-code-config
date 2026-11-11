@@ -84,6 +84,41 @@ reject_pattern "$PM" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
   '/pm 3.4 refill must trigger below Step 0 LIMIT, not the raw CEILING'
 ok "/pm and /pm-forgotten-pr launch up to min(CEILING, CAP), not the raw ceiling"
 
+# --- the short recommendation list cannot become the cold-start batch ---
+PM_SHORTLIST=$(sed -n '/^### 1B\.3:/,/^### 1B\.4:/p' "$ROOT/$PM")
+PM_BATCH=$(sed -n '/^### 1B\.5:/,/^### 1C:/p' "$ROOT/$PM")
+PM_LAUNCH=$(sed -n '/^### 3\.1:/,/^### 3\.2:/p' "$ROOT/$PM")
+
+[[ "$PM_SHORTLIST" == *'shortlist the top `max(20, 2 × LIMIT)`'* ]] \
+  || fail '/pm Step 1B.3 shortlist must grow with LIMIT'
+[[ "$PM_BATCH" == *'display a short list of the top 3–5'* ]] \
+  || fail '/pm Step 1B.5 must preserve the short display'
+[[ "$PM_BATCH" == *'walk the retained ranking in operator-first order'* &&
+   "$PM_BATCH" == *'the first `LIMIT` inline-eligible issues in `BATCH_ISSUES`'* ]] \
+  || fail '/pm Step 1B.5 must select the inline batch from the full order'
+[[ "$PM_BATCH" == *'Build the JSON from `BATCH_ISSUES` and pipe to `makespan.sh'* &&
+   "$PM_BATCH" == *'CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})'* ]] \
+  || fail '/pm must run window fit and ownership against the selected batch'
+[[ "$PM_LAUNCH" == *'only surviving `BATCH_ISSUES` are eligible for immediate inline launch'* &&
+   "$PM_LAUNCH" == *"ranked overflow in the current run's existing inline queue for 3.4"* ]] \
+  || fail '/pm Step 3.1 must queue the overflow without bypassing the initial launch gates'
+
+reject_literal_pm_batch() {
+  local block=$1
+  ! grep -Eiq '(ranked rows up to five in all|top (3[-–])?(5|five) (eligible |inline )?(picks|launches)|dispatch (up to |the first )?(5|five) )' <<< "$block"
+}
+
+reject_literal_pm_batch "$PM_BATCH" || fail '/pm Step 1B.5 hard-codes an initial dispatch limit'
+reject_literal_pm_batch "$PM_LAUNCH" || fail '/pm Step 3.1 hard-codes an initial dispatch limit'
+if reject_literal_pm_batch 'dispatch up to five inline issues'; then
+  fail 'the hard-coded dispatch check missed its negative control'
+fi
+require_text "$PM" 'Recheck the active window for refill picks' \
+  '/pm queued refill must retain the active-window fit gate'
+require_text "$PM" '--expect-at "$WINDOW_DEADLINE_PATH" "$DEADLINE_EPOCH"' \
+  '/pm queued refill must register the monitored issue against the verified deadline'
+ok '/pm separates its short display from its LIMIT-sized initial dispatch'
+
 # --- MAX_WAVE may still only lower the ceiling ------------------------------
 require_text "$WAVE" 'clamped to [1, CEILING]' \
   '/wave must still clamp MAX_WAVE to [1, CEILING]'
