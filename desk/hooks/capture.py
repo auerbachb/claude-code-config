@@ -381,7 +381,10 @@ def lookup_binding(directory):
     if not stat.S_ISREG(mode):
         raise FailOpen("the queue bindings file is not a readable regular file")
     try:
-        fh = open(path, encoding="utf-8", newline="")
+        # surrogateescape: a path row with non-UTF-8 bytes must not raise and
+        # fail open for every account in the registry. bindings.sh compares
+        # the same bytes, so the match stays byte-exact on both sides.
+        fh = open(path, encoding="utf-8", errors="surrogateescape", newline="")
     except FileNotFoundError:
         return None
     except OSError:

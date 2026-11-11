@@ -258,6 +258,26 @@ print("%s|%s|%s" % (d, name, schema))
 ' "$HQ_T_DESK_DIR/hooks/capture.py")
 check "agreement: python resolves the same row" "$ROW_PY" "$ROW_BASH"
 
+# A row whose path holds non-UTF-8 bytes must not stop either reader from
+# resolving the account's own row. Uses a copy, so later sections are unchanged.
+REG_NONUTF="$TMP/bindings-nonutf.tsv"
+cp "$REG" "$REG_NONUTF"
+printf '/odd\377path\tother\tother_queue\n' >>"$REG_NONUTF"
+ROW_PY_NU=$(env -i HOME="$HOMEDIR" PATH="$MINPATH" CLAUDE_CONFIG_DIR="$DIR_A/" HUMAN_QUEUE_BINDINGS_FILE="$REG_NONUTF" \
+  python3 -I -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("hq_capture", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+d = mod.config_dir()
+name, schema = mod.lookup_binding(d)
+print("%s|%s|%s" % (d, name, schema))
+' "$HQ_T_DESK_DIR/hooks/capture.py")
+check "agreement: python resolves the account past a non-UTF-8 row" "$ROW_PY_NU" "$ROW_BASH"
+ROW_BASH_NU=$(env -i HOME="$HOMEDIR" PATH="$MINPATH" CLAUDE_CONFIG_DIR="$DIR_A/" HUMAN_QUEUE_BINDINGS_FILE="$REG_NONUTF" \
+  bash -c '. "$1"; d=$(hqb_config_dir) && hqb_lookup "$d" && printf "%s|%s|%s\n" "$d" "$HQB_NAME" "$HQB_SCHEMA"' _ "$LIB")
+check "agreement: bash resolves the account past a non-UTF-8 row" "$ROW_BASH_NU" "$ROW_BASH"
+
 # ---------------------------------------------------------- corruption
 printf '== corrupt registry\n'
 cp "$REG" "$REG.good"
