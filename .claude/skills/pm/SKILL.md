@@ -683,16 +683,14 @@ PM_QUEUE_SELECTION=$(jq -ce --argjson limit "$LIMIT" '
     error("invalid inline ranking")
   else
     reduce .[] as $issue ([]; if index($issue) == null then . + [$issue] else . end)
-    | {batch: .[:$limit], planned: .[$limit:($limit * 2)]}
+    | .[:($limit * 2)]
+    | {batch: .[:$limit], ranked: .}
   end' <<<"$PM_INLINE_RANKED") || exit 1
 ```
 
-Put the first `LIMIT` inline-eligible issues in `BATCH_ISSUES` from `.batch` for ordinary and windowed runs. Window and
-launch checks still decide what actually starts. After the initial dispatch
-attempt, save `.planned` through the Step 3.4 queue publication block for this
-same dispatcher. Exclude any candidate already accepted by `/subagent` or
-definitively rejected during this turn. A ranking-only run, pause, or launch
-horizon hold does not replace a standing queue.
+Put the first `LIMIT` inline-eligible issues in `BATCH_ISSUES` from `.batch`
+for ordinary and windowed runs. Window and launch checks decide what starts.
+Carry the bounded ranked pool through the dispatch evaluation.
 
 **Window-fit gate (when `WINDOW_STR` is set and Step 0b parsed it successfully).** After ranking and before dispatch, trim the ranked batch to fit inside the remaining window using `makespan.sh`. This is a pure trim gate — it never reorders the batch.
 
@@ -860,6 +858,26 @@ Interpret **both** reads with **3.4's table, unchanged**: `RC=0` + `true` → pa
 **An unreadable operator priority is a stop of the same kind** (`PRIORITY_UNREADABLE=true`, 1B.1a): rank and report, launch nothing, and say so with 1B.1a's one-line warning. It lifts on its own once the file reads cleanly again (fixed, or removed) — no human resume is needed, because nothing was paused on purpose.
 
 **This read gates the batch; it does not replace the per-launch check.** Ranking, Step 1C's confirm gates, and Step 1D's triage can span several turns, so the pause is re-read immediately before each launch by the gate that already owns that — `/subagent` Step 7's pre-launch check, the same one 3.4's refill relies on. A stop the user says while those steps are still running cancels the remaining launches, and a candidate outside a scope set in that window is skipped at dispatch time. Delegate to it; do not add a second pause mechanism here.
+
+After the dispatch evaluation, build `PM_QUEUE_REMOVED` from verified launches,
+adoptions, accepted claimed successors and definitive rejections in this
+turn. Use `[]` when none occurred. Keep window-trimmed and other deferred
+picks in their original rank order, subject to the existing refill checks.
+A ranking-only run, pause or launch horizon hold preserves the previous plan.
+On the publishing path, compute the prospective picks from the retained
+ranking and save them with Step 3.4's queue publication block.
+
+<!-- test-anchor: pm-standing-queue-initial-plan -->
+```bash
+if ! PM_QUEUE_NEXT=$(jq -ce --argjson removed "${PM_QUEUE_REMOVED:-null}" --argjson limit "$LIMIT" '
+  if ($removed | type) != "array" or
+     any($removed[]; (type == "string" and test("^[1-9][0-9]*$")) | not) then
+    error("invalid initial dispatch outcomes")
+  else (.ranked - $removed)[:$limit] end' <<<"$PM_QUEUE_SELECTION"); then
+  PM_QUEUE_NEXT=''
+  printf '%s\n' 'DEGRADED: initial standing queue outcomes unavailable; previous plan retained' >&2
+fi
+```
 
 State, **when the read cleared**: "Starting the top {N} inline — #{a}, #{b}, #{c}; {M} queued. Say 'adjust' to change the selection, or 'give me prompts instead' for prompt blocks rather than inline runs." Record each launch through 3.1 and the Active Work table (3.2). Apply the decision-only policy to the human-facing output and use 3.3a when a report is requested or due. **When it did not clear** — paused, or unreadable and therefore read as paused — emit the ranking-only message instead: the ranking, the pause, and how to lift it. Never announce launches that did not happen.
 
@@ -2328,9 +2346,9 @@ PM_QUEUE_NEXT=$(jq -ce --argjson additions "$PM_QUEUE_ADDITIONS" --argjson limit
   | .[:$limit]' <<<"$PM_QUEUE_REMAINING") || exit 1
 ```
 
-**Publish the verified plan.** For initial dispatch use the filtered
-`.planned` result as `PM_QUEUE_NEXT`. After refill use the top-up block's
-result. Skip a publication when the read was unavailable. A stale write
+**Publish the verified plan.** Use `PM_QUEUE_NEXT` from the initial dispatch
+or the top-up block. Skip publication if the plan or its prior record could
+not be read or computed. A stale write
 does not undo a launch or acquire a claim. Surface the failure and re-read
 at the next evaluation rather than overwriting the winning plan. On a
 verified empty backlog, use `[]` to retire this dispatcher's own plan. Preserve
@@ -2338,7 +2356,7 @@ plans across pauses and during recovery.
 
 <!-- test-anchor: pm-standing-queue-publish -->
 ```bash
-if [[ -n "$PM_QUEUE_STATE" ]]; then
+if [[ -n "$PM_QUEUE_STATE" && -n "${PM_QUEUE_NEXT:-}" ]]; then
   if PM_QUEUE_SAVED=$(jq -cn --argjson expect "$PM_QUEUE_STATE" --argjson issues "$PM_QUEUE_NEXT" \
       '{expect:$expect,issues:$issues}' | \
       "$PM_STANDING_QUEUE_SH" save "$REPO_KEY" "$PM_QUEUE_SESSION" "$LIMIT" 2>/dev/null); then

@@ -28,6 +28,7 @@ def block(document, anchor):
 
 
 INITIAL = block(PM, "pm-standing-queue-initial")
+INITIAL_PLAN = block(PM, "pm-standing-queue-initial-plan")
 READ = block(PM, "pm-standing-queue-read")
 REFILL = block(PM, "pm-standing-queue-refill")
 TOP_UP = block(PM, "pm-standing-queue-top-up")
@@ -81,17 +82,54 @@ class StandingQueue(unittest.TestCase):
                                     PM_QUEUE_VACANCIES=str(vacancies),
                                     PM_QUEUE_ADDITIONS=json.dumps(additions)))
 
-    def test_initial_twenty_ranked_give_six_running_and_six_planned(self):
+    def initial_selection(self, ranked):
         output = self.shell(INITIAL + '\nprintf "%s" "$PM_QUEUE_SELECTION"',
-                            PM_INLINE_RANKED=json.dumps(ids(1, 20)))
-        selection = json.loads(output)
-        self.assertEqual(selection, {"batch": ids(1, 6), "planned": ids(7, 12)})
-        # Verify the durable branch stores only the prospective IDs.
-        saved = self.shell(READ + '\n' + PUBLISH + '\nprintf "%s" "$PM_QUEUE_STATE"',
-                           PM_QUEUE_NEXT=json.dumps(selection["planned"]))
-        self.assertEqual(json.loads(saved)["issues"], ids(7, 12))
+                            PM_INLINE_RANKED=json.dumps(ranked))
+        return json.loads(output)
+
+    def publish_initial(self, ranked, removed):
+        code = "\n".join([READ, INITIAL, INITIAL_PLAN, PUBLISH,
+                         'printf "%s" "$PM_QUEUE_STATE"'])
+        return json.loads(self.shell(code, PM_INLINE_RANKED=json.dumps(ranked),
+                                    PM_QUEUE_REMOVED=json.dumps(removed)))
+
+    def test_initial_twenty_ranked_give_six_running_and_six_planned(self):
+        ranked = ids(1, 20)
+        selection = self.initial_selection(ranked)
+        self.assertEqual(selection, {"batch": ids(1, 6), "ranked": ids(1, 12)})
+        self.assertEqual(self.publish_initial(ranked, selection["batch"])["issues"], ids(7, 12))
         self.assertEqual(self.queue("read")["issues"], ids(7, 12))
         self.assertNotIn("pipelines", json.loads(self.state.read_text())["repos"][REPO])
+
+    def test_window_trimmed_initial_picks_keep_their_queue_priority(self):
+        ranked = ids(1, 12)
+        batch = self.initial_selection(ranked)["batch"]
+        # Step 1B.5 drops the lowest rank until the real makespan fits.
+        while batch:
+            estimates = [{"num": int(issue), "est_lo": 60,
+                          "est_hi": 120 if issue == "4" else 60, "deps": []}
+                         for issue in batch]
+            result = self.run_command([BASH, str(SCRIPTS / "makespan.sh"),
+                                       "--ceiling", "6", "--cr-rate", "60",
+                                       "--now", "2026-11-11T13:23:00Z"],
+                                      stdin=json.dumps({"issues": estimates}))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            span = result.stdout.split(" · binding:", 1)[0]
+            if span == "1 h":
+                break
+            self.assertEqual(span, "1 h–2 h")
+            batch.pop()
+        self.assertEqual(batch, ids(1, 3))
+        self.assertEqual(self.publish_initial(ranked, batch)["issues"], ids(4, 9))
+        # A definitive rejection is removed from the entire ranked pool.
+        self.assertEqual(self.publish_initial(ranked, batch + ["5"])["issues"],
+                         ["4", *ids(6, 10)])
+
+    def test_unreadable_initial_outcomes_preserve_prior_plan(self):
+        original = self.save(["77"])
+        before = self.state.read_bytes()
+        self.assertEqual(self.publish_initial(ids(1, 12), None), original)
+        self.assertEqual(self.state.read_bytes(), before)
 
     def test_two_finished_slots_dispatch_before_any_scan(self):
         self.save(ids(7, 12))
