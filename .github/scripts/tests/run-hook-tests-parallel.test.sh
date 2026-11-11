@@ -286,6 +286,27 @@ else
   ok "structure: array expansions are guarded for bash 3.2"
 fi
 
+# ==========================================================================
+# Timing report (issue #2207): the job log names the worker count and the effective
+# concurrency, and lists the slowest suites. Human mode prints it; --json keeps stdout to JSON.
+# ==========================================================================
+
+FIX="$(new_fixture timing)"
+add_uneven_fixture "$FIX"
+export RAN_RECORD="$FIX/ran.txt"
+: > "$RAN_RECORD"
+HUMAN="$(RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 2>/dev/null)"
+if grep -Fq '[CONCURRENCY] pool jobs=2 ' <<<"$HUMAN"; then ok "timing: human mode names the worker count"; else bad "timing: worker count line missing"; fi
+if grep -Fq '[TIMING] slowest 30 suites:' <<<"$HUMAN"; then ok "timing: human mode prints the slowest-suites table"; else bad "timing: slowest-suites table missing"; fi
+if grep -Eq '\[TIMING\] pool: 7 suites, sum [0-9]+s, effective concurrency [0-9.]+ of 2 jobs' <<<"$HUMAN"; then ok "timing: pool summary counts suites and concurrency"; else bad "timing: pool summary wrong"; fi
+if grep -Eq '\[TIMING\] serial: 0 suites, sum 0s' <<<"$HUMAN"; then ok "timing: serial summary is zero when no suite is serial"; else bad "timing: serial summary wrong"; fi
+# The timing table lands in the aggregate log too, so a CI artifact carries it.
+LOGFILE="$(ls -t "$FIX"/logs/run-hook-tests-*.log 2>/dev/null | head -n 1)"
+if [ -n "$LOGFILE" ] && grep -Fq '[TIMING] wall=' "$LOGFILE"; then ok "timing: aggregate log carries the timing summary"; else bad "timing: aggregate log lacks the timing summary"; fi
+# JSON mode: stdout stays the single JSON object, with no timing text leaking onto it.
+JOUT="$(RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 --json 2>/dev/null)"
+if printf '%s' "$JOUT" | jq -e '.ok == true' >/dev/null 2>&1; then ok "timing: --json stdout remains pure JSON"; else bad "timing: --json stdout polluted"; fi
+
 echo ""
 echo "run-hook-tests-parallel: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -308,8 +308,9 @@ total=$n
 # run_suite <slot> <path>: runs in a background subshell. Parse-checks the suite, runs it with
 # its own TMPDIR and stdin closed, and records the exit code last (its presence means "finished").
 run_suite() {
-  local slot="$1" t="$2" d="$WORK/$1" rc=0 syn=""
+  local slot="$1" t="$2" d="$WORK/$1" rc=0 syn="" t0 t1
   mkdir -p "$d/tmp" || { printf '%s\n' 70 > "$d/rc"; return 0; }
+  t0="$(date +%s)"
   if syn="$(bash -n "$t" 2>&1)"; then
     TMPDIR="$d/tmp" bash "$t" </dev/null >"$d/out" 2>&1 || rc=$?
   else
@@ -317,6 +318,10 @@ run_suite() {
     printf "ERROR: %s does not parse — \`bash -n\` rejected it, so the suite never ran:\n%s\n" \
       "$t" "$syn" >"$d/out"
   fi
+  t1="$(date +%s)"
+  # Wall-clock seconds for this suite (issue #2207 timing table). Written before the rc marker,
+  # so a finished slot always has its timing.
+  printf '%s %s\n' "$t0" "$t1" > "$d/time"
   printf '%s\n' "$rc" > "$d/rc.tmp" && mv "$d/rc.tmp" "$d/rc"
 }
 
@@ -382,6 +387,8 @@ run_pool() {
         wait "$p" 2>/dev/null
         printf 'ERROR: %s exceeded the per-suite timeout (%ss) and was killed\n' \
           "${SUITE_PATH[$i]}" "$SUITE_TIMEOUT" >> "$WORK/$i/out"
+        # Record the elapsed time the timing table needs, in the same format run_suite writes.
+        printf '%s %s\n' "$s" "$now" > "$WORK/$i/time"
         printf '%s\n' 124 > "$WORK/$i/rc"
         continue
       fi
@@ -408,8 +415,11 @@ run_pool() {
 }
 
 # The pool first (bounded concurrency), then the serial group one at a time.
+RUN_T0="$(date +%s)"
 run_pool "$JOBS" ${POOL_SLOTS[@]+"${POOL_SLOTS[@]}"}
+POOL_T1="$(date +%s)"
 run_pool 1 ${SERIAL_SLOTS[@]+"${SERIAL_SLOTS[@]}"}
+RUN_T1="$(date +%s)"
 
 failed=0
 FAILED_LIST=""
@@ -464,6 +474,42 @@ while [ "$slot" -lt "$total" ]; do
         }' "$SUITE_OUT" 2>/dev/null)"$'\n'
   fi
 done
+
+# Timing table (issue #2207): per-suite wall seconds, the pool and serial-group totals, and the
+# effective concurrency each phase reached. The same text lands in the log file, so a CI run's
+# captured output carries its own measurements. Advisory: it never changes the exit status.
+if [ "$total" -gt 0 ]; then
+  TIMING_TSV="$WORK/timing.tsv"
+  : > "$TIMING_TSV"
+  slot=0
+  while [ "$slot" -lt "$total" ]; do
+    t="${SUITE_PATH[$slot]}"
+    kind=pool
+    if grep -Fxq -- "$t" <<<"$SERIAL_GROUP"; then kind=serial; fi
+    t0=""; t1=""
+    if [ -f "$WORK/$slot/time" ]; then read -r t0 t1 < "$WORK/$slot/time"; fi
+    [ -n "$t0" ] && [ -n "$t1" ] || { t0=0; t1=0; }
+    printf '%s\t%s\t%s\n' "$((t1 - t0))" "$kind" "$t" >> "$TIMING_TSV"
+    slot=$((slot + 1))
+  done
+  POOL_WALL=$((POOL_T1 - RUN_T0))
+  SERIAL_WALL=$((RUN_T1 - POOL_T1))
+  TOTAL_WALL=$((RUN_T1 - RUN_T0))
+  CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo unknown)"
+  timing_report="$(printf '\n[CONCURRENCY] pool jobs=%s cpus=%s runner=%s/%s\n' "$JOBS" "$CPUS" "$(uname -s)" "$(uname -m)")"
+  timing_report="${timing_report}$(awk -F'\t' -v pw="$POOL_WALL" -v sw="$SERIAL_WALL" -v tw="$TOTAL_WALL" -v jobs="$JOBS" '
+      $2 == "pool"   { pn++; ps += $1 }
+      $2 == "serial" { sn++; ss += $1 }
+      END {
+        printf "[TIMING] wall=%ss (pool %ss + serial %ss)\n", tw, pw, sw
+        printf "[TIMING] pool: %d suites, sum %ss, effective concurrency %.2f of %s jobs\n", pn + 0, ps + 0, (pw > 0 ? ps / pw : 0), jobs
+        printf "[TIMING] serial: %d suites, sum %ss\n", sn + 0, ss + 0
+      }' "$TIMING_TSV")"
+  timing_report="${timing_report}"$'\n'"[TIMING] slowest 30 suites:"$'\n'"$(sort -t$'\t' -k1,1nr "$TIMING_TSV" | head -n 30 \
+    | awk -F'\t' '{ printf "  %5ss  %-6s  %s\n", $1, $2, $3 }')"
+  say "$timing_report"
+  printf '%s\n' "$timing_report" >> "$LOG"
+fi
 
 if [ "$SELECT_MODE" -eq 0 ]; then
   say "$(printf '\nDiscovered and ran %s bash test suite(s); %s failed.\nFull output: %s' "$total" "$failed" "$LOG")"
