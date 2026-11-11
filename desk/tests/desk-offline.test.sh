@@ -240,7 +240,7 @@ dcli() {
   rm -f "$STUB_DIR/url" "$STUB_DIR/args"
   RC=0
   # Bash 3.2 with nounset treats an empty array as unset.
-  env -i HOME="$H" PATH="$MINPATH" TMPDIR="$TMP" STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$STUB" \
+  env -i HOME="$H" PATH="$MINPATH" TMPDIR="$TMP" STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$STUB" HUMAN_QUEUE_SCHEMA=hq_test_offline \
     ${envs[@]+"${envs[@]}"} bash "$BIN/desk-cli.sh" "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
@@ -457,7 +457,7 @@ DUE='[{"id": "D-9", "session": "s9", "failures": 1, "retry": 1}, {"id": "D-2", "
 
 dtick() {
   RC=0
-  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" "$@" \
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" "$@" \
     >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
@@ -722,7 +722,7 @@ done
 treset
 printf '%s\n' "$OURS" > "$STUB_DIR/status"
 printf '[]\n' > "$STUB_DIR/tick-default"
-env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_TICK_SECONDS=2 \
+env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" HUMAN_QUEUE_TICK_SECONDS=2 \
   bash "$BIN/desk-tick.sh" --session desk-1 --generation g3 >/dev/null 2>&1 </dev/null &
 LOOP=$!
 SLEEPERS="$SLEEPERS $LOOP"

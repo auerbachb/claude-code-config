@@ -1628,7 +1628,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
    fi
    ```
-6. **Send heartbeat.** If >5 minutes since last user message, send a status update: a timestamp line (`TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`), then the **"Running now" table** — the same shape Step 7.2 printed at launch, re-rendered — then pending transitions and blockers.
+6. **Send heartbeat.** When this inline round belongs to `/pm`, use its Step 3.3a report gate in the existing turn and deliver at most one report after processing the tick's outcomes. For standalone rounds, apply the existing output policy to the following heartbeat guidance. If >5 minutes since last user message, send a status update: a timestamp line (`TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`), then the **"Running now" table** — the same shape Step 7.2 printed at launch, re-rendered — then pending transitions and blockers.
 
    Build the table from the `CELLS_THIS_PR` computed in step 5, one row per pipeline, accumulated across iterations. **`Start` is read back from state and stays constant across ticks**; only Status, Projected end, and Remaining are recomputed. Queued issues stay in the table as `queued` rows with `—` clocks, and flip to a started row on the tick after they launch. Never emit the round as a bulleted list.
 
@@ -2041,6 +2041,8 @@ Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this
 - `run_in_background: true`
 
 ### Phase C Completion
+
+When the round belongs to `/pm`, retain each verified terminal outcome for its Step 3.3a report gate. Supply the event on this completion turn unless the same turn will run the inline-tick or D5 gate. Standalone phase output follows the existing policy.
 
 When a Phase C subagent returns:
 

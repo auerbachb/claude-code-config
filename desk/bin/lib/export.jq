@@ -159,7 +159,7 @@ def ex_md_body: tostring | ex_md_esc | gsub("\\\\\\*\\\\\\*"; "**");
 # export's own words and rules do not. Lines that must stay lines end in two
 # spaces (a Markdown line break), which reads as nothing on paper when the
 # Markdown itself is printed.
-def ex_md_item:
+def ex_md_item($pandoc):
   "## " + .n + "  " + (.heading | ex_md_lit),
   "",
   (if .meta != "" then (.meta | ex_md_lit), "" else empty end),
@@ -169,23 +169,26 @@ def ex_md_item:
   (if .default != null then (.default | ex_md_lit), "" else empty end),
   (if .todo != null then (.todo | ex_md_lit), "" else empty end),
   (if .link != null then "Link: " + (.link.label | ex_md_lit) + " — " + (.link.url | ex_md_lit), "" else empty end),
-  (if .open then .answer_label + " " + ex_rule, "", ex_rule, ""
+  # Pandoc turns each inline underscore into a wide LaTeX glyph. Size
+  # the rule for the longer Review label so it stays inside the text block.
+  (if .open then .answer_label + " " + (if $pandoc then ex_rule[0:28] else ex_rule end), "", ex_rule, ""
    elif .answer != null then "Answered: " + (.answer | ex_md_lit), ""
    else empty end);
 
-def export_markdown($print_footer):
+def ex_markdown($pandoc):
   ([ "# Desk export · " + ex_title,
      "",
      ex_subtitle,
      "",
      ex_hint,
      "",
-     (ex_items[] | ex_md_item),
+     (ex_items[] | ex_md_item($pandoc)),
      (ex_more | ., ""),
-     (if $print_footer then "---", "", ex_footer else empty end) ]
+     (if $pandoc then empty else "---", "", ex_footer end) ]
    | join("\n")) + "\n";
 
-def export_markdown: export_markdown(true);
+def export_markdown: ex_markdown(false);
+def export_pandoc_markdown: ex_markdown(true);
 
 # ----------------------------------------------------------- plain text
 

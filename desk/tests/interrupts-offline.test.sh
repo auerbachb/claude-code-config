@@ -220,11 +220,11 @@ dtick() {
   rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
   RC=0
   if [ -n "$pol" ]; then
-    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
       HUMAN_QUEUE_POLICY="$pol" PATH="$TMP/sleepbin:$PATH" \
       "${DTICK_SHELL:-bash}" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   else
-    env -u HUMAN_QUEUE_POLICY STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+    env -u HUMAN_QUEUE_POLICY STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
       PATH="$TMP/sleepbin:$PATH" \
       "${DTICK_SHELL:-bash}" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   fi
@@ -300,7 +300,7 @@ midsleep() {
   local next_policy="$2"
   shift 2
   RC=0
-  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
     HUMAN_QUEUE_POLICY="$TMP/live-run.json" NEXT_POLICY="$next_policy" PATH="$TMP/sleepbin2:$PATH" \
     "${DTICK_SHELL:-bash}" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
 }
@@ -566,7 +566,7 @@ mkdir -p "$TMP/run" "$TMP/blocktmp"
 run_block() {
   rm -f "$STUB_DIR/hq-args" "$STUB_DIR/hq-calls"
   (cd "$TMP/run" && env DESK="$HQ_T_DESK_DIR" HQ="$HSTUB" SID="desk-1" STUB_DIR="$STUB_DIR" \
-     HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+     HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
      TMPDIR="$TMP/blocktmp" HUMAN_QUEUE_POLICY="${3:-$TMP/missing.json}" "$1" "$2") 2>&1
 }
 args() { tr '\n' ' ' < "$STUB_DIR/hq-args" 2>/dev/null | sed 's/ $//'; }
