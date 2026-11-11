@@ -156,10 +156,11 @@ pm_dependency_case() {
   local test_case="$1" parser="${2-$SCRIPT}"
   PM_TEST_CASE="$test_case" ISSUE_DEPS_SH="$parser" REPO_KEY=acme/widgets "$BASH" -u -c \
     "$PM_INPUT_BLOCK"$'\n''gh() {
-      [ "$*" = "issue view $3 --repo acme/widgets --json number,body,title,labels,comments,assignees" ] || return 2
+      [ "$*" = "issue view $3 --repo acme/widgets --json number,state,body,title,labels,comments,assignees" ] || return 2
       case "$3" in
-        42) printf "%s\n" "{\"number\":42,\"body\":\"Depends on #41\",\"comments\":[]}" ;;
-        43) printf "%s\n" "{\"number\":43,\"body\":\"\",\"comments\":[{\"body\":\"Blocked by #42\"}]}" ;;
+        42) printf "%s\n" "{\"number\":42,\"state\":\"OPEN\",\"body\":\"Depends on #41\",\"comments\":[]}" ;;
+        43) printf "%s\n" "{\"number\":43,\"state\":\"OPEN\",\"body\":\"\",\"comments\":[{\"body\":\"Blocked by #42\"}]}" ;;
+        46) printf "%s\n" "{\"number\":46,\"state\":\"CLOSED\",\"body\":\"Depends on #42\",\"comments\":[]}" ;;
         44) return 1 ;;
         45) printf "%s\n" "{\"body\":\"Depends on #42\",\"comments\":[]}" ;;
       esac
@@ -169,6 +170,9 @@ pm_dependency_case() {
     case "$PM_TEST_CASE" in
       single) PM_RANK_CANDIDATES="[42]" ;;
       complete) PM_RANK_ISSUE_OBJECTS+=$'"'"'\n'"'"'$(pm_read_rank_candidate 43) || exit 99 ;;
+      closed)
+        PM_RANK_CANDIDATES="[42,46]"
+        PM_RANK_ISSUE_OBJECTS+=$'"'"'\n'"'"'$(pm_read_rank_candidate 46) || exit 99 ;;
       missing) ;;
       failed-fetch|missing-number)
         if [ "$PM_TEST_CASE" = failed-fetch ]; then requested=44; else requested=45; fi
@@ -182,6 +186,8 @@ check_eq "PM uses a numbered single candidate" \
 check_eq "PM assembles body and comment edges" \
   $'PM_RANK_DEPS_ROUTE=ready\n[{"blocker":41,"blocked":42},{"blocker":42,"blocked":43}]' \
   "$(pm_dependency_case complete)"
+check_eq "a closed candidate contributes no dependency edges" \
+  $'PM_RANK_DEPS_ROUTE=ready\n[{"blocker":41,"blocked":42}]' "$(pm_dependency_case closed)"
 check_eq "PM reports incomplete candidate input as unknown" PM_RANK_DEPS_ROUTE=unknown \
   "$(pm_dependency_case missing)"
 check_eq "PM retains the existing manual read with a verified array" PM_RANK_DEPS_ROUTE=manual-read \

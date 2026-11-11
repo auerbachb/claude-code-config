@@ -29,10 +29,11 @@ pm_read_rank_candidate() {
   [[ "$candidate_number" =~ ^[1-9][0-9]{0,9}$ &&
      "${REPO_KEY:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 4
   candidate=$(gh issue view "$candidate_number" --repo "$REPO_KEY" \
-    --json number,body,title,labels,comments,assignees) || return 4
+    --json number,state,body,title,labels,comments,assignees) || return 4
   jq -cse --argjson number "$candidate_number" '
     select(length == 1) | .[0] | objects |
-    select(.number == $number and (.body | type == "string") and
+    select(.number == $number and (.state == "OPEN" or .state == "CLOSED") and
+      (.body | type == "string") and
       (.comments | type == "array") and all(.comments[]; .body | type == "string"))
   ' <<< "$candidate"
 }
@@ -43,7 +44,8 @@ pm_rank_dependency_inputs() {
       all($expected[]; type == "number") and
       ($expected | length) == ($expected | unique | length)) |
     select(all(.[]; type == "object" and (.number | type == "number") and
-      (.body | type == "string") and (.comments | type == "array") and
+      (.state == "OPEN" or .state == "CLOSED") and (.body | type == "string") and
+      (.comments | type == "array") and
       all(.comments[]; .body | type == "string"))) |
     select((map(.number) | sort) == ($expected | sort))
   ' <<< "$PM_RANK_ISSUE_OBJECTS"
@@ -52,7 +54,8 @@ pm_rank_dependency_inputs() {
 
 Set `PM_RANK_CANDIDATES` to the exact shortlist as a JSON array of numbers.
 Set `PM_RANK_ISSUE_OBJECTS` to one verified object per candidate, including
-retained unchanged candidates in a rescan. Revalidate the combined set when
+retained unchanged candidates in a rescan. Refresh older cached objects
+without a typed issue state before parsing. Revalidate the combined set when
 the bounded ranking uses a second page. Then run:
 
 <!-- test-anchor: pm-rank-parse-dependencies -->
