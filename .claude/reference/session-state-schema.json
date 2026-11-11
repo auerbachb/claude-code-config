@@ -60,7 +60,7 @@
       },
       "_pm_backlog_scan_at_comment": "When `/pm` last fetched this repo's backlog successfully (UTC ISO 8601, set back five minutes so a fast local clock never skips an issue), written by the `pm-1b2-new-issues` block in `/pm` Step 1B.2 (issue #1766). The next scan names every open, unassigned, non-excluded issue created after it as `NEW_ISSUES` — shortlisted and shown with its tier — so an idea filed from the desk is ranked on the first scan after it was filed. Absent means the last 24 hours. It moves only after a successful fetch.",
       "pm_backlog_scan_at": "2026-10-07T17:49:11Z",
-      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
+      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time. New activations carry a unique generation. A verified legacy /end clear may add legacy_resume with its bound native UUID and the unchanged native gate fingerprint. It scopes a retry to the same stopped inventory.",
       "execution_pauses": {
         "session-example": {
           "active": true,
@@ -72,6 +72,7 @@
           "cleared_at": null
         }
       },
+      "_legacy_end_resume_scopes_comment": "A guarded legacy /end clear publishes this map by native UUID with the exact legacy key and native gate fingerprint. While a task is reserved under that legacy key, the native launch hook also checks its gate under the execution-pause state lock.",
       "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. end-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
       "background_tasks": [
         {
