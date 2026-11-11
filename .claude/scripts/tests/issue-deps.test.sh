@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests for issue-deps.sh (issue #1760).
 # catalog: tests — Tests for `issue-deps.sh`: the `/pm` 1B.3 marker set in bodies and comments (any case), edge direction, chains, diamonds, cycles, cross-repo and self references, closed issues, and a failing read that never reads as zero
+# covers: .claude/scripts/issue-deps.sh .claude/skills/pm/modules/rank/score.md
 # Stubs `gh` on PATH with fixture JSON. Run from anywhere:
 #   bash .claude/scripts/tests/issue-deps.test.sh
 set -uo pipefail
@@ -145,6 +146,64 @@ check_contains "--help ends with its dependencies" "jq 1.6+" "$HELP"
 # scan takes one argument, case folded by an inline (?i) in the regex itself.
 SCAN2=$(grep -n -E 'scan\([^()]*;' "$SCRIPT" | grep -v -E '^[0-9]+:#' || true)
 check_eq "jq 1.6: no two-argument scan in the program" "" "$SCAN2"
+
+# ---- PM's actual numbered candidate route -----------------------------------
+source "$REPO_ROOT/.claude/scripts/tests/lib/skill-bash.sh"
+RANK_SCORE="$REPO_ROOT/.claude/skills/pm/modules/rank/score.md"
+PM_INPUT_BLOCK=$(extract_skill_bash "$RANK_SCORE" pm-rank-numbered-dependency-inputs) || exit 1
+PM_PARSE_BLOCK=$(extract_skill_bash "$RANK_SCORE" pm-rank-parse-dependencies) || exit 1
+pm_dependency_case() {
+  local test_case="$1" parser="${2-$SCRIPT}"
+  PM_TEST_CASE="$test_case" ISSUE_DEPS_SH="$parser" REPO_KEY=acme/widgets "$BASH" -u -c \
+    "$PM_INPUT_BLOCK"$'\n''gh() {
+      [ "$*" = "issue view $3 --repo acme/widgets --json number,state,body,title,labels,comments,assignees" ] || return 2
+      case "$3" in
+        42) printf "%s\n" "{\"number\":42,\"state\":\"OPEN\",\"body\":\"Depends on #41\",\"comments\":[]}" ;;
+        43) printf "%s\n" "{\"number\":43,\"state\":\"OPEN\",\"body\":\"\",\"comments\":[{\"body\":\"Blocked by #42\"}]}" ;;
+        46) printf "%s\n" "{\"number\":46,\"state\":\"CLOSED\",\"body\":\"Depends on #42\",\"comments\":[]}" ;;
+        44) return 1 ;;
+        45) printf "%s\n" "{\"body\":\"Depends on #42\",\"comments\":[]}" ;;
+      esac
+    }
+    PM_RANK_CANDIDATES="[42,43]"
+    PM_RANK_ISSUE_OBJECTS=$(pm_read_rank_candidate 42) || exit 99
+    case "$PM_TEST_CASE" in
+      single) PM_RANK_CANDIDATES="[42]" ;;
+      complete) PM_RANK_ISSUE_OBJECTS+=$'"'"'\n'"'"'$(pm_read_rank_candidate 43) || exit 99 ;;
+      closed)
+        PM_RANK_CANDIDATES="[42,46]"
+        PM_RANK_ISSUE_OBJECTS+=$'"'"'\n'"'"'$(pm_read_rank_candidate 46) || exit 99 ;;
+      missing) ;;
+      failed-fetch|missing-number)
+        if [ "$PM_TEST_CASE" = failed-fetch ]; then requested=44; else requested=45; fi
+        if pm_read_rank_candidate "$requested"; then exit 99; fi
+        exit 0 ;;
+    esac'$'\n'"$PM_PARSE_BLOCK"$'\n''printf "%s\n" "$PM_RANK_DEPENDENCIES"'
+}
+
+check_eq "PM uses a numbered single candidate" \
+  $'PM_RANK_DEPS_ROUTE=ready\n[{"blocker":41,"blocked":42}]' "$(pm_dependency_case single)"
+check_eq "PM assembles body and comment edges" \
+  $'PM_RANK_DEPS_ROUTE=ready\n[{"blocker":41,"blocked":42},{"blocker":42,"blocked":43}]' \
+  "$(pm_dependency_case complete)"
+check_eq "a closed candidate contributes no dependency edges" \
+  $'PM_RANK_DEPS_ROUTE=ready\n[{"blocker":41,"blocked":42}]' "$(pm_dependency_case closed)"
+check_eq "PM reports incomplete candidate input as unknown" PM_RANK_DEPS_ROUTE=unknown \
+  "$(pm_dependency_case missing)"
+check_eq "PM retains the existing manual read with a verified array" PM_RANK_DEPS_ROUTE=manual-read \
+  "$(pm_dependency_case complete '')"
+check_eq "PM reports a failed parser as unknown" PM_RANK_DEPS_ROUTE=unknown \
+  "$(pm_dependency_case complete /usr/bin/false)"
+if pm_dependency_case failed-fetch >/dev/null; then
+  pass "PM does not accept a failed candidate read"
+else
+  fail "PM accepted a failed candidate read"
+fi
+if pm_dependency_case missing-number >/dev/null; then
+  pass "PM does not accept an object without its number"
+else
+  fail "PM accepted an object without its number"
+fi
 
 echo
 echo "issue-deps.test.sh: $PASS passed, $FAIL failed"

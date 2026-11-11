@@ -16,12 +16,68 @@ Reading all issue bodies is expensive. Use a two-pass approach:
 
 **Every issue in `NEW_ISSUES` (1B.2) joins the shortlist in addition to the quick-scan candidates**, so an issue filed since the last scan is always read, scored, and tiered on the first scan after it was filed. The 1B.5 output then **names each of them with its tier**, even when it ranks below the top 3–5, as one line after the ranked list: `New since the last scan: #N — title (Tier)` (several joined with `; `). A new issue the 1B.3 / 1B.4 checks later drop (an open PR, a dependency) is named the same way with that reason in place of the tier, so the operator sees it was picked up.
 
-**Pass 2 — Deep read:** Fetch full bodies and score the entire shortlist in 1B.4:
+**Pass 2 — Deep read:** Fetch the full bodies and comments and score the
+entire shortlist in 1B.4. For each issue that needs a read, call
+`pm_read_rank_candidate <number>` below. Keep each successful result as a
+single JSON object. A bounded rescan reuses verified unchanged objects and
+calls it for the same candidates it previously needed to refresh.
 
+<!-- test-anchor: pm-rank-numbered-dependency-inputs -->
 ```bash
-# For each candidate issue number:
-gh issue view $NUMBER --json body,title,labels,comments,assignees
+pm_read_rank_candidate() {
+  local candidate_number="$1" candidate
+  [[ "$candidate_number" =~ ^[1-9][0-9]{0,9}$ &&
+     "${REPO_KEY:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 4
+  candidate=$(gh issue view "$candidate_number" --repo "$REPO_KEY" \
+    --json number,state,body,title,labels,comments,assignees) || return 4
+  jq -cse --argjson number "$candidate_number" '
+    select(length == 1) | .[0] | objects |
+    select(.number == $number and (.state == "OPEN" or .state == "CLOSED") and
+      (.body | type == "string") and
+      (.comments | type == "array") and all(.comments[]; .body | type == "string"))
+  ' <<< "$candidate"
+}
+
+pm_rank_dependency_inputs() {
+  jq -cse --argjson expected "$PM_RANK_CANDIDATES" '
+    select(($expected | type) == "array" and
+      all($expected[]; type == "number") and
+      ($expected | length) == ($expected | unique | length)) |
+    select(all(.[]; type == "object" and (.number | type == "number") and
+      (.state == "OPEN" or .state == "CLOSED") and (.body | type == "string") and
+      (.comments | type == "array") and
+      all(.comments[]; .body | type == "string"))) |
+    select((map(.number) | sort) == ($expected | sort))
+  ' <<< "$PM_RANK_ISSUE_OBJECTS"
+}
 ```
+
+Set `PM_RANK_CANDIDATES` to the exact shortlist as a JSON array of numbers.
+Set `PM_RANK_ISSUE_OBJECTS` to one verified object per candidate, including
+retained unchanged candidates in a rescan. Refresh older cached objects
+without a typed issue state before parsing. Revalidate the combined set when
+the bounded ranking uses a second page. Then run:
+
+<!-- test-anchor: pm-rank-parse-dependencies -->
+```bash
+PM_RANK_DEPS_ROUTE=unknown
+PM_RANK_DEPENDENCIES=''
+if PM_RANK_DEP_INPUTS=$(pm_rank_dependency_inputs); then
+  if [ -z "${ISSUE_DEPS_SH:-}" ]; then
+    PM_RANK_DEPS_ROUTE=manual-read
+  elif PM_RANK_DEPENDENCIES=$("$ISSUE_DEPS_SH" parse <<< "$PM_RANK_DEP_INPUTS"); then
+    PM_RANK_DEPS_ROUTE=ready
+  fi
+fi
+printf 'PM_RANK_DEPS_ROUTE=%s\n' "$PM_RANK_DEPS_ROUTE"
+```
+
+Use `PM_RANK_DEPENDENCIES` only on `ready`. On `manual-read`, the helper
+was unavailable, so apply Step 0's existing manual marker check to the
+validated array. On `unknown`, report that dependency data is unverified,
+keep the prior plan, and stop before launching or promoting candidates from
+this scan. Do the same if any deep read fails, even when other candidates
+were readable. Retry on the next eligible ranking or refill.
 
 Extract from each:
 - Scope and intent (what the issue actually asks for, not just the title)
@@ -29,7 +85,7 @@ Extract from each:
 - Dependency references, from the body **and** comments. **Match these markers case-insensitively** — the same way the closing-keyword rule below does, and for a concrete reason: `/issue-maker` Step 8 and `/subagent` Step 5.1 both write increment links as `- Depends on #N` at the start of a list item, so a case-sensitive read would collect none of them and every increment chain would look parallelizable to `/wave` Step 5.1:
   - Blocked direction: `blocked by #N`, `depends on #N`, `prerequisite for #N`, `after #N`
   - Unblocking direction: `unblocks #N`, `enables #N`, `required by #N`, `before #N`
-  - **`issue-deps.sh` is the canonical reading of these markers** (issue #1760): `"$ISSUE_DEPS_SH" parse` reads the `--json number,body,comments` you already fetched (one array) and prints the blocker → blocked edges; `edges <owner/repo>` and `dependents <owner/repo> <N>...` read the repo's open issues themselves. Build 1B.4's dependency map from its edges rather than by eye, so `/pm`, `/wave` (5.1), and the desk's derived impact (`human-queue.sh impact`, which counts an issue's open dependents with the same script) can never read the markers differently.
+  - **`issue-deps.sh` is the canonical reading of these markers** (issue #1760): `"$ISSUE_DEPS_SH" parse` reads the verified numbered candidate array above and prints the blocker → blocked edges; `edges <owner/repo>` and `dependents <owner/repo> <N>...` read the repo's open issues themselves. Build 1B.4's dependency map from its edges rather than by eye, so `/pm`, `/wave` (5.1), and the desk's derived impact (`human-queue.sh impact`, which counts an issue's open dependents with the same script) can never read the markers differently.
 - In-flight signal: cross-reference against the open-PR list already fetched in 1B.2 (now includes `body`) — a PR body containing a GitHub closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) for this issue's number means a PR is already underway; match both local (`#N`) and cross-repo (`owner/repo#N`) reference forms. GitHub's closing keywords live in PR bodies, not in the issue's own text, so this signal is never collected from the issue body or comments — same source Section 3.3's progress detection reuses.
 - Complexity signals: number of acceptance criteria, files mentioned, architectural scope
 - Current assignee — who, if anyone, is already on it
