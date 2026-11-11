@@ -3,26 +3,37 @@ Route `resume:load`. Load config and persisted work for a resume. Continue to re
 <!-- pm-routing:end -->
 ### 1A.1: Load pm-config.md
 
+<!-- test-anchor: pm-resume-load-config -->
 ```bash
-# Probe the config file via the shared parser. IMPORTANT: run the probe as a
-# direct call first, not via `mapfile < <(...)`. With mapfile, `$?` captures
-# mapfile's exit code (always 0 on success) — NOT the script's — so a probe
-# like `mapfile ...; LIST_RC=$?` would silently never see the rc=2
-# (config-missing) signal.
-"$PM_CONFIG_GET" --list >/dev/null 2>&1
-LIST_RC=$?
+LIST_RC=0
+SECTION_NAMES=$("$PM_CONFIG_GET" --list 2>/dev/null) || LIST_RC=$?
+PM_RESUME_CONFIG=""
+if [ "$LIST_RC" -eq 0 ]; then
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    SECTION_RC=0
+    SECTION_BODY=$("$PM_CONFIG_GET" --section "$name" 2>/dev/null) || SECTION_RC=$?
+    case "$SECTION_RC" in
+      0|1)
+        printf -v PM_RESUME_CONFIG '%s## %s\n%s\n' "$PM_RESUME_CONFIG" "$name" "$SECTION_BODY"
+        ;;
+      *)
+        LIST_RC="$SECTION_RC"
+        PM_RESUME_CONFIG=""
+        break
+        ;;
+    esac
+  done <<< "$SECTION_NAMES"
+fi
+printf 'LIST_RC=%s\n' "$LIST_RC"
+if [ "$LIST_RC" -eq 0 ]; then printf '%s' "$PM_RESUME_CONFIG"; fi
 ```
 
-- If `LIST_RC == 2`: tell the user to run `/pm-handoff` first to bootstrap the config, mark `1A failed (resume config unavailable)`, and finish the invocation.
-- Otherwise: enumerate sections and iterate for bodies:
-
-  ```bash
-  mapfile -t SECTIONS < <("$PM_CONFIG_GET" --list 2>/dev/null)
-  for name in "${SECTIONS[@]}"; do
-    body="$("$PM_CONFIG_GET" --section "$name" 2>/dev/null)"
-    # store (name, body) — same loop as `/pm-handoff` Step 3
-  done
-  ```
+- If `LIST_RC == 2`, tell the user to run `/pm-handoff` to bootstrap the
+  config, mark `1A failed (resume config unavailable)`, and finish the invocation.
+- If `LIST_RC == 1`, the config has no sections. Continue without section bodies.
+- If another nonzero code remains, report the failed config read and stop
+  resume. Do not proceed with partial config.
 
 ### 1A.2: Load in-flight state
 
