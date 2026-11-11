@@ -105,6 +105,10 @@ check "three cached summaries in batch order with their own source" \
   '[["R-3","pr-3","Pandoc falls through to Chrome."],["R-2","pr-2","The cache key is the commit SHA."],["R-1","pr-1","Retries run every five minutes."]]'
 check "a cache question miss points to the cache Review's PR" \
   "$(jq -r '.[] | select(.id == "R-2") | .link.url' <<< "$sources")" 'https://github.com/owner/fixture/pull/2'
+large_batch=()
+for ((n=1000; n<1505; n++)); do large_batch+=("R-$n"); done
+check "eligible summaries can follow more than 500 batch IDs" \
+  "$(hq quiz sources "${large_batch[@]}" R-2 | jq -c '[.[].id]')" '["R-2"]'
 check "looking up quiz sources writes nothing" "$(sql "SELECT count(*) FROM state WHERE key LIKE 'quiz_count:%'")" 0
 check "completed quiz advances today's count" "$(hq quiz complete)" 1
 check "another completed quiz advances the same count" "$(hq quiz complete)" 2

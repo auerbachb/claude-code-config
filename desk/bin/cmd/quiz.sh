@@ -22,6 +22,9 @@ USAGE
 }
 
 hq__quiz_sources() {
+  # The comma-separated canonical Review IDs contain only R, digits and
+  # hyphens. Bind them through the script to avoid a process argument limit.
+  printf '%s\n' "\\set hq_ids '$1'"
   cat <<'SQL'
 WITH batch AS (
   SELECT id, min(ord) AS ord
@@ -40,7 +43,7 @@ SQL
 hq__quiz_complete() {
   cat <<'SQL'
 INSERT INTO state (key, value)
-VALUES ('quiz_count:' || (now() AT TIME ZONE 'America/New_York')::date, '1')
+VALUES ('quiz_count:' || (now() AT TIME ZONE :'hq_tz')::date, '1')
 ON CONFLICT (key) DO UPDATE SET value = (state.value::bigint + 1)::text
 RETURNING value;
 SQL
@@ -51,7 +54,7 @@ cmd_run() {
   case "${1:-}" in
     sources)
       shift
-      [ "$#" -ge 1 ] && [ "$#" -le 500 ] || hq_die_validation "quiz: supply 1 to 500 reviewed IDs"
+      [ "$#" -ge 1 ] || hq_die_validation "quiz: supply at least one reviewed ID"
       for raw in "$@"; do
         hq_item_id id "$raw"
         hq_require_kind quiz "$id" review
@@ -69,7 +72,7 @@ cmd_run() {
 
   hq_db_connect
   hq_mktemp errf
-  out=$("$query" | hq_db_script -At -v "hq_ids=$ids" 2>"$errf") || rc=$?
+  out=$("$query" "$ids" | hq_db_script -At -v "hq_tz=$(hq_desk_tz)" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then hq_db_fail "$rc" "$errf" "quiz: store operation failed"; fi
   if [ "$query" = hq__quiz_sources ]; then
     printf '%s\n' "$out" | hq_jq -c -L "$HQ_DESK_DIR/skill" 'include "desk"; map(. + {link: item_link})'
