@@ -156,7 +156,12 @@ hqb_store() {
     HQB_REASON="cannot create $dir"
     return 7
   fi
-  chmod 700 "$dir" 2>/dev/null || true
+  # Fail closed: a directory this account cannot secure is not one to write
+  # the registry into.
+  if ! chmod 700 "$dir" 2>/dev/null; then
+    HQB_REASON="cannot make $dir owner-only"
+    return 7
+  fi
   tmp=$(mktemp "$dir/bindings.XXXXXX" 2>/dev/null) || { HQB_REASON="cannot create a temp file in $dir"; return 7; }
   {
     if [ -f "$file" ]; then

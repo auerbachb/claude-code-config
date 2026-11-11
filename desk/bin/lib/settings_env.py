@@ -42,7 +42,13 @@ def load(path):
 def get(path):
     env = load(path).get("env")
     if isinstance(env, dict) and isinstance(env.get(ENV_KEY), str):
-        sys.stdout.write(env[ENV_KEY] + "\n")
+        value = env[ENV_KEY]
+        # The caller reads this through $(...), which strips trailing newlines:
+        # a value with a line break would bind a different queue than the one
+        # written here, and drop would then leave the entry behind.
+        if "\n" in value or "\r" in value:
+            fail(4, "the HUMAN_QUEUE_SCHEMA entry has a line break; remove it by hand")
+        sys.stdout.write(value + "\n")
     return 0
 
 

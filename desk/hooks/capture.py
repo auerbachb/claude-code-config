@@ -336,17 +336,33 @@ def config_dir():
     elif d.startswith("~/"):
         d = home + d[1:]
     if not d.startswith("/"):
-        d = os.getcwd() + "/" + d
+        d = logical_cwd() + "/" + d
     while len(d) > 1 and d.endswith("/"):
         d = d[:-1]
     return d
+
+
+def logical_cwd():
+    """The working directory as the shell sees it ($PWD, symlinks kept), so a
+    relative CLAUDE_CONFIG_DIR resolves to the same path bindings.sh uses.
+    Falls back to the physical cwd when $PWD does not name it."""
+    pwd = os.environ.get("PWD") or ""
+    if pwd.startswith("/") and os.path.isdir(pwd):
+        try:
+            if os.path.samefile(pwd, "."):
+                return pwd
+        except OSError:
+            pass
+    return os.getcwd()
 
 
 def bindings_path():
     override = os.environ.get("HUMAN_QUEUE_BINDINGS_FILE")
     if override:
         return override
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    # Mirrors bindings.sh: ${XDG_CONFIG_HOME:-${HOME:-}/.config}. An unset HOME
+    # is an empty prefix there, not the passwd home.
+    base = os.environ.get("XDG_CONFIG_HOME") or ((os.environ.get("HOME") or "") + "/.config")
     return os.path.join(base, BINDINGS_FILE)
 
 
@@ -354,6 +370,16 @@ def lookup_binding(directory):
     """(name, schema) bound to DIRECTORY, or None when unbound. A malformed
     registry, or a directory listed twice, raises FailOpen (fail closed)."""
     path = bindings_path()
+    # Check the file type before opening: open() on a FIFO with no writer
+    # blocks, and the hook would hang instead of failing open.
+    try:
+        mode = os.stat(path).st_mode
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise FailOpen("the queue bindings file is not readable")
+    if not stat.S_ISREG(mode):
+        raise FailOpen("the queue bindings file is not a readable regular file")
     try:
         fh = open(path, encoding="utf-8", newline="")
     except FileNotFoundError:
