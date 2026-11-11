@@ -2153,6 +2153,11 @@ Mark `3.1 ran` when the dispatch or offer and its required records are verified.
 Mark `3.1 failed` for a launch or record failure and `3.1 skipped` for a known
 hold or an empty selection. Use the actual reason.
 
+After recording verified launches and their queue state, refresh the
+[project page](../../reference/pm-output-templates.md#persistent-project-board)
+once in the dispatch turn. Coalesce this with any terminal or scheduled
+refresh in Step 3.3a.
+
 ### 3.2: Track assignments
 
 Maintain a state table in the conversation. Update it as work progresses:
@@ -2292,6 +2297,14 @@ refills, and when a verified terminal outcome reaches the PM parent outside
 those ticks. Evaluate once per turn after consolidating its outcomes. Keep the
 gate and delivery in this PM thread. Do not arm a reporting-only monitor or
 invoke a separate model to check for changes.
+
+**Project page.** Refresh the same current-repo page on a verified dispatch,
+each observed merged or blocked outcome, and every due report, including
+D5 and the PM-owned inline monitor. Follow the
+[persistent project board](../../reference/pm-output-templates.md#persistent-project-board)
+projection and publication steps. Gather the turn's evidence before the
+single publish, even when chat reporting is disabled. Add the verified
+page link to each scheduled report.
 
 ### 3.4: Keep the pipeline full (capacity refill)
 

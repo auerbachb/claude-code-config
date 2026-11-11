@@ -27,6 +27,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [park-generation.sh](../park-generation.sh) | Mints a durable usage-limit park identity from OS entropy |
 | [park-retire.sh](../park-retire.sh) | Retires a bound park snapshot without adopting a replacement |
 | [park-wake-publish.sh](../park-wake-publish.sh) | Publishes a wake identity onto its bound park; recovery can replace a proven-dead wake |
+| [pm-board-page.sh](../pm-board-page.sh) | Publish a private read-only project board from verified PM evidence. |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |
 | [pm-rank-cache.sh](../pm-rank-cache.sh) | `/pm`'s latest backlog ranking cache (`~/.claude/pm-rank/<owner>-<repo>.json`): `/pm` 1B.4c writes the order it presents, the desk's derived impact reads an issue's rank while the cache is under 24 hours old (else rank unknown) |
