@@ -53,6 +53,59 @@
 
 HQ_ANSWER_MAX=4000
 
+# shellcheck source=bindings.sh
+. "$HQ_BIN_DIR/lib/bindings.sh"
+
+# hq_binding_arg VAR — the caller's binding name (HUMAN_QUEUE_BINDING, issue
+# #2184), validated and stored in the variable named VAR (empty when no name was
+# given). An invalid name exits 4 before any connection attempt; it can never
+# reach psql unchecked.
+hq_binding_arg() {
+  local hq__name=""
+  if [ -n "${HUMAN_QUEUE_BINDING:-}" ]; then
+    if ! hqb_valid_name "$HUMAN_QUEUE_BINDING"; then
+      hq_die_validation "HUMAN_QUEUE_BINDING must be an account name (letters, digits, dot, underscore, hyphen)"
+    fi
+    # The name reaches psql's argv and the refusal line: a secret-shaped one
+    # stops here, before any connection (the callers load secrets.sh).
+    hq_refuse_secret "HUMAN_QUEUE_BINDING" "$HUMAN_QUEUE_BINDING"
+    hq__name="$HUMAN_QUEUE_BINDING"
+  fi
+  printf -v "$1" '%s' "$hq__name"
+}
+
+# hq_sql_owner_guard_open — the queue owner check (issue #2184), emitted inside
+# a guarded write transaction after its lock prelude. A SHARED advisory lock on
+# the queue's owner stamp is held until commit, so `owner transfer` (exclusive)
+# cannot land between this check and the write. The stamp is compared with the
+# caller's binding name (:'hq_binding'; empty for an unnamed call). Equal, or
+# both empty (an unnamed call on an unstamped queue, unchanged from before), is
+# ok. Anything else sets hq_owner_problem and the body is skipped: the caller
+# prints `!reason` through hq_sql_owner_guard_close, and nothing is written.
+hq_sql_owner_guard_open() {
+  cat <<'SQL'
+SELECT pg_advisory_xact_lock_shared(hashtextextended('human-queue:owner:' || :'hq_schema', 0)) AS hq_owner_locked \gset
+SELECT coalesce((SELECT value FROM state WHERE key = 'queue_owner'), '') AS hq_owner \gset
+SELECT CASE
+         WHEN :'hq_owner' = :'hq_binding' THEN ''
+         WHEN :'hq_owner' = '' THEN 'this queue has no owner yet; only bind (desk-cli.sh bind --name NAME --schema SCHEMA) records one, and nothing was written'
+         WHEN :'hq_binding' = '' THEN 'this queue belongs to ''' || :'hq_owner' || '''; this call names no account binding, so nothing was written'
+         ELSE 'this queue belongs to ''' || :'hq_owner' || '''; this caller is bound as ''' || :'hq_binding' || ''', so nothing was written'
+       END AS hq_owner_problem \gset
+SELECT :'hq_owner_problem' = '' AS hq_owner_ok \gset
+\if :hq_owner_ok
+SQL
+}
+
+# hq_sql_owner_guard_close — closes hq_sql_owner_guard_open's block.
+hq_sql_owner_guard_close() {
+  cat <<'SQL'
+\else
+SELECT '!' || :'hq_owner_problem';
+\endif
+SQL
+}
+
 # hq_wake_retries — the wake-up retries that follow a first failed wake-up
 # (issue #1781): `wake` parks an answer when this many retries have failed
 # too, and `wake-due` lists an answer for a retry while it has any left. One

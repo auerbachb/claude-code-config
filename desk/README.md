@@ -51,6 +51,7 @@ The hook entries under `.claude/hooks/` are symlinks into this folder
 - <a name="sets"></a>[Sets](docs/sets.md)
 - <a name="state-control-and-tick"></a>[State, control, and tick](docs/state-control-tick.md)
 - <a name="account-bindings-issue-2183"></a>[Account bindings (issue #2183)](docs/account-bindings.md)
+  - <a name="queue-owner-issue-2184"></a>[Queue owner (issue #2184)](docs/account-bindings.md#queue-owner-issue-2184)
 - <a name="capture-hook"></a>[Capture hook](docs/capture-hook.md)
   - <a name="decisions-from-codex-cursor-and-other-tools"></a>[Decisions from Codex, Cursor, and other tools](docs/capture-hook.md#decisions-from-codex-cursor-and-other-tools)
 - <a name="migrations"></a>[Migrations](docs/migrations.md)
@@ -77,3 +78,11 @@ The hook entries under `.claude/hooks/` are symlinks into this folder
 - <a name="review-batches"></a>[Review batches](docs/review-batches.md)
 - <a name="export-to-paper-issue-1759"></a>[Export to paper (issue #1759)](docs/export-to-paper.md)
 <!-- desk-docs-index:end -->
+
+### Queue owner: decisions (issue #2184)
+
+- **The queue knows its owner.** `bind` stamps the queue with the account's binding name under the reserved `queue_owner` state key. `register-control`, `tick --session`, and `add` refuse a caller whose name differs (exit 4, one line naming both, nothing written). `bind` (and `carry-over`, which runs `bind`) runs `owner set NAME`, the only path that stamps an unstamped queue; `owner transfer NAME --confirm` is the explicit move to another owner, and it reports the open items first.
+- **Unstamped queues refuse named calls** with instructions to bind. Unnamed calls on unstamped queues are unchanged. The capture hook fails open either way: the menu renders and one warning line is printed.
+- **The stamp is the name, not the signed-in identity (decided: name only).** No hook or CLI input reliably exposes the signed-in account without reading credential-adjacent profile state, and an email would put personal data in the queue. A profile re-logged into a different account therefore still matches its name; this gap is accepted and revisited only if an identifier becomes available to hooks without touching credentials.
+
+Details, the test seam's name rule, and the tick loop's stop: [Account bindings](docs/account-bindings.md#queue-owner-issue-2184).

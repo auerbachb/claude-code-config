@@ -92,6 +92,21 @@ hqb_test_schema() {
   printf '%s\n' "$s"
 }
 
+# hqb_test_binding — prints HUMAN_QUEUE_BINDING (the caller's binding name for
+# the queue owner check, issue #2184) only when the test schema seam is in use
+# and the name carries the hq_test_ prefix; any other value prints nothing.
+# So the seam can never name a real account, and an unnamed test call keeps the
+# pre-#2184 behavior on an unstamped schema.
+hqb_test_binding() {
+  local n="${HUMAN_QUEUE_BINDING:-}"
+  case "$n" in
+    hq_test_*) ;;
+    *) return 0 ;;
+  esac
+  hqb_valid_name "$n" && printf '%s\n' "$n"
+  return 0
+}
+
 # hqb_lookup DIR — the row bound to DIR (see return codes above). On 0, sets
 # HQB_NAME and HQB_SCHEMA. Not run in a subshell, so HQB_REASON survives. A
 # duplicate row for DIR, or any malformed row, is a corrupt registry: fail closed.

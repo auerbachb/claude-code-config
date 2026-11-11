@@ -316,6 +316,8 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}\Z")
 # HUMAN_QUEUE_SCHEMA is honored by the desk only for a throwaway test schema.
 TEST_SCHEMA_RE = re.compile(r"^hq_test_[a-z0-9_]{0,55}\Z")
+# The binding name a test schema may carry (issue #2184): hq_test_ names only.
+TEST_BINDING_RE = re.compile(r"^hq_test_[A-Za-z0-9._-]{0,56}\Z")
 
 
 def valid_schema(value):
@@ -410,13 +412,26 @@ def lookup_binding(directory):
     return found
 
 
+def test_binding():
+    """The binding name a test schema may carry (issue #2184): HUMAN_QUEUE_BINDING
+    only when it starts with hq_test_, else "" (an unnamed call). A real
+    account's name never comes from the environment, so the test seam cannot
+    name one."""
+    name = os.environ.get("HUMAN_QUEUE_BINDING", "")
+    if TEST_BINDING_RE.match(name) and NAME_RE.match(name):
+        return name
+    return ""
+
+
 def queue_for_this_account():
     """(schema, name) for this hook call. HUMAN_QUEUE_SCHEMA counts only when it
     names a throwaway test schema; anything else is ignored. Unbound raises
-    FailOpen naming the bind command, so the menu renders and nothing is queued."""
+    FailOpen naming the bind command, so the menu renders and nothing is queued.
+    NAME is the account's binding name, which the queue checks against its
+    owner (issue #2184); "" for an unnamed test call."""
     test = os.environ.get("HUMAN_QUEUE_SCHEMA", "")
     if TEST_SCHEMA_RE.match(test) and valid_schema(test):
-        return test, "test"
+        return test, test_binding()
     directory = config_dir()
     bound = lookup_binding(directory)
     if bound is None:
@@ -682,12 +697,14 @@ def run(hook, raw):
         raise FailOpen("the hook input has no questions")
 
     # Unbound accounts stop here: no URL, no store call, nothing queued.
-    schema, _name = queue_for_this_account()
+    schema, binding = queue_for_this_account()
 
     cli = resolve_cli()
     env = dict(os.environ)
     env["HUMAN_QUEUE_DATABASE_URL"] = resolve_url(hook)
     env["HUMAN_QUEUE_SCHEMA"] = schema
+    # The queue refuses this call unless the name matches its owner (issue #2184).
+    env["HUMAN_QUEUE_BINDING"] = binding
     store = Store(hook, cli, env)
 
     control = live_control_session(hook, store)
