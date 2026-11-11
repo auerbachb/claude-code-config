@@ -209,7 +209,7 @@ For every candidate, produce a footprint (a set of paths) using the **first** so
 
 Resolve the target repository root and use its `.claude/pm-config.md` as `--file` on both area calls. Run `"$ISSUE_AREA" --config-only --file "$AREA_CONFIG"` before collecting extra hints. With no active section, skip source 5. If the helper is unavailable and a config could declare areas, or if validation fails, report the diagnostic once and keep the existing conservative footprint checks.
 
-For an active section, reuse the ranking's issue number, labels, title and body. Fetch missing hints for a pathless candidate with `gh issue view N --json number,title,body,labels`. If that read fails, keep the candidate undeclared. Pass one JSON array on stdin to `"$ISSUE_AREA" --file "$AREA_CONFIG"`, with normalized `paths` for path candidates and complete `labels` (strings), `title`, and `body` for pathless candidates. Use the helper's `issues` map by issue number when its response has `enabled: true`. Use `area` and its `source` only when no path evidence exists. If the batch fails, apply no area placements or path tags from that batch.
+For an active section, reuse the ranking's issue number, labels, title and body. Fetch missing hints for a pathless candidate with `gh issue view N --json number,title,body,labels`. If that read fails, keep the candidate undeclared. Pass a JSON object on stdin to `"$ISSUE_AREA" --file "$AREA_CONFIG"`. Its `issues` array holds normalized `paths` for path candidates and complete `labels` (strings), `title`, and `body` for pathless candidates. An explicit null body means the issue has no description. Include the `paths_by_surface` map from Step 4. Use the helper's `issues` map by issue number when its response has `enabled: true`. Use `area` and its `source` only when no path evidence exists. If the batch fails, apply no area placements or path tags from that batch.
 
 Normalize before comparing: trim, strip leading `./`, drop trailing slashes, deduplicate.
 
@@ -226,7 +226,9 @@ Two issues collide when they touch the same **surface**, which is usually the sa
 | `.claude/settings.json` | `project-settings` |
 | Anything else | the exact normalized path |
 
-For area footprints, the surface is `area:<name>`. Keep the helper's `path_areas` tags separate from exact path surfaces. Compare those tags only against an area footprint. Two paths in one area still use the existing exact-path and declared-coupling checks.
+For area footprints, add `area:<name>` and any shared surfaces the configured globs cover. For the area pass in Step 3, build `paths_by_surface` from the shared-surface rules in this step. For each named surface, include its explicit members, candidate paths mapped to it, and tracked paths under any wildcard member such as `.claude/rules/*.md`. Apply repository-declared couplings to this map as well. Copy the matched `areas[NAME].shared_surfaces` into the area footprint before Step 5.2. The same response includes the configured globs. Include a shared wildcard surface when those globs can cover it and the known path list cannot rule it out.
+
+Keep the helper's `path_areas` tags separate from exact path surfaces. Compare those tags only against an area footprint. Two paths in one area still use the existing exact-path and declared-coupling checks.
 
 **Why the rule corpus is one surface:** `rule-lint.sh` fails when the corpus exceeds the committed ratchet cap in `.claude/rules/.budget-soft-cap`, so two branches that each add words to *different* rule files still collide — the second to merge inherits a cap the first already consumed. Same mechanical collision for shared settings files, where two branches append different keys to one JSON object.
 

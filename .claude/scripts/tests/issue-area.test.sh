@@ -21,7 +21,7 @@ CONFIG = """## Independent areas
 | Area | Paths | Labels | Keywords |
 | --- | --- | --- | --- |
 | billing | `services/billing/`, `billing.toml` | billing, team:billing | invoice, payment retry |
-| mailer | `services/**/mailer/` | mailer | outgoing email |
+| mailer | `services/**/mailer/**` | mailer | outgoing email |
 | web | `apps/web/*`, `services/**/mailer/ui/` | web | web client |
 """
 PAIR = subprocess.check_output([
@@ -49,11 +49,12 @@ class IssueAreas(unittest.TestCase):
         self.config = self.root / "pm-config.md"
         self.config.write_text(CONFIG, encoding="utf-8")
 
-    def run_cli(self, issues=(), *, only=False, file=None):
+    def run_cli(self, issues=(), *, only=False, file=None, shared=None):
         args = [str(SCRIPT), "--file", str(file or self.config)]
         if only:
             args.append("--config-only")
-        return subprocess.run(args, cwd=self.root, input=json.dumps(issues), text=True,
+        payload = {"issues": issues, "paths_by_surface": shared or {}}
+        return subprocess.run(args, cwd=self.root, input=json.dumps(payload), text=True,
                               capture_output=True, check=False)
 
     def project(self, *issues):
@@ -104,6 +105,9 @@ class IssueAreas(unittest.TestCase):
             issue(5, paths=["services/east/mailer/cmd/worker.py"]),
             issue(6, labels=["billing"], paths=["package-lock.json"]),
             issue(7, labels=["mailer"], paths=["package-lock.json"]),
+            issue(8, paths=["services/billing"]),
+            issue(9, paths=["apps/web"]),
+            issue(10, paths=["services/mailer"]),
         )
         self.assertIsNone(rows[2]["area"])
         self.assertEqual(rows[4]["path_areas"], ["mailer", "web"])
@@ -114,8 +118,38 @@ class IssueAreas(unittest.TestCase):
         self.assertEqual(rows[6]["path_areas"], [])
         self.assertIsNone(rows[6]["area"])
         self.assertIsNone(rows[7]["area"])
+        self.assertEqual(rows[8]["path_areas"], ["billing"])
+        self.assertEqual(rows[9]["path_areas"], ["web"])
+        self.assertEqual(rows[10]["path_areas"], ["mailer"])
+        self.assertIn("same area billing", compare(rows[8], rows[1]))
         wave = WAVE.read_text(encoding="utf-8")
         self.assertLess(wave.index("Any surface shared"), wave.index("<!-- test-anchor: wave-area-pair -->"))
+
+    def test_explicit_null_body_keeps_label_and_other_batch_tags(self):
+        _, rows = self.project(issue(1, labels=["mailer"], body=None),
+                               issue(2, paths=["services/billing/handler.py"]))
+        self.assertEqual(rows[1]["area"], "mailer")
+        self.assertEqual(rows[2]["path_areas"], ["billing"])
+
+    def test_area_inherits_existing_shared_surface_membership(self):
+        self.config.write_text(
+            CONFIG + "| rules | .claude/rules/ | rules | |\n", encoding="utf-8",
+        )
+        shared = {
+            "rule-corpus": ["CLAUDE.md", ".claude/rules/review.md"],
+            "dependency-locks": ["services/billing/package-lock.json", "package-lock.json"],
+            "project-settings": [".claude/settings.json"],
+        }
+        result = self.run_cli([issue(1, labels=["rules"]), issue(2, paths=["CLAUDE.md"]),
+                               issue(3, labels=["billing"])], shared=shared)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["issues"]["1"]["area"], "rules")
+        self.assertEqual(output["issues"]["2"]["path_areas"], [])
+        self.assertEqual(output["areas"]["rules"]["shared_surfaces"], ["rule-corpus"])
+        self.assertEqual(output["areas"]["billing"]["shared_surfaces"], ["dependency-locks"])
+        self.assertEqual(output["areas"]["web"]["shared_surfaces"], [])
+        self.assertEqual(output["areas"]["rules"]["globs"], [".claude/rules/"])
 
     def test_inactive_config_preserves_prior_pair_decisions(self):
         for content in ("", "## Independent Areas\n", "## Independent areas\n",
@@ -168,6 +202,7 @@ class IssueAreas(unittest.TestCase):
         self.assertIn('--config-only', step3)
         subagent = (ROOT / ".claude/skills/subagent/SKILL.md").read_text(encoding="utf-8")
         step60 = subagent.split("### 6.0b:", 1)[1].split("### 6.0c:", 1)[0]
+        self.assertIn("ISSUE_AREA=$(resolve_script issue-area.py || true)", subagent)
         self.assertIn("../wave/SKILL.md#step-3", step60)
         self.assertIn("area-only chain", step60)
         self.assertNotIn("| Area | Paths |", step60)

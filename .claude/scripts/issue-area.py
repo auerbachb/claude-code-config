@@ -7,6 +7,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 
 HEADER = ("Area", "Paths", "Labels", "Keywords")
@@ -14,6 +15,13 @@ AREA = re.compile(r"[a-z][a-z0-9-]*\Z")
 GLOB = re.compile(r"[a-zA-Z0-9._/*?-]+\Z")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 HEADING = re.compile(r"^## (.+?)\s*$")
+
+
+class Area(NamedTuple):
+    globs: list
+    patterns: list
+    labels: set
+    keywords: list
 
 
 def entries(value):
@@ -29,12 +37,13 @@ def path_pattern(glob):
     if (not GLOB.fullmatch(glob) or glob.startswith("/")
             or any(part in ("", ".", "..") for part in glob.removesuffix("/").split("/"))):
         raise ValueError("area globs must be repository-relative paths")
-    if glob.endswith("/"):
-        glob += "*"
-    tokens = re.split(r"(\*\*/|\*+|\?)", glob)
+    directory = glob.endswith(("/", "/*", "/**"))
+    scope = glob.rsplit("/", 1)[0] if directory else glob
+    tokens = re.split(r"(\*\*/|\*+|\?)", scope)
     special = {"**/": "(?:.*/)?", "?": "."}
-    return re.compile("".join(special.get(token, ".*" if token.startswith("*")
-                                          else re.escape(token)) for token in tokens))
+    pattern = "".join(special.get(token, ".*" if token.startswith("*")
+                                  else re.escape(token)) for token in tokens)
+    return re.compile(pattern + ("(?:/.*)?" if directory else ""))
 
 
 def live_lines(text):
@@ -114,10 +123,12 @@ def load_areas(section):
         name = name.casefold()
         if not AREA.fullmatch(name) or name in areas:
             raise ValueError("area names must be unique slugs")
-        patterns = [path_pattern(glob) for glob in entries(globs)]
+        globs = entries(globs)
+        patterns = [path_pattern(glob) for glob in globs]
         if not patterns:
             raise ValueError("each area must have at least one path glob")
-        areas[name] = (
+        areas[name] = Area(
+            globs,
             patterns,
             {label.casefold() for label in entries(labels)},
             [re.compile(r"(?<![\w-])" + re.escape(word.casefold()) + r"(?![\w-])")
@@ -134,37 +145,56 @@ def footprint(areas, issue):
         return {
             "area": None,
             "source": None,
-            "path_areas": [name for name, (globs, _, _) in areas.items()
-                           if any(glob.fullmatch(path) for path in paths for glob in globs)],
+            "path_areas": [name for name, area in areas.items()
+                           if any(pattern.fullmatch(path) for path in paths for pattern in area.patterns)],
         }
     labels = issue.get("labels")
     title, body = issue.get("title"), issue.get("body")
+    if "body" in issue and body is None:
+        body = ""
     if (not isinstance(labels, list) or not all(isinstance(label, str) for label in labels)
             or not isinstance(title, str) or not isinstance(body, str)):
         raise ValueError("pathless issue requires complete labels, title and body")
     label_set = {label.casefold() for label in labels}
-    matches = [name for name, (_, hints, _) in areas.items() if hints & label_set]
+    matches = [name for name, area in areas.items() if area.labels & label_set]
     source = "label"
     if not matches:
         source = "keyword"
         text = f"{title}\n{body}".casefold()
-        matches = [name for name, (_, _, hints) in areas.items()
-                   if any(hint.search(text) for hint in hints)]
+        matches = [name for name, area in areas.items()
+                   if any(hint.search(text) for hint in area.keywords)]
     unique = len(matches) == 1
     return {"area": matches[0] if unique else None,
             "source": source if unique else None, "path_areas": []}
 
 
-def evaluate(areas, issues):
-    if not isinstance(issues, list):
-        raise ValueError("expected an issue array")
+def evaluate(areas, payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get("issues"), list):
+        raise ValueError("expected a batch with an issue array")
+    issues = payload["issues"]
+    shared = payload.get("paths_by_surface")
+    if (not isinstance(shared, dict) or not all(
+            name and isinstance(paths, list)
+            and all(isinstance(path, str) and path for path in paths)
+            for name, paths in shared.items())):
+        raise ValueError("shared surfaces require arrays of normalized paths")
+    area_scopes = {
+        name: {
+            "globs": area.globs,
+            "shared_surfaces": [
+                surface for surface, paths in shared.items()
+                if any(pattern.fullmatch(path) for pattern in area.patterns for path in paths)
+            ],
+        }
+        for name, area in areas.items()
+    }
     results = {}
     for issue in issues:
         if (not isinstance(issue, dict) or type(issue.get("number")) is not int
                 or issue["number"] <= 0 or issue["number"] in results):
             raise ValueError("issues require unique positive numbers")
         results[issue["number"]] = footprint(areas, issue)
-    return results
+    return {"issues": results, "areas": area_scopes}
 
 
 def main():
@@ -183,7 +213,7 @@ def main():
         areas = load_areas(section)
         output = {"enabled": bool(areas)}
         if not options.config_only:
-            output["issues"] = evaluate(areas, json.load(sys.stdin))
+            output.update(evaluate(areas, json.load(sys.stdin)))
         print(json.dumps(output, separators=(",", ":")))
     except (OSError, ValueError) as error:
         print(f"issue-area: {error}", file=sys.stderr)
