@@ -104,7 +104,51 @@ jobs:
   # #1473: the portable-handoff-publish lock-contention flake). This job runs
   # the SAME bash-suite discovery on macos-latest; a new test is covered by
   # both jobs with no edit here.
-  hook-tests-macos:
+  # Issue #2207: the macOS full run is split into two shards on two macOS runners, because one
+  # 3-vCPU job cannot finish the full suite under the 30-minute target. A PR whose selection is
+  # not the full set keeps ONE shard, so it pays for a single macOS runner as before.
+  # The required check name stays `hook-tests-macos`: the aggregate job below carries that name
+  # and passes only when the plan and every shard succeed.
+  hook-tests-macos-plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      selection: ${{ steps.plan.outputs.selection }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide macOS shard count
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SEL="$RUNNER_TEMP/hook-test-selection-plan.txt"
+          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
+            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
+          fi
+          if grep -Fxq 'ALL' "$SEL"; then
+            SHARDS='[{"index":1,"count":2},{"index":2,"count":2}]'
+          else
+            SHARDS='[{"index":1,"count":1}]'
+          fi
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+          echo "selection=$(base64 < "$SEL" | tr -d '\n')" >> "$GITHUB_OUTPUT"
+          echo "macOS shards: $SHARDS"
+
+  hook-tests-macos-shard:
+    needs: hook-tests-macos-plan
+    # The matrix is never empty: the plan always emits at least shard 1/1, so a selection the
+    # selector resolved to zero bash suites still runs the runner once, as before.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.hook-tests-macos-plan.outputs.shards) }}
+    name: hook-tests-macos-shard ${{ matrix.index }}/${{ matrix.count }}
     runs-on: macos-latest
     # session-start-sync-publish-bounds.test.sh's ample-budget control proves its stall
     # assertion is not vacuous by running a HEALTHY publisher inside the hook's
@@ -127,15 +171,14 @@ jobs:
 
       # Decide once per job which suites this PR can affect (issue #2153). Fail toward the
       # full run: a selector that exits non-zero hands the runners ALL, never a partial list.
-      - name: Select hook test suites this PR can affect
+      # The selection is decided once, by hook-tests-macos-plan, and passed here; shards never
+      # re-run the selector, so every shard sees the same suite list the plan counted.
+      - name: Restore the planned hook test selection
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SELECTION_B64: ${{ needs.hook-tests-macos-plan.outputs.selection }}
         run: |
           SEL="$RUNNER_TEMP/hook-test-selection.txt"
-          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
-            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
-          fi
+          printf '%s' "$SELECTION_B64" | base64 -d > "$SEL" || { echo "::error::cannot restore the planned selection" >&2; exit 1; }
           echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
           cat "$SEL"
 
@@ -178,8 +221,28 @@ jobs:
           fi
           python3 -c 'import yaml; print("PyYAML available:", yaml.__version__)'
 
-      - name: Run bash hook + script test suites (auto-discovered, macOS)
-        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh --only-file "$HOOK_TEST_SELECTION"
+      - name: Run bash hook + script test suites (auto-discovered, macOS shard ${{ matrix.index }}/${{ matrix.count }})
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS shard ${{ matrix.index }}/${{ matrix.count }})" .github/scripts/run-hook-tests.sh --shard "${{ matrix.index }}/${{ matrix.count }}" --only-file "$HOOK_TEST_SELECTION"
+
+  # The one check branch protection requires for macOS. It reports once per PR and passes only
+  # when the plan and every shard finished with success. Cancelled, skipped and failed shards
+  # all fail it. The zero-suite case is preserved: the shard still runs the runner, which exits 0.
+  hook-tests-macos:
+    needs: [hook-tests-macos-plan, hook-tests-macos-shard]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every macOS shard to succeed
+        env:
+          PLAN_RESULT: ${{ needs.hook-tests-macos-plan.result }}
+          SHARD_RESULT: ${{ needs.hook-tests-macos-shard.result }}
+        run: |
+          if [ "$PLAN_RESULT" = "success" ] && [ "$SHARD_RESULT" = "success" ]; then
+            echo "All macOS hook-test shards passed."
+            exit 0
+          fi
+          echo "::error::macOS hook tests did not pass: plan=$PLAN_RESULT, shards=$SHARD_RESULT"
+          exit 1
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
