@@ -88,7 +88,8 @@ URL, is refused with exit 7 rather than silently dropped.
 | Variable | Meaning |
 |----------|---------|
 | `HUMAN_QUEUE_DATABASE_URL` | `postgres://` URL of the store. Required; secret |
-| `HUMAN_QUEUE_SCHEMA` | Schema every statement runs in (default `public`), applied with `SET LOCAL search_path` inside each transaction. Tests set it to a throwaway schema |
+| `HUMAN_QUEUE_SCHEMA` | Schema every statement runs in (default `public`) for the raw `human-queue.sh` CLI, applied with `SET LOCAL search_path` inside each transaction. The desk entry points (`desk-cli.sh`, the capture hook) honor it only when it names a throwaway `hq_test_*` schema; any other value is ignored and the account's binding governs (see "Account bindings") |
+| `HUMAN_QUEUE_BINDINGS_FILE` | The account registry file (default `${XDG_CONFIG_HOME:-~/.config}/human-queue/bindings.tsv`); tests point it at a temp file |
 | `HUMAN_QUEUE_PSQL` | `psql` 15+ binary to use (installed Homebrew PostgreSQL 17/16/15 kegs preferred, then `PATH`, libpq kegs and linked Homebrew; explicit override wins) |
 | `HUMAN_QUEUE_EXPORT_RENDERER` | `export`'s PDF renderer: `auto` (default: pandoc, then headless Chrome, then cupsfilter), one of those three, or `markdown` (none) |
 | `HUMAN_QUEUE_PANDOC`, `HUMAN_QUEUE_CHROME`, `HUMAN_QUEUE_CUPSFILTER` | That renderer's binary; set to anything that is not an executable file, it counts as not installed (tests) |
@@ -273,6 +274,16 @@ full contract.
   registered owner under the same locks. The argument-free compatibility
   command has no caller identity: any such tick committing after registration
   can make it live, so its stamp does not prove the new session itself ticked.
+
+## Account bindings (issue #2183)
+
+Every Claude account is explicitly bound to one queue. There is no fallback to `public`.
+
+- **Identity.** An account is its config directory: `CLAUDE_CONFIG_DIR` when set and non-empty, else `$HOME/.claude`, with `~` expanded, made absolute, and trailing slashes removed. The match is lexical on purpose (no symlink resolution, no case folding), because Claude Code derives a credential realm from the spelling. A differently spelled alias is unbound and refused, never mapped.
+- **Registry.** `${XDG_CONFIG_HOME:-~/.config}/human-queue/bindings.tsv` (outside every profile, so copying a profile's `settings.json` never copies a binding), directory 700, file 600. One row per account: directory, name, queue schema, tab separated. It holds no connection URL.
+- **Guard.** `desk-cli.sh` resolves the queue from the registry before every subcommand except `bindings`, `bind`, and `carry-over`. An unbound account exits 4 with "You can't run the desk here until you configure a queue for this account" and the bind command, before any store contact or `register-control`. The capture hook renders the menu, queues nothing, and prints one warning line naming the bind command. A malformed registry (a duplicate or bad row) fails closed.
+- **Commands.** `desk-cli.sh bind --name <name> --schema <schema> [--config-dir <dir>] [--rebind]` migrates the queue, then records the binding; a different existing queue needs `--rebind`. `desk-cli.sh bindings` lists accounts and queues. `desk-cli.sh carry-over [--profile <dir>]... [--dry-run]` binds the default directory to `public` as `personal`, and each profile to the `HUMAN_QUEUE_SCHEMA` in its `settings.json`, then removes that interim entry.
+- **Tests.** `desk/tests/bindings-offline.test.sh` covers the guard, isolation, `bind`, `bindings`, the hook, bash/python agreement, corruption, and carry-over, all against temp directories.
 
 ## Capture hook
 

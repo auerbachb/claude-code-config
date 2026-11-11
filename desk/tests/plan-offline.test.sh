@@ -527,7 +527,7 @@ dtick() {
   local sh="$1" clock="$2" pol="$3"
   shift 3
   RC=0
-  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
     HUMAN_QUEUE_CLOCK="$clock" HUMAN_QUEUE_POLICY="${pol:-$TMP/no-policy.json}" \
     "$sh" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
@@ -619,7 +619,7 @@ desk-tick g1 new D-4"
       expected_error='desk-tick independent error interrupt exit 1: interrupt get printed something other than a JSON object with boolean held'
     fi
     RC=0
-    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
       HUMAN_QUEUE_CLOCK="2026-10-08 17:40" HUMAN_QUEUE_POLICY="$TMP/no-policy.json" HUMAN_QUEUE_TICK_SECONDS=1 \
       perl -e 'alarm 20; exec @ARGV' "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation independent \
         >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
@@ -634,7 +634,7 @@ desk-tick g1 new D-4"
   treset
   printf 'due 2026-10-08\n' > "$STUB_DIR/sweep-out"
   RC=0
-  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
     HUMAN_QUEUE_CLOCK="2026-10-08 17:40" HUMAN_QUEUE_POLICY="$TMP/no-policy.json" HUMAN_QUEUE_TICK_SECONDS=1 \
     perl -e 'alarm 4; exec @ARGV' "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g2 >"$TMP/out" 2>/dev/null </dev/null || RC=$?
   OUT=$(cat "$TMP/out")

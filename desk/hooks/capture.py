@@ -304,6 +304,100 @@ def resolve_url(hook):
                    "~/.config/human-queue/database_url, or a shell profile")
 
 
+# --- the account's queue (issue #2183) ---------------------------------------
+#
+# Mirrors desk/bin/lib/bindings.sh exactly: same registry file, same row
+# format, same config-dir normalization, same validity rules. The bash suite
+# asserts the two agree on one fixture. Lookup is lexical by design (no symlink
+# resolution, no case folding): an alias spelling is unbound, so it fails closed.
+
+BINDINGS_FILE = os.path.join("human-queue", "bindings.tsv")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}\Z")
+# HUMAN_QUEUE_SCHEMA is honored by the desk only for a throwaway test schema.
+TEST_SCHEMA_RE = re.compile(r"^hq_test_[a-z0-9_]{0,55}\Z")
+
+
+def valid_schema(value):
+    return bool(SCHEMA_RE.match(value)) and not value.startswith("pg_")
+
+
+def config_dir():
+    """The resolved config directory: CLAUDE_CONFIG_DIR when non-empty, else
+    $HOME/.claude; ~ expanded, absolute, no trailing slashes."""
+    home = os.environ.get("HOME") or ""
+    d = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    if not d:
+        if not home:
+            raise FailOpen("cannot find this account's queue: neither CLAUDE_CONFIG_DIR nor HOME is set")
+        d = home + "/.claude"
+    if d == "~":
+        d = home
+    elif d.startswith("~/"):
+        d = home + d[1:]
+    if not d.startswith("/"):
+        d = os.getcwd() + "/" + d
+    while len(d) > 1 and d.endswith("/"):
+        d = d[:-1]
+    return d
+
+
+def bindings_path():
+    override = os.environ.get("HUMAN_QUEUE_BINDINGS_FILE")
+    if override:
+        return override
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, BINDINGS_FILE)
+
+
+def lookup_binding(directory):
+    """(name, schema) bound to DIRECTORY, or None when unbound. A malformed
+    registry, or a directory listed twice, raises FailOpen (fail closed)."""
+    path = bindings_path()
+    try:
+        fh = open(path, encoding="utf-8", newline="")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise FailOpen("the queue bindings file is not readable")
+    found = None
+    count = 0
+    with fh:
+        for raw in fh:
+            line = raw[:-1] if raw.endswith("\n") else raw
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) != 3 or not parts[0].startswith("/"):
+                raise FailOpen("the queue bindings file has a malformed row")
+            dir_, name, schema = parts
+            if not NAME_RE.match(name) or not valid_schema(schema):
+                raise FailOpen("the queue bindings file has a row with an invalid name or queue")
+            if dir_ == directory:
+                count += 1
+                found = (name, schema)
+    if count > 1:
+        raise FailOpen("the queue bindings file lists this account more than once")
+    return found
+
+
+def queue_for_this_account():
+    """(schema, name) for this hook call. HUMAN_QUEUE_SCHEMA counts only when it
+    names a throwaway test schema; anything else is ignored. Unbound raises
+    FailOpen naming the bind command, so the menu renders and nothing is queued."""
+    test = os.environ.get("HUMAN_QUEUE_SCHEMA", "")
+    if TEST_SCHEMA_RE.match(test) and valid_schema(test):
+        return test, "test"
+    directory = config_dir()
+    bound = lookup_binding(directory)
+    if bound is None:
+        desk_cli = os.path.join(DESK_DIR, "bin", "desk-cli.sh")
+        raise FailOpen("this account has no queue; bind it with %s bind --name <name> --schema <schema>"
+                       % desk_cli)
+    name, schema = bound
+    return schema, name
+
+
 # --- running things ----------------------------------------------------------
 
 def run_bounded(hook, argv, env, cap, what):
@@ -558,9 +652,13 @@ def run(hook, raw):
     if not isinstance(raw_questions, list) or not raw_questions:
         raise FailOpen("the hook input has no questions")
 
+    # Unbound accounts stop here: no URL, no store call, nothing queued.
+    schema, _name = queue_for_this_account()
+
     cli = resolve_cli()
     env = dict(os.environ)
     env["HUMAN_QUEUE_DATABASE_URL"] = resolve_url(hook)
+    env["HUMAN_QUEUE_SCHEMA"] = schema
     store = Store(hook, cli, env)
 
     control = live_control_session(hook, store)
