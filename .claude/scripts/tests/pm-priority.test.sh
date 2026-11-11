@@ -34,7 +34,8 @@ PM_ROOT="$REPO_ROOT/.claude/skills/pm"
 PM_SKILL="$TMP/pm-rank-source.md"
 cat "$PM_ROOT/SKILL.md" \
   "$PM_ROOT/modules/rank/load.md" \
-  "$PM_ROOT/modules/rank/score.md" > "$PM_SKILL" || exit 1
+  "$PM_ROOT/modules/rank/score.md" \
+  "$PM_ROOT/modules/flow/refill.md" > "$PM_SKILL" || exit 1
 TMP="$(cd -P "$TMP" && pwd)"   # macOS: /var → /private/var, so paths compare equal
 
 export HOME="$TMP/home"

@@ -17,7 +17,8 @@ for phase in preconditions arm tick teardown recovery park-reactive park-preempt
 done
 
 for pair in resume:load resume:fetch resume:present rank:load rank:fetch rank:score \
-    rank:present shared:priority shared:window-fit shared:ownership; do
+    rank:present shared:priority shared:window-fit shared:ownership flow:cleanup flow:forgotten-prs \
+    flow:monitor flow:launch flow:track flow:progress flow:refill flow:handoff; do
   operation=${pair%:*}
   phase=${pair#*:}
   chosen=$("$BASH" "$dispatcher" "$operation" "$phase")
@@ -54,12 +55,17 @@ trace_route() {
     pair=${pair#\`}; pair=${pair%\`}
     module=$("$BASH" "$dispatcher" "${pair%:*}" "${pair#*:}") || return
     selected="${selected}${selected:+ }${module#"$skill/modules/"}"
-  done <<< "$(grep -oE '`(resume|rank|shared|day):[a-z-]+`' <<< "$row" || true)"
+  done <<< "$(grep -oE '`(resume|rank|shared|day|flow):[a-z-]+`' <<< "$row" || true)"
   printf '%s\n' "$selected"
 }
 
 [[ "$(trace_route 'Resume existing work')" == 'resume/load.md resume/fetch.md resume/present.md' ]]
 [[ "$(trace_route 'Cold start or explicit ranking')" == 'rank/load.md rank/fetch.md rank/score.md rank/present.md' ]]
+[[ "$(trace_route 'Existing Step 1C cleanup gate')" == 'flow/cleanup.md' ]]
+[[ "$(trace_route 'Existing Step 1D forgotten-PR gate')" == 'flow/forgotten-prs.md' ]]
+[[ "$(trace_route 'Selected eligible dispatch')" == 'flow/launch.md' ]]
+[[ "$(trace_route 'Available-capacity evaluation')" == 'flow/refill.md' ]]
+[[ "$(trace_route 'Status, due progress, or board report')" == 'flow/progress.md' ]]
 status_trace=$(trace_route 'Passive status')
 [[ -z "$status_trace" ]]
 [[ "$(trace_route 'Saved queue, operator order, or current evidence refill')" == 'shared/priority.md shared/ownership.md shared/window-fit.md' ]]
@@ -102,4 +108,4 @@ probe_fire=$(grep -nF '<!-- test-anchor: pm-day-2d7-probe-fire -->' "$probe" | c
 [[ "$probe_horizon" -lt "$probe_fire" ]]
 extract_skill_bash "$tick" pm-day-d2-horizon-branch > "$scratch/probe-horizon"
 [[ -s "$scratch/probe-horizon" ]]
-printf '%s\n' 'PM module routes: 18 operation/phase pairs, invalid/missing guards, installed symlink and unset-HOME fallback'
+printf '%s\n' 'PM module routes: 26 operation/phase pairs, invalid/missing guards, installed symlink and unset-HOME fallback'

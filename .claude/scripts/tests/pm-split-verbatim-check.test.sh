@@ -168,6 +168,49 @@ class Parity(unittest.TestCase):
         self.assertIn("shared/priority.md", result.stderr)
         self.assertIn("shared/ownership.md", result.stderr)
 
+    def test_flow_split_preserves_section_order_and_entry_boundaries(self):
+        sections = (
+            ("## Step 1C: Cleanup", "cleanup", "clean first"),
+            ("## Step 1D: Forgotten PRs", "forgotten-prs", "triage next"),
+            ("## Step 2: Monitoring", "monitor", "set up monitoring"),
+            ("## Step 2D: Day mode", None, "keep day entry"),
+            ("### 3.1: Launch", "launch", "launch once"),
+            ("### 3.2: Track", "track", "track once"),
+            ("### 3.3: Progress", "progress", "progress first"),
+            ("### 3.3a: Board", "progress", "progress second"),
+            ("### 3.4: Refill", "refill", "refill once"),
+            ("### 3.5: Handoff", "handoff", "handoff once"),
+            ("## Execution Boundary", None, "keep the boundary"),
+        )
+        self.write(ENTRY, "".join(f"{heading}\n{text}\n" for heading, _, text in sections))
+        self.write(MODULE, "unchanged day module\n")
+        self.git("add", str(ENTRY), str(MODULE))
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "baseline flow")
+        baseline = self.git("rev-parse", "HEAD").strip()
+
+        retained = []
+        flow = {}
+        for heading, module, text in sections:
+            retained.append(heading + "\n")
+            if module is None:
+                retained.append(text + "\n")
+            else:
+                flow.setdefault(module, []).append(text + "\n")
+        self.write(ENTRY, "".join(retained))
+        folder = ENTRY.parent / "modules/flow"
+        for name, contents in flow.items():
+            self.write(folder / f"{name}.md", "".join(contents))
+        clean = self.check("--baseline-sha", baseline)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+
+        self.write(folder / "progress.md", "".join(reversed(flow["progress"])))
+        reordered = self.check("--baseline-sha", baseline)
+        self.assertEqual(reordered.returncode, 1)
+        self.assertIn("ordered baseline instructions differ", reordered.stderr)
+        self.assertIn("flow/progress.md", reordered.stderr)
+        self.assertNotIn("missing (", reordered.stderr)
+
     def test_missing_ref_or_missing_historical_source(self):
         result = self.check("--base", "unknown")
         self.assertEqual(result.returncode, 2)

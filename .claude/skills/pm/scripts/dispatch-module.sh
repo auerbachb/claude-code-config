@@ -7,7 +7,8 @@ if [[ $# -ne 2 ]]; then
     'Usage: dispatch-module.sh day preconditions|arm|tick|teardown|recovery|park-reactive|park-preemptive|probe-wake' \
     '       dispatch-module.sh resume load|fetch|present' \
     '       dispatch-module.sh rank load|fetch|score|present' \
-    '       dispatch-module.sh shared priority|window-fit|ownership' >&2
+    '       dispatch-module.sh shared priority|window-fit|ownership' \
+    '       dispatch-module.sh flow cleanup|forgotten-prs|monitor|launch|track|progress|refill|handoff' >&2
   exit 2
 fi
 
@@ -29,6 +30,14 @@ case "$1:$2" in
   shared:priority) module=shared/priority.md ;;
   shared:window-fit) module=shared/window-fit.md ;;
   shared:ownership) module=shared/ownership.md ;;
+  flow:cleanup) module=flow/cleanup.md ;;
+  flow:forgotten-prs) module=flow/forgotten-prs.md ;;
+  flow:monitor) module=flow/monitor.md ;;
+  flow:launch) module=flow/launch.md ;;
+  flow:track) module=flow/track.md ;;
+  flow:progress) module=flow/progress.md ;;
+  flow:refill) module=flow/refill.md ;;
+  flow:handoff) module=flow/handoff.md ;;
   *) printf 'dispatch-module.sh: unsupported operation/phase: %s:%s\n' "$1" "$2" >&2; exit 2 ;;
 esac
 

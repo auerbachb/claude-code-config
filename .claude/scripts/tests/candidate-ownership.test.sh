@@ -934,7 +934,8 @@ echo "== (10) /pm wiring and output contract =="
 PM_ROOT="$REPO_ROOT/.claude/skills/pm"
 PM_SKILL="$TMP/pm-rank-source.md"
 cat "$PM_ROOT/SKILL.md" \
-  "$PM_ROOT/modules/shared/ownership.md" > "$PM_SKILL" || exit 1
+  "$PM_ROOT/modules/shared/ownership.md" \
+  "$PM_ROOT/modules/flow/refill.md" > "$PM_SKILL" || exit 1
 in_pm() { grep -qF -- "$1" "$PM_SKILL" && echo true || echo false; }
 
 # The needles are literal snippets containing `$(`, backticks, and braces. They

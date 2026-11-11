@@ -16,7 +16,10 @@ PM_ROOT="$REPO_ROOT/.claude/skills/pm"
 PM_SKILL="$TMP/pm-rank-source.md"
 cat "$PM_ROOT/SKILL.md" \
   "$PM_ROOT/modules/rank/score.md" \
-  "$PM_ROOT/modules/rank/present.md" > "$PM_SKILL" || exit 1
+  "$PM_ROOT/modules/rank/present.md" \
+  "$PM_ROOT/modules/flow/cleanup.md" \
+  "$PM_ROOT/modules/flow/progress.md" \
+  "$PM_ROOT/modules/flow/refill.md" > "$PM_SKILL" || exit 1
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude"
 unset PM_RANK_DIR

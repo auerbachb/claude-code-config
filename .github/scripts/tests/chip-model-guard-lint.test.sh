@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for chip-model-guard-lint.sh (issue #731)
-# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/harness-audit/SKILL.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
+# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/harness-audit/SKILL.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 
@@ -33,6 +33,8 @@ make_fixture() {
   for skill in "${ALL_EMITTERS[@]}"; do
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
   done
+  mkdir -p "$dir/.claude/skills/pm/modules/flow"
+  cp "$REPO_ROOT/.claude/skills/pm/modules/flow/launch.md" "$dir/.claude/skills/pm/modules/flow/"
 }
 
 expect() {
@@ -102,7 +104,7 @@ expect "missing Fable guidance in chip-launching fails" 1 \
 
 expect "missing model-guard in pm skill fails" 1 \
   'pm model-guard requirement' \
-  mutate .claude/skills/pm/SKILL.md '/model-guard preamble/d'
+  mutate .claude/skills/pm/modules/flow/launch.md '/model-guard preamble/d'
 
 # After the co-occurrence tightening (#802) wave has TWO lines that satisfy the
 # check: the "Chip model + effort contract" line (has "MUST open" + **Model:**)
@@ -327,7 +329,7 @@ expect "placement phrase without **Model:** co-occurrence fails (Issue #802 exam
 # the same line. The replacement deliberately retains both so the case proves
 # co-occurrence strictness, not mere phrase-absence.
 rewording_pr799() {
-  mutate .claude/skills/pm/SKILL.md \
+  mutate .claude/skills/pm/modules/flow/launch.md \
     's/ as the \*\*first line\*\* of the / **first** in the chip /'
 }
 
