@@ -147,6 +147,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 > **Exempt from corpus-wide rewrites (#791).** Every file in this section is a dated snapshot of what was true when it was written. Sweeping renames — the versionless model-name rename is the standing example — **must skip them**: rewriting a record to match today's vocabulary falsifies the history it exists to preserve. A versioned model name (`Opus 5`, `Haiku 4.5`) inside one of these files is correct by construction, not drift. The rename applies to the operative corpus — `CLAUDE.md`, `.claude/rules/`, `.claude/skills/`, `.claude/agents/` — plus the living contract docs in this directory that those files consume normatively (`chip-launching.md`, `chip-model-guard-decision.md`). Enforced by `.github/scripts/chip-model-guard-lint.sh`, whose scan is scoped to exactly that set.
 
+- `symbol-navigation-benchmark-2026-11.md` — measured `rg` and on-demand Python AST retrieval across Python, embedded Python, and Bash (#1874)
 - `skill-repo-diff-2026-08.md` — August 2026 point-in-time survey of obra/superpowers @ `b36e0829` and affaan-m/everything-claude-code @ `569b1d5b` vs our repo; six-dimension gap analysis, prioritized backlog, and import log stub for second harvest cycle (#417)
 - `skill-repo-diff-2026-11.md` — November upstream survey (#417): pinned Superpowers and ECC changes, six comparison dimensions, and one evidence pattern to adopt
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
