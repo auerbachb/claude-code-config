@@ -462,7 +462,7 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author,isDraft 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
   emit_json false unknown cr "$(missing_json "PR #$PR_NUMBER not found")" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
@@ -472,6 +472,7 @@ PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
 HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid // ""')
 BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 MERGE_STATE=$(echo "$PR_JSON" | jq -r '.mergeStateStatus // ""')
+PR_READY=$(echo "$PR_JSON" | jq -r '.isDraft == false')
 MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable // ""')
 REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
@@ -1108,16 +1109,15 @@ elif [[ "$REQUIRED_COUNT" == invalid ]]; then
   REQUIRED_CONTEXTS_JSON='[]'
   MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
 elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
-  # Legacy commit statuses can satisfy a required context just as check-runs can
-  # (Vercel, CircleCI and friends still post them), so a context absent from the
-  # check-run list is not yet absent. Fetched only when there is something to
-  # check, and non-fatal: an unreadable status list simply contributes nothing,
-  # which can withhold a merge but never grant one. Newest-first per the API, so
-  # `first` per context is that context's current state.
-  COMMIT_STATUSES_JSON='[]'
-  if _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null); then
-    COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sc 'add // []' 2>/dev/null || echo '[]')
-    if [[ -z "$COMMIT_STATUSES_JSON" ]]; then COMMIT_STATUSES_JSON='[]'; fi
+  # Legacy statuses are required evidence too. When a check and a commit
+  # status share a required name, both must pass. Each API page is an array,
+  # newest first, so the first entry per context is its current state.
+  if ! _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null) ||
+     ! COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sec '
+        if length > 0 and all(.[]; type == "array" and
+          all(.[]; type == "object" and (.context | type) == "string"))
+        then add else error("invalid commit status pages") end'); then
+    REQUIRED_ERROR="required commit status evidence is unavailable or invalid"
   fi
 
   # CHECK_RUNS_JSON is already deduped to the newest suite per (app, name), so a
@@ -1147,7 +1147,9 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # — because the two have different fixes and "degraded means say so".
   # Commit statuses stay name-only on purpose: they carry no app_id, and the
   # app-scoped `checks[]` shape governs check-runs.
-  if ! REQUIRED_STATE_JSON=$(jq -cen -L "$SCRIPT_DIR/lib" \
+  if [[ -n "$REQUIRED_ERROR" ]]; then
+    REQUIRED_UNSATISFIED_JSON='[]'
+  elif ! REQUIRED_STATE_JSON=$(jq -cen -L "$SCRIPT_DIR/lib" \
       --argjson req "$REQUIRED_CONTEXTS_JSON" \
       --argjson apps "$REQUIRED_APPS_JSON" \
       --argjson runs "$CHECK_RUNS_JSON" \
@@ -2465,7 +2467,7 @@ fi
 # Admit a retry only after every other gate check has reported its blocker.
 CANCELLED_RETRY=null
 if [[ "$AUTHORSHIP" == mine && "$MERGEABLE" == MERGEABLE && "$MERGE_STATE" != DRAFT &&
-      "${#MISSING[@]}" -eq 1 &&
+      "$PR_READY" == true && "${#MISSING[@]}" -eq 1 &&
       -n "${REQUIRED_UNSATISFIED_REASON:-}" && "${MISSING[0]}" == "$REQUIRED_UNSATISFIED_REASON" ]]; then
   CANCELLED_RETRY=$(printf '%s\n' "$REQUIRED_UNSATISFIED_JSON" | jq -c '
     if length == 1 then .[0].cancelled_check // null else null end') || CANCELLED_RETRY=null

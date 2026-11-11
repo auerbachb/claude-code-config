@@ -594,7 +594,7 @@ Exact block format and the gap-line wording: `references/pmm-classify.md` "Revie
 
 **Shared gate idiom:** a blocking Phase A `active_agents` entry (the field is a map keyed by agent id) blocks rebase, `/wrap`, and fix-dispatch gates. PMM-owned (`pmm-fix-` prefix) — blocking until drained by Step 2.5/5e. Foreign — blocking only while not stale (`PMM_LOCK_STALE_SECS` default 3600s with no progress evidence). All gate checks use this idiom consistently.
 
-Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
+Initialize `TICK_HAD_ACTION=false`, `TICK_HAS_PENDING_CI_RETRY=false`, and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
 
 When `PMM_SKIP_ACTIONS=true`, skip every Step 5 dispatch and release-sweep substep. Reuse completed Step 6 state and continue with Step 7 so a replay can finish pause/stop/re-arm state after actions already completed.
 
@@ -641,6 +641,9 @@ if [[ "$VERDICT" == required-ci-rerun && "${WATCH_LAUNCH_OK:-true}" == true ]]; 
   fi
   if jq -e '.status == "requested"' >/dev/null <<<"$REQUIRED_CI_RESULT"; then
     TICK_HAD_ACTION=true
+  fi
+  if jq -e '.wait_for_ci == true' >/dev/null <<<"$REQUIRED_CI_RESULT"; then
+    TICK_HAS_PENDING_CI_RETRY=true
   fi
 fi
 ```
@@ -754,12 +757,12 @@ fi
 
 Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. See [PMM pre-dispatch](references/pmm-pre-dispatch.md#runtime-integration-limits) for the supported cadence bounds.
 
-**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
+**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing; (6) no exact required CI retry awaiting observation in Step 5. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
 On a quiet shell-only poll, no model action ran by construction; the gate advances the idle counter
 only when the state digest is unchanged and there are no active Phase A agents, PMM locks, or merge
 holds. A wake at `--idle-pause-after` returns a lifecycle event so this skill can execute the
-ordinary Pause route.
+ordinary Pause route after Steps 5 and 6 check for current work.
 
 <!-- test-anchor: pmm-pre-dispatch-idle -->
 ```bash
@@ -767,7 +770,7 @@ if [ "${PMM_SKIP_ACTIONS:-false}" != true ]; then
   : "${PMM_STEP6_ROOT:?run Step6 backoff and idle together}"
   IDLE_PREV=$(jq -r '.pmm_idle_streak // 0' <<<"$PMM_STEP6_ROOT") || exit 1
   [[ "$IDLE_PREV" =~ ^[0-9]{1,8}$ ]] || { echo 'ERROR: invalid idle streak' >&2; exit 1; }
-  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "$PMM_STEP6_SAME_DIGEST" = true ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$ACTIVE_WRAPS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
+  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "${TICK_HAS_PENDING_CI_RETRY:-false}" = false ] && [ "$PMM_STEP6_SAME_DIGEST" = true ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$ACTIVE_WRAPS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
     IDLE_STREAK=$((10#$IDLE_PREV+1))
   else
     IDLE_STREAK=0

@@ -586,6 +586,14 @@ print('PASS: failed/stale Step6 atomic commit cannot advance counters or fabrica
 step6_delayed=json.loads(json.dumps(step6_done));step6_delayed['pmm_idle_streak']=9;step6_file.write_text(json.dumps(step6_delayed));step6_before=step6_file.read_bytes()
 r=step6_call(step6_code+'\nprintf "%s" "$IDLE_STREAK"',extra='PMM_SKIP_ACTIONS=true\n');assert r.returncode==0 and r.stdout=='0' and step6_file.read_bytes()==step6_before,(r.stdout,r.stderr)
 
+# A retry owned by another caller prevents idle pause without creating a new action.
+step6_pending=json.loads(json.dumps(step6_seed));step6_pending['pmm_idle_streak']=9
+step6_file.write_text(json.dumps(step6_pending))
+r=step6_call(step6_code+'\nprintf "%s" "$TICK_HAD_ACTION"',extra='TICK_HAS_PENDING_CI_RETRY=true\n')
+step6_result=json.loads(step6_file.read_text())
+assert r.returncode==0 and r.stdout=='false' and step6_result['pmm_idle_streak']==0,(r.stdout,r.stderr,step6_result)
+print('PASS: pending required CI rerun resets idle without recording another action')
+
 # Canonical live-work classes, with stale shell flags deliberately set to zero.
 for step6_name,step6_work,step6_idle_expected in [
  ('active-wrap',{'pmm_in_flight':{'7':step6_lock}},0),

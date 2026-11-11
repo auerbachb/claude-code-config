@@ -18,6 +18,7 @@ export FIXTURE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export OTHER_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 export FIXTURE_JOB=101
 export POST_LOG="$TMP/post"
+export RELEASE_POST="$TMP/release-post"
 export FIXTURE_MODE=normal
 
 cat > "$TMP/sut/session-state.sh" <<'SH'
@@ -50,6 +51,13 @@ case "$1/$2" in
   api/--method)
     [[ "$3" == POST && "$4" == "repos/fixture/repo/actions/jobs/$FIXTURE_JOB/rerun" ]] || exit 91
     printf '%s\n' "$4" >> "$POST_LOG"
+    if [[ "$FIXTURE_MODE" == held_post ]]; then
+      for _ in {1..200}; do
+        [[ ! -e "$RELEASE_POST" ]] || exit 0
+        sleep .05
+      done
+      exit 94
+    fi
     [[ "$FIXTURE_MODE" != rejected ]]
     ;;
   api/repos/fixture/repo/actions/jobs/*)
@@ -135,6 +143,30 @@ wait "$second"
 check_eq 1 "$(posts)" "two simultaneous owners still send one exact request"
 check_eq '["already_recorded","requested"]' "$(jq -sc 'map(.status)|sort' "$TMP/race-1" "$TMP/race-2")" "concurrent loser reports the durable winning claim"
 
+reset held
+FIXTURE_MODE=held_post "$TMP/sut/rerun-cancelled-required-ci.sh" 11 > "$TMP/held-result" &
+winner=$!
+for _ in {1..100}; do
+  [[ ! -s "$POST_LOG" ]] || break
+  sleep .05
+done
+check_eq 1 "$(posts)" "winner reached the exact job request"
+run_retry
+touch "$RELEASE_POST"
+wait "$winner"
+check_eq request_pending "$(value .reason)" "concurrent caller observes the in-flight request"
+check_eq true "$(value .wait_for_ci)" "watcher keeps waiting during a fresh claim"
+check_eq requested "$(jq -r .status "$TMP/held-result")" "winner records the confirmed request"
+check_eq 1 "$(posts)" "a pending claim never authorizes a second request"
+
+reset abandoned
+"$REAL_STATE" --repo fixture/repo --set \
+  ".prs[\"11\"].required_ci_reruns[\"$FIXTURE_HEAD\"]={\"status\":\"claimed\",\"job_id\":101,\"claimed_at\":\"2000-01-01T00:00:00Z\"}"
+run_retry
+check_eq claim_uncertain "$(value .reason)" "an abandoned claim names the uncertain outcome"
+check_eq false "$(value .wait_for_ci)" "watchers surface an abandoned request after the wait"
+check_eq 0 "$(posts)" "an old claim cannot be acquired again"
+
 # Exercise the actual entry-point blocks with one stubbed helper.
 FIXPR_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/skills/fixpr/SKILL.md" fixpr-required-ci-rerun)
 BABYSIT_BLOCK=$(extract_skill_bash "$REPO_ROOT/.claude/skills/babysit-pr/SKILL.md" babysit-required-ci-rerun)
@@ -156,10 +188,17 @@ OUT=$(PR_NUMBER=11 "$BASH" -uc "$FIXPR_BLOCK"$'\nprintf "%s\\n" "$REQUIRED_CI_RE
 check_eq requested "$(value .status)" "fixpr reaches the exact helper from its cancelled check audit"
 OUT=$(CLASS=required-ci-rerun PR=11 "$BASH" -uc "$BABYSIT_BLOCK"$'\nprintf "%s\\n" "$CLASS"')
 check_eq waiting-on-bots "$OUT" "babysit resumes gate waiting after a requested rerun"
+OUT=$(CLASS=required-ci-rerun PR=11 STUB_OUT='{"status":"already_recorded","reason":"request_pending","wait_for_ci":true}' \
+  "$BASH" -uc "$BABYSIT_BLOCK"$'\nprintf "%s\\n" "$CLASS"')
+check_eq waiting-on-bots "$OUT" "babysit waits for another caller's pending rerun"
 OUT=$(CLASS=required-ci-rerun PR=11 WATCH_LAUNCH_OK=false "$BASH" -uc "$BABYSIT_BLOCK"$'\nprintf "%s\\n" "$CLASS"')
 check_eq required-ci-rerun "$OUT" "babysit horizon hold leaves the pending action untouched"
 OUT=$(VERDICT=required-ci-rerun N=11 "$BASH" -uc "$PMM_BLOCK"$'\nprintf "%s\\n" "$TICK_HAD_ACTION"')
 check_eq true "$OUT" "fleet path records the rerun as action"
-check_eq $'11\n11\n11' "$(cat "$STUB_LOG")" "each authorized entry uses the same exact PR helper"
+OUT=$(VERDICT=required-ci-rerun N=11 TICK_HAD_ACTION=false TICK_HAS_PENDING_CI_RETRY=false \
+  STUB_OUT='{"status":"already_recorded","reason":"request_pending","wait_for_ci":true}' \
+  "$BASH" -uc "$PMM_BLOCK"$'\nprintf "%s|%s\n" "$TICK_HAD_ACTION" "$TICK_HAS_PENDING_CI_RETRY"')
+check_eq 'false|true' "$OUT" "fleet path recognizes a pending retry without reporting a new action"
+check_eq $'11\n11\n11\n11\n11' "$(cat "$STUB_LOG")" "each authorized entry uses the same exact PR helper"
 
 printf 'OK: %s required CI retry checks passed\n' "$PASS"

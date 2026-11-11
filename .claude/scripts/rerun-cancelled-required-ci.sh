@@ -4,6 +4,8 @@
 # Usage: rerun-cancelled-required-ci.sh <PR>
 # Stdout is JSON. Exit 0 for an assessed outcome, 1 for an operational failure,
 # 2 for bad usage. A requested rerun is not a passing check.
+# Concurrent callers wait briefly for an in-progress request. An older claim
+# with no recorded result requires verification and never permits a second POST.
 set -uo pipefail
 
 PR="${1:-}"
@@ -19,16 +21,23 @@ source "$SCRIPT_DIR/lib/repo-normalizer.sh" || exit 1
 
 HEAD_SHA=""
 JOB_ID=null
+PENDING_SECONDS=120
 report() {
   jq -cn --arg status "$1" --arg reason "$2" --arg head "$HEAD_SHA" --argjson job "$JOB_ID" \
     '{status:$status,reason:$reason,head_sha:$head,job_id:$job,
-      wait_for_ci:($status == "requested" or ($status == "already_recorded" and $reason == "requested"))}'
+      wait_for_ci:($status == "requested"
+        or ($status == "already_recorded" and ($reason | IN("requested", "request_pending"))))}'
 }
 
 report_prior() {
-  local status
-  status=$(jq -r --argjson job "$JOB_ID" '
+  local status now
+  now=$(date -u +%s) || { report state_error "cannot verify retry claim age"; return 1; }
+  status=$(jq -r --argjson job "$JOB_ID" --argjson now "$now" --argjson pending "$PENDING_SECONDS" '
     if .job_id != $job then "retry_exhausted"
+    elif .status == "claimed" then
+      (try (.claimed_at | fromdateiso8601) catch null) as $at
+      | if $at != null and $at <= $now and ($now - $at) < $pending
+        then "request_pending" else "claim_uncertain" end
     else .status // "unknown" end' <<<"$1") || {
     report state_error "recorded retry state is invalid"; return 1;
   }

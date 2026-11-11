@@ -260,6 +260,30 @@ run_gate "$(bundle "$(cr 1 'Some Check' success 100)")"
 check_eq "yes" "$(has_required_entry)" "(k) a pending commit status does not satisfy it"
 check_eq "pending" "$(unsat_state ci/legacy)" "(k) pending commit status: state reported"
 
+# GitHub requires both signals when a required check and status share a name.
+for commit_status in failure pending success; do
+  FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+  FAKE_COMMIT_STATUSES="$(jq -cn --arg state "$commit_status" '[{context:"build",state:$state}]')" \
+  run_gate "$(bundle "$(cr 1 build success 100)")"
+  if [[ "$commit_status" == success ]]; then
+    check_eq no "$(has_required_entry)" "same-name check and commit status both pass"
+  else
+    check_eq "$commit_status" "$(unsat_state build)" "passing check cannot mask a $commit_status same-name status"
+  fi
+done
+
+for status_evidence in unavailable malformed; do
+  status_error=false
+  status_payload='{"context":"build","state":"success"}'
+  [[ "$status_evidence" == unavailable ]] && status_error=true
+  FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+  FAKE_COMMIT_STATUS_ERROR="$status_error" FAKE_COMMIT_STATUSES="$status_payload" \
+  run_gate "$(bundle "$(cr 1 build success 100)")"
+  check_eq false "$(jq -r .met <<<"$OUT")" "$status_evidence commit status evidence blocks the gate"
+  check_contains 'required commit status evidence is unavailable or invalid' "$(req_field error)" \
+    "$status_evidence commit status evidence has a visible diagnostic"
+done
+
 # --------------------------------------------------------------------------
 # (m) App-scoped identity. Protection pins a context to an `app_id`, and GitHub
 #     accepts only that app's check for it. Matching on NAME alone would let any
@@ -327,6 +351,19 @@ FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
 run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 other success 100)")"
 check_eq '4' "$(jq -r '.required_contexts.cancelled_retry.id' <<<"$OUT")" "sole cancelled required Actions job is a retry candidate"
 check_eq false "$(jq -r .met <<<"$OUT")" "a retry candidate still blocks the gate"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+FAKE_COMMIT_STATUSES='[{"context":"build","state":"pending"}]' \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)")"
+check_eq null "$(req_field cancelled_retry)" "pending same-name status prevents retry admission"
+
+for draft in true null '"false"'; do
+  FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+  FAKE_MERGE_STATE=BLOCKED FAKE_DRAFT="$draft" \
+  run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)")"
+  check_eq null "$(req_field cancelled_retry)" "retry requires explicit non-draft evidence (isDraft=$draft)"
+  check_eq cancelled "$(unsat_state build)" "draft uncertainty preserves the required cancellation blocker"
+done
 
 FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
 run_gate "$(bundle "$(cr 4 build cancelled 100 another-app)" "$(cr 5 other success 100)")"
