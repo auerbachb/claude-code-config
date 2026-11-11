@@ -118,4 +118,4 @@ The default wait is 10 minutes from the HEAD anchor described above in this file
 - **Override merge: not exercised.** CodeAnt approved HEAD 90 seconds after the push, so `no_review_override.applied` stayed `false` on every tick and the merge took the reviewed path. On this repo a reviewer answers within about a minute, so the override path has still not been observed live.
 - **Project file demanding a completed review: not run.** It needs a second repository.
 
-Two gaps the run exposed, tracked separately: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201), and stable-state backoff tells a waiting thread to stop polling while the gate is unmet (Issue #2202).
+Two gaps the run exposed: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201, open), and stable-state backoff told a waiting thread to stop polling while the gate was unmet (Issue #2202, fixed by PR #2204 on 2026-11-11).
