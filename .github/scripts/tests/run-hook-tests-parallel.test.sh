@@ -140,6 +140,14 @@ HOOK_TEST_JOBS=0 RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-ho
 check_eq 2 "$?" "pool: HOOK_TEST_JOBS=0 is a usage error (exit 2)"
 HOOK_TEST_SUITE_TIMEOUT=abc RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" >/dev/null 2>&1
 check_eq 2 "$?" "pool: non-numeric HOOK_TEST_SUITE_TIMEOUT is a usage error (exit 2)"
+RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs "" >/dev/null 2>&1
+check_eq 2 "$?" "pool: an explicitly empty --jobs is a usage error, not the default (exit 2)"
+HOOK_TEST_JOBS="" RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" >/dev/null 2>&1
+check_eq 2 "$?" "pool: an explicitly empty HOOK_TEST_JOBS is a usage error (exit 2)"
+HOOK_TEST_JOBS=2.5 RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" >/dev/null 2>&1
+check_eq 2 "$?" "pool: a non-integer HOOK_TEST_JOBS is a usage error (exit 2)"
+HOOK_TEST_JOBS=3 RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 1 --json >/dev/null 2>&1
+check_eq 0 "$?" "pool: --jobs wins over HOOK_TEST_JOBS when both are valid (exit 0)"
 
 # Per-suite TMPDIR: every suite sees a distinct TMPDIR.
 FIX="$(new_fixture tmpdirs)"
@@ -184,8 +192,15 @@ if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ]; then
 else
   bad "pool: peak concurrency $PEAK is outside 2..3 for --jobs 3"
 fi
-SERIAL_EARLY="$(awk '/^start .*(silence-detector-time-dedupe|session-start-sync-publish-bounds)/ { s = 1; next } s && /^start / { v++ } END { print v + 0 }' "$EVENTS")"
-check_eq 0 "$SERIAL_EARLY" "pool: no pooled suite starts after a serial-group suite"
+# Pooled starts that happen after the first serial-group start (both serial suites are
+# recognised by name, so the second serial start is never counted as a pooled one).
+POOLED_AFTER_SERIAL="$(awk '
+  /^start .*(silence-detector-time-dedupe|session-start-sync-publish-bounds)/ { s = 1; next }
+  s && /^start / { v++ }
+  END { print v + 0 }' "$EVENTS")"
+check_eq 0 "$POOLED_AFTER_SERIAL" "pool: no pooled suite starts after a serial-group suite"
+SERIAL_STARTS="$(grep -c -E '^start .*(silence-detector-time-dedupe|session-start-sync-publish-bounds)' "$EVENTS")"
+check_eq 2 "$SERIAL_STARTS" "pool: both serial-group suites ran in this fixture"
 POOL_ENDED_FIRST="$(awk '/^start .*(silence-detector-time-dedupe|session-start-sync-publish-bounds)/ { exit } /^end / { e++ } END { print e + 0 }' "$EVENTS")"
 check_eq 7 "$POOL_ENDED_FIRST" "pool: every pooled suite ended before the first serial-group suite started"
 SERIAL_PEAK="$(awk 'f { if ($1 == "start") c++; else c--; if (c > m) m = c } !f && /^start .*(silence-detector-time-dedupe|session-start-sync-publish-bounds)/ { f = 1; c = 1; m = 1 } END { print m + 0 }' "$EVENTS")"
@@ -232,7 +247,15 @@ OUT="$(HOOK_TEST_SUITE_TIMEOUT=3 RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.githu
 RC=$?
 ELAPSED=$(( $(date +%s) - START ))
 check_eq 1 "$RC" "pool: a hanging suite makes the run exit 1"
-if [ "$ELAPSED" -lt 60 ]; then ok "pool: a hanging suite is bounded by the per-suite timeout (${ELAPSED}s)"; else bad "pool: run took ${ELAPSED}s; the timeout did not bound the hang"; fi
+# A 3 s timeout must fire near 3 s: under 15 s proves the kill came from the timeout (the hang
+# would otherwise run 297 s), with headroom for a loaded runner.
+if [ "$ELAPSED" -lt 15 ]; then ok "pool: a hanging suite is bounded by the per-suite timeout (${ELAPSED}s)"; else bad "pool: run took ${ELAPSED}s for a 3s timeout; the timeout did not bound the hang"; fi
+HANG_LOG="$(printf '%s' "$OUT" | jq -r '.log_path')"
+if grep -q '^===== .*c-hang.test.sh (rc=124) =====' "$HANG_LOG" && grep -q 'exceeded the per-suite timeout (3s)' "$HANG_LOG"; then
+  ok "pool: the hung suite is recorded as rc 124 (timed out), not as a slow pass"
+else
+  bad "pool: the hung suite was not recorded as a timeout (rc 124) in $HANG_LOG"
+fi
 check_eq ".claude/scripts/tests/c-hang.test.sh" "$(printf '%s' "$OUT" | jq -r '.failed_tests[0]')" "pool: the hanging suite is reported as failed"
 check_eq 1 "$(printf '%s' "$OUT" | jq -r '.failed_tests | length')" "pool: only the hanging suite is failed"
 if exactly_once "$RAN_RECORD" 3; then ok "pool: every suite, the hung one included, started exactly once"; else bad "pool: the hang disturbed the other suites"; fi

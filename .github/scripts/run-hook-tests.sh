@@ -80,15 +80,42 @@ shopt -s nullglob
 #    (by design: sentinels live in /tmp), and the suite primes and clears those exact names.
 #  - session-start-sync-publish-bounds: asserts wall-clock budgets (the ample-budget control
 #    in CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS) that concurrent load can break.
+#  - desk/tests/*: the offline suites assert that a command finished within 1-2 s (no
+#    connection attempt, hq_t_elapsed_under) or that a deadline stopped a call within 2.9 s.
+#    Under pool load those wall-clock bounds become false failures, so they run alone.
+#  - .claude/scripts/tests/local-review.test.sh and worktree-isolation-shapes.test.sh: use
+#    1-3 s --timeout / --interval bounds as the behaviour under test.
+#  - .claude/scripts/tests/pr-state-stdout.test.sh: counts /tmp/pr-state-7-* entries, and
+#    pr-state.sh writes its output under a fixed /tmp prefix, not TMPDIR, so a concurrent
+#    suite that runs pr-state.sh for the same PR number would change the count.
 SERIAL_GROUP="
 .claude/hooks/tests/silence-detector-time-dedupe.test.sh
 .claude/hooks/tests/session-start-sync-publish-bounds.test.sh
+.claude/scripts/tests/pr-state-stdout.test.sh
+.claude/scripts/tests/local-review.test.sh
+.claude/scripts/tests/worktree-isolation-shapes.test.sh
+desk/tests/cli.test.sh
+desk/tests/checkin-offline.test.sh
+desk/tests/desk-offline.test.sh
+desk/tests/export-offline.test.sh
+desk/tests/ideas-offline.test.sh
+desk/tests/interrupts-offline.test.sh
+desk/tests/items-cli.test.sh
+desk/tests/lifecycle-cli.test.sh
+desk/tests/longform-offline.test.sh
+desk/tests/plan-offline.test.sh
+desk/tests/question-leak-warn.test.sh
+desk/tests/report-offline.test.sh
+desk/tests/reviews-cli.test.sh
+desk/tests/reviews-view-offline.test.sh
+desk/tests/todo-offline.test.sh
 "
 
 JSON=0
 ONLY_FILE=""
 ONLY_FILE_GIVEN=0   # distinguishes "--only-file given (maybe empty)" from "not given"
 JOBS_ARG=""
+JOBS_GIVEN=0        # distinguishes "--jobs given (maybe empty)" from "not given"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
@@ -98,7 +125,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --jobs)
       [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --jobs needs a count" >&2; exit 2; }
-      JOBS_ARG="$2"; shift 2
+      JOBS_ARG="$2"; JOBS_GIVEN=1; shift 2
       ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -115,15 +142,17 @@ done
 # Concurrency and per-suite timeout. A positive integer or a usage error: a typo must never
 # silently fall back to a different concurrency or an unbounded wait.
 is_positive_int() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ]; }
-if [ -n "$JOBS_ARG" ]; then
+if [ "$JOBS_GIVEN" -eq 1 ]; then
   JOBS="$JOBS_ARG"
-elif [ -n "${HOOK_TEST_JOBS:-}" ]; then
+  is_positive_int "$JOBS" || { echo "::error::run-hook-tests.sh: --jobs must be a positive integer, got: '$JOBS'" >&2; exit 2; }
+elif [ -n "${HOOK_TEST_JOBS+x}" ]; then
+  # Set but empty counts as set: an empty override is a typo, not a request for the default.
   JOBS="$HOOK_TEST_JOBS"
+  is_positive_int "$JOBS" || { echo "::error::run-hook-tests.sh: HOOK_TEST_JOBS must be a positive integer, got: '$JOBS'" >&2; exit 2; }
 else
   JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
   is_positive_int "$JOBS" || JOBS=2
 fi
-is_positive_int "$JOBS" || { echo "::error::run-hook-tests.sh: --jobs / HOOK_TEST_JOBS must be a positive integer: $JOBS" >&2; exit 2; }
 SUITE_TIMEOUT="${HOOK_TEST_SUITE_TIMEOUT:-900}"
 is_positive_int "$SUITE_TIMEOUT" || { echo "::error::run-hook-tests.sh: HOOK_TEST_SUITE_TIMEOUT must be a positive integer of seconds: $SUITE_TIMEOUT" >&2; exit 2; }
 
