@@ -40,6 +40,16 @@ PIPELINE_CEILING=6
 - **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
 - **PIPELINE_CEILING** — the per-thread concurrent-pipeline ceiling that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch launch up to. Positive integer in **[1, 20]**, **default 4**; absent falls back silently, a present-but-unparseable or out-of-range value warns on stderr and falls back to 4. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh --ceiling`, which prints the raw ceiling; each consumer applies the `min()` with `ACTIVE_WORK_CAP` itself, so the ceiling never raises the cap — running wider than the cap means raising both. This repo sets **6**, a third of the cap, so one orchestrating thread cannot take every slot; a repo that keeps the default omits the line.
 
+## Independent areas
+
+See [Independent areas](reference/independent-areas.md) for launch-side matching. Commented rows are examples.
+
+<!--
+| Area | Paths | Labels | Keywords |
+| --- | --- | --- | --- |
+| desk | `desk/` | desk | human queue |
+-->
+
 ## Reporting
 
 `/pm` reports changed boards every 30 minutes by default and reports

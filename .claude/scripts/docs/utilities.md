@@ -36,6 +36,7 @@ Called by other scripts; run `python3 .claude/scripts/<name>.py --help` for usag
 |--------|---------|
 <!-- catalog:rows:begin kind=py -->
 | [cr-plan-filter.py](../cr-plan-filter.py) | Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`) |
+| [issue-area.py](../issue-area.py) | Resolve configured issue areas and tag declared paths for launch overlap. |
 | [memory-audit.py](../memory-audit.py) | Memory-store audit engine behind `/memory-clean` |
 <!-- catalog:rows:end -->
 

@@ -412,11 +412,9 @@ Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/und
 
 Two subagents landing in the same file produce exactly the merge-time conflict that overlap-aware merge sequencing exists to clean up afterwards. It is far cheaper not to create it. **Issues in this batch that overlap on a file run one after another, not concurrently.**
 
-Reuse `/wave`'s existing footprint model verbatim — do not invent a second one:
+Reuse [`/wave` Steps 3–5](../wave/SKILL.md#step-3-extract-each-candidates-file-footprint) for footprint extraction and comparisons. Use the same area helper, path and shared-surface rules, and at-most-one allowance for footprints that remain undeclared. Collect hints for the batch as Step 3 specifies.
 
-1. **Footprint per issue** — `/wave` Step 3: the CR/human plan's file list, else a `## Related Files` section, else backticked paths in the body, else subject inference ("the `/pm` skill" → that SKILL.md). No signal at all → `undeclared`.
-2. **Map to collision surfaces** — `/wave` Step 4, including the coarse shared ones: `CLAUDE.md` + `.claude/rules/*` + `.budget-soft-cap` are all one **`rule-corpus`** surface (two branches adding words to *different* rule files still collide on the ratchet cap), and each shared settings file is one surface. A shared *directory* is **not** a surface.
-3. **Group and order.** Issues sharing a surface form a chain. Within a chain, the issue with the larger expected footprint in the shared surface starts first — same "biggest first" rule as merge time; ties break to the lower issue number. `undeclared` footprints are conservative: at most one runs concurrently with the rest, exactly as `/wave` Step 5.4 does.
+Group issues that overlap into chains. Use the existing biggest-first order on the shared surface, breaking ties by lower issue number. In an area-only chain there is no declared size, so use lower issue number first. Keep the established dependency order and terminal-state release below.
 
 **Decomposition children are a chain by provenance, not footprint.** The children Step 5.1 just filed form one chain because they are ordered slices of one theme — their `- Depends on #<previous increment>` links say so directly, so they need no footprint analysis to be grouped and they stay chained even when their files do not overlap. **Their order is the increment order** (`{i}/{n}`), never the "biggest first" rule below, which exists to settle *contention* and has nothing to say about a sequence the split already fixed. Otherwise they behave exactly like any other chain: head launches, successors queue, and a footprint overlap with a *different* issue chains them further as usual.
 

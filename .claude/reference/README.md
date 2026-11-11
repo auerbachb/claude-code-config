@@ -44,6 +44,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `ai-quotas-test-hotspot-decision.md` — KEEP the quota test dispatcher and its 30 fixture groups (Issue #1902); nine counted changes and the existing split
 - `subagent-park-fixture-hotspot-decision.md` — keep the usage-limit park fixture together (Issue #1682); three counted changes share the same park and wake ownership checks
 - `paid-review-approval.md` — one paid AI review per owner yes (issue #1898): when an attended session may ask, the `AskUserQuestion` shape and human-queue path, the single-use grant `paid-review-grant.sh` writes and spends (PR + HEAD + vendor + session), on-demand offer acceptance, and why headless contexts never ask
+- `independent-areas.md` — optional service boundaries for launch-side overlap in `/wave` and `/subagent`, with config and matching rules (#2159).
 - `review-policy.md` — per-repo review tiers declared in pm-config `## Review policy`: table format, strictest-wins resolution across paths and labels, fail-closed invalid policies, base-branch reads, and what each gate (`ci-only` / `ci+codeant-one-round` / `full` / `legacy`) means; resolved by `review-tier.sh` (#1724, #1725)
 - `merge-gate-stale-approval-redemption.md` — CodeAnt in-place review edit: how `merge-gate.sh` redeems a stale approval by evidence rather than by reviewer identity (#876)
 - `merge-sequencing.md` — mechanism and state machine for `merge-sequence.sh`; overlap-aware merge sequencing for PRs touching the same file (#756)
