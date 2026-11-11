@@ -47,11 +47,36 @@ def ex_more:
   then "… and \(ex_plural(.more; "more item"; "more items")) left out (an export holds at most 99)."
   else empty end;
 
-def ex_footer:
+def ex_footer_parts:
   [ "Exported \(.exported_local) ET",
     (if .set_id != null then "set \(.set_id)" else empty end),
-    ex_plural(.count; "item"; "items") ]
-  | join(" · ");
+    ex_plural(.count; "item"; "items") ];
+
+def ex_footer: ex_footer_parts | join(" · ");
+
+
+def ex_tex_esc:
+  gsub("(?<char>[\\\\{}#$%&_^~·\r\n])";
+    { "\\": "\\textbackslash{}", "{": "\\{", "}": "\\}", "#": "\\#",
+      "$": "\\$", "%": "\\%", "&": "\\&", "_": "\\_",
+      "^": "\\textasciicircum{}", "~": "\\textasciitilde{}",
+      "·": "\\textperiodcentered{}", "\r": " ", "\n": " " }[.char]);
+
+# Only batch metadata enters this trusted LaTeX input. Use the kernel's page
+# style and Pandoc's cross-reference passes without an extra package.
+def export_tex_header:
+  (ex_footer_parts | map(ex_tex_esc) | join(" \\textperiodcentered{} ")) as $footer
+  | [ "\\makeatletter",
+      "\\def\\ps@deskexport{%",
+      "  \\let\\@oddhead\\@empty\\let\\@evenhead\\@empty",
+      "  \\def\\@oddfoot{\\small " + $footer
+        + "\\hfil Page \\thepage{} of \\pageref*{desk-export-last-page}}%",
+      "  \\let\\@evenfoot\\@oddfoot}",
+      "\\let\\ps@plain\\ps@deskexport",
+      "\\makeatother",
+      "\\pagestyle{deskexport}",
+      "\\AtEndDocument{\\label{desk-export-last-page}}" ]
+  | join("\n");
 
 
 # ex_body($level): a Review's summary at $level, else the next level down,
@@ -148,7 +173,7 @@ def ex_md_item:
    elif .answer != null then "Answered: " + (.answer | ex_md_lit), ""
    else empty end);
 
-def export_markdown:
+def export_markdown($print_footer):
   ([ "# Desk export · " + ex_title,
      "",
      ex_subtitle,
@@ -157,10 +182,10 @@ def export_markdown:
      "",
      (ex_items[] | ex_md_item),
      (ex_more | ., ""),
-     "---",
-     "",
-     ex_footer ]
+     (if $print_footer then "---", "", ex_footer else empty end) ]
    | join("\n")) + "\n";
+
+def export_markdown: export_markdown(true);
 
 # ----------------------------------------------------------- plain text
 

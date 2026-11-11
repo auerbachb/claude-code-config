@@ -15,7 +15,7 @@
 # PUBLIC FUNCTIONS
 #   hq_export_check_env    exits 4 when HUMAN_QUEUE_EXPORT_RENDERER is not
 #                          auto, pandoc, chrome, cupsfilter, or markdown
-#   hq_export_pdf VAR MD TXT HTML PDF WORK
+#   hq_export_pdf VAR MD TXT HTML PDF WORK [TEX_HEADER]
 #                          writes the PDF from the first renderer that works;
 #                          sets VAR to its name and returns 0, or returns 1
 #                          (VAR empty) with HQ_EXPORT_TRIED naming what each
@@ -221,7 +221,11 @@ hq__export_file_url() {
 }
 
 hq__export_pandoc() {
-  local hq__md="$1" hq__pdf="$2" hq__work="$3" hq__bin rc=0
+  local hq__md="$1" hq__pdf="$2" hq__work="$3" hq__header="$4" hq__bin rc=0
+  local hq__args=()
+  if [ -n "$hq__header" ]; then
+    hq__args+=( "--include-in-header=$hq__header" )
+  fi
   if ! hq__export_pick hq__bin "${HUMAN_QUEUE_PANDOC+x}" "${HUMAN_QUEUE_PANDOC:-}" \
        /opt/homebrew/bin/pandoc /usr/local/bin/pandoc pandoc; then
     hq__export_missing pandoc
@@ -235,7 +239,7 @@ hq__export_pandoc() {
   # punctuation: `--force` stays `--force`, not an en dash.
   hq__export_run "$(hq__export_limit 120)" '' "$hq__work/pandoc.out" "$hq__work/pandoc.err" \
     "$hq__bin" --from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars-smart --standalone \
-    --output "$hq__pdf" "$hq__md" || rc=$?
+    ${hq__args[@]+"${hq__args[@]}"} --output "$hq__pdf" "$hq__md" || rc=$?
   if [ "$rc" -eq 0 ] && hq__export_is_pdf "$hq__pdf"; then return 0; fi
   hq__export_note pandoc "$rc"
   return 1
@@ -301,7 +305,7 @@ hq_export_pdf() {
   esac
   for hq__r in $hq__list; do
     case "$hq__r" in
-      pandoc) hq__export_pandoc "$hq__md" "$hq__pdf" "$hq__work" || continue ;;
+      pandoc) hq__export_pandoc "$hq__md" "$hq__pdf" "$hq__work" "${7:-}" || continue ;;
       chrome) hq__export_chrome "$hq__html" "$hq__pdf" "$hq__work" || continue ;;
       cupsfilter) hq__export_cupsfilter "$hq__txt" "$hq__pdf" "$hq__work" || continue ;;
       *) continue ;;
