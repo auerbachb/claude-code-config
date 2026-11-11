@@ -172,14 +172,19 @@ read_round_membership() {
   local repo="$1" result
   ROUND_READ_MEMBERS=""
   ROUND_READ_SCOPE=none
+  ROUND_READ_PLANNED='[]'
   if [[ -z "$ROUND_MEMBERSHIP_SH" ]]; then return 0; fi
-  if ! result=$("$ROUND_MEMBERSHIP_SH" --repo "$repo" --session "$TF_SESSION" --state-helper "$SESSION_STATE_SH"); then
+  if ! result=$("$ROUND_MEMBERSHIP_SH" --repo "$repo" --session "$TF_SESSION" --state-helper "$SESSION_STATE_SH" --include-pm-queue); then
     echo 'DEGRADED: round membership unavailable — using labelled no-record fallbacks'
     return 0
   fi
   ROUND_READ_MEMBERS=$(printf '%s' "$result" | jq -c '.members')
   ROUND_READ_SCOPE=$(printf '%s' "$result" | jq -r '.scope')
   [[ "$ROUND_READ_MEMBERS" != null ]] || ROUND_READ_MEMBERS=""
+  if ! ROUND_READ_PLANNED=$(printf '%s' "$result" | jq -ce '.planned | select(type == "array")'); then
+    echo 'DEGRADED: standing queue unavailable'
+    ROUND_READ_PLANNED='[]'
+  fi
 }
 if [[ -n "$EFFECTIVE_REPO" ]]; then
   PIPELINES=$(sget ".repos[\"$EFFECTIVE_REPO\"].pipelines")
@@ -188,6 +193,7 @@ if [[ -n "$EFFECTIVE_REPO" ]]; then
   read_round_membership "$EFFECTIVE_REPO"
   ROUND_MEMBERS="$ROUND_READ_MEMBERS"
   ROUND_SCOPE="$ROUND_READ_SCOPE"
+  ROUND_PLANNED="$ROUND_READ_PLANNED"
 fi
 ```
 
@@ -207,7 +213,8 @@ for RK in $BOARD_REPOS; do
   read_round_membership "$RK"
   RK_ROUND_MEMBERS="$ROUND_READ_MEMBERS"
   RK_ROUND_SCOPE="$ROUND_READ_SCOPE"
-  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS, RK_ROUND_SCOPE); `_unknown` carries no
+  RK_ROUND_PLANNED="$ROUND_READ_PLANNED"
+  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS, RK_ROUND_SCOPE, RK_ROUND_PLANNED); `_unknown` carries no
   # usable repo for the `gh` and estimate lookups below, so skip it rather than
   # guessing one.
 done
@@ -404,20 +411,26 @@ board. Three row classes make up the round:
 - **Queued** — issues accepted for this round that have not launched. **Read them
   from the durable round record** (`ROUND_MEMBERS`, Step 2): a member with **no
   recorded `started_at`** in that repo's `pipelines` has not launched, and is a
-  queued row. Nothing else marks a queued issue — a queued issue has no `pipelines`
-  entry at all until its turn, which is precisely why membership had to be written
-  down separately.
+  queued row. Append the selected dispatcher's unclaimed PM standing plan from
+  the same repo snapshot, in its saved rank order. Bind `ROW_ROUND_PLANNED`
+  to this repo’s `ROUND_PLANNED` or `RK_ROUND_PLANNED` from Step 2.
+  Use this repo's already rendered running and evidenced pre-PR issue IDs as
+  `ROW_RUNNING_IDS`, a JSON array of issue-number strings. A verified running
+  row takes precedence over a plan entry for the same issue. Only the launched
+  round membership feeds completed counts.
 
   <!-- test-anchor: board-step3-queued-from-round -->
 
   ```bash
-  # ROW_PIPELINES and ROW_ROUND_MEMBERS are that repo's own pair (Step 2). Queue
-  # order is the recorded order — `members` is written in Step 6.0b's execution
-  # order, so it is read back as-is and never re-sorted.
+  # Claimed successors lead in execution order, then standing plans in rank order.
   QUEUED_ISSUES=$(jq -rn \
     --argjson m "$ROW_ROUND_MEMBERS" \
     --argjson p "${ROW_PIPELINES:-null}" \
-    '$m[] | select((($p // {})[.] // {}) | has("started_at") | not)' 2>/dev/null)
+    --argjson planned "${ROW_ROUND_PLANNED:-[]}" \
+    --argjson running "${ROW_RUNNING_IDS:-[]}" \
+    '([$m[] | select((($p // {})[.] // {}) | has("started_at") | not)] + ($planned - $running))
+     | reduce .[] as $issue ([]; if index($issue) == null then . + [$issue] else . end)
+     | .[]' 2>/dev/null)
   ```
 
   **This path is exact for any thread**, not only the dispatcher: the record is on

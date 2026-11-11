@@ -313,6 +313,13 @@
         },
         "ended-session": null
       },
+      "_pm_standing_queues_comment": "Rank-ordered unclaimed /pm refill plans, scoped by normalized repo and actual dispatcher session. Each generation is compared before replacement or retirement. A retired plan keeps an empty issue list and a new generation so a stale absent read cannot recreate it. A plan is separate from launched round membership and claimed overlap successors. /board reads plans with their selected round and requires its usual live-work evidence. Plans never contribute to active-work-cap.",
+      "pm_standing_queues": {
+        "session-example": {
+          "generation": "1794399200:1234:17:42",
+          "issues": ["1608", "1609"]
+        }
+      },
       "_round_comment": "Legacy singleton round from issue #1604. New dispatchers never write or clear this field. round-membership.sh retains it as read-only compatibility evidence unless its attributed session already has a key in rounds (including a null teardown tombstone). An unattributed legacy record remains visible in the observer/legacy view; membership is not proof of liveness.",
       "round": {
         "members": ["1604", "1607", "1612"],

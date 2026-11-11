@@ -80,6 +80,7 @@ WINDOW_PLAN_SH=$(resolve_script window-plan.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 PM_REPORT_SH=$(resolve_script lib/pm-report.py || true)
+PM_STANDING_QUEUE_SH=$(resolve_script pm-standing-queue.sh || true)
 ```
 
 Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
@@ -99,6 +100,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `USAGE_HORIZON_SH` empty → **optional, degrades to `unknown`** (day mode only). Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — runway verdict unavailable, day mode holds the conservative posture` on the arming turn and treat every tick's verdict as `unknown` (D2's horizon gate): in-flight work finishes, nothing new starts, and **no pre-emptive park ever fires** — an absent signal must not park a healthy board any more than it may green-light a dying one.
 - `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
 - `PM_REPORT_SH` empty → **optional**. If the repo enabled scheduled reports, surface the report gate's missing-helper diagnostic once per PM run. Explicit `/board` remains available.
+- `PM_STANDING_QUEUE_SH` empty → **optional**. Surface one diagnostic and use the existing claimed queue and backlog refill without a standing plan.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Keep explicit and opted-in reports available. Preserve the diagnostic when a rendered table's freshness clock cannot be written.
 - `MAKESPAN_SH` / `ESTIMATE_RESOLVE_SH` empty → **optional** (needed only for window batch fitting and estimate display). **If a window is active (`WINDOW_STR` set) and either helper is unavailable, do NOT dispatch the full untrimmed batch — fail closed: print `DEGRADED: <helper> not found — dispatch paused; cannot verify batch fits the requested window` and skip dispatch for this run.** Without an active window, show estimates inline where available and continue normally.
 
@@ -664,7 +666,33 @@ Then display a short list of the top 3–5 backlog issues (unassigned / up for p
 
 Summarize rather than enumerate once a tier stops informing a decision — most often the Low tier: "68 additional issues are Low-priority relative to this goal". The tier still appears with its heading; it just carries a count instead of 68 bullets.
 
-**Select the initial batch from the full ranking.** After the pause and scope reads below, walk the retained ranking in operator-first order (1B.4c). Apply Step 3.1's inline eligibility test, then put the first `LIMIT` inline-eligible issues in `BATCH_ISSUES` for both ordinary and windowed runs. Keep the remaining eligible issues in ranked order for the existing inline queue and refill. Send issues encountered before the batch fills that require a prompt or decomposition to their existing Step 3.1 paths. They consume no inline slot. Keep the existing window, ownership, budget, horizon, pause, and overlap checks on every proposed launch.
+**Select the initial batch and standing queue from the same ranking.** After
+the pause and scope checks below, walk the retained ranking in operator-first order (1B.4c). Apply the
+existing 3.1 inline criteria, dependency, park and scope filters, then run the
+1B.5 read-only ownership sweep until twice `LIMIT` candidates clear or the
+ranking is exhausted.
+Build `PM_INLINE_RANKED` as a JSON array of their issue-number strings, best
+first. Preserve the prompt/decomposition paths for candidates encountered
+before the batch fills. The standing picks are a plan only. They do not enter
+the `/subagent` launch set or acquire claims.
+
+<!-- test-anchor: pm-standing-queue-initial -->
+```bash
+PM_QUEUE_SELECTION=$(jq -ce --argjson limit "$LIMIT" '
+  if type != "array" or any(.[]; (type == "string" and test("^[1-9][0-9]*$")) | not) then
+    error("invalid inline ranking")
+  else
+    reduce .[] as $issue ([]; if index($issue) == null then . + [$issue] else . end)
+    | {batch: .[:$limit], planned: .[$limit:($limit * 2)]}
+  end' <<<"$PM_INLINE_RANKED") || exit 1
+```
+
+Put the first `LIMIT` inline-eligible issues in `BATCH_ISSUES` from `.batch` for ordinary and windowed runs. Window and
+launch checks still decide what actually starts. After the initial dispatch
+attempt, save `.planned` through the Step 3.4 queue publication block for this
+same dispatcher. Exclude any candidate already accepted by `/subagent` or
+definitively rejected during this turn. A ranking-only run, pause, or launch
+horizon hold does not replace a standing queue.
 
 **Window-fit gate (when `WINDOW_STR` is set and Step 0b parsed it successfully).** After ranking and before dispatch, trim the ranked batch to fit inside the remaining window using `makespan.sh`. This is a pure trim gate — it never reorders the batch.
 
@@ -700,7 +728,7 @@ fi
    ```
    When `MAKESPAN_SH` or `ESTIMATE_RESOLVE_SH` is unavailable, follow Step 0's dispatch pause for the active window.
 
-**Ownership sweep (runs after ranking and window-fit selection, before dispatch).** In-flight work does not live only on GitHub — it also lives in other threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state on disk. The claim gate alone cannot see any of that, and a stale claim is re-picked with only a warning, which is how issue #652 shipped twice. Run the sweep over the selected inline-eligible candidates and branch three ways (issue #1431):
+**Ownership sweep (read-only when planning, rechecked before dispatch).** In-flight work does not live only on GitHub — it also lives in other threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state on disk. The claim gate alone cannot see any of that, and a stale claim is re-picked with only a warning, which is how issue #652 shipped twice. During ranking, pass the candidate numbers as `PM_OWNERSHIP_ISSUES` to the same read-only sweep below. Reuse fresh results from this evaluation for surviving `BATCH_ISSUES` after window trimming. At launch, recheck any result that is missing or stale. Branch three ways (issue #1431):
 
 **Get the session listing first — it is what makes `adopt` reachable (issue #1459).** Liveness is resolved against a listing of this harness's sessions, and no CLI enumerates them: the source is the **deferred** MCP tool `mcp__ccd_session_mgmt__list_sessions`. Deferred means its schema is not loaded, so calling it straight away fails — load it once per thread, then call it:
 
@@ -756,8 +784,14 @@ fi
 
 <!-- test-anchor: pm-1b5-ownership-sweep -->
 ```bash
-# Initial inline picks from BATCH_ISSUES, after any window-fit trim.
-CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})
+# Ranking provides a bounded candidate list. A launch recheck defaults to the
+# actual batch after window trimming.
+if [[ -n "${PM_OWNERSHIP_ISSUES[0]:-}" ]]; then
+  CANDIDATE_NUMS=("${PM_OWNERSHIP_ISSUES[@]}")
+  unset PM_OWNERSHIP_ISSUES
+else
+  CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})
+fi
 
 SWEEP=""; SWEEP_RC=0; SWEEP_ERR=""
 if [[ -n "$CANDIDATE_OWNERSHIP" && ${#CANDIDATE_NUMS[@]} -gt 0 ]]; then
@@ -786,9 +820,9 @@ Each line carries `action`, and `action` is the whole contract:
 
 | `action` | `/pm` does |
 |---|---|
-| `dispatch` | hand to 3.1 exactly as today — the common case, unchanged |
+| `dispatch` | eligible for the ranked batch or standing plan. Send only current launch picks to 3.1. |
 | `skip` | do not dispatch; print the owned line below. **Never** resume, message, or write the owning thread's state: a human parked it, and running the same work in two places is how duplicates get shipped |
-| `adopt` | the owner is archived or gone. Take the claim over via the existing stale-takeover path (`issue-claim.sh <N> --claim`) and dispatch **from the surviving state** named in `adopt` — `from: pr` enters the normal PR flow at `adopt.phase`, `from: branch` resumes Phase A on that branch, `from: null` is a fresh dispatch. Work with surviving state is never redone from scratch |
+| `adopt` | the owner is archived or gone. Keep the disposition while planning. At launch, take the claim over via the existing stale-takeover path (`issue-claim.sh <N> --claim`) and dispatch **from the surviving state** named in `adopt` — `from: pr` enters the normal PR flow at `adopt.phase`, `from: branch` resumes Phase A on that branch, `from: null` is a fresh dispatch. Work with surviving state is never redone from scratch |
 
 Print one line per non-dispatch candidate, as a sibling of the window-fit exclusion idiom, immediately before `## Suggested Next Issues`:
 
@@ -800,14 +834,14 @@ Print one line per non-dispatch candidate, as a sibling of the window-fit exclus
 
 Rules that bind this step:
 
-- **The sweep never blocks.** It is read-only, it never waits on a user answer while any unowned candidate remains dispatchable, and its only writes are on the adoption path (the claim takeover plus normal dispatch bookkeeping).
+- **The sweep never blocks.** It is read-only, it never waits on a user answer while any unowned candidate remains dispatchable, and its only writes are on the adoption path (the claim takeover plus normal dispatch bookkeeping). A prospective pick takes that path only at launch.
 - **A degraded candidate falls back to claim-gate-only** — name the file in the line above and treat that one candidate as today. A read failure is never a silent skip of the whole sweep and never a dispatch block.
 - **All-owned edge case only:** if every rankable candidate is owned and the pipeline would otherwise sit idle, present a menu (`ask-menu.md`) listing the owned items and their resume routes. In every other case keep the surface-and-skip posture — no permission questions.
 - The paused PR fleet is not a special case any more, just the instance whose `resume_route` is `/pr-monitor-and-manage-wake`. Day mode's arm-time fleet takeover (2D.1(a)) is a different decision and is unchanged.
 
 Mechanism, reader set, and verdict table: `.claude/reference/pm-ownership-sweep.md`.
 
-**Dispatch the selected batch by default.** Hand the surviving `BATCH_ISSUES` to **Step 3.1** for immediate inline dispatch, with ranked overflow marked for the queue. Keep window exclusions and ownership skips out of the launch set. Step 3.1 claims the launch picks and runs them through the `/subagent` A→B→C flow up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`). Do not ask "should I start these?" — free capacity is a trigger, not a question (`CLAUDE.md` "KEEP THE PIPELINE FULL"), and the launches are **reported, never proposed**, exactly as 3.4 reports a refill. Step 3.1 owns the mechanics — issue claims (`/subagent` 6.0), overlap chains (6.0b), the ceiling and the inline queue (Step 7) — and this step restates none of them. **Prompts and chips are the exception, not the act:** an issue produces one only when it carries a named `/subagent` Step 4 disqualifier (quoted in the offer) or the user explicitly asks for prompts — see 3.1.
+**Dispatch the selected batch by default.** Hand the surviving `BATCH_ISSUES` to **Step 3.1** for immediate inline dispatch, with the standing plan kept outside the dispatch set. Keep window exclusions and ownership skips out of the launch set. Step 3.1 claims the launch picks and runs them through the `/subagent` A→B→C flow up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`). Do not ask "should I start these?" — free capacity is a trigger, not a question (`CLAUDE.md` "KEEP THE PIPELINE FULL"), and the launches are **reported, never proposed**, exactly as 3.4 reports a refill. Step 3.1 owns the mechanics — issue claims (`/subagent` 6.0), overlap chains (6.0b), the ceiling and the inline queue (Step 7) — and this step restates none of them. **Prompts and chips are the exception, not the act:** an issue produces one only when it carries a named `/subagent` Step 4 disqualifier (quoted in the offer) or the user explicitly asks for prompts — see 3.1.
 
 **Read the refill pause before dispatching anything — and before composing the ranking output above**, the way Step 1C runs ahead of everything else in this step. Cold start is the default mode for a bare `/pm`, so this path runs in repos where a human already said "stop" and that stop was persisted. The resume path reads it in 1A.2 and this path reads it here — dispatching without the same read is how an inverted default silently relaunches against an explicit stop:
 
@@ -1175,7 +1209,7 @@ Name each blocked pipeline's issue and its blocker, so the user can see at a gla
 
 The placement is the point: D2 reads `refill_halted` to decide whether to launch, so evaluating the threshold in D4 would let the very tick that crossed it refill first and halt afterwards, pushing one more pipeline into a board already known to be failing. A halt that takes effect one tick late is a halt that fired after the damage.
 
-**D2 — Refill.** Run **Step 3.4 unchanged** — the pause read with its exit-code table, `$SCOPE` narrowing, operator order then queue then backlog (with the operator-priority re-read), per-pick re-validation, overlap chains, `FREE` from `active-work-cap.sh`, and the reported-not-proposed launch lines. Day-mode conditions sit **on top of** it, none replacing any part:
+**D2 — Refill.** Run **Step 3.4 unchanged** — the pause read with its exit-code table, `$SCOPE` narrowing, operator order, claimed successors and standing picks, then backlog top-up (with the operator-priority re-read), per-pick re-validation, overlap chains, `FREE` from `active-work-cap.sh`, and the reported-not-proposed launch lines. Day-mode conditions sit **on top of** it, none replacing any part:
 
 **The usage-horizon gate runs first, before any pick is dispatched** (#1428, #2147). Use the counter (`<total_tokens>N tokens left</total_tokens>`) only if this turn's harness actually prints it. Never use a transcript-derived count or local estimate. Use §7.3 of `subagent-thread-limit-park.md` for the continuous first-hand absence attestation and launch policy.
 
@@ -1259,7 +1293,7 @@ printf 'HORIZON_STATUS=%s\nHORIZON_REFILL_OK=%s\nHORIZON_PARK=%s\nHORIZON_IDLE_R
 | Variable | Derived from |
 |----------|--------------|
 | `PIPELINES_SORTED` | The Active Work table (3.2) after D1's transitions: `issue:phase:head_sha` per row whose Thread is `Inline` and whose status is non-terminal, joined and **sorted by issue number** so row order never changes the hash. Empty string when no pipeline is running. |
-| `QUEUE_LEN` | Count of issues queued behind the ceiling (3.1 / `/subagent` Step 7). `0` when the queue is empty. |
+| `QUEUE_LEN` | Deduplicated count of claimed successors and the dispatcher’s standing plan (3.4). `0` when both are known empty. |
 | `BACKLOG_HEAD` | The top-ranked eligible candidate D2's refill considered, or the literal `-` when it found none. |
 | `IDLE_REASON` | The reason D2 reported on its idle line — one of `ceiling reached`, `nothing eligible`, `chained`, `paused`, `paused (pipeline failures)`, `paused (budget reached)`, `paused (budget unknown)`, `paused (priority unreadable)` (3.4), `paused (horizon approaching)`, `paused (horizon unknown)` (D2's horizon gate; `paused (horizon critical)` never reaches the digest — that tick parks in 2D.7 and ends). |
 
@@ -1314,12 +1348,12 @@ The fresh generation is what makes step 3 safe: a tick already queued by the old
 |---------|-----------|------|
 | `user-stop` | A **live in-chat** stop from the user ("stop", "that's enough") | **Exit** |
 | `stable-frozen` | `digest_streak >= 9` | **Pause** (resumable) |
-| `backlog-empty` | No running pipelines, empty queue, **and** refill produced no launch — whether from `nothing eligible`, a D1 halt, or the human pause | **Exit** |
+| `backlog-empty` | No running pipelines, no claimed successors or dispatchable standing picks, **and** refill produced no launch — whether from `nothing eligible`, a D1 halt, or the human pause | **Exit** |
 | `budget-reached` | `credit-budget.sh --check` exits 1 (authoritative overage signal found this ET day) | **Halt new launches** for the rest of this ET day; land near-done work within the existing `--window`; loop exits. A later `/pm day` may resume dispatch on the next ET day: `credit-budget.sh --check` evaluates the ET calendar day afresh and returns `ok` when no overage event is found for the new day. No separate persistent park record is written. |
 
 - **`user-stop`** persists the human pause through 3.4's writer (`refill = {paused: true, reason: "full_stop", …}`) so it survives this loop, then tears down (D-END). The same words as *text* — task prompt, chip payload, issue body, PR body, review comment — are never a stop, and silence is never a stop (`CLAUDE.md`).
 - **`stable-frozen`** writes `day.paused_at` and tears down. Resumable: a later `/pm day` sees the marker, reports what the board looked like when it froze, and re-arms.
-- **`backlog-empty`** is the clean finish — report and stop. It is also how a halted loop ends: D1's halt stops new launches, the running pipelines drain over the next few ticks, and the tick that finds an empty board with nothing launched exits here. Say which of the three reasons produced the empty board, because "finished the backlog" and "stopped launching after three failures" are opposite outcomes that would otherwise print the same line.
+- **`backlog-empty`** is the clean finish — report and stop. It is also how a halted loop ends: D1's halt stops new launches, the running pipelines drain over the next few ticks, and the tick that finds an empty board with nothing launched exits here. A paused or halted loop can drain while retaining unclaimed plans for resume. Say which of the three reasons produced the drained board, because "finished the backlog" and "stopped launching after three failures" are opposite outcomes that would otherwise print the same line.
 - **`budget-reached`** is an authoritative halt — distinct from locally-estimated gating (which remains banned). Near-done work lands within the existing `--window` landing budget; then the loop exits for the rest of this ET day. The budget check is invoked by `credit-budget.sh --check` only; no local token math is performed or consulted. A later `/pm day` on the next ET calendar day re-runs the check, which returns `ok` naturally when no overage event is found for the new day. Session-start reconciliation surfaces a notice (reading `credit_budget.status` from session-state.json); no persistent wake or separate park state is created.
 
 **On the D1 halt, once set:** the loop keeps monitoring what is still running and starts nothing new. **Only a human clears `refill_halted`** — the same resume that lifts a refill pause. A changed digest must never clear it, or the loop auto-resumes straight back into the failure that stopped it.
@@ -1937,11 +1971,11 @@ This is the core PM behavior. Enter the orchestration loop as soon as Step 1 has
 
 ### 3.1: Launch selected issues (inline by default)
 
-On cold start, only surviving `BATCH_ISSUES` are eligible for immediate inline launch. Carry the ranked overflow in the current run's existing inline queue for 3.4. Before an overflow pick can launch, 3.4 revalidates it, including the ownership sweep and current gates. Apply the existing thread-prompt and decomposition paths to the separately routed picks.
+On cold start, only surviving `BATCH_ISSUES` are eligible for immediate inline launch. Keep ranked overflow in the unclaimed standing queue for 3.4. Before an overflow pick can launch, 3.4 revalidates it, including the ownership sweep and current gates. Apply the existing thread-prompt and decomposition paths to the separately routed picks.
 
 **The selection arrives already made.** 1B.5 hands over the top-ranked batch by default, 1A.4/3.4 hand over refill picks the same way, and an `adjust` from the user replaces the set — there is no separate "which of these?" turn to wait for. **Partition the batch** with the "too big for any subagent" test from `/subagent` Step 4 — the implementation can't be carried across sequential subagent turns, needs interactive human judgment mid-build, or should be split into multiple PRs. This is a judgment call about *resumability and interactivity*, not tier, and not file/AC/dependency counts. Neither sheer size, nor touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, nor a full inline pipeline makes an issue too big — past-ceiling work queues inline (#776). **The partition is three-way, not two:** the third criterion decomposes rather than routing out (#1193), so only criteria 1 and 2 produce a thread. Then:
 
-- **Inline-eligible issues (the default — most issues):** run them inline through the `/subagent` A→B→C flow. This is the default action; the issue landing in the batch **is** the go-ahead — neither a selection turn nor a "go ahead and run those" is waited on. Invoke `/subagent #{a} #{b} …` with the eligible set **through the Skill tool** (`skill: "subagent"`) — never by starting a `phase-a-fixer` / `phase-b-reviewer` / `phase-c-merger` with the `Agent` tool from this thread, which skips Step 7.1's launch record (no Start, no estimate, no table). A repo rule that lets the parent merge directly replaces Phase C only, never this launch (#1903). It runs Phase A then Phase B under Dedicated Monitor Mode, driving each to `merge_ready`, then **auto-launches Phase C** (full `/wrap`, silent merge). Launch up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`) from `subagent-orchestration.md` and queue the rest, starting a queued pipeline as each running one **merges or blocks** — a pipeline parked at `merge_ready` keeps its slot through Phase C (see 3.4, which refills on free capacity, not only on a finish). Mark each such issue `Inline` in the Active Work table (3.2). `/subagent` Step 7.2 supplies the round's launch and queue records, including queued rows with `—` clocks. **A dispatch is not finished until its machine-readable launch and queue records exist.** Use `/board` (3.3a) for an explicit request or due opted-in report. `/board` shows every recorded Step 7.1 clock; name the launches with no record separately in one line — `/board` may show them as a queued row or not at all (`No active round`), so a row never proves a launch happened — and never backfill a Start. If launch records are missing, name the affected launches and stop further launches for this round. Issues in the set that **overlap on a file** are serialized rather than started together — `/subagent` Step 6.0b owns that; expect a chained issue to start later than a free slot alone would suggest.
+- **Inline-eligible issues (the default — most issues):** run them inline through the `/subagent` A→B→C flow. This is the default action; the issue landing in the batch **is** the go-ahead — neither a selection turn nor a "go ahead and run those" is waited on. Invoke `/subagent #{a} #{b} …` with the eligible set **through the Skill tool** (`skill: "subagent"`) — never by starting a `phase-a-fixer` / `phase-b-reviewer` / `phase-c-merger` with the `Agent` tool from this thread, which skips Step 7.1's launch record (no Start, no estimate, no table). A repo rule that lets the parent merge directly replaces Phase C only, never this launch (#1903). It runs Phase A then Phase B under Dedicated Monitor Mode, driving each to `merge_ready`, then **auto-launches Phase C** (full `/wrap`, silent merge). Keep prospective standing picks outside this Skill call until Step 3.4 promotes them. Launch up to the **`LIMIT` concurrent-pipeline** limit (Step 0 — `min(CEILING, ACTIVE_WORK_CAP)`) from `subagent-orchestration.md` and queue the rest, starting a queued pipeline as each running one **merges or blocks** — a pipeline parked at `merge_ready` keeps its slot through Phase C (see 3.4, which refills on free capacity, not only on a finish). Mark each such issue `Inline` in the Active Work table (3.2). `/subagent` Step 7.2 supplies the round's launch and queue records, including queued rows with `—` clocks. **A dispatch is not finished until its machine-readable launch and queue records exist.** Use `/board` (3.3a) for an explicit request or due opted-in report. `/board` shows every recorded Step 7.1 clock; name the launches with no record separately in one line — `/board` may show them as a queued row or not at all (`No active round`), so a row never proves a launch happened — and never backfill a Start. If launch records are missing, name the affected launches and stop further launches for this round. Issues in the set that **overlap on a file** are serialized rather than started together — `/subagent` Step 6.0b owns that; expect a chained issue to start later than a free slot alone would suggest.
 - **Criterion-3 issues — decomposed, never chipped whole (#1193):** an issue that fails the fit bar because it *should be split into multiple PRs* is split here rather than handed out. `/subagent` Step 5.1 files its increment children, links them, writes the tracking checklist into the parent, and queues the chain inline; the parent stays open as the tracking issue and takes no row of its own beyond the parent/children group in 3.2. **Never generate a chip or a prompt block for a criterion-3 parent** — that is the fan-out this rule exists to end. Report the split (one line per child, the rationale once on the head) exactly as Step 5.1 specifies. If the split needs more than 5 children, if a clean split cannot be articulated, or if Step 5.1's dependencies did not resolve, Step 5.1 routes the parent out instead — then and only then it reaches the thread-prompt path below. Its one-line reason is **criterion 3 plus why decomposition was unavailable** ("needs 7 increments, past the 5 cap"), which is the one shape in which criterion 3 is a valid route-to-thread verdict (`chip-launching.md`). A bare "criterion 3" is not: it would be rejected as invalid and the issue would stall, neither routed nor decomposed.
 - **Criterion-1/2 issues (the exception):** hand these out as thread prompts for the user to launch in a separate thread, each with a **one-line reason** naming which criterion fired.
 
@@ -2222,18 +2256,103 @@ SCOPE_JSON=$(jq -cn --arg s "<label>" --arg at "$NOW" \
 
 **Re-read the operator priority on every refill** (1B.1a, issue #1767) — once at the top of the tick, so a `/desk` edit takes effect on the next tick without restarting `/pm`. `PRIORITY_UNREADABLE=true` holds every autonomous launch this tick, idle reason `paused (priority unreadable)`; it clears by itself once the file reads cleanly.
 
-Refill from three sources, in this order:
+Refill in this order:
 
 **(o) Operator order — first.** Re-run 1B.4 item 7 over the latest ranking with this tick's read and take its `override` rows, in the operator's order. An ordered issue that ranking never saw (bumped since it ran) first joins the candidate set as a first-seen issue — full read, scored, excluded or not — exactly as step 2 of "When one or more pipelines or threads finish" below treats one. An issue that is also queued is taken once, here, at its override position, and leaves the queue. When `$SCOPE` is non-null, take only the override rows inside it, still in the operator's order; an out-of-scope ordered issue is deferred, not dropped — it stays in the override for a later, wider refill, the way an out-of-scope queued issue stays queued. **Parked issues are deferred in every source:** a parked queued issue stays queued and is skipped until its date, the way an out-of-scope queued issue is; a parked backlog issue is not a candidate.
 
-**(a) Queue refill — existing, automatic.** Start the next issue queued behind the ceiling from 3.1 before touching the backlog. When `$SCOPE` is non-null, skip queued issues outside it (they stay queued — a narrowing defers work, it does not drop it).
+**(a) Queue refill — before the backlog.** Start the next eligible successor
+in the existing `/subagent` queue, then walk this dispatcher's unclaimed
+standing plan in rank order. Apply the same immediate revalidation below.
+Consume an issue only on verified launch, adoption or acceptance into the
+existing claimed successor queue. Evict definitive rejections, such as a
+closed issue or an existing PR. Keep out-of-scope, parked and deadline-deferred
+picks, and keep picks whose validation or launch evidence is unreadable.
+Deduplicate the operator overlay and both queues on the issue number.
 
-**(b) Backlog refill — automatic.** When the queue is empty and slots remain, go back to the backlog and launch, with **no "suggest 1–3 and wait for a selection" round-trip**:
+Read the saved plan once before the first pick, including before the initial
+selection or an explicit re-plan. Use the same actual dispatcher identity as the round record
+(`CLAUDE_SESSION_ID`) and the
+verified `REPO_KEY`. Carry the exact record across shell calls for this
+evaluation. Another session's plan is display evidence only.
 
-1. Re-scan and re-score using the incremental re-read + **total** re-score described in step 2 of "When one or more pipelines or threads finish" below. The re-scan runs 1B.2's `pm-1b2-new-issues` block too, and the refill report line names each `NEW_ISSUES` entry with its tier, launched or not (`New since the last scan: #N (Tier)`), so an issue filed meanwhile is visibly in the ranking (issue #1766).
-2. **Apply `$SCOPE` first when it is non-null** — drop every candidate outside it before ranking decides anything, so a narrowed refill can never launch excluded work.
-3. Take the highest-ranked **inline-eligible** candidates from what survives, up to the number of free slots.
-4. Launch them through 3.1's inline path (`/subagent` A→B→C) and mark each `Inline` in the Active Work table (3.2).
+<!-- test-anchor: pm-standing-queue-read -->
+```bash
+PM_QUEUE_SESSION="${CLAUDE_SESSION_ID:-}"
+PM_QUEUE_STATE=''
+if [[ -n "${PM_STANDING_QUEUE_SH:-}" ]]; then
+  if ! PM_QUEUE_STATE=$("$PM_STANDING_QUEUE_SH" read "$REPO_KEY" "$PM_QUEUE_SESSION" 2>/dev/null); then
+    PM_QUEUE_STATE=''
+    printf '%s\n' 'DEGRADED: standing queue unavailable; using the existing refill sources' >&2
+  fi
+fi
+PM_QUEUE_PICKS=$(jq -c '.issues // []' <<<"${PM_QUEUE_STATE:-null}") || exit 1
+```
+
+**(b) Backlog top-up — after queue dispatch.** Pass the issue numbers consumed
+or definitively evicted across all sources as `PM_QUEUE_REMOVED` (a JSON array
+of strings). Count actual remaining capacity after the queue attempt in
+`PM_QUEUE_VACANCIES` (the smaller of free thread slots and verified repo-wide
+`FREE`). Run this block only after the refill gates have cleared and the
+queue sources have had their turn. It requests a scan below half of `LIMIT`.
+If eligible queue picks ran out while a slot remains, use the existing backlog
+fallback even when deferred picks still occupy the plan.
+
+<!-- test-anchor: pm-standing-queue-refill -->
+```bash
+PM_QUEUE_REMAINING=$(jq -ce --argjson removed "$PM_QUEUE_REMOVED" --argjson limit "$LIMIT" \
+  '(. - $removed)[:$limit]' <<<"$PM_QUEUE_PICKS") || exit 1
+PM_QUEUE_DEPTH=$(jq -r 'length' <<<"$PM_QUEUE_REMAINING") || exit 1
+PM_QUEUE_TOP_UP=false
+if (( LIMIT > 0 )); then
+  if (( PM_QUEUE_VACANCIES > 0 )) || { [[ -n "$PM_QUEUE_STATE" ]] && (( 2 * PM_QUEUE_DEPTH < LIMIT )); }; then
+    PM_QUEUE_TOP_UP=true
+  fi
+fi
+```
+
+Only on `PM_QUEUE_TOP_UP=true`, run the incremental re-scan and total re-score
+in the finish housekeeping below. Reuse 1B.2's `pm-1b2-new-issues` block and
+retain the `New since the last scan: #N (Tier)` line when it finds new issues.
+Apply scope before ranking and all existing gates per pick. Fill verified
+remaining vacancies through 3.1 before extending the plan. Set
+`PM_QUEUE_ADDITIONS` to the remaining ranked, inline-eligible issue numbers,
+excluding running work, accepted successors and definitive rejections. Use
+an empty array when no scan ran. Carry over deferred picks in their saved
+order and append at most enough new picks to restore `LIMIT`.
+
+<!-- test-anchor: pm-standing-queue-top-up -->
+```bash
+PM_QUEUE_NEXT=$(jq -ce --argjson additions "$PM_QUEUE_ADDITIONS" --argjson limit "$LIMIT" '
+  reduce $additions[] as $issue (.;
+    if index($issue) == null then . + [$issue] else . end)
+  | .[:$limit]' <<<"$PM_QUEUE_REMAINING") || exit 1
+```
+
+**Publish the verified plan.** For initial dispatch use the filtered
+`.planned` result as `PM_QUEUE_NEXT`. After refill use the top-up block's
+result. Skip a publication when the read was unavailable. A stale write
+does not undo a launch or acquire a claim. Surface the failure and re-read
+at the next evaluation rather than overwriting the winning plan. On a
+verified empty backlog, use `[]` to retire this dispatcher's own plan. Preserve
+plans across pauses and during recovery.
+
+<!-- test-anchor: pm-standing-queue-publish -->
+```bash
+if [[ -n "$PM_QUEUE_STATE" ]]; then
+  if PM_QUEUE_SAVED=$(jq -cn --argjson expect "$PM_QUEUE_STATE" --argjson issues "$PM_QUEUE_NEXT" \
+      '{expect:$expect,issues:$issues}' | \
+      "$PM_STANDING_QUEUE_SH" save "$REPO_KEY" "$PM_QUEUE_SESSION" "$LIMIT" 2>/dev/null); then
+    PM_QUEUE_STATE="$PM_QUEUE_SAVED"
+  else
+    printf '%s\n' 'DEGRADED: standing queue was not updated; re-read it on the next evaluation' >&2
+  fi
+fi
+```
+
+Count the deduplicated claimed successors plus the persisted standing plan
+for the board, report, day digest and slot census. Keep the existing
+`active-work-cap.sh` inputs. An unclaimed plan carries neither an active slot
+nor a launch record.
 
 **Re-validate every pick, from any source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5, **plus the 1B.5 ownership sweep** (`candidate-ownership.sh`, issue #1431). Closed, already has its own PR, now too big, or `action: skip` → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). `action: adopt` launches from the surviving state instead of a fresh start. Backlog refill reuses this validation rather than defining its own.
 
@@ -2337,9 +2456,9 @@ fi
 When one or more pipelines or threads finish (PRs merged, issues closed) — housekeeping that runs on a *finish*, separate from the capacity trigger above:
 
 1. **Dismiss the chips of finished issues, then remove their rows.** Order matters: a row carries its chip's `task_id`, and once the row is gone the chip can no longer be withdrawn. So for every completed issue still at `Chip offered`, `dismiss_task` first — its work is done, the offer is dead — and only then drop it from the assignments table.
-2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies **and comments** for issues whose `updatedAt` moved since the last scan's baseline, or that have no recorded baseline yet (first seen this pass — always gets a full read, same as a changed issue); track/update that baseline per issue as you go). **`updatedAt` bumps on a new comment just like a body edit**, so a dependency reference added in a comment on an otherwise-untouched issue (e.g. "blocked by #99") is still caught on the next pass — re-reading is scoped by *any* change, not just body/title edits, which is what keeps this from being a real completeness gap. **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed **and** what changed, then re-run 1B.4/1B.4b across every remaining candidate — the operator-order overlay (1B.4 item 7) last, against the file as it reads now. Re-reading bodies and comments stays scoped to issues whose `updatedAt` moved or that are new — that's the expensive part and it stays incremental; re-scoring the dependency map and tiers is cheap and must be total. Then persist the new order (1B.4c), so the desk's derived impact reads this re-scan's ranks.
-3. Refill the freed slots per the capacity trigger above — operator order first, then the queue, then the backlog — and report the picks. Do not present them for selection.
-4. Too-big candidates surfaced by that re-scan still go down Step 3.1's chip-or-fallback path and wait for the user's click.
+2. **Scan only when the queue-first top-up above requests it.** Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies **and comments** for issues whose `updatedAt` moved since the last scan's baseline, or that have no recorded baseline yet (first seen this pass — always gets a full read, same as a changed issue); track/update that baseline per issue as you go). **`updatedAt` bumps on a new comment just like a body edit**, so a dependency reference added in a comment on an otherwise-untouched issue (e.g. "blocked by #99") is still caught on the next pass — re-reading is scoped by *any* change, not just body/title edits, which is what keeps this from being a real completeness gap. **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed **and** what changed, then re-run 1B.4/1B.4b across every remaining candidate — the operator-order overlay (1B.4 item 7) last, against the file as it reads now. Re-reading bodies and comments stays scoped to issues whose `updatedAt` moved or that are new — that's the expensive part and it stays incremental; re-scoring the dependency map and tiers is cheap and must be total. Then persist the new order (1B.4c), so the desk's derived impact reads this re-scan's ranks.
+3. Report the picks from the queue-first refill and any backlog fallback. Do not dispatch a second batch from this housekeeping path.
+4. Too-big candidates surfaced by an executed re-scan still go down Step 3.1's chip-or-fallback path and wait for the user's click.
 5. **Dismiss superseded and re-planned chips.** Beyond the finished issues handled in step 1, withdraw a `Chip offered` chip only when its offer is genuinely dead:
    - **Superseded** — the issue was explicitly replaced by a newer suggestion.
    - **Re-planned** — the issue's scope or plan changed, so the chip's prompt is stale.

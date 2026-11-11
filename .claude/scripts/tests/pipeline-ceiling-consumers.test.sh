@@ -100,7 +100,7 @@ PM_LAUNCH=$(sed -n '/^### 3\.1:/,/^### 3\.2:/p' "$ROOT/$PM")
    "$PM_BATCH" == *'CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})'* ]] \
   || fail '/pm must run window fit and ownership against the selected batch'
 [[ "$PM_LAUNCH" == *'only surviving `BATCH_ISSUES` are eligible for immediate inline launch'* &&
-   "$PM_LAUNCH" == *"ranked overflow in the current run's existing inline queue for 3.4"* ]] \
+   "$PM_LAUNCH" == *"ranked overflow in the unclaimed standing queue for 3.4"* ]] \
   || fail '/pm Step 3.1 must queue the overflow without bypassing the initial launch gates'
 
 reject_literal_pm_batch() {
