@@ -1,4 +1,4 @@
-"""Test opted-in PM reporting without a watch or GitHub calls."""
+"""Test scheduled PM reporting without a watch or GitHub calls."""
 import copy
 import json
 import os
@@ -26,10 +26,22 @@ class PMReportTest(unittest.TestCase):
             "terminal": [],
         }
 
-    def test_absent_and_zero_do_not_require_board_or_state(self):
-        for config in ("", "report_every_min: 0"):
-            self.assertEqual(evaluate(interval(config), None, None, 0),
-                             {"due": False, "reason": "disabled"})
+    def test_absent_setting_defaults_to_thirty(self):
+        for config in ("", "Set a custom interval in minutes."):
+            self.assertEqual(interval(config), 30)
+        self.assertEqual(interval("report_every_min: 20"), 20)
+
+    def test_zero_disables_without_board_or_state(self):
+        self.assertEqual(evaluate(interval("report_every_min: 0"), None, None, 0),
+                         {"due": False, "reason": "disabled"})
+
+    def test_config_only_cli(self):
+        for config, expected in (("", "30"), ("report_every_min: 0", "0"),
+                                 ("report_every_min: 20", "20")):
+            result = subprocess.run([sys.executable, str(SCRIPT), "--config-only"],
+                                    input=config, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.strip(), expected)
+            self.assertFalse(result.stderr)
 
     def test_changed_board_at_cadence_and_quiet_when_unchanged(self):
         first = evaluate(20, self.board, None, 0)
@@ -130,6 +142,41 @@ class PMReportTest(unittest.TestCase):
                                  env=env, cwd=folder, text=True, capture_output=True, check=True)
             self.assertFalse(off.stdout.strip())
             self.assertFalse(off.stderr)
+
+            # Exercise the real gate's missing-section route at its exact default boundary.
+            helper = scratch / "report-clock"
+            helper.write_text(
+                '#!/usr/bin/env bash\nexec "$REPORT_TEST_PYTHON" "$REPORT_TEST_SCRIPT" '
+                '--now "$REPORT_TEST_NOW" "$@"\n', encoding="utf-8")
+            helper.chmod(0o700)
+            config.write_text("## Notes\nNo Reporting section.\n", encoding="utf-8")
+            self.board["terminal"] = []
+            env.update(PM_REPORT_SH=str(helper), REPORT_TEST_PYTHON=sys.executable,
+                       REPORT_TEST_SCRIPT=str(SCRIPT), REPORT_TEST_NOW="1000",
+                       CLAUDE_CODE_SESSION_ID="bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                       PM_REPORT_BOARD_JSON=json.dumps(self.board))
+            baseline = json.loads(execute(gate + "\n" + receipt))
+            self.assertEqual(baseline["initialize"]["at"], 1000)
+            self.board["running"][0].update(phase="B", pr=91)
+            env.update(REPORT_TEST_NOW="2799", PM_REPORT_BOARD_JSON=json.dumps(self.board))
+            self.assertFalse(json.loads(execute(gate))["due"])
+            env["REPORT_TEST_NOW"] = "2800"
+            self.assertEqual(json.loads(execute(gate))["reason"], "scheduled")
+
+            # A missing file uses the default. A present unreadable config fails closed.
+            config.unlink()
+            self.assertTrue(json.loads(execute(gate))["due"])
+            config.mkdir()
+            bad_config = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", gate],
+                                        env=env, cwd=folder, text=True, capture_output=True, check=True)
+            self.assertFalse(bad_config.stdout.strip())
+            self.assertIn("Reporting configuration unavailable", bad_config.stderr)
+
+    def test_scheduled_gate_is_pm_only(self):
+        for skill in ("subagent", "pr-monitor-and-manage"):
+            text = (ROOT / ".claude/skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+            self.assertNotIn("pm-progress-report-check", text)
+            self.assertNotIn("PM_REPORT_SH", text)
 
     def test_cli_reports_invalid_config_without_a_render_signal(self):
         result = subprocess.run([sys.executable, str(SCRIPT)],

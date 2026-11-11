@@ -113,10 +113,11 @@ Summarize rather than enumerate once a tier stops informing a decision — most 
 
 The `## Operator order (desk)` section appears only when the operator ordered or parked something (`/pm` 1B.1a). Its rows are listed once, there, with the tier they would have ranked in (`ranked Medium`), and are left out of the tier sections below — so dropping one from the override puts it straight back in its tier.
 
-## Opt-in PM progress report
+## PM progress report
 
-A positive `report_every_min` in the repo's `## Reporting` section is a standing
-status request for `/pm`. The existing `/pm day` tick, PM-owned inline monitor
+The owner requests a changed-board report every 30 minutes by default for
+`/pm` threads. A repo's `report_every_min` in `## Reporting` changes the
+interval when positive. Zero opts out. The existing `/pm day` tick, PM-owned inline monitor
 tick and PM terminal completion turn are its only automatic entry points.
 Consolidate the turn's outcomes and evaluate once. Explicit status renders
 `/board` immediately. It does not consume an automatic report's outcomes.
@@ -151,14 +152,22 @@ REPORT_RESULT=''
 REPORT_BEFORE=''
 REPORT_PATH=''
 REPORT_CONFIG=''
+REPORT_CONFIG_RC=4
 if [[ -n "${PM_CONFIG_GET:-}" ]]; then
-  REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) || REPORT_CONFIG=''
+  REPORT_CONFIG_RC=0
+  REPORT_CONFIG=$("$PM_CONFIG_GET" --section Reporting) || REPORT_CONFIG_RC=$?
+  # The reader returns 2 for both missing and unreadable files.
+  if [[ "$REPORT_CONFIG_RC" -eq 2 && ! -e .claude/pm-config.md && ! -L .claude/pm-config.md ]]; then
+    REPORT_CONFIG_RC=1
+  fi
 fi
-if [[ -z "${PM_REPORT_SH:-}" ]] &&
-  grep -Eq '^[[:blank:]]*report_every_min[[:blank:]]*:[[:blank:]]*0*[1-9][0-9]*[[:blank:]]*$' <<< "$REPORT_CONFIG"; then
-  printf '%s\n' 'DEGRADED: PM report helper missing. Scheduled reports are paused and explicit /board remains available.' >&2
-fi
-if [[ -n "$REPORT_CONFIG" && -n "${PM_REPORT_SH:-}" && -n "${SESSION_STATE_SH:-}" ]] \
+if [[ "$REPORT_CONFIG_RC" -gt 1 ]]; then
+  printf '%s\n' 'DEGRADED: PM Reporting configuration unavailable; scheduled reports paused' >&2
+elif [[ -z "${PM_REPORT_SH:-}" ]]; then
+  if ! grep -Eq '^[[:blank:]]*report_every_min[[:blank:]]*:[[:blank:]]*0+[[:blank:]]*$' <<< "$REPORT_CONFIG"; then
+    printf '%s\n' 'DEGRADED: PM report helper missing. Scheduled reports are paused and explicit /board remains available.' >&2
+  fi
+elif [[ -n "${SESSION_STATE_SH:-}" ]] \
   && REPORT_MIN=$(printf '%s' "$REPORT_CONFIG" | "$PM_REPORT_SH" --config-only) \
   && [[ "$REPORT_MIN" != 0 ]]; then
   REPORT_REPO=$("$SESSION_STATE_SH" --repo-key) || REPORT_REPO=''
