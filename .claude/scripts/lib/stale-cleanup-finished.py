@@ -153,8 +153,12 @@ def canonical(path, cwd):
 
 
 class Sweep:
-    def __init__(self, root, caller, pr_unavailable=False, only=None):
+    def __init__(self, root, caller, pr_unavailable=False, only=None, identity=None):
         self.root = root
+        # path -> branch the caller recorded for it. A path named here is only acted on while that
+        # branch is still checked out there, so a different worktree re-registered at the same path
+        # between the caller's read and this scan is left alone.
+        self.identity = identity or {}
         # None = every worktree (the repo-wide default). A list restricts the
         # scan to exactly those worktree paths; it can only narrow, never widen.
         self.only = only
@@ -444,18 +448,22 @@ sys.exit(11 if errors else 0)
             raise Unknown("caller_context_mismatch")
         self.common = canonical(os.path.join(self.root, self.git("rev-parse", "--git-common-dir").strip()), self.root)
         wanted = None
+        expect = {}
         if self.only is not None:
             wanted = set()
             for item in self.only:
                 if os.path.islink(os.path.normpath(os.path.join(self.root, item))):
                     # A named path swapped for a link could resolve to another registered
                     # worktree: never follow it, so it matches nothing.
-                    wanted.add(item)
-                    continue
-                try:
-                    wanted.add(canonical(item, self.root))
-                except Unknown:
-                    wanted.add(item)  # unreadable or gone: matches no registered worktree
+                    key = item
+                else:
+                    try:
+                        key = canonical(item, self.root)
+                    except Unknown:
+                        key = item  # unreadable or gone: matches no registered worktree
+                wanted.add(key)
+                if item in self.identity:
+                    expect[key] = self.identity[item]
         matched = set()
         for row in self.worktrees():
             if wanted is not None:
@@ -470,6 +478,10 @@ sys.exit(11 if errors else 0)
                 if here not in wanted:
                     continue
                 matched.add(here)
+                if here in expect and row.get("branch", "") != expect[here]:
+                    # Not the checkout the caller recorded: never verified, never removed.
+                    self.record(row, "only_identity_mismatch")
+                    continue
             try:
                 self.report["finished_worktrees"].append(self.verify(row))
             except Skip as exc:
@@ -561,10 +573,20 @@ def main():
     parser.add_argument("--pr-lookup-unavailable", action="store_true")
     parser.add_argument("--only", action="append", metavar="PATH",
                         help="restrict the scan to this worktree path (repeatable); never widens")
+    parser.add_argument("--only-identity", action="append", nargs=2, metavar=("PATH", "BRANCH"),
+                        help="like --only PATH, but only while BRANCH is the branch checked out there")
     args = parser.parse_args()
-    if args.only is not None and any(not item.strip() for item in args.only):
-        parser.error("--only requires a non-empty path")
-    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable, args.only)
+    # Same refusal as the shell wrapper: a blank or flag-like value (`--only=-x` slips past argparse)
+    # is a usage error, never a scope.
+    if args.only is not None and any(not item.strip() or item.startswith("-") for item in args.only):
+        parser.error("--only requires a non-empty path that does not start with '-'")
+    ident = args.only_identity or []
+    if any(not path.strip() or path.startswith("-") or not branch.strip() for path, branch in ident):
+        parser.error("--only-identity requires a path (not starting with '-') and a non-empty branch")
+    only = None
+    if args.only is not None or ident:
+        only = list(args.only or []) + [path for path, _ in ident]
+    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable, only, dict(ident))
     try:
         sweep.detect()
         if args.apply:

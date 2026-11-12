@@ -238,6 +238,33 @@ print('p100\\nn'+cwd)
     code, data = sweep('--apply-finished',flags=('--only',str(link)+'/.'))
     verify(only_b.exists() and not data['finished_worktrees'], 'a link/. form of the named path selects nothing either')
     link.unlink()
+    # A path that is a PREFIX of two worktrees' paths names neither; a trailing slash names exactly one;
+    # a relative path (resolved from the repo root) names exactly one.
+    only_c = worktree('only-c'); only_cc = worktree('only-c-long')
+    code, data = sweep('--apply-finished',flags=('--only',str(only_c)[:-1]))
+    verify(only_c.exists() and only_cc.exists() and not data['finished_worktrees'] and any(r['reason']=='only_path_not_registered' for r in data['skipped_finished_worktrees']),
+           'a path that is only a prefix of other worktrees selects none of them')
+    code, data = sweep('--apply-finished',flags=('--only',str(only_c)+'/'))
+    verify(not only_c.exists() and only_cc.exists() and [r['branch'] for r in data['finished_worktrees']]==['only-c'],
+           'a trailing slash still names exactly one worktree, never its longer-named neighbour')
+    code, data = sweep('--apply-finished',flags=('--only',os.path.relpath(only_cc,root)))
+    verify(not only_cc.exists() and only_b.exists(), 'a relative path names exactly the worktree it resolves to')
+    # --only-identity binds the path to the recorded branch: a different worktree at that path is left alone.
+    code, data = sweep('--apply-finished',flags=('--only-identity',str(only_b),'some-other-branch'))
+    verify(only_b.exists() and not data['finished_worktrees'] and any(r['reason']=='only_identity_mismatch' for r in data['skipped_finished_worktrees']),
+           'a path whose checked-out branch is not the recorded one is skipped and reported, never verified')
+    for bad_flags in [('--only-identity',str(only_b)),('--only-identity',str(only_b),''),('--only-identity','',"only-b")]:
+        bad = subprocess.run(['bash',script,'--apply-finished','--root',str(root),'--json',*bad_flags],cwd=root,env=env,capture_output=True)
+        verify(bad.returncode==3 and only_b.exists(), 'a malformed --only-identity refuses instead of widening')
+    bad = subprocess.run(['bash',script,'--check','--root',str(root),'--json','--only-identity',str(only_b),'only-b'],cwd=root,env=env,capture_output=True)
+    verify(bad.returncode==3 and only_b.exists(), '--only-identity outside --apply-finished refuses')
+    only_d = worktree('only-d')
+    code, data = sweep('--apply-finished',flags=('--only-identity',str(only_d)+'/','only-d'))
+    verify(not only_d.exists() and only_b.exists() and [r['branch'] for r in data['finished_worktrees']]==['only-d'], 'the matching branch is removed as with --only, and only that one')
+    # The helper itself refuses a flag-like value even in the `--only=-x` form argparse would accept.
+    helper = subprocess.run(['python3',str(source/'.claude/scripts/lib/stale-cleanup-finished.py'),'--root',str(root),'--caller',str(root),'--only=-x'],
+                            cwd=root,env=env,capture_output=True)
+    verify(helper.returncode==2 and only_b.exists(), 'a dash-leading --only is a usage error in the helper too')
     for bad_flags in [('--only',''),('--only',)]:
         bad = subprocess.run(['bash',script,'--apply-finished','--root',str(root),'--json',*bad_flags],cwd=root,env=env,capture_output=True)
         verify(bad.returncode==3 and only_b.exists(), 'an empty or valueless --only refuses instead of widening')

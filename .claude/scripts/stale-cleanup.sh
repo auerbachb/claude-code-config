@@ -327,7 +327,7 @@
 #              Also accepts --root=<path>. An empty or flag-like value (e.g.
 #              `--root --json`) is a usage error (exit 3).
 #
-#   stale-cleanup.sh --apply-finished [--root <path>] [--json] [--only <path>]...
+#   stale-cleanup.sh --apply-finished [--root <path>] [--json] [--only <path>]... [--only-identity <path> <branch>]...
 #     Removes only the finished class non-interactively; local branch
 #     deletion uses Git's checkout guard and a pinned verified upstream tip. Never deletes remote branches.
 #     Incompatible with --check, --apply and --include-locked.
@@ -337,6 +337,10 @@
 #     (exit 3), never "everything"; a named path that is not a registered
 #     worktree is reported skipped (only_path_not_registered). Without --only the
 #     behaviour is the repo-wide default, unchanged.
+#     --only-identity <path> <branch> (repeatable) is --only plus a binding: the
+#     path is acted on only while <branch> is still the branch checked out
+#     there; a different worktree re-registered at that path is reported skipped
+#     (only_identity_mismatch) and never verified or removed.
 #   STALE_CLEANUP_LSOF_TIMEOUT_SECS bounds cwd/process census (default 10s).
 #   STALE_CLEANUP_REMOVE_TIMEOUT_SECS bounds finished removal (default 120s);
 #     a timed-out removal is a failed/unknown attempt, never a clean skip.
@@ -413,6 +417,8 @@ JSON=0
 MODE_SET=0
 ROOT_OVERRIDE=""
 ONLY_PATHS=()
+ONLY_ID_PATHS=()
+ONLY_ID_BRANCHES=()
 INCLUDE_LOCKED=0
 REMOVE_ORPHANED_CHECKOUTS=0
 while [[ $# -gt 0 ]]; do
@@ -459,6 +465,15 @@ while [[ $# -gt 0 ]]; do
       ONLY_PATHS+=("$2")
       shift 2
       ;;
+    --only-identity)
+      # Like --only, plus the branch that must still be checked out there; refuses rather than widens.
+      if [[ $# -lt 3 || -z "$2" || "$2" == -* || -z "$3" ]]; then
+        usage_error "--only-identity requires a non-empty path and a non-empty branch"
+      fi
+      ONLY_ID_PATHS+=("$2")
+      ONLY_ID_BRANCHES+=("$3")
+      shift 3
+      ;;
     --root=*)
       ROOT_OVERRIDE="${1#--root=}"
       # Same rejection as the two-arg form. A path that genuinely starts with
@@ -481,8 +496,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if (( ${#ONLY_PATHS[@]} > 0 )) && [[ "$MODE" != "apply-finished" ]]; then
-  usage_error "--only is only valid with --apply-finished"
+if (( ${#ONLY_PATHS[@]} + ${#ONLY_ID_PATHS[@]} > 0 )) && [[ "$MODE" != "apply-finished" ]]; then
+  usage_error "--only and --only-identity are only valid with --apply-finished"
 fi
 if [[ "$MODE" == "apply-finished" && "$INCLUDE_LOCKED" == 1 ]]; then
   usage_error "--include-locked cannot be combined with --apply-finished; finished cleanup always protects locks"
@@ -875,6 +890,11 @@ emit_finished_text() {
 if [[ "$MODE" == "apply-finished" ]]; then
   only_args=()
   for only_path in ${ONLY_PATHS[@]+"${ONLY_PATHS[@]}"}; do only_args+=(--only "$only_path"); done
+  only_i=0
+  while (( only_i < ${#ONLY_ID_PATHS[@]} )); do
+    only_args+=(--only-identity "${ONLY_ID_PATHS[$only_i]}" "${ONLY_ID_BRANCHES[$only_i]}")
+    only_i=$((only_i + 1))
+  done
   finished_report_json --apply ${only_args[@]+"${only_args[@]}"}
   if (( JSON == 1 )); then printf '%s\n' "$FINISHED_JSON"; else emit_finished_text; fi
   exit "$FINISHED_RC"

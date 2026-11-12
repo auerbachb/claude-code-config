@@ -332,6 +332,52 @@ clean_handoffs() {
 # Thread-scoped: only the checkouts the inventory attributed to this thread are ever named to
 # the helper. Ownership that cannot be shown means the path is not in the inventory, so it is
 # never named (and nothing here widens to "every finished worktree").
+# bounded_capture <secs> <command...> - run one command under the repo's wall-clock bound
+# (lib/bounded-run.sh). Output lands in BCAP_OUT. Returns 0 only for a real success: a timeout, a
+# missing bound library or a failed temp file is a failed read, never an empty one.
+BCAP_OUT=""
+bounded_capture() {
+  local secs="$1" cap cap_err rc lib
+  shift
+  BCAP_OUT=""
+  lib="$(dirname "${STALE_SH:-/nonexistent/x}")/lib/bounded-run.sh"
+  [[ -r "$lib" ]] || return 125
+  # shellcheck source=lib/bounded-run.sh
+  source "$lib" || return 125
+  cap="$(mktemp)" || return 125
+  cap_err="$(mktemp)" || { rm -f "$cap"; return 125; }
+  CAPTURE="$cap" CAPTURE_ERR="$cap_err"
+  secs="$(normalize_bound "$secs" 60)"
+  run_bounded "$secs" "$@"; rc=$?
+  BCAP_OUT="$(cat "$cap" 2>/dev/null)"
+  rm -f "$cap" "$cap_err"
+  [[ "${BOUNDED_TIMED_OUT:-0}" != 1 ]] || return 124
+  return "$rc"
+}
+
+# 0 only when the branch's newest PR (the row the finished-worktree helper itself judges) is
+# MERGED on GitHub. A CLOSED-unmerged PR, no PR, a failed or timed-out lookup, or an unreadable
+# answer all return non-zero and set MERGED_WHY: that checkout is kept, never removed.
+MERGED_WHY=""
+branch_pr_merged() {
+  local b="$1" state
+  MERGED_WHY=""
+  if ! bounded_capture "${SAFE_CLOSE_PR_LOOKUP_TIMEOUT_SECS:-60}" \
+      gh pr list --repo "$REPO" --head "$b" --state all --author "@me" --limit 100 --json number,state,headRefName; then
+    MERGED_WHY="its PR state could not be read from GitHub"; return 1
+  fi
+  if ! state="$(jq -r --arg b "$b" 'if type == "array" and length > 0 and all(.[]; type == "object" and .headRefName == $b) then (.[0].state // "") else "?" end' <<<"$BCAP_OUT" 2>/dev/null)"; then
+    MERGED_WHY="its PR state could not be read from GitHub"; return 1
+  fi
+  case "$state" in
+    MERGED) return 0 ;;
+    CLOSED) MERGED_WHY="its PR was closed without merging: that is unmerged work" ;;
+    OPEN) MERGED_WHY="its PR is still open" ;;
+    *) MERGED_WHY="no merged PR could be verified for it" ;;
+  esac
+  return 1
+}
+
 clean_worktrees() {
   clean_worktrees_own
   report_other_finished
@@ -350,7 +396,8 @@ report_other_finished() {
   # (an expired bound omits the line, it never guesses).
   # shellcheck source=lib/bounded-run.sh
   source "$bounded" || return 0
-  cap="$(mktemp)" && cap_err="$(mktemp)" || return 0
+  cap="$(mktemp)" || return 0
+  cap_err="$(mktemp)" || { rm -f "$cap"; return 0; }
   CAPTURE="$cap" CAPTURE_ERR="$cap_err"
   bound="$(normalize_bound "${SAFE_CLOSE_OTHER_COUNT_TIMEOUT_SECS:-120}" 120)"
   prev="$PWD"
@@ -379,7 +426,7 @@ $p
 }
 
 clean_worktrees_own() {
-  local rows row p b id wlist cands="" listed rc line present only_args reason out wt_rows wbefore was
+  local rows row p b id wlist cands="" crows="" brefs="" gone="" wasref removed_wt listed rc line present only_args reason out wt_rows wbefore was
   # Work-holding things: kept and named, never touched.
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
@@ -405,10 +452,25 @@ clean_worktrees_own() {
   if ! wt_rows="$(items_of worktrees)"; then
     emit failed worktree "-" "could not read this thread's worktrees from the inventory; nothing was removed"; return
   fi
-  while IFS= read -r p; do
-    [[ -n "$p" && "$p" != "$WT" ]] && cands="$cands
+  while IFS=$'\t' read -r p b; do
+    [[ -n "$p" && "$p" != "$WT" ]] || continue
+    # Identity the removal is bound to. No recorded branch means no identity to bind: kept.
+    if [[ -z "$b" ]]; then
+      emit kept worktree "$p" "the inventory recorded no branch for it, so it cannot be bound to what was inventoried" \
+        "/pm-clean can judge a detached checkout"
+      continue
+    fi
+    # Unmerged work is kept: the helper treats a CLOSED PR as finished, /safe-close does not.
+    if ! branch_pr_merged "$b"; then
+      emit kept worktree "$p" "$MERGED_WHY; the checkout and its branch '$b' are kept" \
+        "merge the PR (/wrap) or reopen it, or remove the checkout by hand once the work is saved elsewhere"
+      continue
+    fi
+    cands="$cands
 $p"
-  done < <(jq -r 'select(.id | startswith("clean:")) | .ref.path // empty' <<<"$wt_rows")
+    crows="$crows
+$p	$b"
+  done < <(jq -r 'select(.id | startswith("clean:")) | [(.ref.path // ""), (.ref.branch // "")] | @tsv' <<<"$wt_rows")
   if [[ -z "$(printf '%s' "$cands" | tr -d '[:space:]')" ]]; then
     if items_of worktrees | jq -e 'select(.id | startswith("clean:")) | select(.ref.path == $w)' --arg w "$WT" >/dev/null 2>&1; then
       emit notes own_checkout "$WT" "this thread's own checkout stays: a process cannot remove the directory it runs in" \
@@ -419,7 +481,7 @@ $p"
   if (( DO == 0 )); then
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
-      done_or_would worktree "$p" "would be removed by the finished-worktree cleanup if its PR is verified merged, clean, pushed and idle"
+      done_or_would worktree "$p" "its PR is verified merged; it would be removed by the finished-worktree cleanup if it is also clean, pushed and idle"
     done <<<"$cands"
     return 0
   fi
@@ -427,17 +489,26 @@ $p"
     emit failed sweep "-" "stale-cleanup.sh not found (checked all three paths): finished worktrees cannot be removed"; return
   fi
   only_args=()
-  while IFS= read -r p; do
-    [[ -n "$p" ]] && only_args+=(--only "$p")
-  done <<<"$cands"
+  while IFS=$'\t' read -r p b; do
+    [[ -n "$p" ]] && only_args+=(--only-identity "$p" "$b")
+  done <<<"$crows"
   # A scope that came out empty must refuse, never widen to every finished worktree.
   if (( ${#only_args[@]} == 0 )); then
     emit failed sweep "-" "no thread-owned worktree path to scope the cleanup to; nothing was removed"; return
   fi
   # "Removed" needs a before AND an after: a path that was never registered cannot have been removed.
-  if ! wbefore="$(git -C "$WT" worktree list --porcelain 2>/dev/null)"; then
-    emit failed sweep "-" "could not read the worktree list before the cleanup; nothing was removed"; return
+  # Both reads are wall-clock bounded; a timeout is a failed read, never an empty list.
+  if ! bounded_capture "${SAFE_CLOSE_GIT_TIMEOUT_SECS:-60}" git -C "$WT" worktree list --porcelain; then
+    emit failed sweep "-" "could not read the worktree list before the cleanup (failed or timed out); nothing was removed"; return
   fi
+  wbefore="$BCAP_OUT"
+  # Branch refs before: a branch is reported removed only if it existed before and is gone after.
+  brefs=""
+  while IFS=$'\t' read -r p b; do
+    [[ -n "$p" ]] || continue
+    git -C "$WT" show-ref --verify --quiet "refs/heads/$b" 2>/dev/null && brefs="$brefs
+$b"
+  done <<<"$crows"
   out="$(cd "$WT" && "$STALE_SH" --apply-finished --json --root "$WT" "${only_args[@]}" 2>/dev/null)"
   rc=$?
   # No usable report plus a failing exit: say the helper failed (the read-back below still decides what was removed).
@@ -446,9 +517,11 @@ $p"
   fi
   SWEEP_JSON="$(jq -nc --argjson rc "$rc" '{ran:true, scoped:true, exit:$rc, note:"exit status is not evidence; removal was read back"}')"
   # Read back: what is still registered, what is still on disk.
-  if ! wlist="$(git -C "$WT" worktree list --porcelain 2>/dev/null)"; then
-    emit failed sweep "-" "could not re-read the worktree list after the cleanup; nothing is reported removed"; return
+  if ! bounded_capture "${SAFE_CLOSE_GIT_TIMEOUT_SECS:-60}" git -C "$WT" worktree list --porcelain; then
+    emit failed sweep "-" "could not re-read the worktree list after the cleanup (failed or timed out); nothing is reported removed"; return
   fi
+  wlist="$BCAP_OUT"
+  gone=""
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     listed=0
@@ -461,6 +534,8 @@ $p"
         "/pm-clean lists orphaned registrations and checkouts"
     elif (( listed == 0 && present == 0 )); then
       done_or_would worktree "$p" "removed by the finished-worktree cleanup and confirmed gone"
+      gone="$gone
+$p"
     elif (( listed == 0 && present == 1 )); then
       emit failed worktree "$p" "unregistered but the folder is still on disk (a .DS_Store race, or leftover files); it is not forced away"
     else
@@ -469,28 +544,39 @@ $p"
       case "$reason" in
         locked) emit kept worktree "$p" "left behind: the worktree is locked, and a lock is never overridden" \
           "unlock it (git worktree unlock) if it is really finished, then run /safe-close again" ;;
+        only_identity_mismatch) emit kept worktree "$p" "left alone: a different worktree is registered at this path than the one the inventory recorded" \
+          "run /safe-close again for a fresh inventory" ;;
         *) emit kept worktree "$p" "the cleanup retained it${reason:+ ($reason)}: its PR is not verified merged, or it is not provably idle" \
           "finish or merge the PR, then run /safe-close again; /pm-clean lists what blocks it" ;;
       esac
     fi
   done <<<"$cands"
-  # Local branches of the removed checkouts.
-  while IFS= read -r row; do
-    [[ -n "$row" ]] || continue
-    p="$(jq -r '.ref.path // ""' <<<"$row")"; b="$(jq -r '.ref.branch // ""' <<<"$row")"
-    [[ -n "$b" && "$p" != "$WT" ]] || continue
-    case "
-$cands
+  # Local branches: claimed removed only when this cleanup removed the worktree AND the ref existed
+  # before and is absent now. A failed guarded deletion after the worktree is gone is a failure.
+  while IFS=$'\t' read -r p b; do
+    [[ -n "$p" && -n "$b" ]] || continue
+    wasref=0; case "
+$brefs
+" in *"
+$b
+"*) wasref=1 ;; esac
+    removed_wt=0; case "
+$gone
 " in *"
 $p
-"*) ;; *) continue ;; esac
+"*) removed_wt=1 ;; esac
     git -C "$WT" show-ref --verify --quiet "refs/heads/$b" 2>/dev/null
     case $? in
-      0) emit notes branch "$b" "the local branch still exists" "the cleanup deletes it once its PR is verified merged; /pm-clean lists the rest" ;;
-      1) done_or_would branch "$b" "local branch removed with its finished worktree and confirmed gone" ;;
+      0) if (( removed_wt == 1 )); then emit failed branch "$b" "its worktree was removed but the guarded branch deletion did not happen, so the local branch remains" \
+           "check it is merged, then delete it with git branch -d $b"; fi ;;
+      1) if (( removed_wt == 1 && wasref == 1 )); then
+           done_or_would branch "$b" "local branch removed with its finished worktree and confirmed gone"
+         elif (( wasref == 1 )); then
+           emit notes branch "$b" "the branch is gone but this cleanup did not remove its worktree, so it is not counted as removed by this cleanup"
+         fi ;;
       *) emit failed branch "$b" "could not read the branch refs after the cleanup, so its removal is unconfirmed" ;;
     esac
-  done < <(items_of worktrees | jq -c 'select(.id | startswith("clean:"))')
+  done <<<"$crows"
 }
 
 # ---- 4. session-state entries ---------------------------------------------------------------
