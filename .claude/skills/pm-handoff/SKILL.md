@@ -399,7 +399,7 @@ You are the project manager for {repo URL} — {description}.
 You are continuing from a previous PM session. The state below reflects where the previous thread left off. **Verify GitHub state is current before acting on it** — issues may have been closed, PRs merged, or new work started since this handoff was generated.
 
 ## Bootstrap steps for this new thread
-1. Run `/pm` (without `resume`) to load config and re-scan GitHub state.
+1. Run `/pm` (without `resume`) to load config and re-scan GitHub state. Its entry selects ranking, resume, day or orchestration procedures as needed. Recover a saved phase from its scoped evidence and current gates.
 2. **Restore orchestration state.** Review the in-flight work table and verify each PR's state before taking action. PR fleet polling is handled separately via `/pr-monitor-and-manage` if needed — `/pm` does not re-arm polls on resume.
 
 ## Your Role

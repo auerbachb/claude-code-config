@@ -74,7 +74,7 @@ Call `"$PM_MODULE_DISPATCH" OPERATION PHASE` and read only its returned path. Re
 | Bounded backlog rescan | Read `rank:fetch` for the existing incremental scan and `rank:score` for its total re-score and persist gate. Use the scope and operator evidence already read by Step 3.4, then return to refill. |
 | Day tick, probe, or park recovery | Use the [day module routing table](#day-module-routing). If a day tick reaches Step 3.4, follow the refill route and any actual bounded rescan. |
 
-Resume and rank presentation resolve the cleanup and forgotten-PR modules at their existing calls. The ranking-only path does not enter the orchestration loop. If 1C closes an issue after scoring, use the existing rank-score persist block to update the saved order. On recovery, revalidate the current repository, scope, and persisted ranking before resuming the active phase.
+Resume and rank presentation resolve the cleanup and forgotten-PR modules at their existing calls. The ranking-only path does not enter the orchestration loop. If 1C closes an issue after scoring, use the existing rank-score persist block to update the saved order. On recovery, revalidate the current repository, scope, saved phase and pending gates. Open only the active procedure and reuse completed receipts. If the selected module is missing, keep the operation, phase, repository, issue, evidence and next step for repair.
 
 
 | Orchestration route | Module reached |
@@ -315,7 +315,7 @@ with the parse or persistence failure.
 Read existing orchestration state to continue where a previous PM thread left off.
 
 <!-- pm-routing:begin -->
-Resume routes read load, fetch and present in sequence, after the existing entry gates.
+Use the resume row in [PM module routing](#pm-module-routing) after the entry gates.
 <!-- pm-routing:end -->
 ---
 
@@ -324,7 +324,7 @@ Resume routes read load, fetch and present in sequence, after the existing entry
 No prior state — scan GitHub and suggest what to work on.
 
 <!-- pm-routing:begin -->
-Ranking routes read load, fetch, score and present at the corresponding phases. Refill from current evidence and passive status read none of these modules.
+Use the cold-start or ranking row in [PM module routing](#pm-module-routing).
 <!-- pm-routing:end -->
 ---
 
@@ -399,7 +399,7 @@ Read `flow:progress` when this step is reached. Check progress on a requested or
 <!-- pm-routing:end -->
 ### 3.3a: The round's progress view — the "Running now" table (issue #1527)
 <!-- pm-routing:begin -->
-Read `flow:progress` when this step is reached. Use the progress module's board section at its explicit or due gate.
+Use the Step 3.3 progress module's board section at its explicit or due gate.
 <!-- pm-routing:end -->
 ### 3.4: Keep the pipeline full (capacity refill)
 <!-- pm-routing:begin -->
