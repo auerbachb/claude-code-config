@@ -1,8 +1,11 @@
 name: Hook scripts
 
-# Every PR runs all three hook-test jobs, but each job runs only the suites the PR can
+# Every PR runs the Linux and Python hook-test jobs, each running only the suites the PR can
 # affect (issue #2153; selector: .github/scripts/select-hook-tests.sh). A push to main
 # runs the full set as the backstop: the selector answers ALL for any non-PR event.
+# The macOS hook tests run after merge only (issue #2265): on a PR their jobs are skipped and
+# the `hook-tests-macos` check passes with a notice; on push to main they run in full and a
+# failure files or comments on a tracking issue (`hook-tests-macos-report`).
 on:
   pull_request: {}
   push:
@@ -181,11 +184,15 @@ jobs:
   # the SAME bash-suite discovery on macos-latest; a new test is covered by
   # both jobs with no edit here.
   # Issue #2207: the macOS full run is split into two shards on two macOS runners, because one
-  # 3-vCPU job cannot finish the full suite under the 30-minute target. A PR whose selection is
-  # not the full set keeps ONE shard, so it pays for a single macOS runner as before.
+  # 3-vCPU job cannot finish the full suite under the 30-minute target. The selector answers ALL
+  # for every push to main, so the main run always uses two shards.
   # The required check name stays `hook-tests-macos`: the aggregate job below carries that name
   # and passes only when the plan and every shard succeed.
+  # Issue #2265: the macOS run is gated to push-to-main. On a pull_request the plan and shards are
+  # skipped (no Mac runner is queued), and the aggregate reports success with a notice. A failure
+  # on main is reported by `hook-tests-macos-report`.
   hook-tests-macos-plan:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
@@ -298,7 +305,21 @@ jobs:
           python3 -c 'import yaml; print("PyYAML available:", yaml.__version__)'
 
       - name: Run bash hook + script test suites (auto-discovered, macOS shard ${{ matrix.index }}/${{ matrix.count }})
+        env:
+          # The runner's --json contract (incl. failed_tests) is kept for the failure report (issue #2265).
+          SUMMARY_CONTRACT_FILE: ${{ runner.temp }}/hook-test-contract-macos.json
         run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS shard ${{ matrix.index }}/${{ matrix.count }})" .github/scripts/run-hook-tests.sh --shard "${{ matrix.index }}/${{ matrix.count }}" --timing-file "$RUNNER_TEMP/hook-test-timing.tsv" --only-file "$HOOK_TEST_SELECTION"
+
+      # Issue #2265: hand this shard's failing suite list to the report job on main. Runs only after a
+      # failed step; a shard that failed before the contract existed uploads nothing and the report
+      # still files with the run URL.
+      - name: Upload this shard's failing suite list
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hook-tests-macos-failures-${{ matrix.index }}
+          path: ${{ runner.temp }}/hook-test-contract-macos.json
+          if-no-files-found: ignore
 
       # Advisory: the full per-suite table for balancing the shards (issue #2207). Collapsed.
       - name: Print per-suite timings (collapsed)
@@ -309,25 +330,108 @@ jobs:
           if [ -s "$F" ]; then sort -t "$(printf '\t')" -k1,1nr "$F"; else echo "no timing table was written"; fi
           echo "::endgroup::"
 
-  # The one check branch protection requires for macOS. It reports once per PR and passes only
-  # when the plan and every shard finished with success. Cancelled, skipped and failed shards
-  # all fail it. The zero-suite case is preserved: the shard still runs the runner, which exits 0.
+  # The one check reported for macOS. On a pull_request the plan and shards are skipped and this
+  # job passes with a notice (issue #2265: macOS runs after merge). On push to main it passes only
+  # when the plan and every shard finished with success. Cancelled, skipped and failed shards all
+  # fail it there. The zero-suite case is preserved: the shard still runs the runner, which exits 0.
   hook-tests-macos:
     needs: [hook-tests-macos-plan, hook-tests-macos-shard]
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every macOS shard to succeed
+      - name: Require every macOS shard to succeed on main
         env:
+          EVENT_NAME: ${{ github.event_name }}
           PLAN_RESULT: ${{ needs.hook-tests-macos-plan.result }}
           SHARD_RESULT: ${{ needs.hook-tests-macos-shard.result }}
         run: |
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "macOS hook tests run after merge on main (issue #2265); skipped for this pull request."
+            exit 0
+          fi
           if [ "$PLAN_RESULT" = "success" ] && [ "$SHARD_RESULT" = "success" ]; then
             echo "All macOS hook-test shards passed."
             exit 0
           fi
           echo "::error::macOS hook tests did not pass: plan=$PLAN_RESULT, shards=$SHARD_RESULT"
           exit 1
+
+  # Issue #2265: a failed macOS run on main files a tracking issue, or comments on the open one.
+  # Only this job holds `issues: write`. It downloads the shards' failing-suite lists (best effort:
+  # a missing list still files with the run URL) and passes every value through env, never shell
+  # interpolation of suite names or titles. No concurrency group: a queued group keeps only one
+  # pending job, so a third failure would cancel the second report. Two reports racing past the
+  # open-issue search can at worst file one duplicate issue, which is cheaper than a lost report.
+  hook-tests-macos-report:
+    needs: [hook-tests-macos]
+    if: always() && github.event_name == 'push' && needs.hook-tests-macos.result == 'failure'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Download the shards' failing suite lists
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: hook-tests-macos-failures-*
+          path: ${{ runner.temp }}/macos-failures
+
+      - name: File or update the macOS-on-main failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FAILURE_DIR: ${{ runner.temp }}/macos-failures
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+        run: |
+          set -uo pipefail
+          TITLE_PREFIX="macOS hook tests failing on main"
+          SHORT_SHA="${HEAD_SHA:0:7}"
+          BODY="$RUNNER_TEMP/macos-failure-body.md"
+          LIST="$RUNNER_TEMP/macos-failed-suites.txt"
+          : > "$LIST"
+
+          # Read each shard's contract; a missing or unreadable one only costs the suite list.
+          LIST_NOTE="The failing suite list could not be read; see the run's logs."
+          if [ "$DOWNLOAD_OUTCOME" = "success" ]; then
+            while IFS= read -r CONTRACT; do
+              if jq -r '(.failed_tests // [])[]' "$CONTRACT" >> "$LIST" 2>/dev/null; then
+                LIST_NOTE=""
+              fi
+            done < <(find "$FAILURE_DIR" -type f -name '*.json' 2>/dev/null)
+          fi
+          if [ -s "$LIST" ]; then
+            LIST_NOTE="Failing suites:"
+          fi
+
+          {
+            echo "macOS hook tests failed on main at commit \`$HEAD_SHA\`."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            [ -n "$LIST_NOTE" ] && printf '%s\n' "$LIST_NOTE"
+            while IFS= read -r SUITE; do
+              printf -- '- %s\n' "$SUITE"
+            done < "$LIST"
+            echo
+            echo "Filed automatically by the hook-scripts workflow (issue #2265)."
+          } > "$BODY"
+
+          # Match the open tracking issue by title prefix; comment on it instead of opening another.
+          if ! LISTED="$(gh issue list --repo "$REPO" --state open --search "in:title \"$TITLE_PREFIX\"" --limit 100 --json number,title)"; then
+            echo "::error::cannot list open issues; no failure issue was filed" >&2
+            exit 1
+          fi
+          EXISTING="$(printf '%s' "$LISTED" | jq -r --arg p "$TITLE_PREFIX" '[.[] | select(.title | startswith($p))][0].number // empty')"
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body-file "$BODY"
+            echo "Commented on the open tracking issue #$EXISTING."
+          else
+            gh issue create --repo "$REPO" --title "$TITLE_PREFIX (at $SHORT_SHA)" --body-file "$BODY"
+          fi
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,

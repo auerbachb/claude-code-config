@@ -134,6 +134,16 @@ R="$(make_runner nosummary.sh "$GREEN" 0)"
 ( unset GITHUB_STEP_SUMMARY; "$SUT" "Local" "$R" >/dev/null 2>&1 )
 check_eq 0 "$?" "runs cleanly with no GITHUB_STEP_SUMMARY set"
 
+# --------------------------------------------------------------------------
+# 6. SUMMARY_CONTRACT_FILE keeps the parsed contract for a later step (issue #2265).
+#    A red run still writes the failing list before its failure propagates.
+# --------------------------------------------------------------------------
+R="$(make_runner contractfile.sh "$RED" 1)"
+CF="$TMP/contract-out.json"
+( unset GITHUB_STEP_SUMMARY; SUMMARY_CONTRACT_FILE="$CF" "$SUT" "Red" "$R" >/dev/null 2>&1 )
+check_eq 1 "$?" "red run with SUMMARY_CONTRACT_FILE still propagates the failure"
+check_eq "a.test.sh b.test.sh" "$(jq -r '.failed_tests | join(" ")' "$CF" 2>/dev/null)" "SUMMARY_CONTRACT_FILE holds the failing suite list"
+
 echo "----"
 echo "summarize-test-run.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
