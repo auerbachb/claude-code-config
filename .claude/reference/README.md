@@ -31,6 +31,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `churn-hotspots.md` — detector/classifier division, calibration, thresholds, and closed/no-cost suppression policy for churn hotspots (Issues #755 and #1307)
 - `churn-hotspot-baselines.json` — file-and-issue keyed score snapshots consumed by `churn-hotspot-wrap-plan.sh`, which `/wrap` invokes for its 2× material-growth gate (Issue #1307)
 - `churn-hotspot-exemptions.json` — lint-enforced catalog files exempted from churn-hotspot flagging by `churn-hotspots.sh`; every entry must name the enforcing lint (`lint`) and why it forces the edit (`reason`), or the detector exits 3 (Issue #1571)
+- `review-timing-baseline-2026-11-11.md` — dated before-picture for review-on-request timing: per-repo CI duration and failure share, reviewer response time from request or push, refusals, CodeAnt pre-review approvals, and stated blind spots (Issue #2196)
 - `cr-polling-commands.md` — full multi-line `gh api` commands for CR review polling and CI verification
 - `cr-rate-limits.md` — full CR rate-limit caps, hourly-state mechanics, and `cr-review-hourly.sh` flags
 - `codeowner-bot-approvals.md` — CODEOWNERS handling for review bots and stale-approval re-trigger commands
