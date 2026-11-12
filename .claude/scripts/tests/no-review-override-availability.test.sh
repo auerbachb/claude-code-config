@@ -72,7 +72,7 @@ av_state() {
   jq -cn --argjson cr "$rec_cr" --argjson cd "$rec_cd" --argjson sk "$skip" '
     {schema_version: 1, review_availability: ({} + (if $cr == null then {} else {coderabbit: $cr} end)
                                                   + (if $cd == null then {} else {codeant: $cd} end)),
-     repos: {"solo/repo": {prs: (if $sk == null then {} else {"1": {review_request_skip: $sk}} end)}}}' \
+     repos: {"solo/repo": {prs: (if $sk == null then {} else {"1": {review_request_skips: {($sk.head_sha): $sk}}} end)}}}' \
     > "$STATE_FILE"
 }
 
@@ -168,6 +168,18 @@ expect_eq "completed CodeRabbit review: the other reviewer's record is kept" \
 av_state $((NOW + 1200)) $((NOW + 1500)) "$HEADSHA"
 out=$(run_helper "$(payload "[]" | jq -c '.reviews = "not-a-list"')")
 expect_eq "unclearable observe (malformed reviews): skip not applied" "$(jq -r .applied <<<"$out")" "false"
+
+# --- 9. A verdict on HEAD still clears the answering reviewer's stale record (#2256) --------
+# The early exit for a verdict on HEAD must not skip the clear: a reviewer that answered
+# never keeps a stale wait (CodeAnt #4546742961).
+av_state $((NOW + 1200)) $((NOW + 1500)) "-"
+jq '.review_availability.coderabbit.read_at = (now - 300 | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+VERDICT_REVIEWS=$(jq -cn --arg t "$(iso $((NOW - 60)))" --arg h "$HEADSHA" \
+  '[{user:{login:"coderabbitai[bot]"}, state:"APPROVED", commit_id:$h, submitted_at:$t, body:"LGTM"}]')
+out=$(run_helper "$(payload "[]" | jq -c --argjson r "$VERDICT_REVIEWS" '.reviews = $r')")
+expect_eq "verdict on HEAD: the answering reviewer's stale record is cleared" \
+  "$(jq -r '.review_availability.coderabbit' "$STATE_FILE")" "null"
+expect_eq "verdict on HEAD: the reason is the verdict, not a skip" "$(jq -r .reason <<<"$out")" "verdict_on_head"
 
 echo
 echo "no-review-override availability tests: $PASS passed, $FAIL failed"

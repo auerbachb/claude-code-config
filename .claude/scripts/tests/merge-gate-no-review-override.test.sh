@@ -620,8 +620,8 @@ jq -cn --arg h "$HEAD_SHA" --argjson n "$((SKIP_NOW + 3600))" --argjson t "$((SK
     source_repo: "solo/repo", source_pr: 2, read_at: ($t | todateiso8601)};
   {schema_version: 1,
    review_availability: {coderabbit: rec, codeant: rec},
-   repos: {"solo/repo": {prs: {"1": {review_request_skip:
-     {head_sha: $h, reason: "no_reviewer_available_until x", recorded_at: "2026-11-11T00:00:00Z"}}}}}}' \
+   repos: {"solo/repo": {prs: {"1": {review_request_skips: {($h):
+     {head_sha: $h, reason: "no_reviewer_available_until x", recorded_at: "2026-11-11T00:00:00Z"}}}}}}}' \
   > "$HOME/.claude/session-state.json"
 run_gate "$(bundle "$(run 1 build success 660)")"
 check_eq "true" "$(j .met)" "control: green CI with the same skip on HEAD: met"

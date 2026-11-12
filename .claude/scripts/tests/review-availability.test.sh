@@ -146,8 +146,8 @@ expect_eq "record: malformed comments exit 4" "$rc" "4"
 # --- Mark-skip and check-skip ------------------------------------------------------------
 state_with_av "{\"coderabbit\":$(av_record $((NOW + 1200)) $NOW),\"codeant\":$(av_record $((NOW + 1500)) $NOW)}"
 "$AV" mark-skip --repo o/r --pr 9 --head aaa111 --reason "no_reviewer_available_until x" >/dev/null
-expect_eq "mark-skip: skip recorded on the PR (repo-scoped)" \
-  "$(jq -r '.repos["o/r"].prs["9"].review_request_skip.head_sha' "$STATE_FILE")" "aaa111"
+expect_eq "mark-skip: skip recorded on the PR, keyed by HEAD (repo-scoped)" \
+  "$(jq -r '.repos["o/r"].prs["9"].review_request_skips["aaa111"].head_sha' "$STATE_FILE")" "aaa111"
 out=$("$AV" check-skip --repo o/r --pr 9 --head aaa111 --window-s "$WIN" --now "$NOW")
 expect_eq "check-skip: same HEAD, still in force: applies" "$(jq -r '.applies' <<<"$out")" "true"
 out=$("$AV" check-skip --repo o/r --pr 9 --head bbb222 --window-s "$WIN" --now "$NOW")
@@ -158,12 +158,21 @@ expect_eq "check-skip: reviewer back in time since the skip (CodeRabbit at +1200
 out=$("$AV" check-skip --repo o/r --pr 9 --head aaa111 --window-s "$WIN" --now $((NOW + 60)))
 expect_eq "check-skip: still unavailable a minute later: applies" "$(jq -r '.applies' <<<"$out")" "true"
 
+# A late skip for an OLDER HEAD must not replace the current HEAD's skip (#4546742968).
+state_with_av "{\"coderabbit\":$(av_record $((NOW + 1200)) $NOW),\"codeant\":$(av_record $((NOW + 1500)) $NOW)}"
+"$AV" mark-skip --repo o/r --pr 9 --head bbb222 --reason "no_reviewer_available_until y" >/dev/null
+"$AV" mark-skip --repo o/r --pr 9 --head aaa111 --reason "no_reviewer_available_until stale" >/dev/null
+expect_eq "out-of-order skip: current HEAD's skip survives a stale HEAD's write" \
+  "$(jq -r '.repos["o/r"].prs["9"].review_request_skips["bbb222"].reason' "$STATE_FILE")" "no_reviewer_available_until y"
+out=$("$AV" check-skip --repo o/r --pr 9 --head bbb222 --window-s "$WIN" --now "$NOW")
+expect_eq "out-of-order skip: current HEAD still applies after the stale write" "$(jq -r '.applies' <<<"$out")" "true"
+
 # Replace only .review_availability: the PR 9 skip written above must still be on file, so the
 # assertion below proves check-skip re-reads the availability and does not just find no skip.
 jq --argjson c "$(av_record $((NOW + 180)) $NOW)" --argjson d "$(av_record $((NOW + 180)) $NOW)" \
   '.review_availability = {coderabbit: $c, codeant: $d}' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
 expect_eq "check-skip: the recorded skip is still on file" \
-  "$(jq -r '.repos["o/r"].prs["9"].review_request_skip.head_sha' "$STATE_FILE")" "aaa111"
+  "$(jq -r '.repos["o/r"].prs["9"].review_request_skips["aaa111"].head_sha' "$STATE_FILE")" "aaa111"
 out=$("$AV" check-skip --repo o/r --pr 9 --head aaa111 --window-s "$WIN" --now "$NOW")
 expect_eq "check-skip: record no longer justifies the skip: does not apply" "$(jq -r '.applies' <<<"$out")" "false"
 

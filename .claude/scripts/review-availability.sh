@@ -242,11 +242,13 @@ cmd_mark_skip() {
   now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   rec="$(jq -cn --arg h "$head" --arg r "$reason" --arg t "$now_iso" \
     '{head_sha: $h, reason: $r, recorded_at: $t}')"
+  # Keyed by HEAD SHA (CodeAnt #4546742968): a late write for an older HEAD adds its own
+  # entry and can never replace the current HEAD's skip.
   if [[ -n "$repo" ]]; then
-    "$STATE" --repo "$repo" --set ".prs[\"$pr\"].review_request_skip=$rec" >/dev/null 2>&1 \
+    "$STATE" --repo "$repo" --set ".prs[\"$pr\"].review_request_skips[\"$head\"]=$rec" >/dev/null 2>&1 \
       || die 5 "could not record the request skip on PR $pr"
   else
-    "$STATE" --set ".prs[\"$pr\"].review_request_skip=$rec" >/dev/null 2>&1 \
+    "$STATE" --set ".prs[\"$pr\"].review_request_skips[\"$head\"]=$rec" >/dev/null 2>&1 \
       || die 5 "could not record the request skip on PR $pr"
   fi
   jq -cn --arg h "$head" --arg r "$reason" '{recorded: true, head_sha: $h, reason: $r}'
@@ -272,7 +274,7 @@ cmd_check_skip() {
   [[ "$now" =~ ^[0-9]+$ ]] || die 2 "--now must be an epoch"
   dec="$(decide_json "$repo" "$win" "$now")"
   reason="$(jq -r '.reason' <<<"$dec")"
-  skip_rec="$(state_get ".prs[\"$pr\"].review_request_skip" "$repo")" \
+  skip_rec="$(state_get ".prs[\"$pr\"].review_request_skips[\"$head\"]" "$repo")" \
     || { jq -cn '{applies: false, reason: "state_unreadable", head_match: false}'; return 0; }
   if [[ "$(jq -r --arg h "$head" '(type == "object") and (.head_sha == $h)' <<<"$skip_rec")" == true ]]; then
     head_match="true"

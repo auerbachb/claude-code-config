@@ -45,11 +45,13 @@ HEAD2="dddddddddddddddddddddddddddddddddddddddd"
 S="$TMP/scripts"
 mkdir -p "$S/lib" "$TMP/reference"
 for f in maybe-trigger-ai-review.sh review-triggers-allowed.sh bugbot-tier-excluded.sh ci-status.sh \
-         check-runs-dedup.sh session-state.sh state-lock.sh review-request-gate.sh; do
+         check-runs-dedup.sh session-state.sh state-lock.sh review-request-gate.sh \
+         review-availability.sh pr-authorship.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" \
-   "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" "$S/lib/"
+   "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" \
+   "$REPO_ROOT/.claude/scripts/lib/cr-retry-window.jq" "$S/lib/"
 cp "$REPO_ROOT/.claude/reference/session-state-schema.json" "$TMP/reference/"
 cat > "$S/review-tier.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -90,6 +92,8 @@ done
 serve() { if [[ -n "$jqexpr" ]]; then jq -r "$jqexpr" "$1"; else cat "$1"; fi; }
 case "$args" in
   "repo view"*) echo "acme/one" ;;
+  "api user"*) echo "me" ;;
+  "api repos/acme/one/pulls/99600") printf '{"number":99600,"state":"open","draft":false,"user":{"login":"me"}}\n' ;;
   "pr view"*"-q"*) echo "$FIXTURE_HEAD" ;;
   "pr view"*) printf '{"headRefOid":"%s","state":"OPEN"}\n' "$FIXTURE_HEAD" ;;
   "pr comment"*)
@@ -427,6 +431,39 @@ run
 check_eq "on-push, not due: no request" "" "$(posted)"
 check_eq "on-push, not due: the complexity skip still reports" "skipped:cr_rounds_lt_2" "$(f '"\(.status):\(.reason)"')"
 unset FIXTURE_SCORE
+
+echo "== availability skip recorded only where the request would post (CodeAnt #4546742951) =="
+# Both free reviewers are limited well past the window, so the request is held on this HEAD.
+seed_av() {
+  local now
+  now="$(date +%s)"
+  jq -cn --argjson n "$((now + 1800))" --argjson t "$((now - 60))" '
+    {schema_version: 1, review_availability: {
+      coderabbit: {next_available_epoch: $n, next_available: ($n | todateiso8601), notice_epoch: $t,
+                   notice_at: ($t | todateiso8601), window_seconds: 1860, notice_excerpt: "review limit reached",
+                   source_repo: "acme/one", source_pr: 1, read_at: ($t | todateiso8601)},
+      codeant: {next_available_epoch: $n, next_available: ($n | todateiso8601), notice_epoch: $t,
+                notice_at: ($t | todateiso8601), window_seconds: 1860, notice_excerpt: "usage limit",
+                source_repo: "acme/one", source_pr: 1, read_at: ($t | todateiso8601)}}}' \
+    > "$HOME/.claude/session-state.json"
+}
+AV_TIER="$(tier_json present ci+codeant-one-round | jq -c '. + {no_review_override_minutes: 10}')"
+reset "$AV_TIER"
+seed_av
+export FIXTURE_SCORE=50 FIXTURE_ROUNDS=0   # complexity cadence not due: this tick would not post
+checks success 7200
+run
+check_eq "tiered, cadence not due: nothing posted" "" "$(posted)"
+check_eq "tiered, cadence not due: no skip marker recorded" "null" \
+  "$(jq -c --arg h "$HEAD" '.repos["acme/one"].prs["99600"].review_request_skips[$h] // null' "$HOME/.claude/session-state.json")"
+unset FIXTURE_SCORE
+reset "$AV_TIER"
+seed_av
+checks success 7200
+run   # cadence due: the CodeAnt request would post, and is held by the availability skip
+check_eq "tiered, cadence due: the request is held, nothing posted" "" "$(posted)"
+check_eq "tiered, cadence due: skip marker recorded for this HEAD" "no_reviewer_available_until" \
+  "$(jq -r --arg h "$HEAD" '(.repos["acme/one"].prs["99600"].review_request_skips[$h].reason // "") | split(" ")[0]' "$HOME/.claude/session-state.json")"
 
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

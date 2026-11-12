@@ -146,6 +146,17 @@ if [[ -x "$AV_SH" ]]; then
   fi
 fi
 
+# A completed, non-notice review by a free reviewer newer than its recorded limit means it is
+# answering again: clear that record now (issue #2256). This runs before every early exit,
+# including a verdict on HEAD, so a reviewer that answered never keeps a stale wait (CodeAnt
+# #4546742961). A failed clear leaves the request skip unusable this tick (fail closed).
+OBSERVE_OK=0
+if [[ -x "$AV_SH" ]]; then
+  printf '%s' "$PAYLOAD" | jq -c '.reviews // []' \
+    | "$AV_SH" observe --repo "$(printf '%s' "$PAYLOAD" | jq -r '(.owner // "") + "/" + (.repo // "")')" >/dev/null 2>&1 \
+    || OBSERVE_OK=1
+fi
+
 BASE=$(printf '%s' "$PAYLOAD" | jq -c '
   {enabled: (.window_seconds != null), window_seconds: .window_seconds,
    eligible: false, applied: false, reason: "", pending_reason: "",
@@ -371,12 +382,8 @@ REQUEST_T=$(printf '%s' "$REQUEST" | jq -c '.request.t // null')
 # verdict on HEAD already returned above, and CI, threads, AC and human change requests
 # are the caller's. check-skip fails closed: an unreadable answer leaves the window in force.
 if [[ -x "$AV_SH" ]]; then
-  # A completed review by a free reviewer newer than its recorded limit means it is
-  # answering again: clear that record first, so a stale wait cannot waive the window.
-  # A failed clear leaves the skip unusable (fail closed): no skip applies this tick.
-  OBSERVE_OK=0
-  printf '%s' "$PAYLOAD" | jq -c '.reviews // []' | "$AV_SH" observe --repo "$OWNER/$REPO" >/dev/null 2>&1 \
-    || OBSERVE_OK=1
+  # The clear ran before the early exits (OBSERVE_OK). A failed clear leaves the skip
+  # unusable this tick (fail closed): no skip applies.
   SKIP_JSON=""
   if (( OBSERVE_OK == 0 )); then
     SKIP_JSON="$("$AV_SH" check-skip --repo "$OWNER/$REPO" --pr "$PR" --head "$HEAD_SHA_P" \
