@@ -21,6 +21,9 @@ export HOME="$TMP/home"
 mkdir -p "$HOME/.claude"
 STATE_FILE="$HOME/.claude/session-state.json"
 
+# Fixtures assume the shipped defaults: a caller's tuning must not leak in (#2274 review).
+unset REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN REVIEW_EXPECTED_RESPONSE_CODEANT_MIN CR_HOURLY_BUDGET
+
 PASS=0
 FAIL=0
 ok() { PASS=$((PASS + 1)); echo "PASS: $1"; }

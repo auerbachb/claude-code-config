@@ -279,6 +279,7 @@ REQ_BODY="@codeant-ai review"
 REQ_CHOICE_JSON="{}"
 REQ_CHOICE_REASON=""
 REQ_WINDOW_S=""
+REQ_CAN_SKIP=0
 REQ_POSTED_REVIEWER=""
 REQ_SETTING="after-ci"
 REQ_CHECKS=""
@@ -294,9 +295,10 @@ claim_request_head() { # expects the value this tick read (an older HEAD, or nul
   [[ -n "$REQ_HEAD_DONE" ]] && expect="\"$REQ_HEAD_DONE\""
   "$STATE_HELPER" --cas ".prs[\"${PR_KEY}\"].review_request_head_sha=\"$HEAD_SHA\"" --expect "$expect" >/dev/null 2>&1
 }
-# A post that failed gives the claim back, so the next tick asks again.
+# A post that failed gives the claim back, so the next tick asks again. Compare-and-set:
+# only this HEAD's own claim is cleared, never a newer push's claim (#2274 review).
 release_request_head() {
-  "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].review_request_head_sha=null" >/dev/null 2>&1 || true
+  "$STATE_HELPER" --cas ".prs[\"${PR_KEY}\"].review_request_head_sha=null" --expect "\"$HEAD_SHA\"" >/dev/null 2>&1 || true
 }
 # First-request guard (safety.md authorship; the same open, non-draft PR the
 # other paths require). Runs only when a first request would post.
@@ -320,6 +322,7 @@ availability_gate() {
   # 10-minute window, but never skip, since no override would follow a skip.
   local can_skip=1
   if [[ "$nro_min" =~ ^[0-9]+$ ]]; then win=$(( nro_min * 60 )); else win=600; can_skip=0; fi
+  REQ_CAN_SKIP="$can_skip"
   REQ_WINDOW_S="$win"
   # choose (issue #2257) answers both questions: skip when no free reviewer can answer in
   # the window (the same verdict decide gives), else the reviewer to ask for this HEAD.
@@ -356,14 +359,17 @@ reserve_request_reviewer() {
       REQ_BODY="@coderabbitai review"
       return 0
     fi
-    [[ -x "$av" ]] || return 1
-    dec="$("$av" choose --window-s "${REQ_WINDOW_S:-600}" --no-coderabbit 2>/dev/null)" || return 1
+    # CodeRabbit is out: CodeAnt is the only other free reviewer. Hold the request only on
+    # a real skip verdict while a no-review override can follow it; any unusable answer, or
+    # the override off, still asks CodeAnt (fail toward asking).
+    dec=""
+    [[ -x "$av" ]] && dec="$("$av" choose --window-s "${REQ_WINDOW_S:-600}" --no-coderabbit 2>/dev/null)" || dec=""
     # Test the value itself: jq `//` treats false like null, so `.skip // true` reads a
     # successful `skip: false` as true and the fallback to CodeAnt could never happen.
-    jq -e '.skip == false' <<<"$dec" >/dev/null 2>&1 || return 1
-    REQ_CHOICE_JSON="$dec"
-    REQ_CHOICE_REASON="coderabbit_budget_refused_$(jq -r '.choice_reason // "request"' <<<"$dec")"
-    REQ_REVIEWER="$(jq -r '.reviewer' <<<"$dec")"
+    if jq -e '.skip == true' <<<"$dec" >/dev/null 2>&1 && [[ "$REQ_CAN_SKIP" == 1 ]]; then return 1; fi
+    if jq -e '.skip == false' <<<"$dec" >/dev/null 2>&1; then REQ_CHOICE_JSON="$dec"; fi
+    REQ_CHOICE_REASON="coderabbit_budget_refused_$(jq -r '.choice_reason // "request"' <<<"$dec" 2>/dev/null || echo request)"
+    REQ_REVIEWER="codeant"
   fi
   if [[ "$REQ_REVIEWER" == coderabbit ]]; then REQ_BODY="@coderabbitai review"; else REQ_BODY="@codeant-ai review"; fi
   return 0
@@ -546,9 +552,9 @@ fi
 legacy_first_request() {
   if (( DRY_RUN )); then
     if (( JSON_OUT )); then
-      jq -n --arg h "$HEAD_SHA" '{status: "dry_run", reason: "review_request_first", head_sha: $h}'
+      jq -n --arg h "$HEAD_SHA" --arg rr "$REQ_REVIEWER" '{status: "dry_run", reason: "review_request_first", head_sha: $h, request_reviewer: $rr}'
     else
-      echo "[DRY-RUN] would post 1 comment (codeant; first review request for this HEAD, complexity cadence not due)"
+      echo "[DRY-RUN] would post 1 comment ($REQ_REVIEWER; first review request for this HEAD, complexity cadence not due)"
     fi
     exit 0
   fi

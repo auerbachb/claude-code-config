@@ -394,7 +394,7 @@ check_eq "second poll on the same HEAD: still one request" "@codeant-ai review;"
 export FIXTURE_HEAD="$HEAD2" FIXTURE_ROUNDS=5
 checks success 7200
 run
-check_eq "a new push is eligible again: one more request" "@codeant-ai review;@codeant-ai review;" "$(posted)"
+check_eq "a new push is eligible again: one more request, to the free reviewer (#2257)" "@codeant-ai review;@coderabbitai review;" "$(posted)"
 export FIXTURE_HEAD="$HEAD"
 
 echo
@@ -418,7 +418,7 @@ check_eq "not due, second tick same HEAD: nothing new" "@codeant-ai review;" "$(
 export FIXTURE_HEAD="$HEAD2"
 checks success 7200
 run
-check_eq "not due, new HEAD: eligible again" "@codeant-ai review;@codeant-ai review;" "$(posted)"
+check_eq "not due, new HEAD: eligible again, to the free reviewer (#2257)" "@codeant-ai review;@coderabbitai review;" "$(posted)"
 export FIXTURE_HEAD="$HEAD"
 unset FIXTURE_SCORE
 echo "== on-push, complexity not due: no request, as before (#2195) =="

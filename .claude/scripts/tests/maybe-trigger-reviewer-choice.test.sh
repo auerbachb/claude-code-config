@@ -97,7 +97,12 @@ case "$args" in
   "pr view"*"-q"*) echo "$FIXTURE_HEAD" ;;
   "pr view"*) printf '{"headRefOid":"%s","state":"OPEN"}\n' "$FIXTURE_HEAD" ;;
   "pr comment"*)
-    [[ -n "${FIXTURE_POST_FAIL:-}" && "$body" == "$FIXTURE_POST_FAIL" ]] && exit 1
+    if [[ -n "${FIXTURE_POST_FAIL:-}" && "$body" == "$FIXTURE_POST_FAIL" ]]; then
+      # FIXTURE_RACE_HEAD: a newer push claims while this post is failing.
+      [[ -n "${FIXTURE_RACE_HEAD:-}" ]] && bash "$FIXTURE_SS" --repo acme/one \
+        --set ".prs[\"99600\"].review_request_head_sha=\"$FIXTURE_RACE_HEAD\"" >/dev/null 2>&1
+      exit 1
+    fi
     echo "$body" >> "$POSTED"
     if [[ -z "${FIXTURE_INVISIBLE:-}" ]]; then
       jq --arg b "$body" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -210,6 +215,14 @@ check_eq "nothing posted" "" "$(posted)"
 check_eq "hourly budget not consumed" "0" "$(jq '(.cr_hourly.events // []) | length' "$HOME/.claude/session-state.json")"
 check_eq "request log not advanced" "0" "$(jq '(.review_requests // []) | length' "$HOME/.claude/session-state.json")"
 check_eq "no choice recorded" "null" "$(choice_of "$PR")"
+check_eq "the HEAD claim is given back" "" "$( ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].review_request_head_sha // empty" ) 2>/dev/null)"
+# A newer push's claim survives this HEAD's release (compare-and-set, #2274 review).
+reset "$NRO_TIER"
+write_av "{\"codeant\":$LIMIT_CA}"
+export FIXTURE_POST_FAIL="@coderabbitai review" FIXTURE_SS="$S/session-state.sh" FIXTURE_RACE_HEAD="$HEAD2"
+run
+export FIXTURE_RACE_HEAD=""
+check_eq "a newer HEAD's claim is not cleared by this HEAD's failed post" "$HEAD2" "$( ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].review_request_head_sha // empty" ) 2>/dev/null)"
 
 echo "== override off (no window): the free reviewer is still chosen, never skipped =="
 reset "$(tier_json absent legacy)"
@@ -220,6 +233,19 @@ reset "$(tier_json absent legacy)"
 write_av "{\"codeant\":$LIMIT_CA,\"coderabbit\":$LIMIT_CA}"
 run
 check_eq "override off, both limited: still asks (no skip)" "@codeant-ai review;" "$(posted)"
+
+echo "== override off: CodeRabbit budget spent after the choice, CodeAnt limited: still asks CodeAnt =="
+reset "$(tier_json absent legacy)"
+write_av "{\"codeant\":$LIMIT_CA}"
+cat > "$S/cr-review-hourly.sh" <<STUB
+#!/usr/bin/env bash
+n=\$(cat "$TMP/cr-check-count" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$TMP/cr-check-count"
+case "\$1" in --check) [ "\$n" -le 1 ] && exit 0 || exit 1 ;; *) exit 0 ;; esac
+STUB
+chmod +x "$S/cr-review-hourly.sh"; rm -f "$TMP/cr-check-count"
+run
+check_eq "override off, budget lost, CodeAnt limited: asks CodeAnt (no silent skip)" "@codeant-ai review;" "$(posted)"
+cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
 
 echo "== tiered repo: the tier's CodeAnt step always asks CodeAnt, even when CodeAnt is limited =="
 reset '{"policy":"present","gate":"full","tier":"t","source":"base:main","error":null,"matches":[],"escalation":"on","no_review_override_minutes":10}'
