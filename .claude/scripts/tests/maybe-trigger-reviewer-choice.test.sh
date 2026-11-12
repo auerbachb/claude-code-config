@@ -201,6 +201,26 @@ check_eq "budget lost after the choice: CodeAnt is asked instead" "@codeant-ai r
 check_eq "budget lost after the choice: the choice records CodeAnt" "codeant" "$(choice_of "$PR")"
 cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
 
+echo "== CodeRabbit post fails: no budget spent, no request logged, claim released =="
+reset "$NRO_TIER"
+write_av "{\"codeant\":$LIMIT_CA}"
+export FIXTURE_POST_FAIL="@coderabbitai review"
+run
+check_eq "nothing posted" "" "$(posted)"
+check_eq "hourly budget not consumed" "0" "$(jq '(.cr_hourly.events // []) | length' "$HOME/.claude/session-state.json")"
+check_eq "request log not advanced" "0" "$(jq '(.review_requests // []) | length' "$HOME/.claude/session-state.json")"
+check_eq "no choice recorded" "null" "$(choice_of "$PR")"
+
+echo "== override off (no window): the free reviewer is still chosen, never skipped =="
+reset "$(tier_json absent legacy)"
+write_av "{\"codeant\":$LIMIT_CA}"
+run
+check_eq "override off, CodeAnt limited: CodeRabbit asked" "@coderabbitai review;" "$(posted)"
+reset "$(tier_json absent legacy)"
+write_av "{\"codeant\":$LIMIT_CA,\"coderabbit\":$LIMIT_CA}"
+run
+check_eq "override off, both limited: still asks (no skip)" "@codeant-ai review;" "$(posted)"
+
 echo "== tiered repo: the tier's CodeAnt step always asks CodeAnt, even when CodeAnt is limited =="
 reset '{"policy":"present","gate":"full","tier":"t","source":"base:main","error":null,"matches":[],"escalation":"on","no_review_override_minutes":10}'
 write_av "{\"codeant\":$LIMIT_CA}"

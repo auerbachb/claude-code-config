@@ -200,7 +200,7 @@ cr_cap_spent() {
 # One evaluation shared by decide, check-skip and choose (issue #2257). Per free reviewer:
 #   avail  = the later of its limit-notice return time (usable records only), the end of
 #            the queue of requests recently sent to it (each takes its expected response
-#            time), and now;
+#            time; a limited reviewer's queue starts at its return time), and now;
 #   answer = avail + its expected response time;
 #   eligible = no usable limit notice keeps it out past the window, and CodeRabbit's hourly
 #            budget is not spent; the queue and expected time only rank eligible reviewers
@@ -226,14 +226,15 @@ decide_json() {
       | select((.reviewer // "") == $k)
       | select(((.at_epoch // 0) | type) == "number" and .at_epoch > ($now - 3600)) | .at_epoch ] | sort;
     # Requests to one reviewer run one after another: the next one can start once the last
-    # has had its expected response time.
-    def queue_end($k): reduce recent($k)[] as $t (0; ([., $t] | max) + expo($k));
+    # has had its expected response time. A limited reviewer starts its queue at the limit
+    # return, so requests logged before the notice drain only after it lifts.
+    def queue_end($k; $start): reduce recent($k)[] as $t ($start; ([., $t] | max) + expo($k));
     def lane($k; $cap_why):
       ($rec | if type == "object" then .[$k] else null end) as $x
       | (if usable($x) then (if $x.next_available_epoch <= $now then "record_past" else "limited" end)
          else "no_record" end) as $state
       | (if $state == "limited" then $x.next_available_epoch else $now end) as $rec_avail
-      | queue_end($k) as $queue
+      | queue_end($k; (if $state == "limited" then $x.next_available_epoch else 0 end)) as $queue
       | ([$rec_avail, $queue, $now] | max) as $avail
       | ($avail + expo($k)) as $answer
       # Only a real limit notice (or the spent CodeRabbit hourly budget) makes a reviewer

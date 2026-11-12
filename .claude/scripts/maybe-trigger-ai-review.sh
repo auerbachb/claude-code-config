@@ -316,8 +316,10 @@ availability_gate() {
   local av="${SCRIPT_DIR}/review-availability.sh" nro_min win dec
   [[ -x "$av" ]] || return 0
   nro_min="$(jq -r '.no_review_override_minutes // empty' <<<"$REQ_TIER_JSON" 2>/dev/null)" || nro_min=""
-  [[ "$nro_min" =~ ^[0-9]+$ ]] || return 0
-  win=$(( nro_min * 60 ))
+  # Override off (no window): still pick the free reviewer, judged against the default
+  # 10-minute window, but never skip, since no override would follow a skip.
+  local can_skip=1
+  if [[ "$nro_min" =~ ^[0-9]+$ ]]; then win=$(( nro_min * 60 )); else win=600; can_skip=0; fi
   REQ_WINDOW_S="$win"
   # choose (issue #2257) answers both questions: skip when no free reviewer can answer in
   # the window (the same verdict decide gives), else the reviewer to ask for this HEAD.
@@ -333,6 +335,8 @@ availability_gate() {
     [[ "$REQ_REVIEWER" == coderabbit ]] && REQ_BODY="@coderabbitai review"
     return 0
   fi
+  # No window, no override: keep today's CodeAnt request instead of skipping.
+  [[ "$can_skip" == 1 ]] || return 0
   # Held, not yet recorded: settle_pending_skip writes it only where this tick would post.
   REQ_PENDING_SKIP="$(jq -r '.reason' <<<"$dec")"
   REQ_BLOCK="$REQ_PENDING_SKIP"

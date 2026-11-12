@@ -151,5 +151,12 @@ expect_eq "record-request refuses a non-object detail" "$?" "2"
 "$AV" choose --window-s 0 >/dev/null 2>&1
 expect_eq "choose: zero window is a usage error" "$?" "2"
 
+# A limited reviewer's queue drains only after its limit returns (#2274 review): CodeAnt back
+# in 2 min with two requests logged a minute ago drains to NOW+120+2x4 min, not NOW-60+2x4 min.
+write_state "{\"codeant\":$(av_record $((NOW + 120)) $NOW)}" "$(reqs "$(req codeant 60)" "$(req codeant 60)")"
+c=$(choose)
+expect_eq "limited reviewer's queue starts at its return time" \
+  "$(jq -r '.reviewers.codeant.avail' <<<"$c")" "$((NOW + 120 + 480))"
+
 echo "review-availability choose tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
