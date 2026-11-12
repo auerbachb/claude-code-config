@@ -66,3 +66,15 @@ Account-wide, not per PR: CodeRabbit's allowance is per developer, so one PR's l
 - **Fail toward asking:** no record, a past record, an unreadable state file, a malformed value, or a missing helper all request as today.
 - **Gap:** a skip needs a parsed retry window for both free reviewers. CodeAnt has no documented limit wording with a time (`cr-rate-limits.md` does not list one), so until one is observed the skip cannot fire.
 - **Tests:** `.claude/scripts/tests/review-availability.test.sh`, `.claude/scripts/tests/no-review-override-availability.test.sh`.
+
+## Reviewer choice (issue #2257)
+
+Each request due on a HEAD asks exactly one free reviewer, never a paid one. `review-availability.sh choose` evaluates both free reviewers:
+
+- **Availability:** the later of the limit-notice return time, the end of the queue of requests recently sent to that reviewer (`.review_requests`, account-wide, one hour; each request holds it for its expected response time), and now. Its answer is that availability plus its expected response time.
+- **Eligibility:** the answer lands inside the no-review window. CodeRabbit is also ineligible while `cr-review-hourly.sh --check` reports its hourly budget spent; CodeAnt has no cap.
+- **Choice:** the earliest answer wins; a tie goes to the reviewer with fewer requests in the last hour. Neither eligible: the #2256 skip, unchanged. Two PRs going green together alternate reviewers because the first request holds its reviewer's queue.
+- **Posted body:** `@codeant-ai review` or `@coderabbitai review` (never `full review`). The CodeRabbit budget is counted only after the post succeeds (`cr-review-hourly.sh --consume`), so a failed post or a lost claim spends nothing.
+- **Record:** `record-request` appends the request to `.review_requests` and writes `.prs["<N>"].review_request_choices[<head sha>]` with the reviewer, reason, and the expected response times and reviewer estimates. `maybe-trigger-ai-review.sh --json` reports `request_reviewer`.
+- `REVIEW_REQUEST=on-push` keeps `@codeant-ai review` as the request; the choice applies to `after-ci` only.
+- **Tests:** `.claude/scripts/tests/review-availability-choose.test.sh`, `.claude/scripts/tests/maybe-trigger-reviewer-choice.test.sh`.
