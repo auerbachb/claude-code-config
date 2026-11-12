@@ -120,6 +120,7 @@ OUT="$(STOP owner --task-id mon-zzz --repo "$REPO")"
 echo 'not json {' > "$STATE"
 STOP owner --task-id mon-31 --repo "$REPO" >/dev/null 2>&1; [[ $? == 3 ]] || fail "unreadable state must be exit 3 (owner unknown)"
 echo '{}' > "$STATE"
+STOP owner --task-id mon-31 >/dev/null 2>&1; [[ $? == 2 ]] || fail "owner without --repo must be exit 2, never a blind owner none"
 # A later read failing (not the first) must also be exit 3: the helper runs in a $( ) subshell, where
 # a die would only end the subshell and let the script fall through to owner "none" (a bare TaskStop
 # on a named watcher). A stub session-state.sh answers .prs as missing (3) and every other read as 9.

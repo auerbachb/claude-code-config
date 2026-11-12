@@ -14,7 +14,7 @@
 #
 # USAGE
 #   safe-close-stop.sh plan  --inventory FILE|-
-#   safe-close-stop.sh owner --task-id ID [--repo owner/name]
+#   safe-close-stop.sh owner --task-id ID --repo owner/name
 #   safe-close-stop.sh park  --session ID --repo owner/name --decisions FILE
 #   safe-close-stop.sh clear-ceiling --session ID [--repo owner/name]
 #   safe-close-stop.sh verify --session ID [--repo owner/name] [--worktree P]
@@ -36,6 +36,8 @@
 #   owner  Say whether a task id is a named watcher (babysit, pmm, day,
 #          day_limit_wake, leave_winddown) so the owning stop command is used.
 #          Prints {"owner":...,"ref":...}; "none" when no watcher record names it.
+#          --repo is required (exit 2 without it): day, day_limit_wake and
+#          leave_winddown are repo-scoped, so "none" cannot be answered blind.
 #          Exit 3 when session-state could not be read (owner unknown).
 #   park   Write the same resumable record /pause writes —
 #          .repos[<repo>].pauses[<session>] plus a pause-*.md marker — from a
@@ -204,6 +206,9 @@ do_plan() {
 # ---------------------------------------------------------------- owner
 do_owner() {
   [[ -n "$TASK_ID" ]] || die 2 "owner requires --task-id"
+  # The day, day-limit-wake and wind-down watchers are repo-scoped; without --repo they cannot be ruled out,
+  # and answering "none" would send a named watcher to a bare TaskStop.
+  [[ -n "$REPO" ]] || die 2 "owner requires --repo; repo-scoped watchers cannot be ruled out"
   [[ -n "$SESSION_STATE_SH" ]] || die 3 "session-state.sh not found; owner unknown"
   local rf="" prs out rc pmm1 pmm2 day1 day2 lv
   [[ -n "$REPO" ]] && rf="--repo $REPO"
