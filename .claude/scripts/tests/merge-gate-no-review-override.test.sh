@@ -46,6 +46,16 @@ case "$ARGS" in
       '{total_count:1, workflow_runs:[{event:"pull_request", created_at:$t, head_branch:"feature",
          head_sha:"deadbeefcafedeadbeefcafedeadbeefcafedead", head_repository:{full_name:"solo/repo"}}]}'
     exit 0 ;;
+  *" repos/solo/repo/issues/1/comments?per_page=100 "*)
+    if [[ -n "${FAKE_COMMENT_SEQUENCE:-}" ]]; then
+      if [[ -e "$FAKE_COMMENT_SEQUENCE" ]]; then
+        printf '%s' "$FAKE_LATE_COMMENTS"
+      else
+        touch "$FAKE_COMMENT_SEQUENCE"
+        printf '%s' '[]'
+      fi
+      exit 0
+    fi ;;
   *" repos/solo/repo/issues/1/timeline"*)
     [[ "${FAKE_TIMELINE_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
     printf '%s' "${FAKE_TIMELINE:-[]}"; exit 0 ;;
@@ -124,6 +134,7 @@ run_gate() { # $1 = check-runs bundle
   OUT=$(PATH="$BIN:$PATH" FAKE_CHECK_RUNS="$1" \
         FAKE_REVIEWS="${FAKE_REVIEWS:-[]}" FAKE_PR_COMMENTS="${FAKE_PR_COMMENTS:-[]}" \
         FAKE_ISSUE_COMMENTS="${FAKE_ISSUE_COMMENTS:-[]}" \
+        FAKE_COMMENT_SEQUENCE="${FAKE_COMMENT_SEQUENCE:-}" FAKE_LATE_COMMENTS="${FAKE_LATE_COMMENTS:-[]}" \
         "$SUT" 1 2>"$TMP/gate.err")
   RC=$?
 }
@@ -139,6 +150,31 @@ record() { printf '%s' "$OUT" | PATH="$BIN:$PATH" "$LEDGER_SUT" record --pr 1 --
 
 GREEN_11="$(bundle "$(run 1 build success 660)")"
 NEED_APPROVAL="need 1 explicit CodeRabbit or CodeAnt APPROVED review"
+
+echo "=== Issue #2225: a review request arrives after the gate's first comment read ==="
+reset
+FAKE_COMMENT_SEQUENCE="$TMP/comment-sequence"
+FAKE_LATE_COMMENTS=$(jq -cn --arg t "$(ago 30)" \
+  '[{user:{login:"solo"},created_at:$t,body:"@codeant-ai review"}]')
+run_gate "$GREEN_11"
+check_eq "false" "$(j .met)" "late request keeps gate closed"
+check_eq "review_request" "$(j .no_review_override.anchor_source)" "late request replaces push anchor"
+check_eq "window_running" "$(j .no_review_override.reason)" "late request starts its own wait"
+
+rm -f "$FAKE_COMMENT_SEQUENCE"
+FAKE_LATE_COMMENTS=$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 30)" '
+  [{user:{login:"codeant-ai[bot]"},created_at:$t,
+    body:("<!-- codeant-review-status:" + ([{done:true,headSha:$sha}] | tojson) + "-->")}]')
+run_gate "$GREEN_11"
+check_eq "false" "$(j .met)" "late exact reviewer verdict keeps gate closed"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "late exact reviewer verdict holds the waiver"
+
+rm -f "$FAKE_COMMENT_SEQUENCE"
+FAKE_LATE_COMMENTS=$(jq -cn --arg t "$(ago 30)" '
+  [{user:{login:"codeant-ai[bot]"},created_at:$t,body:"The review is queued."}]')
+run_gate "$GREEN_11"
+check_eq "true" "$(j .no_review_override.applied)" "a fresh bot status without a verdict leaves the existing override available"
+unset FAKE_COMMENT_SEQUENCE FAKE_LATE_COMMENTS
 
 echo "=== TP1: green CI, no bot review, HEAD 11 min ago -> met via override + ledger row ==="
 reset; rm -f "$LEDGER_FILE"

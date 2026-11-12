@@ -21,12 +21,16 @@ case "$*" in
   *"/pulls/1"*) printf '%s' "$FAKE_PULL_JSON"; exit 0 ;;
   *"/timeline"*) printf '%s' "[]"; exit 0 ;;
   *"actions/runs"*) printf '%s' "$FAKE_RUNS_JSON"; exit 0 ;;
+  *"/issues/1/comments?per_page=100"*)
+    printf '%s\n' comments >> "$FAKE_CALL_LOG"
+    printf '%s' "$FAKE_FRESH_COMMENTS"
+    exit "${FAKE_COMMENT_EXIT:-0}" ;;
 esac
 echo "fake gh: unexpected call: $*" >&2
 exit 1
 EOF
 chmod +x "$BIN/gh"
-export PATH="$BIN:$PATH"
+export PATH="$BIN:$PATH" FAKE_CALL_LOG="$TMP/calls"
 
 PASS=0
 FAIL=0
@@ -67,7 +71,12 @@ payload() {
                       started_at:$chk, app:{slug:"github-actions"}}], hollow:[]}'
 }
 
-run_helper() { printf '%s' "$1" | "$BASH" "$HELPER"; }
+run_helper() {
+  local payload="$1" pages
+  pages=${2-$(jq -c .issue_comments <<<"$payload")}
+  : > "$FAKE_CALL_LOG"
+  printf '%s' "$payload" | FAKE_FRESH_COMMENTS="$pages" FAKE_COMMENT_EXIT="${3:-0}" "$BASH" "$HELPER"
+}
 
 # --- 1. No request: push anchor unchanged, window elapsed (auto-review repo) ---
 out=$(run_helper "$(payload "[]")")
@@ -152,7 +161,32 @@ out=$(run_helper "$(payload "[$c]")")
 expect_eq "edited request: anchored at the edit" "$(jq -r .request_ts <<<"$out")" "$(iso $((NOW - 300)))"
 expect_eq "edited request: still running from the edit" "$(jq -r .applied <<<"$out")" "false"
 
-# --- 10. Fail closed: unreadable comment list ---
+# --- 10. The decision-time read sees an edited request on a later page ---
+c=$(jq -cn --arg c "$(iso $((NOW - 1200)))" --arg u "$(iso $((NOW - 300)))" \
+  '{user:{login:"solo"}, body:"@codeant-ai review", created_at:$c, updated_at:$u}')
+old=$(comment solo $((NOW - 1200)) "CI is running")
+out=$(run_helper "$(payload "[$old]")" $'[]\n'"[$c]")
+expect_eq "fresh second page: edit time anchors" "$(jq -r .request_ts <<<"$out")" "$(iso $((NOW - 300)))"
+expect_eq "fresh second page: no waiver" "$(jq -r .applied <<<"$out")" "false"
+expect_eq "one paginated read per evaluation" "$(cat "$FAKE_CALL_LOG")" "comments"
+
+# --- 11. Fail closed: bad page shape, truncated JSON, missing author or HTTP failure ---
+for pages in null $'[]\n{}' $'[]\n[' '[{"user":null,"body":"anything"}]' '[{"user":{"login":"solo"},"body":null}]'; do
+  out=$(run_helper "$(payload '[]')" "$pages")
+  expect_eq "bad fresh data holds ($pages)" "$(jq -r .reason <<<"$out")" "anchor_unavailable: comment list unreadable"
+done
+out=$(run_helper "$(payload '[]')" '[]' 1)
+expect_eq "HTTP failure after a valid page holds" "$(jq -r .applied <<<"$out")" "false"
+expect_eq "HTTP failure reason" "$(jq -r .reason <<<"$out")" "anchor_unavailable: comment list unreadable"
+
+# --- 12. No additional comment read on early returns ---
+for edit in '.window_seconds = null' '.review_blockers = []' '.tier_gate = "ci-only"' \
+  '.reviews = [{user:{login:"codeant-ai[bot]"},commit_id:.head_sha,state:"CHANGES_REQUESTED"}]'; do
+  run_helper "$(payload '[]' | jq -c "$edit")" '[]' 1 >/dev/null
+  expect_eq "early return skips comment read ($edit)" "$(cat "$FAKE_CALL_LOG")" ""
+done
+
+# --- 13. Fail closed: unreadable comment list ---
 out=$(run_helper "$(payload "null")")
 expect_eq "unreadable comments: not applied" "$(jq -r .applied <<<"$out")" "false"
 expect_eq "unreadable comments: reason" "$(jq -r .reason <<<"$out")" "anchor_unavailable: comment list unreadable"
