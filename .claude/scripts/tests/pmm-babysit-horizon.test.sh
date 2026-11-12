@@ -426,16 +426,19 @@ require_text "  and says so explicitly" "$BABYSIT" 'This watcher claims no park'
 
 # Neither loop may write the shared day slot. This is the assertion the whole
 # #1444 decision reduces to, so it is checked as a refutation on every file —
-# with a POSITIVE control on /pm's own SKILL.md, which does write that slot.
+# with a positive control on PM's day-arm module, which writes that slot.
 # Without the control this refutation would pass on a typo'd pattern that
 # matches nothing anywhere, which is the failure mode a refute-only check has.
-DAY_WRITE_RE='\-\-(set|cas) [^|]*\.repos\[[^]]*\]\.day'
+DAY_WRITE_RE='\-\-(set|cas) [^|]*(\.repos\[[^]]*\]\.day|\$\{?DAY_STATE_PATH\}?)'
 for F in "$PMM" "$PMM_LIFECYCLE" "$PMM_WAKE" "$BABYSIT"; do
   refute_text "$(basename "$F") writes nothing under .repos[<key>].day" \
     "$F" "$DAY_WRITE_RE"
 done
+DAY_ARM="$REPO_ROOT/.claude/skills/pm/modules/day-arm.md"
+require_text "positive control binds the path alias to this repo's day slot" \
+  "$DAY_ARM" 'DAY_STATE_PATH="\.repos\[[^]]*\]\.day"'
 require_text "positive control — the matcher DOES catch day mode's own day-slot writes" \
-  "$REPO_ROOT/.claude/skills/pm/modules/day-arm.md" "$DAY_WRITE_RE"
+  "$DAY_ARM" "$DAY_WRITE_RE"
 # And the read the two loops ARE allowed is still there: PMM reads the day block
 # to refuse arming beside a live day loop, so a blanket ban on the path would be
 # the wrong fix and this pins the distinction between --get and --set/--cas.
