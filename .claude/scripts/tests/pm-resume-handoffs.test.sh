@@ -7,7 +7,8 @@ source "$root/.claude/scripts/tests/lib/skill-bash.sh"
 block=$(extract_skill_bash "$root/.claude/skills/pm/modules/resume/load.md" pm-resume-scoped-handoffs)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/pm-resume-handoffs.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
-export HOME="$tmp"
+tmp=$(cd "$tmp" && pwd -P)
+export HOME="$tmp/home"
 mkdir -p "$HOME/.claude/handoffs/first/repo" "$HOME/.claude/handoffs/second/repo"
 for order in first second; do
   if [[ "$order" == first ]]; then other=second; else other=first; fi
@@ -40,6 +41,19 @@ for order in first second; do
   printf '%s\n' '{"needs":"older scoped"}' > "$scoped"
   out=$(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block")
   grep -Fq '"needs":"older scoped"' <<< "$out"
+  if [[ "$order" == first ]]; then
+    ln -s "$HOME" "$tmp/linked-home"
+    ln -s "$tmp" "$tmp/linked-parent"
+  fi
+  for linked_home in "$tmp/linked-home" "$tmp/linked-parent/home"; do
+    out=$(HOME="$linked_home" REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block")
+    [[ "$out" == NO_HANDOFF_FILES ]] || { printf '%s\n' 'ownerless linked-home payload was accepted' >&2; exit 1; }
+  done
+  printf '%s\n' '{"owner_repo":"second/repo","pr_number":42,"needs":"verified linked home"}' > "$scoped"
+  for linked_home in "$tmp/linked-home" "$tmp/linked-parent/home"; do
+    out=$(HOME="$linked_home" REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block")
+    grep -Fq '"needs":"verified linked home"' <<< "$out"
+  done
   printf '%s\n' '{"owner_repo":"second/repo","pr_number":null}' > "$scoped"
   [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]] || { printf '%s\n' 'explicit null PR identity was accepted' >&2; exit 1; }
   printf '%s\n' '{"owner_repo":"second/repo","pr_number":43}' > "$scoped"

@@ -110,8 +110,9 @@ if [[ "$CUR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ &&
   ' <<< "${SESSION_VIEW:-}" 2>/dev/null) || SCOPED_PRS=""
 fi
 handoff_root=""
-if [ -n "${HOME:-}" ] && home_dir=$(cd -- "$HOME" 2>/dev/null && pwd -P); then
-  handoff_root="$home_dir/.claude/handoffs"
+if [[ "${HOME:-}" == /* ]]; then
+  # Keep the original path so the physical comparison detects linked HOME too.
+  handoff_root="${HOME%/}/.claude/handoffs"
 fi
 found_handoffs=false
 while IFS= read -r n; do
