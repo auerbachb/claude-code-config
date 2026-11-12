@@ -1,0 +1,83 @@
+{
+  "repos": {
+    "example/app": {
+      "data": {
+        "rateLimit": {"cost": 1, "remaining": 4900, "resetAt": "2026-11-03T13:00:00Z"},
+        "repository": {
+          "pullRequests": {
+            "totalCount": 1,
+            "nodes": [
+              {
+                "number": 1,
+                "mergedAt": "2026-11-03T12:00:00Z",
+                "createdAt": "2026-11-03T09:00:00Z",
+                "headRefOid": "bbbb2222",
+                "commits": {
+                  "totalCount": 2,
+                  "nodes": [
+                    {"commit": {"oid": "aaaa1111", "committedDate": "2026-11-03T10:00:00Z",
+                      "statusCheckRollup": {"contexts": {"totalCount": 2, "nodes": [
+                        {"__typename": "CheckRun", "name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS",
+                         "startedAt": "2026-11-03T10:01:00Z", "completedAt": "2026-11-03T10:11:00Z", "checkSuite": {"app": {"slug": "github-actions"}}},
+                        {"__typename": "CheckRun", "name": "Cursor Bugbot", "status": "COMPLETED", "conclusion": "SUCCESS",
+                         "startedAt": "2026-11-03T10:01:00Z", "completedAt": "2026-11-03T10:20:00Z", "checkSuite": {"app": {"slug": "cursor"}}}
+                      ]}}}},
+                    {"commit": {"oid": "bbbb2222", "committedDate": "2026-11-03T10:20:00Z",
+                      "statusCheckRollup": {"contexts": {"totalCount": 2, "nodes": [
+                        {"__typename": "CheckRun", "name": "unit", "status": "COMPLETED", "conclusion": "FAILURE",
+                         "startedAt": "2026-11-03T10:31:00Z", "completedAt": "2026-11-03T10:41:00Z", "checkSuite": {"app": {"slug": "github-actions"}}},
+                        {"__typename": "CheckRun", "name": "Greptile", "status": "COMPLETED", "conclusion": "SUCCESS",
+                         "startedAt": "2026-11-03T10:31:00Z", "completedAt": "2026-11-03T10:50:00Z", "checkSuite": {"app": {"slug": "greptile"}}}
+                      ]}}}}
+                  ]
+                },
+                "reviews": {"totalCount": 6, "nodes": [
+                  {"author": {"__typename": "Bot", "login": "codeant-ai"}, "state": "APPROVED", "submittedAt": "2026-11-03T10:40:00Z", "body": "", "commit": {"oid": "bbbb2222"}},
+                  {"author": {"__typename": "Bot", "login": "codeant-ai"}, "state": "APPROVED", "submittedAt": "2026-11-03T10:02:00Z", "body": "", "commit": {"oid": "aaaa1111"}},
+                  {"author": {"__typename": "Bot", "login": "cursor"}, "state": "COMMENTED", "submittedAt": "2026-11-03T11:21:00.000000+01:00", "body": "Found 0 issues", "commit": {"oid": "aaaa1111"}},
+                  {"author": {"__typename": "User", "login": "cursor"}, "state": "COMMENTED", "submittedAt": "2026-11-03T10:15:00Z", "body": "same login, but a user", "commit": {"oid": "aaaa1111"}},
+                  {"author": {"__typename": "Bot", "login": "coderabbitai"}, "state": "COMMENTED", "submittedAt": "2026-11-03T10:38:00Z", "body": "Review complete", "commit": {"oid": "bbbb2222"}},
+                  {"author": {"__typename": "Bot", "login": "coderabbitai"}, "state": "COMMENTED", "submittedAt": "2026-11-03T10:45:00Z", "body": "Rate limit exceeded for this review.", "commit": {"oid": "aaaa1111"}},
+                  {"author": {"__typename": "Bot", "login": "coderabbitai"}, "state": "COMMENTED", "submittedAt": "2026-11-03T10:55:00Z", "body": "Walkthrough: the change is reviewed. A rate limit note appears below the summary.", "commit": {"oid": "bbbb2222"}}
+                ]},
+                "comments": {"totalCount": 3, "nodes": [
+                  {"author": {"__typename": "Bot", "login": "codeant-ai"}, "createdAt": "2026-11-03T10:44:30Z", "body": "<!-- codeant-review-status:[{\"commit\":\"bbbb2222\",\"label\":\"Reviewed your PR\",\"started\":\"2026-11-03T10:40:00.000000\",\"finished\":\"2026-11-03T10:44:00.250000\",\"done\":true}] -->"},
+                  {"author": {"__typename": "User", "login": "reviewer-human"}, "createdAt": "2026-11-03T10:40:00Z", "body": "looks fine"},
+                  {"author": {"__typename": "Bot", "login": "coderabbitai"}, "createdAt": "2026-11-03T10:50:00Z", "body": "Review rate limit exceeded. Try again later."}
+                ]},
+                "timelineItems": {"totalCount": 3, "nodes": [
+                  {"__typename": "HeadRefForcePushedEvent", "createdAt": "2026-11-03T10:30:00Z", "beforeCommit": {"oid": "cccc0000"}, "afterCommit": {"oid": "bbbb2222"}},
+                  {"__typename": "ReviewRequestedEvent", "createdAt": "2026-11-03T10:35:00Z", "requestedReviewer": {"__typename": "Bot", "login": "coderabbitai"}},
+                  {"__typename": "ReviewRequestedEvent", "createdAt": "2026-11-03T10:34:00Z", "requestedReviewer": {"__typename": "User", "login": "someone"}}
+                ]}
+              }
+            ]
+          }
+        }
+      }
+    },
+    "example/edge": {
+      "data": {
+        "rateLimit": {"cost": 1},
+        "repository": {"pullRequests": {"totalCount": 1, "nodes": [
+          {"number": 2, "mergedAt": "2026-11-03T12:00:00Z", "createdAt": "2026-11-03T09:00:00Z", "headRefOid": "dddd4444",
+           "commits": {"totalCount": 1, "nodes": [
+             {"commit": {"oid": "dddd4444", "committedDate": "2026-11-03T10:00:00Z",
+               "statusCheckRollup": {"contexts": {"totalCount": 1, "nodes": [
+                 {"__typename": "CheckRun", "name": "unit", "status": "COMPLETED", "conclusion": "WEIRD_NEW_VALUE",
+                  "startedAt": "2026-11-03T10:01:00Z", "completedAt": "2026-11-03T10:11:00Z", "checkSuite": {"app": {"slug": "github-actions"}}}
+               ]}}}}
+           ]},
+           "reviews": {"totalCount": 0, "nodes": []},
+           "comments": {"totalCount": 0, "nodes": []},
+           "timelineItems": {"totalCount": 0, "nodes": []}}
+        ]}}
+      }
+    },
+    "example/broken": {"gh_error": "HTTP 502: Bad Gateway"},
+    "example/errors": {
+      "data": {"rateLimit": {"cost": 1}, "repository": {"pullRequests": {"totalCount": 0, "nodes": []}}},
+      "errors": [{"message": "API rate limit exceeded"}]
+    }
+  }
+}
