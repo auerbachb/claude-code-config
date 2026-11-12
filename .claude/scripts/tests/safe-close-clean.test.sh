@@ -2,7 +2,7 @@
 # catalog: tests — Tests for `safe-close-clean.sh`: finished work removed through the existing helpers, work-holding things kept, other threads' entries untouched, unreadable reads never counted as cleaned, and a read-back instead of an exit status
 #
 # Builds its own fixtures (fake HOME, a private copy of the scripts directory with
-# stubbed `gh`, `issue-claim.sh` and `workspace-sweep.sh`, throwaway git repos and
+# stubbed `gh`, `issue-claim.sh` and the finished-worktree detector, throwaway git repos and
 # worktrees) so it never touches real session state, GitHub, claims, worktrees or
 # anyone's processes. Run from the repo root.
 set -uo pipefail
@@ -30,7 +30,8 @@ STATE="$HOME/.claude/session-state.json"
 export STUB_DIR="$TMP/stub" CLAIM_DIR="$TMP/claims" SWEEP_LOG="$TMP/sweep.log" SWEEP_LIST="$TMP/sweep.list"
 
 # A private copy of the scripts: the cleaner resolves its helpers next to itself first, so the
-# stubs below stand in for the two helpers that need GitHub or a real finished-work sweep.
+# stubs below stand in for the helpers that need GitHub or real PR state. The real stale-cleanup.sh
+# runs (its --only plumbing is under test); only its Python detector is replaced.
 S="$TMP/.claude/scripts"
 mkdir -p "$TMP/.claude"
 cp -R "$ROOT/.claude/scripts" "$S" || fail "could not copy the scripts directory"
@@ -61,25 +62,71 @@ case "$mode" in
     rm -f "$f"; echo '{"verdict":"unclaimed"}' ;;
 esac
 EOF
-cat > "$S/workspace-sweep.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SWEEP_LOG"
-# SWEEP_LIST lines: "<path> <branch>" — what this stub "finds finished" and removes with plain git.
-if [[ -f "$SWEEP_LIST" ]]; then
-  while read -r p b; do
-    [[ -n "$p" ]] || continue
-    git -C "$STUB_MAIN" worktree remove "$p" >/dev/null 2>&1 && git -C "$STUB_MAIN" branch -D "$b" >/dev/null 2>&1
-  done < "$SWEEP_LIST"
-fi
-exit "${STUB_SWEEP_EXIT:-0}"
+# Stand-in for lib/stale-cleanup-finished.py. SWEEP_LIST lines "<path> <branch>" are what it "finds
+# finished". Like the real detector it covers EVERY listed worktree unless --only narrows it, and it
+# removes with plain (never forced) removal; STUB_LOCKED names paths it reports skipped as locked.
+cat > "$S/lib/stale-cleanup-finished.py" <<'EOF'
+#!/usr/bin/env python3
+import json, os, subprocess, sys
+a = sys.argv[1:]
+open(os.environ["SWEEP_LOG"], "a").write(" ".join(a) + "\n")
+only = [a[i + 1] for i, x in enumerate(a) if x == "--only"]
+ident = {a[i + 1]: a[i + 2] for i, x in enumerate(a) if x == "--only-identity"}
+only += list(ident)
+caller = a[a.index("--caller") + 1]
+rows = []
+if os.path.exists(os.environ["SWEEP_LIST"]):
+    rows = [l.split() for l in open(os.environ["SWEEP_LIST"]) if l.strip()]
+locked = os.environ.get("STUB_LOCKED", "").split()
+rep = {"finished_worktrees": [], "skipped_finished_worktrees": [], "unknown_finished_worktrees": [],
+       "finished_scan": os.environ.get("STUB_SCAN", "complete")}
+main = os.environ["STUB_MAIN"]
+for p, b in rows:
+    if only and p not in only:
+        continue
+    if p == caller:
+        continue
+    if p in ident and ident[p] != b:
+        rep["skipped_finished_worktrees"].append({"path": p, "branch": b, "reason": "only_identity_mismatch"})
+        continue
+    if p in locked:
+        rep["skipped_finished_worktrees"].append({"path": p, "branch": b, "reason": "locked"})
+        continue
+    rep["finished_worktrees"].append({"path": p, "branch": b, "pr_number": 1, "pr_state": "MERGED"})
+if os.environ.get("STUB_DROP_BRANCH_ONLY") and "--apply" in a:
+    # another process deletes the ref; this cleanup removes nothing
+    for r in rep["finished_worktrees"]:
+        subprocess.run(["git", "-C", main, "update-ref", "-d", "refs/heads/" + r["branch"]], capture_output=True)
+    rep["finished_worktrees"] = []
+if "--apply" in a:
+    rep["finished_apply"] = []
+    for r in rep["finished_worktrees"]:
+        ok = subprocess.run(["git", "-C", main, "worktree", "remove", r["path"]], capture_output=True).returncode == 0
+        if os.environ.get("STUB_KEEP_BRANCH"):
+            ok = False  # the worktree went, the guarded branch deletion did not
+        else:
+            ok = ok and subprocess.run(["git", "-C", main, "branch", "-D", r["branch"]], capture_output=True).returncode == 0
+        rep["finished_apply"].append({"path": r["path"], "branch": r["branch"], "outcome": "removed" if ok else "failed",
+                                      "reason": "finished" if ok else "worktree_remove_failed", "worktree_removed": ok})
+print(json.dumps(rep))
+sys.exit(int(os.environ.get("STUB_SWEEP_EXIT", "0")))
 EOF
-chmod +x "$S/issue-claim.sh" "$S/workspace-sweep.sh"
+chmod +x "$S/issue-claim.sh" "$S/lib/stale-cleanup-finished.py"
 
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "api user") echo me ;;
-  "pr list") [[ -f "$STUB_DIR/prlist-fail" ]] && exit 1; cat "$STUB_DIR/prlist.json" ;;
+  "pr list")
+    [[ -f "$STUB_DIR/prlist-fail" ]] && exit 1
+    # `--head <branch> --state all`: the branch's PRs; MERGED unless prhead-<branch>.json says otherwise
+    head=""; prev=""; mine=0
+    for x in "$@"; do [[ "$prev" == "--head" ]] && head="$x"; [[ "$x" == "--author" ]] && mine=1; prev="$x"; done
+    if [[ -n "$head" && $mine == 1 ]]; then
+      [[ -f "$STUB_DIR/prhead-fail" ]] && exit 1
+      if [[ -f "$STUB_DIR/prhead-$head.json" ]]; then cat "$STUB_DIR/prhead-$head.json"
+      else printf '[{"number":1,"state":"MERGED","headRefName":"%s"}]\n' "$head"; fi
+    else cat "$STUB_DIR/prlist.json"; fi ;;
   "pr view") f="$STUB_DIR/prview-$3.json"; [[ -f "$f" ]] && cat "$f" || exit 1 ;;
   "issue list") echo '[]' ;;
   *) exit 1 ;;
@@ -128,8 +175,25 @@ ok "session, repo and worktree are required; a foreign or malformed inventory is
 # ---- 2. nothing to clean: a no-op ------------------------------------------------------------------
 OUT="$(INVJ '[]' | CLEAN apply)"; rc=$?
 [[ $rc == 0 && "$(jqr '.removed|length')" == 0 && "$(jqr '.kept|length')" == 0 && "$(jqr .verdict)" == not_assessed ]] || fail "empty inventory should be a no-op that states no verdict"
-[[ ! -s "$SWEEP_LOG" ]] || fail "the sweep ran with nothing of this thread's to sweep"
-ok "an already-clean thread is a no-op, runs no sweep and states no verdict"
+! grep -q -- '--apply' "$SWEEP_LOG" 2>/dev/null || fail "a removal ran with nothing of this thread's to remove"
+ok "an already-clean thread is a no-op, removes nothing and states no verdict"
+
+# An inventory that attributes ZERO worktrees to the thread must not fall back to a repo-wide
+# removal: another thread's finished worktree (which the helper would happily remove if unscoped)
+# survives, and nothing is removed, in apply and in plan.
+git -C "$W" worktree add -q -b zero-scope-other "$TMP/wt-zero-other" 2>/dev/null
+WZ="$(cd "$TMP/wt-zero-other" && pwd -P)"
+echo "$WZ zero-scope-other" > "$SWEEP_LIST"
+: > "$SWEEP_LOG"
+for mode in apply plan; do
+  OUT="$(INVJ '[]' | CLEAN "$mode")"; rc=$?
+  [[ $rc == 0 && -d "$WZ" && "$(jqr '.removed|length')" == 0 ]] || fail "$mode: another thread's finished worktree was touched by a thread that owns none"
+  git -C "$W" show-ref --verify --quiet refs/heads/zero-scope-other || fail "$mode: another thread's branch was removed"
+  ! grep -q -- '--apply' "$SWEEP_LOG" || fail "$mode: a removal was attempted although the thread owns no worktree"
+done
+git -C "$W" worktree remove --force "$WZ" 2>/dev/null; git -C "$W" branch -D zero-scope-other >/dev/null 2>&1
+: > "$SWEEP_LIST"
+ok "a thread that owns no worktree removes none, however many finished ones other threads left"
 
 # ---- 3. claims -------------------------------------------------------------------------------------------
 echo "$SESSION" > "$CLAIM_DIR/5"; echo "$SESSION" > "$CLAIM_DIR/6"; echo "someone-else" > "$CLAIM_DIR/8"
@@ -201,13 +265,24 @@ echo x > "$TMP/wt-dirty/new.txt"
 WD="$(cd "$TMP/wt-done" && pwd -P)"; WH="$(cd "$TMP/wt-held" && pwd -P)"; WX="$(cd "$TMP/wt-dirty" && pwd -P)"
 wt_item() { printf '{"category":"worktrees","id":"%s:%s","summary":"%s","consequence":"%s","detail":"d","ref":{"kind":"worktree","path":"%s","branch":"%s"}}' "$1" "$2" "$5" "$3" "$2" "$4"; }
 ITEMS="[$(wt_item clean "$W" harmless issue-9-own 'own'),$(wt_item clean "$WD" harmless agent-done 'done'),$(wt_item clean "$WH" harmless agent-held 'held'),$(wt_item dirty "$WX" lost agent-dirty '1 uncommitted path')]"
-echo "$WD agent-done" > "$SWEEP_LIST"
+# Another thread's finished worktree: finished by every test the helper applies, but NOT in this
+# thread's inventory. It must survive this thread's cleanup.
+git -C "$W" worktree add -q -b other-done "$TMP/wt-other" 2>/dev/null
+WO="$(cd "$TMP/wt-other" && pwd -P)"
+printf '%s\n%s\n' "$WD agent-done" "$WO other-done" > "$SWEEP_LIST"
 : > "$SWEEP_LOG"
 OUT="$(INVJ "$ITEMS" | CLEAN plan)"
-[[ ! -s "$SWEEP_LOG" && -d "$WD" ]] || fail "plan must not run the sweep"
+[[ -d "$WD" && -d "$WO" ]] || fail "plan must remove nothing"
+[[ "$(jqr '[.would_remove[]|select(.id=="'"$WO"'")]|length')" == 0 ]] || fail "plan must never name another thread's worktree"
 OUT="$(INVJ "$ITEMS" | CLEAN apply)"; rc=$?
-[[ -s "$SWEEP_LOG" ]] || fail "the finished-work sweep was not run"
-grep -q -- "--repo-dir $W" "$SWEEP_LOG" || fail "the sweep must run from the thread's own checkout"
+[[ -s "$SWEEP_LOG" ]] || fail "the finished-worktree cleanup was not run"
+grep -q -- "--apply" "$SWEEP_LOG" && grep -q -- "--only-identity $WD agent-done" "$SWEEP_LOG" || fail "the cleanup must be scoped to the thread's own worktree and bound to its recorded branch"
+grep -q -- "$WO" "$SWEEP_LOG" && fail "another thread's worktree must never be named to the helper"
+[[ -d "$WO" ]] || fail "another thread's finished worktree was removed by this thread's cleanup"
+git -C "$W" show-ref --verify --quiet refs/heads/other-done || fail "another thread's branch was removed by this thread's cleanup"
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")|.why]|join("|")')" == "1 other finished worktree(s)"* ]] || fail "the report must count the one other finished worktree"
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")|.pickup]|join("|")')" == */pm-clean* ]] || fail "the count must point at /pm-clean"
+[[ "$(jqr '[.notes[]|select(.id=="-" and (.why|test("whole repository")))]|length')" == 0 ]] || fail "the whole-repository sweep note must be gone"
 [[ ! -d "$WD" ]] || fail "the finished worktree was not removed"
 [[ -d "$WH" && -d "$WX" && -d "$W" ]] || fail "unfinished, dirty and own checkouts must remain"
 [[ "$(jqr '[.removed[]|select(.kind=="worktree")|.id]|join(",")')" == "$WD" ]] || fail "only the finished worktree may be reported removed"
@@ -229,9 +304,120 @@ ok "removal is read back from git, never taken from the sweep's exit status"
 # own checkout only: no sweep, one note
 : > "$SWEEP_LOG"
 OUT="$(INVJ "[$(wt_item clean "$W" harmless issue-9-own own)]" | CLEAN apply)"
-[[ ! -s "$SWEEP_LOG" && "$(jqr '.notes|map(.kind)|index("own_checkout")')" != null ]] || fail "only the thread's own checkout: no sweep, one note"
+! grep -q -- '--apply' "$SWEEP_LOG" && [[ "$(jqr '.notes|map(.kind)|index("own_checkout")')" != null ]] || fail "only the thread's own checkout: no removal, one note"
 ok "the thread's own checkout is never swept and is explained"
 git -C "$W" worktree remove --force "$TMP/wt-held" 2>/dev/null; git -C "$W" worktree remove --force "$TMP/wt-dirty" 2>/dev/null
+
+# a locked thread-owned worktree is left behind, named, never forced
+git -C "$W" worktree add -q -b agent-locked "$TMP/wt-locked" 2>/dev/null
+WL="$(cd "$TMP/wt-locked" && pwd -P)"
+git -C "$W" worktree lock "$WL" 2>/dev/null
+echo "$WL agent-locked" > "$SWEEP_LIST"
+OUT="$(INVJ "[$(wt_item clean "$WL" harmless agent-locked x)]" | STUB_LOCKED="$WL" CLEAN apply)"
+[[ -d "$WL" && "$(jqr '.removed|length')" == 0 ]] || fail "a locked worktree must not be removed or reported removed"
+[[ "$(jqr '[.kept[]|select(.id=="'"$WL"'")|.why]|.[0]')" == *locked* && "$(jqr '[.kept[]|select(.id=="'"$WL"'")|.pickup]|.[0]')" == *unlock* ]] || fail "a locked worktree must be named as left behind with an unlock pickup"
+grep -q -- '--force' "$SWEEP_LOG" && fail "a lock must never be overridden with force"
+git -C "$W" worktree unlock "$WL" 2>/dev/null; git -C "$W" worktree remove --force "$WL" 2>/dev/null; git -C "$W" branch -D agent-locked >/dev/null 2>&1
+ok "a locked thread-owned worktree is reported left behind, never forced"
+
+# three other finished worktrees: one-line /pm-clean pointer, none removed, none named to the helper
+for n in 1 2 3; do git -C "$W" worktree add -q -b "other-fin$n" "$TMP/wt-ofin$n" 2>/dev/null; done
+git -C "$W" worktree add -q -b agent-mine "$TMP/wt-mine" 2>/dev/null
+WM="$(cd "$TMP/wt-mine" && pwd -P)"
+: > "$SWEEP_LIST"
+for n in 1 2 3; do echo "$(cd "$TMP/wt-ofin$n" && pwd -P) other-fin$n" >> "$SWEEP_LIST"; done
+echo "$WM agent-mine" >> "$SWEEP_LIST"
+OUT="$(INVJ "[$(wt_item clean "$WM" harmless agent-mine x)]" | CLEAN apply)"
+[[ ! -d "$WM" ]] || fail "the thread's own finished worktree should be removed"
+for n in 1 2 3; do [[ -d "$TMP/wt-ofin$n" ]] || fail "other finished worktree $n was removed"; done
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")]|length')" == 1 ]] || fail "exactly one pointer line expected"
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")|.why][0]')" == "3 other"* ]] || fail "the pointer must carry the count of other finished worktrees"
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")|.pickup][0]')" == "/pm-clean clears them" ]] || fail "the pointer must name /pm-clean"
+ok "three other finished worktrees: one /pm-clean pointer line, none removed"
+# an incomplete scan says 'at least'; an unreadable report omits the line
+OUT="$(INVJ "[$(wt_item clean "$WM" harmless agent-mine x)]" | STUB_SCAN=incomplete CLEAN plan)"
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")|.why][0]')" == "at least "* ]] || fail "an incomplete scan must say 'at least'"
+OUT="$(INVJ "[$(wt_item clean "$WM" harmless agent-mine x)]" | STUB_SWEEP_EXIT=3 CLEAN plan)"
+[[ "$(jqr '[.notes[]|select(.kind=="other_finished_worktrees")]|length')" == 0 ]] || fail "an unreadable count must be omitted, never guessed"
+ok "an incomplete scan says 'at least'; an unreadable count is omitted"
+for n in 1 2 3; do git -C "$W" worktree remove --force "$TMP/wt-ofin$n" 2>/dev/null; done
+git -C "$W" worktree remove --force "$WO" 2>/dev/null
+# A clean, pushed, thread-owned checkout whose PR was CLOSED without merging is unmerged work: kept,
+# named, never named to the helper (which would treat CLOSED as finished).
+git -C "$W" worktree add -q -b agent-closed "$TMP/wt-closed" 2>/dev/null
+WC="$(cd "$TMP/wt-closed" && pwd -P)"
+echo "$WC agent-closed" > "$SWEEP_LIST"
+echo '[{"number":7,"state":"CLOSED","headRefName":"agent-closed"}]' > "$STUB_DIR/prhead-agent-closed.json"
+: > "$SWEEP_LOG"
+for mode in apply plan; do
+  OUT="$(INVJ "[$(wt_item clean "$WC" harmless agent-closed x)]" | CLEAN "$mode")"
+  [[ -d "$WC" && "$(jqr '.removed|length')" == 0 && "$(jqr '.would_remove|length')" == 0 ]] || fail "$mode: closed-unmerged work was removed or planned for removal"
+  [[ "$(jqr '[.kept[]|select(.id=="'"$WC"'")|.why]|.[0]')" == *"closed without merging"* ]] || fail "$mode: the closed-unmerged checkout must be kept and named"
+done
+git -C "$W" show-ref --verify --quiet refs/heads/agent-closed || fail "the closed PR's branch was removed"
+grep -q -- "$WC" "$SWEEP_LOG" && fail "a checkout with an unmerged PR must never be named to the helper"
+# a failed or unreadable lookup keeps too
+rm -f "$STUB_DIR/prhead-agent-closed.json"; : > "$STUB_DIR/prhead-fail"
+OUT="$(INVJ "[$(wt_item clean "$WC" harmless agent-closed x)]" | CLEAN apply)"
+[[ -d "$WC" && "$(jqr '.removed|length')" == 0 && "$(jqr '.kept|length')" == 1 ]] || fail "a failed merged-check must keep the checkout"
+rm -f "$STUB_DIR/prhead-fail"
+ok "a clean, pushed checkout whose PR was closed unmerged (or whose PR state cannot be read) is kept and named"
+
+# Path reuse: the inventory recorded branch agent-old at $WC, but a DIFFERENT finished worktree
+# (branch agent-new) now sits at that path. The removal is bound to the recorded branch, so it stays.
+git -C "$W" worktree remove --force "$WC" 2>/dev/null; git -C "$W" branch -D agent-closed >/dev/null 2>&1
+git -C "$W" worktree add -q -b agent-new "$TMP/wt-closed" 2>/dev/null
+echo "$WC agent-new" > "$SWEEP_LIST"
+: > "$SWEEP_LOG"
+OUT="$(INVJ "[$(wt_item clean "$WC" harmless agent-old x)]" | CLEAN apply)"
+[[ -d "$WC" && "$(jqr '.removed|length')" == 0 ]] || fail "a different worktree re-registered at the recorded path was removed"
+git -C "$W" show-ref --verify --quiet refs/heads/agent-new || fail "the re-registered worktree's branch was removed"
+[[ "$(jqr '[.kept[]|select(.id=="'"$WC"'")|.why]|.[0]')" == *"different worktree"* ]] || fail "the identity mismatch must be reported"
+grep -q -- "--only-identity $WC agent-old" "$SWEEP_LOG" || fail "the removal must be bound to the recorded branch"
+ok "a worktree re-registered at an inventoried path is not removed in place of the recorded one"
+git -C "$W" worktree remove --force "$WC" 2>/dev/null; git -C "$W" branch -D agent-new >/dev/null 2>&1
+
+# Bounded reads: a stalled `git worktree list` is a failed read, not an empty list; nothing is removed.
+git -C "$W" worktree add -q -b agent-slow "$TMP/wt-slow" 2>/dev/null
+WS="$(cd "$TMP/wt-slow" && pwd -P)"
+echo "$WS agent-slow" > "$SWEEP_LIST"
+REAL_GIT="$(command -v git)"; mkdir -p "$TMP/slowbin"
+cat > "$TMP/slowbin/git" <<EOF
+#!/usr/bin/env bash
+if [[ -n "\${STUB_GIT_SLOW:-}" && "\$*" == *"worktree list"* ]]; then sleep 30; fi
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$TMP/slowbin/git"
+: > "$SWEEP_LOG"
+OUT="$(INVJ "[$(wt_item clean "$WS" harmless agent-slow x)]" | PATH="$TMP/slowbin:$PATH" STUB_GIT_SLOW=1 SAFE_CLOSE_GIT_TIMEOUT_SECS=1 CLEAN apply)"
+[[ -d "$WS" && "$(jqr '.removed|length')" == 0 ]] || fail "a stalled worktree list must not lead to a removal"
+[[ "$(jqr '[.failed[]|select(.kind=="sweep")]|length')" -ge 1 ]] || fail "a stalled worktree list must be reported as a failed read"
+! grep -q -- '--apply' "$SWEEP_LOG" || fail "the cleanup must not run when the before-read timed out"
+ok "a stalled git worktree list is a failed read (kept and reported), never an empty list"
+
+# Branch claims: worktree removed but the guarded branch deletion failed -> failed, not success.
+OUT="$(INVJ "[$(wt_item clean "$WS" harmless agent-slow x)]" | STUB_KEEP_BRANCH=1 CLEAN apply)"; rc=$?
+[[ ! -d "$WS" ]] || fail "fixture: the worktree should have been removed"
+[[ "$(jqr '[.failed[]|select(.kind=="branch" and .id=="agent-slow")]|length')" == 1 ]] || fail "a branch left behind after its worktree was removed must be reported failed"
+[[ "$(jqr '[.removed[]|select(.kind=="branch")]|length')" == 0 ]] || fail "a branch that remains must not be reported removed"
+git -C "$W" branch -D agent-slow >/dev/null 2>&1
+# ... and a branch some other process deleted is not claimed as this cleanup's removal.
+git -C "$W" worktree add -q -b agent-drop "$TMP/wt-drop" 2>/dev/null
+WP="$(cd "$TMP/wt-drop" && pwd -P)"
+echo "$WP agent-drop" > "$SWEEP_LIST"
+OUT="$(INVJ "[$(wt_item clean "$WP" harmless agent-drop x)]" | STUB_DROP_BRANCH_ONLY=1 CLEAN apply)"
+[[ -d "$WP" && "$(jqr '[.removed[]|select(.kind=="branch")]|length')" == 0 ]] || fail "a branch deleted by another process must not be reported as removed by this cleanup"
+git -C "$W" worktree remove --force "$WP" 2>/dev/null; git -C "$W" branch -D agent-drop >/dev/null 2>&1
+ok "a branch is reported removed only when this cleanup removed its worktree and the ref went from present to absent"
+: > "$SWEEP_LIST"
+
+# the scoping argument can only narrow: an empty or missing --only refuses
+: > "$SWEEP_LOG"
+(cd "$W" && "$S/stale-cleanup.sh" --apply-finished --json --root "$W" --only "" >/dev/null 2>&1); [[ $? == 3 ]] || fail "an empty --only must refuse (exit 3), not widen"
+(cd "$W" && "$S/stale-cleanup.sh" --apply-finished --json --root "$W" --only >/dev/null 2>&1); [[ $? == 3 ]] || fail "a missing --only value must refuse (exit 3)"
+(cd "$W" && "$S/stale-cleanup.sh" --check --json --root "$W" --only "$W" >/dev/null 2>&1); [[ $? == 3 ]] || fail "--only outside --apply-finished must refuse (exit 3)"
+[[ ! -s "$SWEEP_LOG" ]] || fail "a refused --only must never reach the detector"
+ok "an empty, missing or misplaced --only refuses instead of widening"
 
 # ---- 6. session-state: this session's entries only ----------------------------------------------------------
 agent_item() { printf '{"category":"subagents","id":".active_agents:%s","summary":"s","consequence":"keeps_running","detail":"d","ref":{"kind":"state_record","path":".active_agents","key":"%s"}}' "$1" "$1"; }
