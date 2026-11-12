@@ -37,7 +37,54 @@ concurrency:
 # and the complete capture lives at the contract's `log_path` on the runner.
 # Contract: .claude/reference/compact-result-contract.md
 jobs:
-  hook-tests:
+  # Issue #2207: the Linux full run is split into two shards on two runners, mirroring the macOS
+  # pattern below. The plan decides once (the selector runs here, never in a shard) and a PR whose
+  # selection is not the full set keeps ONE shard. The required check name stays `hook-tests`: the
+  # aggregate job after the shards carries that name and passes only when the plan and every shard
+  # succeed.
+  hook-tests-plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      selection: ${{ steps.plan.outputs.selection }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the selector diffs the PR against its base SHA (issue #2153).
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Decide once which suites this PR can affect (issue #2153). Fail toward the full run: a
+      # selector that exits non-zero hands the runners ALL, never a partial list.
+      - name: Select hook test suites and decide the Linux shard count
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SEL="$RUNNER_TEMP/hook-test-selection-linux-plan.txt"
+          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
+            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
+          fi
+          if grep -Fxq 'ALL' "$SEL"; then
+            SHARDS='[{"index":1,"count":2},{"index":2,"count":2}]'
+          else
+            SHARDS='[{"index":1,"count":1}]'
+          fi
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+          echo "selection=$(base64 < "$SEL" | tr -d '\n')" >> "$GITHUB_OUTPUT"
+          echo "Linux shards: $SHARDS"
+          cat "$SEL"
+
+  hook-tests-shard:
+    needs: hook-tests-plan
+    # The matrix is never empty: the plan always emits at least shard 1/1.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.hook-tests-plan.outputs.shards) }}
+    name: hook-tests-shard ${{ matrix.index }}/${{ matrix.count }}
     # Keep the existing GNU userland assumptions stable across image migrations.
     runs-on: ubuntu-24.04
     steps:
@@ -48,17 +95,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Decide once per job which suites this PR can affect (issue #2153). Fail toward the
-      # full run: a selector that exits non-zero hands the runners ALL, never a partial list.
-      - name: Select hook test suites this PR can affect
+      # The selection is decided once, by hook-tests-plan, and passed here; shards never re-run the
+      # selector, so every shard sees the same suite list the plan counted.
+      - name: Restore the planned hook test selection
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SELECTION_B64: ${{ needs.hook-tests-plan.outputs.selection }}
         run: |
           SEL="$RUNNER_TEMP/hook-test-selection.txt"
-          if ! bash .github/scripts/select-hook-tests.sh --event "$EVENT_NAME" --base "$BASE_SHA" > "$SEL"; then
-            printf '# reason: selector exited non-zero: full run\nALL\n# end-of-selection\n' > "$SEL"
-          fi
+          printf '%s' "$SELECTION_B64" | base64 -d > "$SEL" || { echo "::error::cannot restore the planned selection" >&2; exit 1; }
           echo "HOOK_TEST_SELECTION=$SEL" >> "$GITHUB_ENV"
           cat "$SEL"
 
@@ -92,11 +136,43 @@ jobs:
           export PATH="$RUNNER_TEMP/pyyaml-venv/bin:$PATH"
           python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", f"PyYAML {yaml.__version__} on sys.path, expected 6.0.3"; print("PyYAML", yaml.__version__)'
 
-      - name: Run bash hook + script test suites (auto-discovered)
-        run: bash .github/scripts/summarize-test-run.sh "Bash test suites" .github/scripts/run-hook-tests.sh --only-file "$HOOK_TEST_SELECTION"
+      - name: Run bash hook + script test suites (auto-discovered, shard ${{ matrix.index }}/${{ matrix.count }})
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (shard ${{ matrix.index }}/${{ matrix.count }})" .github/scripts/run-hook-tests.sh --shard "${{ matrix.index }}/${{ matrix.count }}" --timing-file "$RUNNER_TEMP/hook-test-timing.tsv" --only-file "$HOOK_TEST_SELECTION"
 
-      - name: Run Python hook unit tests (auto-discovered)
+      # Advisory: the full per-suite table (every suite, not only the slowest 30) for balancing the
+      # shards (issue #2207). Collapsed, so it never buries a failing suite's output.
+      - name: Print per-suite timings (collapsed)
+        if: always()
+        run: |
+          F="$RUNNER_TEMP/hook-test-timing.tsv"
+          echo "::group::Per-suite timings, Linux shard ${{ matrix.index }}/${{ matrix.count }} (seconds, kind, path)"
+          if [ -s "$F" ]; then sort -t "$(printf '\t')" -k1,1nr "$F"; else echo "no timing table was written"; fi
+          echo "::endgroup::"
+
+      # run-python-tests.sh has no --shard, so the Python suites run once, in shard 1/n (the whole
+      # Python set, not a share of it). Every other step above runs in each shard.
+      - name: Run Python hook unit tests (auto-discovered, shard 1 only)
+        if: matrix.index == 1
         run: bash .github/scripts/summarize-test-run.sh "Python unit tests" .github/scripts/run-python-tests.sh --only-file "$HOOK_TEST_SELECTION"
+
+  # The one check branch protection requires for Linux. It reports once per PR and passes only when
+  # the plan and every shard finished with success.
+  hook-tests:
+    needs: [hook-tests-plan, hook-tests-shard]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every Linux shard to succeed
+        env:
+          PLAN_RESULT: ${{ needs.hook-tests-plan.result }}
+          SHARD_RESULT: ${{ needs.hook-tests-shard.result }}
+        run: |
+          if [ "$PLAN_RESULT" = "success" ] && [ "$SHARD_RESULT" = "success" ]; then
+            echo "All Linux hook-test shards passed."
+            exit 0
+          fi
+          echo "::error::Linux hook tests did not pass: plan=$PLAN_RESULT, shards=$SHARD_RESULT"
+          exit 1
 
   # The fleet's primary platform is macOS (state-lock.sh: no flock(1), BSD
   # userland, ~8ms forks) while the job above runs on ubuntu-latest only — so a
@@ -222,7 +298,16 @@ jobs:
           python3 -c 'import yaml; print("PyYAML available:", yaml.__version__)'
 
       - name: Run bash hook + script test suites (auto-discovered, macOS shard ${{ matrix.index }}/${{ matrix.count }})
-        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS shard ${{ matrix.index }}/${{ matrix.count }})" .github/scripts/run-hook-tests.sh --shard "${{ matrix.index }}/${{ matrix.count }}" --only-file "$HOOK_TEST_SELECTION"
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS shard ${{ matrix.index }}/${{ matrix.count }})" .github/scripts/run-hook-tests.sh --shard "${{ matrix.index }}/${{ matrix.count }}" --timing-file "$RUNNER_TEMP/hook-test-timing.tsv" --only-file "$HOOK_TEST_SELECTION"
+
+      # Advisory: the full per-suite table for balancing the shards (issue #2207). Collapsed.
+      - name: Print per-suite timings (collapsed)
+        if: always()
+        run: |
+          F="$RUNNER_TEMP/hook-test-timing.tsv"
+          echo "::group::Per-suite timings, macOS shard ${{ matrix.index }}/${{ matrix.count }} (seconds, kind, path)"
+          if [ -s "$F" ]; then sort -t "$(printf '\t')" -k1,1nr "$F"; else echo "no timing table was written"; fi
+          echo "::endgroup::"
 
   # The one check branch protection requires for macOS. It reports once per PR and passes only
   # when the plan and every shard finished with success. Cancelled, skipped and failed shards
