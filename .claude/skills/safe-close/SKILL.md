@@ -1,6 +1,6 @@
 ---
 name: safe-close
-description: Use when you want to know whether this thread can be closed without losing work or leaving something running — "safe to close?", "what's still open here". Read-only report with a verdict line, then outstanding items tagged lost, keeps running, orphaned or harmless; unverifiable means not yet. Stops and cleans up nothing.
+description: Use when you want to know whether this thread can be closed without losing work or leaving something running — "safe to close?", "what's still open here". Reports a verdict line, then outstanding items tagged lost, keeps running, orphaned or harmless; unverifiable means not yet. `--check` only looks; bare `/safe-close` also stops what the thread left running, removes finished leftovers (never anything that still holds work), re-checks, and offers to archive only if the re-check is clean.
 triggers:
   - safe to close
   - safe-close
@@ -10,7 +10,7 @@ triggers:
 argument-hint: "[--check] [--json]"
 ---
 
-Tell the user whether this thread can be closed right now and exactly what is in the way; then, if something this thread started is still running, stop it. **Steps 0–3 only look.** `/safe-close --check` (and `--json`) run only those steps: no menu, nothing stopped, no state written. Bare `/safe-close` adds Steps 4–7, which stop what is running and nothing more — no worktree, branch, claim, handoff, scratch file or session-state bookkeeping is removed, released or cleared, and the thread is not archived (a later increment owns that). The report's `not yet` for those leftovers is expected after this step.
+Tell the user whether this thread can be closed right now and exactly what is in the way; then stop what this thread left running, tidy what it left behind, and re-check. **Steps 0–3 only look.** `/safe-close --check` (and `--json`) run only those steps: no menu, nothing stopped, nothing removed, no state written. Bare `/safe-close` adds Steps 4–7 (stop what is running) and Steps 8–10 (remove finished leftovers, keep and name anything that still holds work, re-run the check, and offer to archive the thread only when that re-run is clean). Nothing is archived without the user's yes.
 
 It acts only on this thread's own things. Another thread's work, or another author's PR, is context at most: never counted, never stopped.
 
@@ -92,7 +92,7 @@ printf '%s' "$MERGED_INVENTORY_JSON" | "$STOP_SH" plan --inventory -   # stop_it
 
 The plan covers only items the inventory attributed to this thread. Items the inventory marked **unknown** are in `unknown_items[]`: list them to the user (what could not be verified and why) and **never stop them**. Sessions this thread started are separate conversations: list each by name and ask about it individually; never stop them as a group.
 
-If `menu_required` is false there is nothing to ask: the Step 3 report (verdict, every non-harmless item, the unknown list) already stands, so add nothing. No menu, no extra output.
+If `menu_required` is false there is nothing to ask: the Step 3 report (verdict, every non-harmless item, the unknown list) already stands, so add nothing. No menu, no extra output. Go straight to Step 8 only when `unknown_items[]` is also empty (nothing running, nothing unverified, so nothing to verify stopped); with an unknown item left, stop here — cleanup deletes things an unverified task might still use.
 
 ## Step 5: One confirmation menu
 
@@ -130,4 +130,36 @@ List the runtime's own tasks (the harness task list) into a file — a JSON arra
 
 Pass `--stopped-id` for **every** id you tried to stop, including harness-only tasks and chosen linked sessions (their `session_id`), and include those sessions in the runtime list file, so a survivor the registry never knew is still caught. If you could not read the runtime list, pass `--runtime-unreadable` instead; the verdict is then never clean (exit 1, `[unverified]`), and every stopped id is reported unverified, never gone. `--confirmed-gone` is only for a subagent record whose runtime id the harness list showed absent; it counts only when the runtime list was read and does not name that id. It re-runs the inventory, so the check is against current state, not what you remember doing.
 
-The first line is the result. `Nothing owned by this thread is still running.` ends the step. Otherwise it prints `Not yet` and each item still running or unverified, by name; relay those lines, keep the verdict at not yet, and offer one retry of the stop for the named items only. Never report success while one is alive. Then one closing line: what was stopped, what was parked (and that `/go-on` resumes it), what the user dropped, what is unknown, and that worktrees, branches, claims and bookkeeping are untouched.
+The first line is the result. `Nothing owned by this thread is still running.` ends the step. Otherwise it prints `Not yet` and each item still running or unverified, by name; relay those lines, keep the verdict at not yet, and offer one retry of the stop for the named items only. Never report success while one is alive. Then continue to Step 8 **only** when verify exited 0 with the clean line above as its first line (a following `N other item(s) ... are left for cleanup.` line is expected and is not a block) and every attempted stop is confirmed. Any `Not yet` line, any unverified id, or an unreadable runtime task list (`--runtime-unreadable`) means stop here: cleanup waits for a verified stop, since it deletes things a running or unverified task may still use. Say in one line what was stopped, what was parked (and that `/go-on` resumes it), what the user dropped and what is unknown.
+
+## Step 8: Plan the cleanup (bare `/safe-close` only, after a verified stop)
+
+Resolve `safe-close-clean.sh` the same way as Step 0 (missing: say so in one line and stop; never delete by hand). Re-run the inventory script for fresh state (the stop changed it) and merge your Step 2 findings as before. **Gate: clean up only if that fresh merged inventory has no `keeps_running` item and no `unknown` item in `background_tasks`, `subagents`, `ceiling`, `harness_tasks` or `linked_sessions`, and no Step 2 check is unverified.** If one does, report it by name and stop before any cleanup (a plan with an empty `ask[]` is not verification that nothing is running). Then pipe the merged inventory to the plan. Pass the session id, repo, the thread's own checkout, and the scratchpad when it has one — all required except the scratchpad (the script exits 2 without them, and never skips a scoped check silently):
+
+```bash
+CLEAN_SH=$(resolve_script safe-close-clean.sh) || { echo "ERROR: safe-close-clean.sh not found (checked all three paths) — cleanup unavailable" >&2; exit 1; }
+SCRATCH_ARGS=(); [[ -n "${SCRATCHPAD_DIR:-}" ]] && SCRATCH_ARGS=(--scratchpad "$SCRATCHPAD_DIR")
+printf '%s' "$MERGED_INVENTORY_JSON" | "$CLEAN_SH" plan --inventory - --session "$SESSION_ID" --repo "$REPO" --worktree "$PWD" ${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[@]}"}
+```
+
+The plan writes nothing. It sorts what the inventory attributed to this thread into `would_remove` (finished work, each removal done by the helper that already owns it: the finished-work sweep for worktrees and local branches, `issue-claim.sh` for claims, `handoff-state.sh` for handoffs of merged PRs, `session-state.sh` for this session's own entries, plain scratch files), `kept` (anything that still holds work — named, with a pickup note), `ask` (things that carry your own intent and cannot be shown finished) and `failed` (a read that did not work: nothing is cleaned on its say-so). A thread that only filed issues leaves nothing here; the issues are the record, so say that in one clause rather than leaving it to read as an oversight.
+
+## Step 9: One question, then apply
+
+If `ask[]` is empty, apply without asking: everything in `would_remove` is verified finished. Otherwise ask **once** with `AskUserQuestion` (recommended option first, per `ask-menu.md`; `multiSelect: true`, one option per `ask` entry, each worded from its `why`; **"Keep them all" is the recommended first option**). Pass only the ticked kinds back as `--approve <kind>` (one entry per kind; ticking it clears every record of that kind this session holds, which the option text says). If "Keep them all" is ticked, pass no `--approve` at all, even when other options are ticked too. No menu tool (headless): approve nothing.
+
+```bash
+APPLY_ARGS=(${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[@]}"})   # then append: --confirmed-gone <agent-key> ... and --approve <kind> ...
+printf '%s' "$MERGED_INVENTORY_JSON" | "$CLEAN_SH" apply --inventory - --session "$SESSION_ID" --repo "$REPO" --worktree "$PWD" ${APPLY_ARGS[@]+"${APPLY_ARGS[@]}"}
+```
+
+`--confirmed-gone` is for a subagent state record whose runtime id Step 7 saw absent from the harness's task list; without it the record is kept. Run the scratch cleanup only now, after Step 7: other agents of this session may share the scratchpad until then. Never run `git clean`, never delete a worktree, branch, claim, handoff or state entry yourself, and never force anything the report kept: the report is the whole list of what this step may touch. The report's exit status and its `removed[]` are not proof: the next step is.
+
+## Step 10: Re-run the check — the verdict comes from it
+
+Run the inventory script again (Steps 1–3, merging your Step 2 findings), fresh. **That re-run's verdict is the verdict**, never the cleanup's exit code or its `removed[]`. A `failed[]` entry, an `unknown` category, or a read that did not work can therefore never end in "safe": it ends in the re-run still saying not yet, and the report names it.
+
+- **Clean** (`Safe to close.`): one line only — what was cleaned, for example `Safe to close — cleaned 3 worktrees/branches, 1 claim, 2 handoffs.` — then offer to archive the thread with one `AskUserQuestion` (recommended: **Archive this thread**; alternative: **Leave it open**). Archive only on the user's yes, using the harness's own session-archive tool for this thread's own session (never another thread's). In a harness with no archive capability, say in the same line that it is safe to close by hand and ask nothing. Remote branches are left to the merge and to `/pm-clean`.
+- **Not clean** (`Not yet — N outstanding.`): list each remaining item as `[consequence] what it is — what it needs` (use the kept items' pickup notes: commit and push, merge the PR, resume with `/go-on`, cancel with `/leave-by cancel`), and **archive nothing**. Do not offer to archive.
+
+A second `/safe-close` on an already-clean thread finds nothing to remove, runs no sweep and changes nothing: it prints the clean line and the archive offer again.

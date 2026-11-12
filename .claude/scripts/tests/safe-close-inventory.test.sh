@@ -224,6 +224,27 @@ OUT="$(run)"
 echo '{}' > "$STATE"
 ok "an active pause marker is orphaned; a cleared one is harmless"
 
+# ---- 13g. the writers keep markers under .repos[<repo>]: those must be seen too (issue #2262) ----------
+jq -n --arg s "$SESSION" --arg r "$REPO" '{repos:{($r):{execution_pauses:{($s):{active:true}}, resumes:{($s):{at:"x"}}}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr '[.items[]|select(.category=="state_markers" and .consequence=="orphaned")]|length')" == 2 && "$(jqr .verdict)" == not_yet ]] \
+  || { echo "$OUT" >&2; fail "repo-scoped markers were not seen"; }
+jq -n --arg s "other-sess" --arg r "$REPO" '{repos:{($r):{execution_pauses:{($s):{active:true}}}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == safe ]] || fail "another session's repo-scoped marker counted against this thread"
+jq -n --arg s "$SESSION" --arg r "$REPO" '{execution_pauses:{($s):{active:false}}, repos:{($r):{execution_pauses:{($s):{active:true}}}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.category=="state_markers" and .consequence=="orphaned")]|length')" == 1 ]] \
+  || fail "a cleared legacy marker hid an active repo-scoped one"
+jq -n --arg r "$REPO" '{repos:{($r):{resumes:"oops"}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr '.categories.state_markers.status')" == unknown ]] || fail "a marker map of the wrong shape must be unknown, not an absent entry"
+jq -n --arg r "$REPO" '{repos:{($r):{leave:"armed"}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr '.categories.state_markers.status')" == unknown ]] || fail "a leave marker of the wrong shape must be unknown, not an absent entry"
+echo '{}' > "$STATE"
+ok "repo-scoped markers are seen, another session's are not counted, a cleared legacy entry does not hide an active scoped one, a wrong-shaped map is unknown"
+
 # ---- 14. usage ---------------------------------------------------------------------------------
 help_out="$("$SCRIPT" --help)"
 grep -q 'safe-close-inventory.sh' <<<"$help_out" || fail "--help missing"

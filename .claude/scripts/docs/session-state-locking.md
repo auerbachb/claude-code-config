@@ -17,6 +17,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [handoff-state.sh](../handoff-state.sh) | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
 | [issue-completion.sh](../issue-completion.sh) | Independently verify merged-issue completion and reconcile one explicitly scope-verified issue |
 | [recovery-evidence.sh](../recovery-evidence.sh) | Capture and classify raw recovery verdict evidence without turning parse/execution failure into success |
+| [safe-close-clean.sh](../safe-close-clean.sh) | Plans and applies /safe-close's cleanup from the read-only inventory's JSON: every removal except plain scratch files goes through an existing helper, work-holding things are kept and named, and it never states a verdict |
 | [safe-close-inventory.sh](../safe-close-inventory.sh) | Read-only inventory of everything a thread started or still owns, with a safe-to-close verdict; each item tagged lost / keeps_running / orphaned / harmless, unreadable categories reported unknown |
 | [safe-close-stop.sh](../safe-close-stop.sh) | Plans, parks, and verifies /safe-close's stop step from the read-only inventory's JSON; reuses /pause's resume record and registry, and never reads a stop's exit status as proof |
 | [session-state-audit.sh](../session-state-audit.sh) | Audit and guarded repair of `~/.claude/session-state.json` |
