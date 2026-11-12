@@ -76,7 +76,10 @@ The winning claim emits `PARK_GENERATION`. Carry that exact binding into wake pu
 
 ```bash
 PARK_GENERATION_SH=""
-for candidate in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" "${HOME:+$HOME/.claude/scripts/park-generation.sh}"; do
+for candidate in \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" \
+  "${HOME:+$HOME/.claude/scripts/park-generation.sh}" \
+  ".claude/scripts/park-generation.sh"; do
   if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
 done
 PARK_GENERATION=""
