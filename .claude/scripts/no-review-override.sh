@@ -38,10 +38,14 @@
 # normal reviewer path decides — an adverse bot verdict is never waived):
 #   - a non-PENDING review by a reviewer bot with commit_id == HEAD, except an
 #     APPROVED that is hollow (merge-gate's review-substance verdict) or whose
-#     submitted_at predates the HEAD commit (force-push retarget). Discounting
-#     an approval only removes a positive signal; CHANGES_REQUESTED and
-#     COMMENTED reviews on HEAD always count.
-#   - an inline comment by a reviewer bot anchored to HEAD
+#     submitted_at predates the HEAD commit (force-push retarget), and except a
+#     COMMENTED review with an empty or whitespace-only body (issue #2268: an
+#     empty-body COMMENTED review is an acknowledgement, not a verdict).
+#     Discounting an approval only removes a positive signal; CHANGES_REQUESTED
+#     and COMMENTED reviews with a body on HEAD always count.
+#   - an inline comment by a reviewer bot anchored to HEAD, except a reply in an
+#     existing thread (`in_reply_to_id` set, issue #2268: a fix acknowledgement).
+#     A new top-level inline finding still counts.
 #   - a Greptile summary naming HEAD as its last reviewed commit
 #   - a `done` row of CodeAnt's run record that names HEAD
 #   - a COMPLETED reviewer-app check-run (exact app slug) with conclusion
@@ -185,6 +189,7 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
   | [ (.reviews // [])[]?
       | select((.user.login // "") as $l | $bots | index($l))
       | select((.commit_id // "") == $h and (.state // "") != "PENDING" and (.state // "") != "DISMISSED")
+      | select((.state // "") != "COMMENTED" or ((.body // "") | test("\\S")))
       | select(
           (.state != "APPROVED")
           or ( ((.user.login) as $l | $hollow | index($l) | not)
@@ -193,6 +198,7 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
   + [ (.pr_comments // [])[]?
       | select((.user.login // "") as $l | $bots | index($l))
       | select((.commit_id // "") == $h or (.original_commit_id // "") == $h)
+      | select((.in_reply_to_id // null) == null)
       | {reviewer: .user.login, kind: "inline_comment"} ]
   + ((.issue_comments // []) | issue_comment_verdicts($h))
   | unique')
