@@ -116,8 +116,13 @@ def check(doc):
             errors.append(f"job {job_id!r} is not a mapping")
             continue
         perms = job.get("permissions")
-        if job_id != "hook-tests-macos-report" and isinstance(perms, dict) and "issues" in perms:
-            errors.append(f"job {job_id!r} grants issues: {perms['issues']!r}; only the report job may")
+        if job_id != "hook-tests-macos-report" and perms is not None:
+            # Only the report job may hold issues: write. A string shorthand (write-all, read-all)
+            # is rejected outright on any other job; a mapping may not name issues at all.
+            if not isinstance(perms, dict):
+                errors.append(f"job {job_id!r} sets permissions shorthand {perms!r}; only the report job may widen permissions")
+            elif "issues" in perms:
+                errors.append(f"job {job_id!r} grants issues: {perms['issues']!r}; only the report job may")
 
     plan = jobs.get("hook-tests-macos-plan") or {}
     if plan.get("if") != PUSH_GATE:
@@ -254,6 +259,10 @@ def shard_issues_write(d):
     d["jobs"]["hook-tests-macos-shard"]["permissions"] = {"issues": "write"}
 
 
+def shard_write_all(d):
+    d["jobs"]["hook-tests-macos-shard"]["permissions"] = "write-all"
+
+
 def drop_upload_gate(d):
     for s in d["jobs"]["hook-tests-macos-shard"]["steps"]:
         if isinstance(s, dict) and str(s.get("uses", "")).startswith("actions/upload-artifact@"):
@@ -274,6 +283,7 @@ NEGATIVES = [
     ("Linux plan gated off PRs", linux_pr_gate),
     ("expression interpolated into report script", report_interpolates),
     ("shard granted issues: write", shard_issues_write),
+    ("shard granted write-all", shard_write_all),
     ("upload step not gated on failure", drop_upload_gate),
     ("aggregate fails on a pull_request", aggregate_fails_on_pr),
     ("report gate with an unconditional || true", report_gate_or_true),
