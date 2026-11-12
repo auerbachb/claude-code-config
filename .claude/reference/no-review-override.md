@@ -68,7 +68,8 @@ Rules:
 - **Old HEAD ignored.** A request posted before the push anchor belongs to an earlier commit and never counts.
 - **Edits count at the edit.** A request is timed at the later of `created_at` and `updated_at`, so an edit that adds a trigger line can only start the window later, never earlier.
 - **Author only.** A request by anyone other than the PR author is ignored. So is trigger text inside a bot comment, and trigger text inside prose or a quote (only a whole line counts). The harness's own trigger scripts post as the author, so their requests count.
-- **Fail closed.** An unreadable comment list, an unknown PR author, or a malformed `created_at` on a matching request makes the override ineligible (reason `anchor_unavailable` or `anchor_malformed`).
+- **Read comments at decision time.** The request anchor uses a fresh paginated read after the HEAD-anchor reads. The original gate snapshot still determines normal verdict coverage. A fresh exact-HEAD verdict also holds the waiver. The next evaluation can observe requests or verdicts posted after the fresh read.
+- **Fail closed.** An unreadable comment page, comment author or body, unknown PR author, or malformed timestamp on a matching request makes the override ineligible (`anchor_unavailable` or `anchor_malformed`).
 
 A request does not make a review happen. Whether or when reviews are requested is a separate concern (increment 2 of #2194). A refused review (rate or usage limit) is still "no verdict", and the clock still runs from the request.
 
