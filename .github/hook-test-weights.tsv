@@ -1,0 +1,73 @@
+# Hook-test suite weights (issue #2207). Read by .github/scripts/run-hook-tests.sh --shard i/n,
+# which splits the pool and the serial group by weight: suites in descending weight go greedily
+# to the currently lightest shard.
+#
+# Format: one row per suite, <seconds><TAB><path>, sorted with LC_ALL=C by path. Seconds are
+# macOS wall seconds. A malformed row is ignored with one warning. A suite with no row gets the
+# median row weight of this file (1 when the file has no rows).
+#
+# Source: full CI run 43120954884 (main, 2026-11-11), the slowest 30 suites of each macOS shard
+# (hook-tests-macos-shard 1/2 and 2/2 job logs). Those 60 suites carry most of the measured time.
+#
+# Regenerate: run a full suite with --timing-file, which writes every suite's row, then rewrite
+# the rows as <seconds><TAB><path> and sort them with LC_ALL=C sort -t TAB -k2,2.
+30	.claude/hooks/tests/spend-telemetry-tracker.test.sh
+56	.claude/scripts/tests/active-work-cap.test.sh
+264	.claude/scripts/tests/ai-quotas-setup.test.sh
+186	.claude/scripts/tests/ai-quotas.test.sh
+38	.claude/scripts/tests/babysit-generation-persist.test.sh
+175	.claude/scripts/tests/backfill-review.test.sh
+42	.claude/scripts/tests/bounded-run.test.sh
+107	.claude/scripts/tests/candidate-ownership.test.sh
+95	.claude/scripts/tests/checkpoint-handoff.test.sh
+144	.claude/scripts/tests/churn-hotspots.test.sh
+45	.claude/scripts/tests/claude-config-sync.test.sh
+32	.claude/scripts/tests/config-sync-tail.test.sh
+38	.claude/scripts/tests/estimate-log-locks-bash.test.sh
+20	.claude/scripts/tests/estimate-log.test.sh
+37	.claude/scripts/tests/help-output.test.sh
+60	.claude/scripts/tests/issue-claim.test.sh
+42	.claude/scripts/tests/issue-maker-log-scoping.test.sh
+73	.claude/scripts/tests/local-review.test.sh
+75	.claude/scripts/tests/maybe-trigger-tier-triggers.test.sh
+96	.claude/scripts/tests/merge-gate-no-review-override.test.sh
+30	.claude/scripts/tests/merge-gate-required-cancelled.test.sh
+54	.claude/scripts/tests/merge-gate-required-contexts.test.sh
+66	.claude/scripts/tests/merge-gate-review-substance.test.sh
+66	.claude/scripts/tests/merge-gate-review-tier.test.sh
+111	.claude/scripts/tests/park-retire-guard.test.sh
+33	.claude/scripts/tests/park-wake-publish.test.sh
+78	.claude/scripts/tests/pm-day-horizon.test.sh
+29	.claude/scripts/tests/pm-priority.test.sh
+19	.claude/scripts/tests/pm-run-receipt.test.sh
+215	.claude/scripts/tests/pmm-pre-dispatch.test.sh
+36	.claude/scripts/tests/polling-state-gate-multirepo.test.sh
+112	.claude/scripts/tests/polling-state-gate.test.sh
+124	.claude/scripts/tests/portable-handoff-lint.test.sh
+23	.claude/scripts/tests/pr-preflight.test.sh
+43	.claude/scripts/tests/prompt-reservation.test.sh
+22	.claude/scripts/tests/quotas-cheapest-next.test.sh
+44	.claude/scripts/tests/repo-root.test.sh
+27	.claude/scripts/tests/review-tier.test.sh
+63	.claude/scripts/tests/review-triggers-allowed.test.sh
+45	.claude/scripts/tests/session-scheduling-reconcile.test.sh
+102	.claude/scripts/tests/stale-cleanup-finished.test.sh
+180	.claude/scripts/tests/stale-cleanup.test.sh
+44	.claude/scripts/tests/subagent-limit-park.test.sh
+118	.claude/scripts/tests/table-freshness.test.sh
+38	.claude/scripts/tests/usage-horizon.test.sh
+44	.claude/scripts/tests/workspace-artifacts.test.sh
+37	.claude/scripts/tests/workspace-sweep.test.sh
+34	.claude/scripts/tests/worktree-isolation-shapes.test.sh
+23	.github/scripts/tests/chip-model-guard-lint.test.sh
+46	.github/scripts/tests/merge-authority-lint.test.sh
+170	.github/scripts/tests/rule-lint-ratchet.test.sh
+188	.github/scripts/tests/rule-lint.test.sh
+42	.github/scripts/tests/run-hook-tests-parallel.test.sh
+145	.github/scripts/tests/select-hook-sweep.test.sh
+24	.github/scripts/tests/select-hook-tests.test.sh
+52	.github/scripts/tests/skill-portability-lint.test.sh
+24	desk/tests/capture-offline.test.sh
+43	desk/tests/checkin-offline.test.sh
+68	desk/tests/desk-offline.test.sh
+39	desk/tests/plan-offline.test.sh

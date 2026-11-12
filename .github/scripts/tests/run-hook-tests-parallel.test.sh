@@ -308,6 +308,29 @@ if [ -n "$LOGFILE" ] && grep -Fq '[TIMING] wall=' "$LOGFILE"; then ok "timing: a
 JOUT="$(RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 --json 2>/dev/null)"
 if printf '%s' "$JOUT" | jq -e '.ok == true' >/dev/null 2>&1; then ok "timing: --json stdout remains pure JSON"; else bad "timing: --json stdout polluted"; fi
 
+# --timing-file (issue #2207): one "<seconds>\t<pool|serial>\t<path>" row per suite, all 7 suites,
+# written beside the aggregate log. The rows must name exactly the suites that ran.
+TF="$FIX/timing.tsv"
+: > "$RAN_RECORD"
+RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 --timing-file "$TF" >/dev/null 2>&1; RCTF=$?
+check_eq "0" "$RCTF" "timing-file: a green run still exits 0"
+check_eq "7" "$(wc -l < "$TF" | tr -d ' ')" "timing-file: one row per suite (7)"
+check_eq "7" "$(awk -F'\t' 'NF == 3 && $1 ~ /^[0-9]+$/ && $2 == "pool" { n++ } END { print n + 0 }' "$TF")" "timing-file: every row is seconds, kind and path"
+check_eq "$(sort "$RAN_RECORD" | tr -d '\r')" "$(awk -F'\t' '{ print $3 }' "$TF" | LC_ALL=C sort)" "timing-file: the rows name the suites that ran"
+
+# Advisory: an unwritable --timing-file never changes the exit status.
+RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 --timing-file "$FIX/no-such-dir/t.tsv" >/dev/null 2>"$FIX/tf.err"; RCBAD=$?
+check_eq "0" "$RCBAD" "timing-file: an unwritable path keeps exit 0"
+if grep -Fq 'cannot write --timing-file' "$FIX/tf.err"; then ok "timing-file: an unwritable path is reported as a warning"; else bad "timing-file: no warning for an unwritable path"; fi
+
+# --json with --timing-file: stdout is still the single JSON object.
+JOUT2="$(RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --jobs 2 --json --timing-file "$TF" 2>/dev/null)"
+if printf '%s' "$JOUT2" | jq -e '.ok == true' >/dev/null 2>&1; then ok "timing-file: --json stdout stays pure JSON"; else bad "timing-file: --json stdout polluted"; fi
+
+# An empty path is a usage error.
+RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --timing-file "" >/dev/null 2>&1; RCE=$?
+check_eq "2" "$RCE" "timing-file: an empty path is a usage error (exit 2)"
+
 echo ""
 echo "run-hook-tests-parallel: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

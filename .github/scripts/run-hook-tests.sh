@@ -30,13 +30,18 @@
 #   bash .github/scripts/run-hook-tests.sh --only-file <file>   # run only the selected suites
 #   bash .github/scripts/run-hook-tests.sh --jobs <n>           # concurrent suites (default: CPU count)
 #   bash .github/scripts/run-hook-tests.sh --shard <i>/<n>      # run only shard i of n (issue #2207)
+#   bash .github/scripts/run-hook-tests.sh --timing-file <path> # also write per-suite seconds as TSV (advisory)
 #   bash .github/scripts/run-hook-tests.sh --list               # print the suites it would run, no run
 #   bash .github/scripts/run-hook-tests.sh --help
 #
-# --shard i/n (issue #2207): the pool and the serial group (after --only-file) are each sorted with
-# LC_ALL=C, and shard i runs every n-th entry of each list starting at position i. The n shards
-# together run each selected suite exactly once, and each shard gets about its share of the serial
-# group. --shard 1/1 is the default.
+# --shard i/n (issue #2207): the pool and the serial group (after --only-file) are each split by
+# weight: suites in descending weight go greedily to the currently lightest shard. Weights come
+# from .github/hook-test-weights.tsv (override: HOOK_TEST_WEIGHTS_FILE; an absent or empty file
+# gives every suite the same default weight). The n shards together run each selected suite
+# exactly once. --shard 1/1 is the default and keeps discovery order.
+#
+# --timing-file <path> (issue #2207): writes one <seconds><TAB><pool|serial><TAB><path> row per
+# suite. Advisory: it never changes the exit status and is not written by --list.
 #
 # --only-file <file> (issue #2153): the file is the output of
 # .github/scripts/select-hook-tests.sh. A line `ALL` runs every suite, exactly as with no
@@ -161,10 +166,16 @@ JOBS_GIVEN=0        # distinguishes "--jobs given (maybe empty)" from "not given
 SHARD_ARG=""
 SHARD_GIVEN=0       # distinguishes "--shard given (maybe empty)" from "not given"
 LIST_ONLY=0
+TIMING_FILE=""      # --timing-file <path>: advisory per-suite TSV (issue #2207)
+TIMING_FILE_GIVEN=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
     --list) LIST_ONLY=1; shift ;;
+    --timing-file)
+      [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --timing-file needs a path" >&2; exit 2; }
+      TIMING_FILE="$2"; TIMING_FILE_GIVEN=1; shift 2
+      ;;
     --shard)
       [ "$#" -ge 2 ] || { echo "::error::run-hook-tests.sh: --shard needs i/n" >&2; exit 2; }
       SHARD_ARG="$2"; SHARD_GIVEN=1; shift 2
@@ -188,6 +199,12 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# An explicitly empty --timing-file path is a usage error, never a silent no-export.
+if [ "$TIMING_FILE_GIVEN" -eq 1 ] && [ -z "$TIMING_FILE" ]; then
+  echo "::error::run-hook-tests.sh: --timing-file was given an empty path" >&2
+  exit 2
+fi
 
 # Concurrency and per-suite timeout. A positive integer or a usage error: a typo must never
 # silently fall back to a different concurrency or an unbounded wait.
@@ -343,23 +360,71 @@ for t in .claude/hooks/tests/*.test.sh \
     POOL_SEL="${POOL_SEL}${t}"$'\n'
   fi
 done
-# Sharded runs split the pool and the serial group SEPARATELY: each list is sorted in a
-# locale-independent order, then shard i takes every n-th entry from it. Splitting by kind keeps
-# both shards at about half of the serial group, which runs one suite at a time, so neither shard
-# inherits the whole serial tail. Shard 1/1 keeps discovery order and is unchanged.
-shard_slice() {
-  local k=0 t
-  while IFS= read -r t; do
-    [ -n "$t" ] || continue
-    if [ $(( k % SHARD_N )) -eq $(( SHARD_I - 1 )) ]; then printf '%s\n' "$t"; fi
-    k=$((k + 1))
-  done
+# Sharded runs split the pool and the serial group SEPARATELY, each by weight (issue #2207
+# follow-up). Suites are taken in descending weight (ties by LC_ALL=C path order) and each goes to
+# the currently lightest shard (ties to the lowest index). Weights come from WEIGHTS_FILE, one
+# "<seconds><TAB><path>" row per suite; a suite missing from it gets the median weight of the file
+# (1 when the file has no rows). The assignment is a pure function of (list, weights file), so every
+# shard computes the same partition. Shard 1/1 keeps discovery order and is unchanged.
+WEIGHTS_FILE="${HOOK_TEST_WEIGHTS_FILE-.github/hook-test-weights.tsv}"
+
+# weighted_slice <shard> <count> <quiet>: reads the sorted suite list on stdin, prints the paths
+# assigned to <shard>, sorted with LC_ALL=C. A malformed or repeated weights row is ignored; the
+# warning goes to stderr once per run (only the pool call, quiet=0, prints it). Exits non-zero (and
+# prints nothing) if the assignment loses a suite.
+weighted_slice() {
+  LC_ALL=C awk -v SHARD="$1" -v NSH="$2" -v QUIET="$3" -v WFILE="$WEIGHTS_FILE" '
+    function before(a, b) { return WT[a] > WT[b] || (WT[a] == WT[b] && P[a] < P[b]) }
+    BEGIN {
+      nw = 0; bad = 0
+      while ((getline line < WFILE) > 0) {
+        if (line ~ /^#/ || line ~ /^[ \t]*$/) continue
+        nf = split(line, f, "\t")
+        if (nf != 2 || f[1] !~ /^[0-9]+(\.[0-9]+)?$/ || f[2] == "" || (f[2] in W)) { bad++; continue }
+        W[f[2]] = f[1] + 0
+        nw++; V[nw] = f[1] + 0
+      }
+      close(WFILE)
+      if (bad > 0 && QUIET + 0 == 0) printf "run-hook-tests.sh: ignored %d malformed or repeated row(s) in %s\n", bad, WFILE > "/dev/stderr"
+      for (i = 2; i <= nw; i++) {
+        v = V[i]; j = i - 1
+        while (j >= 1 && V[j] > v) { V[j + 1] = V[j]; j-- }
+        V[j + 1] = v
+      }
+      if (nw == 0) def = 1
+      else if (nw % 2 == 1) def = V[(nw + 1) / 2]
+      else def = (V[nw / 2] + V[nw / 2 + 1]) / 2
+      nl = 0
+    }
+    $0 != "" { nl++; P[nl] = $0; WT[nl] = ($0 in W) ? W[$0] : def }
+    END {
+      for (i = 1; i <= nl; i++) ORD[i] = i
+      for (i = 2; i <= nl; i++) {
+        x = ORD[i]; j = i - 1
+        while (j >= 1 && before(x, ORD[j])) { ORD[j + 1] = ORD[j]; j-- }
+        ORD[j + 1] = x
+      }
+      for (s = 1; s <= NSH; s++) LOAD[s] = 0
+      for (i = 1; i <= nl; i++) {
+        x = ORD[i]; best = 1
+        for (s = 2; s <= NSH; s++) if (LOAD[s] < LOAD[best]) best = s
+        LOAD[best] += (WT[x] < 1 ? 1 : WT[x]); OWN[x] = best
+      }
+      lost = 0
+      for (i = 1; i <= nl; i++) if (!(i in OWN)) lost++
+      if (lost > 0) { printf "run-hook-tests.sh: weighted split lost %d suite(s); refusing a partial shard\n", lost > "/dev/stderr"; exit 2 }
+      for (i = 1; i <= nl; i++) if (OWN[i] == SHARD + 0) print P[i]
+    }' | LC_ALL=C sort
 }
 if [ "$SHARD_N" -gt 1 ]; then
   # Fail closed: a sort that fails or drops lines would leave this shard with a short list, and a
   # runner that skipped suites would still exit 0. Sort each list on its own, check the status
-  # and the line count against the unsorted list, and only then slice.
+  # and the line count against the unsorted list, and only then assign.
   count_lines() { printf '%s\n' "$1" | grep -c . || true; }
+  if [ -e "$WEIGHTS_FILE" ] && { [ ! -f "$WEIGHTS_FILE" ] || [ ! -r "$WEIGHTS_FILE" ]; }; then
+    echo "run-hook-tests: weights file is not a readable regular file: $WEIGHTS_FILE" >&2
+    exit 2
+  fi
   POOL_SORTED="$(printf '%s' "$POOL_SEL" | LC_ALL=C sort)" \
     || { echo "run-hook-tests: cannot sort the pool list for --shard" >&2; exit 2; }
   SERIAL_SORTED="$(printf '%s' "$SERIAL_SEL" | LC_ALL=C sort)" \
@@ -369,7 +434,11 @@ if [ "$SHARD_N" -gt 1 ]; then
     echo "run-hook-tests: sorted suite list lost entries; refusing to run a partial shard" >&2
     exit 2
   fi
-  SEL_LIST="$(printf '%s\n' "$POOL_SORTED" | shard_slice)"$'\n'"$(printf '%s\n' "$SERIAL_SORTED" | shard_slice)"$'\n'
+  POOL_SHARD="$(printf '%s\n' "$POOL_SORTED" | weighted_slice "$SHARD_I" "$SHARD_N" 0)" \
+    || { echo "run-hook-tests: cannot assign the pool list to shard $SHARD_I/$SHARD_N" >&2; exit 2; }
+  SERIAL_SHARD="$(printf '%s\n' "$SERIAL_SORTED" | weighted_slice "$SHARD_I" "$SHARD_N" 1)" \
+    || { echo "run-hook-tests: cannot assign the serial list to shard $SHARD_I/$SHARD_N" >&2; exit 2; }
+  SEL_LIST="$POOL_SHARD"$'\n'"$SERIAL_SHARD"$'\n'
 fi
 while IFS= read -r t; do
   [ -n "$t" ] || continue
@@ -606,6 +675,16 @@ if [ "$total" -gt 0 ]; then
     | awk -F'\t' '{ printf "  %5ss  %-6s  %s\n", $1, $2, $3 }')"
   say "$timing_report"
   printf '%s\n' "$timing_report" >> "$LOG"
+  # Every suite's row, not only the slowest 30, so one full run yields the whole table (issue #2207).
+  { printf '[TIMING] all %s suites, seconds<TAB>kind<TAB>path:\n' "$total"; cat "$TIMING_TSV"; } >> "$LOG"
+fi
+
+# --timing-file <path> (issue #2207): the same per-suite rows as TSV, <seconds>\t<pool|serial>\t<path>,
+# in discovery order. Advisory: a write failure is a warning and never changes the exit status.
+if [ "$TIMING_FILE_GIVEN" -eq 1 ]; then
+  if [ -f "$WORK/timing.tsv" ]; then TIMING_SRC="$WORK/timing.tsv"; else TIMING_SRC="/dev/null"; fi
+  cp -- "$TIMING_SRC" "$TIMING_FILE" 2>/dev/null \
+    || echo "::warning::run-hook-tests.sh: cannot write --timing-file: $TIMING_FILE" >&2
 fi
 
 if [ "$SELECT_MODE" -eq 0 ]; then
