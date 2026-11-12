@@ -3,26 +3,58 @@ Route `resume:load`. Load config and persisted work for a resume. Continue to re
 <!-- pm-routing:end -->
 ### 1A.1: Load pm-config.md
 
+<!-- test-anchor: pm-resume-load-config -->
 ```bash
-# Probe the config file via the shared parser. IMPORTANT: run the probe as a
-# direct call first, not via `mapfile < <(...)`. With mapfile, `$?` captures
-# mapfile's exit code (always 0 on success) — NOT the script's — so a probe
-# like `mapfile ...; LIST_RC=$?` would silently never see the rc=2
-# (config-missing) signal.
-"$PM_CONFIG_GET" --list >/dev/null 2>&1
-LIST_RC=$?
+pm_resume_config() (
+  umask 077
+  local source_config=.claude/pm-config.md config_snapshot
+  local list_rc=0 section_rc=0 section_names section_name section_body config_body=""
+  if [ -z "${PM_CONFIG_GET:-}" ]; then
+    printf '%s\n' 'RESUME_CONFIG=defaults' 'LIST_RC=1'
+    return
+  fi
+  if [ ! -e "$source_config" ] && [ ! -L "$source_config" ]; then
+    printf '%s\n' 'RESUME_CONFIG=missing' 'LIST_RC=2'
+    return
+  fi
+  if [ ! -f "$source_config" ] || ! config_snapshot=$(mktemp "${TMPDIR:-/tmp}/pm-resume-config.XXXXXX"); then
+    printf '%s\n' 'RESUME_CONFIG=unreadable' 'LIST_RC=2'
+    return
+  fi
+  trap 'rm -f "$config_snapshot"' EXIT
+  # A copy that spans an in-place edit can contain more than one version.
+  if ! cat "$source_config" > "$config_snapshot" || ! cmp -s "$source_config" "$config_snapshot"; then
+    printf '%s\n' 'RESUME_CONFIG=unreadable' 'LIST_RC=2'
+    return
+  fi
+
+  section_names=$("$PM_CONFIG_GET" --list --file "$config_snapshot" 2>/dev/null) || list_rc=$?
+  if [ "$list_rc" -eq 0 ]; then
+    while IFS= read -r section_name; do
+      [ -n "$section_name" ] || continue
+      section_rc=0
+      section_body=$("$PM_CONFIG_GET" --section "$section_name" --file "$config_snapshot" 2>/dev/null) ||
+        section_rc=$?
+      case "$section_rc" in
+        0|1) printf -v config_body '%s## %s\n%s\n' "$config_body" "$section_name" "$section_body" ;;
+        *) list_rc="$section_rc"; break ;;
+      esac
+    done <<< "$section_names"
+  fi
+  case "$list_rc" in
+    0) printf 'RESUME_CONFIG=ready\nLIST_RC=0\n%s' "$config_body" ;;
+    1) printf '%s\n' 'RESUME_CONFIG=empty' 'LIST_RC=1' ;;
+    *) printf 'RESUME_CONFIG=failed\nLIST_RC=%s\n' "$list_rc" ;;
+  esac
+)
+pm_resume_config
 ```
 
-- If `LIST_RC == 2`: tell the user to run `/pm-handoff` first to bootstrap the config, mark `1A failed (resume config unavailable)`, and finish the invocation.
-- Otherwise: enumerate sections and iterate for bodies:
-
-  ```bash
-  mapfile -t SECTIONS < <("$PM_CONFIG_GET" --list 2>/dev/null)
-  for name in "${SECTIONS[@]}"; do
-    body="$("$PM_CONFIG_GET" --section "$name" 2>/dev/null)"
-    # store (name, body) — same loop as `/pm-handoff` Step 3
-  done
-  ```
+Continue with defaults on `defaults` or with no section bodies on `empty`.
+On `missing`, tell the user to run `/pm-handoff` to bootstrap the config
+and finish this resume as config unavailable. On `unreadable` or `failed`,
+report the read failure and stop before using any section. The list and
+all section lookups use one private snapshot whose bytes matched a second read before parsing.
 
 ### 1A.2: Load in-flight state
 
