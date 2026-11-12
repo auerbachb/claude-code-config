@@ -248,9 +248,13 @@ scan_records() { # category jq-path label consequence-for-this
 scan_records subagents '.active_agents' "subagent" keeps_running
 for qpath in '.pipelines' '.queued_chain' '.subagent_queue'; do scan_records queued_work "$qpath" "queued/pipeline entry" lost; done
 
-mark_session() { # category jq-path label  — per-session marker maps
+mark_one() { # category jq-path label  — one per-session marker map
   local cat="$1" path="$2" label="$3" raw
   if ! raw="$(ss_get "$path")"; then cat_unknown "$cat" "session-state $path unreadable"; return; fi
+  # A marker map is an object or absent; any other JSON shape cannot be read as "no entry".
+  if ! jq -e 'type == "object" or type == "null"' >/dev/null 2>&1 <<<"$raw"; then
+    cat_unknown "$cat" "session-state $path has an unexpected shape"; return
+  fi
   if [[ -z "$SESSION_ID" ]]; then
     if jq -e 'type=="object" and length>0' >/dev/null <<<"$raw"; then
       cat_unknown "$cat" "no session id: cannot tell which $path markers are this thread's"
@@ -269,23 +273,34 @@ mark_session() { # category jq-path label  — per-session marker maps
   fi
   cat_ok "$cat"
 }
+# The writers (/pause, /go-on, execution-pause.sh) keep these maps under .repos[<repo>]; the top-level
+# path is the legacy layout. Each is judged on its own, so an active entry in either stays active even
+# when the other holds a cleared one (issue #2262).
+mark_session() {
+  mark_one "$1" "$2" "$3"
+  [[ -n "$REPO" ]] && mark_one "$1" ".repos[\"$REPO\"]$2" "$3"
+}
 mark_session state_markers '.execution_pauses' "launch-pause gate"
 mark_session state_markers '.pauses' "pause/park"
 mark_session state_markers '.resumes' "resume"
-if raw="$(ss_get '.leave')"; then
-  if jq -e 'type=="object" and (.active == true)' >/dev/null <<<"$raw"; then
-    lsid="$(jq -r '(.session_id // .session // "")' <<<"$raw")"
-    if [[ -z "$lsid" ]]; then
-      cat_unknown state_markers "an armed repo-scoped leave marker names no session, so it cannot be attributed to this thread"
-    elif [[ "$lsid" == "$SESSION_ID" ]]; then
-      add_item state_markers ".leave" "leave-by marker is armed for this session" orphaned "the wind-down monitor dies with the thread" '{"kind":"state_marker","path":".leave"}'
-    else
-      add_excluded state_markers ".leave" "leave-by marker" "armed for another session"
+for lpath in '.leave' ".repos[\"$REPO\"].leave"; do
+  [[ "$lpath" == .repos* && -z "$REPO" ]] && continue
+  if raw="$(ss_get "$lpath")"; then
+    if jq -e 'type=="object" and (.active == true)' >/dev/null <<<"$raw"; then
+      lsid="$(jq -r '(.session_id // .session // "")' <<<"$raw")"
+      if [[ -z "$lsid" ]]; then
+        cat_unknown state_markers "an armed repo-scoped leave marker names no session, so it cannot be attributed to this thread"
+      elif [[ "$lsid" == "$SESSION_ID" ]]; then
+        add_item state_markers "$lpath" "leave-by marker is armed for this session" orphaned "the wind-down monitor dies with the thread" \
+          "$(jq -n --arg p "$lpath" '{kind:"state_marker",path:$p}')"
+      else
+        add_excluded state_markers "$lpath" "leave-by marker" "armed for another session"
+      fi
     fi
+  else
+    cat_unknown state_markers "session-state $lpath unreadable"
   fi
-else
-  cat_unknown state_markers "session-state .leave unreadable"
-fi
+done
 cat_ok state_markers
 
 # ---- 5. bgwork ceiling / watchers ----------------------------------------------
