@@ -160,7 +160,7 @@ REVIEW_NOW=$(jq -cn --arg t "$(iso $((NOW - 60)))" --arg c "$OTHERSHA" \
 out=$(run_helper "$(payload "[]" | jq -c --argjson r "$REVIEW_NOW" '.reviews = $r')")
 expect_eq "completed CodeRabbit review after its limit record: skip not applied" "$(jq -r .applied <<<"$out")" "false"
 expect_eq "completed CodeRabbit review after its limit record: record cleared" \
-  "$(jq -r '.review_availability.coderabbit' "$STATE_FILE")" "null"
+  "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "null"
 expect_eq "completed CodeRabbit review: the other reviewer's record is kept" \
   "$(jq -r '.review_availability.codeant.next_available_epoch != null' "$STATE_FILE")" "true"
 
@@ -178,7 +178,7 @@ VERDICT_REVIEWS=$(jq -cn --arg t "$(iso $((NOW - 60)))" --arg h "$HEADSHA" \
   '[{user:{login:"coderabbitai[bot]"}, state:"APPROVED", commit_id:$h, submitted_at:$t, body:"LGTM"}]')
 out=$(run_helper "$(payload "[]" | jq -c --argjson r "$VERDICT_REVIEWS" '.reviews = $r')")
 expect_eq "verdict on HEAD: the answering reviewer's stale record is cleared" \
-  "$(jq -r '.review_availability.coderabbit' "$STATE_FILE")" "null"
+  "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "null"
 expect_eq "verdict on HEAD: the reason is the verdict, not a skip" "$(jq -r .reason <<<"$out")" "verdict_on_head"
 
 echo

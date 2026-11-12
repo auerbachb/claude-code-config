@@ -146,8 +146,13 @@ cmd_record() {
     for attempt in 1 2 3 4 5; do
       old="$(state_get ".review_availability.$key" "")" || die 5 "could not read the existing $key record — nothing written"
       # A newer statement already on file (another PR, same account) outranks this notice.
+      # A tombstone left by observe (the reviewer answered after this notice) keeps a notice no
+      # newer than the one it cleared from being written again on the next run.
       keep="$(jq -rn --argjson o "$old" --argjson n "$new" --argjson u "$unr" '
-        if $n == null then
+        if ($o | type) == "object" and (($o.cleared_notice_epoch | type) == "number")
+           and (if $n == null then $u <= $o.cleared_notice_epoch
+                else $n.notice_epoch <= $o.cleared_notice_epoch end) then "same"
+        elif $n == null then
           (if ($o | type) != "object" then "same"
            elif (($o.notice_epoch | type) == "number") and ($o.notice_epoch > $u) then "newer"
            else "write" end)
@@ -293,7 +298,7 @@ cmd_check_skip() {
 # and the stale wait must not keep blocking a request or a green-HEAD override. Only a
 # review object is evidence here: a notice edited in place is not (a known residual).
 cmd_observe() {
-  local repo="" reviews recs cleared="" key login notice rec read_epoch answered
+  local repo="" reviews recs cleared="" key login notice rec read_epoch answered tomb
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) [[ $# -ge 2 ]] || die 2 "--repo needs a value"; repo="$2"; shift 2 ;;
@@ -333,8 +338,14 @@ cmd_observe() {
                         or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not))) ]
         | length > 0' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
       if [[ "$answered" != true ]]; then outcome="kept"; break; fi
+      # Clear to a tombstone, not null: record re-reads every notice still in the PR on each
+      # run, and a null slot would let it rewrite this already-answered notice with a fresh
+      # read time, which observe could then never clear again.
+      tomb="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{cleared_notice_epoch: .notice_epoch, cleared_at: $at, next_available: null}' <<<"$rec")" \
+        || die 4 "could not build the $key tombstone — nothing cleared"
       rc=0
-      "$STATE" --raw-path --cas ".review_availability.$key=null" --expect "$rec" >/dev/null 2>&1 || rc=$?
+      "$STATE" --raw-path --cas ".review_availability.$key=$tomb" --expect "$rec" >/dev/null 2>&1 || rc=$?
       if (( rc == 0 )); then outcome="cleared"; break; fi
       (( rc == 7 )) || die 5 "could not clear the $key availability record"
     done

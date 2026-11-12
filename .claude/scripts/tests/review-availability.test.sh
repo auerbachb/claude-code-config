@@ -193,9 +193,31 @@ approved_now=$(jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"coderabbita
 out=$("$AV" observe --repo o/r <<<"$approved_now")
 expect_eq "observe: CodeRabbit APPROVED after read time clears its record" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
 expect_eq "observe: the other reviver's record is kept" "$(jq -r '.review_availability.codeant.next_available_epoch != null' "$STATE_FILE")" "true"
-expect_eq "observe: cleared record reads as absent" "$(jq -r '.review_availability.coderabbit' "$STATE_FILE")" "null"
+expect_eq "observe: cleared record reads as absent (a tombstone with no next-available time)" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "null"
+expect_eq "observe: the tombstone names the notice it cleared" "$(jq -r '.review_availability.coderabbit.cleared_notice_epoch | type' "$STATE_FILE")" "number"
 dec=$("$AV" decide --window-s "$WIN" --now "$NOW" --repo o/r)
 expect_eq "observe: after a clear the skip no longer holds" "$(jq -r '.skip' <<<"$dec")" "false"
+
+# A clear survives the next record run, which re-reads the same notice still in the PR.
+# Without the tombstone, record would rewrite it with a fresh read time and the skip would
+# return while CodeRabbit is answering (#2263 review).
+rm -f "$STATE_FILE"
+"$AV" record --repo o/r --pr 7 < "$TMP/banner.json" >/dev/null
+jq --argjson d "$(av_record $((NOW + 1500)) $NOW)" '.review_availability.codeant = $d' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+later=$(jq -cn --arg t "$(iso $(( $(date -u +%s) + 120 )))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",submitted_at:$t,body:"ok"}]')
+out=$("$AV" observe --repo o/r <<<"$later")
+expect_eq "observe then record: the answered reviewer is cleared" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+"$AV" record --repo o/r --pr 7 < "$TMP/banner.json" >/dev/null
+expect_eq "observe then record: the same old notice is not written again" \
+  "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "null"
+dec=$("$AV" decide --window-s "$WIN" --now "$NOW" --repo o/r)
+expect_eq "observe then record: the skip stays off" "$(jq -r '.skip' <<<"$dec")" "false"
+T2=$(iso $((NOW + 30)))
+jq -cn --arg t "$T2" '[{user:{login:"coderabbitai[bot]"},
+  body:"**Review limit reached**\n**Next review available in:** **20 minutes**", created_at:$t, updated_at:$t}]' > "$TMP/banner-newer.json"
+"$AV" record --repo o/r --pr 7 < "$TMP/banner-newer.json" >/dev/null
+expect_eq "a newer notice after the clear is recorded again" \
+  "$(jq -r '.review_availability.coderabbit.next_available_epoch | type' "$STATE_FILE")" "number"
 
 state_with_av "{\"coderabbit\":$base_cr,\"codeant\":$base_cd}"
 banner_now=$(jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"coderabbitai[bot]"},state:"COMMENTED",submitted_at:$t,body:"Review limit reached. Next review available in 20 minutes."}]')
