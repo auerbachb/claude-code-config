@@ -3,7 +3,7 @@
 `workspace-sweep.sh` is a cadence adapter around the merged Issue #1961
 `stale-cleanup.sh --apply-finished --root DIR --json` contract. It never calls
 plain `--apply`, age cleanup, remote branch deletion, or `git clean`. The helper
-owns authorship, merged/closed PR, pushed/clean state, environment files, locks,
+owns authorship, merged PR (a PR closed without merging is kept as `closed_unmerged_pr`; `/pm-clean` lists it for confirmation, Issue #2281), pushed/clean state, environment files, locks,
 caller protection and live-session evidence. Unknown liveness retains a tree.
 Managed Codex/Cursor worktrees and unbound desktop sessions remain protected.
 Detached HEAD worktrees remain protected. The artifact pass below handles

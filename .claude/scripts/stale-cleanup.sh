@@ -19,7 +19,8 @@
 #        whose `.git` gitdir target is gone: the inverse of class 4, and
 #        REPORT-ONLY unless --remove-orphaned-checkouts is passed (issue #1417).
 #
-#     6. Finished worktrees: same-repo, owner-authored MERGED/CLOSED PR and
+#     6. Finished worktrees: same-repo, owner-authored MERGED PR (a PR closed
+#        without merging is kept as closed_unmerged_pr, never auto-removed) and
 #        verified clean/pushed/unlocked/inactive state, independent of age.
 #        Unknown metadata or session liveness is never deletion permission.
 #
@@ -327,7 +328,7 @@
 #              Also accepts --root=<path>. An empty or flag-like value (e.g.
 #              `--root --json`) is a usage error (exit 3).
 #
-#   stale-cleanup.sh --apply-finished [--root <path>] [--json] [--only <path>]... [--only-identity <path> <branch>]...
+#   stale-cleanup.sh --apply-finished [--root <path>] [--json] [--only <path>]... [--only-identity <path> <branch>]... [--include-closed-unmerged --confirmed-head <path> <sha>]...
 #     Removes only the finished class non-interactively; local branch
 #     deletion uses Git's checkout guard and a pinned verified upstream tip. Never deletes remote branches.
 #     Incompatible with --check, --apply and --include-locked.
@@ -341,6 +342,15 @@
 #     path is acted on only while <branch> is still the branch checked out
 #     there; a different worktree re-registered at that path is reported skipped
 #     (only_identity_mismatch) and never verified or removed.
+#     A newest PR closed WITHOUT merging is set-aside work, not finished work:
+#     the worktree is kept with reason closed_unmerged_pr (reported last, so it
+#     means every other guard passed) and /pm-clean lists it for confirmation.
+#     --include-closed-unmerged is the confirmed-removal path for exactly the
+#     worktrees a human approved. It needs, per worktree, --only-identity PATH
+#     BRANCH and --confirmed-head PATH SHA (the HEAD the human was shown) — bare
+#     --only is refused, exit 3. A different branch or HEAD is reported skipped and
+#     never removed; every other guard still runs. A commit authored after the PR
+#     closed keeps the worktree (branch_advanced_after_pr).
 #   STALE_CLEANUP_LSOF_TIMEOUT_SECS bounds cwd/process census (default 10s).
 #   STALE_CLEANUP_REMOVE_TIMEOUT_SECS bounds finished removal (default 120s);
 #     a timed-out removal is a failed/unknown attempt, never a clean skip.
@@ -417,6 +427,9 @@ JSON=0
 MODE_SET=0
 ROOT_OVERRIDE=""
 ONLY_PATHS=()
+INCLUDE_CLOSED_UNMERGED=0
+CONFIRMED_HEAD_PATHS=()
+CONFIRMED_HEAD_SHAS=()
 ONLY_ID_PATHS=()
 ONLY_ID_BRANCHES=()
 INCLUDE_LOCKED=0
@@ -474,6 +487,18 @@ while [[ $# -gt 0 ]]; do
       ONLY_ID_BRANCHES+=("$3")
       shift 3
       ;;
+    --include-closed-unmerged)
+      INCLUDE_CLOSED_UNMERGED=1
+      shift
+      ;;
+    --confirmed-head)
+      if [[ $# -lt 3 || -z "$2" || "$2" == -* || ! "$3" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        usage_error "--confirmed-head requires a path and a full commit sha"
+      fi
+      CONFIRMED_HEAD_PATHS+=("$2")
+      CONFIRMED_HEAD_SHAS+=("$3")
+      shift 3
+      ;;
     --root=*)
       ROOT_OVERRIDE="${1#--root=}"
       # Same rejection as the two-arg form. A path that genuinely starts with
@@ -496,6 +521,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if (( INCLUDE_CLOSED_UNMERGED == 1 )) && { [[ "$MODE" != "apply-finished" ]] || (( ${#ONLY_PATHS[@]} > 0 || ${#ONLY_ID_PATHS[@]} == 0 || ${#CONFIRMED_HEAD_PATHS[@]} != ${#ONLY_ID_PATHS[@]} )); }; then
+  usage_error "--include-closed-unmerged requires --apply-finished with --only-identity PATH BRANCH and --confirmed-head PATH SHA for each worktree (no bare --only)"
+fi
+if (( ${#CONFIRMED_HEAD_PATHS[@]} > 0 )) && (( INCLUDE_CLOSED_UNMERGED == 0 )); then
+  usage_error "--confirmed-head is only valid with --include-closed-unmerged"
+fi
 if (( ${#ONLY_PATHS[@]} + ${#ONLY_ID_PATHS[@]} > 0 )) && [[ "$MODE" != "apply-finished" ]]; then
   usage_error "--only and --only-identity are only valid with --apply-finished"
 fi
@@ -895,6 +926,14 @@ if [[ "$MODE" == "apply-finished" ]]; then
     only_args+=(--only-identity "${ONLY_ID_PATHS[$only_i]}" "${ONLY_ID_BRANCHES[$only_i]}")
     only_i=$((only_i + 1))
   done
+  if (( INCLUDE_CLOSED_UNMERGED == 1 )); then
+    only_args+=(--include-closed-unmerged)
+    only_i=0
+    while (( only_i < ${#CONFIRMED_HEAD_PATHS[@]} )); do
+      only_args+=(--confirmed-head "${CONFIRMED_HEAD_PATHS[$only_i]}" "${CONFIRMED_HEAD_SHAS[$only_i]}")
+      only_i=$((only_i + 1))
+    done
+  fi
   finished_report_json --apply ${only_args[@]+"${only_args[@]}"}
   if (( JSON == 1 )); then printf '%s\n' "$FINISHED_JSON"; else emit_finished_text; fi
   exit "$FINISHED_RC"
