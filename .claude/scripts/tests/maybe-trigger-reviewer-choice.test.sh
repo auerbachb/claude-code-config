@@ -201,6 +201,13 @@ check_eq "budget lost after the choice: CodeAnt is asked instead" "@codeant-ai r
 check_eq "budget lost after the choice: the choice records CodeAnt" "codeant" "$(choice_of "$PR")"
 cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
 
+echo "== tiered repo: the tier's CodeAnt step always asks CodeAnt, even when CodeAnt is limited =="
+reset '{"policy":"present","gate":"full","tier":"t","source":"base:main","error":null,"matches":[],"escalation":"on","no_review_override_minutes":10}'
+write_av "{\"codeant\":$LIMIT_CA}"
+run
+check_eq "tiered: no CodeRabbit request" "0" "$(grep -c '@coderabbitai' "$POSTED")"
+check_eq "tiered: the CodeAnt step posts CodeAnt" "1" "$(grep -c '^@codeant-ai review$' "$POSTED")"
+
 echo "== both limited: nothing posted, skipped as increment 1 =="
 reset "$NRO_TIER"
 write_av "{\"codeant\":$LIMIT_CA,\"coderabbit\":$LIMIT_CA}"

@@ -77,4 +77,6 @@ Each request due on a HEAD asks exactly one free reviewer, never a paid one. `re
 - **Posted body:** `@codeant-ai review` or `@coderabbitai review` (never `full review`). The CodeRabbit budget is counted only after the post succeeds (`cr-review-hourly.sh --consume`), so a failed post or a lost claim spends nothing.
 - **Record:** `record-request` appends the request to `.review_requests` and writes `.prs["<N>"].review_request_choices[<head sha>]` with the reviewer, reason, and the expected response times and reviewer estimates. `maybe-trigger-ai-review.sh --json` reports `request_reviewer`.
 - `REVIEW_REQUEST=on-push` keeps `@codeant-ai review` as the request; the choice applies to `after-ci` only.
+- **Tiered repos:** a repo with a review tier always asks CodeAnt through the tier's CodeAnt step; the choice applies to the legacy path only.
+- **Known limits:** two ticks racing can both ask the same reviewer or both pass CodeRabbit's last hourly slot; the cost is one extra free request, which CodeRabbit answers with its limit notice.
 - **Tests:** `.claude/scripts/tests/review-availability-choose.test.sh`, `.claude/scripts/tests/maybe-trigger-reviewer-choice.test.sh`.

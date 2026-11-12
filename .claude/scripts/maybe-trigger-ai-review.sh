@@ -682,6 +682,12 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   T_POSTED=0
   ANY_DEFERRED=0
   [[ "$DEFERRED_JSON" != "[]" ]] && ANY_DEFERRED=1
+  # A review tier decides which reviewers this PR gets, and its codeant step is CodeAnt's
+  # own claim and lifetime cap, so the tiered path always asks CodeAnt. The free-reviewer
+  # choice (issue #2257) applies to the legacy path only.
+  if [[ "$REQ_REVIEWER" != codeant ]]; then
+    REQ_REVIEWER="codeant"; REQ_BODY="@codeant-ai review"; REQ_CHOICE_REASON="tier_requests_codeant"
+  fi
   for step in codeant cursor; do
     case "$step" in
       codeant) body="$REQ_BODY" ;;
@@ -1003,11 +1009,13 @@ post_one() {
   local step_key="$1"
   local body="$2"
   local posted
+  POST_ONE_POSTED=0
   posted="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step_key\"] // empty" 2>/dev/null || true)"
   if [[ "$posted" == "true" ]]; then
     return 0
   fi
   gh pr comment "$PR_NUM" --body "$body" || return 1
+  POST_ONE_POSTED=1
   if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step_key\"]=true"; then
     echo "maybe-trigger-ai-review.sh: comment posted but state update failed — may re-post on retry" >&2
   fi
@@ -1032,7 +1040,9 @@ else
     exit 5
   fi
   record_request_head
-  record_request_choice
+  # Log the choice only for a request this run actually posted: a resumed run whose step
+  # was already done posts nothing and must not count as another request (#2257).
+  if [[ "${POST_ONE_POSTED:-0}" == 1 ]]; then record_request_choice; fi
 fi
 if [[ -n "$BUGBOT_TIER_GATE" ]]; then
   # Deliberately NOT recorded as handled, unlike the refusal branch below. A
