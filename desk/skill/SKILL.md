@@ -70,11 +70,13 @@ done
 
 1. **Prelude.** `DESK` or `SID` empty → say so in one line and stop. Nothing is armed.
 2. **Policy and cadence.** Capture the policy’s `interrupt_rule` once as this desk’s `<DEFAULT>` (`everything` or `away`; missing/invalid means `everything`, matching the policy parser). Keep it in this conversation and carry it into `.desk.interrupt_default` in step 7. A policy edit applies at the next `/desk`; a re-arm retains the captured default. Read `desk/policy.json` first (`interrupts.md`, "The policy": block `desk-policy`); a warning line it prints goes in the start report, once. `--cadence Nm`, a whole number of minutes, default the policy's `tick_cadence_min` (5), and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
-3. **Migrate, validate the initial hold, then register** this session. Do the read before registration, stopping an earlier loop or stamping a tick: a failed hold read leaves the earlier desk working and creates no fresh capture target without a Monitor.
+3. **Account and queue, migrate, validate the initial hold, then register** this session. Do the read before registration, stopping an earlier loop or stamping a tick: a failed hold read leaves the earlier desk working and creates no fresh capture target without a Monitor. The account check is first, so an unbound account is refused before the store is touched.
 
    <!-- test-anchor: desk-start -->
 
    ```bash
+   ACCOUNT_LINE=$("$HQ" bindings --current) || exit "$?"
+   printf '%s\n' "$ACCOUNT_LINE"
    "$HQ" migrate || exit "$?"
    START_HOLD=$("$HQ" interrupt get --session "$SID" --default "<DEFAULT>" --json) || exit "$?"
    HELD_FLAG=$(printf '%s' "$START_HOLD" | jq -er 'if type == "object" and (.held | type) == "boolean" then (if .held then "--held" else "" end) else error("invalid held") end' 2>/dev/null) || {
@@ -88,6 +90,7 @@ done
    A failed/malformed hold read exits before control registration; use the not-started report below and stop. On success, retain `HELD_FLAG` from the receipt for step 6. A held seed covers focus expiry before the first persistent observation.
 
    - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, the Reviews view `007_reviews_summary_l1.sql`, and feedback tags `008_event_session.sql`).
+   - `bindings --current` exit 4 → `Desk not started: this account has no desk queue; bind it with the command the CLI printed.` and stop. Exit 7 → `Desk not started: the queue registry is unreadable (<the CLI's one line>).` and stop. The start line is `account: <name>  queue: <schema>`; it is printed before the first tick. Only the registry is read here, so no store is contacted.
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
    - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
 4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.

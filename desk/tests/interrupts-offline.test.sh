@@ -681,7 +681,7 @@ for SH in $BLOCK_SHELLS; do
     if [ "$initial_held" = true ]; then expected_flag=--held; else expected_flag=""; fi
     seed_flag=$(printf '%s\n' "$OUT" | sed -n 's/^HELD_FLAG=//p')
     check "[$SH] activation validates the captured hold before registration" "$(cat "$STUB_DIR/hq-calls")" \
-      "$(printf 'migrate\ninterrupt get --session desk-1 --default away --json\nregister-control desk-1')"
+      "$(printf 'bindings --current\nmigrate\ninterrupt get --session desk-1 --default away --json\nregister-control desk-1')"
     check_contains "[$SH] successful activation emits an explicit seed receipt" "$OUT" 'HELD_FLAG='
     check "[$SH] boolean $initial_held produces a typed seed" "$RC:$seed_flag" "0:$expected_flag"
     literal "$TMP/monitor-default.sh" "<HELD_FLAG>" "$seed_flag" > "$TMP/monitor.sh"
@@ -706,8 +706,9 @@ for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/start-held.sh") || RC=$?
   check "[$SH] failed startup hold read retains its exit" "$RC" 7
   check_absent "[$SH] failed startup hold read creates no seed" "$OUT" 'HELD_FLAG='
-  check "[$SH] failed hold read stops after migration and lookup" "$(cat "$STUB_DIR/hq-calls")" \
-    "$(printf 'migrate\ninterrupt get --session desk-1 --default away --json')"
+  check "[$SH] failed hold read stops after the account check, migration, and lookup" "$(cat "$STUB_DIR/hq-calls")" \
+    "$(printf 'bindings --current\nmigrate\ninterrupt get --session desk-1 --default away --json')"
+  check "[$SH] the account check runs before every other store-facing call" "$(head -n 1 "$STUB_DIR/hq-calls")" "bindings --current"
   check "[$SH] hostile hold text was never executed" "$(find "$TMP/run" -name 'seed-pwned' | wc -l | tr -d ' ')" 0
   rm -f "$STUB_DIR/held-json" "$STUB_DIR/held-rc"
 

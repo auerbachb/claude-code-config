@@ -262,6 +262,16 @@ primary install:
   onboarding state is what makes it that account's).
 - **`codex`** — symlinks `rules` and copies `config.toml` from `~/.codex`.
 
+**Desk notice (issue #2185, `claude` profiles only).** The `settings.json` copy strips any
+`HUMAN_QUEUE_SCHEMA` entry from `.env`, because a desk binding belongs to one account in
+the registry and never to a profile. The stripping is reported as
+`stripped HUMAN_QUEUE_SCHEMA from settings.json`, without the value. After the summary
+line, one nonfatal line names the desk queue for the profile: `desk queue: <name> (<schema>)`,
+or `no desk queue — run <bind command>` with the profile's config directory in the command.
+Relay that line. A new account starts unbound, so a fresh `share-config` reports the bind
+command, not a queue. Only `desk queue: unknown (<reason>)` means the desk or registry could
+not be read; the share itself still succeeded.
+
 Anything already in the wanted state is `kept`, so a re-run changes nothing; anything in
 the way is moved aside as `<name>.pre-share` and **never deleted** — the summary line says
 so and gives the counts. A primary item that does not exist is `skipped` rather than

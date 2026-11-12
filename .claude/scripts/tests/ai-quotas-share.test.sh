@@ -663,6 +663,178 @@ RACE_CP
     "$race_kind: the refused operation leaves no temporary file"
 done
 
+# --- 7b. share-config: the desk notice and the HUMAN_QUEUE_SCHEMA strip (#2185) --
+# Every case runs against a scratch registry (HUMAN_QUEUE_BINDINGS_FILE inside
+# the case directory) and the real desk library, which only reads that file.
+# The schema values below are probes: they must never reach any output.
+
+export HUMAN_QUEUE_DESK_DIR="$ROOT/desk"
+
+new_case "desk-unbound"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "desk: an unbound claude profile still shares (exit 0)"
+printf -v WORK_DIR_Q '%q' "$WORK_DIR"
+check_contains "$OUT" "no desk queue — run " "desk: an unbound profile gets the no-queue line"
+check_contains "$OUT" "bind --name <name> --schema <schema> --config-dir $WORK_DIR_Q" \
+  "desk: the line names the bind command and the profile's config directory"
+check_eq "$(printf '%s\n' "$OUT" | tail -1 | cut -c1-13)" "no desk queue" "desk: the notice is the last line, after the summary"
+
+new_case "desk-bound"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '%s\t%s\t%s\n' "$WORK_DIR" "work" "work_queue" > "$HUMAN_QUEUE_BINDINGS_FILE"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "desk: a bound claude profile shares (exit 0)"
+check_contains "$OUT" "desk queue: work (work_queue)" "desk: a bound profile names its account and queue"
+check_not_contains "$OUT" "no desk queue" "desk: a bound profile gets no bind prompt"
+
+new_case "desk-strip"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+# A private TMPDIR: the staging directory check below sees only this case's runs.
+desk_saved_tmpdir="${TMPDIR-}"
+mkdir -p "$CASE_DIR/stage-tmp"
+export TMPDIR="$CASE_DIR/stage-tmp"
+printf '{"theme":"dark","env":{"HUMAN_QUEUE_SCHEMA":"strip_probe_schema","KEEP_ME":"yes"}}\n' > "$PRIMARY/settings.json"
+chmod 600 "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "strip: share-config exits 0"
+check_contains "$OUT" "stripped HUMAN_QUEUE_SCHEMA from settings.json" "strip: the removal is reported"
+check_not_contains "$OUT" "strip_probe_schema" "strip: the schema value is never printed"
+check_eq "$(jq -r '.env | has("HUMAN_QUEUE_SCHEMA")' "$WORK_DIR/settings.json")" "false" "strip: the copied settings carry no HUMAN_QUEUE_SCHEMA"
+check_eq "$(jq -r '.env.KEEP_ME' "$WORK_DIR/settings.json")" "yes" "strip: other env entries are kept"
+check_eq "$(jq -r '.theme' "$WORK_DIR/settings.json")" "dark" "strip: other keys are kept"
+check_eq "$(mode_of "$WORK_DIR/settings.json")" "600" "strip: the source mode is kept"
+check_eq "$(jq -r '.env.HUMAN_QUEUE_SCHEMA' "$PRIMARY/settings.json")" "strip_probe_schema" "strip: the primary settings.json is not edited"
+run share-config "$WORK_LABEL" claude
+check_contains "$OUT" "stripped HUMAN_QUEUE_SCHEMA from settings.json" "strip rerun: the removal is reported again"
+check_contains "$OUT" "kept    settings.json" "strip rerun: the stripped copy matches the profile, so it is kept"
+check_eq "$(test -e "$WORK_DIR/settings.json.pre-share" && echo present || echo absent)" "absent" "strip rerun: no keepsake is made for an identical copy"
+check_eq "$(find "$CASE_DIR/stage-tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "0" "strip: the staging directory is removed"
+export TMPDIR="$desk_saved_tmpdir"
+
+new_case "desk-cp-fail"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+# A cp shim fails only the copy into this profile's settings.json, so the die
+# inside share_copy runs after the stripped copy is staged. The staged file must
+# still be removed on that exit path.
+cpfail_tmp="$CASE_DIR/stage-tmp"
+cpfail_bin="$CASE_DIR/fakebin"
+mkdir -p "$cpfail_tmp" "$cpfail_bin"
+printf '%s\n' '#!/bin/bash' 'last=""' 'for a in "$@"; do last="$a"; done' \
+  'if [ "$last" = "$FAIL_CP_DEST" ]; then echo "cp: simulated failure" >&2; exit 1; fi' \
+  'exec /bin/cp "$@"' > "$cpfail_bin/cp"
+chmod +x "$cpfail_bin/cp"
+cpfail_saved_path="$PATH"
+cpfail_saved_tmpdir="${TMPDIR-}"
+export TMPDIR="$cpfail_tmp"
+export PATH="$cpfail_bin:$PATH"
+export FAIL_CP_DEST="$WORK_DIR/settings.json"
+printf '{"theme":"dark","env":{"HUMAN_QUEUE_SCHEMA":"cpfail_probe_schema"}}\n' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+export PATH="$cpfail_saved_path"
+unset FAIL_CP_DEST
+export TMPDIR="$cpfail_saved_tmpdir"
+check_eq "$RC" "5" "cp fail: share-config exits 5"
+check_contains "$OUT" "could not copy" "cp fail: the copy failure is reported"
+check_eq "$(find "$cpfail_tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "0" "cp fail: the staged settings copy is removed on the die path"
+check_eq "$(jq -r '.env.HUMAN_QUEUE_SCHEMA' "$PRIMARY/settings.json")" "cpfail_probe_schema" "cp fail: the primary settings.json is not edited"
+check_not_contains "$OUT" "cpfail_probe_schema" "cp fail: the schema value is never printed"
+
+new_case "desk-plain"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+run share-config "$WORK_LABEL" claude
+check_eq "$(cmp -s "$PRIMARY/settings.json" "$WORK_DIR/settings.json" && echo identical || echo DIFFERENT)" "identical" \
+  "plain: a source that never mentions the key is copied byte for byte"
+check_not_contains "$OUT" "stripped HUMAN_QUEUE_SCHEMA" "plain: nothing is reported as stripped"
+
+new_case "desk-escaped-key"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+BSLASH="$(printf '\134')"
+printf '%s\n' '{"env":{"'"$BSLASH"'u0048UMAN_QUEUE_SCHEMA":"strip_probe_schema","KEEP_ME":"yes"}}' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_contains "$OUT" "stripped HUMAN_QUEUE_SCHEMA from settings.json" "escaped key: a \\u-escaped key is still stripped"
+check_eq "$(jq -r '.env | has("HUMAN_QUEUE_SCHEMA")' "$WORK_DIR/settings.json")" "false" "escaped key: the decoded key is gone from the copy"
+check_eq "$(grep -c 'HUMAN_QUEUE' "$WORK_DIR/settings.json")" "0" "escaped key: no spelling of the key remains in the copy"
+check_not_contains "$OUT" "strip_probe_schema" "escaped key: the value is never printed"
+
+new_case "desk-text-only"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '%s\n' '{"hooks":{"note":"HUMAN_QUEUE_SCHEMA is set by the desk"}}' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$(cmp -s "$PRIMARY/settings.json" "$WORK_DIR/settings.json" && echo identical || echo DIFFERENT)" "identical" \
+  "text only: a valid object that mentions the key outside env is copied byte for byte"
+check_not_contains "$OUT" "stripped HUMAN_QUEUE_SCHEMA" "text only: nothing is reported as stripped"
+
+new_case "desk-malformed"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '{"theme":"light"}\n' > "$WORK_DIR/settings.json"
+printf '{"env":{"HUMAN_QUEUE_SCHEMA":"strip_probe_schema"' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "5" "malformed: a source that mentions the key but is not JSON exits 5"
+check_contains "$OUT" "not a JSON object" "malformed: the refusal says why"
+check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"light"}' "malformed: the profile settings.json is untouched"
+check_eq "$(test -e "$WORK_DIR/settings.json.pre-share" && echo present || echo absent)" "absent" "malformed: no keepsake is made"
+check_not_contains "$OUT" "strip_probe_schema" "malformed: the value is never printed"
+
+new_case "desk-multi-value"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '{"theme":"light"}\n' > "$WORK_DIR/settings.json"
+printf '{"env":{"HUMAN_QUEUE_SCHEMA":"strip_probe_schema"}} {"theme":"dark"}\n' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "5" "multi-value: a file of two values where the first holds the key exits 5 (the last value must not decide)"
+check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"light"}' "multi-value: the profile settings.json is untouched"
+check_not_contains "$OUT" "strip_probe_schema" "multi-value: the value is never printed"
+
+new_case "desk-escaped-malformed"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '{"theme":"light"}\n' > "$WORK_DIR/settings.json"
+printf '{"env":{"\\u0048UMAN_QUEUE_SCHEMA":"strip_probe_schema"' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "5" "escaped malformed: a non-object whose key is \\u-escaped exits 5"
+check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"light"}' "escaped malformed: the profile settings.json is untouched"
+check_not_contains "$OUT" "strip_probe_schema" "escaped malformed: the value is never printed"
+
+new_case "desk-unsearchable-dir"
+mkdir -p "$CASE_DIR/locked"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/locked/bindings.tsv"
+chmod 000 "$CASE_DIR/locked"
+run share-config "$WORK_LABEL" claude
+chmod 700 "$CASE_DIR/locked"
+check_contains "$OUT" "desk queue: unknown (the queue bindings directory is not searchable" "unsearchable dir: reported unknown, not unbound"
+check_not_contains "$OUT" "You can't run the desk here" "unsearchable dir: not mistaken for an unbound account"
+
+new_case "desk-missing"
+export HUMAN_QUEUE_DESK_DIR="$CASE_DIR/no-such-desk"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "missing desk: the share still exits 0"
+check_contains "$OUT" "desk queue: unknown (the desk was not found" "missing desk: one unknown line"
+export HUMAN_QUEUE_DESK_DIR="$ROOT/desk"
+
+new_case "desk-unreadable-registry"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+mkdir -p "$HUMAN_QUEUE_BINDINGS_FILE"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "unreadable registry: the share still exits 0"
+check_contains "$OUT" "desk queue: unknown (the queue bindings file is not a readable regular file)" "unreadable registry: one unknown line with the reason"
+
+new_case "desk-space"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+SPACE_DIR="$PROFILES/with space/claude"
+mkdir -p "$SPACE_DIR"
+jq --arg l "$WORK_LABEL" --arg d "$SPACE_DIR" \
+  '.accounts |= map(if .label == $l and .provider == "claude" then .profile_dir = $d else . end)' "$CONFIG" > "$CONFIG.tmp" \
+  && mv "$CONFIG.tmp" "$CONFIG"
+printf -v SPACE_Q '%q' "$SPACE_DIR"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "path with a space: share-config exits 0"
+check_contains "$OUT" "bind --name <name> --schema <schema> --config-dir $SPACE_Q" "path with a space: the bind command names the escaped directory"
+printf '%s\t%s\t%s\n' "$SPACE_DIR" "work" "space_queue" > "$HUMAN_QUEUE_BINDINGS_FILE"
+run share-config "$WORK_LABEL" claude
+check_contains "$OUT" "desk queue: work (space_queue)" "path with a space: a bound row in a spaced directory resolves"
+
+unset HUMAN_QUEUE_DESK_DIR HUMAN_QUEUE_BINDINGS_FILE
+
 # --- 8. no case, anywhere, leaked a credential --------------------------------
 
 check_eq "$(grep -c "$FIXTURE_SECRET" "$ALL_OUTPUT" || true)" "0" \

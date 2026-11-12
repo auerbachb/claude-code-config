@@ -52,6 +52,7 @@ The hook entries under `.claude/hooks/` are symlinks into this folder
 - <a name="state-control-and-tick"></a>[State, control, and tick](docs/state-control-tick.md)
 - <a name="account-bindings-issue-2183"></a>[Account bindings (issue #2183)](docs/account-bindings.md)
   - <a name="queue-owner-issue-2184"></a>[Queue owner (issue #2184)](docs/account-bindings.md#queue-owner-issue-2184)
+  - <a name="one-queue-per-account-setup-notice-and-start-display-issue-2185"></a>[One queue per account, setup notice, and start display (issue #2185)](docs/account-bindings.md#one-queue-per-account-setup-notice-and-start-display-issue-2185)
 - <a name="capture-hook"></a>[Capture hook](docs/capture-hook.md)
   - <a name="decisions-from-codex-cursor-and-other-tools"></a>[Decisions from Codex, Cursor, and other tools](docs/capture-hook.md#decisions-from-codex-cursor-and-other-tools)
 - <a name="migrations"></a>[Migrations](docs/migrations.md)
@@ -86,3 +87,13 @@ The hook entries under `.claude/hooks/` are symlinks into this folder
 - **The stamp is the name, not the signed-in identity (decided: name only).** No hook or CLI input reliably exposes the signed-in account without reading credential-adjacent profile state, and an email would put personal data in the queue. A profile re-logged into a different account therefore still matches its name; this gap is accepted and revisited only if an identifier becomes available to hooks without touching credentials.
 
 Details, the test seam's name rule, and the tick loop's stop: [Account bindings](docs/account-bindings.md#queue-owner-issue-2184).
+
+### One queue per account (issue #2185)
+
+- **One queue per account.** Each account binds to one queue. A new account starts unbound, and a copied profile never inherits another account's queue.
+- **Commands.** `desk-cli.sh bind --name <name> --schema <schema>` binds the account; `desk-cli.sh bindings` lists accounts; `desk-cli.sh bindings --current` prints `account: <name>  queue: <schema>` for this account from the registry alone.
+- **Refusals.** An unbound account exits 4 with the bind command. A queue owned by another account is refused by `bind` (exit 4, nothing recorded).
+- **Start display.** `/desk` checks `bindings --current` first and shows the account and queue before the first tick.
+- **Setup notice.** `share-config` strips `HUMAN_QUEUE_SCHEMA` from a copied `settings.json` and prints one `desk queue:` line (or `no desk queue — run ... bind ...`) per Claude profile.
+
+Details: [Account bindings](docs/account-bindings.md#one-queue-per-account-setup-notice-and-start-display-issue-2185).
