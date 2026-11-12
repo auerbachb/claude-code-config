@@ -39,7 +39,7 @@
 #   - a non-PENDING review by a reviewer bot with commit_id == HEAD, except an
 #     APPROVED that is hollow (merge-gate's review-substance verdict) or whose
 #     submitted_at predates the HEAD commit (force-push retarget), and except a
-#     COMMENTED review with an empty or whitespace-only body (issue #2268: an
+#     COMMENTED review whose body is empty once HTML comments are stripped (issue #2268: an
 #     empty-body COMMENTED review is an acknowledgement, not a verdict).
 #     Discounting an approval only removes a positive signal; CHANGES_REQUESTED
 #     and COMMENTED reviews with a body on HEAD always count.
@@ -189,7 +189,7 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
   | [ (.reviews // [])[]?
       | select((.user.login // "") as $l | $bots | index($l))
       | select((.commit_id // "") == $h and (.state // "") != "PENDING" and (.state // "") != "DISMISSED")
-      | select((.state // "") != "COMMENTED" or ((.body // "") | test("\\S")))
+      | select((.state // "") != "COMMENTED" or ((.body // "") | gsub("<!--[\\s\\S]*?-->"; "") | test("\\S")))
       | select(
           (.state != "APPROVED")
           or ( ((.user.login) as $l | $hollow | index($l) | not)

@@ -93,6 +93,12 @@ expect_eq "PR #2263 shape: no verdicts on HEAD" "$(jq -c .verdicts_on_head <<<"$
 out=$(run_helper "$(payload "[$(review "$CR" COMMENTED "")]" '[]' '[]')")
 expect_eq "empty COMMENTED review: applied" "$(jq -r .applied <<<"$out")" "true"
 
+# --- 2b. A COMMENTED review whose body is only HTML comments is not a verdict either
+out=$(run_helper "$(payload "[$(review "$CR" COMMENTED "$(printf '<!-- coderabbit-ai-generated:v1 -->\n  <!-- marker\nspanning lines -->\n')")]" '[]' '[]')")
+expect_eq "HTML-comment-only COMMENTED review: applied" "$(jq -r .applied <<<"$out")" "true"
+out=$(run_helper "$(payload "[$(review "$CR" COMMENTED "<!-- marker --> Found a bug in line 3.")]" '[]' '[]')")
+expect_eq "COMMENTED review with text beside a comment: verdict" "$(jq -r .reason <<<"$out")" "verdict_on_head"
+
 # --- 3. A COMMENTED review with a real body is still a verdict
 out=$(run_helper "$(payload "[$(review "$CR" COMMENTED "Review completed.")]" '[]' '[]')")
 expect_eq "COMMENTED review with body: verdict" "$(jq -r .reason <<<"$out")" "verdict_on_head"
