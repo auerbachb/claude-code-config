@@ -158,6 +158,66 @@ os.execv(shell,[shell,real]+args)
     def run_block(self, cause, **kwargs):
         return self.finish(self.start(cause,**kwargs))
 
+    def test_park_claim_resolves_generation_in_pm_order(self):
+        checkout = self.root / 'checkout'
+        local = checkout / '.claude/scripts/park-generation.sh'
+        installed = self.home / '.claude/scripts/park-generation.sh'
+        worktree = self.home / '.claude/skills-worktree/.claude/scripts/park-generation.sh'
+        local.parent.mkdir(parents=True)
+        worktree.parent.mkdir(parents=True)
+        isolated_state = self.root / 'claim-state'
+        self.tool_path(isolated_state, '#!/usr/bin/env bash\n'
+                       'HOME="$CLAIM_HOME" exec "$TEST_SHELL" "$TEST_REAL_STATE" --repo owner/repo "$@"\n')
+
+        def run_claim(cause, unset_home=False):
+            anchor = 'pm-day-2d6-park-claim' if cause == 'reactive' else 'pm-day-2d7-park-claim'
+            match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```',
+                              park_text(cause), re.S)
+            self.assertIsNotNone(match, anchor)
+            self.seed(cause)
+            self.set_day(parked_until=None, limit_cause=None, park_generation=None,
+                         limit_probe_fires_remaining=None)
+            original = self.state.read_bytes()
+            env = dict(self.env, CLAIM_HOME=str(self.home), SESSION_STATE_SH=str(isolated_state),
+                       REPO_KEY=REPO, NEW_HITS='1', LIMIT_KIND='rolling_window',
+                       PARKED_UNTIL='2027-01-01T00:00:00Z')
+            if unset_home:
+                env.pop('HOME', None)
+            result = subprocess.run([SHELL, '-u', '-c', match.group(1)], cwd=checkout,
+                                    env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return original, result.stdout
+
+        for selected, count, unset_home in [
+            ('worktree', 3, False), ('installed', 2, False),
+            ('local', 1, False), ('local', 1, True), ('altered', 1, True), (None, 0, True),
+        ]:
+            for path in (local, installed, worktree):
+                path.unlink(missing_ok=True)
+            if count:
+                shutil.copy2(ROOT / '.claude/scripts/park-generation.sh', local)
+            sentinel = self.root / 'altered-generator-executed'
+            if selected == 'altered':
+                with local.open('a') as script:
+                    script.write(f'\nprintf changed > "{sentinel}"\n')
+            for path, identity in ((installed, 'installed'), (worktree, 'worktree'))[:max(0, count - 1)]:
+                self.tool_path(path, f'#!/usr/bin/env bash\nprintf "%s\\n" parkgen-{identity}\n')
+            for cause in ('reactive', 'preemptive'):
+                with self.subTest(cause=cause, selected=selected, unset_home=unset_home):
+                    sentinel.unlink(missing_ok=True)
+                    original, out = run_claim(cause, unset_home)
+                    if selected in (None, 'altered'):
+                        self.assertEqual(out.strip(), 'PARK_CLAIM=error rc=generation')
+                        self.assertEqual(self.state.read_bytes(), original)
+                        self.assertFalse(sentinel.exists())
+                    else:
+                        self.assertIn('PARK_CLAIM=won', out)
+                        if selected == 'local':
+                            self.assertRegex(self.day()['park_generation'], r'^parkgen-[0-9a-f]{32}$')
+                        else:
+                            self.assertEqual(self.day()['park_generation'], f'parkgen-{selected}')
+                        self.assertIsNone(self.day()['limit_resume_task_id'])
+
     def stopped(self):
         return self.stop_log.read_text().splitlines() if self.stop_log.exists() else []
 
