@@ -131,6 +131,41 @@ def split_rank(expected, current):
                 del contents[start:end]
 
 
+FLOW_PHASES = (
+    ("cleanup", "## Step 1C:", "## Step 1D:"),
+    ("forgotten-prs", "## Step 1D:", "## Step 2:"),
+    ("monitor", "## Step 2:", "## Step 2D:"),
+    ("launch", "### 3.1:", "### 3.2:"),
+    ("track", "### 3.2:", "### 3.3:"),
+    ("progress", "### 3.3:", "### 3.3a:"),
+    ("progress", "### 3.3a:", "### 3.4:"),
+    ("refill", "### 3.4:", "### 3.5:"),
+    ("handoff", "### 3.5:", "## Execution Boundary"),
+)
+
+
+def split_flow(expected, current):
+    module_dir = ENTRY.parent / "modules" / "flow"
+    paths = {module_dir / f"{name}.md" for name, _, _ in FLOW_PHASES}
+    if not any(path in current and path not in expected for path in paths):
+        return
+    before = expected[ENTRY]
+    retained = []
+    preceding = 0
+    for name, start, following in FLOW_PHASES:
+        first = unique_prefix(before, start) + 1
+        last = unique_prefix(before, following)
+        if before[last - 2:last] == ["---\n", "\n"]:
+            last -= 2
+        if first < preceding or last <= first:
+            raise ValueError(f"could not identify ordered baseline flow {name} section")
+        retained.extend(before[preceding:first])
+        expected.setdefault(module_dir / f"{name}.md", []).extend(before[first:last])
+        preceding = last
+    retained.extend(before[preceding:])
+    expected[ENTRY] = retained
+
+
 def ordered_mismatches(baseline, current):
     expected = baseline.copy()
     has_layout = len(baseline) > 1 or any(
@@ -140,6 +175,7 @@ def ordered_mismatches(baseline, current):
         return []
     split_day(expected)
     split_rank(expected, current)
+    split_flow(expected, current)
     return [path for path in sorted(expected.keys() | current.keys())
             if expected.get(path) != current.get(path)]
 

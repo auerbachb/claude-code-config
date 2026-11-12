@@ -16,6 +16,7 @@ BASH = sys.argv[2]
 SCRIPTS = ROOT / ".claude/scripts"
 PM = ROOT / ".claude/skills/pm/SKILL.md"
 RANK_PRESENT = PM.parent / "modules/rank/present.md"
+REFILL_MODULE = PM.parent / "modules/flow/refill.md"
 BOARD = ROOT / ".claude/skills/board/SKILL.md"
 REPO = "sample/project"
 SESSION = "session.a:1"
@@ -30,10 +31,10 @@ def block(document, anchor):
 
 INITIAL = block(RANK_PRESENT, "pm-standing-queue-initial")
 INITIAL_PLAN = block(RANK_PRESENT, "pm-standing-queue-initial-plan")
-READ = block(PM, "pm-standing-queue-read")
-REFILL = block(PM, "pm-standing-queue-refill")
-TOP_UP = block(PM, "pm-standing-queue-top-up")
-PUBLISH = block(PM, "pm-standing-queue-publish")
+READ = block(REFILL_MODULE, "pm-standing-queue-read")
+REFILL = block(REFILL_MODULE, "pm-standing-queue-refill")
+TOP_UP = block(REFILL_MODULE, "pm-standing-queue-top-up")
+PUBLISH = block(REFILL_MODULE, "pm-standing-queue-publish")
 BOARD_QUEUE = block(BOARD, "board-step3-queued-from-round")
 
 

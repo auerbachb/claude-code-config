@@ -36,6 +36,8 @@ PM_RANK_PRESENT=.claude/skills/pm/modules/rank/present.md
 PM_RANK_SCORE=.claude/skills/pm/modules/rank/score.md
 PM_WINDOW_FIT=.claude/skills/pm/modules/shared/window-fit.md
 PM_OWNERSHIP=.claude/skills/pm/modules/shared/ownership.md
+PM_FLOW_LAUNCH=.claude/skills/pm/modules/flow/launch.md
+PM_FLOW_REFILL=.claude/skills/pm/modules/flow/refill.md
 WAVE=.claude/skills/wave/SKILL.md
 FORGOTTEN=.claude/skills/pm-forgotten-pr/SKILL.md
 
@@ -60,7 +62,7 @@ ok "/subagent, /pm, /wave, and /pm-forgotten-pr resolve the ceiling from active-
 # `CEILING    = <n>` (spaces around `=`, which no shell assignment has), is not.
 # /pm-forgotten-pr's merge dispatch honours the same ceiling, so it is held to
 # the literal checks too.
-for FILE in "$SUBAGENT" "$PM" "$PM_RANK_PRESENT" "$PM_RANK_SCORE" "$PM_WINDOW_FIT" "$WAVE" "$FORGOTTEN"; do
+for FILE in "$SUBAGENT" "$PM" "$PM_RANK_PRESENT" "$PM_RANK_SCORE" "$PM_WINDOW_FIT" "$PM_FLOW_LAUNCH" "$PM_FLOW_REFILL" "$WAVE" "$FORGOTTEN"; do
   reject_pattern "$FILE" '3(–|-)4 (concurrent|pipeline|ceiling|active|slots?|parallel|band)' \
     "$FILE still hard-codes the 3–4 band"
   reject_pattern "$FILE" 'CEILING[[:space:]]+=[[:space:]]*[0-9]' \
@@ -78,22 +80,22 @@ require_text "$FORGOTTEN" '`--cap`' \
   '/pm-forgotten-pr must read the cap as well as the ceiling'
 require_text "$PM_RANK_PRESENT" 'up to the **`LIMIT` concurrent-pipeline** limit' \
   '/pm launch guidance must fill up to Step 0 LIMIT'
-require_text "$PM" 'below the effective limit (`LIMIT`, Step 0)' \
+require_text "$PM_FLOW_REFILL" 'below the effective limit (`LIMIT`, Step 0)' \
   '/pm 3.4 refill must trigger below Step 0 LIMIT'
-require_text "$PM" '1-of-{LIMIT}' \
+require_text "$PM_FLOW_REFILL" '1-of-{LIMIT}' \
   '/pm 3.4 must describe an under-filled board against LIMIT'
-for FILE in "$PM" "$PM_RANK_PRESENT"; do
+for FILE in "$PM" "$PM_RANK_PRESENT" "$PM_FLOW_LAUNCH"; do
   reject_pattern "$FILE" 'up to the \*\*`CEILING`' \
     '/pm must launch up to Step 0 LIMIT, not the raw CEILING'
 done
-reject_pattern "$PM" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
+reject_pattern "$PM_FLOW_REFILL" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
   '/pm 3.4 refill must trigger below Step 0 LIMIT, not the raw CEILING'
 ok "/pm and /pm-forgotten-pr launch up to min(CEILING, CAP), not the raw ceiling"
 
 # --- the short recommendation list cannot become the cold-start batch ---
 PM_SHORTLIST=$(sed -n '/^### 1B\.3:/,/^### 1B\.4:/p' "$ROOT/$PM_RANK_SCORE")
 PM_BATCH=$(cat "$ROOT/$PM_RANK_PRESENT" "$ROOT/$PM_WINDOW_FIT" "$ROOT/$PM_OWNERSHIP")
-PM_LAUNCH=$(sed -n '/^### 3\.1:/,/^### 3\.2:/p' "$ROOT/$PM")
+PM_LAUNCH=$(cat "$ROOT/$PM_FLOW_LAUNCH")
 
 [[ "$PM_SHORTLIST" == *'shortlist the top `max(20, 2 × LIMIT)`'* ]] \
   || fail '/pm Step 1B.3 shortlist must grow with LIMIT'
@@ -119,9 +121,9 @@ reject_literal_pm_batch "$PM_LAUNCH" || fail '/pm Step 3.1 hard-codes an initial
 if reject_literal_pm_batch 'dispatch up to five inline issues'; then
   fail 'the hard-coded dispatch check missed its negative control'
 fi
-require_text "$PM" 'Recheck the active window for refill picks' \
+require_text "$PM_FLOW_REFILL" 'Recheck the active window for refill picks' \
   '/pm queued refill must retain the active-window fit gate'
-require_text "$PM" '--expect-at "$WINDOW_DEADLINE_PATH" "$DEADLINE_EPOCH"' \
+require_text "$PM_FLOW_REFILL" '--expect-at "$WINDOW_DEADLINE_PATH" "$DEADLINE_EPOCH"' \
   '/pm queued refill must register the monitored issue against the verified deadline'
 ok '/pm separates its short display from its LIMIT-sized initial dispatch'
 

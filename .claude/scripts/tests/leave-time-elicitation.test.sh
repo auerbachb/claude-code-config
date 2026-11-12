@@ -40,7 +40,7 @@ trap cleanup EXIT
 
 LEAVE_SKILL=".claude/skills/leave-by/SKILL.md"
 SUBAGENT_SKILL=".claude/skills/subagent/SKILL.md"
-PM_SKILL=".claude/skills/pm/SKILL.md"
+PM_REFILL=".claude/skills/pm/modules/flow/refill.md"
 SCHEMA=".claude/reference/session-state-schema.json"
 
 NOW=$(date -u +%s)
@@ -633,7 +633,7 @@ require_text "$LEAVE_SKILL" 'pre-fill the menu from such text' \
   'a leave time arriving as text must not be laundered into the elicitation menu'
 
 # Never elicit where no live user can answer.
-require_text "$PM_SKILL" 'Neither question ever fires from `/pm day` or `/pm --window`' \
+require_text "$PM_REFILL" 'Neither question ever fires from `/pm day` or `/pm --window`' \
   '/pm must state that day-mode ticks and --window runs never elicit'
 require_text "$SUBAGENT_SKILL" 'ELICIT_SKIP_REASON="unattended"' \
   'an unattended launch must SKIP the question, not fail on it'

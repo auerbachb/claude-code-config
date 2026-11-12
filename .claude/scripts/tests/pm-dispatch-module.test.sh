@@ -17,7 +17,8 @@ for phase in preconditions arm tick teardown recovery park-reactive park-preempt
 done
 
 for pair in resume:load resume:fetch resume:present rank:load rank:fetch rank:score \
-    rank:present shared:priority shared:window-fit shared:ownership; do
+    rank:present shared:priority shared:window-fit shared:ownership flow:cleanup flow:forgotten-prs \
+    flow:monitor flow:launch flow:track flow:progress flow:refill flow:handoff; do
   operation=${pair%:*}
   phase=${pair#*:}
   chosen=$("$BASH" "$dispatcher" "$operation" "$phase")
@@ -54,12 +55,17 @@ trace_route() {
     pair=${pair#\`}; pair=${pair%\`}
     module=$("$BASH" "$dispatcher" "${pair%:*}" "${pair#*:}") || return
     selected="${selected}${selected:+ }${module#"$skill/modules/"}"
-  done <<< "$(grep -oE '`(resume|rank|shared|day):[a-z-]+`' <<< "$row" || true)"
+  done <<< "$(grep -oE '`(resume|rank|shared|day|flow):[a-z-]+`' <<< "$row" || true)"
   printf '%s\n' "$selected"
 }
 
 [[ "$(trace_route 'Resume existing work')" == 'resume/load.md resume/fetch.md resume/present.md' ]]
 [[ "$(trace_route 'Cold start or explicit ranking')" == 'rank/load.md rank/fetch.md rank/score.md rank/present.md' ]]
+[[ "$(trace_route 'Existing Step 1C cleanup gate')" == 'flow/cleanup.md' ]]
+[[ "$(trace_route 'Existing Step 1D forgotten-PR gate')" == 'flow/forgotten-prs.md' ]]
+[[ "$(trace_route 'Selected eligible dispatch')" == 'flow/launch.md' ]]
+[[ "$(trace_route 'Available-capacity evaluation')" == 'flow/refill.md' ]]
+[[ "$(trace_route 'Status, due progress, or board report')" == 'flow/progress.md' ]]
 status_trace=$(trace_route 'Passive status')
 [[ -z "$status_trace" ]]
 [[ "$(trace_route 'Saved queue, operator order, or current evidence refill')" == 'shared/priority.md shared/ownership.md shared/window-fit.md' ]]
@@ -102,4 +108,41 @@ probe_fire=$(grep -nF '<!-- test-anchor: pm-day-2d7-probe-fire -->' "$probe" | c
 [[ "$probe_horizon" -lt "$probe_fire" ]]
 extract_skill_bash "$tick" pm-day-d2-horizon-branch > "$scratch/probe-horizon"
 [[ -s "$scratch/probe-horizon" ]]
-printf '%s\n' 'PM module routes: 18 operation/phase pairs, invalid/missing guards, installed symlink and unset-HOME fallback'
+launch="$skill/modules/flow/launch.md"
+budget=$(extract_skill_bash "$launch" pm-initial-launch-credit-budget)
+budget_dir="$scratch/budget-project"
+mkdir -p "$budget_dir/.claude/scripts"
+budget_check="$budget_dir/.claude/scripts/credit-budget.sh"
+cat > "$budget_check" <<'BUDGET'
+#!/usr/bin/env bash
+[ "$#" -eq 1 ] && [ "$1" = --check ] || exit 3
+printf '%s\n' checked > "$FIXTURE_BUDGET_CALL"
+[ -z "$FIXTURE_BUDGET_STATUS" ] || printf '{"status":"%s"}\n' "$FIXTURE_BUDGET_STATUS"
+exit "$FIXTURE_BUDGET_RC"
+BUDGET
+chmod +x "$budget_check"
+check_budget() {
+  local rc="$1" status="$2" explicit="$3" expected="$4" day_mode="${5:-true}"
+  [[ "$(cd "$budget_dir" && env -u HOME FIXTURE_BUDGET_RC="$rc" FIXTURE_BUDGET_STATUS="$status" \
+    DAY_MODE="$day_mode" FIXTURE_BUDGET_CALL="$scratch/budget-call" \
+    PM_INITIAL_USER_DIRECTED="$explicit" "$BASH" -u -c "$budget" 2>/dev/null)" == "PM_INITIAL_BUDGET=$expected" ]]
+}
+check_budget 0 ok false ok
+check_budget 1 reached false reached
+check_budget 2 unknown false unknown
+check_budget 3 '' false unknown
+check_budget 1 reached true explicit-override
+check_budget 1 '' false unknown
+check_budget 0 reached false unknown
+[[ -s "$scratch/budget-call" ]]
+rm "$scratch/budget-call"
+check_budget 1 reached false not-applicable false
+[[ ! -e "$scratch/budget-call" ]]
+rm -f "$budget_check"
+ln -s "$root/.claude/scripts/credit-budget.sh" "$budget_check"
+check_budget 0 '' false unknown
+rm -f "$budget_check"
+check_budget 0 '' false unknown
+grep -Fq 'Day-mode initial 1B.5 dispatch checks the credit budget in flow:launch' "$skill/SKILL.md"
+
+printf '%s\n' 'PM module routes: 26 operation/phase pairs, invalid/missing guards, installed symlink and unset-HOME fallback'

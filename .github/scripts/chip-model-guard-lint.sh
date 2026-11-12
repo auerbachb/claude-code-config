@@ -262,6 +262,7 @@ fi
 # --- 2. Canonical emitter skills -----------------------------------------
 for skill in "${CANONICAL_EMITTERS[@]}"; do
   skill_file="${SKILLS_DIR}/${skill}/SKILL.md"
+  if [[ "$skill" == pm ]]; then skill_file="${SKILLS_DIR}/pm/modules/flow/launch.md"; fi
   if [[ ! -f "$skill_file" ]]; then
     echo "::error::${skill_file} not found — canonical chip emitter missing"
     errors=$((errors + 1))

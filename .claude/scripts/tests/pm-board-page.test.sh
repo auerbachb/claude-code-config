@@ -197,9 +197,9 @@ class ProjectBoard(unittest.TestCase):
         self.assertEqual(state[FOREIGN]["marker"], 42)
 
     def test_pm_routes_use_shared_publication(self):
-        skill = (ROOT / ".claude/skills/pm/SKILL.md").read_text()
-        launch = skill.split("### 3.1:", 1)[1].split("### 3.2:", 1)[0]
-        progress = skill.split("### 3.3a:", 1)[1].split("### 3.4:", 1)[0]
+        modules = ROOT / ".claude/skills/pm/modules/flow"
+        launch = (modules / "launch.md").read_text()
+        progress = (modules / "progress.md").read_text()
         self.assertIn("#persistent-project-board", launch)
         self.assertIn("each observed merged or blocked outcome", progress)
         self.assertIn("every due report", progress)
