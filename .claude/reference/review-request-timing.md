@@ -22,12 +22,16 @@ REVIEW_REQUEST_CHECKS=rule-lint,hook-tests-py39
 2. A blocking conclusion on a counted check (`failure`, `timed_out`, `cancelled`, `action_required`, `startup_failure`, `stale`) means no request on that HEAD, whatever else runs.
 3. Named checks: each name's newest run decides. A name with no run yet is pending until 900 seconds have passed since the later of the HEAD commit time and the first poll that saw that HEAD (`review_request_seen_epoch` in session state). After that it is ignored and listed in `ignored_checks`, so a check that never reports cannot hold the request forever. Once names are given, unnamed checks are not awaited: that is the point of the list.
 4. No names: every non-reviewer run must be completed and non-blocking. No runs at all waits until the same 900-second grace passes, then requests (a repo with no CI).
-5. One request per HEAD. A request already recorded for the HEAD (`review_request_head_sha` in session state) is never repeated by the timing gate. A new push is a new HEAD and eligible again.
+5. One request per HEAD. The first request claims the HEAD (`review_request_head_sha` in session state, written by compare-and-set before the post, released if the post fails). Once recorded, no path posts a second `@codeant-ai review` for that HEAD, including the complexity cadence. A new push is a new HEAD and eligible again.
 6. A `ci-only` tier requests nothing: the tier path already excludes every reviewer.
 7. The request is `@codeant-ai review`, posted by `maybe-trigger-ai-review.sh`. Paid reviewers stay owner-approval only (`safety.md` §Paid AI Reviews); this setting adds no path that posts `@cursor review` or `@greptileai`.
 8. An unreadable check list, commit time or tier answer holds the request for that tick (fail closed). The next tick asks again.
 
-The legacy complexity cadence (`#362`) can still post a second CodeAnt request on a later CR round of the same HEAD. That policy is separate from this timing gate and is unchanged.
+The complexity cadence (`#362`) in the legacy path (no `## Review policy` table) decides only what it governed before, after the first request: on a HEAD with a recorded request it posts no second CodeAnt request. Its first request for a HEAD is not gated by the cadence: when the request gate says `request`, the first request posts even while the cadence is below its round or score gate. `on-push` keeps the cadence exactly as it was. `@cursor review` stays owner-approval only and is unchanged.
+
+A tiered repo (a `## Review policy` table) still defers to its complexity skip for the first request; only the legacy path has this change so far.
+
+The HEAD check-run input is read with `gh api --paginate`, then reduced by `check-runs-dedup.sh`, the same rule the merge gate uses: one verdict per check name, newest suite wins. An older failed run superseded by a newer successful suite does not hold; a failing run in the newest suite does.
 
 ## Dashboard checklist (manual, not done by the harness)
 

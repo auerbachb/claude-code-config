@@ -101,12 +101,31 @@ check_eq "the same names inside the grace still wait" "wait/named_checks_pending
 out="$(run after-ci " rule-lint , " "" "$HEAD_OLD" "$GREEN")"
 check_eq "names are trimmed and empty entries dropped" "request/named_checks_green" "$(decision "$out")"
 
+echo "== superseded runs, through the merge gate's dedup rule (check-runs-dedup.sh) =="
+dedup_gate() { # <setting> <checks> <head-epoch> <raw check runs> -> decision line
+  printf '%s' "$4" | bash "$REPO_ROOT/.claude/scripts/check-runs-dedup.sh" \
+    | bash "$GATE" --setting "$1" --head "$SHA" --checks "$2" --requested-head "" \
+      --head-epoch "$3" --now-epoch "$NOW" 2>"$TMP/err"
+}
+SUPERSEDED='{"check_runs":[{"id":1,"name":"rule-lint","status":"completed","conclusion":"failure","started_at":"2026-11-11T09:00:00Z","check_suite":{"id":10},"app":{"slug":"github-actions"}},{"id":2,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T10:00:00Z","check_suite":{"id":11},"app":{"slug":"github-actions"}}]}'
+out="$(dedup_gate after-ci "" "$HEAD_OLD" "$SUPERSEDED")"
+check_eq "an older failed run superseded by a newer successful suite → request" "request/ci_green" "$(decision "$out")"
+NEWEST_FAILS='{"check_runs":[{"id":1,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T09:00:00Z","check_suite":{"id":10},"app":{"slug":"github-actions"}},{"id":2,"name":"rule-lint","status":"completed","conclusion":"failure","started_at":"2026-11-11T10:00:00Z","check_suite":{"id":11},"app":{"slug":"github-actions"}}]}'
+out="$(dedup_gate after-ci "" "$HEAD_OLD" "$NEWEST_FAILS")"
+check_eq "a failing run in the newest suite → held (none)" "none/ci_failed" "$(decision "$out")"
+CURSOR_CI='{"check_runs":[{"id":3,"name":"cursor-pagination","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}},{"id":4,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}'
+out="$(dedup_gate after-ci "" "$HEAD_OLD" "$CURSOR_CI")"
+check_eq "a check whose name merely contains 'cursor' is CI, not a reviewer (fails the gate)" "none/ci_failed" "$(decision "$out")"
+NAMED_REVIEWER='{"check_runs":[{"id":5,"name":"CodeRabbit","status":"completed","conclusion":"failure"},{"id":6,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}'
+out="$(dedup_gate after-ci "" "$HEAD_OLD" "$NAMED_REVIEWER")"
+check_eq "an exact-named reviewer check with no publisher is excluded → request" "request/ci_green" "$(decision "$out")"
+
 echo "== bad input fails closed =="
 check_eq "non-JSON check-run input → exit 4" "4" "$(echo bogus | bash "$GATE" --setting after-ci --head "$SHA" --now-epoch "$NOW" >/dev/null 2>&1; echo $?)"
 check_eq "unknown setting → usage exit 2" "2" "$(echo "$EMPTY" | bash "$GATE" --setting sometimes --head "$SHA" >/dev/null 2>&1; echo $?)"
 check_eq "missing --head → usage exit 2" "2" "$(echo "$EMPTY" | bash "$GATE" --setting after-ci >/dev/null 2>&1; echo $?)"
 check_eq "a flag with no value → usage exit 2" "2" "$(echo "$EMPTY" | bash "$GATE" --setting >/dev/null 2>&1; echo $?)"
-QUEUED='{"check_runs":[{"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T10:00:00Z","app":{"slug":"github-actions"}},{"name":"rule-lint","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]}'
+QUEUED='{"check_runs":[{"id":2,"name":"rule-lint","status":"queued","conclusion":null,"check_suite":{"id":21},"app":{"slug":"github-actions"}},{"id":1,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T10:00:00Z","check_suite":{"id":20},"app":{"slug":"github-actions"}}]}'
 out="$(run after-ci "rule-lint" "" "$HEAD_OLD" "$QUEUED")"
 check_eq "a newer queued re-run (higher id, no start time) is the one that counts → wait" "wait/named_checks_pending" "$(decision "$out")"
 RERUN_GREEN='{"check_runs":[{"id":1,"name":"rule-lint","status":"queued","conclusion":null,"app":{"slug":"github-actions"}},{"id":2,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T10:00:00Z","app":{"slug":"github-actions"}}]}'

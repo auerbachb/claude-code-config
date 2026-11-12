@@ -88,24 +88,28 @@ NAMES_JSON="$(printf '%s\n' "$CHECKS" | jq -Rc 'split(",") | map(gsub("^[[:space
   || { echo "review-request-gate.sh: could not parse --checks" >&2; exit 4; }
 
 RUNS_IN="$(cat)"
-if ! jq -e '.check_runs | type == "array"' <<<"$RUNS_IN" >/dev/null 2>&1; then
-  echo "review-request-gate.sh: check-run input is not {check_runs: [...]}" >&2
+if ! jq -e '(type == "array") or ((.check_runs? // null) | type == "array")' <<<"$RUNS_IN" >/dev/null 2>&1; then
+  echo "review-request-gate.sh: check-run input is not a check-run array or {check_runs: [...]}" >&2
   exit 4
 fi
 
 RESULT="$(jq -c \
   --argjson names "$NAMES_JSON" --argjson now "$NOW_EPOCH" \
   --argjson head "${HEAD_EPOCH:-null}" --argjson grace "$GRACE_S" '
+  # The reviewer rule of ci-status.sh: by app slug, or by exact name when the
+  # publisher is absent. Exact names, never a substring (cursor-pagination is CI).
   def reviewer:
-    ((.app.slug // "") | IN("coderabbitai", "codeant-ai", "cursor", "greptile-apps", "graphite-app"))
-    or ((.name // "") | test("coderabbit|codeant|bugbot|cursor|greptile"; "i"));
+    (.app.slug // "") as $slug
+    | if $slug == "" then ((.name // "") | IN("CodeRabbit", "CodeAnt", "Cursor Bugbot", "Greptile", "Graphite / AI Reviews"))
+      else ($slug | IN("codeant-ai", "codeant", "cursor", "cursor-com", "coderabbitai", "coderabbit", "greptile-apps", "greptile", "graphite-app", "graphite"))
+      end;
   def state:
     if (.status // "") != "completed" or (.conclusion // null) == null then "pending"
     elif (.conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale")) then "blocking"
     else "ok" end;
   def newest($runs; $n): [ $runs[] | select(.name == $n) ] | sort_by(.id // 0) | last;
   def past_grace: if $head == null then false else (($now - $head) > $grace) end;
-  (.check_runs | map(select(reviewer | not))) as $ci
+  ((if type == "array" then . else .check_runs end)) | map(select(reviewer | not)) as $ci
   | if ($names | length) == 0 then
       ([ $ci[] | state ]) as $st
       | if any($st[]; . == "blocking") then {decision: "none", reason: "ci_failed"}

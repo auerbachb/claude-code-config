@@ -50,6 +50,8 @@ cp "${MAYBE_TRIGGER_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/maybe-trigger-ai-rev
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/review-request-gate.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/check-runs-dedup.sh" "$STUB_DIR/"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/pr-authorship.sh"; chmod +x "$STUB_DIR/pr-authorship.sh"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/"
 # The real normaliser, not a stub: the shared helper declines to suppress when
 # this library will not load, so a missing copy would make every scenario post
@@ -84,7 +86,7 @@ sub="${1-}"; shift || true
 case "$sub" in
   pr)
     case "${1-}" in
-      view) echo "$FIXTURE_HEAD_SHA"; exit 0 ;;
+      view) if [[ "$*" == *isDraft* ]]; then echo '{"state":"OPEN","isDraft":false}'; else echo "$FIXTURE_HEAD_SHA"; fi; exit 0 ;;
       comment)
         prev=""
         for a in "$@"; do

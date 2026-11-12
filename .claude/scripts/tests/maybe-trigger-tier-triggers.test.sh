@@ -72,7 +72,8 @@ printf '%s\n' "$FIXTURE_CAP_OUT"
 exit "${FIXTURE_CAP_RC:-0}"
 EOF
 printf '#!/usr/bin/env bash\necho "${FIXTURE_ROUNDS:-3}"\n' > "$S/cycle-count.sh"
-printf '#!/usr/bin/env bash\necho 500\n' > "$S/complexity-score.sh"
+printf '#!/usr/bin/env bash\necho "${FIXTURE_SCORE:-500}"\n' > "$S/complexity-score.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$S/pr-authorship.sh"
 chmod +x "$S"/*.sh
 
 export FX="$TMP/fx" POSTED="$TMP/posted"
@@ -301,7 +302,7 @@ check_eq "legacy: no approval skip reported" "null" "$(f .bugbot_skipped)"
 check_eq "legacy: the grant is used" "consumed" "$(grant_status)"
 export FIXTURE_ROUNDS=5
 run
-check_eq "legacy: the next round on the same HEAD posts no second @cursor review" "@codeant-ai review;@cursor review;@codeant-ai review;" "$(posted)"
+check_eq "legacy: the next round on the same HEAD posts no second @cursor review and no second CodeAnt request (#2195)" "@codeant-ai review;@cursor review;" "$(posted)"
 check_eq "legacy: the approval skip is back" "approval_required" "$(f .bugbot_skipped.reason)"
 reset "$(tier_json absent legacy)"
 grant_for "$HEAD"
@@ -338,7 +339,7 @@ check_eq "legacy: a failed BugBot post reports trigger_failed" "yes" "$( [[ "$ER
 check_eq "legacy: a failed BugBot post releases the grant" "unused" "$(grant_status)"
 export FIXTURE_POST_FAIL=""
 unset CLAUDE_CODE_SESSION_ID
-rm -f "$S/paid-review-grant.sh" "$S/pr-authorship.sh"
+rm -f "$S/paid-review-grant.sh"
 
 echo "== an unresolvable tier on a policy repo posts nothing =="
 reset ""
@@ -362,6 +363,14 @@ rm -f "$WORK/.claude/pm-config.md"
 run
 check_eq "the same failure on a policy-free checkout: legacy, the free reviewer posts" "@codeant-ai review;" "$(posted)"
 
+# The unresolvable-tier section above replaced the resolver stub; restore the
+# fixture-driven one so the request cases below read their own tier answer.
+cat > "$S/review-tier.sh" <<'STUB'
+#!/usr/bin/env bash
+[[ -n "${FIXTURE_TIER_OUT:-}" ]] && printf '%s\n' "$FIXTURE_TIER_OUT"
+exit "${FIXTURE_TIER_RC:-0}"
+STUB
+chmod +x "$S/review-tier.sh"
 echo "== review request after CI (#2195), legacy path: pending, failed, green, same HEAD, new push =="
 reset "$(tier_json absent legacy)"
 checks null 600 in_progress
@@ -385,6 +394,40 @@ check_eq "a new push is eligible again: one more request" "@codeant-ai review;@c
 export FIXTURE_HEAD="$HEAD"
 
 echo
+echo "== first request while the complexity cadence is not due (#2195), legacy =="
+reset "$(tier_json absent legacy)"
+export FIXTURE_SCORE=50 FIXTURE_ROUNDS=0
+checks null 600 in_progress
+run
+check_eq "not due, CI pending: no request" "" "$(posted)"
+check_eq "not due, CI pending: the complexity skip reports (nothing posted)" "skipped:cr_rounds_lt_2" "$(f '"\(.status):\(.reason)"')"
+checks failure 600
+run
+check_eq "not due, CI failed: no request" "" "$(posted)"
+checks success 7200
+run
+check_eq "not due, CI green: exactly one request" "@codeant-ai review;" "$(posted)"
+check_eq "not due, CI green: first-request reason" "triggered:review_request_first" "$(f '"\(.status):\(.reason)"')"
+check_eq "not due, CI green: HEAD recorded" "$HEAD" "$(cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].review_request_head_sha" 2>/dev/null)"
+run
+check_eq "not due, second tick same HEAD: nothing new" "@codeant-ai review;" "$(posted)"
+export FIXTURE_HEAD="$HEAD2"
+checks success 7200
+run
+check_eq "not due, new HEAD: eligible again" "@codeant-ai review;@codeant-ai review;" "$(posted)"
+export FIXTURE_HEAD="$HEAD"
+unset FIXTURE_SCORE
+echo "== on-push, complexity not due: no request, as before (#2195) =="
+ONPUSH_TIER="$(tier_json absent legacy)"
+ONPUSH_TIER="$(printf '%s' "$ONPUSH_TIER" | jq -c '. + {review_request: "on-push"}')"
+reset "$ONPUSH_TIER"
+export FIXTURE_SCORE=50 FIXTURE_ROUNDS=0
+checks success 7200
+run
+check_eq "on-push, not due: no request" "" "$(posted)"
+check_eq "on-push, not due: the complexity skip still reports" "skipped:cr_rounds_lt_2" "$(f '"\(.status):\(.reason)"')"
+unset FIXTURE_SCORE
+
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
 echo "OK: maybe-trigger-ai-review.sh tier-aware trigger tests passed"
