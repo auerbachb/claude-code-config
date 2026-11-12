@@ -91,46 +91,55 @@ DAY_RC=0
 DAY_STATE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day") || DAY_RC=$?
 echo "DAY_STATE=${DAY_STATE:-null} DAY_RC=$DAY_RC"
 
-# Per-PR handoff files — read ONLY the ones for PRs in this repo's scope. The
-# handoff filename is still global (issue #655), so two repos at one PR number
-# share a file; gating on the scoped PR set AND verifying each payload's repo
-# bounds that leak on the read side without the rename #655 tracks.
-if [ "$SESSION_VIEW" != "NO_SESSION_STATE" ]; then
-  SCOPED_PRS=$(jq -r '(.prs // {}) | keys[]' <<<"$SESSION_VIEW" 2>/dev/null)
-  CUR_REPO=$(jq -r '.repo // ""' <<<"$SESSION_VIEW" 2>/dev/null)
-else
-  SCOPED_PRS=""
-  CUR_REPO=""
+```
+
+Run the handoff block in the same shell as the scoped state reads above.
+Resolve handoffs from that scoped PR list. A scoped file takes precedence.
+A flat or linked scoped file must name this repository. Read each payload once
+and reject malformed or mismatched identities.
+
+<!-- test-anchor: pm-resume-scoped-handoffs -->
+```bash
+SCOPED_PRS=""
+CUR_REPO="${REPO_KEY:-}"
+if [[ "$CUR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ &&
+      "/$CUR_REPO/" != */./* && "/$CUR_REPO/" != */../* ]]; then
+  SCOPED_PRS=$(jq -sr --arg repo "$CUR_REPO" '
+    select(length == 1) | .[0] | objects | select(.repo == $repo)
+    | .prs | objects | keys[] | select(test("\\A[1-9][0-9]*\\z"))
+  ' <<< "${SESSION_VIEW:-}" 2>/dev/null) || SCOPED_PRS=""
+fi
+handoff_root=""
+if [[ "${HOME:-}" == /* ]]; then
+  # Keep the original path so the physical comparison detects linked HOME too.
+  handoff_root="${HOME%/}/.claude/handoffs"
 fi
 found_handoffs=false
-# Read-safe iteration: quoted, one key per line, numeric PR keys only (never
-# word-split an unquoted list into the path below).
 while IFS= read -r n; do
-  [ -n "$n" ] || continue
-  case "$n" in *[!0-9]*) continue ;; esac
-  # Resolve handoff path: scoped layout takes priority (issue #655); flat fallback for legacy files.
-  or=$([ -f "$HOME/.claude/session-state.json" ] && \
-    jq -r --arg n "$n" '(.repos // {}) | to_entries[] | select(.value.prs[$n].owner_repo?) | .value.prs[$n].owner_repo' \
-    "$HOME/.claude/session-state.json" 2>/dev/null | head -1 || true)
-  if [ -n "$or" ] && [ "$or" != "null" ]; then
-    f="$HOME/.claude/handoffs/${or}/pr-${n}-handoff.json"
-    [ -f "$f" ] || f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
-  else
-    f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  [[ -n "$handoff_root" && "$n" =~ ^[1-9][0-9]*$ ]] || continue
+  scoped_dir="$handoff_root/$CUR_REPO"
+  f="$scoped_dir/pr-$n-handoff.json"
+  require_owner=false
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    f="$handoff_root/pr-$n-handoff.json"
+    require_owner=true
+  elif [ -L "$f" ] || ! physical_dir=$(cd -- "$scoped_dir" 2>/dev/null && pwd -P) ||
+       [ "$physical_dir" != "$scoped_dir" ]; then
+    require_owner=true
   fi
-  [ -f "$f" ] || continue
-  # If the payload names a DIFFERENT repo than this one, it's the other repo's
-  # handoff colliding on this PR number (#655) — skip it. A null/absent
-  # owner_repo is unknown, not a mismatch, so fall back to the PR-number scope.
-  ho_repo=$(jq -r '.owner_repo // ""' "$f" 2>/dev/null)
-  if [ -n "$ho_repo" ] && [ -n "$CUR_REPO" ] && [ "$ho_repo" != "$CUR_REPO" ]; then
-    continue
-  fi
+  [ -f "$f" ] && [ -r "$f" ] || continue
+  payload=$(jq -cse --arg repo "$CUR_REPO" --arg pr "$n" --argjson require_owner "$require_owner" '
+    select(length == 1) | .[0] | objects |
+    select((has("pr_number") | not) or (.pr_number | type == "number" and tostring == $pr)) |
+    select(
+      if .owner_repo == null then ($require_owner | not)
+      else (.owner_repo | type == "string" and ascii_downcase == ($repo | ascii_downcase))
+      end)
+    ' "$f" 2>/dev/null) || continue
   found_handoffs=true
-  echo "--- $f ---"
-  cat "$f"
-done < <(printf '%s\n' "$SCOPED_PRS")
-$found_handoffs || echo "NO_HANDOFF_FILES"
+  printf '%s\n%s\n' "--- $f ---" "$payload"
+done <<< "$SCOPED_PRS"
+$found_handoffs || echo NO_HANDOFF_FILES
 ```
 
 > **Invoking-repo scope (issue #687).** Every default surface of `/pm` — the
