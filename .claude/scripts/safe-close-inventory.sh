@@ -286,7 +286,9 @@ mark_session state_markers '.resumes' "resume"
 for lpath in '.leave' ".repos[\"$REPO\"].leave"; do
   [[ "$lpath" == .repos* && -z "$REPO" ]] && continue
   if raw="$(ss_get "$lpath")"; then
-    if jq -e 'type=="object" and (.active == true)' >/dev/null <<<"$raw"; then
+    if ! jq -e 'type=="object" or type=="null"' >/dev/null 2>&1 <<<"$raw"; then
+      cat_unknown state_markers "session-state $lpath has an unexpected shape"
+    elif jq -e 'type=="object" and (.active == true)' >/dev/null <<<"$raw"; then
       lsid="$(jq -r '(.session_id // .session // "")' <<<"$raw")"
       if [[ -z "$lsid" ]]; then
         cat_unknown state_markers "an armed repo-scoped leave marker names no session, so it cannot be attributed to this thread"

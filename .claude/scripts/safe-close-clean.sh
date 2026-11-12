@@ -195,7 +195,7 @@ ss() { "$SESSION_STATE_SH" --repo "$REPO" "$@"; }
 
 # ---- 1. issue claims -------------------------------------------------------------------
 clean_claims() {
-  local items row n cout verdict holder_rec holder open_prs pr_ok=1 cover
+  local items row n cout verdict holder_rec holder open_prs pr_ok=1 cover held_json held cid
   items="$(items_of claims | jq -c 'select(.ref.kind == "claim")')" || { emit failed claims "-" "could not read the inventory's claim items"; return; }
   [[ -n "$items" ]] || return 0
   if [[ -z "$CLAIM_SH" ]]; then
@@ -206,6 +206,12 @@ clean_claims() {
   fi
   open_prs="$(gh pr list --repo "$REPO" --author "@me" --state open --json number,headRefName,closingIssuesReferences --limit 100 2>/dev/null)" || pr_ok=0
   if (( pr_ok == 1 )) && ! jq -e 'type == "array" and length < 100' >/dev/null 2>&1 <<<"$open_prs"; then pr_ok=0; fi
+  # Issues that a work-holding worktree or branch of this thread still names (issue-N-* branches): the
+  # claim is the only thing stopping a second thread from redoing that work, so it stays.
+  held_json="$(jq -c '[.items[]
+      | select((.category == "worktrees" and ((.id // "") | test("^(dirty|unpushed):")))
+               or (.category == "branches" and .consequence != "harmless"))
+      | ((.ref.branch // "") | capture("^(worktree-)?issue-(?<k>[0-9]+)(-|$)")? | (.k | tonumber))]' <<<"$INV" 2>/dev/null)" || held_json=""
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
     n="$(jq -r '.ref.issue' <<<"$row")"
@@ -228,10 +234,22 @@ clean_claims() {
         "merge PR #$cover (/wrap) and the claim is released; or run issue-claim.sh $n --release"
       continue
     fi
+    if [[ -z "$held_json" ]]; then
+      emit kept claim "issue #$n" "could not tell whether a worktree or branch still holds unlanded work for it" "re-run /safe-close"
+      emit failed claim "issue #$n" "the inventory's work-holding items could not be read; claim kept"
+      continue
+    fi
+    held="$(jq -r --argjson n "$n" 'index($n) != null' <<<"$held_json" 2>/dev/null)" || held=""
+    if [[ "$held" != false ]]; then
+      emit kept claim "issue #$n" "a worktree or branch of this thread still holds unlanded work for it, so the claim stays" \
+        "commit, push and open a PR for it, then run /safe-close again"
+      continue
+    fi
     cout="$("$CLAIM_SH" "$n" --check --json --repo "$REPO" --holder "$SESSION" 2>/dev/null)"
     if ! jq -e '.verdict != null' >/dev/null 2>&1 <<<"$cout"; then
       emit failed claim "issue #$n" "could not read the claim; kept"; continue
     fi
+    cid="$(jq -r '.claim_comment_id // ""' <<<"$cout")"
     verdict="$(jq -r '.verdict' <<<"$cout")"
     holder_rec="$(jq -r '.claimant_holder // ""' <<<"$cout")"
     case "$verdict" in
@@ -242,11 +260,15 @@ clean_claims() {
       unclaimed|stale) continue ;;
       *) emit failed claim "issue #$n" "claim state is '$verdict'; kept"; continue ;;
     esac
+    if [[ ! "$cid" =~ ^[1-9][0-9]*$ ]]; then
+      emit failed claim "issue #$n" "the claim's comment id could not be read, so it cannot be released against the claim that was checked; kept"; continue
+    fi
     if (( DO == 0 )); then done_or_would claim "issue #$n" "claim would be released (holder $holder)"; continue; fi
     # --release compares logins, not holders, so a sibling thread of this account that took the claim
-    # between the check above and this call would lose it. The window is the two adjacent calls; the
-    # read-back below reports a claim that is not unclaimed afterwards as failed, never as released.
-    "$CLAIM_SH" "$n" --release --repo "$REPO" --holder "$holder" --json >/dev/null 2>&1
+    # between the check above and this call would lose it. --expect-claim-id makes the release refuse
+    # (exit 5, nothing written) when the claim is no longer the one that was checked; the read-back below
+    # still reports a claim that is not unclaimed afterwards as failed, never as released.
+    "$CLAIM_SH" "$n" --release --repo "$REPO" --holder "$holder" --expect-claim-id "$cid" --json >/dev/null 2>&1
     # The release command's exit status is not proof: read the claim back.
     cout="$("$CLAIM_SH" "$n" --check --json --repo "$REPO" --holder "$SESSION" 2>/dev/null)"
     if jq -e '.verdict == "unclaimed"' >/dev/null 2>&1 <<<"$cout"; then
@@ -345,6 +367,7 @@ $p"
   "$SWEEP_SH" --trigger post-merge --repo-dir "$WT" >/dev/null 2>&1
   rc=$?
   SWEEP_JSON="$(jq -nc --argjson rc "$rc" '{ran:true, exit:$rc, note:"exit status is not evidence; removal was read back"}')"
+  emit notes sweep "-" "the finished-work sweep covers the whole repository: it also removes other threads' worktrees whose PR is verified merged, clean, pushed and idle (the same sweep /wrap runs after every merge); only this thread's are listed"
   # Read back: what is still registered, what is still on disk.
   if ! wlist="$(git -C "$WT" worktree list --porcelain 2>/dev/null)"; then
     emit failed sweep "-" "could not re-read the worktree list after the sweep; nothing is reported removed"; return
@@ -373,11 +396,12 @@ $cands
 " in *"
 $p
 "*) ;; *) continue ;; esac
-    if git -C "$WT" show-ref --verify --quiet "refs/heads/$b" 2>/dev/null; then
-      emit notes branch "$b" "the local branch still exists" "the sweep deletes it once its PR is verified merged; /pm-clean lists the rest"
-    else
-      done_or_would branch "$b" "local branch removed with its finished worktree and confirmed gone"
-    fi
+    git -C "$WT" show-ref --verify --quiet "refs/heads/$b" 2>/dev/null
+    case $? in
+      0) emit notes branch "$b" "the local branch still exists" "the sweep deletes it once its PR is verified merged; /pm-clean lists the rest" ;;
+      1) done_or_would branch "$b" "local branch removed with its finished worktree and confirmed gone" ;;
+      *) emit failed branch "$b" "could not read the branch refs after the sweep, so its removal is unconfirmed" ;;
+    esac
   done < <(items_of worktrees | jq -c 'select(.id | startswith("clean:"))')
 }
 
@@ -388,7 +412,8 @@ cas_set() { ss --cas "$1=$3" --expect "$2" >/dev/null 2>&1; }
 clean_state() {
   local items row key rec sid gone raw agents recsess kind path val expect new cur wdt
   # (a) subagent records: removed only when the harness showed the runtime id absent.
-  items="$(items_of subagents | jq -c 'select(.ref.kind == "state_record")')" || items=""
+  items="$(items_of subagents | jq -c 'select(.ref.kind == "state_record")')" \
+    || { items=""; emit failed agents "-" "could not read the inventory's subagent records"; }
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
     key="$(jq -r '.ref.key' <<<"$row")"
@@ -508,7 +533,7 @@ count_find() {
   FOUND_N="$(printf '%s' "$out" | awk 'END { print NR }')"
 }
 clean_scratch() {
-  local row dir real home_real before kept_env other left depth nested
+  local row dir real home_real before kept_env other left depth nested hdepth
   row="$(items_of scratchpad | jq -c 'select(.ref.kind == "scratchpad")' | head -n 1)" || row=""
   [[ -n "$row" ]] || return 0
   dir="$(jq -r '.ref.path' <<<"$row")"
@@ -523,6 +548,12 @@ clean_scratch() {
   if [[ "$real" == / || "$real" == "$home_real" || "$real" == "${HOME:-/nonexistent}" || "$depth" -lt 3 || -e "$real/.git" ]] \
      || git -C "$real" rev-parse --show-toplevel >/dev/null 2>&1; then
     emit failed scratch "$real" "refusing to delete in a directory that looks like a home, a root or a git checkout"; return
+  fi
+  # Nothing at or just below a home directory (Documents, Downloads, Desktop, ~/.claude) is a scratchpad,
+  # and no ancestor of a home directory is either.
+  hdepth="$(printf '%s' "$home_real" | awk -F/ '{n=0; for (i=1;i<=NF;i++) if ($i != "") n++; print n}')"
+  if [[ "$real/" == "$home_real/"* && $(( depth - hdepth )) -lt 3 ]] || [[ "$home_real/" == "$real/"* ]]; then
+    emit failed scratch "$real" "refusing to delete at or just below a home directory"; return
   fi
   # A git checkout nested anywhere below holds work-in-progress: fail closed, delete nothing.
   count_find "$real" -name .git || { emit failed scratch "$real" "the scratch tree could not be fully read; nothing deleted"; return; }

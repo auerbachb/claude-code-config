@@ -39,19 +39,26 @@ SCRIPT="$S/safe-close-clean.sh"
 
 cat > "$S/issue-claim.sh" <<'EOF'
 #!/usr/bin/env bash
-n="$1"; shift; mode=""; holder=""
+n="$1"; shift; mode=""; holder=""; expect=""
 while [[ $# -gt 0 ]]; do
-  case "$1" in --check|--release|--claim) mode="$1" ;; --holder) holder="$2"; shift ;; --repo) shift ;; esac
+  case "$1" in --check|--release|--claim) mode="$1" ;; --holder) holder="$2"; shift ;; --expect-claim-id) expect="$2"; shift ;; --repo) shift ;; esac
   shift
 done
 f="$CLAIM_DIR/$n"
+cid=101; [[ -f "$f.cid" ]] && cid="$(cat "$f.cid")"
 case "$mode" in
   --check)
     if [[ -f "$f" ]]; then
       h="$(cat "$f")"; v=claimed; [[ "$h" == "$holder" ]] && v=mine
-      printf '{"verdict":"%s","claimant_holder":"%s"}\n' "$v" "$h"; [[ "$v" == mine ]]
+      printf '{"verdict":"%s","claimant_holder":"%s","claim_comment_id":%s}\n' "$v" "$h" "$cid"
+      # STUB_CLAIM_ROTATE: a sibling thread re-claims right after the first read (a new comment id).
+      if [[ -n "${STUB_CLAIM_ROTATE:-}" && ! -f "$f.rot" ]]; then touch "$f.rot"; echo 202 > "$f.cid"; fi
+      [[ "$v" == mine ]]
     else echo '{"verdict":"unclaimed"}'; fi ;;
-  --release) [[ -n "${STUB_CLAIM_RELEASE_FAILS:-}" ]] && exit 0; rm -f "$f"; echo '{"verdict":"unclaimed"}' ;;
+  --release)
+    [[ -n "${STUB_CLAIM_RELEASE_FAILS:-}" ]] && exit 0
+    if [[ -n "$expect" && "$expect" != "$cid" ]]; then echo '{"verdict":"claimed"}'; exit 5; fi
+    rm -f "$f"; echo '{"verdict":"unclaimed"}' ;;
 esac
 EOF
 cat > "$S/workspace-sweep.sh" <<'EOF'
@@ -153,7 +160,22 @@ ok "an unreadable open-PR list keeps the claim and is reported, not skipped"
 OUT="$(INVJ "[$(claim_item 5)]" | STUB_CLAIM_RELEASE_FAILS=1 CLEAN apply)"; rc=$?
 [[ $rc == 1 && "$(jqr '.removed|length')" == 0 && "$(jqr '.failed|length')" == 1 ]] || fail "a release that left the claim must be failed, not removed"
 ok "a release that changes nothing is read back and reported failed"
+# a sibling thread re-claims between the check and the release: the release must refuse
+echo "$SESSION" > "$CLAIM_DIR/5"
+OUT="$(INVJ "[$(claim_item 5)]" | STUB_CLAIM_ROTATE=1 CLEAN apply)"; rc=$?
+[[ -f "$CLAIM_DIR/5" && "$(jqr '.removed|length')" == 0 && $rc == 1 ]] || fail "a claim whose comment changed after the check must not be released"
 rm -f "$CLAIM_DIR"/*
+ok "a claim re-taken between the check and the release is not released"
+# a worktree or branch that still holds unlanded work for the issue keeps its claim
+echo "$SESSION" > "$CLAIM_DIR/11"; echo "$SESSION" > "$CLAIM_DIR/12"; echo "$SESSION" > "$CLAIM_DIR/13"
+HELD_ITEMS="[$(claim_item 11),$(claim_item 12),$(claim_item 13),
+  {\"category\":\"worktrees\",\"id\":\"dirty:/x/wip\",\"summary\":\"s\",\"consequence\":\"lost\",\"detail\":\"d\",\"ref\":{\"kind\":\"worktree\",\"path\":\"/x/wip\",\"branch\":\"issue-11-wip\"}},
+  {\"category\":\"branches\",\"id\":\"branch:issue-12-x\",\"summary\":\"s\",\"consequence\":\"orphaned\",\"detail\":\"d\",\"ref\":{\"kind\":\"branch\",\"branch\":\"issue-12-x\"}}]"
+echo '[]' > "$STUB_DIR/prlist.json"
+OUT="$(INVJ "$HELD_ITEMS" | CLEAN apply)"
+[[ -f "$CLAIM_DIR/11" && -f "$CLAIM_DIR/12" && ! -f "$CLAIM_DIR/13" ]] || fail "claims on issues a dirty worktree or an unlanded branch still names must be kept; the unrelated one released"
+rm -f "$CLAIM_DIR"/*
+ok "a claim stays while a work-holding worktree or branch still names its issue"
 
 # ---- 4. handoffs ------------------------------------------------------------------------------------------
 for n in 7 8 9 10; do "$S/handoff-state.sh" --owner-repo "$REPO" --create "$n" "{\"schema_version\":\"1.0\",\"pr_number\":$n}"; done
@@ -289,6 +311,13 @@ mkdir -p "$TMP/repo-like/x/y"; git init -q "$TMP/repo-like/x/y"; echo k > "$TMP/
 OUT="$(INVJ "[$(scratch_item "$TMP/repo-like/x/y")]" | CLEAN apply --scratchpad "$TMP/repo-like/x/y")"; rc=$?
 [[ $rc == 1 && -f "$TMP/repo-like/x/y/keep.txt" ]] || fail "a git checkout must never be treated as a scratchpad"
 ok "a mismatched scratchpad and a git checkout are refused"
+# nothing at or just below a home directory is a scratchpad, whatever the caller names
+mkdir -p "$HOME/Documents/notes"; echo keep > "$HOME/Documents/notes/important.txt"
+for d in "$HOME/Documents" "$HOME/Documents/notes"; do
+  OUT="$(INVJ "[$(scratch_item "$d")]" | CLEAN apply --scratchpad "$d")"; rc=$?
+  [[ $rc == 1 && -f "$HOME/Documents/notes/important.txt" ]] || fail "a directory just below HOME ($d) must never be treated as a scratchpad"
+done
+ok "a directory at or just below HOME is refused as a scratchpad"
 SCR2="$TMP/pad2/scratchpad"; mkdir -p "$SCR2/proj/.git"; echo k > "$SCR2/proj/keep.txt"; echo a > "$SCR2/a.txt"
 OUT="$(INVJ "[$(scratch_item "$SCR2")]" | CLEAN apply --scratchpad "$SCR2")"; rc=$?
 [[ $rc == 1 && -f "$SCR2/proj/keep.txt" && -f "$SCR2/a.txt" && "$(jqr '.removed|length')" == 0 ]] || fail "a git checkout nested in the scratchpad must stop the cleanup with nothing deleted"
