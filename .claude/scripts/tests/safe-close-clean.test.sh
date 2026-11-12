@@ -343,7 +343,7 @@ ok "an incomplete scan says 'at least'; an unreadable count is omitted"
 for n in 1 2 3; do git -C "$W" worktree remove --force "$TMP/wt-ofin$n" 2>/dev/null; done
 git -C "$W" worktree remove --force "$WO" 2>/dev/null
 # A clean, pushed, thread-owned checkout whose PR was CLOSED without merging is unmerged work: kept,
-# named, never named to the helper (which would treat CLOSED as finished).
+# named, never named to the helper (a second line of defence now that the helper keeps CLOSED too).
 git -C "$W" worktree add -q -b agent-closed "$TMP/wt-closed" 2>/dev/null
 WC="$(cd "$TMP/wt-closed" && pwd -P)"
 echo "$WC agent-closed" > "$SWEEP_LIST"

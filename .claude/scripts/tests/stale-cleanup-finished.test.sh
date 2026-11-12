@@ -51,6 +51,10 @@ with tempfile.TemporaryDirectory(prefix='finished-cleanup-test-') as directory:
 
     skill = (source/'.claude/skills/pm-clean/SKILL.md').read_text()
     refresh = skill.split('<!-- test-anchor: finished-workspace-refresh -->',1)[1].split('```bash\n',1)[1].split('\n```',1)[0]
+    def anchor_block(name):
+        return skill.split('<!-- test-anchor: '+name+' -->',1)[1].split('```bash\n',1)[1].split('\n```',1)[0]
+    closed_list = anchor_block('closed-unmerged-list')
+    closed_apply = anchor_block('closed-unmerged-apply')
     refresher = tmp/'refresh.sh'
     refresher.write_text("""#!/usr/bin/env bash
 printf '%s\\n' '{"stale_worktrees":[],"fresh":true}'
@@ -204,8 +208,15 @@ print('p100\\nn'+cwd)
     code, data = sweep(extra={'FINISHED_TEST_CWD':str(live/'child')})
     eligible = {r['branch'] for r in data['finished_worktrees']}
     skipped = {r['branch']:r['reason'] for r in data['skipped_finished_worktrees']}
-    verify({'young','closed'} <= eligible, 'recent merged/closed PRs are finished independently of age')
+    verify('young' in eligible, 'a recent merged PR is finished independently of age')
+    verify('closed' not in eligible and skipped.get('closed')=='closed_unmerged_pr', ('a PR closed without merging is kept, with its reason', eligible, skipped))
     verify(all(r['branch'] not in ('young','closed') for r in data['stale_worktrees']), 'young finished trees are not age candidates')
+    # /pm-clean's own classification: the closed-unmerged worktree lands in the confirm-first list, the merged one never does.
+    listed = json.loads(subprocess.run(['bash','-c',closed_list+'\nprintf "%s" "$CLOSED_UNMERGED_JSON"'],env=dict(env,WORKSPACE_JSON=json.dumps(data)),
+                                       text=True,capture_output=True,check=True).stdout)
+    verify([r['branch'] for r in listed]==['closed'] and listed[0]['path']==os.path.realpath(closed), ('/pm-clean confirm-first list holds exactly the closed-unmerged worktree', listed))
+    verify('young' not in {r['branch'] for r in listed} and 'young' in eligible, 'the merged worktree is in the no-confirmation class, not the confirm-first list')
+    verify('--include-closed-unmerged' in closed_apply and '--only-identity' in closed_apply, '/pm-clean confirmed removal is scoped to the named worktree')
     for branch, reason in [('dirty','uncommitted_tracked_changes'),('untracked','untracked_files'),
                            ('unpushed','unpushed_commits'),('opened','open_pr'),('locked','locked'),
                            ('live','live_process'),('dotenv','protected_env_files'),('foreign','not_authored')]:
@@ -215,11 +226,36 @@ print('p100\\nn'+cwd)
     verify(any(r['branch']=='young' and r['reason']=='caller_worktree' for r in data['skipped_finished_worktrees']), 'caller worktree is protected')
     verify(any(r['reason']=='main_worktree' for r in data['skipped_finished_worktrees']), 'main worktree is protected')
     code, data = sweep('--apply-finished',extra={'FINISHED_TEST_CWD':str(live/'child')})
-    verify(not young.exists() and not closed.exists(), 'finished mode removes both verified trees')
+    verify(not young.exists() and closed.exists() and git('branch','--list','closed')!='', 'finished mode removes the merged tree and keeps the closed-unmerged one')
+    verify(any(r['branch']=='closed' and r['reason']=='closed_unmerged_pr' for r in data['skipped_finished_worktrees']), 'the apply report names the closed-unmerged worktree and why')
     verify(git('branch','--list','young')=='', ('finished local branch removed',data.get('finished_apply'),data.get('unknown_finished_worktrees')))
     verify(git('--git-dir',str(bare),'rev-parse','refs/heads/young')!='', 'remote branch stays intact')
     verify(old.exists() and git('branch','--list','old-unmerged')!='', 'finished mode never reaches age-only apply')
     verify(all(path.exists() for path in [dirty,untracked,unpushed,opened,locked,live,protected,foreign,managed]), 'every unsafe/unknown worktree retained')
+
+    # Confirmed removal of a closed-unmerged worktree: only when named, and only with the explicit flag.
+    for bad_flags in [('--include-closed-unmerged',),('--include-closed-unmerged','--only',str(closed),'--check')]:
+        bad = subprocess.run(['bash',script,'--apply-finished','--root',str(root),'--json',*bad_flags],cwd=root,env=env,capture_output=True)
+        verify(bad.returncode==3 and closed.exists(), '--include-closed-unmerged without a named worktree (or outside --apply-finished) refuses')
+    bad = subprocess.run(['bash',script,'--check','--root',str(root),'--json','--include-closed-unmerged','--only',str(closed)],cwd=root,env=env,capture_output=True)
+    verify(bad.returncode==3 and closed.exists(), '--include-closed-unmerged outside --apply-finished refuses')
+    helper = subprocess.run(['python3',str(source/'.claude/scripts/lib/stale-cleanup-finished.py'),'--root',str(root),'--caller',str(root),'--apply','--include-closed-unmerged'],
+                            cwd=root,env=env,capture_output=True)
+    verify(helper.returncode==2 and closed.exists(), 'the helper refuses the flag without a named worktree too')
+    code, data = sweep('--apply-finished',flags=('--only-identity',str(closed),'closed'),extra={'FINISHED_TEST_CWD':str(live/'child')})
+    verify(closed.exists() and any(r['reason']=='closed_unmerged_pr' for r in data['skipped_finished_worktrees']), 'naming a closed-unmerged worktree is not confirmation by itself')
+    # Another guard outranks the closed reason: unpushed work on a closed PR is reported as unpushed.
+    closed_dirty = worktree('closed-advanced','CLOSED'); (closed_dirty/'README').write_text('more\n'); git('commit','-qam','after close',cwd=closed_dirty)
+    code, data = sweep()
+    verify(any(r['branch']=='closed-advanced' and r['reason']=='unpushed_commits' for r in data['skipped_finished_worktrees']), 'unpushed commits after a closed PR keep their own reason')
+    git('push','-q','push-fixture','closed-advanced')
+    code, data = sweep()
+    verify(any(r['branch']=='closed-advanced' and r['reason']=='branch_advanced_after_pr' for r in data['skipped_finished_worktrees']), 'work pushed after a PR was closed still keeps the worktree')
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed_dirty),'closed-advanced'))
+    verify(closed_dirty.exists(), 'the confirmed path does not bypass the advanced-branch guard')
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed),'closed'),extra={'FINISHED_TEST_CWD':str(live/'child')})
+    verify(not closed.exists() and git('branch','--list','closed')=='' and [r['pr_state'] for r in data['finished_worktrees']]==['CLOSED'], 'a named, confirmed closed-unmerged worktree is removed with its local branch')
+    git('worktree','remove','--force',str(closed_dirty)); git('branch','-D','closed-advanced')
 
     # --only narrows the apply to the named worktrees; omitting it keeps the repo-wide default.
     only_a = worktree('only-a'); only_b = worktree('only-b')

@@ -1,6 +1,6 @@
 ---
 name: pm-clean
-description: Scan two independent fronts and recommend cleanup — open GitHub issues (solved-by-PR, inactive, superseded, duplicates) and the on-disk workspace (stale worktrees + local/remote branches, via the shared stale-cleanup.sh). Never auto-closes issues; age-only workspace cleanup asks first. Verified finished worktrees/local branches can be reaped without confirmation. Triggers on "pm-clean", "stale issues", "clean backlog", "close stale", "clean worktrees", "stale branches", "prune branches".
+description: Scan two independent fronts and recommend cleanup — open GitHub issues (solved-by-PR, inactive, superseded, duplicates) and the on-disk workspace (stale worktrees + local/remote branches, via the shared stale-cleanup.sh). Never auto-closes issues; age-only workspace cleanup asks first. Verified merged worktrees/local branches can be reaped without confirmation; closed-unmerged ones are listed for confirmation. Triggers on "pm-clean", "stale issues", "clean backlog", "close stale", "clean worktrees", "stale branches", "prune branches".
 argument-hint: "[days] (optional — default 30; applies to issue inactivity and worktree/branch age) [--worktree-days N] (optional — override worktree/branch age only)"
 ---
 
@@ -9,7 +9,7 @@ argument-hint: "[days] (optional — default 30; applies to issue inactivity and
 1. **Open GitHub issues** — solved-by-merged-PR, inactive, superseded, potential duplicates.
 2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `stale-cleanup.sh` (this skill holds that script's only direct invocation — one implementation, no divergence).
 
-The two scans never gate each other: one finding nothing does **not** suppress the other. Issue closures and age-only workspace cleanup require confirmation. Verified finished worktrees/local branches are the deliberate noninteractive exception (Issue #1961); unknown liveness never qualifies.
+The two scans never gate each other: one finding nothing does **not** suppress the other. Issue closures and age-only workspace cleanup require confirmation. Verified finished (merged-PR) worktrees/local branches are the deliberate noninteractive exception (Issue #1961); a PR closed without merging is set-aside work, not finished work, and is confirm-first (Issue #2281); unknown liveness never qualifies.
 
 Resolve both scan engines before Step 0:
 
@@ -52,7 +52,7 @@ Record two values for the rest of the run: `DAYS` (issue-inactivity threshold) a
 
 ## Step 1: Issue staleness scan
 
-> **Authorship guard (issue #733, `safety.md`).** `/pm-clean` performs **no PR writes** — it closes issues (after confirmation) and cleans local worktrees/branches; it never merges, comments on, or closes a PR. Any merged-PR data it reads (e.g. "solved by merged PR") is **read-only context**, and may legitimately reference a collaborator's PR. Workspace cleanup already protects **every** open PR's branch (yours and collaborators') from deletion via `stale-cleanup.sh`, so no author filter is applied to that protection by design. The finished class separately requires an owner-authored merged/closed PR through `pr-authorship.sh`.
+> **Authorship guard (issue #733, `safety.md`).** `/pm-clean` performs **no PR writes** — it closes issues (after confirmation) and cleans local worktrees/branches; it never merges, comments on, or closes a PR. Any merged-PR data it reads (e.g. "solved by merged PR") is **read-only context**, and may legitimately reference a collaborator's PR. Workspace cleanup already protects **every** open PR's branch (yours and collaborators') from deletion via `stale-cleanup.sh`, so no author filter is applied to that protection by design. The finished class separately requires an owner-authored merged PR through `pr-authorship.sh`.
 
 ### Step 1.1: Count the open backlog
 
@@ -109,7 +109,9 @@ The additive JSON fields are `finished_worktrees[]` (`path`, `branch`,
 `head_sha`, `pr_number`, `pr_state`, `last_commit_ts`),
 `skipped_finished_worktrees[]` / `unknown_finished_worktrees[]` (path, branch,
 reason), and `finished_scan` (`complete`, `incomplete`, `not_run`). This class is
-independent of `WORKTREE_DAYS`. Read unknowns as incomplete verification, not an
+independent of `WORKTREE_DAYS`. Only a **merged** PR makes a worktree finished: a PR
+closed without merging is kept with reason `closed_unmerged_pr` (reported only when
+every other guard passed) and is handled by the confirm-first Step 3/4.2 list, never here. Read unknowns as incomplete verification, not an
 empty/clean result. A known desktop host without a session binding, a managed
 Codex/Cursor worktree, partial/missing lsof visibility, API failure or any other
 unknown is retained. Protected dotenv files, including ignored ones, are retained.
@@ -145,6 +147,14 @@ if jq -e 'any(.finished_apply[]?; .removal_attempted == true)' <<<"$FINISHED_APP
   RC=0
   WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json)" || RC=$?
 fi
+```
+
+Closed-unmerged worktrees are drawn from `skipped_finished_worktrees[]` and stay
+in the confirmation list until removed:
+
+<!-- test-anchor: closed-unmerged-list -->
+```bash
+CLOSED_UNMERGED_JSON="$(jq -c '[.skipped_finished_worktrees[]? | select(.reason == "closed_unmerged_pr") | {path, branch}]' <<<"$WORKSPACE_JSON")"
 ```
 
 Removed worktrees cannot remain in the confirmation list. Unknowns stay listed
@@ -214,6 +224,16 @@ Idle {WORKTREE_DAYS}+ days. Removing a worktree also deletes its branch when tha
 |----------|--------|-------------|----------------|
 | `path` | `branch` | date | Remove — idle {WORKTREE_DAYS}+ days |
 
+### Closed-Unmerged Worktrees (K)
+
+Clean and fully pushed, but the PR was closed without merging — set-aside work, not finished work, so it is never removed automatically. Removing one also deletes its local branch; the commits stay on the remote.
+
+| Worktree | Branch | Recommendation |
+|----------|--------|----------------|
+| `path` | `branch` | Remove only if abandoned — PR closed without merging |
+
+Draw these rows from `CLOSED_UNMERGED_JSON` (Step 2.2). Omit the block when it is empty.
+
 ### Stale Local Branches (K)
 
 | Branch | Last Commit | Recommendation |
@@ -270,6 +290,19 @@ When the user confirms closures, close each issue with a comment:
 gh issue close 42 --comment "Closing: [rationale from the recommendation]. Identified by backlog cleanup scan."
 ```
 
+### Step 4.2a: Closed-unmerged worktrees
+
+Only when `CLOSED_UNMERGED_JSON` is non-empty. Ask separately from every other deletion, via **`AskUserQuestion`** when available (`multiSelect: true`, one option per worktree plus `"Skip all"`; prose fallback in headless runs). Naming a worktree is the confirmation. Remove exactly the confirmed ones, one call each, never repo-wide:
+
+<!-- test-anchor: closed-unmerged-apply -->
+```bash
+# CONFIRMED_PATH / CONFIRMED_BRANCH come from the worktree the user approved.
+"$STALE_CLEANUP_SH" --apply-finished --include-closed-unmerged --json \
+  --only-identity "$CONFIRMED_PATH" "$CONFIRMED_BRANCH"
+```
+
+The script re-runs every guard (dirty, unpushed, advanced branch, open PR, live process, protected files), so a worktree that changed since the dry-run is retained and reported. Removal is bound to the closed PR's own head commit: any commit made or pushed after you confirmed (unpushed, or `branch_advanced_after_pr`) keeps the worktree, and a PR reopened or replaced by an open one is caught by the open-PR guard. Declining leaves them in place; they will be listed again next run.
+
 ### Step 4.2: Workspace deletions
 
 Only if the refreshed `WORKSPACE_JSON` has a non-empty `stale_worktrees`, `stale_local_branches`, `stale_remote_branches` or `orphaned_registrations` array and the user explicitly confirms. `RC == 1` alone is insufficient; unknown finished results never authorize or prompt age-only cleanup. Present via **`AskUserQuestion`** when available (options: `"Apply cleanup (Recommended)"`, `"Skip"`; prose fallback `"Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)"` in headless runs). `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually. See `ask-menu.md` for the full vehicle convention.
@@ -294,7 +327,7 @@ If the user declines, report: "Workspace cleanup: dry-run only — nothing delet
 ## Rules
 
 - **NEVER auto-close issues.** Always present recommendations and wait for user confirmation.
-- **Age-only cleanup requires confirmation.** `/pm-clean` never runs ordinary `stale-cleanup.sh --apply` on its own. The sole noninteractive exception is the verified finished class via `--apply-finished` (Step 2.2); unknown/live/dirty/unpushed work is retained.
+- **Age-only cleanup requires confirmation.** `/pm-clean` never runs ordinary `stale-cleanup.sh --apply` on its own. The sole noninteractive exception is the verified finished (merged-PR) class via `--apply-finished` (Step 2.2); closed-unmerged, unknown, live, dirty and unpushed work is retained or confirm-first.
 - **The two scans are independent.** One finding nothing must not suppress the other; the summary reports both, always.
 - **Delegate workspace detection — never reimplement it.** `stale-cleanup.sh` is the shared source of truth for worktree/branch staleness and safety (issue #618, mirroring the shared-detection precedent `backlog-staleness.sh` set in #598). This skill holds the only direct invocation of the script, and `/pm` reaches it by running this whole `/pm-clean` flow inline rather than calling the script itself (#656); keep them in sync by changing only the script, never by forking its logic into this skill.
 - **Be conservative with "superseded" and "duplicate" flags.** False positives waste the user's time reviewing issues that shouldn't be closed. Only flag when evidence is clear.

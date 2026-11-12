@@ -42,7 +42,7 @@
 #
 # WHAT IS REMOVED — and only when verified
 #   worktrees + local branches   stale-cleanup.sh --apply-finished (finished-only:
-#                                merged or closed owner-authored PR, clean,
+#                                merged owner-authored PR, clean,
 #                                pushed, idle — the primitive the repo-wide sweep
 #                                itself runs), scoped with --only to exactly the
 #                                checkouts the inventory attributed to THIS
@@ -460,7 +460,7 @@ clean_worktrees_own() {
         "/pm-clean can judge a detached checkout"
       continue
     fi
-    # Unmerged work is kept: the helper treats a CLOSED PR as finished, /safe-close does not.
+    # Unmerged work is kept. The helper now keeps a CLOSED PR too (Issue #2281); this stays as a second line of defence.
     if ! branch_pr_merged "$b"; then
       emit kept worktree "$p" "$MERGED_WHY; the checkout and its branch '$b' are kept" \
         "merge the PR (/wrap) or reopen it, or remove the checkout by hand once the work is saved elsewhere"

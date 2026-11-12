@@ -153,8 +153,11 @@ def canonical(path, cwd):
 
 
 class Sweep:
-    def __init__(self, root, caller, pr_unavailable=False, only=None, identity=None):
+    def __init__(self, root, caller, pr_unavailable=False, only=None, identity=None, include_closed=False):
         self.root = root
+        # A PR closed WITHOUT merging is set-aside work, not finished work: it is kept (reason
+        # closed_unmerged_pr) unless the caller names the worktree AND a human confirmed it.
+        self.include_closed = include_closed
         # path -> branch the caller recorded for it. A path named here is only acted on while that
         # branch is still checked out there, so a different worktree re-registered at the same path
         # between the caller's read and this scan is left alone.
@@ -395,6 +398,11 @@ sys.exit(11 if errors else 0)
         stamp = self.git("log", "-1", "--format=%ct", head).strip()
         if not stamp.isdigit():
             raise Unknown("commit_timestamp_unknown")
+        # Last on purpose: every other guard (open PR, authorship, unpushed or advanced branch,
+        # live process, unknown evidence) is reported first, so this reason means the worktree is
+        # otherwise removable and only a human can call closed-unmerged work done.
+        if pr["state"] != "MERGED" and not self.include_closed:
+            raise Skip("closed_unmerged_pr")
         return {"path": path, "branch": branch, "head_sha": head,
                 "pr_number": pr["number"], "pr_state": pr["state"], "last_commit_ts": int(stamp)}
 
@@ -573,6 +581,8 @@ def main():
     parser.add_argument("--pr-lookup-unavailable", action="store_true")
     parser.add_argument("--only", action="append", metavar="PATH",
                         help="restrict the scan to this worktree path (repeatable); never widens")
+    parser.add_argument("--include-closed-unmerged", action="store_true",
+                        help="also treat a PR closed without merging as finished; needs --apply and --only/--only-identity")
     parser.add_argument("--only-identity", action="append", nargs=2, metavar=("PATH", "BRANCH"),
                         help="like --only PATH, but only while BRANCH is the branch checked out there")
     args = parser.parse_args()
@@ -586,7 +596,9 @@ def main():
     only = None
     if args.only is not None or ident:
         only = list(args.only or []) + [path for path, _ in ident]
-    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable, only, dict(ident))
+    if args.include_closed_unmerged and not (args.apply and only):
+        parser.error("--include-closed-unmerged requires --apply and --only/--only-identity (a confirmed, named worktree)")
+    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable, only, dict(ident), args.include_closed_unmerged)
     try:
         sweep.detect()
         if args.apply:
