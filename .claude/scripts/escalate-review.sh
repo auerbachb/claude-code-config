@@ -1098,49 +1098,8 @@ CR_RETRY_WINDOW_CAP_SECONDS=3600
 # has a value (0 when absent) while the ts may be empty, so putting the window
 # first makes the only possible empty field a TRAILING one, which `read` does
 # preserve.
-read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
-  def window_seconds:
-    # `capture` emits an EMPTY GENERATOR on no-match, not null — so binding it
-    # directly with `as` yields zero outputs and silently deletes the whole
-    # enclosing object, making any null-branch below unreachable. Collecting into
-    # an array first turns "no match" into a real null this code can act on.
-    # KEYED ON THE STABLE ANCHORS, NOT THE SENTENCE (issue #1364). CodeRabbit has
-    # already reworded this line twice: `Next review available in: 12 minutes`
-    # became `Next included review available in 27 minutes.` — an inserted word
-    # AND a dropped colon. The colon was already optional; the inserted word is
-    # what silently zeroed the window and escalated PRs mid-allowance. What does
-    # not drift is `next` … `review available in` … number + unit, so that is all
-    # this matches, with a BOUNDED 0-2 word allowance for the next insertion.
-    # Bounded, not `.*`: the banner is selected before this runs, but an
-    # unbounded bridge could still reach across a paragraph and time the PR off
-    # an unrelated number. `\\b` keeps `next` a word, not a suffix. The internal
-    # separators are `\\s+` rather than literal spaces because THIS FUNCTION
-    # creates the variation it has to survive: stripping the markdown emphasis
-    # off `**review**  **available in**` leaves a double space behind.
-    #
-    # THE COPULA SLOT, and why it is a literal rather than a second `{0,2}`
-    # (CodeAnt review of this PR). CodeRabbit also ships the sentence in the
-    # future tense — `Your next review will be available in 22 minutes.`,
-    # captured verbatim on PR #554 (2026-07-16) and tolerated by
-    # `lib/pr-state-classify.jq` since #557. That insertion sits between `review`
-    # and `available`, so the 0-2 allowance above — which is on the other side of
-    # `review` — could never reach it, and this parser read a zero window from a
-    # phrasing its sibling had already been reading for six weeks. Both are now
-    # keyed on ONE anchor shape; keep them identical (`cr-rate-limits.md`).
-    # Literal `will be`, not a generic bridge, because the same shape is used by
-    # the classifier, which has NO author gate: `available in <number>` is
-    # ordinary prose, and a generic slot there would let a real finding saying
-    # "the next review is available in the dashboard" classify as a rate-limit
-    # ack. Slot one guards an adjective position ahead of a noun, where the next
-    # insertion is unguessable; this one guards a copula with two observed forms.
-    # An unrecognised third form degrades to escalation, not to a stalled PR.
-    ([ ascii_downcase | gsub("\\*"; "")
-       | capture("\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+(?:will\\s+be\\s+)?available\\s+in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
-     | first) as $m
-    | if $m == null then 0
-      else ($m.n | tonumber)
-           * (if $m.unit == "hour" then 3600 elif $m.unit == "minute" then 60 else 1 end)
-      end;
+read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -L "$SCRIPT_DIR/lib" -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
+  include "cr-retry-window";
   # NEWEST banner first, THEN read its window — never the reverse (CodeRabbit
   # review, PR #1203). "Newest" is by the edit-aware ts built below, so it means
   # MOST RECENTLY STATED, not most recently born (issue #1440): between a banner
@@ -1217,7 +1176,7 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
                | strings
                | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}")) ]
              | max // ""),
-        w: ((.body // "") | window_seconds) }
+        w: ((.body // "") | cr_retry_window_seconds) }
     | select(.ts != "") ]
   | sort_by(.ts) | last // {ts: "", w: 0}
   | [ (if .w > $cap then $cap else .w end), .ts ] | @tsv

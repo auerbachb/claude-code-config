@@ -297,6 +297,25 @@ first_request_guard() {
   jq -e '.state == "OPEN" and ((.isDraft // false) == false)' <<<"$pr_state" >/dev/null 2>&1 \
     || REQ_BLOCK="pr_not_open_or_draft"
 }
+# Request skip when no free reviewer can answer inside the no-review window (issue
+# #2256). review-availability.sh decides from the account-wide record. Any unusable
+# answer, or a missing helper or window, keeps the request (fail toward asking). A skip
+# is recorded on the PR so the no-review override can apply at once for this HEAD.
+availability_gate() {
+  local av="${SCRIPT_DIR}/review-availability.sh" nro_min win dec
+  [[ -x "$av" ]] || return 0
+  nro_min="$(jq -r '.no_review_override_minutes // empty' <<<"$REQ_TIER_JSON" 2>/dev/null)" || nro_min=""
+  [[ "$nro_min" =~ ^[0-9]+$ ]] || return 0
+  win=$(( nro_min * 60 ))
+  dec="$("$av" decide --window-s "$win" 2>/dev/null)" || return 0
+  [[ "$(jq -r '.skip // false' <<<"$dec" 2>/dev/null)" == true ]] || return 0
+  REQ_BLOCK="$(jq -r '.reason' <<<"$dec")"
+  REQ_FIRST=0
+  if (( DRY_RUN == 0 )); then
+    "$av" mark-skip --pr "$PR_NUM" --head "$HEAD_SHA" --reason "$REQ_BLOCK" >/dev/null 2>&1 \
+      || echo "maybe-trigger-ai-review.sh: could not record the skipped review request (issue #2256) — the override will wait its window" >&2
+  fi
+}
 REQ_TIER_JSON="$("$REVIEW_TIER_SH" "$PR_NUM" --json 2>/dev/null)" || REQ_TIER_JSON=""
 REQ_GATE_NAME="$(jq -r '.gate // ""' <<<"$REQ_TIER_JSON" 2>/dev/null)" || REQ_GATE_NAME=""
 # An unreadable tier keeps the default setting (after-ci), so the CI gate
@@ -346,6 +365,9 @@ if [[ "$REQ_HEAD_DONE" != "$HEAD_SHA" && "$REQ_GATE_NAME" != "ci-only" ]]; then
       elif [[ "$(jq -r '.decision' <<<"$REQ_OUT")" == "request" ]]; then
         REQ_FIRST=1
         first_request_guard
+        if [[ -z "$REQ_BLOCK" ]]; then
+          availability_gate
+        fi
       else
         REQ_BLOCK="$(jq -r '.reason' <<<"$REQ_OUT")"
       fi

@@ -319,6 +319,7 @@ ROW="$(jq -cn --argjson g "$GATE" --argjson v "$PRV" --arg repo "$REPO" --argjso
      anchor_source: $o.anchor_source, elapsed_seconds: $o.elapsed_seconds,
      missing_reviewers: ($o.missing_reviewers // []), waived_reasons: ($o.waived_reasons // []),
      excluded_reviewer_checks: ($o.excluded_reviewer_checks // []),
+     skip_reason: ($o.skip_reason // null),
      label_applied: $label, backfill_status: "pending"}')" || die 4 "could not build the ledger row"
 
 with_lock

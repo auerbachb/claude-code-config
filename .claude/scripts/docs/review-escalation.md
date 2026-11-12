@@ -24,6 +24,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [maybe-trigger-ai-review.sh](../maybe-trigger-ai-review.sh) | Post supplemental AI reviewer triggers when complexity and CR-round gates pass |
 | [paid-review-grant.sh](../paid-review-grant.sh) | Write, check, consume, and release the single-use owner grant every paid review trigger needs |
 | [pr-body-review-note.sh](../pr-body-review-note.sh) | Record a review-trigger decision (such as a BugBot daily-cap skip) as one line under the PR body's `## Review notes`, idempotent per key and HEAD |
+| [review-availability.sh](../review-availability.sh) | Record when CodeRabbit and CodeAnt are next available from their own limit notices (account-wide), and skip a review request when no free reviewer can answer inside the no-review window |
 | [review-ci-report.sh](../review-ci-report.sh) | Measure, per repo, how long CI runs, how often it fails, and how long each AI reviewer takes to respond (from its request when one exists, else from push), with blind spots stated; one GraphQL request per repo |
 | [review-daily-cap.sh](../review-daily-cap.sh) | Tally today's (ET) spend for one paid reviewer across every registered repo and say whether one more trigger stays under the account's daily cap |
 | [review-repos.sh](../review-repos.sh) | Resolve the registered AI-review repos (`REVIEW_REPOS`, then the account config's `## Review repos` list plus its private untracked overlay, then `ac-gate.yml` discovery) for `/review-stack-audit`'s multi-repo roll-up |

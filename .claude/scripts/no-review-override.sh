@@ -26,7 +26,8 @@
 #    pending_reason, head_anchor_ts, anchor_source, elapsed_seconds,
 #    eligible_at, verdicts_on_head: [{reviewer, kind}],
 #    missing_reviewers: [{reviewer, reason}], waived_reasons: [..],
-#    excluded_reviewer_checks: [{name, app, status}]}
+#    excluded_reviewer_checks: [{name, app, status}], skip_reason (issue #2256: set only
+#    when a recorded request skip applies the override at once)}
 #   `applied` true = the caller drops `review_blockers` from missing[] and
 #   re-reads CI without the non-completed reviewer checks. `pending_reason`
 #   is set while the window is still running — the caller adds it to missing[].
@@ -132,6 +133,18 @@ JQ_DEFS='
 '
 
 emit() { printf '%s\n' "$1"; exit 0; }
+
+# Account-wide reviewer availability (issue #2256). Every limit notice in this PR's
+# comments updates the record whatever the gate decides below. Non-fatal: a record
+# that is not written only means no request skip can rely on it (fail toward asking).
+AV_SH="$(cd "$(dirname "$0")" && pwd)/review-availability.sh"
+if [[ -x "$AV_SH" ]]; then
+  if ! printf '%s' "$PAYLOAD" | jq -c '.issue_comments // []' \
+      | "$AV_SH" record --repo "$(printf '%s' "$PAYLOAD" | jq -r '(.owner // "") + "/" + (.repo // "")')" \
+          --pr "$(printf '%s' "$PAYLOAD" | jq -r '.pr // ""')" >/dev/null 2>&1; then
+    echo "no-review-override.sh: could not record reviewer availability (issue #2256) — no request skip can rely on it" >&2
+  fi
+fi
 
 BASE=$(printf '%s' "$PAYLOAD" | jq -c '
   {enabled: (.window_seconds != null), window_seconds: .window_seconds,
@@ -351,6 +364,20 @@ REQUEST=$(printf '%s' "$REQUEST_COMMENTS" | jq -c --arg author "$PR_AUTHOR" --ar
 REQUEST_ERR=$(printf '%s' "$REQUEST" | jq -r '.error // ""')
 [[ -z "$REQUEST_ERR" ]] || ineligible "$REQUEST_ERR"
 REQUEST_T=$(printf '%s' "$REQUEST" | jq -c '.request.t // null')
+
+# Request skipped for this HEAD (issue #2256): no free reviewer could answer inside
+# the window when the request was due, and that answer still holds now. The override
+# applies at once, with the skip's reason. Every hard stop still decides: a fresh
+# verdict on HEAD already returned above, and CI, threads, AC and human change requests
+# are the caller's. check-skip fails closed: an unreadable answer leaves the window in force.
+if [[ -x "$AV_SH" ]]; then
+  SKIP_JSON="$("$AV_SH" check-skip --repo "$OWNER/$REPO" --pr "$PR" --head "$HEAD_SHA_P" \
+      --window-s "$(printf '%s' "$PAYLOAD" | jq -r '.window_seconds')" 2>/dev/null)" || SKIP_JSON=""
+  if [[ -n "$SKIP_JSON" && "$(jq -r '.applies // false' <<<"$SKIP_JSON" 2>/dev/null)" == true ]]; then
+    emit "$(printf '%s' "$OUT" | jq -c --arg r "$(jq -r '.reason' <<<"$SKIP_JSON")" --argjson rb "$(printf '%s' "$PAYLOAD" | jq -c '.review_blockers // []')" '
+      .eligible = true | .applied = true | .reason = $r | .skip_reason = $r | .waived_reasons = $rb')"
+  fi
+fi
 
 NOW=$(date -u +%s)
 BLOCKERS=$(printf '%s' "$PAYLOAD" | jq -c '.review_blockers // []')

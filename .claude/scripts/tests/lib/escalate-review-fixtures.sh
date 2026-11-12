@@ -45,6 +45,8 @@ cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/state-lock.sh"
 # lib/ subdirectory mirrored alongside the other siblings.
 mkdir -p "$STUB_DIR/lib"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/repo-normalizer.sh"
+# escalate-review.sh includes the shared CodeRabbit retry-window parser (issue #2256).
+cp "$REPO_ROOT/.claude/scripts/lib/cr-retry-window.jq" "$STUB_DIR/lib/cr-retry-window.jq"
 chmod +x "$STUB_DIR/escalate-review.sh" "$STUB_DIR/session-state.sh" "$STUB_DIR/greptile-budget.sh"
 
 cat > "$STUB_DIR/pr-state.sh" <<'STUB'
