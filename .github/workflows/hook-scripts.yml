@@ -184,8 +184,8 @@ jobs:
   # the SAME bash-suite discovery on macos-latest; a new test is covered by
   # both jobs with no edit here.
   # Issue #2207: the macOS full run is split into two shards on two macOS runners, because one
-  # 3-vCPU job cannot finish the full suite under the 30-minute target. A PR whose selection is
-  # not the full set keeps ONE shard, so it pays for a single macOS runner as before.
+  # 3-vCPU job cannot finish the full suite under the 30-minute target. A main push whose
+  # selection is not the full set keeps ONE shard.
   # The required check name stays `hook-tests-macos`: the aggregate job below carries that name
   # and passes only when the plan and every shard succeed.
   # Issue #2265: the macOS run is gated to push-to-main. On a pull_request the plan and shards are
@@ -359,15 +359,13 @@ jobs:
   # Issue #2265: a failed macOS run on main files a tracking issue, or comments on the open one.
   # Only this job holds `issues: write`. It downloads the shards' failing-suite lists (best effort:
   # a missing list still files with the run URL) and passes every value through env, never shell
-  # interpolation of suite names or titles. A constant group (no PR number) queues concurrent main
-  # failures, so two runs cannot both miss the open issue and file duplicates.
+  # interpolation of suite names or titles. No concurrency group: a queued group keeps only one
+  # pending job, so a third failure would cancel the second report. Two reports racing past the
+  # open-issue search can at worst file one duplicate issue, which is cheaper than a lost report.
   hook-tests-macos-report:
     needs: [hook-tests-macos]
     if: always() && github.event_name == 'push' && needs.hook-tests-macos.result == 'failure'
     runs-on: ubuntu-24.04
-    concurrency:
-      group: hook-tests-macos-report
-      cancel-in-progress: false
     permissions:
       issues: write
     steps:

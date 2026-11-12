@@ -134,6 +134,10 @@ def check(doc):
     agg_env = (agg_steps[0].get("env") or {}) if agg_steps else {}
     if agg_env.get("EVENT_NAME") != "${{ github.event_name }}":
         errors.append("hook-tests-macos does not receive github.event_name through a step env")
+    if agg_env.get("PLAN_RESULT") != "${{ needs.hook-tests-macos-plan.result }}":
+        errors.append("hook-tests-macos does not bind PLAN_RESULT to needs.hook-tests-macos-plan.result")
+    if agg_env.get("SHARD_RESULT") != "${{ needs.hook-tests-macos-shard.result }}":
+        errors.append("hook-tests-macos does not bind SHARD_RESULT to needs.hook-tests-macos-shard.result")
     if agg_steps:
         errors.extend(aggregate_behaviour(agg_steps[0]["run"]))
     else:
@@ -148,8 +152,8 @@ def check(doc):
         cond = str(report.get("if", ""))
         if cond != REPORT_GATE:
             errors.append(f"report job gate must be exactly {REPORT_GATE!r}, got {cond!r}")
-        if report.get("concurrency") != {"group": "hook-tests-macos-report", "cancel-in-progress": False}:
-            errors.append(f"report job must serialize on the constant main-only group, got {report.get('concurrency')!r}")
+        if "concurrency" in report:
+            errors.append(f"report job must not declare concurrency (a queued group drops pending reports), got {report.get('concurrency')!r}")
         if report.get("permissions") != {"issues": "write"}:
             errors.append(f"report job permissions must be exactly issues: write, got {report.get('permissions')!r}")
         for block in run_blocks(report):
@@ -237,7 +241,7 @@ def report_gate_or_true(d):
 
 
 def report_job_wide_concurrency(d):
-    d["jobs"]["hook-tests-macos-report"]["concurrency"]["group"] = "hook-tests-${{ github.event.pull_request.number }}"
+    d["jobs"]["hook-tests-macos-report"]["concurrency"] = {"group": "hook-tests-macos-report", "cancel-in-progress": False}
 
 
 def aggregate_fails_on_pr(d):
@@ -256,6 +260,14 @@ def drop_upload_gate(d):
             s.pop("if", None)
 
 
+def hardcode_plan_result(d):
+    d["jobs"]["hook-tests-macos"]["steps"][0]["env"]["PLAN_RESULT"] = "success"
+
+
+def hardcode_shard_result(d):
+    d["jobs"]["hook-tests-macos"]["steps"][0]["env"]["SHARD_RESULT"] = "success"
+
+
 NEGATIVES = [
     ("plan not gated to push", drop_plan_gate),
     ("report job with extra permission", report_extra_perm),
@@ -265,7 +277,9 @@ NEGATIVES = [
     ("upload step not gated on failure", drop_upload_gate),
     ("aggregate fails on a pull_request", aggregate_fails_on_pr),
     ("report gate with an unconditional || true", report_gate_or_true),
-    ("report concurrency keyed on a PR number", report_job_wide_concurrency),
+    ("report job declares a concurrency group", report_job_wide_concurrency),
+    ("aggregate PLAN_RESULT hard-coded", hardcode_plan_result),
+    ("aggregate SHARD_RESULT hard-coded", hardcode_shard_result),
 ]
 
 for label, fn in NEGATIVES:

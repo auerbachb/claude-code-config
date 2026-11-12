@@ -152,17 +152,9 @@ def check(doc):
                 if isinstance(spec, dict) and ("paths" in spec or "paths-ignore" in spec):
                     errors.append(f"{ev} trigger carries paths/paths-ignore: the run can be filtered out")
 
-    # The one exemption (issue #2265): the main-only failure reporter serializes on a CONSTANT group
-    # that never includes a PR number, and never cancels a queued run. Every other job stays
-    # concurrency-free, so no job can join a PR's group.
     for job_id, job in (doc.get("jobs") or {}).items():
         if isinstance(job, dict) and "concurrency" in job:
-            jc = job["concurrency"]
-            if job_id != "hook-tests-macos-report":
-                errors.append(f"job {job_id!r} declares its own concurrency")
-            elif not (isinstance(jc, dict) and jc.get("group") == "hook-tests-macos-report"
-                      and jc.get("cancel-in-progress") is False):
-                errors.append(f"job {job_id!r} concurrency must be the constant main-only group with cancel-in-progress false: {jc!r}")
+            errors.append(f"job {job_id!r} declares its own concurrency")
 
     conc = doc.get("concurrency")
     if not isinstance(conc, dict):
