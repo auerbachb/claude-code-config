@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 source = Path(sys.argv[1])
 real_git = shutil.which('git')
@@ -177,7 +178,8 @@ print('p100\\nn'+cwd)
         head = git('rev-parse', 'HEAD', cwd=path)
         if state:
             db['rows'].append(dict(number=len(db['rows'])+1, state=state, headRefName=name,
-                                   headRefOid=head, isCrossRepository=False, createdAt='2026-11-07T00:00:00Z'))
+                                   headRefOid=head, isCrossRepository=False, createdAt='2026-11-07T00:00:00Z',
+                                   closedAt=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()) if state=='CLOSED' else None))
         write_db()
         return path
 
@@ -234,14 +236,19 @@ print('p100\\nn'+cwd)
     verify(all(path.exists() for path in [dirty,untracked,unpushed,opened,locked,live,protected,foreign,managed]), 'every unsafe/unknown worktree retained')
 
     # Confirmed removal of a closed-unmerged worktree: only when named, and only with the explicit flag.
-    for bad_flags in [('--include-closed-unmerged',),('--include-closed-unmerged','--only',str(closed),'--check')]:
+    shown = git('rev-parse','HEAD',cwd=closed)
+    for bad_flags in [('--include-closed-unmerged',),('--include-closed-unmerged','--only',str(closed),'--check'),
+                      ('--include-closed-unmerged','--only',str(closed)),
+                      ('--include-closed-unmerged','--only',str(closed),'--confirmed-head',str(closed),shown),
+                      ('--include-closed-unmerged','--only-identity',str(closed),'closed'),
+                      ('--include-closed-unmerged','--only-identity',str(closed),'closed','--only',str(young),'--confirmed-head',str(closed),shown)]:
         bad = subprocess.run(['bash',script,'--apply-finished','--root',str(root),'--json',*bad_flags],cwd=root,env=env,capture_output=True)
-        verify(bad.returncode==3 and closed.exists(), '--include-closed-unmerged without a named worktree (or outside --apply-finished) refuses')
-    bad = subprocess.run(['bash',script,'--check','--root',str(root),'--json','--include-closed-unmerged','--only',str(closed)],cwd=root,env=env,capture_output=True)
+        verify(bad.returncode==3 and closed.exists(), ('--include-closed-unmerged needs --only-identity plus --confirmed-head and refuses bare --only or --check', bad_flags, bad.returncode))
+    bad = subprocess.run(['bash',script,'--check','--root',str(root),'--json','--include-closed-unmerged','--only-identity',str(closed),'closed','--confirmed-head',str(closed),shown],cwd=root,env=env,capture_output=True)
     verify(bad.returncode==3 and closed.exists(), '--include-closed-unmerged outside --apply-finished refuses')
-    helper = subprocess.run(['python3',str(source/'.claude/scripts/lib/stale-cleanup-finished.py'),'--root',str(root),'--caller',str(root),'--apply','--include-closed-unmerged'],
+    helper = subprocess.run(['python3',str(source/'.claude/scripts/lib/stale-cleanup-finished.py'),'--root',str(root),'--caller',str(root),'--apply','--include-closed-unmerged','--only',str(closed)],
                             cwd=root,env=env,capture_output=True)
-    verify(helper.returncode==2 and closed.exists(), 'the helper refuses the flag without a named worktree too')
+    verify(helper.returncode==2 and closed.exists(), 'the helper refuses the flag without --only-identity and --confirmed-head too')
     code, data = sweep('--apply-finished',flags=('--only-identity',str(closed),'closed'),extra={'FINISHED_TEST_CWD':str(live/'child')})
     verify(closed.exists() and any(r['reason']=='closed_unmerged_pr' for r in data['skipped_finished_worktrees']), 'naming a closed-unmerged worktree is not confirmation by itself')
     # Another guard outranks the closed reason: unpushed work on a closed PR is reported as unpushed.
@@ -251,9 +258,33 @@ print('p100\\nn'+cwd)
     git('push','-q','push-fixture','closed-advanced')
     code, data = sweep()
     verify(any(r['branch']=='closed-advanced' and r['reason']=='branch_advanced_after_pr' for r in data['skipped_finished_worktrees']), 'work pushed after a PR was closed still keeps the worktree')
-    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed_dirty),'closed-advanced'))
+    cadv = git('rev-parse','HEAD',cwd=closed_dirty)
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed_dirty),'closed-advanced','--confirmed-head',str(closed_dirty),cadv))
     verify(closed_dirty.exists(), 'the confirmed path does not bypass the advanced-branch guard')
-    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed),'closed'),extra={'FINISHED_TEST_CWD':str(live/'child')})
+    # GitHub moves headRefOid with the live branch: work pushed after the close must still keep the tree.
+    closed_live = worktree('closed-live','CLOSED')
+    live_shown = git('rev-parse','HEAD',cwd=closed_live)
+    row = next(r for r in db['rows'] if r['headRefName']=='closed-live')
+    later = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(time.time()+7200))
+    (closed_live/'README').write_text('after close\n'); git('commit','-qam','after close',cwd=closed_live,extra={'GIT_AUTHOR_DATE':later+'Z','GIT_COMMITTER_DATE':later+'Z'})
+    git('push','-q','push-fixture','closed-live')
+    row['headRefOid']=git('rev-parse','HEAD',cwd=closed_live); write_db()
+    code, data = sweep()
+    verify(any(r['branch']=='closed-live' and r['reason']=='branch_advanced_after_pr' for r in data['skipped_finished_worktrees']) and not any(r['branch']=='closed-live' for r in data['finished_worktrees']),
+           ('a commit pushed to a closed PR head keeps the worktree even though headRefOid follows the branch', data['skipped_finished_worktrees']))
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed_live),'closed-live','--confirmed-head',str(closed_live),git('rev-parse','HEAD',cwd=closed_live)))
+    verify(closed_live.exists(), 'the confirmed path never removes work pushed after the close')
+    row['closedAt']=None; write_db()
+    code, data = sweep()
+    verify(any(r['branch']=='closed-live' and r['reason']=='pr_closed_at_unknown' for r in data['unknown_finished_worktrees']), 'an unreadable close time fails closed')
+    git('worktree','remove','--force',str(closed_live)); git('branch','-D','closed-live')
+    # The user confirmed a different HEAD than the one now checked out: kept, reported.
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed),'closed','--confirmed-head',str(closed),'0'*40),extra={'FINISHED_TEST_CWD':str(live/'child')})
+    verify(closed.exists() and any(r['reason']=='confirmed_head_mismatch' for r in data['skipped_finished_worktrees']), 'a HEAD other than the confirmed one is never removed')
+    # The path re-registered as a different branch after confirmation: identity mismatch, kept.
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed),'other-branch','--confirmed-head',str(closed),shown),extra={'FINISHED_TEST_CWD':str(live/'child')})
+    verify(closed.exists() and any(r['reason']=='only_identity_mismatch' for r in data['skipped_finished_worktrees']), 'a different branch at the confirmed path is never removed')
+    code, data = sweep('--apply-finished',flags=('--include-closed-unmerged','--only-identity',str(closed),'closed','--confirmed-head',str(closed),shown),extra={'FINISHED_TEST_CWD':str(live/'child')})
     verify(not closed.exists() and git('branch','--list','closed')=='' and [r['pr_state'] for r in data['finished_worktrees']]==['CLOSED'], 'a named, confirmed closed-unmerged worktree is removed with its local branch')
     git('worktree','remove','--force',str(closed_dirty)); git('branch','-D','closed-advanced')
 

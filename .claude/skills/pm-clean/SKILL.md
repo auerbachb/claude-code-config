@@ -154,7 +154,7 @@ in the confirmation list until removed:
 
 <!-- test-anchor: closed-unmerged-list -->
 ```bash
-CLOSED_UNMERGED_JSON="$(jq -c '[.skipped_finished_worktrees[]? | select(.reason == "closed_unmerged_pr") | {path, branch}]' <<<"$WORKSPACE_JSON")"
+CLOSED_UNMERGED_JSON="$(jq -c '[.skipped_finished_worktrees[]? | select(.reason == "closed_unmerged_pr") | {path, branch, head_sha}]' <<<"$WORKSPACE_JSON")"
 ```
 
 Removed worktrees cannot remain in the confirmation list. Unknowns stay listed
@@ -213,7 +213,7 @@ If a category has no flagged issues, omit that section entirely. If no issues we
 
 ### Workspace sections
 
-Render from `WORKSPACE_JSON` when `RC == 1`, **plus the orphaned-checkout block whenever `orphaned_checkouts[]` is non-empty or `checkout_scan` is not `"ok"`/`"none"` — at any `RC`, including 0** (see the exit-code-neutral note in Step 2). Convert each `last_commit_ts` to a `YYYY-MM-DD` date. Put the item count in each heading, and omit any category with no items:
+Render from `WORKSPACE_JSON` when `RC == 1`, **plus the orphaned-checkout block whenever `orphaned_checkouts[]` is non-empty or `checkout_scan` is not `"ok"`/`"none"` — at any `RC`, including 0** (see the exit-code-neutral note in Step 2), **and the Closed-Unmerged Worktrees block whenever `CLOSED_UNMERGED_JSON` is non-empty — also at any `RC`, because a closed-unmerged worktree alone leaves `--check` at 0**. Convert each `last_commit_ts` to a `YYYY-MM-DD` date. Put the item count in each heading, and omit any category with no items:
 
 ```
 ### Stale Worktrees (K)
@@ -223,6 +223,8 @@ Idle {WORKTREE_DAYS}+ days. Removing a worktree also deletes its branch when tha
 | Worktree | Branch | Last Commit | Recommendation |
 |----------|--------|-------------|----------------|
 | `path` | `branch` | date | Remove — idle {WORKTREE_DAYS}+ days |
+
+Omit any row whose path is in `CLOSED_UNMERGED_JSON`; it is listed only under Closed-Unmerged Worktrees.
 
 ### Closed-Unmerged Worktrees (K)
 
@@ -255,7 +257,7 @@ Protected by the script — listed for transparency, NOT offered for deletion:
 | `path / branch / ref` | worktree / local branch / remote branch | reason (verbatim from the script) |
 ```
 
-Draw the **Skipped (safety)** rows from the three `skipped_*` arrays (each item's `reason` verbatim), and render the block whenever any is non-empty while presenting stale items. If the workspace scan found no stale items (`RC == 0`), skip these tables and state: "No stale worktrees or branches detected." — but only after checking `orphaned_checkouts[]` and `checkout_scan`, which report under `RC == 0` too: render the orphaned-checkout block (and any `skipped_checkouts[]` reasons) before that line, and do not claim a clean workspace while either is non-empty or `checkout_scan == "unreadable"`.
+Draw the **Skipped (safety)** rows from the three `skipped_*` arrays (each item's `reason` verbatim), and render the block whenever any is non-empty while presenting stale items. If the workspace scan found no stale items (`RC == 0`), skip these tables and state: "No stale worktrees or branches detected." — but only after checking `orphaned_checkouts[]` and `checkout_scan`, which report under `RC == 0` too: render the orphaned-checkout block (and any `skipped_checkouts[]` reasons) before that line, and do not claim a clean workspace while either is non-empty or `checkout_scan == "unreadable"`. Render the Closed-Unmerged Worktrees block there as well when `CLOSED_UNMERGED_JSON` is non-empty, and never state a clean workspace while it is.
 
 **Summarize the tail.** For large sets (e.g. 20+ stale worktrees), list the most relevant items and summarize the remainder ("…and N more, all idle {WORKTREE_DAYS}+ days") — the same tail treatment the issue scan relies on (`backlog-staleness.sh` caps its own deep check at the 50 oldest candidates and notes any remainder on stderr; surface that note when present).
 
@@ -292,16 +294,18 @@ gh issue close 42 --comment "Closing: [rationale from the recommendation]. Ident
 
 ### Step 4.2a: Closed-unmerged worktrees
 
-Only when `CLOSED_UNMERGED_JSON` is non-empty. Ask separately from every other deletion, via **`AskUserQuestion`** when available (`multiSelect: true`, one option per worktree plus `"Skip all"`; prose fallback in headless runs). Naming a worktree is the confirmation. Remove exactly the confirmed ones, one call each, never repo-wide:
+Only when `CLOSED_UNMERGED_JSON` is non-empty. Ask separately from every other deletion, via **`AskUserQuestion`** when available (`multiSelect: true`, at most 3 worktree options plus `"Skip all"` per question — `ask-menu.md` caps a menu at 4 — so ask in successive batches of 3 when there are more, and stop asking once the user picks `"Skip all"`; prose fallback in headless runs). Naming a worktree is the confirmation. Remove exactly the confirmed ones, one call each, never repo-wide:
 
 <!-- test-anchor: closed-unmerged-apply -->
 ```bash
-# CONFIRMED_PATH / CONFIRMED_BRANCH come from the worktree the user approved.
+# CONFIRMED_PATH / CONFIRMED_BRANCH / CONFIRMED_HEAD are the path, branch and head_sha of the
+# CLOSED_UNMERGED_JSON row the user was shown and approved.
 "$STALE_CLEANUP_SH" --apply-finished --include-closed-unmerged --json \
-  --only-identity "$CONFIRMED_PATH" "$CONFIRMED_BRANCH"
+  --only-identity "$CONFIRMED_PATH" "$CONFIRMED_BRANCH" \
+  --confirmed-head "$CONFIRMED_PATH" "$CONFIRMED_HEAD"
 ```
 
-The script re-runs every guard (dirty, unpushed, advanced branch, open PR, live process, protected files), so a worktree that changed since the dry-run is retained and reported. Removal is bound to the closed PR's own head commit: any commit made or pushed after you confirmed (unpushed, or `branch_advanced_after_pr`) keeps the worktree, and a PR reopened or replaced by an open one is caught by the open-PR guard. Declining leaves them in place; they will be listed again next run.
+The script re-runs every guard (dirty, unpushed, advanced branch, open PR, live process, protected files), so a worktree that changed since the dry-run is retained and reported. Removal is bound to what the user was shown: a different branch at the path (`only_identity_mismatch`) or a different HEAD than the confirmed one (`confirmed_head_mismatch`) is kept, as is any commit authored after the PR closed (`branch_advanced_after_pr` — the PR's `headRefOid` follows the live branch, so the close time is what proves it), and a PR reopened or replaced by an open one is caught by the open-PR guard. The script refuses a bare `--only` with this flag. Declining leaves them in place; they will be listed again next run. A closed-unmerged worktree is offered only here, never in the age list: in Step 3 omit its row from the Stale Worktrees table, and in Step 4.2 skip the all-or-nothing `--apply` whenever any path still present from `CLOSED_UNMERGED_JSON` is in `stale_worktrees` (declined, skipped or retained — it is idle past `WORKTREE_DAYS` and `--apply` would sweep it), say which path blocks it, and leave the rest to a manual removal.
 
 ### Step 4.2: Workspace deletions
 
