@@ -327,10 +327,16 @@
 #              Also accepts --root=<path>. An empty or flag-like value (e.g.
 #              `--root --json`) is a usage error (exit 3).
 #
-#   stale-cleanup.sh --apply-finished [--root <path>] [--json]
+#   stale-cleanup.sh --apply-finished [--root <path>] [--json] [--only <path>]...
 #     Removes only the finished class non-interactively; local branch
 #     deletion uses Git's checkout guard and a pinned verified upstream tip. Never deletes remote branches.
 #     Incompatible with --check, --apply and --include-locked.
+#     --only <path> (repeatable, --apply-finished only) narrows the scan to the
+#     named worktree paths: every other worktree is neither verified nor
+#     touched. It can only narrow — an empty or flag-like value is a usage error
+#     (exit 3), never "everything"; a named path that is not a registered
+#     worktree is reported skipped (only_path_not_registered). Without --only the
+#     behaviour is the repo-wide default, unchanged.
 #   STALE_CLEANUP_LSOF_TIMEOUT_SECS bounds cwd/process census (default 10s).
 #   STALE_CLEANUP_REMOVE_TIMEOUT_SECS bounds finished removal (default 120s);
 #     a timed-out removal is a failed/unknown attempt, never a clean skip.
@@ -406,6 +412,7 @@ MODE="check"
 JSON=0
 MODE_SET=0
 ROOT_OVERRIDE=""
+ONLY_PATHS=()
 INCLUDE_LOCKED=0
 REMOVE_ORPHANED_CHECKOUTS=0
 while [[ $# -gt 0 ]]; do
@@ -444,6 +451,14 @@ while [[ $# -gt 0 ]]; do
       ROOT_OVERRIDE="$2"
       shift 2
       ;;
+    --only)
+      # Scope-narrowing only: a missing, empty or flag-like value must refuse, never widen.
+      if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+        usage_error "--only requires a non-empty path argument"
+      fi
+      ONLY_PATHS+=("$2")
+      shift 2
+      ;;
     --root=*)
       ROOT_OVERRIDE="${1#--root=}"
       # Same rejection as the two-arg form. A path that genuinely starts with
@@ -466,6 +481,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if (( ${#ONLY_PATHS[@]} > 0 )) && [[ "$MODE" != "apply-finished" ]]; then
+  usage_error "--only is only valid with --apply-finished"
+fi
 if [[ "$MODE" == "apply-finished" && "$INCLUDE_LOCKED" == 1 ]]; then
   usage_error "--include-locked cannot be combined with --apply-finished; finished cleanup always protects locks"
 fi
@@ -855,7 +873,9 @@ emit_finished_text() {
   jq -r '"Finished worktrees:", (if (.finished_worktrees|length)==0 then "  none" else .finished_worktrees[]|"  \(.path) — \(.pr_state) PR #\(.pr_number)" end), (.unknown_finished_worktrees[]|"unknown: \(.path) — \(.reason)"), (.finished_apply[]?|"\(.outcome): \(.path) — \(.reason)", (.remaining_entries // empty))' <<<"$FINISHED_JSON"
 }
 if [[ "$MODE" == "apply-finished" ]]; then
-  finished_report_json --apply
+  only_args=()
+  for only_path in ${ONLY_PATHS[@]+"${ONLY_PATHS[@]}"}; do only_args+=(--only "$only_path"); done
+  finished_report_json --apply ${only_args[@]+"${only_args[@]}"}
   if (( JSON == 1 )); then printf '%s\n' "$FINISHED_JSON"; else emit_finished_text; fi
   exit "$FINISHED_RC"
 fi

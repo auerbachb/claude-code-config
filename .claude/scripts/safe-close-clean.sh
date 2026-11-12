@@ -8,7 +8,7 @@
 #   worktrees and local branches, issue claims, handoffs for merged PRs, the
 #   thread's own session-state entries, and scratch files. It deletes nothing
 #   itself except scratch files; every other removal is delegated to the helper
-#   that already owns it (workspace-sweep.sh, issue-claim.sh, handoff-state.sh,
+#   that already owns it (stale-cleanup.sh --apply-finished --only, issue-claim.sh, handoff-state.sh,
 #   session-state.sh, execution-pause.sh). There is no new deletion path, no
 #   `git clean`, no forced discard.
 #
@@ -41,13 +41,22 @@
 #   thread the inventory attributed.
 #
 # WHAT IS REMOVED — and only when verified
-#   worktrees + local branches   workspace-sweep.sh (finished-only: merged or
-#                                closed owner-authored PR, clean, pushed, idle).
-#                                Run only when the inventory shows a checkout of
-#                                this thread other than its own (a process
-#                                cannot remove the directory it runs in). The
-#                                outcome is read back from `git worktree list`
-#                                and the refs.
+#   worktrees + local branches   stale-cleanup.sh --apply-finished (finished-only:
+#                                merged or closed owner-authored PR, clean,
+#                                pushed, idle — the primitive the repo-wide sweep
+#                                itself runs), scoped with --only to exactly the
+#                                checkouts the inventory attributed to THIS
+#                                thread (its own recovery paths and its
+#                                subagents'). Another thread's finished worktree
+#                                is never named, so never removed; a locked one
+#                                is reported left behind, never forced. Run only
+#                                when the inventory shows a checkout of this
+#                                thread other than its own (a process cannot
+#                                remove the directory it runs in). The outcome is
+#                                read back from `git worktree list` and the refs.
+#                                Other finished worktrees in the repo are only
+#                                COUNTED (a one-line /pm-clean pointer; omitted
+#                                when the count cannot be read).
 #   issue claims                 issue-claim.sh --release with the recorded
 #                                holder, only when this account has no open PR
 #                                for the issue; read back with --check.
@@ -136,7 +145,7 @@ done
 [[ -n "$INVENTORY" ]] || die 2 "--inventory FILE|- is required"
 [[ -n "$SESSION" ]] || die 2 "--session is required: without it this thread's entries cannot be told from another's"
 [[ -n "$REPO" ]] || die 2 "--repo owner/name is required: the repo-scoped checks cannot run without it"
-[[ -n "$WT_ARG" ]] || die 2 "--worktree is required: the sweep and the attribution check need the thread's own checkout"
+[[ -n "$WT_ARG" ]] || die 2 "--worktree is required: the cleanup scope and the attribution check need the thread's own checkout"
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die 2 "--repo must be owner/name, got: $REPO"
 # The session id becomes part of a jq path below, so it is restricted to a literal-safe alphabet.
 [[ "$SESSION" =~ ^[A-Za-z0-9._:-]+$ ]] || die 2 "--session has characters outside [A-Za-z0-9._:-]"
@@ -157,7 +166,7 @@ jq -e --arg s "$SESSION" --arg r "$REPO" --arg w "$WT" \
 SESSION_STATE_SH="$(resolve_script session-state.sh)" || SESSION_STATE_SH=""
 CLAIM_SH="$(resolve_script issue-claim.sh)" || CLAIM_SH=""
 HANDOFF_SH="$(resolve_script handoff-state.sh)" || HANDOFF_SH=""
-SWEEP_SH="$(resolve_script workspace-sweep.sh)" || SWEEP_SH=""
+STALE_SH="$(resolve_script stale-cleanup.sh)" || STALE_SH=""
 PAUSE_SH="$(resolve_script execution-pause.sh)" || PAUSE_SH=""
 
 DO=0
@@ -319,9 +328,58 @@ clean_handoffs() {
   done <<<"$items"
 }
 
-# ---- 3. finished worktrees and local branches (workspace-sweep.sh) ------------------------
+# ---- 3. finished worktrees and local branches (stale-cleanup.sh --apply-finished --only) ----
+# Thread-scoped: only the checkouts the inventory attributed to this thread are ever named to
+# the helper. Ownership that cannot be shown means the path is not in the inventory, so it is
+# never named (and nothing here widens to "every finished worktree").
 clean_worktrees() {
-  local rows row p b id wlist cands="" listed rc line present
+  clean_worktrees_own
+  report_other_finished
+}
+
+# The report line for finished worktrees this thread does NOT own: counted from the helper's
+# read-only detection and pointed at /pm-clean. Never removes anything. An unreadable count is
+# omitted, never guessed; a scan that finished incompletely says "at least".
+report_other_finished() {
+  local helper bounded out rc n own scan p cap cap_err bound prev
+  [[ -n "$STALE_SH" ]] || return 0
+  helper="$(dirname "$STALE_SH")/lib/stale-cleanup-finished.py"
+  bounded="$(dirname "$STALE_SH")/lib/bounded-run.sh"
+  [[ -r "$helper" && -r "$bounded" ]] && command -v python3 >/dev/null 2>&1 || return 0
+  # The count is optional: a wall-clock bound keeps a slow repo-wide scan from stalling the cleanup
+  # (an expired bound omits the line, it never guesses).
+  # shellcheck source=lib/bounded-run.sh
+  source "$bounded" || return 0
+  cap="$(mktemp)" && cap_err="$(mktemp)" || return 0
+  CAPTURE="$cap" CAPTURE_ERR="$cap_err"
+  bound="$(normalize_bound "${SAFE_CLOSE_OTHER_COUNT_TIMEOUT_SECS:-120}" 120)"
+  prev="$PWD"
+  cd "$WT" 2>/dev/null || { rm -f "$cap" "$cap_err"; return 0; }
+  run_bounded "$bound" python3 "$helper" --root "$WT" --caller "$WT" --json; rc=$?
+  cd "$prev" 2>/dev/null || true
+  out="$(cat "$cap" 2>/dev/null)"; rm -f "$cap" "$cap_err"
+  [[ "${BOUNDED_TIMED_OUT:-0}" != 1 ]] || return 0
+  (( rc == 0 || rc == 1 )) || return 0
+  jq -e 'type == "object" and (.finished_worktrees | type == "array") and (.finished_scan == "complete" or .finished_scan == "incomplete")' >/dev/null 2>&1 <<<"$out" || return 0
+  scan="$(jq -r '.finished_scan' <<<"$out")" || return 0
+  own="$(items_of worktrees | jq -r '.ref.path // empty')" || return 0
+  n=0
+  while IFS= read -r p; do
+    [[ -n "$p" && "$p" != "$WT" ]] || continue
+    case "
+$own
+" in *"
+$p
+"*) continue ;; esac
+    n=$((n + 1))
+  done < <(jq -r '.finished_worktrees[]?.path // empty' <<<"$out")
+  (( n > 0 )) || return 0
+  emit notes other_finished_worktrees "-" "$([[ "$scan" == incomplete ]] && printf 'at least ')$n other finished worktree(s) in this repo are not attributed to this thread and were left alone" \
+    "/pm-clean clears them"
+}
+
+clean_worktrees_own() {
+  local rows row p b id wlist cands="" listed rc line present only_args reason out wt_rows wbefore was
   # Work-holding things: kept and named, never touched.
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
@@ -342,11 +400,15 @@ clean_worktrees() {
     emit kept pr "$(jq -r '.id' <<<"$row")" "$(jq -r '.summary' <<<"$row")" "let it merge (/wrap), then run /safe-close again"
   done < <(items_of open_prs | jq -c 'select(.consequence != "harmless" and .consequence != "unknown")')
 
-  # This thread's other, clean checkouts: candidates for the finished-work sweep.
+  # This thread's other, clean checkouts (the inventory's attribution): the only candidates.
+  # Captured first so an unreadable inventory is a failure, not an empty candidate list.
+  if ! wt_rows="$(items_of worktrees)"; then
+    emit failed worktree "-" "could not read this thread's worktrees from the inventory; nothing was removed"; return
+  fi
   while IFS= read -r p; do
     [[ -n "$p" && "$p" != "$WT" ]] && cands="$cands
 $p"
-  done < <(items_of worktrees | jq -r 'select(.id | startswith("clean:")) | .ref.path // empty')
+  done < <(jq -r 'select(.id | startswith("clean:")) | .ref.path // empty' <<<"$wt_rows")
   if [[ -z "$(printf '%s' "$cands" | tr -d '[:space:]')" ]]; then
     if items_of worktrees | jq -e 'select(.id | startswith("clean:")) | select(.ref.path == $w)' --arg w "$WT" >/dev/null 2>&1; then
       emit notes own_checkout "$WT" "this thread's own checkout stays: a process cannot remove the directory it runs in" \
@@ -357,33 +419,59 @@ $p"
   if (( DO == 0 )); then
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
-      done_or_would worktree "$p" "would be removed by the finished-work sweep if its PR is verified merged, clean, pushed and idle"
+      done_or_would worktree "$p" "would be removed by the finished-worktree cleanup if its PR is verified merged, clean, pushed and idle"
     done <<<"$cands"
     return 0
   fi
-  if [[ -z "$SWEEP_SH" ]]; then
-    emit failed sweep "-" "workspace-sweep.sh not found (checked all three paths): finished worktrees cannot be swept"; return
+  if [[ -z "$STALE_SH" ]]; then
+    emit failed sweep "-" "stale-cleanup.sh not found (checked all three paths): finished worktrees cannot be removed"; return
   fi
-  "$SWEEP_SH" --trigger post-merge --repo-dir "$WT" >/dev/null 2>&1
+  only_args=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && only_args+=(--only "$p")
+  done <<<"$cands"
+  # A scope that came out empty must refuse, never widen to every finished worktree.
+  if (( ${#only_args[@]} == 0 )); then
+    emit failed sweep "-" "no thread-owned worktree path to scope the cleanup to; nothing was removed"; return
+  fi
+  # "Removed" needs a before AND an after: a path that was never registered cannot have been removed.
+  if ! wbefore="$(git -C "$WT" worktree list --porcelain 2>/dev/null)"; then
+    emit failed sweep "-" "could not read the worktree list before the cleanup; nothing was removed"; return
+  fi
+  out="$(cd "$WT" && "$STALE_SH" --apply-finished --json --root "$WT" "${only_args[@]}" 2>/dev/null)"
   rc=$?
-  SWEEP_JSON="$(jq -nc --argjson rc "$rc" '{ran:true, exit:$rc, note:"exit status is not evidence; removal was read back"}')"
-  emit notes sweep "-" "the finished-work sweep covers the whole repository: it also removes other threads' worktrees whose PR is verified merged, clean, pushed and idle (the same sweep /wrap runs after every merge); only this thread's are listed"
+  # No usable report plus a failing exit: say the helper failed (the read-back below still decides what was removed).
+  if (( rc != 0 )) && ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$out"; then
+    emit failed sweep "-" "stale-cleanup.sh exited $rc without a readable report; whatever it removed is confirmed below from the worktree list"
+  fi
+  SWEEP_JSON="$(jq -nc --argjson rc "$rc" '{ran:true, scoped:true, exit:$rc, note:"exit status is not evidence; removal was read back"}')"
   # Read back: what is still registered, what is still on disk.
   if ! wlist="$(git -C "$WT" worktree list --porcelain 2>/dev/null)"; then
-    emit failed sweep "-" "could not re-read the worktree list after the sweep; nothing is reported removed"; return
+    emit failed sweep "-" "could not re-read the worktree list after the cleanup; nothing is reported removed"; return
   fi
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     listed=0
     while IFS= read -r line; do [[ "$line" == "worktree $p" ]] && listed=1; done <<<"$wlist"
     present=0; [[ -e "$p" ]] && present=1
-    if (( listed == 0 && present == 0 )); then
-      done_or_would worktree "$p" "removed by the finished-work sweep and confirmed gone"
+    was=0
+    while IFS= read -r line; do [[ "$line" == "worktree $p" ]] && was=1; done <<<"$wbefore"
+    if (( was == 0 )); then
+      emit kept worktree "$p" "it was not a registered worktree before the cleanup, so nothing was removed" \
+        "/pm-clean lists orphaned registrations and checkouts"
+    elif (( listed == 0 && present == 0 )); then
+      done_or_would worktree "$p" "removed by the finished-worktree cleanup and confirmed gone"
     elif (( listed == 0 && present == 1 )); then
       emit failed worktree "$p" "unregistered but the folder is still on disk (a .DS_Store race, or leftover files); it is not forced away"
     else
-      emit kept worktree "$p" "the sweep retained it: its PR is not verified merged, or it is not provably idle" \
-        "finish or merge the PR, then run /safe-close again; /pm-clean lists what blocks it"
+      # The helper's own reason for retaining it (locked, open PR, live process, ...), when readable.
+      reason="$(jq -r --arg p "$p" '[((.skipped_finished_worktrees // []) + (.unknown_finished_worktrees // []) + (.finished_apply // []))[] | select(.path == $p) | .reason // empty] | last // empty' <<<"$out" 2>/dev/null)" || reason=""
+      case "$reason" in
+        locked) emit kept worktree "$p" "left behind: the worktree is locked, and a lock is never overridden" \
+          "unlock it (git worktree unlock) if it is really finished, then run /safe-close again" ;;
+        *) emit kept worktree "$p" "the cleanup retained it${reason:+ ($reason)}: its PR is not verified merged, or it is not provably idle" \
+          "finish or merge the PR, then run /safe-close again; /pm-clean lists what blocks it" ;;
+      esac
     fi
   done <<<"$cands"
   # Local branches of the removed checkouts.
@@ -398,9 +486,9 @@ $p
 "*) ;; *) continue ;; esac
     git -C "$WT" show-ref --verify --quiet "refs/heads/$b" 2>/dev/null
     case $? in
-      0) emit notes branch "$b" "the local branch still exists" "the sweep deletes it once its PR is verified merged; /pm-clean lists the rest" ;;
+      0) emit notes branch "$b" "the local branch still exists" "the cleanup deletes it once its PR is verified merged; /pm-clean lists the rest" ;;
       1) done_or_would branch "$b" "local branch removed with its finished worktree and confirmed gone" ;;
-      *) emit failed branch "$b" "could not read the branch refs after the sweep, so its removal is unconfirmed" ;;
+      *) emit failed branch "$b" "could not read the branch refs after the cleanup, so its removal is unconfirmed" ;;
     esac
   done < <(items_of worktrees | jq -c 'select(.id | startswith("clean:"))')
 }

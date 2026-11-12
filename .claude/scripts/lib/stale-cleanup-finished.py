@@ -153,8 +153,11 @@ def canonical(path, cwd):
 
 
 class Sweep:
-    def __init__(self, root, caller, pr_unavailable=False):
+    def __init__(self, root, caller, pr_unavailable=False, only=None):
         self.root = root
+        # None = every worktree (the repo-wide default). A list restricts the
+        # scan to exactly those worktree paths; it can only narrow, never widen.
+        self.only = only
         self.caller = caller
         self.pr_unavailable = pr_unavailable
         self.cwds = None
@@ -440,13 +443,42 @@ sys.exit(11 if errors else 0)
         if self.caller != canonical(os.getcwd(), self.root):
             raise Unknown("caller_context_mismatch")
         self.common = canonical(os.path.join(self.root, self.git("rev-parse", "--git-common-dir").strip()), self.root)
+        wanted = None
+        if self.only is not None:
+            wanted = set()
+            for item in self.only:
+                if os.path.islink(os.path.normpath(os.path.join(self.root, item))):
+                    # A named path swapped for a link could resolve to another registered
+                    # worktree: never follow it, so it matches nothing.
+                    wanted.add(item)
+                    continue
+                try:
+                    wanted.add(canonical(item, self.root))
+                except Unknown:
+                    wanted.add(item)  # unreadable or gone: matches no registered worktree
+        matched = set()
         for row in self.worktrees():
+            if wanted is not None:
+                try:
+                    here = canonical(row["path"], self.root)
+                except Unknown as exc:
+                    # Unreadable: never verify or remove it. It only makes the scan incomplete when
+                    # it is literally one of the paths requested.
+                    if row["path"] in self.only:
+                        self.record(row, exc, True)
+                    continue
+                if here not in wanted:
+                    continue
+                matched.add(here)
             try:
                 self.report["finished_worktrees"].append(self.verify(row))
             except Skip as exc:
                 self.record(row, exc)
             except Unknown as exc:
                 self.record(row, exc, True)
+        if wanted is not None:
+            for item in sorted(wanted - matched):
+                self.record({"path": item}, "only_path_not_registered")
         return self.report
 
     def apply(self):
@@ -527,8 +559,12 @@ def main():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--pr-lookup-unavailable", action="store_true")
+    parser.add_argument("--only", action="append", metavar="PATH",
+                        help="restrict the scan to this worktree path (repeatable); never widens")
     args = parser.parse_args()
-    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable)
+    if args.only is not None and any(not item.strip() for item in args.only):
+        parser.error("--only requires a non-empty path")
+    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable, args.only)
     try:
         sweep.detect()
         if args.apply:

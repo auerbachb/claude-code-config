@@ -221,6 +221,31 @@ print('p100\\nn'+cwd)
     verify(old.exists() and git('branch','--list','old-unmerged')!='', 'finished mode never reaches age-only apply')
     verify(all(path.exists() for path in [dirty,untracked,unpushed,opened,locked,live,protected,foreign,managed]), 'every unsafe/unknown worktree retained')
 
+    # --only narrows the apply to the named worktrees; omitting it keeps the repo-wide default.
+    only_a = worktree('only-a'); only_b = worktree('only-b')
+    code, data = sweep('--apply-finished',flags=('--only',str(only_a)))
+    verify(not only_a.exists() and only_b.exists(), '--only removes only the named finished worktree')
+    verify(git('branch','--list','only-a')=='' and git('branch','--list','only-b')!='', '--only deletes only the named branch')
+    verify([r['branch'] for r in data['finished_worktrees']]==['only-a'] and not data['skipped_finished_worktrees'] and not data['unknown_finished_worktrees'],
+           '--only does not even inspect unnamed worktrees')
+    code, data = sweep('--apply-finished',flags=('--only',str(tmp/'not-a-worktree')))
+    verify(only_b.exists() and any(r['reason']=='only_path_not_registered' for r in data['skipped_finished_worktrees']) and not data['finished_worktrees'],
+           'a named path that is not a registered worktree widens nothing and is reported')
+    link = tmp/'link-to-only-b'; link.symlink_to(only_b)
+    code, data = sweep('--apply-finished',flags=('--only',str(link)))
+    verify(only_b.exists() and not data['finished_worktrees'] and any(r['reason']=='only_path_not_registered' for r in data['skipped_finished_worktrees']),
+           'a named path replaced by a link to another registered worktree selects nothing')
+    code, data = sweep('--apply-finished',flags=('--only',str(link)+'/.'))
+    verify(only_b.exists() and not data['finished_worktrees'], 'a link/. form of the named path selects nothing either')
+    link.unlink()
+    for bad_flags in [('--only',''),('--only',)]:
+        bad = subprocess.run(['bash',script,'--apply-finished','--root',str(root),'--json',*bad_flags],cwd=root,env=env,capture_output=True)
+        verify(bad.returncode==3 and only_b.exists(), 'an empty or valueless --only refuses instead of widening')
+    bad = subprocess.run(['bash',script,'--check','--root',str(root),'--json','--only',str(only_b)],cwd=root,env=env,capture_output=True)
+    verify(bad.returncode==3 and only_b.exists(), '--only outside --apply-finished refuses')
+    code, data = sweep('--apply-finished',extra={'FINISHED_TEST_CWD':str(live/'child')})
+    verify(not only_b.exists(), 'without --only the repo-wide default still removes every verified finished worktree')
+
     # Initial safety assertions above have already exercised every negative
     # control. Lock them now to avoid repeating expensive unrelated probes.
     for negative in [dirty,untracked,unpushed,opened,live,protected,foreign,old]:
