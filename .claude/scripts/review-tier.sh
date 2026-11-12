@@ -576,6 +576,47 @@ resolve_codeant_cap() {
   fi
 }
 
+# When the agent asks for AI reviews (issue #2195): REVIEW_REQUEST in the same
+# live ```ini block. `after-ci` (default when absent) → request once per HEAD
+# only when the checks that matter are green; `on-push` → today's behaviour,
+# no CI gate. Any other value → `never` with one stderr warning: an unclear
+# request switch fails toward not requesting. REVIEW_REQUEST_CHECKS is a comma
+# list of check-run names that must be green first; absent or empty → every
+# non-reviewer check. Both are reported as JSON fields and read by
+# review-request-gate.sh; this script never decides the request itself.
+REQ_KEY="REVIEW_REQUEST"
+REQ_VALUE="after-ci"
+REQ_CHECKS_KEY="REVIEW_REQUEST_CHECKS"
+REQ_CHECKS=""
+REQ_LIVE_FOUND=0
+REQ_CHECKS_LIVE_FOUND=0
+resolve_review_request() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $REQ_KEY"
+  [[ -n "$range" ]] || return 0
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$REQ_KEY")" \
+    || die_read "could not read $REQ_KEY from ## $SECTION"
+  if [[ -n "$found" ]]; then
+    REQ_LIVE_FOUND=1
+    value="${found#=}"
+    case "$value" in
+      after-ci|on-push) REQ_VALUE="$value" ;;
+      *)
+        warn "$REQ_KEY='$value' in ## $SECTION is not after-ci or on-push — treating review requests as never (an unclear request switch fails toward not requesting)"
+        REQ_VALUE="never"
+        ;;
+    esac
+  fi
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$REQ_CHECKS_KEY")" \
+    || die_read "could not read $REQ_CHECKS_KEY from ## $SECTION"
+  if [[ -n "$found" ]]; then
+    REQ_CHECKS_LIVE_FOUND=1
+    REQ_CHECKS="${found#=}"
+  fi
+}
+
 # A heading that is almost `## Review policy` (other case, extra spaces).
 # The gate treats it as invalid below; the switch in it is honoured.
 near_miss_heading() {
@@ -592,9 +633,21 @@ if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   resolve_escalation
   resolve_override_window
   resolve_codeant_cap
+  resolve_review_request
   if [[ $ESC_SECTION_FOUND -eq 0 ]]; then
     ESC_NEAR="$(near_miss_heading)"
-    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; resolve_codeant_cap "$ESC_NEAR"; }
+    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; resolve_codeant_cap "$ESC_NEAR"; resolve_review_request "$ESC_NEAR"; }
+  fi
+  # A request key outside a live ini block is never honoured; say so once.
+  if [[ $REQ_LIVE_FOUND -eq 0 ]]; then
+    REQ_STRAY="$(extract_knob_value "$REQ_KEY" < "$POLICY_COPY")" || REQ_STRAY=""
+    [[ -z "$REQ_STRAY" ]] \
+      || warn "$REQ_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — ignored; review requests stay after-ci"
+  fi
+  if [[ $REQ_CHECKS_LIVE_FOUND -eq 0 ]]; then
+    REQ_CHECKS_STRAY="$(extract_knob_value "$REQ_CHECKS_KEY" < "$POLICY_COPY")" || REQ_CHECKS_STRAY=""
+    [[ -z "$REQ_CHECKS_STRAY" ]] \
+      || warn "$REQ_CHECKS_KEY is not inside a live \`\`\`ini block under ## $SECTION — ignored; every non-reviewer check is awaited"
   fi
   # A cap key outside a live ini block is never honoured; say so once.
   if [[ $CAP_LIVE_FOUND -eq 0 ]]; then
@@ -625,6 +678,7 @@ emit() {
     jq -cn --arg policy "$1" --arg gate "$2" --arg tier "$3" --arg source "$SOURCE" \
       --arg error "$4" --argjson matches "$5" --arg escalation "$ESCALATION" \
       --argjson nro "$NRO_MINUTES" --argjson cap_full "$CAP_FULL" \
+      --arg req "$REQ_VALUE" --arg req_checks "$REQ_CHECKS" \
       '{policy: $policy, gate: $gate,
         tier: (if $tier == "" then null else $tier end),
         source: $source,
@@ -632,7 +686,11 @@ emit() {
         matches: $matches,
         escalation: $escalation,
         no_review_override_minutes: $nro,
-        codeant_lifetime_cap_full: $cap_full}'
+        codeant_lifetime_cap_full: $cap_full,
+        review_request: $req,
+        review_request_checks: (if $req_checks == "" then null
+          else ($req_checks | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0))
+                | if length == 0 then null else . end) end)}'
   else
     printf '%s\n' "$2"
   fi

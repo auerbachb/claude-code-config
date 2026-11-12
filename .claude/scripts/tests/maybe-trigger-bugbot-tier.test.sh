@@ -49,6 +49,7 @@ mkdir -p "$STUB_DIR/lib"
 cp "$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/review-request-gate.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/"
 cp "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" "$STUB_DIR/lib/"
 cp "$REPO_ROOT/.claude/scripts/bugbot-refused-head.sh" "$STUB_DIR/"
@@ -99,8 +100,13 @@ case "$sub" in
     exit 0
     ;;
   api)
-    # No refusal anywhere: the refusal guard always answers "post".
-    echo "[]"
+    # No refusal anywhere: the refusal guard always answers "post". The review
+    # request waits for a green CI check on a HEAD that is past its grace (#2195).
+    case "$*" in
+      *check-runs*) echo '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}' ;;
+      */commits/*) jq -rn 'now - 7200 | todate' ;;
+      *) echo "[]" ;;
+    esac
     ;;
   *) exit 0 ;;
 esac

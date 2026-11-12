@@ -12,7 +12,7 @@
 | Borderline — overlaps, fit uncertain | One-line suggestion; proceed per the answer, no long detour |
 | None | No skill mention at all |
 
-"Clear" means the skill's description names the requested task (e.g. "summarize what this PR changed" → `/recap`; "what should I work on next?" → `/pm` or `/prioritize`).
+"Clear" means the skill's description names the requested task.
 
 ## Reaching Subagents
 

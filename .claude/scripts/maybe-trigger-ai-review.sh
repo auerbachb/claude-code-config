@@ -258,6 +258,76 @@ elif [[ -n "$LAST_FIRED_ROUND" && "$LAST_FIRED_ROUND" =~ ^[0-9]+$ ]]; then
   fi
 fi
 
+# When the agent asks (issue #2195). The tier's REVIEW_REQUEST setting and this
+# HEAD's checks decide whether the CodeAnt request may post now; the rules live
+# in review-request-gate.sh. A block never ends the tick by itself: a tiered
+# run defers the CodeAnt step (the step stays open, so the next tick asks
+# again) and a legacy run skips the tick before any state write. A ci-only
+# tier passes through, as does a HEAD already requested: the existing dedupe
+# below decides that. The request is recorded after the CodeAnt post succeeds.
+REVIEW_TIER_SH="${SCRIPT_DIR}/review-tier.sh"
+REQUEST_SH="${SCRIPT_DIR}/review-request-gate.sh"
+REQ_BLOCK=""
+record_request_head() {
+  "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].review_request_head_sha=\"$HEAD_SHA\"" >/dev/null 2>&1 \
+    || echo "maybe-trigger-ai-review.sh: posted the review request but could not record its HEAD — it may be requested again" >&2
+}
+if [[ -z "$SKIP_REASON" ]]; then
+  REQ_TIER_JSON="$("$REVIEW_TIER_SH" "$PR_NUM" --json 2>/dev/null)" || REQ_TIER_JSON=""
+  REQ_GATE_NAME="$(jq -r '.gate // ""' <<<"$REQ_TIER_JSON" 2>/dev/null)" || REQ_GATE_NAME=""
+  # An unreadable tier keeps the default setting (after-ci), so the CI gate
+  # still applies; the tier path's own fail-closed rules are unchanged.
+  REQ_SETTING="after-ci"
+  REQ_CHECKS=""
+  if [[ -n "$REQ_TIER_JSON" && -n "$REQ_GATE_NAME" ]]; then
+    REQ_SETTING="$(jq -r '.review_request // "after-ci"' <<<"$REQ_TIER_JSON")"
+    REQ_CHECKS="$(jq -r '(.review_request_checks // []) | join(",")' <<<"$REQ_TIER_JSON")"
+  fi
+  if [[ "$REQ_GATE_NAME" != "ci-only" ]]; then
+    if [[ "$REQ_SETTING" == "never" ]]; then
+      REQ_BLOCK="never"
+    elif [[ "$REQ_SETTING" == "after-ci" ]]; then
+      REQ_HEAD_DONE="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].review_request_head_sha // empty" 2>/dev/null || true)"
+      REQ_HEAD_EPOCH=""
+      REQ_COMMIT_DATE="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null)" || REQ_COMMIT_DATE=""
+      if [[ -n "$REQ_COMMIT_DATE" ]]; then
+        REQ_HEAD_EPOCH="$(jq -rn --arg d "$REQ_COMMIT_DATE" '$d | fromdateiso8601' 2>/dev/null)" || REQ_HEAD_EPOCH=""
+      fi
+      # The grace runs from the later of the commit time and the first poll that
+      # saw this HEAD: an old commit pushed now still gets its full wait for CI.
+      REQ_SEEN_SHA="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].review_request_seen_sha // empty" 2>/dev/null || true)"
+      REQ_SEEN_EPOCH="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].review_request_seen_epoch // empty" 2>/dev/null || true)"
+      if [[ "$REQ_SEEN_SHA" != "$HEAD_SHA" || ! "$REQ_SEEN_EPOCH" =~ ^[0-9]+$ ]]; then
+        REQ_SEEN_EPOCH="$(date +%s)"
+        # A dry run evaluates with this clock but never persists it.
+        if (( DRY_RUN == 0 )); then
+          "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].review_request_seen_sha=\"$HEAD_SHA\"" \
+            --set ".prs[\"${PR_KEY}\"].review_request_seen_epoch=$REQ_SEEN_EPOCH" >/dev/null 2>&1 \
+            || { REQ_BLOCK="ci_unreadable"; REQ_SEEN_EPOCH=""; }
+        fi
+      fi
+      if [[ -n "$REQ_SEEN_EPOCH" && ( -z "$REQ_HEAD_EPOCH" || "$REQ_SEEN_EPOCH" -gt "$REQ_HEAD_EPOCH" ) ]]; then
+        REQ_HEAD_EPOCH="$REQ_SEEN_EPOCH"
+      fi
+      REQ_RUNS="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null)" || REQ_RUNS=""
+      if [[ ! -x "$REQUEST_SH" ]]; then
+        echo "maybe-trigger-ai-review.sh: ERROR: review-request-gate.sh not found — the CodeAnt request is held this tick" >&2
+        REQ_BLOCK="gate_missing"
+      elif [[ -z "$REQ_RUNS" ]]; then
+        REQ_BLOCK="ci_unreadable"
+      else
+        REQ_OUT="$(printf '%s' "$REQ_RUNS" | "$REQUEST_SH" --setting "$REQ_SETTING" --head "$HEAD_SHA" \
+          --checks "$REQ_CHECKS" --requested-head "$REQ_HEAD_DONE" --head-epoch "$REQ_HEAD_EPOCH")" || REQ_OUT=""
+        if [[ -z "$REQ_OUT" ]]; then
+          REQ_BLOCK="ci_unreadable"
+        elif [[ "$(jq -r '.decision' <<<"$REQ_OUT")" != "request" && "$(jq -r '.reason' <<<"$REQ_OUT")" != "already_requested" ]]; then
+          REQ_BLOCK="$(jq -r '.reason' <<<"$REQ_OUT")"
+        fi
+      fi
+    fi
+  fi
+fi
+
 emit_json_skip() {
   jq -n \
     --arg status skipped \
@@ -326,6 +396,18 @@ else
   echo "maybe-trigger-ai-review.sh: DEGRADED: review-triggers-allowed.sh not found beside this script — tier-aware triggers unavailable, continuing with the legacy path" >&2
 fi
 
+# Legacy: a held request ends the tick before any state write, so the next tick
+# asks again (issue #2195). The tiered path defers its CodeAnt step below.
+if [[ "$TRIGGER_MODE" == "legacy" && -n "$REQ_BLOCK" ]]; then
+  SKIP_REASON="review_request_${REQ_BLOCK}"
+  if (( JSON_OUT )); then
+    emit_json_skip
+  else
+    echo "skipped: $SKIP_REASON (review request held this tick)"
+  fi
+  exit 0
+fi
+
 if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
   # The reviewers this script invites; CodeRabbit is never one of them.
@@ -368,6 +450,13 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
           trigger_skips: $skips, deferred: $deferred,
           bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap}'
   }
+
+  # A held request shows in the dry run as deferred, not as a planned post (#2195).
+  if [[ -n "$REQ_BLOCK" ]] && step_allowed codeant; then
+    TRIGGER_SKIPS_JSON="$(jq -c --arg why "review_request_${REQ_BLOCK}" '.codeant = {kind: "deferred", reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
+    DEFERRED_JSON="$(jq -c '. + ["codeant"] | unique' <<<"$DEFERRED_JSON")"
+    ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "cursor") ] | join(", ")' <<<"$TRIGGER_JSON")"
+  fi
 
   if (( DRY_RUN )); then
     # Evaluated, never claimed: a dry run posts nothing and records nothing.
@@ -427,6 +516,15 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       fi
       continue
     fi
+    # The CodeAnt request waits for CI (issue #2195). Held = deferred: the step
+    # stays open, so the next tick asks again. Not claimed, so no cap is spent.
+    if [[ "$step" == "codeant" && -n "$REQ_BLOCK" ]]; then
+      echo "maybe-trigger-ai-review.sh: holding $body — review request $REQ_BLOCK (#2195)" >&2
+      TRIGGER_SKIPS_JSON="$(jq -c --arg why "review_request_${REQ_BLOCK}" '.codeant = {kind: "deferred", reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
+      ANY_DEFERRED=1
+      DEFERRED_JSON="$(jq -c '. + ["codeant"] | unique' <<<"$DEFERRED_JSON")"
+      continue
+    fi
     # Claim BEFORE posting: the ledger bounds the lifetime caps across racing
     # runs and the seconds before GitHub lists the new comment.
     CLAIM_RC=0
@@ -458,6 +556,7 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     fi
     "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step\"]=true" >/dev/null 2>&1 \
       || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the claim ledger still bounds a re-post" >&2
+    if [[ "$step" == "codeant" ]]; then record_request_head; fi
     T_POSTED=$((T_POSTED + 1))
   done
 
@@ -698,6 +797,7 @@ post_one() {
 
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
+record_request_head
 if [[ -n "$BUGBOT_TIER_GATE" ]]; then
   # Deliberately NOT recorded as handled, unlike the refusal branch below. A
   # refusal is fixed for this HEAD, but a tier can change without a push (a

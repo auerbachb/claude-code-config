@@ -45,7 +45,7 @@ HEAD2="dddddddddddddddddddddddddddddddddddddddd"
 S="$TMP/scripts"
 mkdir -p "$S/lib" "$TMP/reference"
 for f in maybe-trigger-ai-review.sh review-triggers-allowed.sh bugbot-tier-excluded.sh ci-status.sh \
-         check-runs-dedup.sh session-state.sh state-lock.sh; do
+         check-runs-dedup.sh session-state.sh state-lock.sh review-request-gate.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" \
@@ -361,6 +361,28 @@ check_eq "deferred for every step" '["codeant","cursor"]' "$(f '.deferred | tost
 rm -f "$WORK/.claude/pm-config.md"
 run
 check_eq "the same failure on a policy-free checkout: legacy, the free reviewer posts" "@codeant-ai review;" "$(posted)"
+
+echo "== review request after CI (#2195), legacy path: pending, failed, green, same HEAD, new push =="
+reset "$(tier_json absent legacy)"
+checks null 600 in_progress
+run
+check_eq "CI pending: no request" "" "$(posted)"
+check_eq "CI pending: reason held" "skipped:review_request_ci_pending" "$(f '"\(.status):\(.reason)"')"
+checks failure 600
+run
+check_eq "CI failed on this HEAD: no request" "" "$(posted)"
+check_eq "CI failed: reason held" "skipped:review_request_ci_failed" "$(f '"\(.status):\(.reason)"')"
+checks success 7200
+run
+check_eq "CI green: exactly one request" "@codeant-ai review;" "$(posted)"
+check_eq "CI green: the HEAD is recorded" "$HEAD" "$(cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].review_request_head_sha" 2>/dev/null)"
+run
+check_eq "second poll on the same HEAD: still one request" "@codeant-ai review;" "$(posted)"
+export FIXTURE_HEAD="$HEAD2" FIXTURE_ROUNDS=5
+checks success 7200
+run
+check_eq "a new push is eligible again: one more request" "@codeant-ai review;@codeant-ai review;" "$(posted)"
+export FIXTURE_HEAD="$HEAD"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

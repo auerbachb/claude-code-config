@@ -442,9 +442,11 @@ esc_err_lines() { grep -c . "$ESC_ERR" | tr -d ' '; }
 printf '# PM Config\n\n## Active work\n\n```ini\nACTIVE_WORK_CAP=6\n```\n' > "$POLICY"
 out="$(esc_json)"
 check "escalation: no Review policy section → on" "on" "$(jq -r .escalation <<<"$out")"
-check "escalation: follows every pre-#1807 key (only #1899's window and #1849's cap come after it)" "escalation" "$(jq -r 'keys_unsorted | .[-3]' <<<"$out")"
-check "no_review_override_minutes: after escalation, default 10" "no_review_override_minutes=10" "$(jq -r '(keys_unsorted | .[-2]) as $k | "\($k)=\(.[$k])"' <<<"$out")"
-check "codeant_lifetime_cap_full: last key, default 1" "codeant_lifetime_cap_full=1" "$(jq -r '(keys_unsorted | last) as $k | "\($k)=\(.[$k])"' <<<"$out")"
+check "escalation: follows every pre-#1807 key (#1899's window, #1849's cap and #2195's request keys come after it)" "escalation" "$(jq -r 'keys_unsorted | .[-5]' <<<"$out")"
+check "no_review_override_minutes: after escalation, default 10" "no_review_override_minutes=10" "$(jq -r '(keys_unsorted | .[-4]) as $k | "\($k)=\(.[$k])"' <<<"$out")"
+check "codeant_lifetime_cap_full: default 1" "codeant_lifetime_cap_full=1" "$(jq -r '(keys_unsorted | .[-3]) as $k | "\($k)=\(.[$k])"' <<<"$out")"
+check "review_request: absent section key → after-ci (#2195)" "review_request=after-ci" "$(jq -r '(keys_unsorted | .[-2]) as $k | "\($k)=\(.[$k])"' <<<"$out")"
+check "review_request_checks: absent → null (every non-reviewer check)" "review_request_checks=null" "$(jq -r '(keys_unsorted | last) as $k | "\($k)=\(.[$k])"' <<<"$out")"
 check "codeant_lifetime_cap_full: no section → stderr silent" "0" "$(esc_err_lines)"
 printf '# PM Config\n\n## Review policy\n\n```ini\nCODEANT_LIFETIME_CAP_FULL=2\n```\n' > "$POLICY"
 check "codeant_lifetime_cap_full: integer 2" "2" "$(jq -r .codeant_lifetime_cap_full <<<"$(esc_json)")"
@@ -806,6 +808,22 @@ check "--config overrides the base-branch read in PR mode" "ci-only" \
 check "CLAUDE_REVIEW_POLICY_FILE in the environment is ignored" "legacy" \
   "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 CLAUDE_REVIEW_POLICY_FILE="$TMP_DIR/local-copy.md" pr_gate)"
 bash "$SUT" 0 >/dev/null 2>&1; check "PR number 0 → exit 2" "2" "$?"
+
+# ---- REVIEW_REQUEST / REVIEW_REQUEST_CHECKS (issue #2195) -----------------
+req_json() { { printf '## Review policy\n\n'; ini_block "$1"; } > "$POLICY"; esc_json; }
+out="$(req_json 'REVIEW_REQUEST=on-push')"
+check "review_request: on-push is reported" "on-push" "$(jq -r .review_request <<<"$out")"
+out="$(req_json 'REVIEW_REQUEST=after-ci')"
+check "review_request: after-ci is reported" "after-ci" "$(jq -r .review_request <<<"$out")"
+out="$(req_json 'REVIEW_REQUEST=Sometimes')"
+check "review_request: malformed value fails toward never" "never" "$(jq -r .review_request <<<"$out")"
+check "review_request: malformed value warns once" "1" "$(esc_err_lines)"
+out="$(req_json 'REVIEW_REQUEST_CHECKS=rule-lint, hook-tests-py39')"
+check "review_request_checks: csv is trimmed into a list" "rule-lint,hook-tests-py39" "$(jq -r '.review_request_checks | join(",")' <<<"$out")"
+out="$(req_json 'REVIEW_REQUEST_CHECKS=')"
+check "review_request_checks: empty value is absent (null)" "null" "$(jq -r '.review_request_checks' <<<"$out")"
+out="$(printf '## Review policy\n\n```\nREVIEW_REQUEST=on-push\n```\n' > "$POLICY"; esc_json)"
+check "review_request: outside a live ini block is ignored (after-ci)" "after-ci" "$(jq -r .review_request <<<"$out")"
 
 echo
 echo "review-tier.test.sh: $PASS passed, $FAIL failed"

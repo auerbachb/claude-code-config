@@ -52,7 +52,7 @@ HEAD_SHA="deadbeef0000000000000000000000000000abcf"
 # ---- stub SCRIPT_DIR ---------------------------------------------------------
 STUB_DIR="$TMP/scripts"
 mkdir -p "$STUB_DIR/lib"
-for f in maybe-trigger-ai-review.sh session-state.sh state-lock.sh bugbot-tier-excluded.sh; do
+for f in maybe-trigger-ai-review.sh session-state.sh state-lock.sh bugbot-tier-excluded.sh review-request-gate.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$STUB_DIR/"
 done
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" "$STUB_DIR/lib/"
@@ -105,7 +105,13 @@ case "$sub" in
         exit 0 ;;
     esac
     exit 0 ;;
-  api) echo "[]" ;;
+  api)
+    # A green CI check on a HEAD past its grace, so the review request may post (#2195).
+    case "$*" in
+      *check-runs*) echo '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}' ;;
+      */commits/*) jq -rn 'now - 7200 | todate' ;;
+      *) echo "[]" ;;
+    esac ;;
   *) exit 0 ;;
 esac
 STUB
