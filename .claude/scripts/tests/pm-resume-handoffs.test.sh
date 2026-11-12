@@ -56,6 +56,8 @@ for order in first second; do
   done
   printf '%s\n' '{"owner_repo":"second/repo","pr_number":null}' > "$scoped"
   [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]] || { printf '%s\n' 'explicit null PR identity was accepted' >&2; exit 1; }
+  printf '%s\n' '{"owner_repo":"second/repo","pr_number":"42"}' > "$scoped"
+  [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]] || { printf '%s\n' 'string PR identity was accepted' >&2; exit 1; }
   printf '%s\n' '{"owner_repo":"second/repo","pr_number":43}' > "$scoped"
   [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]]
   printf '%s\n' '{"owner_repo":"first/repo","pr_number":42}' > "$scoped"

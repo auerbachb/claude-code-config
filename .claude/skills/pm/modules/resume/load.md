@@ -130,7 +130,7 @@ while IFS= read -r n; do
   [ -f "$f" ] && [ -r "$f" ] || continue
   payload=$(jq -cse --arg repo "$CUR_REPO" --arg pr "$n" --argjson require_owner "$require_owner" '
     select(length == 1) | .[0] | objects |
-    select((has("pr_number") | not) or ((.pr_number | tostring) == $pr)) |
+    select((has("pr_number") | not) or (.pr_number | type == "number" and tostring == $pr)) |
     select(
       if .owner_repo == null then ($require_owner | not)
       else (.owner_repo | type == "string" and ascii_downcase == ($repo | ascii_downcase))
