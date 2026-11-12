@@ -222,15 +222,20 @@ do_owner() {
     # shellcheck disable=SC2086
     v="$("$SESSION_STATE_SH" $rf --get "$1" 2>/dev/null)"; rc2=$?
     if (( rc2 == 3 )); then printf 'null'; return 0; fi
-    (( rc2 == 0 )) || die 3 "could not read $1 (exit $rc2); owner unknown"
+    if (( rc2 != 0 )); then
+      # Runs inside $( ): a die here would only end the subshell, so report and let the caller abort.
+      printf 'safe-close-stop.sh: could not read %s (exit %s); owner unknown\n' "$1" "$rc2" >&2
+      return 3
+    fi
     printf '%s' "${v:-null}"
   }
-  pmm1="$(_get '.pmm_monitor_task_id')"; pmm2="$(_get '.pmm.auto_wake_monitor_task_id')"
+  pmm1="$(_get '.pmm_monitor_task_id')" || exit 3
+  pmm2="$(_get '.pmm.auto_wake_monitor_task_id')" || exit 3
   if [[ "$pmm1" == "$TASK_ID" || "$pmm2" == "$TASK_ID" ]]; then jq -nc '{owner:"pmm",ref:null}'; return 0; fi
   if [[ -n "$REPO" ]]; then
-    day1="$(_get ".repos[\"$REPO\"].day.monitor_task_id")"
-    day2="$(_get ".repos[\"$REPO\"].day.limit_resume_task_id")"
-    lv="$(_get ".repos[\"$REPO\"].leave.winddown_task_id")"
+    day1="$(_get ".repos[\"$REPO\"].day.monitor_task_id")" || exit 3
+    day2="$(_get ".repos[\"$REPO\"].day.limit_resume_task_id")" || exit 3
+    lv="$(_get ".repos[\"$REPO\"].leave.winddown_task_id")" || exit 3
     if [[ "$day1" == "$TASK_ID" ]]; then jq -nc '{owner:"day",ref:null}'; return 0; fi
     if [[ "$day2" == "$TASK_ID" ]]; then jq -nc '{owner:"day_limit_wake",ref:null}'; return 0; fi
     if [[ "$lv" == "$TASK_ID" ]]; then jq -nc '{owner:"leave_winddown",ref:null}'; return 0; fi

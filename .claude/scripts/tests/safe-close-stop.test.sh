@@ -120,6 +120,15 @@ OUT="$(STOP owner --task-id mon-zzz --repo "$REPO")"
 echo 'not json {' > "$STATE"
 STOP owner --task-id mon-31 --repo "$REPO" >/dev/null 2>&1; [[ $? == 3 ]] || fail "unreadable state must be exit 3 (owner unknown)"
 echo '{}' > "$STATE"
+# A later read failing (not the first) must also be exit 3: the helper runs in a $( ) subshell, where
+# a die would only end the subshell and let the script fall through to owner "none" (a bare TaskStop
+# on a named watcher). A stub session-state.sh answers .prs as missing (3) and every other read as 9.
+STUBDIR="$TMP/stubstop"; mkdir -p "$STUBDIR"
+cp "$SCRIPT" "$STUBDIR/safe-close-stop.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *"--get-json"*) exit 3 ;; *) exit 9 ;; esac' > "$STUBDIR/session-state.sh"
+chmod +x "$STUBDIR/session-state.sh"
+OUT="$(bash "$STUBDIR/safe-close-stop.sh" owner --task-id mon-31 --repo "$REPO" 2>/dev/null)"; RC=$?
+[[ $RC == 3 && -z "$OUT" ]] || fail "a failed later read must be exit 3 with no owner, got rc=$RC out=$OUT"
 ok "owner identifies watchers and fails closed on unreadable state"
 
 # ---- 6. park writes the record /go-on reads, and never overwrites an unresumed one ---------
