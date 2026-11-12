@@ -2302,6 +2302,16 @@ share_copy() { # <profile_dir> <name> <source> [<shown source>]
   echo "  copied  $2 from $shown"
 }
 
+# Removes the staged settings.json copy made by share_settings_copy. Safe to call
+# more than once: SHARE_STAGE_DIR is cleared after the first removal.
+share_stage_cleanup() {
+  if [[ -n "${SHARE_STAGE_DIR:-}" ]]; then
+    rm -f "$SHARE_STAGE_DIR/settings.json"
+    rmdir "$SHARE_STAGE_DIR" 2>/dev/null || true
+    SHARE_STAGE_DIR=""
+  fi
+}
+
 # settings.json for a Claude profile (issue #2185). A desk binding is per
 # account and lives in the registry, never in a profile, so a copied settings
 # file must not carry the HUMAN_QUEUE_SCHEMA entry of the primary install. The
@@ -2335,14 +2345,19 @@ share_settings_copy() { # <profile_dir> <primary settings.json>
   mode="$(file_mode "$source")" || die 5 "could not read the mode of $source"
   stage="$(mktemp -d "${TMPDIR:-/tmp}/ai-quotas-settings.XXXXXX")" \
     || die 5 "could not create a staging directory for settings.json"
+  # Every exit from here on, including share_copy's `die` when cp fails, must
+  # remove the staged copy: the EXIT trap runs the cleanup on any die.
+  SHARE_STAGE_DIR="$stage"
+  trap share_stage_cleanup EXIT
   if ! jq 'if (.env | type) == "object" then .env |= del(.HUMAN_QUEUE_SCHEMA) else . end' "$source" > "$stage/settings.json" \
      || ! chmod "$mode" "$stage/settings.json"; then
-    rm -f "$stage/settings.json"; rmdir "$stage"
+    share_stage_cleanup
     die 5 "could not stage a copy of $source without HUMAN_QUEUE_SCHEMA"
   fi
   echo "  stripped HUMAN_QUEUE_SCHEMA from settings.json"
   share_copy "$1" settings.json "$stage/settings.json" "$source"
-  rm -f "$stage/settings.json"; rmdir "$stage"
+  share_stage_cleanup
+  trap - EXIT
 }
 
 # One nonfatal line on the desk queue of a Claude profile (issue #2185), printed

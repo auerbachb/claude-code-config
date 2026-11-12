@@ -712,6 +712,34 @@ check_eq "$(test -e "$WORK_DIR/settings.json.pre-share" && echo present || echo 
 check_eq "$(find "$CASE_DIR/stage-tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "0" "strip: the staging directory is removed"
 export TMPDIR="$desk_saved_tmpdir"
 
+new_case "desk-cp-fail"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+# A cp shim fails only the copy into this profile's settings.json, so the die
+# inside share_copy runs after the stripped copy is staged. The staged file must
+# still be removed on that exit path.
+cpfail_tmp="$CASE_DIR/stage-tmp"
+cpfail_bin="$CASE_DIR/fakebin"
+mkdir -p "$cpfail_tmp" "$cpfail_bin"
+printf '%s\n' '#!/bin/bash' 'last=""' 'for a in "$@"; do last="$a"; done' \
+  'if [ "$last" = "$FAIL_CP_DEST" ]; then echo "cp: simulated failure" >&2; exit 1; fi' \
+  'exec /bin/cp "$@"' > "$cpfail_bin/cp"
+chmod +x "$cpfail_bin/cp"
+cpfail_saved_path="$PATH"
+cpfail_saved_tmpdir="${TMPDIR-}"
+export TMPDIR="$cpfail_tmp"
+export PATH="$cpfail_bin:$PATH"
+export FAIL_CP_DEST="$WORK_DIR/settings.json"
+printf '{"theme":"dark","env":{"HUMAN_QUEUE_SCHEMA":"cpfail_probe_schema"}}\n' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+export PATH="$cpfail_saved_path"
+unset FAIL_CP_DEST
+export TMPDIR="$cpfail_saved_tmpdir"
+check_eq "$RC" "5" "cp fail: share-config exits 5"
+check_contains "$OUT" "could not copy" "cp fail: the copy failure is reported"
+check_eq "$(find "$cpfail_tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "0" "cp fail: the staged settings copy is removed on the die path"
+check_eq "$(jq -r '.env.HUMAN_QUEUE_SCHEMA' "$PRIMARY/settings.json")" "cpfail_probe_schema" "cp fail: the primary settings.json is not edited"
+check_not_contains "$OUT" "cpfail_probe_schema" "cp fail: the schema value is never printed"
+
 new_case "desk-plain"
 export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
 run share-config "$WORK_LABEL" claude
