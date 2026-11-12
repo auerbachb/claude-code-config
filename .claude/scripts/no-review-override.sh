@@ -135,14 +135,17 @@ JQ_DEFS='
 emit() { printf '%s\n' "$1"; exit 0; }
 
 # Account-wide reviewer availability (issue #2256). Every limit notice in this PR's
-# comments updates the record whatever the gate decides below. Non-fatal: a record
-# that is not written only means no request skip can rely on it (fail toward asking).
+# comments updates the record whatever the gate decides below. Non-fatal for the gate, but a
+# record that could not be written leaves the request skip unusable this tick: a newer notice
+# it failed to store could have ended the limit an older record still claims (fail closed).
 AV_SH="$(cd "$(dirname "$0")" && pwd)/review-availability.sh"
+AV_FAILED=0
 if [[ -x "$AV_SH" ]]; then
   if ! printf '%s' "$PAYLOAD" | jq -c '.issue_comments // []' \
       | "$AV_SH" record --repo "$(printf '%s' "$PAYLOAD" | jq -r '(.owner // "") + "/" + (.repo // "")')" \
           --pr "$(printf '%s' "$PAYLOAD" | jq -r '.pr // ""')" >/dev/null 2>&1; then
     echo "no-review-override.sh: could not record reviewer availability (issue #2256) — no request skip can rely on it" >&2
+    AV_FAILED=1
   fi
 fi
 
@@ -385,7 +388,7 @@ if [[ -x "$AV_SH" ]]; then
   # The clear ran before the early exits (OBSERVE_OK). A failed clear leaves the skip
   # unusable this tick (fail closed): no skip applies.
   SKIP_JSON=""
-  if (( OBSERVE_OK == 0 )); then
+  if (( OBSERVE_OK == 0 && AV_FAILED == 0 )); then
     SKIP_JSON="$("$AV_SH" check-skip --repo "$OWNER/$REPO" --pr "$PR" --head "$HEAD_SHA_P" \
         --window-s "$(printf '%s' "$PAYLOAD" | jq -r '.window_seconds')" 2>/dev/null)" || SKIP_JSON=""
   fi

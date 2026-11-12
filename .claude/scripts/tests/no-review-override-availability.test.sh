@@ -169,6 +169,11 @@ av_state $((NOW + 1200)) $((NOW + 1500)) "$HEADSHA"
 out=$(run_helper "$(payload "[]" | jq -c '.reviews = "not-a-list"')")
 expect_eq "unclearable observe (malformed reviews): skip not applied" "$(jq -r .applied <<<"$out")" "false"
 
+# Fail closed: a record that cannot be written leaves no skip in force for this tick either.
+av_state $((NOW + 1200)) $((NOW + 1500)) "$HEADSHA"
+out=$(run_helper "$(payload "[]" | jq -c '.issue_comments = "not-a-list"')")
+expect_eq "unwritable record (malformed comments): skip not applied" "$(jq -r .applied <<<"$out")" "false"
+
 # --- 9. A verdict on HEAD still clears the answering reviewer's stale record (#2256) --------
 # The early exit for a verdict on HEAD must not skip the clear: a reviewer that answered
 # never keeps a stale wait (CodeAnt #4546742961).
