@@ -268,6 +268,9 @@ fi
 REVIEW_TIER_SH="${SCRIPT_DIR}/review-tier.sh"
 REQUEST_SH="${SCRIPT_DIR}/review-request-gate.sh"
 REQ_BLOCK=""
+# The availability skip decided by availability_gate, recorded only by settle_pending_skip
+# on a path that would otherwise have posted the request (CodeAnt #4546742951).
+REQ_PENDING_SKIP=""
 REQ_FIRST=0
 REQ_SETTING="after-ci"
 REQ_CHECKS=""
@@ -296,6 +299,42 @@ first_request_guard() {
   pr_state="$(gh pr view "$PR_NUM" --json state,isDraft 2>/dev/null)" || { REQ_BLOCK="pr_unreadable"; return 0; }
   jq -e '.state == "OPEN" and ((.isDraft // false) == false)' <<<"$pr_state" >/dev/null 2>&1 \
     || REQ_BLOCK="pr_not_open_or_draft"
+}
+# Request skip when no free reviewer can answer inside the no-review window (issue
+# #2256). review-availability.sh decides from the account-wide record. Any unusable
+# answer, or a missing helper or window, keeps the request (fail toward asking). A skip
+# is recorded on the PR so the no-review override can apply at once for this HEAD.
+availability_gate() {
+  local av="${SCRIPT_DIR}/review-availability.sh" nro_min win dec
+  [[ -x "$av" ]] || return 0
+  nro_min="$(jq -r '.no_review_override_minutes // empty' <<<"$REQ_TIER_JSON" 2>/dev/null)" || nro_min=""
+  [[ "$nro_min" =~ ^[0-9]+$ ]] || return 0
+  win=$(( nro_min * 60 ))
+  dec="$("$av" decide --window-s "$win" 2>/dev/null)" || return 0
+  [[ "$(jq -r '.skip // false' <<<"$dec" 2>/dev/null)" == true ]] || return 0
+  # Held, not yet recorded: settle_pending_skip writes it only where this tick would post.
+  REQ_PENDING_SKIP="$(jq -r '.reason' <<<"$dec")"
+  REQ_BLOCK="$REQ_PENDING_SKIP"
+  REQ_FIRST=0
+}
+
+# Writes the pending availability skip for this HEAD, but only on a path that would
+# otherwise have posted the request (CodeAnt #4546742951). A tiered PR whose cadence or
+# tier posts nothing records nothing, so no override can be waived by it. The skip is
+# written under the PR's own owner/name, the scope check-skip reads back. An unresolved
+# repo or a failed write restores the request path (fail toward asking).
+settle_pending_skip() {
+  local av="${SCRIPT_DIR}/review-availability.sh" repo_name
+  [[ -n "$REQ_PENDING_SKIP" && "$REQ_BLOCK" == "$REQ_PENDING_SKIP" ]] || return 0
+  if (( DRY_RUN )); then return 0; fi
+  repo_name="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || repo_name=""
+  if [[ ! "$repo_name" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
+      || ! "$av" mark-skip --repo "$repo_name" --pr "$PR_NUM" --head "$HEAD_SHA" --reason "$REQ_PENDING_SKIP" >/dev/null 2>&1; then
+    echo "maybe-trigger-ai-review.sh: could not record the skipped review request (issue #2256) — requesting review as before" >&2
+    REQ_BLOCK=""
+    REQ_FIRST=1
+  fi
+  REQ_PENDING_SKIP=""
 }
 REQ_TIER_JSON="$("$REVIEW_TIER_SH" "$PR_NUM" --json 2>/dev/null)" || REQ_TIER_JSON=""
 REQ_GATE_NAME="$(jq -r '.gate // ""' <<<"$REQ_TIER_JSON" 2>/dev/null)" || REQ_GATE_NAME=""
@@ -346,6 +385,9 @@ if [[ "$REQ_HEAD_DONE" != "$HEAD_SHA" && "$REQ_GATE_NAME" != "ci-only" ]]; then
       elif [[ "$(jq -r '.decision' <<<"$REQ_OUT")" == "request" ]]; then
         REQ_FIRST=1
         first_request_guard
+        if [[ -z "$REQ_BLOCK" ]]; then
+          availability_gate
+        fi
       else
         REQ_BLOCK="$(jq -r '.reason' <<<"$REQ_OUT")"
       fi
@@ -453,6 +495,7 @@ legacy_first_request() {
 }
 if [[ "$REQ_FIRST" == 1 && -n "$SKIP_REASON" ]]; then
   if [[ "$TRIGGER_MODE" == "legacy" ]]; then
+    settle_pending_skip
     if [[ -n "$REQ_BLOCK" ]]; then
       SKIP_REASON="review_request_${REQ_BLOCK}"
     else
@@ -470,6 +513,7 @@ fi
 
 # Legacy: a held request ends the tick before any state write, so the next tick
 # asks again (issue #2195). The tiered path defers its CodeAnt step below.
+if [[ "$TRIGGER_MODE" == "legacy" ]]; then settle_pending_skip; fi
 if [[ "$TRIGGER_MODE" == "legacy" && -n "$REQ_BLOCK" ]]; then
   SKIP_REASON="review_request_${REQ_BLOCK}"
   if (( JSON_OUT )); then
@@ -590,6 +634,10 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     fi
     # The CodeAnt request waits for CI (issue #2195). Held = deferred: the step
     # stays open, so the next tick asks again. Not claimed, so no cap is spent.
+    if [[ "$step" == "codeant" && -n "$REQ_BLOCK" ]]; then
+      # This step would post the request: only now does an availability skip get recorded.
+      settle_pending_skip
+    fi
     if [[ "$step" == "codeant" && -n "$REQ_BLOCK" ]]; then
       echo "maybe-trigger-ai-review.sh: holding $body — review request $REQ_BLOCK (#2195)" >&2
       TRIGGER_SKIPS_JSON="$(jq -c --arg why "review_request_${REQ_BLOCK}" '.codeant = {kind: "deferred", reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"

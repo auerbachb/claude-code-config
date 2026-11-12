@@ -54,3 +54,15 @@ This doc covers the setting and the decision. Rolling it out to other repos and 
 - `.claude/scripts/tests/review-request-gate.test.sh` — every decision state (pending, failed, green, reviewer checks, named checks, grace, once per HEAD, on-push, never, bad input).
 - `.claude/scripts/tests/review-tier.test.sh` — parsing: defaults, `on-push`, named checks, malformed value, stray key outside a live block.
 - `.claude/scripts/tests/maybe-trigger-tier-triggers.test.sh` — legacy path: pending holds, failed holds, green requests once, second poll on the same HEAD does not, a new push requests again.
+
+## Availability (issue #2256)
+
+Account-wide, not per PR: CodeRabbit's allowance is per developer, so one PR's limit notice applies to every repo.
+
+- **Record:** `session-state.json` `.review_availability.{coderabbit,codeant}` holds `next_available_epoch`, `notice_at`, `window_seconds`, `notice_excerpt`, `source_repo`, `source_pr`, `read_at`. Written by `review-availability.sh record` from the PR's issue comments every time `no-review-override.sh` runs. Only a parsed retry window writes; an unparseable notice writes nothing, and a newer notice on file is not overwritten by an older one.
+- **Expected response (settings):** `REVIEW_EXPECTED_RESPONSE_CODEANT_MIN` (default 4) and `REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN` (default 5), minutes, from the 2026-11-11 baseline. Invalid values fall back to the default.
+- **Skip (before posting a request):** `decide` skips the request on this HEAD only when every free reviewer has a usable record that is still in the future and whose next-available time plus its expected response is later than now plus the no-review window. The reason is `no_reviewer_available_until <ISO>`, recorded on the PR as `review_request_skips[<head sha>]` (`mark-skip`), keyed by HEAD so a late write for an older HEAD never replaces the current one. It is written only on a path that would otherwise have posted the request, so a tier or cadence that posts nothing records nothing.
+- **Override:** `no-review-override.sh` applies at once while the recorded skip is for the current HEAD and the same answer still holds (`check-skip`). Its gate JSON carries the reason as `reason` and `skip_reason`; the unreviewed-merge ledger row carries `skip_reason`. Every other hard stop is unchanged.
+- **Fail toward asking:** no record, a past record, an unreadable state file, a malformed value, or a missing helper all request as today.
+- **Gap:** a skip needs a parsed retry window for both free reviewers. CodeAnt has no documented limit wording with a time (`cr-rate-limits.md` does not list one), so until one is observed the skip cannot fire.
+- **Tests:** `.claude/scripts/tests/review-availability.test.sh`, `.claude/scripts/tests/no-review-override-availability.test.sh`.
