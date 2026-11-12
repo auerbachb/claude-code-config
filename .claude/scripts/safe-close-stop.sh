@@ -402,7 +402,7 @@ do_verify() {
            | {id: $s, what: ("runtime still lists " + $s), why: "the stop did not take effect"} ]
        + [ $pids[] | {id: ("pid:" + .), what: ("process " + . + " is alive"), why: "the process survived"} ]) as $running
     | ([ $items[] | select(.consequence == "unknown") | {id, what: .summary, why: "could not be verified"} ]
-       + (if $unreadable == 1 then [ ($stopped + $regstop | unique)[] | {id: ., what: ("runtime task list unreadable; " + . + " not confirmed gone"), why: "no runtime evidence"} ] else [] end)) as $unverified
+       + (if $unreadable == 1 then [ {id: "runtime-list", what: "runtime task list unreadable; tasks only the harness knows (shells, Monitors, wake-ups) cannot be ruled out", why: "no runtime evidence"} ] + [ ($stopped + $regstop | unique)[] | {id: ., what: ("runtime task list unreadable; " + . + " not confirmed gone"), why: "no runtime evidence"} ] else [] end)) as $unverified
     | { nothing_running: (($running | length) == 0 and ($unverified | length) == 0),
         still_running: $running, unverified: $unverified,
         left_for_cleanup: ([ $items[] | select(.consequence != "harmless" and .consequence != "unknown"

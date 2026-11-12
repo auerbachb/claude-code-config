@@ -204,6 +204,10 @@ OUT="$(STOP verify --session "$SESSION" --repo "$REPO" --worktree "$W" --runtime
 [[ $rc == 1 && "$OUT" == *"[unverified]"* && "$OUT" == *"bash-1"* ]] || { echo "$OUT" >&2; fail "registry-stopped ids must be unverified when the runtime list is unreadable, even without --stopped-id (rc=$rc)"; }
 OUT="$(STOP verify --session "$SESSION" --repo "$REPO" --worktree "$W" --runtime-unreadable --stopped-id bash-1)"; rc=$?
 [[ $rc == 1 && "$OUT" == *"[unverified]"* ]] || { echo "$OUT" >&2; fail "unreadable runtime list must leave stopped ids unverified"; }
+# Even with nothing registered as stopped and no --stopped-id, an unreadable runtime list is never "clean".
+jq -n '{}' > "$STATE"
+OUT="$(STOP verify --session "$SESSION" --repo "$REPO" --worktree "$W" --runtime-unreadable)"; rc=$?
+[[ $rc == 1 && "$OUT" == *"[unverified]"* && "$OUT" != *"Nothing owned by this thread"* ]] || { echo "$OUT" >&2; fail "unreadable runtime list with nothing named must still be unverified (rc=$rc)"; }
 ok "a success status is not proof: the runtime list decides; an unreadable list is unverified"
 
 # ---- 11. verify: a subagent record stays running until its runtime id is confirmed gone ---------------
