@@ -47,6 +47,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `independent-areas.md` — optional service boundaries for launch-side overlap in `/wave` and `/subagent`, with config and matching rules (#2159).
 - `hook-test-serial-group.md` — per-entry decision record for the 40-suite hook-test `SERIAL_GROUP`: why each suite stays serial, its timings, and what must change before it can return to the pool (#2207).
 - `review-policy.md` — per-repo review tiers declared in pm-config `## Review policy`: table format, strictest-wins resolution across paths and labels, fail-closed invalid policies, base-branch reads, and what each gate (`ci-only` / `ci+codeant-one-round` / `full` / `legacy`) means; resolved by `review-tier.sh` (#1724, #1725)
+- `review-request-timing.md` — when the agent asks for an AI review: `REVIEW_REQUEST` (`after-ci` default, `on-push`), named fast checks and the grace for checks that never report, one request per HEAD, and the manual dashboard checklist that switches reviewers' automatic triggers off (#2195)
 - `merge-gate-stale-approval-redemption.md` — CodeAnt in-place review edit: how `merge-gate.sh` redeems a stale approval by evidence rather than by reviewer identity (#876)
 - `merge-sequencing.md` — mechanism and state machine for `merge-sequence.sh`; overlap-aware merge sequencing for PRs touching the same file (#756)
 - `codeant-supplemental.md` — CodeAnt supplemental polling on the CR path, plus CodeAnt CLI install state (Graphite retirement and retired-thread cleanup, #1889 and #2192)

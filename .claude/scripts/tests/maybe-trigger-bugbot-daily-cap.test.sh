@@ -52,13 +52,14 @@ HEAD_SHA="deadbeef0000000000000000000000000000abcf"
 # ---- stub SCRIPT_DIR ---------------------------------------------------------
 STUB_DIR="$TMP/scripts"
 mkdir -p "$STUB_DIR/lib"
-for f in maybe-trigger-ai-review.sh session-state.sh state-lock.sh bugbot-tier-excluded.sh; do
+for f in maybe-trigger-ai-review.sh session-state.sh state-lock.sh bugbot-tier-excluded.sh review-request-gate.sh check-runs-dedup.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$STUB_DIR/"
 done
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" "$STUB_DIR/lib/"
 
 # The refusal guard's own logic is maybe-trigger-bugbot-suppression.test.sh's
 # job; here it only has to say "refused" when a scenario asks.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/pr-authorship.sh"; chmod +x "$STUB_DIR/pr-authorship.sh"
 cat > "$STUB_DIR/bugbot-refused-head.sh" <<'STUB'
 #!/usr/bin/env bash
 [[ -n "${FIXTURE_REFUSED:-}" ]]
@@ -92,7 +93,7 @@ sub="${1-}"; shift || true
 case "$sub" in
   pr)
     case "${1-}" in
-      view) echo "$FIXTURE_HEAD_SHA"; exit 0 ;;
+      view) if [[ "$*" == *isDraft* ]]; then echo '{"state":"OPEN","isDraft":false}'; else echo "$FIXTURE_HEAD_SHA"; fi; exit 0 ;;
       comment)
         prev=""
         for a in "$@"; do
@@ -105,7 +106,13 @@ case "$sub" in
         exit 0 ;;
     esac
     exit 0 ;;
-  api) echo "[]" ;;
+  api)
+    # A green CI check on a HEAD past its grace, so the review request may post (#2195).
+    case "$*" in
+      *check-runs*) echo '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}' ;;
+      */commits/*) jq -rn 'now - 7200 | todate' ;;
+      *) echo "[]" ;;
+    esac ;;
   *) exit 0 ;;
 esac
 STUB

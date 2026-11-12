@@ -8,6 +8,8 @@
 
 **Prerequisite:** Confirm the repo uses CodeRabbit (`.coderabbit.yaml` or prior `coderabbitai[bot]` PR reviews). If not configured, skip CR-specific polling but still verify CI/AC through `cr-merge-gate.md`.
 
+**Request timing:** With `REVIEW_REQUEST=after-ci` (default), ask once per HEAD once required checks are green, never on failed HEAD. Checklist: `.claude/reference/review-request-timing.md`.
+
 ### Pre-polling procedural gate (MANDATORY — issue #315)
 
 Before the first poll tick:
@@ -54,7 +56,7 @@ Verdicts: `gate_met`, `polling_cr`, `no_reviewer`, `tier_gate`, `self_review` (`
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** **5 reviews/hour per developer** on Pro (#1204). The `Review limit reached` banner names a retry window; `escalate-review.sh` waits it out before escalating. `cr_hourly` is our pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`; paid levers: `.claude/reference/pricing-matrix.md` §CodeRabbit.
+**Cap:** **5 reviews/hour per developer** on Pro (#1204). The `Review limit reached` banner names a retry window; `escalate-review.sh` waits it out. `cr_hourly` is our pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`; paid levers: `.claude/reference/pricing-matrix.md` §CodeRabbit.
 
 ### Polling
 

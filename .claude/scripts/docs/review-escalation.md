@@ -26,6 +26,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [pr-body-review-note.sh](../pr-body-review-note.sh) | Record a review-trigger decision (such as a BugBot daily-cap skip) as one line under the PR body's `## Review notes`, idempotent per key and HEAD |
 | [review-daily-cap.sh](../review-daily-cap.sh) | Tally today's (ET) spend for one paid reviewer across every registered repo and say whether one more trigger stays under the account's daily cap |
 | [review-repos.sh](../review-repos.sh) | Resolve the registered AI-review repos (`REVIEW_REPOS`, then the account config's `## Review repos` list plus its private untracked overlay, then `ac-gate.yml` discovery) for `/review-stack-audit`'s multi-repo roll-up |
+| [review-request-gate.sh](../review-request-gate.sh) | Decide whether the agent's review request for a PR HEAD may post now: after-ci waits for the named (or every non-reviewer) check to finish green, requests once per HEAD, never on failed checks; on-push keeps today's behaviour |
 | [review-triggers-allowed.sh](../review-triggers-allowed.sh) | One tier-aware answer for every reviewer-trigger path: which AI reviewers may be invited on the PR's current HEAD, with a lifetime-cap claim ledger |
 <!-- catalog:rows:end -->
 
