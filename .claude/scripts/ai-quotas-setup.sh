@@ -97,10 +97,13 @@
 #             Make a profile behave like the primary install. For a claude
 #             profile: symlink skills, agents, rules, hooks, plugins,
 #             projects, CLAUDE.md, and account-config.md to the ~/.claude
-#             equivalents, copy settings.json, and merge the primary
+#             equivalents, copy settings.json (without any HUMAN_QUEUE_SCHEMA
+#             entry, which is stripped and reported), and merge the primary
 #             ~/.claude.json mcpServers block into the profile's .claude.json
 #             (every other field of the profile's file — its login and
-#             onboarding state — is kept). For a codex profile: symlink rules
+#             onboarding state — is kept), then print one desk line: the
+#             queue the account is bound to, or the bind command when it has
+#             none. For a codex profile: symlink rules
 #             and copy config.toml from ~/.codex. Anything already in the
 #             wanted state is left alone, so a re-run is a no-op; anything in
 #             the way is moved aside as <name>.pre-share, never deleted. A
@@ -2277,11 +2280,11 @@ share_link() { # <profile_dir> <name> <target>
   echo "  linked  $2 -> $target"
 }
 
-share_copy() { # <profile_dir> <name> <source>
-  local path="$1/$2" source="$3" dest
+share_copy() { # <profile_dir> <name> <source> [<shown source>]
+  local path="$1/$2" source="$3" shown="${4:-$3}" dest
   if [[ ! -f "$source" ]]; then
     SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
-    echo "  skipped $2 — $source does not exist in the primary install"
+    echo "  skipped $2 — $shown does not exist in the primary install"
     return 0
   fi
   if [[ ! -L "$path" && -f "$path" ]] && cmp -s "$source" "$path"; then
@@ -2294,9 +2297,100 @@ share_copy() { # <profile_dir> <name> <source>
     share_note_moved "$2" "$dest"
   fi
   # `-p` carries the primary file's mode across: a 600 settings file stays 600.
-  cp -p "$source" "$path" || die 5 "could not copy $source to $path"
+  cp -p "$source" "$path" || die 5 "could not copy $shown to $path"
   SHARE_COPIED=$((SHARE_COPIED + 1))
-  echo "  copied  $2 from $source"
+  echo "  copied  $2 from $shown"
+}
+
+# settings.json for a Claude profile (issue #2185). A desk binding is per
+# account and lives in the registry, never in a profile, so a copied settings
+# file must not carry the HUMAN_QUEUE_SCHEMA entry of the primary install. The
+# decision is made on the DECODED JSON, not the literal text, so an escaped key
+# cannot slip past: a valid object whose `.env` holds the key is staged with it
+# removed (the staged file is what gets compared and copied); any other valid
+# object takes the plain share_copy path, byte for byte. A file that is not a
+# JSON object is copied as before unless its text mentions the key, in which
+# case it refuses (exit 5) before anything in the profile is touched. Nothing
+# from the file is printed.
+share_settings_copy() { # <profile_dir> <primary settings.json>
+  local source="$2" stage had=false mode
+  if [[ ! -f "$source" ]]; then
+    share_copy "$1" settings.json "$source"
+    return 0
+  fi
+  if ! jq -e 'type == "object"' "$source" >/dev/null 2>&1; then
+    if grep -q 'HUMAN_QUEUE_SCHEMA' "$source"; then
+      die 5 "$source mentions HUMAN_QUEUE_SCHEMA but is not a JSON object — settings.json was left alone"
+    fi
+    share_copy "$1" settings.json "$source"
+    return 0
+  fi
+  if jq -e '(.env | type) == "object" and (.env | has("HUMAN_QUEUE_SCHEMA"))' "$source" >/dev/null 2>&1; then
+    had=true
+  fi
+  if [[ "$had" != true ]]; then
+    share_copy "$1" settings.json "$source"
+    return 0
+  fi
+  mode="$(file_mode "$source")" || die 5 "could not read the mode of $source"
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/ai-quotas-settings.XXXXXX")" \
+    || die 5 "could not create a staging directory for settings.json"
+  if ! jq 'if (.env | type) == "object" then .env |= del(.HUMAN_QUEUE_SCHEMA) else . end' "$source" > "$stage/settings.json" \
+     || ! chmod "$mode" "$stage/settings.json"; then
+    rm -f "$stage/settings.json"; rmdir "$stage"
+    die 5 "could not stage a copy of $source without HUMAN_QUEUE_SCHEMA"
+  fi
+  echo "  stripped HUMAN_QUEUE_SCHEMA from settings.json"
+  share_copy "$1" settings.json "$stage/settings.json" "$source"
+  rm -f "$stage/settings.json"; rmdir "$stage"
+}
+
+# One nonfatal line on the desk queue of a Claude profile (issue #2185), printed
+# after the share-config summary. The desk is found through HUMAN_QUEUE_DESK_DIR
+# first, then ~/.claude/skills-worktree/desk. The lookup runs in a subshell that
+# sources desk/bin/lib/bindings.sh with the profile directory as the config
+# directory, so the registry rules stay in one place and bindings.tsv is never
+# parsed here. Never exits non-zero.
+share_desk_line() { # <profile_dir>
+  local dir="$1" desk="" cand res status f1="" f2="" cmd qdir
+  for cand in "${HUMAN_QUEUE_DESK_DIR:-}" "${HOME:+$HOME/.claude/skills-worktree/desk}"; do
+    if [[ -n "$cand" && -f "$cand/bin/lib/bindings.sh" ]]; then
+      desk="$cand"
+      break
+    fi
+  done
+  if [[ -z "$desk" ]]; then
+    echo "desk queue: unknown (the desk was not found: checked HUMAN_QUEUE_DESK_DIR and ~/.claude/skills-worktree/desk)"
+    return 0
+  fi
+  res="$(
+    export CLAUDE_CONFIG_DIR="$dir"
+    . "$desk/bin/lib/bindings.sh" 2>/dev/null \
+      || { printf 'unknown\tthe desk binding library cannot be loaded\n'; exit 0; }
+    if ! cfg="$(hqb_config_dir)"; then
+      printf 'unknown\tneither CLAUDE_CONFIG_DIR nor HOME is set\n'
+      exit 0
+    fi
+    rc=0
+    hqb_lookup "$cfg" || rc=$?
+    case "$rc" in
+      0) printf 'bound\t%s\t%s\n' "$HQB_NAME" "$HQB_SCHEMA" ;;
+      3) printf 'unbound\n' ;;
+      *) printf 'unknown\t%s\n' "$HQB_REASON" ;;
+    esac
+  )" || res=$'unknown\tthe desk registry lookup failed'
+  IFS=$'\t' read -r status f1 f2 <<<"$res"
+  case "$status" in
+    bound)
+      echo "desk queue: $f1 ($f2)" ;;
+    unbound)
+      printf -v qdir '%q' "$dir"
+      printf -v cmd '%q' "$desk/bin/desk-cli.sh"
+      echo "no desk queue — run $cmd bind --name <name> --schema <schema> --config-dir $qdir" ;;
+    *)
+      echo "desk queue: unknown (${f1:-the registry could not be read})" ;;
+  esac
+  return 0
 }
 
 share_discard_staging() { # <private staging directory>
@@ -2461,7 +2555,7 @@ action_share_config() {
       for name in skills agents rules hooks plugins projects CLAUDE.md account-config.md; do
         share_link "$dir" "$name" "$primary_dir/$name"
       done
-      share_copy "$dir" settings.json "$primary_dir/settings.json"
+      share_settings_copy "$dir" "$primary_dir/settings.json"
       share_merge_mcp "$dir" "$PRIMARY_CLAUDE_JSON"
       ;;
     codex)
@@ -2470,6 +2564,11 @@ action_share_config() {
       ;;
   esac
   echo "${SELF_NAME}: done — linked $SHARE_LINKED, copied $SHARE_COPIED, merged $SHARE_MERGED, kept $SHARE_KEPT, moved aside $SHARE_MOVED, skipped $SHARE_SKIPPED. Nothing was deleted; *.pre-share holds whatever was in the way."
+  # Claude profiles only (issue #2185): which desk queue this profile's account
+  # is bound to. Codex accounts get no line; a desk problem never fails the share.
+  if [[ "$provider" == claude ]]; then
+    share_desk_line "$dir"
+  fi
 }
 
 # shellcheck source=./lib/ai-quotas-layout.sh

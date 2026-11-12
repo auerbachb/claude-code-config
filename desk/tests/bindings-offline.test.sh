@@ -225,6 +225,42 @@ check_contains "bindings: marks this account" "$OUT" "(this account)"
 check_absent "bindings: no connection URL" "$OUT$ERR" "postgres://"
 check_absent "bindings: no password" "$OUT$ERR" "secret"
 
+# ------------------------------------------------------- bindings --current
+printf '== bindings --current\n'
+reset_log
+hqcli "$DIR_A" bindings --current
+check "current bound: exits 0" "$RC" "0"
+check "current bound: one line" "$(printf '%s\n' "$OUT" | grep -c .)" "1"
+check "current bound: names the account and queue" "$OUT" "account: personal  queue: alpha_queue"
+check "current bound: the store is never contacted" "$(wc -l <"$LOG" | tr -d ' ')" "0"
+check_absent "current bound: no URL or password" "$OUT$ERR" "secret"
+
+reset_log
+hqcli "$DIR_B" bindings --current
+check "current bound B: names its own queue" "$OUT" "account: work  queue: beta_queue"
+
+reset_log
+hqcli "$DIR_NEW" bindings --current
+check "current unbound: exits 4" "$RC" "4"
+check "current unbound: no stdout" "$OUT" ""
+check_contains "current unbound: refusal names the bind command" "$ERR" "bind --name <name> --schema <schema>"
+check "current unbound: the store is never contacted" "$(wc -l <"$LOG" | tr -d ' ')" "0"
+
+REG_CURRENT_BAD="$TMP/reg-current-bad/bindings.tsv"
+mkdir -p "$(dirname "$REG_CURRENT_BAD")"
+printf '%s\tpersonal\n' "$DIR_A" > "$REG_CURRENT_BAD"
+reset_log
+EXTRA_ENV=("HUMAN_QUEUE_BINDINGS_FILE=$REG_CURRENT_BAD")
+hqcli "$DIR_A" bindings --current
+check "current malformed registry: exits 7" "$RC" "7"
+check_contains "current malformed registry: names the malformed row" "$ERR" "malformed row"
+check "current malformed registry: no stdout" "$OUT" ""
+check "current malformed registry: the store is never contacted" "$(wc -l <"$LOG" | tr -d ' ')" "0"
+
+reset_log
+hqcli "$DIR_A" bindings --current extra
+check "current: an extra argument is refused (exit 4)" "$RC" "4"
+
 # ---------------------------------------------------------------- hook
 printf '== capture hook\n'
 reset_log
