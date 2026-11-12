@@ -366,7 +366,14 @@ reserve_request_reviewer() {
     [[ -x "$av" ]] && dec="$("$av" choose --window-s "${REQ_WINDOW_S:-600}" --no-coderabbit 2>/dev/null)" || dec=""
     # Test the value itself: jq `//` treats false like null, so `.skip // true` reads a
     # successful `skip: false` as true and the fallback to CodeAnt could never happen.
-    if jq -e '.skip == true' <<<"$dec" >/dev/null 2>&1 && [[ "$REQ_CAN_SKIP" == 1 ]]; then return 1; fi
+    if jq -e '.skip == true' <<<"$dec" >/dev/null 2>&1 && [[ "$REQ_CAN_SKIP" == 1 ]]; then
+      # Record the skip for this HEAD now, so the no-review override applies at once (#2274
+      # review). A failed record asks CodeAnt instead (settle_pending_skip clears REQ_BLOCK).
+      REQ_PENDING_SKIP="$(jq -r '.reason' <<<"$dec")"
+      REQ_BLOCK="$REQ_PENDING_SKIP"
+      settle_pending_skip
+      [[ -n "$REQ_BLOCK" ]] && return 1
+    fi
     if jq -e '.skip == false' <<<"$dec" >/dev/null 2>&1; then REQ_CHOICE_JSON="$dec"; fi
     REQ_CHOICE_REASON="coderabbit_budget_refused_$(jq -r '.choice_reason // "request"' <<<"$dec" 2>/dev/null || echo request)"
     REQ_REVIEWER="codeant"

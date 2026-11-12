@@ -247,6 +247,21 @@ run
 check_eq "override off, budget lost, CodeAnt limited: asks CodeAnt (no silent skip)" "@codeant-ai review;" "$(posted)"
 cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
 
+echo "== override on: CodeRabbit budget lost after the choice, CodeAnt limited: skip recorded for the override =="
+reset "$NRO_TIER"
+write_av "{\"codeant\":$LIMIT_CA}"
+cat > "$S/cr-review-hourly.sh" <<STUB
+#!/usr/bin/env bash
+n=\$(cat "$TMP/cr-check-count" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$TMP/cr-check-count"
+case "\$1" in --check) [ "\$n" -le 1 ] && exit 0 || exit 1 ;; *) exit 0 ;; esac
+STUB
+chmod +x "$S/cr-review-hourly.sh"; rm -f "$TMP/cr-check-count"
+run
+check_eq "override on, budget lost, CodeAnt limited: nothing posted" "" "$(posted)"
+check_eq "the skip is recorded on this HEAD for the no-review override" "no_reviewer_available_until" \
+  "$(jq -r --arg h "$HEAD" '(.repos["acme/one"].prs["99600"].review_request_skips[$h].reason // "") | split(" ")[0]' "$HOME/.claude/session-state.json")"
+cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
+
 echo "== tiered repo: the tier's CodeAnt step always asks CodeAnt, even when CodeAnt is limited =="
 reset '{"policy":"present","gate":"full","tier":"t","source":"base:main","error":null,"matches":[],"escalation":"on","no_review_override_minutes":10}'
 write_av "{\"codeant\":$LIMIT_CA}"
