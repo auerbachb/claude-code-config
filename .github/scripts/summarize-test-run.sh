@@ -66,6 +66,13 @@ if ! printf '%s' "$CONTRACT" | jq -e 'has("ok") and has("log_path")' >/dev/null 
   exit 4
 fi
 
+# Optional (issue #2265): keep the parsed contract in a file so a later CI step can read the
+# failing suite names. Unset means no file, as before.
+if [ -n "${SUMMARY_CONTRACT_FILE:-}" ]; then
+  printf '%s\n' "$CONTRACT" > "$SUMMARY_CONTRACT_FILE" ||
+    echo "::warning::summarize-test-run.sh: cannot write SUMMARY_CONTRACT_FILE=$SUMMARY_CONTRACT_FILE" >&2
+fi
+
 # `printf '%s'` not `echo` — echo mangles JSON into jq on some shells
 # (memory: zsh-echo-jq-json-corruption).
 OK="$(printf '%s' "$CONTRACT" | jq -r '.ok')"
