@@ -7,12 +7,12 @@ triggers:
   - can I close this thread
   - what's still open
   - is this thread done
-argument-hint: "[--json]"
+argument-hint: "[--check] [--json]"
 ---
 
-Tell the user whether this thread can be closed right now, and exactly what is in the way. **This command only looks.** It stops no process, deletes nothing, releases no claim, and writes no state — stopping running work and cleaning up are separate, later commands.
+Tell the user whether this thread can be closed right now and exactly what is in the way; then, if something this thread started is still running, stop it. **Steps 0–3 only look.** `/safe-close --check` (and `--json`) run only those steps: no menu, nothing stopped, no state written. Bare `/safe-close` adds Steps 4–7, which stop what is running and nothing more — no worktree, branch, claim, handoff, scratch file or session-state bookkeeping is removed, released or cleared, and the thread is not archived (a later increment owns that). The report's `not yet` for those leftovers is expected after this step.
 
-It reports only on this thread's own things. Another thread's work, or another author's PR, is context at most and never counts against the verdict.
+It acts only on this thread's own things. Another thread's work, or another author's PR, is context at most: never counted, never stopped.
 
 ## Step 0: Resolve the inventory script
 
@@ -72,9 +72,62 @@ Then one line per non-harmless item: `[consequence] what it is — what happens 
 
 A clean thread is at most three lines: the verdict, one line counting harmless leftovers, and, if relevant, one line noting other threads' work that was excluded.
 
-Do not offer to stop or clean anything unprompted beyond one closing line naming what the next step would handle. `--json` prints the merged inventory instead of the prose report: the script JSON plus your agent-check items, with `outstanding` recounted over the merged `items[]` (every non-harmless item) and `verdict` set to `not_yet` whenever that count is above zero, so an unregistered running task reads `not_yet` in JSON exactly as in prose. Once Step 2 has cleared every `agent_checks[]` entry, empty that array and set `needs_agent_checks` to `false`; leave it populated for any check you could not complete (and count that one as unknown).
+With `--check` or `--json`, stop here and add at most one closing line naming what the stop step would handle. Bare `/safe-close` continues to Step 4 when something is running. `--json` prints the merged inventory instead of the prose report: the script JSON plus your agent-check items, with `outstanding` recounted over the merged `items[]` (every non-harmless item) and `verdict` set to `not_yet` whenever that count is above zero, so an unregistered running task reads `not_yet` in JSON exactly as in prose. Once Step 2 has cleared every `agent_checks[]` entry, empty that array and set `needs_agent_checks` to `false`; leave it populated for any check you could not complete (and count that one as unknown).
 
 ## Notes
 
 - Ownership is shown by the session id on a record, the thread's own worktree or branch, or a runtime id this session registered. A non-terminal record that names no owner is reported as one `unknown` item, never claimed and never ignored.
 - The verdict is only as good as what was recorded: a task or agent that was never registered is invisible to the script, which is why Step 2 exists.
+
+## Step 4: Plan the stop (bare `/safe-close` only)
+
+Skip this step and everything after it for `--check` and `--json`. Resolve `safe-close-stop.sh` the same way as Step 0 (missing: say so in one line and stop; never improvise a stop). Feed it the merged inventory, which already folds in your Step 2 findings — in particular, add each harness-only background shell, Monitor, wake-up and subagent as an item `{category:"harness_tasks", consequence:"keeps_running", ref:{task_id, type}}`, and each live session this thread started as `{category:"linked_sessions", consequence:"keeps_running", ref:{session_id}}`, so the plan covers them (an item with another category is ignored, so use these exact shapes):
+
+```bash
+STOP_SH=$(resolve_script safe-close-stop.sh) || { echo "ERROR: safe-close-stop.sh not found (checked all three paths) — stop step unavailable" >&2; exit 1; }
+# Pass the merged inventory (script JSON + your Step 2 items, as in --json) on stdin, so no
+# scratchpad is needed; a file path works too (--inventory FILE).
+printf '%s' "$MERGED_INVENTORY_JSON" | "$STOP_SH" plan --inventory -   # stop_items[], unknown_items[], menu_required
+```
+
+The plan covers only items the inventory attributed to this thread. Items the inventory marked **unknown** are in `unknown_items[]`: list them to the user (what could not be verified and why) and **never stop them**. Sessions this thread started are separate conversations: list each by name and ask about it individually; never stop them as a group.
+
+If `menu_required` is false there is nothing to ask: the Step 3 report (verdict, every non-harmless item, the unknown list) already stands, so add nothing. No menu, no extra output.
+
+## Step 5: One confirmation menu
+
+Ask exactly once, with `AskUserQuestion` (recommended option first, per `ask-menu.md`); never stop anything before the answer:
+
+1. **Stop all, park unfinished work (Recommended)** — every item stops; any with unlanded work (`choice_required`) is parked.
+2. **Choose per item** — one follow-up `AskUserQuestion` for the items with `choice_required`, with `multiSelect` where the choices are independent. Offer `finish`, `park`, `drop` and, when the item's `offers` includes it, `wrap` (a merge-ready PR gets a final `/wrap` instead of being parked). The default is `park`. Offer a runway for `finish` (default 15 minutes); when it passes, the item falls back to `park`.
+3. **Cancel** — nothing is stopped.
+
+A plan item with `kind: "session"` is a conversation this thread started: it gets its own question (`keep` is the default, `stop` the alternative, no park or drop), one per session, and "Stop all" never includes it.
+
+**Drop is never the default and is never chosen for the user**: it is recorded only when the user picks it for that item by name. Anything the user did not answer for is parked. If the question tool is unavailable (headless), do not stop anything: report the plan and end.
+
+## Step 6: Stop it (reusing /pause's machinery)
+
+**Linked sessions the user chose to stop** are not task ids: stop each with the harness's session-management tool by its `session_id` (stop that one session, nothing else), then confirm with a fresh session list that it is no longer running. With no such tool, or if the list cannot be read, report the session as not stopped. Sessions follow no park/owner/registry flow below.
+
+Do not add a second stop path. Use the same pieces `/pause` Step 2 and `background-task-shutdown.md` use, scoped to the exact ids in the plan:
+
+1. **Land or checkpoint the work first.** `finish`: wait up to the runway for the item to reach a terminal state (re-check the registry), then fall back to `park`. `wrap`: run `/wrap` for that PR only. `park`: ask a running agent for a cooperative checkpoint (finish only its current atomic write, preserve uncommitted work and output paths, launch no successors) and wait for it, so what you record is where it actually stopped.
+2. **Write the park record before stopping anything that depends on it.** For every parked item, write the decisions file (`parked[]` entries need `kind`, `stopped_at`, `next_move`, `boundary`, plus `branch`, `ref`, `handoff_path` as `/pause` Step 6 records them) and run `"$STOP_SH" park --session "$SESSION_ID" --repo "$REPO" --decisions <file>`. It writes the same `.repos[<repo>].pauses[<session>]` record and `pause-*.md` marker `/pause` writes, so `/go-on` resumes it from any thread. A non-zero exit means nothing was parked: stop nothing that depends on it and say so. Do not list a task under `background_tasks_stopped[]` yet.
+3. **Stop by exact runtime id**, never by logical name: for each item, `safe-close-stop.sh owner --task-id <id>`. A named watcher goes through its owner's stop command (`babysit` → `/babysit-pr-stop <PR>`, `pmm` → `/pr-monitor-and-manage-stop`, `day` and `day_limit_wake` and `leave_winddown` → `/pause` Step 2 items 3–5, in that order, including the generation invalidation for the wind-down). Owner `none` → call `TaskStop` on the exact id. An **unreadable owner (exit 3)** is not `none`: stop nothing for that id, report it as unverified, and leave it for the user — never send an id you cannot attribute to a bare `TaskStop`. Mark the registry as you go: `background-task-registry.sh --transition --session "$SESSION_ID" --task-id <id> --status stopping`, then `stopped` only once a fresh read of the harness task list no longer shows that id. A stop that errors is `stop_failed`. Scheduled wake-ups and cron jobs the harness listed for this thread are removed with the harness's own tool.
+4. **Record what is confirmed stopped.** Only for tasks confirmed gone in step 3 that the user parked, run `park` again with those in `background_tasks_stopped[]` (their exact `task_id`, `type`, `name`, `recovery_path`) — it extends the existing record rather than replacing it, so `/go-on` re-arms them. **If this second write fails**, the task is stopped but its re-arm entry is not recorded: say so plainly, name each affected exact `task_id` with its `recovery_path` and output file (the registry still holds them as `stopped`, and the first park record names the parked unit), and leave the verdict at not yet until the user has that list. Never describe it as parked.
+5. **Ceiling.** Only after every task, subagent and Monitor this thread owned is confirmed stopped (the registry lists none live), run `"$STOP_SH" clear-ceiling --session "$SESSION_ID" --repo "$REPO"`.
+
+## Step 7: Re-check — a stop's exit status is not proof
+
+List the runtime's own tasks (the harness task list) into a file — a JSON array of ids, or one id per line; write an empty list as `[]`, because an empty file is read as a failed read — and run:
+
+```bash
+"$STOP_SH" verify --session "$SESSION_ID" --repo "$REPO" --worktree "$PWD" \
+  --runtime-live-file "$RUNTIME_LIST" --stopped-id <id> [--stopped-id <id> ...] \
+  [--confirmed-gone <subagent-key> ...] [--pid <pid-you-spawned> ...]
+```
+
+Pass `--stopped-id` for **every** id you tried to stop, including harness-only tasks and chosen linked sessions (their `session_id`), and include those sessions in the runtime list file, so a survivor the registry never knew is still caught. If you could not read the runtime list, pass `--runtime-unreadable` instead; every stopped id is then reported unverified, never gone. `--confirmed-gone` is only for a subagent record whose runtime id the harness list showed absent; it counts only when the runtime list was read and does not name that id. It re-runs the inventory, so the check is against current state, not what you remember doing.
+
+The first line is the result. `Nothing owned by this thread is still running.` ends the step. Otherwise it prints `Not yet` and each item still running or unverified, by name; relay those lines, keep the verdict at not yet, and offer one retry of the stop for the named items only. Never report success while one is alive. Then one closing line: what was stopped, what was parked (and that `/go-on` resumes it), what the user dropped, what is unknown, and that worktrees, branches, claims and bookkeeping are untouched.
