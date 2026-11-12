@@ -23,7 +23,8 @@ import json
 import math
 import os
 import sys
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 
 def _shared_trigger_patterns():
@@ -47,8 +48,11 @@ TRIGGER_LOGIN = {"coderabbit": "coderabbitai", "bugbot": "cursor", "codeant": "c
 # ci-status.sh's reviewer app-slug set: a check-run from these is review, not build CI.
 REVIEWER_SLUGS = frozenset([
     "codeant-ai", "codeant", "cursor", "cursor-com", "coderabbitai", "coderabbit",
-    "greptile-apps", "graphite-app", "graphite",
+    "greptile-apps", "greptile", "graphite-app", "graphite",
 ])
+KNOWN_PASSED_CONCLUSIONS = frozenset(["SUCCESS", "NEUTRAL", "CANCELLED", "SKIPPED"])
+CODEANT_MARKER_RE = re.compile(r"<!--[ \t]*codeant-review-status:(.*?)-->", re.S)
+ISO_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$")
 REVIEW_CONTEXT_PREFIXES = ("coderabbit", "codeant", "cursor", "greptile", "graphite")
 BLOCKING_CONCLUSIONS = frozenset(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"])
 FAILED_STATUS_STATES = frozenset(["FAILURE", "ERROR"])
@@ -65,12 +69,56 @@ PREFIX_NOTE = "Blind spots are stated, not hidden: read them before drawing a co
 
 
 def parse_ts(value):
-    if not value:
+    """ISO-8601 instant as aware UTC. Accepts fractional seconds, Z or a numeric
+    offset, and a naive value, which CodeAnt's run markers use and which is UTC."""
+    if not value or not isinstance(value, str):
+        return None
+    match = ISO_RE.match(value.strip())
+    if not match:
         return None
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
+        moment = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
         return None
+    fraction = match.group(2) or ""
+    moment = moment.replace(microsecond=int((fraction + "000000")[:6]) if fraction else 0)
+    zone = match.group(3)
+    if zone and zone != "Z":
+        digits = zone[1:].replace(":", "")
+        offset = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+        moment = moment - offset if zone[0] == "+" else moment + offset
+    return moment.replace(tzinfo=timezone.utc)
+
+
+def codeant_run_ends(comments):
+    """Finish instant of each completed CodeAnt run, keyed by full commit SHA.
+
+    Read from the `codeant-review-status` marker on CodeAnt's own comment, the
+    same record merge-gate.sh and review-substance.sh use. Only rows with
+    done == true count; the latest finish per SHA wins.
+    """
+    ends = {}
+    for comment in comments:
+        author = comment.get("author") or {}
+        if not is_bot(author) or login_of(author) != "codeant-ai":
+            continue
+        for match in CODEANT_MARKER_RE.finditer(comment.get("body") or ""):
+            try:
+                rows = json.loads(match.group(1).strip())
+            except ValueError:
+                continue
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or row.get("done") is not True:
+                    continue
+                sha = str(row.get("commit") or "").lower()
+                finished = parse_ts(row.get("finished"))
+                if not sha or finished is None:
+                    continue
+                if sha not in ends or finished > ends[sha]:
+                    ends[sha] = finished
+    return ends
 
 
 def minutes_between(start, end):
@@ -203,6 +251,9 @@ def ci_summary(items, when):
                 continue
             if node.get("conclusion") in BLOCKING_CONCLUSIONS:
                 failed = True
+            elif node.get("conclusion") not in KNOWN_PASSED_CONCLUSIONS:
+                # An unrecognised conclusion is not evidence of a pass: keep it unresolved.
+                pending = True
             start = parse_ts(node.get("startedAt"))
             if start:
                 starts.append(start)
@@ -324,6 +375,7 @@ def analyze_pr(pr, acc, since):
 
     # Reviews: refusals and pre-review approvals are not reviews.
     review_map = {}
+    codeant_ends = codeant_run_ends(comments)
     for rv in (pr.get("reviews") or {}).get("nodes") or []:
         author = rv.get("author") or {}
         if not is_bot(author):
@@ -338,13 +390,18 @@ def analyze_pr(pr, acc, since):
         if is_refusal(rv.get("body")):
             acc["reviewers"][login]["refusal_keys"].add(("review", rv.get("submittedAt")))
             continue
-        if login == "codeant-ai" and state == "APPROVED":
-            acc["reviewers"][login]["pre_review_approvals"] += 1
-            continue
         if submitted is None:
             acc["undated"] += 1
             continue
         oid = (rv.get("commit") or {}).get("oid")
+        end_at = submitted
+        if login == "codeant-ai" and state == "APPROVED":
+            # A pre-review stub, unless a completed run on this exact commit substantiates it.
+            run_end = codeant_ends.get(oid.lower()) if oid else None
+            if run_end is None:
+                acc["reviewers"][login]["pre_review_approvals"] += 1
+                continue
+            end_at = run_end
         if oid and oid not in pr_commits:
             # The review names a commit outside the sample: it is not attributed elsewhere.
             acc["undated"] += 1
@@ -359,8 +416,8 @@ def analyze_pr(pr, acc, since):
             oid = max(candidates)[1]
             acc["inferred"] += 1
         key = (login, oid)
-        if key not in review_map or submitted < review_map[key]:
-            review_map[key] = submitted
+        if key not in review_map or submitted < review_map[key][0]:
+            review_map[key] = (submitted, end_at)
 
     for comment in comments:
         author = comment.get("author") or {}
@@ -372,7 +429,7 @@ def analyze_pr(pr, acc, since):
 
     # Per reviewer: response time from the earliest request after the push proxy, else from push.
     first_by_login = {}
-    for (login, oid), submitted in sorted(review_map.items(), key=lambda kv: kv[1]):
+    for (login, oid), (submitted, end_at) in sorted(review_map.items(), key=lambda kv: kv[1][0]):
         rec = pr_commits[oid]
         bucket = acc["reviewers"][login]
         bucket["reviews"] += 1
@@ -388,17 +445,17 @@ def analyze_pr(pr, acc, since):
             acc["undated"] += 1
             anchor_kind, anchor = None, None
         else:
-            matching = [t for t in requests[login] if push_t <= t <= submitted]
+            matching = [t for t in requests[login] if push_t <= t <= end_at]
             if matching:
                 anchor_kind, anchor = "request", min(matching)
-            elif push_t <= submitted:
+            elif push_t <= end_at:
                 anchor_kind, anchor = "push", push_t
             else:
                 anchor_kind, anchor = None, None
                 acc["negative"] += 1
         if anchor is not None:
             bucket["anchor"][anchor_kind] += 1
-            bucket["minutes"].append(minutes_between(anchor, submitted))
+            bucket["minutes"].append(minutes_between(anchor, end_at))
         if login not in first_by_login or submitted < first_by_login[login][0]:
             first_by_login[login] = (submitted, ci_state)
     for login, (_when, ci_state) in first_by_login.items():

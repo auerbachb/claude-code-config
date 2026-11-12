@@ -12,7 +12,7 @@ FIXTURE="$SCRIPT_DIR/fixtures/review-ci-report/fixture.json"
 PASS=0
 FAIL=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/review-ci-report-test.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
-trap 'rm -f "$TMP"/* 2>/dev/null; rmdir "$TMP" 2>/dev/null' EXIT
+trap 'rm -f "$TMP"/* "$TMP"/stub/* "$TMP"/empty/* 2>/dev/null; rmdir "$TMP"/stub "$TMP"/empty "$TMP" 2>/dev/null' EXIT
 
 check() {
   # check <name> <expected> <actual>
@@ -55,10 +55,19 @@ check "failed gh query carries a reason" "gh exited 1: HTTP 502: Bad Gateway" "$
 check "GraphQL errors with data present reported unread" "unread" "$(jq -r '.per_repo[] | select(.repo == "example/errors") | .status' "$JSON_OUT")"
 check "healthy repo stays read" "read" "$(jq -r '.per_repo[] | select(.repo == "example/app") | .status' "$JSON_OUT")"
 
-# CodeAnt's empty pre-review APPROVED (10:02, before any request) is not a review.
-# Mutation: counting every APPROVED review makes codeant reviews 1 and pre-review approvals 0.
-check "CodeAnt pre-review approval is not a review" "0" "$(jq -r '.per_repo[] | select(.repo == "example/app") | .reviewers["codeant-ai"].reviews' "$JSON_OUT")"
-check "CodeAnt pre-review approval counted separately" "1" "$(jq -r '.per_repo[] | select(.repo == "example/app") | .reviewers["codeant-ai"].pre_review_approvals' "$JSON_OUT")"
+# CodeAnt's empty APPROVED on aaaa1111 (10:02) has no completed run on its SHA: a pre-review stub, counted
+# in its own bucket. Mutation: a blanket exclusion of every APPROVED also drops the substantiated one below.
+check "unsubstantiated CodeAnt approval counted as pre-review" "1" "$(jq -r '.per_repo[] | select(.repo == "example/app") | .reviewers["codeant-ai"].pre_review_approvals' "$JSON_OUT")"
+# The APPROVED on bbbb2222 (10:40) is substantiated by a done run finished 10:44:00.25 (naive UTC marker):
+# it counts as a review, timed from push (10:30) to the run's finish, not to the approval.
+# Mutation: a blanket exclusion makes reviews 0; timing at the approval instant gives 10.0, not 14.0.
+check "substantiated CodeAnt approval counts as a review" "1" "$(jq -r '.per_repo[] | select(.repo == "example/app") | .reviewers["codeant-ai"].reviews' "$JSON_OUT")"
+check "substantiated CodeAnt approval timed at run finish" "14.0" "$(jq -r '.per_repo[] | select(.repo == "example/app") | .reviewers["codeant-ai"].response_median_min' "$JSON_OUT")"
+
+# Build CI: an unrecognised conclusion is never counted as passed. example/edge has one commit whose only
+# check concludes WEIRD_NEW_VALUE: it stays pending. Mutation: falling through to passed gives completed 1.
+check "unrecognised conclusion stays pending" "1" "$(jq -r '.per_repo[] | select(.repo == "example/edge") | .ci.commits_ci_pending' "$JSON_OUT")"
+check "unrecognised conclusion is not a completed pass" "0" "$(jq -r '.per_repo[] | select(.repo == "example/edge") | .ci.commits_ci_completed' "$JSON_OUT")"
 
 # A refusal (rate limit) is counted per reviewer and is not a review.
 # A walkthrough that quotes a rate-limit note is a review, not a refusal (the 10:55 review).
@@ -91,7 +100,7 @@ check "force-push proxy used for the rewritten commit" "1" "$(jq -r '.per_repo[]
 
 # Request budget: one GraphQL request per repo, stated.
 check "request budget stated per repo" "1" "$(jq -r '.request_budget.graphql_requests_per_repo' "$JSON_OUT")"
-check "request budget total" "3" "$(jq -r '.request_budget.graphql_requests_total' "$JSON_OUT")"
+check "request budget total" "4" "$(jq -r '.request_budget.graphql_requests_total' "$JSON_OUT")"
 
 # Blind spots are printed in plain words in the table.
 TABLE_OUT="$TMP/table.md"
@@ -109,6 +118,32 @@ check "malformed --repo is a usage error" "2" "$?"
 # Shape-valid but impossible calendar dates are usage errors too.
 "$SCRIPT" --since 2026-02-31 --fixture "$FIXTURE" >/dev/null 2>&1
 check "impossible --since date is a usage error" "2" "$?"
+
+# An explicitly empty --since is a usage error, never "no filter".
+"$SCRIPT" --since "" --fixture "$FIXTURE" >/dev/null 2>&1
+check "explicitly empty --since is a usage error" "2" "$?"
+
+# Without python3 the date cannot be validated: report unavailability (exit 1), not a bad date (exit 2).
+mkdir -p "$TMP/empty"
+env PATH="$TMP/empty" /bin/bash "$SCRIPT" --since 2026-01-02 --fixture "$FIXTURE" >/dev/null 2>"$TMP/nopy.err"
+check "missing python3 reports unavailable, exit 1" "1" "$?"
+check_contains "missing python3 names the dependency" "python3 not found" "$TMP/nopy.err"
+
+# gh receives owner and name with -f (raw strings), so 1234 and true stay strings.
+# Mutation: -F sends owner=1234 and name=true type-converted; the awk finds no "-f" before them.
+mkdir -p "$TMP/stub"
+cat > "$TMP/stub/gh" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$@" > "$REPORT_GH_ARGS"
+printf '%s\n' '{"data":{"rateLimit":{"cost":1},"repository":{"pullRequests":{"totalCount":0,"nodes":[]}}}}'
+STUB
+chmod +x "$TMP/stub/gh"
+REPORT_GH_ARGS="$TMP/gh-args.txt" PATH="$TMP/stub:$PATH" "$SCRIPT" --repo 1234/true >/dev/null 2>&1
+RAW_OK=no
+if awk 'prev == "-f" && ($0 == "owner=1234" || $0 == "name=true") { n++ } { prev = $0 } END { exit n == 2 ? 0 : 1 }' "$TMP/gh-args.txt"; then
+  RAW_OK=yes
+fi
+check "owner and name are sent as raw strings (-f)" "yes" "$RAW_OK"
 
 rm -f "$TMP"/* 2>/dev/null
 echo "review-ci-report tests: $PASS passed, $FAIL failed"

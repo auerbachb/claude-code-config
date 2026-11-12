@@ -11,8 +11,8 @@ This repository is public. Private repos appear only as `private repo A` to `pri
 - Command: `REVIEW_REPOS="<active repos>" .claude/scripts/review-ci-report.sh --json --limit 25`. Default wait 10 minutes (the `NO_REVIEW_OVERRIDE_MINUTES` default in `no-review-override.md`).
 - Selection: every owner repo pushed on or after 2026-10-11, per `gh repo list`. That gives eight repos: five private, three public (`claude-code-config`, `still-point`, `nest_commerce`). The tracker issue listed seven names, and `nest_commerce` is not among them, so the list was not copied from the issue.
 - Window: the last 25 merged PRs per repo, by update time, read with one GraphQL request per repo.
-- Requests: one full read is eight GraphQL requests. Across the whole session the measurement used 35 GraphQL requests (full reads re-run after fixes, one retry, one 10-PR diagnostic, and one raw read of the public repo for a refusal check) plus three other API calls. One repo returned HTTP 504 on the 25-PR query, twice.
-- Measurement note: the figures below were computed before the final script change that stops attributing a review which names a commit outside the sample to the nearest sampled commit. In the public repo that affects three CodeRabbit reviews; other repos may differ by a similar small count. The next run shows the difference.
+- Requests: one full read is eight GraphQL requests. Across the whole session the measurement used 36 GraphQL requests (full reads re-run after fixes, one retry, one 10-PR diagnostic, and one raw read of the public repo for a refusal check) plus three other API calls. One repo returned HTTP 504 on the 25-PR query, twice.
+- Measurement note: this repo's row was re-measured with the final script (one request). Its PR window moved slightly between runs as PRs were updated, so its commit count is 84, not 88. The other repos (private repos A to E and the two other public repos) were measured before the final script change. That change credits CodeAnt approvals that a completed run substantiates, reads the legacy `greptile` check slug as a reviewer, parses offset and fractional timestamps, and keeps unrecognised check conclusions unresolved. Their figures may therefore move; the next run re-measures all repos.
 
 ## Results (25 merged PRs per repo)
 
@@ -20,7 +20,7 @@ Figures are computed by the script. The CI column counts only commits whose chec
 
 | Repo | Commits (CI done) | Commits with failed CI | CI median / p90 (min) | Force-push events |
 | --- | --- | --- | --- | --- |
-| claude-code-config | 88 (70) | 21 (30.0%) | 17.7 / 66.6 | 2 |
+| claude-code-config | 84 (69) | 21 (30.4%) | 17.4 / 66.6 | 2 |
 | private repo A | 50 (39) | 33 (84.6%) | 9.3 / 18.1 | 5 |
 | private repo B | 45 (31) | 1 (3.2%) | 8.3 / 10.5 | 2 |
 | private repo C | unread (HTTP 504 on the 25-PR query, twice) | n/a | n/a | n/a |
@@ -33,8 +33,8 @@ Per reviewer (reviews counted; refusals and CodeAnt pre-review approvals are not
 
 | Repo | Reviewer | Reviews | Response median / p90 (min) | Within 10 min | On failed CI | First review on failed CI | Refusals | CodeAnt pre-review approvals |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| claude-code-config | CodeRabbit | 17 | 4.9 / 11.7 | 76.5% | 5 of 15 | 4 of 8 | 4 | n/a |
-| claude-code-config | CodeAnt | 46 | 5.1 / 8.3 | 93.5% | 11 of 46 | 8 of 21 | 0 | 57 |
+| claude-code-config | CodeRabbit | 15 | 4.9 / 10.3 | 80.0% | 5 of 13 | 4 of 7 | 5 | n/a |
+| claude-code-config | CodeAnt | 60 | 4.2 / 8.2 | 91.7% | 18 of 60 | 9 of 24 | 0 | 22 |
 | private repo A | CodeAnt | 14 | 7.1 / 8.7 | 100% | 14 of 14 | 14 of 14 | 0 | 33 |
 | private repo B | CodeAnt | 19 | 4.9 / 10.0 | 89.5% | 1 of 11 | 0 of 5 | 0 | 26 |
 | private repo B | CodeRabbit | 6 (small) | 6.1 / 11.1 | 66.7% | 0 of 4 | 0 of 2 | 10 | n/a |
@@ -62,7 +62,7 @@ Per reviewer (reviews counted; refusals and CodeAnt pre-review approvals are not
 
 ## Differences from the one-off figures in the tracker issue
 
-- The tracker issue reported that CI failed on 18% of sampled commits in this repo. This baseline measures 30.0% (21 of 70 completed commits). The windows and the counting differ: this run reads every commit of the last 10 commits per PR, not the earlier one-off sample. The difference is not explained here and is not resolved by this run.
+- The tracker issue reported that CI failed on 18% of sampled commits in this repo. This baseline measures 30.4% (21 of 69 completed commits). The windows and the counting differ: this run reads every commit of the last 10 commits per PR, not the earlier one-off sample. The difference is not explained here and is not resolved by this run.
 - The one-off first-review figure for this repo (13 of 86) is not reproduced in this form. The per-reviewer rows above use a different denominator.
 
 ## Follow-up

@@ -57,6 +57,7 @@ show_help() {
 
 REPOS=()
 SINCE=""
+SINCE_GIVEN=0
 LIMIT=25
 WAIT=""
 FORMAT="table"
@@ -70,7 +71,7 @@ while [ $# -gt 0 ]; do
       REPOS+=("$2"); shift 2 ;;
     --since)
       [ $# -ge 2 ] || usage_error "--since needs YYYY-MM-DD"
-      SINCE="$2"; shift 2 ;;
+      SINCE="$2"; SINCE_GIVEN=1; shift 2 ;;
     --limit)
       [ $# -ge 2 ] || usage_error "--limit needs a number"
       LIMIT="$2"; shift 2 ;;
@@ -92,11 +93,17 @@ if [ "$LIMIT" -lt 1 ] || [ "$LIMIT" -gt 100 ]; then
   usage_error "--limit must be from 1 to 100"
 fi
 
-if [ -n "$SINCE" ]; then
+if [ "$SINCE_GIVEN" -eq 1 ]; then
+  # An explicitly empty value is a usage error, never "no filter".
   case "$SINCE" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
     *) usage_error "--since must be YYYY-MM-DD" ;;
   esac
+  # The calendar check needs python3; without it, report unavailability, not a bad date.
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 not found — cannot validate --since; review-ci-report unavailable" >&2
+    exit 1
+  fi
   # Shape alone lets 2026-02-31 through; the calendar must accept the date too.
   if ! python3 -c 'import datetime, sys; datetime.date.fromisoformat(sys.argv[1])' "$SINCE" 2>/dev/null; then
     usage_error "--since is not a real calendar date: $SINCE"
@@ -256,7 +263,7 @@ for R in "${REPOS[@]}"; do
   else
     OWNER="${R%%/*}"
     NAME="${R#*/}"
-    gh api graphql -f query="$QUERY" -F owner="$OWNER" -F name="$NAME" -F limit="$LIMIT" >"$OUT" 2>"$ERR"
+    gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F limit="$LIMIT" >"$OUT" 2>"$ERR"
     RC=$?
   fi
   jq -cn --arg repo "$R" --argjson rc "$RC" --arg out "$OUT" --arg err "$(head -c 400 "$ERR" 2>/dev/null)" \
