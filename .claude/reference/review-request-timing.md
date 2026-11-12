@@ -22,9 +22,9 @@ REVIEW_REQUEST_CHECKS=rule-lint,hook-tests-py39
 2. A blocking conclusion on a counted check (`failure`, `timed_out`, `cancelled`, `action_required`, `startup_failure`, `stale`) means no request on that HEAD, whatever else runs.
 3. Named checks: each name's newest run decides. A name with no run yet is pending until 900 seconds have passed since the later of the HEAD commit time and the first poll that saw that HEAD (`review_request_seen_epoch` in session state). After that it is ignored and listed in `ignored_checks`, so a check that never reports cannot hold the request forever. Once names are given, unnamed checks are not awaited: that is the point of the list.
 4. No names: every non-reviewer run must be completed and non-blocking. No runs at all waits until the same 900-second grace passes, then requests (a repo with no CI).
-5. One request per HEAD. The first request claims the HEAD (`review_request_head_sha` in session state, written by compare-and-set before the post, released if the post fails). Once recorded, no path posts a second `@codeant-ai review` for that HEAD, including the complexity cadence. A new push is a new HEAD and eligible again.
+5. One request per HEAD. The first request claims the HEAD (`review_request_head_sha` in session state, written by compare-and-set before the post, released if the post fails). Once recorded, no path posts a second review request for that HEAD, including the complexity cadence. A new push is a new HEAD and eligible again.
 6. A `ci-only` tier requests nothing: the tier path already excludes every reviewer.
-7. The request is `@codeant-ai review`, posted by `maybe-trigger-ai-review.sh`. Paid reviewers stay owner-approval only (`safety.md` §Paid AI Reviews); this setting adds no path that posts `@cursor review` or `@greptileai`.
+7. The request is `@codeant-ai review` or `@coderabbitai review` (the free reviewer chosen per §Reviewer choice; tiered repos and `on-push` always ask CodeAnt), posted by `maybe-trigger-ai-review.sh`. Paid reviewers stay owner-approval only (`safety.md` §Paid AI Reviews); this setting adds no path that posts `@cursor review` or `@greptileai`.
 8. An unreadable check list, commit time or tier answer holds the request for that tick (fail closed). The next tick asks again.
 
 The complexity cadence (`#362`) in the legacy path (no `## Review policy` table) decides only what it governed before, after the first request: on a HEAD with a recorded request it posts no second CodeAnt request. Its first request for a HEAD is not gated by the cadence: when the request gate says `request`, the first request posts even while the cadence is below its round or score gate. `on-push` keeps the cadence exactly as it was. `@cursor review` stays owner-approval only and is unchanged.
@@ -43,7 +43,7 @@ Until a reviewer's automatic trigger is off, it still fires on push, and this se
 4. Greptile dashboard: turn off auto-trigger. The dashboard bypasses the rules in `greptile.md`.
 5. Graphite: retired 2026-11-03 (#1889); nothing to switch.
 
-Verify afterwards: on a draft PR here, push a commit whose CI fails. No reviewer comment or review should appear. Fix CI, push again, and exactly one `@codeant-ai review` should appear once the named checks are green.
+Verify afterwards: on a draft PR here, push a commit whose CI fails. No reviewer comment or review should appear. Fix CI, push again, and exactly one request (`@codeant-ai review` or `@coderabbitai review`) should appear once the named checks are green.
 
 ## Scope
 
@@ -61,8 +61,23 @@ Account-wide, not per PR: CodeRabbit's allowance is per developer, so one PR's l
 
 - **Record:** `session-state.json` `.review_availability.{coderabbit,codeant}` holds `next_available_epoch`, `notice_at`, `window_seconds`, `notice_excerpt`, `source_repo`, `source_pr`, `read_at`. Written by `review-availability.sh record` from the PR's issue comments every time `no-review-override.sh` runs. Only a parsed retry window writes; an unparseable notice writes nothing, and a newer notice on file is not overwritten by an older one.
 - **Expected response (settings):** `REVIEW_EXPECTED_RESPONSE_CODEANT_MIN` (default 4) and `REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN` (default 5), minutes, from the 2026-11-11 baseline. Invalid values fall back to the default.
-- **Skip (before posting a request):** `decide` skips the request on this HEAD only when every free reviewer has a usable record that is still in the future and whose next-available time plus its expected response is later than now plus the no-review window. The reason is `no_reviewer_available_until <ISO>`, recorded on the PR as `review_request_skips[<head sha>]` (`mark-skip`), keyed by HEAD so a late write for an older HEAD never replaces the current one. It is written only on a path that would otherwise have posted the request, so a tier or cadence that posts nothing records nothing.
+- **Skip (before posting a request):** `decide` skips the request on this HEAD only when no free reviewer is eligible: each one either has a usable, future record whose next-available time plus its expected response is later than now plus the no-review window, or (CodeRabbit only) has its hourly budget spent. The reason is `no_reviewer_available_until <ISO>`, recorded on the PR as `review_request_skips[<head sha>]` (`mark-skip`), keyed by HEAD so a late write for an older HEAD never replaces the current one. It is written only on a path that would otherwise have posted the request, so a tier or cadence that posts nothing records nothing.
 - **Override:** `no-review-override.sh` applies at once while the recorded skip is for the current HEAD and the same answer still holds (`check-skip`). Its gate JSON carries the reason as `reason` and `skip_reason`; the unreviewed-merge ledger row carries `skip_reason`. Every other hard stop is unchanged.
 - **Fail toward asking:** no record, a past record, an unreadable state file, a malformed value, or a missing helper all request as today.
-- **Gap:** a skip needs a parsed retry window for both free reviewers. CodeAnt has no documented limit wording with a time (`cr-rate-limits.md` does not list one), so until one is observed the skip cannot fire.
+- **Gap:** a skip needs a parsed retry window for CodeAnt (and for CodeRabbit unless its hourly budget is spent). CodeAnt has no documented limit wording with a time (`cr-rate-limits.md` does not list one), so until one is observed the skip cannot fire.
 - **Tests:** `.claude/scripts/tests/review-availability.test.sh`, `.claude/scripts/tests/no-review-override-availability.test.sh`.
+
+## Reviewer choice (issue #2257)
+
+Each request due on a HEAD asks exactly one free reviewer, never a paid one. `review-availability.sh choose` evaluates both free reviewers:
+
+- **Availability:** the later of the limit-notice return time, the end of the queue of requests recently sent to that reviewer (`.review_requests`, account-wide, one hour; each request holds it for its expected response time, and a limited reviewer's queue drains only after its limit returns), and now. Its answer is that availability plus its expected response time.
+- **Eligibility:** a reviewer is ineligible only when a limit notice keeps it out of the no-review window (its return time plus its expected response time lands past the window), or, for CodeRabbit, while `cr-review-hourly.sh --check` reports its hourly budget spent (CodeAnt has no cap). Without a limit notice, the queue and expected response time only rank eligible reviewers; they never make one ineligible.
+- **Choice:** the earliest answer wins; a tie goes to the reviewer with fewer requests in the last hour. Neither eligible: the #2256 skip, unchanged. Two PRs going green together alternate reviewers because the first request holds its reviewer's queue.
+- **Posted body:** `@codeant-ai review` or `@coderabbitai review` (never `full review`). The CodeRabbit budget is counted only after the post succeeds (`cr-review-hourly.sh --consume`), so a failed post or a lost claim spends nothing.
+- **Record:** `record-request` appends the request to `.review_requests` and writes `.prs["<N>"].review_request_choices[<head sha>]` with the reviewer, reason, and the expected response times and reviewer estimates. `maybe-trigger-ai-review.sh --json` reports `request_reviewer`.
+- `REVIEW_REQUEST=on-push` keeps `@codeant-ai review` as the request; the choice applies to `after-ci` only.
+- **Tiered repos:** a repo with a review tier always asks CodeAnt through the tier's CodeAnt step; the choice applies to the legacy path only.
+- **Estimates never skip:** only a real limit notice (its return time plus the expected response time past the window), or a spent CodeRabbit hourly budget, makes a reviewer ineligible; without a limit notice, the request queue and expected response time only rank eligible reviewers, so a busy moment never skips review.
+- **Known limits:** two ticks racing can both ask the same reviewer or both pass CodeRabbit's last hourly slot; the cost is one extra free request, which CodeRabbit answers with its limit notice.
+- **Tests:** `.claude/scripts/tests/review-availability-choose.test.sh`, `.claude/scripts/tests/maybe-trigger-reviewer-choice.test.sh`.
