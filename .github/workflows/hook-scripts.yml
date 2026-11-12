@@ -184,8 +184,8 @@ jobs:
   # the SAME bash-suite discovery on macos-latest; a new test is covered by
   # both jobs with no edit here.
   # Issue #2207: the macOS full run is split into two shards on two macOS runners, because one
-  # 3-vCPU job cannot finish the full suite under the 30-minute target. A main push whose
-  # selection is not the full set keeps ONE shard.
+  # 3-vCPU job cannot finish the full suite under the 30-minute target. The selector answers ALL
+  # for every push to main, so the main run always uses two shards.
   # The required check name stays `hook-tests-macos`: the aggregate job below carries that name
   # and passes only when the plan and every shard succeed.
   # Issue #2265: the macOS run is gated to push-to-main. On a pull_request the plan and shards are
