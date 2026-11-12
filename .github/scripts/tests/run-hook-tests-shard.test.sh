@@ -73,6 +73,13 @@ check "shard 1/2 is deterministic across runs" 'cmp -s "$TMP/s1" "$TMP/s1b"'
 # Leading zeros name the same shard (08/10 is shard 8 of 10, not an octal error).
 bash "$RUNNER" --list --shard 01/02 > "$TMP/s1z" 2>/dev/null
 check "--shard 01/02 equals --shard 1/2" 'cmp -s "$TMP/s1z" "$TMP/s1"'
+# A huge shard count stays cheap: only as many loads as suites are tracked.
+SECONDS=0
+bash "$RUNNER" --list --shard 1/100000000 > "$TMP/huge" 2>/dev/null; RCH=$?
+check "--shard 1/100000000 lists successfully" '[ "$RCH" -eq 0 ]'
+check "--shard 1/100000000 returns quickly" '[ "$SECONDS" -lt 60 ]'
+check "--shard 1/100000000 holds at most one pool and one serial suite" '[ "$(wc -l < "$TMP/huge" | tr -d " ")" -le 2 ]'
+
 bash "$RUNNER" --list --shard 08/10 > "$TMP/s8z" 2>/dev/null; RC8=$?
 bash "$RUNNER" --list --shard 8/10 > "$TMP/s8" 2>/dev/null
 check "--shard 08/10 runs and equals --shard 8/10" '[ "$RC8" -eq 0 ] && cmp -s "$TMP/s8z" "$TMP/s8"'

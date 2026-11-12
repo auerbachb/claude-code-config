@@ -244,6 +244,14 @@ if [ "$SHARD_GIVEN" -eq 1 ]; then
   SHARD_N=$((10#$SHARD_N))
 fi
 
+# Resolve a relative --timing-file against the caller's directory, before the cd below, so the
+# export lands where the caller asked and not in the repository root.
+if [ "$TIMING_FILE_GIVEN" -eq 1 ]; then
+  case "$TIMING_FILE" in
+    /*) ;;
+    *) TIMING_FILE="$PWD/$TIMING_FILE" ;;
+  esac
+fi
 # Read the selection before the cd below, so a relative --only-file path still resolves
 # against the caller's directory.
 SELECT_MODE=0
@@ -404,10 +412,13 @@ weighted_slice() {
         while (j >= 1 && before(x, ORD[j])) { ORD[j + 1] = ORD[j]; j-- }
         ORD[j + 1] = x
       }
-      for (s = 1; s <= NSH; s++) LOAD[s] = 0
+      # No shard above the suite count can receive a suite, so only that many loads are kept:
+      # a huge n (--shard 1/100000000) must not allocate or scan n entries.
+      nsh = (NSH + 0 > nl ? nl : NSH + 0); if (nsh < 1) nsh = 1
+      for (s = 1; s <= nsh; s++) LOAD[s] = 0
       for (i = 1; i <= nl; i++) {
         x = ORD[i]; best = 1
-        for (s = 2; s <= NSH; s++) if (LOAD[s] < LOAD[best]) best = s
+        for (s = 2; s <= nsh; s++) if (LOAD[s] < LOAD[best]) best = s
         LOAD[best] += (WT[x] < 1 ? 1 : WT[x]); OWN[x] = best
       }
       lost = 0
@@ -680,7 +691,7 @@ if [ "$total" -gt 0 ]; then
 fi
 
 # --timing-file <path> (issue #2207): the same per-suite rows as TSV, <seconds>\t<pool|serial>\t<path>,
-# in discovery order. Advisory: a write failure is a warning and never changes the exit status.
+# in the order this invocation ran them (a sharded run lists its sorted shard). Advisory: a write failure is a warning and never changes the exit status.
 if [ "$TIMING_FILE_GIVEN" -eq 1 ]; then
   if [ -f "$WORK/timing.tsv" ]; then TIMING_SRC="$WORK/timing.tsv"; else TIMING_SRC="/dev/null"; fi
   cp -- "$TIMING_SRC" "$TIMING_FILE" 2>/dev/null \
