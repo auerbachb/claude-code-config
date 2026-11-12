@@ -50,7 +50,7 @@ REVIEW_REQUEST_CHECKS=rule-lint,hook-tests-py39
 ```
 
 - **REVIEW_REQUEST** — `after-ci` (default) asks for a review once per HEAD, after CI is green; `on-push` keeps the old timing.
-- **REVIEW_REQUEST_CHECKS** — this repo names its fast checks. `rule-lint` (the rule corpus, word budget and doc lints) and `hook-tests-py39` (the Python hook unit tests and import smoke, the short Python job) answer in minutes. The full hook-test suites (`hook-tests`, `hook-tests-macos`) run about 34 minutes at the median (Issue #2195), so waiting for them before asking would add that to every review round. Remove this line once the full suite is fast (#2176); then every non-reviewer check is awaited.
+- **REVIEW_REQUEST_CHECKS** — this repo names its fast checks. `rule-lint` (the rule corpus, word budget and doc lints) and `hook-tests-py39` (the Python hook unit tests and import smoke, the short Python job) answer in minutes. On a PR, `hook-tests` (Linux, two shards) takes about 13 minutes on a full run and `hook-tests-macos` passes at once, because macOS runs after merge (Issue #2265); waiting for `hook-tests` before asking would still add that to every review round. Remove this line once the full suite is fast (#2176); then every non-reviewer check is awaited.
 
 ## Independent areas
 
