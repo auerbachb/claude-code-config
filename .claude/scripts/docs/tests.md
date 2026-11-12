@@ -186,6 +186,7 @@ opt-in of issue #1544.
 | [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path |
 | [review-tier.test.sh](../tests/review-tier.test.sh) | Tests for `review-tier.sh` — policy parsing, strictest-wins resolution, fail-closed invalid policies, PR-mode base-branch reads |
 | [review-triggers-allowed.test.sh](../tests/review-triggers-allowed.test.sh) | Tests `review-triggers-allowed.sh` — legacy pass-through, every tier row, fail-closed probe, settled HEAD, lifetime caps across comments and the ledger, the CodeAnt-unavailable fallback, BugBot's refused-HEAD and daily-cap guards, and racing claims |
+| [safe-close-inventory.test.sh](../tests/safe-close-inventory.test.sh) | Tests for `safe-close-inventory.sh`: verdicts, consequence tags, unknown-forces-not-yet, exclusion of other threads, and read-only behaviour |
 | [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
 | [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |
 | [session-scheduling-reconcile.test.sh](../tests/session-scheduling-reconcile.test.sh) | Tests for `session-scheduling-reconcile.sh` against a redirected `HOME` |

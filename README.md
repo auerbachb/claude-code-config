@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only on an owner grant spent through `paid-review-grant.sh` (#1897, #1898); without one, agents keep polling for a free review or the no-review override.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges. The running worktree and branch are left intact and reaped out-of-band by `/pm-clean`.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 38 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 39 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -111,7 +111,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 38 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 39 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -150,6 +150,7 @@ All 38 commands are invoked as `/command` in a Claude Code session. They are def
 | `/end-resume` | Workflow | Explicitly reopen work stopped by `/end`; optionally clear the independent refill pause with `--resume-refill` |
 | `/pause` | Workflow | Short-break or laptop-close pause with a 15-minute default runway: land safe work, park recovery state, and hard-stop every owned background task |
 | `/pause-resume` | Workflow | Restore the paused board, explicitly reopen launches, and re-arm selected stopped work without duplicating live tasks |
+| `/safe-close` | Workflow | Read-only check of whether this thread can be closed: a verdict line (safe, or not yet with a count), then everything the thread still owns — running tasks, unlanded PRs and worktrees, open questions, held claims, leftover state — each tagged lost, keeps running, orphaned or harmless; unverifiable items count as unknown and force not-yet; stops and cleans up nothing |
 | `/desk` | Workflow | The human queue's control session — one place to answer every question agent threads ask: waiting Decisions as clickable menus in numbered sets of up to four, long-form ones as one text prompt at a time (multipart ones part by part, the typed reply stored word for word — outer whitespace trimmed, a lone option letter stored as that option), `discuss <n\|D-id>` to talk an item through before answering, menu clicks or typed replies (`2: B`, `D-43: B`) written to the store, and each asking thread woken with a pointer. Ticks on a persistent Monitor; while it is live, worker threads stop rendering their own menus. Lives in `desk/skill/` (symlinked as `.claude/skills/desk`) |
 | `/inbox` | Workflow | `import <scan.pdf>` previews marked answers and comments from a numbered desk export for confirmation |
 | `/leave-by` | Workflow | Say once when you have to stop ("I need to leave at 7 PM") — arms that time as the repo's planning deadline so dispatch declines pipelines that cannot finish before it, then checks in unprompted at a configurable lead (default 30 min, `--lead Nm`) and winds down through `/pause`, so everything is merged or resumable by the time you go |
