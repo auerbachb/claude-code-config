@@ -325,5 +325,11 @@ class PMReadTrace(unittest.TestCase):
         self.assertIn('../rank/fetch.md#1b2-fetch-github-state', resume)
 
 
+    def test_handoff_routes_saved_round_through_resume(self):
+        handoff = (ROOT / '.claude/skills/pm-handoff/SKILL.md').read_text()
+        self.assertIn('1. Run `/pm resume` for a saved PM round.', handoff)
+        self.assertIn('Run `/pm` to start a fresh ranking round when there is no saved work.', handoff)
+
+
 unittest.main(argv=[sys.argv[0]], verbosity=2)
 PY
