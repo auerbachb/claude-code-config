@@ -96,7 +96,7 @@ else
 fi
 ```
 
-Render only for an explicit status request or a due opted-in report. Keep the complete machine-readable launch and queue records at every dispatch.
+Render only for an explicit status request or a scheduled report when due. Keep the complete machine-readable launch and queue records at every dispatch.
 
 **`/pm` is the dispatching thread, so the board renders complete.** `/board` Step 3 draws queued rows from the dispatching thread's own queue and confirms a pre-PR row from a live agent handle — both of which `/pm` holds (3.1's queued-behind-the-ceiling list, and the handles for pipelines `/subagent` launched for this round). Supply them: a board rendered from `/pm` carries its queued rows, shows no `Phase A (unconfirmed)` row for a pipeline it is holding, and qualifies neither its running nor its delivered count. Those qualifications exist for threads that did *not* dispatch the round; adopting them here would understate a round `/pm` can account for exactly.
 
@@ -108,15 +108,15 @@ Render only for an explicit status request or a due opted-in report. Keep the co
 
 | Trigger | Render |
 |---------|--------|
-| Dispatch or refill | Preserve the complete launch and queue records. Render when an explicit request or opted-in report calls for it. |
-| Existing day or PM-owned inline monitor tick | Evaluate the opt-in report gate below |
+| Dispatch or refill | Preserve the complete launch and queue records. Render when an explicit request or a scheduled report calls for it. |
+| Existing day or PM-owned inline monitor tick | Evaluate the scheduled report gate below |
 | A progress question — "how far along?", "where is everything?", "status" | This table, recomputed, whatever the count: one shape whether one pipeline is running or five |
-| Observed `merged` or `blocked` outcome in this PM run | Evaluate the opt-in report gate immediately, even when the round just drained |
+| Observed `merged` or `blocked` outcome in this PM run | Evaluate the scheduled report gate immediately, even when the round just drained |
 
 **The Active Work table (3.2) is a different table and neither replaces the other.** Active Work is the **assignment ledger**: every issue `/pm` is responsible for, including rows that are not pipelines at all — `Chip offered` and `Prompt generated` (awaiting a click or a paste), `Active` (a separate thread's work), `Tracking` parents, `Deferred (cap)` — each keyed by thread and, where one exists, by `task_id`. The canonical Status vocabulary is `queued` / `Phase A|B|C` / `merged`, which has no cell for "awaiting a click" and no column for a chip handle, so the ledger cannot be folded into it. "Running now" is the **round's progress view**: pipelines only, with clocks. Keep both, and keep the boundary — one answers *who is doing what*, the other *when will it land*.
 
-**Scheduled reports.** The owner requests a changed-board report every
-30 minutes for `/pm`. Read `report_every_min` in `## Reporting` through
+**Scheduled reports.** By default, `/pm` reports a changed board every
+30 minutes. Read `report_every_min` in `## Reporting` through
 `PM_CONFIG_GET`. Zero opts out, and a positive value sets a different
 interval. Follow
 [PM progress report](../../../../reference/pm-output-templates.md#pm-progress-report)
