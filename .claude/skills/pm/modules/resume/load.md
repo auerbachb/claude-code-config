@@ -109,22 +109,27 @@ if [[ "$CUR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ &&
     | .prs | objects | keys[] | select(test("\\A[1-9][0-9]*\\z"))
   ' <<< "${SESSION_VIEW:-}" 2>/dev/null) || SCOPED_PRS=""
 fi
+handoff_root=""
+if [ -n "${HOME:-}" ] && home_dir=$(cd -- "$HOME" 2>/dev/null && pwd -P); then
+  handoff_root="$home_dir/.claude/handoffs"
+fi
 found_handoffs=false
 while IFS= read -r n; do
-  [[ -n "${HOME:-}" && "$n" =~ ^[1-9][0-9]*$ ]] || continue
-  handoff_root="$HOME/.claude/handoffs"
-  f="$handoff_root/$CUR_REPO/pr-$n-handoff.json"
+  [[ -n "$handoff_root" && "$n" =~ ^[1-9][0-9]*$ ]] || continue
+  scoped_dir="$handoff_root/$CUR_REPO"
+  f="$scoped_dir/pr-$n-handoff.json"
   require_owner=false
   if [ ! -e "$f" ] && [ ! -L "$f" ]; then
     f="$handoff_root/pr-$n-handoff.json"
     require_owner=true
-  elif [ -L "$f" ] || [ -L "$handoff_root/$CUR_REPO" ] || [ -L "$handoff_root/${CUR_REPO%%/*}" ]; then
+  elif [ -L "$f" ] || ! physical_dir=$(cd -- "$scoped_dir" 2>/dev/null && pwd -P) ||
+       [ "$physical_dir" != "$scoped_dir" ]; then
     require_owner=true
   fi
   [ -f "$f" ] && [ -r "$f" ] || continue
   payload=$(jq -cse --arg repo "$CUR_REPO" --arg pr "$n" --argjson require_owner "$require_owner" '
     select(length == 1) | .[0] | objects |
-    select(.pr_number == null or ((.pr_number | tostring) == $pr)) |
+    select((has("pr_number") | not) or ((.pr_number | tostring) == $pr)) |
     select(
       if .owner_repo == null then ($require_owner | not)
       else (.owner_repo | type == "string" and ascii_downcase == ($repo | ascii_downcase))

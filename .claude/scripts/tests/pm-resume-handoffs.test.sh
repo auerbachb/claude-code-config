@@ -40,6 +40,8 @@ for order in first second; do
   printf '%s\n' '{"needs":"older scoped"}' > "$scoped"
   out=$(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block")
   grep -Fq '"needs":"older scoped"' <<< "$out"
+  printf '%s\n' '{"owner_repo":"second/repo","pr_number":null}' > "$scoped"
+  [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]] || { printf '%s\n' 'explicit null PR identity was accepted' >&2; exit 1; }
   printf '%s\n' '{"owner_repo":"second/repo","pr_number":43}' > "$scoped"
   [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]]
   printf '%s\n' '{"owner_repo":"first/repo","pr_number":42}' > "$scoped"
@@ -62,5 +64,16 @@ for order in first second; do
   dot_view=$(jq -c --arg repo "$dot_repo" '.repo = $repo' <<< "$view")
   out=$(REPO_KEY="$dot_repo" SESSION_VIEW="$dot_view" "$BASH" -u -c "$block")
   grep -Fq '"needs":"dot repository"' <<< "$out"
+  store="$HOME/.claude/handoffs"
+  linked_store="$HOME/linked-handoffs"
+  mv "$store" "$linked_store"
+  ln -s "$linked_store" "$store"
+  printf '%s\n' '{"needs":"linked store without owner"}' > "$scoped"
+  [[ $(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block") == NO_HANDOFF_FILES ]] || { printf '%s\n' 'ownerless linked-store payload was accepted' >&2; exit 1; }
+  printf '%s\n' '{"owner_repo":"second/repo","pr_number":42,"needs":"verified linked store"}' > "$scoped"
+  out=$(REPO_KEY="$key" SESSION_VIEW="$view" "$BASH" -u -c "$block")
+  grep -Fq '"needs":"verified linked store"' <<< "$out"
+  rm "$store"
+  mv "$linked_store" "$store"
   printf '%s\n' "$order first: collisions, valid legacy, linked scope, and invalid payload/view verified"
 done
