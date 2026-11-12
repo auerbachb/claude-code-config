@@ -49,6 +49,9 @@ mkdir -p "$STUB_DIR/lib"
 cp "${MAYBE_TRIGGER_TEST_SOURCE:-$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh}" "$STUB_DIR/maybe-trigger-ai-review.sh"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/review-request-gate.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/check-runs-dedup.sh" "$STUB_DIR/"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/pr-authorship.sh"; chmod +x "$STUB_DIR/pr-authorship.sh"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/"
 # The real normaliser, not a stub: the shared helper declines to suppress when
 # this library will not load, so a missing copy would make every scenario post
@@ -83,7 +86,7 @@ sub="${1-}"; shift || true
 case "$sub" in
   pr)
     case "${1-}" in
-      view) echo "$FIXTURE_HEAD_SHA"; exit 0 ;;
+      view) if [[ "$*" == *isDraft* ]]; then echo '{"state":"OPEN","isDraft":false}'; else echo "$FIXTURE_HEAD_SHA"; fi; exit 0 ;;
       comment)
         prev=""
         for a in "$@"; do
@@ -100,12 +103,15 @@ case "$sub" in
     exit 0
     ;;
   api)
-    if [[ "${FIXTURE_API_FAIL:-0}" == "1" ]]; then exit 1; fi
+    # FIXTURE_API_FAIL silences the refusal read only. The CI reads that gate
+    # the review request (#2195) stay readable, so the refusal cases still run.
     for arg in "$@"; do
       case "$arg" in
         repos/*/commits/*/check-runs*) cat "$FIXTURE_CHECK_RUNS_JSON"; exit 0 ;;
         repos/*/commits/*)             printf '%s\n' "$FIXTURE_HEAD_TS"; exit 0 ;;
-        repos/*/issues/*/comments*)    cat "$FIXTURE_COMMENTS_JSON";  exit 0 ;;
+        repos/*/issues/*/comments*)
+          if [[ "${FIXTURE_API_FAIL:-0}" == "1" ]]; then exit 1; fi
+          cat "$FIXTURE_COMMENTS_JSON"; exit 0 ;;
       esac
     done
     echo "[]"
@@ -158,7 +164,7 @@ setup() {
   export FIXTURE_POST_FAIL=""
   # Default: BugBot has a check-run on HEAD, so a post-HEAD refusal is
   # attributable. Scenarios that need the un-attributable case override this.
-  printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"cursor"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs.json"
+  printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"cursor"},"status":"completed","conclusion":"neutral"},{"name":"build","app":{"slug":"github-actions"},"status":"completed","conclusion":"success"}]}' > "$TMP/check-runs.json"
   export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs.json"
   export POSTED="$TMP/posted.txt"
   : > "$POSTED"
@@ -237,7 +243,7 @@ echo "== (g): refusal with NO BugBot check-run on HEAD -> not attributable, nudg
 # commit the guard cannot attribute the refusal, and fails open. (CodeRabbit
 # review, PR #1203.)
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
-printf '%s\n' '{"check_runs":[]}' > "$TMP/check-runs-empty.json"
+printf '%s\n' '{"check_runs":[{"name":"build","app":{"slug":"github-actions"},"status":"completed","conclusion":"success"}]}' > "$TMP/check-runs-empty.json"
 export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs-empty.json"
 run_script
 check_eq "@cursor review not suppressed as a refusal (refusal not attributable to this commit) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
@@ -247,7 +253,7 @@ echo "== (g2): a FOREIGN app's same-named check-run is not BugBot's footprint ==
 # Any app may publish a check named `Cursor Bugbot` (issue #956), so the slug is
 # part of the identity. A foreign run must not license suppression.
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
-printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"github-actions"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs-foreign.json"
+printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"github-actions"},"status":"completed","conclusion":"neutral"},{"name":"build","app":{"slug":"github-actions"},"status":"completed","conclusion":"success"}]}' > "$TMP/check-runs-foreign.json"
 export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs-foreign.json"
 run_script
 check_eq "@cursor review not suppressed as a refusal (foreign publisher is not BugBot) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"

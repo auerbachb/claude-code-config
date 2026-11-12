@@ -49,6 +49,9 @@ mkdir -p "$STUB_DIR/lib"
 cp "$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/review-request-gate.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/check-runs-dedup.sh" "$STUB_DIR/"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/pr-authorship.sh"; chmod +x "$STUB_DIR/pr-authorship.sh"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/"
 cp "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" "$STUB_DIR/lib/"
 cp "$REPO_ROOT/.claude/scripts/bugbot-refused-head.sh" "$STUB_DIR/"
@@ -82,7 +85,7 @@ sub="${1-}"; shift || true
 case "$sub" in
   pr)
     case "${1-}" in
-      view) echo "$FIXTURE_HEAD_SHA"; exit 0 ;;
+      view) if [[ "$*" == *isDraft* ]]; then echo '{"state":"OPEN","isDraft":false}'; else echo "$FIXTURE_HEAD_SHA"; fi; exit 0 ;;
       comment)
         prev=""
         for a in "$@"; do
@@ -99,8 +102,13 @@ case "$sub" in
     exit 0
     ;;
   api)
-    # No refusal anywhere: the refusal guard always answers "post".
-    echo "[]"
+    # No refusal anywhere: the refusal guard always answers "post". The review
+    # request waits for a green CI check on a HEAD that is past its grace (#2195).
+    case "$*" in
+      *check-runs*) echo '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}' ;;
+      */commits/*) jq -rn 'now - 7200 | todate' ;;
+      *) echo "[]" ;;
+    esac
     ;;
   *) exit 0 ;;
 esac

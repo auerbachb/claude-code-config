@@ -40,6 +40,18 @@ PIPELINE_CEILING=6
 - **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
 - **PIPELINE_CEILING** — the per-thread concurrent-pipeline ceiling that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch launch up to. Positive integer in **[1, 20]**, **default 4**; absent falls back silently, a present-but-unparseable or out-of-range value warns on stderr and falls back to 4. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh --ceiling`, which prints the raw ceiling; each consumer applies the `min()` with `ACTIVE_WORK_CAP` itself, so the ceiling never raises the cap — running wider than the cap means raising both. This repo sets **6**, a third of the cap, so one orchestrating thread cannot take every slot; a repo that keeps the default omits the line.
 
+## Review policy
+
+<!-- Issue #2195. Rules and the dashboard checklist: .claude/reference/review-request-timing.md -->
+
+```ini
+REVIEW_REQUEST=after-ci
+REVIEW_REQUEST_CHECKS=rule-lint,hook-tests-py39
+```
+
+- **REVIEW_REQUEST** — `after-ci` (default) asks for a review once per HEAD, after CI is green; `on-push` keeps the old timing.
+- **REVIEW_REQUEST_CHECKS** — this repo names its fast checks. `rule-lint` (the rule corpus, word budget and doc lints) and `hook-tests-py39` (the Python hook unit tests and import smoke, the short Python job) answer in minutes. The full hook-test suites (`hook-tests`, `hook-tests-macos`) run about 34 minutes at the median (Issue #2195), so waiting for them before asking would add that to every review round. Remove this line once the full suite is fast (#2176); then every non-reviewer check is awaited.
+
 ## Independent areas
 
 See [Independent areas](reference/independent-areas.md) for launch-side matching. Commented rows are examples.
