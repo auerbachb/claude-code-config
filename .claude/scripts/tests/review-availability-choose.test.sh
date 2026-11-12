@@ -112,8 +112,15 @@ for pr in 1 2 3 4; do
 done
 expect_eq "four PRs green together alternate reviewers" "$seq" " codeant coderabbit codeant coderabbit"
 c=$(choose)
-expect_eq "a fifth PR in the same window finds neither reviewer answering in time: skip" \
-  "$(jq -r '.skip' <<<"$c")" "true"
+# A busy queue is an estimate, not a limit: the fifth PR is still asked (fail toward
+# asking). Only a real limit notice may skip a review (#2274 review).
+expect_eq "a fifth PR in the same window is still asked, not skipped" \
+  "$(jq -r '.skip' <<<"$c")" "false"
+expect_eq "the fifth PR goes to a reviewer, marked busy but asked" \
+  "$(jq -r '[.reviewers.coderabbit.why, .reviewers.codeant.why] | index("busy_but_asked") != null' <<<"$c")" "true"
+# A no-review window shorter than both expected response times never skips without a limit.
+c=$(REVIEW_EXPECTED_RESPONSE_CODEANT_MIN=30 REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=30 "$AV" choose --window-s 120 --now "$NOW")
+expect_eq "window shorter than the expected response, no limit notice: still asked" "$(jq -r '.skip' <<<"$c")" "false"
 
 # --- record-request: log, choice on the PR, prune --------------------------------------
 write_state "$EMPTY_AV" "$(reqs "$(req codeant 7300)")"

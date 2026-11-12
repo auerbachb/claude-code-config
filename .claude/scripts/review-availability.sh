@@ -202,7 +202,8 @@ cr_cap_spent() {
 #            the queue of requests recently sent to it (each takes its expected response
 #            time), and now;
 #   answer = avail + its expected response time;
-#   eligible = answer lands inside the window, and CodeRabbit's hourly budget is not spent
+#   eligible = no usable limit notice keeps it out past the window, and CodeRabbit's hourly
+#            budget is not spent; the queue and expected time only rank eligible reviewers
 #            (cr-review-hourly.sh) and it is not excluded.
 # Skip = no reviewer is eligible. Unusable records are not a limit (fail toward asking).
 decide_json() {
@@ -235,13 +236,20 @@ decide_json() {
       | queue_end($k) as $queue
       | ([$rec_avail, $queue, $now] | max) as $avail
       | ($avail + expo($k)) as $answer
-      | (($cap_why == "") and ($answer <= ($now + $win))) as $eligible
+      # Only a real limit notice (or the spent CodeRabbit hourly budget) makes a reviewer
+      # ineligible. The queue of logged requests and the expected response time only rank
+      # the eligible reviewers: they are estimates, and an estimate must never skip a review
+      # (fail toward asking). Without this, several PRs going green together, or a window
+      # shorter than the expected response time, would skip review with no limit at all.
+      | (($state == "limited") and (($x.next_available_epoch + expo($k)) > ($now + $win))) as $limited_out
+      | (($cap_why == "") and ($limited_out | not)) as $eligible
       | { blocked: ($eligible | not),
           next: (if $state == "limited" then $x.next_available_epoch else null end),
           avail: $avail, answer: $answer, recent: (recent($k) | length), eligible: $eligible,
           why: (if $cap_why != "" then $cap_why
-                elif $answer > ($now + $win) then (if $state == "limited" then "limited" else "busy" end)
+                elif $limited_out then "limited"
                 elif $state == "limited" then "answers_within_window"
+                elif $answer > ($now + $win) then "busy_but_asked"
                 else $state end) };
     lane("coderabbit"; $crwhy) as $a | lane("codeant"; "") as $b
     | [ (if $a.eligible then {r: "coderabbit", x: $a} else empty end),
