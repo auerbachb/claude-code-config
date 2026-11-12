@@ -120,6 +120,15 @@ for skill in "${SKILLS[@]}"; do
       echo "::error::No guarded module sources: .claude/skills/${skill}/modules"
       missing=$((missing + 1))
     fi
+    if [[ "$skill" == pm && -d ".claude/skills/pm/modules" ]]; then
+      if ! module_links=$(find ".claude/skills/pm/modules" -type l -print); then
+        echo "::error::Cannot verify PM module links"
+        missing=$((missing + 1))
+      elif [[ -L ".claude/skills/pm/modules" || -n "$module_links" ]]; then
+        echo "::error::PM module sources must be regular files in the skill module tree"
+        missing=$((missing + 1))
+      fi
+    fi
     while IFS= read -r module; do
       [[ -n "$module" ]] && guarded_files+=("$module")
     done <<< "$module_files"
