@@ -185,6 +185,22 @@ write_av '{}' "$EIGHT"
 REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=1 run
 check_eq "posted CodeAnt" "@codeant-ai review;" "$(posted)"
 
+echo "== CodeRabbit budget spent between the choice and the post: falls back to CodeAnt =="
+reset "$NRO_TIER"
+write_av '{}'
+cp "$S/cr-review-hourly.sh" "$TMP/cr-review-hourly.real"
+cat > "$S/cr-review-hourly.sh" <<STUB
+#!/usr/bin/env bash
+# First --check (the choice) has budget; every later --check (the reserve) is spent.
+n=\$(cat "$TMP/cr-check-count" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$TMP/cr-check-count"
+case "\$1" in --check) [ "\$n" -le 1 ] && exit 0 || exit 1 ;; *) exit 0 ;; esac
+STUB
+chmod +x "$S/cr-review-hourly.sh"; rm -f "$TMP/cr-check-count"
+REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=1 run
+check_eq "budget lost after the choice: CodeAnt is asked instead" "@codeant-ai review;" "$(posted)"
+check_eq "budget lost after the choice: the choice records CodeAnt" "codeant" "$(choice_of "$PR")"
+cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
+
 echo "== both limited: nothing posted, skipped as increment 1 =="
 reset "$NRO_TIER"
 write_av "{\"codeant\":$LIMIT_CA,\"coderabbit\":$LIMIT_CA}"

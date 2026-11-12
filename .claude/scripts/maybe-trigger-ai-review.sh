@@ -354,7 +354,9 @@ reserve_request_reviewer() {
     fi
     [[ -x "$av" ]] || return 1
     dec="$("$av" choose --window-s "${REQ_WINDOW_S:-600}" --no-coderabbit 2>/dev/null)" || return 1
-    [[ "$(jq -r '.skip // true' <<<"$dec" 2>/dev/null)" == false ]] || return 1
+    # Test the value itself: jq `//` treats false like null, so `.skip // true` reads a
+    # successful `skip: false` as true and the fallback to CodeAnt could never happen.
+    jq -e '.skip == false' <<<"$dec" >/dev/null 2>&1 || return 1
     REQ_CHOICE_JSON="$dec"
     REQ_CHOICE_REASON="coderabbit_budget_refused_$(jq -r '.choice_reason // "request"' <<<"$dec")"
     REQ_REVIEWER="$(jq -r '.reviewer' <<<"$dec")"
