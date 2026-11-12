@@ -39,23 +39,34 @@ A weekly limit is the long-horizon token/credit case and follows `/end` in the
 weekly branch below. After the selected wind-down steps complete, read the
 current `consecutive_limit_hits` and increment it:
 
+<!-- test-anchor: pm-day-2d6-prior-hits -->
+
 ```bash
 HITS_RC=0
-PRIOR_HITS=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits") || HITS_RC=$?
-[ "$HITS_RC" -eq 3 ] && PRIOR_HITS=0   # no state file — first limit hit ever
+PRIOR_HITS_JSON=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits") || HITS_RC=$?
+case "$HITS_RC" in
+  0)
+    PRIOR_HITS=$(jq -ers '
+      select(length == 1) | .[0] |
+      if . == null or . == "" then 0
+      elif type == "string" then select(test("^(0|[1-9][0-9]*)$")) | tonumber
+      else . end |
+      select(type == "number" and . >= 0 and . < 9007199254740991 and floor == .)
+      ' <<< "$PRIOR_HITS_JSON") || HITS_RC=4
+    ;;
+  3) PRIOR_HITS=0 ;;
+esac
 
-# Fail closed on any other unreadable state: a corrupt or lock-timed count cannot
-# be safely reset to 0 — doing so would let thrash guards be bypassed.
-# The block below must terminate this section; nothing after it — NEW_HITS computation,
-# state writes, or Monitor arming — may execute when this condition is true.
 if [[ "$HITS_RC" -ne 0 && "$HITS_RC" -ne 3 ]]; then
   echo "Parked (usage limit) — consecutive_limit_hits unreadable (rc=$HITS_RC); staying parked to avoid thrash. Resume manually."
-  return  # EXIT this section — do not compute NEW_HITS, write state, or arm a Monitor
+  exit "$HITS_RC"
 fi
-[[ "$PRIOR_HITS" =~ ^[0-9]+$ ]] || PRIOR_HITS=0
 NEW_HITS=$(( PRIOR_HITS + 1 ))
 MAX_LIMIT_HITS=3  # mirrors max_pipeline_failures range; not currently user-configurable
 ```
+
+Run the claim only after this block exits successfully. A nonzero exit
+leaves the execution gate closed and requires manual `/pause-resume`.
 
 **Claim the park slot rather than overwriting one (#1428, #1622).** A real kill can land while 2D.7 — or a subagent-running thread (`subagent-thread-limit-park.md` §2) — has already parked the board. Every one of those paths writes these same fields, so a plain write here would replace `parked_until` and the cause and null the wake identity pair, stranding a live Monitor that nothing can name to `TaskStop`. So the reactive path does not write a park; it **claims** one, by the same compare-and-set on `limit_cause` that 2D.7 Step 3 and the subagent leg already use. `limit_cause` is null until exactly one path claims it, and the whole record rides that single compare (`--cas` composed with `--set`, #1445), so there is no window between owning the slot and finishing the metadata:
 
@@ -71,10 +82,8 @@ done
 PARK_GENERATION=""
 PARK_CLAIM_RC=0
 if ! [[ "${NEW_HITS:-}" =~ ^[0-9]+$ ]]; then
-  # The thrash guard is only a guard if the counter is a number. An unset NEW_HITS
-  # writes an empty string, which the `[[ =~ ^[0-9]+$ ]] || PRIOR_HITS=0` coercion
-  # above then reads back as a reset streak — so MAX_LIMIT_HITS could never bite.
-  # Same guard, same reason, as 2D.7 Step 3.
+  # A missing or invalid increment cannot authorize a park claim.
+  # Same guard as 2D.7 Step 3.
   echo "PARK_CLAIM=error rc=hits"
 elif [ -z "$PARK_GENERATION_SH" ] || ! PARK_GENERATION=$("$PARK_GENERATION_SH"); then
   echo "PARK_CLAIM=error rc=generation"

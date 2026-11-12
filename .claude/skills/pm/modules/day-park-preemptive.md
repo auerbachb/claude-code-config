@@ -195,7 +195,11 @@ fi
 
 **Gate the release on your claim token, not on your own timestamp and not on `limit_cause` (#1596).** Expecting `parked_until` to still equal `$PREEMPTIVE_PARKED_UNTIL` looks like it identifies your own claim, and with an unknown reset it nearly does. With a *known* reset it does not: `PARK_EPOCH` is then the vendor reset epoch, and a reactive kill parking off the same signal computes the same instant — so the two paths write a byte-identical timestamp and the release matches a park that is not yours. `limit_cause=null` fixed that collision but has one of its own, in the other direction: the field is null through this claim's entire assembly window, so it is *equally* null under a **second pre-emptive claim** that opened after ours was cleared. A release still in flight from the first claim then matches the second one's slot and clears a live park. The token has neither collision — it is unique per claim, and every competing parker retires it in the same atomic write that takes the slot (2D.6's reactive claim and the subagent leg's §2 both carry `--set park_claim_token=null`). So a reactive park, a sibling thread's park, or a second pre-emptive claim all take this release to exit 7 — clear nothing, stand down — while an abort with no competing park clears the claim it actually made.
 
-**Step 3 — Finish the park record, re-checking ownership.** Read and increment `consecutive_limit_hits` exactly as 2D.6 does, including its fail-closed exit when the count is unreadable and its `MAX_LIMIT_HITS=3` thrash guard (at the cap: stay parked, no wake, notify). A pre-emptive park is always `rolling_window` — the horizon verdict measures the rolling window's runway and carries no weekly-cap classification, and **weekly caps remain the reactive path's business and stay manual-resume**.
+**Step 3 — Finish the park record, re-checking ownership.** Run 2D.6's `pm-day-2d6-prior-hits` block. On an unreadable or invalid count,
+leave the unfinished claim and execution gate in place, skip the release
+block, and require manual `/pause-resume`. Releasing the claim would clear the
+deadline and could allow ordinary arming. A valid result uses the same
+`MAX_LIMIT_HITS=3` thrash guard (at the cap: stay parked, no wake, notify). A pre-emptive park is always `rolling_window` — the horizon verdict measures the rolling window's runway and carries no weekly-cap classification, and **weekly caps remain the reactive path's business and stay manual-resume**.
 
 **Winning Step 1 is not a licence to finish.** The shutdown between them takes up to the landing window, and a real kill can fire inside it: 2D.6 then rewrites the park with a vendor reset time and arms its own wake. A plain `--set` here would overwrite that winner's `limit_cause` and probe bound, and Step 4 would then arm a *second* Monitor over its identity — the double-wake this issue exists to prevent. So ownership is re-taken by compare-and-set on **the claim token Step 1 minted** (#1596) — **and the whole record rides that one compare** (`--cas` composed with `--set`, #1445), so there is no window between re-taking ownership and finishing the metadata:
 
@@ -206,8 +210,7 @@ if [ "$PARK_RESET_KNOWN" = true ]; then PROBE_FIRES=null; else PROBE_FIRES="$PRO
 RECORD_RC=0
 if ! [[ "${NEW_HITS:-}" =~ ^[0-9]+$ ]]; then
   # The thrash guard is only a guard if the counter is a number. An unset NEW_HITS
-  # writes an empty string, which 2D.6's own `[[ =~ ^[0-9]+$ ]] || PRIOR_HITS=0`
-  # coercion then reads as a reset streak — so MAX_LIMIT_HITS could never bite.
+  # would otherwise leave a count that 2D.6 cannot safely interpret.
   echo "PARK_RECORD=error rc=hits"
 elif [ -z "${PARK_CLAIM_TOKEN:-}" ]; then
   # A lost token is a BUG, not a supersession, and the two demand opposite
@@ -301,43 +304,160 @@ For a probe fire, resolve `day:tick` and run only its `pm-day-d2-horizon-branch`
 <!-- test-anchor: pm-day-2d7-probe-fire -->
 
 ```bash
-GEN_RC=0
-STORED_GEN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_generation") || GEN_RC=$?
-if [ "$GEN_RC" -ne 0 ] && [ "$GEN_RC" -ne 3 ]; then
-  # Only rc 3 (no state file) is legitimately "no generation". A lock timeout is
-  # contention — likeliest precisely when a fleet is hammering this file — and reading
-  # it as `stale` would exit silently AND spend no fire, so the bound never advances.
-  echo "PROBE=fail-closed"
-elif [ -z "$STORED_GEN" ] || [ "$STORED_GEN" = null ] || [ "$TICK_GENERATION" != "$STORED_GEN" ]; then
-  echo "PROBE=stale"                    # superseded Monitor: no resume, no write, no output beyond this
-else
-  FIRES_RC=0; DEC_RC=0
-  FIRES=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining") || FIRES_RC=$?
-  if [ "$FIRES_RC" -ne 0 ] || ! [[ "$FIRES" =~ ^[0-9]+$ ]]; then
-    # Unreadable, or the `-1` sentinel (#1445) — a fire arriving against a bound
-    # that is not in force is exactly as untrustworthy as one against garbage, and
-    # the non-negative-integer pattern already rejects both. Stay parked, surface it.
-    echo "PROBE=fail-closed"
-  elif [ "$HORIZON_STATUS" = clear ]; then
-    echo "PROBE=resume"                 # window replenished -> /pause-resume --generation "$STORED_GEN"
-  elif [ "$FIRES" -le 1 ]; then
-    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=0" || DEC_RC=$?
-    [ "$DEC_RC" -eq 0 ] && echo "PROBE=exhausted" || echo "PROBE=fail-closed"
-  else
-    # The decrement IS the bound. `|| true` here would report a fire that was never
-    # recorded, so every later fire re-reads the same count, `exhausted` is never
-    # reached, and the Monitor probes forever — the runaway this park exists to avoid.
-    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=$(( FIRES - 1 ))" || DEC_RC=$?
-    [ "$DEC_RC" -eq 0 ] && echo "PROBE=continue" || echo "PROBE=fail-closed"
-  fi
-fi
+pm_day_probe_fire() {
+  local day_path snapshot binding generation observed identity field expected
+  local fires next write_path prior nonce resume_generation probe_rc attempt lock_retried
+  local -a guards
+  day_path=".repos[\"$REPO_KEY\"].day"
+  generation=$(jq -cn --arg id "$TICK_GENERATION" '$id') ||
+    { printf '%s\n' 'PROBE=fail-closed'; return; }
+  observed=""
+  lock_retried=false
+  for attempt in 1 2 3 4; do
+    probe_rc=0
+    snapshot=$("$SESSION_STATE_SH" --get-json "$day_path") || probe_rc=$?
+    if [ "$probe_rc" -eq 6 ]; then
+      probe_rc=0
+      snapshot=$("$SESSION_STATE_SH" --get-json "$day_path") || probe_rc=$?
+    fi
+    case "$probe_rc" in
+      0) ;;
+      3) printf '%s\n' 'PROBE=stale'; return ;;
+      *) printf '%s\n' 'PROBE=fail-closed'; return ;;
+    esac
+
+    if ! binding=$(jq -cse '
+      def ident: type == "string" and length > 0 and . != "null";
+      def task_id: ident or
+        (type == "number" and . >= 0 and . <= 9007199254740991 and floor == .);
+      select(length == 1) | .[0] |
+      if . == null then {}
+      elif type == "object" then {
+        park_generation, parked_until, limit_cause, limit_kind,
+        limit_resume_task_id, limit_resume_generation, limit_probe_fires_remaining
+      }
+      else error("invalid day state") end |
+      select(.park_generation == null or (.park_generation | ident)) |
+      select(.limit_resume_task_id == null or (.limit_resume_task_id | task_id)) |
+      select(.limit_resume_generation == null or (.limit_resume_generation | ident))
+    ' <<< "$snapshot"); then
+      printf '%s\n' 'PROBE=fail-closed'
+      return
+    fi
+    if ! jq -e --argjson generation "$generation" \
+         '.limit_resume_generation == $generation' >/dev/null <<< "$binding"; then
+      printf '%s\n' 'PROBE=stale'
+      return
+    fi
+    identity=$(jq -c 'del(.limit_probe_fires_remaining)' <<< "$binding") ||
+      { printf '%s\n' 'PROBE=fail-closed'; return; }
+    if [ -n "$observed" ] && [ "$identity" != "$observed" ]; then
+      printf '%s\n' 'PROBE=stale'
+      return
+    fi
+    observed="$identity"
+
+    if ! fires=$(jq -er '
+      select(.limit_kind == "rolling_window" and .limit_cause == "preemptive") |
+      .limit_probe_fires_remaining |
+      select(type == "number" and . >= 0 and . <= 9007199254740991 and floor == .)
+    ' <<< "$binding"); then
+      printf 'PROBE_BINDING=%s\nPROBE=fail-closed\n' "$binding"
+      return
+    fi
+    if [ "$fires" -eq 0 ]; then
+      printf 'PROBE_BINDING=%s\nPROBE=exhausted\n' "$binding"
+      return
+    fi
+    guards=()
+    for field in park_generation parked_until limit_cause limit_kind limit_resume_task_id; do
+      expected=$(jq -c --arg field "$field" '.[$field]' <<< "$identity") ||
+        { printf '%s\n' 'PROBE=fail-closed'; return; }
+      guards+=("--expect-at" "$day_path.$field" "$expected")
+    done
+    if [ "$HORIZON_STATUS" = clear ]; then
+      nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n') || nonce=""
+      if ! [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]; then
+        printf 'PROBE_BINDING=%s\nPROBE=fail-closed\n' "$binding"
+        return
+      fi
+      resume_generation="probe-resume-$nonce"
+      next=$(jq -cn --arg gen "$resume_generation" '$gen') ||
+        { printf '%s\n' 'PROBE=fail-closed'; return; }
+      write_path="$day_path.limit_resume_generation"
+      prior="$generation"
+      guards+=("--expect-at" "$day_path.limit_probe_fires_remaining" "$fires")
+    else
+      next=$(( fires - 1 ))
+      write_path="$day_path.limit_probe_fires_remaining"
+      prior="$fires"
+      guards+=("--expect-at" "$day_path.limit_resume_generation" "$generation")
+    fi
+    probe_rc=0
+    "$SESSION_STATE_SH" --cas "$write_path=$next" --expect "$prior" \
+      "${guards[@]}" || probe_rc=$?
+    case "$probe_rc" in
+      0)
+        if [ "$HORIZON_STATUS" = clear ]; then
+          printf 'PROBE_RESUME_GENERATION=%s\nPROBE=resume\n' "$resume_generation"
+        elif [ "$next" -eq 0 ]; then
+          printf 'PROBE_BINDING=%s\nPROBE=exhausted\n' "$binding"
+        else
+          printf '%s\n' 'PROBE=continue'
+        fi
+        return ;;
+      7) ;; # Only count changes are eligible for a retry.
+      6)
+        if [ "$lock_retried" = true ]; then
+          printf '%s\n' 'PROBE=fail-closed'
+          return
+        fi
+        lock_retried=true ;;
+      *) printf 'PROBE_BINDING=%s\nPROBE=fail-closed\n' "$binding"; return ;;
+    esac
+  done
+  printf '%s\n' 'PROBE=contended'
+}
+pm_day_probe_fire
 ```
 
 `HORIZON_STATUS` comes from re-running D2's horizon block (observe, then `--check`) at the top of the fire — the same gate, so `unknown` cannot resume any more than it can park. Only `clear` resumes: `approaching` means the window has begun refilling but has not recovered, and resuming there walks straight back into the wall the thrash guard exists to prevent.
 
-- `PROBE=resume` → invoke `/pause-resume --generation "$STORED_GEN"`, which validates the token, reopens the gate, and re-arms the day loop through `/pm day resume`. **Never pass `--resume-refill`** — this park never wrote `.refill.paused`.
-- `PROBE=exhausted` / `PROBE=fail-closed` → `TaskStop` the recorded Monitor, null `limit_resume_task_id` and `limit_resume_generation`, leave the park in place, and surface one line: `probe wake exhausted after {N} checks — still parked; resume manually with /pause-resume`. Silence here would be a board that never comes back and never says so.
+- `PROBE=resume` → invoke `/pause-resume --generation "$PROBE_RESUME_GENERATION"` with the newly emitted token. The CAS replaced the old wake generation while the bound was still positive, so a concurrent final decrement cannot also win. If the handoff is interrupted, use captured-wake recovery or manual resume. **Never pass `--resume-refill`** — this park never wrote `.refill.paused`.
+- `PROBE=exhausted` / `PROBE=fail-closed` → keep the park in place. Stop and clear only the wake captured in `PROBE_BINDING`, using the identity gate below. Report a spent bound or the failure and say to resume manually with `/pause-resume`.
+- `PROBE=contended` → leave the wake and park in place. A later fire can retry; this turn did not record a decrement.
 - `PROBE=stale` → exit silently, exactly as D0 does for a superseded tick.
+
+**Retire only this wake.** Re-read the day state before stopping. Verify that the captured task is a Monitor in the current native session and that its typed task ID, wake generation, and park generation still match the original `PROBE_BINDING`. If any are unknown or changed, leave the record alone. Keep the actual successful `TaskStop` response as `PROBE_STOP_RESPONSE`, then apply this compare. A failed stop or compare keeps the current record intact.
+
+<!-- test-anchor: pm-day-2d7-probe-retire-wake -->
+
+```bash
+pm_day_probe_clear_wake() {
+  local day_path task wake park
+  day_path=".repos[\"$REPO_KEY\"].day"
+  jq -en --argjson bound "${PROBE_BINDING:-null}" --argjson stop "${PROBE_STOP_RESPONSE:-null}" '
+    ($bound | type == "object") and ($stop | type == "object") and
+    ($bound.limit_resume_generation | type == "string" and length > 0 and . != "null") and
+    ($bound.limit_resume_task_id != null) and
+    ($stop.task_id // $stop.taskId) == $bound.limit_resume_task_id and
+    ($stop.task_id == null or $stop.taskId == null or $stop.task_id == $stop.taskId) and
+    ($stop.task_type // $stop.taskType) == "monitor" and
+    ($stop.task_type == null or $stop.taskType == null or $stop.task_type == $stop.taskType) and
+    $stop.error == null and $stop.errorMessage == null and
+    ($stop.status == null or $stop.status == "stopped" or $stop.status == "success")
+  ' >/dev/null || return 4
+  task=$(jq -c '.limit_resume_task_id' <<< "$PROBE_BINDING") || return 4
+  wake=$(jq -c '.limit_resume_generation' <<< "$PROBE_BINDING") || return 4
+  park=$(jq -c '.park_generation' <<< "$PROBE_BINDING") || return 4
+  "$SESSION_STATE_SH" --cas "$day_path.limit_resume_generation=null" --expect "$wake" \
+    --expect-at "$day_path.limit_resume_task_id" "$task" \
+    --expect-at "$day_path.park_generation" "$park" \
+    --set "$day_path.limit_resume_task_id=null"
+}
+pm_day_probe_clear_wake
+```
+
 
 **Step 6 — Chat surfacing.** Two lines on park, one on resume. On park, emit the two lines below only after `WAKE_PUBLISH=armed`. For `failed` or `stranded`, use the Step 4 diagnostic instead; for `lost`, say nothing. An absent or unreadable publication result is failure, never permission to promise automatic resume. On resume, use the resume line below.
 
