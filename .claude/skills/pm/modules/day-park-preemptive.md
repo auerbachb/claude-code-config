@@ -107,17 +107,33 @@ PARK_CLAIM_TOKEN="park-$(date -u +%Y%m%dT%H%M%SZ)-$$-$PARK_CLAIM_NONCE"
 PARK_GENERATION_SH=""
 for candidate in \
   "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/park-generation.sh}" \
-  "${HOME:+$HOME/.claude/scripts/park-generation.sh}" \
-  ".claude/scripts/park-generation.sh"; do
+  "${HOME:+$HOME/.claude/scripts/park-generation.sh}"; do
   if [ -x "$candidate" ]; then PARK_GENERATION_SH="$candidate"; break; fi
 done
+pm_mint_park_generation() {
+  if [ -n "$PARK_GENERATION_SH" ]; then
+    "$PARK_GENERATION_SH"
+    return
+  fi
+  local checkout_helper script_body digest
+  checkout_helper=$(pwd -P) || return 1
+  checkout_helper="$checkout_helper/.claude/scripts/park-generation.sh"
+  [[ -f "$checkout_helper" && -x "$checkout_helper" ]] || return 1
+  # Hash the captured bytes and execute that same copy. Keep this digest in
+  # sync with the canonical generator and the other PM park claim.
+  script_body=$(head -c 4096 "$checkout_helper" && printf '.') || return 1
+  script_body=${script_body%.}
+  digest=$(printf '%s' "$script_body" | shasum -a 256) || return 1
+  [[ "${digest%% *}" == 596ded3932a821a3a134f36b165ed39a2aa9475530934bc21c0a42c3b6bdae73 ]] || return 1
+  "$BASH" -c "$script_body"
+}
 PARK_GENERATION=""
 PARK_CLAIM_RC=0
 if [ "$PARK_EPOCH" -le "$NOW_EPOCH" ]; then
   # Refuse rather than claim: a deadline that is not in the future is indistinguishable
   # from no park at all, so claiming one would shut the board down invisibly.
   echo "PARK_CLAIM=error rc=window"
-elif [ -z "$PARK_GENERATION_SH" ] || ! PARK_GENERATION=$("$PARK_GENERATION_SH"); then
+elif ! PARK_GENERATION=$(pm_mint_park_generation); then
   echo "PARK_CLAIM=error rc=generation"
 else
   # The kind rides the claim too, because the token turns the assembly window

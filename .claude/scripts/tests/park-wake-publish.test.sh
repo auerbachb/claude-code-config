@@ -190,21 +190,32 @@ os.execv(shell,[shell,real]+args)
 
         for selected, count, unset_home in [
             ('worktree', 3, False), ('installed', 2, False),
-            ('local', 1, False), ('local', 1, True), (None, 0, True),
+            ('local', 1, False), ('local', 1, True), ('altered', 1, True), (None, 0, True),
         ]:
             for path in (local, installed, worktree):
                 path.unlink(missing_ok=True)
-            for path, identity in ((local, 'local'), (installed, 'installed'), (worktree, 'worktree'))[:count]:
+            if count:
+                shutil.copy2(ROOT / '.claude/scripts/park-generation.sh', local)
+            sentinel = self.root / 'altered-generator-executed'
+            if selected == 'altered':
+                with local.open('a') as script:
+                    script.write(f'\nprintf changed > "{sentinel}"\n')
+            for path, identity in ((installed, 'installed'), (worktree, 'worktree'))[:max(0, count - 1)]:
                 self.tool_path(path, f'#!/usr/bin/env bash\nprintf "%s\\n" parkgen-{identity}\n')
             for cause in ('reactive', 'preemptive'):
                 with self.subTest(cause=cause, selected=selected, unset_home=unset_home):
+                    sentinel.unlink(missing_ok=True)
                     original, out = run_claim(cause, unset_home)
-                    if selected is None:
+                    if selected in (None, 'altered'):
                         self.assertEqual(out.strip(), 'PARK_CLAIM=error rc=generation')
                         self.assertEqual(self.state.read_bytes(), original)
+                        self.assertFalse(sentinel.exists())
                     else:
                         self.assertIn('PARK_CLAIM=won', out)
-                        self.assertEqual(self.day()['park_generation'], f'parkgen-{selected}')
+                        if selected == 'local':
+                            self.assertRegex(self.day()['park_generation'], r'^parkgen-[0-9a-f]{32}$')
+                        else:
+                            self.assertEqual(self.day()['park_generation'], f'parkgen-{selected}')
                         self.assertIsNone(self.day()['limit_resume_task_id'])
 
     def stopped(self):
