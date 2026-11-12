@@ -122,6 +122,13 @@ expect_eq "the fifth PR goes to a reviewer, marked busy but asked" \
 c=$(REVIEW_EXPECTED_RESPONSE_CODEANT_MIN=30 REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=30 "$AV" choose --window-s 120 --now "$NOW")
 expect_eq "window shorter than the expected response, no limit notice: still asked" "$(jq -r '.skip' <<<"$c")" "false"
 
+# Skip time comes from a real return time: CodeRabbit cap spent, CodeAnt limited for 20 min.
+jq -cn --argjson ca "$(av_record $((NOW + 1200)) $NOW)" --argjson ev "$(spent_events)" \
+  '{schema_version: 1, review_availability: {codeant: $ca}, cr_hourly: {events: $ev}}' > "$STATE_FILE"
+c=$(choose)
+expect_eq "cap spent + CodeAnt limited: skip" "$(jq -r '.skip' <<<"$c")" "true"
+expect_eq "cap spent + CodeAnt limited: the skip lifts at CodeAnt's return, not now" "$(jq -r '.until_epoch' <<<"$c")" "$((NOW + 1200))"
+
 # --- record-request: log, choice on the PR, prune --------------------------------------
 write_state "$EMPTY_AV" "$(reqs "$(req codeant 7300)")"
 out=$("$AV" record-request --pr 42 --head abc123 --reviewer coderabbit --reason earliest_answer \

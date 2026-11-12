@@ -255,7 +255,9 @@ decide_json() {
     | [ (if $a.eligible then {r: "coderabbit", x: $a} else empty end),
         (if $b.eligible then {r: "codeant", x: $b} else empty end) ] as $c
     | if ($c | length) == 0 then
-        ([$a.avail, $b.avail] | min) as $u
+        # Only a limit notice gives a real return time; a cap-spent reviewer has none, so the
+        # skip lifts at the earliest notice return, or in an hour when only the cap holds.
+        ([ ($a, $b) | select(.next != null) | .next ] | min // ($now + 3600)) as $u
         | {skip: true, reviewer: null, reason: ("no_reviewer_available_until " + ($u | todateiso8601)),
            choice_reason: "no_free_reviewer_answers_in_window", until_epoch: $u,
            until_iso: ($u | todateiso8601)}
