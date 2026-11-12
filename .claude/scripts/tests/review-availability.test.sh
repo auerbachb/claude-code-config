@@ -114,6 +114,32 @@ out=$("$AV" record --repo o/r --pr 8 < "$TMP/banner.json")
 expect_eq "record: older notice does not overwrite a newer one" \
   "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "$((NOW + 3000))"
 
+# A timed notice followed by a NEWER untimed notice clears the stale slot, so decide requests (#2256).
+state_with_av "{\"coderabbit\":$(av_record $((NOW + 1200)) $((NOW - 600))),\"codeant\":$(av_record $((NOW + 1500)) $NOW)}"
+jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},
+  body:"**Review limit reached** with no time given", created_at:$t, updated_at:$t}]' > "$TMP/untimed.json"
+out=$("$AV" record --repo o/r --pr 7 < "$TMP/untimed.json")
+expect_eq "untimed newer notice: CodeRabbit slot cleared" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+expect_eq "untimed newer notice: the other reviewer's record is untouched (no notice for it)" \
+  "$(jq -r '.review_availability.codeant.next_available_epoch != null' "$STATE_FILE")" "true"
+dec=$(decide_at "$NOW")
+expect_eq "timed notice then newer untimed notice: decide requests" "$(jq -r '.skip' <<<"$dec")" "false"
+
+# An OLDER untimed notice never clears a newer timed record.
+state_with_av "{\"coderabbit\":$(av_record $((NOW + 1200)) $NOW),\"codeant\":$(av_record $((NOW + 1500)) $NOW)}"
+jq -cn --arg t "$(iso $((NOW - 300)))" '[{user:{login:"coderabbitai[bot]"},
+  body:"**Review limit reached** with no time given", created_at:$t, updated_at:$t}]' > "$TMP/older-untimed.json"
+out=$("$AV" record --repo o/r --pr 7 < "$TMP/older-untimed.json")
+expect_eq "older untimed notice: newer record kept, nothing cleared" "$(jq -c '.cleared' <<<"$out")" '[]'
+dec=$(decide_at "$NOW")
+expect_eq "older untimed notice: skip still decided from the newer record" "$(jq -r '.skip' <<<"$dec")" "true"
+
+# A stored record without a notice time or window is unreadable: no skip from it (#2256).
+state_with_av "{\"coderabbit\":{\"next_available_epoch\":$((NOW + 1500))},\"codeant\":$(av_record $((NOW + 1500)) $NOW)}"
+dec=$(decide_at "$NOW")
+expect_eq "record without notice time or window: reads as no_record" "$(jq -r '.reviewers.coderabbit.why' <<<"$dec")" "no_record"
+expect_eq "record without notice time or window: request, not skip" "$(jq -r '.skip' <<<"$dec")" "false"
+
 out=$(printf 'not json' | "$AV" record --repo o/r --pr 7 2>/dev/null) && rc=0 || rc=$?
 expect_eq "record: malformed comments exit 4" "$rc" "4"
 
@@ -132,13 +158,54 @@ expect_eq "check-skip: reviewer back in time since the skip (CodeRabbit at +1200
 out=$("$AV" check-skip --repo o/r --pr 9 --head aaa111 --window-s "$WIN" --now $((NOW + 60)))
 expect_eq "check-skip: still unavailable a minute later: applies" "$(jq -r '.applies' <<<"$out")" "true"
 
-state_with_av "{\"coderabbit\":$(av_record $((NOW + 180)) $NOW),\"codeant\":$(av_record $((NOW + 180)) $NOW)}"
+# Replace only .review_availability: the PR 9 skip written above must still be on file, so the
+# assertion below proves check-skip re-reads the availability and does not just find no skip.
+jq --argjson c "$(av_record $((NOW + 180)) $NOW)" --argjson d "$(av_record $((NOW + 180)) $NOW)" \
+  '.review_availability = {coderabbit: $c, codeant: $d}' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+expect_eq "check-skip: the recorded skip is still on file" \
+  "$(jq -r '.repos["o/r"].prs["9"].review_request_skip.head_sha' "$STATE_FILE")" "aaa111"
 out=$("$AV" check-skip --repo o/r --pr 9 --head aaa111 --window-s "$WIN" --now "$NOW")
 expect_eq "check-skip: record no longer justifies the skip: does not apply" "$(jq -r '.applies' <<<"$out")" "false"
 
 printf '{"schema_version":1' > "$STATE_FILE"
 out=$("$AV" check-skip --repo o/r --pr 9 --head aaa111 --window-s "$WIN" --now "$NOW")
 expect_eq "check-skip: unreadable state fails closed" "$(jq -r '.applies' <<<"$out")" "false"
+
+# --- Observe: a completed review newer than the read time clears that reviewer (#2256) ----
+READ_T=$((NOW - 600))
+rec_at() { # <record json> with read_at fixed to the epoch given
+  jq -c --arg r "$(iso "$2")" '.read_at = $r' <<<"$1"
+}
+base_cr=$(av_record $((NOW + 1200)) $NOW)
+base_cr=$(rec_at "$base_cr" "$READ_T")
+base_cd=$(rec_at "$(av_record $((NOW + 1200)) $NOW)" "$READ_T")
+state_with_av "{\"coderabbit\":$base_cr,\"codeant\":$base_cd}"
+approved_now=$(jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",submitted_at:$t,body:"ok"}]')
+out=$("$AV" observe --repo o/r <<<"$approved_now")
+expect_eq "observe: CodeRabbit APPROVED after read time clears its record" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+expect_eq "observe: the other reviver's record is kept" "$(jq -r '.review_availability.codeant.next_available_epoch != null' "$STATE_FILE")" "true"
+expect_eq "observe: cleared record reads as absent" "$(jq -r '.review_availability.coderabbit' "$STATE_FILE")" "null"
+dec=$("$AV" decide --window-s "$WIN" --now "$NOW" --repo o/r)
+expect_eq "observe: after a clear the skip no longer holds" "$(jq -r '.skip' <<<"$dec")" "false"
+
+state_with_av "{\"coderabbit\":$base_cr,\"codeant\":$base_cd}"
+banner_now=$(jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"coderabbitai[bot]"},state:"COMMENTED",submitted_at:$t,body:"Review limit reached. Next review available in 20 minutes."}]')
+out=$("$AV" observe --repo o/r <<<"$banner_now")
+expect_eq "observe: a CodeRabbit limit notice as a review does not clear" "$(jq -c '.cleared' <<<"$out")" '[]'
+old_approve=$(jq -cn --arg t "$(iso $((READ_T - 60)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",submitted_at:$t,body:""}]')
+out=$("$AV" observe --repo o/r <<<"$old_approve")
+expect_eq "observe: a review older than the read time does not clear" "$(jq -c '.cleared' <<<"$out")" '[]'
+human=$(jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"someone"},state:"APPROVED",submitted_at:$t,body:""}]')
+out=$("$AV" observe --repo o/r <<<"$human")
+expect_eq "observe: a human review does not clear a bot's record" "$(jq -c '.cleared' <<<"$out")" '[]'
+codeant_cmt=$(jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"codeant-ai[bot]"},state:"COMMENTED",submitted_at:$t,body:"Review finished, no issues."}]')
+out=$("$AV" observe --repo o/r <<<"$codeant_cmt")
+expect_eq "observe: a CodeAnt non-notice review clears only CodeAnt" "$(jq -c '.cleared' <<<"$out")" '["codeant"]'
+
+state_with_av "{\"coderabbit\":$base_cr,\"codeant\":$base_cd}"
+"$AV" observe --repo o/r <<<'{"not":"an array"}' >/dev/null 2>&1 && rc=0 || rc=$?
+expect_eq "observe: malformed reviews exit 4" "$rc" "4"
+expect_eq "observe: malformed reviews clear nothing" "$(jq -r '.review_availability.coderabbit.next_available_epoch != null' "$STATE_FILE")" "true"
 
 # --- Usage ---------------------------------------------------------------------------------
 "$AV" decide --window-s 0 >/dev/null 2>&1 && rc=0 || rc=$?

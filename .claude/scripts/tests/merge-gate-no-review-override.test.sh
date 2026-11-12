@@ -610,6 +610,29 @@ check_eq "0" "$?" "reviewed merge binds its repo and clears unused evidence"
 test ! -e "$SNAPSHOT_PATH"; check_eq "0" "$?" "reviewed merge leaves no override snapshot"
 unset FAKE_NRO_STATE_PATH FAKE_MERGED_HEAD FAKE_NRO_EXPECT_REVIEWED
 
+echo "=== #2256: a request skip on HEAD never makes a failing-CI HEAD merge-ready ==="
+reset
+SKIP_NOW=$(date +%s)
+mkdir -p "$HOME/.claude"
+jq -cn --arg h "$HEAD_SHA" --argjson n "$((SKIP_NOW + 3600))" --argjson t "$((SKIP_NOW - 300))" '
+  def rec: {next_available_epoch: $n, next_available: ($n | todateiso8601), notice_epoch: $t,
+    notice_at: ($t | todateiso8601), window_seconds: 3600, notice_excerpt: "review limit reached",
+    source_repo: "solo/repo", source_pr: 2, read_at: ($t | todateiso8601)};
+  {schema_version: 1,
+   review_availability: {coderabbit: rec, codeant: rec},
+   repos: {"solo/repo": {prs: {"1": {review_request_skip:
+     {head_sha: $h, reason: "no_reviewer_available_until x", recorded_at: "2026-11-11T00:00:00Z"}}}}}}' \
+  > "$HOME/.claude/session-state.json"
+run_gate "$(bundle "$(run 1 build success 660)")"
+check_eq "true" "$(j .met)" "control: green CI with the same skip on HEAD: met"
+check_eq "true" "$(j '(.no_review_override.skip_reason // "") | startswith("no_reviewer_available_until")')" "control: the skip is the reason the override applied"
+reset
+run_gate "$(bundle "$(run 1 build failure 660)")"
+check_eq "false" "$(j .met)" "failing CI with the same skip on HEAD: not met"
+check_eq "yes" "$(has_missing "failing check-run")" "failing CI reason still blocks the gate"
+check_eq "false" "$(j '(.path == "no-review-override")')" "a failing HEAD is not met through the override path"
+rm -f "$HOME/.claude/session-state.json"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

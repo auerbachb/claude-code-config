@@ -149,6 +149,26 @@ expect_eq "failing CI with a skip recorded: waived list holds reviewer blockers 
 expect_eq "failing CI: the CI check is not a reviewer check, so it stays out of the excluded list" \
   "$(jq -c '[.excluded_reviewer_checks[].name]' <<<"$out")" "[]"
 
+# --- 8. A completed CodeRabbit review newer than its limit record clears it (#2256) -------
+# The gate sees CodeRabbit answering again (a non-notice review posted after the record was
+# read), so the stale wait must not waive the window even with a skip recorded for HEAD.
+av_state $((NOW + 1200)) $((NOW + 1500)) "$HEADSHA"
+jq '.review_availability.coderabbit.read_at = (now - 300 | todateiso8601)
+    | .review_availability.codeant.read_at = (now - 300 | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+REVIEW_NOW=$(jq -cn --arg t "$(iso $((NOW - 60)))" --arg c "$OTHERSHA" \
+  '[{user:{login:"coderabbitai[bot]"}, state:"COMMENTED", commit_id:$c, submitted_at:$t, body:"Review completed."}]')
+out=$(run_helper "$(payload "[]" | jq -c --argjson r "$REVIEW_NOW" '.reviews = $r')")
+expect_eq "completed CodeRabbit review after its limit record: skip not applied" "$(jq -r .applied <<<"$out")" "false"
+expect_eq "completed CodeRabbit review after its limit record: record cleared" \
+  "$(jq -r '.review_availability.coderabbit' "$STATE_FILE")" "null"
+expect_eq "completed CodeRabbit review: the other reviewer's record is kept" \
+  "$(jq -r '.review_availability.codeant.next_available_epoch != null' "$STATE_FILE")" "true"
+
+# Fail closed: an observe that cannot run leaves no skip in force for this tick.
+av_state $((NOW + 1200)) $((NOW + 1500)) "$HEADSHA"
+out=$(run_helper "$(payload "[]" | jq -c '.reviews = "not-a-list"')")
+expect_eq "unclearable observe (malformed reviews): skip not applied" "$(jq -r .applied <<<"$out")" "false"
+
 echo
 echo "no-review-override availability tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

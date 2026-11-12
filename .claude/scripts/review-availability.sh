@@ -23,7 +23,10 @@
 #   review-availability.sh decide [--repo <owner/name>] --window-s <s> [--now <epoch>]
 #   review-availability.sh mark-skip [--repo <owner/name>] --pr <N> --head <sha> --reason <text>
 #   review-availability.sh check-skip --repo <owner/name> --pr <N> --head <sha> --window-s <s> [--now <epoch>]
+#   review-availability.sh observe [--repo <owner/name>] < reviews.json
 #   review-availability.sh --help
+#   observe     — clears a reviewer's record once a completed, non-notice review by that bot
+#                 is newer than the record's read time (the account is answering again).
 #
 # SETTINGS (expected response time from a request to a free reviewer's review, minutes)
 #   REVIEW_EXPECTED_RESPONSE_CODEANT_MIN     default 4   (2026-11-11 baseline median)
@@ -80,7 +83,8 @@ state_get() {
 valid_repo() { [[ "$1" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; }
 
 cmd_record() {
-  local repo="" pr="" comments now now_iso recs key new old keep
+  local repo="" pr="" comments now now_iso items item key usable new unr old keep attempt outcome rc
+  local written="" kept="" cleared=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) [[ $# -ge 2 ]] || die 2 "--repo needs a value"; repo="$2"; shift 2 ;;
@@ -95,8 +99,10 @@ cmd_record() {
     || die 4 "issue comments are not a JSON array of objects — nothing recorded"
   now="$(date +%s)"
   now_iso="$(jq -rn --argjson n "$now" '$n | todateiso8601')"
-  # The newest notice per reviewer decides; an unparseable newest notice writes nothing (never an older one's time).
-  recs="$(printf '%s' "$comments" | jq -c -L "$LIB_DIR" \
+  # One item per reviewer whose NEWEST notice is present. A usable newest notice carries
+  # its record; an unusable one (no readable window, or over the cap) carries only its
+  # time, so its slot is cleared unless a newer notice already holds it (fail toward asking).
+  items="$(printf '%s' "$comments" | jq -c -L "$LIB_DIR" \
     --arg repo "${repo:-unknown}" --argjson pr "$pr" --arg now_iso "$now_iso" --argjson cap "$CR_WINDOW_CAP_SECONDS" '
     include "cr-retry-window";
     def reviewers: [
@@ -110,38 +116,67 @@ cmd_record() {
               | {t: notice_epoch, body: .body} | select(.t != null) ] | sort_by(.t) | last) as $n
       | select($n != null)
       | ($n.body | cr_retry_window_seconds) as $w
-      | select($w > 0 and $w <= $cap)
-      | {key: $r.key, value: {
-          next_available_epoch: ($n.t + $w),
-          next_available: (($n.t + $w) | todateiso8601),
-          notice_epoch: $n.t,
-          notice_at: ($n.t | todateiso8601),
-          window_seconds: $w,
-          notice_excerpt: ($n.body | cr_retry_capture | .s | .[0:200]),
-          source_repo: $repo,
-          source_pr: $pr,
-          read_at: $now_iso}}
-    ] | from_entries')" || die 4 "could not evaluate the notice parser"
-  local written="" kept=""
-  while IFS= read -r key; do
-    [[ -n "$key" ]] || continue
-    new="$(jq -c --arg k "$key" '.[$k]' <<<"$recs")"
-    old="$(state_get ".review_availability.$key" "")" || die 5 "could not read the existing $key record — nothing written"
-    # A newer statement already on file (another PR, same account) outranks this older notice.
-    keep="$(jq -rn --argjson o "$old" --argjson n "$new" '
-      if ($o | type) == "object" and (($o.notice_epoch | type) == "number") and $o.notice_epoch > $n.notice_epoch then "newer"
-      elif ($o | type) == "object" and $o.notice_epoch == $n.notice_epoch and $o.next_available_epoch == $n.next_available_epoch then "same"
-      else "write" end')"
-    if [[ "$keep" == "write" ]]; then
-      "$STATE" --raw-path --set ".review_availability.$key=$new" >/dev/null 2>&1 \
-        || die 5 "could not write the $key availability record"
-      written="$written $key"
+      | if ($w > 0 and $w <= $cap) then
+          {key: $r.key, usable: true, value: {
+            next_available_epoch: ($n.t + $w),
+            next_available: (($n.t + $w) | todateiso8601),
+            notice_epoch: $n.t,
+            notice_at: ($n.t | todateiso8601),
+            window_seconds: $w,
+            notice_excerpt: ($n.body | cr_retry_capture | .s | .[0:200]),
+            source_repo: $repo,
+            source_pr: $pr,
+            read_at: $now_iso}}
+        else
+          {key: $r.key, usable: false, notice_epoch: $n.t}
+        end
+    ]')" || die 4 "could not evaluate the notice parser"
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    key="$(jq -r '.key' <<<"$item")"
+    usable="$(jq -r '.usable' <<<"$item")"
+    if [[ "$usable" == true ]]; then
+      new="$(jq -c '.value' <<<"$item")"
+      unr="null"
     else
-      kept="$kept $key"
+      new="null"
+      unr="$(jq -c '.notice_epoch' <<<"$item")"
     fi
-  done <<<"$(jq -r 'keys[]' <<<"$recs")"
-  jq -cn --arg w "$written" --arg k "$kept" '{written: ($w | split(" ") | map(select(length > 0))),
-                                             kept: ($k | split(" ") | map(select(length > 0)))}'
+    outcome=""
+    for attempt in 1 2 3 4 5; do
+      old="$(state_get ".review_availability.$key" "")" || die 5 "could not read the existing $key record — nothing written"
+      # A newer statement already on file (another PR, same account) outranks this notice.
+      keep="$(jq -rn --argjson o "$old" --argjson n "$new" --argjson u "$unr" '
+        if $n == null then
+          (if ($o | type) != "object" then "same"
+           elif (($o.notice_epoch | type) == "number") and ($o.notice_epoch > $u) then "newer"
+           else "write" end)
+        elif ($o | type) == "object" and (($o.notice_epoch | type) == "number") and $o.notice_epoch > $n.notice_epoch then "newer"
+        elif ($o | type) == "object" and $o.notice_epoch == $n.notice_epoch and $o.next_available_epoch == $n.next_available_epoch then "same"
+        else "write" end')"
+      if [[ "$keep" != "write" ]]; then
+        outcome="$keep"
+        break
+      fi
+      # Compare-and-set under the state lock: a concurrent writer that won (exit 7) is re-read.
+      rc=0
+      "$STATE" --raw-path --cas ".review_availability.$key=$new" --expect "$old" >/dev/null 2>&1 || rc=$?
+      if (( rc == 0 )); then
+        outcome="wrote"
+        break
+      fi
+      (( rc == 7 )) || die 5 "could not write the $key availability record"
+    done
+    case "$outcome" in
+      wrote) if [[ "$new" == null ]]; then cleared="$cleared $key"; else written="$written $key"; fi ;;
+      same|newer) kept="$kept $key" ;;
+      *) die 5 "could not settle the $key availability record after retries — nothing written" ;;
+    esac
+  done <<<"$(jq -c '.[]' <<<"$items")"
+  jq -cn --arg w "$written" --arg k "$kept" --arg c "$cleared" \
+    '{written: ($w | split(" ") | map(select(length > 0))),
+      kept: ($k | split(" ") | map(select(length > 0))),
+      cleared: ($c | split(" ") | map(select(length > 0)))}'
 }
 
 # decide_json <repo or ""> <window seconds> <now epoch>
@@ -157,7 +192,9 @@ decide_json() {
     # Anything unusable is NOT blocked (fail toward asking).
     def lim($key; $exp):
       ($rec | if type == "object" then .[$key] else null end) as $x
-      | if ($x | type) != "object" or (($x.next_available_epoch | type) != "number") then {blocked: false, why: "no_record"}
+      | if ($x | type) != "object" or (($x.next_available_epoch | type) != "number")
+           or (($x.notice_epoch | type) != "number") or (($x.window_seconds | type) != "number")
+           or ($x.window_seconds <= 0) then {blocked: false, why: "no_record"}
         elif $x.next_available_epoch <= $now then {blocked: false, why: "record_past"}
         elif ($x.next_available_epoch + $exp) > ($now + $win) then {blocked: true, next: $x.next_available_epoch, why: "limited"}
         else {blocked: false, why: "answers_within_window"} end;
@@ -247,12 +284,74 @@ cmd_check_skip() {
     '{applies: $a, reason: $r, head_match: $h}'
 }
 
+# cmd_observe --repo <owner/name> < reviews.json
+# Clears a free reviewer's availability record when a completed review by that bot is
+# newer than the record's read time and is not itself a limit notice (issue #2256).
+# CodeRabbit's allowance is account-wide, so such a review shows it is answering again
+# and the stale wait must not keep blocking a request or a green-HEAD override. Only a
+# review object is evidence here: a notice edited in place is not (a known residual).
+cmd_observe() {
+  local repo="" reviews recs cleared="" key login notice rec read_epoch answered
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) [[ $# -ge 2 ]] || die 2 "--repo needs a value"; repo="$2"; shift 2 ;;
+      *) die 2 "observe: unknown argument: $1" ;;
+    esac
+  done
+  [[ -z "$repo" ]] || valid_repo "$repo" || die 2 "--repo must be owner/name"
+  reviews="$(cat)"
+  printf '%s' "$reviews" | jq -e 'type == "array" and all(.[]; type == "object")' >/dev/null 2>&1 \
+    || die 4 "reviews are not a JSON array of objects — nothing cleared"
+  recs="$(state_get '.review_availability' "$repo")" || die 5 "could not read the review availability records"
+  if [[ "$(jq -r 'type' <<<"$recs")" != object ]]; then
+    jq -cn '{cleared: []}'
+    return 0
+  fi
+  for key in coderabbit codeant; do
+    if [[ "$key" == coderabbit ]]; then
+      login="coderabbitai[bot]"; notice="review limit reached|<!--[^>]*rate[- ]?limited by coderabbit\\.ai"
+    else
+      login="codeant-ai[bot]"; notice="review limit reached|usage limit|rate limit"
+    fi
+    outcome=""
+    # Compare-and-set against the record this pass read: a newer notice written meanwhile
+    # (exit 7) is re-read and re-judged, so the clear can never erase a newer record.
+    for attempt in 1 2 3 4 5; do
+      recs_now="$(state_get '.review_availability' "$repo")" || die 5 "could not re-read the review availability records"
+      rec="$(jq -c --arg k "$key" 'if type == "object" then (.[$k] // null) else null end' <<<"$recs_now")"
+      if [[ "$(jq -r 'type' <<<"$rec")" != object ]]; then outcome="none"; break; fi
+      read_epoch="$(jq -r '(.read_at // "") | fromdateiso8601? // empty' <<<"$rec")"
+      # An unreadable read time already reads as "no record" in decide: nothing to clear.
+      if ! [[ "$read_epoch" =~ ^[0-9]+$ ]]; then outcome="unreadable"; break; fi
+      answered="$(jq -r --arg l "$login" --argjson rd "$read_epoch" --arg n "$notice" '
+        [ .[] | select((.user.login // "") == $l)
+               | select((.submitted_at // "") | type == "string" and . != "")
+               | select(((.submitted_at | fromdateiso8601?) // 0) > $rd)
+               | select(((.state // "") == "APPROVED")
+                        or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not))) ]
+        | length > 0' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
+      if [[ "$answered" != true ]]; then outcome="kept"; break; fi
+      rc=0
+      "$STATE" --raw-path --cas ".review_availability.$key=null" --expect "$rec" >/dev/null 2>&1 || rc=$?
+      if (( rc == 0 )); then outcome="cleared"; break; fi
+      (( rc == 7 )) || die 5 "could not clear the $key availability record"
+    done
+    case "$outcome" in
+      cleared) cleared="$cleared $key" ;;
+      none|unreadable|kept) ;;
+      *) die 5 "could not settle the $key availability record after retries — nothing cleared" ;;
+    esac
+  done
+  jq -cn --arg c "$cleared" '{cleared: ($c | split(" ") | map(select(length > 0)))}'
+}
+
 case "${1:-}" in
   -h|--help) print_usage; exit 0 ;;
   record) shift; cmd_record "$@" ;;
   decide) shift; cmd_decide "$@" ;;
   mark-skip) shift; cmd_mark_skip "$@" ;;
   check-skip) shift; cmd_check_skip "$@" ;;
-  "") die 2 "missing subcommand (record|decide|mark-skip|check-skip)" ;;
+  observe) shift; cmd_observe "$@" ;;
+  "") die 2 "missing subcommand (record|decide|mark-skip|check-skip|observe)" ;;
   *) die 2 "unknown subcommand: $1" ;;
 esac

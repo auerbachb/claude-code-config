@@ -371,8 +371,17 @@ REQUEST_T=$(printf '%s' "$REQUEST" | jq -c '.request.t // null')
 # verdict on HEAD already returned above, and CI, threads, AC and human change requests
 # are the caller's. check-skip fails closed: an unreadable answer leaves the window in force.
 if [[ -x "$AV_SH" ]]; then
-  SKIP_JSON="$("$AV_SH" check-skip --repo "$OWNER/$REPO" --pr "$PR" --head "$HEAD_SHA_P" \
-      --window-s "$(printf '%s' "$PAYLOAD" | jq -r '.window_seconds')" 2>/dev/null)" || SKIP_JSON=""
+  # A completed review by a free reviewer newer than its recorded limit means it is
+  # answering again: clear that record first, so a stale wait cannot waive the window.
+  # A failed clear leaves the skip unusable (fail closed): no skip applies this tick.
+  OBSERVE_OK=0
+  printf '%s' "$PAYLOAD" | jq -c '.reviews // []' | "$AV_SH" observe --repo "$OWNER/$REPO" >/dev/null 2>&1 \
+    || OBSERVE_OK=1
+  SKIP_JSON=""
+  if (( OBSERVE_OK == 0 )); then
+    SKIP_JSON="$("$AV_SH" check-skip --repo "$OWNER/$REPO" --pr "$PR" --head "$HEAD_SHA_P" \
+        --window-s "$(printf '%s' "$PAYLOAD" | jq -r '.window_seconds')" 2>/dev/null)" || SKIP_JSON=""
+  fi
   if [[ -n "$SKIP_JSON" && "$(jq -r '.applies // false' <<<"$SKIP_JSON" 2>/dev/null)" == true ]]; then
     emit "$(printf '%s' "$OUT" | jq -c --arg r "$(jq -r '.reason' <<<"$SKIP_JSON")" --argjson rb "$(printf '%s' "$PAYLOAD" | jq -c '.review_blockers // []')" '
       .eligible = true | .applied = true | .reason = $r | .skip_reason = $r | .waived_reasons = $rb')"
