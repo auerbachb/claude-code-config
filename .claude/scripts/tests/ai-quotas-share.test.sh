@@ -776,6 +776,33 @@ check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"light"}' "malformed: the 
 check_eq "$(test -e "$WORK_DIR/settings.json.pre-share" && echo present || echo absent)" "absent" "malformed: no keepsake is made"
 check_not_contains "$OUT" "strip_probe_schema" "malformed: the value is never printed"
 
+new_case "desk-multi-value"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '{"theme":"light"}\n' > "$WORK_DIR/settings.json"
+printf '{"env":{"HUMAN_QUEUE_SCHEMA":"strip_probe_schema"}} {"theme":"dark"}\n' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "5" "multi-value: a file of two values where the first holds the key exits 5 (the last value must not decide)"
+check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"light"}' "multi-value: the profile settings.json is untouched"
+check_not_contains "$OUT" "strip_probe_schema" "multi-value: the value is never printed"
+
+new_case "desk-escaped-malformed"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"
+printf '{"theme":"light"}\n' > "$WORK_DIR/settings.json"
+printf '{"env":{"\\u0048UMAN_QUEUE_SCHEMA":"strip_probe_schema"' > "$PRIMARY/settings.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "5" "escaped malformed: a non-object whose key is \\u-escaped exits 5"
+check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"light"}' "escaped malformed: the profile settings.json is untouched"
+check_not_contains "$OUT" "strip_probe_schema" "escaped malformed: the value is never printed"
+
+new_case "desk-unsearchable-dir"
+mkdir -p "$CASE_DIR/locked"
+export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/locked/bindings.tsv"
+chmod 000 "$CASE_DIR/locked"
+run share-config "$WORK_LABEL" claude
+chmod 700 "$CASE_DIR/locked"
+check_contains "$OUT" "desk queue: unknown (the queue bindings directory is not searchable" "unsearchable dir: reported unknown, not unbound"
+check_not_contains "$OUT" "You can't run the desk here" "unsearchable dir: not mistaken for an unbound account"
+
 new_case "desk-missing"
 export HUMAN_QUEUE_DESK_DIR="$CASE_DIR/no-such-desk"
 export HUMAN_QUEUE_BINDINGS_FILE="$CASE_DIR/bindings.tsv"

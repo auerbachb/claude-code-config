@@ -2318,24 +2318,26 @@ share_stage_cleanup() {
 # decision is made on the DECODED JSON, not the literal text, so an escaped key
 # cannot slip past: a valid object whose `.env` holds the key is staged with it
 # removed (the staged file is what gets compared and copied); any other valid
-# object takes the plain share_copy path, byte for byte. A file that is not a
-# JSON object is copied as before unless its text mentions the key, in which
-# case it refuses (exit 5) before anything in the profile is touched. Nothing
-# from the file is printed.
+# object takes the plain share_copy path, byte for byte. "Single object" is
+# checked with `jq -s`, so a file of several concatenated values is not decided
+# by its last value alone. A file that is not a single JSON object is copied as
+# before unless its text mentions the key or holds a \uXXXX escape (which could
+# spell it), in which case it refuses (exit 5) before anything in the profile is
+# touched. Nothing from the file is printed.
 share_settings_copy() { # <profile_dir> <primary settings.json>
   local source="$2" stage had=false mode
   if [[ ! -f "$source" ]]; then
     share_copy "$1" settings.json "$source"
     return 0
   fi
-  if ! jq -e 'type == "object"' "$source" >/dev/null 2>&1; then
-    if grep -q 'HUMAN_QUEUE_SCHEMA' "$source"; then
-      die 5 "$source mentions HUMAN_QUEUE_SCHEMA but is not a JSON object — settings.json was left alone"
+  if ! jq -e -s 'length == 1 and (.[0] | type == "object")' "$source" >/dev/null 2>&1; then
+    if grep -qE 'HUMAN_QUEUE_SCHEMA|\\u[0-9A-Fa-f]{4}' "$source"; then
+      die 5 "$source is not a JSON object and may hold HUMAN_QUEUE_SCHEMA (possibly escaped) — settings.json was left alone"
     fi
     share_copy "$1" settings.json "$source"
     return 0
   fi
-  if jq -e '(.env | type) == "object" and (.env | has("HUMAN_QUEUE_SCHEMA"))' "$source" >/dev/null 2>&1; then
+  if jq -e -s 'length == 1 and (.[0].env | type) == "object" and (.[0].env | has("HUMAN_QUEUE_SCHEMA"))' "$source" >/dev/null 2>&1; then
     had=true
   fi
   if [[ "$had" != true ]]; then

@@ -116,6 +116,14 @@ hqb_lookup() {
   HQB_SCHEMA=""
   file=$(hqb_file)
   if [ ! -e "$file" ]; then
+    # A missing file is "unbound" only when its directory can be searched; an
+    # existing but unsearchable directory hides the file from stat, so the
+    # lookup cannot tell it apart from absence and must report unreadable.
+    dir=$(dirname "$file")
+    if [ -d "$dir" ] && [ ! -x "$dir" ]; then
+      HQB_REASON="the queue bindings directory is not searchable, so the file cannot be checked"
+      return 7
+    fi
     return 3
   fi
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then
