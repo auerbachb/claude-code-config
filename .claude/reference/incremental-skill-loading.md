@@ -62,12 +62,12 @@ The startup/rule and schema baselines remain coordinated with Issues [#1158](htt
 | Skill | Entry guidance | Phase/branch inventory | Existing deterministic entry points | References loaded at their phase |
 |---|---|---|---|---|
 | `/issue-maker` | Capture boundary, classifier, resume contract | Session, reflect, dedup, file, postfile, chain, update, retract, export, requested handoff | `dispatch-module.sh`, `resolve-log.sh`, `set-log.sh`, `issue-file.sh`, `issue-dedup.sh` | Tier/estimate for drafting; duplicate policy for dedup; chip contract only for explicit handoff/export |
-| `/pm` | Intent, authority, tooling, and execution boundary | Day preconditions, arming, tick, teardown, recovery, reactive park, and pre-emptive park/probe are dispatched separately. Resume and rank use selected load, fetch, score and presentation phases. Orchestration stays in the entry until the next slice. | `scripts/dispatch-module.sh`, `active-work-cap.sh`, `issue-claim.sh` | Output templates when reporting, review/cap policy when routing work, and day references at the selected phase |
+| `/pm` | Intent, authority, tooling, and execution boundary | Day preconditions, arming, tick, teardown, recovery, reactive park, and pre-emptive park/probe are dispatched separately. Resume and rank use selected load, fetch, score and presentation phases. Cleanup, forgotten PR triage, monitoring, dispatch, tracking, reporting, refill and handoff load as flow modules. | `scripts/dispatch-module.sh`, `active-work-cap.sh`, `issue-claim.sh` | Output templates when reporting, review/cap policy when routing work, and day references at the selected phase |
 | `/subagent` | Fit test, claims, orchestration boundaries | Planning, task prompt, execution, review, merge/handoff | `issue-claim.sh`, `issue-deps.sh`, existing review helpers | Phase guardrails at dispatch; reviewer contracts at review |
 | `/wrap` | PR target, authorship, merge authority | Discovery, gate verification, recovery, merge/sync, follow-ups, lessons | `merge-gate.sh`, `ci-status.sh`, `ac-checkboxes.sh`, `main-sync.sh` | Report templates when requested; duplicate policy for follow-up filing |
 | `/pr-monitor-and-manage` | Fleet selection, authority, stop criteria | Discovery, polling, triage, repair, completion | `pr-state.sh`, `polling-state-gate.sh`, `merge-gate.sh` | Polling commands during observation; reviewer/escalation policy when actionable |
 
-The `/pm` day-mode slice follows this inventory. The remaining rows describe planned migrations. Their proposed module prerequisites are established in the ordered slices below, and safety/required gates stay available regardless of source layout.
+The `/pm` evidence below records its completed split. The `/subagent`, `/wrap`, and `/pr-monitor-and-manage` rows describe planned migrations. Their proposed module prerequisites are established in the ordered slices below, and safety/required gates stay available regardless of source layout.
 
 This issue establishes the contract and pilots it on `/issue-maker`; it does not rewrite the other giant skills. Migrate the rest as separately reviewable slices in this order:
 
@@ -82,13 +82,48 @@ For each slice, inventory content as (a) entry guidance, (b) branch/phase module
 
 Ordinary cold start and resume use the entry and existing procedures. An active day route resolves one module path at a time. Arming checks path availability before claiming work. Recovery uses the persisted day generation and park/wake identity and reads the matching phase. The 2D instructions retain their order and behavior. Three relative Markdown prefixes changed so the original link targets remain reachable from the modules.
 
-On baseline `475769d3`, the entry went from 38,107 to 24,573 words and from 258,458 to 165,258 bytes. The parity checker verifies the exact baseline with the seven modules. Fixture traces cover the installed symlink, unset HOME fallback, absent module, invalid phase and day/park/cadence behavior. The source measurements describe the instructions selected by the fixture. Runtime loader and token measurements remain part of the final PM increment.
+On baseline `475769d3`, the entry went from 38,107 to 24,573 words and from 258,458 to 165,258 bytes. The parity checker verifies the exact baseline with the seven modules. Fixture traces cover the installed symlink, unset HOME fallback, absent module, invalid phase and day/park/cadence behavior. The source measurements describe the instructions selected by the fixture. The final PM section records the source measurements and runtime evidence available for the split.
 
 ### PM ranking and resume slice (#2171)
 
 Resume loads three phases. Ranking loads four phases as it reaches them. A saved-queue refill uses the existing shared priority and ownership checks and reads window fit only when it applies. A bounded rescan additionally loads rank fetch and score. A passive status question reads no rank or resume phase. Ranking-only requests exit before the orchestration loop.
 
 The entry moves from 24,573 to 16,724 words and from 165,258 to 112,487 bytes on baseline `cccba0cb`. The parity check covers the line multiset and ordered phase contents, including previously extracted day modules. Its one ordered relocation puts the original pause and scope read before scoring as the block requires. The dispatcher fixture verifies the documented phase paths, including installed resolution. These measurements count source text.
+
+### PM orchestration and final verification (#2172, #2173)
+
+The PM entry selects one procedure at a time. The day phases, three resume phases, four ranking phases, three shared gates and eight orchestration modules use the same dispatcher. The entry still owns execution authority, the user and repository scope, and the pause, budget, usage horizon and deadline requirements. Launch, merge and reporting checks are exercised at their moved call sites.
+
+The table counts the entry, distinct module files opened by each caller fixture, and the same bounded reference sections on both sides. The pre-split source is `475769d3`. Ranking-only uses a paused `--no-clean` run with forgotten-PR triage. Status uses an explicit board render. Refill uses a saved candidate that reaches the ownership and active-window checks. The day tick reaches that refill and a due board render. A rescan, park transition, helper failure, or an optional report can take a different route.
+
+| Caller fixture | Before words | After words | Before bytes | After bytes |
+|---|---:|---:|---:|---:|
+| Ranking only | 38,238 | 12,922 | 259,263 | 88,845 |
+| Status | 41,134 | 10,734 | 277,743 | 72,434 |
+| Saved-queue refill | 38,107 | 13,042 | 258,458 | 89,828 |
+| Day tick | 41,134 | 20,819 | 277,743 | 141,437 |
+
+The fixtures exercise the real dispatcher and record each opened source. Reusing an already loaded procedure adds no source read in a valid context. Recovery reads the entry and the saved phase and rechecks the current gates before continuing. The fixture verifies that prior phases and an unrelated missing module stay unread. The existing state fixtures check persisted receipt, park and wake ownership, pause, dependency order, and merge-gate behavior. A missing selected module reports its path and keeps the affected launch held.
+
+These are source words and bytes. No harness loader trace or runtime token measurement was collected. The fixture includes the entry in every scenario and counts the same bounded table or ranking excerpts for both versions. Compaction adds the entry and the active phase again when needed. The check does not estimate LLM reading, cache hits, tool overhead, or actual retry frequency.
+
+The source paths are relative to `.claude/skills/pm/modules/`. Every fixture also reads `SKILL.md`.
+
+- Ranking only reads `rank/load`, `shared/priority`, `rank/fetch`, `rank/score`, `rank/present`, `flow/cleanup`, and `flow/forgotten-prs`. The comparison includes the User-Scoped Sections and Full Ranking sections of `pm-output-templates.md`.
+- Status reads `flow/progress` and the Running now Table section of `time-estimates.md`.
+- Saved-queue refill reads `flow/refill`, `shared/priority`, `shared/ownership`, and `shared/window-fit`.
+- Day tick reads `day-tick`, then the same refill paths and `flow/progress`. It includes the same Running now Table excerpt as status.
+
+| Parity and recovery check | Verification |
+|---|---|
+| Entry authority and launch gates | Mutation fixtures remove each entry guard individually and reject whole-tree and automatic module imports. |
+| Selected reads | The real dispatcher returns one readable path. The four caller fixtures check selected paths in order and reuse repeated source reads. |
+| Behavioral outputs and writes | The PM suites cover ranking, queue and receipt outcomes, issue scope, ownership, wake recovery, fallback reporting, and merge authority. |
+| Resume and missing source | The recovery fixture loads only the active saved phase. Removing it returns the path and a failure with no alternate module selected. |
+| Original instructions | Each landed split has an exact ordered parity proof. The final duplicate truncation warning in `resume/fetch.md` cites the one in `rank/fetch.md` at the same 500-issue threshold. |
+| Measurement and retry scope | Count each selected file or named reference section once. For recovery, add the entry and active phase again only if the context needs them. |
+
+Run `bash .claude/scripts/tests/pm-split-verbatim-check.test.sh` for the source-read and guard fixtures. To reproduce the table, sum whitespace-delimited words and bytes in the listed files and excerpts, with `git show 475769d3:.claude/skills/pm/SKILL.md` as the baseline entry and the same reference excerpts.
 
 ## Behavior-preservation map
 

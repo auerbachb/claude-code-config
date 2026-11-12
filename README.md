@@ -115,7 +115,7 @@ All 37 commands are invoked as `/command` in a Claude Code session. They are def
 
 | Command | Category | Description |
 |---------|----------|-------------|
-| `/pm` | PM | Active PM orchestrator — rank the backlog by business-goal impact (OKR-aware), track threads, suggest next work |
+| `/pm` | PM | Rank the backlog by business-goal impact, dispatch work and track threads. Loads the procedure for the current phase. |
 | `/pm-handoff` | PM | Generate a self-contained handoff prompt for a new PM thread; bootstraps or re-scans `pm-config.md`, preserving user-edited sections |
 | `/pm-clean` | PM | Detect stale issues and suggest closures; sole home for the stale worktree/branch sweep |
 | `/pm-forgotten-pr` | PM | One-shot triage of open PRs idle above a threshold — classify as close or merge, render a Forgotten PRs block, dispatch confirmed merges |

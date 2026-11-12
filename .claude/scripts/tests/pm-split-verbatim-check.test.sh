@@ -4,12 +4,15 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 python3 - "$root" <<'PY'
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
-SCRIPT = Path(sys.argv[1]) / ".claude/scripts/pm-split-verbatim-check.py"
+ROOT = Path(sys.argv[1]).resolve()
+SCRIPT = ROOT / ".claude/scripts/pm-split-verbatim-check.py"
 ENTRY = Path(".claude/skills/pm/SKILL.md")
 MODULE = ENTRY.parent / "modules/day-tick.md"
 OLD = "entry\nrepeat\nrepeat\n[shared](../../reference/example.md)\n"
@@ -221,6 +224,111 @@ class Parity(unittest.TestCase):
         result = self.check("--baseline-sha", self.git("rev-parse", "HEAD").strip())
         self.assertEqual(result.returncode, 2)
         self.assertIn("unverifiable", result.stderr)
+
+
+MODULES = ENTRY.parent / 'modules'
+DISPATCH = ENTRY.parent / 'scripts/dispatch-module.sh'
+
+GUARDS = {
+    'execution boundary': '## Execution Boundary (CRITICAL)',
+    'refill pause': 'apply the persisted pause and scope',
+    'credit budget': 'credit budget, usage horizon',
+    'usage horizon': 'usage horizon, deadline',
+    'launch deadline': 'deadline, and author scope',
+    'author scope': 'author scope at their existing gates',
+    'identity check': '## Step 0a: Identify the current gh user',
+    'deadline calculation': '## Step 0b: Window planning',
+    'hold unreadable gates': "A gate's missing or unreadable evidence keeps the affected launch held.",
+    'selected module only': 'read only its returned path',
+}
+
+
+def check_entry(text):
+    for name, fragment in GUARDS.items():
+        if fragment not in text:
+            raise ValueError(name)
+    if re.search(r'(?:^|[\s`])@[^\s`]*modules(?:/|\b)', text, re.MULTILINE):
+        raise ValueError('automatic module import')
+    if re.search(r'(?im)^.*(?:read|load|cat)[^\n]*modules/[^\n]*\*', text):
+        raise ValueError('wholesale module read')
+
+
+def read_trace(root, routes):
+    seen = {ENTRY: (root / ENTRY).read_bytes()}
+    for op, phase in routes:
+        path = subprocess.check_output([str(root / DISPATCH), op, phase], text=True)
+        paths = path.splitlines()
+        if len(paths) != 1:
+            raise ValueError(f'{op}:{phase} returned {len(paths)} paths')
+        selected = Path(paths[0]).relative_to(root)
+        if selected not in seen:
+            seen[selected] = (root / selected).read_bytes()
+    return seen
+
+
+class PMReadTrace(unittest.TestCase):
+    def test_entry_guards_and_import_controls(self):
+        source = (ROOT / ENTRY).read_text()
+        check_entry(source)
+        for name, fragment in GUARDS.items():
+            with self.subTest(guard=name), self.assertRaises(ValueError):
+                check_entry(source.replace(fragment, '', 1))
+        for unsafe in ('@./modules/day-tick.md', 'Read modules/*.md'):
+            with self.subTest(unsafe=unsafe), self.assertRaises(ValueError):
+                check_entry(source + '\n' + unsafe + '\n')
+
+    def test_four_caller_source_traces(self):
+        cases = (
+            ('ranking-only', ('rank:load', 'shared:priority', 'rank:fetch', 'rank:score',
+                              'rank:present', 'flow:cleanup', 'flow:forgotten-prs'),
+             ('rank/load', 'shared/priority', 'rank/fetch', 'rank/score', 'rank/present',
+              'flow/cleanup', 'flow/forgotten-prs')),
+            ('status', ('flow:progress', 'flow:progress'), ('flow/progress',)),
+            ('refill', ('flow:refill', 'shared:priority', 'shared:ownership', 'shared:window-fit'),
+             ('flow/refill', 'shared/priority', 'shared/ownership', 'shared/window-fit')),
+            ('day tick', ('day:tick', 'flow:refill', 'shared:priority', 'shared:ownership',
+                          'shared:window-fit', 'flow:progress'),
+             ('day-tick', 'flow/refill', 'shared/priority', 'shared/ownership',
+              'shared/window-fit', 'flow/progress')),
+        )
+        for name, requested, expected in cases:
+            with self.subTest(route=name):
+                trace = read_trace(ROOT, (route.split(':') for route in requested))
+                self.assertEqual(tuple(trace), (ENTRY,) + tuple(MODULES / (f + '.md') for f in expected))
+                self.assertTrue(all(trace.values()))
+
+    def test_resume_reads_only_available_saved_phase(self):
+        with tempfile.TemporaryDirectory(prefix='pm-resume-trace-') as private:
+            root = Path(private).resolve()
+            files = (ENTRY, DISPATCH, MODULES / 'flow/refill.md')
+            for file in files:
+                (root / file).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / file, root / file)
+            # The fixture has no earlier phases or sibling modules. Recovery
+            # supplies the previously selected route after revalidating evidence.
+            self.assertEqual(tuple(read_trace(root, [('flow', 'refill')])), (ENTRY, files[-1]))
+            (root / files[-1]).unlink()
+            result = subprocess.run([str(root / DISPATCH), 'flow', 'refill'],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(result.stdout, '')
+            self.assertIn(str(root / files[-1]), result.stderr)
+
+    def test_resume_cites_the_canonical_truncation_warning(self):
+        rank = (ROOT / MODULES / 'rank/fetch.md').read_text()
+        resume = (ROOT / MODULES / 'resume/fetch.md').read_text()
+        self.assertIn('### 1B.2: Fetch GitHub state', rank)
+        self.assertIn('If the returned issue count equals 500, warn:', rank)
+        self.assertEqual(rank.count('Showing 500 issues'), 1)
+        self.assertNotIn('Showing 500 issues', resume)
+        self.assertIn('If 500 issues are returned', resume)
+        self.assertIn('../rank/fetch.md#1b2-fetch-github-state', resume)
+
+
+    def test_handoff_routes_saved_round_through_resume(self):
+        handoff = (ROOT / '.claude/skills/pm-handoff/SKILL.md').read_text()
+        self.assertIn('1. Run `/pm resume` for a saved PM round.', handoff)
+        self.assertIn('Run `/pm` to start a fresh ranking round when there is no saved work.', handoff)
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
