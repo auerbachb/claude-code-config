@@ -86,6 +86,25 @@ hide_pm_modules() {
 }
 expect "missing PM module directory fails closed" 3 'Guarded module directory missing: .claude/skills/pm/modules' hide_pm_modules
 
+link_pm_module() {
+  mv .claude/skills/pm/modules/day-tick.md detached-tick.md
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> detached-tick.md
+  ln -s ../../../../detached-tick.md .claude/skills/pm/modules/day-tick.md
+}
+expect "PM module cannot escape the lint through a link" 3 'PM module sources must be regular files' link_pm_module
+
+dangle_pm_module() {
+  mv .claude/skills/pm/modules/day-tick.md detached-tick.md
+  ln -s missing.md .claude/skills/pm/modules/day-tick.md
+}
+expect "dangling PM module links fail closed" 3 'PM module sources must be regular files' dangle_pm_module
+
+link_pm_modules_directory() {
+  mv .claude/skills/pm/modules detached-modules
+  ln -s ../../../detached-modules .claude/skills/pm/modules
+}
+expect "linked PM module directory fails closed" 3 'PM module sources must be regular files' link_pm_modules_directory
+
 noop() { :; }
 
 plant_bare_invocation() {

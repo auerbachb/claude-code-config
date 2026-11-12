@@ -36,6 +36,36 @@ status=0
 [[ "$status" == 3 && ! -s "$scratch/out" ]]
 grep -Fq 'required module unreadable:' "$scratch/error"
 
+# A linked module can point outside the portability lint's scanned tree.
+partial_dispatch="$scratch/partial/scripts/dispatch-module.sh"
+partial_tick="$scratch/partial/modules/day-tick.md"
+for target in "$skill/modules/day-tick.md" "$scratch/nonexistent.md"; do
+  ln -s "$target" "$partial_tick"
+  status=0
+  "$BASH" "$partial_dispatch" day tick > "$scratch/out" 2> "$scratch/error" || status=$?
+  [[ "$status" == 3 && ! -s "$scratch/out" ]]
+  grep -Fq 'required module unreadable:' "$scratch/error"
+  rm "$partial_tick"
+done
+cp "$skill/modules/day-tick.md" "$partial_tick"
+[[ "$("$BASH" "$partial_dispatch" day tick)" == "$(cd "$scratch/partial/modules" && pwd -P)/day-tick.md" ]]
+mv "$scratch/partial/modules" "$scratch/real-modules"
+ln -s "$scratch/real-modules" "$scratch/partial/modules"
+status=0
+"$BASH" "$partial_dispatch" day tick > "$scratch/out" 2> "$scratch/error" || status=$?
+[[ "$status" == 3 && ! -s "$scratch/out" ]]
+grep -Fq 'required module unreadable:' "$scratch/error"
+
+rm "$scratch/partial/modules"
+mv "$scratch/real-modules" "$scratch/partial/modules"
+mkdir -p "$scratch/detached-rank"
+cp "$skill/modules/rank/fetch.md" "$scratch/detached-rank/fetch.md"
+ln -s "$scratch/detached-rank" "$scratch/partial/modules/rank"
+status=0
+"$BASH" "$partial_dispatch" rank fetch > "$scratch/out" 2> "$scratch/error" || status=$?
+[[ "$status" == 3 && ! -s "$scratch/out" ]]
+grep -Fq 'required module unreadable:' "$scratch/error"
+
 mkdir -p "$scratch/home/.claude/skills-worktree/.claude/skills" "$scratch/project"
 ln -s "$skill" "$scratch/home/.claude/skills-worktree/.claude/skills/pm"
 trace="$resolver"$'\nprintf "%s\\n" "$PM_MODULE_DISPATCH"\n'

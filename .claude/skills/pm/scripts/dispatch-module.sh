@@ -44,7 +44,9 @@ esac
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 module_path="$SKILL_ROOT/modules/$module"
-if [[ ! -f "$module_path" || ! -r "$module_path" ]]; then
+module_dir=${module_path%/*}
+physical_dir=$(cd -- "$module_dir" 2>/dev/null && pwd -P) || physical_dir=""
+if [[ "$physical_dir" != "$module_dir" || -L "$module_path" || ! -f "$module_path" || ! -r "$module_path" ]]; then
   printf 'dispatch-module.sh: required module unreadable: %s\n' "$module_path" >&2
   exit 3
 fi
