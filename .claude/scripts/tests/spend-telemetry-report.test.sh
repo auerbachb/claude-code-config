@@ -153,5 +153,27 @@ fi
 grep -q "n/a" <<<"$out" || fail "revert-verify: n/a not rendered for empty tokens"
 echo "PASS: revert-verify confirms n/a rendering is required"
 
+# Issue #2300: a PR-linked correlation written with no runtime session must name
+# why it cannot join usage. Runs the real link writer in a temp HOME with no
+# session env and no gh on PATH (no network), then checks the stored row and report.
+LINK="$REPO_ROOT/.claude/scripts/spend-telemetry-link.sh"
+rm -f "$LOG"
+# A gh stub that always fails comes first on PATH, so the link's `gh pr view`
+# takes the unavailable path even on hosts where a real gh lives in /usr/bin.
+STUB_BIN="$TMP_BASE/stub-bin"
+mkdir -p "$STUB_BIN"
+printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/gh"
+chmod +x "$STUB_BIN/gh"
+env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID HOME="$HOME" PATH="$STUB_BIN:$PATH" \
+  bash "$LINK" --repo owner/repo --issue 5 --pr 9 --source wrap_post_merge >/dev/null 2>&1 || true
+link_row="$(grep $'\ttask_correlation\t' "$LOG" | tail -n 1)"
+[[ -n "$link_row" ]] || fail "sessionless link did not write a correlation row"
+[[ "$(cut -f6 <<<"$link_row")" == "unknown" ]] || fail "sessionless link should carry an unknown session"
+grep -q 'unsupported:no_runtime_session_id_at_link_writer' <<<"$link_row" || fail "sessionless link row does not name its blocker"
+out="$(run_report --days 30)"
+grep -q 'rows naming the blocker unsupported:no_runtime_session_id_at_link_writer: 1' <<<"$out" \
+  || fail "report does not count the named sessionless blocker"
+echo "PASS: sessionless PR link names its join blocker in the row and report"
+
 echo ""
 echo "All spend-telemetry-report tests passed."

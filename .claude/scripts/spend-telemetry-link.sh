@@ -193,6 +193,22 @@ PY
   fi
 fi
 
+# A PR-only row written with no runtime session can never join usage. Name that
+# blocker in the metadata so the report does not present it as an ordinary unknown
+# (issue #2300). Telemetry-only: a failed annotation keeps the original evidence.
+if [[ "$SESSION_ID" == unknown ]]; then
+  SESSION_REASON_PY='import json, sys
+try:
+    e = json.loads(sys.argv[1])
+except Exception:
+    e = {}
+if isinstance(e, dict):
+    e["session_unresolved"] = "unsupported:no_runtime_session_id_at_link_writer"
+print(json.dumps(e, separators=(",", ":"), sort_keys=True))'
+  ANNOTATED_EVIDENCE="$(python3 -c "$SESSION_REASON_PY" "$EVIDENCE_JSON" 2>/dev/null)" || ANNOTATED_EVIDENCE=""
+  [[ -n "$ANNOTATED_EVIDENCE" ]] && EVIDENCE_JSON="$ANNOTATED_EVIDENCE"
+fi
+
 record_spend_correlation "$SESSION_ID" "$REPO_ROOT" "$REPO" "$ISSUE" "$PR" \
   "$TASK_ID" "$AGENT_ID" "$SOURCE" "$EVIDENCE_JSON" || true
 exit 0

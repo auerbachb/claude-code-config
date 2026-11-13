@@ -56,6 +56,14 @@ The report joins transcript usage by exact session+repository slug. Task-level u
 
 Existing `~/.claude/estimate-log.jsonl` records PR, issue, merge time, actual elapsed minutes, and `rounds`; it has no session/task key, so it can join usage only through an explicit repo+PR correlation row. Its `rounds` value counts PR commits, including pre-open commits; it is a commit-count proxy, not paid reviewer rounds or CI retries. `session-state.json` PR state has no session join key. GitHub review/check records are PR-scoped; the captured check rollup is a current snapshot, not historical rerun evidence. Exact paid review rounds, CI retries, and escalation reasons remain unavailable and unknown.
 
+### Measured join blockers (issue #2300)
+
+Read-only audit of the 14-day log showed 0 linked assistant messages and 1,408 `subagent_stop` rows with a missing child transcript. Three causes were measured; none are fixed by changing a cost, quota, budget, or dispatch gate.
+
+- **Sessionless correlation (155 of 161 rows).** Every `task_correlation` row so far came from `/wrap`'s `wrap_post_merge` call. Most were written with session `unknown`, because the link writer received no `--session` value and no `CLAUDE_CODE_SESSION_ID` or `CLAUDE_SESSION_ID` env var. Such rows cannot join usage. New rows written without a runtime session now carry `session_unresolved: unsupported:no_runtime_session_id_at_link_writer`, and the report counts them. The cause of the missing env var at the writer is not reproduced by this audit: it was present in the audit's own Bash environment. Rows with a session still join only under the existing rule: a session that maps to exactly one PR and a single worker allocation.
+- **Multi-PR sessions stay unknown by design.** The five joinable rows share one session that closed five PRs. Assistant usage cannot be allocated per PR from session metadata, so usage stays unknown, not split.
+- **Child transcript path missing (upstream limit).** Since 2026-11 the `SubagentStop` payload carries an agent ID but no usable transcript path, and the child transcripts for November IDs were not found under `~/.claude/projects/*/*/subagents/` (0 of 200 sampled). The hook now distinguishes the two causes: `unsupported:agent_transcript_path_missing` when the payload omits the path, and `unsupported:agent_transcript_file_missing` when the path is given but absent. The hook does not guess a replacement path.
+
 ## Coverage and limitations
 
 - Each usage component has its own available-record denominator. A missing field is blank and counts as unavailable; it never becomes zero. The legacy aggregate `tokens` field is populated only when all four usage components are present in the v3 record.
