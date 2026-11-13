@@ -338,9 +338,10 @@ those rows (§"Output" under "Overage" below — it was a bare array before #166
 exit codes: `ai-quotas.sh --help`.
 
 **Display only, and the reader enforces it structurally: it opens no state file for
-writing.** Its one write is the append-only telemetry line every script here emits to
+writing.** Its writes are the append-only telemetry line every script here emits to
 `~/.claude/script-usage.log` (script name and the action word `read`, never the
-arguments — those carry the account label). Nothing reads that log back into a decision,
+arguments — those carry the account label), and the last-known folder described in
+§"Last-known folder (#2280)" below, which only the display reads. Nothing reads that log back into a decision,
 so it is a log, not state. What the reader never opens for writing is the state that
 could gate work: not `session-state.json`, not `credit-budget.sh`'s inputs
 (`~/.claude/usage-limit-events.jsonl`, `~/.claude/usage-limit-last.json`, the
@@ -1849,3 +1850,54 @@ self-service usage endpoint was found in those references. This is a documentati
 finding, not a claim about private endpoints or this owner's eligibility. An
 eligible existing provider API remains preferable; this fix mints no key, changes
 no provider acquisition order and performs no sign-in or live verification.
+
+## Last-known folder (#2280)
+
+A failed live read used to show `unknown` even when a good reading from an hour or a week
+ago would answer the question. The reader now keeps each account's last usable reading in a
+private folder and shows it, labelled, when the live read fails.
+
+**Location.** `~/.claude/ai-quotas/last-known/`, or `AI_QUOTAS_LAST_KNOWN_DIR` when set. One
+file per account: `<provider>--<label>.json`. The folder is `0700`, each file `0600`. A symlinked
+or world-writable folder is refused with a warning, and the report still renders.
+
+**What is stored.** Usage percentages, reset times, the source name and account labels. No
+credential, cookie, token, user id or provider payload. Only `ok` rows with a finite
+`used_pct` are saved, so a failed read never overwrites its file.
+
+**Who writes it.** `.claude/scripts/lib/quotas-last-known.py` is the only code that touches the
+folder. The reader calls it with `record` after each run; `/quotas-setup report` calls it with
+`owner-report`. Locking, reread under the lock, `0600` temporary files, `fsync`, atomic replace
+and refusal of older-than-saved records follow `quotas-codex-reset.py`. Test seam:
+`AI_QUOTAS_LAST_KNOWN_BIN` replaces the helper, as `AI_QUOTAS_CHEAPEST_BIN` does.
+
+**Schema.** `schema`, `provider`, `label`, `nickname`, `fetched_at_epoch`, `fetched_at_et`,
+`source`, and `rows[]` with `window`, `pool`, `used_pct`, `resets_at_epoch`, `resets`, `overage`,
+and optional row-level `source` and `fetched_at_epoch`. Missing row fields inherit the file's
+values. A Cursor row without `pool` whose window is `cursor-models` or `other-models` is read as
+that pool, so the stopgap files still read.
+
+**Display.** A failed account gets one derived row per saved series. Its live `status`,
+`detail` and `action` are copied, `used_pct` stays `null`, and the saved figure appears only in
+the `last_known_*` fields and in the table's NOTE column: `100% (last known, Nov 12,
+owner-reported); resets Nov 28`. When the saved reset has passed, the note reads
+`expired: ...; reset ...`. A healthy account keeps `null` in every `last_known_*` field.
+JSON fields: `last_known_used_pct`, `last_known_at_epoch`, `last_known_at_et`,
+`last_known_source`, `last_known_resets_at_epoch`, `last_known_resets_et`,
+`last_known_expired`.
+
+**Owner readings.** `/quotas-setup report <label> <window> <used_pct> [<reset>] [<provider>]`
+records one reading as `owner-reported`. Cursor pools are `cursor-models` and `other-models`.
+The reset accepts `YYYY-MM-DD` (midnight Eastern), an ISO-8601 timestamp, or epoch seconds.
+The next usable live `ok` read replaces the file.
+
+**Gates never read it.** `quota-reserve.sh --refresh` passes `--no-last-known`, so the reader
+makes no helper call at all. `credit-budget.sh` never calls the reader. A static test asserts
+that neither gate names the folder, its override, or the helper.
+
+**Stopgap migration.** A hand-made `refresh.sh` and `LATEST.md` once kept this folder. Existing
+files in the stopgap shape stay readable. `refresh.sh` does not honour the lock, and the daily
+job now keeps the folder itself, so delete `refresh.sh` and any scheduler that runs it. The
+reader does not maintain `LATEST.md`; the `/quotas` table supersedes it. `/quotas-setup doctor`
+reports both leftovers and the folder mode, read-only.
+
