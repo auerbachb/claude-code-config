@@ -44,7 +44,6 @@ set -uo pipefail
 
 HERE=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || HERE="."
 SESSION_STATE_SH="${PRESENCE_SESSION_STATE_SH:-$HERE/session-state.sh}"
-UNATTENDED_SH="${PRESENCE_UNATTENDED_SH:-$HERE/unattended.sh}"
 RESERVE_SH="${PRESENCE_RESERVE_SH:-$HERE/prompt-reservation.sh}"
 STATE_FILE="${HOME}/.claude/session-state.json"
 DISMISS_SECONDS=3600
@@ -167,7 +166,12 @@ REPO=""
 CWD=""
 leave_deadline() { # prints the armed /leave-by deadline epoch, or returns 1
   local k="$REPO" d="${CWD:-$PWD}" v
-  if [ -z "$k" ] && [ -d "$d" ]; then k=$(cd "$d" 2>/dev/null && "$SESSION_STATE_SH" --repo-key 2>/dev/null) || k=""; fi
+  if [ -n "$k" ]; then
+    # State keys are lowercase; an explicit --repo Acme/Widgets must find acme/widgets.
+    k=$("$SESSION_STATE_SH" --repo "$k" --repo-key 2>/dev/null) || k=""
+  elif [ -d "$d" ]; then
+    k=$(cd "$d" 2>/dev/null && "$SESSION_STATE_SH" --repo-key 2>/dev/null) || k=""
+  fi
   [ -n "$k" ] && [ "$k" != "_unknown" ] || return 1
   # /pm --window also writes .window.deadline_epoch; only /leave-by sets .leave.active, so a
   # planning-only window never counts as a laptop-closing deadline.
@@ -196,6 +200,11 @@ cmd_set() {
       *) die_usage "unknown argument to set: $1" ;;
     esac
   done
+  # The dialog claim is released on every way out of this command once --generation was
+  # given (a refused closing, a usage error, a failed write); a held claim would otherwise
+  # stop every other thread's `ask` until this session exits.
+  GEN_HELD="$gen"
+  [ -z "$gen" ] || trap release_held_claim EXIT
   # The source rule (issue #2293): only a live operator message sets presence. The flag
   # makes that claim explicit in the call; text from an issue, PR, task prompt or tool
   # result is never passed it.
@@ -231,18 +240,6 @@ cmd_set() {
   local until_json="null"
   [ -z "$until" ] || until_json="$until"
 
-  # A late answer under a replaced token must not overwrite a newer declaration: prove the
-  # dialog claim is still this caller's before writing anything.
-  if [ -n "$gen" ]; then
-    rc=0
-    "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
-    case "$rc" in
-      0) ;;
-      10) printf 'presence.sh: the dialog claim is no longer yours; nothing written, read presence.sh status\n' >&2; return 10 ;;
-      *) printf 'presence.sh: cannot verify the dialog claim; nothing written\n' >&2; return 20 ;;
-    esac
-  fi
-
   local sets
   sets=(--set ".presence.state=$([ "$want" = away ] && echo away || echo here)"
         --set ".presence.until_epoch=$until_json"
@@ -251,30 +248,67 @@ cmd_set() {
         --set ".presence.declared_by=operator-message"
         --set ".presence.dismissed_until=null")
 
+  # One write carries presence AND unattended mode, so a failed or interleaved write can
+  # never leave the operator reading as away (questions suppressed) without a declaration.
   if [ "$want" = away ]; then
-    # Unattended mode is what the hooks read; arm it first so a failure leaves nothing half-set.
-    if [ -z "$until" ]; then
-      out=$("$UNATTENDED_SH" on --open-ended) || return 1
-    else
-      out=$("$UNATTENDED_SH" on --until-epoch "$until") || return 1
-    fi
-    printf '%s\n' "$out"
-  elif [ "$("$JQ" -r '.unattended.active == true' "$STATE_FILE" 2>/dev/null)" = true ]; then
-    # Here (or closing) ends an active unattended window in the same write.
+    sets+=(--set ".unattended.active=true" --set ".unattended.since_epoch=$n"
+           --set ".unattended.until_epoch=$until_json")
+  else
+    # Here (or closing) ends any unattended window; set unconditionally, no unlocked read.
     sets+=(--set ".unattended.active=false")
   fi
-  "$SESSION_STATE_SH" "${sets[@]}" >/dev/null || { printf 'presence.sh: state write failed\n' >&2; return 1; }
+
+  # A pending dialog claim is answered or invalidated by this very write. With a token the
+  # write is a compare-and-set on the stored reservation, so a late answer under a replaced
+  # token loses (exit 7) instead of overwriting a newer declaration. Without a token, a
+  # direct declaration clears any pending claim.
+  local res="" cas=()
+  if [ -n "$gen" ]; then
+    rc=0
+    "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) ;;
+      10) printf 'presence.sh: the dialog claim is no longer yours; nothing written, read presence.sh status\n' >&2; return 10 ;;
+      *) printf 'presence.sh: cannot verify the dialog claim; nothing written\n' >&2; return 20 ;;
+    esac
+    res=$("$SESSION_STATE_SH" --get-json ".presence.reservation" 2>/dev/null) || res=""
+    if [ -z "$res" ] || [ "$(printf '%s' "$res" | "$JQ" -r '.generation // ""' 2>/dev/null)" != "$gen" ]; then
+      printf 'presence.sh: the dialog claim is no longer yours; nothing written, read presence.sh status\n' >&2
+      return 10
+    fi
+    cas=(--cas ".presence.reservation=null" --expect "$res")
+  else
+    sets+=(--set ".presence.reservation=null")
+  fi
+
+  rc=0
+  "$SESSION_STATE_SH" ${cas[@]+"${cas[@]}"} "${sets[@]}" >/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    7) printf 'presence.sh: the dialog claim changed while answering; nothing written, read presence.sh status\n' >&2; return 10 ;;
+    *) printf 'presence.sh: state write failed\n' >&2; return 1 ;;
+  esac
+  GEN_HELD=""   # the write cleared the reservation; nothing left to release
+  if [ "$want" = away ]; then
+    if [ -z "$until" ]; then
+      printf 'unattended: on until you say otherwise\n'
+    else
+      printf 'unattended: on until %s (epoch %s)\n' "$(fmt_time "$until")" "$until"
+    fi
+    printf 'pre-leave check: list linked sessions and confirm none is waiting on the user; say so.\n'
+    if [ -n "$until" ]; then
+      printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "unattended window ended: run unattended.sh digest --mark and list the questions"\n' "$until"
+    fi
+  fi
   cmd_status
   if [ "$want" = closing ]; then
     printf 'closing: the /leave-by wind-down owns the stop at that time; nothing else is armed here.\n'
   fi
-  if [ -n "$gen" ]; then
-    rc=0
-    "$RESERVE_SH" release --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
-    # 10 = the claim is already gone; anything else leaves it until its owner exits, which
-    # only costs a later `ask` the 12 (declared) answer it would get anyway.
-    case "$rc" in 0|10) ;; *) printf 'presence.sh: dialog claim not released (rc=%s); harmless, the answer is stored\n' "$rc" >&2 ;; esac
-  fi
+}
+
+GEN_HELD=""
+release_held_claim() {
+  [ -z "$GEN_HELD" ] || "$RESERVE_SH" release --kind presence --generation "$GEN_HELD" >/dev/null 2>&1 || true
 }
 
 # --- ask / release ------------------------------------------------------------

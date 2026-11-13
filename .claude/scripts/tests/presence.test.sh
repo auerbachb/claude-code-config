@@ -49,6 +49,13 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (missing '$3' in: $2)" ;; esac; }
 P() { local who="$1"; shift; rc=0; out=$(cd "$REPO" && FAKE_OWNER="$who" "$PRESENCE" "$@" 2>"$tmp/err") || rc=$?; }
 field() { printf '%s' "$out" | jq -r "$1"; }
+# Local HH:MM of an epoch: BSD date -r takes an epoch, GNU date -r takes a file (use -d @E there).
+hhmm() {
+  local t
+  t=$(date -r "$1" +%H:%M 2>/dev/null) || t=$(date -d "@$1" +%H:%M 2>/dev/null) || t=""
+  [ -n "$t" ] || { printf 'hhmm: neither date form worked for %s\n' "$1" >&2; return 1; }
+  printf '%s\n' "$t"
+}
 
 printf '== read: nothing declared\n'
 P $owner1 status --json
@@ -177,13 +184,51 @@ check "here ends the open-ended away" "$("$UNATT" is-active; echo $?)" 1
 has "unattended --help lists --open-ended" "$("$UNATT" --help 2>&1)" "--open-ended"
 has "presence --help lists the exit codes" "$("$PRESENCE" --help 2>&1)" "another thread holds the dialog"
 
+printf '== claims, late answers, atomic away, explicit repo\n'
+"$UNATT" off >/dev/null 2>&1
+jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"
+# An explicit mixed-case --repo resolves to the lowercase state key.
+future=$(( $(date +%s) + 3600 ))
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$future" --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
+P $owner1 set closing --by operator-message --repo Acme/Widgets
+check "an explicit mixed-case --repo finds the lowercase key" "$rc" 0
+jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"
+# A refused closing releases the dialog claim it was answering.
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$(( $(date +%s) - 60 ))" >/dev/null
+P $owner1 ask; tok1=$out; check "owner1 claims the dialog" "$rc" 0
+P $owner1 set closing --by operator-message --generation "$tok1"
+check "closing with no armed deadline is refused" "$rc" 3
+P $owner2 ask; tok2=$out
+check "the refused answer released the claim: another thread may ask" "$rc" 0
+# A direct declaration without a token invalidates a pending claim; the late answer loses.
+P $owner1 set here --by operator-message --for 1h; check "a direct declaration is stored" "$rc" 0
+P $owner2 set away --by operator-message --for 2h --generation "$tok2"
+check "the late answer under the invalidated token is refused" "$rc" 10
+P $owner1 status --json; check "the late answer left the newer declaration alone" "$(field .state)" here
+check "the late answer armed no unattended window" "$("$UNATT" is-active; echo $?)" 1
+# away is one write: when it fails, unattended mode is not left armed.
+cat > "$tmp/bin/ss-fail" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *presence.state=away*) exit 5 ;; esac; done
+exec "$STATE" "\$@"
+EOF
+chmod +x "$tmp/bin/ss-fail"
+rc=0; (cd "$REPO" && FAKE_OWNER=$owner1 PRESENCE_SESSION_STATE_SH="$tmp/bin/ss-fail" "$PRESENCE" set away --by operator-message --for 1h >/dev/null 2>&1) || rc=$?
+check "a failed away write exits 1" "$rc" 1
+check "a failed away write leaves unattended mode off" "$("$UNATT" is-active; echo $?)" 1
+P $owner1 status --json; check "a failed away write leaves presence as it was" "$(field .state)" here
+# here clears unattended mode even when the flag was set between a read and the write.
+"$UNATT" on --for 1h >/dev/null 2>&1
+P $owner1 set here --by operator-message --for 1h >/dev/null
+check "here clears an unattended window unconditionally" "$("$UNATT" is-active; echo $?)" 1
+
 printf '== rest of the day\n'
 P $owner1 set here --by operator-message --rest-of-day >/dev/null
 P $owner1 status --json
-check "here rest-of-day ends at 23:59 local" "$(date -r "$(field .until_epoch)" +%H:%M)" 23:59
+check "here rest-of-day ends at 23:59 local" "$(hhmm "$(field .until_epoch)")" 23:59
 P $owner1 set away --by operator-message --rest-of-day >/dev/null
 P $owner1 status --json
-check "away rest-of-day ends at 08:00 local" "$(date -r "$(field .until_epoch)" +%H:%M)" 08:00
+check "away rest-of-day ends at 08:00 local" "$(hhmm "$(field .until_epoch)")" 08:00
 if [ "$(field .until_epoch)" -gt "$(date +%s)" ]; then ok "away rest-of-day ends in the future"; else bad "away rest-of-day ends in the past"; fi
 "$UNATT" off >/dev/null
 
