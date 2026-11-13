@@ -29,6 +29,7 @@
 #   ai-quotas-setup.sh repair-layout <claude|codex>
 #   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
 #   ai-quotas-setup.sh nick <label> <name> [<provider>]
+#   ai-quotas-setup.sh report <label> <window> <used_pct> [<reset>] [<provider>]
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
 #   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
@@ -326,6 +327,9 @@ NO_LOGIN=0
 ARG_PROVIDER=""
 ARG_LABEL=""
 ARG_NICK=""
+REPORT_WINDOW=""
+REPORT_PCT=""
+REPORT_RESET=""
 NICK_GIVEN=0
 ARG_HOUR=""
 SCHEDULE_OP=""
@@ -411,6 +415,25 @@ case "$ACTION" in
     ;;
   launchers)
     [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "launchers takes no arguments"
+    ;;
+  report)
+    # `report <label> <window> <used_pct> [<reset>] [<provider>]`. A fourth
+    # argument that names a provider is the provider, not a reset, so a
+    # provider can follow a reset-less report.
+    [[ ${#POSITIONAL[@]} -ge 4 && ${#POSITIONAL[@]} -le 6 ]] \
+      || die_usage "report requires <label> <window> <used_pct> [<reset>] [<provider>]"
+    ARG_LABEL="${POSITIONAL[1]}"
+    REPORT_WINDOW="${POSITIONAL[2]}"
+    REPORT_PCT="${POSITIONAL[3]}"
+    if [[ ${#POSITIONAL[@]} -eq 5 ]]; then
+      case "${POSITIONAL[4]}" in
+        claude|codex|cursor) ARG_PROVIDER="${POSITIONAL[4]}" ;;
+        *) REPORT_RESET="${POSITIONAL[4]}" ;;
+      esac
+    elif [[ ${#POSITIONAL[@]} -eq 6 ]]; then
+      REPORT_RESET="${POSITIONAL[4]}"
+      ARG_PROVIDER="${POSITIONAL[5]}"
+    fi
     ;;
   schedule)
     [[ ${#POSITIONAL[@]} -eq 2 ]] \
@@ -1270,6 +1293,103 @@ action_sources() {
   echo "${SELF_NAME}: usage source configuration updated."
 }
 
+# Read-only (#2280): reports the last-known folder's mode and any leftovers
+# from the hand-made stopgap (refresh.sh, LATEST.md). Never deletes anything —
+# the repository cannot remove files it did not install, so the owner does.
+doctor_last_known() {
+  local folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}" mode
+  [[ "$JSON" -eq 0 ]] || return 0
+  if [[ -z "$folder" ]]; then folder="${_HOME:-}/.claude/ai-quotas/last-known"; fi
+  [[ -d "$folder" ]] || return 0
+  mode="$(file_mode "$folder" 2>/dev/null || true)"
+  if [[ -n "$mode" && "$mode" != 700 ]]; then
+    echo "last-known folder mode is ${mode} (expected 700): ${folder} — chmod 700 it"
+  fi
+  if [[ -e "$folder/refresh.sh" ]]; then
+    echo "stopgap leftover: ${folder}/refresh.sh — the reader now keeps this folder itself and refresh.sh does not honor the lock. Delete it, and remove any scheduler (crontab -l, launchctl) that runs it."
+  fi
+  if [[ -e "$folder/LATEST.md" ]]; then
+    echo "stopgap leftover: ${folder}/LATEST.md — /quotas now shows the same figures and nothing rewrites this page. Delete it."
+  fi
+  return 0
+}
+
+# Owner-typed reading (#2280). Stored as `owner-reported` in the last-known
+# folder; the next usable live `ok` read replaces it. Display only.
+action_report() {
+  local config index provider label nickname pool folder now now_et pct rc
+  [[ -n "$ARG_LABEL" && -n "$REPORT_WINDOW" && -n "$REPORT_PCT" ]] \
+    || die_usage "report requires a label, a window and a used percentage"
+  if [[ -n "$ARG_PROVIDER" ]]; then valid_provider "$ARG_PROVIDER" || die_usage "unknown provider: $ARG_PROVIDER"; fi
+  pct="${REPORT_PCT%\%}"
+  [[ "$pct" =~ ^([0-9]{1,2}(\.[0-9])?|100(\.0)?)$ ]] \
+    || die 3 "used_pct must be a number from 0 to 100 with at most one decimal place"
+
+  # The config lock is taken before the account lookup and held through the
+  # helper call, as remove does. A concurrent remove therefore cannot delete the
+  # account (and its saved readings) between resolving it and recording the
+  # report, which would recreate a file that a later same-label account inherits.
+  # Every error after this point releases the lock first.
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  _report_fail() { state_lock_release || true; die "$@"; }
+  config="$(read_config)"
+  index="$(printf '%s' "$config" | jq -r --arg l "$ARG_LABEL" --arg p "$ARG_PROVIDER" \
+    '[.accounts | to_entries[] | select(.value.label == $l and ($p == "" or .value.provider == $p)) | .key]
+     | if length == 1 then .[0] else empty end')"
+  [[ -n "$index" ]] || _report_fail 4 "no single account registered as '${ARG_LABEL}' (name the provider if the label is shared)"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  nickname="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].nickname // ""')"
+
+  # Windows are provider-specific. Cursor reports two pools, stored as both
+  # the window and the pool; Claude and Codex have one row per window.
+  pool=""
+  case "$provider" in
+    claude)
+      case "$REPORT_WINDOW" in
+        7-day|"7-day (opus)"|5-hour) ;;
+        *) _report_fail 3 "claude windows are 7-day, \"7-day (opus)\" or 5-hour" ;;
+      esac ;;
+    codex)
+      case "$REPORT_WINDOW" in
+        7-day) ;;
+        *-hour) [[ "${REPORT_WINDOW%-hour}" =~ ^[1-9][0-9]*$ ]] || _report_fail 3 "codex hour windows look like 5-hour" ;;
+        *) _report_fail 3 "codex windows are 7-day or <n>-hour" ;;
+      esac ;;
+    cursor)
+      case "$REPORT_WINDOW" in
+        cursor-models|other-models) pool="$REPORT_WINDOW" ;;
+        *) _report_fail 3 "cursor pools are cursor-models or other-models" ;;
+      esac ;;
+  esac
+
+  folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}"
+  if [[ -z "$folder" ]]; then
+    [[ -n "${_HOME:-}" ]] || _report_fail 5 "HOME is unset and AI_QUOTAS_LAST_KNOWN_DIR is not set — cannot locate the last-known folder"
+    folder="${_HOME}/.claude/ai-quotas/last-known"
+  fi
+  [[ -r "$SELF_DIR/lib/quotas-last-known.py" ]] || _report_fail 5 "lib/quotas-last-known.py not found — install the complete scripts directory"
+  command -v python3 >/dev/null 2>&1 || _report_fail 5 "python3 is required to record a reading"
+
+  now="$(date +%s)"
+  now_et="$(TZ=America/New_York date '+%a %b %-d %Y %-I:%M %p ET')"
+  rc=0
+  python3 -I "$SELF_DIR/lib/quotas-last-known.py" owner-report --dir "$folder" --now "$now" \
+    --now-et "$now_et" --provider "$provider" --label "$label" --nickname "$nickname" \
+    --window "$REPORT_WINDOW" --pool "$pool" --used-pct "$pct" --resets-text "$REPORT_RESET" || rc=$?
+  state_lock_release || true
+  case "$rc" in
+    0) ;;
+    9)
+      echo "${SELF_NAME}: ${provider} account '${label}' ${REPORT_WINDOW}: a newer saved reading is kept; this older report was not recorded."
+      return 0 ;;
+    3) die 3 "reset must be YYYY-MM-DD, an ISO-8601 timestamp, or epoch seconds, and a real date" ;;
+    7) die 7 "the last-known folder is busy; retry in a moment" ;;
+    *) die 5 "could not record the reading in the last-known folder" ;;
+  esac
+  echo "${SELF_NAME}: ${provider} account '${label}' ${REPORT_WINDOW} recorded at ${pct}% as owner-reported; the next usable live read replaces it."
+}
+
 action_nick() {
   local config index provider label
 
@@ -1331,10 +1451,29 @@ action_remove() {
   config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i])')" \
     || { state_lock_release || true; die 5 "could not remove the account entry"; }
   write_config "$config"
+  # Its saved last-known readings (#2280) go too, so a later account that reuses
+  # this label cannot inherit them. Cleared while the config lock is still held:
+  # a same-label re-add cannot save a fresh reading in between and have it deleted.
+  # Best effort: the registry change stands.
+  forget_last_known "$provider" "$ARG_LABEL"
   state_lock_release || true
 
   echo "${SELF_NAME}: removed ${provider} account '${ARG_LABEL}' from the registry."
   echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
+}
+
+# Removes one account's last-known file through the helper (#2280). Warns and
+# continues on failure; a stale file is display-only and never a gate.
+forget_last_known() { # <provider> <label>
+  local folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}"
+  if [[ -z "$folder" ]]; then
+    [[ -n "${_HOME:-}" ]] || return 0
+    folder="${_HOME}/.claude/ai-quotas/last-known"
+  fi
+  [[ -r "$SELF_DIR/lib/quotas-last-known.py" ]] && command -v python3 >/dev/null 2>&1 || return 0
+  python3 -I "$SELF_DIR/lib/quotas-last-known.py" forget --dir "$folder" --provider "$1" --label "$2" \
+    || echo "${SELF_NAME}: could not clear the saved readings for '$2' in ${folder} — remove that file by hand" >&2
+  return 0
 }
 
 
@@ -1747,6 +1886,13 @@ action_schedule_install() {
     extra_env="${extra_env}
         <key>AI_QUOTAS_HISTORY</key>
         <string>$(xml_escape "$AI_QUOTAS_HISTORY")</string>"
+  fi
+  # The last-known folder (#2280) follows the same rule: an explicit override in
+  # this shell is what the nightly job must write to as well.
+  if [[ -n "${AI_QUOTAS_LAST_KNOWN_DIR:-}" ]]; then
+    extra_env="${extra_env}
+        <key>AI_QUOTAS_LAST_KNOWN_DIR</key>
+        <string>$(xml_escape "$AI_QUOTAS_LAST_KNOWN_DIR")</string>"
   fi
   tmp="$(mktemp "${plist_dir}/.ai-quotas-plist.XXXXXX")" || die 5 "could not create a temp file in $plist_dir"
   cat > "$tmp" <<PLIST
@@ -2604,6 +2750,7 @@ case "$ACTION" in
   repair-layout) action_repair_layout ;;
   add)      action_add ;;
   nick)     action_nick ;;
+  report)   action_report ;;
   sources)  action_sources ;;
   remove)   action_remove ;;
   relogin)  action_relogin ;;

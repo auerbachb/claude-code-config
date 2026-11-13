@@ -484,6 +484,22 @@ check_eq "$("$SCRIPT" --status --json | jq -r '.stale')" "true" "--json carries 
 "$SCRIPT" --decide --json </dev/null >/dev/null 2>&1; check_eq "$?" "2" "--json with --decide is a usage error"
 OUT="$("$SCRIPT" --help)"; check_contains "$OUT" "FAILS OPEN" "--help documents the fail-open rule"
 
+# ------------------------------------------------------------------------------
+# 9. Last-known folder (#2280): gates never read or write it
+# ------------------------------------------------------------------------------
+# The refresh reads the reader with --no-last-known, so a saved figure cannot
+# decide whether autonomous work may proceed.
+reset_state
+rows "$(row claude a@example.com 'Claude A' $CLAUDE_A 7-day ok 10)"
+"$SCRIPT" --refresh --force
+check_contains "$(cat "$READER_LOG")" "args=--json --no-last-known" \
+  "the reserve refresh passes --no-last-known to the reader"
+# Static guard: neither gate script names the folder, its override, or the helper.
+for gate in "$REPO_ROOT/.claude/scripts/quota-reserve.sh" "$REPO_ROOT/.claude/scripts/credit-budget.sh"; do
+  check_eq "$(grep -c -e 'AI_QUOTAS_LAST_KNOWN_DIR' -e 'AI_QUOTAS_LAST_KNOWN_BIN' -e 'quotas-last-known.py' -e 'ai-quotas/last-known' "$gate" || true)" "0" \
+    "$(basename "$gate") never references the last-known folder"
+done
+
 echo
 echo "passed: $PASS   failed: $FAILED"
 [[ "$FAILED" -eq 0 ]] || exit 1

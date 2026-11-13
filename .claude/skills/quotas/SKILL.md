@@ -161,6 +161,16 @@ from endpoint diagnostics. Claude `setup-token` credentials are limited to model
 requests; this usage reader keeps normal per-profile OAuth instead of installing an
 incompatible token. See the logout diagnosis and notification policy in the reference.
 
+## Step 3a — A failed read shows the last known figure (#2280)
+
+When a live read fails, the row keeps its live status (`unreadable`, `needs-login`, …) and
+its USED cell stays `-`. NOTE then shows the last usable reading the reader saved for that
+account, labelled with its date and source, for example `100% (last known, Nov 12,
+owner-reported); resets Nov 28`. An expired one reads `expired: ...`, and it is not current
+usage. Say "last known" when you quote one, never "current". The JSON fields are
+`last_known_used_pct`, `last_known_at_epoch`, `last_known_source` and `last_known_expired`;
+`used_pct` stays `null`. The folder is display only, and the gates never read it.
+
 ## Step 3b — The Overage column and the cheapest-next line
 
 The **OVERAGE** column is what continuing PAST that row's cap costs: `1 free reset` or

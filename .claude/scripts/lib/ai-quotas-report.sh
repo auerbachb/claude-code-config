@@ -309,9 +309,19 @@ render_quota_table() {
         # columns that must be crossed. An `ok` row says nothing, which is what
         # `ok` was worth. `status` is still on every --json row, and it is
         # still the field to branch on.
+        # The saved figure (#2280) follows the live status, so a row that could
+        # not be read says so first and then shows what was last read. It is
+        # always labelled last known with its date and source, and an expired
+        # one says so; USED stays a dash on every such row.
         ([ (if (.status // "ok") != "ok" then .status else empty end),
            (if .label != .reported_email then "registered as \(.label)" else empty end),
-           (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end) ]
+           (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end),
+           (if .last_known_used_pct == null then empty
+            else ((if .last_known_expired == true then "expired: " else "" end)
+                  + "\(.last_known_used_pct)% (last known, \(.last_known_at_et // "" | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0] // "-"), \(.last_known_source // "unknown"))"
+                  + (if .last_known_resets_et == null then ""
+                     else "; \(if .last_known_expired == true then "reset" else "resets" end) \(.last_known_resets_et | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0] // "-")" end))
+            end) ]
          | join("; ") | if . == "" then "-" else . end)
       ] | @tsv' "$DOC"
   } > "$TABLE"
