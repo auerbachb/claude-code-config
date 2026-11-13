@@ -222,6 +222,54 @@ P $owner1 status --json; check "a failed away write leaves presence as it was" "
 P $owner1 set here --by operator-message --for 1h >/dev/null
 check "here clears an unattended window unconditionally" "$("$UNATT" is-active; echo $?)" 1
 
+printf '== guard writes: fallback jq, visible release failure, newer-declaration CAS, dismissal CAS\n'
+reset_presence() { jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"; }
+# ask must work when jq is only at one of the script's fallback locations (children need it too).
+mkdir -p "$tmp/nojq"
+for f in /bin/* /usr/bin/*; do b=${f##*/}; [ "$b" = jq ] || ln -sf "$f" "$tmp/nojq/$b" 2>/dev/null; done
+reset_presence
+rc=0; out=$(cd "$REPO" && PATH="$tmp/bin:$tmp/nojq" FAKE_OWNER=$owner1 /bin/bash "$PRESENCE" ask 2>/dev/null) || rc=$?
+check "ask works with jq only at a fallback location" "$rc" 0
+P $owner1 release --generation "$out" >/dev/null
+# A failed claim release is reported, not swallowed.
+cat > "$tmp/bin/rs-fail" <<EOF
+#!/bin/bash
+[ "\$1" = release ] && exit 20
+exec "$RESERVE" "\$@"
+EOF
+chmod +x "$tmp/bin/rs-fail"
+reset_presence
+P $owner1 ask; tok=$out
+rc=0; err=$(cd "$REPO" && FAKE_OWNER=$owner1 PRESENCE_RESERVE_SH="$tmp/bin/rs-fail" "$PRESENCE" set closing --by operator-message --generation "$tok" 2>&1 >/dev/null) || rc=$?
+check "a refused closing still exits 3" "$rc" 3
+has "a failed claim release is reported" "$err" "claim not released"
+P $owner1 release --generation "$tok" >/dev/null
+# A set delayed before its write loses to a newer declaration instead of overwriting it.
+reset_presence
+P $owner1 set here --by operator-message --for 1h >/dev/null
+cat > "$tmp/bin/ss-newer" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *presence.state=here*) "$STATE" --set ".presence.declared_epoch=\$(( \$(date +%s) + 600 ))" >/dev/null; break ;; esac; done
+exec "$STATE" "\$@"
+EOF
+chmod +x "$tmp/bin/ss-newer"
+rc=0; (cd "$REPO" && FAKE_OWNER=$owner2 PRESENCE_SESSION_STATE_SH="$tmp/bin/ss-newer" "$PRESENCE" set here --by operator-message --for 2h >/dev/null 2>&1) || rc=$?
+check "a delayed set loses to the newer declaration" "$rc" 10
+check "the newer declaration time is kept" "$(jq '.presence.declared_epoch > (now + 300)' "$HOME/.claude/session-state.json")" true
+# A dismissal is one compare-and-set with the reservation clear: a declaration that cleared the
+# reservation first leaves no cooldown behind.
+reset_presence
+P $owner1 ask; tok=$out
+cat > "$tmp/bin/ss-dis" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *dismissed_until=*) "$STATE" --set ".presence.reservation=null" >/dev/null; break ;; esac; done
+exec "$STATE" "\$@"
+EOF
+chmod +x "$tmp/bin/ss-dis"
+(cd "$REPO" && FAKE_OWNER=$owner1 PRESENCE_SESSION_STATE_SH="$tmp/bin/ss-dis" "$PRESENCE" release --generation "$tok" --dismissed >/dev/null 2>&1)
+check "a stale dismissal writes no cooldown" "$(jq -r '.presence.dismissed_until // 0' "$HOME/.claude/session-state.json")" 0
+reset_presence
+
 printf '== rest of the day\n'
 P $owner1 set here --by operator-message --rest-of-day >/dev/null
 P $owner1 status --json

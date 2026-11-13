@@ -55,6 +55,10 @@ if [ -z "$JQ" ]; then
   done
 fi
 
+# Child scripts (prompt-reservation.sh, session-state.sh) need jq on PATH; the fallback
+# locations above may not be on it, so put the resolved jq's directory there for children.
+[ -z "$JQ" ] || case "$JQ" in /*) PATH="$(dirname "$JQ"):$PATH"; export PATH ;; esac
+
 usage() { sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'presence.sh: %s\n' "$1" >&2; exit 2; }
 now() { date +%s; }
@@ -262,7 +266,15 @@ cmd_set() {
   # write is a compare-and-set on the stored reservation, so a late answer under a replaced
   # token loses (exit 7) instead of overwriting a newer declaration. Without a token, a
   # direct declaration clears any pending claim.
-  local res="" cas=()
+  # The write is also conditional on the stored declaration time: a set delayed before its
+  # write must not overwrite a newer declaration with its older answer.
+  local res="" cas=() cur
+  cur=$("$SESSION_STATE_SH" --get-json ".presence.declared_epoch" 2>/dev/null) || cur=null
+  case "$cur" in ''|*[!0-9]*) cur=null ;; esac
+  if [ "$cur" != null ] && [ "$cur" -gt "$n" ]; then
+    printf 'presence.sh: a newer declaration is already stored; nothing written, read presence.sh status\n' >&2
+    return 10
+  fi
   if [ -n "$gen" ]; then
     rc=0
     "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
@@ -276,16 +288,17 @@ cmd_set() {
       printf 'presence.sh: the dialog claim is no longer yours; nothing written, read presence.sh status\n' >&2
       return 10
     fi
-    cas=(--cas ".presence.reservation=null" --expect "$res")
+    cas=(--cas ".presence.reservation=null" --expect "$res" --expect-at ".presence.declared_epoch" "$cur")
   else
+    cas=(--cas ".presence.declared_epoch=$n" --expect "$cur")
     sets+=(--set ".presence.reservation=null")
   fi
 
   rc=0
-  "$SESSION_STATE_SH" ${cas[@]+"${cas[@]}"} "${sets[@]}" >/dev/null || rc=$?
+  "$SESSION_STATE_SH" "${cas[@]}" "${sets[@]}" >/dev/null || rc=$?
   case "$rc" in
     0) ;;
-    7) printf 'presence.sh: the dialog claim changed while answering; nothing written, read presence.sh status\n' >&2; return 10 ;;
+    7) printf 'presence.sh: the dialog claim or the stored declaration changed while answering; nothing written, read presence.sh status\n' >&2; return 10 ;;
     *) printf 'presence.sh: state write failed\n' >&2; return 1 ;;
   esac
   GEN_HELD=""   # the write cleared the reservation; nothing left to release
@@ -307,8 +320,15 @@ cmd_set() {
 }
 
 GEN_HELD=""
+# Give a dialog claim back; a failed release leaves the global slot held for the life of this
+# session, so say so (the caller's exit status is unchanged).
+release_claim_visible() {
+  local rc=0
+  "$RESERVE_SH" release --kind presence --generation "$1" >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0|10) ;; *) printf 'presence.sh: dialog claim not released (rc=%s); other threads cannot ask until it is: run presence.sh release --generation %s\n' "$rc" "$1" >&2 ;; esac
+}
 release_held_claim() {
-  [ -z "$GEN_HELD" ] || "$RESERVE_SH" release --kind presence --generation "$GEN_HELD" >/dev/null 2>&1 || true
+  [ -z "$GEN_HELD" ] || release_claim_visible "$GEN_HELD"
 }
 
 # --- ask / release ------------------------------------------------------------
@@ -346,7 +366,7 @@ cmd_ask() {
   # asker released first). Re-check holding the claim, and hand it back if asking is now moot.
   brc=0; ask_blocker || brc=$?
   if [ "$brc" -ne 0 ]; then
-    "$RESERVE_SH" release --kind presence --generation "$out" >/dev/null 2>&1 || true
+    release_claim_visible "$out"
     return "$brc"
   fi
   printf '%s\n' "$out"
@@ -364,10 +384,19 @@ cmd_release() {
   [ -n "$gen" ] || die_usage "release needs --generation"
   if [ "$dismissed" -eq 1 ]; then
     # Only the current holder's dismissal counts: a stale token must not start a cooldown.
-    # Written before the release so a failure here never leaves the claim gone with no pause.
+    # The cooldown and the reservation clear are ONE compare-and-set on the stored reservation,
+    # so a declaration that cleared it first makes this dismissal lose instead of blocking `ask`
+    # for an hour after that declaration expires.
+    local res
     "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || return 0
-    "$SESSION_STATE_SH" --set ".presence.dismissed_until=$(( $(now) + DISMISS_SECONDS ))" >/dev/null ||
-      { printf 'presence.sh: state write failed\n' >&2; return 1; }
+    res=$("$SESSION_STATE_SH" --get-json ".presence.reservation" 2>/dev/null) || res=""
+    [ -n "$res" ] && [ "$(printf '%s' "$res" | "$JQ" -r '.generation // ""' 2>/dev/null)" = "$gen" ] || return 0
+    "$SESSION_STATE_SH" --cas ".presence.reservation=null" --expect "$res" \
+      --set ".presence.dismissed_until=$(( $(now) + DISMISS_SECONDS ))" >/dev/null || rc=$?
+    case "$rc" in
+      0|7) return 0 ;;
+      *) printf 'presence.sh: state write failed\n' >&2; return 1 ;;
+    esac
   fi
   "$RESERVE_SH" release --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
   case "$rc" in 0|10) return 0 ;; *) printf 'presence.sh: claim not released (rc=%s)\n' "$rc" >&2; return 1 ;; esac
