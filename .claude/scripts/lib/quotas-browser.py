@@ -111,7 +111,8 @@ def validate(doc, label, expected_email, now, provider='cursor'):
         raise ValueError('provider')
     if not isinstance(doc, dict) or set(doc) != set(SCHEMA['required']):
         raise ValueError('shape')
-    if doc['schema_version'] != 1 or doc['provider'] != provider or doc['label'] != label or doc['status'] not in ('ok', 'logged_out', 'unreadable'):
+    # type() check: Python's True == 1, so a boolean must not pass as schema version 1.
+    if type(doc['schema_version']) is not int or doc['schema_version'] != 1 or doc['provider'] != provider or doc['label'] != label or doc['status'] not in ('ok', 'logged_out', 'unreadable'):
         raise ValueError('account')
     if not isinstance(doc['email'], str) or len(doc['email']) > 254 or (doc['email'] and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', doc['email'])):
         raise ValueError('email')
