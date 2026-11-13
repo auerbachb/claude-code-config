@@ -92,7 +92,7 @@ is_active() {
   [ "$("$JQ" -r --argjson n "$n" '
     (.unattended | if type == "object" then . else {} end) as $u
     | (.presence | if type == "object" then . else {} end) as $p
-    | if $u.active == true then "yes"
+    | if $u.active == true and (($u.since_epoch // 0) >= ($p.declared_epoch // 0)) then "yes"
       elif $p.state == "here" and ($p.until_epoch | type) == "number" and $p.until_epoch <= $n then "yes"
       else "no" end' "$STATE_FILE" 2>/dev/null)" = yes ]
 }
@@ -213,9 +213,18 @@ cmd_off() {
   # An at-computer window that ran out is "away handling" too: end it with the flag. After the flag
   # write, so a newer unattended window that was live no longer shields the older lapsed one. Best
   # effort and silent; it acts only on a lapsed window and never touches one still running.
-  [ ! -x "$PRESENCE_SH" ] || "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || true
+  local lapsed=0 pst=""
+  if [ -x "$PRESENCE_SH" ]; then pst=$("$PRESENCE_SH" probe 2>/dev/null) || pst=""; fi
+  case "$pst" in lapsed|lapsed-claimed) lapsed=1 ;; esac
   printf 'unattended: off\n'
-  cmd_digest --mark
+  if [ "$lapsed" -eq 1 ]; then
+    # That return is global and clears the lapsed window: list every repo's saved questions FIRST
+    # (emitted and marked together, per file), and only then clear the window.
+    cmd_digest --all --mark
+    "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || true
+  else
+    cmd_digest --mark
+  fi
 }
 
 cmd_status() {

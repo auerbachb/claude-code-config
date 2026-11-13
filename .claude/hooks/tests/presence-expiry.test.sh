@@ -389,6 +389,25 @@ P expire >"$TMP/exp-none.out"; RN=$?
 check "nothing lapsed exits 1" "$RN" 1
 check "and prints nothing" "$(cat "$TMP/exp-none.out")" ""
 
+# A delayed write can leave an unattended flag on that is OLDER than a newer here declaration. The
+# declaration is the later decision, so away handling must not stay on: the guard lets a menu through.
+printf '== an older unattended flag under a newer here declaration does not keep menus denied\n'
+P set here --by operator-message --for 2h >/dev/null
+n=$(date +%s)
+"$STATE" --set ".unattended.active=true" --set ".unattended.since_epoch=$((n - 3600))" >/dev/null
+check "is-active is false: the flag is older than the declaration" "$(U is-active; echo $?)" 1
+check "the guard lets the menu through" "$(guard s-here)" ""
+
+# `off` ends an at-computer window that ran out (a return with no dialog). That return is global, so
+# the questions every repo saved while it ran out are listed, not only the current repo's.
+printf '== off after an at-computer window ran out: every repo saved questions are listed\n'
+lapse here
+U record --question "Off A?" --recommended "a" >/dev/null
+UB record --question "Off B?" --recommended "b" >/dev/null
+OFF_OUT=$(U off)
+has "off lists the current repo's saved question" "$OFF_OUT" "Off A?"
+has "and the other repo's saved question" "$OFF_OUT" "Off B?"
+
 printf '== guard and digest hooks do nothing without state\n'
 rm -rf "$HOME/.claude/session-state.json" "$HOME/.claude/unattended"
 check "guard: silent with no state" "$(guard s-1)" ""
