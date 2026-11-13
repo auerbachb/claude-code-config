@@ -32,8 +32,11 @@
 #   ai-quotas.sh --help | -h
 #
 #   --json         Emit the report document with rows, reliability and recommendations.
-#   --browser      Explicit interactive Cursor Chrome fallback (never scheduled).
-#   --browser-results FILE  Resume one --account from a private browser observation.
+#   --browser      Explicit interactive browser fallback (never scheduled). Cursor
+#                  reads through the Chrome bridge; Claude is observation-only and
+#                  reports that an agent-collected observation is needed (#2299).
+#   --browser-results FILE  Resume one --account (Cursor or Claude) from a private
+#                  browser observation file. Claude observations are provider "claude".
 #   --no-last-known
 #                  Do not read or write the last-known folder (#2280). Used by
 #                  quota-reserve.sh --refresh so an autonomous-work gate never
@@ -941,8 +944,97 @@ relogin_hint() { # <provider> <label>
 # Ordered acquisition sources. Browser is activated only by an explicit agent run.
 effective_sources() { # <provider> <account-index>
   printf '%s' "$CONFIG" | jq -r --arg p "$1" --argjson i "$2" '
-    .accounts[$i].sources // (if $p == "claude" then ["oauth-usage"]
+    .accounts[$i].sources // (if $p == "claude" then ["oauth-usage","browser"]
       elif $p == "codex" then ["app-server","http"] else ["ide-token","browser"] end) | .[]'
+}
+
+# Shared mapping from a browser observation's fixed error class to a row and
+# a ledger outcome (#2299: the same classes serve Cursor and Claude).
+browser_failure_row() { # <provider> <label> <email> <window> <result-json>
+  local provider="$1" label="$2" email="$3" window="$4" result="$5"
+  local error_class detail outcome_status=unreadable
+  error_class="$(printf '%s' "$result" | jq -r '.error_class' 2>/dev/null)" || error_class=""
+  case "$error_class" in
+    browser_launch_failed) detail="browser bridge could not launch" ;;
+    browser_connection_unavailable) detail="browser connection unavailable" ;;
+    browser_tool_denied) detail="browser tool denied by the read-only guard" ;;
+    browser_tab_create_failed) detail="browser owned-tab creation failed" ;;
+    browser_destination_unverified) detail="browser owned-tab destination could not be verified" ;;
+    browser_observation_rejected) detail="browser observation rejected" ;;
+    browser_read_unverified) detail="browser page read could not be verified" ;;
+    browser_timeout) detail="browser bridge reached its outer timeout"; outcome_status=timeout ;;
+    *) error_class=browser_stage_unknown; detail="browser unavailable; failure stage unknown" ;;
+  esac
+  set_outcome "$outcome_status" browser "$error_class"
+  emit_row "$provider" "$label" "$email" "$window" "" "" unreadable "$detail" browser ""
+}
+
+# The expected identity for a Claude observation (#2299). The profile's own
+# oauthAccount.emailAddress is the independent evidence; an email-shaped label
+# is the fallback. Two different emails mean the identity is unknown, and an
+# empty answer makes the reader reject any observation (fail closed).
+claude_expected_email() { # <label> <profile_dir>
+  local label="$1" dir="$2" profile="" from_label="" re='^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
+  if [[ -n "$dir" && -f "$dir/.claude.json" && ! -L "$dir/.claude.json" ]]; then
+    profile="$(jq -r '.oauthAccount.emailAddress // empty' "$dir/.claude.json" 2>/dev/null || true)"
+  fi
+  [[ ! "$label" =~ $re ]] || from_label="$label"
+  if [[ -n "$profile" && -n "$from_label" ]]; then
+    if [[ "$(printf '%s' "$profile" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$from_label" | tr '[:upper:]' '[:lower:]')" ]]; then
+      return 0
+    fi
+  fi
+  if [[ -n "$profile" ]]; then printf '%s' "$profile"; else printf '%s' "$from_label"; fi
+}
+
+# Claude browser source (#2299). Observation-only: the agent reads the
+# claude.ai usage page with its own browser tools and passes the result file
+# through --browser-results. The reader never opens a page for Claude.
+read_claude_browser() { # <label> <profile_dir>
+  local label="$1" dir="$2" expected result status email row used reset window span extra emitted=0
+  if [[ -z "$BROWSER_RESULTS" ]]; then
+    set_outcome unreadable browser browser_agent_observation_required
+    emit_row claude "$label" "" "7-day" "" "" unreadable \
+      "browser fallback needs an agent-collected claude.ai usage observation; not attempted by plain --browser" browser ""
+    return 0
+  fi
+  expected="$(claude_expected_email "$label" "$dir")"
+  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$expected" "$NOW" "" claude 2>/dev/null)"
+  status="$(printf '%s' "$result" | jq -r '.status' 2>/dev/null)" || status=""
+  if [[ "$status" != "ok" ]]; then
+    if [[ "$status" == "logged_out" ]]; then
+      set_outcome logged_out browser browser_logged_out
+      emit_row claude "$label" "$expected" "7-day" "" "" needs-login "browser is logged out; sign in yourself" browser ""
+    else
+      browser_failure_row claude "$label" "$expected" "7-day" "$result"
+    fi
+    return 0
+  fi
+  email="$(printf '%s' "$result" | jq -r '.email')"
+  while IFS= read -r row; do
+    window="$(printf '%s' "$row" | jq -r '.window')"
+    # The five-hour row follows the OAuth convention: shown only with --five-hour.
+    [[ "$window" != "5-hour" || "$FIVE_HOUR" -eq 1 ]] || continue
+    used="$(printf '%s' "$row" | jq -r '.used_pct // empty')"
+    reset="$(printf '%s' "$row" | jq -r '.resets_at_epoch | if type == "number" and . <= 253402300799 then floor else empty end')"
+    if [[ -z "$used" ]]; then
+      # One window unread on the page: report it unreadable, never as an invented figure.
+      emit_row claude "$label" "$email" "$window" "" "$reset" unreadable "window not shown on the observed page" browser ""
+      emitted=1
+      continue
+    fi
+    span=604800
+    [[ "$window" != "5-hour" ]] || span=18000
+    extra="$(with_window_start "{}" "$reset" "$span")"
+    emit_row claude "$label" "$email" "$window" "$used" "$reset" ok \
+      "browser observation; account verified" browser "" "$extra"
+    emitted=1
+  done < <(printf '%s' "$result" | jq -c '.rows[]')
+  # The fallback only when no row at all was emitted, so the account never vanishes
+  # and a window already reported unreadable is not duplicated.
+  if [[ "$emitted" -eq 0 ]]; then
+    emit_row claude "$label" "$email" "7-day" "" "" unreadable "browser observation carried no figure to show" browser ""
+  fi
 }
 
 read_cursor_browser() { # <label>
@@ -963,21 +1055,7 @@ read_cursor_browser() { # <label>
       set_outcome logged_out browser browser_logged_out
       emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" needs-login "browser is logged out; sign in yourself" browser ""
     else
-      error_class="$(printf '%s' "$result" | jq -r '.error_class' 2>/dev/null)" || error_class=""
-      outcome_status=unreadable
-      case "$error_class" in
-        browser_launch_failed) detail="browser bridge could not launch" ;;
-        browser_connection_unavailable) detail="browser connection unavailable" ;;
-        browser_tool_denied) detail="browser tool denied by the read-only guard" ;;
-        browser_tab_create_failed) detail="browser owned-tab creation failed" ;;
-        browser_destination_unverified) detail="browser owned-tab destination could not be verified" ;;
-        browser_observation_rejected) detail="browser observation rejected" ;;
-        browser_read_unverified) detail="browser page read could not be verified" ;;
-        browser_timeout) detail="browser bridge reached its outer timeout"; outcome_status=timeout ;;
-        *) error_class=browser_stage_unknown; detail="browser unavailable; failure stage unknown" ;;
-      esac
-      set_outcome "$outcome_status" browser "$error_class"
-      emit_row cursor "$label" "$email" "$CURSOR_WINDOW" "" "" unreadable "$detail" browser ""
+      browser_failure_row cursor "$label" "$email" "$CURSOR_WINDOW" "$result"
     fi
     return 0
   fi
@@ -1011,6 +1089,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
         codex:app-server|codex:http) read_codex_account "$label" "$dir" "$source" ;;
         cursor:ide-token) read_cursor_account "$label" ;;
         cursor:browser) read_cursor_browser "$label" ;;
+        claude:browser) read_claude_browser "$label" "$dir" ;;
         *) set_outcome unreadable "$source" source_unsupported
            emit_row "$provider" "$label" "" "7-day" "" "" unsupported "source is unavailable for this provider" "$source" "" ;;
       esac
@@ -1043,8 +1122,8 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
 read_config
 if [[ -n "$BROWSER_RESULTS" ]]; then
   resume_targets="$(printf '%s' "$CONFIG" | jq --arg label "$ACCOUNT_FILTER" '[.accounts[] | select(.label == $label)]')"
-  printf '%s' "$resume_targets" | jq -e 'length == 1 and .[0].provider == "cursor" and ((.[0].sources // ["ide-token","browser"]) | index("browser") != null)' >/dev/null \
-    || die_usage "--browser-results requires one unambiguous Cursor label with browser configured"
+  printf '%s' "$resume_targets" | jq -e 'length == 1 and (.[0].provider == "cursor" or .[0].provider == "claude") and ((.[0].sources // (if .[0].provider == "claude" then ["oauth-usage","browser"] else ["ide-token","browser"] end)) | index("browser") != null)' >/dev/null \
+    || die_usage "--browser-results requires one unambiguous Cursor or Claude label with browser configured"
 fi
 COUNT="$(printf '%s' "$CONFIG" | jq '.accounts | length' 2>/dev/null || true)"
 # read_config only returns on a config it has already validated, so a count
@@ -1383,6 +1462,7 @@ jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the r
 jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001f\u007f]")) then null
   elif .provider == "cursor" and .source == "browser" then "open the Cursor dashboard in Chrome and sign in"
   elif .provider == "cursor" then "open the Cursor IDE and sign in"
+  elif .provider == "claude" and .source == "browser" then "open the claude.ai usage page in Chrome and sign in"
   elif .provider == "claude" or .provider == "codex" then
     "/quotas-setup relogin " + (if (.label|startswith("-")) then "-- " else "" end) + (.label | if test("^[A-Za-z0-9@._+%-]+$") then . else @sh end) + " " + .provider
   else null end)})' "$ROWS_JSON" > "$TMP/actions.json" \
