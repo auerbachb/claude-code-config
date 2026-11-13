@@ -48,9 +48,10 @@
 #   from two marker files, each created atomically once (no lock, no pid file):
 #   <KEY>.claim (answered | due) and <KEY>.outcome (sent | missed). status:
 #   waiting | answered | due | sent | missed. Never inside a worktree.
-#   A push that stays `due` for PHONE_PUSH_GRACE_SEC (default 180) with no `sent`
+#   A push that stays `due` for PHONE_PUSH_GRACE_SEC (default 600) with no `sent`
 #   or `missed` lost its wake: the next watch/status/doctor/arm records it as
-#   `missed` (reason "wake lost"), once. Nothing is ever re-pushed.
+#   `missed` (reason "wake lost"), once. Nothing is ever re-pushed. A `sent` that
+#   arrives later is kept beside that miss and the final status is `sent`.
 #
 # EXIT CODES
 #   0 ok; 1 a state read/write failed (nothing is claimed as armed or sent);
@@ -87,10 +88,12 @@ rec() { printf '%s/%s.json' "$DIR" "$1"; }
 #   <KEY>.outcome  first line `sent` or `missed`   (due -> sent | missed)
 # A process killed at any point leaves either nothing or a complete marker, never
 # a half state, so no later command can wedge. Line 2 is the epoch, line 3 the reason.
-GRACE=${PHONE_PUSH_GRACE_SEC:-180}
-valid_int "$GRACE" || GRACE=180
+GRACE=${PHONE_PUSH_GRACE_SEC:-600}
+valid_int "$GRACE" || GRACE=600
 claim_f() { printf '%s/%s.claim' "$DIR" "$1"; }
 outcome_f() { printf '%s/%s.outcome' "$DIR" "$1"; }
+# A `sent` that arrives after a wake-lost miss is kept beside it, never over it.
+delivered_f() { printf '%s/%s.delivered' "$DIR" "$1"; }
 line() { sed -n "${1}p" "$2" 2>/dev/null; } # line N FILE
 
 # put_once FILE STATUS [REASON]: exit 0 won, 3 lost (FILE exists), 1 failed.
@@ -110,7 +113,9 @@ status_of() {
   c=$(line 1 "$(claim_f "$1")")
   case "$c" in
     answered) echo answered ;;
-    due) o=$(line 1 "$(outcome_f "$1")"); echo "${o:-due}" ;;
+    due) o=$(line 1 "$(outcome_f "$1")")
+         if [ "$o" = "missed" ] && [ -f "$(delivered_f "$1")" ]; then o=sent; fi
+         echo "${o:-due}" ;;
     *) echo waiting ;;
   esac
 }
@@ -124,7 +129,7 @@ settle() {
   valid_int "$ce" || return 0
   [ "$(now)" -ge $((ce + GRACE)) ] || return 0
   put_once "$(outcome_f "$key")" missed "wake lost: no sent or missed recorded within ${GRACE}s of the push becoming due"; rc=$?
-  [ "$rc" -eq 0 ] && printf 'phone-push %s missed: wake lost (no push was recorded within %ss of becoming due)\n' "$key" "$GRACE" >&2
+  [ "$rc" -eq 0 ] && printf 'phone-push %s missed: wake lost (no sent or missed within %ss of becoming due; delivery unconfirmed)\n' "$key" "$GRACE" >&2
   return 0
 }
 settle_all() {
@@ -171,6 +176,13 @@ set_status() {
     answered|due) put_once "$(claim_f "$key")" "$to" "$reason"; rc=$? ;;
     *) if [ "$(line 1 "$(claim_f "$key")")" = "due" ]; then
          put_once "$(outcome_f "$key")" "$to" "$reason"; rc=$?
+         # The push may have been delivered after the grace period: a wake-lost
+         # miss is only "unconfirmed", so accept one late `sent` beside it.
+         if [ "$rc" -eq 3 ] && [ "$to" = "sent" ] \
+            && [ "$(line 1 "$(outcome_f "$key")")" = "missed" ] \
+            && case "$(line 3 "$(outcome_f "$key")")" in "wake lost"*) true ;; *) false ;; esac; then
+           put_once "$(delivered_f "$key")" sent "recorded late, after a wake-lost miss"; rc=$?
+         fi
        else rc=3; fi ;;
   esac
   [ "$rc" -eq 3 ] && { status_of "$key"; return 3; }
@@ -205,7 +217,7 @@ cmd_arm() {
   # ln fails when the record exists: one push per question, atomically.
   if ! ln "$tmp" "$f" 2>/dev/null; then
     rm -f "$tmp"
-    die 3 "$key is already armed (status $(field "$key" status)); one push per question, nothing re-armed"
+    die 3 "$key is already armed (status $(status_of "$key")); one push per question, nothing re-armed"
   fi
   rm -f "$tmp"
   printf 'phone push armed for %s: one push if it is still unanswered after %ss.\n' "$key" "$delay"
@@ -283,6 +295,7 @@ status_line() { # FILE
   k=$(jq -r '.key // empty' "$f" 2>/dev/null) && valid_key "$k" || { printf '%s unreadable\n' "$f"; return; }
   st=$(status_of "$k")
   r=$(line 3 "$(outcome_f "$k")"); [ -n "$r" ] || r=$(line 3 "$(claim_f "$k")")
+  if [ -f "$(delivered_f "$k")" ]; then r=$(line 3 "$(delivered_f "$k")"); fi
   printf '%s %s delay=%ss %s\n' "$k" "$st" "$(field "$k" delay_sec)" "$r"
 }
 
@@ -308,7 +321,8 @@ cmd_doctor() {
   for f in "$DIR"/*.outcome; do
     [ -f "$f" ] || continue
     case "$(line 3 "$f")" in "wake lost"*) lost=$(basename "$f" .outcome)
-      printf 'doctor: %s was recorded missed: wake lost (the push never reached the phone)\n' "$lost"; rc=1 ;; esac
+      [ -f "$(delivered_f "$lost")" ] && continue
+      printf 'doctor: %s was recorded missed: wake lost (delivery unconfirmed; no sent was recorded)\n' "$lost"; rc=1 ;; esac
   done
   [ -f "$s" ] || { echo "doctor: $s not found; cannot check the phone-push settings"; return 1; }
   for k in inputNeededNotifEnabled agentPushNotifEnabled; do

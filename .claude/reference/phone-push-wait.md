@@ -33,8 +33,8 @@ that proceeds on the recommended default is not waiting, so it arms nothing.
    pid file) and prints one line carrying the push text. Only one process can create that file, which is
    what makes the push once-only with any number of watchers, and a process killed mid-step leaves no
    half state. `sent`/`missed` are the same kind of one-shot create (`<KEY>.outcome`). A record left `due`
-   past the grace period (`PHONE_PUSH_GRACE_SEC`, default 180) with neither outcome lost its wake: the next
-   `watch`/`status`/`doctor`/`arm` records it `missed` (reason "wake lost"), once. No push is retried.
+   past the grace period (`PHONE_PUSH_GRACE_SEC`, default 600) with neither outcome lost its wake: the next
+   `watch`/`status`/`doctor`/`arm` records it `missed` (reason "wake lost"), once. A later `sent` is kept beside it (final status `sent`). No push is retried.
 6. The woken thread calls `PushNotification` with that exact text, then runs `sent D-<n>`. If the call
    reports the push could not be delivered (for example Remote Control is not connected), it runs
    `missed D-<n> --reason '<why>'`. The miss stays in the record, `status` lists it, and the thread

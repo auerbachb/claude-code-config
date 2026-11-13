@@ -109,8 +109,6 @@ for w in 1 2 3 4 5; do ( PHONE_PUSH_GRACE_SEC=1 "$SCRIPT" status D-L1 >"$TMP/l$w
 check_eq "lost wake: recorded missed" missed "$(st D-L1)"
 check_has "status shows the wake-lost reason" "wake lost" "$("$SCRIPT" status D-L1)"
 check_eq "lost wake is recorded exactly once" 1 "$(cat "$TMP"/l?.err | grep -c 'D-L1 missed: wake lost')"
-run sent D-L1
-check_eq "a late sent cannot overwrite the recorded miss" 3 "$rc"
 bounded 20 "$SCRIPT" watch D-L1; check_eq "watch on a lost-wake record prints nothing" "" "$out"
 printf '{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":true}' >"$PHONE_PUSH_SETTINGS"
 run doctor
@@ -121,7 +119,20 @@ check_has "doctor names the lost-wake key" "D-L1 was recorded missed: wake lost"
 "$SCRIPT" watch D-L2 >/dev/null 2>&1; sleep 2
 PHONE_PUSH_GRACE_SEC=1 "$SCRIPT" arm D-L3 --thread t --question q >/dev/null 2>&1
 check_eq "arm settles a lost wake" missed "$(st D-L2)"
-rm -f "$PHONE_PUSH_DIR"/D-L*.outcome "$PHONE_PUSH_DIR"/D-K*.outcome
+# a late `sent` supersedes the wake-lost miss (the push did go out): final status
+# sent, doctor stops flagging it, and a second late sent is refused
+run sent D-L2
+check_eq "late sent after a wake-lost miss is accepted" 0 "$rc"
+check_eq "late sent: final status is sent" sent "$(st D-L2)"
+check_has "late sent: status keeps the late-record reason" "recorded late" "$("$SCRIPT" status D-L2)"
+run sent D-L2
+check_eq "a second late sent is refused" 3 "$rc"
+run missed D-L2 --reason x
+check_eq "an explicit missed cannot overwrite a wake-lost record" 3 "$rc"
+# re-arming reports the real status, not the immutable record's
+run arm D-L2 --thread t --question q
+check_has "re-arm refusal reports the derived status" "status sent" "$out"
+rm -f "$PHONE_PUSH_DIR"/D-L*.outcome "$PHONE_PUSH_DIR"/D-L*.delivered "$PHONE_PUSH_DIR"/D-K*.outcome
 
 # --- printed commands are shell-quoted (a path with a space stays one word)
 mkdir -p "$TMP/dir with space"; cp "$SCRIPT" "$TMP/dir with space/phone-push-wait.sh"
