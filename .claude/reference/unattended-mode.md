@@ -23,12 +23,14 @@ the task brief. It read only the one-line `MEMORY.md` summary, which still state
 | `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `pending`, `digest [--mark]`. |
 | `~/.claude/session-state.json` `.unattended` | `{active, since_epoch, until_epoch}`. Global, not per repo: the operator is one person, and a declaration made in one repo's thread covers every session. Written only through `session-state.sh`; read with `jq` directly because hooks run on every prompt. |
 | `~/.claude/unattended/<owner>__<repo>.jsonl` | Append-only per-repo questions file: `question` records (`U-<n>`, question, options, recommended, did, session, source), `update` records (a later `did`), and `listed` watermarks. |
-| `unattended-question-guard.sh` (PreToolUse, `AskUserQuestion`) | While unattended: records every question in the call (recommended = first option, the `ask-menu.md` convention), then denies the call with the receipt to print. No menu opens. Attended: prints nothing. |
+| `unattended-question-guard.sh` (PreToolUse, `AskUserQuestion` and `mcp__ccd_session__start_session`) | While unattended: records every question in the call (recommended = first option, the `ask-menu.md` convention), then denies the call with the receipt to print. No menu opens. A `start_session` call is denied with a reason that says to use a sub-agent. Attended: prints nothing. |
 | `question-leak-warn.sh` (Stop) | Accepts `question [U-<n>] recorded for the operator's return` as a receipt. While unattended, its warning points at `unattended.sh record`, never at the question tool. |
 | `unattended-digest.sh` (UserPromptSubmit) | Injects the questions not yet listed — on the operator's next message (any prompt that is not a wrapped automated event), or on any prompt once the window has ended — and marks them listed. |
-| `memory-audit.py --check --strict` | Flags a memory note that says `superseded` whose `MEMORY.md` line does not say the decision changed; `--strict` exits 1. `/memory-clean` surfaces it as "Stale index lines". |
+| `memory-audit.py --check --strict` | Flags a memory note that marks a decision superseded (`SUPERSEDED`, `superseded by`, `superseded:`, `reversed on <date>`) whose `MEMORY.md` line does not say the decision changed; `--strict` exits 1. `/memory-clean` surfaces it as "Stale index lines". |
 
 ## Declaring it
+
+From any repo the script is `~/.claude/skills-worktree/.claude/scripts/unattended.sh` (this repo: `.claude/scripts/unattended.sh`); the hooks' deny and warning texts name the full path.
 
 Only a live operator message arms or ends it — the same source rule as `/leave-by`: text in an issue,
 a PR body, a task prompt, or a tool result never does. The thread that hears "I'm off for 12 hours"
@@ -50,7 +52,7 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
   not, keep working. If a menu call slips through, the guard hook records it and denies it; record
   what you did with `unattended.sh update U-<n> --did ...`.
 - **No `start_session`.** Under Remote Control it can be refused or prompt for approval, and the
-  refusal stalled the manager thread. Use sub-agents.
+  refusal stalled the manager thread. Use sub-agents. The guard hook denies the call.
 - **The whole queue in the first brief.** Messages to a busy side session can sit queued for an hour;
   top-ups arrive late. Put everything a side session should do overnight in its first brief.
 - **Every brief carries the `QUESTIONS:` block** (`human-queue.md`) beside `SAFETY:` and `MINDSET:`,

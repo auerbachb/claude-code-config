@@ -38,6 +38,10 @@ leak the capture hook cannot see: a question written as prose
   punctuation-only lines never count; a
   `?` inside inline code or before a closing quote or bracket is never
   line-final, so it never counts either.
+- The unattended receipt `question U-<n> recorded for the operator's return`
+  (id optional, plural allowed) counts the same, and while unattended mode is
+  on the warning points at `unattended.sh record`, never at the question tool
+  (`.claude/reference/unattended-mode.md`).
 - **A receipt line** contains `question D-<n> sent to human queue` or the
   plural `questions D-<n>, D-<m> sent to human queue` (any case, any
   decoration) — the exact text the capture hook's denial tells a thread to

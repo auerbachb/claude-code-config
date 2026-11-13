@@ -133,6 +133,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-portability-lint-hotspot-decision.md` — keep the skill portability lint together (Issue #1331); five historical changes and no counted current churn
 - `skill-usage-durability.md` — how skill-usage telemetry records survive machine moves, OS reinstalls, and `~/.claude` cleanups (#572)
 - `skill-first-subagent-delivery.md` — the two delivery paths that carry the skill-first reflex into subagents, the `Skill`-tool precondition matrix, and the borderline-rung adaptation for autonomous agents (`skill-first.md`; #918)
+- `unattended-mode.md` — unattended mode (`human-queue.md` §Unattended): the `unattended.sh` switch and per-repo questions file, the guard hook that denies menus and `start_session`, the once-only digest on the operator's return, the `QUESTIONS:` brief block, the stale-memory-index lint, and what was left out (#2283)
+- `ask-menu-pause-points.md` — the named `AskUserQuestion` pause points and menu conventions moved out of `ask-menu.md` for the word budget (#2283)
 - `trust-dialog-repair.md` — why `~/.claude.json` re-prompts per worktree, the three flags, and repair-script behavior (`trust-dialog-fix.md`)
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 - `budget-cap-raise-decision.md` — decision record: the `.budget-soft-cap` ratchet is a visibility mechanism raisable with a PR-body justification line; the 12,000/13,000 word limits are the actual gate (#879)

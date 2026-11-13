@@ -24,6 +24,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [silence-watchdog.sh](../silence-watchdog.sh) | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |
 | [statusline.sh](../statusline.sh) | Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0 |
 | [table-freshness.sh](../table-freshness.sh) | Hourly floor on "Running now" table freshness during active rounds — the complementary bound to the silence ceiling; mechanism in `.claude/reference/time-estimates.md` §"Table freshness" |
+| [unattended.sh](../unattended.sh) | Unattended mode: declare the operator away, record questions instead of opening menus, list them once on his return |
 | [uninstall-backfill-review.sh](../uninstall-backfill-review.sh) | Unload and remove the backfill-review LaunchAgent; always keeps the ledger (`~/.claude/unreviewed-merges.json`), locks and logs |
 | [uninstall-config-sync.sh](../uninstall-config-sync.sh) | Unload and remove the config-sync LaunchAgent; `--remove-state` also drops its state, logs and marker |
 | [uninstall-silence-watchdog.sh](../uninstall-silence-watchdog.sh) | Uninstall the macOS launchd silence watchdog |

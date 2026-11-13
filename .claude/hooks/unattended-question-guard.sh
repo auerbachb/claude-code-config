@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# unattended-question-guard.sh — PreToolUse hook on AskUserQuestion (issue #2283).
+# unattended-question-guard.sh — PreToolUse hook on AskUserQuestion and
+# start_session (issue #2283).
 #
 # While the operator has declared himself away (`unattended.sh on`), a menu
 # blocks the turn until he returns. This hook records every question in the
@@ -7,7 +8,8 @@
 # "hook", recommended = the first option, the ask-menu.md convention) and
 # denies the call with a reason telling the agent to print the receipt, take
 # the recommended option where it is reversible, park only the step that is
-# not, and keep working. No menu opens.
+# not, and keep working. No menu opens. A start_session call is denied with
+# a reason that says to use a sub-agent.
 #
 # Not unattended (the common case): prints nothing, the menu renders as usual
 # (and human-queue-capture.sh decides as before).
@@ -36,6 +38,20 @@ payload=$(cat 2>/dev/null) || exit 0
 [ -n "$payload" ] || exit 0
 
 "$UNATTENDED_SH" is-active >/dev/null 2>&1 || exit 0
+
+deny() { # REASON
+  "$JQ" -cn --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",
+    permissionDecision: "deny", permissionDecisionReason: $r}}' 2>/dev/null
+  exit 0
+}
+
+# start_session can be refused or sit on an approval prompt under Remote
+# Control; that refusal is what stalled the manager thread. Sub-agents do not.
+tool=$(printf '%s' "$payload" | "$JQ" -r '(.tool_name // "") | tostring' 2>/dev/null) || tool=""
+case "$tool" in
+  *start_session)
+    deny "UNATTENDED (human-queue.md, Unattended): the operator is away, and starting a session can wait on him. Do the work in a sub-agent (Agent tool) instead, with the whole queue in its first brief, and keep working. Do not retry this call." ;;
+esac
 
 cwd=$(printf '%s' "$payload" | "$JQ" -r '(.cwd // "") | tostring' 2>/dev/null) || cwd=""
 sid=$(printf '%s' "$payload" | "$JQ" -r '(.session_id // "") | tostring' 2>/dev/null) || sid=""
@@ -74,11 +90,9 @@ fi
 
 if [ -n "$ids" ] && [ "$failed" -eq 0 ]; then
   case "$ids" in *,*) noun="questions" ;; *) noun="question" ;; esac
-  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens. Recorded for his return: $ids. Print exactly: $noun $ids recorded for the operator's return. Then take the recommended option${recs:+ ($recs)} if the step is reversible, else park only that step; record what you did with unattended.sh update <id> --did '...'; and keep working. Do not ask again."
+  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens. Recorded for his return: $ids. Print exactly: $noun $ids recorded for the operator's return. Then take the recommended option${recs:+ ($recs)} if the step is reversible, else park only that step; record what you did with $UNATTENDED_SH update <id> --did '...'; and keep working. Do not ask again."
 else
-  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens.${ids:+ Recorded: $ids.} The question could not be fully recorded: record it with unattended.sh record --question '...' --recommended '...' --did '...', or put it in your final report. Take the recommended option if the step is reversible, else park only that step, and keep working. Do not ask again."
+  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens.${ids:+ Recorded: $ids.} The question could not be fully recorded: record it with $UNATTENDED_SH record --question '...' --recommended '...' --did '...', or put it in your final report. Take the recommended option if the step is reversible, else park only that step, and keep working. Do not ask again."
 fi
 
-"$JQ" -cn --arg r "$reason" '{hookSpecificOutput: {hookEventName: "PreToolUse",
-  permissionDecision: "deny", permissionDecisionReason: $r}}' 2>/dev/null
-exit 0
+deny "$reason"

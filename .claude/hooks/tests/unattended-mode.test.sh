@@ -63,6 +63,10 @@ ask_payload() { # CWD
                  {label: "Amazon", description: "AWS"}], multiSelect: false},
       {question: "Merge now?", header: "Merge", options: [], multiSelect: false}]}}'
 }
+session_payload() { # CWD
+  jq -cn --arg cwd "$1" '{session_id: "s-1", cwd: $cwd, hook_event_name: "PreToolUse",
+    tool_name: "mcp__ccd_session__start_session", tool_input: {title: "item F", initiation: "own_initiative"}}'
+}
 prompt_payload() { # CWD PROMPT
   jq -cn --arg cwd "$1" --arg p "$2" '{session_id: "s-1", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: $p}'
 }
@@ -72,7 +76,7 @@ printf '== registration\n'
 REG=$(jq -r '[.hooks | to_entries[] | .key as $e | .value[] | (.matcher // "") as $m | .hooks[]
   | select(.command | test("/unattended-")) | "\($e) \($m) \(.command | split("/") | last)"] | sort | join(";")' "$SETTINGS")
 check "both hooks registered once" "$REG" \
-  "PreToolUse AskUserQuestion unattended-question-guard.sh;UserPromptSubmit  unattended-digest.sh"
+  "PreToolUse AskUserQuestion|mcp__ccd_session__start_session unattended-question-guard.sh;UserPromptSubmit  unattended-digest.sh"
 for f in "$SCRIPT" "$GUARD" "$DIGEST"; do
   if [ -x "$f" ]; then ok "$(basename "$f") is executable"; else bad "$(basename "$f") is not executable"; fi
   if bash -n "$f"; then ok "$(basename "$f") parses"; else bad "$(basename "$f") does not parse"; fi
@@ -85,6 +89,8 @@ check "status: inactive" "$(U status)" "inactive"
 OUT=$(ask_payload "$REPO_A" | "$GUARD"; echo "rc=$?")
 check "guard: prints nothing, menu renders" "$OUT" "rc=0"
 check "guard: nothing recorded" "$(ls "$HOME/.claude/unattended" 2>/dev/null | wc -l | tr -d ' ')" "0"
+OUT=$(session_payload "$REPO_A" | "$GUARD"; echo "rc=$?")
+check "guard: start_session runs when attended" "$OUT" "rc=0"
 OUT=$(prompt_payload "$REPO_A" "hello" | "$DIGEST"; echo "rc=$?")
 check "digest hook: nothing to list" "$OUT" "rc=0"
 
@@ -121,6 +127,13 @@ check "source hook" "$(jq -rs '.[0].source' "$QF")" "hook"
 OUT=$(jq -cn --arg cwd "$REPO_A" '{cwd: $cwd, tool_input: {}}' | "$GUARD")
 check "guard: an empty call is still denied" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
 has "guard: and says to record it" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "unattended.sh record"
+
+# start_session can wait on the operator: denied, nothing recorded.
+OUT=$(session_payload "$REPO_A" | "$GUARD")
+check "guard: start_session is denied while unattended" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
+has "guard: and says to use a sub-agent" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "sub-agent"
+check "guard: start_session records no question" "$(jq -s '[.[] | select(.type == "question")] | length' "$QF")" "2"
+has "reason: names the script by full path" "$REASON" "$SCRIPT update"
 
 # ---------------------------------------------------------------- script
 printf '== record / update / per repo\n'

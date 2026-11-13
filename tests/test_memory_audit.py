@@ -121,6 +121,19 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(r["stale_index"][0]["line"], 1)
         self.assertEqual(r["summary"]["stale_index_count"], 1)
 
+    def test_bare_word_in_prose_is_not_a_marker(self):
+        # "superseded" as an ordinary word does not mark a decision reversed.
+        mem = make_store(
+            self.tmp,
+            ["- [CI](ci.md) — re-run once first", "- [DB](db.md) — use Postgres"],
+            {
+                "ci.md": fact("ci", "Cancel runs on superseded SHAs to free the runner.\n"),
+                "db.md": fact("db", "Use Postgres. Reversed on 2026-11-02: use SQLite.\n"),
+            },
+        )
+        r = memory_audit.detect(mem, 10 ** 9)
+        self.assertEqual([s["file"] for s in r["stale_index"]], ["db.md"])
+
     def test_strict_exit_code(self):
         mem = make_store(
             self.tmp,

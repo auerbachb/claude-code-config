@@ -18,7 +18,7 @@ Design (mirrors the ticket's "lean conservative" guidance):
                          orphans are intentionally unindexed)
     - dangling pointers: a ``MEMORY.md`` link whose target file is missing
     - index health     : entry count + index byte size vs a soft budget
-    - stale index lines: a note that says ``superseded`` (any case) whose
+    - stale index lines: a note that marks a decision superseded whose
                          ``MEMORY.md`` line does not say the decision changed
                          (``superseded`` / ``reversed`` / ``replaced``) — the
                          index loads every session and the note does not, so a
@@ -101,9 +101,15 @@ _STALE_MARKER_RE = re.compile(
     r"\b(superseded by|replaced by|deprecated|obsolete|no longer needed)\b",
     re.IGNORECASE,
 )
-# A note that records a decision as superseded (issue #2283): the bare word, any
-# case, so "SUPERSEDED 2026-11-10" and "superseded the same day" both count.
-_SUPERSEDED_WORD_RE = re.compile(r"\bsuperseded\b", re.IGNORECASE)
+# A note that records a decision as superseded (issue #2283): the all-caps
+# marker ("SUPERSEDED 2026-11-10"), or the word used as a marker in any case
+# ("superseded by", "superseded:", "superseded the same day", "reversed on
+# 2026-..."). The bare word in running prose ("runs on superseded SHAs") does
+# not count.
+_SUPERSEDED_WORD_RE = re.compile(
+    r"\b(?:SUPERSEDED|REVERSED)\b"
+    r"|(?i:\b(?:superseded|reversed)\s*(?::|by\b|the same day|(?:on\s+)?\d{4}-\d))"
+)
 # An index line that says the decision changed.
 _INDEX_SAYS_CHANGED_RE = re.compile(r"supersed|revers|replaced", re.IGNORECASE)
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
@@ -307,7 +313,7 @@ def detect_superseded(mem_dir: str, files: List[str]) -> List[Dict[str, str]]:
 def detect_stale_index_lines(
     mem_dir: str, raw_lines: List[str], pointers: List[Tuple[int, str]]
 ) -> List[Dict[str, str]]:
-    """A note containing the word ``superseded`` whose index line does not say
+    """A note marking a decision superseded whose index line does not say
     the decision changed (issue #2283). One entry per such index line."""
     flags = []
     for line_no, target in pointers:

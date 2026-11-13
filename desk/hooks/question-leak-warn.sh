@@ -231,7 +231,7 @@ qlw_warning_jq() {
       hookEventName: "Stop",
       additionalContext: (if $mode == "unattended" then
         ("PROSE QUESTION WARNING (human-queue.md, Unattended): your final message asks in prose: \"" + $quote + "\". The operator is away (unattended mode), so do not open a menu and do not wait. "
-        + "Fix: record it with unattended.sh record --question '...' --recommended '...' --did '...', print the receipt it names (question U-<n> recorded for the operator's return), take the recommended option if the step is reversible, else park only that step, and keep working. "
+        + "Fix: record it with " + $script + " record --question '...' --recommended '...' --did '...', print the receipt it names (question U-<n> recorded for the operator's return), take the recommended option if the step is reversible, else park only that step, and keep working. "
         + "If that line is not a question for the operator, end your turn without repeating it.")
       else
         ("PROSE QUESTION WARNING (human-queue.md): your final message asks in prose: \"" + $quote + "\". A prose question never reaches the human queue, so no desk sees it. "
@@ -291,6 +291,6 @@ if [ -n "$qlw_here" ] && [ -x "$qlw_unattended" ] && "$qlw_unattended" is-active
   qlw_mode_name=unattended
 fi
 
-"$qlw_jq" -c -n --arg q "$qlw_q" --argjson max "$QLW_QUOTE_MAX" --arg mode "$qlw_mode_name" "$(qlw_warning_jq)" 2>/dev/null
+"$qlw_jq" -c -n --arg q "$qlw_q" --argjson max "$QLW_QUOTE_MAX" --arg mode "$qlw_mode_name" --arg script "$qlw_unattended" "$(qlw_warning_jq)" 2>/dev/null
 
 exit 0

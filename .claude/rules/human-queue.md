@@ -28,4 +28,4 @@ Park only a step whose recommended option is not reversible, and report it.
 Full rules: .claude/rules/human-queue.md.
 ```
 
-**Past decisions:** read the full memory note and the assigned issue (body, first comment) before asking; the task as written beats a remembered note — proceed, flag the doubt. Marking a note superseded rewrites its `MEMORY.md` line (`memory-audit.py --strict` flags misses). Detail: `.claude/reference/unattended-mode.md`.
+**Past decisions:** read the full memory note, the task brief and the assigned issue (body, first comment) before asking; the task as written beats a remembered note — proceed, flag the doubt. Marking a note superseded rewrites its `MEMORY.md` line (`memory-audit.py --strict` flags misses). Detail: `.claude/reference/unattended-mode.md`.

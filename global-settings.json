@@ -136,7 +136,7 @@
         ]
       },
       {
-        "matcher": "AskUserQuestion",
+        "matcher": "AskUserQuestion|mcp__ccd_session__start_session",
         "hooks": [
           {
             "type": "command",
