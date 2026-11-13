@@ -663,11 +663,17 @@ def add_question(store, n, repo, key, session, q):
 def deny(ids):
     if len(ids) == 1:
         reason = ("Queued as {0}. Print exactly: question {0} sent to human queue. "
-                  "Then proceed on your recommended default or park and wait for a wake-up.").format(ids[0])
+                  "Then proceed on your recommended default or park and wait for a wake-up. "
+                  "If you park, first arm the phone push: "
+                  "~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm {0} "
+                  "--thread <name> --question '<one line>' and follow what it prints.").format(ids[0])
     else:
         joined = ", ".join(ids)
         reason = ("Queued as {0}. Print exactly: questions {0} sent to human queue. "
-                  "Then proceed on your recommended defaults or park and wait for a wake-up.").format(joined)
+                  "Then proceed on your recommended defaults or park and wait for a wake-up. "
+                  "If you park, first arm the phone push for each id: "
+                  "~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm <id> "
+                  "--thread <name> --question '<one line>' and follow what it prints.").format(joined)
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
