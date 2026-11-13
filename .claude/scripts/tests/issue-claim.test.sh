@@ -1460,6 +1460,261 @@ run 873 --claim --repo acme/widgets --holder "$OTHER_HOLDER"
 run 873 --renew --repo acme/widgets --holder "$RECEIPT_OUT"
 check_eq "a valid receipt cannot re-acquire a lost claim on resume" 5 "$RC"
 
+############################################################################
+echo "== (2284) who holds it: provider / device / label, hidden default holder =="
+# Isolate every variable that feeds provider, holder, device or label so the
+# defaults are what is under test.
+drun() {
+  local errfile="$TMP/err"
+  OUT="$(env -u CLAUDE_CLAIM_HOLDER -u CLAUDE_SESSION_ID -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_SANDBOX -u CODEX_THREAD_ID -u CODEX_HOME -u CURSOR_AGENT -u CURSOR_TRACE_ID \
+    -u AGENT_CLAIM_PROVIDER -u AGENT_CLAIM_DEVICE -u AGENT_CLAIM_LABEL \
+    "$@" 2>"$errfile")"; RC=$?
+  ERR="$(cat "$errfile")"
+}
+last_payload() { # -> payload JSON of the newest claim comment
+  jq -r '[ .[] | select(.body | contains("<!-- claude-claim:")) ] | last | .body
+         | capture("<!-- claude-claim: (?<p>.*) -->").p' "$STATE/comments.json"
+}
+last_body() { jq -r '[ .[] | select(.body | contains("<!-- claude-claim:")) ] | last | .body' "$STATE/comments.json"; }
+add_marker() { # add_marker <id> <created_at> <payload-json>
+  jq --argjson id "$1" --arg at "$2" --arg p "$3" \
+    '. + [{id: $id, created_at: $at, user: {login: "alice"},
+           body: ("🔒 Claimed by `alice` for active work. It will be released when this issue'"'"'s PR merges.\n\n<!-- claude-claim: " + $p + " -->")}]' \
+    "$STATE/comments.json" > "$STATE/c.tmp" && mv "$STATE/c.tmp" "$STATE/comments.json"
+  echo "$1" > "$STATE/next_id"
+}
+# Stub hostname with a distinctive value so the privacy assertions are
+# controlled: the real machine name could be a substring of anything.
+REAL_HOST="secret-host-9f3a"
+mkdir -p "$TMP/hostbin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "secret-host-9f3a"\n' > "$TMP/hostbin/hostname"
+chmod +x "$TMP/hostbin/hostname"
+export PATH="$TMP/hostbin:$PATH"
+
+reset_issue
+run 873 --claim --holder threadA --provider codex --device studio --label "backlog run" --json
+check_eq "fields: claim succeeds" "0|mine" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "fields: claim JSON reports provider" "codex" "$(jq -r .provider <<<"$OUT")"
+check_eq "fields: payload carries provider" "codex" "$(last_payload | jq -r .provider)"
+check_eq "fields: payload carries device" "studio" "$(last_payload | jq -r .device)"
+check_eq "fields: payload carries label" "backlog run" "$(last_payload | jq -r .label)"
+check_eq "fields: payload keeps holder/login" "threadA|alice" "$(last_payload | jq -r '.holder + "|" + .login')"
+check_contains "fields: sentence names provider and device" "Held by codex on device studio (run: backlog run)." "$(last_body)"
+run 873 --check --holder threadB --json
+check_eq "fields: second holder sees claimed" "1|claimed" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "fields: --check --json names the three" "codex|studio|backlog run" \
+  "$(jq -r '[.provider, .device, .label] | join("|")' <<<"$OUT")"
+run 873 --check --holder threadB
+check_contains "fields: human message names provider" "provider codex" "$ERR"
+check_contains "fields: human message names device" "device studio" "$ERR"
+check_contains "fields: human message names label" "label backlog run" "$ERR"
+
+# resolution order: flag > env > detection > unknown
+reset_issue
+drun env AGENT_CLAIM_PROVIDER=cursor AGENT_CLAIM_DEVICE=envbox "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: env provider/device used" "cursor|envbox" "$(jq -r '[.provider, .device] | join("|")' <<<"$OUT")"
+reset_issue
+drun env AGENT_CLAIM_PROVIDER=cursor "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --json
+check_eq "resolution: flag beats env" "codex" "$(jq -r .provider <<<"$OUT")"
+reset_issue
+drun env CODEX_HOME=/x "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: Codex env detected" "codex" "$(jq -r .provider <<<"$OUT")"
+reset_issue
+drun env CLAUDECODE=1 "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: Claude Code env detected" "claude-code" "$(jq -r .provider <<<"$OUT")"
+reset_issue
+drun env CURSOR_TRACE_ID=1 "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: Cursor env detected" "cursor" "$(jq -r .provider <<<"$OUT")"
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: nothing known -> unknown" "unknown" "$(jq -r .provider <<<"$OUT")"
+check_eq "resolution: no label -> null" "null" "$(jq -r .label <<<"$OUT")"
+check_eq "resolution: device is a per-machine nickname" "true" \
+  "$(jq -r '.device | test("^device-[0-9a-f]{6}$")' <<<"$OUT")"
+printf 'my-laptop\n' > "$HOME/.claude/device-nickname"
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: nickname file used" "my-laptop" "$(jq -r .device <<<"$OUT")"
+for NICK_CASE in "Bob's MacBook" "Studio (office)" "caf$(printf '\303\251')"; do
+  printf '%s\r\n' "$NICK_CASE" > "$HOME/.claude/device-nickname"
+  reset_issue
+  drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+  check_eq "resolution: invalid nickname file falls back, no usage error ($NICK_CASE)" "0|true" \
+    "$RC|$(jq -r '.device | test("^device-[0-9a-f]{6}$")' <<<"$OUT")"
+done
+printf 'my-laptop\r\n' > "$HOME/.claude/device-nickname"
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: CRLF nickname file trimmed" "my-laptop" "$(jq -r .device <<<"$OUT")"
+printf "Bob's MacBook\n" > "$HOME/.claude/device-nickname"
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --device "Bob's MacBook" --json
+check_eq "resolution: explicit invalid --device stays strict" "2" "$RC"
+rm -f "$HOME/.claude/device-nickname"
+
+# release: the released claim's facts are not reported beside `unclaimed`
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --device laptop --json
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --release --holder h1 --json
+check_eq "release --json: unclaimed with no leftover facts" "unclaimed|null|null|null" \
+  "$(jq -r '[.verdict, .provider, .device, .label] | map(tostring) | join("|")' <<<"$OUT")"
+
+# no SHA-256 tool: the default holder/device id fails closed (no weak checksum)
+NOSHA_BIN="$TMP/nosha-bin"
+mkdir -p "$NOSHA_BIN"
+for t in shasum sha256sum; do printf '#!/bin/sh\nexit 1\n' > "$NOSHA_BIN/$t"; chmod +x "$NOSHA_BIN/$t"; done
+reset_issue
+drun env PATH="$NOSHA_BIN:$PATH" "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --json
+check_eq "no sha tool: default holder claim fails closed (usage)" "2" "$RC"
+reset_issue
+drun env PATH="$NOSHA_BIN:$PATH" "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --json
+check_eq "no sha tool: default device fails closed (usage)" "2" "$RC"
+reset_issue
+drun env PATH="$NOSHA_BIN:$PATH" "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --device laptop --json
+check_eq "no sha tool: explicit holder+device still claims" "0" "$RC"
+
+# nothing private in the posted comment (default holder, default device)
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --json
+check_eq "privacy: default claim succeeds" "0|mine" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "privacy: default holder is a digest" "true" "$(last_payload | jq -r '.holder | test("^h-[0-9a-f]{12}$")')"
+PRIV_BODY="$(last_body)"
+check_eq "privacy: comment has no hostname" "no" "$([[ "$PRIV_BODY" == *"$REAL_HOST"* ]] && echo yes || echo no)"
+check_eq "privacy: comment has no checkout path" "no" "$([[ "$PRIV_BODY" == *"$REPO_ROOT"* ]] && echo yes || echo no)"
+check_eq "privacy: comment has no HOME path" "no" "$([[ "$PRIV_BODY" == *"$HOME"* ]] && echo yes || echo no)"
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --check
+check_eq "privacy: same default holder reads back as mine" "0|mine" "$RC|$OUT"
+
+# old markers: still parse, block, renew, release; the old default token is mine
+reset_issue
+LEGACY_TOKEN="$REAL_HOST:$REPO_ROOT"
+add_marker 1 "$(iso_ago 1)" "$(jq -cn --arg h "$LEGACY_TOKEN" '{holder: $h, login: "alice"}')"
+echo in-progress > "$STATE/labels"; echo alice > "$STATE/assignees"
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --check --json
+check_eq "legacy: old default token still reads as mine" "mine" "$(jq -r .verdict <<<"$OUT")"
+check_eq "legacy: old marker has null provider/device/label" "null|null|null" \
+  "$(jq -r '[.provider, .device, .label] | map(tostring) | join("|")' <<<"$OUT")"
+run 873 --check --holder other --json
+check_eq "legacy: old marker blocks a foreign holder" "1|claimed" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "legacy: old marker gives null fields to the foreign reader" "null|null|null" \
+  "$(jq -r '[.provider, .device, .label] | map(tostring) | join("|")' <<<"$OUT")"
+check_contains "legacy: human message unchanged shape" "claimed by alice (holder $LEGACY_TOKEN)" "$ERR"
+# defaulted renewal migrates the old token and keeps exactly one marker
+drun env CLAIM_RENEW_MINUTES=30 "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --renew --json
+check_eq "legacy: defaulted renewal of an old default claim succeeds" "0|true" "$RC|$(jq -r .renewed <<<"$OUT")"
+check_eq "legacy: renewal migrates to the digest holder" "true" "$(last_payload | jq -r '.holder | test("^h-[0-9a-f]{12}$")')"
+check_eq "legacy: renewal leaves one marker" 1 "$(claim_comment_count)"
+check_eq "legacy: renewal fills the missing fields" "unknown" "$(last_payload | jq -r .provider)"
+
+# an explicit holder on an old marker renews and carries forward
+reset_issue
+add_marker 1 "$(iso_ago 3)" '{"holder":"threadA","login":"alice"}'
+echo in-progress > "$STATE/labels"; echo alice > "$STATE/assignees"
+run 873 --renew --holder threadA --provider claude-code --device studio --label oldrun --json
+check_eq "old marker: explicit holder renews" "0|true" "$RC|$(jq -r .renewed <<<"$OUT")"
+check_eq "old marker: renewal writes the new fields" "claude-code|studio|oldrun" \
+  "$(last_payload | jq -r '[.provider, .device, .label] | join("|")')"
+
+# renewal carries the recorded fields forward, even when other values are passed
+reset_issue
+add_marker 1 "$(iso_ago 3)" '{"holder":"threadA","login":"alice","provider":"codex","device":"studio","label":"backlog run"}'
+echo in-progress > "$STATE/labels"; echo alice > "$STATE/assignees"
+run 873 --renew --holder threadA --provider cursor --device other --label different --json
+check_eq "carry-forward: renewal succeeds" "0|true" "$RC|$(jq -r .renewed <<<"$OUT")"
+check_eq "carry-forward: new marker keeps the original fields" "codex|studio|backlog run" \
+  "$(last_payload | jq -r '[.provider, .device, .label] | join("|")')"
+check_eq "carry-forward: JSON reports the original fields" "codex|studio|backlog run" \
+  "$(jq -r '[.provider, .device, .label] | join("|")' <<<"$OUT")"
+check_contains "carry-forward: sentence still names them" "Held by codex on device studio (run: backlog run)." "$(last_body)"
+run 873 --release --holder threadA
+check_eq "carry-forward: release clears it" "0|unclaimed" "$RC|$OUT"
+
+# a verified sibling renewal wins: report ITS facts, not this run's
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA --provider codex --device studio --label first
+OLD_IDS="$(marker_ids)"
+jq -n --arg at "$(date -u +%FT%TZ)" '{id: 999999, created_at: $at, user: {login: "alice"},
+  body: ("<!-- claude-claim: " + ({holder: "threadA", login: "alice", provider: "claude-code", device: "laptop", label: "sibling"} | tojson) + " -->")}' \
+  > "$STATE/inject.json"
+FAKE_AFTER_POST_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" --argjson new "$NEW_ID" --slurpfile x "$S/inject.json" \
+    "[ .[] | select(.id != \$old and .id != \$new) ] + \$x" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"' \
+  run 873 --renew --holder threadA --provider cursor --device other --label mine --json
+check_eq "sibling won: renewal exits 0" 0 "$RC"
+check_eq "sibling won: reports the winner's fields" "claude-code|laptop|sibling" \
+  "$(jq -r '[.provider, .device, .label] | join("|")' <<<"$OUT")"
+run 873 --check --holder threadB --json
+check_eq "sibling won: --check agrees" "claude-code|laptop|sibling" \
+  "$(jq -r '[.provider, .device, .label] | join("|")' <<<"$OUT")"
+
+# usage errors for the new flags
+reset_issue
+run 873 --check --provider codex
+check_eq "usage: --provider is claim/renew only" 2 "$RC"
+run 873 --claim --holder h1 --device "/Users/someone/box"
+check_eq "usage: a path is rejected as a device" 2 "$RC"
+run 873 --claim --holder h1 --label 'a<b'
+check_eq "usage: markup is rejected in a label" 2 "$RC"
+run 873 --claim --holder h1 --provider
+check_eq "usage: --provider needs a value" 2 "$RC"
+run 873 --claim --holder h1 --provider --json
+check_eq "usage: a following option is not swallowed as the value" 2 "$RC"
+run 873 --claim --holder h1 --device _studio --label "#2284 run" --json
+check_eq "usage: leading punctuation in the documented alphabet is accepted" "0|_studio|#2284 run" \
+  "$RC|$(jq -r '[.device, .label] | join("|")' <<<"$OUT")"
+run 873 --release --holder h1
+check_eq "usage: rejected values wrote nothing" 0 "$(claim_comment_count)"
+
+############################################################################
+echo "== (2284-int) real default claim, then the REAL ownership gate: both identity env vars unset =="
+# candidate-ownership.test.sh stubs issue-claim.sh, so it cannot see a mismatch
+# between the holder the real claim script writes by default and the one the
+# ownership gate expects. Here nothing is stubbed but `gh` and `hostname`.
+reset_issue
+INT_BIN="$TMP/int-bin"
+mkdir -p "$INT_BIN"
+# Distinctive fake host: the claim digest must come from it, never a real name.
+printf '#!/usr/bin/env bash\necho fixture-host-zzq\n' > "$INT_BIN/hostname"
+# The gate also asks gh for the in-progress index, open PRs and the repo name;
+# answer those and forward every issue-API call to the stateful stub above.
+cat > "$INT_BIN/gh" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}\${2:-}" in
+  issuelist) exit 0 ;;
+  prlist) echo '[]'; exit 0 ;;
+  repoview) echo 'testowner/testrepo'; exit 0 ;;
+esac
+exec "$STUB_BIN/gh" "\$@"
+STUB
+chmod +x "$INT_BIN/hostname" "$INT_BIN/gh"
+INT_SESSION_STATE="$TMP/int-session-state.json"
+echo '{"schema_version":2,"repos":{}}' > "$INT_SESSION_STATE"
+int_env() { # int_env <cmd...> — identity env vars unset, fake host first on PATH
+  ( cd "$REPO_ROOT" && env -u CLAUDE_CLAIM_HOLDER -u CLAUDE_SESSION_ID -u CANDIDATE_OWNERSHIP_SCRIPT_DIR \
+      PATH="$INT_BIN:$PATH" CLAUDE_SESSION_STATE_FILE="$INT_SESSION_STATE" \
+      CLAUDE_SESSION_REPO="testowner/testrepo" CLAUDE_HANDOFF_DIR="$TMP/int-handoffs" "$@" )
+}
+INT_OUT="$(int_env "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --repo testowner/testrepo --json 2>"$TMP/int.err")"; INT_RC=$?
+check_eq "default claim succeeds with no explicit holder" "0|mine" "$INT_RC|$(jq -r .verdict <<<"$INT_OUT")"
+check_eq "premise: the claim comment is on the issue" 1 "$(claim_comment_count)"
+INT_HOLDER="$(jq -r '.[0].body' "$STATE/comments.json" | sed -n 's/.*"holder":"\([^"]*\)".*/\1/p')"
+check_contains "premise: the stored holder is the hidden digest form" "h-" "$INT_HOLDER"
+check_eq "premise: the fake hostname is not published" "false" \
+  "$(if grep -q 'fixture-host-zzq' "$STATE/comments.json"; then echo true; else echo false; fi)"
+INT_GATE="$(int_env "$CLAIM_TEST_SHELL" "$REPO_ROOT/.claude/scripts/candidate-ownership.sh" 873 --repo testowner/testrepo --json 2>"$TMP/int-gate.err")"
+check_eq "gate: the run's own default claim is not owned" "false" "$(jq -r 'select(.issue == 873) | .owned' <<<"$INT_GATE")"
+check_eq "gate: dispatchable" "dispatch" "$(jq -r 'select(.issue == 873) | .action' <<<"$INT_GATE")"
+check_contains "gate: self-attributed" "held by this thread" \
+  "$(jq -r 'select(.issue == 873) | .evidence | join("|")' <<<"$INT_GATE")"
+check_eq "gate: the real claim script answered (verdict mine)" "mine" "$(jq -r 'select(.issue == 873) | .claim_verdict' <<<"$INT_GATE")"
+# Control: a claim under an unrelated holder still reads as foreign.
+reset_issue
+run 873 --claim --holder someone-else
+INT_GATE="$(int_env "$CLAIM_TEST_SHELL" "$REPO_ROOT/.claude/scripts/candidate-ownership.sh" 873 --repo testowner/testrepo --json 2>/dev/null)"
+check_eq "control: a foreign claim is still owned" "true" "$(jq -r 'select(.issue == 873) | .owned' <<<"$INT_GATE")"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

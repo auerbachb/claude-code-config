@@ -270,6 +270,15 @@ chmod +x "$tmp/bin/ss-dis"
 check "a stale dismissal writes no cooldown" "$(jq -r '.presence.dismissed_until // 0' "$HOME/.claude/session-state.json")" 0
 reset_presence
 
+# A usage error after --generation still releases the claim.
+reset_presence
+P $owner1 ask; tok=$out
+P $owner1 set here --by operator-message --generation "$tok" --bogus-flag
+check "a bad flag after --generation is a usage error" "$rc" 2
+P $owner2 ask; check "the claim was released after the usage error" "$rc" 0
+P $owner2 release --generation "$out" >/dev/null
+reset_presence
+
 printf '== rest of the day\n'
 P $owner1 set here --by operator-message --rest-of-day >/dev/null
 P $owner1 status --json

@@ -301,6 +301,8 @@
 0	desk/tests/reviews-view.test.sh
 0	desk/tests/reviews.test.sh
 0	desk/tests/shellcheck.test.sh
+20	desk/tests/stoppage-offline.test.sh
+0	desk/tests/stoppage.test.sh
 7	desk/tests/todo-offline.test.sh
 0	desk/tests/todo.test.sh
 0	desk/tests/wakeups.test.sh

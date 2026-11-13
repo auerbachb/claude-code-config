@@ -18,7 +18,7 @@ GitHub is the only store. There is no local claim state — a local file by defi
 |---|---|---|
 | `in-progress` label | the coarse "someone is working this" bit | any issue list, `/wave`'s batch pre-filter, a human skimming the backlog |
 | `@me` assignee | ownership at **account** level (#732) | `--release`'s ownership test |
-| claim comment `<!-- claude-claim: {"holder":…,"login":…,"since":…} -->` | **holder** identity + the claimed-at timestamp (`created_at`); `since` (renewed markers only) carries the original pickup time | `--check`'s `mine` vs `claimed` decision |
+| claim comment `<!-- claude-claim: {"holder":…,"login":…,"provider":…,"device":…,"label":…,"since":…} -->` | **holder** identity, who holds it (provider / device / label, #2284) + the claimed-at timestamp (`created_at`); `since` (renewed markers only) carries the original pickup time | `--check`'s `mine` vs `claimed` decision |
 
 The label is created idempotently on first use (`gh label list` existence check, then `gh label create … || true`) — the repo had no such label before this feature.
 
@@ -30,9 +30,29 @@ The failure this feature exists to prevent is **two Claude threads belonging to 
 
 `.claude/scripts/tests/issue-claim.test.sh` pins this: substituting the login-level comparison makes scenario (2) fail.
 
-**Holder resolution:** `--holder ID` → `$CLAUDE_CLAIM_HOLDER` → `$CLAUDE_SESSION_ID` → `<hostname>:<git toplevel>`.
+**Holder resolution:** `--holder ID` → `$CLAUDE_CLAIM_HOLDER` → `$CLAUDE_SESSION_ID` → `h-<12 hex>`, a SHA-256 digest of `<hostname>:<git toplevel>` (#2284). The digest keeps the computer name and checkout path out of a public comment. A defaulted holder still recognizes the **old** default token (`<hostname>:<git toplevel>`) as its own: an open claim written before the change reads as `mine`, and its first renewal rewrites it with the digest token. Explicit holders (`--holder`, env, session id) get no alias, so callers that pass a stored holder are unaffected.
 
 The default is honest about its granularity rather than hiding it: two threads sharing one checkout resolve to one holder. That is acceptable because `CLAUDE.md` mandates a worktree per thread, so the mandated workflow always yields distinct holders. A caller holding a real session id should still pass `--holder`. A Form A chip starts before it creates a worktree, so it gives the launch an explicit holder and carries the verified issue/holder pair across checkout changes, renewal, and wrap. See `chip-launching.md`.
+
+## Who holds it: provider, device, label (issue #2284)
+
+Several agents (Claude Code, Codex, Cursor) on several machines share one GitHub login, so the login says nothing about who holds a claim. The marker payload therefore also carries three plain-language fields, and the visible sentence names them (`Held by codex on device studio (run: backlog run).`):
+
+| Field | Resolution order | Never |
+|---|---|---|
+| `provider` | `--provider` → `$AGENT_CLAIM_PROVIDER` → detected agent env (`CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT`/`CLAUDE_SESSION_ID` → `claude-code`; `CODEX_SANDBOX`/`CODEX_THREAD_ID`/`CODEX_HOME` → `codex`; `CURSOR_AGENT`/`CURSOR_TRACE_ID` → `cursor`) → `unknown` | |
+| `device` | `--device` → `$AGENT_CLAIM_DEVICE` → first line of `~/.claude/device-nickname` → `device-<6 hex>` (digest of the hostname) | the raw hostname or any path |
+| `label` | `--label` → `$AGENT_CLAIM_LABEL` → none (`null`) | |
+
+Values are limited to 1-64 characters of letters, digits, space and `. _ : + @ # -` (a path or markup is a usage error, exit 2); `provider` is lowercased. The flags are valid only with `--claim` and `--renew`.
+
+`--check --json` returns `provider`, `device`, `label` for the winning claim, `null` when the marker predates this change, and the human `claimed` message appends them to the holder (`holder X, provider P, device D, label L`).
+
+**Old markers** (no new fields) parse, block, renew, and release exactly as before. A renewal carries the old marker's fields forward; fields the old marker lacked are filled from the renewing run's resolved values.
+
+**Marker name.** The hidden marker stays `claude-claim`: renaming it would hide new claims from older helper copies on other machines. Treat it as a format name, not an owner. Claims already posted with a hostname stay in issue history; cleaning them up is out of scope.
+
+This increment records and reports the facts only. Teaching non-Claude agents to claim, batch claiming, and enforcement are separate increments.
 
 ## Block at holder level, release at account level
 

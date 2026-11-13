@@ -56,8 +56,8 @@ if [ -z "$JQ" ]; then
 fi
 
 # Child scripts (prompt-reservation.sh, session-state.sh) need jq on PATH; the fallback
-# locations above may not be on it, so put the resolved jq's directory there for children.
-[ -z "$JQ" ] || case "$JQ" in /*) PATH="$(dirname "$JQ"):$PATH"; export PATH ;; esac
+# locations above may not be on it, so append the resolved jq directory (never prepend: it must not shadow the caller tools) for children.
+[ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
 
 usage() { sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'presence.sh: %s\n' "$1" >&2; exit 2; }
@@ -200,15 +200,13 @@ cmd_set() {
       --until-epoch) [ $# -ge 2 ] || die_usage "--until-epoch needs a value"; until="$2"; given=$((given + 1)); shift 2 ;;
       --rest-of-day) rod=1; given=$((given + 1)); shift ;;
       --open-ended) open=1; given=$((given + 1)); shift ;;
-      --generation) [ $# -ge 2 ] || die_usage "--generation needs a value"; gen="$2"; shift 2 ;;
+      --generation) [ $# -ge 2 ] || die_usage "--generation needs a value"; gen="$2"; GEN_HELD="$gen"; trap release_held_claim EXIT; shift 2 ;;
       *) die_usage "unknown argument to set: $1" ;;
     esac
   done
   # The dialog claim is released on every way out of this command once --generation was
   # given (a refused closing, a usage error, a failed write); a held claim would otherwise
   # stop every other thread's `ask` until this session exits.
-  GEN_HELD="$gen"
-  [ -z "$gen" ] || trap release_held_claim EXIT
   # The source rule (issue #2293): only a live operator message sets presence. The flag
   # makes that claim explicit in the call; text from an issue, PR, task prompt or tool
   # result is never passed it.

@@ -327,7 +327,7 @@ Registered on **`PreToolUse`** with matcher **`AskUserQuestion`** and a 15 s tim
 
 - Asks the store (`desk/bin/human-queue.sh control-status`) whether a live desk exists: a registered control session whose last tick is at most 15 minutes old (`live_desk_max_tick_age_min` in `desk/policy.json` overrides it).
 - **No live desk:** does nothing; the menu renders as it always has. This is the state until the `/desk` session (#1779) registers and ticks, so the hook is inert at rollout.
-- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.`
+- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.` followed by one sentence telling a parking thread to arm `phone-push-wait.sh` first (Issue #2291).
 - Finds `HUMAN_QUEUE_DATABASE_URL` even when the app's environment lacks it: from an owner-only `~/.config/human-queue/database_url`, else a literal `export` line in the shell profile (read, never run). Never prints it.
 - **Fails open:** any failure (no URL, store unreachable, CLI missing, timeout, bad input) allows the menu with one `human-queue-capture:` line on stderr. Always exits `0`.
 
@@ -350,6 +350,21 @@ Registered on **`Stop`** with a 5 s timeout.
 - **Fails open:** no jq, bad input, an unreadable transcript — nothing printed. Always exits `0`. Needs no database.
 
 **Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.
+
+## stoppage-log.sh
+
+Logs an unplanned work stoppage to the desk's private database (Issue #2292). A **symlink** to `desk/hooks/stoppage.sh`; contract and gates: `desk/docs/stoppages.md`.
+
+Registered on **`Stop`** and **`UserPromptSubmit`** with a 10 s timeout each.
+
+**What it does:**
+
+- **Stop:** writes one entry (`human-queue.sh stoppage record`) only on an `issue-N-*` branch with no planned stop (`/pause`, `/end`, a declared leave time), nothing running or armed, and unfinished work. Any doubt means no entry.
+- **Stop continued by another hook** (`stop_hook_active`): the entry the first Stop opened is withdrawn (`stoppage withdraw`, deleted rather than closed), then the real end is judged like any Stop.
+- **UserPromptSubmit:** closes the thread's open entry with the idle time (`stoppage resume`); without an open marker it is one file test.
+- **Fails open:** no jq, bad input, a database that is down or unmigrated — nothing printed, exit `0`. A down database keeps the entry under `~/.claude/desk-stoppages` and sends it later. Never writes to GitHub or to a repository file.
+
+**Tests:** `desk/tests/stoppage-offline.test.sh`.
 
 ## unattended-question-guard.sh + unattended-digest.sh
 

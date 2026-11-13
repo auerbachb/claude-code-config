@@ -78,6 +78,7 @@ The hook entries under `.claude/hooks/` are symlinks into this folder
 - <a name="derived-impact-issue-1760"></a>[Derived impact (issue #1760)](docs/derived-impact.md)
 - <a name="review-batches"></a>[Review batches](docs/review-batches.md)
 - <a name="export-to-paper-issue-1759"></a>[Export to paper (issue #1759)](docs/export-to-paper.md)
+- <a name="stoppage-log-issue-2292"></a>[Stoppage log (issue #2292)](docs/stoppages.md)
 <!-- desk-docs-index:end -->
 
 ### Queue owner: decisions (issue #2184)
