@@ -7,6 +7,7 @@ Hook implementations for the human queue live here.
 | `capture.sh` | The capture hook (issue #1755): a `PreToolUse` hook on `AskUserQuestion` that sends a thread's questions to the store instead of rendering them in the thread, while a live desk exists. A bash launcher that resolves its own location and runs `capture.py` |
 | `capture.py` | The capture hook's logic (Python 3.9: the input is nested JSON, and every CLI call needs a hard timeout that kills its process group) |
 | `question-leak-warn.sh` | The prose-question nudge (issue #1778): a `Stop` hook that warns, once per turn, when the final assistant message asks the operator a question in prose with no receipt line after it. Warn-only; bash, jq, and awk; needs neither the CLI nor the database |
+| `stoppage.sh` | The stoppage log hook (issue #2292): a `Stop` and `UserPromptSubmit` hook that records one entry in the desk database when a turn ends with nothing running, nothing armed, and assigned work unfinished, and closes it with the idle time at the next prompt. Bash and jq; fails open, keeps the entry locally when the database is down. Contract: `../docs/stoppages.md` |
 
 Claude Code registers hooks from `.claude/hooks/`, so each hook here gets an
 entry there that is a symlink into this folder
