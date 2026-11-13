@@ -49,6 +49,16 @@ RECORDER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" 2>/dev/null && pwd)/lib
 
 
 SESSION_ID="$(_spend_resolve_session "$SESSION_ID")"
+# Explicit --session and the runtime env vars come first. When neither is set in
+# this shell, use the breadcrumb the SessionStart hook wrote for this claude
+# process (issue #2300). Any failure leaves SESSION_ID unknown, never fabricated.
+if [[ "$SESSION_ID" == unknown ]]; then
+  CRUMB_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" 2>/dev/null && pwd)/session-breadcrumb.sh"
+  if [[ -r "$CRUMB_LIB" ]] && . "$CRUMB_LIB" 2>/dev/null; then
+    CRUMB_SESSION="$(session_breadcrumb_read 2>/dev/null || true)"
+    [[ -n "$CRUMB_SESSION" ]] && SESSION_ID="$CRUMB_SESSION"
+  fi
+fi
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$REPO" ]]; then
   REPO="${GH_REPO:-}"
