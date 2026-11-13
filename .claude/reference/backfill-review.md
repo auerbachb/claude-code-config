@@ -80,6 +80,39 @@ Install it once with `install-backfill-review.sh --repo-dir <checkout>` (`--inte
 
 `uninstall-backfill-review.sh` unloads and removes the agent and always keeps the ledger (`~/.claude/unreviewed-merges.json`), its locks, and the logs. Both scripts exit 1 on non-macOS hosts. A one-off run: `backfill-review.sh --repo-dir <checkout> --ignore-window`. Logs: `~/.claude/logs/backfill-review.log` (runner detail) and `backfill-review-stdout.log` / `-stderr.log` (launchd). Tests: `.claude/scripts/tests/install-backfill-review.test.sh`.
 
+## Range mode (issue #2324)
+
+`backfill-review.sh --range` reviews `main` in stretches instead of one logged merge at a time. One committed-range review covers many small PRs, which fits the reviewers' rate limits better than one request per small diff. The per-PR mode above is unchanged; with no `--range` the script behaves as before. Range mode uses the free channels only, never opens a PR, triggers no GitHub reviewer, posts no comment, and does not read the ledger or touch labels.
+
+**Start.** The marker is `~/.claude/backfill-range-marker.json` (override `BACKFILL_RANGE_MARKER`; never in a worktree). Its shape: `{schema_version: 1, repos: {"owner/name": {last_reviewed_commit, updated_at, last_range: {first, last, commits, files, bound, channel, partial}, partial_commits: [{commit, files, bound}]}}}`. Written atomically (a temp file in the same directory, then rename), and only after a verified run whose findings were all parsed and filed. On a first run with no marker, give `--from <commit>`, or use the default: the parent of the oldest first-parent commit on `main` within `--default-days` (default 14; env `BACKFILL_RANGE_DEFAULT_DAYS`). The run prints the start and its source. A default window that reaches the repository's first commit stops with `range_no_start` rather than starting there silently. `--from` over an existing marker is a usage error.
+
+**Refusals.** An unreadable or malformed marker stops with `range_marker_unreadable`, a marker commit missing from the checkout with `range_marker_unknown_commit`, and a marker that is not an ancestor of the pinned `origin/main` with `range_marker_not_ancestor`. All three exit 6 and leave the marker untouched. Nothing falls back to an arbitrary commit.
+
+**Bounds.** A stretch is cut by distinct changed files, not time. A file is counted once per stretch, using `git diff --no-renames --name-only <start> <commit>`, so a rename counts as two files.
+
+| Reviewer | Bound | Source |
+|---|---|---|
+| CodeAnt CLI | 15 | `local-review-cli-failure-modes.md` "The 15-file cap" (`meta.max_files`; files past it are skipped and reported clean) |
+| CodeRabbit CLI | 150 | `pricing-matrix.md`, CLI row: "150 files/review" |
+
+`--range-bound N` (env `BACKFILL_RANGE_BOUND`) lowers the bound for every reviewer. A larger value is ignored. Each channel gets its own cut, so a fallback channel reviews the same stretch within its own bound. A commit that is over the bound on its own is reviewed alone and recorded as **partially covered** in `partial_commits` and `last_range.partial`, with its file count and the bound. A stretch with zero changed files is not a verified review: the run stops with `range_empty` and the marker stays where it is, so a human has to look at it.
+
+**Review.** The reviewed tree is a throwaway detached worktree at the stretch's last commit (`core.hooksPath=/dev/null`). The base is a temporary branch at the marker. `local-review.sh --tool <ch> --scope committed --base <branch>` runs as in the per-PR mode, and nothing from the tree is built or executed. A run that is not verified drops that channel and retries the same stretch on the next channel. With no channel left the run stops with `capacity_exhausted`.
+
+**Filing.** Findings go through the same normalize, verify-against-`main`, dedup, and `issue-file.sh` path as per-PR mode. The verification compares the flagged file on `main` with its content at the stretch's last commit. Each issue names the first and last commit of the stretch and the introducing PR: the last commit in the stretch that touched the flagged path, read from its squash subject. This is path-level and approximate. If no PR number can be read, the issue says so.
+
+**Fingerprint.** Range findings use the location only: repo, path, and flagged line, with no PR number and no range. A re-review of an overlapping stretch lands on the same issue, through the exact marker `<!-- backfill-range-finding: owner/repo:<fp> -->`. That marker cannot collide with the per-PR `<!-- backfill-finding: owner/repo#PR:<fp> -->`. The cost is that one flaw found by both the per-PR pass and a range pass files two issues. The per-PR fingerprint keeps the PR number, so the two passes never share a marker.
+
+**What "covered" means.** A commit is covered when the marker has passed it after a verified run: a free reviewer ran a committed-range review over its net diff, every finding it reported was parsed, and each bug was filed or matched an existing issue. It does not mean clean. A bug introduced and fixed inside one stretch is invisible, because only the net diff is reviewed. A commit listed in `partial_commits` is covered only for the files the reviewer saw. A failed, rate-limited, timed-out, or capacity-exhausted run covers nothing, and the marker stays where it is.
+
+**Stop reasons.** `done` (the marker reached `main`), `window_closed`, `max_reviews`, `capacity_exhausted`, `range_empty`, `range_failed`, `range_findings_unparsed`, `range_filing_failed`, `range_setup_failed`, `range_marker_write_failed` (exit 5), `range_internal_error` (exit 5, a git enumeration failure), `dry_run`, and the three marker refusals above (exit 6). Every stop prints the summary line. The exit code is 0 for these stops, except the two exit-5 faults and the exit-6 refusals listed above, and usage errors (exit 2: `--from` without `--range`, `--from` over an existing marker, a `--from` that is not a commit, a bad `--range-bound` or `--default-days`).
+
+**Dry run.** `--range --dry-run` lists each stretch it would review as `first..last commits=N files=M bound=B channel=C partial=yes|no`. It writes nothing: no marker, no ledger, no issues, no labels. It reads `origin/main` (a fetch) and the marker.
+
+**Scheduling.** `install-backfill-review.sh` does not schedule range mode. Turning it on for the overnight run is a follow-up decision, to be made after range mode has run cleanly for a while.
+
+**Tests.** `.claude/scripts/tests/backfill-range-review.test.sh` covers the bound cut, the partial commit, the default start, a refused start, the marker advance after a verified run, the marker kept after failed and filing-failed runs, the two marker refusals, the `--from` usage errors, and the dry run.
+
 ## Tests
 
 `.claude/scripts/tests/backfill-review.test.sh` — offline: seeded ledger, fixture repo, stub CLIs and gh. Covers one deduped issue per planted bug, no re-review, marker recovery, outage → pending, lookup failure → pending, window handling, disabled hooks, the allowlist, no paid-reviewer call, and the rename and unresolvable-path verdicts (filed, never dropped), a runner killed while a helper sleeps leaving no lock, failing rows sinking behind a fresh one and being skipped at the cap, same-anchor findings in one issue, a repeated channel run once, a quoted heading, and the window re-check after slow setup.

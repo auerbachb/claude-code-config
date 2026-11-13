@@ -6,6 +6,8 @@
 #   backfill-review.sh [--repo-dir DIR] [--window HH:MM-HH:MM] [--tz ZONE]
 #                      [--now ISO8601] [--ignore-window] [--channels LIST]
 #                      [--max-reviews N] [--timeout SEC] [--dry-run]
+#   backfill-review.sh --range [--from SHA] [--default-days N]
+#                      [--range-bound N] [same options]   (range mode, issue #2324)
 #   backfill-review.sh --help
 #
 # WHAT IT DOES
@@ -59,6 +61,20 @@
 #                      (default BACKFILL_MAX_ROW_ATTEMPTS or 3)
 #   --dry-run          list what would be reviewed; review, file, label nothing
 #
+# RANGE MODE (--range, issue #2324)
+#   Walks origin/main from a persisted "last reviewed commit" marker
+#   (~/.claude/backfill-range-marker.json, override BACKFILL_RANGE_MARKER)
+#   in stretches bounded by distinct changed-file count per reviewer
+#   (CodeAnt 15, CodeRabbit 150; see the reference doc). Each stretch is one
+#   committed-range review; the marker advances only after a verified run
+#   whose findings were parsed and filed. Free reviewers only; no PR is
+#   opened, labelled or commented on, and the per-PR ledger is not read.
+#   --from SHA sets the start on a first run (no marker yet); without it the
+#   start is the parent of the oldest first-parent commit within
+#   --default-days (default 14, env BACKFILL_RANGE_DEFAULT_DAYS).
+#   --range-bound N (env BACKFILL_RANGE_BOUND) lowers both file bounds.
+#   Reference: .claude/reference/backfill-review.md §Range mode
+#
 # ENVIRONMENT
 #   BACKFILL_CODERABBIT_BIN / BACKFILL_CODEANT_BIN  CLI override passed to
 #   local-review.sh --bin (tests point these at stubs).
@@ -76,8 +92,12 @@
 #   safe. Setup: .claude/reference/backfill-review.md §Scheduling.
 #
 # EXIT CODES
-#   0 completed (including a capacity stop, a closed window, a held lock)
+#   0 completed (including a capacity stop, a closed window, a held lock,
+#     and every range-mode stop reason other than the two below)
 #   2 usage · 3 a required tool or helper is missing · 4 ledger unreadable
+#   5 range mode internal fault (git enumeration or marker write failed)
+#   6 range mode refused the marker (unreadable, malformed, unknown commit,
+#     or not an ancestor of origin/main); the marker is left untouched
 
 set -uo pipefail
 
@@ -105,6 +125,17 @@ MAX_REVIEWS=3
 REVIEW_TIMEOUT=900
 MAX_ROW_ATTEMPTS="${BACKFILL_MAX_ROW_ATTEMPTS:-3}"
 DRY_RUN=0
+# Range mode (issue #2324). Bounds are changed distinct files per review:
+# CodeAnt CLI skips files past 15 and reports them clean (local-review-cli-
+# failure-modes.md "The 15-file cap"); CodeRabbit CLI is 150 files/review
+# (pricing-matrix.md, CLI row). Overridable only downward.
+RANGE_BOUND_CODEANT=15
+RANGE_BOUND_CODERABBIT=150
+RANGE_MODE=0
+FROM_SHA=""
+RANGE_DEFAULT_DAYS="${BACKFILL_RANGE_DEFAULT_DAYS:-14}"
+RANGE_BOUND_OVERRIDE="${BACKFILL_RANGE_BOUND:-}"
+RANGE_MARKER="${BACKFILL_RANGE_MARKER:-$HOME/.claude/backfill-range-marker.json}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -119,10 +150,19 @@ while [[ $# -gt 0 ]]; do
     --timeout) REVIEW_TIMEOUT="${2:-}"; [[ "$REVIEW_TIMEOUT" =~ ^[0-9]+$ ]] || die 2 "--timeout needs an integer"; shift 2 ;;
     --max-row-attempts) MAX_ROW_ATTEMPTS="${2:-}"; [[ -n "$MAX_ROW_ATTEMPTS" ]] || die 2 "--max-row-attempts needs a value"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --range) RANGE_MODE=1; shift ;;
+    --from) FROM_SHA="${2:-}"; [[ -n "$FROM_SHA" ]] || die 2 "--from needs a commit"; shift 2 ;;
+    --default-days) RANGE_DEFAULT_DAYS="${2:-}"; [[ "$RANGE_DEFAULT_DAYS" =~ ^[1-9][0-9]*$ ]] || die 2 "--default-days needs a positive integer"; shift 2 ;;
+    --range-bound) RANGE_BOUND_OVERRIDE="${2:-}"; [[ "$RANGE_BOUND_OVERRIDE" =~ ^[1-9][0-9]*$ ]] || die 2 "--range-bound needs a positive integer"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die 2 "unknown argument: $1" ;;
   esac
 done
+if [[ -n "$RANGE_BOUND_OVERRIDE" && ! "$RANGE_BOUND_OVERRIDE" =~ ^[1-9][0-9]*$ ]]; then
+  die 2 "BACKFILL_RANGE_BOUND needs a positive integer"
+fi
+if [[ -n "$FROM_SHA" && "$RANGE_MODE" -eq 0 ]]; then die 2 "--from needs --range"; fi
+if [[ ! "$RANGE_DEFAULT_DAYS" =~ ^[1-9][0-9]*$ ]]; then die 2 "BACKFILL_RANGE_DEFAULT_DAYS needs a positive integer"; fi
 if ! [[ "$MAX_ROW_ATTEMPTS" =~ ^[0-9]+$ ]] || (( 10#$MAX_ROW_ATTEMPTS < 1 )); then
   die 2 "--max-row-attempts / BACKFILL_MAX_ROW_ATTEMPTS needs an integer >= 1"
 fi
@@ -268,6 +308,9 @@ if [[ "$LOCK_STATE" != locked ]]; then
   summary lock_held; exit 0
 fi
 
+# Per-PR preamble (ledger rows, dry run, label retries). Range mode skips it:
+# it never reads the ledger and never writes a PR label.
+if [[ "$RANGE_MODE" -eq 0 ]]; then
 # ---- pending rows ----------------------------------------------------------
 ALL_ROWS="$("$LEDGER_SH" list --repo "$REPO")" || die 4 "ledger list failed"
 # Fewest failed attempts first, then oldest merge: a row that keeps failing
@@ -331,6 +374,7 @@ done < <(jq -c '.[] | select((.backfill_status == "reviewed-clean" or .backfill_
                               and .backfill.label_synced == false)' <<<"$ALL_ROWS")
 
 [[ "$PENDING_LEFT" -gt 0 ]] || { summary "done"; exit 0; }
+fi
 
 # Pin origin/main once: every finding is verified against this SHA.
 if ! git -C "$REPO_DIR" fetch --quiet origin main 2>>"$LOG"; then
@@ -499,6 +543,293 @@ file_finding() {
   ISSUE_FILE_GH="$GH_BIN" bash "$ISSUE_FILE" --repo "$REPO" --title "$title" --body-file "$body" --label bug --json 2>>"$LOG" \
     | jq -er '.url' || return 1
 }
+
+# ---- range mode (issue #2324) ----------------------------------------------
+# Everything below is defined before the dispatch at the end of this section,
+# so the helpers above (verify_finding, marker_lookup, file_finding's
+# neutralize/safe_inline, cleanup_worktree, drop_channel) are all in scope.
+RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_CUT_PARTIAL=0 RANGE_FIRST=""
+RANGE_LAST=""
+short() { printf '%s' "${1:0:12}"; }
+
+range_bound() { # channel -> the file bound for that reviewer
+  local b=0
+  case "$1" in
+    codeant) b=$RANGE_BOUND_CODEANT ;;
+    coderabbit) b=$RANGE_BOUND_CODERABBIT ;;
+  esac
+  if [[ -n "$RANGE_BOUND_OVERRIDE" ]] && (( 10#$RANGE_BOUND_OVERRIDE < b )); then
+    b=$(( 10#$RANGE_BOUND_OVERRIDE ))
+  fi
+  printf '%s' "$b"
+}
+
+# range_marker_read — sets RANGE_LAST to the recorded commit. An absent file, or
+# a file with no entry for this repo, is "no marker" (RANGE_LAST empty). Any
+# other shape is refused (return 1): an empty file, a file holding anything but
+# one JSON object, a repo entry with no usable commit, or a commit that is not
+# a full hex SHA. Nothing here falls back to a default start.
+range_marker_read() {
+  local sha=""
+  RANGE_LAST=""
+  [[ -e "$RANGE_MARKER" ]] || return 0
+  jq -e 'type == "object"' "$RANGE_MARKER" >/dev/null 2>&1 || return 1
+  # Only an ABSENT repo key prints the word null (jq -r). A present key must be
+  # an object with a commit; an explicit null, a non-object, an empty commit, or
+  # a missing commit fails here or in the SHA check below. None is "absent".
+  sha="$(jq -r --arg r "$REPO" 'if type == "object" and ((.repos | type) == "object") then
+             (if ((.repos | has($r)) | not) then null
+              else (.repos[$r] | if type == "object"
+                    then (.last_reviewed_commit // error("no commit for repo"))
+                    else error("repo entry is not an object") end) end)
+           else error("marker shape") end' "$RANGE_MARKER" 2>/dev/null)" || return 1
+  if [[ "$sha" == null ]]; then return 0; fi
+  [[ "$sha" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+  RANGE_LAST="$sha"
+}
+
+# range_marker_write <sha> <files> <bound> <channel> <partial 0|1> — atomic:
+# temp file in the same directory, then rename. Uses RANGE_FIRST / RANGE_CUT_COMMITS.
+range_marker_write() {
+  local sha="$1" files="$2" bound="$3" ch="$4" partial="$5" dir tmp now
+  dir="$(dirname "$RANGE_MARKER")"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$(mktemp "$dir/.backfill-range-marker.XXXXXX")" || return 1
+  now="$(date -u +%FT%TZ)"
+  {
+    if [[ -e "$RANGE_MARKER" ]]; then cat "$RANGE_MARKER"; else printf '%s' '{"schema_version":1,"repos":{}}'; fi
+  } | jq --arg r "$REPO" --arg sha "$sha" --arg now "$now" --arg first "$RANGE_FIRST" \
+        --argjson commits "$RANGE_CUT_COMMITS" --argjson files "$files" --argjson bound "$bound" \
+        --arg ch "$ch" --argjson partial "$partial" '
+      .repos[$r] = ((.repos[$r] // {}) + {last_reviewed_commit: $sha, updated_at: $now,
+        last_range: {first: $first, last: $sha, commits: $commits, files: $files,
+                     bound: $bound, channel: $ch, partial: ($partial == 1)}})
+      | if $partial == 1
+        then .repos[$r].partial_commits = ((.repos[$r].partial_commits // []) + [{commit: $sha, files: $files, bound: $bound}])
+        else . end' > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
+}
+
+# range_cut <start> <end> <bound> — walks first-parent commits after start and
+# cuts at the last boundary whose cumulative distinct-file count (diff from
+# start, renames off) is at or under <bound>. A first commit alone over the
+# bound is the cut, flagged partial. Sets RANGE_CUT_*, RANGE_FIRST.
+# Returns 1 on a git failure, 2 when there is no commit to cut.
+range_cut() {
+  local start="$1" end="$2" bound="$3" c n=0 diffout nfiles cut="" cfiles=0 cn=0 first="" partial=0 commits
+  RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_CUT_PARTIAL=0 RANGE_FIRST=""
+  commits="$(git -C "$REPO_DIR" rev-list --first-parent --reverse "$start..$end" 2>/dev/null)" || return 1
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    n=$(( n + 1 ))
+    [[ -n "$first" ]] || first="$c"
+    diffout="$(git -C "$REPO_DIR" diff --no-renames --name-only "$start" "$c" 2>/dev/null)" || return 1
+    nfiles="$(printf '%s' "$diffout" | awk 'NF' | wc -l | tr -d ' ')"
+    if (( nfiles > bound )); then
+      if [[ -z "$cut" ]]; then cut="$c"; cfiles=$nfiles; cn=$n; partial=1; fi
+      break
+    fi
+    cut="$c"; cfiles=$nfiles; cn=$n
+  done <<< "$commits"
+  [[ -n "$cut" ]] || return 2
+  RANGE_CUT_SHA="$cut" RANGE_CUT_FILES=$cfiles RANGE_CUT_COMMITS=$cn RANGE_CUT_PARTIAL=$partial RANGE_FIRST="$first"
+}
+
+# range_introducer <path> <start> <cut> — the PR behind the last commit in the
+# range that touched <path>, read from its squash subject. Path-level only.
+range_introducer() {
+  local path="$1" start="$2" cut="$3" c subj n
+  c="$(git -C "$REPO_DIR" log --first-parent -1 --format=%H "$start..$cut" -- "$path" 2>/dev/null)" || c=""
+  if [[ -z "$c" ]]; then printf 'not determinable (no commit in the range touches this path)'; return; fi
+  subj="$(git -C "$REPO_DIR" log -1 --format=%s "$c" 2>/dev/null)"
+  n="$(printf '%s' "$subj" | sed -n 's/.*(#\([0-9][0-9]*\))[^(]*$/\1/p')"
+  if [[ -n "$n" ]]; then
+    printf 'PR #%s (commit %s, the last commit in the range touching this path; path-level, approximate)' "$n" "$(short "$c")"
+  else
+    printf 'commit %s (no PR number in its subject; path-level, approximate)' "$(short "$c")"
+  fi
+}
+
+# range_review_channel <start> <cut> <channel> — one committed-range review in a
+# throwaway detached worktree at <cut>, base = <start>. Returns 0 on a verified
+# run (REVIEW_JSON / REVIEW_LOG set), 1 when not verified, 2 on a setup
+# failure, 3 when the quiet window no longer fits a review.
+range_review_channel() {
+  local start="$1" cut="$2" ch="$3" bin_var bin out rc
+  REVIEW_JSON="" REVIEW_LOG=""
+  SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/backfill-range.XXXXXX")" || return 2
+  WT="$SCRATCH/wt"
+  git -C "$REPO_DIR" -c core.hooksPath=/dev/null worktree add --quiet --detach "$WT" "$cut" >/dev/null 2>>"$LOG" \
+    || { WT=""; return 2; }
+  BASE_BRANCH="backfill-range-base-$$"
+  git -C "$REPO_DIR" branch --quiet "$BASE_BRANCH" "$start" 2>>"$LOG" || { BASE_BRANCH=""; return 2; }
+  window_has_room || return 3
+  ATTEMPTS=$(( ATTEMPTS + 1 ))
+  bin_var="BACKFILL_$(printf '%s' "$ch" | tr '[:lower:]' '[:upper:]')_BIN"
+  bin="${!bin_var:-}"
+  local args=(--tool "$ch" --scope committed --base "$BASE_BRANCH" --timeout "$REVIEW_TIMEOUT" --log-dir "$SCRATCH")
+  [[ -n "$bin" ]] && args+=(--bin "$bin")
+  out="$(cd "$WT" && bash "$LOCAL_REVIEW" "${args[@]}" 9>&-)"; rc=$?
+  log "$REPO range $(short "$start")..$(short "$cut") $ch rc=$rc $(printf '%s' "$out" | jq -c '{verified_run,findings,failure_mode}' 2>/dev/null)"
+  if [[ $rc -le 1 ]] && [[ "$(printf '%s' "$out" | jq -r '.verified_run' 2>/dev/null)" == true ]]; then
+    REVIEW_JSON="$out" REVIEW_LOG="$(printf '%s' "$out" | jq -r .log_path)"
+    return 0
+  fi
+  return 1
+}
+
+# file_range_finding <finding> <start> <cut> <verdict> <main_path> <introducer> <range-info>
+# Same filing path as file_finding (exact marker, dedup, issue-file.sh) with a
+# range-scoped marker. The fingerprint is location-based, with no PR and no range.
+file_range_finding() {
+  local f="$1" start="$2" cut="$3" verdict="$4" main_path="$5" intro="$6" info="$7"
+  local fp path line sev text marker url kw dup dup_rc title body
+  fp="$(jq -r .fingerprint <<<"$f")"; path="$(jq -r .path <<<"$f")"; line="$(jq -r '.line // "?"' <<<"$f")"
+  sev="$(jq -r .severity <<<"$f")"; text="$(jq -r .text <<<"$f")"
+  marker="<!-- backfill-range-finding: $REPO:$fp -->"
+  url="$(marker_lookup "$marker")" || return 1
+  if [[ -n "$url" ]]; then printf '%s\n' "$url"; return 0; fi
+  kw="$(printf '%s %s' "$(basename "$path")" "$(printf '%s' "$text" | head -n 1)" | tr -c '[:alnum:]_.-' ' ' | cut -c1-200)"
+  dup="$(bash "$ISSUE_DEDUP" "$kw" --repo "$REPO" --max-results 3 2>/dev/null)"; dup_rc=$?
+  [[ $dup_rc -eq 4 || $dup_rc -eq 2 ]] && return 1
+  dup="$(jq -r '.[]? | "Possibly duplicates #\(.number) — \(.title)"' <<<"${dup:-[]}" 2>/dev/null | neutralize)"
+  title="Backfill range: $(basename "$path") — $(printf '%s' "$text" | head -n 1 | tr -s '[:space:]' ' ')"
+  title="$(printf '%s' "$title" | python3 -c 'import sys; t=sys.stdin.read().strip(); print(t if len(t)<=70 else t[:69].rstrip()+"…")')"
+  title="$(printf '%s' "$title" | sed 's/@/(at)/g')"
+  body="$SCRATCH/range-issue-$fp.md"
+  {
+    printf '## Background\n\n'
+    printf 'The backfill range review (issue #2324) reviewed the commits `%s`..`%s` on `main` as one committed-range diff (%s). The range begins after the last reviewed commit `%s`. The change behind the flagged line: %s.\n\n' \
+      "$(short "$RANGE_FIRST")" "$(short "$cut")" "$info" "$(short "$start")" "$intro"
+    printf '## Problem\n\n`%s` line %s (severity: %s). Finding text, quoted as untrusted review data:\n\n```text\n' \
+      "$(safe_inline "$path")" "$(safe_inline "$line")" "$(safe_inline "$sev")"
+    printf '%s\n' "$text" | neutralize
+    printf '```\n\n'
+    printf '## Proposed solution\n\nConfirm the finding against current `main` and fix it if it still applies.\n\n'
+    printf '## Acceptance Criteria\n\n- [ ] The flagged behaviour is fixed on `main`, or this issue is closed with the reason it does not apply.\n\n'
+    printf '## Test Plan\n\n- [ ] A test or manual check shows the flagged case behaves correctly.\n\n'
+    printf '## Notes / Open questions\n\n'
+    printf -- '- Verified against `main` at `%s`: %s.\n' "$MAIN_SHA" "$verdict"
+    if [[ -z "$main_path" ]]; then
+      printf -- '- This path is not on `main` and no rename was detected — locate the code (renamed, moved, or deleted) and confirm the finding still applies before fixing.\n'
+    else
+      if [[ "$main_path" != "$path" ]]; then printf -- '- The file was renamed after the range; on `main` it is `%s`.\n' "$(safe_inline "$main_path")"; fi
+      if [[ "$verdict" == changed ]]; then printf -- '- The file changed after the range — confirm the finding still applies before fixing.\n'; fi
+    fi
+    if [[ -n "$dup" ]]; then printf -- '- %s\n' "$dup"; fi
+    printf -- '- Filed automatically from a range review; no reviewer was asked to re-review.\n\n%s\n\n' "$marker"
+    printf '## Estimate\n\nEst: 15–30 min · plan on 30\n\n_Captured via /issue-maker._\n'
+  } > "$body" || return 1
+  ISSUE_FILE_GH="$GH_BIN" bash "$ISSUE_FILE" --repo "$REPO" --title "$title" --body-file "$body" --label bug --json 2>>"$LOG" \
+    | jq -er '.url' || return 1
+}
+
+# range_main — the range loop. Always exits (summary + exit code).
+range_main() {
+  local start="" source="" cursor="" ch bound cut nfiles ncommits partial rc2 dry_count=0
+  local f vline verdict main_path intro url ok ISSUES BUGS FINDINGS reported parsed info
+  if ! range_marker_read; then summary range_marker_unreadable; exit 6; fi
+  if [[ -n "$FROM_SHA" && -n "$RANGE_LAST" ]]; then
+    die 2 "--from is for a first run; a marker already exists for $REPO (reset it to restart)"
+  fi
+  if [[ -n "$RANGE_LAST" ]]; then
+    start="$RANGE_LAST"; source="marker"
+    if ! git -C "$REPO_DIR" cat-file -e "$start^{commit}" 2>/dev/null; then
+      summary range_marker_unknown_commit; exit 6
+    fi
+  elif [[ -n "$FROM_SHA" ]]; then
+    start="$(git -C "$REPO_DIR" rev-parse --verify -q "$FROM_SHA^{commit}" 2>/dev/null)" || start=""
+    [[ -n "$start" ]] || die 2 "--from $FROM_SHA is not a commit in $REPO_DIR"
+    source="--from"
+  else
+    local oldest
+    oldest="$(git -C "$REPO_DIR" rev-list --first-parent --since="$RANGE_DEFAULT_DAYS days ago" "$MAIN_SHA" 2>/dev/null | tail -n 1)" \
+      || { summary range_internal_error; exit 5; }
+    if [[ -z "$oldest" ]]; then summary range_no_commits; exit 0; fi
+    start="$(git -C "$REPO_DIR" rev-parse --verify -q "$oldest^" 2>/dev/null)" || start=""
+    if [[ -z "$start" ]]; then summary range_no_start; exit 0; fi
+    source="default: commits since $RANGE_DEFAULT_DAYS days ago"
+  fi
+  if ! git -C "$REPO_DIR" merge-base --is-ancestor "$start" "$MAIN_SHA" 2>/dev/null; then
+    if [[ "$source" == marker ]]; then summary range_marker_not_ancestor; exit 6; fi
+    die 2 "range start $start is not an ancestor of origin/main"
+  fi
+  cursor="$start"
+  printf 'backfill-review: range start=%s source=%s\n' "$(short "$start")" "$source"
+  log "$REPO range start $start source=$source"
+
+  while :; do
+    if [[ "$cursor" == "$MAIN_SHA" ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then summary dry_run; else summary "done"; fi
+      exit 0
+    fi
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      window_has_room || { summary window_closed; exit 0; }
+      if (( ATTEMPTS >= MAX_REVIEWS )); then summary max_reviews; exit 0; fi
+    elif (( dry_count >= MAX_REVIEWS )); then
+      summary dry_run; exit 0
+    fi
+    if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
+
+    ch="${ALIVE[0]}"; bound="$(range_bound "$ch")"
+    rc2=0; range_cut "$cursor" "$MAIN_SHA" "$bound" || rc2=$?
+    if [[ $rc2 -ne 0 ]]; then summary range_internal_error; exit 5; fi
+    cut="$RANGE_CUT_SHA"; nfiles="$RANGE_CUT_FILES"; ncommits="$RANGE_CUT_COMMITS"; partial="$RANGE_CUT_PARTIAL"
+    info="$ncommits commit(s), $nfiles changed file(s), bound $bound for $ch"
+    [[ "$partial" -eq 1 ]] && info="$info; single commit over the bound, reviewed alone and recorded partially covered"
+    if (( nfiles == 0 )); then summary range_empty; exit 0; fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      printf 'would review range %s..%s commits=%s files=%s bound=%s channel=%s partial=%s\n' \
+        "$(short "$RANGE_FIRST")" "$(short "$cut")" "$ncommits" "$nfiles" "$bound" "$ch" "$([[ $partial -eq 1 ]] && echo yes || echo no)"
+      dry_count=$(( dry_count + 1 )); cursor="$cut"; continue
+    fi
+
+    rc2=0; range_review_channel "$cursor" "$cut" "$ch" || rc2=$?
+    if [[ $rc2 -eq 3 ]]; then cleanup_worktree; summary window_closed; exit 0; fi
+    if [[ $rc2 -eq 2 ]]; then cleanup_worktree; summary range_setup_failed; exit 0; fi
+    if [[ $rc2 -eq 1 ]]; then cleanup_worktree; drop_channel "$ch"; continue; fi
+
+    FINDINGS="$(python3 "$HELPER" normalize --tool "$ch" --log "$REVIEW_LOG" --repo "$REPO" --pr "")" || {
+      cleanup_worktree; summary range_findings_unparsed; exit 0; }
+    reported="$(printf '%s' "$REVIEW_JSON" | jq -r '.findings // 0')"
+    parsed="$(jq length <<<"$FINDINGS")"
+    if ! [[ "$reported" =~ ^[0-9]+$ && "$parsed" =~ ^[0-9]+$ ]] || (( parsed < reported )); then
+      cleanup_worktree; summary range_findings_unparsed; exit 0
+    fi
+
+    # Bugs only; a bug with a location but no text is kept with placeholder
+    # text; findings at one location share one issue quoting every text.
+    BUGS="$(jq -c 'map(select(.bug == true and (.path // "") != ""))
+      | map(if ((.text // "") | gsub("\\s"; "")) == ""
+            then .text = "(the reviewer flagged this location as a bug but gave no description)" else . end)
+      | group_by(.fingerprint)
+      | map(.[0] + {text: (map(.text) | join("\n\n----- another finding at the same location -----\n\n"))})' <<<"$FINDINGS")"
+    ISSUES='[]' ok=1
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      vline="$(verify_finding "$f" "$cut")"
+      verdict="${vline%%$'\t'*}"; main_path="${vline#*$'\t'}"
+      intro="$(safe_inline "$(range_introducer "$(jq -r .path <<<"$f")" "$cursor" "$cut")")"
+      url="$(file_range_finding "$f" "$cursor" "$cut" "$verdict" "$main_path" "$intro" "$info")" && [[ -n "$url" ]] || { ok=0; break; }
+      ISSUES="$(jq -c --arg u "$url" '. + [$u] | unique' <<<"$ISSUES")"
+    done < <(jq -c '.[]' <<<"$BUGS")
+    if [[ $ok -eq 0 ]]; then cleanup_worktree; summary range_filing_failed; exit 0; fi
+
+    # Marker last: only a verified run whose findings were all parsed and filed.
+    if ! range_marker_write "$cut" "$nfiles" "$bound" "$ch" "$partial"; then
+      cleanup_worktree; summary range_marker_write_failed; exit 5
+    fi
+    REVIEWED=$(( REVIEWED + 1 ))
+    if [[ "$(jq length <<<"$ISSUES")" -gt 0 ]]; then FILED=$(( FILED + 1 )); else CLEAN=$(( CLEAN + 1 )); fi
+    log "$REPO range $RANGE_FIRST..$cut verified $info issues=$(jq -c . <<<"$ISSUES")"
+    cleanup_worktree
+    cursor="$cut"
+  done
+}
+
+if [[ "$RANGE_MODE" -eq 1 ]]; then
+  range_main
+fi
 
 for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
   row="$(jq -c ".[$i]" <<<"$PENDING")"
