@@ -11,7 +11,7 @@ Population: **246 merged PRs, 1,890 changed files**, merged 2026-10-31 to 2026-1
 | real (counted approval on merge HEAD) | 235 | 95.5% | 1,780 | 94.2% |
 | override (no counted approval, no verdict on HEAD; inferred) | 5 | 2.0% | 20 | 1.1% |
 | discounted (empty or hollow approval beside a non-approval verdict on HEAD) | 6 | 2.4% | 90 | 4.8% |
-| other (non-approval verdict, no approval) | 0 | 0% | 0 | 0% |
+| other (non-approval verdict or other-bot activity on HEAD, no approval) | 0 | 0% | 0 | 0% |
 | unknown | 0 | 0% | 0 | 0% |
 
 Per reviewer, PRs at merge HEAD:
@@ -48,12 +48,14 @@ PRs #1881, #1928, #1972, #2017, #2219, and #2231 each had a non-approval verdict
 
 ## Method
 
-1. Population: `gh pr list --state merged --author <owner> --search "merged:>=2026-10-30"`, limit 1,000. The run refuses if the limit is reached, so no page is silently missing.
+1. Population: `gh pr list --state merged --author <owner> --base main --search "merged:>=2026-10-30"`, limit 1,000. The run refuses if the limit is reached, so no page is silently missing. Only PRs whose base is `main` are counted.
 2. Per PR: `pulls/N/reviews`, `pulls/N/comments`, `issues/N/comments`, paginated. Read-only GET, cached in a scratch directory. A failed or rate-limited read is `unknown`, never "no review". The run refuses to start when core quota is below 1,000.
 3. Only evidence posted at or before the merge time counts. Items posted after the merge are dropped before the substance check runs.
-4. Classes are assigned in order: `real`, then `discounted`, `other`, `override`. Empty-body COMMENTED reviews and reply comments inside existing threads are not verdicts, mirroring `no-review-override.sh` (issue #2268).
+4. Classes are assigned in order: `real`, then `discounted`, `other`, `override`. Empty-body COMMENTED reviews and reply comments inside existing threads are not verdicts, mirroring `no-review-override.sh` (issue #2268). A PR where another bot (Cursor, Greptile) reviewed or commented on HEAD before the merge is `other`, never `override`; it is named in the per-PR `foreign` field and counted in `foreign_reviewer_prs`. Those bots are presence-checked, not scored. Graphite's stack comment is not a reviewer and is excluded.
 
 Correction made during the run: the first pass counted empty-body CodeRabbit COMMENTED reviews as verdicts, which moved PR #2290 to `discounted`. The gate's own rule (#2268) discounts those, so the classifier now matches it, and PR #2290 is `override`, consistent with the ledger.
+
+Second correction (CodeAnt review of the measurement, #2313): the fixes were base-branch scoping, cutting comments on `updated_at`, exact-integer threshold comparison, per-run temp files, a required `--cache-dir` for offline runs without `--repo`, and a foreign-bot `other` class. Re-run offline from the same response cache, every figure above is unchanged and the decision is still not warranted. The population is 246 PRs, all into `main`; no PR was excluded by the base filter. The foreign-bot class moves no PR into or out of `override` here: the six PRs with Cursor or Greptile activity are already `real` or `discounted` on CodeAnt. Check-runs are not read by this script, so a PR whose only evidence is a check-run would still be `override`.
 
 ## Reproduce
 

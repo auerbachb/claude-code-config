@@ -163,5 +163,62 @@ echo '[[]]' > "$EMPTY/pr-302.issue_comments.json"
 check "empty-body COMMENTED is not a verdict (override)" "override" "$(jq -r 'select(.number == 301) | .class' "$EMPTY/classified.jsonl")"
 check "non-empty COMMENTED beside hollow approval is discounted" "discounted" "$(jq -r 'select(.number == 302) | .class' "$EMPTY/classified.jsonl")"
 
+# Scope and evidence cuts. Each case below changes behaviour that the code before the
+# fix got wrong, so each would fail on the old script.
+SCOPE="$TMP/scope"
+mkdir -p "$SCOPE"
+# 901: merged into a release branch, not main; must leave the denominator (old: counted).
+# 902: CodeRabbit inline verdict on HEAD created before the merge but EDITED after it;
+#      the at-merge cut uses updated_at, so the verdict is gone (old: counted as other).
+# 903: a Cursor APPROVED review on HEAD before the merge; it is not CodeRabbit or CodeAnt,
+#      so the PR must be other with cursor[bot] named (old: override).
+jq -n '[{number: 901, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s1", changedFiles: 1, labels: [], baseRefName: "release"},
+        {number: 902, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s2", changedFiles: 1, labels: []},
+        {number: 903, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s3", changedFiles: 1, labels: []},
+        {number: 904, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s4", changedFiles: 1, labels: []}]' > "$SCOPE/population.json"
+# 904: only Graphite's stack comment on the PR; it is not a reviewer, so override stands.
+echo '[[]]' > "$SCOPE/pr-904.reviews.json"; echo '[[]]' > "$SCOPE/pr-904.pr_comments.json"
+jq -n '[[{id: 41, user: {login: "graphite-app[bot]"}, body: "stack", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$SCOPE/pr-904.issue_comments.json"
+echo '[[]]' > "$SCOPE/pr-901.reviews.json"; echo '[[]]' > "$SCOPE/pr-901.pr_comments.json"; echo '[[]]' > "$SCOPE/pr-901.issue_comments.json"
+jq -n '[[]]' > "$SCOPE/pr-902.reviews.json"
+jq -n '[[{id: 21, user: {login: "coderabbitai[bot]"}, commit_id: "s2", body: "Looks fine.", created_at: "2026-11-20T10:00:00Z", updated_at: "2026-12-02T10:00:00Z"}]]' > "$SCOPE/pr-902.pr_comments.json"
+echo '[[]]' > "$SCOPE/pr-902.issue_comments.json"
+jq -n --arg b "$REAL_BODY" '[[{id: 31, user: {login: "cursor[bot]"}, state: "APPROVED", commit_id: "s3", body: $b, submitted_at: "2026-11-29T10:00:00Z"}]]' > "$SCOPE/pr-903.reviews.json"
+echo '[[]]' > "$SCOPE/pr-903.pr_comments.json"
+echo '[[]]' > "$SCOPE/pr-903.issue_comments.json"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$SCOPE" --ledger-json "$LEDGER" > "$TMP/scope.json" 2>/dev/null
+check "scope run exits 0" "0" "$?"
+check "release-branch PR is out of the denominator" "3" "$(jq -r '.prs_total' "$TMP/scope.json")"
+check "Graphite stack comment is not a foreign reviewer (override)" "override_no_signal" "$(jq -r 'select(.number == 904) | .sub' "$SCOPE/classified.jsonl")"
+check "edited-after-merge verdict is cut (override)" "override_no_signal" "$(jq -r 'select(.number == 902) | .sub' "$SCOPE/classified.jsonl")"
+check "foreign bot on HEAD is other, not override" "other" "$(jq -r 'select(.number == 903) | .class' "$SCOPE/classified.jsonl")"
+check "foreign reviewer is named" "cursor[bot]" "$(jq -r 'select(.number == 903) | .foreign[0]' "$SCOPE/classified.jsonl")"
+check "foreign sub-reason" "foreign_reviewer_activity" "$(jq -r 'select(.number == 903) | .sub' "$SCOPE/classified.jsonl")"
+
+# Offline runs without --repo must name a cache; the default path is repo-derived.
+"$SUT" --from-cache >/dev/null 2>"$TMP/nocache.err"
+check "--from-cache without --repo or --cache-dir exits 2" "2" "$?"
+check "message names the missing cache" "1" "$(grep -c 'needs --cache-dir' "$TMP/nocache.err")"
+
+# Threshold: 404 PRs, 81 lacking (81/404 = 20.05%). Rounded to one decimal that is 20.0,
+# which a strict > 20 test wrongly reads as at-threshold. Exact integers say warranted.
+EDGE="$TMP/edge"
+mkdir -p "$EDGE"
+jq -n '[range(1; 405) | {number: ., mergedAt: "2026-11-30T12:00:00Z", headRefOid: ("h" + tostring), changedFiles: 1, labels: []}]' > "$EDGE/population.json"
+for n in $(seq 1 404); do
+  if [ "$n" -le 81 ]; then
+    echo '[[]]' > "$EDGE/pr-$n.reviews.json"
+  else
+    jq -n --argjson n "$n" --arg h "h$n" --arg b "$REAL_BODY" '[[{id: $n, user: {login: "coderabbitai[bot]"}, state: "APPROVED", commit_id: $h, body: $b, submitted_at: "2026-11-01T10:01:00Z"}]]' > "$EDGE/pr-$n.reviews.json"
+  fi
+  echo '[[]]' > "$EDGE/pr-$n.pr_comments.json"
+  echo '[[]]' > "$EDGE/pr-$n.issue_comments.json"
+done
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$EDGE" --ledger-json "$LEDGER" > "$TMP/edge.json" 2>/dev/null
+check "edge run exits 0" "0" "$?"
+check "20.05% lacking is warranted, not rounded to threshold" "warranted" "$(jq -r '.decision.prs' "$TMP/edge.json")"
+
 printf 'review-coverage-measure tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

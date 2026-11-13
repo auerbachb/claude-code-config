@@ -6,7 +6,10 @@
 # Classes (one per PR, first match wins):
 #   real        a substantive APPROVED on HEAD (review-substance counts_as_coverage)
 #   discounted  a hollow APPROVED on HEAD AND a non-approval bot verdict on HEAD
-#   other       a non-approval bot verdict on HEAD and no approval at all
+#   other       a non-approval bot verdict on HEAD and no approval at all, OR activity by
+#               another bot (not CodeRabbit or CodeAnt, e.g. Cursor or Greptile) on the
+#               PR before the merge. Such a PR is named in `foreign`, never `override`.
+#               Those bots are not scored here: the check is presence, not verdict.
 #   override    no counted approval and no verdict on HEAD (the no-review override's
 #               own definition, no-review-override.md); inferred from GitHub data
 #               because the gate JSON is not stored. Sub-field `hollow_any` marks a
@@ -28,6 +31,8 @@ SUBSTANCE_SH="$SCRIPT_DIR/review-substance.sh"
 LEDGER_SH="$SCRIPT_DIR/unreviewed-merge-ledger.sh"
 CR_LOGIN="coderabbitai[bot]"
 CA_LOGIN="codeant-ai[bot]"
+# Graphite posts PR stack metadata, not a review verdict; it is excluded from "foreign".
+STACK_LOGIN="graphite-app[bot]"
 THRESHOLD_PCT=20
 MIN_CORE_REMAINING=1000
 POP_LIMIT=1000
@@ -56,7 +61,7 @@ Output
   cache    <cache-dir>/classified.jsonl holds one line per PR.
 
 Method
-  1. gh pr list --state merged --author <login> --search "merged:>=<since>" (limit 1000;
+  1. gh pr list --state merged --author <login> --base main --search "merged:>=<since>" (limit 1000;
      the run aborts if the count reaches the limit, because a page is then missing).
   2. Per PR: pulls/N/reviews, pulls/N/comments, issues/N/comments (paginated, cached).
   3. Each PR's payloads go to review-substance.sh with head_sha = headRefOid. The
@@ -110,6 +115,9 @@ fi
 
 if [ -z "$REPO" ]; then
   if [ "$FROM_CACHE" -eq 1 ]; then
+    # The default cache path is derived from the repo, and no repo is resolved offline,
+    # so an offline run without --repo must name its cache explicitly.
+    [ -n "$CACHE_DIR" ] || die "--from-cache without --repo needs --cache-dir (no repo is resolved offline)" 2
     REPO="fixture/fixture"
   else
     REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || die "cannot resolve the repo; pass --repo" 4
@@ -157,20 +165,25 @@ if [ "$FROM_CACHE" -eq 0 ]; then
   fi
 fi
 
+# Every temp file is per-run (mktemp), so two runs sharing one cache never write the
+# same temporary path; each finished file is then renamed into place atomically.
+tmpf() { mktemp "$CACHE_DIR/.tmp.XXXXXX"; }
+
 POP="$CACHE_DIR/population.json"
 if [ "$FROM_CACHE" -eq 0 ]; then
-  if ! gh pr list --repo "$REPO" --state merged --author "$AUTHOR" \
+  POP_TMP=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
+  if ! gh pr list --repo "$REPO" --state merged --author "$AUTHOR" --base main \
       --search "merged:>=$SINCE" --limit "$POP_LIMIT" \
-      --json number,mergedAt,headRefOid,changedFiles,labels </dev/null > "$POP.tmp" 2>/dev/null; then
-    rm -f "$POP.tmp"
+      --json number,mergedAt,headRefOid,changedFiles,labels,baseRefName </dev/null > "$POP_TMP" 2>/dev/null; then
+    rm -f "$POP_TMP"
     die "population fetch failed" 4
   fi
-  N_POP=$(jq 'length' "$POP.tmp") || { rm -f "$POP.tmp"; die "population unreadable" 4; }
+  N_POP=$(jq 'length' "$POP_TMP") || { rm -f "$POP_TMP"; die "population unreadable" 4; }
   if [ "$N_POP" -ge "$POP_LIMIT" ]; then
-    rm -f "$POP.tmp"
+    rm -f "$POP_TMP"
     die "population reached --limit $POP_LIMIT; a page is missing, so the run is refused" 5
   fi
-  mv "$POP.tmp" "$POP"
+  mv "$POP_TMP" "$POP"
 fi
 [ -s "$POP" ] || die "no population at $POP (run once without --from-cache)" 2
 
@@ -200,27 +213,33 @@ classify_pr() {
   rv_m="$CACHE_DIR/pr-$num.reviews.atmerge.json"
   pc_m="$CACHE_DIR/pr-$num.pr_comments.atmerge.json"
   ic_m="$CACHE_DIR/pr-$num.issue_comments.atmerge.json"
+  # A review is cut on submitted_at. A comment is cut on updated_at: a status comment
+  # created before the merge can be edited afterwards (CodeAnt's run record), so its
+  # created_at says nothing about what it said at merge time. Cutting on updated_at
+  # drops any comment edited after the merge, the conservative side.
   jq -c --arg m "$merged" '[flatten[] | select(((.submitted_at // .created_at // "") <= $m))]' "$rv" > "$rv_m" \
-    && jq -c --arg m "$merged" '[flatten[] | select(((.submitted_at // .created_at // "") <= $m))]' "$pc" > "$pc_m" \
-    && jq -c --arg m "$merged" '[flatten[] | select(((.submitted_at // .created_at // "") <= $m))]' "$ic" > "$ic_m" \
+    && jq -c --arg m "$merged" '[flatten[] | select(((.updated_at // .created_at // "") <= $m))]' "$pc" > "$pc_m" \
+    && jq -c --arg m "$merged" '[flatten[] | select(((.updated_at // .created_at // "") <= $m))]' "$ic" > "$ic_m" \
     || { printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "merge_time_filter_failed", cr: "unknown", ca: "unknown", hollow_any: false}'; return 0; }
   rv="$rv_m"; pc="$pc_m"; ic="$ic_m"
 
+  SI=$(tmpf) || return 1
+  ST=$(tmpf) || { rm -f "$SI"; return 1; }
   jq -n --arg sha "$head" --slurpfile r "$rv" --slurpfile p "$pc" --slurpfile i "$ic" \
     '{head_sha: $sha, reviews: ($r[0] | flatten), pr_comments: ($p[0] | flatten), issue_comments: ($i[0] | flatten), resolved_comment_ids: []}' \
-    > "$subst.input" 2>/dev/null || { rm -f "$subst.input"; printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "input_build_failed", cr: "unknown", ca: "unknown", hollow_any: false}'; return 0; }
+    > "$SI" 2>/dev/null || { rm -f "$SI" "$ST"; printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "input_build_failed", cr: "unknown", ca: "unknown", hollow_any: false}'; return 0; }
 
-  if ! "$SUBSTANCE_SH" < "$subst.input" > "$subst.tmp" 2>/dev/null \
-      || ! jq -e '.reviewers | type == "object"' "$subst.tmp" >/dev/null 2>&1; then
-    rm -f "$subst.input" "$subst.tmp"
+  if ! "$SUBSTANCE_SH" < "$SI" > "$ST" 2>/dev/null \
+      || ! jq -e '.reviewers | type == "object"' "$ST" >/dev/null 2>&1; then
+    rm -f "$SI" "$ST"
     printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "substance_check_failed", cr: "unknown", ca: "unknown", hollow_any: false}'
     return 0
   fi
-  mv "$subst.tmp" "$subst"
-  rm -f "$subst.input"
+  mv "$ST" "$subst"
+  rm -f "$SI"
 
   printf '%s' "$pr" | jq -c --arg h "$head" \
-    --slurpfile s "$subst" --slurpfile r "$rv" --slurpfile p "$pc" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" \
+    --slurpfile s "$subst" --slurpfile r "$rv" --slurpfile p "$pc" --slurpfile i "$ic" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" --arg stack "$STACK_LOGIN" \
     '
     def state($login):
       ($s[0].reviewers[$login] // {}) as $rv
@@ -239,28 +258,41 @@ classify_pr() {
               elif $hollow then "hollow"
               else "none" end),
           hollow: $hollow };
+    # Any other bot that reviewed or commented on this PR before the merge (Cursor,
+    # Greptile, ...). The gate counts these through other paths; this script does not
+    # score them, so such a PR is never classed as override.
+    def foreign_bots:
+      ([$r[0] | flatten[] | select(.commit_id == $h) | .user.login]
+       + [$p[0] | flatten[] | select(.commit_id == $h or .original_commit_id == $h) | .user.login]
+       + [$i[0] | flatten[] | .user.login])
+      | map(select(. != null and endswith("[bot]") and . != $cr and . != $ca and . != $stack)) | unique;
     [state($cr), state($ca)] as $st
+    | foreign_bots as $fb
     | (any($st[]; .s == "real")) as $anyreal
     | (any($st[]; .s == "verdict")) as $anyverdict
     | (any($st[]; .hollow)) as $anyhollow
     | (if $anyreal then "real"
        elif $anyverdict and $anyhollow then "discounted"
        elif $anyverdict then "other"
+       elif ($fb | length) > 0 then "other"
        else "override" end) as $class
     | (if $class == "real" then "counted_approval"
        elif $class == "discounted" then "hollow_approval_with_verdict"
-       elif $class == "other" then "non_approval_verdict_on_head"
+       elif $class == "other" and $anyverdict then "non_approval_verdict_on_head"
+       elif $class == "other" then "foreign_reviewer_activity"
        elif $anyhollow then "override_discounted_approval"
        else "override_no_signal" end) as $sub
     | {number, merged_at: (.mergedAt // ""), head_sha: $h, changed_files: (.changedFiles // 0),
        labels: [(.labels // [])[] | .name], class: $class, sub: $sub,
-       cr: $st[0].s, ca: $st[1].s, hollow_any: $anyhollow}
+       cr: $st[0].s, ca: $st[1].s, hollow_any: $anyhollow, foreign: $fb}
     ' || { printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "classify_failed", cr: "unknown", ca: "unknown", hollow_any: false}'; }
 }
 
 CLASSIFIED="$CACHE_DIR/classified.jsonl"
-: > "$CLASSIFIED.tmp"
-jq -c '.[]' "$POP" > "$CACHE_DIR/population.lines" || die "population unreadable" 4
+CLS_TMP=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
+LINES=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
+# Only PRs merged into main are in the denominator; a missing baseRefName reads as main.
+jq -c '.[] | select((.baseRefName // "main") == "main")' "$POP" > "$LINES" || die "population unreadable" 4
 
 COUNT=0
 while IFS= read -r PR; do
@@ -277,11 +309,12 @@ while IFS= read -r PR; do
           pr_comments) API="repos/$REPO/pulls/$NUM/comments" ;;
           issue_comments) API="repos/$REPO/issues/$NUM/comments" ;;
         esac
-        if gh api --paginate --slurp "$API?per_page=100" </dev/null > "$F.tmp" 2>/dev/null \
-            && jq -e 'flatten | type == "array"' "$F.tmp" >/dev/null 2>&1; then
-          mv "$F.tmp" "$F"
+        FT=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
+        if gh api --paginate --slurp "$API?per_page=100" </dev/null > "$FT" 2>/dev/null \
+            && jq -e 'flatten | type == "array"' "$FT" >/dev/null 2>&1; then
+          mv "$FT" "$F"
         else
-          rm -f "$F.tmp"
+          rm -f "$FT"
           printf 'fetch failed: PR %s %s (classified unknown)\n' "$NUM" "$KIND" >&2
         fi
       fi
@@ -291,10 +324,10 @@ while IFS= read -r PR; do
     fi
   fi
 
-  classify_pr "$NUM" "$HEAD" "$PR" >> "$CLASSIFIED.tmp" || die "classification failed for PR $NUM" 4
-done < "$CACHE_DIR/population.lines"
-mv "$CLASSIFIED.tmp" "$CLASSIFIED"
-rm -f "$CACHE_DIR/population.lines"
+  classify_pr "$NUM" "$HEAD" "$PR" >> "$CLS_TMP" || die "classification failed for PR $NUM" 4
+done < "$LINES"
+mv "$CLS_TMP" "$CLASSIFIED"
+rm -f "$LINES"
 
 # Ledger cross-check input. Status says where the ledger came from.
 LEDGER_FILE="$CACHE_DIR/ledger.json"
@@ -307,12 +340,13 @@ if [ -n "$LEDGER_JSON" ]; then
     die "--ledger-json is not a JSON array" 2
   fi
 elif [ "$FROM_CACHE" -eq 0 ] && [ -x "$LEDGER_SH" ]; then
-  if "$LEDGER_SH" list --repo "$REPO" > "$LEDGER_FILE.tmp" 2>/dev/null \
-      && jq -e 'type == "array"' "$LEDGER_FILE.tmp" >/dev/null 2>&1; then
-    mv "$LEDGER_FILE.tmp" "$LEDGER_FILE"
+  LEDGER_TMP=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
+  if "$LEDGER_SH" list --repo "$REPO" > "$LEDGER_TMP" 2>/dev/null \
+      && jq -e 'type == "array"' "$LEDGER_TMP" >/dev/null 2>&1; then
+    mv "$LEDGER_TMP" "$LEDGER_FILE"
     LEDGER_STATUS="unreviewed-merge-ledger.sh list"
   else
-    rm -f "$LEDGER_FILE.tmp"
+    rm -f "$LEDGER_TMP"
     LEDGER_STATUS="unavailable"
   fi
 fi
@@ -327,9 +361,11 @@ jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
    --arg ledger_start "$LEDGER_START" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" '
   def pct($a; $b): if $b == 0 then 0 else (($a * 1000 / $b) | round) / 10 end;
   def fsum: map(.changed_files) | add // 0;
-  def decide($lower; $upper):
-    if $lower > $thr then "warranted"
-    elif $upper <= $thr then "not_warranted"
+  # Compare exact integers, never the one-decimal rounded share: 200 of 999 is 20.02%,
+  # which is above a strict 20% line even though it rounds to 20.0.
+  def decide($lo; $up; $tot):
+    if $lo * 100 > $thr * $tot then "warranted"
+    elif $up * 100 <= $thr * $tot then "not_warranted"
     else "undetermined" end;
   . as $all
   | ($all | length) as $n
@@ -376,12 +412,13 @@ jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
         lacking_files_pct: {lower: pct($lack_files_lower_n; $nf), upper: pct($lack_files_upper_n; $nf)}
       },
       decision: {
-        prs: decide(pct($lack_prs_lower_n; $n); pct($lack_prs_upper_n; $n)),
-        files: decide(pct($lack_files_lower_n; $nf); pct($lack_files_upper_n; $nf)),
-        overall: (if (pct($lack_prs_lower_n; $n) > $thr) or (pct($lack_files_lower_n; $nf) > $thr) then "warranted"
-                  elif (pct($lack_prs_upper_n; $n) <= $thr) and (pct($lack_files_upper_n; $nf) <= $thr) then "not_warranted"
+        prs: decide($lack_prs_lower_n; $lack_prs_upper_n; $n),
+        files: decide($lack_files_lower_n; $lack_files_upper_n; $nf),
+        overall: (if ($lack_prs_lower_n * 100 > $thr * $n) or ($lack_files_lower_n * 100 > $thr * $nf) then "warranted"
+                  elif ($lack_prs_upper_n * 100 <= $thr * $n) and ($lack_files_upper_n * 100 <= $thr * $nf) then "not_warranted"
                   else "undetermined" end)
       },
+      foreign_reviewer_prs: ($all | map(select((.foreign // []) | length > 0)) | length),
       ledger_cross_check: {
         status: $ledger_status,
         ledger_entries_in_repo: ($led_repo | length),
