@@ -60,7 +60,7 @@ reset_state() {
   : > "$STATE/calls.log"
   printf 'bug\n' > "$STATE/repo_labels"
   export FAKE_VIEWER="alice"
-  unset FAKE_INDEX_MODE FAKE_BAD_ISSUE CLAIM_STALE_HOURS CLAIM_RENEW_MINUTES
+  unset FAKE_SWAP_ISSUE FAKE_INDEX_MODE FAKE_BAD_ISSUE FAKE_MISSING_ISSUE FAKE_CLOSED_ISSUE FAKE_GRAPHQL_MODE CLAIM_STALE_HOURS CLAIM_RENEW_MINUTES
 }
 
 STUB_BIN="$TMP/bin"
@@ -77,18 +77,36 @@ lines_json() { jq -Rn --rawfile f "$1" '($f | split("\n") | map(select(length > 
 case "${1:-}" in
   api)
     shift
-    METHOD="GET"; ENDPOINT=""; BODY=""
+    METHOD="GET"; ENDPOINT=""; BODY=""; QUERY=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         -X) METHOD="$2"; shift 2 ;;
         --paginate|--slurp) shift ;;
         --jq) shift 2 ;;
-        -f|-F|--raw-field|--field) [[ "$2" == body=* ]] && BODY="${2#body=}"; shift 2 ;;
+        -f|-F|--raw-field|--field) [[ "$2" == body=* ]] && BODY="${2#body=}"; [[ "$2" == query=* ]] && QUERY="${2#query=}"; shift 2 ;;
         *) [[ -z "$ENDPOINT" ]] && ENDPOINT="$1"; shift ;;
       esac
     done
     case "$ENDPOINT" in
       user) printf '%s\n' "${FAKE_VIEWER:-}" ;;
+      graphql)
+        # Existence/state read: one aliased issue(number: N) per issue. Mirrors gh:
+        # a missing issue is null with a NOT_FOUND error, and gh exits 1 with the body.
+        case "${FAKE_GRAPHQL_MODE:-ok}" in error) echo "gh: HTTP 502: bad gateway" >&2; exit 1 ;; esac
+        data='{}'; errs='[]'
+        for n in $(printf '%s' "$QUERY" | grep -oE 'i[0-9]+: issue\(number: [0-9]+\)' | grep -oE '[0-9]+\)' | tr -d ')'); do
+          if [[ "${FAKE_MISSING_ISSUE:-}" == "$n" ]]; then
+            data="$(jq -c --arg a "i$n" '. + {($a): null}' <<<"$data")"
+            errs="$(jq -c --arg a "i$n" '. + [{type: "NOT_FOUND", path: ["repository", $a]}]' <<<"$errs")"
+          elif [[ "${FAKE_CLOSED_ISSUE:-}" == "$n" ]]; then
+            data="$(jq -c --arg a "i$n" --argjson n "$n" '. + {($a): {number: $n, state: "CLOSED"}}' <<<"$data")"
+          else
+            data="$(jq -c --arg a "i$n" --argjson n "$n" '. + {($a): {number: $n, state: "OPEN"}}' <<<"$data")"
+          fi
+        done
+        jq -cn --argjson d "$data" --argjson e "$errs" 'if ($e | length) > 0 then {data: {repository: $d}, errors: $e} else {data: {repository: $d}} end'
+        [[ "$(jq 'length' <<<"$errs")" -gt 0 ]] && exit 1
+        exit 0 ;;
       */issues\?*)
         case "${FAKE_INDEX_MODE:-ok}" in
           error) echo "gh: HTTP 502: bad gateway" >&2; exit 1 ;;
@@ -168,11 +186,9 @@ export PATH="$STUB_BIN:$PATH"
 
 run_batch() { # run_batch <args...> -> OUT (stdout) ERR (stderr) RC
   OUT="$("$TEST_SHELL" "$BATCH" "$@" 2>"$TMP/err")"; RC=$?
-  ERR="$(cat "$TMP/err")"
 }
 run_single() {
   OUT="$("$TEST_SHELL" "$SINGLE" "$@" 2>"$TMP/err")"; RC=$?
-  ERR="$(cat "$TMP/err")"
 }
 verdict_of() { printf '%s\n' "$OUT" | jq -r --argjson n "$1" 'select(.issue == $n) | .verdict'; }
 field_of() { printf '%s\n' "$OUT" | jq -r --argjson n "$1" --arg f "$2" 'select(.issue == $n) | .[$f] // "null"'; }
@@ -336,14 +352,14 @@ echo "     measured: batch check of 50 unclaimed issues = $BATCH_CALLS gh call(s
 for n in $ISSUES50; do "$TEST_SHELL" "$SINGLE" "$n" --check --holder H1 >/dev/null 2>&1; done
 LOOP_CALLS="$(gh_calls)"
 echo "     measured: 50 single-issue checks              = $LOOP_CALLS gh call(s)"
-check_eq "batch check uses 2 calls (user + one index page)" 2 "$BATCH_CALLS"
+check_eq "batch check uses 3 calls (user + one index page + one existence read)" 3 "$BATCH_CALLS"
 check_lt "batch check is far below the per-issue loop" "$BATCH_CALLS" "$LOOP_CALLS"
 # With a few claimed issues the cost grows by the usual three reads each, not by N.
 claim_as_other 110; claim_as_other 120
 : > "$STATE/calls.log"
 # shellcheck disable=SC2086
 run_batch --check $ISSUES50 --holder H1
-check_eq "two labeled issues add 3 reads each: 2 + 6 calls" 8 "$(gh_calls)"
+check_eq "two labeled issues add 3 reads each: 3 + 6 calls" 9 "$(gh_calls)"
 check_eq "and they read claimed" "claimed claimed" "$(printf '%s\n' "$OUT" | jq -r 'select(.verdict == "claimed") | .verdict' | tr '\n' ' ' | sed 's/ $//')"
 
 # Write-path cost, per issue, so the renewal cadence can be judged against the
@@ -351,7 +367,7 @@ check_eq "and they read claimed" "claimed claimed" "$(printf '%s\n' "$OUT" | jq 
 reset_state
 : > "$STATE/calls.log"
 run_batch --claim 201 202 203 204 --holder H1 --batch cost
-echo "     measured: batch claim of 4 free issues         = $(gh_calls) gh call(s) ($(( $(gh_calls) / 4 )) per issue after the shared 2)"
+echo "     measured: batch claim of 4 free issues         = $(gh_calls) gh call(s) ($(( $(gh_calls) / 4 )) per issue after the shared 3)"
 : > "$STATE/calls.log"
 run_batch --renew 201 202 203 204 --holder H1
 echo "     measured: renew of 4 held issues, none due     = $(gh_calls) gh call(s) ($(( $(gh_calls) / 4 )) per issue)"
@@ -394,6 +410,60 @@ check_eq "duplicates are collapsed to one result" 1 "$(printf '%s\n' "$OUT" | jq
 run_batch --help
 check_eq "--help exits 0" 0 "$RC"
 check_contains "--help documents the exit codes" "EXIT STATUS" "$OUT"
+
+############################################################################
+echo "== (8) an issue that does not exist or is closed is never a startable 'unclaimed' =="
+reset_state
+export FAKE_MISSING_ISSUE=302 FAKE_CLOSED_ISSUE=303
+: > "$STATE/calls.log"
+run_batch --check 301 302 303 304 --holder H1
+check_eq "a missing or closed issue makes the batch exit 4 (not proceedable)" 4 "$RC"
+check_eq "open unlabeled issues stay unclaimed" "unclaimed unclaimed" "$(verdict_of 301) $(verdict_of 304)"
+check_eq "a nonexistent issue is unknown, not unclaimed" unknown "$(verdict_of 302)"
+check_contains "and says it was not found" "not found" "$(field_of 302 reason)"
+check_eq "a closed issue is unknown, not unclaimed" unknown "$(verdict_of 303)"
+check_contains "and says it is closed" "closed" "$(field_of 303 reason)"
+check_eq "existence is one extra bounded read: 3 calls for 4 issues" 3 "$(gh_calls)"
+run_batch --claim 301 302 303 304 --holder H1 --batch exist
+check_eq "claim exits 4 for the unstartable pair" 4 "$RC"
+check_eq "the open issues are still claimed" "mine mine" "$(verdict_of 301) $(verdict_of 304)"
+check_eq "nothing is written to a missing or closed issue" "0 0 no no" "$(marker_count 302) $(marker_count 303) $(has_label 302) $(has_label 303)"
+check_contains "batch size counts only the admitted issues" "One of 2 claimed together" "$(comment_bodies 301)"
+export FAKE_GRAPHQL_MODE=error
+run_batch --check 305 306 --holder H1
+check_eq "a failed existence read is exit 4" 4 "$RC"
+check_eq "and reads unknown, never unclaimed (fail-closed)" "unknown unknown" "$(verdict_of 305) $(verdict_of 306)"
+unset FAKE_GRAPHQL_MODE FAKE_MISSING_ISSUE FAKE_CLOSED_ISSUE
+
+############################################################################
+echo "== (9) release: a claim swapped between the check and the release is left alone =="
+reset_state
+SWAPDIR="$TMP/swapscripts"; mkdir -p "$SWAPDIR"
+cp "$BATCH" "$SWAPDIR/issue-claim-batch.sh"
+cat > "$SWAPDIR/issue-claim.sh" <<WRAP
+#!/usr/bin/env bash
+# Test wrapper: runs the real issue-claim.sh, then, right after the batch's
+# --check of FAKE_SWAP_ISSUE, replaces the claim with another holder's.
+out="\$("$SINGLE" "\$@")"; rc=\$?
+printf '%s\n' "\$out"
+if [[ "\${1:-}" == "\${FAKE_SWAP_ISSUE:-}" && " \$* " == *" --check "* && ! -f "$TMP/swapped" ]]; then
+  : > "$TMP/swapped"
+  "$SINGLE" "\$1" --release >/dev/null 2>&1
+  "$SINGLE" "\$1" --claim --holder otherThread --provider codex --device studio >/dev/null 2>&1
+fi
+exit \$rc
+WRAP
+chmod +x "$SWAPDIR/issue-claim-batch.sh" "$SWAPDIR/issue-claim.sh"
+"$TEST_SHELL" "$SINGLE" 401 --claim --holder H1 >/dev/null 2>&1
+rm -f "$TMP/swapped"
+export FAKE_SWAP_ISSUE=401
+OUT="$("$TEST_SHELL" "$SWAPDIR/issue-claim-batch.sh" --release 401 --holder H1 2>"$TMP/err")"; RC=$?
+unset FAKE_SWAP_ISSUE
+check_eq "the swap actually happened between check and release" yes "$([[ -f "$TMP/swapped" ]] && echo yes || echo no)"
+check_eq "release of a swapped claim exits 5 (not held)" 5 "$RC"
+check_eq "the new holder's marker survives" 1 "$(marker_count 401)"
+check_eq "and so does the label" yes "$(has_label 401)"
+check_contains "the survivor is the other holder's" "otherThread" "$(comment_bodies 401)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

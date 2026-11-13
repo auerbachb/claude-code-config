@@ -21,14 +21,20 @@
 #   --check does not read three endpoints per issue. It reads the repo's
 #   `in-progress` label index ONCE (`gh api --paginate .../issues?labels=...`,
 #   one page per 100 labeled issues) plus the authenticated user, then:
-#     - an issue NOT in the index is reported `unclaimed` straight away;
+#     - the issues NOT in the index get ONE more bounded read (a single GraphQL
+#       call per 50 of them) for existence and state: an open one is reported
+#       `unclaimed` straight away; a CLOSED or nonexistent one is `unknown`
+#       (exit 4, not startable), never a startable `unclaimed`;
 #     - an issue in the index is checked in full by `issue-claim.sh --check`
 #       (that is the usual handful, not the whole batch).
-#   So checking 50 free issues costs 2 calls, not 150. This is the same
+#   So checking 50 free open issues costs 3 calls, not 150. This is the same
 #   label-index pre-filter /wave uses; the label is written before the claim
 #   comment, so a fresh claim nearly always carries it. The residual (a marker
 #   whose label was lost) is documented in issue-claim.md and heals on the
 #   holder's next renew; --claim never relies on the index (see below).
+#   Batch --check is therefore a PLANNING SCREEN: an `unclaimed` answer may
+#   still be a live claim whose label was lost. Only --claim, which re-reads
+#   every issue in full, is authoritative.
 #   --claim, --renew and --release write per issue, so their cost is per issue.
 #
 # FAIL-CLOSED
@@ -232,8 +238,7 @@ run_one() {
 }
 
 # --- the label index (bounded batch read) ------------------------------------
-# Sets INDEX_OK=1 and INDEX_NUMBERS (space-padded) when the read is complete.
-INDEX_OK=0
+# Sets INDEX_NUMBERS (space-padded) when the read is complete.
 INDEX_NUMBERS=" "
 INDEX_ERR=""
 VIEWER=""
@@ -256,7 +261,6 @@ read_label_index() {
     INDEX_ERR="the in-progress label index came back truncated or unreadable"; return 1
   fi
   INDEX_NUMBERS=" $nums "
-  INDEX_OK=1
 }
 
 # index_object <issue>: `unclaimed` for an issue absent from a complete index.
@@ -270,9 +274,39 @@ index_object() {
       reason: ("issue #" + ($issue | tostring) + " is not in the in-progress label index - unclaimed, startable")}'
 }
 
+# read_states <issue...>: ONE bounded GraphQL read (chunks of 50 aliases) for the
+# issues the label index did not list. Writes $WORK/state.<n> = open | closed |
+# missing | err for each. A chunk whose read fails or comes back without
+# `data.repository` marks its issues `err` (fail-closed, never "exists").
+read_states() {
+  local chunk=() n q i raw body
+  while (( $# > 0 )); do
+    chunk=()
+    while (( $# > 0 && ${#chunk[@]} < 50 )); do chunk+=("$1"); shift; done
+    q="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {"
+    for n in "${chunk[@]}"; do q+=" i$n: issue(number: $n) { number state }"; done
+    q+=" } }"
+    if [[ -n "$REPO" ]]; then
+      raw="$(gh api graphql -f query="$q" -F owner="${REPO%%/*}" -F name="${REPO#*/}" 2>/dev/null)" || true
+    else
+      raw="$(gh api graphql -f query="$q" -F owner='{owner}' -F name='{repo}' 2>/dev/null)" || true
+    fi
+    for n in "${chunk[@]}"; do
+      body="$(printf '%s' "$raw" | jq -r --arg a "i$n" '
+        if (.data.repository | type) != "object" then "err"
+        elif (.data.repository[$a] | type) == "object" then (.data.repository[$a].state | ascii_downcase)
+        elif ([ .errors[]? | select(.type == "NOT_FOUND" and (.path // [] | .[1]) == $a) ] | length) > 0 then "missing"
+        else "err" end' 2>/dev/null || echo err)"
+      case "$body" in open|closed|missing) ;; *) body=err ;; esac
+      printf '%s\n' "$body" > "$WORK/state.$n"
+    done
+  done
+}
+
 # batch_check: fill r.<i>/rc.<i> for every issue.
 batch_check() {
-  local i issue
+  local i issue st
+  local unindexed=()
   if ! read_label_index; then
     for (( i = 0; i < TOTAL; i++ )); do
       record "$i" "$(unknown_object "${ISSUES[$i]}" "$INDEX_ERR - claim state undetermined; treat the issue as claimed (fail-closed)")" 4
@@ -280,12 +314,22 @@ batch_check() {
     return 0
   fi
   for (( i = 0; i < TOTAL; i++ )); do
+    [[ "$INDEX_NUMBERS" == *" ${ISSUES[$i]} "* ]] || unindexed+=("${ISSUES[$i]}")
+  done
+  (( ${#unindexed[@]} > 0 )) && read_states "${unindexed[@]}"
+  for (( i = 0; i < TOTAL; i++ )); do
     issue="${ISSUES[$i]}"
     if [[ "$INDEX_NUMBERS" == *" $issue "* ]]; then
       run_one "$i" "$issue" --check ${COMMON[@]+"${COMMON[@]}"}
-    else
-      record "$i" "$(index_object "$issue")" 0
+      continue
     fi
+    st="$(cat "$WORK/state.$issue" 2>/dev/null || echo err)"
+    case "$st" in
+      open)    record "$i" "$(index_object "$issue")" 0 ;;
+      closed)  record "$i" "$(unknown_object "$issue" "issue #$issue is closed - not startable (it is not claimed; reopen it or drop it from the plan)")" 4 ;;
+      missing) record "$i" "$(unknown_object "$issue" "issue #$issue not found - not startable (check the number)")" 4 ;;
+      *)       record "$i" "$(unknown_object "$issue" "could not read the state of issue #$issue - claim state undetermined; treat the issue as claimed (fail-closed)")" 4 ;;
+    esac
   done
 }
 
