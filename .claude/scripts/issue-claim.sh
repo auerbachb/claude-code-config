@@ -29,11 +29,27 @@
 #
 #   Holder resolution order:
 #     --holder ID  ->  $CLAUDE_CLAIM_HOLDER  ->  $CLAUDE_SESSION_ID
-#                  ->  <hostname>:<git toplevel>     (default)
+#                  ->  h-<12 hex>   (default: a digest of <hostname>:<git toplevel>)
 #   The default is honest about its granularity: two threads sharing one
 #   checkout resolve to one holder. That is acceptable because CLAUDE.md
 #   mandates a worktree per thread, so the mandated workflow always yields
 #   distinct holders — but a caller that has a real session id should pass it.
+#   The digest keeps the hostname and checkout path out of a public comment
+#   (issue #2284). Claims written with the OLD default (<hostname>:<toplevel>)
+#   are still recognized as `mine` by a defaulted holder: the legacy token is
+#   computed locally and matched as an alias, never published. A renewal of
+#   such a claim writes the new token (migrates it).
+#
+# WHO HOLDS IT (issue #2284)
+#   A claim also records PROVIDER (which tool), DEVICE (a machine nickname) and
+#   LABEL (a short run label) in the marker payload and names all three in the
+#   visible sentence, so a person or another agent can tell who holds it.
+#     provider: --provider -> $AGENT_CLAIM_PROVIDER -> detected agent env -> unknown
+#     device:   --device   -> $AGENT_CLAIM_DEVICE   -> ~/.claude/device-nickname
+#                          -> device-<6 hex> digest of the hostname
+#     label:    --label    -> $AGENT_CLAIM_LABEL    -> none
+#   Neither provider nor device ever falls back to the raw hostname or a path.
+#   Older markers lack the fields; they read back as null and behave as before.
 #
 # BLOCK AT HOLDER LEVEL, RELEASE AT ACCOUNT LEVEL (deliberate asymmetry)
 #   --check/--claim compare HOLDERS, so a sibling thread of yours is blocked.
@@ -103,9 +119,11 @@
 # USAGE
 #   issue-claim.sh <issue_number> --check   [--repo owner/repo] [--holder ID] [--json]
 #   issue-claim.sh <issue_number> --claim   [--repo owner/repo] [--holder ID] [--json] [--allow-claimed]
+#                    [--provider NAME] [--device NAME] [--label TEXT]
 #   issue-claim.sh <issue_number> --release [--repo owner/repo] [--holder ID] [--json]
 #                    [--expect-claim-id ID|none]
 #   issue-claim.sh <issue_number> --renew   [--repo owner/repo] [--holder ID] [--json]
+#                    [--provider NAME] [--device NAME] [--label TEXT]
 #   issue-claim.sh --help | -h
 #
 #   --check          Report the verdict without writing anything.
@@ -118,6 +136,9 @@
 #                    --check --json exposes claim_comment_id; none means no marker.
 #   --json           Machine-readable object on stdout instead of the verdict word.
 #   --allow-claimed  Explicit user override; only valid with --claim.
+#   --provider/--device/--label  Who-holds-it facts (see above); only valid with
+#                    --claim or --renew. A renewal carries the old marker's
+#                    values forward and fills missing ones from these.
 #
 # ENVIRONMENT
 #   CLAIM_STALE_HOURS     Stale window in hours (default 4).
@@ -125,19 +146,24 @@
 #                         window). A same-holder marker older than this renews.
 #   CLAUDE_CLAIM_HOLDER   Holder token, when no --holder is passed.
 #   CLAUDE_SESSION_ID     Fallback holder token.
+#   AGENT_CLAIM_PROVIDER / AGENT_CLAIM_DEVICE / AGENT_CLAIM_LABEL
+#                         Provider, machine nickname and run label defaults.
 #
 # OUTPUT
 #   Default: one word on stdout — unclaimed | mine | claimed | stale | unknown.
 #            Human-readable refusal / warning / override lines go to stderr, so a
 #            caller reading only the exit code still surfaces a clear message.
 #   --json:  {"issue":N,"repo":...,"viewer":...,"holder":...,"verdict":...,
-#             "claimant":...,"claimant_holder":...,"claim_comment_id":...,"claimed_at":...,
+#             "claimant":...,"claimant_holder":...,"provider":...,"device":...,
+#             "label":...,"claim_comment_id":...,"claimed_at":...,
 #             "claimed_since":...,"previous_claimed_at":...,"renewed":true|false,
 #             "stale":true|false,"overridden":true|false,"reason":"..."}
 #            claimed_at is the GitHub created_at of the live marker (after a
 #            renewal, the new one); claimed_since is the original pickup time
 #            (payload `since`, else claimed_at); previous_claimed_at is the
-#            replaced marker's created_at when renewed is true.
+#            replaced marker's created_at when renewed is true. provider,
+#            device and label describe the winning claim (null for a marker
+#            written before issue #2284).
 #
 # EXIT STATUS
 #   0  startable / authorized — unclaimed, mine, stale, or an --allow-claimed
@@ -264,6 +290,9 @@ JSON=0
 ALLOW_CLAIMED=0
 EXPECT_CLAIM_ID_SET=0
 EXPECTED_CLAIM_ID=""
+PROVIDER_ARG=""
+DEVICE_ARG=""
+LABEL_ARG=""
 
 set_action() {
   [[ -n "$ACTION" ]] && die_usage "only one of --check / --claim / --release / --renew may be given (got --$ACTION and $1)"
@@ -295,6 +324,23 @@ while [[ $# -gt 0 ]]; do
       HOLDER_ARG="${1#--holder=}"
       [[ -z "$HOLDER_ARG" ]] && die_usage "--holder requires a value"
       shift ;;
+    --provider|--device|--label)
+      # A following option is a missing value; use --flag=VALUE for a literal.
+      [[ $# -lt 2 || -z "${2-}" || "${2-}" == --* ]] && die_usage "$1 requires a value"
+      case "$1" in
+        --provider) PROVIDER_ARG="$2" ;;
+        --device)   DEVICE_ARG="$2" ;;
+        --label)    LABEL_ARG="$2" ;;
+      esac
+      shift 2 ;;
+    --provider=*|--device=*|--label=*)
+      [[ -z "${1#*=}" ]] && die_usage "${1%%=*} requires a value"
+      case "$1" in
+        --provider=*) PROVIDER_ARG="${1#*=}" ;;
+        --device=*)   DEVICE_ARG="${1#*=}" ;;
+        --label=*)    LABEL_ARG="${1#*=}" ;;
+      esac
+      shift ;;
     --) shift; break ;;
     -*) die_usage "unknown flag: $1" ;;
     *)
@@ -318,6 +364,10 @@ fi
 # into a config default. Reject it outright instead.
 if (( ALLOW_CLAIMED )) && [[ "$ACTION" != "claim" ]]; then
   die_usage "--allow-claimed is only valid with --claim"
+fi
+
+if [[ -n "$PROVIDER_ARG$DEVICE_ARG$LABEL_ARG" && "$ACTION" != claim && "$ACTION" != renew ]]; then
+  die_usage "--provider / --device / --label are only valid with --claim or --renew"
 fi
 
 for dep in gh jq; do
@@ -354,16 +404,85 @@ resolve_holder() {
   [[ -n "$HOLDER_ARG" ]] && { printf '%s' "$HOLDER_ARG"; return; }
   [[ -n "${CLAUDE_CLAIM_HOLDER:-}" ]] && { printf '%s' "$CLAUDE_CLAIM_HOLDER"; return; }
   [[ -n "${CLAUDE_SESSION_ID:-}" ]] && { printf '%s' "$CLAUDE_SESSION_ID"; return; }
+  printf 'h-%s' "$(digest_hex "$(legacy_holder)" 12)"
+}
+# legacy_holder: the pre-#2284 default token. Computed only to be hashed or to
+# be matched against older markers; it is never written to GitHub.
+legacy_holder() {
   local host top
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)"
   top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   printf '%s:%s' "$host" "$top"
+}
+# digest_hex <text> <n>: first n hex chars of a SHA-256 (cksum as a last resort).
+digest_hex() {
+  local d=""
+  if command -v shasum >/dev/null 2>&1; then
+    d="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-64)"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    d="$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -c1-64)"
+  fi
+  [[ -n "$d" ]] || d="$(printf '%s' "$1" | cksum | awk '{printf "%08x%08x", $1, $2}')"
+  printf '%s' "${d:0:$2}"
 }
 # Append a sentinel so command substitution cannot silently trim a malformed
 # holder into the identity of a different thread.
 HOLDER="$(resolve_holder; printf '.')"
 HOLDER="${HOLDER%.}"
 [[ "$HOLDER" =~ [[:cntrl:]] ]] && die_usage "holder must not contain control characters"
+
+# A defaulted holder also answers to the legacy default token, so claims written
+# before the digest default stay `mine` (issue #2284). An explicit holder never
+# gets an alias.
+HOLDER_LEGACY=""
+if [[ -z "$HOLDER_ARG" && -z "${CLAUDE_CLAIM_HOLDER:-}" && -z "${CLAUDE_SESSION_ID:-}" ]]; then
+  HOLDER_LEGACY="$(legacy_holder)"
+fi
+# holder_is_mine <token>: true when the token is this holder (or its legacy alias).
+holder_is_mine() {
+  [[ -n "$1" && ( "$1" == "$HOLDER" || ( -n "$HOLDER_LEGACY" && "$1" == "$HOLDER_LEGACY" ) ) ]]
+}
+
+# --- provider / device / label (issue #2284) -----------------------------------
+# Values are published in a public comment, so they are restricted to a small
+# safe alphabet: no path separators, no markup, no control characters.
+FACT_RE='^[A-Za-z0-9._:+@#-][A-Za-z0-9 ._:+@#-]{0,63}$'
+valid_fact() { [[ "$1" =~ $FACT_RE ]]; }
+
+resolve_provider() {
+  local v="${PROVIDER_ARG:-${AGENT_CLAIM_PROVIDER:-}}"
+  if [[ -z "$v" ]]; then
+    if [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE_ENTRYPOINT:-}" || -n "${CLAUDE_SESSION_ID:-}" ]]; then
+      v="claude-code"
+    elif [[ -n "${CODEX_SANDBOX:-}" || -n "${CODEX_THREAD_ID:-}" || -n "${CODEX_HOME:-}" ]]; then
+      v="codex"
+    elif [[ -n "${CURSOR_AGENT:-}" || -n "${CURSOR_TRACE_ID:-}" ]]; then
+      v="cursor"
+    else
+      v="unknown"
+    fi
+  fi
+  printf '%s' "$v" | tr '[:upper:]' '[:lower:]'
+}
+resolve_device() {
+  local v="${DEVICE_ARG:-${AGENT_CLAIM_DEVICE:-}}"
+  if [[ -z "$v" && -n "${HOME:-}" && -r "$HOME/.claude/device-nickname" ]]; then
+    v="$(head -n 1 "$HOME/.claude/device-nickname" 2>/dev/null || true)"
+  fi
+  [[ -n "$v" ]] || v="device-$(digest_hex "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)" 6)"
+  printf '%s' "$v"
+}
+RES_PROVIDER=""; RES_DEVICE=""; RES_LABEL=""
+if [[ "$ACTION" == claim || "$ACTION" == renew ]]; then
+  RES_PROVIDER="$(resolve_provider)"
+  RES_DEVICE="$(resolve_device)"
+  RES_LABEL="${LABEL_ARG:-${AGENT_CLAIM_LABEL:-}}"
+  valid_fact "$RES_PROVIDER" || die_usage "provider must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_PROVIDER)"
+  valid_fact "$RES_DEVICE" || die_usage "device must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_DEVICE)"
+  if [[ -n "$RES_LABEL" ]]; then
+    valid_fact "$RES_LABEL" || die_usage "label must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_LABEL)"
+  fi
+fi
 
 # --- API path helpers ----------------------------------------------------------
 # {owner}/{repo} resolves from the current checkout unless --repo names one.
@@ -389,6 +508,9 @@ RENEWED="false"
 MARKER_ID=""
 MARKER_AUTHOR=""
 MARKER_SINCE=""
+CLAIM_PROVIDER=""
+CLAIM_DEVICE=""
+CLAIM_LABEL_TEXT=""
 IS_STALE="false"
 OVERRIDDEN="false"
 
@@ -407,6 +529,9 @@ emit() {
       --arg verdict "$verdict" \
       --arg claimant "$CLAIMANT" \
       --arg claimant_holder "$CLAIMANT_HOLDER" \
+      --arg provider "$CLAIM_PROVIDER" \
+      --arg device "$CLAIM_DEVICE" \
+      --arg label "$CLAIM_LABEL_TEXT" \
       --argjson claim_comment_id "$observed_claim_id" \
       --arg claimed_at "$CLAIMED_AT" \
       --arg claimed_since "$CLAIMED_SINCE" \
@@ -422,6 +547,9 @@ emit() {
         verdict: $verdict,
         claimant: (if $claimant == "" then null else $claimant end),
         claimant_holder: (if $claimant_holder == "" then null else $claimant_holder end),
+        provider: (if $provider == "" then null else $provider end),
+        device: (if $device == "" then null else $device end),
+        label: (if $label == "" then null else $label end),
         claim_comment_id: $claim_comment_id,
         claimed_at: (if $claimed_at == "" then null else $claimed_at end),
         claimed_since: (if $claimed_since == "" then null else $claimed_since end),
@@ -492,9 +620,11 @@ CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | filter_claim_comments 2>/dev/nu
 # but unreadable winner is not an empty marker list.
 #
 # parse_winner <claim-comments-json> -> sets W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT
+#   plus W_PROVIDER W_DEVICE W_LABEL (empty for a marker older than issue #2284)
 # An empty array is a successful read of absence; any unreadable winner is nonzero.
 parse_winner() {
   W_ID=""; W_AUTHOR=""; W_HOLDER=""; W_LOGIN=""; W_SINCE=""; W_AT=""
+  W_PROVIDER=""; W_DEVICE=""; W_LABEL=""
   [[ "$1" == '[]' ]] && return 0
   local rec
   rec="$(printf '%s' "$1" | jq -r '
@@ -502,12 +632,15 @@ parse_winner() {
     | $c._claim_payload as $p
     | select(($p.holder | type) == "string" and ($p.holder | length) > 0)
     | [($c.id // ""), ($c.user.login // ""), ($p.holder // ""), ($p.login // ""),
-       ($p.since // ""), ($c.created_at // "")]
+       ($p.since // ""), ($c.created_at // ""),
+       (if ($p.provider | type) == "string" then $p.provider else "" end),
+       (if ($p.device | type) == "string" then $p.device else "" end),
+       (if ($p.label | type) == "string" then $p.label else "" end)]
     | map(tostring)
     | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
     | join("\u001f")' 2>/dev/null)" || return 1
   [[ -n "$rec" ]] || return 1
-  IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT <<<"$rec"
+  IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT W_PROVIDER W_DEVICE W_LABEL <<<"$rec"
 }
 
 # read_claim_comments -> stdout: the claim-marker comments as one JSON array.
@@ -527,6 +660,9 @@ CLAIMANT_HOLDER="$W_HOLDER"
 CLAIMANT="$W_LOGIN"
 CLAIMED_AT="$W_AT"
 MARKER_SINCE="$W_SINCE"
+CLAIM_PROVIDER="$W_PROVIDER"
+CLAIM_DEVICE="$W_DEVICE"
+CLAIM_LABEL_TEXT="$W_LABEL"
 
 HAS_CLAIM_COMMENT=0
 [[ -n "$CLAIMANT_HOLDER" ]] && HAS_CLAIM_COMMENT=1
@@ -595,7 +731,7 @@ CLAIM_EXISTS=0
 
 if (( ! CLAIM_EXISTS )); then
   VERDICT="unclaimed"
-elif [[ "$HAS_CLAIM_COMMENT" -eq 1 && "$CLAIMANT_HOLDER" == "$HOLDER" ]]; then
+elif [[ "$HAS_CLAIM_COMMENT" -eq 1 ]] && holder_is_mine "$CLAIMANT_HOLDER"; then
   VERDICT="mine"
 elif is_stale; then
   VERDICT="stale"
@@ -618,8 +754,12 @@ viewer_owns_claim() {
 describe_claim() {
   local who="${CLAIMANT:-an unknown account}"
   local when="${CLAIMED_AT:-an unrecorded time}"
-  printf 'issue #%s is already being worked — claimed by %s (holder %s) at %s' \
-    "$ISSUE_NUMBER" "$who" "${CLAIMANT_HOLDER:-unknown}" "$when"
+  local facts=""
+  [[ -n "$CLAIM_PROVIDER" ]] && facts+=", provider $CLAIM_PROVIDER"
+  [[ -n "$CLAIM_DEVICE" ]] && facts+=", device $CLAIM_DEVICE"
+  [[ -n "$CLAIM_LABEL_TEXT" ]] && facts+=", label $CLAIM_LABEL_TEXT"
+  printf 'issue #%s is already being worked — claimed by %s (holder %s%s) at %s' \
+    "$ISSUE_NUMBER" "$who" "${CLAIMANT_HOLDER:-unknown}" "$facts" "$when"
 }
 
 # --- action: --check -----------------------------------------------------------
@@ -713,10 +853,11 @@ ensure_label() {
   fi
 }
 
-# claim_body <payload-json> -> the visible claim comment, marker included.
+# claim_body <payload-json> <provider> <device> [label] -> the visible claim
+# comment, marker included. The sentence names who holds the claim (#2284).
 claim_body() {
   printf '%s\n\n%s\n' \
-    "🔒 Claimed by \`$VIEWER\` for active work. It will be released when this issue's PR merges or when the issue closes; it becomes stale if not renewed within ${STALE_HOURS}h." \
+    "🔒 Claimed by \`$VIEWER\` for active work. Held by $2 on device $3${4:+ (run: $4)}. It will be released when this issue's PR merges or when the issue closes; it becomes stale if not renewed within ${STALE_HOURS}h." \
     "<!-- $CLAIM_MARKER: $1 -->"
 }
 
@@ -789,7 +930,8 @@ withdraw_markers() {
 # winner (W_*) as the current claimant when it is not this holder's.
 emit_renew_released() {
   local v="unclaimed"
-  if [[ -n "$W_ID" ]] && ! { [[ "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" ]]; }; then
+  CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
+  if [[ -n "$W_ID" ]] && ! { holder_is_mine "$W_HOLDER" && [[ "$W_AUTHOR" == "$VIEWER" ]]; }; then
     v="claimed"; CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$W_AT"
   else
     CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""
@@ -803,6 +945,7 @@ emit_renew_released() {
 emit_renew_superseded() {
   CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"
   CLAIMED_SINCE="$W_AT"; MARKER_ID="$W_ID"; MARKER_AUTHOR="$W_AUTHOR"
+  CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
   # A renewed winner carries its original pickup time as `since`.
   if [[ -n "$W_SINCE" && -n "$(iso_to_epoch "$W_SINCE")" ]]; then
     CLAIMED_SINCE="$W_SINCE"
@@ -828,8 +971,8 @@ renew_authorized() {
 # winner_is_ours: the parsed winner (W_*) is a viewer-authored marker for this
 # holder other than the one being replaced.
 winner_is_ours() {
-  [[ -n "$W_ID" && "$W_ID" != "$1" && "$W_HOLDER" == "$HOLDER" \
-     && "$W_AUTHOR" == "$VIEWER" && "$W_LOGIN" == "$VIEWER" ]]
+  [[ -n "$W_ID" && "$W_ID" != "$1" ]] && holder_is_mine "$W_HOLDER" \
+    && [[ "$W_AUTHOR" == "$VIEWER" && "$W_LOGIN" == "$VIEWER" ]]
 }
 
 # own_run_markers <claim-comments-json> -> ids (one per line) of the
@@ -861,12 +1004,16 @@ do_renew() {
 
   # Per-run nonce: identifies this run's own marker on re-read (own_run_markers).
   RUN_NONCE="$(date -u +%s)-$$-$RANDOM$RANDOM"
+  # Carry the old marker's who-holds-it facts forward; fill missing ones (an
+  # older marker) from this run's resolved values.
+  local r_provider="${CLAIM_PROVIDER:-$RES_PROVIDER}" r_device="${CLAIM_DEVICE:-$RES_DEVICE}" r_label="${CLAIM_LABEL_TEXT:-$RES_LABEL}"
   payload="$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" --arg s "$since" --arg r "$RUN_NONCE" \
-    '{holder: $h, login: $l, since: $s, run: $r}')"
+    --arg p "$r_provider" --arg d "$r_device" --arg lb "$r_label" \
+    '{holder: $h, login: $l, since: $s, run: $r, provider: $p, device: $d, label: (if $lb == "" then null else $lb end)}')"
   # `gh api` POST (not `gh issue comment`) so the response carries the new
   # comment's id — the identity verification compares.
   if post_out="$(gh api -X POST "$REPO_PREFIX/issues/$ISSUE_NUMBER/comments" \
-       -f "body=$(claim_body "$payload")" 2>"$ERR_FILE")"; then
+       -f "body=$(claim_body "$payload" "$r_provider" "$r_device" "$r_label")" 2>"$ERR_FILE")"; then
     new_id="$(printf '%s' "$post_out" | jq -r '.id // empty' 2>/dev/null || true)"
     post_id="$new_id"
   else
@@ -940,10 +1087,10 @@ do_renew() {
     while IFS= read -r cid; do
       [[ -z "$cid" ]] && continue
       gh api -X DELETE "$REPO_PREFIX/issues/comments/$cid" >/dev/null 2>&1 || cleanup_failed=1
-    done < <(printf '%s' "$verify" | jq -r --arg v "$VIEWER" --arg h "$HOLDER" \
+    done < <(printf '%s' "$verify" | jq -r --arg v "$VIEWER" --arg h "$HOLDER" --arg hl "$HOLDER_LEGACY" \
       --arg keep "$new_id" '
       .[] | select((.user.login // "") == $v and ((.id | tostring) != $keep))
-      | select(._claim_payload.holder == $h)
+      | select(._claim_payload.holder == $h or ($hl != "" and ._claim_payload.holder == $hl))
       | .id' 2>/dev/null || true)
     (( cleanup_failed )) && echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but could not delete an older marker of this holder; the duplicate is inert (the newest marker wins) and the next renewal or release removes it" >&2
 
@@ -966,8 +1113,8 @@ do_renew() {
       parse_winner "$final" || fail_closed "renew-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable on the final re-read; no further marker or metadata cleanup attempted"
       local f_closed=0 f_ours=0 kept_present=0
       issue_is_closed "$final_issue" && f_closed=1
-      [[ -n "$W_ID" && "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" \
-         && "$W_LOGIN" == "$VIEWER" ]] && f_ours=1
+      [[ -n "$W_ID" && "$W_AUTHOR" == "$VIEWER" && "$W_LOGIN" == "$VIEWER" ]] \
+        && holder_is_mine "$W_HOLDER" && f_ours=1
       [[ "$(printf '%s' "$final" | jq -r --arg k "$kept_id" \
             'any(.[]; (.id | tostring) == $k)' 2>/dev/null)" == "true" ]] && kept_present=1
       if (( ! f_closed && f_ours )); then
@@ -1017,6 +1164,9 @@ do_renew() {
 
     MARKER_ID="$new_id"; MARKER_AUTHOR="$VIEWER"
     CLAIMANT="$VIEWER"; CLAIMANT_HOLDER="$HOLDER"
+    # Report the winning marker's facts (W_* is the verified winner, which may
+    # be a sibling renewal's marker); empty fields stay empty and emit as null.
+    CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
     PREVIOUS_CLAIMED_AT="$old_at"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$since"
     IS_STALE="false"; RENEWED="true"
     if (( was_stale )); then
@@ -1116,7 +1266,8 @@ if (( HAS_CLAIM_COMMENT )); then
     '.[] | select((.user.login // "") == $v) | .id' 2>/dev/null || true)
 fi
 
-CLAIM_BODY="$(claim_body "$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" '{holder: $h, login: $l}')")"
+CLAIM_BODY="$(claim_body "$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" --arg p "$RES_PROVIDER" --arg d "$RES_DEVICE" --arg lb "$RES_LABEL" \
+  '{holder: $h, login: $l, provider: $p, device: $d, label: (if $lb == "" then null else $lb end)}')" "$RES_PROVIDER" "$RES_DEVICE" "$RES_LABEL")"
 
 if ! gh issue comment "$ISSUE_NUMBER" --body "$CLAIM_BODY" >/dev/null 2>"$ERR_FILE"; then
   # ROLL BACK the label + assignee this run added. A half-written claim (marker
@@ -1139,6 +1290,7 @@ fi
 
 CLAIMANT="$VIEWER"
 CLAIMANT_HOLDER="$HOLDER"
+CLAIM_PROVIDER="$RES_PROVIDER"; CLAIM_DEVICE="$RES_DEVICE"; CLAIM_LABEL_TEXT="$RES_LABEL"
 CLAIMED_AT="$(date -u +%FT%TZ)"
 # Prefer the marker's GitHub created_at — the timestamp every later --check
 # reads — over the local clock. Best effort: a failed re-read keeps the clock.
