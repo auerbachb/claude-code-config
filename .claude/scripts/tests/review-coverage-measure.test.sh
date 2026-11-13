@@ -175,7 +175,19 @@ mkdir -p "$SCOPE"
 jq -n '[{number: 901, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s1", changedFiles: 1, labels: [], baseRefName: "release"},
         {number: 902, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s2", changedFiles: 1, labels: []},
         {number: 903, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s3", changedFiles: 1, labels: []},
-        {number: 904, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s4", changedFiles: 1, labels: []}]' > "$SCOPE/population.json"
+        {number: 904, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s4", changedFiles: 1, labels: []},
+        {number: 905, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s5", changedFiles: 1, labels: []},
+        {number: 906, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s6", changedFiles: 1, labels: []},
+        {number: 907, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "s7", changedFiles: 1, labels: []}]' > "$SCOPE/population.json"
+# 905: github-actions[bot] comment naming HEAD. Not a reviewer, so override (not other).
+echo '[[]]' > "$SCOPE/pr-905.reviews.json"; echo '[[]]' > "$SCOPE/pr-905.pr_comments.json"
+jq -n '[[{id: 51, user: {login: "github-actions[bot]"}, body: "Deploy preview for s5 is ready", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$SCOPE/pr-905.issue_comments.json"
+# 906: Greptile summary that names HEAD (full SHA): a reviewer, so other.
+echo '[[]]' > "$SCOPE/pr-906.reviews.json"; echo '[[]]' > "$SCOPE/pr-906.pr_comments.json"
+jq -n '[[{id: 61, user: {login: "greptile-apps[bot]"}, body: "Last reviewed commit: s6 with no findings", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$SCOPE/pr-906.issue_comments.json"
+# 907: Greptile comment that names no HEAD (an earlier commit): not on HEAD, so override.
+echo '[[]]' > "$SCOPE/pr-907.reviews.json"; echo '[[]]' > "$SCOPE/pr-907.pr_comments.json"
+jq -n '[[{id: 71, user: {login: "greptile-apps[bot]"}, body: "Last reviewed commit: 0ldc0mmit", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$SCOPE/pr-907.issue_comments.json"
 # 904: only Graphite's stack comment on the PR; it is not a reviewer, so override stands.
 echo '[[]]' > "$SCOPE/pr-904.reviews.json"; echo '[[]]' > "$SCOPE/pr-904.pr_comments.json"
 jq -n '[[{id: 41, user: {login: "graphite-app[bot]"}, body: "stack", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$SCOPE/pr-904.issue_comments.json"
@@ -189,8 +201,11 @@ echo '[[]]' > "$SCOPE/pr-903.issue_comments.json"
 "$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
   --cache-dir "$SCOPE" --ledger-json "$LEDGER" > "$TMP/scope.json" 2>/dev/null
 check "scope run exits 0" "0" "$?"
-check "release-branch PR is out of the denominator" "3" "$(jq -r '.prs_total' "$TMP/scope.json")"
+check "release-branch PR is out of the denominator" "6" "$(jq -r '.prs_total' "$TMP/scope.json")"
 check "Graphite stack comment is not a foreign reviewer (override)" "override_no_signal" "$(jq -r 'select(.number == 904) | .sub' "$SCOPE/classified.jsonl")"
+check "github-actions[bot] comment on HEAD is not a reviewer (override)" "override_no_signal" "$(jq -r 'select(.number == 905) | .sub' "$SCOPE/classified.jsonl")"
+check "Greptile summary naming HEAD is other" "other" "$(jq -r 'select(.number == 906) | .class' "$SCOPE/classified.jsonl")"
+check "Greptile comment not naming HEAD is override" "override_no_signal" "$(jq -r 'select(.number == 907) | .sub' "$SCOPE/classified.jsonl")"
 check "edited-after-merge verdict is cut (override)" "override_no_signal" "$(jq -r 'select(.number == 902) | .sub' "$SCOPE/classified.jsonl")"
 check "foreign bot on HEAD is other, not override" "other" "$(jq -r 'select(.number == 903) | .class' "$SCOPE/classified.jsonl")"
 check "foreign reviewer is named" "cursor[bot]" "$(jq -r 'select(.number == 903) | .foreign[0]' "$SCOPE/classified.jsonl")"

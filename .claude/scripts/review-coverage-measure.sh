@@ -31,8 +31,10 @@ SUBSTANCE_SH="$SCRIPT_DIR/review-substance.sh"
 LEDGER_SH="$SCRIPT_DIR/unreviewed-merge-ledger.sh"
 CR_LOGIN="coderabbitai[bot]"
 CA_LOGIN="codeant-ai[bot]"
-# Graphite posts PR stack metadata, not a review verdict; it is excluded from "foreign".
-STACK_LOGIN="graphite-app[bot]"
+# Other reviewer bots that can make a PR "foreign" (not scored here). Same reviewer set
+# no-review-override.sh names (reviewer_bots), minus CodeRabbit and CodeAnt above. Any
+# other bot (github-actions, Graphite stack comments, coverage bots) is not a reviewer.
+FOREIGN_REVIEWERS_JSON='["cursor[bot]","greptile-apps[bot]"]'
 THRESHOLD_PCT=20
 MIN_CORE_REMAINING=1000
 POP_LIMIT=1000
@@ -154,6 +156,12 @@ if [ -z "$CACHE_DIR" ]; then
   CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/review-coverage-measure/$SLUG"
 fi
 mkdir -p "$CACHE_DIR" || die "cannot create cache dir $CACHE_DIR" 4
+# Per-run scratch directory inside the cache. Every intermediate file (including the
+# merge-time cut and the classification list) lives here, so concurrent runs sharing
+# one cache never read or replace each other's files. Only finished results are renamed
+# into the cache, and only at the end.
+RUN_DIR=$(mktemp -d "$CACHE_DIR/.run.XXXXXX") || die "cannot create a run directory in $CACHE_DIR" 4
+trap 'rm -f "$RUN_DIR"/* 2>/dev/null; rmdir "$RUN_DIR" 2>/dev/null' EXIT
 
 if [ "$FROM_CACHE" -eq 0 ]; then
   REMAINING=$(gh api rate_limit --jq .resources.core.remaining 2>/dev/null) || die "rate_limit lookup failed" 4
@@ -167,7 +175,7 @@ fi
 
 # Every temp file is per-run (mktemp), so two runs sharing one cache never write the
 # same temporary path; each finished file is then renamed into place atomically.
-tmpf() { mktemp "$CACHE_DIR/.tmp.XXXXXX"; }
+tmpf() { mktemp "$RUN_DIR/tmp.XXXXXX"; }
 
 POP="$CACHE_DIR/population.json"
 if [ "$FROM_CACHE" -eq 0 ]; then
@@ -210,9 +218,9 @@ classify_pr() {
     printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "no_merge_time", cr: "unknown", ca: "unknown", hollow_any: false}'
     return 0
   fi
-  rv_m="$CACHE_DIR/pr-$num.reviews.atmerge.json"
-  pc_m="$CACHE_DIR/pr-$num.pr_comments.atmerge.json"
-  ic_m="$CACHE_DIR/pr-$num.issue_comments.atmerge.json"
+  rv_m=$(tmpf) || return 1
+  pc_m=$(tmpf) || return 1
+  ic_m=$(tmpf) || return 1
   # A review is cut on submitted_at. A comment is cut on updated_at: a status comment
   # created before the merge can be edited afterwards (CodeAnt's run record), so its
   # created_at says nothing about what it said at merge time. Cutting on updated_at
@@ -239,7 +247,7 @@ classify_pr() {
   rm -f "$SI"
 
   printf '%s' "$pr" | jq -c --arg h "$head" \
-    --slurpfile s "$subst" --slurpfile r "$rv" --slurpfile p "$pc" --slurpfile i "$ic" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" --arg stack "$STACK_LOGIN" \
+    --slurpfile s "$subst" --slurpfile r "$rv" --slurpfile p "$pc" --slurpfile i "$ic" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" --argjson fr "$FOREIGN_REVIEWERS_JSON" \
     '
     def state($login):
       ($s[0].reviewers[$login] // {}) as $rv
@@ -258,14 +266,15 @@ classify_pr() {
               elif $hollow then "hollow"
               else "none" end),
           hollow: $hollow };
-    # Any other bot that reviewed or commented on this PR before the merge (Cursor,
-    # Greptile, ...). The gate counts these through other paths; this script does not
-    # score them, so such a PR is never classed as override.
+    # Reviewer bots from the $fr allowlist (Cursor, Greptile) that reviewed or commented
+    # on HEAD before the merge. Issue comments count only when their body names HEAD
+    # (full or 7-char SHA), since they carry no commit id. The gate counts these through
+    # other paths; this script does not score them, so such a PR is never override.
     def foreign_bots:
       ([$r[0] | flatten[] | select(.commit_id == $h) | .user.login]
        + [$p[0] | flatten[] | select(.commit_id == $h or .original_commit_id == $h) | .user.login]
-       + [$i[0] | flatten[] | .user.login])
-      | map(select(. != null and endswith("[bot]") and . != $cr and . != $ca and . != $stack)) | unique;
+       + [$i[0] | flatten[] | select(((.body // "") | (contains($h) or contains($h[0:7])))) | .user.login])
+      | map(select(. != null and (. as $x | $fr | index($x) != null))) | unique;
     [state($cr), state($ca)] as $st
     | foreign_bots as $fb
     | (any($st[]; .s == "real")) as $anyreal
@@ -326,11 +335,10 @@ while IFS= read -r PR; do
 
   classify_pr "$NUM" "$HEAD" "$PR" >> "$CLS_TMP" || die "classification failed for PR $NUM" 4
 done < "$LINES"
-mv "$CLS_TMP" "$CLASSIFIED"
 rm -f "$LINES"
 
 # Ledger cross-check input. Status says where the ledger came from.
-LEDGER_FILE="$CACHE_DIR/ledger.json"
+LEDGER_FILE="$RUN_DIR/ledger.json"
 LEDGER_STATUS="not checked"
 if [ -n "$LEDGER_JSON" ]; then
   if jq -e 'type == "array"' "$LEDGER_JSON" >/dev/null 2>&1; then
@@ -436,9 +444,12 @@ jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
         backfill_reviewed_not_override: (($lab_br - $ov) | length)
       }
     }
-' "$CLASSIFIED" || die "aggregation failed" 4
+' "$CLS_TMP" || die "aggregation failed" 4
 
-UNKNOWN=$(jq -s 'map(select(.class == "unknown")) | length' "$CLASSIFIED") || die "cannot count unknown PRs in $CLASSIFIED" 4
+# The aggregate is computed from this run's own list; the shared file is replaced only
+# after the aggregate succeeded, so a concurrent run cannot change what was reported.
+UNKNOWN=$(jq -s 'map(select(.class == "unknown")) | length' "$CLS_TMP") || die "cannot count unknown PRs" 4
+mv "$CLS_TMP" "$CLASSIFIED" || die "cannot write $CLASSIFIED" 4
 if [ "$FAIL_UNKNOWN" -eq 1 ] && [ "$UNKNOWN" -gt 0 ]; then
   printf 'review-coverage-measure: %s PR(s) unknown; see %s\n' "$UNKNOWN" "$CLASSIFIED" >&2
   exit 4
