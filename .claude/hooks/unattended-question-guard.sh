@@ -90,9 +90,9 @@ fi
 
 if [ -n "$ids" ] && [ "$failed" -eq 0 ]; then
   case "$ids" in *,*) noun="questions" ;; *) noun="question" ;; esac
-  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens. Recorded for his return: $ids. Print exactly: $noun $ids recorded for the operator's return. Then take the recommended option${recs:+ ($recs)} if the step is reversible, else park only that step; record what you did with $UNATTENDED_SH update <id> --did '...'; and keep working. Do not ask again."
+  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens. Recorded for his return: $ids. Print exactly: $noun $ids recorded for the operator's return. Then take the recommended option${recs:+ ($recs)} only if the step is reversible and no rule requires confirmation, else park only that step and go on with independent work; record what you did with $UNATTENDED_SH update <id> --did '...'; and keep working. Do not ask again."
 else
-  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens.${ids:+ Recorded: $ids.} The question could not be fully recorded: record it with $UNATTENDED_SH record --question '...' --recommended '...' --did '...', or put it in your final report. Take the recommended option if the step is reversible, else park only that step, and keep working. Do not ask again."
+  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens.${ids:+ Recorded: $ids.} The question could not be fully recorded: record it with $UNATTENDED_SH record --question '...' --recommended '...' --did '...', or put it in your final report. Take the recommended option only if the step is reversible and no rule requires confirmation, else park only that step, and keep working. Do not ask again."
 fi
 
 deny "$reason"

@@ -259,12 +259,16 @@ cmd_digest() {
   p=$(pending_json "$f")
   count=$(printf '%s' "$p" | "$JQ" -r 'length')
   [ "${count:-0}" -gt 0 ] || { unlock; return 0; }
-  printf 'Questions recorded while you were away (%s):\n' "$count"
-  printf '%s' "$p" | "$JQ" -r 'to_entries[] | .value as $q
+  local out
+  out=$(printf '%s' "$p" | "$JQ" -r 'to_entries[] | .value as $q
     | "\(.key + 1). \($q.id): \($q.question)"
       + "\n   Recommended: \($q.recommended // "none given")"
       + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
-      + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"'
+      + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
+  # Nothing is marked listed unless the list was rendered and written.
+  if [ -z "$out" ] || ! printf 'Questions recorded while you were away (%s):\n%s\n' "$count" "$out"; then
+    unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
+  fi
   if [ "$mark" -eq 1 ]; then
     last=$(printf '%s' "$p" | "$JQ" -r '[.[].id | ltrimstr("U-") | tonumber? // 0] | max')
     append "$f" "$("$JQ" -cn --argjson t "$last" --argjson at "$(now)" '{type: "listed", through: $t, at: $at}')" ||

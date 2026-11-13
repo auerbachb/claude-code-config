@@ -94,7 +94,8 @@ To prune, tell me which to remove. I can:
 1. Drop all dangling index pointers (safe — they point at nothing)
 2. Delete specific orphaned files (list names)
 3. Act on a specific advisory item (I'll re-confirm the exact file)
-4. Skip — leave the store untouched
+4. Rewrite stale index lines (each MEMORY.md line is reworded to the note's current decision; no note is deleted)
+5. Skip — leave the store untouched
 
 Which items should I prune?
 ```
