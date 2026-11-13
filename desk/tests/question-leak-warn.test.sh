@@ -566,7 +566,7 @@ question recorded for the operator's return")"
   check "[$SH] unattended: one JSON object" "$(n_objects)" "1"
   UCTX=$(field '.hookSpecificOutput.additionalContext')
   check_contains "[$SH] unattended: says the operator is away" "$UCTX" "The operator is away (unattended mode)"
-  check_contains "[$SH] unattended: names the record command" "$UCTX" "unattended.sh record"
+  check_contains "[$SH] unattended: names the record command" "$UCTX" "unattended.sh' record"
   check_contains "[$SH] unattended: names the unattended receipt" "$UCTX" "(question U-<n> recorded for the operator's return)"
   check_absent "[$SH] unattended: never demands the question tool" "$UCTX" "AskUserQuestion"
 

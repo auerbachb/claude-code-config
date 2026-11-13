@@ -126,14 +126,14 @@ check "source hook" "$(jq -rs '.[0].source' "$QF")" "hook"
 # A payload with no questions is still denied while unattended.
 OUT=$(jq -cn --arg cwd "$REPO_A" '{cwd: $cwd, tool_input: {}}' | "$GUARD")
 check "guard: an empty call is still denied" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
-has "guard: and says to record it" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "unattended.sh record"
+has "guard: and says to record it" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "unattended.sh' record"
 
 # start_session can wait on the operator: denied, nothing recorded.
 OUT=$(session_payload "$REPO_A" | "$GUARD")
 check "guard: start_session is denied while unattended" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
 has "guard: and says to use a sub-agent" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "sub-agent"
 check "guard: start_session records no question" "$(jq -s '[.[] | select(.type == "question")] | length' "$QF")" "2"
-has "reason: names the script by full path" "$REASON" "$SCRIPT update"
+has "reason: names the script by full path" "$REASON" "'$SCRIPT' update"
 
 # ---------------------------------------------------------------- script
 printf '== record / update / per repo\n'

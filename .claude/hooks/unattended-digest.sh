@@ -58,6 +58,8 @@ fi
 digest=$("$UNATTENDED_SH" digest --mark --cwd "$cwd" 2>/dev/null) || digest=""
 [ -n "$digest" ] || exit 0
 
-"$JQ" -cn --arg d "$digest" '{hookSpecificOutput: {hookEventName: "UserPromptSubmit",
+# On stdin, not --arg: a long digest must not hit the argument-size limit
+# after the watermark is already written.
+printf '%s' "$digest" | "$JQ" -Rsc '. as $d | {hookSpecificOutput: {hookEventName: "UserPromptSubmit",
   additionalContext: ("UNATTENDED QUESTIONS (human-queue.md, Unattended): show the operator this list once in your reply, before anything else, each item with its recommended option and what was done meanwhile. It is now marked listed and will not be injected again.\n" + $d)}}' 2>/dev/null
 exit 0

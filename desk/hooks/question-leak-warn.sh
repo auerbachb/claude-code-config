@@ -231,7 +231,7 @@ qlw_warning_jq() {
       hookEventName: "Stop",
       additionalContext: (if $mode == "unattended" then
         ("PROSE QUESTION WARNING (human-queue.md, Unattended): your final message asks in prose: \"" + $quote + "\". The operator is away (unattended mode), so do not open a menu and do not wait. "
-        + "Fix: record it with " + $script + " record --question '...' --recommended '...' --did '...', print the receipt it names (question U-<n> recorded for the operator's return), take the recommended option if the step is reversible, else park only that step, and keep working. "
+        + "Fix: record it with '" + $script + "' record --question '...' --recommended '...' --did '...', print the receipt it names (question U-<n> recorded for the operator's return), take the recommended option only if the step is reversible and no rule requires confirmation, else park only that step, and keep working. "
         + "If that line is not a question for the operator, end your turn without repeating it.")
       else
         ("PROSE QUESTION WARNING (human-queue.md): your final message asks in prose: \"" + $quote + "\". A prose question never reaches the human queue, so no desk sees it. "

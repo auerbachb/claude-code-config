@@ -107,7 +107,7 @@ q_file() {
   printf '%s/%s.jsonl\n' "$Q_DIR" "$k"
 }
 
-# mkdir lock around id allocation (append itself is O_APPEND).
+# mkdir lock around every write: id allocation, updates, the listed watermark.
 LOCK=""
 lock() {
   local i=0
@@ -124,7 +124,8 @@ lock() {
 }
 unlock() { [ -n "$LOCK" ] && rmdir "$LOCK" 2>/dev/null; LOCK=""; }
 
-append() { # FILE JSON
+append() { # FILE JSON — refuses an empty record (a failed jq)
+  [ -n "$2" ] || return 1
   mkdir -p "$(dirname "$1")" 2>/dev/null || return 1
   printf '%s\n' "$2" >>"$1"
 }
@@ -233,8 +234,14 @@ cmd_update() {
     esac
   done
   [ -n "$did" ] || die_usage "update needs --did"
-  append "$(q_file)" "$("$JQ" -cn --arg id "$id" --arg d "$did" --argjson at "$(now)" \
-    '{type: "update", id: $id, at: $at, did: $d}')" || { printf 'unattended.sh: write failed\n' >&2; return 1; }
+  local f rc=0
+  f=$(q_file)
+  mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
+  lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
+  append "$f" "$("$JQ" -cn --arg id "$id" --arg d "$did" --argjson at "$(now)" \
+    '{type: "update", id: $id, at: $at, did: $d}')" || rc=1
+  unlock
+  [ "$rc" -eq 0 ] || { printf 'unattended.sh: write failed\n' >&2; return 1; }
 }
 
 cmd_pending() {

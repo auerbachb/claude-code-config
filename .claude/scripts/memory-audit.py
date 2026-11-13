@@ -112,9 +112,10 @@ _SUPERSEDED_WORD_RE = re.compile(
 )
 # An index line that says the decision changed.
 _INDEX_SAYS_CHANGED_RE = re.compile(r"\b(?:supersed\w*|reversed|replaced)\b", re.IGNORECASE)
-# A markdown link destination, removed before the index line is read: a file
-# named superseded_x.md must not count as the line saying so.
-_LINK_DEST_RE = re.compile(r"\]\([^)]*\)")
+# A markdown link destination, and a label that is only a filename, removed
+# before the index line is read: a file named superseded_x.md must not count
+# as the line saying so. A descriptive label ("Policy superseded by X") stays.
+_LINK_DEST_RE = re.compile(r"\[[^\]]*\.md\]\([^)]*\)|\]\([^)]*\)")
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _MDFILE_RE = re.compile(r"([A-Za-z0-9._-]+\.md)")
 

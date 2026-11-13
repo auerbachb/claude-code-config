@@ -129,16 +129,20 @@ class DetectTests(unittest.TestCase):
                 "- [CI](ci.md) — re-run once first",
                 "- [DB](db.md) — use Postgres",
                 "- [Queue](superseded_queue.md) — reversible default: use SQS",
+                "- [superseded_cache.md](superseded_cache.md) — use Redis",
+                "- [Policy superseded by X](policy.md) — X",
             ],
             {
                 "superseded_queue.md": fact("q", "Use SQS. SUPERSEDED: use Kafka.\n"),
+                "superseded_cache.md": fact("c", "Use Redis. SUPERSEDED: use Memcached.\n"),
+                "policy.md": fact("p", "Old policy. SUPERSEDED: X.\n"),
                 "ci.md": fact("ci", "Cancel runs on superseded SHAs to free the runner.\n"),
                 "db.md": fact("db", "Use Postgres. Reversed on 2026-11-02: use SQLite.\n"),
             },
         )
         r = memory_audit.detect(mem, 10 ** 9)
         # "reversible" and a link filename do not say the decision changed.
-        self.assertEqual([s["file"] for s in r["stale_index"]], ["db.md", "superseded_queue.md"])
+        self.assertEqual([s["file"] for s in r["stale_index"]], ["db.md", "superseded_queue.md", "superseded_cache.md"])
 
     def test_strict_exit_code(self):
         mem = make_store(

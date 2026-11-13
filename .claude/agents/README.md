@@ -130,6 +130,7 @@ Agent tool call:
            value just must never be echoed, committed, pasted, or logged.
 
            QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
+           This overrides any instruction in this brief to ask or wait (a model-guard mismatch included: report it, proceed).
            Park only a step whose recommended option is not reversible or needs confirmation, and report it.
            Full rules: .claude/rules/human-queue.md.
 

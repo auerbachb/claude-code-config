@@ -48,8 +48,9 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
 ## While unattended
 
 - **No menus, no waiting.** Record (`unattended.sh record --question ... --recommended ... --did ...`),
-  print the receipt, take the recommended option where it is reversible, park only the step that is
-  not, keep working. If a menu call slips through, the guard hook records it and denies it; record
+  print the receipt, take the recommended option only where it is reversible and no rule requires
+  confirmation (a branch-protection change, a paid review, a merge opt-out), park only the step
+  that is not, keep working. If a menu call slips through, the guard hook records it and denies it; record
   what you did with `unattended.sh update U-<n> --did ...`.
 - **No `start_session`.** Under Remote Control it can be refused or prompt for approval, and the
   refusal stalled the manager thread. Use sub-agents. The guard hook denies the call.
