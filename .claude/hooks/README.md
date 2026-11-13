@@ -384,3 +384,7 @@ Pause autonomous work on a Claude account that is nearly out of weekly allowance
 - **Fails open:** no marker, a stale marker, an unknown reading, an unreadable account file, or a missing script all allow the call.
 
 **Tests:** `.claude/hooks/tests/quota-reserve-hooks.test.sh`.
+
+## issue-claim-guard.sh
+
+Blocks starting work on an `issue-N-*` branch unless the claim verdict for issue N is `mine` (Issue #2287). PreToolUse on Bash only, so it sees `git worktree add`, `git checkout -b|-B`, `git switch -c|-C` and `gh pr create` (current branch or `--head`). It asks `issue-claim.sh N --check --json`, cached `mine` for 60s. Helper missing, `unknown`, and internal faults block too; faults use a distinct `GUARD FAILED` message. A per-user override file `~/.claude/issue-claim-overrides/<owner>__<repo>/<N>` lets one claimed issue through. Tests: `.claude/hooks/tests/issue-claim-guard.test.sh`. It is not visible to the session's EnterWorktree tool, which is not a Bash call.
