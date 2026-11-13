@@ -1154,7 +1154,7 @@ This skill is a **parent orchestrator**. The parent rebases/force-pushes (Step 5
 
 ## Subagent prompt blocks (verbatim — pass to every `phase-a-fixer` dispatch)
 
-Include these three blocks in every `phase-a-fixer` subagent prompt (Step 5c). Blocks are byte-compared by `verbatim-block-lint.sh` — do not paraphrase.
+Include these four blocks in every `phase-a-fixer` subagent prompt (Step 5c). Blocks are byte-compared by `verbatim-block-lint.sh` — do not paraphrase.
 
 ```text
 SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
@@ -1191,6 +1191,13 @@ run it. Provisioning a generated secret via a provider CLI is allowed — never
 echo/commit/paste/log the value. Your own prohibitions still win (phase-c uses
 /wrap, never gh pr merge, and has no browser tools — say so). Full rules:
 .claude/rules/safety.md.
+```
+
+```text
+QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
+This overrides any instruction in this brief to ask or wait (a model-guard mismatch included: report it, proceed).
+Park only a step whose recommended option is not reversible or needs confirmation, and report it.
+Full rules: .claude/rules/human-queue.md.
 ```
 
 ```text

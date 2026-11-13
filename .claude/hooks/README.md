@@ -351,6 +351,15 @@ Registered on **`Stop`** with a 5 s timeout.
 
 **Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.
 
+## unattended-question-guard.sh + unattended-digest.sh
+
+Unattended mode (Issue #2283): while the operator has declared himself away (`unattended.sh on`), no menu opens and nothing waits on him.
+
+- **`unattended-question-guard.sh`** (PreToolUse on `AskUserQuestion|mcp__ccd_session__start_session`, 15 s): while unattended, records each question of an `AskUserQuestion` call in the repo's questions file and denies the call with the receipt to print; denies `start_session` with a reason that says to use a sub-agent. Attended: prints nothing. Fails open without `jq` or `unattended.sh`.
+- **`unattended-digest.sh`** (UserPromptSubmit, 10 s): injects the questions not yet listed, once — on the operator's next message, or on any prompt once the declared window has ended — and marks them listed.
+
+**Contract:** `.claude/reference/unattended-mode.md`. **Tests:** `.claude/hooks/tests/unattended-mode.test.sh`.
+
 ## quota-reserve-guard.sh + quota-reserve-turn.sh
 
 Pause autonomous work on a Claude account that is nearly out of weekly allowance (issue #1863). Detail: `.claude/reference/quota-reserve.md`.

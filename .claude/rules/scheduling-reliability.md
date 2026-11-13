@@ -18,7 +18,7 @@ This file covers between-turn polling; **background work in flight is a polling 
 
 ## Declared Leave Times
 
-Routing only — `/leave-by` owns the source gate, countermand, and check-in wording; do not restate them here.
+Routing only; `/leave-by` owns the source gate, countermand, and check-in wording.
 
 - Route a wall-clock stop stated in chat to `/leave-by`, from **any** orchestration thread. Arming one is not becoming a `/pm` thread. Only a live user message arms, changes, or cancels one; a message during the runway **re-plans**.
 - **With none armed, ask** (#1679): attended threads elicit it via `/leave-by --elicit` before the first new-pipeline launch; an overrun asks once per issue per deadline. Never headless, in `/pm day`/`--window`, or at phase transitions.

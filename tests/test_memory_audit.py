@@ -100,6 +100,68 @@ class DetectTests(unittest.TestCase):
         )
         self.assertEqual(memory_audit.detect(mem, 10 ** 9)["advisory"]["superseded"], [])
 
+    def test_stale_index_line_flagged(self):
+        # Issue #2283: the note was reversed the same day, the always-loaded
+        # index line still states the old decision.
+        mem = make_store(
+            self.tmp,
+            [
+                "- [SMS provider](sms.md) — all SMS on Amazon (no Twilio)",
+                "- [Voice](voice.md) — SUPERSEDED: one Twilio number for SMS and voice",
+                "- [Plain](plain.md) — a current fact",
+            ],
+            {
+                "sms.md": fact("sms", "1. All SMS on Amazon. SUPERSEDED 2026-11-10: one Twilio number.\n"),
+                "voice.md": fact("voice", "Item 1 superseded the same day.\n"),
+                "plain.md": fact("plain", "Does not supersede anything.\n"),
+            },
+        )
+        r = memory_audit.detect(mem, 10 ** 9)
+        self.assertEqual([s["file"] for s in r["stale_index"]], ["sms.md"])
+        self.assertEqual(r["stale_index"][0]["line"], 1)
+        self.assertEqual(r["summary"]["stale_index_count"], 1)
+
+    def test_bare_word_in_prose_is_not_a_marker(self):
+        # "superseded" as an ordinary word does not mark a decision reversed.
+        mem = make_store(
+            self.tmp,
+            [
+                "- [CI](ci.md) — re-run once first",
+                "- [DB](db.md) — use Postgres",
+                "- [Queue](superseded_queue.md) — reversible default: use SQS",
+                "- [superseded_cache.md](superseded_cache.md) — use Redis",
+                "- [Policy superseded by X](policy.md) — X",
+            ],
+            {
+                "superseded_queue.md": fact("q", "Use SQS. SUPERSEDED: use Kafka.\n"),
+                "superseded_cache.md": fact("c", "Use Redis. SUPERSEDED: use Memcached.\n"),
+                "policy.md": fact("p", "Old policy. SUPERSEDED: X.\n"),
+                "ci.md": fact("ci", "Cancel runs on superseded SHAs to free the runner.\n"),
+                "db.md": fact("db", "Use Postgres. Reversed on 2026-11-02: use SQLite.\n"),
+            },
+        )
+        r = memory_audit.detect(mem, 10 ** 9)
+        # "reversible" and a link filename do not say the decision changed.
+        self.assertEqual([s["file"] for s in r["stale_index"]], ["db.md", "superseded_queue.md", "superseded_cache.md"])
+
+    def test_strict_exit_code(self):
+        mem = make_store(
+            self.tmp,
+            ["- [SMS](sms.md) — all SMS on Amazon"],
+            {"sms.md": fact("sms", "SUPERSEDED: Twilio.\n")},
+        )
+        out = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--check", "--strict", "--dir", mem],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(out.returncode, 1, out.stderr)
+        self.assertIn("Stale index lines", out.stdout)
+        plain = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--check", "--dir", mem],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+
     def test_duplicate_names(self):
         mem = make_store(
             self.tmp,

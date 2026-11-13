@@ -100,6 +100,10 @@ The `**Model:**` line is the **first line** of the `prompt` payload; the `**Effo
 
 **The guard covers the model line only.** Effort is a pre-click recommendation, not a guarded self-report — rationale in `chip-model-guard-decision.md`.
 
+## Sessions an agent starts itself — the QUESTIONS block (issue #2283)
+
+A `start_session` brief that no human clicks — a session an agent starts on its own — also carries the verbatim `QUESTIONS:` block from `.claude/rules/human-queue.md`, placed after the MODEL GUARD preamble (and after SAFETY/MINDSET when present), and the whole queue of work goes in that first brief, not in later top-ups. In such a session the QUESTIONS block wins over the MODEL GUARD's menu, and says so in its own second line, so the session does not need this file to know it: on a family mismatch the session reports it to its parent by message and proceeds on the running model. Never call `start_session` while the operator is unattended (`.claude/reference/unattended-mode.md`); use sub-agents. A user-clicked chip is attended by construction and keeps the guard's menu; if the operator has since declared himself away, the unattended guard hook denies that menu and records the question like any other.
+
 ## Model-guard preamble
 
 The recommended model is worthless if nothing checks it at launch time. Every `prompt` payload — chip or fallback — MUST include this preamble immediately after the `**Effort:**` line that follows the `**Model:**` line (no blank line between the three, matching the fence-adjacent placement of the `**Model:**` line itself). Reproduce it **verbatim** — do not reword it per skill, the same way `safety.md`'s `SAFETY:`/`MINDSET:` blocks are copied into subagent prompts unchanged:
