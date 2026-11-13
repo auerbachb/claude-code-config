@@ -98,6 +98,11 @@ else
     rrc=0
     "$PRESENCE_SH" return >/dev/null 2>&1 || rrc=$?
     if [ "$rrc" -eq 0 ]; then returned=1; elif [ "$rrc" -eq 10 ]; then lost=1; fi
+  elif [ "$probe" = listing-stale ]; then
+    # The return winner stopped listing: take its place, so every repo's questions are still listed.
+    rrc=0
+    "$PRESENCE_SH" relist >/dev/null 2>&1 || rrc=$?
+    if [ "$rrc" -eq 0 ]; then returned=1; elif [ "$rrc" -eq 10 ]; then lost=1; fi
   fi
   if [ "$lost" -eq 1 ]; then
     # Lost the return to another session, which lists every repo's questions: nothing to add.

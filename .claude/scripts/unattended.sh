@@ -221,7 +221,13 @@ cmd_off() {
 cmd_status() {
   local f u
   if is_active; then
-    f=$(read_flag); u=$(printf '%s' "$f" | "$JQ" -r '.until_epoch // empty')
+    # Active because an at-computer presence window lapsed (the unattended flag is not on): its own
+    # stored end is the deadline to show, not whatever the unattended flag last recorded.
+    u=$("$JQ" -r --argjson n "$(now)" '
+      (.unattended | if type == "object" then . else {} end) as $u
+      | (.presence | if type == "object" then . else {} end) as $p
+      | if $u.active != true and $p.state == "here" and ($p.until_epoch | type) == "number" and $p.until_epoch <= $n
+        then $p.until_epoch else ($u.until_epoch // empty) end' "$STATE_FILE" 2>/dev/null)
     if [ -z "$u" ]; then printf 'active\n'
     elif [ "$u" -gt "$(now)" ]; then printf 'active until %s\n' "$(fmt_time "$u")"
     else printf 'active (window ended %s; until you send a message)\n' "$(fmt_time "$u")"; fi

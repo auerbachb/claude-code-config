@@ -183,11 +183,11 @@ check "and did not consume the saved question" "$(U pending)" 1
 P dialog-ready >/dev/null; check "the winner finishes listing" "$?" 0
 check "the dialog is now pending for the next message" "$(sj '.presence.return.dialog')" pending
 P dialog-ready >/dev/null; check "dialog-ready is not repeatable" "$?" 1
-# A winner that died mid-list is given up on after two minutes: listing resumes, nothing stays stuck.
+# A winner that died mid-list is given up on after two minutes: the next message takes its place.
 lapse here
 P return >/dev/null
 "$STATE" --set ".presence.return.generation=$(( $(date +%s) - 300 ))" >/dev/null
-check "a stuck return stops blocking" "$(P probe)" none
+check "a stuck return stops blocking: the next reader may take it over" "$(P probe)" listing-stale
 OUT=$(operator s-9)
 has "so the next message lists again" "$(ctx "$OUT")" "Still listing?"
 
@@ -322,6 +322,72 @@ n=$(date +%s)
 "$STATE" --repo acme/widgets --set "$KEY.leave.active=false" >/dev/null
 check "a spent closing deadline with its record gone still lapses" "$(P probe)" lapsed
 has "and its expiry prints the notice" "$(P expire)" "your at-computer window ended"
+
+fmtt() { date -r "$1" '+%a %H:%M %Z' 2>/dev/null || date -d "@$1" '+%a %H:%M %Z'; }
+
+# A return winner that dies before it lists: its dialog stays "listing" and no hook may read that as
+# a live winner forever. After the stale window, the next operator message re-wins the return and
+# lists EVERY repo's saved questions, then leaves the dialog for his next message.
+printf '== a return winner that died: the next operator message lists every repo, then the dialog\n'
+lapse away
+U record --question "Stranded A?" --recommended "a" >/dev/null
+UB record --question "Stranded B?" --recommended "b" >/dev/null
+P return >/dev/null
+check "a return left the dialog listing" "$(sj '.presence.return.dialog')" listing
+GD=$(sj '.presence.return.generation')
+"$STATE" --set ".presence.return.generation=$((GD - 300))" >/dev/null
+check "the stale winner probes as listing-stale" "$(P probe)" listing-stale
+OUT=$(operator s-live)
+C=$(ctx "$OUT")
+has "the next message lists repo A's stranded question" "$C" "Stranded A?"
+has "and repo B's, which the dead winner never reached" "$C" "Stranded B?"
+has "under each repo's label" "$C" "[acme/gadgets]"
+check "the dialog is pending for his next message" "$(sj '.presence.return.dialog')" pending
+OUT2=$(operator s-live)
+lacks "a later message does not list them again" "$(ctx "$OUT2")" "Stranded A?"
+has "and his next message asks the dialog" "$(ctx "$OUT2")" "PRESENCE DIALOG"
+
+# An expiry claimed a moment before a return: the guard must still deliver the notice it claimed,
+# because the list was marked listed when it was rendered. Here a return lands between the guard's
+# expire and its is-active read (the wrapper runs the return just before the real is-active).
+printf '== expiry racing a return: the claimed notice and its list still reach the thread\n'
+lapse away
+U record --question "Race A?" --recommended "a" >/dev/null
+RACE_SH="$TMP/is-active-race.sh"
+cat > "$RACE_SH" <<RACE
+#!/usr/bin/env bash
+# Stands in for a return landing between the guard's expiry claim and its is-active read.
+if [ "\${1-}" = is-active ]; then (cd "$REPO_A" && env -u UNATTENDED_SH "$PRESENCE" return >/dev/null 2>&1); fi
+exec "$UNATT" "\$@"
+RACE
+chmod +x "$RACE_SH"
+RACE_OUT=$(ask_payload s-race "$REPO_A" | UNATTENDED_SH="$RACE_SH" "$GUARD")
+RACE_C=$(printf '%s' "$RACE_OUT" | jq -r '.hookSpecificOutput.additionalContext // .hookSpecificOutput.permissionDecisionReason // ""')
+has "the expiry notice reaches the thread though the return cleared the window first" "$RACE_C" "your away window ended"
+has "with the saved question it claimed" "$RACE_C" "Race A?"
+
+# status prints the deadline of the window that actually lapsed, not a stale unattended end.
+printf '== status names the lapsed presence window deadline\n'
+lapse here
+n=$(date +%s)
+"$STATE" --set ".unattended.until_epoch=$((n - 9000))" >/dev/null
+WANT=$(fmtt "$(sj '.presence.until_epoch')")
+check "status prints the presence end, not the stale unattended end" "$(U status)" "active (window ended $WANT; until you send a message)"
+
+# expire has three outcomes, told apart by exit status: 0 this caller won and printed the notice,
+# 1 nothing has lapsed, 10 a lapse exists but another caller holds its claim (or none is owed).
+printf '== expire: winner exits 0 with the notice, nothing lapsed exits 1, a lost claim exits 10\n'
+lapse here
+P expire >"$TMP/exp-win.out"; RW=$?
+check "the winner exits 0" "$RW" 0
+has "and prints the notice" "$(cat "$TMP/exp-win.out")" "your at-computer window ended"
+P expire >"$TMP/exp-lost.out"; RL=$?
+check "a lost claim exits 10" "$RL" 10
+check "and prints nothing" "$(cat "$TMP/exp-lost.out")" ""
+P set here --by operator-message --for 2h >/dev/null
+P expire >"$TMP/exp-none.out"; RN=$?
+check "nothing lapsed exits 1" "$RN" 1
+check "and prints nothing" "$(cat "$TMP/exp-none.out")" ""
 
 printf '== guard and digest hooks do nothing without state\n'
 rm -rf "$HOME/.claude/session-state.json" "$HOME/.claude/unattended"

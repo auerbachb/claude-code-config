@@ -50,7 +50,15 @@ if [ -x "$PRESENCE_SH" ] && [ "$("$PRESENCE_SH" probe 2>/dev/null)" = lapsed ]; 
   notice=$("$PRESENCE_SH" expire 2>/dev/null) || notice=""
 fi
 
-"$UNATTENDED_SH" is-active >/dev/null 2>&1 || exit 0
+if ! "$UNATTENDED_SH" is-active >/dev/null 2>&1; then
+  # A return can clear the window between the claim above and this read. The claimed notice, with
+  # the questions it listed (already marked), must still reach the thread: never drop it here.
+  if [ -n "$notice" ]; then
+    printf '%s' "$notice" | "$JQ" -Rsc '{hookSpecificOutput: {hookEventName: "PreToolUse",
+      additionalContext: .}}' 2>/dev/null
+  fi
+  exit 0
+fi
 
 deny() { # REASON
   # On stdin, not --arg: an expiry notice can carry a long saved-question list.

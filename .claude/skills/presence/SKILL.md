@@ -74,9 +74,11 @@ Away also arms unattended mode (`human-queue.md` §Unattended): follow the lines
 Nothing is asked on a timer. A window whose end passed, with no operator message since, is
 *lapsed*: handle questions as in away mode (record, reversible default, park the rest). The hooks
 run `presence.sh expire` for you. A Monitor wake that says `run ... expire` is only a prompt to run
-it yourself: run it, and act only when it prints instructions (nothing printed means another thread
-already won the claim, so do nothing). When its output reaches you (that, a deny reason or an injected
-notice), you are the one thread that won the claim:
+it yourself, and act only on exit 0: that thread won the claim and printed the instructions. Exit 1
+means no window has run out (nothing to do). Exit 10 means another thread holds the claim, or the window
+changed under it (do nothing). Exit 11 means the claim could not be written:
+nothing was printed, and the next evaluation retries. When its output reaches you (that, a deny reason
+or an injected notice), you are the one thread that won the claim:
 
 1. For an at-computer window: print the line once, then call the `PushNotification` tool once with
    exactly the text it gives, then run `presence.sh push-result sent|missed --generation <epoch>`

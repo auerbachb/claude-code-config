@@ -31,10 +31,14 @@
 #   presence.sh ask                 claim the one dialog; see exit codes
 #   presence.sh release --generation <token> [--dismissed]
 #                                   give the claim back; --dismissed (no answer) pauses `ask` for an hour
-#   presence.sh expire              a window ran out? Claim it once for all threads and print what to do
-#                                   (nothing when none ended, or another thread claimed it); always exits 0
+#   presence.sh expire              a window ran out? Claim it once for all threads and print what to do.
+#                                   Exit 0 this caller won and printed the notice; 1 no window has run out;
+#                                   10 it ran out but another thread holds the claim (or the write was refused,
+#                                   which the next evaluation retries); 11 the claim could not be written
 #   presence.sh return [--no-dialog]  the operator spoke after a window ran out: end away handling, record a
 #                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race
+#   presence.sh relist              a return winner stopped listing (the dialog is still "listing" after two
+#                                   minutes): take over the return and list. Exit 0 taken, 10 another took it, 1 none stale
 #   presence.sh dialog-claim        claim the pending post-return dialog once, globally. Exit 0 claimed, else 1
 #   presence.sh dialog-ready [--now]  the return's winner finished listing: open the dialog for the next message,
 #                                   or with --now claim it for this turn (nothing was saved). Exit 0 done, else 1
@@ -570,11 +574,11 @@ cmd_expire() {
   reconcile_closing
   get_eval; e="$EVAL"
   lp=$(jf "$e" '.lapse')
-  [ -n "$lp" ] && [ "$lp" != null ] || return 0
-  [ "$(jr "$e" '.claimed')" != true ] || return 0
+  [ -n "$lp" ] && [ "$lp" != null ] || return 1
+  [ "$(jr "$e" '.claimed')" != true ] || return 10
   kind=$(jr "$lp" '.kind'); gen=$(jf "$lp" '.generation'); until=$(jf "$lp" '.until')
   n=$(now)
-  newclaim=$("$JQ" -cn --argjson g "$gen" --argjson n "$n" --arg k "$kind" '{generation: $g, epoch: $n, kind: $k, push: null}') || return 0
+  newclaim=$("$JQ" -cn --argjson g "$gen" --argjson n "$n" --arg k "$kind" '{generation: $g, epoch: $n, kind: $k, push: null}') || return 11
   claim=$(jf "$e" '.claim')
   "$SESSION_STATE_SH" --cas ".presence.expiry_claim=$newclaim" --expect "$claim" \
     --expect-at ".presence.declared_epoch" "$(jf "$e" '.pt')" \
@@ -582,7 +586,13 @@ cmd_expire() {
     --expect-at ".unattended.active" "$(jf "$e" '.ua')" \
     --expect-at ".presence.state" "$(jf "$e" '.ps')" \
     --expect-at "$(deadline_path "$lp")" "$until" >/dev/null 2>&1 || rc=$?
-  [ "$rc" -eq 0 ] || return 0   # lost the claim, or the write failed: never a second notice
+  # Lost the claim (7): another thread printed the notice. Any other failure: nothing was printed,
+  # so the next evaluation still sees an unclaimed lapse and tries again. Never a second notice.
+  case "$rc" in
+    0) : ;;
+    7) return 10 ;;
+    *) return 11 ;;
+  esac
   if [ "$kind" = here ]; then
     printf 'presence: your at-computer window ended %s. Threads now record questions and take reversible defaults, and park steps that are not reversible, until you send a message; no menu opens before that.\n' "$(fmt_time "$until")"
     printf 'Print the line above once, then (once only) call the PushNotification tool with exactly this text: %s\n' "$PUSH_TEXT"
@@ -651,13 +661,33 @@ cmd_probe() {
     if [ "$(jr "$e" '.claimed')" = true ]; then printf 'lapsed-claimed\n'; else printf 'lapsed\n'; fi
   elif [ "$(jr "$e" '.dlg')" = pending ]; then
     printf 'dialog\n'
-  elif [ "$(jr "$e" '.dlg')" = listing ] && [ $(( $(now) - $(jr "$e" '.dlg_gen // 0') )) -lt 120 ]; then
+  elif [ "$(jr "$e" '.dlg')" = listing ]; then
     # A return just happened and its winner is still listing: nobody else lists or asks yet. After
-    # two minutes a stuck winner is given up on (its dialog is lost, listing resumes).
-    printf 'returning\n'
+    # two minutes the winner is presumed dead: listing-stale, which any hook may take over (relist).
+    if [ $(( $(now) - $(jr "$e" '.dlg_gen // 0') )) -lt 120 ]; then printf 'returning\n'; else printf 'listing-stale\n'; fi
   else
     printf 'none\n'
   fi
+}
+
+# A return winner that stopped listing (dialog still "listing" after two minutes) must not strand the
+# saved questions of the other repos. Take the return over: one compare-and-set on the stale
+# generation, so exactly one hook lists in its place. The caller then lists every repo as a return does.
+cmd_relist() {
+  local e g n rc=0
+  [ -f "$STATE_FILE" ] || return 1
+  reconcile_closing
+  get_eval; e="$EVAL"
+  [ "$(jr "$e" '.dlg')" = listing ] || return 1
+  [ $(( $(now) - $(jr "$e" '.dlg_gen // 0') )) -ge 120 ] || return 1
+  g=$(jf "$e" '.dlg_gen'); n=$(now)
+  "$SESSION_STATE_SH" --cas ".presence.return.generation=$n" --expect "$g" \
+    --expect-at ".presence.return.dialog" '"listing"' >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    7) return 10 ;;
+    *) return 1 ;;
+  esac
 }
 
 # The return's winner has finished listing the saved questions: open the dialog for the next
@@ -730,6 +760,7 @@ case "$sub" in
   release) cmd_release "$@" ;;
   expire) cmd_expire "$@" ;;
   return) cmd_return "$@" ;;
+  relist) cmd_relist "$@" ;;
   dialog-claim) cmd_dialog_claim ;;
   dialog-ready) cmd_dialog_ready "$@" ;;
   push-result) cmd_push_result "$@" ;;
