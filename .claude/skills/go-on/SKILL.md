@@ -622,8 +622,11 @@ fi
 
 ```bash
 if [[ -n "${HQ_CLI:-}" ]]; then
-  "$HQ_CLI" stoppage resume --thread "$STOP_THREAD" >/dev/null 2>&1 || true
-  rm -f "${HOME:-/nonexistent}/.claude/desk-stoppages/open/$STOP_THREAD" 2>/dev/null || true
+  # The marker goes only when `resume` succeeded (closed, or kept locally to be
+  # sent in order). A failed resume leaves it, so a later prompt retries.
+  if "$HQ_CLI" stoppage resume --thread "$STOP_THREAD" >/dev/null 2>&1; then
+    rm -f "${HOME:-/nonexistent}/.claude/desk-stoppages/open/$STOP_THREAD" 2>/dev/null || true
+  fi
 fi
 ```
 

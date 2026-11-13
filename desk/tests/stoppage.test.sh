@@ -186,6 +186,42 @@ check "flush: sends both" "$OUT" "sent 2"
 check "flush: the keep directory empties" "$(find "$KEEP" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ')" "0"
 check "flush: stored in order, idle time added" "$(sql_in "SELECT cause || ' ' || idle_seconds FROM stoppages WHERE thread = 's5'")" "crash 2700"
 
+# ---- order: a kept correction lands before a newer record ----------------------
+# The correction was made against the thread's older entry; when the database
+# returns, a new record must not be written ahead of it, or the correction would
+# land on the newer entry.
+rm -rf "$KEEP"
+hq stoppage record --thread s6 --repo acme/widgets --cause crash --evidence "older" --at 2026-11-12T09:00:00Z
+check "order: the older entry is stored" "$RC" "0"
+hq stoppage resume --thread s6 --at 2026-11-12T09:10:00Z
+RC=0
+env HUMAN_QUEUE_DATABASE_URL="postgresql://u:pw@127.0.0.1:1/db" HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_STOPPAGE_DIR="$KEEP" \
+  bash "$HQ_T_CLI" stoppage correct --thread s6 --cause out_of_work >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+check "order: down: the correction is kept" "$(find "$KEEP" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ')" "1"
+hq stoppage record --thread s6 --repo acme/widgets --cause usage_limit --evidence "newer" --at 2026-11-12T10:00:00Z
+check "order: the newer record is stored" "$RC" "0"
+check "order: the correction reached the older entry" \
+  "$(sql_in "SELECT coalesce(corrected_cause, '-') FROM stoppages WHERE thread = 's6' AND evidence = 'older'")" "out_of_work"
+check "order: the newer entry is not corrected" \
+  "$(sql_in "SELECT coalesce(corrected_cause, '-') FROM stoppages WHERE thread = 's6' AND evidence = 'newer'")" "-"
+check "order: the keep directory is empty" "$(find "$KEEP" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ')" "0"
+
+# ---- order: one writer at a time -------------------------------------------------
+# While another call holds the lock (it is sending earlier entries), a resume
+# must not write ahead of it: it is kept behind them, unapplied.
+mkdir -p "$KEEP/.flush.lock"
+hq stoppage resume --thread s6 --at 2026-11-12T10:30:00Z
+check "lock held: resume exits 0" "$RC" "0"
+check_contains "lock held: the resume is kept" "$OUT" "kept locally"
+check "lock held: one operation kept" "$(find "$KEEP" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ')" "1"
+check "lock held: nothing written ahead" \
+  "$(sql_in "SELECT count(*) FROM stoppages WHERE thread = 's6' AND evidence = 'newer' AND resumed_at IS NULL")" "1"
+rmdir "$KEEP/.flush.lock"
+hq stoppage flush
+check "lock released: flush sends it" "$OUT" "sent 1"
+check "lock released: the entry is closed" \
+  "$(sql_in "SELECT idle_seconds FROM stoppages WHERE thread = 's6' AND evidence = 'newer'")" "1800"
+
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
 check "the public schema is untouched" "$PUBLIC_AFTER" "$PUBLIC_BEFORE"
 

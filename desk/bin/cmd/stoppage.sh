@@ -150,7 +150,7 @@ hq__stp_record() {
     --arg ref "$ref" --arg cause "$cause" --arg evidence "$ev" --arg source "$src" \
     '{op: "record", key: $key, at: $at, thread: $thread, repo: $repo, ref: $ref,
       cause: $cause, evidence: $evidence, source: $source}') || hq_die_error "stoppage: cannot build the entry"
-  hq_stp_try out "$payload" || rc=$?
+  hq_stp_apply_ordered out "$payload" || rc=$?
   case "$rc" in
     0)
       if [ "$json" -eq 1 ]; then
@@ -158,10 +158,8 @@ hq__stp_record() {
       else
         printf 'stored %s\n' "$out"
       fi
-      hq_stp_flush
       ;;
-    1|7)
-      hq_stp_spool_put "$payload"
+    100|101)
       if [ "$json" -eq 1 ]; then
         hq_jq -cn --arg cause "$cause" --arg key "$key" '{id: null, cause: $cause, key: $key, stored: false}'
       else
@@ -196,11 +194,7 @@ hq__stp_resume() {
     0)
       printf 'closed %s\n' "$(hq__stp_count "$out")"
       ;;
-    100)
-      printf 'kept locally (%s)\n' "$HQ_STP_ERR"
-      ;;
-    1|7)
-      hq_stp_spool_put "$payload"
+    100|101)
       printf 'kept locally (%s); it will be sent when the database answers\n' "${HQ_STP_ERR:-database unreachable}"
       ;;
     *)
@@ -259,12 +253,7 @@ hq__stp_correct() {
     0)
       printf 'corrected %s\n' "$out"
       ;;
-    100)
-      printf 'kept locally (%s)\n' "$HQ_STP_ERR"
-      ;;
-    1|7)
-      # The one failure a correction can wait out; keep it and say so.
-      hq_stp_spool_put "$payload"
+    100|101)
       printf 'kept locally (%s); it will be sent when the database answers\n' "${HQ_STP_ERR:-database unreachable}"
       ;;
     *)

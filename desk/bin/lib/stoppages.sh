@@ -32,7 +32,9 @@
 #                                       unreachable, 1 store error, 4 refused)
 #                                       with the one-line message in HQ_STP_ERR
 #   hq_stp_pending                      true when an operation is kept locally
-#   hq_stp_apply_ordered VAR JSON       hq_stp_try behind the kept backlog
+#   hq_stp_apply_ordered VAR JSON       the one write path: under the lock, send
+#                                       the kept backlog, then hq_stp_try this
+#                                       operation or keep it behind the backlog
 #   hq_stp_flush                        send every kept operation; stops at the
 #                                       first one the database cannot take.
 #                                       Never fails; sets HQ_STP_SENT
@@ -285,12 +287,9 @@ hq_stp_pending() {
   return 1
 }
 
-hq_stp_flush() {
-  local hq__dir hq__f hq__json hq__rc LC_ALL=C
-  HQ_STP_SENT=0
-  hq_stp_spool_dir hq__dir
-  [ -d "$hq__dir" ] || return 0
-  hq__stp_lock "$hq__dir" || return 0
+# hq__stp_flush_locked DIR — send every kept operation; the caller holds the lock.
+hq__stp_flush_locked() {
+  local hq__dir="$1" hq__f hq__json hq__rc LC_ALL=C
   for hq__f in "$hq__dir"/[0-9]*.json; do
     [ -f "$hq__f" ] || continue
     hq__json=$(cat "$hq__f" 2>/dev/null) || break
@@ -310,21 +309,56 @@ hq_stp_flush() {
       *) break ;;
     esac
   done
+}
+
+hq_stp_flush() {
+  local hq__dir
+  HQ_STP_SENT=0
+  hq_stp_spool_dir hq__dir
+  [ -d "$hq__dir" ] || return 0
+  hq__stp_lock "$hq__dir" || return 0
+  hq__stp_flush_locked "$hq__dir"
   hq__stp_unlock "$hq__dir"
   return 0
 }
 
-# hq_stp_apply_ordered VAR JSON — for operations whose meaning depends on the
-# ones before them (resume, correct): the kept backlog goes first, and when any
-# of it cannot be sent this operation is kept behind it, unapplied. Returns 0
-# applied; 100 kept behind the backlog (already written); otherwise
-# hq_stp_try's code (the caller keeps the operation on 1 or 7).
+# hq_stp_apply_ordered VAR JSON — every write (record, resume, correct) goes
+# through here, so operations for a thread reach the database in the order they
+# happened. One lock covers the whole step: the kept backlog is sent, then this
+# operation is written or kept, with no other process able to keep an operation
+# in between. When any of the backlog cannot be sent, or the lock stays busy,
+# this operation is kept behind it, unapplied. Returns 0 applied; 100 kept
+# behind the backlog; 101 kept because the database failed (HQ_STP_ERR says
+# why); otherwise hq_stp_try's code (a refusal; nothing kept).
 hq_stp_apply_ordered() {
-  hq_stp_flush
+  local hq__dir hq__n=0 hq__rc=0
+  HQ_STP_SENT=0
+  hq_stp_spool_dir hq__dir
+  ( umask 077; mkdir -p "$hq__dir" ) 2>/dev/null || hq_die_error "stoppage: cannot create the local keep directory"
+  until hq__stp_lock "$hq__dir"; do
+    hq__n=$((hq__n + 1))
+    if [ "$hq__n" -gt 30 ]; then
+      hq_stp_spool_put "$2"
+      HQ_STP_ERR="another stoppage call is sending earlier entries"
+      return 100
+    fi
+    sleep 0.1
+  done
+  hq__stp_flush_locked "$hq__dir"
   if hq_stp_pending; then
     hq_stp_spool_put "$2"
+    hq__stp_unlock "$hq__dir"
     HQ_STP_ERR="earlier entries are still waiting to be sent"
     return 100
   fi
-  hq_stp_try "$1" "$2"
+  hq_stp_try "$1" "$2" || hq__rc=$?
+  case "$hq__rc" in
+    1|7)
+      hq_stp_spool_put "$2"
+      hq__stp_unlock "$hq__dir"
+      return 101
+      ;;
+  esac
+  hq__stp_unlock "$hq__dir"
+  return "$hq__rc"
 }

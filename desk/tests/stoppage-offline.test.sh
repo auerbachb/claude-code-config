@@ -428,7 +428,12 @@ check "hook: a refusing CLI leaves no marker" "$([ -f "$KEEP/open/sess-2" ] && e
 reset_state
 HRC=0
 payload=$(jq -cn --arg c "$REPO" '{hook_event_name: "Stop", session_id: "sess-3", cwd: $c}')
-printf '%s' "$payload" | env -u HUMAN_QUEUE_DATABASE_URL STOPPAGE_SCRIPTS_DIR="$STUBS" \
+# The hook's default CLI is desk-cli.sh (it finds the account's bound queue and
+# the store URL; the raw CLI would use `public`), here pointed at a closed port.
+check "hook: the default CLI is desk-cli.sh" \
+  "$(grep -c 'HUMAN_QUEUE_CLI:-\$stp_here/../bin/desk-cli.sh' "$HOOK" | tr -d ' ')" "1"
+printf '%s' "$payload" | env -u HUMAN_QUEUE_CLI HUMAN_QUEUE_DATABASE_URL="postgresql://u:pw@127.0.0.1:1/db" \
+  HUMAN_QUEUE_SCHEMA=hq_test_stoppage_offline STOPPAGE_SCRIPTS_DIR="$STUBS" \
   HUMAN_QUEUE_STOPPAGE_DIR="$KEEP" STP_PAUSE_FILE="$TMP/pause" STP_BG_FILE="$TMP/bg" \
   STP_REG_FILE="$TMP/reg" STP_REPO_FILE="$TMP/repostate" STP_AGENTS_FILE="$TMP/agents" \
   bash "$HOOK" >"$TMP/hout" 2>"$TMP/herr" || HRC=$?
@@ -437,5 +442,14 @@ check "hook, database down: silent" "$(cat "$TMP/hout")$(cat "$TMP/herr")" ""
 check "hook, database down: the entry is kept locally" "$(kept_count)" "1"
 check "hook, database down: the kept entry has the thread" \
   "$(cat "$KEEP"/[0-9]*.json | jq -r .thread)" "sess-3"
+
+# ---- /go-on: the open marker survives a failed close --------------------------
+GOON="$HQ_T_DESK_DIR/../.claude/skills/go-on/SKILL.md"
+if [ -f "$GOON" ]; then
+  check "go-on: a failed resume never ends in '|| true'" \
+    "$(grep -c 'stoppage resume.*|| true' "$GOON" | tr -d ' ')" "0"
+  check "go-on: the marker is removed only inside the successful-resume branch" \
+    "$(grep -c '^  if "\$HQ_CLI" stoppage resume' "$GOON" | tr -d ' ')" "1"
+fi
 
 hq_t_finish "stoppage-offline.test.sh"

@@ -74,7 +74,9 @@ while [ -L "$stp_self" ]; do
   esac
 done
 stp_here=$(cd -P "$(dirname "$stp_self")" 2>/dev/null && pwd) || exit 0
-stp_cli="${HUMAN_QUEUE_CLI:-$stp_here/../bin/human-queue.sh}"
+# desk-cli.sh, not human-queue.sh: a desktop hook runs without the login profile,
+# and only the wrapper finds the store URL and the account's bound schema.
+stp_cli="${HUMAN_QUEUE_CLI:-$stp_here/../bin/desk-cli.sh}"
 [ -f "$stp_cli" ] || exit 0
 
 # ---- UserPromptSubmit: the work resumed -------------------------------------
