@@ -42,7 +42,7 @@ def attempt(n, **changes):
 with tempfile.TemporaryDirectory() as tmp:
     request = Path(tmp) / 'request.json'
 
-    def check(name, data, action, model=None, code=0):
+    def check(name, data, action, model=None, code=0, fallback=None, gaps=None, reason=None):
         request.write_text(json.dumps(data), encoding="utf-8")
         started = time.monotonic()
         run = subprocess.run([str(script), '--input', str(request)], capture_output=True, text=True)
@@ -51,6 +51,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert run.returncode == code, (name, run.returncode, result, run.stderr)
         assert result['action'] == action, (name, result)
         assert result['model'] == model, (name, result)
+        if action != 'invalid':
+            assert isinstance(result['capability_fallback'], list) and isinstance(result['capability_gaps'], list), (name, result)
+        if fallback is not None:
+            assert action != 'invalid', (name, result)
+            assert [(n['model'], n['basis']) for n in result['capability_fallback']] == fallback, (name, result)
+        if gaps is not None:
+            assert [(n['model'], n['kind']) for n in result['capability_gaps']] == gaps, (name, result)
+        if reason is not None:
+            assert all(part in result['reason'] for part in reason), (name, result)
         report.append(dict(scenario=name, passed=True, action=action, model=model,
                            router_elapsed_seconds=round(measured, 6), metrics=result.get('metrics')))
         return result
@@ -102,7 +111,10 @@ with tempfile.TemporaryDirectory() as tmp:
     data['models'][0]['available'] = False
     check('initial unavailable cheapest tier', data, 'start', 'sonnet')
     data['models'][1]['capable'] = False
-    check('required context or tool support filters candidate', data, 'start', 'opus')
+    data['models'][1]['capability_gap'] = dict(kind='context', detail='needs the unattended phase brief',
+                                               evidence='fixture/context-gap.json')
+    check('required context or tool support filters candidate', data, 'start', 'opus',
+          fallback=[], gaps=[('sonnet', 'context')])
     data['owner_model'] = 'haiku'
     check('unavailable owner pin never substituted', data, 'blocked', code=3)
     data['owner_model'] = 'opus'
@@ -123,6 +135,84 @@ with tempfile.TemporaryDirectory() as tmp:
     for row in data['models']:
         row.pop('capable')
     check('unknown capability is not available', data, 'blocked', code=3)
+
+    # Capability basis: an explicit capable:false needs a valid capability_gap to exclude a tier.
+    GAP = dict(kind='tool', detail='needs the repo-local MCP tool', evidence='fixture/tool-gap.json')
+
+    def row_of(d, model):
+        return next(r for r in d['models'] if r['model'] == model)
+
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    result = check('capable false without basis falls back to haiku', data, 'start', 'haiku',
+                   fallback=[('haiku', 'missing')], gaps=[],
+                   reason=['disregarded for haiku', 'basis missing'])
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['capability_gap'] = GAP
+    check('documented haiku gap allows the step-up', data, 'start', 'sonnet',
+          fallback=[], gaps=[('haiku', 'tool')], reason=['skipped for accepted tool capability gap'])
+    for label, gap in [
+            ('invalid kind', dict(GAP, kind='network')),
+            ('blank detail', dict(GAP, detail='   ')),
+            ('blank evidence', dict(GAP, evidence='')),
+            ('non-object gap', 'tool')]:
+        data = copy.deepcopy(base)
+        row_of(data, 'haiku')['capable'] = False
+        row_of(data, 'haiku')['capability_gap'] = gap
+        check('malformed basis (' + label + ') falls back', data, 'start', 'haiku',
+              fallback=[('haiku', 'malformed')], gaps=[])
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['available'] = False
+    check('unavailable haiku with capable false is ineligible without a note', data, 'start', 'sonnet',
+          fallback=[], gaps=[])
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = True
+    row_of(data, 'haiku')['capability_gap'] = GAP
+    check('capable true ignores a stray gap', data, 'start', 'haiku', fallback=[], gaps=[])
+    data = copy.deepcopy(base)
+    for model in ('haiku', 'sonnet'):
+        row_of(data, model)['capable'] = False
+        row_of(data, model)['capability_gap'] = dict(GAP)
+    check('two documented gaps climb to opus with both recorded', data, 'start', 'opus',
+          fallback=[], gaps=[('haiku', 'tool'), ('sonnet', 'tool')])
+    data = copy.deepcopy(base)
+    for model in ('haiku', 'sonnet', 'opus'):
+        row_of(data, model)['capable'] = False
+    check('every tier capable false without basis selects cheapest', data, 'start', 'haiku',
+          fallback=[('haiku', 'missing')], gaps=[])
+    data = copy.deepcopy(base)
+    for model in ('haiku', 'sonnet', 'opus'):
+        row_of(data, model)['capable'] = False
+        row_of(data, model)['capability_gap'] = dict(GAP)
+    check('every tier documented as incapable blocks', data, 'blocked', code=3,
+          fallback=[], gaps=[('haiku', 'tool'), ('sonnet', 'tool'), ('opus', 'tool')])
+    data = copy.deepcopy(base)
+    data['submission'] = dict(local_checks_passed=True, distinct_changes=True, batched=True)
+    row_of(data, 'haiku')['capable'] = False
+    result = check('basis fallback keeps submission guard usable', data, 'start', 'haiku',
+                   fallback=[('haiku', 'missing')], gaps=[])
+    assert result['submission_allowed'] is True
+    data = copy.deepcopy(base)
+    data['current_model'] = 'haiku'
+    data['attempts'] = [attempt(1), attempt(2)]
+    row_of(data, 'sonnet')['capable'] = False
+    data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                             evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                             why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
+    check('escalation to sonnet without basis falls back to sonnet', data, 'escalate', 'sonnet',
+          fallback=[('sonnet', 'missing')], gaps=[])
+    row_of(data, 'sonnet')['capability_gap'] = dict(GAP)
+    check('escalation with sonnet gap skips to opus', data, 'escalate', 'opus',
+          fallback=[], gaps=[('sonnet', 'tool')])
+    data = copy.deepcopy(base)
+    data['owner_model'] = 'opus'
+    row_of(data, 'opus')['capable'] = False
+    check('owner pin with unsupported capable false keeps owner and names disregard', data, 'start', 'opus',
+          fallback=[('opus', 'missing')], gaps=[], reason=['disregarded for opus'])
+    row_of(data, 'opus')['capability_gap'] = dict(GAP)
+    check('owner pin with documented gap is blocked', data, 'blocked', code=3, fallback=[], gaps=[('opus', 'tool')])
     data = copy.deepcopy(base)
     result = check('unknown local checks cannot submit', data, 'start', 'haiku')
     assert result['submission_allowed'] is False

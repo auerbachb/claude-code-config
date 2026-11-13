@@ -18,7 +18,11 @@ the ladder. Source: [provider pricing](https://platform.claude.com/docs/en/about
 For each candidate confirm tool support, required context, the agent's unchanged
 permission/tool restrictions, provider availability and budget/reserve controls.
 `capable` means these requirements are supported, not that a first patch is
-guaranteed correct. Unknown capability/availability is ineligible. A provider
+guaranteed correct. Unknown capability/availability is ineligible. Set `capable`
+to `true` when the tier's requirements are supported. If a concrete requirement
+is missing, set `false` **and** add a valid `capability_gap` (see "Capability
+gap" below). An unsupported `false` is disregarded: the router selects the
+cheapest eligible tier and names the fallback. A provider
 limit is handled by existing park/wake controls, never an excuse to buy another
 tier or silently switch accounts. Preserve the existing reserve gate's own
 freshness/unknown semantics; the routing helper does not reinterpret its marker.
@@ -50,7 +54,9 @@ successor; do not reuse a stale clear result. `owner_model` is only an explicit
 owner selection for this task, not an old phase default or a generated model
 recommendation. If pinned and unavailable, block; never silently substitute.
 
-The result contains `action`, `model`, `reason`, evidence IDs and metrics. Exit
+The result contains `action`, `model`, `reason`, evidence IDs, metrics,
+`capability_fallback` and `capability_gaps` (both always present, empty when
+nothing applies). Exit
 0 permits `start`, `retry`, `escalate`, or reports `complete`; only the first
 three launch. Exit 3 (`wait`, `diagnose`, `owner_decision`, `blocked`) launches nothing;
 persist the pending work and recover or surface an owner-only decision as
@@ -71,6 +77,36 @@ forced overrides. Do not silently edit owner settings or clear an explicit pin.
 This repository's old seeded fallback therefore requires a compatible client;
 verify the effective model with runtime telemetry after launch as well. The
 version shown in the JSON example is illustrative, not automatic detection.
+
+## Capability gap
+
+A tier marked `"capable": false` is excluded only with a recorded basis on the
+same inventory row:
+
+```json
+"capability_gap": {
+  "kind": "tool",
+  "detail": "needs the repo-local MCP tool the cheaper tier cannot call",
+  "evidence": "path/to/tool-requirement-check.json"
+}
+```
+
+- `kind` is one of `tool`, `context` or `permissions`.
+- `detail` names the missing requirement. `evidence` points to the check that
+  shows it. Both must be nonblank strings.
+- A valid gap excludes that tier. The decision lists it in `capability_gaps`
+  and, when a higher tier is chosen, `reason` names the skipped tier and `kind`.
+- A `false` with no gap, or with a missing or malformed one (bad `kind`, blank
+  field, or a non-object), is **disregarded**. The tier stays eligible, the
+  cheapest eligible tier is chosen, and `capability_fallback` names the tier
+  with `basis` `missing` or `malformed`. `reason` says the flag was disregarded.
+- `capable: true` ignores any stray `capability_gap`. A missing, null or
+  non-boolean `capable` stays ineligible, as before.
+- An owner pin keeps its selection. An unsupported `false` on the pinned row is
+  recorded in `capability_fallback`, not treated as a blocker.
+
+Callers record a basis or leave the flag `true`. They never mark a cheaper tier
+incapable without naming what it lacks.
 
 ## State and dispatch integration
 

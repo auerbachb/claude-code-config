@@ -1,4 +1,10 @@
-"""Task-local routing reducer. The caller owns and locks session/handoff state."""
+"""Task-local routing reducer. The caller owns and locks session/handoff state.
+
+A tier marked capable:false is excluded only with a valid capability_gap
+(kind tool|context|permissions, nonblank detail and evidence). Without one the
+flag is disregarded, the cheapest eligible tier is chosen, and the decision
+names the fallback in capability_fallback. Accepted gaps go in capability_gaps.
+"""
 import argparse
 import json
 import math
@@ -9,10 +15,16 @@ from pathlib import Path
 
 ORDER = ("haiku", "sonnet", "opus")
 MODELS = ORDER + ("fable",)
+GAP_KINDS = ("tool", "context", "permissions")
 
 
 def text(value):
     return isinstance(value, str) and bool(value.strip())
+
+
+def valid_gap(gap):
+    return (isinstance(gap, dict) and gap.get("kind") in GAP_KINDS
+            and text(gap.get("detail")) and text(gap.get("evidence")))
 
 
 def number(value):
@@ -81,9 +93,11 @@ def decide(request):
     require(isinstance(submission, dict), "submission must be an object")
     known_costs = [a["cost_usd"] for a in attempts if a.get("cost_usd") is not None]
     known_times = [a["elapsed_seconds"] for a in attempts if a.get("elapsed_seconds") is not None]
+    fallbacks, gaps = [], []
     result = {
         "schema_version": 1, "task": request["task"], "phase": request["phase"],
         "action": "blocked", "model": None, "reason": "",
+        "capability_fallback": [], "capability_gaps": [],
         "attempt_ids": [a["id"] for a in attempts],
         "submission_allowed": all(submission.get(k) is True for k in
                                   ("local_checks_passed", "distinct_changes", "batched")),
@@ -99,16 +113,34 @@ def decide(request):
     }
 
     def finish(action, reason, model=None):
-        result.update(action=action, reason=reason, model=model)
+        clauses = [" Unsupported capable:false disregarded for %s (basis %s)." % (note["model"], note["basis"])
+                   for note in fallbacks if note["model"] == model]
+        clauses += [" %s skipped for accepted %s capability gap." % (note["model"], note["kind"])
+                    for note in gaps]
+        result.update(action=action, reason=reason + "".join(clauses), model=model,
+                      capability_fallback=list(fallbacks), capability_gaps=list(gaps))
         if action in ("blocked", "diagnose", "owner_decision", "wait"):
             result["submission_allowed"] = False
         return result
 
-    def eligible(model):
+    def assess(model):
+        # Records a note only for a row the active branch examined.
         row = inventory.get(model, {})
-        return (all(row.get(k) is True for k in
-                    ("available", "capable", "budget_allowed", "reserve_allowed"))
-                and text(row.get("evidence")))
+        if not (all(row.get(k) is True for k in ("available", "budget_allowed", "reserve_allowed"))
+                and text(row.get("evidence"))):
+            return False
+        capable = row.get("capable")
+        if capable is True:
+            return True
+        if capable is not False:
+            return False
+        gap = row.get("capability_gap")
+        if valid_gap(gap):
+            gaps.append({"model": model, "kind": gap["kind"], "detail": gap["detail"],
+                         "evidence": gap["evidence"]})
+            return False
+        fallbacks.append({"model": model, "basis": "missing" if gap is None else "malformed"})
+        return True
 
     if attempts and attempts[-1]["outcome"] == "complete":
         return finish("complete", "Task finished; verify its independent acceptance and merge gates.")
@@ -124,15 +156,19 @@ def decide(request):
     if runtime.get("model_override_forced") is not False:
         return finish("blocked", "A forced/unknown runtime model override cannot honor the routed model; preserve owner control.")
     if owner is not None:
-        if not eligible(owner):
+        if not assess(owner):
             return finish("blocked", "Owner-selected model is unavailable/ineligible; never substitute silently.")
         selected = owner
     elif current is not None:
-        if not eligible(current):
+        if not assess(current):
             return finish("blocked", "Current model is unavailable/ineligible; refresh inventory and reserve/budget gates.")
         selected = current
     else:
-        selected = next((m for m in ORDER if eligible(m)), None)
+        selected = None
+        for candidate in ORDER:
+            if assess(candidate):
+                selected = candidate
+                break
         if selected is None:
             return finish("blocked", "No explicitly available capable model within budget/reserve controls.")
     if not attempts:
@@ -190,7 +226,11 @@ def decide(request):
     if owner is not None:
         return finish("owner_decision", "Evidence supports escalation but an explicit owner model is pinned.", selected)
     start = ORDER.index(current) + 1 if current in ORDER else len(ORDER)
-    successor = next((m for m in ORDER[start:] if eligible(m)), None)
+    successor = None
+    for candidate in ORDER[start:]:
+        if assess(candidate):
+            successor = candidate
+            break
     if successor is None:
         return finish("blocked", "No eligible next tier; retain recovery evidence without bypassing budgets or permissions.")
     return finish("escalate", "Diagnosed " + kind + "; fresh context for this task/phase only.", successor)
