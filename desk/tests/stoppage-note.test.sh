@@ -59,8 +59,8 @@ cat "$STP_PAUSE_FILE"
 EOF
 cat >"$STUBS/session-state.sh" <<'EOF'
 #!/usr/bin/env bash
-case "$2" in
-  .active_agents) cat "$STP_AGENTS_FILE" ;;
+case "$*" in
+  *--session-view*) printf '{"active_agents":%s}\n' "$(cat "$STP_AGENTS_FILE")" ;;
   *) cat "$STP_REPO_FILE" ;;
 esac
 EOF

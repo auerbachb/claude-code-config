@@ -187,12 +187,16 @@ esac
 sn_agents="{}"
 if [ "$sn_mode" = "refill" ]; then
   sn_rc=0
-  sn_out=$("$sn_scripts/session-state.sh" --get-json ".active_agents" 2>/dev/null) || sn_rc=$?
+  # The repo-scoped session view: the global active_agents map keys no repo on a
+  # spawn record, so a same-numbered issue's agent in another repo would hide
+  # this repo's idle slot.
+  sn_out=$("$sn_scripts/session-state.sh" --repo "$sn_lc" --session-view 2>/dev/null) || sn_rc=$?
   case "$sn_rc" in
-    0) [ "$sn_out" = "null" ] || sn_agents="$sn_out" ;;
+    0) sn_agents=$(printf '%s' "$sn_out" | jq -c '.active_agents // {}' 2>/dev/null) || exit 0 ;;
     3) ;;
     *) exit 0 ;;
   esac
+  [ -n "$sn_agents" ] || sn_agents="{}"
 fi
 sn_now=$(date +%s) || exit 0
 # The repo's pipelines (issue-keyed, this repo only) and this session's round

@@ -59,7 +59,10 @@ armed is an entry whatever the branch; its ref is the round's first issue. The
 pipeline records (`.repos[...].pipelines`) are not read: they are append-only
 with no finished marker and are not session-scoped, so they cannot say what is
 still unfinished; a pending phase transition belongs to a round member and is
-covered by the round. An ordinary thread (no round) costs the hook one state read
+covered by the round. `/subagent` Step 7.0 records a round only when a unique
+session id is available; without one it prints a `DEGRADED` line and records
+nothing, so that orchestrator is not logged by the hook (its issue-branch threads
+still are). An ordinary thread (no round) costs the hook one state read
 and no entry, so the check is cheap in every thread.
 
 The cause is what the hook can see: a recorded `token_exhaustion` or

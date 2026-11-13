@@ -208,14 +208,19 @@ for stp_k in "${CLAUDE_CODE_SESSION_ID:-}" "${CLAUDE_SESSION_ID:-}" "$stp_sid"; 
   esac
 done
 
+# active_agents is one map for every repo and keys no repo on a spawn record, so
+# the repo-scoped session view (the schema's attribution rule) is read instead:
+# a running agent of a same-numbered issue in another repo must not hide this
+# repo's stoppage.
 stp_all_agents="{}"
 stp_rc=0
-stp_out=$("$stp_scripts/session-state.sh" --get-json ".active_agents" 2>/dev/null) || stp_rc=$?
+stp_out=$("$stp_scripts/session-state.sh" --repo "$stp_repo_lc" --session-view 2>/dev/null) || stp_rc=$?
 case "$stp_rc" in
-  0) [ "$stp_out" = "null" ] || stp_all_agents="$stp_out" ;;
+  0) stp_all_agents=$(printf '%s' "$stp_out" | jq -c '.active_agents // {}' 2>/dev/null) || exit 0 ;;
   3) ;;
   *) exit 0 ;;
 esac
+[ -n "$stp_all_agents" ] || stp_all_agents="{}"
 
 stp_now=$(date +%s) || exit 0
 stp_planned=$(printf '%s' "$stp_repo_state" | jq -r --argjson now "$stp_now" '
