@@ -131,6 +131,8 @@ action_doctor() {
     printf '%s' "$report" | jq -r '.[] | [.provider,.label,.finding,.profile_dir,.expected_profile_dir,.repairable,.detail] | @tsv'
     echo 'Display only — never a dispatch gate.'
   fi
+  # Last-known folder leftovers (#2280). Read-only; text output only.
+  doctor_last_known
   if printf '%s' "$report" | jq -e 'any(.[]; .finding == "label-mismatch" or .finding == "shared" or .finding == "missing" or .finding == "interrupted-repair")' >/dev/null; then return 8; fi
   return 0
 }

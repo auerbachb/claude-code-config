@@ -382,6 +382,9 @@ def render_v2(v2, heading):
     verified_task_keys=set()
     verified_usage=[]
     print(f"Explicit session/issue correlation records: {len(correlations)}; links resolved to one PR: {len(resolved_links)}; links without a unique PR: {len(unresolved_links)}.")
+    sessionless=[r for r in correlations if not r["session_id"] or r["session_id"]=="unknown"]
+    named_blocker=[r for r in sessionless if r["evidence"].get("session_unresolved")]
+    print(f"Correlation rows with no runtime session ID: {len(sessionless)}; of these, rows naming the blocker unsupported:no_runtime_session_id_at_link_writer: {len(named_blocker)}. Sessionless rows cannot join usage.")
     print("Usage rows join by exact session + repository slug, and by worker/task only when explicitly supplied; no branch/time inference is used.")
     print("\n| Repo | Issue | PR | Session | Task | Usage messages | Outcome | Gate head matches PR head | Review decision | Current checks | Merge SHA | Actual min | Commit rounds (proxy) |\n| --- | ---: | ---: | --- | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: |")
     if not resolved_links:

@@ -30,6 +30,7 @@ ai-quotas.sh --json  ──▶  quota-reserve.sh --refresh  ──▶  ~/.claude
 - **Which account is this session on?** The session's own `.claude.json` (`${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`) carries `oauthAccount.emailAddress`. That is account metadata, not a credential, and it works for the desktop app and for CLI profiles alike. The marker is keyed by the email the provider reports.
 - **Fast path.** A fresh marker with no account in reserve costs one `grep` and one `stat` per tool call, with no `jq`.
 - **The refresh is quiet.** It runs the reader with its history redirected, so a refresh every few minutes does not bury the daily record `/quotas` projects from.
+- **Saved figures never reach the gate (#2280).** The refresh passes `--no-last-known`, so the reader neither reads nor writes the last-known folder during a gate refresh. A failed account therefore stays `unknown` here, never reserve. Only `ok` rows build the marker, so a row with a saved figure and no live figure cannot count.
 
 ## What is blocked, in a session on an account in reserve
 

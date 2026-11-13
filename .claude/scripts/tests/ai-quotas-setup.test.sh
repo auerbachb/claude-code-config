@@ -2360,6 +2360,53 @@ check_contains "$OUT" interrupted-repair 'doctor reports interrupted Keychain re
 unset AI_QUOTAS_KEYCHAIN_ADAPTER_BIN LAYOUT_KC_DB LAYOUT_KC_FAULT LAYOUT_KC_ACCOUNT
 unset LAYOUT_KC_SECOND_SOURCE LAYOUT_KC_SECOND_TARGET LAYOUT_KC_FIRST_TARGET
 
+# --- 16. owner-typed readings (#2280) ----------------------------------------
+#
+# `report` writes one owner-reported series into the last-known folder. The
+# folder is a per-suite temporary directory, never the owner's.
+
+LK_SETUP_DIR="$TMP/last-known-setup"
+export AI_QUOTAS_LAST_KNOWN_DIR="$LK_SETUP_DIR"
+new_case "report-owner"
+run add codex report@example.com --nick "Report GPT"
+check_eq "$RC" "0" "setup: a codex account to report on is registered"
+rm -rf "$LK_SETUP_DIR"
+run report report@example.com 7-day 86 "2026-11-17"
+check_eq "$RC" "0" "report records a reading"
+check_contains "$OUT" "owner-reported" "and says so"
+check_eq "$(stat -c '%a' "$LK_SETUP_DIR/codex--report@example.com.json" 2>/dev/null || stat -f '%Lp' "$LK_SETUP_DIR/codex--report@example.com.json")" "600" \
+  "the saved file is private"
+check_eq "$(jq -r '.rows[0].source' "$LK_SETUP_DIR/codex--report@example.com.json")" "owner-reported" \
+  "the row is owner-reported"
+check_eq "$(jq -r '.rows[0].used_pct' "$LK_SETUP_DIR/codex--report@example.com.json")" "86" "the figure is kept"
+check_eq "$(jq -r '.rows[0].resets_at_epoch | type' "$LK_SETUP_DIR/codex--report@example.com.json")" "number" \
+  "a date-only reset becomes a timestamp (midnight Eastern)"
+run report report@example.com 7-day 90
+check_eq "$RC" "0" "a reset may be omitted"
+check_eq "$(jq -r '.rows[0].resets_at_epoch' "$LK_SETUP_DIR/codex--report@example.com.json")" "null" \
+  "and then the expiry is unknown, stored as null"
+run report nobody@example.com 7-day 5
+check_eq "$RC" "4" "an unknown label exits 4"
+run report report@example.com 7-day 100.5
+check_eq "$RC" "3" "a percentage with two decimals is refused"
+run report report@example.com 7-day 101
+check_eq "$RC" "3" "a percentage over 100 is refused"
+run report report@example.com 30-day 5
+check_eq "$RC" "3" "a window the provider does not have is refused"
+run report report@example.com 7-day 5 2026-02-31
+check_eq "$RC" "3" "a date that is not real is refused"
+run doctor
+touch "$LK_SETUP_DIR/refresh.sh"
+run doctor
+check_contains "$OUT" "stopgap leftover" "doctor reports a seeded refresh.sh"
+check_contains "$OUT" "refresh.sh" "and names it"
+rm -f "$LK_SETUP_DIR/refresh.sh"
+run remove report@example.com codex
+check_eq "$RC" "0" "remove exits 0"
+check_eq "$([[ -e "$LK_SETUP_DIR/codex--report@example.com.json" ]] && echo present || echo gone)" "gone" \
+  "remove clears that account's saved readings, so a reused label starts clean"
+unset AI_QUOTAS_LAST_KNOWN_DIR
+
 # --- summary -----------------------------------------------------------------
 
 echo

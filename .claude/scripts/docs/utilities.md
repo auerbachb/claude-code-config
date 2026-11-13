@@ -24,6 +24,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [pr-summary-material.sh](../../../desk/bin/pr-summary-material.sh) | Human-queue Reviews material (`desk/bin/pr-summary-material.sh`): prints a PR's or issue's raw material for a level 1, 2, or 3 summary (title, labels, closing issue; body, commits, files, tests; the bounded diff, narrowed by --path); read-only |
 | [reference-catalog-lint.sh](../reference-catalog-lint.sh) | Lint the `.claude/reference/` catalog against the directory contents (index/disk parity, no phantoms, no duplicates) |
 | [report-path.sh](../report-path.sh) | Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first |
+| [stoppage-note.sh](../../../desk/bin/stoppage-note.sh) | Records the stoppage causes only an orchestrator knows (`out_of_work`, `blocked_by_error`) in the desk's private database (`desk/bin/stoppage-note.sh`) |
 | [verify-exit-report-block.sh](../verify-exit-report-block.sh) | Verify stdin contains a parseable EXIT_REPORT with all required fields |
 | [wake-target.sh](../../../desk/bin/wake-target.sh) | Human-queue wake-up address (`desk/bin/wake-target.sh`): maps a Decision's return address to the running session's messaging address; read-only |
 <!-- catalog:rows:end -->

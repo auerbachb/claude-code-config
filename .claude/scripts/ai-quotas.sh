@@ -34,6 +34,11 @@
 #   --json         Emit the report document with rows, reliability and recommendations.
 #   --browser      Explicit interactive Cursor Chrome fallback (never scheduled).
 #   --browser-results FILE  Resume one --account from a private browser observation.
+#   --no-last-known
+#                  Do not read or write the last-known folder (#2280). Used by
+#                  quota-reserve.sh --refresh so an autonomous-work gate never
+#                  touches a saved figure. A failed read then shows no saved
+#                  figure.
 #   --five-hour    Add each account's five-hour window, which arrives in the
 #                  same payload as the weekly one. Weekly rows are the
 #                  default because the weekly cap is what the switching
@@ -284,6 +289,14 @@
 #                             rather than falling back to a search, which is
 #                             what makes the unavailable-helper path testable
 #                             from inside a checkout.
+#   AI_QUOTAS_LAST_KNOWN_DIR  Last-known folder (default
+#                             ~/.claude/ai-quotas/last-known). One private file
+#                             per account holds its last usable live reading,
+#                             shown in NOTE when a later live read fails (#2280).
+#                             Tests point it at a temporary folder.
+#   AI_QUOTAS_LAST_KNOWN_BIN  Path to the last-known helper. Used EXCLUSIVELY
+#                             when set; a value that is not executable disables
+#                             the feature with a DEGRADED warning.
 #   AI_QUOTAS_SQLITE3_BIN     Path to sqlite3 (reads the Cursor IDE store).
 #   AI_QUOTAS_CURSOR_STATE_DB Path to the Cursor IDE state store. Lets the
 #                             tests point at a fixture DB, so no test ever
@@ -375,6 +388,7 @@ warn() { echo "${SELF_NAME}: $1" >&2; }
 JSON=0
 FIVE_HOUR=0
 QUIET=0
+NO_LAST_KNOWN=0
 ACCOUNT_FILTER=""
 BROWSER=0
 BROWSER_RESULTS=""
@@ -387,6 +401,7 @@ while [[ $# -gt 0 ]]; do
     --browser-results) [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--browser-results requires a private file"; BROWSER_RESULTS="$2"; BROWSER=1; shift 2 ;;
     --five-hour) FIVE_HOUR=1; shift ;;
     --quiet) QUIET=1; shift ;;
+    --no-last-known) NO_LAST_KNOWN=1; shift ;;
     --account)
       [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--account requires a label"
       ACCOUNT_FILTER="$2"; shift 2 ;;
@@ -896,7 +911,17 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       usage_start_display: null,
       pct_per_day: null,
       days_left: null,
-      days_left_note: null}
+      days_left_note: null,
+      # #2280. The saved reading for an account whose live read failed. Set
+      # only on derived rows by apply_last_known; `used_pct` stays null on
+      # every row, so a saved figure is never read as live usage.
+      last_known_used_pct: null,
+      last_known_at_epoch: null,
+      last_known_at_et: null,
+      last_known_source: null,
+      last_known_resets_at_epoch: null,
+      last_known_resets_et: null,
+      last_known_expired: null}
      + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
@@ -1161,6 +1186,144 @@ annotate_rows() { # <rows-json-file>
   return 0
 }
 
+# --- last-known folder (#2280) ----------------------------------------------
+# One private file per account keeps its last usable live reading, so a failed
+# read can show a saved figure instead of nothing. DISPLAY ONLY: the folder is
+# written and read through quotas-last-known.py alone, and no gate reads it
+# (quota-reserve.sh passes --no-last-known; credit-budget.sh never calls this
+# reader). A failed read never writes a file.
+LK_DIR=""
+if [[ -n "${AI_QUOTAS_LAST_KNOWN_DIR:-}" ]]; then
+  LK_DIR="$AI_QUOTAS_LAST_KNOWN_DIR"
+elif [[ -n "$_HOME" ]]; then
+  LK_DIR="${_HOME}/.claude/ai-quotas/last-known"
+fi
+LK_PY="$SELF_DIR/lib/quotas-last-known.py"
+LK_ENABLED=1
+LK_BIN_SET=0
+if [[ "$NO_LAST_KNOWN" -eq 1 || -z "$LK_DIR" ]]; then
+  LK_ENABLED=0
+elif [[ -n "${AI_QUOTAS_LAST_KNOWN_BIN:-}" ]]; then
+  if [[ -x "$AI_QUOTAS_LAST_KNOWN_BIN" ]]; then
+    LK_BIN_SET=1
+  else
+    warn "DEGRADED: AI_QUOTAS_LAST_KNOWN_BIN names '${AI_QUOTAS_LAST_KNOWN_BIN}', which is not executable — last-known readings disabled"
+    LK_ENABLED=0
+  fi
+elif ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$LK_PY" ]]; then
+  warn "DEGRADED: python3 or quotas-last-known.py unavailable — last-known readings disabled"
+  LK_ENABLED=0
+fi
+
+lk_run() { # <subcommand> [args…] — stdin and stdout pass through
+  if [[ "$LK_BIN_SET" -eq 1 ]]; then
+    "$AI_QUOTAS_LAST_KNOWN_BIN" "$@"
+  else
+    python3 -I "$LK_PY" "$@"
+  fi
+}
+
+record_last_known() { # <doc-json-file> — save usable live rows; the helper keeps saved series this run did not read ok
+  [[ "$LK_ENABLED" -eq 1 ]] || return 0
+  local payload="$TMP/lk-record.json" err="$TMP/lk-record.err" now_et
+  now_et="$(epoch_to_et "$NOW")"
+  jq --argjson now "$NOW" --arg now_et "$now_et" '
+    [ .rows[] | select(.status == "ok" and ((.used_pct | type) == "number")) ]
+    | group_by([.provider, .label])
+    | map({provider: .[0].provider,
+           label: .[0].label,
+           nickname: .[0].nickname,
+           source: ("live: " + (.[0].source // "unknown")),
+           fetched_at_epoch: $now,
+           fetched_at_et: $now_et,
+           rows: map({window: (.pool // .window),
+                      pool: .pool,
+                      used_pct: .used_pct,
+                      resets_at_epoch: .resets_at_epoch,
+                      resets: .resets_at_et,
+                      overage: .overage,
+                      source: ("live: " + (.source // "unknown")),
+                      fetched_at_epoch: $now})})
+    | {accounts: .}' "$1" > "$payload" 2>/dev/null || { warn "DEGRADED: could not stage last-known readings — the report is unaffected"; return 0; }
+  [[ "$(jq '.accounts | length' "$payload" 2>/dev/null)" -gt 0 ]] || return 0
+  if ! lk_run record --dir "$LK_DIR" < "$payload" 2>"$err"; then
+    warn "DEGRADED: could not keep last-known readings in ${LK_DIR} — the report is unaffected"
+  fi
+  [[ ! -s "$err" ]] || cat "$err" >&2
+  return 0
+}
+
+apply_last_known() { # <doc-json-file> — saved figures for accounts with no usable live row
+  [[ "$LK_ENABLED" -eq 1 ]] || return 0
+  local keys="$TMP/lk-keys.jsonl" saved="$TMP/lk-saved.jsonl" enriched="$TMP/lk-enriched.jsonl"
+  local line fetched resets fet_et res_et
+  jq -c '
+    ([ .rows[] | select(.status == "ok" and ((.used_pct | type) == "number")) | {provider, label} ]) as $ok
+    | [ .rows[] | {provider, label} ] | unique | .[]
+    | select(. as $a | ($ok | any(. == $a)) | not)' "$1" > "$keys" 2>/dev/null || return 0
+  [[ -s "$keys" ]] || return 0
+  if ! lk_run lookup --dir "$LK_DIR" --now "$NOW" < "$keys" > "$saved" 2>"$TMP/lk-lookup.err"; then
+    warn "DEGRADED: could not read last-known readings from ${LK_DIR} — no saved figures shown"
+    return 0
+  fi
+  [[ ! -s "$TMP/lk-lookup.err" ]] || cat "$TMP/lk-lookup.err" >&2
+  : > "$enriched"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    fetched="$(jq -r '.fetched_at_epoch // empty' <<<"$line")"
+    resets="$(jq -r '.resets_at_epoch // empty' <<<"$line")"
+    fet_et="$(epoch_to_et "$fetched")"
+    res_et=""
+    [[ -z "$resets" ]] || res_et="$(epoch_to_et "$resets")"
+    jq -c --arg fet_et "$fet_et" --arg res_et "$res_et" '
+      . + {fetched_at_et: (if $fet_et == "" then null else $fet_et end),
+           resets_et: (if $res_et == "" then null else $res_et end)}' <<<"$line" >> "$enriched" 2>/dev/null || true
+  done < "$saved"
+  [[ -s "$enriched" ]] || return 0
+  jq --slurpfile series "$enriched" '
+    def usable: (.status == "ok") and ((.used_pct | type) == "number");
+    def key: {provider: .provider, label: .label};
+    . as $doc
+    | ([ .rows[] | select(usable) | key ]) as $ok
+    | .rows = [ $doc.rows | to_entries[] | .key as $i | .value as $r
+        | if ($ok | any(. == ($r | key))) then $r
+          else
+            # A saved series belongs to the live row with its own window or pool. A
+            # saved series that no live row of this account carries (e.g. a 5-hour
+            # reading under a 7-day account-wide failure placeholder) goes to the
+            # first unusable row for the account only, so it is not repeated.
+            ([ $doc.rows[] | select(.provider == $r.provider and .label == $r.label) | (.pool // .window) ]) as $live_keys
+            | ([ $doc.rows[0:$i][] | select(usable | not) | select(key == ($r | key)) ] | length > 0) as $dup
+            | ([ $series[] | select(.provider == $r.provider and .label == $r.label)
+                         | (.pool // .window) as $k
+                         | select($r.provider == "cursor" or $k == ($r.pool // $r.window)) ]) as $own
+            | ([ $series[] | select(.provider == $r.provider and .label == $r.label)
+                         | (.pool // .window) as $k
+                         | select($r.provider != "cursor" and (($live_keys | index($k)) == null)) ]) as $orphan
+            | (if $dup then $own else $own + $orphan end) as $saved
+            | if ($own | length) == 0 and $dup then empty
+              elif ($saved | length) == 0 then $r
+              else $saved[] as $x
+                | $r + {
+                    window: (if $x.provider == "cursor" then "billing-cycle" else $x.window end),
+                    pool: (if $x.provider == "cursor" then ($x.pool // $x.window) else null end),
+                    status: (if $r.status == "ok" then "unreadable" else $r.status end),
+                    detail: (if $r.status == "ok" then "live read returned no usable figure" else $r.detail end),
+                    last_known_used_pct: $x.used_pct,
+                    last_known_at_epoch: $x.fetched_at_epoch,
+                    last_known_at_et: $x.fetched_at_et,
+                    last_known_source: $x.source,
+                    last_known_resets_at_epoch: $x.resets_at_epoch,
+                    last_known_resets_et: $x.resets_et,
+                    last_known_expired: $x.expired
+                  }
+              end
+          end
+      ]' "$1" > "$TMP/lk-doc.json" 2>/dev/null && mv "$TMP/lk-doc.json" "$1" \
+    || warn "DEGRADED: could not place saved figures in the report — showing live status only"
+  return 0
+}
+
 # Forecast helper resolution follows the pricing helper above.
 FORECAST_SH=""
 if [[ -n "${AI_QUOTAS_FORECAST_BIN:-}" ]]; then
@@ -1232,6 +1395,9 @@ annotate_rows "$ROWS_JSON"
 # unattended run report the PREVIOUS day's time — a footer permanently one day
 # behind, and one that reads `stale` on a job that just succeeded.
 append_history "$DOC"
+# Saved only from usable `ok` rows, after the history append and before the
+# report is decorated. A failed read therefore never touches its file (#2280).
+record_last_known "$DOC"
 # AFTER the append, so the file the projection reads already holds this run.
 # It does not depend on that — the live rows are projected in memory, which is
 # what makes the first run and a run whose append failed still report a pace —
@@ -1249,6 +1415,10 @@ if [[ "$SNAPSHOT_SOURCE" == scheduled ]]; then
     warn "DEGRADED: quotas-notify.sh unavailable — logout notifications disabled"
   fi
 fi
+
+# Saved figures go in AFTER notification and history, so neither ever sees a
+# derived row. Accounts with a usable live row are left exactly as read (#2280).
+apply_last_known "$DOC"
 
 if [[ "$JSON" -eq 1 ]]; then
   cat "$DOC"
