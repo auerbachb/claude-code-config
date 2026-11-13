@@ -31,6 +31,11 @@
 #     for unpushed work, and the hook prints nothing and exits 0
 #   - the cause follows the recorded handoff reason, the pipeline phase, and a
 #     final message ending in a question; no message text reaches the entry
+#   - an orchestrating thread off an issue branch (main, a session branch, a
+#     detached HEAD) with a recorded round for this repo and session, nothing
+#     running or armed, gets one entry whatever the branch; an ordinary thread,
+#     a drained or torn-down round, another session's round, a planned stop and
+#     running work get none
 #   - UserPromptSubmit closes an open entry once, then does nothing
 #   - a failing CLI or a database that is down never changes the hook's exit
 #     status or output, and the entry is kept locally
@@ -499,6 +504,107 @@ check "hook, database down: silent" "$(cat "$TMP/hout")$(cat "$TMP/herr")" ""
 check "hook, database down: the entry is kept locally" "$(kept_count)" "1"
 check "hook, database down: the kept entry has the thread" \
   "$(cat "$KEEP"/[0-9]*.json | jq -r .thread)" "sess-3"
+
+# ---- an orchestrating thread off an issue branch (issue #2292, round 2) --------
+# A thread on `main`, a session branch, or a detached HEAD has assigned work only
+# while it holds a recorded orchestration round for this repo and session.
+git -C "$REPO" checkout -q -b orch-main
+ROUND='{"rounds":{"sess-1":{"members":["2292","2293"],"dispatched_at":"2026-11-13T18:00:00Z","session":"sess-1"}}}'
+
+reset_state
+printf '%s\n' "$ROUND" >"$TMP/repostate"
+run_hook Stop
+check "orchestrator: exit 0" "$HRC" "0"
+check "orchestrator: prints nothing" "$HOUT$HERR" ""
+check "orchestrator: a recorded round, nothing running, is one entry" "$(hq_t_lines "$(calls)")" "1"
+check_contains "orchestrator: thread and repo" "$(calls)" "stoppage record --thread sess-1 --repo acme/widgets"
+check_contains "orchestrator: the round's first issue is the ref" "$(calls)" "--ref issue#2292"
+check_contains "orchestrator: unknown cause by default" "$(calls)" "--cause unknown"
+check_contains "orchestrator: the evidence says what it is" "$(calls)" "orchestrating thread on orch-main"
+check_contains "orchestrator: and names the round" "$(calls)" "recorded round of 2 issue(s) not wound down"
+check_absent "orchestrator: dirty files off an issue branch are not the signal" "$(calls)" "uncommitted"
+check "orchestrator: opens a marker" "$([ -f "$KEEP/open/sess-1" ] && echo yes || echo no)" "yes"
+: >"$CALLS"
+run_hook Stop
+check "orchestrator: an open entry is not recorded twice" "$(calls)" ""
+
+reset_state
+printf '{}\n' >"$TMP/repostate"
+run_hook Stop
+check "non-case: an attended thread with nothing assigned is not a stoppage" "$(calls)" ""
+printf '{"rounds":{"sess-1":null}}\n' >"$TMP/repostate"
+run_hook Stop
+check "non-case: a drained round (torn down to null) is not a stoppage" "$(calls)" ""
+printf '{"rounds":{"other-sess":{"members":["9"],"dispatched_at":"2026-11-13T18:00:00Z","session":"other-sess"}}}\n' >"$TMP/repostate"
+run_hook Stop
+check "orchestrator: another session's round is never this thread's" "$(calls)" ""
+printf '{"rounds":{"sess-1":{"members":[],"dispatched_at":"2026-11-13T18:00:00Z"}}}\n' >"$TMP/repostate"
+run_hook Stop
+check "orchestrator: an empty round is nothing assigned" "$(calls)" ""
+printf '{"rounds":{"sess-1":{"members":["x"],"dispatched_at":"2026-11-13T18:00:00Z"}}}\n' >"$TMP/repostate"
+run_hook Stop
+check "orchestrator: a malformed member is nothing assigned" "$(calls)" ""
+
+# The terminal board (active_pipelines 0, rendered after the dispatch) ends the
+# round even when its slot was not yet torn down; an older zero does not.
+reset_state
+printf '%s\n' "$ROUND" | jq -c '. + {table_render: {"sess-1": {active_pipelines: 0, last_rendered_at: "2026-11-13T19:00:00Z"}}}' >"$TMP/repostate"
+run_hook Stop
+check "non-case: a round that drained with all work finished" "$(calls)" ""
+printf '%s\n' "$ROUND" | jq -c '. + {table_render: {"sess-1": {active_pipelines: 0, last_rendered_at: "2026-11-13T09:00:00Z"}}}' >"$TMP/repostate"
+run_hook Stop
+check "orchestrator: a zero board older than this round's dispatch is stale" "$(hq_t_lines "$(calls)")" "1"
+reset_state
+printf '%s\n' "$ROUND" | jq -c '. + {table_render: {"sess-1": {active_pipelines: 2, last_rendered_at: "2026-11-13T19:00:00Z"}}}' >"$TMP/repostate"
+run_hook Stop
+check "orchestrator: a board with active pipelines is a live round" "$(hq_t_lines "$(calls)")" "1"
+
+# Running work, planned stops, armed work.
+reset_state
+printf '%s\n' "$ROUND" >"$TMP/repostate"
+printf '{"a1":{"issue":2293,"status":"running"}}\n' >"$TMP/agents"
+run_hook Stop
+check "orchestrator: a subagent on a round issue is running work" "$(calls)" ""
+printf '{"a1":{"issue":2293,"status":"spawned"}}\n' >"$TMP/agents"
+run_hook Stop
+check "orchestrator: a just-spawned subagent is running work" "$(calls)" ""
+printf '{"a1":{"issue":555,"status":"running"}}\n' >"$TMP/agents"
+run_hook Stop
+check "orchestrator: a subagent on some other issue is not this round's" "$(hq_t_lines "$(calls)")" "1"
+reset_state
+printf '%s\n' "$ROUND" >"$TMP/repostate"
+printf 'active\n' >"$TMP/pause"
+run_hook Stop
+check "non-case: /pause or /end with a round standing is a planned stop" "$(calls)" ""
+reset_state
+printf '%s\n' "$ROUND" | jq -c --argjson d "$(( $(date +%s) + 600 ))" '. + {window: {deadline_epoch: $d}, leave: {lead_minutes: 20}}' >"$TMP/repostate"
+run_hook Stop
+check "non-case: a leave time at its pause point is a planned stop" "$(calls)" ""
+reset_state
+printf '%s\n' "$ROUND" >"$TMP/repostate"
+printf '{"session":"s","background_work":["subagent"],"armed":true}\n' >"$TMP/bg"
+run_hook Stop
+check "orchestrator: armed or running background work is not a stoppage" "$(calls)" ""
+
+reset_state
+printf '%s\n' "$ROUND" >"$TMP/repostate"
+run_hook Stop '{"last_assistant_message": "Which of these do you want?"}'
+check_contains "orchestrator: a final question is waiting_on_operator" "$(calls)" "--cause waiting_on_operator"
+
+# A detached HEAD is judged the same way.
+reset_state
+printf '%s\n' "$ROUND" >"$TMP/repostate"
+git -C "$REPO" checkout -q --detach
+run_hook Stop
+check_contains "orchestrator: a detached HEAD is named as such" "$(calls)" "orchestrating thread on detached"
+git -C "$REPO" checkout -q orch-main
+
+# The prompt that resumes the thread closes the entry as before.
+run_hook UserPromptSubmit
+check_contains "orchestrator: a prompt closes the entry" "$(calls)" "stoppage resume --thread sess-1"
+
+git -C "$REPO" checkout -q issue-77-thing
+git -C "$REPO" branch -q -D orch-main
 
 # ---- /go-on: the open marker survives a failed close --------------------------
 GOON="$HQ_T_DESK_DIR/../.claude/skills/go-on/SKILL.md"

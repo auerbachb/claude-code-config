@@ -40,6 +40,7 @@ PROMPT_RESERVE_SH=$(resolve_script prompt-reservation.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
+STOPPAGE_NOTE_SH=$(for c in "${HOME:+$HOME/.claude/skills-worktree/desk/bin/stoppage-note.sh}" "${HOME:+$HOME/.claude/desk/bin/stoppage-note.sh}" desk/bin/stoppage-note.sh; do [[ -n "$c" && -x "$c" ]] && { echo "$c"; break; }; done)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -57,6 +58,7 @@ ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 - `SPLIT_THRESHOLDS_SH` empty → **optional**. Print `DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120` and continue with those documented defaults. The time trigger still fires (Step 4 criterion 3); it just cannot see a repo that retuned the knobs. Silently skipping the trigger instead would be worse — it would turn a missing config reader into a missing sizing check.
 - `USAGE_HORIZON_SH` empty → **optional**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — pre-emptive usage-horizon park unavailable; the reactive park still applies` and continue. Step 8's gate then holds `unknown` on every cycle, which starts nothing new and parks nothing — the conservative direction, and the same posture a displaced session already reads.
 - `ACTIVE_WORK_CAP_SH` empty → **optional**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — per-repo PIPELINE_CEILING unavailable, using the default ceiling of 4` and run Step 7 with `CEILING=4` and no cap term. A **non-zero exit** from `--ceiling` or `--cap` on a script that did resolve (they exit non-zero only on a usage error — a bad config value warns and prints the default instead) is not a default: Step 7 sets `LIMIT=0` and launches nothing new rather than sizing against a guessed number.
+- `STOPPAGE_NOTE_SH` empty → **optional**. Print `DEGRADED: stoppage-note.sh not found (checked all three paths) — out_of_work / blocked_by_error stoppage entries unavailable` and continue; the entry is a log, never a gate.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
@@ -1553,7 +1555,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - **Renew the issue's claim (Step 8.1) immediately before launching any successor** — A→B, each replacement B, and B→C after `merge_ready`. Exit 5 → launch nothing for that issue: mark it blocked and report lost ownership; other pipelines continue.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
-4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
+4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons). Then log the evaluation, unless this tick only drained a round whose every pipeline merged (a finished round is not a stoppage): `[[ -n "$STOPPAGE_NOTE_SH" ]] && "$STOPPAGE_NOTE_SH" refill --picked <N launched> --reason "<idle reason, else empty>" || true` (writes `out_of_work` only for `nothing eligible`, closes an open entry when N > 0; silent, best-effort).
 5. **Compute this pipeline's table cells and check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved).** For each active PR, derive BOUND_MIN from the issue's estimate. Always compute the cells (no window needed). Then check for a breach only when a window is active. Skip silently if either helper is unavailable — the row still renders, with `—` in the clock columns.
    ```bash
    # Derive planning bound from the issue's estimate (requires ESTIMATE_RESOLVE_SH)
@@ -1952,7 +1954,7 @@ When a Phase B subagent returns:
    - `merge_ready` -> launch Phase C within 60s (auto `/wrap`, no approval pause).
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
-   - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
+   - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change. Log it: `[[ -n "$STOPPAGE_NOTE_SH" ]] && "$STOPPAGE_NOTE_SH" blocked --phase B --pr {PR_NUMBER} --reason "<one line>" || true`.
    - Any `PAID_REVIEW: skipped (...)` note -> relay it with the report. In an attended session this is where you may ask the owner for one paid review (`.claude/reference/paid-review-approval.md`); never from `/pm day` or `--window` ticks.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
@@ -2048,7 +2050,7 @@ When a Phase C subagent returns:
 1. **Parse exit report.** Same limit-vs-crash classification on a missing one (Phase A step 1).
 2. **Branch on OUTCOME:**
    - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
-   - `blocked` -> report blocker details to user. Do NOT merge.
+   - `blocked` -> report blocker details to user. Do NOT merge. Log it: `[[ -n "$STOPPAGE_NOTE_SH" ]] && "$STOPPAGE_NOTE_SH" blocked --phase C --pr {PR_NUMBER} --reason "<one line>" || true`.
 After GitHub confirms `merged`, run the parent-checkout [finished-only cadence](../../reference/workspace-sweep-cadence.md), including Phase B/C worktrees; never call age cleanup here:
 
 <!-- test-anchor: workspace-sweep-subagent-merged -->
