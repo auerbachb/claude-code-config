@@ -58,6 +58,9 @@ if [ -z "$JQ" ]; then
   done
 fi
 
+# session-state.sh needs jq on PATH too; append (never prepend) the resolved jq directory.
+[ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
+
 usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'unattended.sh: %s\n' "$1" >&2; exit 2; }
 need_jq() { [ -n "$JQ" ] || { printf 'unattended.sh: jq not found\n' >&2; exit 1; }; }

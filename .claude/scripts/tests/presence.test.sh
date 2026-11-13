@@ -290,6 +290,24 @@ P $owner1 set here --by operator-dialog --for 1h --generation "$tok"; check "dia
 check "the stored source names the dialog" "$(jq -r .presence.declared_by "$HOME/.claude/session-state.json")" operator-dialog
 reset_presence
 
+# A dismissal whose claim cannot be verified reports failure, not success.
+reset_presence
+P $owner1 ask; tok=$out
+cat > "$tmp/bin/rs-unverifiable" <<EOF
+#!/bin/bash
+[ "\$1" = verify ] && exit 20
+exec "$RESERVE" "\$@"
+EOF
+chmod +x "$tmp/bin/rs-unverifiable"
+rc=0; (cd "$REPO" && FAKE_OWNER=$owner1 PRESENCE_RESERVE_SH="$tmp/bin/rs-unverifiable" "$PRESENCE" release --generation "$tok" --dismissed >/dev/null 2>&1) || rc=$?
+check "an unverifiable dismissal is not reported as success" "$rc" 20
+P $owner1 release --generation "$tok" >/dev/null
+reset_presence
+# unattended.sh arms when jq is only at a fallback location.
+rc=0; (cd "$REPO" && PATH="$tmp/bin:$tmp/nojq" /bin/bash "$UNATT" on --open-ended >/dev/null 2>&1) || rc=$?
+check "unattended on works with jq only at a fallback location" "$rc" 0
+"$UNATT" off >/dev/null 2>&1
+
 printf '== rest of the day\n'
 P $owner1 set here --by operator-message --rest-of-day >/dev/null
 P $owner1 status --json

@@ -391,7 +391,13 @@ cmd_release() {
     # so a declaration that cleared it first makes this dismissal lose instead of blocking `ask`
     # for an hour after that declaration expires.
     local res
-    "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || return 0
+    "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) ;;
+      10) return 0 ;;   # not the live holder: nothing to dismiss
+      *) printf 'presence.sh: cannot verify the dialog claim; dismissal not stored\n' >&2; return 20 ;;
+    esac
+    rc=0
     res=$("$SESSION_STATE_SH" --get-json ".presence.reservation" 2>/dev/null) || res=""
     [ -n "$res" ] && [ "$(printf '%s' "$res" | "$JQ" -r '.generation // ""' 2>/dev/null)" = "$gen" ] || return 0
     "$SESSION_STATE_SH" --cas ".presence.reservation=null" --expect "$res" \
