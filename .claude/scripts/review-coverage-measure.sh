@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # review-coverage-measure.sh — read-only measurement of how each PR the owner
 # merged into main in a window cleared AI review at its merge HEAD (issue #2313).
-# catalog: review-coverage-2026-11 — Classify merged PRs by real AI review coverage at merge HEAD, reusing review-substance.sh
+# catalog: merge-gate-sequencing —Classify merged PRs by real AI review coverage at merge HEAD, reusing review-substance.sh
 #
 # Classes (one per PR, first match wins):
 #   real        a substantive APPROVED on HEAD (review-substance counts_as_coverage)
@@ -401,7 +401,7 @@ jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
     }
 ' "$CLASSIFIED" || die "aggregation failed" 4
 
-UNKNOWN=$(jq -s 'map(select(.class == "unknown")) | length' "$CLASSIFIED") || UNKNOWN=0
+UNKNOWN=$(jq -s 'map(select(.class == "unknown")) | length' "$CLASSIFIED") || die "cannot count unknown PRs in $CLASSIFIED" 4
 if [ "$FAIL_UNKNOWN" -eq 1 ] && [ "$UNKNOWN" -gt 0 ]; then
   printf 'review-coverage-measure: %s PR(s) unknown; see %s\n' "$UNKNOWN" "$CLASSIFIED" >&2
   exit 4
