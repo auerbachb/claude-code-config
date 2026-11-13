@@ -7,12 +7,13 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.claude/scripts/phone-push-wait.sh"
+SCRIPT="${PHONE_PUSH_SCRIPT:-$REPO_ROOT/.claude/scripts/phone-push-wait.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export PHONE_PUSH_DIR="$TMP/state"
 export PHONE_PUSH_SETTINGS="$TMP/settings.json"
 unset PHONE_PUSH_DELAY_SEC
+export PHONE_PUSH_GRACE_SEC=100000   # lost-wake tests lower it per call
 
 PASS=0; FAIL=0
 check_eq() { if [[ "$3" == "$2" ]]; then PASS=$((PASS+1)); echo "ok   — $1"; else FAIL=$((FAIL+1)); echo "FAIL — $1 (expected '$2', got '$3')"; fi; }
@@ -24,10 +25,10 @@ run arm D-1 --thread "issue-9 worker" --question "Approve the paid review for PR
 check_eq "arm exits 0" 0 "$rc"
 check_has "arm prints the watch command" "phone-push-wait.sh watch D-1" "$out"
 check_eq "default delay is 300s" 300 "$(jq -r .delay_sec "$PHONE_PUSH_DIR/D-1.json")"
-check_eq "status starts waiting" waiting "$(jq -r .status "$PHONE_PUSH_DIR/D-1.json")"
+check_eq "status starts waiting" waiting "$("$SCRIPT" status D-1 | awk '{print $2}')"
 run arm D-1 --thread x --question y
 check_eq "re-arming the same key is refused" 3 "$rc"
-check_eq "refused re-arm leaves one record" waiting "$(jq -r .status "$PHONE_PUSH_DIR/D-1.json")"
+check_eq "refused re-arm leaves one record" waiting "$("$SCRIPT" status D-1 | awk '{print $2}')"
 
 # --- delay knob: flag and env
 run arm D-2 --thread t --question q --delay 90
@@ -47,77 +48,80 @@ check_eq "option with no value is a usage error (no loop)" 2 "$rc"
 run missed D-1 --reason
 check_eq "--reason with no value is a usage error" 2 "$rc"
 
-# --- a lock left by a killed process is reclaimed
-run arm D-12 --thread t --question q --delay 1
-mkdir "$PHONE_PUSH_DIR/.lock"; printf '999999' >"$PHONE_PUSH_DIR/.lock/pid"
-sleep 1
-out=$("$SCRIPT" watch D-12 2>&1); rc=$?
-check_has "stale lock: the push still comes due" "phone-push D-12 due" "$out"
-check_eq "stale lock: lock is released after" no "$([ -d "$PHONE_PUSH_DIR/.lock" ] && echo yes || echo no)"
+# --- no lock exists: transitions are atomic marker creates, so a killed process
+# can never wedge later commands (every call below is bounded by a watchdog).
+bounded() { # SECONDS CMD... ; sets out/rc, rc=124 when the call hung
+  local secs=$1 pid wd; shift
+  "$@" >"$TMP/bounded.out" 2>&1 & pid=$!
+  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) & wd=$!
+  wait "$pid" 2>/dev/null; rc=$?; kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  [ "$rc" -eq 137 ] && rc=124
+  out=$(cat "$TMP/bounded.out")
+}
+st() { "$SCRIPT" status "$1" 2>/dev/null | awk '{print $2}'; }
 
-# --- concurrent recovery of one stale lock: still exactly one push line
-run arm D-14 --thread t --question q --delay 1
-mkdir "$PHONE_PUSH_DIR/.lock"; printf '999999' >"$PHONE_PUSH_DIR/.lock/pid"
-sleep 1
-( "$SCRIPT" watch D-14 >"$TMP/c1" 2>&1 ) & ( "$SCRIPT" watch D-14 >"$TMP/c2" 2>&1 ) & ( "$SCRIPT" watch D-14 >"$TMP/c3" 2>&1 ) & wait
-check_eq "three watchers over a stale lock: one push line" 1 "$(cat "$TMP/c1" "$TMP/c2" "$TMP/c3" | grep -c 'phone-push D-14 due')"
-check_eq "no stale lock left behind" 0 "$(ls -d "$PHONE_PUSH_DIR"/.lock* 2>/dev/null | wc -l | tr -d ' ')"
-
-# --- racing reclaimers (Graphite finding): many watchers recover one stale lock,
-# repeatedly. Exactly one push line per key, no lock nested inside a lock, no
-# leftover lock or reclaim guard.
-race_bad=0; race_nested=0; race_left=0
+# racing watchers over one due key, repeated: exactly one push line per round
+race_bad=0
 for r in 1 2 3 4 5 6; do
   k="D-R$r"
   "$SCRIPT" arm "$k" --thread t --question q --delay 1 >/dev/null 2>&1
-  mkdir "$PHONE_PUSH_DIR/.lock"; printf '999999' >"$PHONE_PUSH_DIR/.lock/pid"
   sleep 1
   for w in 1 2 3 4 5 6 7 8; do ( "$SCRIPT" watch "$k" >"$TMP/r$r.$w" 2>&1 ) & done; wait
   n=$(cat "$TMP"/r$r.* | grep -c "phone-push $k due")
   [ "$n" = 1 ] || race_bad=$((race_bad+1))
-  [ -z "$(ls -A "$PHONE_PUSH_DIR/.lock" 2>/dev/null)" ] || race_nested=$((race_nested+1))
-  [ "$(ls -d "$PHONE_PUSH_DIR"/.lock* 2>/dev/null | wc -l | tr -d ' ')" = 0 ] || race_left=$((race_left+1))
+  "$SCRIPT" sent "$k" >/dev/null 2>&1
 done
-check_eq "racing reclaimers: exactly one push line every round" 0 "$race_bad"
-check_eq "racing reclaimers: no lock nested or non-empty" 0 "$race_nested"
-check_eq "racing reclaimers: no lock or guard left behind" 0 "$race_left"
+check_eq "racing watchers: exactly one push line every round" 0 "$race_bad"
+check_eq "no lock or reclaim guard is ever created" 0 "$(ls -d "$PHONE_PUSH_DIR"/.lock* 2>/dev/null | wc -l | tr -d ' ')"
 
-# --- deterministic reclaim race (Graphite finding): a waiter judges the lock stale
-# (dead pid), then a live owner takes it before the waiter acts, and a third
-# process mkdirs a fresh .lock during the waiter's restore window. The live lock
-# must stay intact and never end up nested inside another lock. PATH shims inject
-# the interleaving: `cat` swaps in a live pid after the stale judgment; `mv` mkdirs
-# .lock right after a lock is moved away.
-SH="$TMP/shim"; mkdir -p "$SH"
-export RACE_CAT RACE_MV RACE_TMP="$TMP"
-RACE_CAT=$(command -v cat); RACE_MV=$(command -v mv)
-cat >"$SH/cat" <<'SHIM'
-#!/bin/sh
-case "$1" in
-  */.lock/pid)
-    n=$("$RACE_CAT" "$RACE_TMP/catn" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" >"$RACE_TMP/catn"
-    if [ "$n" = 21 ]; then "$RACE_CAT" "$1"; printf '%s' "$("$RACE_CAT" "$RACE_TMP/live")" >"$1"; exit 0; fi ;;
-esac
-exec "$RACE_CAT" "$@"
-SHIM
-cat >"$SH/mv" <<'SHIM'
-#!/bin/sh
-"$RACE_MV" "$@"; rc=$?
-case "$1" in */.lock) mkdir "$1" 2>/dev/null ;; esac
-exit $rc
-SHIM
-chmod +x "$SH/cat" "$SH/mv"
-sleep 60 & LIVE=$!
-printf '%s' "$LIVE" >"$TMP/live"; rm -f "$TMP/catn"
-"$SCRIPT" arm D-R9 --thread t --question q --delay 1 >/dev/null 2>&1
-mkdir "$PHONE_PUSH_DIR/.lock"; printf '999999' >"$PHONE_PUSH_DIR/.lock/pid"
-sleep 1
-PATH="$SH:$PATH" "$SCRIPT" watch D-R9 >"$TMP/r9" 2>&1 &
-RW=$!; ( sleep 25; kill "$RW" 2>/dev/null ) & WD=$!   # bound a wedged watcher
-wait "$RW" 2>/dev/null; kill "$WD" 2>/dev/null
-check_eq "reclaim race: live owner's lock is not displaced" "$LIVE" "$("$RACE_CAT" "$PHONE_PUSH_DIR/.lock/pid" 2>/dev/null)"
-check_eq "reclaim race: nothing is nested inside the lock" 0 "$(ls -A "$PHONE_PUSH_DIR/.lock" 2>/dev/null | grep -vc '^pid$')"
-kill "$LIVE" 2>/dev/null; rm -rf "$PHONE_PUSH_DIR/.lock" "$PHONE_PUSH_DIR"/.lock.*
+# a watcher killed just BEFORE it claims the push: later commands terminate and
+# the push still comes exactly once
+SH="$TMP/shim"; mkdir -p "$SH"; REAL_LN=$(command -v ln)
+printf '#!/bin/sh\ncase "$2" in *.claim) kill -9 $PPID; exit 1 ;; esac\nexec %s "$@"\n' "$REAL_LN" >"$SH/ln"
+chmod +x "$SH/ln"
+"$SCRIPT" arm D-K1 --thread t --question q --delay 1 >/dev/null 2>&1; sleep 1
+PATH="$SH:$PATH" "$SCRIPT" watch D-K1 >/dev/null 2>&1
+check_eq "killed before claiming: still waiting" waiting "$(st D-K1)"
+bounded 20 "$SCRIPT" status; check_eq "status terminates after the kill" 0 "$rc"
+bounded 20 "$SCRIPT" watch D-K1; check_eq "next watch terminates" 0 "$rc"
+check_eq "next watch pushes exactly once" 1 "$(printf '%s\n' "$out" | grep -c 'phone-push D-K1 due')"
+bounded 20 "$SCRIPT" watch D-K1; check_eq "a further watch prints nothing" "" "$out"
+
+# a watcher killed just AFTER it claims (before printing): no second push, and
+# later commands still terminate
+printf '#!/bin/sh\n%s "$@"; rc=$?\ncase "$2" in *.claim) kill -9 $PPID ;; esac\nexit $rc\n' "$REAL_LN" >"$SH/ln"
+"$SCRIPT" arm D-K2 --thread t --question q --delay 1 >/dev/null 2>&1; sleep 1
+PATH="$SH:$PATH" "$SCRIPT" watch D-K2 >/dev/null 2>&1
+check_eq "killed after claiming: due" due "$(st D-K2)"
+bounded 20 "$SCRIPT" watch D-K2
+check_eq "no second push after a kill mid-transition" 0 "$(printf '%s\n' "$out" | grep -c 'phone-push D-K2 due')"
+bounded 20 "$SCRIPT" answer D-K2
+check_eq "answer terminates" 0 "$rc"
+check_has "answer after the claim: already due" "already due" "$out"
+
+# --- lost wake: due with neither sent nor missed past the grace period is
+# recorded missed, once, and status/doctor surface it
+"$SCRIPT" arm D-L1 --thread t --question q --delay 1 >/dev/null 2>&1; sleep 1
+"$SCRIPT" watch D-L1 >/dev/null 2>&1
+check_eq "within the grace period it stays due" due "$(st D-L1)"
+sleep 2
+for w in 1 2 3 4 5; do ( PHONE_PUSH_GRACE_SEC=1 "$SCRIPT" status D-L1 >"$TMP/l$w.out" 2>"$TMP/l$w.err" ) & done; wait
+check_eq "lost wake: recorded missed" missed "$(st D-L1)"
+check_has "status shows the wake-lost reason" "wake lost" "$("$SCRIPT" status D-L1)"
+check_eq "lost wake is recorded exactly once" 1 "$(cat "$TMP"/l?.err | grep -c 'D-L1 missed: wake lost')"
+run sent D-L1
+check_eq "a late sent cannot overwrite the recorded miss" 3 "$rc"
+bounded 20 "$SCRIPT" watch D-L1; check_eq "watch on a lost-wake record prints nothing" "" "$out"
+printf '{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":true}' >"$PHONE_PUSH_SETTINGS"
+run doctor
+check_eq "doctor fails when a wake was lost" 1 "$rc"
+check_has "doctor names the lost-wake key" "D-L1 was recorded missed: wake lost" "$out"
+# arm also settles a stale due record
+"$SCRIPT" arm D-L2 --thread t --question q --delay 1 >/dev/null 2>&1; sleep 1
+"$SCRIPT" watch D-L2 >/dev/null 2>&1; sleep 2
+PHONE_PUSH_GRACE_SEC=1 "$SCRIPT" arm D-L3 --thread t --question q >/dev/null 2>&1
+check_eq "arm settles a lost wake" missed "$(st D-L2)"
+rm -f "$PHONE_PUSH_DIR"/D-L*.outcome "$PHONE_PUSH_DIR"/D-K*.outcome
 
 # --- printed commands are shell-quoted (a path with a space stays one word)
 mkdir -p "$TMP/dir with space"; cp "$SCRIPT" "$TMP/dir with space/phone-push-wait.sh"
@@ -142,6 +146,12 @@ for bad in "/Users" "/etc" "/var/log" "someone"; do
   [[ "$text" != *"$bad"* ]]; check_eq "text drops quoted or bracketed path $bad" 0 $?
 done
 check_has "text keeps the words around a path" "and" "$text"
+run arm D-14 --thread t --question 'at location:/Users/someone/x, dir=/home/someone/y; and/or 1/2'
+text=$("$SCRIPT" text D-14)
+for bad in "/Users" "/home" "someone"; do
+  [[ "$text" != *"$bad"* ]]; check_eq "text drops punctuation-led path $bad" 0 $?
+done
+check_has "text keeps and/or and 1/2" "and/or 1/2" "$text"
 run arm D-7 --thread t --question ""
 check_has "empty question still reads" "waiting on you for a decision" "$("$SCRIPT" text D-7)"
 
@@ -151,7 +161,7 @@ run arm D-8 --thread t --question q --delay 3
 out=$("$SCRIPT" watch D-8 2>&1); rc=$?
 check_eq "answered before the delay: watch is silent" "" "$out"
 check_eq "answered before the delay: watch exits 0" 0 "$rc"
-check_eq "status is answered" answered "$(jq -r .status "$PHONE_PUSH_DIR/D-8.json")"
+check_eq "status is answered" answered "$(st D-8)"
 
 # --- unanswered past the delay: exactly one line, once
 run arm D-9 --thread t --question "Pick one" --delay 1
@@ -163,7 +173,7 @@ check_has "due line carries the push text" "[t] waiting on you: Pick one" "$out"
 check_has "due line says to call PushNotification" "PushNotification" "$out"
 out2=$("$SCRIPT" watch D-9 2>&1)
 check_eq "a second watch prints nothing" "" "$out2"
-check_eq "status is due" due "$(jq -r .status "$PHONE_PUSH_DIR/D-9.json")"
+check_eq "status is due" due "$(st D-9)"
 
 # --- two watchers racing: only one claims the push
 run arm D-10 --thread t --question q --delay 1
@@ -178,12 +188,12 @@ check_has "late answer reports the status" "already due" "$out"
 # --- outcome records: sent, missed (never silently dropped)
 run sent D-9
 check_eq "sent after due is recorded" 0 "$rc"
-check_eq "status is sent" sent "$(jq -r .status "$PHONE_PUSH_DIR/D-9.json")"
+check_eq "status is sent" sent "$(st D-9)"
 run sent D-9
 check_eq "sent twice is refused" 3 "$rc"
 run missed D-10 --reason "Remote Control not connected"
 check_eq "missed is recorded" 0 "$rc"
-check_eq "miss keeps its reason" "Remote Control not connected" "$(jq -r .reason "$PHONE_PUSH_DIR/D-10.json")"
+check_has "miss keeps its reason" "Remote Control not connected" "$("$SCRIPT" status D-10)"
 run missed D-10
 check_eq "missed without a reason is refused" 2 "$rc"
 run sent D-1
@@ -203,6 +213,10 @@ run doctor; check_eq "doctor passes with both toggles" 0 "$rc"
 printf '{"agentPushNotifEnabled":true}' >"$PHONE_PUSH_SETTINGS"
 run doctor; check_eq "doctor flags an unset toggle" 1 "$rc"
 check_has "doctor names the toggle" "inputNeededNotifEnabled: unset" "$out"
+
+mkdir -p "$TMP/cfg"; printf '{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":true}' >"$TMP/cfg/settings.json"
+( unset PHONE_PUSH_SETTINGS; CLAUDE_CONFIG_DIR="$TMP/cfg" PHONE_PUSH_DIR="$TMP/emptystate" "$SCRIPT" doctor >"$TMP/dc" 2>&1 ); rc=$?
+check_eq "doctor reads settings under CLAUDE_CONFIG_DIR" 0 "$rc"
 
 run --help; check_has "--help prints usage" "USAGE" "$out"
 

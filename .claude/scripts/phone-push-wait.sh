@@ -43,9 +43,14 @@
 #   never transcript text or secrets.
 #
 # STATE
-#   ${PHONE_PUSH_DIR:-~/.claude/phone-push}/<KEY>.json: {key, thread, text, status,
-#   armed_epoch, delay_sec, due_epoch, updated_epoch, reason}. status: waiting |
-#   answered | due | sent | missed. Never inside a worktree.
+#   ${PHONE_PUSH_DIR:-~/.claude/phone-push}/<KEY>.json is the immutable record
+#   {key, thread, text, armed_epoch, delay_sec, due_epoch}. The status is derived
+#   from two marker files, each created atomically once (no lock, no pid file):
+#   <KEY>.claim (answered | due) and <KEY>.outcome (sent | missed). status:
+#   waiting | answered | due | sent | missed. Never inside a worktree.
+#   A push that stays `due` for PHONE_PUSH_GRACE_SEC (default 180) with no `sent`
+#   or `missed` lost its wake: the next watch/status/doctor/arm records it as
+#   `missed` (reason "wake lost"), once. Nothing is ever re-pushed.
 #
 # EXIT CODES
 #   0 ok; 1 a state read/write failed (nothing is claimed as armed or sent);
@@ -75,51 +80,61 @@ now() { date +%s; }
 ensure_dir() { mkdir -p "$DIR" 2>/dev/null && chmod 700 "$DIR" 2>/dev/null && [ -w "$DIR" ]; }
 rec() { printf '%s/%s.json' "$DIR" "$1"; }
 
-# Serialize read-modify-write per state dir (mkdir is atomic). The lock records
-# its owner's pid; a lock whose owner is gone (killed mid-update) is reclaimed
-# so a crash cannot wedge every later update.
-LOCK_HELD=0
-lock() {
-  local i=0 owner current
-  while ! mkdir "$DIR/.lock" 2>/dev/null; do
-    i=$((i + 1))
-    owner=$(cat "$DIR/.lock/pid" 2>/dev/null || true)
-    # A lock with no pid yet may be a new owner between mkdir and its pid write,
-    # so it is only treated as stale after a longer wait (5 s).
-    if { [ -n "$owner" ] && [ "$i" -gt 20 ] && ! kill -0 "$owner" 2>/dev/null; } \
-       || { [ -z "$owner" ] && [ "$i" -gt 50 ]; }; then
-      # Owner gone (or never recorded one). Reclaimers serialize on a short-lived
-      # guard, re-read the pid under it, and remove the lock only if it is still
-      # the one judged stale. A possibly-live lock is never moved, so there is
-      # nothing to restore and no way to nest one lock inside another.
-      if mkdir "$DIR/.lock.reclaim" 2>/dev/null; then
-        current=$(cat "$DIR/.lock/pid" 2>/dev/null || true)
-        if [ "$current" = "$owner" ]; then
-          if [ -n "$owner" ]; then
-            kill -0 "$owner" 2>/dev/null || { rm -f "$DIR/.lock/pid"; rmdir "$DIR/.lock" 2>/dev/null || true; }
-          else
-            rmdir "$DIR/.lock" 2>/dev/null || true
-          fi
-        fi
-        rmdir "$DIR/.lock.reclaim" 2>/dev/null || true
-      else
-        sleep 0.1
-      fi
-      continue
-    fi
-    [ "$i" -gt 100 ] && return 1
-    sleep 0.1
-  done
-  printf '%s' "$$" >"$DIR/.lock/pid" 2>/dev/null || { rmdir "$DIR/.lock" 2>/dev/null; return 1; }
-  LOCK_HELD=1
-  trap 'unlock; exit 1' INT TERM HUP
+# State is never rewritten and no lock exists. The record <KEY>.json is immutable.
+# Each transition is one atomic create of a complete marker file (ln fails when it
+# exists), so exactly one process wins and a loser just reports the current state:
+#   <KEY>.claim    first line `answered` or `due`  (waiting -> answered | due)
+#   <KEY>.outcome  first line `sent` or `missed`   (due -> sent | missed)
+# A process killed at any point leaves either nothing or a complete marker, never
+# a half state, so no later command can wedge. Line 2 is the epoch, line 3 the reason.
+GRACE=${PHONE_PUSH_GRACE_SEC:-180}
+valid_int "$GRACE" || GRACE=180
+claim_f() { printf '%s/%s.claim' "$DIR" "$1"; }
+outcome_f() { printf '%s/%s.outcome' "$DIR" "$1"; }
+line() { sed -n "${1}p" "$2" 2>/dev/null; } # line N FILE
+
+# put_once FILE STATUS [REASON]: exit 0 won, 3 lost (FILE exists), 1 failed.
+put_once() {
+  local dest=$1 st=$2 r=${3:-} tmp
+  tmp=$(mktemp "$DIR/.tmp.XXXXXX") || return 1
+  if ! printf '%s\n%s\n%s\n' "$st" "$(now)" "$r" >"$tmp" 2>/dev/null; then rm -f "$tmp"; return 1; fi
+  if ln "$tmp" "$dest" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  rm -f "$tmp"
+  [ -f "$dest" ] && return 3
+  return 1
 }
-unlock() {
-  [ "$LOCK_HELD" = 1 ] || return 0
-  rm -f "$DIR/.lock/pid" 2>/dev/null
-  rmdir "$DIR/.lock" 2>/dev/null || true
-  LOCK_HELD=0
-  trap - INT TERM HUP
+
+# status_of KEY: waiting | answered | due | sent | missed
+status_of() {
+  local c o
+  c=$(line 1 "$(claim_f "$1")")
+  case "$c" in
+    answered) echo answered ;;
+    due) o=$(line 1 "$(outcome_f "$1")"); echo "${o:-due}" ;;
+    *) echo waiting ;;
+  esac
+}
+
+# settle KEY: a push that has sat `due` past the grace period with neither `sent`
+# nor `missed` lost its wake. Record it as missed, once (no push is retried).
+settle() {
+  local key=$1 ce rc
+  [ "$(status_of "$key")" = "due" ] || return 0
+  ce=$(line 2 "$(claim_f "$key")")
+  valid_int "$ce" || return 0
+  [ "$(now)" -ge $((ce + GRACE)) ] || return 0
+  put_once "$(outcome_f "$key")" missed "wake lost: no sent or missed recorded within ${GRACE}s of the push becoming due"; rc=$?
+  [ "$rc" -eq 0 ] && printf 'phone-push %s missed: wake lost (no push was recorded within %ss of becoming due)\n' "$key" "$GRACE" >&2
+  return 0
+}
+settle_all() {
+  local f k
+  [ -d "$DIR" ] || return 0
+  for f in "$DIR"/*.claim; do
+    [ -f "$f" ] || continue
+    k=$(basename "$f" .claim); valid_key "$k" && settle "$k"
+  done
+  return 0
 }
 
 # sanitize TEXT -> one printable-ASCII line with links, emails, paths and
@@ -130,7 +145,7 @@ sanitize() {
     sed -E \
       -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^ ]*#[link]#g' \
       -e 's#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+#[email]#g' \
-      -e 's#(^| )(~|\.{1,2})?/[^ ]*#\1[path]#g' \
+      -e 's#(^|[^A-Za-z0-9_])(~|\.{1,2})?/[^ ]*#\1[path]#g' \
       -e 's#[A-Za-z0-9_+=-]{32,}#[redacted]#g' \
       -e 's#(sk|ghp|gho|ghu|ghs|ghr|xox[a-z])[-_][A-Za-z0-9_-]{8,}#[redacted]#g' \
       -e 's# +# #g' -e 's#^ ##' -e 's# $##'
@@ -147,20 +162,19 @@ build_text() { # THREAD QUESTION
 
 field() { jq -r --arg f "$2" '.[$f] // "" | tostring' "$(rec "$1")" 2>/dev/null; }
 
-# set_status KEY FROM TO [REASON]: move FROM -> TO under the lock. Exit 0 moved,
-# 3 not in FROM (prints the current status), 1 failed.
+# set_status KEY FROM TO [REASON]: one atomic marker create. Exit 0 moved, 3 lost
+# or not in FROM (prints the current status), 1 failed.
 set_status() {
-  local key=$1 from=$2 to=$3 reason=${4:-} f cur tmp
-  f=$(rec "$key")
-  [ -f "$f" ] || return 3
-  lock || return 1
-  cur=$(field "$key" status)
-  if [ "$cur" != "$from" ]; then unlock; printf '%s\n' "$cur"; return 3; fi
-  tmp=$(mktemp "$DIR/.tmp.XXXXXX") || { unlock; return 1; }
-  if jq --arg s "$to" --arg r "$reason" --argjson n "$(now)" \
-       '.status=$s | .updated_epoch=$n | (if $r != "" then .reason=$r else . end)' "$f" >"$tmp" 2>/dev/null \
-     && mv "$tmp" "$f"; then unlock; return 0; fi
-  rm -f "$tmp"; unlock; return 1
+  local key=$1 to=$3 reason=${4:-} rc
+  [ -f "$(rec "$key")" ] || return 3
+  case "$to" in
+    answered|due) put_once "$(claim_f "$key")" "$to" "$reason"; rc=$? ;;
+    *) if [ "$(line 1 "$(claim_f "$key")")" = "due" ]; then
+         put_once "$(outcome_f "$key")" "$to" "$reason"; rc=$?
+       else rc=3; fi ;;
+  esac
+  [ "$rc" -eq 3 ] && { status_of "$key"; return 3; }
+  return "$rc"
 }
 
 cmd_arm() {
@@ -178,6 +192,7 @@ cmd_arm() {
   done
   valid_int "$delay" && [ "$delay" -ge 1 ] && [ "$delay" -le "$MAX_DELAY" ] || die 2 "delay must be 1 to $MAX_DELAY seconds (the Monitor that watches it expires after about 30 minutes)"
   ensure_dir || die 1 "cannot create $DIR; nothing armed"
+  settle_all
   text=$(build_text "$thread" "$question")
   f=$(rec "$key")
   tmp=$(mktemp "$DIR/.tmp.XXXXXX") || die 1 "cannot write state; nothing armed"
@@ -207,7 +222,8 @@ cmd_watch() {
   due=$(field "$key" due_epoch)
   valid_int "$due" || die 1 "state for $key is unreadable"
   while :; do
-    st=$(field "$key" status)
+    settle "$key"
+    st=$(status_of "$key")
     [ "$st" = "waiting" ] || exit 0
     if [ "$(now)" -ge "$due" ]; then
       set_status "$key" waiting due >/dev/null; rc=$?
@@ -262,24 +278,38 @@ cmd_text() {
   field "$1" text
 }
 
+status_line() { # FILE
+  local f=$1 k st r
+  k=$(jq -r '.key // empty' "$f" 2>/dev/null) && valid_key "$k" || { printf '%s unreadable\n' "$f"; return; }
+  st=$(status_of "$k")
+  r=$(line 3 "$(outcome_f "$k")"); [ -n "$r" ] || r=$(line 3 "$(claim_f "$k")")
+  printf '%s %s delay=%ss %s\n' "$k" "$st" "$(field "$k" delay_sec)" "$r"
+}
+
 cmd_status() {
   local f
+  settle_all
   if [ -n "${1:-}" ]; then
     valid_key "$1" || die 2 "bad KEY"
     [ -f "$(rec "$1")" ] || die 3 "unknown key $1"
-    f=$(rec "$1")
-    jq -r '"\(.key) \(.status) delay=\(.delay_sec)s \(.reason)"' "$f"
+    status_line "$(rec "$1")"
     return 0
   fi
   [ -d "$DIR" ] || return 0
   for f in "$DIR"/*.json; do
     [ -f "$f" ] || continue
-    jq -r '"\(.key) \(.status) delay=\(.delay_sec)s \(.reason)"' "$f" 2>/dev/null || printf '%s unreadable\n' "$f"
+    status_line "$f"
   done
 }
 
 cmd_doctor() {
-  local s="${PHONE_PUSH_SETTINGS:-${HOME:-}/.claude/settings.json}" k v rc=0
+  local s="${PHONE_PUSH_SETTINGS:-${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/settings.json}" k v rc=0 f lost
+  settle_all
+  for f in "$DIR"/*.outcome; do
+    [ -f "$f" ] || continue
+    case "$(line 3 "$f")" in "wake lost"*) lost=$(basename "$f" .outcome)
+      printf 'doctor: %s was recorded missed: wake lost (the push never reached the phone)\n' "$lost"; rc=1 ;; esac
+  done
   [ -f "$s" ] || { echo "doctor: $s not found; cannot check the phone-push settings"; return 1; }
   for k in inputNeededNotifEnabled agentPushNotifEnabled; do
     v=$(jq -r --arg k "$k" '.[$k] | if . == null then "unset" else tostring end' "$s" 2>/dev/null) || v="unreadable"

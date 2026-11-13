@@ -29,9 +29,12 @@ that proceeds on the recommended default is not waiting, so it arms nothing.
    `PHONE_PUSH_DELAY_SEC`, else 300.
 4. Answer arrives inside the delay: the thread runs `answer D-<n>`; `watch` finds the record answered and
    exits without printing. Nothing is sent.
-5. Delay passes first: `watch` moves the record `waiting` to `due` under a lock and prints one line
-   carrying the push text. The lock-protected transition is what makes the push once-only even with two
-   watchers.
+5. Delay passes first: `watch` claims the push with one atomic file create (`<KEY>.claim`, no lock, no
+   pid file) and prints one line carrying the push text. Only one process can create that file, which is
+   what makes the push once-only with any number of watchers, and a process killed mid-step leaves no
+   half state. `sent`/`missed` are the same kind of one-shot create (`<KEY>.outcome`). A record left `due`
+   past the grace period (`PHONE_PUSH_GRACE_SEC`, default 180) with neither outcome lost its wake: the next
+   `watch`/`status`/`doctor`/`arm` records it `missed` (reason "wake lost"), once. No push is retried.
 6. The woken thread calls `PushNotification` with that exact text, then runs `sent D-<n>`. If the call
    reports the push could not be delivered (for example Remote Control is not connected), it runs
    `missed D-<n> --reason '<why>'`. The miss stays in the record, `status` lists it, and the thread
