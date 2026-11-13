@@ -49,6 +49,16 @@ RECORDER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" 2>/dev/null && pwd)/lib
 
 
 SESSION_ID="$(_spend_resolve_session "$SESSION_ID")"
+# Explicit --session and the runtime env vars come first. When neither is set in
+# this shell, use the breadcrumb the SessionStart hook wrote for this claude
+# process (issue #2300). Any failure leaves SESSION_ID unknown, never fabricated.
+if [[ "$SESSION_ID" == unknown ]]; then
+  CRUMB_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" 2>/dev/null && pwd)/session-breadcrumb.sh"
+  if [[ -r "$CRUMB_LIB" ]] && . "$CRUMB_LIB" 2>/dev/null; then
+    CRUMB_SESSION="$(session_breadcrumb_read 2>/dev/null || true)"
+    [[ -n "$CRUMB_SESSION" ]] && SESSION_ID="$CRUMB_SESSION"
+  fi
+fi
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$REPO" ]]; then
   REPO="${GH_REPO:-}"
@@ -191,6 +201,22 @@ PY
   if [[ "$EVIDENCE_JSON" == *'"issue_linked":false'* && "$EVIDENCE_JSON" != *'"pr_state":"UNKNOWN"'* ]]; then
     echo "WARN: PR #$PR does not report the explicit issue link; correlation saved without verified outcome." >&2
   fi
+fi
+
+# A PR-only row written with no runtime session can never join usage. Name that
+# blocker in the metadata so the report does not present it as an ordinary unknown
+# (issue #2300). Telemetry-only: a failed annotation keeps the original evidence.
+if [[ "$SESSION_ID" == unknown ]]; then
+  SESSION_REASON_PY='import json, sys
+try:
+    e = json.loads(sys.argv[1])
+except Exception:
+    e = {}
+if isinstance(e, dict):
+    e["session_unresolved"] = "unsupported:no_runtime_session_id_at_link_writer"
+print(json.dumps(e, separators=(",", ":"), sort_keys=True))'
+  ANNOTATED_EVIDENCE="$(python3 -c "$SESSION_REASON_PY" "$EVIDENCE_JSON" 2>/dev/null)" || ANNOTATED_EVIDENCE=""
+  [[ -n "$ANNOTATED_EVIDENCE" ]] && EVIDENCE_JSON="$ANNOTATED_EVIDENCE"
 fi
 
 record_spend_correlation "$SESSION_ID" "$REPO_ROOT" "$REPO" "$ISSUE" "$PR" \
