@@ -61,5 +61,19 @@ check_eq "$(field_of codex-one@example.com "window" used_pct)" "30" "missing dur
 for wire_bad in 'true' 'null' '-1' '"unknown"'; do
   jq --argjson bad "$wire_bad" '.rate_limit.primary_window.used_percent=$bad' "$HTTP_WIRE_FIXTURE" > "$STUB_CHATGPT_BODY"
   run --json --five-hour
-  check_eq "$(rows_for codex-one@example.com)" "unreachable" "invalid wire usage $wire_bad cannot become a successful empty report"
+  check_eq "$(rows_for codex-one@example.com | grep -c '^ok$')" "0" "invalid wire usage $wire_bad cannot become a successful report"
 done
+
+# A failed account-wide read (the 7-day placeholder) still shows a saved 5-hour
+# reading as last known, labelled with its own window (#2280 review).
+CODEX_LKD="$TMP/codex-last-known"
+export AI_QUOTAS_LAST_KNOWN_DIR="$CODEX_LKD"
+rm -rf "$CODEX_LKD"
+printf '%s' '{"accounts":[{"provider":"codex","label":"codex-one@example.com","fetched_at_epoch":'"$NOW"',"fetched_at_et":"fixture","source":"live: fixture","rows":[{"window":"5-hour","pool":null,"used_pct":33,"resets_at_epoch":null,"resets":null,"overage":null}]}]}' \
+  | python3 -I "$(cd "$(dirname "$SCRIPT")" && pwd)/lib/quotas-last-known.py" record --dir "$CODEX_LKD"
+printf '%s' '{"not": "a usage body"' > "$STUB_CHATGPT_BODY"
+run --json --five-hour
+check_eq "$(field_of codex-one@example.com "5-hour" last_known_used_pct)" "33" "a saved 5-hour reading shows under a failed account-wide placeholder"
+check_eq "$(rows_for codex-one@example.com | grep -c '^ok$')" "0" "the failed read is not reported as ok"
+cp "$HTTP_WIRE_FIXTURE" "$STUB_CHATGPT_BODY"
+unset AI_QUOTAS_LAST_KNOWN_DIR

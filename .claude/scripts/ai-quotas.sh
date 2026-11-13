@@ -1288,10 +1288,21 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
     | .rows = [ $doc.rows | to_entries[] | .key as $i | .value as $r
         | if ($ok | any(. == ($r | key))) then $r
           else
-            ([ $series[] | select(.provider == $r.provider and .label == $r.label)
-                         | select($r.provider == "cursor" or ((.pool // .window) == ($r.pool // $r.window))) ]) as $saved
-            | if ($saved | length) == 0 then $r
-              elif ([ $doc.rows[0:$i][] | select(usable | not) | select(key == ($r | key)) ] | length) > 0 then empty
+            # A saved series belongs to the live row with its own window or pool. A
+            # saved series that no live row of this account carries (e.g. a 5-hour
+            # reading under a 7-day account-wide failure placeholder) goes to the
+            # first unusable row for the account only, so it is not repeated.
+            ([ $doc.rows[] | select(.provider == $r.provider and .label == $r.label) | (.pool // .window) ]) as $live_keys
+            | ([ $doc.rows[0:$i][] | select(usable | not) | select(key == ($r | key)) ] | length > 0) as $dup
+            | ([ $series[] | select(.provider == $r.provider and .label == $r.label)
+                         | (.pool // .window) as $k
+                         | select($r.provider == "cursor" or $k == ($r.pool // $r.window)) ]) as $own
+            | ([ $series[] | select(.provider == $r.provider and .label == $r.label)
+                         | (.pool // .window) as $k
+                         | select($r.provider != "cursor" and (($live_keys | index($k)) == null)) ]) as $orphan
+            | (if $dup then $own else $own + $orphan end) as $saved
+            | if ($own | length) == 0 and $dup then empty
+              elif ($saved | length) == 0 then $r
               else $saved[] as $x
                 | $r + {
                     window: (if $x.provider == "cursor" then "billing-cycle" else $x.window end),
