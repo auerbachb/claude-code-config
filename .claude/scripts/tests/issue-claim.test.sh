@@ -1715,6 +1715,31 @@ run 873 --claim --holder someone-else
 INT_GATE="$(int_env "$CLAIM_TEST_SHELL" "$REPO_ROOT/.claude/scripts/candidate-ownership.sh" 873 --repo testowner/testrepo --json 2>/dev/null)"
 check_eq "control: a foreign claim is still owned" "true" "$(jq -r 'select(.issue == 873) | .owned' <<<"$INT_GATE")"
 
+############################################################################
+echo "== (2285) a claim written by the plain-gh fallback recipe reads as a valid claim =="
+reset_issue
+# The recipe text lives in the shared instruction block; assert the fixture
+# below is the same shape that block tells agents to write.
+BLOCK_SRC="$REPO_ROOT/.claude/reference/agent-issue-claims-block.md"
+BLOCK_TEXT="$(cat "$BLOCK_SRC")"
+FB_NOW="$(iso_ago 0)"
+FB_BODY="🔒 Claimed by \`alice\` for active work. Held by codex on device fixture-box. It will be released when this issue's PR merges or when the issue closes; it becomes stale if not renewed within 4h.
+
+<!-- claude-claim: {\"holder\":\"codex-1700000000\",\"login\":\"alice\",\"since\":\"$FB_NOW\",\"provider\":\"codex\",\"device\":\"fixture-box\"} -->"
+check_contains "recipe: block carries the marker shape" '<!-- claude-claim: {\"holder\":\"$HOLDER\",\"login\":\"$ME\",\"since\":\"$NOW\",\"provider\":\"<agent>\",\"device\":\"<nickname>\"} -->' "$BLOCK_TEXT"
+check_contains "recipe: block carries the notice sentence" 'for active work. Held by <agent> on device <nickname>.' "$BLOCK_TEXT"
+jq -n --arg b "$FB_BODY" --arg t "$FB_NOW" '[{id: 7001, user: {login: "alice"}, created_at: $t, body: $b}]' > "$STATE/comments.json"
+printf 'in-progress\n' > "$STATE/labels"
+printf 'alice\n' > "$STATE/assignees"
+run 873 --check --holder someone-else --json
+check_eq "recipe: a different holder sees claimed" "claimed" "$(jq -r .verdict <<<"$OUT")"
+check_eq "recipe: provider and device read back" "codex|fixture-box" "$(jq -r '[.provider, .device] | join("|")' <<<"$OUT")"
+check_contains "recipe: message names the provider" "codex" "$ERR"
+# Control: the same issue with no marker comment and no label is free.
+reset_issue
+run 873 --check --holder someone-else
+check_eq "recipe control: unclaimed issue reads unclaimed" "unclaimed" "$OUT"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
