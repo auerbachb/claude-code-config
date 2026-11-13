@@ -167,7 +167,7 @@ while [[ $# -gt 0 ]]; do
     --allow-claimed) die_usage "--allow-claimed is a per-issue user override and is not available in batch mode; use issue-claim.sh for that one issue" ;;
     -*) die_usage "unknown flag: $1" ;;
     *)
-      [[ "$1" =~ ^[1-9][0-9]*$ ]] || die_usage "issue numbers must be positive integers, got: $1"
+      [[ "$1" =~ ^[1-9][0-9]{0,8}$ ]] || die_usage "issue numbers must be positive integers up to 999999999, got: $1"
       dup=0
       for existing in ${ISSUES[@]+"${ISSUES[@]}"}; do [[ "$existing" == "$1" ]] && dup=1; done
       (( dup )) || ISSUES+=("$1")
@@ -177,6 +177,7 @@ done
 
 [[ -n "$ACTION" ]] || die_usage "one of --check / --claim / --renew / --release is required"
 (( ${#ISSUES[@]} > 0 )) || die_usage "at least one issue number is required"
+(( ${#ISSUES[@]} <= 9999 )) || die_usage "at most 9999 issues per batch (issue-claim.sh --batch-size limit), got: ${#ISSUES[@]}"
 if [[ -n "$REPO" ]] && ! [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   die_usage "--repo must be owner/repo, got: $REPO"
 fi
@@ -306,24 +307,22 @@ read_states() {
 # batch_check: fill r.<i>/rc.<i> for every issue.
 batch_check() {
   local i issue st
-  local unindexed=()
   if ! read_label_index; then
     for (( i = 0; i < TOTAL; i++ )); do
       record "$i" "$(unknown_object "${ISSUES[$i]}" "$INDEX_ERR - claim state undetermined; treat the issue as claimed (fail-closed)")" 4
     done
     return 0
   fi
-  for (( i = 0; i < TOTAL; i++ )); do
-    [[ "$INDEX_NUMBERS" == *" ${ISSUES[$i]} "* ]] || unindexed+=("${ISSUES[$i]}")
-  done
-  (( ${#unindexed[@]} > 0 )) && read_states "${unindexed[@]}"
+  # The label index lists every state, so an indexed issue can be closed: read
+  # the state of every issue, indexed or not, and never admit a closed one.
+  read_states "${ISSUES[@]}"
   for (( i = 0; i < TOTAL; i++ )); do
     issue="${ISSUES[$i]}"
-    if [[ "$INDEX_NUMBERS" == *" $issue "* ]]; then
+    st="$(cat "$WORK/state.$issue" 2>/dev/null || echo err)"
+    if [[ "$INDEX_NUMBERS" == *" $issue "* && "$st" != closed ]]; then
       run_one "$i" "$issue" --check ${COMMON[@]+"${COMMON[@]}"}
       continue
     fi
-    st="$(cat "$WORK/state.$issue" 2>/dev/null || echo err)"
     case "$st" in
       open)    record "$i" "$(index_object "$issue")" 0 ;;
       closed)  record "$i" "$(unknown_object "$issue" "issue #$issue is closed - not startable (it is not claimed; reopen it or drop it from the plan)")" 4 ;;

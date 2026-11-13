@@ -339,17 +339,17 @@ check_eq "and the held one is still renewed/ok" mine "$(verdict_of 61)"
 ############################################################################
 echo "== (6) API cost: a 50-issue batch check is bounded, not three calls per issue =="
 reset_state
-ISSUES50="$(seq 101 150 | tr '\n' ' ')"
+ISSUES50=()
+while IFS= read -r n; do ISSUES50+=("$n"); done < <(seq 101 150)
 : > "$STATE/calls.log"
-# shellcheck disable=SC2086
-run_batch --check $ISSUES50 --holder H1
+run_batch --check "${ISSUES50[@]}" --holder H1
 BATCH_CALLS="$(gh_calls)"
 check_eq "50 free issues: exit 0" 0 "$RC"
 check_eq "50 JSON lines" 50 "$(printf '%s\n' "$OUT" | jq -s 'length')"
 check_eq "50 verdicts all unclaimed" 50 "$(printf '%s\n' "$OUT" | jq -s '[.[] | select(.verdict == "unclaimed")] | length')"
 echo "     measured: batch check of 50 unclaimed issues = $BATCH_CALLS gh call(s)"
 : > "$STATE/calls.log"
-for n in $ISSUES50; do "$TEST_SHELL" "$SINGLE" "$n" --check --holder H1 >/dev/null 2>&1; done
+for n in "${ISSUES50[@]}"; do "$TEST_SHELL" "$SINGLE" "$n" --check --holder H1 >/dev/null 2>&1; done
 LOOP_CALLS="$(gh_calls)"
 echo "     measured: 50 single-issue checks              = $LOOP_CALLS gh call(s)"
 check_eq "batch check uses 3 calls (user + one index page + one existence read)" 3 "$BATCH_CALLS"
@@ -357,8 +357,7 @@ check_lt "batch check is far below the per-issue loop" "$BATCH_CALLS" "$LOOP_CAL
 # With a few claimed issues the cost grows by the usual three reads each, not by N.
 claim_as_other 110; claim_as_other 120
 : > "$STATE/calls.log"
-# shellcheck disable=SC2086
-run_batch --check $ISSUES50 --holder H1
+run_batch --check "${ISSUES50[@]}" --holder H1
 check_eq "two labeled issues add 3 reads each: 3 + 6 calls" 9 "$(gh_calls)"
 check_eq "and they read claimed" "claimed claimed" "$(printf '%s\n' "$OUT" | jq -r 'select(.verdict == "claimed") | .verdict' | tr '\n' ' ' | sed 's/ $//')"
 
@@ -401,6 +400,8 @@ run_batch --claim 72 --allow-claimed
 check_eq "batch mode refuses --allow-claimed" 2 "$RC"
 run_batch --check
 check_eq "no issue numbers is a usage error" 2 "$RC"
+run_batch --check 99999999999999999999 --holder H1
+check_eq "an issue number beyond 9 digits is a usage error" 2 "$RC"
 run_batch --check abc
 check_eq "a non-numeric issue is a usage error" 2 "$RC"
 run_batch --check 72 --batch x
@@ -434,6 +435,13 @@ run_batch --check 305 306 --holder H1
 check_eq "a failed existence read is exit 4" 4 "$RC"
 check_eq "and reads unknown, never unclaimed (fail-closed)" "unknown unknown" "$(verdict_of 305) $(verdict_of 306)"
 unset FAKE_GRAPHQL_MODE FAKE_MISSING_ISSUE FAKE_CLOSED_ISSUE
+reset_state
+export FAKE_CLOSED_ISSUE=303
+claim_as_other 303
+run_batch --check 303 --holder H1
+check_eq "a closed issue still in the label index is unknown, not claimed" unknown "$(verdict_of 303)"
+check_contains "and says it is closed" "closed" "$(field_of 303 reason)"
+unset FAKE_CLOSED_ISSUE
 
 ############################################################################
 echo "== (9) release: a claim swapped between the check and the release is left alone =="

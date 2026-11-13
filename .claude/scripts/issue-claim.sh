@@ -688,8 +688,8 @@ parse_winner() {
        (if ($p.provider | type) == "string" then $p.provider else "" end),
        (if ($p.device | type) == "string" then $p.device else "" end),
        (if ($p.label | type) == "string" then $p.label else "" end),
-       (if ($p.batch | type) == "string" and ($p.batch_size | type) == "number" then $p.batch else "" end),
-       (if ($p.batch | type) == "string" and ($p.batch_size | type) == "number" then ($p.batch_size | floor) else "" end)]
+       (if ($p.batch | type) == "string" and ($p.batch_size | type) == "number" and ($p.batch_size | floor) >= 1 and ($p.batch_size | floor) <= 9999 then $p.batch else "" end),
+       (if ($p.batch | type) == "string" and ($p.batch_size | type) == "number" and ($p.batch_size | floor) >= 1 and ($p.batch_size | floor) <= 9999 then ($p.batch_size | floor) else "" end)]
     | map(tostring)
     | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
     | join("\u001f")' 2>/dev/null)" || return 1

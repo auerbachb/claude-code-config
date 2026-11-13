@@ -406,7 +406,7 @@ Per issue — **take the claim before spawning Phase A** so it is held for the w
 ```bash
 CLAIM_HOLDER=""
 CLAIM_JSON=${BATCH_CLAIM_JSON:-}; BATCH_CLAIM_JSON=""   # one-shot: consumed here, so one issue's object never reaches the next
-if CLAIM_JSON=${CLAIM_JSON:-$("$ISSUE_CLAIM" {NUMBER} --claim --json)} && [[ "$(printf '%s' "$CLAIM_JSON" | jq -r '.verdict // empty' 2>/dev/null)" == mine ]]; then
+if CLAIM_JSON=${CLAIM_JSON:-$("$ISSUE_CLAIM" {NUMBER} --claim --json)} && printf '%s' "$CLAIM_JSON" | jq -e --argjson n {NUMBER} '.issue == $n and .verdict == "mine"' >/dev/null 2>&1; then
   # The exact token this claim was taken with — every later --renew must pass
   # it (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived.
   CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty' 2>/dev/null)
