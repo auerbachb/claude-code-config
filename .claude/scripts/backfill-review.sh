@@ -552,6 +552,14 @@ RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_CUT_PARTIAL=0 RANGE
 RANGE_LAST=""
 short() { printf '%s' "${1:0:12}"; }
 
+range_hard_bound() { # channel -> the reviewer's own file cap, never lowered; unknown = 0 (refuse)
+  case "$1" in
+    codeant) printf '%s' "$RANGE_BOUND_CODEANT" ;;
+    coderabbit) printf '%s' "$RANGE_BOUND_CODERABBIT" ;;
+    *) printf '0' ;;
+  esac
+}
+
 range_bound() { # channel -> the file bound for that reviewer
   local b=0
   case "$1" in
@@ -777,6 +785,14 @@ range_main() {
     info="$ncommits commit(s), $nfiles changed file(s), bound $bound for $ch"
     [[ "$partial" -eq 1 ]] && info="$info; single commit over the bound, reviewed alone and recorded partially covered"
     if (( nfiles == 0 )); then summary range_empty; exit 0; fi
+# A channel never reviews more files than ITS OWN bound (not the lowered
+# --range-bound). A single oversized commit cut for CodeRabbit (150) would
+# otherwise reach CodeAnt, which skips files past 15 and reads clean.
+hard="$(range_hard_bound "$ch")"
+if (( nfiles > hard )); then
+  log "$REPO range $(short "$RANGE_FIRST")..$(short "$cut") refused for $ch: $nfiles files exceed its $hard-file bound"
+  drop_channel "$ch"; continue
+fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       printf 'would review range %s..%s commits=%s files=%s bound=%s channel=%s partial=%s\n' \

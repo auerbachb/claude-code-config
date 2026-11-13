@@ -113,6 +113,7 @@ EOF
 cat > "$STUB/bin/codeant" <<'EOF'
 #!/bin/bash
 echo "codeant $*" >> "$STUB_DIR/cli-calls.log"
+if [ "${STUB_CODEANT_MODE:-fail}" = ok ]; then echo '{"issues":[],"error":null,"noFiles":false}'; exit 0; fi
 echo 'API Error: Access denied (403)' >&2
 echo '{"issues":[],"error":null,"noFiles":false}'
 EOF
@@ -308,6 +309,35 @@ check_eq "11: nothing was filed" "0" "$(grep -c '^issue create' "$STUB/gh-calls.
 OUT="$("$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --from "$BASE" --dry-run --ignore-window 2>&1)"; RC=$?
 check_eq "10: --from without --range is a usage error" "2" "$RC"
 check_contains "10: usage error names --range" "--from needs --range" "$OUT"
+
+# ---- 16. a channel never receives more files than its own cap -----------------
+# Fallback from CodeRabbit (150) to CodeAnt (15) must re-cut the range for 15.
+rrun() { local d="$1"; shift; "$RUN_BASH" "$SCRIPT" --range --repo-dir "$d" --repo acme/widgets --timeout 30 --channels coderabbit,codeant "$@" 2>"$TMP/stderr"; }
+V="$TMP/single"; git init -q --bare "$TMP/single.git"; git clone -q "$TMP/single.git" "$V" 2>/dev/null
+printf 'seed\n' > "$V/seed.txt"; git -C "$V" add seed.txt; git -C "$V" commit -qm "Seed (#98)"
+VSEED="$(git -C "$V" rev-parse HEAD)"
+mkdir -p "$V/big"; for i in $(seq 1 16); do printf 'x\n' > "$V/big/f$i.txt"; done
+git -C "$V" add big; git -C "$V" commit -qm "Sixteen files (#303)"; git -C "$V" push -q origin main 2>/dev/null
+W="$TMP/wide"; git init -q --bare "$TMP/wide.git"; git clone -q "$TMP/wide.git" "$W" 2>/dev/null
+printf 'seed\n' > "$W/seed.txt"; git -C "$W" add seed.txt; git -C "$W" commit -qm "Seed (#98)"
+WSEED="$(git -C "$W" rev-parse HEAD)"
+mkdir -p "$W/one" "$W/two"
+for i in $(seq 1 8); do printf 'x\n' > "$W/one/f$i.txt"; done; git -C "$W" add one; git -C "$W" commit -qm "Eight files (#301)"
+for i in $(seq 1 8); do printf 'x\n' > "$W/two/f$i.txt"; done; git -C "$W" add two; git -C "$W" commit -qm "Eight more (#302)"
+WTIP="$(git -C "$W" rev-parse HEAD)"; git -C "$W" push -q origin main 2>/dev/null
+
+# 16a: one 16-file commit. CodeRabbit fails; CodeAnt must NOT be handed 16 files.
+reset_state
+OUT="$(STUB_CLI_MODE=fail STUB_CODEANT_MODE=ok rrun "$V" --from "$VSEED" --ignore-window 2>/dev/null)"
+check_contains "16a: oversized commit stops the run for codeant" "stop=capacity_exhausted" "$OUT"
+check_not_contains "16a: codeant never ran on the 16 files" "codeant" "$(cat "$STUB/cli-calls.log")"
+check_eq "16a: marker not written past unreviewed files" "no" "$([ -e "$MARKER" ] && echo yes || echo no)"
+
+# 16b: two 8-file commits. CodeAnt gets the range re-cut to <=15 files per run.
+reset_state
+OUT="$(STUB_CLI_MODE=fail STUB_CODEANT_MODE=ok rrun "$W" --from "$WSEED" --ignore-window 2>/dev/null)"
+check_eq "16b: codeant ran once per 8-file stretch" "2" "$(grep -c '^codeant' "$STUB/cli-calls.log")"
+check_eq "16b: marker ends at main after two verified stretches" "$WTIP" "$(marker_sha)"
 
 echo
 echo "backfill-range-review tests: $PASS passed, $FAIL failed"
