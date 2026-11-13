@@ -1536,7 +1536,43 @@ printf 'my-laptop\n' > "$HOME/.claude/device-nickname"
 reset_issue
 drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
 check_eq "resolution: nickname file used" "my-laptop" "$(jq -r .device <<<"$OUT")"
+for NICK_CASE in "Bob's MacBook" "Studio (office)" "caf$(printf '\303\251')"; do
+  printf '%s\r\n' "$NICK_CASE" > "$HOME/.claude/device-nickname"
+  reset_issue
+  drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+  check_eq "resolution: invalid nickname file falls back, no usage error ($NICK_CASE)" "0|true" \
+    "$RC|$(jq -r '.device | test("^device-[0-9a-f]{6}$")' <<<"$OUT")"
+done
+printf 'my-laptop\r\n' > "$HOME/.claude/device-nickname"
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --json
+check_eq "resolution: CRLF nickname file trimmed" "my-laptop" "$(jq -r .device <<<"$OUT")"
+printf "Bob's MacBook\n" > "$HOME/.claude/device-nickname"
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --device "Bob's MacBook" --json
+check_eq "resolution: explicit invalid --device stays strict" "2" "$RC"
 rm -f "$HOME/.claude/device-nickname"
+
+# release: the released claim's facts are not reported beside `unclaimed`
+reset_issue
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --device laptop --json
+drun "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --release --holder h1 --json
+check_eq "release --json: unclaimed with no leftover facts" "unclaimed|null|null|null" \
+  "$(jq -r '[.verdict, .provider, .device, .label] | map(tostring) | join("|")' <<<"$OUT")"
+
+# no SHA-256 tool: the default holder/device id fails closed (no weak checksum)
+NOSHA_BIN="$TMP/nosha-bin"
+mkdir -p "$NOSHA_BIN"
+for t in shasum sha256sum; do printf '#!/bin/sh\nexit 1\n' > "$NOSHA_BIN/$t"; chmod +x "$NOSHA_BIN/$t"; done
+reset_issue
+drun env PATH="$NOSHA_BIN:$PATH" "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --json
+check_eq "no sha tool: default holder claim fails closed (usage)" "2" "$RC"
+reset_issue
+drun env PATH="$NOSHA_BIN:$PATH" "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --json
+check_eq "no sha tool: default device fails closed (usage)" "2" "$RC"
+reset_issue
+drun env PATH="$NOSHA_BIN:$PATH" "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --holder h1 --provider codex --device laptop --json
+check_eq "no sha tool: explicit holder+device still claims" "0" "$RC"
 
 # nothing private in the posted comment (default holder, default device)
 reset_issue

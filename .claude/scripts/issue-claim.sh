@@ -404,7 +404,9 @@ resolve_holder() {
   [[ -n "$HOLDER_ARG" ]] && { printf '%s' "$HOLDER_ARG"; return; }
   [[ -n "${CLAUDE_CLAIM_HOLDER:-}" ]] && { printf '%s' "$CLAUDE_CLAIM_HOLDER"; return; }
   [[ -n "${CLAUDE_SESSION_ID:-}" ]] && { printf '%s' "$CLAUDE_SESSION_ID"; return; }
-  printf 'h-%s' "$(digest_hex "$(legacy_holder)" 12)"
+  local d
+  d="$(digest_hex "$(legacy_holder)" 12)" || return 1
+  printf 'h-%s' "$d"
 }
 # legacy_holder: the pre-#2284 default token. Computed only to be hashed or to
 # be matched against older markers; it is never written to GitHub.
@@ -422,12 +424,18 @@ digest_hex() {
   elif command -v sha256sum >/dev/null 2>&1; then
     d="$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -c1-64)"
   fi
-  [[ -n "$d" ]] || d="$(printf '%s' "$1" | cksum | awk '{printf "%08x%08x", $1, $2}')"
+  # No SHA-256 tool: fail closed. A 32-bit checksum could collide and let
+  # another checkout read as the same holder, bypassing the claim block.
+  if [[ -z "$d" ]]; then
+    echo "issue-claim.sh: no shasum or sha256sum found; cannot derive a default holder/device id; pass --holder/--device or set CLAUDE_CLAIM_HOLDER/AGENT_CLAIM_DEVICE" >&2
+    return 1
+  fi
   printf '%s' "${d:0:$2}"
 }
 # Append a sentinel so command substitution cannot silently trim a malformed
 # holder into the identity of a different thread.
-HOLDER="$(resolve_holder; printf '.')"
+HOLDER="$(resolve_holder && printf '.')"
+[[ -n "$HOLDER" ]] || die_usage "could not resolve a holder token"
 HOLDER="${HOLDER%.}"
 [[ "$HOLDER" =~ [[:cntrl:]] ]] && die_usage "holder must not contain control characters"
 
@@ -468,14 +476,18 @@ resolve_device() {
   local v="${DEVICE_ARG:-${AGENT_CLAIM_DEVICE:-}}"
   if [[ -z "$v" && -n "${HOME:-}" && -r "$HOME/.claude/device-nickname" ]]; then
     v="$(head -n 1 "$HOME/.claude/device-nickname" 2>/dev/null || true)"
+    v="${v%$'\r'}"
+    # A free-form nickname file must never block claiming: only this file-sourced
+    # value falls back to the hostname-derived id; explicit values stay strict.
+    valid_fact "$v" || v=""
   fi
-  [[ -n "$v" ]] || v="device-$(digest_hex "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)" 6)"
+  [[ -n "$v" ]] || v="device-$(digest_hex "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)" 6)" || return 1
   printf '%s' "$v"
 }
 RES_PROVIDER=""; RES_DEVICE=""; RES_LABEL=""
 if [[ "$ACTION" == claim || "$ACTION" == renew ]]; then
   RES_PROVIDER="$(resolve_provider)"
-  RES_DEVICE="$(resolve_device)"
+  RES_DEVICE="$(resolve_device)" || die_usage "could not resolve a device id"
   RES_LABEL="${LABEL_ARG:-${AGENT_CLAIM_LABEL:-}}"
   valid_fact "$RES_PROVIDER" || die_usage "provider must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_PROVIDER)"
   valid_fact "$RES_DEVICE" || die_usage "device must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_DEVICE)"
@@ -833,6 +845,7 @@ if [[ "$ACTION" == "release" ]]; then
     fail_closed "release of issue #$ISSUE_NUMBER partially failed ($(tr '\n' ' ' < "$ERR_FILE"))"
   fi
   CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""; IS_STALE="false"
+  CLAIM_PROVIDER=""; CLAIM_DEVICE=""; CLAIM_LABEL_TEXT=""
   emit unclaimed 0 "released the claim on issue #$ISSUE_NUMBER"
 fi
 
@@ -935,6 +948,7 @@ emit_renew_released() {
     v="claimed"; CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$W_AT"
   else
     CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""
+    CLAIM_PROVIDER=""; CLAIM_DEVICE=""; CLAIM_LABEL_TEXT=""
   fi
   IS_STALE="false"
   emit "$v" 5 "released — the claim on issue #$ISSUE_NUMBER was released (or the issue closed) while this renewal was in flight; this run's marker was withdrawn and $1 — ownership is lost, stop and report"
@@ -1298,6 +1312,9 @@ if POSTED_COMMENTS="$(read_claim_comments)"; then
   parse_winner "$POSTED_COMMENTS" || fail_closed "claim-unverified — newest claim marker on issue #$ISSUE_NUMBER is unreadable after posting; marker and metadata retained"
   if [[ "$W_AUTHOR" == "$VIEWER" && "$W_HOLDER" == "$HOLDER" && -n "$(iso_to_epoch "$W_AT")" ]]; then
     CLAIMED_AT="$W_AT"
+    # The re-read may have selected a newer marker of this same holder (a
+    # concurrent run with different facts); report the winner's facts.
+    CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
   fi
 fi
 CLAIMED_SINCE="$CLAIMED_AT"

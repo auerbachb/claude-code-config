@@ -226,6 +226,13 @@ resolve_holder() {
   printf '%s:%s' "$host" "$top"
 }
 HOLDER="$(resolve_holder)"
+# True when the holder was not named by flag or environment: issue-claim.sh then
+# derives its own default (a digest since issue #2284, with a legacy alias), so
+# this script must not pass its own host:path token as an explicit --holder.
+HOLDER_DEFAULTED=0
+if [[ -z "$HOLDER_ARG" && -z "${CLAUDE_CLAIM_HOLDER:-}" && -z "${CLAUDE_SESSION_ID:-}" ]]; then
+  HOLDER_DEFAULTED=1
+fi
 SELF_SESSION="${CLAUDE_SESSION_ID:-}"
 
 # Session ids reach this script from two populations that do not agree on
@@ -923,7 +930,8 @@ for ISSUE in "${CANDIDATES[@]}"; do
   if [[ -z "$ISSUE_CLAIM_SH" ]]; then
     add_degraded "issue-claim.sh: not found (claim gate unavailable for #$ISSUE)"
   else
-    CLAIM_ARGS=("$ISSUE" --check --json --holder "$HOLDER")
+    CLAIM_ARGS=("$ISSUE" --check --json)
+    (( HOLDER_DEFAULTED )) || CLAIM_ARGS+=(--holder "$HOLDER")
     [[ -n "$REPO" ]] && CLAIM_ARGS+=(--repo "$REPO")
     CLAIM_RC=0
     CLAIM_JSON="$("$ISSUE_CLAIM_SH" "${CLAIM_ARGS[@]}" 2>/dev/null)" || CLAIM_RC=$?
