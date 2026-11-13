@@ -1325,8 +1325,18 @@ action_report() {
   [[ "$pct" =~ ^([0-9]{1,2}(\.[0-9])?|100(\.0)?)$ ]] \
     || die 3 "used_pct must be a number from 0 to 100 with at most one decimal place"
 
+  # The config lock is taken before the account lookup and held through the
+  # helper call, as remove does. A concurrent remove therefore cannot delete the
+  # account (and its saved readings) between resolving it and recording the
+  # report, which would recreate a file that a later same-label account inherits.
+  # Every error after this point releases the lock first.
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  _report_fail() { state_lock_release || true; die "$@"; }
   config="$(read_config)"
-  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  index="$(printf '%s' "$config" | jq -r --arg l "$ARG_LABEL" --arg p "$ARG_PROVIDER" \
+    '[.accounts | to_entries[] | select(.value.label == $l and ($p == "" or .value.provider == $p)) | .key]
+     | if length == 1 then .[0] else empty end')"
+  [[ -n "$index" ]] || _report_fail 4 "no single account registered as '${ARG_LABEL}' (name the provider if the label is shared)"
   provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
   label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
   nickname="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].nickname // ""')"
@@ -1338,28 +1348,28 @@ action_report() {
     claude)
       case "$REPORT_WINDOW" in
         7-day|"7-day (opus)"|5-hour) ;;
-        *) die 3 "claude windows are 7-day, \"7-day (opus)\" or 5-hour" ;;
+        *) _report_fail 3 "claude windows are 7-day, \"7-day (opus)\" or 5-hour" ;;
       esac ;;
     codex)
       case "$REPORT_WINDOW" in
         7-day) ;;
-        *-hour) [[ "${REPORT_WINDOW%-hour}" =~ ^[1-9][0-9]*$ ]] || die 3 "codex hour windows look like 5-hour" ;;
-        *) die 3 "codex windows are 7-day or <n>-hour" ;;
+        *-hour) [[ "${REPORT_WINDOW%-hour}" =~ ^[1-9][0-9]*$ ]] || _report_fail 3 "codex hour windows look like 5-hour" ;;
+        *) _report_fail 3 "codex windows are 7-day or <n>-hour" ;;
       esac ;;
     cursor)
       case "$REPORT_WINDOW" in
         cursor-models|other-models) pool="$REPORT_WINDOW" ;;
-        *) die 3 "cursor pools are cursor-models or other-models" ;;
+        *) _report_fail 3 "cursor pools are cursor-models or other-models" ;;
       esac ;;
   esac
 
   folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}"
   if [[ -z "$folder" ]]; then
-    [[ -n "${_HOME:-}" ]] || die 5 "HOME is unset and AI_QUOTAS_LAST_KNOWN_DIR is not set — cannot locate the last-known folder"
+    [[ -n "${_HOME:-}" ]] || _report_fail 5 "HOME is unset and AI_QUOTAS_LAST_KNOWN_DIR is not set — cannot locate the last-known folder"
     folder="${_HOME}/.claude/ai-quotas/last-known"
   fi
-  [[ -r "$SELF_DIR/lib/quotas-last-known.py" ]] || die 5 "lib/quotas-last-known.py not found — install the complete scripts directory"
-  command -v python3 >/dev/null 2>&1 || die 5 "python3 is required to record a reading"
+  [[ -r "$SELF_DIR/lib/quotas-last-known.py" ]] || _report_fail 5 "lib/quotas-last-known.py not found — install the complete scripts directory"
+  command -v python3 >/dev/null 2>&1 || _report_fail 5 "python3 is required to record a reading"
 
   now="$(date +%s)"
   now_et="$(TZ=America/New_York date '+%a %b %-d %Y %-I:%M %p ET')"
@@ -1367,6 +1377,7 @@ action_report() {
   python3 -I "$SELF_DIR/lib/quotas-last-known.py" owner-report --dir "$folder" --now "$now" \
     --now-et "$now_et" --provider "$provider" --label "$label" --nickname "$nickname" \
     --window "$REPORT_WINDOW" --pool "$pool" --used-pct "$pct" --resets-text "$REPORT_RESET" || rc=$?
+  state_lock_release || true
   case "$rc" in
     0) ;;
     9)
