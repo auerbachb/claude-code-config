@@ -60,6 +60,7 @@ MAX_DELAY=1500
 MAX_TEXT=190
 SELF_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || SELF_DIR=""
 SELF="${SELF_DIR}/$(basename "${BASH_SOURCE[0]}")"
+SELF_Q=$(printf '%q' "$SELF")   # shell-safe form for every command we print
 
 usage() { sed -n '2,/^# Bash 3.2/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die() { printf 'phone-push-wait: %s\n' "$2" >&2; exit "$1"; }
@@ -79,7 +80,7 @@ rec() { printf '%s/%s.json' "$DIR" "$1"; }
 # so a crash cannot wedge every later update.
 LOCK_HELD=0
 lock() {
-  local i=0 owner moved
+  local i=0 owner current
   while ! mkdir "$DIR/.lock" 2>/dev/null; do
     i=$((i + 1))
     owner=$(cat "$DIR/.lock/pid" 2>/dev/null || true)
@@ -87,17 +88,22 @@ lock() {
     # so it is only treated as stale after a longer wait (5 s).
     if { [ -n "$owner" ] && [ "$i" -gt 20 ] && ! kill -0 "$owner" 2>/dev/null; } \
        || { [ -z "$owner" ] && [ "$i" -gt 50 ]; }; then
-      # Owner gone (or never recorded one): move the lock to a private name, then
-      # confirm what we moved is still the lock we judged stale. If another process
-      # took the lock in between, put it back rather than displace its owner.
-      if mv "$DIR/.lock" "$DIR/.lock.stale.$$" 2>/dev/null; then
-        moved=$(cat "$DIR/.lock.stale.$$/pid" 2>/dev/null || true)
-        if [ "$moved" = "$owner" ]; then
-          rm -f "$DIR/.lock.stale.$$/pid"
-          rmdir "$DIR/.lock.stale.$$" 2>/dev/null || true
-        else
-          mv "$DIR/.lock.stale.$$" "$DIR/.lock" 2>/dev/null || true
+      # Owner gone (or never recorded one). Reclaimers serialize on a short-lived
+      # guard, re-read the pid under it, and remove the lock only if it is still
+      # the one judged stale. A possibly-live lock is never moved, so there is
+      # nothing to restore and no way to nest one lock inside another.
+      if mkdir "$DIR/.lock.reclaim" 2>/dev/null; then
+        current=$(cat "$DIR/.lock/pid" 2>/dev/null || true)
+        if [ "$current" = "$owner" ]; then
+          if [ -n "$owner" ]; then
+            kill -0 "$owner" 2>/dev/null || { rm -f "$DIR/.lock/pid"; rmdir "$DIR/.lock" 2>/dev/null || true; }
+          else
+            rmdir "$DIR/.lock" 2>/dev/null || true
+          fi
         fi
+        rmdir "$DIR/.lock.reclaim" 2>/dev/null || true
+      else
+        sleep 0.1
       fi
       continue
     fi
@@ -188,9 +194,9 @@ cmd_arm() {
   fi
   rm -f "$tmp"
   printf 'phone push armed for %s: one push if it is still unanswered after %ss.\n' "$key" "$delay"
-  printf '1. Start a persistent Monitor with this command: %s watch %s\n' "$SELF" "$key"
-  printf '2. When the answer arrives, run: %s answer %s\n' "$SELF" "$key"
-  printf '3. When the Monitor prints "phone-push %s due", call PushNotification with the text it gives, then run: %s sent %s  (or: %s missed %s --reason "<why>")\n' "$key" "$SELF" "$key" "$SELF" "$key"
+  printf '1. Start a persistent Monitor with this command: %s watch %s\n' "$SELF_Q" "$key"
+  printf '2. When the answer arrives, run: %s answer %s\n' "$SELF_Q" "$key"
+  printf '3. When the Monitor prints "phone-push %s due", call PushNotification with the text it gives, then run: %s sent %s  (or: %s missed %s --reason "<why>")\n' "$key" "$SELF_Q" "$key" "$SELF_Q" "$key"
 }
 
 cmd_watch() {
@@ -207,7 +213,7 @@ cmd_watch() {
       set_status "$key" waiting due >/dev/null; rc=$?
       if [ "$rc" -eq 0 ]; then
         printf 'phone-push %s due: call PushNotification with exactly this text, then record it with %s sent %s (or missed %s --reason "<why>"): %s\n' \
-          "$key" "$SELF" "$key" "$key" "$(field "$key" text)"
+          "$key" "$SELF_Q" "$key" "$key" "$(field "$key" text)"
         exit 0
       fi
       [ "$rc" -eq 3 ] && exit 0
