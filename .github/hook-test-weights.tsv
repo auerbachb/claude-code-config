@@ -111,6 +111,7 @@
 2	.claude/scripts/tests/install-config-sync.test.sh
 3	.claude/scripts/tests/install-workspace-sweep.test.sh
 2	.claude/scripts/tests/issue-area.test.sh
+45	.claude/scripts/tests/issue-claim-batch.test.sh
 40	.claude/scripts/tests/issue-claim.test.sh
 2	.claude/scripts/tests/issue-dedup.test.sh
 2	.claude/scripts/tests/issue-deps.test.sh
