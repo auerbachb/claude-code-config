@@ -115,7 +115,10 @@ def decide(request):
     def finish(action, reason, model=None):
         clauses = [" Unsupported capable:false disregarded for %s (basis %s)." % (note["model"], note["basis"])
                    for note in fallbacks if note["model"] == model]
-        clauses += [" %s skipped for accepted %s capability gap." % (note["model"], note["kind"])
+        # A gap on a tier the router moved past is "skipped"; on a blocked
+        # decision (e.g. an owner pin) that tier was held, not passed over.
+        verb = "blocked by" if action == "blocked" else "skipped for"
+        clauses += [" %s %s accepted %s capability gap." % (note["model"], verb, note["kind"])
                     for note in gaps]
         result.update(action=action, reason=reason + "".join(clauses), model=model,
                       capability_fallback=list(fallbacks), capability_gaps=list(gaps))

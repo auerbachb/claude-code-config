@@ -212,7 +212,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check('owner pin with unsupported capable false keeps owner and names disregard', data, 'start', 'opus',
           fallback=[('opus', 'missing')], gaps=[], reason=['disregarded for opus'])
     row_of(data, 'opus')['capability_gap'] = dict(GAP)
-    check('owner pin with documented gap is blocked', data, 'blocked', code=3, fallback=[], gaps=[('opus', 'tool')])
+    check('owner pin with documented gap is blocked', data, 'blocked', code=3, fallback=[], gaps=[('opus', 'tool')],
+          reason=['blocked by accepted tool capability gap', 'never substitute silently'])
     data = copy.deepcopy(base)
     result = check('unknown local checks cannot submit', data, 'start', 'haiku')
     assert result['submission_allowed'] is False
@@ -243,6 +244,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check('asserted progress requires new evidence', data, 'invalid', code=2)
     data['attempts'][0]['new_evidence'] = ['fixture/new-cause.json']
     check('documented progress retains cheap model', data, 'retry', 'haiku')
+    gapped = copy.deepcopy(data)
+    row_of(gapped, 'haiku')['capable'] = False
+    row_of(gapped, 'haiku')['capability_gap'] = dict(GAP)
+    check('retry on a tier with a valid gap blocks instead of moving', gapped, 'blocked', code=3,
+          gaps=[('haiku', 'tool')], reason=['blocked by accepted tool capability gap'])
     data['attempts'][0]['cost_usd'] = float('nan')
     check('nonfinite spend never becomes known', data, 'invalid', code=2)
     data = copy.deepcopy(base)

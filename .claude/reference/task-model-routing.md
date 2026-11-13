@@ -56,7 +56,8 @@ recommendation. If pinned and unavailable, block; never silently substitute.
 
 The result contains `action`, `model`, `reason`, evidence IDs, metrics,
 `capability_fallback` and `capability_gaps` (both always present, empty when
-nothing applies). Exit
+nothing applies). An invalid request (exit 2) returns only `action` `invalid`,
+`model` null and `error`, with no capability fields. Exit
 0 permits `start`, `retry`, `escalate`, or reports `complete`; only the first
 three launch. Exit 3 (`wait`, `diagnose`, `owner_decision`, `blocked`) launches nothing;
 persist the pending work and recover or surface an owner-only decision as
@@ -97,13 +98,17 @@ same inventory row:
 - A valid gap excludes that tier. The decision lists it in `capability_gaps`
   and, when a higher tier is chosen, `reason` names the skipped tier and `kind`.
 - A `false` with no gap, or with a missing or malformed one (bad `kind`, blank
-  field, or a non-object), is **disregarded**. The tier stays eligible, the
-  cheapest eligible tier is chosen, and `capability_fallback` names the tier
-  with `basis` `missing` or `malformed`. `reason` says the flag was disregarded.
+  field, or a non-object), is **disregarded**. The tier stays eligible: a fresh
+  start chooses the cheapest eligible tier, a retry keeps its current tier, and
+  `capability_fallback` names the tier with `basis` `missing` or `malformed`.
+  `reason` says the flag was disregarded.
 - `capable: true` ignores any stray `capability_gap`. A missing, null or
   non-boolean `capable` stays ineligible, as before.
 - An owner pin keeps its selection. An unsupported `false` on the pinned row is
-  recorded in `capability_fallback`, not treated as a blocker.
+  recorded in `capability_fallback`, not treated as a blocker. A valid gap on the
+  pinned row blocks (exit 3), lists it in `capability_gaps`, and never
+  substitutes another tier. A retry whose current tier has a valid gap blocks the
+  same way rather than moving to another tier.
 
 Callers record a basis or leave the flag `true`. They never mark a cheaper tier
 incapable without naming what it lacks.
