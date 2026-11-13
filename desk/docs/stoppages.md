@@ -54,6 +54,15 @@ entry for the same stretch. The next prompt in the thread (`UserPromptSubmit`)
 closes the entry with its idle time; the normal path of that hook is one file
 test.
 
+The marker holds the entry's stop time. When another Stop hook continues the
+turn (`question-leak-warn.sh` does, once), the continued turn's next Stop
+carries `stop_hook_active: true`: the first Stop was not the end of the turn, so
+the hook **withdraws** the entry (`stoppage withdraw`, which deletes it) instead
+of closing it, and then judges the turn's real end like any other Stop. A closed
+entry would have counted as a stoppage a few seconds long. `why` also counts a
+kept (not yet sent) `resume` or `withdraw`, so an offline thread that stopped and
+resumed is not reported as still stopped.
+
 A session found dead on return is recorded by `/go-on` Step 0.5a from the
 evidence Step 0 already reads (ranks 2 to 4: usage-limit park, token
 exhaustion, unplanned), with cause `crash` when a task never closed, else
@@ -66,6 +75,7 @@ duplicated.
 human-queue.sh stoppage record  --thread ID [--repo OWNER/NAME] [--ref issue#N|pr#N]
                                 [--cause CAUSE] [--evidence TEXT] [--at TIME] [--source hook|go-on|manual]
 human-queue.sh stoppage resume  --thread ID [--at TIME]
+human-queue.sh stoppage withdraw --thread ID --at TIME
 human-queue.sh stoppage why     [--thread ID] [--json]
 human-queue.sh stoppage correct (ID | --thread ID) --cause CAUSE [--note TEXT]
 human-queue.sh stoppage list    [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--json]

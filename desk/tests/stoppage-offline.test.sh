@@ -179,6 +179,41 @@ for SH in $SHELLS; do
   cli "$SH" stoppage list
   check "[$SH] list, database down: exit 7" "$RC" "7"
   check "[$SH] list, database down: one stderr line" "$(hq_t_lines "$ERR")" "1"
+
+  # ---- a kept resume or withdraw is accounted for by `why` --------------------
+  reset_keep
+  cli "$SH" stoppage record --thread w1 --repo a/b --cause crash --evidence "gone" --at 2026-11-13T08:00:00Z
+  cli "$SH" stoppage why --thread w1
+  check_contains "[$SH] why: a kept record alone is still stopped" "$OUT" "still stopped"
+  cli "$SH" stoppage resume --thread w1 --at 2026-11-13T08:30:00Z
+  cli "$SH" stoppage why --thread w1
+  check "[$SH] why: a kept resume closes the kept record" "$RC" "0"
+  check_contains "[$SH] why: with the idle time from the kept resume" "$OUT" "idle 30m"
+  check_absent "[$SH] why: and no longer says still stopped" "$OUT" "still stopped"
+  cli "$SH" stoppage why --thread w1 --json
+  check "[$SH] why --json: the idle seconds" "$(printf '%s' "$OUT" | jq -r .idle_seconds)" "1800"
+  # a resume that predates the stop does not close it
+  cli "$SH" stoppage record --thread w2 --repo a/b --cause crash --evidence "gone" --at 2026-11-13T09:00:00Z
+  cli "$SH" stoppage resume --thread w2 --at 2026-11-13T08:00:00Z
+  cli "$SH" stoppage why --thread w2
+  check_contains "[$SH] why: a resume before the stop leaves it open" "$OUT" "still stopped"
+  # a kept withdraw takes the kept record out
+  cli "$SH" stoppage record --thread w3 --repo a/b --cause crash --evidence "gone" --at 2026-11-13T10:00:00Z
+  cli "$SH" stoppage withdraw --thread w3 --at 2026-11-13T10:00:00Z
+  check "[$SH] withdraw, database down: exit 0" "$RC" "0"
+  check_contains "[$SH] withdraw, database down: kept locally" "$OUT" "kept locally"
+  cli "$SH" stoppage why --thread w3
+  check "[$SH] why: a withdrawn kept record is not shown (nothing to answer from)" "$RC" "7"
+  expect_bad "$SH" 4 "withdraw without a time" "--at" stoppage withdraw --thread w3
+  expect_bad "$SH" 4 "withdraw with a bad time" "--at" stoppage withdraw --thread w3 --at soon
+
+  # ---- list takes real calendar dates only --------------------------------------
+  expect_bad "$SH" 4 "list 31 February" "real date" stoppage list --from 2026-02-31
+  expect_bad "$SH" 4 "list 29 February in a common year" "real date" stoppage list --to 2027-02-29
+  expect_bad "$SH" 4 "list 31 April" "real date" stoppage list --from 2026-04-31
+  reset_keep
+  cli "$SH" stoppage list --from 2028-02-29 --to 2028-03-01
+  check "[$SH] list: a leap day is a real date (reaches the database step)" "$RC" "7"
 done
 
 # ---- grouping --------------------------------------------------------------
@@ -304,14 +339,36 @@ check "hook: and removes the marker" "$([ -f "$KEEP/open/sess-1" ] && echo yes |
 run_hook UserPromptSubmit
 check "hook: a second prompt does nothing" "$(calls)" ""
 
+# A Stop another hook continued (stop_hook_active). The entry its first Stop
+# opened is withdrawn with its stop time, never closed as a short stoppage, and
+# the turn's real end is judged like any other Stop.
 reset_state
 run_hook Stop '{"stop_hook_active": true}'
-check "hook: a continued stop is not recorded" "$(calls)" ""
+check_contains "hook: a continued stop with no open entry is judged like any Stop" "$(calls)" "stoppage record --thread sess-1"
+check_absent "hook: and withdraws nothing" "$(calls)" "withdraw"
+reset_state
 run_hook Stop
+FIRST_AT=$(head -n 1 "$KEEP/open/sess-1")
+check_contains "hook: the marker holds the stop time" "$FIRST_AT" "T"
+check_contains "hook: the record carries that stop time" "$(calls)" "--at $FIRST_AT"
 : >"$CALLS"
 run_hook Stop '{"stop_hook_active": true}'
-check_contains "hook: a continued stop closes the entry its first stop opened" "$(calls)" "stoppage resume --thread sess-1"
-check "hook: and removes the marker" "$([ -f "$KEEP/open/sess-1" ] && echo yes || echo no)" "no"
+check_contains "hook: a continued stop withdraws the entry its first stop opened" "$(calls)" "stoppage withdraw --thread sess-1 --at $FIRST_AT"
+check_absent "hook: and never closes it" "$(calls)" "stoppage resume"
+check_contains "hook: then records the turn's real end" "$(calls)" "stoppage record --thread sess-1"
+check "hook: the marker is back, for the new entry" "$([ -f "$KEEP/open/sess-1" ] && echo yes || echo no)" "yes"
+reset_state
+run_hook Stop
+: >"$CALLS"
+HRC=0
+payload=$(jq -cn --arg c "$REPO" '{hook_event_name: "Stop", session_id: "sess-1", cwd: $c, stop_hook_active: true}')
+printf '%s' "$payload" | env HUMAN_QUEUE_CLI="$STUBS/cli.sh" STOPPAGE_SCRIPTS_DIR="$STUBS" \
+  HUMAN_QUEUE_STOPPAGE_DIR="$KEEP" STP_CALLS="$CALLS" STP_CLI_RC=4 STP_PAUSE_FILE="$TMP/pause" \
+  STP_BG_FILE="$TMP/bg" STP_REG_FILE="$TMP/reg" STP_REPO_FILE="$TMP/repostate" \
+  STP_AGENTS_FILE="$TMP/agents" bash "$HOOK" >"$TMP/hout" 2>"$TMP/herr" || HRC=$?
+check "hook: a refused withdraw leaves exit 0 and no output" "$HRC:$(cat "$TMP/hout")$(cat "$TMP/herr")" "0:"
+check "hook: a refused withdraw records nothing new" "$(grep -c 'stoppage record' "$CALLS" | tr -d ' ')" "0"
+check "hook: a refused withdraw keeps the marker" "$([ -f "$KEEP/open/sess-1" ] && echo yes || echo no)" "yes"
 
 reset_state
 git -C "$REPO" checkout -q -- f.txt

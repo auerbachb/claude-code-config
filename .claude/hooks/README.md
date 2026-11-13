@@ -360,6 +360,7 @@ Registered on **`Stop`** and **`UserPromptSubmit`** with a 10 s timeout each.
 **What it does:**
 
 - **Stop:** writes one entry (`human-queue.sh stoppage record`) only on an `issue-N-*` branch with no planned stop (`/pause`, `/end`, a declared leave time), nothing running or armed, and unfinished work. Any doubt means no entry.
+- **Stop continued by another hook** (`stop_hook_active`): the entry the first Stop opened is withdrawn (`stoppage withdraw`, deleted rather than closed), then the real end is judged like any Stop.
 - **UserPromptSubmit:** closes the thread's open entry with the idle time (`stoppage resume`); without an open marker it is one file test.
 - **Fails open:** no jq, bad input, a database that is down or unmigrated — nothing printed, exit `0`. A down database keeps the entry under `~/.claude/desk-stoppages` and sends it later. Never writes to GitHub or to a repository file.
 

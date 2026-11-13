@@ -25,8 +25,10 @@
 # waiting_on_review when the recorded pipeline is in review.
 # Evidence is a fixed-vocabulary line plus the branch name, never message text.
 #
-# An open marker (~/.claude/desk-stoppages/open/<session>) stops a second entry
-# for the same stretch and tells UserPromptSubmit there is an idle time to add.
+# An open marker (~/.claude/desk-stoppages/open/<session>, holding the entry's
+# stop time) stops a second entry for the same stretch and tells
+# UserPromptSubmit there is an idle time to add. A Stop another hook continued
+# (stop_hook_active) withdraws that entry instead of closing it.
 # The normal path of UserPromptSubmit is one file test.
 #
 # Fails open: no jq, bad JSON, an unreachable database, any error — nothing is
@@ -93,13 +95,19 @@ fi
 [ "$stp_event" = "Stop" ] || exit 0
 
 # ---- Stop -------------------------------------------------------------------
-# A stop another hook continued is not an idle stretch: close the entry the
-# turn's first Stop opened (it is a few seconds old), and record nothing new.
-if [ "$(stp_get '.stop_hook_active')" = "true" ]; then
-  if [ -f "$stp_marker" ] && bash "$stp_cli" stoppage resume --thread "$stp_sid" >/dev/null 2>&1; then
-    rm -f "$stp_marker" 2>/dev/null || true
-  fi
-  exit 0
+# A stop another Stop hook continued (stop_hook_active) was not the end of the
+# turn, so the entry its first Stop opened is withdrawn, not closed: a closed one
+# would count as a stoppage a few seconds long. The marker holds the entry's stop
+# time. The turn's real end is then judged like any other Stop, below.
+if [ "$(stp_get '.stop_hook_active')" = "true" ] && [ -f "$stp_marker" ]; then
+  stp_old_at=$(head -n 1 "$stp_marker" 2>/dev/null) || stp_old_at=""
+  case "$stp_old_at" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
+      if bash "$stp_cli" stoppage withdraw --thread "$stp_sid" --at "$stp_old_at" >/dev/null 2>&1; then
+        rm -f "$stp_marker" 2>/dev/null || true
+      fi
+      ;;
+  esac
 fi
 [ -f "$stp_marker" ] && exit 0
 
@@ -250,8 +258,9 @@ stp_safe_branch="${stp_branch//[^A-Za-z0-9._\/-]/_}"
 stp_evidence="turn ended, nothing running or armed; branch ${stp_safe_branch:0:70}; $stp_signals"
 stp_evidence="${stp_evidence:0:200}"
 
+stp_at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || exit 0
 stp_args=(stoppage record --thread "$stp_sid" --repo "$stp_repo" --cause "$stp_cause" \
-          --evidence "$stp_evidence" --source hook)
+          --evidence "$stp_evidence" --source hook --at "$stp_at")
 if [ -n "$stp_pr_no" ]; then
   stp_args+=(--ref "pr#$stp_pr_no")
 else
@@ -259,6 +268,6 @@ else
 fi
 
 if bash "$stp_cli" "${stp_args[@]}" >/dev/null 2>&1; then
-  ( umask 077; mkdir -p "$stp_dir/open" && : >"$stp_marker" ) 2>/dev/null || true
+  ( umask 077; mkdir -p "$stp_dir/open" && printf '%s\n' "$stp_at" >"$stp_marker" ) 2>/dev/null || true
 fi
 exit 0

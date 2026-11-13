@@ -9,7 +9,7 @@
 #   in a private directory and sent on a later call that does reach the
 #   database. The directory is ${HUMAN_QUEUE_STOPPAGE_DIR:-~/.claude/
 #   desk-stoppages}: under the user's own ~/.claude, never inside a worktree or
-#   this repository. Each file holds one operation (record, resume, or correct)
+#   this repository. Each file holds one operation (record, resume, withdraw, or correct)
 #   and only the entry's own fields: no transcript text and no connection
 #   string. Files replay in name order (epoch first), so a resume kept before
 #   its record was sent still lands after it. A record carries a dedupe key, so
@@ -21,6 +21,7 @@
 #   hq_stp_check_text CMD LABEL VALUE MAX   one line, at most MAX characters,
 #                                       no control characters, not a secret
 #   hq_stp_check_time CMD LABEL VALUE   UTC ISO 8601 with a trailing Z
+#   hq_stp_month_days VAR Y M           days in that month (0 for a bad month)
 #   hq_stp_now VAR                      the local clock, UTC ISO 8601
 #   hq_stp_key VAR THREAD STOPPED_AT    the dedupe key (32 hex characters)
 #   hq_stp_spool_dir VAR                the spool directory (not created)
@@ -67,6 +68,22 @@ hq_stp_check_text() {
   hq_refuse_secret "$hq__label" "$hq__v"
 }
 
+# hq_stp_month_days VAR YEAR MONTH — days in the month (Gregorian), 0 for a month
+# outside 1-12. Pure arithmetic: no date(1), so BSD and GNU behave alike.
+hq_stp_month_days() {
+  local hq__y="$2" hq__mo="$3" hq__md
+  case "$hq__mo" in
+    1|3|5|7|8|10|12) hq__md=31 ;;
+    4|6|9|11) hq__md=30 ;;
+    2)
+      hq__md=28
+      if [ $((hq__y % 4)) -eq 0 ] && { [ $((hq__y % 100)) -ne 0 ] || [ $((hq__y % 400)) -eq 0 ]; }; then hq__md=29; fi
+      ;;
+    *) hq__md=0 ;;
+  esac
+  printf -v "$1" '%s' "$hq__md"
+}
+
 hq_stp_check_time() {
   local hq__cmd="$1" hq__label="$2" hq__v="$3" hq__re hq__y hq__mo hq__d hq__h hq__mi hq__sec hq__max
   hq__re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
@@ -75,15 +92,7 @@ hq_stp_check_time() {
   fi
   hq__y=$((10#${hq__v:0:4})); hq__mo=$((10#${hq__v:5:2})); hq__d=$((10#${hq__v:8:2}))
   hq__h=$((10#${hq__v:11:2})); hq__mi=$((10#${hq__v:14:2})); hq__sec=$((10#${hq__v:17:2}))
-  case "$hq__mo" in
-    1|3|5|7|8|10|12) hq__max=31 ;;
-    4|6|9|11) hq__max=30 ;;
-    2)
-      hq__max=28
-      if [ $((hq__y % 4)) -eq 0 ] && { [ $((hq__y % 100)) -ne 0 ] || [ $((hq__y % 400)) -eq 0 ]; }; then hq__max=29; fi
-      ;;
-    *) hq__max=0 ;;
-  esac
+  hq_stp_month_days hq__max "$hq__y" "$hq__mo"
   if [ "$hq__y" -lt 2000 ] || [ "$hq__d" -lt 1 ] || [ "$hq__d" -gt "$hq__max" ] \
      || [ "$hq__h" -gt 23 ] || [ "$hq__mi" -gt 59 ] || [ "$hq__sec" -gt 59 ]; then
     hq_die_validation "$hq__cmd: $hq__label is not a real time"
@@ -179,6 +188,14 @@ RETURNING id;
 SQL
 }
 
+hq__stp_sql_withdraw() {
+  cat <<'SQL'
+DELETE FROM stoppages
+ WHERE dedupe_key = :'hq_key' AND thread = :'hq_thread' AND resumed_at IS NULL
+RETURNING id;
+SQL
+}
+
 hq__stp_sql_correct() {
   cat <<'SQL'
 UPDATE stoppages
@@ -219,6 +236,11 @@ EOF
 $(hq__stp_fields "$hq__json" '.thread, .at')
 EOF
       ;;
+    withdraw)
+      { IFS= read -r hq__thread; IFS= read -r hq__key; } <<EOF
+$(hq__stp_fields "$hq__json" '.thread, .key')
+EOF
+      ;;
     correct)
       { IFS= read -r hq__id; IFS= read -r hq__thread; IFS= read -r hq__cause; IFS= read -r hq__note; } <<EOF
 $(hq__stp_fields "$hq__json" '(.id // ""), (.thread // ""), .cause, (.note // "")')
@@ -240,7 +262,7 @@ EOF
     fi
     hq_db_fail "$hq__rc" "$hq__errf" "stoppage"
   fi
-  if [ -z "$hq__out" ] && [ "$hq__op" != "resume" ]; then
+  if [ -z "$hq__out" ] && [ "$hq__op" != "resume" ] && [ "$hq__op" != "withdraw" ]; then
     if [ "$hq__op" = "correct" ]; then
       hq_die_validation "stoppage: no entry to correct"
     fi

@@ -222,6 +222,51 @@ check "lock released: flush sends it" "$OUT" "sent 1"
 check "lock released: the entry is closed" \
   "$(sql_in "SELECT idle_seconds FROM stoppages WHERE thread = 's6' AND evidence = 'newer'")" "1800"
 
+# ---- withdraw: a stop another hook continued ------------------------------------
+rm -rf "$KEEP"
+hq stoppage record --thread s7 --repo acme/widgets --cause unknown --evidence "continued turn" --at 2026-11-12T11:00:00Z
+check "withdraw: the entry is stored" "$(sql_in "SELECT count(*) FROM stoppages WHERE thread = 's7'")" "1"
+hq stoppage withdraw --thread s7 --at 2026-11-12T11:00:00Z
+check "withdraw: exit 0" "$RC" "0"
+check "withdraw: says one withdrawn" "$OUT" "withdrawn 1"
+check "withdraw: the entry is deleted, not closed" "$(sql_in "SELECT count(*) FROM stoppages WHERE thread = 's7'")" "0"
+hq stoppage withdraw --thread s7 --at 2026-11-12T11:00:00Z
+check "withdraw again: nothing left, still exit 0" "$RC:$OUT" "0:withdrawn 0"
+hq stoppage record --thread s8 --repo acme/widgets --cause crash --evidence "real stop" --at 2026-11-12T12:00:00Z
+hq stoppage resume --thread s8 --at 2026-11-12T12:20:00Z
+hq stoppage withdraw --thread s8 --at 2026-11-12T12:00:00Z
+check "withdraw: an entry already resumed is left alone" "$(sql_in "SELECT idle_seconds FROM stoppages WHERE thread = 's8'")" "1200"
+hq stoppage record --thread s9 --repo acme/widgets --cause crash --evidence "other entry" --at 2026-11-12T13:00:00Z
+hq stoppage withdraw --thread s9 --at 2026-11-12T13:00:01Z
+check "withdraw: only the entry with that stop time" "$(sql_in "SELECT count(*) FROM stoppages WHERE thread = 's9'")" "1"
+# kept while the database is down, then sent in order: record, then withdraw
+rm -rf "$KEEP"
+DOWN_URL="postgresql://u:pw@127.0.0.1:1/db"
+env HUMAN_QUEUE_DATABASE_URL="$DOWN_URL" HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_STOPPAGE_DIR="$KEEP" \
+  bash "$HQ_T_CLI" stoppage record --thread s10 --repo acme/widgets --cause unknown --evidence "continued" \
+  --at 2026-11-12T14:00:00Z >/dev/null 2>&1 </dev/null
+env HUMAN_QUEUE_DATABASE_URL="$DOWN_URL" HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_STOPPAGE_DIR="$KEEP" \
+  bash "$HQ_T_CLI" stoppage withdraw --thread s10 --at 2026-11-12T14:00:00Z >/dev/null 2>&1 </dev/null
+check "withdraw: kept behind its record" "$(find "$KEEP" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ')" "2"
+hq stoppage flush
+check "withdraw: flush sends both" "$OUT" "sent 2"
+check "withdraw: the entry never shows up" "$(sql_in "SELECT count(*) FROM stoppages WHERE thread = 's10'")" "0"
+
+# ---- why accounts for a kept resume while the database is reachable ----------------
+rm -rf "$KEEP"
+hq stoppage record --thread s11 --repo acme/widgets --cause crash --evidence "x" --at 2026-11-12T15:00:00Z
+mkdir -p "$KEEP"
+printf '%s\n' '{"op":"resume","thread":"s11","at":"2026-11-12T15:10:00Z"}' >"$KEEP/0000000000000001-1.json"
+mkdir "$KEEP/.flush.lock"
+hq stoppage why --thread s11
+check_contains "why: a kept resume closes an open entry the database still shows" "$OUT" "idle 10m"
+rmdir "$KEEP/.flush.lock"
+rm -rf "$KEEP"
+
+# ---- list: a real calendar date reaches the database, a false one never does -----
+hq stoppage list --from 2026-02-31
+check "list: 31 February is validation, not a database error" "$RC" "4"
+
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
 check "the public schema is untouched" "$PUBLIC_AFTER" "$PUBLIC_BEFORE"
 

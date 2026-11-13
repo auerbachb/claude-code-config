@@ -24,6 +24,7 @@ USAGE
                                   [--cause CAUSE] [--evidence TEXT] [--at TIME]
                                   [--source hook|go-on|manual] [--json]
   human-queue.sh stoppage resume  --thread ID [--at TIME]
+  human-queue.sh stoppage withdraw --thread ID --at TIME
   human-queue.sh stoppage why     [--thread ID] [--json]
   human-queue.sh stoppage correct (ID | --thread ID) --cause CAUSE [--note TEXT]
   human-queue.sh stoppage list    [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--json]
@@ -53,6 +54,11 @@ COMMANDS
            `kept locally` with the reason.
   resume   the thread's work started again: closes its open entries with the
            idle time from stop to TIME. Kept locally the same way.
+  withdraw take back the entry recorded for THREAD at TIME (the stop time given
+           to `record`) when the turn did not really end, for example another
+           Stop hook continued it. The entry is deleted, not closed, so it
+           leaves no short stoppage in the reports. An entry already resumed is
+           left alone. Kept locally the same way.
   why      the thread's latest entry (default thread: $CLAUDE_SESSION_ID), the
            answer to "why weren't you working?". An entry still only kept
            locally is shown and marked.
@@ -165,6 +171,38 @@ hq__stp_record() {
       else
         printf 'kept locally (%s); it will be sent when the database answers\n' "${HQ_STP_ERR:-database unreachable}"
       fi
+      ;;
+    *)
+      printf 'human-queue: %s\n' "$HQ_STP_ERR" >&2
+      exit "$rc"
+      ;;
+  esac
+}
+
+hq__stp_withdraw() {
+  local thread="${CLAUDE_SESSION_ID:-}" at="" key payload out rc=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --thread) hq__stp_need "$#" --thread; thread="$2"; shift 2 ;;
+      --at) hq__stp_need "$#" --at; at="$2"; shift 2 ;;
+      -*) hq_die_validation "stoppage withdraw: unknown $(hq_flag_name "$1") (run human-queue.sh stoppage --help)" ;;
+      *) hq_die_validation "stoppage withdraw: takes options only (run human-queue.sh stoppage --help)" ;;
+    esac
+  done
+  hq__stp_check_thread "$thread"
+  if [ -z "$at" ]; then hq_die_validation "stoppage withdraw: --at is required (the stop time given to record)"; fi
+  hq_stp_check_time "stoppage" "--at" "$at"
+  hq_stp_key key "$thread" "$at"
+  hq_jq_find || hq_die_error "stoppage: jq not found (PATH, /opt/homebrew/bin/jq, or /usr/bin/jq)"
+  payload=$(hq_jq -cn --arg thread "$thread" --arg key "$key" '{op: "withdraw", thread: $thread, key: $key}') \
+    || hq_die_error "stoppage: cannot build the entry"
+  hq_stp_apply_ordered out "$payload" || rc=$?
+  case "$rc" in
+    0)
+      printf 'withdrawn %s\n' "$(hq__stp_count "$out")"
+      ;;
+    100|101)
+      printf 'kept locally (%s); it will be sent when the database answers\n' "${HQ_STP_ERR:-database unreachable}"
       ;;
     *)
       printf 'human-queue: %s\n' "$HQ_STP_ERR" >&2
@@ -301,20 +339,65 @@ hq__stp_render_why() {
       + (if .id == null then " · not stored yet (database unreachable)" else "" end)'
 }
 
-# hq__stp_kept_latest VAR THREAD — the latest locally kept record for THREAD, in
-# the shape `why` prints, or empty. Reads only this machine's kept files.
-hq__stp_kept_latest() {
-  local hq__var="$1" hq__thread="$2" hq__dir hq__f hq__best="" LC_ALL=C
-  printf -v "$hq__var" '%s' ""
+# hq__stp_kept_files VAR — the kept operation files, in the order they were kept
+# (a newline-separated list; empty when there are none).
+hq__stp_kept_files() {
+  local hq__var="$1" hq__dir hq__f hq__acc="" LC_ALL=C
   hq_stp_spool_dir hq__dir
-  [ -d "$hq__dir" ] || return 0
-  for hq__f in "$hq__dir"/[0-9]*.json; do
-    [ -f "$hq__f" ] || continue
-    hq__best=$(hq_jq -c --arg t "$hq__thread" 'select(.op == "record" and .thread == $t)
-        | {id: null, stopped_at: .at, thread, repo, ref, cause, evidence, source,
-           idle_seconds: null, corrected_cause: null, correction_note: null}' "$hq__f" 2>/dev/null) || hq__best=""
-    if [ -n "$hq__best" ]; then printf -v "$hq__var" '%s' "$hq__best"; fi
-  done
+  if [ -d "$hq__dir" ]; then
+    for hq__f in "$hq__dir"/[0-9]*.json; do
+      if [ -f "$hq__f" ]; then hq__acc="${hq__acc}${hq__f}"$'\n'; fi
+    done
+  fi
+  printf -v "$hq__var" '%s' "$hq__acc"
+}
+
+# hq__stp_kept_latest VAR THREAD — the latest locally kept record for THREAD, in
+# the shape `why` prints, or empty. A kept withdraw takes its record out; a kept
+# resume closes it. Reads only this machine's kept files.
+hq__stp_kept_latest() {
+  local hq__var="$1" hq__thread="$2" hq__list hq__f hq__args=() hq__best=""
+  printf -v "$hq__var" '%s' ""
+  hq__stp_kept_files hq__list
+  [ -n "$hq__list" ] || return 0
+  while IFS= read -r hq__f; do
+    if [ -n "$hq__f" ]; then hq__args+=("$hq__f"); fi
+  done <<EOF
+$hq__list
+EOF
+  hq__best=$(hq_jq -c -s --arg t "$hq__thread" '
+    [.[] | select(type == "object" and .thread == $t)] as $ops
+    | [$ops[] | select(.op == "withdraw") | .key] as $gone
+    | ([$ops[] | select(.op == "record" and (.key as $k | any($gone[]; . == $k) | not))] | last) as $r
+    | if $r == null then empty else
+        {id: null, stopped_at: $r.at, thread: $r.thread, repo: $r.repo, ref: $r.ref, cause: $r.cause,
+         evidence: $r.evidence, source: $r.source, idle_seconds: null,
+         corrected_cause: null, correction_note: null} end' "${hq__args[@]}" 2>/dev/null) || hq__best=""
+  printf -v "$hq__var" '%s' "$hq__best"
+  return 0
+}
+
+# hq__stp_apply_kept_resume VAR JSON THREAD — JSON (one entry as `why` prints it)
+# with the idle time a kept resume gives it. An entry the database still shows
+# open, or a kept record, is closed by the earliest kept resume of the thread at
+# or after its stop time, exactly as the database would close it once sent.
+hq__stp_apply_kept_resume() {
+  local hq__var="$1" hq__json="$2" hq__thread="$3" hq__list hq__f hq__args=() hq__res=""
+  printf -v "$hq__var" '%s' "$hq__json"
+  hq__stp_kept_files hq__list
+  [ -n "$hq__list" ] || return 0
+  while IFS= read -r hq__f; do
+    if [ -n "$hq__f" ]; then hq__args+=("$hq__f"); fi
+  done <<EOF
+$hq__list
+EOF
+  hq__res=$(hq_jq -c -s --arg t "$hq__thread" --argjson e "$hq__json" '
+    if $e.idle_seconds != null then $e else
+      ([.[] | select(type == "object" and .op == "resume" and .thread == $t and .at >= $e.stopped_at) | .at] | sort | first) as $at
+      | if $at == null then $e
+        else $e | .idle_seconds = ([0, (($at | fromdateiso8601) - ($e.stopped_at | fromdateiso8601))] | max) end
+      end' "${hq__args[@]}" 2>/dev/null) || hq__res=""
+  if [ -n "$hq__res" ]; then printf -v "$hq__var" '%s' "$hq__res"; fi
   return 0
 }
 
@@ -361,16 +444,18 @@ hq__stp_why() {
     if [ "$json" -eq 1 ]; then printf 'null\n'; else printf 'no stoppage entry for this thread\n'; fi
     return 0
   fi
+  hq__stp_apply_kept_resume out "$out" "$thread"
   if [ "$json" -eq 1 ]; then printf '%s\n' "$out"; else hq__stp_render_why "$out"; fi
 }
 
 hq__stp_check_day() {
-  local hq__re='^[0-9]{4}-[0-9]{2}-[0-9]{2}$' hq__y hq__m hq__d
+  local hq__re='^[0-9]{4}-[0-9]{2}-[0-9]{2}$' hq__y hq__m hq__d hq__max
   if ! [[ $2 =~ $hq__re ]]; then
     hq_die_validation "stoppage list: $1 must be a date like 2026-11-13"
   fi
   hq__y=$((10#${2:0:4})); hq__m=$((10#${2:5:2})); hq__d=$((10#${2:8:2}))
-  if [ "$hq__m" -lt 1 ] || [ "$hq__m" -gt 12 ] || [ "$hq__d" -lt 1 ] || [ "$hq__d" -gt 31 ] || [ "$hq__y" -lt 2000 ]; then
+  hq_stp_month_days hq__max "$hq__y" "$hq__m"
+  if [ "$hq__y" -lt 2000 ] || [ "$hq__d" -lt 1 ] || [ "$hq__d" -gt "$hq__max" ]; then
     hq_die_validation "stoppage list: $1 is not a real date"
   fi
 }
@@ -449,6 +534,7 @@ cmd_run() {
   case "$sub" in
     record) hq__stp_record "$@" ;;
     resume) hq__stp_resume "$@" ;;
+    withdraw) hq__stp_withdraw "$@" ;;
     why) hq__stp_why "$@" ;;
     correct) hq__stp_correct "$@" ;;
     list) hq__stp_list "$@" ;;
