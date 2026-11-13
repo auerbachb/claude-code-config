@@ -132,6 +132,19 @@ check_eq "an explicit missed cannot overwrite a wake-lost record" 3 "$rc"
 # re-arming reports the real status, not the immutable record's
 run arm D-L2 --thread t --question q
 check_has "re-arm refusal reports the derived status" "status sent" "$out"
+run doctor
+[[ "$out" != *"D-L2 was recorded"* ]]; check_eq "doctor stops flagging D-L2 after the late sent" 0 $?
+check_has "doctor still flags the unconfirmed D-L1" "D-L1 was recorded missed" "$out"
+# a late known failure is accepted the same way: it becomes the final outcome
+check_has "settled record reads as delivery unconfirmed" "delivery unconfirmed" "$("$SCRIPT" status D-L1)"
+run missed D-L1 --reason "Remote Control not connected"
+check_eq "late missed after a wake-lost settle is accepted" 0 "$rc"
+check_has "late missed keeps its own reason" "Remote Control not connected" "$("$SCRIPT" status D-L1)"
+check_eq "late missed: final status is missed" missed "$(st D-L1)"
+run sent D-L1
+check_eq "a sent after a late missed is refused" 3 "$rc"
+run doctor
+[[ "$out" != *"D-L1 was recorded"* ]]; check_eq "doctor stops flagging D-L1 after the late missed" 0 $?
 rm -f "$PHONE_PUSH_DIR"/D-L*.outcome "$PHONE_PUSH_DIR"/D-L*.delivered "$PHONE_PUSH_DIR"/D-K*.outcome
 
 # --- printed commands are shell-quoted (a path with a space stays one word)

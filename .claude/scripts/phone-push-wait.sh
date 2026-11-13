@@ -50,8 +50,8 @@
 #   waiting | answered | due | sent | missed. Never inside a worktree.
 #   A push that stays `due` for PHONE_PUSH_GRACE_SEC (default 600) with no `sent`
 #   or `missed` lost its wake: the next watch/status/doctor/arm records it as
-#   `missed` (reason "wake lost"), once. Nothing is ever re-pushed. A `sent` that
-#   arrives later is kept beside that miss and the final status is `sent`.
+#   `missed` (reason "wake lost"), once. Nothing is ever re-pushed. A later
+#   `sent` or `missed` is kept beside that record and becomes the final status.
 #
 # EXIT CODES
 #   0 ok; 1 a state read/write failed (nothing is claimed as armed or sent);
@@ -92,7 +92,8 @@ GRACE=${PHONE_PUSH_GRACE_SEC:-600}
 valid_int "$GRACE" || GRACE=600
 claim_f() { printf '%s/%s.claim' "$DIR" "$1"; }
 outcome_f() { printf '%s/%s.outcome' "$DIR" "$1"; }
-# A `sent` that arrives after a wake-lost miss is kept beside it, never over it.
+# A `sent` or `missed` that arrives after a wake-lost settle is kept beside it
+# (line 1 = that final status), never written over the once-only outcome.
 delivered_f() { printf '%s/%s.delivered' "$DIR" "$1"; }
 line() { sed -n "${1}p" "$2" 2>/dev/null; } # line N FILE
 
@@ -114,7 +115,7 @@ status_of() {
   case "$c" in
     answered) echo answered ;;
     due) o=$(line 1 "$(outcome_f "$1")")
-         if [ "$o" = "missed" ] && [ -f "$(delivered_f "$1")" ]; then o=sent; fi
+         if [ "$o" = "missed" ] && [ -f "$(delivered_f "$1")" ]; then o=$(line 1 "$(delivered_f "$1")"); fi
          echo "${o:-due}" ;;
     *) echo waiting ;;
   esac
@@ -128,8 +129,8 @@ settle() {
   ce=$(line 2 "$(claim_f "$key")")
   valid_int "$ce" || return 0
   [ "$(now)" -ge $((ce + GRACE)) ] || return 0
-  put_once "$(outcome_f "$key")" missed "wake lost: no sent or missed recorded within ${GRACE}s of the push becoming due"; rc=$?
-  [ "$rc" -eq 0 ] && printf 'phone-push %s missed: wake lost (no sent or missed within %ss of becoming due; delivery unconfirmed)\n' "$key" "$GRACE" >&2
+  put_once "$(outcome_f "$key")" missed "wake lost, delivery unconfirmed: no sent or missed recorded within ${GRACE}s of the push becoming due"; rc=$?
+  [ "$rc" -eq 0 ] && printf 'phone-push %s missed: wake lost, delivery unconfirmed (no sent or missed within %ss of becoming due)\n' "$key" "$GRACE" >&2
   return 0
 }
 settle_all() {
@@ -176,12 +177,13 @@ set_status() {
     answered|due) put_once "$(claim_f "$key")" "$to" "$reason"; rc=$? ;;
     *) if [ "$(line 1 "$(claim_f "$key")")" = "due" ]; then
          put_once "$(outcome_f "$key")" "$to" "$reason"; rc=$?
-         # The push may have been delivered after the grace period: a wake-lost
-         # miss is only "unconfirmed", so accept one late `sent` beside it.
-         if [ "$rc" -eq 3 ] && [ "$to" = "sent" ] \
+         # The push may have been delivered (or known to fail) after the grace
+         # period: a wake-lost settle is only "unconfirmed", so accept one late
+         # `sent` or `missed` beside it, with no retry.
+         if [ "$rc" -eq 3 ] \
             && [ "$(line 1 "$(outcome_f "$key")")" = "missed" ] \
             && case "$(line 3 "$(outcome_f "$key")")" in "wake lost"*) true ;; *) false ;; esac; then
-           put_once "$(delivered_f "$key")" sent "recorded late, after a wake-lost miss"; rc=$?
+           put_once "$(delivered_f "$key")" "$to" "${reason:-recorded late, after a wake-lost settle}"; rc=$?
          fi
        else rc=3; fi ;;
   esac
