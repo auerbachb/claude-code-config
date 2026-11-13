@@ -20,7 +20,7 @@ the task brief. It read only the one-line `MEMORY.md` summary, which still state
 
 | Piece | What it does |
 |---|---|
-| `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `pending`, `digest [--mark]`. |
+| `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E \| --open-ended]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `pending`, `digest [--mark]`. |
 | `~/.claude/session-state.json` `.unattended` | `{active, since_epoch, until_epoch}`. Global, not per repo: the operator is one person, and a declaration made in one repo's thread covers every session. Written only through `session-state.sh`; read with `jq` directly because hooks run on every prompt. |
 | `~/.claude/unattended/<owner>__<repo>.jsonl` | Append-only per-repo questions file: `question` records (`U-<n>`, question, options, recommended, did, session, source), `update` records (a later `did`), and `listed` watermarks. |
 | `unattended-question-guard.sh` (PreToolUse, `AskUserQuestion` and `mcp__ccd_session__start_session`) | While unattended: records every question in the call (recommended = first option, the `ask-menu.md` convention), then denies the call with the receipt to print. No menu opens. A `start_session` call is denied with a reason that says to use a sub-agent. Attended: prints nothing. |
@@ -41,6 +41,8 @@ runs `unattended.sh on --for 12h`, which prints three lines:
    none is waiting on the user ("needs the user"), and say so to the operator before he goes;
 3. a persistent `Monitor` command that wakes the thread when the window ends, so the list is shown
    then even if he never writes (`scheduling-reliability.md`: recurring waits use `Monitor`).
+
+`unattended.sh on --open-ended` arms it with no window end (until `off`). Presence windows (`presence-windows.md`, issue #2293) sit on top of this switch: declaring away through `presence.sh` arms it, and an active window reads as the away state.
 
 `/leave-by` is a different switch: it declares a hard stop and winds the thread down before it.
 Unattended mode declares the opposite — keep working, do not wait. They can be armed together.

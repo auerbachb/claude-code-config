@@ -15,6 +15,7 @@
       "greptile_daily": "object",
       "credit_budget": "object",
       "usage_horizon": "object",
+      "presence": "object",
       "pmm_in_flight": "object",
       "pmm_merge_holds": "object",
       "pmm": "object"
@@ -491,6 +492,16 @@
     "status": "clear",
     "status_at": "2026-08-27T21:05:00Z",
     "source": "observed"
+  },
+  "_presence_comment": "Operator presence (issue #2293): one GLOBAL record, because the operator is one person. state is 'here' or 'away'; until_epoch is the window end (number) or null for open-ended; declared_epoch is when it was declared; machine_on is false only for 'closing the laptop' (the window end is then the /leave-by deadline, which owns the wind-down); declared_by is 'operator-message' or 'operator-dialog' (only the operator's own chat message, or the operator's answer to the dialog the setting thread opened with a valid reservation token, sets it, the same source rule as /leave-by and unattended mode); dismissed_until suppresses the dialog for an hour after a dismissal; reservation is the one-asker slot owned by prompt-reservation.sh --kind presence. Written ONLY through presence.sh. An active .unattended window reads as away when it is the newer declaration. Expiry, return, pushes and planning rules are later increments (issues #2294-#2296). Contract: .claude/reference/presence-windows.md.",
+  "presence": {
+    "state": "here",
+    "until_epoch": 1788000000,
+    "declared_epoch": 1787992800,
+    "machine_on": true,
+    "declared_by": "operator-message",
+    "dismissed_until": null,
+    "reservation": null
   },
   "_active_agents_comment": "Live subagent records for this session, keyed by agent id (issue #1631). This map REPLACES the top-level array the field used to be, following the `resumes`/`pauses` precedent from issue #1576. The array was unsafe because it was not addressable per entry: every writer had to read the whole array, append or filter locally, and `--set` the whole value back. The read and the write span two lock windows, so two orchestration threads on one machine race and the loser\u2019s entries vanish \u2014 observed three times in one day on 2026-09-04, each time dropping live Phase B/C agents with no error anywhere. As a map, each thread writes ONLY its own key (`--set '.active_agents[\"<id>\"]={...}'`) and deletes ONLY its own key (`session-state.sh --remove-agent <id>`), both under the existing lock, so a sibling\u2019s entries are structurally untouchable. An existing ARRAY on disk is migrated to this map on first read \u2014 in memory for `--get`/`--session-view`, persisted by the next write or by `--migrate` \u2014 keyed by each entry\u2019s `id`, dropping `null`/non-object elements and giving an id-less entry a stable `_unkeyed_<index>` key so nothing is lost. No schema_version bump: unlike the flat\u2192scoped migration, this one is self-detecting by type and idempotent. A `null` (or otherwise non-object) VALUE under a key is invalid \u2014 session-state-audit.sh reports it and `--heal-types` drops that one key, never the whole field. Unlike `refill`/`day`/`pauses`, this field stays VISIBLE in session-state.sh --session-view, projected as a repo-scoped, filtered map (same attribution rule as before: explicit `.owner_repo` wins, then entries with no `.pr`, then PR numbers not tracked by another real repo). Entries record what was LAUNCHED, not what is still alive \u2014 the parent removes an entry on completion, so a crashed session leaves one behind and active-work-cap.sh ages it out by `last_seen_at`/`launched`.",
   "active_agents": {

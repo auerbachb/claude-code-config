@@ -20,6 +20,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [off-peak-minute.sh](../off-peak-minute.sh) | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
 | [overrun-check.sh](../overrun-check.sh) | Per-pipeline planning-bound breach check for the monitor loop; emits one alert line on the first breach only |
 | [phone-push-wait.sh](../phone-push-wait.sh) | Phone push for a parked step: arm a delay, push once if still unanswered, record a miss |
+| [presence.sh](../presence.sh) | Presence windows: one global here-or-away state with an end time, read with one call; one thread asks the dialog |
 | [round-membership.sh](../round-membership.sh) | Reads a session's ordered round or an observer union without replacing another dispatch |
 | [session-scheduling-reconcile.sh](../session-scheduling-reconcile.sh) | Session-start reconciliation of durable scheduling state — purge dead in-memory job bookkeeping, surface the on-disk records that survived |
 | [silence-watchdog.sh](../silence-watchdog.sh) | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |

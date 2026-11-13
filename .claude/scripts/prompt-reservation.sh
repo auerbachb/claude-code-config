@@ -2,6 +2,8 @@
 # catalog: backlog-pm — Reserve an attended /subagent launch prompt across threads with the session-state CAS writer
 # Usage: prompt-reservation.sh claim|verify|release|snapshot-leave|commit-leave --repo OWNER/REPO --kind leave|overrun
 #        [--issue N] [--generation TOKEN]
+#   --kind presence is the one GLOBAL slot (issue #2293): the operator's here-or-away question,
+#   asked by one thread for every repo. It takes no --repo and lives at .presence.reservation.
 # claim prints a generation on success. 10 = occupied/lost; 20 = cannot verify;
 # 2 = bad arguments. Never time out a prompt whose owner might still be alive.
 # For release, 0 confirms removal and 10 confirms the exact owner/token is gone.
@@ -11,6 +13,7 @@ set -uo pipefail
 
 usage() {
   printf '%s\n' 'Usage: prompt-reservation.sh claim|verify|release|snapshot-leave|commit-leave --repo OWNER/REPO --kind leave|overrun [--issue N] [--generation TOKEN]' \
+    '       prompt-reservation.sh claim|verify|release --kind presence [--generation TOKEN]   (global slot, no --repo)' \
     'commit-leave also requires --baseline JSON --window JSON --leave JSON'
 }
 
@@ -33,8 +36,13 @@ while (( $# > 0 )); do
   esac
   shift 2
 done
-[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { usage >&2; exit 2; }
+if [[ "$kind" == presence ]]; then
+  [[ -z "$repo" ]] || { usage >&2; exit 2; }
+else
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { usage >&2; exit 2; }
+fi
 case "$kind" in
+  presence) [[ -z "$issue" ]] || { usage >&2; exit 2; }; key=presence ;;
   leave) [[ -z "$issue" ]] || { usage >&2; exit 2; }; key=leave ;;
   overrun) [[ "$issue" =~ ^[1-9][0-9]{0,14}$ ]] || { usage >&2; exit 2; }; key="overrun:$issue" ;;
   *) usage >&2; exit 2 ;;
@@ -134,10 +142,18 @@ owner_gone() {
 }
 
 owner="$(session_owner)" || unavailable 'cannot verify the Claude session process'
-repo_key="$("$state" --repo "$repo" --repo-key 2>/dev/null)" || unavailable 'cannot resolve repo state key'
-[[ "$repo_key" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || unavailable 'cannot resolve repo state key'
-repo_path=".repos[\"$repo_key\"]"
-path="$repo_path.prompt_reservations[\"$key\"]"
+repo_args=()
+if [[ "$kind" == presence ]]; then
+  repo_key=""
+  repo_path=""
+  path=".presence.reservation"
+else
+  repo_args=(--repo "$repo")
+  repo_key="$("$state" --repo "$repo" --repo-key 2>/dev/null)" || unavailable 'cannot resolve repo state key'
+  [[ "$repo_key" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || unavailable 'cannot resolve repo state key'
+  repo_path=".repos[\"$repo_key\"]"
+  path="$repo_path.prompt_reservations[\"$key\"]"
+fi
 
 # Read only these scheduling fields, even in repos with large durable state.
 # Snapshot eligibility rejects an explicit declaration or Monitor already in
@@ -231,7 +247,7 @@ drop_release_receipt() {
 
 read_reservation() {
   local rc=0
-  current="$("$state" --repo "$repo" --get-json "$path" 2>/dev/null)" || rc=$?
+  current="$("$state" ${repo_args[@]+"${repo_args[@]}"} --get-json "$path" 2>/dev/null)" || rc=$?
   if [[ "$rc" == 3 ]]; then current=null
   elif [[ "$rc" != 0 ]]; then unavailable 'cannot read reservation state'; fi
   jq -e 'type == "null" or
@@ -270,7 +286,7 @@ if [[ "$action" == release ]]; then
   fi
   for attempt in 1 2; do
     release_rc=0
-    "$state" --repo "$repo" --cas "$path=null" --expect "$current" >/dev/null || release_rc=$?
+    "$state" ${repo_args[@]+"${repo_args[@]}"} --cas "$path=null" --expect "$current" >/dev/null || release_rc=$?
     case "$release_rc" in
       0) finish_release 0 ;;
       6|7)
@@ -285,7 +301,7 @@ fi
 
 cas() {
   local code=0
-  "$state" --repo "$repo" --cas "$path=$1" --expect "$current" >/dev/null || code=$?
+  "$state" ${repo_args[@]+"${repo_args[@]}"} --cas "$path=$1" --expect "$current" >/dev/null || code=$?
   case "$code" in 0) return 0 ;; 7) exit 10 ;; *) unavailable 'cannot update reservation state' ;; esac
 }
 
