@@ -1889,7 +1889,8 @@ JSON fields: `last_known_used_pct`, `last_known_at_epoch`, `last_known_at_et`,
 **Owner readings.** `/quotas-setup report <label> <window> <used_pct> [<reset>] [<provider>]`
 records one reading as `owner-reported`. Cursor pools are `cursor-models` and `other-models`.
 The reset accepts `YYYY-MM-DD` (midnight Eastern), an ISO-8601 timestamp, or epoch seconds.
-The next usable live `ok` read replaces the file.
+The next usable live `ok` read replaces that series. Series the live run did not read `ok` keep
+their saved reading, so one failed window or pool never erases another's last good figure.
 
 **Gates never read it.** `quota-reserve.sh --refresh` passes `--no-last-known`, so the reader
 makes no helper call at all. `credit-budget.sh` never calls the reader. A static test asserts

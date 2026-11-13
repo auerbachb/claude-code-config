@@ -1440,13 +1440,15 @@ action_remove() {
   config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i])')" \
     || { state_lock_release || true; die 5 "could not remove the account entry"; }
   write_config "$config"
+  # Its saved last-known readings (#2280) go too, so a later account that reuses
+  # this label cannot inherit them. Cleared while the config lock is still held:
+  # a same-label re-add cannot save a fresh reading in between and have it deleted.
+  # Best effort: the registry change stands.
+  forget_last_known "$provider" "$ARG_LABEL"
   state_lock_release || true
 
   echo "${SELF_NAME}: removed ${provider} account '${ARG_LABEL}' from the registry."
   echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
-  # Its saved last-known readings (#2280) go too, so a later account that reuses
-  # this label cannot inherit them. Best effort: the registry change stands.
-  forget_last_known "$provider" "$ARG_LABEL"
 }
 
 # Removes one account's last-known file through the helper (#2280). Warns and

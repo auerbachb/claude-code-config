@@ -54,10 +54,24 @@ class LastKnownTests(unittest.TestCase):
         self.assertEqual(self.load(path.name)['rows'][0]['used_pct'], 54)
 
     def test_non_finite_and_figureless_rows_are_not_saved(self):
-        rows = [row('7-day', 'NaN'), row('5-hour', 10)]
+        rows = [row('7-day', 'NaN'), row('5-hour', None)]
         self.record([account('claude', 'one@example.com', NOW, rows)])
-        saved = self.load('claude--one@example.com.json')['rows']
-        self.assertEqual([r['window'] for r in saved], ['5-hour'])
+        self.assertFalse((self.folder / 'claude--one@example.com.json').exists())
+
+    def test_partial_live_read_keeps_saved_series_it_did_not_read(self):
+        # Cursor-style account: the live run reads only one pool ok; the other
+        # pool's last good reading must survive the rewrite.
+        self.record([account('cursor', 'c@example.com', NOW,
+                             [row('cursor-models', 53, 'cursor-models'),
+                              row('cursor-auto', 20, 'cursor-auto')])])
+        result = self.record([account('cursor', 'c@example.com', NOW + 60,
+                                      [row('cursor-models', 61, 'cursor-models')])])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = {r['pool']: r for r in self.load('cursor--c@example.com.json')['rows']}
+        self.assertEqual(set(rows), {'cursor-models', 'cursor-auto'})
+        self.assertEqual(rows['cursor-models']['used_pct'], 61)
+        self.assertEqual(rows['cursor-auto']['used_pct'], 20)
+        self.assertEqual(rows['cursor-auto']['fetched_at_epoch'], NOW)
 
     def test_ordering_refuses_to_replace_a_newer_reading(self):
         self.record([account('codex', 'a@example.com', NOW + 3600, [row('7-day', 40)])])
@@ -83,13 +97,13 @@ class LastKnownTests(unittest.TestCase):
 
     def test_lookup_never_writes_and_flags_expiry(self):
         self.record([account('claude', 'one@example.com', NOW - 100, [row('7-day', 90)])])
-        before = sorted(self.folder.iterdir())
+        before = {p.name: p.read_bytes() for p in self.folder.iterdir()}
         result = run_helper(['lookup', '--dir', str(self.folder), '--now', str(NOW + 10 * 86400)],
                             stdin='{"provider": "claude", "label": "one@example.com"}\n')
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         self.assertTrue(lines and lines[0]['expired'])
-        self.assertEqual(sorted(self.folder.iterdir()), before)
+        self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, before)
 
     def test_stopgap_file_without_provenance_is_readable(self):
         self.folder.mkdir(mode=0o700)

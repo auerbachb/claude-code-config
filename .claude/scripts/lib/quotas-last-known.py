@@ -291,6 +291,10 @@ def cmd_record(args):
                     else account.get("source") if isinstance(account.get("source"), str) else None,
                     "fetched_at_epoch": fetched,
                 })
+            # A partial live read keeps the saved series it did not return,
+            # so a failed window or pool never erases its last good reading.
+            fresh_keys = {(row["window"], row["pool"]) for row in rows}
+            rows += [saved for saved in prior if (saved["window"], saved["pool"]) not in fresh_keys]
             if not rows:
                 continue
             nickname = account.get("nickname") if isinstance(account.get("nickname"), str) else None

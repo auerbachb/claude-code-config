@@ -1223,7 +1223,7 @@ lk_run() { # <subcommand> [args…] — stdin and stdout pass through
   fi
 }
 
-record_last_known() { # <doc-json-file> — write usable live rows only
+record_last_known() { # <doc-json-file> — save usable live rows; the helper keeps saved series this run did not read ok
   [[ "$LK_ENABLED" -eq 1 ]] || return 0
   local payload="$TMP/lk-record.json" err="$TMP/lk-record.err" now_et
   now_et="$(epoch_to_et "$NOW")"
@@ -1288,7 +1288,8 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
     | .rows = [ $doc.rows | to_entries[] | .key as $i | .value as $r
         | if ($ok | any(. == ($r | key))) then $r
           else
-            ([ $series[] | select(.provider == $r.provider and .label == $r.label) ]) as $saved
+            ([ $series[] | select(.provider == $r.provider and .label == $r.label)
+                         | select($r.provider == "cursor" or ((.pool // .window) == ($r.pool // $r.window))) ]) as $saved
             | if ($saved | length) == 0 then $r
               elif ([ $doc.rows[0:$i][] | select(usable | not) | select(key == ($r | key)) ] | length) > 0 then empty
               else $saved[] as $x
