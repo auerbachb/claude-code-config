@@ -76,13 +76,13 @@ chmod +x "$FAKE_BIN/gh"
 row_a="$(correlation_rows "$HOME_A" | tail -n 1)"
 [[ -n "$row_a" ]] || fail "(a) link writer recorded no correlation row"
 [[ "$(printf '%s' "$row_a" | cut -f6)" == "$SID" ]] || fail "(a) correlation row does not carry the real session id"
-if printf '%s' "$row_a" | grep -q session_unresolved; then fail "(a) real session id still carries the unsupported marker"; fi
+if grep -q session_unresolved <<<"$row_a"; then fail "(a) real session id still carries the unsupported marker"; fi
 report_a="$(HOME="$HOME_A" bash "$REPORT" 2>&1 || true)"
-printf '%s\n' "$report_a" | grep -q "Correlation rows with no runtime session ID: 0" \
+grep -q "Correlation rows with no runtime session ID: 0" <<<"$report_a" \
   || fail "(a) report still counts a sessionless correlation row"
 linked_line="$(printf '%s\n' "$report_a" | grep "$SID" || true)"
 [[ -n "$linked_line" ]] || fail "(a) report lists no linked row for the session"
-printf '%s\n' "$linked_line" | grep -Eq '\| 1 \|' || fail "(a) linked message count is not above 0: $linked_line"
+grep -Eq '\| 1 \|' <<<"$linked_line" || fail "(a) linked message count is not above 0: $linked_line"
 if grep -q "$PRIVATE_SENTINEL" "$HOME_A/.claude/spend-telemetry.log"; then fail "(a) telemetry log stored transcript content"; fi
 ok "(a) empty env + breadcrumb: link row carries the real session id and the report counts 1 linked message"
 
@@ -98,7 +98,7 @@ set -e
 [[ "$rc_b" -eq 0 ]] || fail "(b) link writer must exit 0 without a breadcrumb"
 row_b="$(correlation_rows "$HOME_B" | tail -n 1)"
 [[ "$(printf '%s' "$row_b" | cut -f6)" == unknown ]] || fail "(b) missing breadcrumb must yield unknown"
-printf '%s' "$row_b" | grep -q "unsupported:no_runtime_session_id_at_link_writer" || fail "(b) unknown row lacks the unsupported marker"
+grep -q "unsupported:no_runtime_session_id_at_link_writer" <<<"$row_b" || fail "(b) unknown row lacks the unsupported marker"
 ok "(b) no breadcrumb: session stays unknown with the unsupported marker, exit 0"
 
 # (c) A breadcrumb for another identity is ignored.
