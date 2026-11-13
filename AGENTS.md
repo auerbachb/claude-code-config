@@ -18,6 +18,8 @@ CLAIM=<the helper path>
 "$CLAIM" N --release    # on merge, close or abandon
 ```
 
+Planning a batch? Claim the whole batch up front with the sibling in the same folder, `issue-claim-batch.sh`: `"$(dirname "$CLAIM")/issue-claim-batch.sh" --claim N N N --provider <...> --device <...>` prints one JSON line per issue. Work only the issues that come back `mine`; drop the rest from your plan, naming the holder. `--release N` drops an issue you will not do. No batch helper next to `issue-claim.sh`? Claim each issue one at a time with `issue-claim.sh`. Keep each claim's `holder` from the JSON and pass it as `--holder` when you renew or release.
+
 No helper installed (for example a cloud sandbox)? Use plain `gh`. This writes the same claim, and the helper reads it:
 
 ```bash

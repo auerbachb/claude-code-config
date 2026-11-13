@@ -120,10 +120,12 @@
 #   issue-claim.sh <issue_number> --check   [--repo owner/repo] [--holder ID] [--json]
 #   issue-claim.sh <issue_number> --claim   [--repo owner/repo] [--holder ID] [--json] [--allow-claimed]
 #                    [--provider NAME] [--device NAME] [--label TEXT]
+#                    [--batch LABEL --batch-size N]
 #   issue-claim.sh <issue_number> --release [--repo owner/repo] [--holder ID] [--json]
 #                    [--expect-claim-id ID|none]
 #   issue-claim.sh <issue_number> --renew   [--repo owner/repo] [--holder ID] [--json]
 #                    [--provider NAME] [--device NAME] [--label TEXT]
+#                    [--batch LABEL --batch-size N]
 #   issue-claim.sh --help | -h
 #
 #   --check          Report the verdict without writing anything.
@@ -139,6 +141,13 @@
 #   --provider/--device/--label  Who-holds-it facts (see above); only valid with
 #                    --claim or --renew. A renewal carries the old marker's
 #                    values forward and fills missing ones from these.
+#   --batch LABEL --batch-size N  Mark this claim as one of N taken together
+#                    (issue #2286): recorded in the marker as batch/batch_size
+#                    and named in the visible sentence. Only valid with --claim
+#                    or --renew, and only as a pair. issue-claim-batch.sh passes
+#                    them; --check --json then reports batch/batch_size (only
+#                    when the winning marker has them - other output is
+#                    unchanged).
 #
 # ENVIRONMENT
 #   CLAIM_STALE_HOURS     Stale window in hours (default 4).
@@ -293,6 +302,8 @@ EXPECTED_CLAIM_ID=""
 PROVIDER_ARG=""
 DEVICE_ARG=""
 LABEL_ARG=""
+BATCH_ARG=""
+BATCH_SIZE_ARG=""
 
 set_action() {
   [[ -n "$ACTION" ]] && die_usage "only one of --check / --claim / --release / --renew may be given (got --$ACTION and $1)"
@@ -341,6 +352,20 @@ while [[ $# -gt 0 ]]; do
         --label=*)    LABEL_ARG="${1#*=}" ;;
       esac
       shift ;;
+    --batch|--batch-size)
+      [[ $# -lt 2 || -z "${2-}" || "${2-}" == --* ]] && die_usage "$1 requires a value"
+      case "$1" in
+        --batch)      BATCH_ARG="$2" ;;
+        --batch-size) BATCH_SIZE_ARG="$2" ;;
+      esac
+      shift 2 ;;
+    --batch=*|--batch-size=*)
+      [[ -z "${1#*=}" ]] && die_usage "${1%%=*} requires a value"
+      case "$1" in
+        --batch=*)      BATCH_ARG="${1#*=}" ;;
+        --batch-size=*) BATCH_SIZE_ARG="${1#*=}" ;;
+      esac
+      shift ;;
     --) shift; break ;;
     -*) die_usage "unknown flag: $1" ;;
     *)
@@ -368,6 +393,12 @@ fi
 
 if [[ -n "$PROVIDER_ARG$DEVICE_ARG$LABEL_ARG" && "$ACTION" != claim && "$ACTION" != renew ]]; then
   die_usage "--provider / --device / --label are only valid with --claim or --renew"
+fi
+
+if [[ -n "$BATCH_ARG$BATCH_SIZE_ARG" ]]; then
+  [[ "$ACTION" == claim || "$ACTION" == renew ]] || die_usage "--batch / --batch-size are only valid with --claim or --renew"
+  [[ -n "$BATCH_ARG" && -n "$BATCH_SIZE_ARG" ]] || die_usage "--batch and --batch-size must be given together"
+  [[ "$BATCH_SIZE_ARG" =~ ^[1-9][0-9]{0,3}$ ]] || die_usage "--batch-size must be a positive integer up to 9999, got: $BATCH_SIZE_ARG"
 fi
 
 for dep in gh jq; do
@@ -484,15 +515,19 @@ resolve_device() {
   [[ -n "$v" ]] || v="device-$(digest_hex "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)" 6)" || return 1
   printf '%s' "$v"
 }
-RES_PROVIDER=""; RES_DEVICE=""; RES_LABEL=""
+RES_PROVIDER=""; RES_DEVICE=""; RES_LABEL=""; RES_BATCH=""; RES_BATCH_SIZE=""
 if [[ "$ACTION" == claim || "$ACTION" == renew ]]; then
   RES_PROVIDER="$(resolve_provider)"
   RES_DEVICE="$(resolve_device)" || die_usage "could not resolve a device id"
   RES_LABEL="${LABEL_ARG:-${AGENT_CLAIM_LABEL:-}}"
+  RES_BATCH="$BATCH_ARG"; RES_BATCH_SIZE="$BATCH_SIZE_ARG"
   valid_fact "$RES_PROVIDER" || die_usage "provider must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_PROVIDER)"
   valid_fact "$RES_DEVICE" || die_usage "device must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_DEVICE)"
   if [[ -n "$RES_LABEL" ]]; then
     valid_fact "$RES_LABEL" || die_usage "label must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_LABEL)"
+  fi
+  if [[ -n "$RES_BATCH" ]]; then
+    valid_fact "$RES_BATCH" || die_usage "batch must be 1-64 chars of letters, digits, space or . _ : + @ # - (got: $RES_BATCH)"
   fi
 fi
 
@@ -523,6 +558,8 @@ MARKER_SINCE=""
 CLAIM_PROVIDER=""
 CLAIM_DEVICE=""
 CLAIM_LABEL_TEXT=""
+CLAIM_BATCH=""
+CLAIM_BATCH_SIZE=""
 IS_STALE="false"
 OVERRIDDEN="false"
 
@@ -544,6 +581,8 @@ emit() {
       --arg provider "$CLAIM_PROVIDER" \
       --arg device "$CLAIM_DEVICE" \
       --arg label "$CLAIM_LABEL_TEXT" \
+      --arg batch "$CLAIM_BATCH" \
+      --arg batch_size "$CLAIM_BATCH_SIZE" \
       --argjson claim_comment_id "$observed_claim_id" \
       --arg claimed_at "$CLAIMED_AT" \
       --arg claimed_since "$CLAIMED_SINCE" \
@@ -569,7 +608,8 @@ emit() {
         renewed: $renewed,
         stale: $stale,
         overridden: $overridden,
-        reason: $reason}'
+        reason: $reason}
+       | if $batch == "" then . else . + {batch: $batch, batch_size: ($batch_size | tonumber)} end'
   else
     printf '%s\n' "$verdict"
   fi
@@ -636,7 +676,7 @@ CLAIM_COMMENTS="$(printf '%s' "$COMMENTS_JSON" | filter_claim_comments 2>/dev/nu
 # An empty array is a successful read of absence; any unreadable winner is nonzero.
 parse_winner() {
   W_ID=""; W_AUTHOR=""; W_HOLDER=""; W_LOGIN=""; W_SINCE=""; W_AT=""
-  W_PROVIDER=""; W_DEVICE=""; W_LABEL=""
+  W_PROVIDER=""; W_DEVICE=""; W_LABEL=""; W_BATCH=""; W_BATCH_SIZE=""
   [[ "$1" == '[]' ]] && return 0
   local rec
   rec="$(printf '%s' "$1" | jq -r '
@@ -647,12 +687,14 @@ parse_winner() {
        ($p.since // ""), ($c.created_at // ""),
        (if ($p.provider | type) == "string" then $p.provider else "" end),
        (if ($p.device | type) == "string" then $p.device else "" end),
-       (if ($p.label | type) == "string" then $p.label else "" end)]
+       (if ($p.label | type) == "string" then $p.label else "" end),
+       (if ($p.batch | type) == "string" and ($p.batch_size | type) == "number" then $p.batch else "" end),
+       (if ($p.batch | type) == "string" and ($p.batch_size | type) == "number" then ($p.batch_size | floor) else "" end)]
     | map(tostring)
     | select(all(.[]; all(explode[]; . >= 32 and . != 127)))
     | join("\u001f")' 2>/dev/null)" || return 1
   [[ -n "$rec" ]] || return 1
-  IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT W_PROVIDER W_DEVICE W_LABEL <<<"$rec"
+  IFS=$'\x1f' read -r W_ID W_AUTHOR W_HOLDER W_LOGIN W_SINCE W_AT W_PROVIDER W_DEVICE W_LABEL W_BATCH W_BATCH_SIZE <<<"$rec"
 }
 
 # read_claim_comments -> stdout: the claim-marker comments as one JSON array.
@@ -675,6 +717,7 @@ MARKER_SINCE="$W_SINCE"
 CLAIM_PROVIDER="$W_PROVIDER"
 CLAIM_DEVICE="$W_DEVICE"
 CLAIM_LABEL_TEXT="$W_LABEL"
+CLAIM_BATCH="$W_BATCH"; CLAIM_BATCH_SIZE="$W_BATCH_SIZE"
 
 HAS_CLAIM_COMMENT=0
 [[ -n "$CLAIMANT_HOLDER" ]] && HAS_CLAIM_COMMENT=1
@@ -770,6 +813,7 @@ describe_claim() {
   [[ -n "$CLAIM_PROVIDER" ]] && facts+=", provider $CLAIM_PROVIDER"
   [[ -n "$CLAIM_DEVICE" ]] && facts+=", device $CLAIM_DEVICE"
   [[ -n "$CLAIM_LABEL_TEXT" ]] && facts+=", label $CLAIM_LABEL_TEXT"
+  [[ -n "$CLAIM_BATCH" ]] && facts+=", batch $CLAIM_BATCH (one of $CLAIM_BATCH_SIZE)"
   printf 'issue #%s is already being worked — claimed by %s (holder %s%s) at %s' \
     "$ISSUE_NUMBER" "$who" "${CLAIMANT_HOLDER:-unknown}" "$facts" "$when"
 }
@@ -845,7 +889,7 @@ if [[ "$ACTION" == "release" ]]; then
     fail_closed "release of issue #$ISSUE_NUMBER partially failed ($(tr '\n' ' ' < "$ERR_FILE"))"
   fi
   CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""; IS_STALE="false"
-  CLAIM_PROVIDER=""; CLAIM_DEVICE=""; CLAIM_LABEL_TEXT=""
+  CLAIM_PROVIDER=""; CLAIM_DEVICE=""; CLAIM_LABEL_TEXT=""; CLAIM_BATCH=""; CLAIM_BATCH_SIZE=""
   emit unclaimed 0 "released the claim on issue #$ISSUE_NUMBER"
 fi
 
@@ -866,11 +910,13 @@ ensure_label() {
   fi
 }
 
-# claim_body <payload-json> <provider> <device> [label] -> the visible claim
-# comment, marker included. The sentence names who holds the claim (#2284).
+# claim_body <payload-json> <provider> <device> [label] [batch] [batch-size] ->
+# the visible claim comment, marker included. The sentence names who holds the
+# claim (#2284) and, for a batch claim, that it is one of N taken together
+# (#2286). It stays ONE line: the marker classifier accepts only that shape.
 claim_body() {
   printf '%s\n\n%s\n' \
-    "🔒 Claimed by \`$VIEWER\` for active work. Held by $2 on device $3${4:+ (run: $4)}. It will be released when this issue's PR merges or when the issue closes; it becomes stale if not renewed within ${STALE_HOURS}h." \
+    "🔒 Claimed by \`$VIEWER\` for active work. Held by $2 on device $3${4:+ (run: $4)}.${5:+ One of ${6:-several} claimed together (batch $5).} It will be released when this issue's PR merges or when the issue closes; it becomes stale if not renewed within ${STALE_HOURS}h." \
     "<!-- $CLAIM_MARKER: $1 -->"
 }
 
@@ -944,11 +990,12 @@ withdraw_markers() {
 emit_renew_released() {
   local v="unclaimed"
   CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
+  CLAIM_BATCH="$W_BATCH"; CLAIM_BATCH_SIZE="$W_BATCH_SIZE"
   if [[ -n "$W_ID" ]] && ! { holder_is_mine "$W_HOLDER" && [[ "$W_AUTHOR" == "$VIEWER" ]]; }; then
     v="claimed"; CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$W_AT"
   else
     CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""
-    CLAIM_PROVIDER=""; CLAIM_DEVICE=""; CLAIM_LABEL_TEXT=""
+    CLAIM_PROVIDER=""; CLAIM_DEVICE=""; CLAIM_LABEL_TEXT=""; CLAIM_BATCH=""; CLAIM_BATCH_SIZE=""
   fi
   IS_STALE="false"
   emit "$v" 5 "released — the claim on issue #$ISSUE_NUMBER was released (or the issue closed) while this renewal was in flight; this run's marker was withdrawn and $1 — ownership is lost, stop and report"
@@ -960,6 +1007,7 @@ emit_renew_superseded() {
   CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"
   CLAIMED_SINCE="$W_AT"; MARKER_ID="$W_ID"; MARKER_AUTHOR="$W_AUTHOR"
   CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
+  CLAIM_BATCH="$W_BATCH"; CLAIM_BATCH_SIZE="$W_BATCH_SIZE"
   # A renewed winner carries its original pickup time as `since`.
   if [[ -n "$W_SINCE" && -n "$(iso_to_epoch "$W_SINCE")" ]]; then
     CLAIMED_SINCE="$W_SINCE"
@@ -1021,13 +1069,18 @@ do_renew() {
   # Carry the old marker's who-holds-it facts forward; fill missing ones (an
   # older marker) from this run's resolved values.
   local r_provider="${CLAIM_PROVIDER:-$RES_PROVIDER}" r_device="${CLAIM_DEVICE:-$RES_DEVICE}" r_label="${CLAIM_LABEL_TEXT:-$RES_LABEL}"
+  # Batch membership is carried forward too; an older marker without it takes
+  # the values this run was given (if any).
+  local r_batch="${CLAIM_BATCH:-$RES_BATCH}" r_batch_size="${CLAIM_BATCH_SIZE:-$RES_BATCH_SIZE}"
   payload="$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" --arg s "$since" --arg r "$RUN_NONCE" \
     --arg p "$r_provider" --arg d "$r_device" --arg lb "$r_label" \
-    '{holder: $h, login: $l, since: $s, run: $r, provider: $p, device: $d, label: (if $lb == "" then null else $lb end)}')"
+    --arg bt "$r_batch" --arg bn "$r_batch_size" \
+    '{holder: $h, login: $l, since: $s, run: $r, provider: $p, device: $d, label: (if $lb == "" then null else $lb end)}
+     | if $bt == "" or $bn == "" then . else . + {batch: $bt, batch_size: ($bn | tonumber)} end')"
   # `gh api` POST (not `gh issue comment`) so the response carries the new
   # comment's id — the identity verification compares.
   if post_out="$(gh api -X POST "$REPO_PREFIX/issues/$ISSUE_NUMBER/comments" \
-       -f "body=$(claim_body "$payload" "$r_provider" "$r_device" "$r_label")" 2>"$ERR_FILE")"; then
+       -f "body=$(claim_body "$payload" "$r_provider" "$r_device" "$r_label" "$r_batch" "$r_batch_size")" 2>"$ERR_FILE")"; then
     new_id="$(printf '%s' "$post_out" | jq -r '.id // empty' 2>/dev/null || true)"
     post_id="$new_id"
   else
@@ -1181,6 +1234,7 @@ do_renew() {
     # Report the winning marker's facts (W_* is the verified winner, which may
     # be a sibling renewal's marker); empty fields stay empty and emit as null.
     CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
+    CLAIM_BATCH="$W_BATCH"; CLAIM_BATCH_SIZE="$W_BATCH_SIZE"
     PREVIOUS_CLAIMED_AT="$old_at"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$since"
     IS_STALE="false"; RENEWED="true"
     if (( was_stale )); then
@@ -1281,7 +1335,9 @@ if (( HAS_CLAIM_COMMENT )); then
 fi
 
 CLAIM_BODY="$(claim_body "$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" --arg p "$RES_PROVIDER" --arg d "$RES_DEVICE" --arg lb "$RES_LABEL" \
-  '{holder: $h, login: $l, provider: $p, device: $d, label: (if $lb == "" then null else $lb end)}')" "$RES_PROVIDER" "$RES_DEVICE" "$RES_LABEL")"
+  --arg bt "$RES_BATCH" --arg bn "$RES_BATCH_SIZE" \
+  '{holder: $h, login: $l, provider: $p, device: $d, label: (if $lb == "" then null else $lb end)}
+   | if $bt == "" then . else . + {batch: $bt, batch_size: ($bn | tonumber)} end')" "$RES_PROVIDER" "$RES_DEVICE" "$RES_LABEL" "$RES_BATCH" "$RES_BATCH_SIZE")"
 
 if ! gh issue comment "$ISSUE_NUMBER" --body "$CLAIM_BODY" >/dev/null 2>"$ERR_FILE"; then
   # ROLL BACK the label + assignee this run added. A half-written claim (marker
@@ -1305,6 +1361,7 @@ fi
 CLAIMANT="$VIEWER"
 CLAIMANT_HOLDER="$HOLDER"
 CLAIM_PROVIDER="$RES_PROVIDER"; CLAIM_DEVICE="$RES_DEVICE"; CLAIM_LABEL_TEXT="$RES_LABEL"
+CLAIM_BATCH="$RES_BATCH"; CLAIM_BATCH_SIZE="$RES_BATCH_SIZE"
 CLAIMED_AT="$(date -u +%FT%TZ)"
 # Prefer the marker's GitHub created_at — the timestamp every later --check
 # reads — over the local clock. Best effort: a failed re-read keeps the clock.
@@ -1315,6 +1372,7 @@ if POSTED_COMMENTS="$(read_claim_comments)"; then
     # The re-read may have selected a newer marker of this same holder (a
     # concurrent run with different facts); report the winner's facts.
     CLAIM_PROVIDER="$W_PROVIDER"; CLAIM_DEVICE="$W_DEVICE"; CLAIM_LABEL_TEXT="$W_LABEL"
+    CLAIM_BATCH="$W_BATCH"; CLAIM_BATCH_SIZE="$W_BATCH_SIZE"
   fi
 fi
 CLAIMED_SINCE="$CLAIMED_AT"

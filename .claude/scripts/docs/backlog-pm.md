@@ -19,6 +19,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [estimate-log.sh](../estimate-log.sh) | Record and report guess-vs-actual durations for merged PRs in `~/.claude/estimate-log.jsonl` |
 | [estimate-resolve.sh](../estimate-resolve.sh) | Resolve an issue number to its estimate string so every dispatch helper reports the same figure |
 | [forgotten-pr-triage.sh](../forgotten-pr-triage.sh) | Detect and classify open PRs that have gone quiet past a staleness threshold |
+| [issue-claim-batch.sh](../issue-claim-batch.sh) | Check, claim, renew or release a planned batch of issues in one call, one JSON verdict per issue |
 | [issue-claim.sh](../issue-claim.sh) | Claim an issue at pick time so two threads cannot work the same issue at once |
 | [issue-dedup.sh](../issue-dedup.sh) | Score open issues against keywords to find duplicate candidates before filing |
 | [issue-deps.sh](../issue-deps.sh) | Parse issue dependency markers (`Depends on #N`, `blocked by`, `unblocks`, …) from bodies and comments — the one reading `/pm` 1B.3, `/wave` 5.1, and the desk's derived impact share; `edges` and transitive `dependents` |
