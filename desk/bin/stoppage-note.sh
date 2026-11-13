@@ -4,8 +4,9 @@
 # catalog: utilities — Records the stoppage causes only an orchestrator knows (`out_of_work`, `blocked_by_error`) in the desk's private database (`desk/bin/stoppage-note.sh`)
 #
 # USAGE
-#   stoppage-note.sh refill  --picked N [--reason TEXT] [--repo OWNER/NAME]
-#   stoppage-note.sh blocked --phase A|B|C (--pr N | --issue N) --reason TEXT [--repo OWNER/NAME]
+#   stoppage-note.sh refill  --picked N [--reason TEXT | --reason-file PATH|-] [--repo OWNER/NAME]
+#   stoppage-note.sh blocked --phase A|B|C (--pr N | --issue N) (--reason TEXT | --reason-file PATH|-) [--repo OWNER/NAME]
+#   --reason-file reads the reason as data ("-" = stdin); use it whenever the text is not your own.
 #
 # refill   /subagent Step 8 item 4 and /pm's refill call this once per refill
 #          evaluation. N is how many pipelines the evaluation launched.
@@ -56,7 +57,7 @@ sn_usage() {
 sn_mode="${1:-}"
 case "$sn_mode" in
   refill|blocked) shift ;;
-  --help|-h) sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --help|-h) sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) sn_usage ;;
 esac
 
@@ -66,6 +67,12 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --picked) sn_picked="$2" ;;
     --reason) sn_reason="$2" ;;
+    --reason-file)
+      # Third-party text (a Test plan line, a reviewer comment) must never be
+      # spliced into shell source: callers write it to a file or stdin ("-")
+      # through a single-quoted heredoc and it is read here as data.
+      if [ "$2" = "-" ]; then sn_reason=$(head -c 2000 2>/dev/null || true)
+      else sn_reason=$(head -c 2000 < "$2" 2>/dev/null || true); fi ;;
     --repo) sn_repo="$2" ;;
     --phase) sn_phase="$2" ;;
     --pr) sn_pr="$2" ;;

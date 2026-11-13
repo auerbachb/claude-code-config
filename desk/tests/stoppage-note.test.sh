@@ -23,6 +23,9 @@
 #     silence; a secret-shaped or odd reason never reaches the call as shell
 #     syntax
 #
+#   - hostile text (substitution, backticks, quotes, newline, semicolon) handed over
+#     with --reason-file (file or stdin) runs nothing and is stored sanitised
+#
 # Every case runs under `bash` on PATH and, when /bin/bash is 3.x (macOS), too.
 set -uo pipefail
 
@@ -221,6 +224,41 @@ for SH in $SHELLS; do
   check "${P}blocked: still one line" "$(hq_t_lines "$(calls)")" "1"
   check "${P}blocked: the evidence is bounded" \
     "$([ "$(calls | wc -c | tr -d ' ')" -lt 520 ] && echo yes || echo no)" "yes"
+
+  # ---- hostile third-party text goes in as data, never as shell source ----------
+  # A Test plan line or reviewer comment can reach the reason. The documented path
+  # writes it through a single-quoted heredoc and hands it over with
+  # --reason-file, so nothing in it is ever parsed by the orchestrator's shell.
+  reset
+  SENT="$TMP/sentinel-$$"
+  rm -f "$SENT"
+  RF="$TMP/reason.txt"
+  cat >"$RF" <<'STP_REASON_8f3a'
+needs `touch SENT_BT` and $(touch SENT_CS); "quoted"; rm -rf x
+second line
+STP_REASON_8f3a
+  sed -i.bak "s|SENT_BT|$SENT-bt|; s|SENT_CS|$SENT|" "$RF"
+  note "$SH" blocked --phase C --pr 42 --reason-file "$RF"
+  check "${P}reason-file: exit 0" "$NRC" "0"
+  check "${P}reason-file: no command ran" "$([ -e "$SENT" ] || [ -e "$SENT-bt" ] && echo ran || echo none)" "none"
+  check "${P}reason-file: the entry is written" "$(hq_t_lines "$(calls)")" "1"
+  check_absent "${P}reason-file: no substitution syntax stored" "$(calls)" '$('
+  check_absent "${P}reason-file: no backtick or quote stored" "$(calls)" '`'
+  check_absent "${P}reason-file: no double quote stored" "$(calls)" '"'
+  check "${P}reason-file: the sanitised literal text is stored" \
+    "$(calls | grep -c 'needs touch')" "1"
+  reset
+  rm -f "$SENT" "$SENT-bt"
+  NRC=0
+  (cd "$REPO" && env HUMAN_QUEUE_CLI="$STUBS/cli.sh" STOPPAGE_SCRIPTS_DIR="$STUBS" \
+    HUMAN_QUEUE_STOPPAGE_DIR="$KEEP" STP_CALLS="$CALLS" STP_PAUSE_FILE="$TMP/pause" \
+    STP_REPO_FILE="$TMP/repostate" STP_AGENTS_FILE="$TMP/agents" CLAUDE_SESSION_ID=sess-1 \
+    "$SH" "$NOTE" blocked --phase B --pr 42 --reason-file - <"$RF") >"$TMP/nout" 2>&1 || NRC=$?
+  check "${P}reason-file from stdin: exit 0 and the entry is written" "$NRC:$(hq_t_lines "$(calls)")" "0:1"
+  check "${P}reason-file from stdin: no command ran" "$([ -e "$SENT" ] && echo ran || echo none)" "none"
+  reset
+  note "$SH" blocked --phase B --pr 42 --reason-file "$TMP/does-not-exist"
+  check "${P}reason-file missing: usage error, nothing recorded" "$NRC:$(calls)" "2:"
 
   # ---- fail open ---------------------------------------------------------------
   reset
