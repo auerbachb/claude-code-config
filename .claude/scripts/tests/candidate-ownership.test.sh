@@ -703,6 +703,17 @@ check_contains "self-attribution stated" "held by this thread" \
 check_not_contains "and not reported as a foreign claim" "fresh claim held by" \
   "$(field 412 '.evidence | join("|")')"
 
+echo "-- (4m2) default holder: no host:path token is passed as an explicit --holder (issue #2284) --"
+scenario "(4m2) default holder left to issue-claim.sh"
+export FAKE_CLAIM_414="mine:h-aaaaaaaaaaaa:alice"
+( unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_ID; sweep 414; printf '%s' "$OUT" > "$TMP/out414"; cp "$HELPER_LOG" "$TMP/log414" )
+check_not_contains "gate call carries no explicit --holder" "--holder" \
+  "$(grep 'issue-claim.sh 414' "$TMP/log414")"
+check_contains "own default claim is self-attributed" "held by this thread" \
+  "$(jq -r 'select(.issue == 414) | .evidence | join("|")' "$TMP/out414")"
+check_eq "and not owned" "false" "$(jq -r 'select(.issue == 414) | .owned' "$TMP/out414")"
+unset FAKE_CLAIM_414
+
 echo "-- (4n) control: the same claim under a FOREIGN token still owns --"
 scenario "(4n) foreign fresh claim"
 export FAKE_CLAIM_413="claimed:threadOther:alice"
