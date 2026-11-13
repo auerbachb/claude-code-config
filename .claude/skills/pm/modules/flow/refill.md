@@ -247,6 +247,8 @@ Redirecting after the fact is the correction mechanism that replaces the removed
 | `paused (budget unknown)` | `credit-budget.sh --check` returned `unknown` (exit 2) — no authoritative source was reachable. Conservative posture: in-flight work finishes, no new dispatches. Clears automatically on the next tick when the probe succeeds |
 | `paused (priority unreadable)` | The operator-priority file exists but does not read (1B.1a) — it may be hiding a park, so nothing new starts. In-flight work finishes. Clears automatically on the first tick it reads cleanly (fixed with `/desk`, or removed) |
 
+Log each evaluation to the stoppage log with `stoppage-note.sh` (`~/.claude/skills-worktree/desk/bin/`, then `~/.claude/desk/bin/`, then `desk/bin/`; missing → skip): `stoppage-note.sh refill --picked <N launched> --reason-file -` with the idle reason (empty when none) written through a single-quoted heredoc whose delimiter does not occur in the text, never inside shell source. Only `nothing eligible` records `out_of_work`; N > 0 closes an open entry; it is silent and never blocks the refill.
+
 A full board is `ceiling reached` and needs no explanation. The heartbeat carries the same reason in its `· slots {used}/{cap}` suffix (`monitor-mode.md`), where `{cap}` is the Step 0 `LIMIT` — `slots 3/4` on a default repo.
 
 #### Slot census

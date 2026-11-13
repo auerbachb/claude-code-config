@@ -32,22 +32,74 @@ not one. The Stop hook ([`hooks/stoppage.sh`](../hooks/stoppage.sh), registered 
 `.claude/hooks/stoppage-log.sh`) records an entry only when **all** hold, and any
 doubt means no entry:
 
-1. the checkout is on a branch named `issue-N-*` (assigned work);
+1. the thread has assigned work: its checkout is on a branch named `issue-N-*`,
+   **or** (any branch, `main` and detached HEAD included) it is an orchestrating
+   thread holding a recorded round for this repo and session (below);
 2. no active `/pause` or `/end` gate for the session or the repo, and no
    declared leave time at or before its pause point (`deadline_epoch` minus
    `lead_minutes`); an unreadable gate is not "no gate";
 3. nothing running: the background-work ledger, the task registry (stale
    leftovers ignored), and the recorded subagents for the issue are all empty;
 4. nothing armed: no silence-ceiling watch (it exists only while work runs);
-5. work not finished: uncommitted changes, unpushed commits, or a recorded
-   pipeline whose head is this checkout's HEAD.
+5. work not finished: on an issue branch, uncommitted changes, unpushed
+   commits, or a recorded pipeline whose head is this checkout's HEAD; for an
+   orchestrating thread, its round not wound down.
+
+**Orchestrating threads.** A project-manager or subagent-monitoring thread is
+usually on `main` or a session branch, so the branch cannot say it has work. Its
+work is the state `/subagent` already keeps: `.repos["<owner>/<repo>"].rounds["<session>"]`
+(Step 7.0), set to `null` when the round winds down (Step 8 teardown), plus
+`table_render["<session>"]` whose terminal board (`active_pipelines` 0, rendered no
+earlier than the round's dispatch) also ends it. The round is keyed by the
+thread's own session id and read from the repo's own record, so another
+session's or another repo's work is never attributed to this thread. A round
+with members left, nothing running (no background work, no registry task, no
+recorded subagent on any round issue, running or just spawned) and nothing
+armed is an entry whatever the branch; its ref is the round's first issue. The
+pipeline records (`.repos[...].pipelines`) are not read: they are append-only
+with no finished marker and are not session-scoped, so they cannot say what is
+still unfinished; a pending phase transition belongs to a round member and is
+covered by the round. `/subagent` Step 7.0 records a round only when a unique
+session id is available; without one it prints a `DEGRADED` line and records
+nothing, so that orchestrator is not logged by the hook (its issue-branch threads
+still are). An ordinary thread (no round) costs the hook one state read
+and no entry, so the check is cheap in every thread.
 
 The cause is what the hook can see: a recorded `token_exhaustion` or
 `usage_limit_park` handoff reason, a pipeline in review (`waiting_on_review`), a
 final message ending in a question (`waiting_on_operator`; only its shape is read,
 none of it stored), else `unknown`. `out_of_work` and `blocked_by_error` are not
-visible from a Stop hook; an orchestrator records them with
-`stoppage record --cause`.
+visible from a Stop hook; the orchestration steps that know them record them with
+[`bin/stoppage-note.sh`](../bin/stoppage-note.sh):
+
+- `stoppage-note.sh refill --picked N --reason TEXT`, called once per refill
+  evaluation by `/subagent` Step 8 item 4 and `/pm`'s refill (the step that
+  already names the idle reason of a slot that stays empty). With nothing
+  launched and a reason starting `nothing eligible` it records `out_of_work`,
+  evidence `slot idle: <reason>`, ref the round's first issue. Every other idle
+  reason (`chained`, `paused`, budget, horizon, priority, ceiling) is a held or
+  planned state and records nothing; `/subagent` skips the call on the tick
+  that only drains a round whose pipelines all merged (a finished round is not
+  a stoppage), while `/pm`'s refill finding the backlog empty is the
+  `out_of_work` case. It also records nothing while a subagent
+  still works a pipeline of the repo or a round issue, during a `/pause` or
+  `/end` gate, or at a leave time's pause point. With N above 0 it closes an
+  entry left open for the session (`stoppage resume`), so the idle time ends
+  when work is launched again, not at the operator's next prompt.
+- `stoppage-note.sh blocked --phase A|B|C (--pr N | --issue N) --reason TEXT`,
+  called where `/subagent` Step 9 reports a Phase B `blocked_self_review` or a
+  Phase C `blocked` with no recovery under way. It records `blocked_by_error`,
+  evidence `phase <X> blocked: <reason>`, whether or not other pipelines run,
+  but not during a `/pause` or `/end` gate or at a leave time's pause point
+  (a result arriving then is the wind-down).
+
+Both write source `manual`, share the Stop hook's open marker (one entry per
+stretch: while an entry stands, neither writes a second), and fail open and
+silent like the hook. The reason is the step's own one-line text, stripped to a
+plain vocabulary and bounded; the CLI still refuses anything shaped like a
+secret. A drained round that finished all its work, an attended thread waiting
+for the operator with nothing assigned, a planned stop, and a turn another Stop
+hook continues write nothing.
 
 An open marker (`~/.claude/desk-stoppages/open/<session>`) prevents a second
 entry for the same stretch. The next prompt in the thread (`UserPromptSubmit`)
@@ -112,13 +164,27 @@ all database access goes through `lib/db.sh`.
 - [`tests/stoppage-offline.test.sh`](../tests/stoppage-offline.test.sh): the
   CLI's validation, secret refusal and keep-locally path, the list grouping,
   and the hook's every gate, with no database.
+- [`tests/stoppage-note.test.sh`](../tests/stoppage-note.test.sh): the
+  orchestration helper (`out_of_work`, `blocked_by_error`, and the non-cases),
+  with a stub CLI.
 - [`tests/stoppage.test.sh`](../tests/stoppage.test.sh): the live path against a
   throwaway schema (skips without `HUMAN_QUEUE_DATABASE_URL`).
 
 ### Known limits
 
 - The hook cannot see an orchestrator's empty queue or a tool error; those
-  entries come from `record --cause`.
+  entries come from `stoppage-note.sh`, called by the orchestration steps. A
+  thread that never reaches those steps (a crashed orchestrator) is still caught
+  by its Stop hook when its round is not wound down, and by `/go-on` otherwise.
+- An `out_of_work` or `blocked_by_error` entry is closed when a later refill
+  launches work or the thread's next prompt arrives, whichever is first. A
+  `blocked_by_error` written while other pipelines keep running therefore
+  counts until then, so its idle time reads as an upper bound.
+- One entry per stretch: a second blocked pipeline while an entry stands is not
+  logged separately.
+- A round whose teardown was skipped (the thread died before Step 8) reads as
+  not wound down; an entry for it is correct for a dead orchestrator and `why`
+  can be corrected afterwards.
 - The idle time ends at the next prompt in the thread, or at the `/go-on` that
   picked the work up. A thread restarted by a background-task notification with
   no prompt keeps its entry open until then.
