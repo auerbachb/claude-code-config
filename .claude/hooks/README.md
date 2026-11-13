@@ -351,6 +351,20 @@ Registered on **`Stop`** with a 5 s timeout.
 
 **Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.
 
+## stoppage-log.sh
+
+Logs an unplanned work stoppage to the desk's private database (Issue #2292). A **symlink** to `desk/hooks/stoppage.sh`; contract and gates: `desk/docs/stoppages.md`.
+
+Registered on **`Stop`** and **`UserPromptSubmit`** with a 10 s timeout each.
+
+**What it does:**
+
+- **Stop:** writes one entry (`human-queue.sh stoppage record`) only on an `issue-N-*` branch with no planned stop (`/pause`, `/end`, a declared leave time), nothing running or armed, and unfinished work. Any doubt means no entry.
+- **UserPromptSubmit:** closes the thread's open entry with the idle time (`stoppage resume`); without an open marker it is one file test.
+- **Fails open:** no jq, bad input, a database that is down or unmigrated — nothing printed, exit `0`. A down database keeps the entry under `~/.claude/desk-stoppages` and sends it later. Never writes to GitHub or to a repository file.
+
+**Tests:** `desk/tests/stoppage-offline.test.sh`.
+
 ## unattended-question-guard.sh + unattended-digest.sh
 
 Unattended mode (Issue #2283): while the operator has declared himself away (`unattended.sh on`), no menu opens and nothing waits on him.

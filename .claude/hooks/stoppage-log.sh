@@ -1,0 +1,1 @@
+../../desk/hooks/stoppage.sh

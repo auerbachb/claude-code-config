@@ -593,7 +593,45 @@ fi
 
 **A receipt never outranks a still-parked board.** `record_at` in the digest is the newest **un-resumed** record's timestamp (probe B), so a record that is still parked keeps producing a digest, and a record that was genuinely restored stops appearing in the union and changes the digest. A `nothing to resume` verdict therefore rests on the records themselves, with the receipt only suppressing a repeat of the *same* evidence for the *same* session.
 
+### 0.5a Log the stoppage (ranks 2–4 only; issue #2292)
+
+A stop nobody planned is written down once, to the desk's private database, so the causes can be counted later. **Never** for rank 1 (`pause` / `end` are planned stops) or rank 5. Never posted to GitHub or written to a repository file. This step records and never blocks: any failure here is one line, then dispatch continues.
+
+Resolve the desk CLI from installed locations only (`~/.claude/skills-worktree/desk/bin/human-queue.sh`, then `~/.claude/desk/bin/human-queue.sh`); unresolved → one `DEGRADED: human-queue.sh not found — stoppage log unavailable, continuing without it` line.
+
+- **Cause:** rank 2 → `usage_limit`; rank 3 → `token_exhaustion`; rank 4 → `crash` when probe E found a registry entry still `running`/`stopping`/`stop_failed` (a task that never closed, so the session died), else `unknown`.
+- **Thread:** the dead session's id when the stale registry entry names one (`session_id`), else this session's.
+- **Stop time:** the record's own time (`record_at`, the handoff's time, or the registry entry's `updated_at`) as UTC `Z`; when none is known use now and say so in the evidence.
+- **Evidence:** one fixed line — class, probe letters, and the PR or branch — never transcript text.
+- **An entry the dead session's own Stop hook already wrote** (`stoppage why --thread <id>` shows `still stopped`) is not duplicated: record nothing; it is closed after dispatch (below).
+
+```bash
+# STOP_CAUSE, STOP_THREAD, STOP_AT (UTC Z), STOP_REF (issue#N|pr#N, may be empty),
+# STOP_EVIDENCE are set from the bullets above; HQ_CLI is the resolved CLI.
+if [[ -n "${HQ_CLI:-}" ]]; then
+  if ! "$HQ_CLI" stoppage why --thread "$STOP_THREAD" 2>/dev/null | grep -q 'still stopped'; then
+    STOP_ARGS=(--thread "$STOP_THREAD" --repo "${REPO_KEY:-unknown}" --cause "$STOP_CAUSE" \
+      --evidence "$STOP_EVIDENCE" --at "$STOP_AT" --source go-on)
+    [[ -n "${STOP_REF:-}" ]] && STOP_ARGS+=(--ref "$STOP_REF")
+    "$HQ_CLI" stoppage record "${STOP_ARGS[@]}" >/dev/null 2>&1 || true
+  fi
+fi
+```
+
+**Close it only when work actually resumed.** The idle time ends when dispatch relaunches or continues work, not when `/go-on` merely ran. After a dispatch that did so (a delegated resume that re-armed work, relaunched pipelines, or entered Steps 0b–10), run the block below. When dispatch launched nothing (a usage-limit park whose window is still shut, an unreadable inventory that blocked ranks 3 and 4), leave the entry open: a later `/go-on` finds it `still stopped` and closes it then.
+
+```bash
+if [[ -n "${HQ_CLI:-}" ]]; then
+  "$HQ_CLI" stoppage resume --thread "$STOP_THREAD" >/dev/null 2>&1 || true
+  rm -f "${HOME:-/nonexistent}/.claude/desk-stoppages/open/$STOP_THREAD" 2>/dev/null || true
+fi
+```
+
+An unreachable database keeps both operations locally and sends them later, in order (`desk/docs/stoppages.md`).
+
 ### 0.6 Dispatch
+
+For ranks 2–4, run 0.5a first (it records the stoppage and never blocks the dispatch below), and close the entry after a dispatch that actually resumed work.
 
 **Never duplicate a live task or Monitor.** Before any lane, list live registry entries (`"$TASK_REGISTRY_SH" --list --live`) and read `.prs["<N>"].babysit.active`. Work already covered by a live identity is reported, not relaunched; the delegated commands take the locked `stopped -> rearming` claim that makes concurrent resumes single-writer.
 
