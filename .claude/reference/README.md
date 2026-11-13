@@ -53,6 +53,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `merge-sequencing.md` — mechanism and state machine for `merge-sequence.sh`; overlap-aware merge sequencing for PRs touching the same file (#756)
 - `codeant-supplemental.md` — CodeAnt supplemental polling on the CR path, plus CodeAnt CLI install state (Graphite retirement and retired-thread cleanup, #1889 and #2192)
 - `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap, and binary-absent detection (#642, #819)
+- `agent-issue-claims-block.md` — the single source of the provider-neutral issue-claim block that `repo-bootstrap.sh --apply` installs into `AGENTS.md` (check, claim, renew, release; plain-`gh` fallback recipe; #2285)
 - `repo-bootstrap-protection.md` — branch-protection remediation mechanism: CI check-name discovery, the confirmation prompt, and the read-then-PUT payload that never downgrades existing protection (`repo-bootstrap.md`; #918)
 - `repo-bootstrap-workflows.md` — provisioned-file design: the one-list guarantee, `get_file_content()` mechanism, drift guard, and `BOOTSTRAP_FILES` as the single authoritative list (`repo-bootstrap.md`; #1282)
 - `dirty-main-guard.md` — how `--check` computes "dirty", what `--quarantine` preserves, and the recovery-branch listing/inspection/deletion commands (`main-hygiene.md`; #918)

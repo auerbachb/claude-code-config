@@ -7,7 +7,15 @@
 #      Run with --apply to install any that are missing (add-only; never
 #      overwrites). See .claude/reference/repo-bootstrap-workflows.md for the
 #      file-set design, per-file modes, and the one-list guarantee.
-#   2. Branch protection on main: report status only — never modified by this
+#   2. Agent issue-claim block (issue #2285): installs one provider-neutral
+#      marked section into AGENTS.md at the repo root, so Codex, Cursor,
+#      Antigravity and other non-Claude agents follow the same claim rule. The
+#      text lives in .claude/reference/agent-issue-claims-block.md (found next
+#      to this script, else under ~/.claude). --apply creates AGENTS.md when
+#      absent, appends the block to an existing file (every byte already there
+#      is kept), and rewrites only its own marked block when that drifts from
+#      the source. A second run changes nothing.
+#   3. Branch protection on main: report status only — never modified by this
 #      script (the rule requires user confirmation, so the script defers).
 #
 # Usage:
@@ -998,6 +1006,91 @@ for _i in "${!BOOTSTRAP_FILES[@]}"; do
 done
 
 # --------------------------------------------------------------------------
+# Agent issue-claim block in AGENTS.md (issue #2285).
+# The marked block is the only part of AGENTS.md this script owns; it never
+# touches a byte outside the BEGIN/END marker lines.
+# AGENTS_STATE: missing | present | differs | malformed | symlink
+# --------------------------------------------------------------------------
+AGENTS_REL="AGENTS.md"
+AGENTS_BEGIN_PREFIX="<!-- BEGIN agent-issue-claims"
+AGENTS_END_LINE="<!-- END agent-issue-claims -->"
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENTS_SRC=""
+for _cand in "$_script_dir/../reference/agent-issue-claims-block.md" \
+             "${HOME:+$HOME/.claude/skills-worktree/.claude/reference/agent-issue-claims-block.md}" \
+             "${HOME:+$HOME/.claude/reference/agent-issue-claims-block.md}"; do
+  if [[ -n "$_cand" && -r "$_cand" ]]; then AGENTS_SRC="$_cand"; break; fi
+done
+if [[ -z "$AGENTS_SRC" ]]; then
+  echo "ERROR: agent-issue-claims-block.md not found (checked next to this script, ~/.claude/skills-worktree, ~/.claude) — cannot check or install the AGENTS.md claim block" >&2
+  exit 3
+fi
+
+agents_compute_state() {
+  local f="$REPO_TOP/$AGENTS_REL" nb ne bl el cur
+  if [[ -L "$f" ]]; then AGENTS_STATE="symlink"; return; fi
+  if [[ ! -f "$f" ]]; then AGENTS_STATE="missing"; return; fi
+  nb=$(grep -c -F -x -e "$AGENTS_END_LINE" "$f" || true)
+  ne=$(grep -c -F -e "$AGENTS_BEGIN_PREFIX" "$f" || true)
+  if [[ "$nb" -eq 0 && "$ne" -eq 0 ]]; then AGENTS_STATE="missing"; return; fi
+  if [[ "$nb" -ne 1 || "$ne" -ne 1 ]]; then AGENTS_STATE="malformed"; return; fi
+  bl=$(grep -n -F -e "$AGENTS_BEGIN_PREFIX" "$f" | head -n 1 | cut -d: -f1)
+  el=$(grep -n -F -x -e "$AGENTS_END_LINE" "$f" | head -n 1 | cut -d: -f1)
+  if [[ "$bl" -ge "$el" ]]; then AGENTS_STATE="malformed"; return; fi
+  cur="$(sed -n "${bl},${el}p" "$f")"
+  if [[ "$cur" == "$(cat "$AGENTS_SRC")" ]]; then AGENTS_STATE="present"; else AGENTS_STATE="differs"; fi
+}
+
+# Write the new AGENTS.md content into $1 (a temp file), per current state.
+agents_build() {
+  local out="$1" f="$REPO_TOP/$AGENTS_REL" bl el
+  case "$AGENTS_STATE" in
+    missing)
+      if [[ -f "$f" && -s "$f" ]]; then
+        cat "$f" >"$out" || return 1
+        # Keep every existing byte; add only the separator needed before the block.
+        [[ -z "$(tail -c 1 "$f")" ]] || printf '\n' >>"$out" || return 1
+        printf '\n' >>"$out" || return 1
+      else
+        : >"$out" || return 1
+      fi
+      cat "$AGENTS_SRC" >>"$out" || return 1
+      ;;
+    differs)
+      bl=$(grep -n -F -e "$AGENTS_BEGIN_PREFIX" "$f" | head -n 1 | cut -d: -f1)
+      el=$(grep -n -F -x -e "$AGENTS_END_LINE" "$f" | head -n 1 | cut -d: -f1)
+      # sed -n "1,0p" prints line 1 on GNU sed, so skip the prefix when the block starts the file.
+      { if [[ "$bl" -gt 1 ]]; then sed -n "1,$((bl - 1))p" "$f"; fi; cat "$AGENTS_SRC"; sed -n "$((el + 1)),\$p" "$f"; } >"$out" || return 1
+      ;;
+  esac
+}
+
+agents_compute_state
+AGENTS_INSTALLED=0
+if [[ "$MODE" == "apply" && ( "$AGENTS_STATE" == "missing" || "$AGENTS_STATE" == "differs" ) ]]; then
+  _ag_tmp="$(mktemp "$REPO_TOP/.repo-bootstrap-agents.XXXXXX" 2>/dev/null)" || { echo "repo-bootstrap.sh: failed to create temp file for $AGENTS_REL" >&2; exit 5; }
+  TMP_FILE="$_ag_tmp"
+  # Mode: keep the existing file's (cp -p), else the usual 644 for a new file.
+  if [[ -f "$REPO_TOP/$AGENTS_REL" ]]; then
+    cp -p "$REPO_TOP/$AGENTS_REL" "$_ag_tmp" || { echo "repo-bootstrap.sh: failed to stage $AGENTS_REL" >&2; exit 5; }
+  else
+    chmod 644 "$_ag_tmp" || { echo "repo-bootstrap.sh: failed to chmod temp file for $AGENTS_REL" >&2; exit 5; }
+  fi
+  if ! agents_build "$_ag_tmp"; then
+    echo "repo-bootstrap.sh: failed to build $AGENTS_REL" >&2
+    exit 5
+  fi
+  # Publish by rename: a failed write leaves the original AGENTS.md intact.
+  if ! mv -f "$_ag_tmp" "$REPO_TOP/$AGENTS_REL"; then
+    echo "repo-bootstrap.sh: failed to write $AGENTS_REL" >&2
+    exit 5
+  fi
+  TMP_FILE=""
+  AGENTS_INSTALLED=1
+  agents_compute_state
+fi
+
+# --------------------------------------------------------------------------
 # Branch protection check (read-only — never modified)
 # --------------------------------------------------------------------------
 # Capture the response and HTTP status separately. `gh api` returns non-zero on
@@ -1141,6 +1234,20 @@ for _i in "${!BOOTSTRAP_FILES[@]}"; do
   esac
 done
 echo
+echo "Agent Instructions (AGENTS.md):"
+case "$AGENTS_STATE" in
+  present)
+    if [[ "$AGENTS_INSTALLED" -eq 1 ]]; then
+      printf '  [INSTALLED] %s — issue-claim block\n' "$AGENTS_REL"
+    else
+      printf '  [OK]        %s — issue-claim block\n' "$AGENTS_REL"
+    fi ;;
+  differs)   printf '  [MISSING]   %s — issue-claim block differs from the source; --apply rewrites only the marked block\n' "$AGENTS_REL" ;;
+  malformed) printf '  [MISSING]   %s — unbalanced issue-claim markers; fix by hand (never auto-edited)\n' "$AGENTS_REL" ;;
+  symlink)   printf '  [SYMLINK]   %s — symlink at target; remove it to install the block\n' "$AGENTS_REL" ;;
+  *)         printf '  [MISSING]   %s — issue-claim block not installed\n' "$AGENTS_REL" ;;
+esac
+echo
 echo "Branch Protection (main):"
 case "$BP_STATE" in
   configured)
@@ -1187,6 +1294,9 @@ done
 if [[ "$BP_STATE" == "missing" ]]; then
   GAPS=1
 fi
+if [[ "$AGENTS_STATE" != "present" ]]; then
+  GAPS=1
+fi
 
 if [[ "$GAPS" -eq 1 ]]; then
   echo
@@ -1203,6 +1313,13 @@ if [[ "$GAPS" -eq 1 ]]; then
   done
   BP_GAP=0
   [[ "$BP_STATE" == "missing" ]] && BP_GAP=1
+  if [[ "$AGENTS_STATE" != "present" ]]; then
+    if [[ "$MODE" == "check" && ( "$AGENTS_STATE" == "missing" || "$AGENTS_STATE" == "differs" ) ]]; then
+      echo "AGENTS.md claim block gap detected. Re-run with --apply to install or refresh it."
+    else
+      echo "AGENTS.md claim block needs attention (see report); --apply will not edit a symlink or unbalanced markers."
+    fi
+  fi
 
   if [[ "$MODE" == "check" ]]; then
     if [[ "$FILE_GAP" -eq 1 ]]; then
