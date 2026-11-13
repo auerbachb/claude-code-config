@@ -73,6 +73,11 @@
 #   start is the parent of the oldest first-parent commit within
 #   --default-days (default 14, env BACKFILL_RANGE_DEFAULT_DAYS).
 #   --range-bound N (env BACKFILL_RANGE_BOUND) lowers both file bounds.
+#   A single commit over EVERY channel's hard cap (150 files) is never sent to
+#   a reviewer: it is recorded in the marker's repos[<repo>].uncovered list and
+#   the marker moves past it in the same atomic write. That is the only case
+#   where the marker passes code no reviewer saw; a lowered bound yields
+#   `partial` (some reviewer saw it), never `uncovered`.
 #   Reference: .claude/reference/backfill-review.md §Range mode
 #
 # ENVIRONMENT
@@ -560,6 +565,15 @@ range_hard_bound() { # channel -> the reviewer's own file cap, never lowered; un
   esac
 }
 
+range_max_hard_bound() { # the largest hard cap of any allowed channel; a commit above it fits no reviewer
+  local c b m=0
+  for c in $ALLOWED_CHANNELS; do
+    b="$(range_hard_bound "$c")"
+    if (( b > m )); then m=$b; fi
+  done
+  printf '%s' "$m"
+}
+
 range_bound() { # channel -> the file bound for that reviewer
   local b=0
   case "$1" in
@@ -615,6 +629,28 @@ range_marker_write() {
       | if $partial == 1
         then .repos[$r].partial_commits = ((.repos[$r].partial_commits // []) + [{commit: $sha, files: $files, bound: $bound}])
         else . end' > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
+}
+
+# range_marker_write_uncovered <sha> <files> <largest-cap> — the one case where the
+# marker moves past code no reviewer saw. A single commit over every channel's
+# hard cap is appended to repos[<repo>].uncovered and the marker advances to it
+# in ONE atomic write. last_range and partial_commits are not touched: nothing
+# was reviewed. Failure returns 1 with the marker unchanged (the caller stops).
+range_marker_write_uncovered() {
+  local sha="$1" files="$2" cap="$3" dir tmp now
+  dir="$(dirname "$RANGE_MARKER")"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$(mktemp "$dir/.backfill-range-marker.XXXXXX")" || return 1
+  now="$(date -u +%FT%TZ)"
+  {
+    if [[ -e "$RANGE_MARKER" ]]; then cat "$RANGE_MARKER"; else printf '%s' '{"schema_version":1,"repos":{}}'; fi
+  } | jq --arg r "$REPO" --arg sha "$sha" --arg now "$now" --arg first "$RANGE_FIRST" \
+        --argjson files "$files" --argjson cap "$cap" '
+      .repos[$r] = ((.repos[$r] // {}) + {last_reviewed_commit: $sha, updated_at: $now})
+      | .repos[$r].uncovered = ((.repos[$r].uncovered // []) + [{
+          commit: $sha, files: $files, largest_cap: $cap, recorded_at: $now,
+          reason: "exceeds every channel hard cap; no reviewer was run on this commit"}])' \
+    > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
 }
 
 # range_cut <start> <end> <bound> — walks first-parent commits after start and
@@ -776,12 +812,35 @@ range_main() {
     elif (( dry_count >= MAX_REVIEWS )); then
       summary dry_run; exit 0
     fi
-    if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
-
-    ch="${ALIVE[0]}"; bound="$(range_bound "$ch")"
+    # The probe bound below only sizes the cut when no channel is alive; the
+    # uncovered verdict depends on the file count alone, so it runs first.
+    ch="${ALIVE[0]:-coderabbit}"; bound="$(range_bound "$ch")"
     rc2=0; range_cut "$cursor" "$MAIN_SHA" "$bound" || rc2=$?
     if [[ $rc2 -ne 0 ]]; then summary range_internal_error; exit 5; fi
     cut="$RANGE_CUT_SHA"; nfiles="$RANGE_CUT_FILES"; ncommits="$RANGE_CUT_COMMITS"; partial="$RANGE_CUT_PARTIAL"
+
+    # A single commit over EVERY channel's hard cap fits no reviewer. It is never
+    # handed to one and never stalls the run: it is recorded as uncovered and the
+    # marker moves past it, in one atomic write. An unavailable channel is not
+    # this case (that stays capacity_exhausted below, marker untouched).
+    max_hard="$(range_max_hard_bound)"
+    if [[ "$partial" -eq 1 ]] && (( nfiles > max_hard )); then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'would record uncovered commit %s files=%s largest_cap=%s (no reviewer run; nothing written)\n' \
+          "$cut" "$nfiles" "$max_hard"
+        cursor="$cut"; continue
+      fi
+      if ! range_marker_write_uncovered "$cut" "$nfiles" "$max_hard"; then
+        summary range_uncovered_write_failed; exit 5
+      fi
+      log "$REPO UNCOVERED commit $cut: $nfiles files exceed every channel cap (largest $max_hard); no reviewer was run; recorded in marker uncovered[]"
+      printf 'backfill-review: uncovered commit %s files=%s largest_cap=%s; no reviewer saw it; recorded in the marker under repos["%s"].uncovered\n' \
+        "$cut" "$nfiles" "$max_hard" "$REPO"
+      cursor="$cut"; continue
+    fi
+
+    if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
+
     info="$ncommits commit(s), $nfiles changed file(s), bound $bound for $ch"
     [[ "$partial" -eq 1 ]] && info="$info; single commit over the bound, reviewed alone and recorded partially covered"
     if (( nfiles == 0 )); then summary range_empty; exit 0; fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for backfill-review.sh --range, the range mode of the overnight backfill (issue #2324).
-# catalog: tests — Exercises backfill-review.sh --range against a fixture repo, a stub CodeRabbit CLI and a stub gh: range cut at the file bound, oversized commit recorded partial, marker advanced only after a verified run, non-ancestor and unreadable markers refused, dry-run writing nothing
+# catalog: tests — Exercises backfill-review.sh --range against a fixture repo, a stub CodeRabbit CLI and a stub gh: range cut at the file bound, oversized commit recorded partial, commit over every channel cap recorded uncovered and skipped, marker advanced only after a verified run, non-ancestor and unreadable markers refused, dry-run writing nothing
 #
 # WHAT IS UNDER TEST
 #   A scratch HOME (so the real ~/.claude marker and ledger are never touched),
@@ -30,6 +30,13 @@
 #     9. --from on a run whose marker already exists is a usage error;
 #    10. --from without --range is a usage error;
 #    11. a filing failure (issue listing fails) leaves the marker where it was.
+#   16. a channel never receives more files than its own cap (16a, 16b);
+#   17. a single 151-file commit (over every channel cap) is never sent to a
+#       reviewer: it is recorded in uncovered[] with its SHA and count, the
+#       marker moves past it, and the small commit after it is reviewed;
+#   18. the same, with the uncovered write failing: marker unchanged, named
+#       stop reason, exit 5, no reviewer run;
+#   19. --dry-run on that fixture lists "would record uncovered" and writes nothing.
 #   The fail-first pass (reverting the logic and confirming the cases fail)
 #   is run by hand and recorded in the PR body; see the reference doc.
 #
@@ -338,6 +345,75 @@ reset_state
 OUT="$(STUB_CLI_MODE=fail STUB_CODEANT_MODE=ok rrun "$W" --from "$WSEED" --ignore-window 2>/dev/null)"
 check_eq "16b: codeant ran once per 8-file stretch" "2" "$(grep -c '^codeant' "$STUB/cli-calls.log")"
 check_eq "16b: marker ends at main after two verified stretches" "$WTIP" "$(marker_sha)"
+
+# ---- 17-19. a single commit over every channel's cap is recorded uncovered -----
+# Fixture: a seed, then a 151-file commit (over CodeRabbit's 150, so over every
+# channel), then a one-file commit. The 151-file commit must never reach a
+# reviewer; it is recorded in uncovered[] and the marker moves past it; the
+# small commit after it is reviewed as usual.
+U="$TMP/uncov"; git init -q --bare "$TMP/uncov.git"; git clone -q "$TMP/uncov.git" "$U" 2>/dev/null
+printf 'seed\n' > "$U/seed.txt"; git -C "$U" add seed.txt; git -C "$U" commit -qm "Seed (#96)"
+USEED="$(git -C "$U" rev-parse HEAD)"
+mkdir -p "$U/huge"; for i in $(seq 1 151); do printf 'x\n' > "$U/huge/f$i.txt"; done
+git -C "$U" add huge; git -C "$U" commit -qm "Vendor drop (#401)"
+UBIG="$(git -C "$U" rev-parse HEAD)"
+printf 'ok\n' > "$U/small.txt"; git -C "$U" add small.txt; git -C "$U" commit -qm "Small fix (#402)"
+USMALL="$(git -C "$U" rev-parse HEAD)"
+git -C "$U" push -q origin main 2>/dev/null
+UTIP="$(git -C "$U" rev-parse HEAD)"
+
+# 17: the uncovered commit is recorded, never reviewed; the small one after it is.
+reset_state
+seed_marker "$USEED"
+OUT="$(STUB_CODEANT_MODE=ok rrun "$U" --max-reviews 5 --ignore-window 2>/dev/null)"; RC=$?
+check_eq "17: exit 0" "0" "$RC"
+check_contains "17: run completes" "stop=done" "$OUT"
+check_contains "17: uncovered commit is named on stdout with its count" \
+  "backfill-review: uncovered commit $UBIG files=151 largest_cap=150" "$OUT"
+check_contains "17: uncovered is not counted as reviewed (only the small commit is)" "reviewed=1 clean=1" "$OUT"
+check_eq "17: exactly one reviewer run, on the small commit" "1" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "17: uncovered entry holds the SHA" "$UBIG" \
+  "$(jq -r '.repos["acme/widgets"].uncovered[0].commit' "$MARKER")"
+check_eq "17: uncovered entry holds the file count" "151" \
+  "$(jq -r '.repos["acme/widgets"].uncovered[0].files' "$MARKER")"
+check_eq "17: uncovered entry holds the largest cap" "150" \
+  "$(jq -r '.repos["acme/widgets"].uncovered[0].largest_cap' "$MARKER")"
+check_eq "17: uncovered list has exactly one entry" "1" \
+  "$(jq -r '.repos["acme/widgets"].uncovered | length' "$MARKER")"
+check_eq "17: the small commit is the one recorded as reviewed" "$USMALL" \
+  "$(jq -r '.repos["acme/widgets"].last_range.last' "$MARKER")"
+check_eq "17: marker ends at main" "$UTIP" "$(marker_sha)"
+check_eq "17: no partial record for the uncovered commit" "null" \
+  "$(jq -r '.repos["acme/widgets"].partial_commits' "$MARKER")"
+
+# 18: the uncovered record cannot be written; the marker must not advance.
+reset_state
+RO="$TMP/ro"; mkdir -p "$RO"; RO_MARKER="$RO/marker.json"
+jq -n --arg s "$USEED" '{schema_version: 1, repos: {"acme/widgets": {last_reviewed_commit: $s, updated_at: "2026-11-01T00:00:00Z"}}}' > "$RO_MARKER"
+BEFORE="$(cat "$RO_MARKER")"
+chmod 555 "$RO"
+OUT="$(BACKFILL_RANGE_MARKER="$RO_MARKER" STUB_CODEANT_MODE=ok "$RUN_BASH" "$SCRIPT" --range --repo-dir "$U" --repo acme/widgets \
+  --timeout 30 --channels coderabbit,codeant --max-reviews 5 --ignore-window 2>"$TMP/stderr")"; RC=$?
+chmod 755 "$RO"
+check_eq "18: failed uncovered write exits 5" "5" "$RC"
+check_contains "18: stop reason is named" "stop=range_uncovered_write_failed" "$OUT"
+check_eq "18: marker byte-identical (no advance without the record)" "$BEFORE" "$(cat "$RO_MARKER")"
+check_eq "18: no reviewer ran for the uncovered commit or after it" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "18: nothing filed" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+
+# 19: dry run lists the uncovered commit and writes nothing.
+reset_state
+seed_marker "$USEED"
+OUT="$(rrun "$U" --dry-run --ignore-window 2>/dev/null)"; RC=$?
+check_eq "19: dry run exits 0" "0" "$RC"
+check_contains "19: dry run says would record uncovered, with the SHA and count" \
+  "would record uncovered commit $UBIG files=151 largest_cap=150" "$OUT"
+check_contains "19: dry run still plans the small commit" "commits=1 files=1 bound=150 channel=coderabbit partial=no" "$OUT"
+check_contains "19: dry run stops with dry_run" "stop=dry_run" "$OUT"
+check_eq "19: dry run left the marker at its seed" "$USEED" "$(marker_sha)"
+check_eq "19: dry run has no uncovered entry" "null" "$(jq -r '.repos["acme/widgets"].uncovered' "$MARKER")"
+check_eq "19: dry run ran no review CLI" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "19: dry run filed nothing" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
 
 echo
 echo "backfill-range-review tests: $PASS passed, $FAIL failed"
