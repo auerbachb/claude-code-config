@@ -14,7 +14,8 @@
 #   Contract and rationale: .claude/reference/unattended-mode.md.
 #
 # USAGE
-#   unattended.sh on [--for <N>h|<N>m | --until-epoch <E>]   (default --for 12h)
+#   unattended.sh on [--for <N>h|<N>m | --until-epoch <E> | --open-ended]   (default --for 12h)
+#                                                --open-ended: no window end (until `off`); issue #2293
 #   unattended.sh off [--cwd DIR | --repo KEY]   switch off, then print and mark the digest
 #   unattended.sh status                         one line: `active until ...` or `inactive`
 #   unattended.sh is-active                      exit 0 active, 1 not (no output)
@@ -57,7 +58,7 @@ if [ -z "$JQ" ]; then
   done
 fi
 
-usage() { sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'unattended.sh: %s\n' "$1" >&2; exit 2; }
 need_jq() { [ -n "$JQ" ] || { printf 'unattended.sh: jq not found\n' >&2; exit 1; }; }
 
@@ -152,15 +153,26 @@ pending_json() { # FILE
 
 # --- subcommands ------------------------------------------------------------
 cmd_on() {
-  local until="" dur="12h" n
+  local until="" dur="12h" n open=0 given=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --for) [ $# -ge 2 ] || die_usage "--for needs a value"; dur="$2"; shift 2 ;;
-      --until-epoch) [ $# -ge 2 ] || die_usage "--until-epoch needs a value"; until="$2"; shift 2 ;;
+      --for) [ $# -ge 2 ] || die_usage "--for needs a value"; dur="$2"; given=$((given + 1)); shift 2 ;;
+      --until-epoch) [ $# -ge 2 ] || die_usage "--until-epoch needs a value"; until="$2"; given=$((given + 1)); shift 2 ;;
+      --open-ended) open=1; given=$((given + 1)); shift ;;
       *) die_usage "unknown argument to on: $1" ;;
     esac
   done
+  [ "$open" -eq 0 ] || [ "$given" -le 1 ] || die_usage "--open-ended cannot be combined with --for or --until-epoch"
   n=$(now)
+  if [ "$open" -eq 1 ]; then
+    # No end: the flag stays on until `off`. A null until_epoch is "never ends" to
+    # is_active/window_ended, so no window-end watch is printed.
+    "$SESSION_STATE_SH" --set ".unattended.active=true" --set ".unattended.since_epoch=$n" \
+      --set ".unattended.until_epoch=null" >/dev/null || { printf 'unattended.sh: state write failed\n' >&2; return 1; }
+    printf 'unattended: on until you say otherwise\n'
+    printf 'pre-leave check: list linked sessions and confirm none is waiting on the user; say so.\n'
+    return 0
+  fi
   if [ -z "$until" ]; then
     case "$dur" in
       *[!0-9]*[hm]|[hm]) die_usage "--for takes <N>h or <N>m" ;;

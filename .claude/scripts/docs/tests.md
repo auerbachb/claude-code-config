@@ -166,6 +166,7 @@ opt-in of issue #1544.
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
 | [pr-state-stdout.test.sh](../tests/pr-state-stdout.test.sh) | Verify pr-state stdout parity and absence of temp bundles on success, failure, and interruption |
 | [pr-state-unmarked-replies.test.sh](../tests/pr-state-unmarked-replies.test.sh) | Tests the advisory `unmarked_replies` count `pr-state.sh` adds to its bundle |
+| [presence.test.sh](../tests/presence.test.sh) | Proves the global presence state, one-asker dialog claim, closing-the-laptop routing, and the unattended-reads-as-away bridge |
 | [prompt-reservation.test.sh](../tests/prompt-reservation.test.sh) | Proves real state CAS, process recovery, and the two /subagent prompt gates against competing callers |
 | [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
 | [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, the `account-config.md` leg, and the `setup-skills-worktree.sh` delegation guard |
