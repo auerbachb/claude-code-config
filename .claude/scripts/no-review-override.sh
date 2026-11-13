@@ -197,7 +197,10 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
       | {reviewer: .user.login, kind: ("review_" + (.state | ascii_downcase))} ]
   + [ (.pr_comments // [])[]?
       | select((.user.login // "") as $l | $bots | index($l))
-      | select((.commit_id // "") == $h or (.original_commit_id // "") == $h)
+      # GitHub may retarget commit_id after a push while preserving the old
+      # original_commit_id. Match the original-HEAD fence in review-substance.sh:
+      # only genuinely current findings stop the no-review clock.
+      | select((.commit_id // "") == $h and ((.original_commit_id // .commit_id) // "") == $h)
       | select((.in_reply_to_id // null) == null)
       | {reviewer: .user.login, kind: "inline_comment"} ]
   + ((.issue_comments // []) | issue_comment_verdicts($h))

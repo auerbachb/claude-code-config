@@ -126,5 +126,51 @@ expect_eq "hollow APPROVED: excluded, applied" "$(jq -r .applied <<<"$out")" "tr
 out=$(run_helper "$(payload '[]' "[$(inline "$CU" "Still a bug: the guard fails open." 1001)]" '[]')")
 expect_eq "inline reply reading like a finding: not a verdict" "$(jq -r .applied <<<"$out")" "true"
 
+# --- 9. Issue #2325 / MIA PR #1121: old findings retargeted onto a new HEAD
+# must not block the clock; acknowledgement replies and hollow approval add no verdict.
+OLDSHA=2222222222222222222222222222222222222222
+retargeted=$(inline "$CA" "Old finding, now fixed." null | jq --arg old "$OLDSHA" '.original_commit_id = $old | .id = 1001')
+ack=$(inline "$CA" "Verified fixed on the new commit." 1001 | jq --arg old "$OLDSHA" '.original_commit_id = $old')
+old_findings=$(jq -cn --argjson finding "$retargeted" --argjson ack "$ack" '[$finding,$ack]')
+out=$(run_helper "$(payload "[$(review "$CA" APPROVED "")]" "$old_findings" "[\"$CA\"]")")
+expect_eq "retargeted old finding plus hollow approval: applied" "$(jq -r .applied <<<"$out")" "true"
+expect_eq "retargeted old finding: no HEAD verdict" "$(jq -c .verdicts_on_head <<<"$out")" "[]"
+expect_eq "retargeted old finding: eligible" "$(jq -r .eligible <<<"$out")" "true"
+expect_eq "retargeted old finding: elapsed window" "$(jq -r .reason <<<"$out")" "window_elapsed"
+expect_eq "retargeted old finding: normal check anchor" "$(jq -r .anchor_source <<<"$out")" "earliest_head_check_start"
+expect_eq "retargeted old finding: full window elapsed" "$(jq -r '.elapsed_seconds >= 600' <<<"$out")" "true"
+
+# The inverse mismatch is not a current finding either.
+inverse=$(inline "$CA" "Old location with current original ID." null | jq --arg old "$OLDSHA" '.commit_id = $old')
+out=$(run_helper "$(payload '[]' "[$inverse]" '[]')")
+expect_eq "old commit with current original: excluded" "$(jq -r .applied <<<"$out")" "true"
+
+# Legacy absent original IDs follow review-substance's fallback to commit_id.
+legacy=$(inline "$CA" "Current legacy finding." null | jq 'del(.original_commit_id)')
+out=$(run_helper "$(payload '[]' "[$legacy]" '[]')")
+expect_eq "absent original current finding: blocks" "$(jq -r .reason <<<"$out")" "verdict_on_head"
+legacy_old=$(printf '%s' "$legacy" | jq --arg old "$OLDSHA" '.commit_id = $old')
+out=$(run_helper "$(payload '[]' "[$legacy_old]" '[]')")
+expect_eq "absent original old finding: excluded" "$(jq -r .applied <<<"$out")" "true"
+
+# A fresh genuine top-level finding still blocks even beside the resolved old one.
+mixed=$(jq -cn --argjson old "$retargeted" --argjson current "$(inline "$CA" "A new current finding." null)" '[$old,$current]')
+out=$(run_helper "$(payload "[$(review "$CA" APPROVED "")]" "$mixed" "[\"$CA\"]")")
+expect_eq "genuine current finding beside old finding: blocks" "$(jq -r .reason <<<"$out")" "verdict_on_head"
+expect_eq "genuine current finding: verdict kind" "$(jq -r '.verdicts_on_head[0].kind' <<<"$out")" "inline_comment"
+
+# Null uses the same legacy fallback; empty strings and missing current IDs do not.
+null_original=$(printf '%s' "$legacy" | jq '.original_commit_id = null')
+out=$(run_helper "$(payload '[]' "[$null_original]" '[]')")
+expect_eq "null original current finding: blocks" "$(jq -r .reason <<<"$out")" "verdict_on_head"
+empty_original=$(printf '%s' "$legacy" | jq '.original_commit_id = ""')
+out=$(run_helper "$(payload '[]' "[$empty_original]" '[]')")
+expect_eq "empty original current finding: excluded" "$(jq -r .applied <<<"$out")" "true"
+missing_current=$(inline "$CA" "No current origin." null | jq 'del(.commit_id)')
+out=$(run_helper "$(payload '[]' "[$missing_current]" '[]')")
+expect_eq "missing current with HEAD original: excluded" "$(jq -r .applied <<<"$out")" "true"
+out=$(run_helper "$(payload "[$(review "$CA" APPROVED "Reviewed this current change.")]" "$old_findings" '[]')")
+expect_eq "real approval beside retargeted finding: blocks" "$(jq -r .reason <<<"$out")" "verdict_on_head"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
