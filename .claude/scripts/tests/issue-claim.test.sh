@@ -1667,6 +1667,54 @@ check_eq "usage: leading punctuation in the documented alphabet is accepted" "0|
 run 873 --release --holder h1
 check_eq "usage: rejected values wrote nothing" 0 "$(claim_comment_count)"
 
+############################################################################
+echo "== (2284-int) real default claim, then the REAL ownership gate: both identity env vars unset =="
+# candidate-ownership.test.sh stubs issue-claim.sh, so it cannot see a mismatch
+# between the holder the real claim script writes by default and the one the
+# ownership gate expects. Here nothing is stubbed but `gh` and `hostname`.
+reset_issue
+INT_BIN="$TMP/int-bin"
+mkdir -p "$INT_BIN"
+# Distinctive fake host: the claim digest must come from it, never a real name.
+printf '#!/usr/bin/env bash\necho fixture-host-zzq\n' > "$INT_BIN/hostname"
+# The gate also asks gh for the in-progress index, open PRs and the repo name;
+# answer those and forward every issue-API call to the stateful stub above.
+cat > "$INT_BIN/gh" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}\${2:-}" in
+  issuelist) exit 0 ;;
+  prlist) echo '[]'; exit 0 ;;
+  repoview) echo 'testowner/testrepo'; exit 0 ;;
+esac
+exec "$STUB_BIN/gh" "\$@"
+STUB
+chmod +x "$INT_BIN/hostname" "$INT_BIN/gh"
+INT_SESSION_STATE="$TMP/int-session-state.json"
+echo '{"schema_version":2,"repos":{}}' > "$INT_SESSION_STATE"
+int_env() { # int_env <cmd...> — identity env vars unset, fake host first on PATH
+  ( cd "$REPO_ROOT" && env -u CLAUDE_CLAIM_HOLDER -u CLAUDE_SESSION_ID -u CANDIDATE_OWNERSHIP_SCRIPT_DIR \
+      PATH="$INT_BIN:$PATH" CLAUDE_SESSION_STATE_FILE="$INT_SESSION_STATE" \
+      CLAUDE_SESSION_REPO="testowner/testrepo" CLAUDE_HANDOFF_DIR="$TMP/int-handoffs" "$@" )
+}
+INT_OUT="$(int_env "$CLAIM_TEST_SHELL" "$SCRIPT" 873 --claim --repo testowner/testrepo --json 2>"$TMP/int.err")"; INT_RC=$?
+check_eq "default claim succeeds with no explicit holder" "0|mine" "$INT_RC|$(jq -r .verdict <<<"$INT_OUT")"
+check_eq "premise: the claim comment is on the issue" 1 "$(claim_comment_count)"
+INT_HOLDER="$(jq -r '.[0].body' "$STATE/comments.json" | sed -n 's/.*"holder":"\([^"]*\)".*/\1/p')"
+check_contains "premise: the stored holder is the hidden digest form" "h-" "$INT_HOLDER"
+check_eq "premise: the fake hostname is not published" "false" \
+  "$(if grep -q 'fixture-host-zzq' "$STATE/comments.json"; then echo true; else echo false; fi)"
+INT_GATE="$(int_env "$CLAIM_TEST_SHELL" "$REPO_ROOT/.claude/scripts/candidate-ownership.sh" 873 --repo testowner/testrepo --json 2>"$TMP/int-gate.err")"
+check_eq "gate: the run's own default claim is not owned" "false" "$(jq -r 'select(.issue == 873) | .owned' <<<"$INT_GATE")"
+check_eq "gate: dispatchable" "dispatch" "$(jq -r 'select(.issue == 873) | .action' <<<"$INT_GATE")"
+check_contains "gate: self-attributed" "held by this thread" \
+  "$(jq -r 'select(.issue == 873) | .evidence | join("|")' <<<"$INT_GATE")"
+check_eq "gate: the real claim script answered (verdict mine)" "mine" "$(jq -r 'select(.issue == 873) | .claim_verdict' <<<"$INT_GATE")"
+# Control: a claim under an unrelated holder still reads as foreign.
+reset_issue
+run 873 --claim --holder someone-else
+INT_GATE="$(int_env "$CLAIM_TEST_SHELL" "$REPO_ROOT/.claude/scripts/candidate-ownership.sh" 873 --repo testowner/testrepo --json 2>/dev/null)"
+check_eq "control: a foreign claim is still owned" "true" "$(jq -r 'select(.issue == 873) | .owned' <<<"$INT_GATE")"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
