@@ -28,6 +28,7 @@ resolve_script() {
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+ISSUE_CLAIM_BATCH=$(resolve_script issue-claim-batch.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 MODEL_ROUTE_SH=$(resolve_script model-route.sh || true)
@@ -51,6 +52,7 @@ STOPPAGE_NOTE_SH=$(for c in "${HOME:+$HOME/.claude/skills-worktree/desk/bin/stop
 - `chip-launching.md` unreadable → **required** for Step 5's route-to-thread branch only. Print `ERROR: chip-launching.md not found (checked all three paths) — too-big routing gate unavailable`, and queue the issue inline rather than routing it out: inline is the default the gate exists to protect (#1189), so failing toward it is correct.
 - `SESSION_STATE_SH` empty → **required**. Print `ERROR: session-state.sh not found (checked all three paths) — agent tracking and refill state unavailable` and do not spawn; an untracked agent is one nothing will ever reap.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 6 claim gate skipped` and continue.
+- `ISSUE_CLAIM_BATCH` empty → **optional**. Print `DEGRADED: issue-claim-batch.sh not found (checked all three paths) — claiming each issue one at a time (more API calls; the rest of the round is unclaimed until each issue's turn)` and use Step 6.0's per-issue claim.
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
 - `PROMPT_RESERVE_SH` empty → an attended launch that would need a new Step 7 question stays queued; already-answered and unattended paths keep their normal gates. Say the reservation helper is unavailable and do not open an unreserved prompt.
@@ -377,7 +379,7 @@ For each qualifying issue, verify no PR is already open **and** that no other th
 
 ```bash
 gh pr list --search "head:issue-{NUMBER}" --json number,title,state
-"$ISSUE_CLAIM" {NUMBER} --check   # $ISSUE_CLAIM from Step 0
+"$ISSUE_CLAIM" {NUMBER} --check   # $ISSUE_CLAIM from Step 0; when ISSUE_CLAIM_BATCH resolved, the round claim below subsumes this check
 ```
 
 Either signal skips the issue, and the skip line names **which** one fired:
@@ -386,11 +388,25 @@ Either signal skips the issue, and the skip line names **which** one fired:
 - claim check exits `1` (`claimed`) or `4` (`unknown`) → "Issue #N is already being worked — claimed by `{claimant}` at {time} — skipping." `unknown` is treated exactly as `claimed`; it never reads as permission.
 - `stale` (exit 0) → not a skip. Surface the stale warning and continue.
 
-When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
+**Claim the whole round at once (issue #2286).** After the open-PR check has dropped issues that already have a PR, claim **every remaining issue admitted to this round — running and queued alike — in one call, before the first Phase A starts**, so a second orchestrator cannot plan over the queue while it waits its turn. Claim only what this round intends to run, never the wider backlog:
+
+```bash
+CLAIM_RESULTS=""
+if [[ -n "$ISSUE_CLAIM_BATCH" ]]; then
+  # {NUMBERS}: the admitted issue numbers, space-separated. Exit 1/4 only says
+  # some issue was refused or undetermined; the per-issue verdicts decide.
+  CLAIM_RESULTS=$("$ISSUE_CLAIM_BATCH" --claim {NUMBERS} --json) || true
+fi
+```
+
+Then, for each issue, read its own object — `printf '%s\n' "$CLAIM_RESULTS" | jq -c --argjson n {NUMBER} 'select(.issue == $n)'`. Verdict `mine` → continue below with `BATCH_CLAIM_JSON` set to that object (the snippet below consumes and clears it, so one issue's object never leaks into the next; leave it empty on the per-issue fallback). Any other verdict, or no object for the issue (an empty `CLAIM_RESULTS` is never permission) → drop the issue from the round, naming the holder (`claimant`, `provider`, `device`) when it is `claimed`; `unknown` reads exactly as `claimed`. The one exception is a `claimed` issue the user explicitly told you, in chat, to start anyway: do not drop it, take it with the single-issue `"$ISSUE_CLAIM" {NUMBER} --claim --allow-claimed --json` and say you are overriding. An issue dropped from the round **after** it was claimed — a later gate declines it for good, or the user removes it — is released in the same step: `"$ISSUE_CLAIM_BATCH" --release {NUMBER}` (on the per-issue fallback: `"$ISSUE_CLAIM" {NUMBER} --release`). A launch that is merely deferred (it stays queued) keeps its claim. Claims on `/pause` and `/end` are kept; the work resumes. When `ISSUE_CLAIM_BATCH` is empty, use the per-issue pair below for each issue instead.
+
+Per issue — **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
 
 ```bash
 CLAIM_HOLDER=""
-if CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json); then
+CLAIM_JSON=${BATCH_CLAIM_JSON:-}; BATCH_CLAIM_JSON=""   # one-shot: consumed here, so one issue's object never reaches the next
+if CLAIM_JSON=${CLAIM_JSON:-$("$ISSUE_CLAIM" {NUMBER} --claim --json)} && printf '%s' "$CLAIM_JSON" | jq -e --argjson n {NUMBER} '.issue == $n and .verdict == "mine"' >/dev/null 2>&1; then
   # The exact token this claim was taken with — every later --renew must pass
   # it (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived.
   CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty' 2>/dev/null)
