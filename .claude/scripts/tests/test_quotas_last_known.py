@@ -58,6 +58,28 @@ class LastKnownTests(unittest.TestCase):
         self.record([account('claude', 'one@example.com', NOW, rows)])
         self.assertFalse((self.folder / 'claude--one@example.com.json').exists())
 
+    def test_folder_created_by_a_concurrent_helper_is_accepted(self):
+        # Deterministic race: the folder appears after secure_folder's existence
+        # check and before its mkdir. The losing helper must accept it, not fail.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('quotas_last_known', HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        folder = self.root / 'raced'
+        real_mkdir = os.mkdir
+
+        def racing_mkdir(path, mode=0o777, *args, **kwargs):
+            real_mkdir(path, mode)  # the other process wins the race
+            return real_mkdir(path, mode)  # our call then hits FileExistsError
+
+        original = module.os.mkdir
+        module.os.mkdir = racing_mkdir
+        try:
+            self.assertTrue(module.secure_folder(folder, create=True))
+        finally:
+            module.os.mkdir = original
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+
     def test_partial_live_read_keeps_saved_series_it_did_not_read(self):
         # Cursor-style account: the live run reads only one pool ok; the other
         # pool's last good reading must survive the rewrite.

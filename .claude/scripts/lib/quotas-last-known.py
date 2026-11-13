@@ -62,7 +62,12 @@ def secure_folder(folder, create):
     if create:
         os.makedirs(folder.parent, exist_ok=True)
         if not folder.exists() and not folder.is_symlink():
-            os.mkdir(folder, 0o700)
+            # Another helper may create the folder between the check and the
+            # mkdir; that is success. The checks below still vet what exists.
+            try:
+                os.mkdir(folder, 0o700)
+            except FileExistsError:
+                pass
     try:
         metadata = folder.lstat()
     except FileNotFoundError:

@@ -75,5 +75,7 @@ printf '%s' '{"not": "a usage body"' > "$STUB_CHATGPT_BODY"
 run --json --five-hour
 check_eq "$(field_of codex-one@example.com "5-hour" last_known_used_pct)" "33" "a saved 5-hour reading shows under a failed account-wide placeholder"
 check_eq "$(rows_for codex-one@example.com | grep -c '^ok$')" "0" "the failed read is not reported as ok"
+run
+check_contains "$OUT" "33% (last known" "the text report labels the saved 5-hour reading as last known"
 cp "$HTTP_WIRE_FIXTURE" "$STUB_CHATGPT_BODY"
 unset AI_QUOTAS_LAST_KNOWN_DIR
