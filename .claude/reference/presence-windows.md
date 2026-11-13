@@ -46,7 +46,7 @@ operator ended.
 ## Closing the laptop
 
 "Closing the laptop" is not a second mechanism. `set closing` takes its end from the repo's armed
-`/leave-by` deadline (`.repos[<key>].window.deadline_epoch`) and exits 3 when none is armed, so the
+`/leave-by` deadline (`.repos[<key>].window.deadline_epoch`, counted only while `.repos[<key>].leave.active` is true, so a `/pm --window` deadline never qualifies) and exits 3 when none is armed, so the
 time must go through `/leave-by` first; that skill still owns the planning deadline and the
 wind-down. The presence record then reads `here`, `machine_on: false`, ending at that deadline:
 the operator is at the computer until he closes it. What a thread does at that boundary is

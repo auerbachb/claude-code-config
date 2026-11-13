@@ -94,6 +94,9 @@ check "the winner stores the answer" "$rc" 0
 P $loser status --json; check "the loser now reads the answer" "$(field .state)" here
 P $loser ask; check "after the answer nobody asks" "$rc" 12
 P $winner release --generation "$token"; check "a released token is gone (idempotent)" "$rc" 0
+P $loser set away --by operator-message --for 1h --generation "$token"
+check "a released token cannot write a late answer" "$rc" 10
+P $loser status --json; check "the late answer left the stored state alone" "$(field .state)" here
 
 printf '== a dismissed dialog pauses re-asking for an hour\n'
 jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"
@@ -116,6 +119,8 @@ P $owner1 set closing --by operator-message; check "no deadline armed: refused" 
 P $owner1 set closing --by operator-message --for 1h; check "closing takes no duration" "$rc" 2
 deadline=$(( $(date +%s) + 3 * 3600 ))
 "$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$deadline" >/dev/null
+P $owner1 set closing --by operator-message; check "a /pm --window deadline without /leave-by: refused" "$rc" 3
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
 P $owner1 set closing --by operator-message; check "deadline armed: closing set" "$rc" 0
 P $owner2 status --json
 check "closing: the window ends at the deadline" "$(field .until_epoch)" "$deadline"

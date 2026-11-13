@@ -35,7 +35,7 @@
 #
 # EXIT CODES
 #   0 ok / ask granted (prints the token); 1 is-away false, or a write failed; 2 usage error;
-#   3 closing with no armed leave deadline; 10 another thread holds the dialog (read `status`);
+#   3 closing with no armed leave deadline; 10 another thread holds the dialog, or a set used a stale token (read `status`);
 #   12 a live declaration exists (printed; do not ask); 13 the dialog was dismissed in the last hour;
 #   20 the claim could not be verified (do not ask).
 #
@@ -169,6 +169,10 @@ leave_deadline() { # prints the armed /leave-by deadline epoch, or returns 1
   local k="$REPO" d="${CWD:-$PWD}" v
   if [ -z "$k" ] && [ -d "$d" ]; then k=$(cd "$d" 2>/dev/null && "$SESSION_STATE_SH" --repo-key 2>/dev/null) || k=""; fi
   [ -n "$k" ] && [ "$k" != "_unknown" ] || return 1
+  # /pm --window also writes .window.deadline_epoch; only /leave-by sets .leave.active, so a
+  # planning-only window never counts as a laptop-closing deadline.
+  v=$("$SESSION_STATE_SH" --repo "$k" --get-json ".repos[\"$k\"].leave.active" 2>/dev/null) || return 1
+  [ "$v" = true ] || return 1
   v=$("$SESSION_STATE_SH" --repo "$k" --get-json ".repos[\"$k\"].window.deadline_epoch" 2>/dev/null) || return 1
   case "$v" in ''|null|*[!0-9]*) return 1 ;; esac
   [ "$v" -gt "$(now)" ] || return 1
@@ -226,6 +230,18 @@ cmd_set() {
   fi
   local until_json="null"
   [ -z "$until" ] || until_json="$until"
+
+  # A late answer under a replaced token must not overwrite a newer declaration: prove the
+  # dialog claim is still this caller's before writing anything.
+  if [ -n "$gen" ]; then
+    rc=0
+    "$RESERVE_SH" verify --kind presence --generation "$gen" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) ;;
+      10) printf 'presence.sh: the dialog claim is no longer yours; nothing written, read presence.sh status\n' >&2; return 10 ;;
+      *) printf 'presence.sh: cannot verify the dialog claim; nothing written\n' >&2; return 20 ;;
+    esac
+  fi
 
   local sets
   sets=(--set ".presence.state=$([ "$want" = away ] && echo away || echo here)"
