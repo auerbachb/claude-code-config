@@ -24,6 +24,11 @@ registers globally at the next session start.
   wake-up.` A call with several questions names every id:
   `Queued as D-43, D-44. Print exactly: questions D-43, D-44 sent to human
   queue. ...`
+  Both end with one more sentence (a call naming several ids says to arm each
+  id, so no parked Decision is left without a push): `If you park, first arm the phone push:
+  ~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm D-43 --thread
+  <name> --question '<one line>' and follow what it prints.` (Issue #2291;
+  `.claude/reference/phone-push-wait.md`.)
 - **What a Decision carries.** `--kind decision`; the question on one line
   (whitespace collapsed, control characters dropped, at most 500 bytes); each
   option label as `--option`; `--default` is the label ending in

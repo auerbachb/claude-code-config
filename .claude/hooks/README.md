@@ -327,7 +327,7 @@ Registered on **`PreToolUse`** with matcher **`AskUserQuestion`** and a 15 s tim
 
 - Asks the store (`desk/bin/human-queue.sh control-status`) whether a live desk exists: a registered control session whose last tick is at most 15 minutes old (`live_desk_max_tick_age_min` in `desk/policy.json` overrides it).
 - **No live desk:** does nothing; the menu renders as it always has. This is the state until the `/desk` session (#1779) registers and ticks, so the hook is inert at rollout.
-- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.`
+- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.` followed by one sentence telling a parking thread to arm `phone-push-wait.sh` first (Issue #2291).
 - Finds `HUMAN_QUEUE_DATABASE_URL` even when the app's environment lacks it: from an owner-only `~/.config/human-queue/database_url`, else a literal `export` line in the shell profile (read, never run). Never prints it.
 - **Fails open:** any failure (no URL, store unreachable, CLI missing, timeout, bad input) allows the menu with one `human-queue-capture:` line on stderr. Always exits `0`.
 

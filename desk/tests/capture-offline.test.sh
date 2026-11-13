@@ -217,8 +217,8 @@ input() {
     "$session" "$cwd" "$qs"
 }
 
-R1="Queued as D-1. Print exactly: question D-1 sent to human queue. Then proceed on your recommended default or park and wait for a wake-up."
-R12="Queued as D-1, D-2. Print exactly: questions D-1, D-2 sent to human queue. Then proceed on your recommended defaults or park and wait for a wake-up."
+R1="Queued as D-1. Print exactly: question D-1 sent to human queue. Then proceed on your recommended default or park and wait for a wake-up. If you park, first arm the phone push: ~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm D-1 --thread <name> --question '<one line>' and follow what it prints."
+R12="Queued as D-1, D-2. Print exactly: questions D-1, D-2 sent to human queue. Then proceed on your recommended defaults or park and wait for a wake-up. If you park, first arm the phone push for each id: ~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm <id> --thread <name> --question '<one line>' and follow what it prints."
 
 # ---------------------------------------------------------------- registration
 printf '== registration\n'
