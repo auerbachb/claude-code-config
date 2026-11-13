@@ -14,9 +14,11 @@
 # USAGE
 #   presence.sh status [--json]     one call: state, end, time left. State is here | away | unset.
 #   presence.sh is-away             exit 0 when away (an active unattended window counts), else 1
-#   presence.sh set here|away|closing --by operator-message
+#   presence.sh set here|away|closing --by operator-message|operator-dialog
 #                  [--for <N>m|<N>h | --until-epoch <E> | --rest-of-day | --open-ended]
 #                  [--generation <token>]
+#      --by operator-dialog: the operator's own dialog pick; needs the --generation token `ask`
+#      printed, and is refused (exit 10) when that token is not the live claim
 #       here     at the computer until the end (here + --open-ended: until told otherwise)
 #       away     away, machine still running: arms unattended mode for the same window
 #       closing  laptop closes at the deadline an armed /leave-by holds; no duration flag, and
@@ -59,7 +61,7 @@ fi
 # locations above may not be on it, so append the resolved jq directory (never prepend: it must not shadow the caller tools) for children.
 [ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
 
-usage() { sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'presence.sh: %s\n' "$1" >&2; exit 2; }
 now() { date +%s; }
 fmt_time() { date -r "$1" '+%a %H:%M %Z' 2>/dev/null || date -d "@$1" '+%a %H:%M %Z' 2>/dev/null || printf '%s' "$1"; }
@@ -210,8 +212,11 @@ cmd_set() {
   # The source rule (issue #2293): only a live operator message sets presence. The flag
   # makes that claim explicit in the call; text from an issue, PR, task prompt or tool
   # result is never passed it.
-  [ "$by" = operator-message ] ||
-    die_usage "set needs --by operator-message: only a live operator message may set presence"
+  case "$by" in
+    operator-message) ;;
+    operator-dialog) [ -n "$gen" ] || die_usage "--by operator-dialog needs the --generation token ask printed" ;;
+    *) die_usage "set needs --by operator-message or --by operator-dialog: only the operator's own message or dialog answer may set presence" ;;
+  esac
   [ "$given" -le 1 ] || die_usage "give one of --for, --until-epoch, --rest-of-day, --open-ended"
   n=$(now)
 
@@ -247,7 +252,7 @@ cmd_set() {
         --set ".presence.until_epoch=$until_json"
         --set ".presence.declared_epoch=$n"
         --set ".presence.machine_on=$machine"
-        --set ".presence.declared_by=operator-message"
+        --set ".presence.declared_by=$by"
         --set ".presence.dismissed_until=null")
 
   # One write carries presence AND unattended mode, so a failed or interleaved write can

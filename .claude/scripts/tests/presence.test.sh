@@ -279,6 +279,17 @@ P $owner2 ask; check "the claim was released after the usage error" "$rc" 0
 P $owner2 release --generation "$out" >/dev/null
 reset_presence
 
+# A dialog-sourced set needs a valid generation; the stored source names the dialog.
+reset_presence
+P $owner1 set here --by operator-dialog --for 1h; check "dialog source without a token: usage error" "$rc" 2
+P $owner1 set here --by operator-dialog --for 1h --generation 00000000000000000000000000000000
+check "dialog source with a token that is not the live claim: refused" "$rc" 10
+P $owner1 status --json; check "a refused dialog answer stores nothing" "$(field .state)" unset
+P $owner1 ask; tok=$out
+P $owner1 set here --by operator-dialog --for 1h --generation "$tok"; check "dialog source with the live token: stored" "$rc" 0
+check "the stored source names the dialog" "$(jq -r .presence.declared_by "$HOME/.claude/session-state.json")" operator-dialog
+reset_presence
+
 printf '== rest of the day\n'
 P $owner1 set here --by operator-message --rest-of-day >/dev/null
 P $owner1 status --json
