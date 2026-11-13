@@ -20,11 +20,11 @@ Matches the default you acted on: nothing to do. Differs: apply it while the PR 
 
 ## Unattended
 
-Armed only by the operator in chat (`unattended.sh on`). Then record each question (`unattended.sh record`), print `question U-<n> recorded for the operator's return`, take the recommended option if reversible, else park that step; keep working. Hooks deny menus and list the questions once at his next message or window end. No `start_session`; use sub-agents. **Pre-leave:** list linked sessions; confirm none waits on the user. Every spawned session or sub-agent brief carries, beside SAFETY/MINDSET:
+Armed only by the operator in chat (`unattended.sh on`). Then record each question (`unattended.sh record`), print `question U-<n> recorded for the operator's return`, default or park as above; keep working. Hooks deny menus and list the questions once at his next message or window end. No `start_session`; use sub-agents. **Pre-leave:** list linked sessions; confirm none waits on the user. Every spawned session or sub-agent brief carries, beside SAFETY/MINDSET:
 
 ```text
 QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
-Park only a step whose recommended option is not reversible, and report it.
+Park only a step whose recommended option is not reversible or needs confirmation, and report it.
 Full rules: .claude/rules/human-queue.md.
 ```
 

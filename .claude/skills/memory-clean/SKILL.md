@@ -113,6 +113,8 @@ python3 "$SCRIPT" --apply [--dir PATH] \
 
 The script validates every target (bare `.md` basename, direct child of the memory dir, never `MEMORY.md`), deletes files, rewrites `MEMORY.md` atomically, and verifies integrity. Exit `4` = a safety refusal or an integrity failure — surface the message verbatim and do not retry blindly. On success, report the JSON's before/after `entry_count` and `bytes`, the deleted files, and the integrity result (`ok`, any `remaining_dangling`, any `remaining_orphans` kept by choice).
 
+**Stale index lines** are not part of the `--apply` call (it deletes files and drops pointers; it does not reword lines). For each one the user confirmed: read the note, then edit that one `MEMORY.md` line with the Edit tool so it states the note's current decision first and says the earlier one was superseded; keep the link and the one-line shape. Do this after the `--apply` call when both were chosen (the prune rewrites `MEMORY.md`), then re-run `--check --strict` and report that it exits `0`.
+
 ## Rules
 
 - **NEVER delete a memory file or rewrite MEMORY.md without explicit confirmation** — mirrors `/pm-clean`'s "never auto-close."

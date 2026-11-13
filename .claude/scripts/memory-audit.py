@@ -111,7 +111,10 @@ _SUPERSEDED_WORD_RE = re.compile(
     r"|(?i:\b(?:superseded|reversed)\s*(?::|by\b|the same day|(?:on\s+)?\d{4}-\d))"
 )
 # An index line that says the decision changed.
-_INDEX_SAYS_CHANGED_RE = re.compile(r"supersed|revers|replaced", re.IGNORECASE)
+_INDEX_SAYS_CHANGED_RE = re.compile(r"\b(?:supersed\w*|reversed|replaced)\b", re.IGNORECASE)
+# A markdown link destination, removed before the index line is read: a file
+# named superseded_x.md must not count as the line saying so.
+_LINK_DEST_RE = re.compile(r"\]\([^)]*\)")
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _MDFILE_RE = re.compile(r"([A-Za-z0-9._-]+\.md)")
 
@@ -328,7 +331,7 @@ def detect_stale_index_lines(
         if not _SUPERSEDED_WORD_RE.search(text):
             continue
         line = raw_lines[line_no]
-        if _INDEX_SAYS_CHANGED_RE.search(line):
+        if _INDEX_SAYS_CHANGED_RE.search(_LINK_DEST_RE.sub("]", line)):
             continue
         flags.append({"file": target, "line": line_no + 1, "index_line": line.strip()})
     return flags

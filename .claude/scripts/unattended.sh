@@ -250,9 +250,15 @@ cmd_digest() {
     esac
   done
   f=$(q_file)
+  [ -f "$f" ] || return 0
+  # Hold the lock from read to watermark, so two sessions answering the same
+  # prompt cannot both list the same questions.
+  if [ "$mark" -eq 1 ]; then
+    lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
+  fi
   p=$(pending_json "$f")
   count=$(printf '%s' "$p" | "$JQ" -r 'length')
-  [ "${count:-0}" -gt 0 ] || return 0
+  [ "${count:-0}" -gt 0 ] || { unlock; return 0; }
   printf 'Questions recorded while you were away (%s):\n' "$count"
   printf '%s' "$p" | "$JQ" -r 'to_entries[] | .value as $q
     | "\(.key + 1). \($q.id): \($q.question)"
@@ -262,7 +268,8 @@ cmd_digest() {
   if [ "$mark" -eq 1 ]; then
     last=$(printf '%s' "$p" | "$JQ" -r '[.[].id | ltrimstr("U-") | tonumber? // 0] | max')
     append "$f" "$("$JQ" -cn --argjson t "$last" --argjson at "$(now)" '{type: "listed", through: $t, at: $at}')" ||
-      { printf 'unattended.sh: could not mark the list as shown\n' >&2; return 1; }
+      { unlock; printf 'unattended.sh: could not mark the list as shown\n' >&2; return 1; }
+    unlock
   fi
 }
 

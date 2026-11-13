@@ -1195,7 +1195,7 @@ echo/commit/paste/log the value. Your own prohibitions still win (phase-c uses
 
 ```text
 QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
-Park only a step whose recommended option is not reversible, and report it.
+Park only a step whose recommended option is not reversible or needs confirmation, and report it.
 Full rules: .claude/rules/human-queue.md.
 ```
 

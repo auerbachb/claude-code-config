@@ -125,14 +125,20 @@ class DetectTests(unittest.TestCase):
         # "superseded" as an ordinary word does not mark a decision reversed.
         mem = make_store(
             self.tmp,
-            ["- [CI](ci.md) — re-run once first", "- [DB](db.md) — use Postgres"],
+            [
+                "- [CI](ci.md) — re-run once first",
+                "- [DB](db.md) — use Postgres",
+                "- [Queue](superseded_queue.md) — reversible default: use SQS",
+            ],
             {
+                "superseded_queue.md": fact("q", "Use SQS. SUPERSEDED: use Kafka.\n"),
                 "ci.md": fact("ci", "Cancel runs on superseded SHAs to free the runner.\n"),
                 "db.md": fact("db", "Use Postgres. Reversed on 2026-11-02: use SQLite.\n"),
             },
         )
         r = memory_audit.detect(mem, 10 ** 9)
-        self.assertEqual([s["file"] for s in r["stale_index"]], ["db.md"])
+        # "reversible" and a link filename do not say the decision changed.
+        self.assertEqual([s["file"] for s in r["stale_index"]], ["db.md", "superseded_queue.md"])
 
     def test_strict_exit_code(self):
         mem = make_store(
