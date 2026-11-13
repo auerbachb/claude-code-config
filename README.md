@@ -133,7 +133,7 @@ All 39 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet monitor and re-arms it |
 | `/receiving-code-review` | Review | Judgment layer for evaluating bot review findings before implementing — six-step READ→UNDERSTAND→VERIFY→EVALUATE→RESPOND→IMPLEMENT pattern with rationalization table and decline discipline |
 | `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
-| `/tldr` | Workflow | Few-line summary of what the thread needs from you (Needs you / Done / In flight / Watch out); `/tldr all` covers the whole thread |
+| `/tldr` | Workflow | Plain-English summary of what the thread changed and what it means for you, with a needs-you line first; `/tldr all` covers the whole thread |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/harness-audit` | Workflow | Monthly check of whether the harness now does natively what our rules, skills, scripts, and hooks do by hand — verdicts each artifact against live harness behavior and files issues; advisory only, never edits |
