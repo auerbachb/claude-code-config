@@ -98,7 +98,12 @@ repo_key() {
   if [ -d "$d" ] && [ -x "$SESSION_STATE_SH" ]; then
     k=$(cd "$d" 2>/dev/null && "$SESSION_STATE_SH" --repo-key 2>/dev/null) || k=""
   fi
-  [ -n "$k" ] || k="_unknown"
+  if [ -z "$k" ] || [ "$k" = "_unknown" ]; then
+    # No origin: key on the checkout itself, so two such repos never share a file.
+    local top
+    top=$(cd "$d" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || top=""
+    k="_local/$(printf '%s' "${top:-$d}" | tr '/' '_')"
+  fi
   printf '%s\n' "$k"
 }
 q_file() {
@@ -142,7 +147,7 @@ pending_json() { # FILE
         | . as $q
         | ($q.id | ltrimstr("U-") | tonumber? // 0) as $n
         | select($n > $w)
-        | .did = (([$u[] | select(.id == $q.id) | .did] | last) // .did)]' "$1" 2>/dev/null || printf '[]\n'
+        | .did = (([$u[] | select(.id == $q.id) | .did] | last) // .did)]' "$1" 2>/dev/null
 }
 
 # --- subcommands ------------------------------------------------------------
@@ -158,8 +163,9 @@ cmd_on() {
   n=$(now)
   if [ -z "$until" ]; then
     case "$dur" in
-      *h) until=$(( n + ${dur%h} * 3600 )) 2>/dev/null || die_usage "bad --for: $dur" ;;
-      *m) until=$(( n + ${dur%m} * 60 )) 2>/dev/null || die_usage "bad --for: $dur" ;;
+      *[!0-9]*[hm]|[hm]) die_usage "--for takes <N>h or <N>m" ;;
+      *h) until=$(( n + 10#${dur%h} * 3600 )) ;;
+      *m) until=$(( n + 10#${dur%m} * 60 )) ;;
       *) die_usage "--for takes <N>h or <N>m" ;;
     esac
   fi
@@ -210,13 +216,16 @@ cmd_record() {
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   id="U-$((n + 1))"
   rc=0
-  append "$f" "$("$JQ" -cn --arg id "$id" --arg q "$q" --arg r "$rec" --arg o "$opts" --arg d "$did" \
+  local json
+  json=$("$JQ" -cn --arg id "$id" --arg q "$q" --arg r "$rec" --arg o "$opts" --arg d "$did" \
     --arg s "$sid" --arg src "$src" --argjson at "$(now)" '
     {type: "question", id: $id, at: $at, question: $q,
      options: ($o | if . == "" then [] else split("|") end),
      recommended: (if $r == "" then null else $r end),
      did: (if $d == "" then null else $d end),
-     session: (if $s == "" then null else $s end), source: $src}')" || rc=1
+     session: (if $s == "" then null else $s end), source: $src}') || rc=1
+  # jq's exit status, not just its output: a killed jq can leave partial JSON.
+  [ "$rc" -eq 0 ] && { append "$f" "$json" || rc=1; }
   unlock
   [ "$rc" -eq 0 ] || { printf 'unattended.sh: write failed\n' >&2; return 1; }
   printf '%s\n' "$id"
@@ -238,14 +247,19 @@ cmd_update() {
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
   lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
-  append "$f" "$("$JQ" -cn --arg id "$id" --arg d "$did" --argjson at "$(now)" \
-    '{type: "update", id: $id, at: $at, did: $d}')" || rc=1
+  local json
+  json=$("$JQ" -cn --arg id "$id" --arg d "$did" --argjson at "$(now)" \
+    '{type: "update", id: $id, at: $at, did: $d}') || rc=1
+  [ "$rc" -eq 0 ] && { append "$f" "$json" || rc=1; }
   unlock
   [ "$rc" -eq 0 ] || { printf 'unattended.sh: write failed\n' >&2; return 1; }
 }
 
 cmd_pending() {
-  pending_json "$(q_file)" | "$JQ" -r 'length'
+  local p
+  p=$(pending_json "$(q_file)") && [ -n "$p" ] ||
+    { printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
+  printf '%s' "$p" | "$JQ" -r 'length'
 }
 
 cmd_digest() {
@@ -263,7 +277,9 @@ cmd_digest() {
   if [ "$mark" -eq 1 ]; then
     lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
   fi
-  p=$(pending_json "$f")
+  # An unreadable file is an error, never "nothing to list".
+  p=$(pending_json "$f") && [ -n "$p" ] ||
+    { unlock; printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
   count=$(printf '%s' "$p" | "$JQ" -r 'length')
   [ "${count:-0}" -gt 0 ] || { unlock; return 0; }
   local out
@@ -277,8 +293,10 @@ cmd_digest() {
     unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
   fi
   if [ "$mark" -eq 1 ]; then
-    last=$(printf '%s' "$p" | "$JQ" -r '[.[].id | ltrimstr("U-") | tonumber? // 0] | max')
-    append "$f" "$("$JQ" -cn --argjson t "$last" --argjson at "$(now)" '{type: "listed", through: $t, at: $at}')" ||
+    local json
+    last=$(printf '%s' "$p" | "$JQ" -r '[.[].id | ltrimstr("U-") | tonumber? // 0] | max') &&
+      json=$("$JQ" -cn --argjson t "$last" --argjson at "$(now)" '{type: "listed", through: $t, at: $at}') &&
+      append "$f" "$json" ||
       { unlock; printf 'unattended.sh: could not mark the list as shown\n' >&2; return 1; }
     unlock
   fi

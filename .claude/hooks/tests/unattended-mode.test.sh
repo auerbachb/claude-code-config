@@ -98,6 +98,7 @@ check "digest hook: nothing to list" "$OUT" "rc=0"
 printf '== usage\n'
 U bogus >/dev/null 2>&1; check "unknown subcommand exits 2" "$?" "2"
 U on --for 3x >/dev/null 2>&1; check "bad --for exits 2" "$?" "2"
+U on --for 1+2h >/dev/null 2>&1; check "an arithmetic --for exits 2" "$?" "2"
 U record >/dev/null 2>&1; check "record without --question exits 2" "$?" "2"
 U on --until-epoch 5 >/dev/null 2>&1; check "a window end in the past exits 2" "$?" "2"
 
@@ -172,6 +173,25 @@ OUT=$(ask_payload "$REPO_A" | "$GUARD")
 check "guard after the end: menu renders" "$OUT" ""
 OUT=$(prompt_payload "$REPO_A" "<ci-monitor-event>window over</ci-monitor-event>" | "$DIGEST")
 has "automated prompt after the end lists them" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" "Late question?"
+
+printf '== origin-less repos, failed writes\n'
+NO_A="$TMP/no-origin-a"; NO_B="$TMP/no-origin-b"
+git init -q "$NO_A"; git init -q "$NO_B"
+(cd "$NO_A" && "$SCRIPT" record --question "A only?" >/dev/null)
+check "two repos without an origin do not share a file" "$( (cd "$NO_B" && "$SCRIPT" pending) )" "0"
+check "the first still has its question" "$( (cd "$NO_A" && "$SCRIPT" pending) )" "1"
+# A jq that dies after printing partial JSON: no receipt, nothing appended.
+FAKE="$TMP/fakebin"; mkdir -p "$FAKE"
+cat >"$FAKE/jq" <<'FAKEJQ'
+#!/bin/sh
+printf '{"type":"question"'
+exit 137
+FAKEJQ
+chmod +x "$FAKE/jq"
+BEFORE=$(wc -l <"$QF" | tr -d ' ')
+OUT=$( (cd "$REPO_A" && PATH="$FAKE:$PATH" "$SCRIPT" record --question "Killed?" 2>/dev/null); echo "rc=$?")
+check "a killed jq prints no receipt" "$OUT" "rc=1"
+check "and appends nothing" "$(wc -l <"$QF" | tr -d ' ')" "$BEFORE"
 
 printf '== off\n'
 U on --for 1h >/dev/null
