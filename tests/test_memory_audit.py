@@ -100,6 +100,45 @@ class DetectTests(unittest.TestCase):
         )
         self.assertEqual(memory_audit.detect(mem, 10 ** 9)["advisory"]["superseded"], [])
 
+    def test_stale_index_line_flagged(self):
+        # Issue #2283: the note was reversed the same day, the always-loaded
+        # index line still states the old decision.
+        mem = make_store(
+            self.tmp,
+            [
+                "- [SMS provider](sms.md) — all SMS on Amazon (no Twilio)",
+                "- [Voice](voice.md) — SUPERSEDED: one Twilio number for SMS and voice",
+                "- [Plain](plain.md) — a current fact",
+            ],
+            {
+                "sms.md": fact("sms", "1. All SMS on Amazon. SUPERSEDED 2026-11-10: one Twilio number.\n"),
+                "voice.md": fact("voice", "Item 1 superseded the same day.\n"),
+                "plain.md": fact("plain", "Does not supersede anything.\n"),
+            },
+        )
+        r = memory_audit.detect(mem, 10 ** 9)
+        self.assertEqual([s["file"] for s in r["stale_index"]], ["sms.md"])
+        self.assertEqual(r["stale_index"][0]["line"], 1)
+        self.assertEqual(r["summary"]["stale_index_count"], 1)
+
+    def test_strict_exit_code(self):
+        mem = make_store(
+            self.tmp,
+            ["- [SMS](sms.md) — all SMS on Amazon"],
+            {"sms.md": fact("sms", "SUPERSEDED: Twilio.\n")},
+        )
+        out = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--check", "--strict", "--dir", mem],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(out.returncode, 1, out.stderr)
+        self.assertIn("Stale index lines", out.stdout)
+        plain = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--check", "--dir", mem],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+
     def test_duplicate_names(self):
         mem = make_store(
             self.tmp,

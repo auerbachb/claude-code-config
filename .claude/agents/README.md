@@ -129,11 +129,15 @@ Agent tool call:
            Provisioning a generated secret via a provider CLI is allowed — the
            value just must never be echoed, committed, pasted, or logged.
 
+           QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
+           Park only a step whose recommended option is not reversible, and report it.
+           Full rules: .claude/rules/human-queue.md.
+
            Existing findings to fix:
            <paste findings here>"
 ```
 
-The SAFETY and MINDSET blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md`) as deliberate safety-critical restatements even though they are inherited. The SKILLS block is only needed for Explore/Plan and non-custom spawns that do not inherit automatically (see `.claude/rules/skill-first.md`). The example above shows where to place them — between the task context and any findings payload.
+The SAFETY, MINDSET, and QUESTIONS blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md` and `.claude/rules/human-queue.md` §Unattended) as deliberate safety-critical restatements even though they are inherited. The SKILLS block is only needed for Explore/Plan and non-custom spawns that do not inherit automatically (see `.claude/rules/skill-first.md`). The example above shows where to place them — between the task context and any findings payload.
 
 The agent definition provides role-specific workflow rules. The harness injects the full project rule corpus. The prompt provides runtime context (PR number, branch, handoff path, etc.).
 
@@ -142,7 +146,7 @@ The agent definition provides role-specific workflow rules. The harness injects 
 1. Create `<agent-name>.md` in this directory
 2. Include frontmatter with **`name:`** (required — must match the intended `subagent_type` string and the filename stem exactly), `description:` (required), and optionally `tools:` for tool restrictions (use `tools:`, not `allowed-tools:`) <!-- deprecated-key-ok: allowed-tools -->
 3. Embed only role-specific rules — global rules (skill-first, autonomy, etc.) are inherited automatically
-4. Always include the SAFETY and MINDSET blocks as safety-critical restatements
+4. Always include the SAFETY, MINDSET, and QUESTIONS blocks as safety-critical restatements
 5. Document any new placeholders in this README
 6. Update the Agent Inventory table above
 7. Restart Claude Code so the new file is scanned and registered

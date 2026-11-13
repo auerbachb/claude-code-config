@@ -32,7 +32,7 @@ Parse `$ARGUMENTS`: pass through an explicit `--dir PATH` (for a non-current pro
 python3 "$SCRIPT" --check --json [--dir PATH] [--budget-bytes N]
 ```
 
-Exit `0` = scanned (a clean store is a valid result). Exit `3` = memory dir not found — tell the user and offer to re-run with `--dir PATH`. The JSON has `memory_dir`, `index` (`bytes`, `entry_count`, `file_count`, `budget_bytes`, `over_budget`), `orphans`, `dangling`, and `advisory` (`duplicate_names`, `superseded`). Read `memory_dir` back to the user so they know exactly which store is in scope.
+Exit `0` = scanned (a clean store is a valid result). Exit `3` = memory dir not found — tell the user and offer to re-run with `--dir PATH`. The JSON has `memory_dir`, `index` (`bytes`, `entry_count`, `file_count`, `budget_bytes`, `over_budget`), `orphans`, `dangling`, `stale_index` (issue #2283), and `advisory` (`duplicate_names`, `superseded`). Read `memory_dir` back to the user so they know exactly which store is in scope.
 
 ## Step 2: Present recommendations
 
@@ -57,6 +57,13 @@ On disk but not referenced by MEMORY.md. Some orphans are intentionally unindexe
 |------|------|------|
 | foo.md | 1.2 KB | Unindexed — review before deleting |
 
+### Stale index lines (K) — recommend rewriting the line
+The note says the decision was superseded; its MEMORY.md line still reads as current. The index loads every session and the note does not, so rewrite each line to state the current decision first (an index edit, not a delete; do it on the user's yes in Step 3).
+
+| File | MEMORY.md line | Index line now |
+|------|----------------|----------------|
+| sms-provider.md | 12 | all SMS on Amazon (no Twilio) |
+
 ### Index size
 {Only when over budget:} Index is {bytes} > {budget_bytes}. The index loads every session; trimming entries reduces per-session token cost.
 
@@ -75,6 +82,7 @@ After presenting, stop and present the choice via **`AskUserQuestion`** when ava
 
 - `"Drop dangling index pointers — safe (Recommended)"` (only when dangling pointers found; skip-wins if selected with others)
 - `"Delete orphaned files"` (only when orphans found; user may name specific files via "Other")
+- `"Rewrite stale index lines"` (only when stale index lines found — edit each MEMORY.md line to the note's current decision; no file is deleted)
 - `"Act on advisory items"` (only when advisory findings found)
 - `"Skip — leave the store untouched"` (mark `(Recommended)` and list first when only advisory or orphan-only findings remain; skip-wins)
 

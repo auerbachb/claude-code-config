@@ -12,14 +12,14 @@ Use `.claude/agents/` definitions. Custom `subagent_type` agents automatically i
 3. Explicit `model` (see "Model Selection").
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md` — kept as a deliberate safety-critical restatement even though it is inherited.
-6. The verbatim `MINDSET:` block from `safety.md` — same rationale (try CLI/browser before handoff — see "Capability Discovery").
+6. The verbatim `MINDSET:` block from `safety.md` — same rationale (try CLI/browser before handoff — see "Capability Discovery") — and `QUESTIONS:` from `human-queue.md`.
 7. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`).
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
 ### Fallback: Explore/Plan and Non-Custom Spawns
 
-Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/Plan, a bare `general-purpose` call, or a custom type the session has not registered (`Agent type '<name>' not found`) — gets the verbatim SAFETY/MINDSET/SKILLS blocks pasted manually, plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. **Never paste the full CLAUDE.md + rules corpus.** Causes and rationale: `.claude/reference/phase-decomposition.md` §Non-custom spawns.
+Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/Plan, a bare `general-purpose` call, or a custom type the session has not registered (`Agent type '<name>' not found`) — gets the verbatim SAFETY/MINDSET/QUESTIONS/SKILLS blocks pasted manually, plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. **Never paste the full CLAUDE.md + rules corpus.** Causes and rationale: `.claude/reference/phase-decomposition.md` §Non-custom spawns.
 
 ## Model Selection
 

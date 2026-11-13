@@ -535,6 +535,49 @@ for SH in $SHELLS; do
   expect_silent "[$SH] a jq that fails"
 done
 
+# ---------------------------------------------------------------- unattended (issue #2283)
+printf '== unattended\n'
+for SH in $SHELLS; do
+  reset_markers
+  rm -f "$HOMEDIR/.claude/session-state.json"
+  # The unattended receipt counts as a receipt, attended or not.
+  hook "$SH" "$(msg "Should item F use Twilio or Amazon?
+
+question U-3 recorded for the operator's return
+
+Proceeding on Twilio.")"
+  expect_silent "[$SH] the unattended receipt answers the question"
+  reset_markers
+  hook "$SH" "$(msg "Should item F use Twilio?
+Questions U-3, U-4 recorded for the operator$(printf '\342\200\231')s return")"
+  expect_silent "[$SH] plural unattended receipt, typographic apostrophe"
+  reset_markers
+  hook "$SH" "$(msg "Should item F use Twilio?
+question recorded for the operator's return")"
+  expect_silent "[$SH] unattended receipt without an id"
+
+  # Unattended mode on: the warning never points at the question tool.
+  mkdir -p "$HOMEDIR/.claude"
+  printf '{"unattended":{"active":true,"since_epoch":1,"until_epoch":%s}}\n' "$(( $(date +%s) + 3600 ))" \
+    >"$HOMEDIR/.claude/session-state.json"
+  reset_markers
+  hook "$SH" "$(msg "$M_PROSE")"
+  check "[$SH] unattended: exit 0" "$RC" "0"
+  check "[$SH] unattended: one JSON object" "$(n_objects)" "1"
+  UCTX=$(field '.hookSpecificOutput.additionalContext')
+  check_contains "[$SH] unattended: says the operator is away" "$UCTX" "The operator is away (unattended mode)"
+  check_contains "[$SH] unattended: names the record command" "$UCTX" "unattended.sh record"
+  check_contains "[$SH] unattended: names the unattended receipt" "$UCTX" "(question U-<n> recorded for the operator's return)"
+  check_absent "[$SH] unattended: never demands the question tool" "$UCTX" "AskUserQuestion"
+
+  # A window that has ended is attended again.
+  printf '{"unattended":{"active":true,"since_epoch":1,"until_epoch":2}}\n' >"$HOMEDIR/.claude/session-state.json"
+  reset_markers
+  hook "$SH" "$(msg "$M_PROSE")"
+  expect_warn "[$SH] unattended window ended" "$Q_MERGE"
+  rm -f "$HOMEDIR/.claude/session-state.json"
+done
+
 # ---------------------------------------------------------------- speed
 printf '== speed\n'
 BIG=""

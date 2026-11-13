@@ -27,6 +27,7 @@ make_fixture() {
     "$dir/.claude/skills/pr-monitor-and-manage"
   cp "$REPO_ROOT/.claude/rules/safety.md" "$dir/.claude/rules/"
   cp "$REPO_ROOT/.claude/rules/skill-first.md" "$dir/.claude/rules/"
+  cp "$REPO_ROOT/.claude/rules/human-queue.md" "$dir/.claude/rules/"
   cp "$REPO_ROOT/.claude/reference/subagent-phase-guardrails.md" \
      "$dir/.claude/reference/"
   cp "$REPO_ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" \
@@ -108,6 +109,12 @@ expect "missing SKILLS block in subagent-phase-guardrails.md fails" 1 \
   'Missing SKILLS|SKILLS.*not found' \
   sed -i.bak 's/^SKILLS: /REMOVED: /' \
     .claude/reference/subagent-phase-guardrails.md
+
+# (e) Drifted QUESTIONS block in the pmm skill fails (issue #2283)
+expect "drifted QUESTIONS block in pr-monitor-and-manage fails" 1 \
+  'QUESTIONS block has drifted' \
+  sed -i.bak 's/^QUESTIONS: never use a question tool/QUESTIONS: avoid question tools/' \
+    .claude/skills/pr-monitor-and-manage/SKILL.md
 
 # Final: real repo conformance
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then

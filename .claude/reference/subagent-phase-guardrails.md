@@ -1,8 +1,8 @@
 # Subagent Phase Guardrails
 
-Verbatim SAFETY/MINDSET/SKILLS/RESOLVE blocks for subagent spawn prompts. Single canonical home; `verbatim-block-lint.sh` byte-compares SAFETY/MINDSET/SKILLS against `.claude/rules/safety.md` and `.claude/rules/skill-first.md`, and `skill-portability-lint.sh` byte-compares RESOLVE against `.claude/reference/portable-skill-resolution.md`.
+Verbatim SAFETY/MINDSET/SKILLS/QUESTIONS/RESOLVE blocks for subagent spawn prompts. Single canonical home; `verbatim-block-lint.sh` byte-compares SAFETY/MINDSET/SKILLS/QUESTIONS against `.claude/rules/safety.md`, `.claude/rules/skill-first.md`, and `.claude/rules/human-queue.md`, and `skill-portability-lint.sh` byte-compares RESOLVE against `.claude/reference/portable-skill-resolution.md`.
 
-**Phase C (`phase-c-merger`)** carries only the SAFETY block — no MINDSET or SKILLS per `subagent-orchestration.md`. **RESOLVE ships with all three phases**: every phase shells out to helper scripts, and a phase agent spawned against a repo with no `.claude/` directory fails the same way its parent would (issue #1189).
+**Phase C (`phase-c-merger`)** carries only the SAFETY and QUESTIONS blocks — no MINDSET or SKILLS per `subagent-orchestration.md`. **QUESTIONS ships with every phase** (issue #2283): no sub-agent may block on the operator. **RESOLVE ships with all three phases**: every phase shells out to helper scripts, and a phase agent spawned against a repo with no `.claude/` directory fails the same way its parent would (issue #1189).
 
 ---
 
@@ -68,6 +68,14 @@ run it. Provisioning a generated secret via a provider CLI is allowed — never
 echo/commit/paste/log the value. Your own prohibitions still win (phase-c uses
 /wrap, never gh pr merge, and has no browser tools — say so). Full rules:
 .claude/rules/safety.md.
+```
+
+## QUESTIONS (Never Block on the Operator)
+
+```text
+QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
+Park only a step whose recommended option is not reversible, and report it.
+Full rules: .claude/rules/human-queue.md.
 ```
 
 ## SKILLS (Skills-First Reflex)

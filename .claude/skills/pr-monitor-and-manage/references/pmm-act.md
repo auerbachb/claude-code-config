@@ -271,6 +271,7 @@ run_in_background: true
 - `SKIP_CR_TRIGGER=1` when `$CR_BUDGET_OK == 0`
 - The verbatim `SAFETY:` block from `.claude/rules/safety.md`
 - The verbatim `MINDSET:` block from `.claude/rules/safety.md`
+- The verbatim `QUESTIONS:` block from `.claude/rules/human-queue.md`
 - The verbatim `SKILLS:` block from `.claude/rules/skill-first.md`
 
 **Record all of this tick's spawns in ONE single write, after every Agent call has been issued.** `.active_agents` is a map keyed by agent id (issue #1631), so each spawn writes only its own key — a sibling thread's entries are structurally untouchable, and the old `--get` → append → `--set`-the-whole-array idiom that lost them is gone. Batching is still the rule: one call per tick is one atomic write and one lock acquisition instead of N. Build every entry first, then issue exactly one `session-state.sh` call for the whole batch:
