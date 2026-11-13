@@ -167,12 +167,24 @@ OUT=$(prompt_payload "$REPO_A" "<ci-monitor-event>tick</ci-monitor-event>" | "$D
 check "automated prompt before the end: nothing" "$OUT" ""
 # End the window: rewrite the flag through session-state.sh, as `on` does.
 "$REPO_ROOT/.claude/scripts/session-state.sh" --set ".unattended.until_epoch=$(( $(date +%s) - 1 ))" >/dev/null
-check "is-active after the end" "$(U is-active; echo $?)" "1"
+# Issue #2294: the end of an away window changes nothing for threads. They stay in away handling
+# (the guard still denies, questions are still recorded) until the operator speaks.
+check "is-active after the end: away handling continues" "$(U is-active; echo $?)" "0"
 check "window-ended after the end" "$(U window-ended; echo $?)" "0"
+check "status after the end says so" "$(U status | cut -c1-20)" "active (window ended"
 OUT=$(ask_payload "$REPO_A" | "$GUARD")
-check "guard after the end: menu renders" "$OUT" ""
+check "guard after the end: still denies, no menu" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
+GR=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+has "guard after the end: the winner also gets the away list" "$GR" "your away window ended"
+has "guard after the end: list covers every repo" "$GR" "[acme/gadgets]"
 OUT=$(prompt_payload "$REPO_A" "<ci-monitor-event>window over</ci-monitor-event>" | "$DIGEST")
-has "automated prompt after the end lists them" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" "Late question?"
+check "automated prompt after the end: the notice was already claimed, nothing more" "$OUT" ""
+OUT=$(prompt_payload "$REPO_A" "I'm back" | "$DIGEST")
+RCTX=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')
+has "the operator's message returns him and lists what was saved since" "$RCTX" "U-5: Which SMS provider"
+check "after the return: away handling has ended" "$(U is-active; echo $?)" "1"
+OUT=$(ask_payload "$REPO_A" | "$GUARD")
+check "after the return: the menu renders" "$OUT" ""
 
 printf '== origin-less repos, failed writes\n'
 NO_A="$TMP/no-origin-a"; NO_B="$TMP/no-origin-b"

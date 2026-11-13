@@ -18,7 +18,10 @@
 #                                                --open-ended: no window end (until `off`); issue #2293
 #   unattended.sh off [--cwd DIR | --repo KEY]   switch off, then print and mark the digest
 #   unattended.sh status                         one line: `active until ...` or `inactive`
-#   unattended.sh is-active                      exit 0 active, 1 not (no output)
+#   unattended.sh is-active                      exit 0 away handling applies, 1 not (no output). A window
+#                                                that ran out stays active until the operator speaks
+#                                                (presence.sh return) or `off`; an at-computer presence
+#                                                window that ran out counts too (issue #2294)
 #   unattended.sh window-ended                   exit 0 when a declared window has ended, else 1
 #   unattended.sh record --question TEXT [--recommended TEXT] [--options 'A|B|C']
 #                        [--did TEXT] [--session ID] [--source agent|hook] [--cwd DIR | --repo KEY]
@@ -28,6 +31,9 @@
 #   unattended.sh digest [--mark] [--cwd DIR | --repo KEY]
 #                                                the questions not yet listed, one per item;
 #                                                --mark records them as listed
+#   unattended.sh digest --all [--mark]          the same for EVERY repo's file, each block labelled
+#                                                with its repo key (the operator is one person and may
+#                                                come back in any thread; issue #2294)
 #   unattended.sh --help
 #
 # STATE
@@ -50,6 +56,7 @@ HERE=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || HERE="."
 SESSION_STATE_SH="${UNATTENDED_SESSION_STATE_SH:-$HERE/session-state.sh}"
 STATE_FILE="${HOME}/.claude/session-state.json"
 Q_DIR="${UNATTENDED_DIR:-${HOME}/.claude/unattended}"
+PRESENCE_SH="${UNATTENDED_PRESENCE_SH:-$HERE/presence.sh}"
 
 JQ=$(command -v jq 2>/dev/null) || JQ=""
 if [ -z "$JQ" ]; then
@@ -61,7 +68,7 @@ fi
 # session-state.sh needs jq on PATH too; append (never prepend) the resolved jq directory.
 [ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
 
-usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# Bash 3.2/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'unattended.sh: %s\n' "$1" >&2; exit 2; }
 need_jq() { [ -n "$JQ" ] || { printf 'unattended.sh: jq not found\n' >&2; exit 1; }; }
 
@@ -73,13 +80,21 @@ read_flag() {
   "$JQ" -c '.unattended // null' "$STATE_FILE" 2>/dev/null || printf 'null\n'
 }
 
+# Away handling applies (issue #2294) when
+#   - the flag is on. Its end does NOT turn it off: a window that runs out leaves threads in away
+#     handling until the operator speaks (presence.sh return) or runs `off`; or
+#   - an at-computer presence window ran out and he has not spoken since (presence.sh expire/return
+#     own that record; here, only the stored end is read, so this stays one cheap read).
 is_active() {
-  local f n
-  f=$(read_flag); n=$(now)
-  [ "$(printf '%s' "$f" | "$JQ" -r --argjson n "$n" '
-    if type == "object" and .active == true
-       and ((.until_epoch | type) != "number" or .until_epoch > $n)
-    then "yes" else "no" end' 2>/dev/null)" = yes ]
+  local n
+  n=$(now)
+  [ -f "$STATE_FILE" ] || return 1
+  [ "$("$JQ" -r --argjson n "$n" '
+    (.unattended | if type == "object" then . else {} end) as $u
+    | (.presence | if type == "object" then . else {} end) as $p
+    | if $u.active == true then "yes"
+      elif $p.state == "here" and ($p.until_epoch | type) == "number" and $p.until_epoch <= $n then "yes"
+      else "no" end' "$STATE_FILE" 2>/dev/null)" = yes ]
 }
 
 window_ended() {
@@ -190,11 +205,15 @@ cmd_on() {
     --set ".unattended.until_epoch=$until" >/dev/null || { printf 'unattended.sh: state write failed\n' >&2; return 1; }
   printf 'unattended: on until %s (epoch %s)\n' "$(fmt_time "$until")" "$until"
   printf 'pre-leave check: list linked sessions and confirm none is waiting on the user; say so.\n'
-  printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "unattended window ended: run unattended.sh digest --mark and list the questions"\n' "$until"
+  printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "presence window ended: run %s expire and follow what it prints"\n' "$until" "$(printf '%q' "$PRESENCE_SH")"
 }
 
 cmd_off() {
   "$SESSION_STATE_SH" --set ".unattended.active=false" >/dev/null || { printf 'unattended.sh: state write failed\n' >&2; return 1; }
+  # An at-computer window that ran out is "away handling" too: end it with the flag. After the flag
+  # write, so a newer unattended window that was live no longer shields the older lapsed one. Best
+  # effort and silent; it acts only on a lapsed window and never touches one still running.
+  [ ! -x "$PRESENCE_SH" ] || "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || true
   printf 'unattended: off\n'
   cmd_digest --mark
 }
@@ -203,7 +222,9 @@ cmd_status() {
   local f u
   if is_active; then
     f=$(read_flag); u=$(printf '%s' "$f" | "$JQ" -r '.until_epoch // empty')
-    if [ -n "$u" ]; then printf 'active until %s\n' "$(fmt_time "$u")"; else printf 'active\n'; fi
+    if [ -z "$u" ]; then printf 'active\n'
+    elif [ "$u" -gt "$(now)" ]; then printf 'active until %s\n' "$(fmt_time "$u")"
+    else printf 'active (window ended %s; until you send a message)\n' "$(fmt_time "$u")"; fi
   else
     printf 'inactive\n'
   fi
@@ -277,15 +298,10 @@ cmd_pending() {
   printf '%s' "$p" | "$JQ" -r 'length'
 }
 
-cmd_digest() {
-  local mark=0 f p count last
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --mark) mark=1; shift ;;
-      *) die_usage "unknown argument to digest: $1" ;;
-    esac
-  done
-  f=$(q_file)
+# One repo's file: list the questions not yet listed (with --mark, record them as listed).
+# LABEL, when non-empty, prefixes the header so a multi-repo list says whose questions they are.
+digest_file() { # FILE MARK LABEL
+  local f="$1" mark="$2" label="$3" p count last out
   [ -f "$f" ] || return 0
   # Hold the lock from read to watermark, so two sessions answering the same
   # prompt cannot both list the same questions.
@@ -297,14 +313,13 @@ cmd_digest() {
     { unlock; printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
   count=$(printf '%s' "$p" | "$JQ" -r 'length')
   [ "${count:-0}" -gt 0 ] || { unlock; return 0; }
-  local out
   out=$(printf '%s' "$p" | "$JQ" -r 'to_entries[] | .value as $q
     | "\(.key + 1). \($q.id): \($q.question)"
       + "\n   Recommended: \($q.recommended // "none given")"
       + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
       + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
   # Nothing is marked listed unless the list was rendered and written.
-  if [ -z "$out" ] || ! printf 'Questions recorded while you were away (%s):\n%s\n' "$count" "$out"; then
+  if [ -z "$out" ] || ! printf '%sQuestions recorded while you were away (%s):\n%s\n' "${label:+[$label] }" "$count" "$out"; then
     unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
   fi
   if [ "$mark" -eq 1 ]; then
@@ -315,6 +330,28 @@ cmd_digest() {
       { unlock; printf 'unattended.sh: could not mark the list as shown\n' >&2; return 1; }
     unlock
   fi
+}
+
+cmd_digest() {
+  local mark=0 all=0 rc=0 f key
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mark) mark=1; shift ;;
+      --all) all=1; shift ;;
+      *) die_usage "unknown argument to digest: $1" ;;
+    esac
+  done
+  if [ "$all" -eq 1 ]; then
+    [ -d "$Q_DIR" ] || return 0
+    for f in "$Q_DIR"/*.jsonl; do
+      [ -f "$f" ] || continue
+      key=$(basename "$f" .jsonl)
+      key="${key/__//}"
+      digest_file "$f" "$mark" "$key" || rc=1
+    done
+    return "$rc"
+  fi
+  digest_file "$(q_file)" "$mark" ""
 }
 
 # --- main ---------------------------------------------------------------------

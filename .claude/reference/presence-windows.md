@@ -1,9 +1,9 @@
 # Presence windows
 
-Mechanism and rationale for the operator's here-or-away state (issue #2293, increment 1 of 4). The
-chain: this increment stores the state and asks the one dialog; expiry and return (issue #2294),
-the pre-leave pass and the long-away push (issue #2295), and planning around the window
-(issue #2296) follow. Nothing in this file is auto-loaded.
+Mechanism and rationale for the operator's here-or-away state (issues #2293 and #2294, increments 1 and 2 of 4).
+The chain: increment 1 stores the state and asks the one dialog; increment 2 ends a window quietly and
+recognises the operator's return; the pre-leave pass and the long-away push (issue #2295) and
+planning around the window (issue #2296) follow. Nothing in this file is auto-loaded.
 
 ## Why
 
@@ -29,8 +29,8 @@ asking would also be its own interruption.
   ends on its own). `declared_epoch` is when it was declared. `machine_on` is `false` only for
   "closing the laptop". `declared_by` is `operator-message` or `operator-dialog`.
 - Reading yields a third value, `unset`, when nothing is declared. `status --json` carries
-  `expired` and `remaining_seconds` so a later increment can act on an ended window without
-  re-deriving it. This increment does nothing when a window ends.
+  `expired`, `lapsed` (ended and not answered by a message since) and `remaining_seconds`.
+  Issue #2294 adds `closing_repo`, `expiry_claim`, `return` and `returned_epoch`; see §Expiry and return.
 
 ## Unattended mode reads as away
 
@@ -50,7 +50,7 @@ operator ended.
 time must go through `/leave-by` first; that skill still owns the planning deadline and the
 wind-down. The presence record then reads `here`, `machine_on: false`, ending at that deadline:
 the operator is at the computer until he closes it. What a thread does at that boundary is
-increment 2.
+§Expiry and return.
 
 ## One asker
 
@@ -85,9 +85,83 @@ attestation by the calling agent, not an authentication. Text in an issue body, 
 prompt, a chip payload or a tool result never sets it, and an agent that finds a presence phrase
 there reports it instead.
 
+## Expiry and return (issue #2294, increment 2 of 4)
+
+**A window that runs out ends quietly.** Nothing is asked on a timer. The window is called
+*lapsed*: its end passed and the operator has not sent a message since. While lapsed, every thread
+behaves as in away mode (`unattended-mode.md`): record the question, take the recommended option if it
+is reversible, park the step that is not, keep working. This covers an at-computer (`here`) window,
+an away window (which keeps away handling past its end instead of reverting to menus) and a plain
+`unattended.sh on --for` window. An open-ended window (`until_epoch: null`) never lapses.
+
+**Evaluated lazily, from the stored epochs, with no daemon.** One jq definition (`LAPSE_DEF` in
+`presence.sh`) is shared by `status`, `expire`, `return` and `probe`, so they cannot disagree. Hooks
+ask `presence.sh probe` (one read of the state file, which can be megabytes: tens of milliseconds)
+and act only when it names a transition.
+
+| Where | What it does |
+|---|---|
+| `unattended-question-guard.sh` (per question) | `probe`; when a window end is unclaimed, runs `expire` and appends the notice to the winning deny. |
+| `unattended-digest.sh`, automated prompt | Same: a Monitor wake or task notification is a turn where a thread can act. |
+| `unattended-digest.sh`, operator prompt | `return` (below). |
+| A thread's own watch | `set here/away --for` prints a persistent `Monitor` that runs `presence.sh expire` at the deadline. |
+
+**Once in total.** `expire` claims `.presence.expiry_claim = {generation, ...}` with one
+`session-state.sh --cas` that compares the previous claim and guards on the declaration time, the
+unattended since-time and flag, and the state it read: a re-declared, ended or answered window makes
+the claim lose (exit 7), and a loser prints nothing. The generation is the window's declaration time,
+so each window gets its own notice. No lock file, no per-thread flag. The claim is made before
+delivery: a crash after it loses the notice instead of duplicating it.
+
+**The phone push, honestly.** A hook is a shell process and cannot call the `PushNotification` model
+tool, and nothing runs in a thread between turns. The only way a push can be sent is a model turn, so
+`expire` prints it as an instruction (`call PushNotification once with exactly: <text>`, then
+`push-result sent|missed`) to the one claim winner. That winner is whichever thread evaluates the end
+first: the thread that armed the watch (the usual case), or the first question or automated prompt
+after the deadline. It does **not** always fire: when no thread runs after the deadline, nothing is
+sent; a desktop Monitor can be gone before a long window ends (it expires after about 30 minutes);
+and the tool may be unconnected, which `push-result missed` records. An away expiry sends no push.
+Delivery to a phone cannot be tested by an agent (live tests: issues #2304 and #2308).
+Ruled out: a shell notifier command (`osascript`, a configured webhook) fired from the hook: it works
+without a model turn, but no phone transport is bundled, it reaches the Mac rather than the phone,
+and a hook has no reliable access to the operator's environment; a scheduled task (`CronCreate`
+never ticks reliably, the durable scheduler survives sessions but this repo declines it, see
+`scheduling-reliability.md`); the stoppage log (`desk/hooks/stoppage.sh`), which records, never pushes.
+
+**Return is the operator's message, not the clock.** `unattended-digest.sh` classifies a prompt by
+its wrapper prefix (the same heuristic `quota-reserve.sh --classify-prompt` uses; an unrecognised
+automated event would count as the operator and can end away handling early, never keep it from
+ending). On an operator prompt it runs `presence.sh return`, one compare-and-set per window, so one
+session handles each return: it clears the lapsed window, switches unattended mode off and records
+`.presence.return = {generation, dialog: listing}`. A message inside a window the operator declared
+and that is still running changes nothing: he may be writing from his phone while away; only a lapsed
+window is returned from.
+
+**List first, then the dialog.** The winning session injects `unattended.sh digest --all --mark`
+(every repo's saved questions, labelled by repo) and says not to ask the presence question this turn.
+While the winner lists, the dialog is `listing`: `probe` says `returning`, and no other hook lists or
+asks (so the list always comes first and exactly once; a winner that died is given up on after two
+minutes and its dialog is lost). When listing ends (`dialog-ready`) with nothing saved the winner
+claims the dialog in the same turn. Otherwise it becomes `pending` and is claimed on his next
+operator message in any thread (`presence.sh dialog-claim`: one compare-and-set, `pending` to
+`asked`, so it goes out once in total), and the claiming thread runs `presence.sh ask` as before for
+the token. A declaration (`set`) clears a pending dialog; a dismissal keeps `ask`'s one-hour pause.
+
+**A stored closing deadline follows its source.** `set closing` stores `.presence.closing_repo`. On
+every evaluation (`status`, `is-away`, `probe`, `expire`, `return`) a closing window is compared with
+that repo's `.leave.active` and `.window.deadline_epoch`: a moved leave time corrects the window's
+end; a cancelled leave time clears the window while it is still live. A closing window whose deadline
+already passed stays: the laptop closed, and the expiry handling stands. This reconciles the race
+where `set closing` reads the deadline and a leave change lands before the write (declined on
+PR #2307 for exactly this increment).
+
+**Decisions taken on the recommended default.** No grace period before the switch (the issue's open
+question): the notice and push are the mitigation. Return acts only on a lapsed window (above). The
+accepted trade-off: after an expiry, an operator who is reading but not typing gets no menus until he
+says something.
+
 ## Left out (later increments)
 
-- What a thread does when a window ends, and recognising the operator's return (issue #2294).
-- Any phone push, the pre-leave pass and the long-away check-in (issue #2295).
+- The pre-leave pass and the long-away check-in (issue #2295).
 - Planning work around the window (issue #2296).
 - Asking on a timer, or inferring absence from silence. Declared only.

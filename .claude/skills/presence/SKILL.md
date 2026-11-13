@@ -12,7 +12,8 @@ argument-hint: "[status | ask | here <N>m|<N>h | away <N>m|<N>h | open-ended]"
 
 One state, read by every thread: the operator is here or away, until when, and whether the machine
 stays on. Mechanism: `.claude/reference/presence-windows.md`. This skill stores the answer and asks
-the question; what threads do when a window ends is a later increment.
+the question. A window that runs out ends quietly (no question on a timer): see
+"When a window runs out" below.
 
 ## Step 0: Resolve helpers
 
@@ -49,7 +50,7 @@ thread did not open with a valid token.
 ## Reading it (any thread, one call)
 
 `"$PRESENCE_SH" status` prints one line (`here, until Fri 15:27 EST (118m left) [presence]`);
-`status --json` adds `expired` and `remaining_seconds`. `is-away` exits 0 when away. An active
+`status --json` adds `expired`, `lapsed` and `remaining_seconds`. `is-away` exits 0 when away or when a window ran out unanswered. An active
 unattended window already reads as away. `unset` means nothing is declared: behave as today.
 
 ## Setting it from a plain statement
@@ -67,6 +68,24 @@ When the operator says it outright, do not open a menu; set it:
 
 Away also arms unattended mode (`human-queue.md` §Unattended): follow the lines the call prints
 (the pre-leave check, the window-end Monitor).
+
+## When a window runs out (issue #2294)
+
+Nothing is asked on a timer. A window whose end passed, with no operator message since, is
+*lapsed*: handle questions as in away mode (record, reversible default, park the rest). The hooks
+run `presence.sh expire` for you. A Monitor wake that says `run ... expire` is only a prompt to run
+it yourself: run it, and act only when it prints instructions (nothing printed means another thread
+already won the claim, so do nothing). When its output reaches you (that, a deny reason or an injected
+notice), you are the one thread that won the claim:
+
+1. For an at-computer window: print the line once, then call the `PushNotification` tool once with
+   exactly the text it gives, then run `presence.sh push-result sent|missed --generation <epoch>`
+   (`missed` when the tool is unavailable or fails; never retry). Say plainly if it could not be sent.
+2. For an away window: show the saved-question list it printed, without opening a menu.
+
+The operator's next message ends the lapse (the hook runs `presence.sh return`): show the saved
+questions first. The dialog follows once: when the hook says so, run `ask` and open the dialog below,
+unless his message already says where he is (then `set` from it).
 
 ## Closing the laptop
 
