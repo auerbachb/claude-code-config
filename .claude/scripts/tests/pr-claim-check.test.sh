@@ -102,6 +102,7 @@ case "${1:-}" in
       user)
         echo "viewer-stub"; exit 0 ;;
       repos/*/pulls/*)
+        if [[ -e "$S/pr_garbage" ]]; then echo "<html>maintenance page</html>"; exit 0; fi
         if [[ -f "$S/pr.json" && ! -e "$S/pr_fail" ]]; then cat "$S/pr.json"; exit 0; fi
         echo "gh: HTTP 404: Not Found" >&2; exit 1 ;;
       */issues/*/comments)
@@ -116,12 +117,14 @@ case "${1:-}" in
         if [[ -n "${FAKE_COMMENTS_FAIL:-}" && "$FAKE_COMMENTS_FAIL" == "$N" ]]; then
           echo "gh: HTTP 500: internal server error" >&2; exit 1
         fi
+        if [[ -e "$S/comments_garbage" ]]; then echo "<html>maintenance page</html>"; exit 0; fi
         if [[ -f "$S/comments-$N.json" ]]; then cat "$S/comments-$N.json"; else echo '[]'; fi
         exit 0 ;;
       */issues/*/timeline)
         echo '[]'; exit 0 ;;
       */issues/*)
         N="${ENDPOINT##*/}"
+        if [[ -e "$S/issue_garbage" ]]; then echo "<html>maintenance page</html>"; exit 0; fi
         if [[ -f "$S/issue-$N.json" ]]; then cat "$S/issue-$N.json"; exit 0; fi
         echo "gh: HTTP 404: Not Found" >&2; exit 1 ;;
       *)
@@ -337,6 +340,83 @@ set_pr "Closes#2288" "human-dev" "User"
 run_check
 check_eq "A18 keyword with no space before the number is linked -> no_claim_line" "no_claim_line" "$(verdict_of)"
 
+# ==== A2. fail-closed reads and claim-line parsing (issue #2288 review) =======
+echo "== A2. fail-closed reads and claim-line parsing =="
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+touch "$S/pr_garbage"
+run_check
+check_eq "A19 PR read returns non-JSON -> unverifiable" "unverifiable" "$(verdict_of)"
+check_eq "A19 non-JSON PR read exits 0" "0" "$RC"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+touch "$S/issue_garbage"
+run_check
+check_eq "A20 issue read returns non-JSON -> unverifiable" "unverifiable" "$(verdict_of)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+touch "$S/comments_garbage"
+run_check
+check_eq "A21 claim comments return non-JSON -> never match" "unverifiable" "$(verdict_of)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->
+<!-- claim-holder: $(expect_digest "some-other-thread") -->" "human-dev" "User"
+run_check
+check_eq "A22 two different claim-holder lines -> unverifiable" "unverifiable" "$(verdict_of)"
+check_eq "A22 reason names the ambiguity" "pr_claim_line_ambiguous" "$(printf '%s' "$OUT" | jq -r '.issues[0].reason')"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+run_check
+check_eq "A23 identical duplicate claim-holder lines -> match" "match" "$(verdict_of)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+\`\`\`
+<!-- claim-holder: $MATCH_DIGEST -->
+\`\`\`" "human-dev" "User"
+run_check
+check_eq "A24 claim-holder line only inside a code fence is ignored -> no_claim_line" "no_claim_line" "$(verdict_of)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+Backticked example: \`<!-- claim-holder: $MATCH_DIGEST -->\` in a sentence.
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+run_check
+check_eq "A25 sentence mention plus real own-line marker -> match (one marker)" "match" "$(verdict_of)"
+
 # ==== B. pr-claim-line.sh =====================================================
 echo "== B. claim line =="
 
@@ -361,6 +441,21 @@ jq -cn '{repos: {"auerbachb/claude-code-config": {pipelines: {"2288": {claim_hol
 SESS_OUT="$(HOME="$SESS_HOME" CLAUDE_SESSION_REPO="auerbachb/claude-code-config" bash "$LINE" 2288)"
 check_eq "B4 session-state holder used when env unset" "<!-- claim-holder: $(expect_digest "sess-thread-delta") -->" "$SESS_OUT"
 rm -rf "$SESS_HOME"
+
+# B6-B8: CLAUDE_SESSION_ID is the holder issue-claim.sh uses when no
+# CLAUDE_CLAIM_HOLDER is set; a recorded session-state holder comes first.
+EMPTY_HOME="$(mktemp -d)"
+SID_OUT="$(env -u CLAUDE_CLAIM_HOLDER HOME="$EMPTY_HOME" CLAUDE_SESSION_ID="sess-id-epsilon" bash "$LINE" 2288)"
+check_eq "B6 CLAUDE_SESSION_ID alone is hashed" "<!-- claim-holder: $(expect_digest "sess-id-epsilon") -->" "$SID_OUT"
+
+SID_HOME="$(mktemp -d)"
+mkdir -p "$SID_HOME/.claude"
+jq -cn '{repos: {"auerbachb/claude-code-config": {pipelines: {"2288": {claim_holder: "sess-thread-zeta"}}}}}' \
+  > "$SID_HOME/.claude/session-state.json"
+REC_OUT="$(env -u CLAUDE_CLAIM_HOLDER HOME="$SID_HOME" CLAUDE_SESSION_REPO="auerbachb/claude-code-config" CLAUDE_SESSION_ID="sess-id-epsilon" bash "$LINE" 2288)"
+check_eq "B7 recorded holder beats CLAUDE_SESSION_ID" "<!-- claim-holder: $(expect_digest "sess-thread-zeta") -->" "$REC_OUT"
+if [[ "$REC_OUT" == "$SID_OUT" ]]; then bad "B7 must differ from the session-id digest"; else ok "B7 differs from the session-id digest"; fi
+rm -rf "$EMPTY_HOME" "$SID_HOME"
 
 BAD_ISSUE="$(bash "$LINE" abc 2>/dev/null; echo "rc=$?")"
 check_contains "B5 non-numeric issue is a usage error" "rc=2" "$BAD_ISSUE"
@@ -461,6 +556,43 @@ check_contains "C11 early unverifiable warning emitted" "unverifiable" "$(cat "$
 check_eq "C11 early unverifiable posts a comment" "1" \
   "$(jq '[.[] | select(.body | startswith("<!-- pr-claim-check:unverifiable:"))] | length' "$S/comments-900.json" 2>/dev/null || echo 0)"
 rm -f "$S/pr_fail"
+
+# C12: no temporary directory in --report mode is a warning, never a silent pass.
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+FAILBIN="$TMP/failbin"
+mkdir -p "$FAILBIN"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$FAILBIN/mktemp"
+chmod +x "$FAILBIN/mktemp"
+C12_OUT="$(PATH="$FAILBIN:$PATH" bash "$CHECK" 900 --repo owner/repo --report 2>&1)"; C12_RC=$?
+check_eq "C12 mktemp failure in --report exits 0" "0" "$C12_RC"
+check_contains "C12 mktemp failure warns that ownership is unverified" "::warning::pr-claim-check: could not verify ownership" "$C12_OUT"
+check_contains "C12 mktemp failure verdict is unverifiable" '"verdict":"unverifiable"' "$C12_OUT"
+check_absent "C12 mktemp failure is not a match" '"verdict":"match"' "$C12_OUT"
+
+# C13: a claim held by the literal string the old throwaway holder used is still
+# compared by digest, not treated as "mine".
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "pr-claim-check" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $(expect_digest "some-other-thread") -->" "human-dev" "User"
+run_check
+check_eq "C13 claim held by literal pr-claim-check, other PR line -> foreign" "foreign" "$(verdict_of)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "pr-claim-check" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $(expect_digest "pr-claim-check") -->" "human-dev" "User"
+run_check
+check_eq "C13 claim held by literal pr-claim-check, matching PR line -> match" "match" "$(verdict_of)"
 
 # ==== D. usage ================================================================
 echo "== D. usage =="

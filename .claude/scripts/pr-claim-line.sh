@@ -18,7 +18,8 @@
 # HOLDER SOURCE ORDER
 #   --holder TOKEN  ->  $CLAUDE_CLAIM_HOLDER  ->  the session-state record
 #   .repos["<repo key>"].pipelines["<ISSUE>"].claim_holder (null, empty or
-#   "_unknown" means absent)  ->  the default holder issue-claim.sh computes
+#   "_unknown" means absent)  ->  $CLAUDE_SESSION_ID  ->  the default holder
+#   issue-claim.sh computes
 #   (h-<digest of hostname:git toplevel>, the same formula as issue-claim.sh's
 #   resolve_holder).
 #
@@ -124,6 +125,11 @@ elif [[ -n "${CLAUDE_CLAIM_HOLDER:-}" ]]; then
   RAW="$CLAUDE_CLAIM_HOLDER"
 else
   RAW="$(session_holder)"
+  # The session-state record above is what a claim was actually taken with.
+  # CLAUDE_SESSION_ID is the next holder issue-claim.sh itself would use.
+  if [[ -z "$RAW" && -n "${CLAUDE_SESSION_ID:-}" ]]; then
+    RAW="$CLAUDE_SESSION_ID"
+  fi
 fi
 
 if [[ -n "$RAW" ]]; then

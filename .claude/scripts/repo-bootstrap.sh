@@ -1006,6 +1006,9 @@ REPO_BOOTSTRAP_FILE_EOF
 #     claimed, PR has no claim-holder line                 -> no_claim_line
 #     claimed, digests differ                              -> foreign
 #     unknown, not_found, closed issue, unreadable claim or PR line -> unverifiable
+#     two different claim-holder lines in the PR body -> unverifiable (fails closed)
+#   A claim-holder line counts only when it stands alone on its line, outside
+#   fenced code blocks; a mention inside a sentence is ignored.
 #   Overall skipped: bot author (bot_author), or no closing keyword (no_linked_issue).
 #
 # NEVER PRINTS THE RAW HOLDER
@@ -1077,7 +1080,14 @@ if [[ -n "$REPO" ]]; then
   [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || usage_err "--repo must be OWNER/NAME"
 fi
 
-TMPD="$(mktemp -d 2>/dev/null)" || { echo '{"verdict":"unverifiable","reason":"tempdir_unavailable","claim_line":false,"issues":[]}'; exit 0; }
+TMPD="$(mktemp -d 2>/dev/null)" || {
+  # Never a silent clean pass: in CI mode say ownership is unverified.
+  if [[ "$REPORT" -eq 1 ]]; then
+    echo "::warning::pr-claim-check: could not verify ownership (temporary directory unavailable); this check passes with a warning, not as a match"
+  fi
+  echo '{"verdict":"unverifiable","reason":"tempdir_unavailable","claim_line":false,"issues":[]}'
+  exit 0
+}
 trap 'rm -rf "$TMPD"' EXIT
 
 # digest_hex <text> <n>: first n hex chars of a SHA-256. Fails closed.
@@ -1231,10 +1241,13 @@ strip_body() {
 
 # ---- 3. Read the PR's claim-holder line ---------------------------------------
 strip_body 1 "$TMPD/body.md" "$TMPD/body_fenced_only.md"
-CLAIM_LINES="$(LC_ALL=C grep -F '<!-- claim-holder:' "$TMPD/body_fenced_only.md" 2>/dev/null || true)"
+# Only a marker standing on its own line counts. A mention inside a sentence
+# (for example a backticked example in the Decisions text) is prose, not a claim.
+CLAIM_LINES="$(LC_ALL=C grep -E '^[[:space:]]*<!-- claim-holder:.*-->[[:space:]]*$' "$TMPD/body_fenced_only.md" 2>/dev/null || true)"
 CLAIM_LINE_PRESENT=false
 PR_HOLDER=""
 MALFORMED=0
+AMBIGUOUS=0
 if [[ -n "$CLAIM_LINES" ]]; then
   CLAIM_LINE_PRESENT=true
   FIRST_LINE="$(printf '%s\n' "$CLAIM_LINES" | head -n 1)"
@@ -1242,6 +1255,11 @@ if [[ -n "$CLAIM_LINES" ]]; then
     PR_HOLDER="$(printf '%s' "$FIRST_LINE" | LC_ALL=C grep -oE 'h-[0-9a-f]{12}')"
   else
     MALFORMED=1
+  fi
+  # Two different markers cannot say which holder this PR is for, so the check
+  # fails closed (unverifiable) instead of guessing the first one.
+  if [[ "$(printf '%s\n' "$CLAIM_LINES" | LC_ALL=C sort -u | wc -l | tr -d ' ')" -gt 1 ]]; then
+    AMBIGUOUS=1
   fi
 fi
 
@@ -1286,17 +1304,24 @@ for N in $LINKED; do
     add_issue "$N" unverifiable pr_claim_line_malformed
     continue
   fi
+  if [[ "$AMBIGUOUS" -eq 1 ]]; then
+    add_issue "$N" unverifiable pr_claim_line_ambiguous
+    continue
+  fi
   if [[ ! -f "$ISSUE_CLAIM" ]]; then
     add_issue "$N" unverifiable claim_helper_missing
     continue
   fi
 
-  CLAIM_OUT="$(bash "$ISSUE_CLAIM" "$N" --check --json --repo "$REPO" --holder pr-claim-check 2>/dev/null)" || true
+  # The throwaway holder is unguessable per run, so it can never equal a real
+  # claim holder. Even so, `mine` and `claimed` both carry the winning holder
+  # and are compared by digest below; only unclaimed/stale skip the comparison.
+  CLAIM_OUT="$(bash "$ISSUE_CLAIM" "$N" --check --json --repo "$REPO" --holder "pr-claim-check-$$-$RANDOM" 2>/dev/null)" || true
   VERDICT="$(printf '%s' "$CLAIM_OUT" | jq -r '.verdict // ""' 2>/dev/null)" || VERDICT=""
   case "$VERDICT" in
     unclaimed|stale)
       add_issue "$N" pass_unclaimed "$VERDICT" ;;
-    claimed)
+    claimed|mine)
       RAW_HOLDER="$(printf '%s' "$CLAIM_OUT" | jq -r '.claimant_holder // ""' 2>/dev/null)" || RAW_HOLDER=""
       if [[ -z "$RAW_HOLDER" ]]; then
         add_issue "$N" unverifiable claim_holder_unreadable
