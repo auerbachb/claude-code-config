@@ -79,6 +79,9 @@
 #   where the marker passes code no reviewer saw; a lowered bound yields
 #   A stretch is always covered in full: the reviewer is only ever handed a
 #   stretch within its own hard cap, so no range record is partial.
+#   A net-empty stretch (zero changed files, e.g. a change and its revert) is
+#   passed without a reviewer and recorded in repos[<repo>].skipped_empty; the
+#   tree is unchanged from the marker, so nothing from it remains (issue #2338).
 #   Reference: .claude/reference/backfill-review.md §Range mode
 #
 # ENVIRONMENT
@@ -655,6 +658,29 @@ range_marker_write_uncovered() {
     > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
 }
 
+# range_marker_write_skipped_empty <sha> <commits> — a net-empty stretch (the tree at
+# <sha> equals the tree at the marker, so nothing from it remains on main) is passed
+# without a review. It is appended to repos[<repo>].skipped_empty and the marker
+# advances to <sha> in ONE atomic write. last_range and the counters are not
+# touched: nothing was reviewed or covered. Uses RANGE_FIRST. Failure returns 1
+# with the marker unchanged (the caller stops).
+range_marker_write_skipped_empty() {
+  local sha="$1" commits="$2" dir tmp now
+  dir="$(dirname "$RANGE_MARKER")"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$(mktemp "$dir/.backfill-range-marker.XXXXXX")" || return 1
+  now="$(date -u +%FT%TZ)"
+  {
+    if [[ -e "$RANGE_MARKER" ]]; then cat "$RANGE_MARKER"; else printf '%s' '{"schema_version":1,"repos":{}}'; fi
+  } | jq --arg r "$REPO" --arg sha "$sha" --arg now "$now" --arg first "$RANGE_FIRST" \
+        --argjson commits "$commits" '
+      .repos[$r] = ((.repos[$r] // {}) + {last_reviewed_commit: $sha, updated_at: $now})
+      | .repos[$r].skipped_empty = ((.repos[$r].skipped_empty // []) + [{
+          first: $first, last: $sha, commits: $commits, files: 0, recorded_at: $now,
+          reason: "net-empty: the stretch leaves the tree unchanged from the marker; nothing remains on main, so no reviewer was run"}])' \
+    > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
+}
+
 # range_distinct_files <start> <end> — the number of distinct changed paths between
 # two commits. NUL-terminated (-z), so a name with spaces or a newline is one path
 # and is never dropped or split. Prints the count; returns 1 on a git failure
@@ -866,11 +892,32 @@ range_main() {
       cursor="$cut"; continue
     fi
 
+    # A net-empty stretch (nfiles == 0): the tree at the cut equals the tree at the
+    # marker, so nothing from it remains on main and no reviewer is needed. It is
+    # passed in one atomic write that records it; the walk then continues from the
+    # cut, so an over-bound commit after the pair is handled by the rules above and
+    # below. Without this, a change, its revert and an over-bound commit stalled
+    # the run for good (issue #2338). Like the uncovered branch, it runs before the
+    # live-channel check: it needs no reviewer.
+    if (( nfiles == 0 )); then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'would skip (net-empty) %s..%s commits=%s (nothing written)\n' \
+          "$(short "$RANGE_FIRST")" "$(short "$cut")" "$ncommits"
+        cursor="$cut"; continue
+      fi
+      if ! range_marker_write_skipped_empty "$cut" "$ncommits"; then
+        summary range_skipped_empty_write_failed; exit 5
+      fi
+      log "$REPO SKIPPED net-empty stretch $RANGE_FIRST..$cut commits=$ncommits; no reviewer run; recorded in marker skipped_empty[]"
+      printf 'backfill-review: skipped net-empty stretch %s..%s commits=%s; nothing from it remains on main, no reviewer run; recorded in the marker under repos["%s"].skipped_empty\n' \
+        "$RANGE_FIRST" "$cut" "$ncommits" "$REPO"
+      cursor="$cut"; continue
+    fi
+
     if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
 
     info="$ncommits commit(s), $nfiles changed file(s), bound $bound for $ch"
     if (( nfiles > bound )); then info="$info; single commit over the lowered bound, reviewed in full"; fi
-    if (( nfiles == 0 )); then summary range_empty; exit 0; fi
 # A channel never reviews more files than ITS OWN bound (not the lowered
 # --range-bound). A single oversized commit cut for CodeRabbit (150) would
 # otherwise reach CodeAnt, which skips files past 15 and reads clean.

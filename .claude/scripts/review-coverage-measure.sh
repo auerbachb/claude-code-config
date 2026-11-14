@@ -16,8 +16,11 @@
 #               discounted approval inside it.
 #   unknown     a fetch failed, a payload did not parse, or the substance check failed
 #
-# Nothing is written to GitHub. Reads are GET-only and cached under --cache-dir, so a
-# re-run costs no API calls. A missing cache file is `unknown`, never "no review".
+# Nothing is written to GitHub. Reads are GET-only. Immutable API responses are cached under
+# --cache-dir, keyed by repo, PR and endpoint, so a re-run costs no API calls. Each run works
+# from its own directory under --cache-dir (population, staged payloads, evaluator output)
+# and never reads a shared file it may have just replaced. A missing cache file is `unknown`,
+# never "no review".
 #
 # Usage: review-coverage-measure.sh [--repo owner/name] [--author login] [--since YYYY-MM-DD]
 #                                   [--cache-dir DIR] [--ledger-json FILE] [--from-cache]
@@ -51,6 +54,9 @@ Options
   --since YYYY-MM-DD    Earliest merge date, inclusive (default: 14 days ago, UTC).
   --cache-dir DIR       Cache for population and per-PR API payloads
                         (default: ${XDG_CACHE_HOME:-$HOME/.cache}/review-coverage-measure/<owner>_<repo>).
+                        Population files are keyed by repo, author and --since, so a
+                        --from-cache run needs the same --author and --since as the run
+                        that fetched them.
   --ledger-json FILE    Ledger entries as a JSON array, for the cross-check. Default:
                         `unreviewed-merge-ledger.sh list --repo <repo>`.
   --from-cache          Make no network calls; classify from the cache only (tests, re-runs).
@@ -60,7 +66,7 @@ Options
 Output
   stdout   one JSON object: class counts, shares, per-reviewer tallies, the
            threshold decision, and the ledger/label cross-check.
-  cache    <cache-dir>/classified.jsonl holds one line per PR.
+  cache    <cache-dir>/classified.jsonl holds one line per PR (published last, never read back).
 
 Method
   1. gh pr list --state merged --author <login> --base main --search "merged:>=<since>" (limit 1000;
@@ -149,6 +155,13 @@ if [ -z "$AUTHOR" ]; then
     AUTHOR=$(gh api user --jq .login 2>/dev/null) || die "cannot resolve the author; pass --author" 4
   fi
 fi
+# The author becomes part of a cache file name, so only login characters are accepted.
+if ! LC_ALL=C grep -Eq '^[][A-Za-z0-9._-]+$' <<<"$AUTHOR"; then
+  die "--author must be a GitHub login (letters, digits, '.', '_', '-', '[bot]')" 2
+fi
+# Injective key: '%' is never a login character, so percent-escaping '%' and the brackets
+# keeps distinct logins distinct (name[bot] -> name%5Bbot%5D, name_bot_ stays name_bot_).
+AUTHOR_KEY=$(printf '%s' "$AUTHOR" | sed -e 's/%/%25/g' -e 's/\[/%5B/g' -e 's/\]/%5D/g')
 
 if [ -z "$CACHE_DIR" ]; then
   [ -n "${HOME:-}" ] || die "HOME is unset; pass --cache-dir" 2
@@ -156,12 +169,24 @@ if [ -z "$CACHE_DIR" ]; then
   CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/review-coverage-measure/$SLUG"
 fi
 mkdir -p "$CACHE_DIR" || die "cannot create cache dir $CACHE_DIR" 4
-# Per-run scratch directory inside the cache. Every intermediate file (including the
-# merge-time cut and the classification list) lives here, so concurrent runs sharing
-# one cache never read or replace each other's files. Only finished results are renamed
-# into the cache, and only at the end.
+# Per-run directory inside the cache (same filesystem, so a publish is a hard link or a
+# rename). Every file this run reads back lives here: the population copy, the staged PR
+# payloads, the merge-time cut, the evaluator output and the classification list. Concurrent
+# runs sharing one cache therefore never read or replace each other's files. The shared
+# cache receives only immutable API responses and publish-only outputs, written after use.
 RUN_DIR=$(mktemp -d "$CACHE_DIR/.run.XXXXXX") || die "cannot create a run directory in $CACHE_DIR" 4
-trap 'rm -f "$RUN_DIR"/* 2>/dev/null; rmdir "$RUN_DIR" 2>/dev/null' EXIT
+# Remove only the directory mktemp returned above, and keep the exit status of the run.
+cleanup_run_dir() {
+  st=$?
+  if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
+    rm -f "$RUN_DIR"/* 2>/dev/null
+    rmdir "$RUN_DIR" 2>/dev/null
+  fi
+  exit "$st"
+}
+trap cleanup_run_dir EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ "$FROM_CACHE" -eq 0 ]; then
   REMAINING=$(gh api rate_limit --jq .resources.core.remaining 2>/dev/null) || die "rate_limit lookup failed" 4
@@ -177,31 +202,83 @@ fi
 # same temporary path; each finished file is then renamed into place atomically.
 tmpf() { mktemp "$RUN_DIR/tmp.XXXXXX"; }
 
-POP="$CACHE_DIR/population.json"
+# Injective as well: '_' is escaped before '/' becomes '_', so a_b/c and a/b_c stay apart.
+REPO_KEY=$(printf '%s' "$REPO" | sed -e 's/%/%25/g' -e 's/_/%5F/g' -e 's|/|_|g')
+# The population is keyed by everything that selects it: repo, author, window start and
+# base (fixed to main). Two runs with different windows or authors therefore never share
+# a population file, and a window with no file is refused rather than served another's.
+POP_NAME="$REPO_KEY.population.author-$AUTHOR_KEY.since-$SINCE.base-main.json"
+POP="$CACHE_DIR/$POP_NAME"
+RUN_POP="$RUN_DIR/population.json"
 if [ "$FROM_CACHE" -eq 0 ]; then
-  POP_TMP=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
+  POP_TMP=$(tmpf) || die "cannot create a temp file in $RUN_DIR" 4
   if ! gh pr list --repo "$REPO" --state merged --author "$AUTHOR" --base main \
       --search "merged:>=$SINCE" --limit "$POP_LIMIT" \
       --json number,mergedAt,headRefOid,changedFiles,labels,baseRefName </dev/null > "$POP_TMP" 2>/dev/null; then
-    rm -f "$POP_TMP"
     die "population fetch failed" 4
   fi
-  N_POP=$(jq 'length' "$POP_TMP") || { rm -f "$POP_TMP"; die "population unreadable" 4; }
+  N_POP=$(jq 'length' "$POP_TMP") || die "population unreadable" 4
   if [ "$N_POP" -ge "$POP_LIMIT" ]; then
-    rm -f "$POP_TMP"
     die "population reached --limit $POP_LIMIT; a page is missing, so the run is refused" 5
   fi
-  mv "$POP_TMP" "$POP"
+  mv "$POP_TMP" "$RUN_POP" || die "cannot stage the population in $RUN_DIR" 4
+  # Publish a copy for later --from-cache runs. An atomic rename replaces the same key only;
+  # this run keeps reading its own copy, so a failed publish does not change its result.
+  if ! { cp "$RUN_POP" "$RUN_DIR/population.publish" && mv -f "$RUN_DIR/population.publish" "$POP"; }; then
+    rm -f "$RUN_DIR/population.publish"
+    printf 'warning: could not publish %s (this run is unaffected; --from-cache will not see it)\n' "$POP" >&2
+  fi
+else
+  [ -s "$POP" ] || die "no population at $POP (run once without --from-cache)" 2
+  cp "$POP" "$RUN_POP" || die "population unreadable at $POP" 4
 fi
-[ -s "$POP" ] || die "no population at $POP (run once without --from-cache)" 2
+[ -s "$RUN_POP" ] || die "population is empty for this run (author $AUTHOR, since $SINCE)" 2
 
-# classify_pr NUM HEAD PR_JSON — prints one JSON line on stdout.
+# stage_payload NUM KIND — leaves this run's copy of one PR payload in $RUN_DIR. A cached
+# payload is copied in (it is immutable per request). A missing payload is fetched while
+# online, and the fetched copy is published to the cache by a no-clobber hard link. A
+# payload still missing after this stays absent, so the PR is classified unknown.
+stage_payload() {
+  num="$1"; kind="$2"
+  src="$CACHE_DIR/$REPO_KEY.pr-$num.$kind.json"
+  dst="$RUN_DIR/pr-$num.$kind.json"
+  if [ -s "$src" ]; then
+    if ! cp "$src" "$dst" 2>/dev/null; then
+      rm -f "$dst"
+      printf 'cache read failed: PR %s %s (classified unknown)\n' "$num" "$kind" >&2
+    fi
+    return 0
+  fi
+  if [ "$FROM_CACHE" -eq 1 ]; then
+    return 0
+  fi
+  case "$kind" in
+    reviews) API="repos/$REPO/pulls/$num/reviews" ;;
+    pr_comments) API="repos/$REPO/pulls/$num/comments" ;;
+    issue_comments) API="repos/$REPO/issues/$num/comments" ;;
+  esac
+  FT=$(tmpf) || die "cannot create a temp file in $RUN_DIR" 4
+  if gh api --paginate --slurp "$API?per_page=100" </dev/null > "$FT" 2>/dev/null \
+      && jq -e 'flatten | type == "array"' "$FT" >/dev/null 2>&1 \
+      && mv "$FT" "$dst"; then
+    # Publish is best effort: an existing cache response is never replaced.
+    if [ ! -e "$src" ] && ! ln "$dst" "$src" 2>/dev/null && [ ! -e "$src" ]; then
+      printf 'warning: could not publish %s to the cache (this run is unaffected)\n' "$src" >&2
+    fi
+  else
+    rm -f "$FT"
+    printf 'fetch failed: PR %s %s (classified unknown)\n' "$num" "$kind" >&2
+  fi
+  return 0
+}
+
+# classify_pr NUM HEAD PR_JSON — prints one JSON line on stdout. Reads only this run's
+# staged payloads in $RUN_DIR.
 classify_pr() {
   num="$1"; head="$2"; pr="$3"
-  rv="$CACHE_DIR/pr-$num.reviews.json"
-  pc="$CACHE_DIR/pr-$num.pr_comments.json"
-  ic="$CACHE_DIR/pr-$num.issue_comments.json"
-  subst="$CACHE_DIR/pr-$num.substance.json"
+  rv="$RUN_DIR/pr-$num.reviews.json"
+  pc="$RUN_DIR/pr-$num.pr_comments.json"
+  ic="$RUN_DIR/pr-$num.issue_comments.json"
   base=$(printf '%s' "$pr" | jq -c '{number, merged_at: (.mergedAt // ""), head_sha: (.headRefOid // ""), changed_files: (.changedFiles // 0), labels: [(.labels // [])[] | .name]}') || return 1
 
   for f in "$rv" "$pc" "$ic"; do
@@ -243,11 +320,12 @@ classify_pr() {
     printf '%s' "$base" | jq -c '. + {class: "unknown", sub: "substance_check_failed", cr: "unknown", ca: "unknown", hollow_any: false}'
     return 0
   fi
-  mv "$ST" "$subst"
   rm -f "$SI"
 
+  # The evaluator output is classified from this run's copy only. It is never published,
+  # so no other run can replace it between the evaluator and the classification.
   printf '%s' "$pr" | jq -c --arg h "$head" \
-    --slurpfile s "$subst" --slurpfile r "$rv" --slurpfile p "$pc" --slurpfile i "$ic" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" --argjson fr "$FOREIGN_REVIEWERS_JSON" \
+    --slurpfile s "$ST" --slurpfile r "$rv" --slurpfile p "$pc" --slurpfile i "$ic" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" --argjson fr "$FOREIGN_REVIEWERS_JSON" \
     '
     def state($login):
       ($s[0].reviewers[$login] // {}) as $rv
@@ -301,7 +379,7 @@ CLASSIFIED="$CACHE_DIR/classified.jsonl"
 CLS_TMP=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
 LINES=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
 # Only PRs merged into main are in the denominator; a missing baseRefName reads as main.
-jq -c '.[] | select((.baseRefName // "main") == "main")' "$POP" > "$LINES" || die "population unreadable" 4
+jq -c '.[] | select((.baseRefName // "main") == "main")' "$RUN_POP" > "$LINES" || die "population unreadable" 4
 
 COUNT=0
 while IFS= read -r PR; do
@@ -309,28 +387,11 @@ while IFS= read -r PR; do
   HEAD=$(printf '%s' "$PR" | jq -r '.headRefOid // ""')
   COUNT=$((COUNT + 1))
 
-  if [ "$FROM_CACHE" -eq 0 ]; then
-    for KIND in reviews pr_comments issue_comments; do
-      F="$CACHE_DIR/pr-$NUM.$KIND.json"
-      if [ ! -s "$F" ]; then
-        case "$KIND" in
-          reviews) API="repos/$REPO/pulls/$NUM/reviews" ;;
-          pr_comments) API="repos/$REPO/pulls/$NUM/comments" ;;
-          issue_comments) API="repos/$REPO/issues/$NUM/comments" ;;
-        esac
-        FT=$(tmpf) || die "cannot create a temp file in $CACHE_DIR" 4
-        if gh api --paginate --slurp "$API?per_page=100" </dev/null > "$FT" 2>/dev/null \
-            && jq -e 'flatten | type == "array"' "$FT" >/dev/null 2>&1; then
-          mv "$FT" "$F"
-        else
-          rm -f "$FT"
-          printf 'fetch failed: PR %s %s (classified unknown)\n' "$NUM" "$KIND" >&2
-        fi
-      fi
-    done
-    if [ $((COUNT % 25)) -eq 0 ]; then
-      printf 'progress: %s PRs read\n' "$COUNT" >&2
-    fi
+  for KIND in reviews pr_comments issue_comments; do
+    stage_payload "$NUM" "$KIND"
+  done
+  if [ "$FROM_CACHE" -eq 0 ] && [ $((COUNT % 25)) -eq 0 ]; then
+    printf 'progress: %s PRs read\n' "$COUNT" >&2
   fi
 
   classify_pr "$NUM" "$HEAD" "$PR" >> "$CLS_TMP" || die "classification failed for PR $NUM" 4

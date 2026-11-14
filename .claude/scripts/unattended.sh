@@ -18,7 +18,10 @@
 #                                                --open-ended: no window end (until `off`); issue #2293
 #   unattended.sh off [--cwd DIR | --repo KEY]   switch off, then print and mark the digest
 #   unattended.sh status                         one line: `active until ...` or `inactive`
-#   unattended.sh is-active                      exit 0 active, 1 not (no output)
+#   unattended.sh is-active                      exit 0 away handling applies, 1 not (no output). A window
+#                                                that ran out stays active until the operator speaks
+#                                                (presence.sh return) or `off`; an at-computer presence
+#                                                window that ran out counts too (issue #2294)
 #   unattended.sh window-ended                   exit 0 when a declared window has ended, else 1
 #   unattended.sh record --question TEXT [--recommended TEXT] [--options 'A|B|C']
 #                        [--did TEXT] [--session ID] [--source agent|hook] [--cwd DIR | --repo KEY]
@@ -28,6 +31,14 @@
 #   unattended.sh digest [--mark] [--cwd DIR | --repo KEY]
 #                                                the questions not yet listed, one per item;
 #                                                --mark records them as listed
+#   unattended.sh digest --all [--mark]          the same for EVERY repo's file, each block labelled
+#                                                with its repo key (the operator is one person and may
+#                                                come back in any thread; issue #2294)
+#   unattended.sh settle --session ID --transcript PATH --ref REF [--force]
+#                                                (hooks, issue #2294) pending-delivery records: drop the ones
+#                                                whose list reached the model, print (and re-own) the ones that
+#                                                did not; see DELIVERY below
+#   unattended.sh undelivered --not-ref REF      count of confirmable undelivered records another emission still owns
 #   unattended.sh --help
 #
 # STATE
@@ -40,6 +51,32 @@
 #   The repo key comes from session-state.sh --repo-key run in --cwd (default: the
 #   current directory), or --repo.
 #
+# DELIVERY (issue #2294, PR #2328 review)
+#   A listing that marks questions `listed` must not lose them when the process dies between the mark
+#   and the model seeing the list. INVARIANT: once a question's watermark is written there is a
+#   retained record of its list until delivery is confirmed (or, past the emission cap, until it has
+#   been shown once more with a plain note); no path deletes an unconfirmed record silently, errors
+#   included (a record that cannot be read is kept and logged; a record that cannot be written means
+#   nothing is marked).
+#   When a hook sets UNATTENDED_DELIVERY_REF (and SESSION and TRANSCRIPT: the hook payload's
+#   session_id and transcript_path), `digest --mark` writes one record per repo block to
+#   ${UNATTENDED_DIR:-~/.claude/unattended}/pending/<id>.json (atomically: temp file, then rename)
+#   BEFORE it appends the `listed` watermark. The record holds the rendered text, the emission's ref
+#   and the transcript path. DELIVERED means: the ref text appears in that transcript, which is where
+#   the harness records the context a hook injected, so the model had it. `settle` runs at the top of
+#   the operator's prompt hook: a delivered record is deleted; an undelivered one is re-emitted when
+#   it belongs to the same session (its earlier hook was killed or its output dropped), or to any
+#   session once it is 120 s old, or at once with --force (a takeover of a dead return winner). A
+#   re-emitted record is re-owned by the new emission and settled the same way, so a question can be
+#   shown twice but not zero times. A record never expires by age. After 5 emissions in which the ref
+#   never reached the transcript it is emitted a last time with a plain note saying so, then retired
+#   (logged in ${UNATTENDED_DIR:-~/.claude/unattended}/delivery.log). The transcript file need not
+#   exist when the record is written: until it can be read the list counts as undelivered. A record
+#   whose payload named NO transcript path cannot be confirmed at all; the same session's next prompt
+#   is then taken as the signal (weaker, documented residual). Without a delivery ref (a bare CLI
+#   call such as `off`, or a thread's own `expire`) no record is written and `digest --mark` marks
+#   when rendered, as before.
+#
 # EXIT CODES
 #   0 ok; 1 is-active/window-ended false, or a write failed; 2 usage error.
 #
@@ -50,6 +87,8 @@ HERE=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || HERE="."
 SESSION_STATE_SH="${UNATTENDED_SESSION_STATE_SH:-$HERE/session-state.sh}"
 STATE_FILE="${HOME}/.claude/session-state.json"
 Q_DIR="${UNATTENDED_DIR:-${HOME}/.claude/unattended}"
+PRESENCE_SH="${UNATTENDED_PRESENCE_SH:-$HERE/presence.sh}"
+LIB_DIR="$HERE/lib"
 
 JQ=$(command -v jq 2>/dev/null) || JQ=""
 if [ -z "$JQ" ]; then
@@ -61,7 +100,7 @@ fi
 # session-state.sh needs jq on PATH too; append (never prepend) the resolved jq directory.
 [ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
 
-usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# Bash 3.2/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'unattended.sh: %s\n' "$1" >&2; exit 2; }
 need_jq() { [ -n "$JQ" ] || { printf 'unattended.sh: jq not found\n' >&2; exit 1; }; }
 
@@ -73,13 +112,28 @@ read_flag() {
   "$JQ" -c '.unattended // null' "$STATE_FILE" 2>/dev/null || printf 'null\n'
 }
 
+# Away handling applies (issue #2294) per lib/presence-decision.jq, the ONE decision presence.sh
+# status|is-away|expire|return|probe read as well (see its truth table). It must also see the SAME
+# inputs: presence.sh reconciles a closing window's end against /leave-by before deciding, so when
+# presence.sh is available this asks `presence.sh is-away` (which does that) rather than evaluating
+# the decision on unreconciled records. Fallback with no presence.sh: the decision alone. In short:
+# the newer of the unattended flag and the presence declaration governs; when neither is clearly newer
+# the answer is away; an away window that ran out stays away handling until the operator speaks
+# (presence.sh return) or `off`; an at-computer window that ran out counts too.
+decide_local() { # prints yes|no
+  [ -f "$STATE_FILE" ] || { printf 'no\n'; return 0; }
+  "$JQ" -L "$LIB_DIR" -r --argjson n "$(now)" 'include "presence-decision";
+    (.presence | if type == "object" then . else {} end) as $p
+    | (.unattended | if type == "object" then . else {} end) as $u
+    | if decide($p; $u; $n).away then "yes" else "no" end' "$STATE_FILE" 2>/dev/null || printf 'no\n'
+}
 is_active() {
-  local f n
-  f=$(read_flag); n=$(now)
-  [ "$(printf '%s' "$f" | "$JQ" -r --argjson n "$n" '
-    if type == "object" and .active == true
-       and ((.until_epoch | type) != "number" or .until_epoch > $n)
-    then "yes" else "no" end' 2>/dev/null)" = yes ]
+  [ -f "$STATE_FILE" ] || return 1
+  if [ -x "$PRESENCE_SH" ]; then
+    "$PRESENCE_SH" is-away >/dev/null 2>&1
+  else
+    [ "$(decide_local)" = yes ]
+  fi
 }
 
 window_ended() {
@@ -154,6 +208,122 @@ pending_json() { # FILE
         | .did = (([$u[] | select(.id == $q.id) | .did] | last) // .did)]' "$1" 2>/dev/null
 }
 
+# --- pending delivery (see DELIVERY above) -------------------------------------
+PDIR="$Q_DIR/pending"
+DELIVERY_GRACE=120
+DELIVERY_MAX_EMITS=5
+
+delivery_log() { # LINE — best effort
+  mkdir -p "$Q_DIR" 2>/dev/null || return 0
+  printf '%s %s\n' "$(now)" "$1" >>"$Q_DIR/delivery.log" 2>/dev/null || true
+}
+
+# Persist one rendered block. 0 staged; 2 not applicable (no delivery ref, i.e. a bare CLI call: legacy
+# behaviour); 1 the record could not be written (the caller must NOT mark the questions listed).
+stage_record() { # LABEL TEXT
+  local ref="${UNATTENDED_DELIVERY_REF:-}" tp="${UNATTENDED_DELIVERY_TRANSCRIPT:-}" name tmp
+  [ -n "$ref" ] || return 2
+  mkdir -p "$PDIR" 2>/dev/null || return 1
+  name="$(now)-$$-$RANDOM"
+  tmp="$PDIR/.$name.tmp"
+  printf '%s' "$2" | "$JQ" -Rsc --arg ref "$ref" --arg sid "${UNATTENDED_DELIVERY_SESSION:-}" --arg tp "$tp" \
+    --arg label "$1" --argjson at "$(now)" \
+    '{ref: $ref, session: $sid, transcript: $tp, label: $label, text: ., staged_at: $at, stamped_at: $at, emits: 1}' >"$tmp" 2>/dev/null &&
+    [ -s "$tmp" ] && mv "$tmp" "$PDIR/$name.json" || { rm -f "$tmp" 2>/dev/null; return 1; }
+}
+
+rewrite_record() { # FILE SESSION TRANSCRIPT REF
+  local tmp
+  tmp="$1.$$.tmp"
+  "$JQ" -c --arg s "$2" --arg t "$3" --arg r "$4" --argjson n "$(now)" \
+    '.session = $s | .transcript = $t | .ref = $r | .stamped_at = $n | .emits += 1' "$1" >"$tmp" 2>/dev/null &&
+    [ -s "$tmp" ] && mv "$tmp" "$1" || { rm -f "$tmp" 2>/dev/null; return 1; }
+}
+
+cmd_settle() {
+  local sid="" tp="" ref="" force=0 f fields rref rsid rtp rstamp remits n out="" txt owed nq
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) sid="${2-}"; shift 2 || die_usage "--session needs a value" ;;
+      --transcript) tp="${2-}"; shift 2 || die_usage "--transcript needs a value" ;;
+      --ref) ref="${2-}"; shift 2 || die_usage "--ref needs a value" ;;
+      --force) force=1; shift ;;
+      *) die_usage "unknown argument to settle: $1" ;;
+    esac
+  done
+  [ -n "$ref" ] || die_usage "settle needs --ref"
+  [ -d "$PDIR" ] || return 0
+  ls "$PDIR"/*.json >/dev/null 2>&1 || return 0
+  lock "$PDIR/.settle" || { printf 'unattended.sh: pending records are locked\n' >&2; return 1; }
+  n=$(now)
+  for f in "$PDIR"/*.json; do
+    [ -f "$f" ] || continue
+    # A read failure keeps the record (its list is marked listed, so it is the only copy): log it.
+    fields=$("$JQ" -r '[.ref // "", .session // "", .transcript // "", (.stamped_at // 0 | tostring), (.emits // 1 | tostring)] | join("\u001f")' "$f" 2>/dev/null) ||
+      { delivery_log "could not read pending record $f; kept"; continue; }
+    [ -n "$fields" ] || { delivery_log "could not read pending record $f; kept"; continue; }
+    IFS=$(printf '\037') read -r rref rsid rtp rstamp remits <<EOF
+$fields
+EOF
+    case "$rstamp" in ''|*[!0-9]*) rstamp=0 ;; esac
+    case "$remits" in ''|*[!0-9]*) remits=1 ;; esac
+    # Delivered: the ref is in the owning session's transcript, so the model had the list.
+    if [ -n "$rref" ] && [ -n "$rtp" ] && [ -r "$rtp" ] && grep -qF -- "$rref" "$rtp" 2>/dev/null; then
+      rm -f "$f" 2>/dev/null; continue
+    fi
+    # No transcript path was ever known for this record (a payload without one): nothing can confirm
+    # it, so the same session's next prompt is the only signal there is (weaker; see DELIVERY).
+    if [ -z "$rtp" ] && [ "$force" -eq 0 ] && [ -n "$sid" ] && [ "$rsid" = "$sid" ]; then
+      rm -f "$f" 2>/dev/null; continue
+    fi
+    owed=0
+    if [ "$force" -eq 1 ]; then owed=1
+    elif [ -n "$sid" ] && [ "$rsid" = "$sid" ]; then owed=1
+    elif [ $((n - rstamp)) -ge "$DELIVERY_GRACE" ]; then owed=1; fi
+    [ "$owed" -eq 1 ] || continue
+    txt=$("$JQ" -r '.text // ""' "$f" 2>/dev/null) || { delivery_log "could not read pending list $f; kept"; continue; }
+    [ -n "$txt" ] || { rm -f "$f" 2>/dev/null; continue; }   # genuinely empty: nothing to deliver
+    if [ "$remits" -ge "$DELIVERY_MAX_EMITS" ]; then
+      # The last time: say plainly that it was never confirmed, show it once more, then retire it.
+      nq=$(printf '%s\n' "$txt" | grep -c '^[0-9][0-9]*\. U-')
+      delivery_log "last emission of a pending list after $remits unconfirmed emissions (ref $rref)"
+      out="${out:+$out
+
+}(These $nq saved question(s) were emitted $remits times and the transcript never confirmed them. This is the last time they are shown; the questions file still holds every question.)
+$txt"
+      rm -f "$f" 2>/dev/null
+      continue
+    fi
+    out="${out:+$out
+
+}$txt"
+    # Re-own it: this emission's ref is what the next settle looks for. If the rewrite fails the old
+    # ref stays and a later settle shows the list again, which is the safe direction.
+    rewrite_record "$f" "$sid" "$tp" "$ref" || true
+  done
+  unlock
+  [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+cmd_undelivered() {
+  local ref="" f count=0 r
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --not-ref) ref="${2-}"; shift 2 || die_usage "--not-ref needs a value" ;;
+      *) die_usage "unknown argument to undelivered: $1" ;;
+    esac
+  done
+  if [ -d "$PDIR" ]; then
+    for f in "$PDIR"/*.json; do
+      [ -f "$f" ] || continue
+      # A record with no transcript path can never be confirmed, so it never holds the dialog back.
+      r=$("$JQ" -r 'if (.transcript // "") == "" then "" else (.ref // "x") end' "$f" 2>/dev/null) || r="x"
+      [ -z "$r" ] || [ "$r" = "$ref" ] || count=$((count + 1))
+    done
+  fi
+  printf '%s\n' "$count"
+}
+
 # --- subcommands ------------------------------------------------------------
 cmd_on() {
   local until="" dur="12h" n open=0 given=0
@@ -190,20 +360,54 @@ cmd_on() {
     --set ".unattended.until_epoch=$until" >/dev/null || { printf 'unattended.sh: state write failed\n' >&2; return 1; }
   printf 'unattended: on until %s (epoch %s)\n' "$(fmt_time "$until")" "$until"
   printf 'pre-leave check: list linked sessions and confirm none is waiting on the user; say so.\n'
-  printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "unattended window ended: run unattended.sh digest --mark and list the questions"\n' "$until"
+  printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "presence window ended: run %s expire and follow what it prints"\n' "$until" "$(printf '%q' "$PRESENCE_SH")"
 }
 
 cmd_off() {
   "$SESSION_STATE_SH" --set ".unattended.active=false" >/dev/null || { printf 'unattended.sh: state write failed\n' >&2; return 1; }
+  # An at-computer window that ran out is "away handling" too: end it with the flag. After the flag
+  # write, so a newer unattended window that was live no longer shields the older lapsed one. Best
+  # effort and silent; it acts only on a lapsed window and never touches one still running.
+  local lapsed=0 pst=""
+  if [ -x "$PRESENCE_SH" ]; then pst=$("$PRESENCE_SH" probe 2>/dev/null) || pst=""; fi
+  case "$pst" in lapsed|lapsed-claimed) lapsed=1 ;; esac
   printf 'unattended: off\n'
-  cmd_digest --mark
+  if [ "$lapsed" -eq 1 ]; then
+    # That return is global and clears the lapsed window: list every repo's saved questions FIRST
+    # (emitted and marked together, per file), and only then clear the window.
+    cmd_digest --all --mark
+    local rrc=0
+    "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || rrc=$?
+    # A failed write (exit 11, e.g. a lock timeout) gets one retry, then a visible failure: menus stay
+    # denied until the window is cleared, so `off` must not report success.
+    if [ "$rrc" -eq 11 ]; then
+      rrc=0; "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || rrc=$?
+    fi
+    if [ "$rrc" -eq 11 ]; then
+      printf 'unattended: off, but the expired at-computer window could not be cleared: menus may still be suppressed. Retry: %s return --no-dialog\n' "$PRESENCE_SH" >&2
+      return 1
+    fi
+  else
+    cmd_digest --mark
+  fi
 }
 
 cmd_status() {
-  local f u
+  local u
   if is_active; then
-    f=$(read_flag); u=$(printf '%s' "$f" | "$JQ" -r '.until_epoch // empty')
-    if [ -n "$u" ]; then printf 'active until %s\n' "$(fmt_time "$u")"; else printf 'active\n'; fi
+    # The governing window's own end is the deadline to show (an at-computer window that lapsed has
+    # its presence end, not whatever the unattended flag last recorded).
+    if [ -x "$PRESENCE_SH" ]; then
+      u=$("$PRESENCE_SH" status --json 2>/dev/null | "$JQ" -r '.until_epoch // empty' 2>/dev/null) || u=""
+    else
+      u=$("$JQ" -L "$LIB_DIR" -r --argjson n "$(now)" 'include "presence-decision";
+        (.presence | if type == "object" then . else {} end) as $p
+        | (.unattended | if type == "object" then . else {} end) as $u
+        | decide($p; $u; $n) | (.until_epoch // empty)' "$STATE_FILE" 2>/dev/null)
+    fi
+    if [ -z "$u" ]; then printf 'active\n'
+    elif [ "$u" -gt "$(now)" ]; then printf 'active until %s\n' "$(fmt_time "$u")"
+    else printf 'active (window ended %s; until you send a message)\n' "$(fmt_time "$u")"; fi
   else
     printf 'inactive\n'
   fi
@@ -277,15 +481,10 @@ cmd_pending() {
   printf '%s' "$p" | "$JQ" -r 'length'
 }
 
-cmd_digest() {
-  local mark=0 f p count last
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --mark) mark=1; shift ;;
-      *) die_usage "unknown argument to digest: $1" ;;
-    esac
-  done
-  f=$(q_file)
+# One repo's file: list the questions not yet listed (with --mark, record them as listed).
+# LABEL, when non-empty, prefixes the header so a multi-repo list says whose questions they are.
+digest_file() { # FILE MARK LABEL
+  local f="$1" mark="$2" label="$3" p count last out
   [ -f "$f" ] || return 0
   # Hold the lock from read to watermark, so two sessions answering the same
   # prompt cannot both list the same questions.
@@ -297,14 +496,25 @@ cmd_digest() {
     { unlock; printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
   count=$(printf '%s' "$p" | "$JQ" -r 'length')
   [ "${count:-0}" -gt 0 ] || { unlock; return 0; }
-  local out
   out=$(printf '%s' "$p" | "$JQ" -r 'to_entries[] | .value as $q
     | "\(.key + 1). \($q.id): \($q.question)"
       + "\n   Recommended: \($q.recommended // "none given")"
       + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
       + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
-  # Nothing is marked listed unless the list was rendered and written.
-  if [ -z "$out" ] || ! printf 'Questions recorded while you were away (%s):\n%s\n' "$count" "$out"; then
+  # Nothing is marked listed unless the list was rendered, persisted (when delivery can be verified)
+  # and written.
+  local text src=2
+  text=$(printf '%sQuestions recorded while you were away (%s):\n%s' "${label:+[$label] }" "$count" "$out") || text=""
+  if [ -z "$out" ] || [ -z "$text" ]; then
+    unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
+  fi
+  if [ "$mark" -eq 1 ]; then
+    stage_record "$label" "$text"; src=$?
+    if [ "$src" -eq 1 ]; then
+      unlock; printf 'unattended.sh: could not persist the list; nothing marked as listed\n' >&2; return 1
+    fi
+  fi
+  if ! printf '%s\n' "$text"; then
     unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
   fi
   if [ "$mark" -eq 1 ]; then
@@ -315,6 +525,28 @@ cmd_digest() {
       { unlock; printf 'unattended.sh: could not mark the list as shown\n' >&2; return 1; }
     unlock
   fi
+}
+
+cmd_digest() {
+  local mark=0 all=0 rc=0 f key
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mark) mark=1; shift ;;
+      --all) all=1; shift ;;
+      *) die_usage "unknown argument to digest: $1" ;;
+    esac
+  done
+  if [ "$all" -eq 1 ]; then
+    [ -d "$Q_DIR" ] || return 0
+    for f in "$Q_DIR"/*.jsonl; do
+      [ -f "$f" ] || continue
+      key=$(basename "$f" .jsonl)
+      key="${key/__//}"
+      digest_file "$f" "$mark" "$key" || rc=1
+    done
+    return "$rc"
+  fi
+  digest_file "$(q_file)" "$mark" ""
 }
 
 # --- main ---------------------------------------------------------------------
@@ -344,5 +576,7 @@ case "$sub" in
   update) cmd_update "$@" ;;
   pending) cmd_pending ;;
   digest) cmd_digest "$@" ;;
+  settle) cmd_settle "$@" ;;
+  undelivered) cmd_undelivered "$@" ;;
   *) die_usage "unknown subcommand: $sub" ;;
 esac

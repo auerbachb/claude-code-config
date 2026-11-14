@@ -20,12 +20,12 @@ the task brief. It read only the one-line `MEMORY.md` summary, which still state
 
 | Piece | What it does |
 |---|---|
-| `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E \| --open-ended]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `pending`, `digest [--mark]`. |
+| `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E \| --open-ended]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `pending`, `digest [--all] [--mark]`. |
 | `~/.claude/session-state.json` `.unattended` | `{active, since_epoch, until_epoch}`. Global, not per repo: the operator is one person, and a declaration made in one repo's thread covers every session. Written only through `session-state.sh`; read with `jq` directly because hooks run on every prompt. |
 | `~/.claude/unattended/<owner>__<repo>.jsonl` | Append-only per-repo questions file: `question` records (`U-<n>`, question, options, recommended, did, session, source), `update` records (a later `did`), and `listed` watermarks. |
 | `unattended-question-guard.sh` (PreToolUse, `AskUserQuestion` and `mcp__ccd_session__start_session`) | While unattended: records every question in the call (recommended = first option, the `ask-menu.md` convention), then denies the call with the receipt to print. No menu opens. A `start_session` call is denied with a reason that says to use a sub-agent. Attended: prints nothing. |
 | `question-leak-warn.sh` (Stop) | Accepts `question [U-<n>] recorded for the operator's return` as a receipt. While unattended, its warning points at `unattended.sh record`, never at the question tool. |
-| `unattended-digest.sh` (UserPromptSubmit) | Injects the questions not yet listed — on the operator's next message (any prompt that is not a wrapped automated event), or on any prompt once the window has ended — and marks them listed. |
+| `unattended-digest.sh` (UserPromptSubmit) | Injects the questions not yet listed on the operator's next message (any prompt that is not a wrapped automated event) and marks them listed. Issue #2294: also notices an expired window on an automated prompt and returns the operator on his message after one ran out (below). |
 | `memory-audit.py --check --strict` | Flags a memory note that marks a decision superseded (`SUPERSEDED`, `superseded by`, `superseded:`, `reversed on <date>`) whose `MEMORY.md` line does not say the decision changed; `--strict` exits 1. `/memory-clean` surfaces it as "Stale index lines". |
 
 ## Declaring it
@@ -79,8 +79,37 @@ miss.
 `unattended.sh digest --mark` prints each question not yet listed with its recommended option, its
 options, and what was done meanwhile, then appends a `listed` watermark so nothing is listed twice.
 The UserPromptSubmit hook does this automatically; `unattended.sh off` does it when the operator ends
-the mode in chat. The watermark is marked when the list is injected, not when the reply is read — a
-crash in between loses the reminder, not the record (the file keeps every question).
+the mode in chat. A list the UserPromptSubmit hook (or the guard, for an away expiry) triggers is first persisted as a
+pending-delivery record under `~/.claude/unattended/pending/` and only then marked listed; it counts
+as **delivered** when the hook's delivery reference shows up in the session's transcript (the harness
+records injected context there), and the next operator prompt (`unattended.sh settle`) shows any
+record that did not reach the model again. A hook killed after the mark costs a repeat, never a
+lost question. No path deletes an unconfirmed record silently (an unreadable one is kept and logged; after 5
+unconfirmed emissions it is shown a last time with a plain note). Residual window: the model may have
+received a list and not printed it for him, which nothing here can see; a payload without
+`transcript_path` can only be confirmed by the session's next prompt; and a bare CLI listing (`off`)
+is marked when rendered, as before. Details:
+`presence-windows.md` §Delivery of the saved questions.
+
+## When the window runs out (issue #2294)
+
+A declared window's end no longer ends away handling. Mechanism and rationale for the whole
+lifecycle: `presence-windows.md` §Expiry and return. What changes here:
+
+- `is-active` stays true after the window's end until the operator speaks (`presence.sh return`) or
+  runs `off`; an at-computer presence window that ran out reads as active too. So the guard keeps
+  denying menus, questions keep being recorded, and `question-leak-warn.sh` keeps pointing at
+  `unattended.sh record`. `window-ended` still reports the deadline; `status` says
+  `active (window ended ...; until you send a message)`.
+- `digest --all [--mark]` lists every repo's file, each block labelled `[owner/name]`, because the
+  operator is one person and may come back in any thread while the questions sit in another repo's
+  file. A repo's own `digest` is unchanged.
+- `off` also ends a lapsed at-computer window (silently, through `presence.sh return --no-dialog`);
+  it never touches a window that is still running.
+- The window-end watch that `on` prints now runs `presence.sh expire`, not a bare digest.
+- Trade-off the operator accepted: after an expiry, someone reading but not typing gets no menus
+  until they say something. A prompt the hook does not recognise as automated counts as the
+  operator and can end away handling early; it can never keep it from ending.
 
 ## Left out (issue #2283)
 

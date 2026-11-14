@@ -38,6 +38,12 @@
 #   18. the same, with the uncovered write failing: marker unchanged, named
 #       stop reason, exit 5, no reviewer run;
 #   19. --dry-run on that fixture lists "would record uncovered" and writes nothing.
+#   28-33. a net-empty stretch (a change and its exact revert) is passed without a
+#       review and recorded in skipped_empty[] (issue #2338): no stall, the marker
+#       passes the pair, the over-bound commit after it is reviewed (28) or recorded
+#       uncovered (29); the same at the tip of main (30); a failed record write
+#       leaves the marker unchanged with a named stop (31); dry run writes nothing
+#       (32); a revert of a commit before the marker is ordinary, not skipped (33).
 #   The fail-first pass (reverting the logic and confirming the cases fail)
 #   is run by hand and recorded in the PR body; see the reference doc.
 #
@@ -510,6 +516,163 @@ check_eq "26: per-PR run with --default-days abc exits as without it" "$RC_B" "$
 OUT_E="$(BACKFILL_RANGE_DEFAULT_DAYS=abc "$RUN_BASH" "$SCRIPT" --range --repo-dir "$R" --repo acme/widgets --timeout 30 --channels coderabbit --dry-run --ignore-window 2>&1)"; RC_E=$?
 check_eq "27: --range with BACKFILL_RANGE_DEFAULT_DAYS=abc is a usage error" "2" "$RC_E"
 check_contains "27: the range-only setting is named in the error" "BACKFILL_RANGE_DEFAULT_DAYS needs a positive integer" "$OUT_E"
+
+# ---- 28-33. a net-empty stretch is passed without a review (issue #2338) ------
+# A change, its exact revert, then a commit over the bound. The pair is a
+# net-empty stretch: nothing from it remains on main. The marker must pass it
+# (recorded in skipped_empty[]), not stall with range_empty; the over-bound
+# commit is then handled by the normal cap and uncovered rules.
+nerepo() { # name -> NR (clone dir), NSEED (the seed commit)
+  NR="$TMP/$1"; git init -q --bare "$TMP/$1.git"; git clone -q "$TMP/$1.git" "$NR" 2>/dev/null
+  printf 'seed\n' > "$NR/seed.txt"; git -C "$NR" add seed.txt; git -C "$NR" commit -qm "Seed (#90)"
+  NSEED="$(git -C "$NR" rev-parse HEAD)"
+}
+nrun() { local d="$1"; shift; "$RUN_BASH" "$SCRIPT" --range --repo-dir "$d" --repo acme/widgets --timeout 30 --channels coderabbit "$@" 2>"$TMP/stderr"; }
+# Change + revert, then a 5-file commit (over bound 3, within CodeRabbit's 150).
+nerepo ne1
+printf 'x\n' > "$NR/temp.txt"; git -C "$NR" add temp.txt; git -C "$NR" commit -qm "Add temp file (#701)"
+NA="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" rm -q temp.txt; git -C "$NR" commit -qm "Revert temp file (#702)"
+NB="$(git -C "$NR" rev-parse HEAD)"
+for i in 1 2 3 4 5; do printf 'x\n' > "$NR/x$i.txt"; done
+git -C "$NR" add x1.txt x2.txt x3.txt x4.txt x5.txt; git -C "$NR" commit -qm "Five files (#703)"
+NC="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" push -q origin main 2>/dev/null
+NE1_DIR="$NR"; NE1_SEED="$NSEED"; NE1_A="$NA"; NE1_B="$NB"; NE1_C="$NC"
+
+# 28: no stall. The marker passes the pair, records it, and reviews the 5-file commit.
+reset_state
+seed_marker "$NE1_SEED"
+OUT="$(nrun "$NE1_DIR" --range-bound 3 --max-reviews 5 --ignore-window)"; RC=$?
+check_eq "28: exit 0" "0" "$RC"
+check_contains "28: run completes (no range_empty stall)" "stop=done" "$OUT"
+check_not_contains "28: the stall stop is gone" "stop=range_empty" "$OUT"
+check_eq "28: marker ends at the over-bound commit, past the pair" "$NE1_C" "$(marker_sha)"
+check_eq "28: the pair is recorded as skipped_empty, first commit" "$NE1_A" \
+  "$(jq -r '.repos["acme/widgets"].skipped_empty[0].first' "$MARKER")"
+check_eq "28: skipped_empty last commit is the revert" "$NE1_B" \
+  "$(jq -r '.repos["acme/widgets"].skipped_empty[0].last' "$MARKER")"
+check_eq "28: skipped_empty counts 2 commits and 0 files" "2 0" \
+  "$(jq -r '.repos["acme/widgets"].skipped_empty[0] | "\(.commits) \(.files)"' "$MARKER")"
+check_eq "28: the over-bound commit was reviewed alone, once" "1" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "28: the 5-file commit is the recorded reviewed range" "$NE1_C" \
+  "$(jq -r '.repos["acme/widgets"].last_range.last' "$MARKER")"
+check_contains "28: the net-empty stretch is not counted as reviewed (only the 5-file commit is)" "reviewed=1 clean=1" "$OUT"
+check_eq "28: no uncovered record" "null" "$(jq -r '.repos["acme/widgets"].uncovered' "$MARKER")"
+
+# 29: the same history with the over-bound commit over every cap: it is recorded
+# uncovered by the existing rule, and the pair is still passed.
+V29="$TMP/ne2"; git init -q --bare "$TMP/ne2.git"; git clone -q "$TMP/ne2.git" "$V29" 2>/dev/null
+printf 'seed\n' > "$V29/seed.txt"; git -C "$V29" add seed.txt; git -C "$V29" commit -qm "Seed (#90)"
+V29_SEED="$(git -C "$V29" rev-parse HEAD)"
+printf 'x\n' > "$V29/temp.txt"; git -C "$V29" add temp.txt; git -C "$V29" commit -qm "Add temp file (#711)"
+V29_A="$(git -C "$V29" rev-parse HEAD)"
+git -C "$V29" rm -q temp.txt; git -C "$V29" commit -qm "Revert temp file (#712)"
+V29_B="$(git -C "$V29" rev-parse HEAD)"
+mkdir -p "$V29/huge"; for i in $(seq 1 151); do printf 'x\n' > "$V29/huge/f$i.txt"; done
+git -C "$V29" add huge; git -C "$V29" commit -qm "Vendor drop (#713)"
+V29_C="$(git -C "$V29" rev-parse HEAD)"
+git -C "$V29" push -q origin main 2>/dev/null
+reset_state
+seed_marker "$V29_SEED"
+OUT="$(nrun "$V29" --range-bound 3 --max-reviews 5 --ignore-window 2>/dev/null)"; RC=$?
+check_eq "29: exit 0" "0" "$RC"
+check_contains "29: run completes" "stop=done" "$OUT"
+check_eq "29: marker ends at main" "$V29_C" "$(marker_sha)"
+check_eq "29: the pair is recorded as skipped_empty" "$V29_A" \
+  "$(jq -r '.repos["acme/widgets"].skipped_empty[0].first' "$MARKER")"
+check_eq "29: the over-every-cap commit is uncovered, by the existing rule" "$V29_C" \
+  "$(jq -r '.repos["acme/widgets"].uncovered[0].commit' "$MARKER")"
+check_eq "29: no reviewer ran on the 151 files" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_contains "29: nothing counted as reviewed or clean" "reviewed=0 clean=0" "$OUT"
+
+# 30: a net-empty stretch at the tip of main advances the marker to main.
+nerepo ne3
+printf 'x\n' > "$NR/temp.txt"; git -C "$NR" add temp.txt; git -C "$NR" commit -qm "Add temp file (#721)"
+git -C "$NR" rm -q temp.txt; git -C "$NR" commit -qm "Revert temp file (#722)"
+NE3_TIP="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" push -q origin main 2>/dev/null
+reset_state
+seed_marker "$NSEED"
+OUT="$(nrun "$NR" --max-reviews 5 --ignore-window)"; RC=$?
+check_eq "30: exit 0" "0" "$RC"
+check_contains "30: tip stretch completes the run" "stop=done" "$OUT"
+check_eq "30: marker advances to main, past the net-empty tip" "$NE3_TIP" "$(marker_sha)"
+check_eq "30: the tip stretch is recorded as skipped_empty" "2 0" \
+  "$(jq -r '.repos["acme/widgets"].skipped_empty[0] | "\(.commits) \(.files)"' "$MARKER")"
+check_eq "30: no reviewer ran for a net-empty tip" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+
+# 31: the skipped record cannot be written: marker unchanged, named stop, exit 5.
+reset_state
+RO29="$TMP/ro29"; mkdir -p "$RO29"; RO29_MARKER="$RO29/marker.json"
+jq -n --arg s "$NE1_SEED" '{schema_version: 1, repos: {"acme/widgets": {last_reviewed_commit: $s, updated_at: "2026-11-01T00:00:00Z"}}}' > "$RO29_MARKER"
+BEFORE="$(cat "$RO29_MARKER")"
+# The write is failed by a mv shim, not by a read-only directory: root ignores
+# chmod, so a permission trick would let the write succeed and the test pass for
+# the wrong reason. The shim fails the marker's atomic rename and nothing else.
+mkdir -p "$TMP/mvshim"; printf '#!/bin/sh\nexit 1\n' > "$TMP/mvshim/mv"; chmod +x "$TMP/mvshim/mv"
+OUT="$(env PATH="$TMP/mvshim:$PATH" BACKFILL_RANGE_MARKER="$RO29_MARKER" "$RUN_BASH" "$SCRIPT" --range --repo-dir "$NE1_DIR" --repo acme/widgets \
+  --timeout 30 --channels coderabbit --range-bound 3 --max-reviews 5 --ignore-window 2>"$TMP/stderr")"; RC=$?
+check_eq "31: failed skipped_empty write exits 5" "5" "$RC"
+check_contains "31: stop reason is named" "stop=range_skipped_empty_write_failed" "$OUT"
+check_eq "31: marker byte-identical (no advance without the record)" "$BEFORE" "$(cat "$RO29_MARKER")"
+check_eq "31: no reviewer ran" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+
+# 32: dry run lists the net-empty stretch as a skip and writes nothing.
+reset_state
+seed_marker "$NE1_SEED"
+OUT="$(nrun "$NE1_DIR" --range-bound 3 --dry-run --ignore-window 2>/dev/null)"; RC=$?
+check_eq "32: dry run exits 0" "0" "$RC"
+check_contains "32: dry run says would skip (net-empty), with the pair" \
+  "would skip (net-empty) $(short12 "$NE1_A")..$(short12 "$NE1_B") commits=2 (nothing written)" "$OUT"
+check_contains "32: dry run still plans the over-bound commit after it" \
+  "would review range $(short12 "$NE1_C")..$(short12 "$NE1_C") commits=1 files=5 bound=3 channel=coderabbit" "$OUT"
+check_eq "32: dry run left the marker at its seed" "$NE1_SEED" "$(marker_sha)"
+check_eq "32: dry run wrote no skipped_empty record" "null" "$(jq -r '.repos["acme/widgets"].skipped_empty' "$MARKER")"
+check_eq "32: dry run ran no review CLI" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+
+# 33: a revert of a commit BEFORE the marker is not net-empty: the net diff from the
+# marker is the reverted file, so the stretch is ordinary, reviewed, and not skipped.
+nerepo ne4
+printf 'x\n' > "$NR/keep.txt"; git -C "$NR" add keep.txt; git -C "$NR" commit -qm "Add keep file (#731)"
+NE4_X="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" rm -q keep.txt; git -C "$NR" commit -qm "Revert keep file (#732)"
+NE4_R="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" push -q origin main 2>/dev/null
+reset_state
+seed_marker "$NE4_X"
+OUT="$(nrun "$NR" --max-reviews 5 --ignore-window)"; RC=$?
+check_contains "33: the revert after the marker is reviewed, run completes" "stop=done" "$OUT"
+check_eq "33: marker advances to the revert" "$NE4_R" "$(marker_sha)"
+check_eq "33: not recorded as skipped_empty (net diff is one file)" "null" \
+  "$(jq -r '.repos["acme/widgets"].skipped_empty' "$MARKER")"
+check_eq "33: the reviewer ran once on the ordinary stretch" "1" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+
+# 34: a failed `git diff --name-only` must stop the run, never read as "zero files".
+# A shim fails only the name-only diff; the net-empty pair must not be skipped and
+# the marker must not move (the stop is the named internal error, exit 5).
+nerepo ne5
+printf 'x\n' > "$NR/t34.txt"; git -C "$NR" add t34.txt; git -C "$NR" commit -qm "Add t34 (#741)"
+NE5_A="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" rm -q t34.txt; git -C "$NR" commit -qm "Revert t34 (#742)"
+git -C "$NR" push -q origin main 2>/dev/null
+reset_state
+seed_marker "$NSEED"
+mkdir -p "$TMP/gitshim"
+REAL_GIT="$(command -v git)"
+cat > "$TMP/gitshim/git" <<'SHIM'
+#!/bin/sh
+case " $* " in *" --name-only "*) exit 128 ;; esac
+exec "$REAL_GIT" "$@"
+SHIM
+chmod +x "$TMP/gitshim/git"
+BEFORE34="$(marker_sha)"
+OUT="$(env PATH="$TMP/gitshim:$PATH" REAL_GIT="$REAL_GIT" "$RUN_BASH" "$SCRIPT" --range --repo-dir "$NR" --repo acme/widgets \
+  --timeout 30 --channels coderabbit --range-bound 3 --max-reviews 5 --ignore-window 2>"$TMP/stderr")"; RC=$?
+check_eq "34: a failed diff stops the run with exit 5" "5" "$RC"
+check_contains "34: stop reason is the named internal error" "stop=range_internal_error" "$OUT"
+check_eq "34: marker unchanged (no advance on a failed diff)" "$BEFORE34" "$(marker_sha)"
+check_eq "34: nothing recorded as skipped_empty" "null" "$(jq -r '.repos["acme/widgets"].skipped_empty' "$MARKER")"
 
 echo
 echo "backfill-range-review tests: $PASS passed, $FAIL failed"
