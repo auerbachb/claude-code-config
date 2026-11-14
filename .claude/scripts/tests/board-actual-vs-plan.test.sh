@@ -91,5 +91,29 @@ for CASE in "74 min vs plan 90|+22 min over plan|—" "—|—" "+<1 min over pl
 done
 expect "rollup: delivered count equals the number of rows" "true" "$PARTITION_OK"
 
+# --- per-repo roll-up loop, extracted from SKILL.md (one line per repo, never combined) ----------
+awk '/^ROLLUP_KEYS=\(\)$/{p=1} p{print} p && /^done$/{c++; if (c == 2) exit}' "$SKILL" > "$WORK/rollup-loop.sh"
+if ! grep -q '^ROLLUP_KEYS=()$' "$WORK/rollup-loop.sh"; then
+  echo "FAIL: could not extract the per-repo roll-up loop from $SKILL" >&2
+  exit 1
+fi
+run_rollup() {  # run_rollup <all-repos true|false> <repo:cell:approx>...
+  local all="$1" entry; shift
+  DELIVERED_CELLS=(); DELIVERED_REPOS=(); DELIVERED_APPROX=()
+  for entry in "$@"; do
+    IFS=':' read -r r c a <<< "$entry"
+    DELIVERED_REPOS+=("$r"); DELIVERED_CELLS+=("$c"); DELIVERED_APPROX+=("$a")
+  done
+  BOARD_ALL_REPOS="$all"
+  eval "$(cat "$WORK/helpers.sh")"
+  eval "$(cat "$WORK/rollup-loop.sh")"
+}
+expect "per-repo: single exact repo is one line" "2 delivered: 1 under plan, 1 over by 22 min" \
+  "$(run_rollup false "org/a:74 min vs plan 90:false" "org/a:+22 min over plan:false" 2>&1)"
+expect "per-repo: all-repos prints one qualified line per repo" \
+  "org/a: 2 delivered: 1 under plan, 1 over by 5 min
+org/b: approximately 1 delivered: 0 under plan, 1 over by 22 min" \
+  "$(run_rollup true "org/a:74 min vs plan 90:false" "org/b:+22 min over plan:true" "org/a:+5 min over plan:false" 2>&1)"
+
 echo "board-actual-vs-plan: $PASSES passed, $FAILS failed"
 [[ "$FAILS" -eq 0 ]]

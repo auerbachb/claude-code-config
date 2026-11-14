@@ -676,8 +676,9 @@ Per row:
 - **Queued rows** — `—` in all three clock columns.
 - **Completed rows** — `merged`, with the delivered clock time in `Projected end` and
   the actual against the plan in `Remaining` (`74 min vs plan 90`, or `+22 min over
-  plan`; `—` when the start or the bound cannot be read). Initialise `DELIVERED_CELLS=()`
-  once before the rows, so each merged row appends its cell for the roll-up
+  plan`; `—` when the start or the bound cannot be read). Initialise `DELIVERED_CELLS=()`,
+  `DELIVERED_REPOS=()` and `DELIVERED_APPROX=()` once before the rows, so each merged row
+  appends its cell, its repo key and its approximate flag for the roll-up
   (`time-estimates.md` §"Running now Table"). They never reach
   `overrun-check.sh`'s **projection** cells; the branch below is what keeps them out.
   Both of their clocks are still **formatted** by that script, because it is the only
@@ -745,6 +746,8 @@ if [[ "$ROW_STATUS" == merged ]]; then
   # the bound cannot be read.
   CELL_REMAINING=$(actual_cell "$BOUND_MIN" "$STARTED_AT" "$MERGED_AT")
   DELIVERED_CELLS+=("$CELL_REMAINING")
+  DELIVERED_REPOS+=("$ROW_REPO")
+  DELIVERED_APPROX+=("${DELIVERED_APPROX_FLAG:-false}")  # Step 4's per-repo approximate qualifier
 elif [[ -n "$CELLS" ]]; then
   CELL_START=$(printf '%s' "$CELLS" | cut -f1)
   CELL_END=$(printf '%s' "$CELLS" | cut -f2)
@@ -889,20 +892,36 @@ an exact count must never be hedged into either.
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
 ```
 
-**Round roll-up.** One further line, printed only when at least one row is delivered.
-It tallies the `DELIVERED_CELLS` the table loop collected, so its count is the same
-delivered count the summary line states: under plan + over plan + unreadable always
-equals the delivered rows. Under `--all-repos` it is printed once per repo, each line
-prefixed with that repo's key, and each repo's delivered count is qualified on its own
-terms. A delivered count that is approximate (the timestamp fallback in Step 3) gets the
+**Round roll-up.** One line per repo, printed only for a repo with at least one delivered
+row. It tallies that repo's entries of `DELIVERED_CELLS`, selected by `DELIVERED_REPOS`,
+so its count is the same delivered count the summary line states for that repo: under
+plan + over plan + unreadable always equals that repo's delivered rows. A single-repo
+board has one repo key and so one line. Under `--all-repos` each line is prefixed with
+its repo's key, and each repo's delivered count is qualified on its own terms. A
+repo whose delivered count is approximate (the timestamp fallback in Step 3) gets the
 word `approximately` in front, the same qualifier the summary uses.
 
 ```bash
-# ROLLUP_PREFIX, set per repo before this line: "approximately " when that repo's delivered
-# count came from the timestamp fallback, and "<repo key>: " under --all-repos. Both empty
-# on a single-repo exact board.
-ROLLUP=$(rollup_line "${DELIVERED_CELLS[@]+"${DELIVERED_CELLS[@]}"}")
-[[ -n "$ROLLUP" ]] && printf '%s%s\n' "${ROLLUP_PREFIX:-}" "$ROLLUP"
+# DELIVERED_APPROX_FLAG (set by Step 4 per repo) is "true" where that repo's delivered
+# count came from the timestamp fallback. BOARD_ALL_REPOS is the mode flag from Step 2.
+ROLLUP_KEYS=()
+for k in "${DELIVERED_REPOS[@]+"${DELIVERED_REPOS[@]}"}"; do
+  case " ${ROLLUP_KEYS[*]+"${ROLLUP_KEYS[*]}"} " in *" $k "*) ;; *) ROLLUP_KEYS+=("$k") ;; esac
+done
+for k in "${ROLLUP_KEYS[@]+"${ROLLUP_KEYS[@]}"}"; do
+  REPO_CELLS=(); REPO_APPROX=false
+  for i in "${!DELIVERED_REPOS[@]}"; do
+    if [[ "${DELIVERED_REPOS[$i]}" == "$k" ]]; then
+      REPO_CELLS+=("${DELIVERED_CELLS[$i]}")
+      [[ "${DELIVERED_APPROX[$i]}" == true ]] && REPO_APPROX=true
+    fi
+  done
+  ROLLUP_PREFIX=""
+  [[ "$BOARD_ALL_REPOS" == true ]] && ROLLUP_PREFIX="$k: "
+  [[ "$REPO_APPROX" == true ]] && ROLLUP_PREFIX="${ROLLUP_PREFIX}approximately "
+  ROLLUP=$(rollup_line "${REPO_CELLS[@]+"${REPO_CELLS[@]}"}")
+  [[ -n "$ROLLUP" ]] && printf '%s%s\n' "$ROLLUP_PREFIX" "$ROLLUP"
+done
 ```
 
 ```text
