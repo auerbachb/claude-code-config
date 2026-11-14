@@ -379,9 +379,10 @@ fi
 # ---------------------------------------------------------------------------
 
 # 2a. review-stack-audit — the watermark file is the durable record; a session
-#     start is the tick (issue #1201). It has no "offered" state: its tick runs
-#     the real comparison rather than offering a step-up chip, so a month is
-#     either done or due.
+#     start is the tick (issue #1201). It has no "offered" state: a session
+#     start only emits the notice below and never runs the comparison itself,
+#     so the user runs /review-stack-audit --tick for it. A month is either
+#     done or due.
 if [[ -f "$REVIEW_STACK_WATERMARK" ]]; then
   RS_MONTH="$(TZ='America/New_York' date +%Y-%m)"
   RS_DUE="$(jq -r --arg m "$RS_MONTH" '
