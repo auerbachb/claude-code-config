@@ -46,7 +46,7 @@
   "last_updated": "2026-08-03T21:22:34Z",
   "monitoring_active": true,
   "monitoring_mode": "monitor",
-  "monitoring_command": "/status",
+  "monitoring_command": "/pr-status",
   "monitoring_interval_minutes": 60,
   "monitoring_started_at": "2026-03-16T15:00:00Z",
   "last_poll_at": "2026-03-16T15:58:00Z",

@@ -52,7 +52,7 @@ the live agent handle it is holding (Step 3).
 each one — never a bare `.claude/scripts/…` path
 (`.claude/reference/portable-skill-resolution.md`).
 
-**Scope boundary.** `/status` is the PR-fleet dashboard — every open PR with its
+**Scope boundary.** `/pr-status` is the PR-fleet dashboard — every open PR with its
 review state, whether or not this session dispatched it. `/subagent` is the
 dispatcher that owns this same table at launch and on heartbeats. `/board` neither
 dispatches nor reviews nor merges: it reads state and prints one table. Its **only**
