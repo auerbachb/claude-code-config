@@ -100,7 +100,7 @@ jq '.check_runs.all[] | select(.name == "Cursor Bugbot") | {name, status, conclu
 For a structured merge-readiness call per PR, run the shared merge-gate verifier:
 
 ```bash
-"$MERGE_GATE_SH" "$PR_NUM"
+"$MERGE_GATE_SH" "$N"
 ```
 
 Exit `0` → Clean (merge-ready). Exit `1` → parse `.missing[]` to classify: entries about findings/threads = **Has findings**, entries about CI incomplete or review not yet posted = **Review pending**, entries about rate limits = **Rate-limited**. Exit `3` → PR not found. Exit `2`/`4` → script/gh error.
