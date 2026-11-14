@@ -187,5 +187,13 @@ expect_eq "verdict on HEAD: the answering reviewer's stale record is cleared" \
 expect_eq "verdict on HEAD: the reason is the verdict, not a skip" "$(jq -r .reason <<<"$out")" "verdict_on_head"
 
 echo
+
+# Untimed refusals cannot reuse a skip marker to waive the ordinary window (#2336).
+av_state - - "$HEADSHA"
+jq --argjson t "$((NOW - 60))" '.review_availability={coderabbit:{refusal_kind:"untimed",notice_epoch:$t,next_available_epoch:null,read_at:($t|todateiso8601)},codeant:{refusal_kind:"untimed",notice_epoch:$t,next_available_epoch:null,read_at:($t|todateiso8601)}}' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+out=$(run_helper "$(payload "[]")")
+expect_eq "both untimed refusals plus current skip still wait ordinary window" "$(jq -r .applied <<<"$out")" "false"
+expect_eq "unknown reset does not emit immediate unavailability reason" "$(jq -r '.reason | startswith("no_reviewer_available_until")' <<<"$out")" "false"
+
 echo "no-review-override availability tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

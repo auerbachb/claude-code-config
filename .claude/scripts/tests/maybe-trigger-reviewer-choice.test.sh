@@ -111,7 +111,7 @@ case "$args" in
         '. + [{user: {login: "me"}, body: $b, created_at: $at, updated_at: $at}]' "$FX/comments.json" > "$FX/c.tmp" \
         && mv "$FX/c.tmp" "$FX/comments.json"
     fi ;;
-  *"/issues/"*"/comments"*) serve "$FX/comments.json" ;;
+  *"/issues/"*"/comments"*) [[ -z "${FIXTURE_COMMENTS_FAIL:-}" ]] || exit 1; serve "$FX/comments.json" ;;
   *"/pulls/"*"/reviews"*) echo '[]' ;;
   *"/check-runs"*) jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
   *"/actions/runs"*) jq -c --arg head "$FIXTURE_HEAD" '.check_runs[0] as $check | {total_count:1,workflow_runs:[{id:1,workflow_id:1,event:"push",head_branch:"fixture",head_sha:$head,pull_requests:[],check_suite_id:1,html_url:"https://github.com/acme/one/actions/runs/1",status:$check.status,conclusion:$check.conclusion}]}' "$FX/checks.json" ;;
@@ -141,14 +141,14 @@ OK_CAP='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"c
 reset() { # <tier json>
   export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC=0 FIXTURE_HEAD="$HEAD" FIXTURE_ROUNDS=3
   export FIXTURE_REFUSED="" FIXTURE_CAP_OUT="$OK_CAP" FIXTURE_CAP_RC=0 FIXTURE_POST_FAIL="" FIXTURE_INVISIBLE=""
-  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER=""
+  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER="" FIXTURE_COMMENTS_FAIL="" FIXTURE_AV_FAIL=""
   rm -f "$HOME/.claude/session-state.json"
   : > "$POSTED"
   echo '[]' > "$FX/comments.json"
   checks success 7200
 }
-OUT=""; RC=0; ERR=""
-run() { RC=0; OUT="$(cd "$WORK" && bash "$S/maybe-trigger-ai-review.sh" "$PR" --json "$@" 2>"$TMP/err")" || RC=$?; ERR="$(cat "$TMP/err")"; }
+OUT=""; RC=0
+run() { RC=0; OUT="$(cd "$WORK" && bash "$S/maybe-trigger-ai-review.sh" "$PR" --json 2>"$TMP/err")" || RC=$?; }
 posted() { tr '\n' ';' < "$POSTED"; }
 f() { jq -r "$1" <<<"$OUT" 2>/dev/null; }
 ledger() { ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get-json ".prs[\"$PR\"].review_trigger_ledger.$1.count" 2>/dev/null ) || echo null; }
@@ -287,5 +287,77 @@ run
 PR=99601 run
 check_eq "first PR asks CodeAnt, second asks CodeRabbit" "@codeant-ai review;@coderabbitai review;" "$(posted)"
 check_eq "second PR's choice is recorded" "coderabbit" "$(choice_of 99601)"
+
+echo "== untimed refusal refresh beats a busy eligible queue and preserves one request per HEAD =="
+reset "$NRO_TIER"
+write_av '{}'
+jq --argjson t "$(date +%s)" '.review_requests=[range(3)|{reviewer:"codeant",at_epoch:$t}]' "$HOME/.claude/session-state.json" > "$TMP/state.tmp"
+mv "$TMP/state.tmp" "$HOME/.claude/session-state.json"
+jq -cn --arg t "$(ago 60)" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t},{user:{login:"coderabbitai[bot]"},body:"Review triggered. Your full review will begin shortly.",created_at:$t,updated_at:$t}]' > "$FX/comments.json"
+run
+check_eq "fresh notice selects busy CodeAnt instead of refused CodeRabbit" "@codeant-ai review;" "$(posted)"
+check_eq "unknown reset preserved" "null" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$HOME/.claude/session-state.json")"
+run
+check_eq "same-HEAD rerun exits successfully" "0" "$RC"
+check_eq "second tick cannot request again on same HEAD" "@codeant-ai review;" "$(posted)"
+export FIXTURE_HEAD="$HEAD2"
+run
+check_eq "new HEAD still prefers eligible CodeAnt" "@codeant-ai review;@codeant-ai review;" "$(posted)"
+
+
+echo "== failed metadata refresh preserves account-wide refusal =="
+reset "$NRO_TIER"
+write_av "{\"coderabbit\":$(jq -cn --argjson t "$(date +%s)" '{refusal_kind:"untimed",notice_epoch:$t,source_repo:"other/repo",source_pr:1}') }"
+export FIXTURE_COMMENTS_FAIL=1
+REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=1 run
+check_eq "failed comments read asks CodeAnt from stored cross-repo evidence" "@codeant-ai review;" "$(posted)"
+
+
+echo "== actual unreadable timed observation cannot suppress a request =="
+reset "$NRO_TIER"
+broken=$(jq '.read_at="malformed"' <<<"$LIMIT_CA")
+write_av "{\"codeant\":$broken,\"coderabbit\":$broken}"
+before=$(jq -c '.review_availability' "$HOME/.claude/session-state.json")
+run
+check_eq "unreadable timed observation asks successfully" "0" "$RC"
+check_eq "unreadable timed observation asks instead of stale skip" "@codeant-ai review;" "$(posted)"
+check_eq "unreadable timed observation preserves original records" "$before" "$(jq -c '.review_availability' "$HOME/.claude/session-state.json")"
+check_eq "unreadable timed observation records no NRO skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
+
+echo "== availability processing failures cannot suppress a request using stale limits =="
+mv "$S/review-availability.sh" "$S/review-availability-real.sh"
+cat > "$S/review-availability.sh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${FIXTURE_AV_FAIL:-}" == "$1" ]]; then cat >/dev/null; exit 5; fi
+exec "$(dirname "$0")/review-availability-real.sh" "$@"
+STUB
+chmod +x "$S/review-availability.sh"
+for method in record observe; do
+  reset "$NRO_TIER"
+  write_av "{\"codeant\":$LIMIT_CA,\"coderabbit\":$LIMIT_CA}"
+  export FIXTURE_AV_FAIL="$method"
+  run
+  check_eq "$method failure asks instead of trusting stale all-limited skip" "@codeant-ai review;" "$(posted)"
+  check_eq "$method failure records no immediate-NRO skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
+  run
+  check_eq "$method failure same-HEAD rerun exits successfully" "0" "$RC"
+  check_eq "$method failure still preserves one request per HEAD" "@codeant-ai review;" "$(posted)"
+done
+reset "$NRO_TIER"
+write_av "{\"codeant\":$LIMIT_CA}"
+export FIXTURE_AV_FAIL=record
+cat > "$S/cr-review-hourly.sh" <<STUB
+#!/usr/bin/env bash
+n=\$(cat "$TMP/cr-check-count" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$TMP/cr-check-count"
+case "\$1" in --check) [ "\$n" -le 1 ] && exit 0 || exit 1 ;; *) exit 0 ;; esac
+STUB
+chmod +x "$S/cr-review-hourly.sh"; rm -f "$TMP/cr-check-count"
+run
+check_eq "processing failure also disables later hourly-budget skip" "@codeant-ai review;" "$(posted)"
+check_eq "hourly fallback after processing failure records no skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
+cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
+mv "$S/review-availability-real.sh" "$S/review-availability.sh"
+unset FIXTURE_AV_FAIL
+
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

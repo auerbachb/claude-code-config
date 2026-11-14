@@ -89,7 +89,7 @@ dec=$(decide_at "$NOW")
 expect_eq "only CodeRabbit known limited (CodeAnt unknown): request" "$(jq -r '.skip' <<<"$dec")" "false"
 expect_eq "unknown CodeAnt reads as no_record" "$(jq -r '.reviewers.codeant.why' <<<"$dec")" "no_record"
 
-# --- Record: CodeRabbit banner writes a parsed time; unparseable writes nothing -----------
+# --- Record: timed and untimed reviewer notices preserve their known evidence -----------
 rm -f "$STATE_FILE"
 T=$(iso $((NOW - 60)))
 jq -cn --arg t "$T" '[{user:{login:"coderabbitai[bot]"},
@@ -105,8 +105,8 @@ rm -f "$STATE_FILE"
 jq -cn --arg t "$T" '[{user:{login:"coderabbitai[bot]"},
   body:"**Review limit reached** and then nothing readable about when", created_at:$t, updated_at:$t}]' > "$TMP/nowindow.json"
 out=$("$AV" record --repo o/r --pr 7 < "$TMP/nowindow.json")
-expect_eq "record: unparseable notice writes nothing" "$(jq -c '.written' <<<"$out")" "[]"
-expect_eq "record: no state file created for an unparseable notice" "$(test -f "$STATE_FILE" && echo yes || echo no)" "no"
+expect_eq "record: unparseable refusal retains provenance" "$(jq -c '.written' <<<"$out")" '["coderabbit"]'
+expect_eq "record: untimed refusal has no fabricated deadline" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "null"
 
 # A newer statement on file outranks an older notice (no overwrite with an older time).
 state_with_av "{\"coderabbit\":$(av_record $((NOW + 3000)) $((NOW + 100)))}"
@@ -114,12 +114,12 @@ out=$("$AV" record --repo o/r --pr 8 < "$TMP/banner.json")
 expect_eq "record: older notice does not overwrite a newer one" \
   "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" "$((NOW + 3000))"
 
-# A timed notice followed by a NEWER untimed notice clears the stale slot, so decide requests (#2256).
+# A newer untimed notice replaces stale timing with ranking evidence; decide still requests.
 state_with_av "{\"coderabbit\":$(av_record $((NOW + 1200)) $((NOW - 600))),\"codeant\":$(av_record $((NOW + 1500)) $NOW)}"
 jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},
   body:"**Review limit reached** with no time given", created_at:$t, updated_at:$t}]' > "$TMP/untimed.json"
 out=$("$AV" record --repo o/r --pr 7 < "$TMP/untimed.json")
-expect_eq "untimed newer notice: CodeRabbit slot cleared" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+expect_eq "untimed newer notice: CodeRabbit refusal retained" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" "untimed"
 expect_eq "untimed newer notice: the other reviewer's record is untouched (no notice for it)" \
   "$(jq -r '.review_availability.codeant.next_available_epoch != null' "$STATE_FILE")" "true"
 dec=$(decide_at "$NOW")
@@ -237,6 +237,300 @@ state_with_av "{\"coderabbit\":$base_cr,\"codeant\":$base_cd}"
 "$AV" observe --repo o/r <<<'{"not":"an array"}' >/dev/null 2>&1 && rc=0 || rc=$?
 expect_eq "observe: malformed reviews exit 4" "$rc" "4"
 expect_eq "observe: malformed reviews clear nothing" "$(jq -r '.review_availability.coderabbit.next_available_epoch != null' "$STATE_FILE")" "true"
+
+
+
+# A walkthrough discussing the notice is not itself an explicit refusal.
+rm -f "$STATE_FILE"
+jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"coderabbitai[bot]"},body:"The change preserves Review rate limited. notices and improves reviewer selection.",created_at:$t,updated_at:$t}]' > "$TMP/discussion.json"
+out=$("$AV" record --repo other/repo --pr 1213 < "$TMP/discussion.json")
+expect_eq "ordinary discussion of literal refusal is not a refusal" "$(jq -c '.written' <<<"$out")" '[]'
+
+
+# Legacy broad matchers must not give ordinary prose the new untimed meaning.
+for phrase in 'review limit reached handling' 'usage limit handling' 'rate limit handling'; do
+  for login in 'coderabbitai[bot]' 'codeant-ai[bot]'; do
+    rm -f "$STATE_FILE"
+    discussion=$(jq -cn --arg t "$(iso $NOW)" --arg l "$login" --arg p "$phrase" '[{user:{login:$l},body:("This change improves " + $p + " and preserves the review queue."),created_at:$t,updated_at:$t}]')
+    out=$("$AV" record --repo o/r --pr 7 <<<"$discussion")
+    expect_eq "legacy prose creates no refusal: $login $phrase" "$(jq -c '.written' <<<"$out")" '[]'
+  done
+done
+for login in 'coderabbitai[bot]' 'codeant-ai[bot]'; do
+  rm -f "$STATE_FILE"
+  notices=$(jq -cn --arg old "$(iso $((NOW - 60)))" --arg new "$(iso $NOW)" --arg l "$login" '[{user:{login:$l},body:"**Review limit reached**",created_at:$old,updated_at:$old},{user:{login:$l},body:"This change improves review limit reached handling and preserves the queue.",created_at:$new,updated_at:$new}]')
+  "$AV" record --repo o/r --pr 7 <<<"$notices" >/dev/null
+  key=coderabbit; [[ "$login" == 'codeant-ai[bot]' ]] && key=codeant
+  expect_eq "newer prose in same page cannot hide real refusal: $login" "$(jq -r --arg k "$key" '.review_availability[$k].notice_epoch' "$STATE_FILE")" "$((NOW - 60))"
+  before=$(jq -c '.review_availability' "$STATE_FILE")
+  "$AV" record --repo o/r --pr 7 <<<"$(jq '[.[1]]' <<<"$notices")" >/dev/null
+  expect_eq "prose-only refresh preserves existing refusal: $login" "$(jq -c '.review_availability' "$STATE_FILE")" "$before"
+done
+rm -f "$STATE_FILE"
+banner=$(jq -cn --arg t "$(iso $NOW)" '[{user:{login:"coderabbitai[bot]"},body:"<!-- coderabbit-ai-generated:v1 -->\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n> ## Review limit reached",created_at:$t,updated_at:$t},{user:{login:"codeant-ai[bot]"},body:"Usage limit reached. Please try later.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo o/r --pr 7 <<<"$banner" >/dev/null
+expect_eq "opening generated banner and CodeAnt explicit refusal are retained" "$(jq -r '[.review_availability[].refusal_kind]|unique|join(",")' "$STATE_FILE")" "untimed"
+expect_eq "both explicit reviewer records written" "$(jq -r '.review_availability|length' "$STATE_FILE")" "2"
+rm -f "$STATE_FILE"
+prose_banner=$(jq -cn --arg t "$(iso $NOW)" '[{user:{login:"coderabbitai[bot]"},body:"This change documents the following marker.\n<!-- rate limited by coderabbit.ai -->",created_at:$t,updated_at:$t}]')
+out=$("$AV" record --repo o/r --pr 7 <<<"$prose_banner")
+expect_eq "generated marker quoted after prose is not a refusal" "$(jq -c '.written' <<<"$out")" '[]'
+rate_notice=$(jq -cn --arg t "$(iso $NOW)" '[{user:{login:"codeant-ai[bot]"},body:"Rate limit exceeded. Please try later.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo o/r --pr 7 <<<"$rate_notice" >/dev/null
+expect_eq "explicit CodeAnt rate refusal retained" "$(jq -r '.review_availability.codeant.refusal_kind' "$STATE_FILE")" "untimed"
+
+# Timed legacy wording keeps its existing interpretation without a new opening guard.
+rm -f "$STATE_FILE"
+timed=$(jq -cn --arg t "$(iso $NOW)" '[{user:{login:"codeant-ai[bot]"},body:"Notice: usage limit reached. Next review available in 20 minutes.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo o/r --pr 7 <<<"$timed" >/dev/null
+expect_eq "dated legacy CodeAnt notice retains parsed deadline" "$(jq -r '.review_availability.codeant.next_available_epoch' "$STATE_FILE")" "$((NOW + 1200))"
+
+# Literal production notice, provenance, and conservative recovery (#2336).
+rm -f "$STATE_FILE"
+jq -cn --arg t "$(iso $((NOW - 60)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]' > "$TMP/literal.json"
+"$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
+expect_eq "literal refusal: source repo preserved account-wide" "$(jq -r '.review_availability.coderabbit.source_repo' "$STATE_FILE")" "other/repo"
+expect_eq "literal refusal: no next-available timestamp" "$(jq -r '.review_availability.coderabbit.next_available' "$STATE_FILE")" "null"
+for body in '' 'Review triggered. Your full review will begin shortly.' 'Review rate limited. All analysis steps were skipped.' 'Automatically resolved outdated comments from an earlier review.'; do
+  review=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW + 120)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo other/repo <<<"$review")
+  expect_eq "untimed recovery refuses blank/ACK/refusal/auto-resolution: $body" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+review=$(jq -cn --arg t "$(iso $((NOW - 120)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the changed selector and regression tests; no actionable findings."}]')
+out=$("$AV" observe --repo other/repo <<<"$review")
+expect_eq "old substantive review cannot clear newer refusal" "$(jq -c '.cleared' <<<"$out")" '[]'
+review=$(jq -cn --arg t "$(iso $((NOW + 120)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the changed selector and regression tests; no actionable findings."}]')
+for state in PENDING DISMISSED; do
+  out=$(jq --arg s "$state" '.[0].state=$s' <<<"$review" | "$AV" observe --repo other/repo)
+  expect_eq "unfinished/dismissed review cannot clear refusal: $state" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+out=$("$AV" observe --repo other/repo <<<"$review")
+expect_eq "fresh substantive formal review clears untimed refusal" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+"$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
+expect_eq "cleared untimed refusal cannot resurrect from the same notice" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" "null"
+
+
+# A parsed zero-minute reset is known timing, not an unknown refusal (6871668555 #1).
+for login in 'coderabbitai[bot]' 'codeant-ai[bot]'; do
+  rm -f "$STATE_FILE"
+  zero=$(jq -cn --arg t "$(iso $NOW)" --arg l "$login" '[{user:{login:$l},body:"Review limit reached. Next review available in 0 minutes.",created_at:$t,updated_at:$t}]')
+  out=$("$AV" record --repo o/r --pr 7 <<<"$zero")
+  expect_eq "zero-minute reset creates no unknown refusal: $login" "$(jq -c '.written' <<<"$out")" '[]'
+  older=$(jq -cn --arg t "$(iso $((NOW - 60)))" --arg l "$login" '[{user:{login:$l},body:"**Review limit reached**",created_at:$t,updated_at:$t}]')
+  "$AV" record --repo o/r --pr 7 <<<"$older" >/dev/null
+  "$AV" record --repo o/r --pr 7 <<<"$zero" >/dev/null
+  key=coderabbit; [[ "$login" == 'codeant-ai[bot]' ]] && key=codeant
+  expect_eq "new zero-minute reset clears prior unknown refusal: $login" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" 'null'
+done
+
+# A valid recovery after the refusal but before discovery must count (6871668555 #2).
+rm -f "$STATE_FILE"
+"$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
+recovered=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the changed selector and regression tests; no actionable findings."}]')
+out=$("$AV" observe --repo other/repo <<<"$recovered")
+expect_eq "post-notice pre-discovery substantive recovery clears refusal" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+"$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
+expect_eq "pre-discovery recovery tombstone prevents replay" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" 'null'
+# After a newer refusal arrives, the same successful review cannot clear it.
+newer=$(jq -cn --arg t "$(iso $((NOW - 10)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo other/repo --pr 1213 <<<"$newer" >/dev/null
+out=$("$AV" observe --repo other/repo <<<"$recovered")
+expect_eq "newer refusal survives earlier recovery replay" "$(jq -c '.cleared' <<<"$out")" '[]'
+
+
+# Substantive prose may discuss the review machinery without being an acknowledgment.
+for body in 'Reviewed the review request chooser and regression tests; no actionable findings.' 'Reviewed rate limit handling and queued review request tests; no actionable findings.' $'<!-- coderabbit-ai-generated:v1 -->\n\nReviewed the review request chooser and regression tests; no actionable findings.'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  valid=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$valid")
+  expect_eq "substantive recovery accepts review-request prose: $body" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+done
+for body in 'Review request has been queued. The analysis will begin shortly.' 'Review requested. The complete analysis will begin shortly.' $'<!-- coderabbit-ai-generated:v1 -->\n\nReview request has been queued. The analysis will begin shortly.' $'<!-- coderabbit-ai-generated:v1 -->\n\nReview rate limited.' $'<!-- coderabbit-ai-generated:v1 -->\n<!-- review-status:complete -->' $'<!-- coderabbit-ai-generated:v1 -->\n<!-- review-status:complete -->\nLGTM'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  ack=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$ack")
+  expect_eq "opening acknowledgment cannot recover: $body" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+
+# Recovery is account-wide event evidence, including notices first seen on another PR.
+rm -f "$STATE_FILE"
+"$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+recoveries=$(jq -cn --arg a "$(iso $((NOW - 40)))" --arg b "$(iso $((NOW - 30)))" '[$b,$a]|map({user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:.,body:"Reviewed the selector and regression tests; no actionable findings."})')
+"$AV" observe --repo one/repo <<<"$recoveries" >/dev/null
+expect_eq "recovery stores max qualifying event time, not discovery" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 30))"
+for t in "$((NOW - 45))" "$((NOW - 30))"; do
+  hidden=$(jq -cn --arg t "$(iso "$t")" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+  "$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+  expect_eq "cross-PR untimed notice at/before recovery cannot resurrect: $t" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" null
+done
+later_review=$(jq --arg t "$(iso $((NOW - 20)))" '.[0].submitted_at=$t|.[0:1]' <<<"$recoveries")
+"$AV" observe --repo one/repo <<<"$later_review" >/dev/null
+expect_eq "new substantive review advances existing recovery tombstone" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 20))"
+# Timed evidence remains governed by its old notice boundary, not the untimed watermark.
+timed=$(jq -cn --arg t "$(iso $((NOW - 25)))" '[{user:{login:"coderabbitai[bot]"},body:"Review limit reached. Next review available in 20 minutes.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$timed" >/dev/null
+expect_eq "recovery watermark does not reject legacy timed notice" "$(jq -r '.review_availability.coderabbit.window_seconds' "$STATE_FILE")" 1200
+zero=$(jq -cn --arg t "$(iso $((NOW - 15)))" '[{user:{login:"coderabbitai[bot]"},body:"Review limit reached. Next review available in 0 minutes.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$zero" >/dev/null
+expect_eq "known zero clears timing while preserving proven recovery" "$(jq -r '.review_availability.coderabbit|[.next_available_epoch,.recovery_epoch]|@json' "$STATE_FILE")" "[null,$((NOW - 20))]"
+"$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+expect_eq "intermediate record replacement cannot erase recovery watermark" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" null
+"$AV" record --repo two/repo --pr 2 <<<"$newer" >/dev/null
+expect_eq "untimed refusal after successful recovery remains valid" "$(jq -r '.review_availability.coderabbit.notice_epoch' "$STATE_FILE")" "$((NOW - 10))"
+
+
+# Semantic blankness includes HTML whitespace and formatting, not only source length.
+unicode_blank=$(jq -nr '"\u00a0\u2000\u200b\u200d\u00ad\ufeff\u202f" * 8')
+for body in \
+  $'[ref]: https://example.com/a\n  "A long metadata-only title that is never visible to the reader"' \
+  $'[ref]:\n  https://example.com/a\n  "A long metadata-only title that is never visible to the reader"' \
+  $'[ref]: <https://example.com/a>\n  (A long metadata-only title that is never visible to the reader)' \
+  '[ ](https://example.com/path "A hidden title with a ) and much more metadata that is not prose")' \
+  '[[]](https://example.com/path "A hidden title with enough words to exceed the threshold")' \
+  '----------------------------------------' \
+  '...!!!???+++===:::;;;,,,,...!!!???+++===:::;;;' \
+  '[ ](https://example.com/very-long-destination-with-no-visible-words)' \
+  '![ ](https://example.com/very-long-image-destination "a very long title is hidden too")' \
+  '[ ](https://example.com/outer(inner(deeper))very-long-destination)' \
+  '[ ](https://example.com/escaped\(path\)very-long-destination)' \
+  '[ ][very-long-reference-identifier-that-is-only-metadata]' \
+  '[ref]: https://example.com/very-long-destination-with-no-visible-words' \
+  'https://example.com/very-long-bare-destination-with-no-explanation' \
+  'www.example.com/very-long-bare-destination-with-no-explanation' \
+  '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;' \
+  '&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;' \
+  '&#160;&#0160;&#xA0;&#xa0;&#x00a0;&#160;&#160;' \
+  '&ensp;&emsp;&thinsp;&Tab;&NewLine;&ensp;&emsp;' \
+  '&#32;&#9;&#10;&#13;&#x20;&#x09;&#x0A;&#x0D;' \
+  '<p><br><br><br><span>&nbsp;&nbsp;&nbsp;</span></p>' \
+  '** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **' \
+  "$unicode_blank" \
+  '&#8192;&#8192;&#8192;&#8192;&#8192;&#8192;' \
+  '&#x200B;&#x200B;&#x200B;&#x200B;&#x200B;&#x200B;' \
+  '&ZeroWidthSpace;&ZeroWidthSpace;&ZeroWidthSpace;' \
+  '&amp;amp;nbsp;&amp;amp;nbsp;&amp;amp;nbsp;&amp;amp;nbsp;' \
+  '<!-- metadata -->LGTM<!-- long metadata padding cannot make four letters substantive -->'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  blank=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$blank")
+  expect_eq "non-substantive rendered content cannot recover: $body" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+rm -f "$STATE_FILE"
+"$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+rich=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"<p>Reviewed&nbsp;the <strong>request chooser</strong> and regression cases; no actionable findings.</p>"}]')
+out=$("$AV" observe --repo one/repo <<<"$rich")
+expect_eq "formatted substantive prose still recovers" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+
+# Link labels remain explanatory text; hidden destinations/titles do not pad it.
+for body in \
+  'Reviewed [the request chooser and regression tests](https://example.com/nested(path)); no actionable findings.' \
+  'Reviewed [the request chooser and regression tests][reference]; no actionable findings.'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  rich=$(jq -cn --arg t "$(iso $((NOW - 30)))" --arg b "$body" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$rich")
+  expect_eq "explanatory link labels still recover: $body" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+done
+
+# A strict qualifying review establishes recovery regardless of the active record type.
+for key in coderabbit codeant; do
+  login='coderabbitai[bot]'; [[ "$key" == codeant ]] && login='codeant-ai[bot]'
+  for discovery in "$((NOW - 90))" "$NOW"; do
+    state_with_av "$(jq -cn --arg k "$key" --argjson n "$((NOW + 1200))" --argjson t "$((NOW - 120))" --arg read "$(iso "$discovery")" '{($k):{notice_epoch:$t,next_available_epoch:$n,read_at:$read,window_seconds:1320}}')"
+    recovery=$(jq -cn --arg l "$login" --arg t "$(iso $((NOW - 60)))" '[{user:{login:$l},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the selector and regression tests; no actionable findings."}]')
+    out=$("$AV" observe --repo one/repo <<<"$recovery")
+    expect_eq "timed record stores strict recovery event for $key, discovery $discovery" "$(jq -r --arg k "$key" '.review_availability[$k].recovery_epoch' "$STATE_FILE")" "$((NOW - 60))"
+    if (( discovery < NOW - 60 )); then expected='["'"$key"'"]'; timing=null; else expected='[]'; timing="$((NOW + 1200))"; fi
+    expect_eq "timed legacy clearing keeps discovery fence for $key, discovery $discovery" "$(jq -c '.cleared' <<<"$out")" "$expected"
+    expect_eq "timed eligibility is unchanged by recovery-only update for $key" "$(jq -r --arg k "$key" '.review_availability[$k].next_available_epoch' "$STATE_FILE")" "$timing"
+    hidden=$(jq -cn --arg l "$login" --arg t "$(iso $((NOW - 75)))" '[{user:{login:$l},body:"Review limit reached.",created_at:$t,updated_at:$t}]')
+    "$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+    expect_eq "old hidden untimed notice cannot undo timed-record recovery for $key" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" null
+  done
+  state_with_av "$(jq -cn --arg k "$key" --argjson t "$((NOW - 120))" --arg read "$(iso $((NOW - 90)))" '{($k):{notice_epoch:$t,next_available_epoch:9999999999,read_at:$read}}')"
+  blank=$(jq --arg l "$login" '.[0].user.login=$l|.[0].body=""' <<<"$recovery")
+  out=$("$AV" observe --repo one/repo <<<"$blank")
+  expect_eq "legacy blank approval still clears timed state for $key" "$(jq -c '.cleared' <<<"$out")" '["'"$key"'"]'
+  expect_eq "legacy blank approval creates no strict recovery for $key" "$(jq -r --arg k "$key" '.review_availability[$k].recovery_epoch' "$STATE_FILE")" null
+  "$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+  expect_eq "unproven timed clear cannot suppress a later-discovered untimed refusal for $key" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" untimed
+done
+
+
+# Missing state records only strict event evidence, never an availability deadline.
+recovery_at=$(iso $((NOW - 60)))
+for timestamp in "$recovery_at" "${recovery_at%Z}.123Z" "${recovery_at%Z}+00:00" "${recovery_at%Z}.987+00:00"; do
+  rm -f "$STATE_FILE"
+  first_review=$(jq -cn --arg t "$timestamp" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the chooser and regression tests; no actionable findings."}]')
+  out=$("$AV" observe --repo one/repo <<<"$first_review")
+  expect_eq "empty-state recovery stores actual normalized event: $timestamp" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 60))"
+  expect_eq "recovery-only observation reports no cleared record: $timestamp" "$(jq -c '.cleared' <<<"$out")" '[]'
+  expect_eq "pure recovery does not invent a deadline: $timestamp" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" null
+  before=$(jq -c '.review_availability' "$STATE_FILE")
+  "$AV" observe --repo one/repo <<<"$first_review" >/dev/null
+  expect_eq "same recovery replay is idempotent: $timestamp" "$(jq -c '.review_availability' "$STATE_FILE")" "$before"
+done
+expect_eq "pure recovery cannot justify an availability skip" "$("$AV" decide --window-s 600 | jq -r '.skip')" false
+older_notice=$(jq -cn --arg t "$(iso $((NOW - 90)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$older_notice" >/dev/null
+expect_eq "older notice discovered after empty-state recovery stays suppressed" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" null
+newer_notice=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$newer_notice" >/dev/null
+"$AV" observe --repo one/repo <<<"$first_review" >/dev/null
+expect_eq "newer refusal survives empty-state recovery replay" "$(jq -r '.review_availability.coderabbit.notice_epoch' "$STATE_FILE")" "$((NOW - 30))"
+for state in '{}' '{"coderabbit":null}' '{"coderabbit":{"cleared_notice_epoch":1,"next_available":null}}'; do
+  state_with_av "$state"
+  out=$("$AV" observe --repo one/repo <<<"$first_review")
+  expect_eq "empty/null/cleared slot receives strict recovery: $state" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 60))"
+  expect_eq "empty/null/cleared update does not report a clear: $state" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+for review in \
+  '.[0].body=""' \
+  '.[0].body="Review request has been queued. Full analysis will start shortly."' \
+  '.[0].state="PENDING"' \
+  '.[0].submitted_at="not-a-time"'; do
+  rm -f "$STATE_FILE"
+  out=$(jq "$review" <<<"$first_review" | "$AV" observe --repo one/repo)
+  [[ -e "$STATE_FILE" ]] && exists=yes || exists=no
+  expect_eq "unqualified evidence cannot create initial recovery: $review" "$exists" no
+  expect_eq "unqualified initial observation reports no clear: $review" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+for state in 'false' '[]' '"broken"' '{"coderabbit":false}' '{"coderabbit":[]}' '{"coderabbit":"broken"}' '{"coderabbit":{}}'; do
+  state_with_av "$state"
+  before=$(cat "$STATE_FILE")
+  rc=0; "$AV" observe --repo one/repo <<<"$first_review" >/dev/null 2>&1 || rc=$?
+  expect_eq "malformed existing state reports processing failure: $state" "$rc" 5
+  expect_eq "malformed existing state is not promoted to absence: $state" "$(cat "$STATE_FILE")" "$before"
+done
+
+# A newer refusal wins the real CAS while initial recovery is being persisted.
+rm -f "$STATE_FILE"
+RACE="$TMP/cas-race"
+mkdir -p "$RACE/lib"
+cp "$AV" "$RACE/review-availability.sh"
+cp "$SCRIPT_DIR/../lib/cr-retry-window.jq" "$RACE/lib/"
+export AV_TEST_REAL_STATE="$SCRIPT_DIR/../session-state.sh" AV_TEST_RACE_MARKER="$RACE/won"
+export AV_TEST_WINNER
+AV_TEST_WINNER=$(jq -cn --argjson t "$((NOW - 10))" '{refusal_kind:"untimed",notice_epoch:$t,next_available_epoch:null,source_repo:"concurrent/repo",source_pr:3}')
+cat > "$RACE/session-state.sh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"--cas .review_availability.coderabbit="* && ! -e "$AV_TEST_RACE_MARKER" ]]; then
+  : > "$AV_TEST_RACE_MARKER"
+  "$AV_TEST_REAL_STATE" --raw-path --set ".review_availability.coderabbit=$AV_TEST_WINNER" >/dev/null || exit 5
+fi
+exec "$AV_TEST_REAL_STATE" "$@"
+STUB
+chmod +x "$RACE/session-state.sh"
+out=$("$RACE/review-availability.sh" observe --repo one/repo <<<"$first_review"); rc=$?
+expect_eq "initial recovery settles after concurrent CAS winner" "$rc" 0
+[[ -e "$AV_TEST_RACE_MARKER" ]] && raced=yes || raced=no
+expect_eq "CAS regression actually injected a newer refusal" "$raced" yes
+expect_eq "newer concurrent refusal is preserved exactly" "$(jq -c '.review_availability.coderabbit' "$STATE_FILE")" "$AV_TEST_WINNER"
+expect_eq "losing recovery write reports no clear" "$(jq -c '.cleared' <<<"$out")" '[]'
+unset AV_TEST_REAL_STATE AV_TEST_RACE_MARKER AV_TEST_WINNER
 
 # --- Usage ---------------------------------------------------------------------------------
 "$AV" decide --window-s 0 >/dev/null 2>&1 && rc=0 || rc=$?
