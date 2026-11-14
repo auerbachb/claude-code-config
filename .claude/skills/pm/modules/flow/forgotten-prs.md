@@ -1,9 +1,24 @@
 <!-- pm-routing:begin -->
-Run the existing forgotten-PR triage after Your Open PRs, before Suggested Next Issues.
+Run the forgotten-PR triage after Your Open PRs, before Suggested Next Issues.
 <!-- pm-routing:end -->
 
-Runs on **every** `/pm` invocation that reaches Step 1, no flag required — both 1A.4 (resume) and 1B.5 (cold start) call it (passive status and day ticks skip Step 1 and never run it), rendering its block **immediately after `## Your Open PRs` and before `## Suggested Next Issues`**. It is informational-first: its block never alters 1B.3 narrowing, 1B.4 scoring, or the 1B.4b judgment check.
+Runs on every `/pm` invocation that reaches Step 1 (1A.4 resume and 1B.5 cold start). Passive status and day ticks skip Step 1 and never run it. It is informational first: it never alters 1B.3 narrowing, 1B.4 scoring, or the 1B.4b judgment check. It is one-shot and never becomes a monitoring loop.
 
-**Run the read-only helper:** resolve `forgotten-pr-triage.sh` (`${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/forgotten-pr-triage.sh}`, then `${HOME:+$HOME/.claude/scripts/forgotten-pr-triage.sh}`, then `.claude/scripts/forgotten-pr-triage.sh`; first executable wins; if none resolves, print `DEGRADED: forgotten-pr-triage.sh not found (checked all three paths) — forgotten PR triage unavailable` and render `## Forgotten PRs` as "unavailable"). Then run `"$FORGOTTEN_PR_TRIAGE_SH" --json` with `--days "$FORGOTTEN_PR_DAYS"` when that is set and `--author "$GH_USER"` when `$GH_USER` is set. Render its output as the `## Forgotten PRs` block. The helper never closes, merges, or deletes anything, and this step offers no close or merge actions — those are handled by `/pr-monitor-and-manage` for open PRs.
+**Detect with the existing helper.** Resolve `forgotten-pr-triage.sh` through the three paths (`${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/forgotten-pr-triage.sh}`, then `${HOME:+$HOME/.claude/scripts/forgotten-pr-triage.sh}`, then `.claude/scripts/forgotten-pr-triage.sh`; first executable wins). If none resolves, print `1D failed — forgotten-pr-triage.sh not found (checked all three paths)` and carry on. Otherwise run `"$FORGOTTEN_PR_TRIAGE_SH" --json`, adding `--days "$FORGOTTEN_PR_DAYS"` when set and `--author "$GH_USER"` when `$GH_USER` is set. A non-zero exit is `1D failed` with the reason, and `/pm` continues. The helper is read-only and applies its two close signals (linked issue closed; already in `main`). Do not re-implement either.
 
-Mark `1D ran` when the triage finishes, or `1D failed` with the reason if the helper cannot run.
+**Render only when there is something to report.** Records with `recommendation` of `close` or `merge` become the block below. An empty result prints nothing: no heading, no line. Only the author's own PRs appear. Each line is `PR #N — <title> — Nd idle → close (<rationale>)` or `PR #N — <title> — Nd idle → merge`:
+
+```
+## Forgotten PRs (>N days)
+
+- PR #123 — {title} — {age_days}d idle → close (superseded / already in main)
+- PR #141 — {title} — {age_days}d idle → merge
+```
+
+`N` is the active threshold (`FORGOTTEN_PR_DAYS`, default 3). Mark `1D ran` once detection finishes, whether or not anything rendered.
+
+**Nothing happens without a yes.** Every mutation below waits for an explicit yes in chat. Declining leaves the PR untouched. Attended: ask via `AskUserQuestion` (`ask-menu.md`, recommended option first). Unattended (`unattended.sh is-active`): do not ask and take no action. Record each question with `unattended.sh record --question … --recommended … --did "held"` and print `question U-<n> recorded for the operator's return`.
+
+1. **Close.** For each `close` PR, ask once per PR. On yes, run `gh pr close <N> --comment "<rationale>"`.
+2. **Branch delete.** A separate question, never bundled with the close. On yes, delete `headRefName` only if `stale-cleanup.sh --check --json` shows its branch-deletion safety checks pass for that branch (not a protected name, not checked out in a worktree). Otherwise skip with a one-line note. Do not re-implement those checks.
+3. **Merge.** Ask once for the `merge` set. On yes, these PRs are triage-discovered, so the yes is their authorization (CLAUDE.md "PR MERGE AUTHORIZATION" does not cover them). Order the approved numbers with `merge-sequence.sh --prs <csv> --skip-missing`. Dispatch only `merge` and `batch` entries, and hold any `hold` entry. Keep at most one PR per overlap group in flight. If the planner is missing or fails, dispatch nothing, and hold the set for the next `/pm` run. Concurrency is bounded by `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`, from `active-work-cap.sh --ceiling` and `--cap`. A non-zero exit from either means dispatch nothing new. Model each dispatch with `model-route.sh` and the `task-model-routing.md` dispatch block. Spawn one `phase-c-merger` per approved PR (`mode: "bypassPermissions"`, explicit `model`) to run `/wrap #N`. The merge gate and AC verification stay in `/wrap`. This is a one-shot hand-off: it does not poll.
