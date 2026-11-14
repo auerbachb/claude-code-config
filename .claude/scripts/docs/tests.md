@@ -33,6 +33,7 @@ opt-in of issue #1544.
 | [backlog-health.test.sh](../tests/backlog-health.test.sh) | Tests for `backlog-health.sh` |
 | [backlog-staleness.test.sh](../tests/backlog-staleness.test.sh) | Tests for `backlog-staleness.sh` |
 | [bgwork-ceiling.test.sh](../tests/bgwork-ceiling.test.sh) | Tests for `bgwork-ceiling.sh` |
+| [board-actual-vs-plan.test.sh](../tests/board-actual-vs-plan.test.sh) | Fixture tests for the /board actual-against-plan cell and round roll-up: overrun-check.sh --actual-cell arithmetic, em dash for an unreadable start or bound, and the roll-up partition (under + over + unreadable = delivered) |
 | [board-model-cell.test.sh](../tests/board-model-cell.test.sh) | Fixture tests for the /board Model cell extracted from board/SKILL.md: malformed records stop the merged walk at an em dash, a PR-backed row never falls back to session state, and each row and retry reads its own routed model |
 | [board-round-membership.test.sh](../tests/board-round-membership.test.sh) | Tests real per-session round dispatch/teardown, observer/legacy reads and board queue derivation |
 | [bounded-run.test.sh](../tests/bounded-run.test.sh) | Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract |

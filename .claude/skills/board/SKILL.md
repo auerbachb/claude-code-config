@@ -340,6 +340,10 @@ against the working directory's repo, so the one path that exists to recover a
 missing start is also the one most able to invent a wrong one. Re-deriving a start
 moves the Start column on every rebuild after a compaction, which is precisely what
 the recorded value prevents (`time-estimates.md` §"Start times come from state").
+`RECORDED_START` is the start **only** when it was read from state (either field above);
+it is empty when the start came from the `createdAt` fallback. A fallback start feeds the
+Start column alone, labelled approximate, and never the Remaining cell: the actual is a
+duration from a recorded launch, so an empty `RECORDED_START` renders `—`.
 
 ---
 
@@ -632,7 +636,7 @@ the mislabelling this guard exists to prevent.
 |-------|-------|--------|-------|-----|-----------|--------------------|-----------|
 | #1512 | Universal dispatch + progress table | Phase B | Sonnet | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
 | #1489 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
-| #1480 | Key catalog entries on normalized path | merged | Haiku | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
+| #1480 | Key catalog entries on normalized path | merged | Haiku | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | 24 min vs plan 30 |
 | #1504 | Re-anchor the scripts README gate | queued | — | Est: 15–30 min · plan on 30 | — | — | — |
 ```
 
@@ -675,7 +679,11 @@ Per row:
   A queued row is `—` with no lookup; so is a missing or unreadable record.
 - **Queued rows** — `—` in all three clock columns.
 - **Completed rows** — `merged`, with the delivered clock time in `Projected end` and
-  `—` in `Remaining` (`time-estimates.md` §"Running now Table"). They never reach
+  the actual against the plan in `Remaining` (`74 min vs plan 90`, or `+22 min over
+  plan`; `—` when the start or the bound cannot be read). Initialise `DELIVERED_CELLS=()`,
+  `DELIVERED_REPOS=()` and `DELIVERED_APPROX=()` once before the rows, so each merged row
+  appends its cell, its repo key and its approximate flag for the roll-up
+  (`time-estimates.md` §"Running now Table"). They never reach
   `overrun-check.sh`'s **projection** cells; the branch below is what keeps them out.
   Both of their clocks are still **formatted** by that script, because it is the only
   ET formatter in this repo that is safe to call (below).
@@ -714,6 +722,8 @@ will not parse, which is exactly the empty the guards below already handle.
 
 ```bash
 BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
+# EST_STR is the row's Est cell source: the estimate-resolve.sh output. Empty or
+# unparseable leaves BOUND_MIN empty, and every bound-dependent cell then renders —.
 CELLS=""
 if [[ "$ROW_STATUS" != merged && -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$STARTED_AT" ]]; then
   # --pr is optional in cell mode and omitted here: a Phase A row has a start but no
@@ -730,12 +740,21 @@ if [[ "$ROW_STATUS" == merged ]]; then
   # STARTED_AT directly also keeps the recorded Start on an UNESTIMATED merged row:
   # routing it through the helper would drop Start whenever BOUND_MIN is empty,
   # losing a value that is right there in state.
-  # Guarded, not assigned outright: a pipeline that predates the start record has
-  # no STARTED_AT_ET, and an unguarded assignment would blank the cell instead of
-  # leaving the `—` that every other unknown clock renders.
+  # Guarded, not assigned outright: a pipeline with no start at all (no recorded start
+  # and no createdAt fallback) has no STARTED_AT_ET, and an unguarded assignment would
+  # blank the cell instead of leaving the `—` that every other unknown clock renders.
+  # A pipeline that predates the start record may still have one from the createdAt
+  # fallback: its Start column shows that value, labelled approximate. The Remaining
+  # cell never uses it (RECORDED_START only).
   [[ -n "$STARTED_AT_ET" ]] && CELL_START="$STARTED_AT_ET"  # et_clock "$STARTED_AT"
   [[ -n "$MERGED_AT_ET" ]] && CELL_END="$MERGED_AT_ET"      # et_clock "$MERGED_AT"
-  CELL_REMAINING="—"
+  # Remaining carries the actual against the plan: a fact, measured from the recorded
+  # launch to mergedAt (time-estimates.md §"Completed rows"). "—" when the start or
+  # the bound cannot be read.
+  CELL_REMAINING=$(actual_cell "$BOUND_MIN" "$RECORDED_START" "$MERGED_AT")
+  DELIVERED_CELLS+=("$CELL_REMAINING")
+  DELIVERED_REPOS+=("$ROW_REPO")
+  DELIVERED_APPROX+=("${DELIVERED_APPROX_FLAG:-false}")  # Step 4's per-repo approximate qualifier
 elif [[ -n "$CELLS" ]]; then
   CELL_START=$(printf '%s' "$CELLS" | cut -f1)
   CELL_END=$(printf '%s' "$CELLS" | cut -f2)
@@ -748,6 +767,49 @@ elif [[ -n "$STARTED_AT_ET" ]]; then
   # branch does: an unestimated row loses its forecast, not its history.
   CELL_START="$STARTED_AT_ET"
 fi
+```
+
+**Actual cell (finished rows).** `actual_cell` is the one place a delivered row's
+duration is computed. It calls `overrun-check.sh --actual-cell`, so the minute
+arithmetic is the same as every other clock here, and it measures from the **recorded
+launch** (`RECORDED_START`, Step 2; a `createdAt` fallback never qualifies) to `MERGED_AT` (Step 3's live `mergedAt`). The rule is
+the same as the clock cells: an empty result renders `—`, never a guess.
+
+```bash
+actual_cell() {  # actual_cell <bound-min> <started-at> <merged-at> -> "74 min vs plan 90", "+22 min over plan", or —
+  local out=""
+  if [[ -n "$OVERRUN_CHECK_SH" && -n "$1" && -n "$2" && -n "$3" ]]; then
+    out=$("$OVERRUN_CHECK_SH" --actual-cell --bound-min "$1" --started-at "$2" --ended-at "$3" 2>/dev/null) || out=""
+  fi
+  printf '%s' "${out:-—}"
+}
+rollup_line() {  # rollup_line <cell>... -> "3 delivered: 2 under plan, 1 over by 22 min", or nothing
+  local n=0 under=0 over=0 sub=0 over_min=0 unknown=0 c m
+  for c in "$@"; do
+    n=$((n + 1))
+    case "$c" in
+      *" vs plan "*) under=$((under + 1)) ;;
+      "+<1 min over plan") over=$((over + 1)); sub=$((sub + 1)) ;;
+      +*" min over plan") m=${c#+}; m=${m% min over plan}; over=$((over + 1)); over_min=$((over_min + m)) ;;
+      *) unknown=$((unknown + 1)) ;;
+    esac
+  done
+  (( n == 0 )) && return 0
+  printf '%d delivered: %d under plan, ' "$n" "$under"
+  if (( over == 0 )); then
+    printf '0 over'
+  elif (( sub == over )); then
+    # Every overrun is under a minute: the cells carry no seconds, so never sum them.
+    printf '%d over, each by <1 min' "$over"
+  elif (( sub == 0 )); then
+    printf '%d over by %d min' "$over" "$over_min"
+  else
+    # Whole-minute overruns are summed; sub-minute ones are counted, never added to the total.
+    printf '%d over by %d min plus %d under a minute each' "$over" "$over_min" "$sub"
+  fi
+  (( unknown > 0 )) && printf ', %d without a readable plan or start' "$unknown"
+  printf '\n'
+}
 ```
 
 **Model cell.** Read the saved routing record for the phase the row shows, pre-PR from
@@ -835,6 +897,42 @@ an exact count must never be hedged into either.
 
 ```text
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
+```
+
+**Round roll-up.** One line per repo, printed only for a repo with at least one delivered
+row. It tallies that repo's entries of `DELIVERED_CELLS`, selected by `DELIVERED_REPOS`,
+so its count is the same delivered count the summary line states for that repo: under
+plan + over plan + unreadable always equals that repo's delivered rows. A single-repo
+board has one repo key and so one line. Under `--all-repos` each line is prefixed with
+its repo's key, and each repo's delivered count is qualified on its own terms. A
+repo whose delivered count is approximate (the timestamp fallback in Step 3) gets the
+word `approximately` in front, the same qualifier the summary uses.
+
+```bash
+# DELIVERED_APPROX_FLAG (set by Step 4 per repo) is "true" where that repo's delivered
+# count came from the timestamp fallback. BOARD_ALL_REPOS is the mode flag from Step 2.
+ROLLUP_KEYS=()
+for k in "${DELIVERED_REPOS[@]+"${DELIVERED_REPOS[@]}"}"; do
+  case " ${ROLLUP_KEYS[*]+"${ROLLUP_KEYS[*]}"} " in *" $k "*) ;; *) ROLLUP_KEYS+=("$k") ;; esac
+done
+for k in "${ROLLUP_KEYS[@]+"${ROLLUP_KEYS[@]}"}"; do
+  REPO_CELLS=(); REPO_APPROX=false
+  for i in "${!DELIVERED_REPOS[@]}"; do
+    if [[ "${DELIVERED_REPOS[$i]}" == "$k" ]]; then
+      REPO_CELLS+=("${DELIVERED_CELLS[$i]}")
+      [[ "${DELIVERED_APPROX[$i]}" == true ]] && REPO_APPROX=true
+    fi
+  done
+  ROLLUP_PREFIX=""
+  [[ "$BOARD_ALL_REPOS" == true ]] && ROLLUP_PREFIX="$k: "
+  [[ "$REPO_APPROX" == true ]] && ROLLUP_PREFIX="${ROLLUP_PREFIX}approximately "
+  ROLLUP=$(rollup_line "${REPO_CELLS[@]+"${REPO_CELLS[@]}"}")
+  [[ -n "$ROLLUP" ]] && printf '%s%s\n' "$ROLLUP_PREFIX" "$ROLLUP"
+done
+```
+
+```text
+3 delivered: 2 under plan, 1 over by 22 min
 ```
 
 ### Refill slot census
