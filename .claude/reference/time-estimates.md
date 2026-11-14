@@ -307,6 +307,7 @@ included. It replaces the bulleted-list shape, not just augments it.
 | **Issue** | `#N` |
 | **Scope** | Short description, truncated to 40 chars (`cut -c1-40`) so each row stays one line |
 | **Status** | `queued` for a not-yet-launched row; `merged` for one that has landed; otherwise the phase — `Phase A`, `Phase B`, `Phase C` |
+| **Model** | Family name on the issue — `Opus`, `Sonnet`, `Haiku` or `Fable` — for the phase the row shows (see "Model cell" below). `—` when queued or when no readable record exists |
 | **Est** | `Est: {lo}–{hi} min · plan on {bound}` from `estimate-resolve.sh`, or `unestimated` |
 | **Start (ET)** | Wall-clock launch time, e.g. `12:18 PM` |
 | **Projected end (ET)** | On-track: start + planning bound. Over the bound: the pace-scaled revised finish |
@@ -333,13 +334,33 @@ back like every other timestamp here and never taken from the render-time clock.
 ```markdown
 **Running now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
-|-------|-------|--------|-----|-----------|--------------------|-----------|
-| #1512 | Universal dispatch + progress table | Phase B | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
-| #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
-| #1480 | Key catalog entries on normalized path | merged | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
-| #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|
+| #1512 | Universal dispatch + progress table | Phase B | Sonnet | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
+| #1489 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
+| #1480 | Key catalog entries on normalized path | merged | Haiku | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
+| #1504 | Re-anchor the scripts README gate | queued | — | Est: 15–30 min · plan on 30 | — | — | — |
 ```
+
+### Model cell
+
+The Model cell is read from the routing record `model-route.sh` saved for the issue
+before its launch (`task-model-routing.md` §"State and dispatch integration"), never
+from the chat or from a guess:
+
+- **Pre-PR, or a PR whose handoff has no record:** `.repos["<key>"].tasks["issue-N"].model_routing["<phase>"].decision.model`
+  in the session state.
+- **Once a PR exists:** `.model_routing["issue-N"]["<phase>"].decision.model` in that
+  PR's handoff, which carries the same record for the phase.
+- **`<phase>`** is the letter of the row's Status (`A`, `B`, `C`). A `merged` row shows
+  the latest phase that has a record (`C`, then `B`, then `A`); an unrecognised model in that
+  record renders `—` rather than falling back to an earlier phase.
+- The stored value is a lowercase alias (`haiku`, `sonnet`, `opus`, `fable`); the cell
+  renders its family name. Anything else, a missing field or an unreadable file renders
+  `—`. A queued row renders `—` without a lookup.
+
+`/board` is the renderer that reads this; `/subagent` Steps 7.2 and 8 and `/pm` (which
+renders through `/board`) carry the same column set.
 
 ### Helper: `overrun-check.sh --readout-cells`
 

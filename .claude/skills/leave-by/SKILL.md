@@ -751,11 +751,11 @@ it, never the other way around.
 ```markdown
 **Leaving at 7:00 PM ET — winding down now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining | By 7:00 PM |
-|-------|-------|--------|-----|-----------|--------------------|-----------|------------|
-| #1512 | Universal dispatch + progress table | Phase C | Est: 90–180 min · plan on 180 | 3:18 PM | 6:18 PM | 42 min | finishes by deadline |
-| #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 6:05 PM | 7:35 PM | 1.2 h | parks |
-| #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — | parks |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining | By 7:00 PM |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|------------|
+| #1512 | Universal dispatch + progress table | Phase C | Sonnet | Est: 90–180 min · plan on 180 | 3:18 PM | 6:18 PM | 42 min | finishes by deadline |
+| #1489 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 6:05 PM | 7:35 PM | 1.2 h | parks |
+| #1504 | Re-anchor the scripts README gate | queued | — | Est: 15–30 min · plan on 30 | — | — | — | parks |
 ```
 
 **First, force `parks` for every row the user chose to launch anyway** (issue #1679). Read
