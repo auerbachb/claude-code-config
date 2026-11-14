@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # catalog: tests — Exercises optional area placement and the canonical wave pair check.
-# covers: .claude/scripts/issue-area.py .claude/skills/wave/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/pm-handoff/SKILL.md .claude/pm-config.md .claude/scripts/tests/lib/skill-bash.sh CLAUDE.md
+# covers: .claude/scripts/issue-area.py .claude/skills/wave/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/pm/modules/shared/config.md .claude/pm-config.md .claude/scripts/tests/lib/skill-bash.sh CLAUDE.md
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 python3 - "$root" "$BASH" <<'PY'
@@ -206,7 +206,7 @@ class IssueAreas(unittest.TestCase):
         self.assertIn("../wave/SKILL.md#step-3", step60)
         self.assertIn("area-only chain", step60)
         self.assertNotIn("| Area | Paths |", step60)
-        handoff = (ROOT / ".claude/skills/pm-handoff/SKILL.md").read_text(encoding="utf-8")
+        handoff = (ROOT / ".claude/skills/pm/modules/shared/config.md").read_text(encoding="utf-8")
         self.assertIn("## Independent areas\n\n<!--\n| Area | Paths |", handoff)
         self.assertIn("The `Independent areas`, `Active work`, and `Budget` sections", handoff)
         result = self.run_cli(only=True, file=ROOT / ".claude/pm-config.md")

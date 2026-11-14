@@ -2,7 +2,7 @@
 
 Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the four canonical emitters: `/pm` (Step 3.1), `/start-issue` (Step 7), `/issue-maker` (Step 9c), and `/wave` (Step 7.1). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`. **That rule also decides whether such an offer may exist at all:** its §"Emission gate" bars an ad-hoc chip from any thread that could run the work itself, so the mechanics below apply only to a chip that gate already permits. Recovery when one slips out anyway: §Wrong-chip recovery below.
 
-**Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
+**Out of scope (explicit):** the retired PM handoff skill never offered chips and nothing reopens that (#562): its prompt was a portable context-turnover artifact, and a chip would hide the text the user came for.
 
 **Model-guard placement:** the guard defined below rides in both the chip `prompt` and the fallback block — it is part of the baseline, not a chip-only addition. Decided in #601; rationale in `chip-model-guard-decision.md`.
 

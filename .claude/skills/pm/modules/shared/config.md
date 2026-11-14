@@ -1,31 +1,10 @@
----
-name: pm-handoff
-description: Generate a PM handoff prompt for context-window turnover. Captures static config, live GitHub state, in-flight thread state, and memory summary into a self-contained prompt for a fresh PM thread. Bootstraps and re-scans `.claude/pm-config.md`, preserving user-edited sections. Triggers on "pm-handoff", "handoff", "context turnover", "new pm thread", "refresh pm config", "rescan repo".
-argument-hint: "[copy] (optional — copies output to clipboard via pbcopy)"
----
+<!-- pm-routing:begin -->
+Route `shared:config`. Create `.claude/pm-config.md` when it is absent; refresh its auto-generated sections only when the operator asks in chat (`/pm refresh config`). Resolve `PM_CONFIG_GET` from `/pm` Step 0; if it is empty, stop with `ERROR: pm-config-get.sh not found (checked all three paths) — PM config unavailable`.
+<!-- pm-routing:end -->
 
-Generate a PM handoff prompt for starting or continuing a PM orchestration thread. This prompt is self-contained — paste it into a new Claude Code session (web or CLI) and the new thread becomes the project manager for this repo, with full awareness of what the previous PM thread was doing.
+### Config procedure (shared:config)
 
-Resolve the config parser before Step 1:
-
-```bash
-resolve_script() {
-  local name="$1" candidate
-  for candidate in \
-    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
-    "${HOME:+$HOME/.claude/scripts/$name}" \
-    ".claude/scripts/$name"; do
-    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
-  done
-  return 1
-}
-PM_CONFIG_GET_SH=$(resolve_script pm-config-get.sh || true)
-[[ -n "$PM_CONFIG_GET_SH" ]] || { echo "ERROR: pm-config-get.sh not found (checked all three paths) — PM handoff config capture unavailable" >&2; exit 1; }
-```
-
-Parse `$ARGUMENTS`:
-- If `$ARGUMENTS` contains "copy" or "clipboard", copy the final output to clipboard via `pbcopy` in addition to stdout.
-- If empty, output to stdout only.
+This module owns `.claude/pm-config.md`. It moved here from the retired PM handoff skill (#2344): a cold `/pm` run creates the file when it is missing, and the refresh re-scans Infrastructure and Architecture while preserving every user-edited section. Step numbers below are local to this module.
 
 ## Step 1: Detect mode (bootstrap vs. standard)
 
@@ -38,7 +17,7 @@ on an *existing* config would be silently overwritten by Step 2's bootstrap.
 
 ```bash
 CONFIG_FILE=".claude/pm-config.md"
-"$PM_CONFIG_GET_SH" --list >/dev/null 2>&1
+"$PM_CONFIG_GET" --list >/dev/null 2>&1
 CONFIG_RC=$?
 
 if [[ "$CONFIG_RC" -eq 0 || "$CONFIG_RC" -eq 1 ]]; then
@@ -56,13 +35,13 @@ contract), so both map to `CONFIG_EXISTS`. Anything else — rc=2 with the
 file present, a usage error (rc=3), or any other unexpected exit code — maps
 to `UNREADABLE` rather than being silently treated as a healthy config.
 
-- If `MODE == BOOTSTRAP` (file genuinely absent): proceed to Step 2 (create config from repo scan)
+- If `MODE == BOOTSTRAP` (file genuinely absent): create the config from the repo scan (Step 2)
 - If `MODE == UNREADABLE` (file exists but `pm-config-get.sh` returned an error for it, or returned an exit code outside the documented contract): **STOP.** Tell the user: "`.claude/pm-config.md` exists but could not be read — check file permissions and encoding before continuing." Do NOT proceed to Step 2 — bootstrapping here would silently overwrite the existing file's content, including any user-customized Role/OKRs/Team/Notes sections and any non-canonical sections.
-- Otherwise (**CONFIG_EXISTS**): skip to Step 3 (read existing config)
+- Otherwise (**CONFIG_EXISTS**): if the operator asked for a refresh, go to Step 3; otherwise return to the caller with the config unchanged.
 
 ## Step 2: Bootstrap — create pm-config.md from repo discovery
 
-Only runs on first invocation for a repo. Scan the repo to auto-generate `.claude/pm-config.md`.
+Runs only when the file is absent (`MODE == BOOTSTRAP`). Scan the repo to auto-generate `.claude/pm-config.md`.
 
 ### 2a: Get repo identity
 
@@ -101,7 +80,7 @@ Scan the directory structure (depth 2) and identify patterns:
 - **CI patterns:** `.github/workflows/` (list workflow names)
 - **Config files:** `.coderabbit.yaml`, `tsconfig.json`, `pyproject.toml`, etc.
 
-Record the directory layout and notable patterns. When that evidence identifies independent services, propose their repo-relative globs under [Independent areas](../../reference/independent-areas.md). Prefer separate service entry points or manifests. Generic shared folders and ambiguous service boundaries are insufficient evidence. Use lowercase unique names, leave speculative hints blank, and show the proposed areas in the bootstrap summary.
+Record the directory layout and notable patterns. When that evidence identifies independent services, propose their repo-relative globs under [Independent areas](../../../../reference/independent-areas.md). Prefer separate service entry points or manifests. Generic shared folders and ambiguous service boundaries are insufficient evidence. Use lowercase unique names, leave speculative hints blank, and show the proposed areas in the bootstrap summary.
 
 ### 2d: Generate pm-config.md
 
@@ -194,9 +173,9 @@ Tell the user the config was bootstrapped and they should review/customize the R
 
 ## Step 3: Read and refresh the existing config
 
-This skill is the one place `.claude/pm-config.md` is created (Step 2) or refreshed (this step). The auto-generated sections (Infrastructure, Architecture) are regenerated from the repo's current state; every user-edited section is preserved verbatim. Refreshing here means a handoff prompt is never assembled from stale infrastructure or architecture detection.
+This module is the one place `.claude/pm-config.md` is created (Step 2) or refreshed (this step). The auto-generated sections (Infrastructure, Architecture) are regenerated from the repo's current state; every user-edited section is preserved verbatim. Refreshing runs only when the operator asks for it, so a routine `/pm` run never rewrites the file.
 
-**Stale worktree and branch cleanup is not part of this flow.** `/pm-clean` is the sole documented caller of `stale-cleanup.sh` — never invoke it from this skill. Config staleness and workspace staleness are independent concerns with independent skills.
+**Stale worktree and branch cleanup is not part of this flow.** `/pm-clean` is the sole documented caller of `stale-cleanup.sh` — never invoke it from this module. Config staleness and workspace staleness are independent concerns with independent skills.
 
 ### Section classification
 
@@ -222,9 +201,13 @@ Enumerate section names via the shared parser, then extract each body by name:
 
 ```bash
 # Enumerate headers, then fetch each body verbatim.
-SECTION_LIST=$("$PM_CONFIG_GET_SH" --list 2>/tmp/pm-config-list.err); LIST_RC=$?
+# Private diagnostic files per run. A mktemp failure only loses the diagnostic text;
+# the exit codes below still decide, so the refresh never proceeds on a failed read.
+LIST_ERR="$(mktemp)" || LIST_ERR=/dev/null
+SEC_ERR="$(mktemp)" || SEC_ERR=/dev/null
+SECTION_LIST=$("$PM_CONFIG_GET" --list 2>"$LIST_ERR"); LIST_RC=$?
 if (( LIST_RC != 0 && LIST_RC != 1 )); then
-  echo "ERROR: pm-config-get.sh --list exited ${LIST_RC} — $(cat /tmp/pm-config-list.err)" >&2
+  echo "ERROR: pm-config-get.sh --list exited ${LIST_RC} — $(cat "$LIST_ERR")" >&2
   REFRESH_OK=false            # skip Steps 3b-3g; never write on an unexplained read failure
 else
   # `while read` rather than `mapfile` — macOS ships Bash 3.2, which has no mapfile.
@@ -235,17 +218,19 @@ else
   REFRESH_OK=true
   for name in "${SECTIONS[@]}"; do
     [[ -n "$name" ]] || continue
-    body="$("$PM_CONFIG_GET_SH" --section "$name" 2>/tmp/pm-config-section.err)"; SEC_RC=$?
+    body="$("$PM_CONFIG_GET" --section "$name" 2>"$SEC_ERR")"; SEC_RC=$?
     if (( SEC_RC != 0 && SEC_RC != 1 )); then
-      echo "ERROR: pm-config-get.sh --section '${name}' exited ${SEC_RC} — $(cat /tmp/pm-config-section.err)" >&2
+      echo "ERROR: pm-config-get.sh --section '${name}' exited ${SEC_RC} — $(cat "$SEC_ERR")" >&2
       REFRESH_OK=false; break   # abort the refresh before anything is written
     fi
-    # store (name, body) — reused by Steps 3b-3g and by Steps 4-6
+    # store (name, body) — reused by Steps 3b-3g
   done
 fi
+[[ "$LIST_ERR" == /dev/null ]] || rm -f -- "$LIST_ERR"
+[[ "$SEC_ERR" == /dev/null ]] || rm -f -- "$SEC_ERR"
 ```
 
-Only **0** (section present, non-empty body) and **1** (section missing or body empty) are documented non-error statuses — those two continue. Anything else (2 = config file missing, 3 = usage, or any unexpected code) sets `REFRESH_OK=false`: report the error, **skip Steps 3b-3g entirely so `pm-config.md` is never rewritten from a partial parse**, and continue to Step 4 with whatever sections were read. A failed read degrades the handoff's config capture; it must never corrupt the config itself.
+Only **0** (section present, non-empty body) and **1** (section missing or body empty) are documented non-error statuses — those two continue. Anything else (2 = config file missing, 3 = usage, or any unexpected code) sets `REFRESH_OK=false`: report the error, **skip Steps 3b-3g entirely so `pm-config.md` is never rewritten from a partial parse**, and return to the caller with whatever sections were read. A failed read degrades the config capture; it must never corrupt the config itself.
 
 `pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), the next-header/EOF boundary, and preserves body content verbatim. Preserve the file's title line (`# PM Config — ...`) separately — it sits above all `## ` sections.
 
@@ -274,21 +259,7 @@ Store the content of these sections verbatim — do not modify them:
 
 ### Step 3c: Re-scan infrastructure
 
-Run the same infrastructure detection as Step 2b:
-
-| Signal file | Service |
-|-------------|---------|
-| `railway.toml` or `railway.json` | Railway |
-| `vercel.json` or `.vercel/` | Vercel |
-| `fly.toml` | Fly.io |
-| `render.yaml` | Render |
-| `docker-compose.yml` or `Dockerfile` | Docker |
-| `supabase/` or `supabase.json` | Supabase |
-| `.neon` or references to `neon.tech` in config | Neon DB |
-| `netlify.toml` | Netlify |
-| `package.json` | Node.js (extract key deps) |
-| `requirements.txt` or `pyproject.toml` or `Pipfile` | Python (extract key deps) |
-| `.env.example` | Environment variables (list key names, not values) |
+Run the infrastructure detection in Step 2b against the current repo. Its signal table is the single copy of those rules.
 
 Generate a new Infrastructure section from the scan results.
 
@@ -319,7 +290,7 @@ Before writing, show the user what will change:
 4. **Preview the whole reconstructed file, not just those two sections.** Step 3f rewrites `pm-config.md` end to end, so the write can also reorder canonical sections into the fixed schema order, move a non-canonical section to its recorded anchor, and collapse trailing whitespace (Step 3a's note). Build the Step 3f output in memory and `diff` it against the file on disk, then show that diff alongside the summaries above — a confirmation gate that previews only Infrastructure and Architecture is asking the user to approve edits they were never shown.
 5. If the reconstructed file is byte-identical to the one on disk: skip Step 3f with the message "Infrastructure and Architecture are unchanged — config is up to date." Do not write the file; continue to Step 3g.
 6. If the diff is non-empty, ask the user: "Apply these updates to `.claude/pm-config.md`?" Wait for confirmation before writing — via `AskUserQuestion` when available, prose fallback in headless runs (`ask-menu.md`).
-7. If the user declines, do not write. Report "Config refresh declined — no changes written," and continue to Step 4 using the sections as parsed in Step 3a.
+7. If the user declines, do not write. Report "Config refresh declined — no changes written," and return to the caller using the sections as parsed in Step 3a.
 8. If the user confirms, proceed to Step 3f to apply them.
 
 ### Step 3f: Reassemble and write config
@@ -333,7 +304,7 @@ CONFIG_HASH_BEFORE=$(git hash-object "$CONFIG_FILE")   # Step 3a, before parsing
 # ... Steps 3a-3e ...
 if [[ "$(git hash-object "$CONFIG_FILE")" != "$CONFIG_HASH_BEFORE" ]]; then
   echo "pm-config.md changed while the refresh was awaiting confirmation — nothing written." >&2
-  # Re-run Steps 3a-3e against the new content, or continue to Step 4 without refreshing.
+  # Re-run Steps 3a-3e against the new content, or return to the caller without refreshing.
 fi
 ```
 
@@ -379,141 +350,5 @@ Output a summary showing what changed in the config:
 - Architecture: {brief diff — e.g., "detected new api/ directory"}
 ```
 
-If nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date." Either way, continue to Step 4 — the handoff prompt is assembled whether or not the config needed a refresh.
+If nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date." Either way, return to the caller — the ranking proceeds whether or not the config needed a refresh.
 
-## Step 4: Fetch live GitHub state
-
-Run **§1 Live GitHub state** of `.claude/reference/session-state-collector.md` — the shared collector this skill and `/end` both read from, so the two cannot drift apart on what a handoff sees. It carries the queries and the empty-result handling.
-
-**Surface both truncation warnings it can raise** — one when open issues come back at exactly 500, one when open pull requests do. A handoff that omits the 501st item while reading as complete is the failure those warnings exist to prevent, and it is the receiving thread that pays for it.
-
-Rendering stays here: Step 5's `## Current State` lists are this skill's own shape.
-
-## Step 5: Assemble the handoff prompt
-
-Combine static config with dynamic state into a single prompt. Structure:
-
-```
-You are the project manager for {repo URL} — {description}.
-
-You are continuing from a previous PM session. The state below reflects where the previous thread left off. **Verify GitHub state is current before acting on it** — issues may have been closed, PRs merged, or new work started since this handoff was generated.
-
-## Bootstrap steps for this new thread
-1. Run `/pm resume` for a saved PM round. Its entry loads the scoped resume procedures and rechecks current gates. Run `/pm` to start a fresh ranking round when there is no saved work.
-2. **Restore orchestration state.** Review the in-flight work table and verify each PR's state before taking action. PR fleet polling is handled separately via `/pr-monitor-and-manage` if needed — `/pm` does not re-arm polls on resume.
-
-## Your Role
-{Role section from config}
-
-## OKRs
-{OKRs section from config, or "None set" if empty/placeholder}
-
-## Workflow
-{Workflow Rules section from config}
-
-## Execution Boundary
-Do NOT spawn subagents or use the Agent tool to execute work yourself. Write the prompt and present it to the user — they will paste it into a new Claude Code thread. Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
-
-## What's Been Built
-{Infrastructure section from config}
-{Architecture section from config}
-
-## Dependency Rules
-{Dependency Rules section from config}
-
-## Team
-{Team section from config, or omit if empty/placeholder}
-
-## In-Flight Work
-{From Step 5b — or "No in-flight work detected" if empty}
-
-## Active Polling Jobs
-{From Step 5b2 — or "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`." if empty}
-
-## Lessons & Context
-{From Step 5c — or omit if no memory index found}
-
-## Current State
-{Format as actionable lists:}
-
-### Open Issues ({count})
-{List each: "- #N — Title [labels] (assigned: @user or unassigned)"}
-
-### Open PRs ({count})
-{List each: "- PR #N — Title (by @author, +adds/-dels)"}
-
-### Recently Merged ({count})
-{List each: "- PR #N — Title (merged {date} by @author)"}
-
-## Notes
-{Notes section from config, or omit if empty/placeholder}
-```
-
-### Step 5b: Capture in-flight thread state
-
-Run **§2 Tracked pull requests and their per-PR handoff files** of `.claude/reference/session-state-collector.md`. It carries the repo-scoped `--session-view` read, the per-PR handoff resolution (scoped layout first, flat fallback), the cross-repo PR-number collision guard, and the field list to extract from each source — including the reminder that the `active_agents` map entries (keyed by agent id) are candidates to verify, not current fact.
-
-Render what it returns in this skill's own shape. The table below has a column for the common fields; **`needs` and `remaining_work` do not have one and must not be folded into the `Status` column** — emit each as its own bullet under that PR's row, omitted only when that specific field is empty. They are the only record of what the previous thread knew was still outstanding, and a receiving thread cannot re-derive them from GitHub.
-
-```
-### In-Flight Work
-
-| PR | Issue | Phase | Reviewer | Status | Last SHA |
-|----|-------|-------|----------|--------|----------|
-| #88 | #42 | B (Review) | CR | Awaiting review | abc1234 |
-| #90 | #55 | A (Fix+Push) | — | Fixes pushed | def5678 |
-
-- **#88 needs:** {the `needs` field from that PR's handoff — omit this bullet only when `needs` itself is empty}
-- **#88 remaining work:** {the `remaining_work` field — its own bullet, omitted independently of `needs`}
-- **Active agents (verify — may be stale):** {active_agents entries, or "none recorded"}
-
-**Note:** Thread state may be stale. Verify PR status on GitHub before acting.
-```
-
-If no state files exist, output: "No in-flight work detected. Starting fresh."
-
-### Step 5b2: Capture active polling jobs (informational)
-
-Run **§3 Active polling jobs** of `.claude/reference/session-state-collector.md` — jobs owned by **other skills** (`/pr-monitor-and-manage`, `/babysit-pr`, etc.), snapshotted for informational continuity. `/pm` no longer arms its own polls, so do not instruct the new thread to recreate `/pm` polls.
-
-Format as:
-
-```
-### Active Polling Jobs
-
-| Job ID | Schedule | Prompt | Recurring |
-|--------|----------|--------|-----------|
-| abc123 | 17 * * * * | /some-skill --tick | true |
-
-**On resume:** `CronCreate` jobs are **session-scoped** — `durable: true` has no effect (canonical statement: `session-state-collector.md` §3). Do not use `CronList` to check for survivors, there will be none. Re-arm via the owning skill if needed. For PR fleet monitoring, run `/pr-monitor-and-manage` — a paused fleet resumes from its on-disk marker, not from a job.
-```
-
-If `CronList` returns no jobs (the expected case), output: "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`."
-
-### Step 5c: Memory summary
-
-Run **§4 Memory index** of `.claude/reference/session-state-collector.md` — it derives the per-project memory path from the repo root and reads the index, emitting `NO_MEMORY_INDEX` when there is none.
-
-If the memory index exists, include its entries as a "Lessons & Context" section:
-
-```
-## Lessons & Context
-These are key learnings from previous sessions (from memory index — not full details):
-
-{Each non-empty line from MEMORY.md as a bullet}
-```
-
-If no memory index exists, omit this section entirely.
-
-### Step 5d: Continuation header
-
-The assembled prompt (Step 5 above) already includes the continuation instructions at the top: "You are continuing from a previous PM session..." This tells the receiving thread to verify state before acting.
-
-## Step 6: Output
-
-1. Print the assembled prompt to stdout.
-2. If the `copy` argument was provided:
-   ```bash
-   echo "$PROMPT" | pbcopy 2>/dev/null && echo "--- Copied to clipboard ---" || echo "--- pbcopy not available — copy from above ---"
-   ```
-3. After the prompt, print a brief summary: "Generated PM handoff prompt for {repo}. {N} open issues, {M} open PRs, {K} recent merges, {J} in-flight PRs included."

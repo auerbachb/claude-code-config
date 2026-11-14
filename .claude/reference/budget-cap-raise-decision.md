@@ -74,4 +74,4 @@ PR #787 (issue #785, the `rm`-of-verified-untracked-files exception) is where th
 - `.github/scripts/rule-lint.sh` — enforcement: soft/hard limits, ratchet-cap error, `--update-cap` / `--allow-raise` mechanics
 - `.github/scripts/tests/rule-lint.test.sh` case `(h)` — regression guard pinning the ratchet breach as a hard fail
 - `.claude/rules/.budget-soft-cap` — the committed cap; edit directly to raise, with a PR-body justification line
-- `chip-model-guard-decision.md`, `pm-handoff-chips-decision.md` — the house style this record follows (`## Decision` / `## Rationale` / `## Explicitly Rejected` / `## References`)
+- `chip-model-guard-decision.md`, the house style this record follows (`## Decision` / `## Rationale` / `## Explicitly Rejected` / `## References`)
