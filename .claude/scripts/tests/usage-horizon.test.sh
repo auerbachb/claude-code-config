@@ -13,6 +13,9 @@
 #     the same path does return `clear` when the reading is genuinely fine
 #   - observation log mode 600 and single-generation rotation
 #   - the comparison-only guarantee: no transcript read, no estimation path
+#   - conversation identity (issue #2376): a reading survives a change of the
+#     derived key when a harness conversation id is present, explicit ids stay
+#     exact, and the never-seen attestation is cross-checked against the log
 
 set -uo pipefail
 
@@ -70,6 +73,10 @@ reason_of() { printf '%s\n' "$OUT" | sed -n 's/^REASON=//p'; }
 
 FAKE_HOME="$TMP/home"
 export HOME="$FAKE_HOME"
+# The suite runs inside a Claude session, whose Bash environment carries the
+# real conversation's ids. Clear them so every case states its own identity.
+unset CLAUDE_CODE_HOST_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
+  CLAUDE_USAGE_HORIZON_DIR CLAUDE_USAGE_HORIZON_CONV_ID
 reset_home() {
   rm -rf "$FAKE_HOME"
   mkdir -p "$FAKE_HOME/.claude"
@@ -672,7 +679,201 @@ else
   bad "could not create the throwaway git repo for the pm-config knob fixture"
 fi
 
-# --- 10. comparison-only guarantee -----------------------------------------------
+# --- 10. conversation identity (issue #2376) --------------------------------------
+# renv <VAR=value...> <script> <args...> — like run, with per-case environment.
+renv() {
+  OUT="$(env "$@" 2>"$TMP/stderr")"
+  RC=$?
+}
+HOST_X="CLAUDE_CODE_HOST_SESSION_ID=local_conversation-x"
+HOST_Y="CLAUDE_CODE_HOST_SESSION_ID=local_conversation-y"
+SID_S="CLAUDE_CODE_SESSION_ID=11111111-aaaa-4bbb-8ccc-000000000001"
+SID_T="CLAUDE_CODE_SESSION_ID=11111111-aaaa-4bbb-8ccc-000000000002"
+PROC_A="CLAUDE_USAGE_HORIZON_CONV_ID=claude=101|start=A"
+PROC_B="CLAUDE_USAGE_HORIZON_CONV_ID=claude=202|start=B"
+
+# One recorded reading, then the derived key changes underneath the same
+# conversation (a resumed process; the compaction case). Same verdict, same exit.
+reset_home
+renv "$HOST_X" "$SID_S" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+check_eq "$RC" "0" "observe under a host conversation id succeeds"
+renv "$HOST_X" "$SID_S" "$PROC_A" "$SCRIPT" --check
+BEFORE_OUT="$OUT"
+BEFORE_RC="$RC"
+check_eq "$OUT" $'STATUS=clear\nREASON=reading-fresh' "the recording process reads its own reading"
+renv "$HOST_X" "$SID_S" "$PROC_B" "$SCRIPT" --check
+check_eq "$OUT" "$BEFORE_OUT" "a changed derived key resolves to the original reading (same verdict)"
+check_eq "$RC" "$BEFORE_RC" "  and the same exit code"
+check_eq "$(jq -r '.usage_horizon.reading.session_id' "$(STATE)" | cut -c1-7)" "anchor-" "the reading is keyed on the conversation anchor"
+if grep -q 'conversation-x\|11111111-aaaa' "$(STATE)" "$(LOG)"; then
+  bad "a raw harness id reached the state file or the log"
+else
+  ok "only digests of the harness ids are stored"
+fi
+check_eq "$(tail -n 1 "$(LOG)" | jq -c '.anchors | map_values(type)')" '{"host":"string","sid":"string"}' "the log line carries both anchor digests"
+
+# One of the two ids missing on one side still finds the reading.
+renv "$SID_S" "$PROC_B" "$SCRIPT" --check
+check_eq "$(status_of)" "clear" "a call holding only the CLI session id finds a reading recorded with both"
+renv "$HOST_X" "$PROC_B" "$SCRIPT" --check
+check_eq "$(status_of)" "clear" "a call holding only the host id finds it too"
+reset_home
+renv "$SID_S" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$HOST_X" "$SID_S" "$PROC_B" "$SCRIPT" --check
+check_eq "$(status_of)" "clear" "a reading recorded with only the CLI session id is found once the host id appears"
+
+# A different conversation never matches, whatever else it shares.
+reset_home
+renv "$HOST_X" "$SID_S" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$HOST_Y" "$SID_T" "$PROC_A" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "a different conversation on the same process cannot read the reading"
+check_eq "$(reason_of)" "no-reading-this-session" "  and names the foreign reading"
+renv "$HOST_Y" "$SID_S" "$PROC_A" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "a differing host id wins over an equal CLI session id"
+renv "$SID_T" "$PROC_A" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "a differing CLI session id alone does not match"
+check_contains "$(cat "$TMP/stderr")" "not the account usage reader" "the diagnostic says this is not the account usage reader"
+
+# No harness id at all: the derived key is the fallback, and its drift fails closed.
+reset_home
+renv "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$PROC_A" "$SCRIPT" --check
+check_eq "$(status_of)" "clear" "the derived fallback reads its own reading"
+check_eq "$(jq -c '.usage_horizon.reading.anchors' "$(STATE)")" '{"host":null,"sid":null}' "no harness id records null anchors"
+renv "$PROC_B" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "a drifted derived key with no anchor cannot yield clear"
+check_eq "$(reason_of)" "no-reading-this-session" "  and reports the documented fail-closed reason"
+
+# An explicit identity is exact and never borrows the ambient conversation ids.
+reset_home
+renv "$HOST_X" "$SID_S" "$SCRIPT" --observe 14000000 --limit 15000000 --session explicit-one
+check_eq "$(jq -c '.usage_horizon.reading.anchors' "$(STATE)")" '{"host":null,"sid":null}' "an explicit identity records no ambient anchor"
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check --session explicit-two
+check_not_clear "$(status_of)" "$RC" "two explicit ids sharing ambient anchors stay separate"
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "the ambient conversation does not adopt an explicit id's reading"
+renv "$HOST_X" "$SID_S" CLAUDE_SESSION_ID=explicit-one "$SCRIPT" --check
+check_eq "$(status_of)" "clear" "CLAUDE_SESSION_ID is an explicit identity and matches exactly"
+reset_home
+renv "$HOST_X" "$SID_S" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check --session explicit-one
+check_not_clear "$(status_of)" "$RC" "an explicit id does not adopt the ambient conversation's reading"
+
+# A reading written before #2376 has no anchors object: key match only.
+reset_home
+renv "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+jq 'del(.usage_horizon.reading.anchors)' "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+renv "$PROC_A" "$SCRIPT" --check
+check_eq "$(status_of)" "clear" "a pre-#2376 reading still matches on its key"
+renv "$HOST_X" "$PROC_A" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "a pre-#2376 reading is not adopted through an anchor it never recorded"
+jq '.usage_horizon.reading.anchors = "local_conversation-x"' "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+renv "$HOST_X" "$PROC_B" "$SCRIPT" --check
+check_not_clear "$(status_of)" "$RC" "a non-object anchors value matches nothing"
+
+# Hysteresis follows the conversation across a changed derived key.
+reset_home
+renv "$HOST_X" "$PROC_A" "$SCRIPT" --observe 1000000 --limit 15000000
+check_eq "$(status_of)" "critical" "6.7% of the window is critical"
+renv "$HOST_X" "$PROC_B" "$SCRIPT" --observe 1700000 --limit 15000000
+check_eq "$(status_of)" "critical" "the prior verdict still anchors after the derived key changed"
+reset_home
+renv "$HOST_X" "$PROC_A" "$SCRIPT" --observe 1000000 --limit 15000000
+renv "$HOST_Y" "$PROC_A" "$SCRIPT" --observe 1700000 --limit 15000000
+check_eq "$(status_of)" "approaching" "another conversation's verdict anchors nothing (control)"
+
+# --- 11. the never-seen attestation is cross-checked against the log (#2376) ------
+# The slot as found on 2026-11-14: one old reading from another conversation,
+# written before anchors existed. Nothing from this conversation in the log.
+reset_home
+printf '%s\n' '{"ts":"2026-10-27T21:57:36Z","session_id":"derived-872ab4b35369993b5d38","remaining":11693000,"limit":null}' > "$(LOG)"
+printf '%s' '{"usage_horizon":{"reading":{"ts":"2026-10-27T21:57:36Z","session_id":"derived-872ab4b35369993b5d38","remaining":11693000,"limit":null},"status":"clear","status_at":"2026-10-27T21:57:36Z","source":"observed"}}' > "$(STATE)"
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check
+check_eq "$OUT" $'STATUS=unknown\nREASON=no-reading-this-session' "an old foreign slot reads as another session's without the attestation"
+check_eq "$RC" "3" "  with the unknown exit"
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=counter-never-seen' "with nothing logged for this conversation the attestation stands"
+check_eq "$RC" "3" "  and still exits unknown, never clear"
+
+# This conversation recorded a reading, then another conversation took the slot.
+reset_home
+renv "$HOST_X" "$SID_S" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$HOST_Y" "$SID_T" "$PROC_A" "$SCRIPT" --observe 13000000 --limit 15000000
+renv "$HOST_X" "$SID_S" "$PROC_B" "$SCRIPT" --check --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=counter-seen-reading-displaced' "a logged reading from this conversation refuses the attestation"
+check_eq "$RC" "3" "  with the unknown exit"
+renv "$HOST_X" "$SID_S" "$PROC_B" "$SCRIPT" --check
+check_eq "$(reason_of)" "no-reading-this-session" "without the flag the displaced slot keeps its usual reason"
+renv "$HOST_Y" "$SID_T" "$SCRIPT" --check --counter-never-seen
+check_eq "$(status_of)" "clear" "the flag never masks the owner's fresh reading"
+
+# The owned line survives only in the rotated generation.
+mv "$(LOG)" "$(LOG).1"
+printf '%s\n' '{"ts":"2026-11-14T00:00:00Z","session_id":"anchor-00000000000000000000","remaining":5,"limit":null,"anchors":{"host":"00000000000000000000","sid":null}}' > "$(LOG)"
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "a reading found only in the .1 generation still refuses the attestation"
+
+# No state file at all, but the log remembers.
+rm -f "$(STATE)"
+renv "$HOST_X" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "a missing state file does not erase a logged reading"
+renv "$HOST_Y" "$SID_T" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "  for either conversation in the log"
+renv "CLAUDE_CODE_HOST_SESSION_ID=local_conversation-z" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen" "a conversation with only foreign lines in the log is attested"
+
+# With no harness id the key is the derived fallback, which can change under one
+# conversation, so an empty log search confirms nothing.
+reset_home
+renv "$PROC_A" "$SCRIPT" --check --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=counter-never-seen-unverified' "a derived identity cannot confirm the attestation from the log"
+check_eq "$RC" "3" "  and exits unknown"
+renv "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$HOST_Y" "$SCRIPT" --observe 14000000 --limit 15000000
+renv "$PROC_B" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen-unverified" "a drifted derived key that misses its own line is never reported as confirmed"
+renv "$PROC_A" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "the undrifted derived key still finds its own line"
+renv "$SCRIPT" --check --counter-never-seen --session stated-id
+check_eq "$(reason_of)" "counter-never-seen" "an explicit identity is stable by declaration and is confirmed"
+
+# A torn line is skipped; an unreadable log refuses the attestation.
+reset_home
+printf '%s\n' '{"ts":"2026-11-14T00:00:00Z","session_id":"anchor-00000000' 'not json' '[1,2]' > "$(LOG)"
+renv "$HOST_X" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen" "unparseable log lines are skipped"
+rm -f "$(LOG)"
+mkdir "$(LOG)"
+renv "$HOST_X" "$SCRIPT" --check --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=observation-log-unreadable' "a log that is not a regular file refuses the attestation"
+check_eq "$RC" "3" "  with the unknown exit"
+rmdir "$(LOG)"
+printf '%s\n' '{}' > "$(LOG)"
+chmod 000 "$(LOG)"
+if [[ ! -r "$(LOG)" ]]; then
+  renv "$HOST_X" "$SCRIPT" --check --counter-never-seen
+  check_eq "$(reason_of)" "observation-log-unreadable" "an unreadable log refuses the attestation"
+fi
+chmod 600 "$(LOG)"
+
+# The attestation never hides this conversation's own stale reading.
+reset_home
+renv "$HOST_X" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+jq '.usage_horizon.reading.ts = "2020-01-01T00:00:00Z"' "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+renv "$HOST_X" "$PROC_B" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "reading-stale" "a stale reading owned through the anchor stays stale under the flag"
+
+# The cross-check answers "was a reading recorded" and reads no figure.
+SCAN_BODY="$(awk '/^conversation_logged\(\) \{/ { on = 1 } on { print } on && /^\}/ { exit }' "$SCRIPT")"
+if [[ -z "$SCAN_BODY" ]]; then
+  bad "could not extract conversation_logged from the script"
+elif grep -q 'remaining\|limit' <<<"$SCAN_BODY"; then
+  bad "the log cross-check reads a token figure"
+else
+  ok "the log cross-check reads no token figure"
+fi
+
+# --- 12. comparison-only guarantee -----------------------------------------------
 # Strip comment lines, then assert the executable body references no transcript
 # and no estimation source. This is the AC clause that no behavioural test can
 # reach: the guarantee is the ABSENCE of a code path.

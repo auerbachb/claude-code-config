@@ -49,6 +49,16 @@ starting at 15,000,000 and decrementing per turn. This is the first
 quantitative, **pre-emptive** quota signal reachable from a session — Probe 1 is
 binary and post-hoc, Probe 2 is not automatable, Probe 3 does not exist.
 
+**Where it is missing, and what it may measure (#2376).** The counter is a
+per-model harness capability. In the Claude Code 2.1.321 binary, Fable 5.2,
+Opus 5.5, Sonnet 5.5 and Mythos 5.2 do not have it, so a session on one of them
+never has a reading and Probe 0 answers `unknown` throughout. The same binary
+describes the default figure as a countdown from a configured budget that
+re-anchors on each user prompt, which is not the account's usage window. That
+contradicts the paragraph above and is recorded as an open question, not
+resolved here:
+[`usage-horizon-desktop-investigation-2026-11.md`](usage-horizon-desktop-investigation-2026-11.md).
+
 **How `usage-horizon.sh` uses it:** Comparison only. `--observe` records the
 reading and computes a verdict against the `usage_horizon_*` knobs in
 `pm-config.md` `## Budget` (percentage thresholds when a total is stated, the
@@ -205,6 +215,11 @@ stale, and both are `unknown`:
 | Fresh reading at/below `usage_horizon_approaching_pct` (or the floor) | `1` (`approaching`) | Prefer landing work over starting it |
 | Fresh reading at/below `usage_horizon_critical_pct` (or the derived floor) | `2` (`critical`) | Wind down; checkpoint and hand off |
 | No reading, foreign session, past TTL, corrupt/malformed state, jq or session identity unavailable | `3` (`unknown`) | Conservative: finish in-flight, start nothing new |
+
+A reading is owned by the conversation that recorded it, keyed on the harness's
+conversation id where the Bash environment carries one, so it survives a
+compaction and a replaced `claude` process (#2376; rule in the script header,
+SESSION IDENTITY).
 
 **Unreadable state is never permission.** In both probes an unreadable signal
 is treated as `unknown`, which uses the conservative posture. Neither probe

@@ -778,6 +778,14 @@ It was absent throughout the reported Claude Code 2.1.322 / Fable 5.2 session.
 There is no verified version or model allowlist. Use this session's actual
 harness output; a version string is not evidence of presence or absence.
 
+**Why it is absent (#2376).** The counter is a per-model harness capability, off
+by default for a model without it. In the Claude Code 2.1.321 binary, Fable 5.2,
+Opus 5.5, Sonnet 5.5 and Mythos 5.2 lack it, in the desktop app and the terminal
+alike. On such a model there is never a reading, so the verdict is `unknown` on
+every cycle and §7.3 is the normal path, not a degraded one. Evidence, the
+identity rule, and what stays open:
+[the desktop investigation](usage-horizon-desktop-investigation-2026-11.md).
+
 ### 7.1 Read the horizon, every cycle
 
 Observe the harness counter, then branch on `--check`. This is `/pm` 2D.7's D2
@@ -872,17 +880,39 @@ All `unknown` reasons stop **automatic refill**, leave in-flight work alone,
 and never park, arm a wake, or resume a park. Report
 `paused (horizon unknown) — {HORIZON_REASON}` on the idle line.
 
-Set `HORIZON_COUNTER_NEVER_SEEN=true` only when you have observed this session's
-harness continuously since it started and it has never emitted the counter.
-A counter missing this turn, an older session's reading, or a resumed or
-compacted history with gaps cannot establish this. Omit the flag if you have
-ever seen the counter or cannot vouch for the full session. The helper can
-report `counter-never-seen` only when there is no current-session reading; it
-still reports `unknown` and exits 3. Never estimate a reading.
+Set `HORIZON_COUNTER_NEVER_SEEN=true` only when no harness counter appears
+anywhere in the context you can see: not in the system prompt, not after any
+tool result. A counter that is merely missing from this turn after one appeared
+earlier does not qualify, and neither does another session's reading. Omit the
+flag if a counter is visible anywhere.
+
+A compaction no longer bars the flag (#2376). You attest only to what you can
+still see; the helper supplies the rest by searching its own observation log
+for a reading this conversation recorded, which a compaction does not remove.
+It answers `counter-never-seen` when it finds none, and refuses with
+`counter-seen-reading-displaced` when it finds one, or with
+`observation-log-unreadable` when the log is there but cannot be read. In every
+case it reports `unknown` and exits 3. Never estimate a reading.
+
+What the cross-check cannot see is a counter that was printed but never handed
+to `--observe`, or a line the log has since rotated out. Either can only let
+through a launch the user asked for in chat; neither reaches automatic refill.
+
+`counter-never-seen-unverified` means the helper found nothing but had no
+harness conversation id to search under, only the derived key, which can change
+within one conversation. The log then confirms nothing, so the older, stricter
+basis applies: treat it as `counter-never-seen` only if you have watched this
+session continuously since it started, with no compaction or resume, and it
+never printed a counter. Otherwise it holds.
+
+A message the user types in live chat that names the work to start is the
+explicit request: `/subagent <issue>`, "start #N now". Ask nothing further about
+the horizon.
 
 On the first dispatch of a request, use the line below if the horizon holds
-it. Only the first row allows an exception, and only when the user explicitly
-asks in live chat to launch those picks now. Print
+it. Only the two counter-absent rows allow an exception (the second only on its
+stricter basis), and only when the user explicitly asks in live chat to launch
+those picks now. Print
 `[horizon counter absent] Proceeding with the launches you requested.` once,
 then apply every other dispatch gate. A bounded request to fill the available
 slots can cover the picks selected for that dispatch, subject to the existing
@@ -892,10 +922,16 @@ leftover picks on a later tick cannot supply this permission. Do not set
 
 | Horizon result | First hold line | Explicit chat request |
 | --- | --- | --- |
-| `unknown / counter-never-seen` | `Launch held: no horizon counter in this session. Ask in chat to launch the specific work now.` | May launch the requested picks only. |
-| `unknown / no-reading-this-session` or `reading-stale` | `Launch held: horizon reading is stale or belongs to another session. Wait for a fresh harness counter, then retry.` | Remains held. Check once more if a fresh counter appears. |
-| Other `unknown` | `Launch held: horizon unavailable ({HORIZON_REASON}). Restore the counter or helper, then retry.` | Remains held. |
-| `approaching` | `Launch held: horizon approaching. Retry when the horizon reads clear.` | Remains held. |
+| `unknown / counter-never-seen` | `Launch held: no horizon counter in this session. Ask in chat to launch the specific work now. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | May launch the requested picks only. |
+| `unknown / counter-never-seen-unverified` | `Launch held: no horizon counter seen, and no conversation id to confirm it. Ask in chat to launch the specific work now. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | May launch the requested picks only on the stricter basis above. Otherwise remains held. |
+| `unknown / no-reading-this-session` | `Launch held: the stored horizon reading belongs to another session. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | If no counter is visible anywhere in context, check once more with the attestation above and follow the row for the reason it returns. Otherwise remains held. |
+| `unknown / reading-stale` or `counter-seen-reading-displaced` | `Launch held: this session's horizon reading is stale or was displaced. Wait for a fresh harness counter, then retry. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. Check once more if a fresh counter appears. |
+| Other `unknown` | `Launch held: horizon unavailable ({HORIZON_REASON}). Restore the counter or helper, then retry. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. |
+| `approaching` | `Launch held: horizon approaching. Retry when the horizon reads clear. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. |
+
+The last sentence of each line is fixed. The account usage readers (`/quotas`,
+the weekly reserve) are separate tools that do need a sign-in; this check reads
+only what the harness prints into the conversation.
 
 `critical` follows §7.4 and uses its park message.
 
