@@ -1468,15 +1468,16 @@ Execution order is Step 6.0b's: each chain's head, then its queued members in ch
 ```markdown
 **Running now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
-|-------|-------|--------|-----|-----------|--------------------|-----------|
-| #42 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:18 PM | 1:48 PM | 1.5 h |
-| #55 | Prune the stale worktree sweep | queued | unestimated | — | — | — |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|
+| #42 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:18 PM | 1:48 PM | 1.5 h |
+| #55 | Prune the stale worktree sweep | queued | — | unestimated | — | — | — |
 ```
 
 Per row:
 
 - **Scope** — truncate to 40 chars so each row stays one line: `printf '%s' "$ISSUE_SCOPE" | cut -c1-40`.
+- **Model** — read per row, never from a shared variable: each launched row reads its own saved routing record for phase A, through the lookup `/board` uses (`time-estimates.md` §"Model cell"), so rows launched with different models each show their own family name (`Opus`, `Sonnet`, `Haiku`, `Fable`). The table is printed after dispatch, and a scalar such as `ROUTED_MODEL` would show the last launched model on every row. A queued row is `—`. Step 8 re-reads the same cell on every refresh.
 - **Est** — `estimate-resolve.sh <N>` (Step 0 candidate order); `unestimated` when it exits 2.
 - **Clock columns** — from `overrun-check.sh --readout-cells`, using the `started_at` just recorded in 7.1. At launch this is start + bound and the full planning bound remaining.
 - **Queued rows** — `—` in all three clock columns. Nothing has started, so there is nothing honest to print.
@@ -1681,7 +1682,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    ```
 6. **Send heartbeat.** When this inline round belongs to `/pm`, use its Step 3.3a report gate in the existing turn and deliver at most one report after processing the tick's outcomes. For standalone rounds, apply the existing output policy to the following heartbeat guidance. If >5 minutes since last user message, send a status update: a timestamp line (`TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`), then the **"Running now" table** — the same shape Step 7.2 printed at launch, re-rendered — then pending transitions and blockers.
 
-   Build the table from the `CELLS_THIS_PR` computed in step 5, one row per pipeline, accumulated across iterations. **`Start` is read back from state and stays constant across ticks**; only Status, Projected end, and Remaining are recomputed. Queued issues stay in the table as `queued` rows with `—` clocks, and flip to a started row on the tick after they launch. Never emit the round as a bulleted list.
+   Build the table from the `CELLS_THIS_PR` computed in step 5, one row per pipeline, accumulated across iterations. **`Start` is read back from state and stays constant across ticks**; only Status, Projected end, and Remaining are recomputed. **`Model` is re-read from the routing record on every refresh** for the row's current phase, the same lookup `/board` uses, even when the phase has not changed, so a retry or escalation that changes the model shows on the next render. Queued issues stay in the table as `queued` rows with `—` clocks, and flip to a started row on the tick after they launch. Never emit the round as a bulleted list.
 
    ```bash
    if [[ -n "$CELLS_THIS_PR" ]]; then

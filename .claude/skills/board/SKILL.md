@@ -80,6 +80,7 @@ ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 ROUND_MEMBERSHIP_SH=$(resolve_script round-membership.sh || true)
+HANDOFF_STATE_SH=$(resolve_script handoff-state.sh || true)
 ```
 
 Read `time-estimates.md` through the matching `.claude/reference/` candidate order.
@@ -91,6 +92,7 @@ silently.**
 - `ROUND_MEMBERSHIP_SH` empty → **optional**. Print `DEGRADED: round-membership.sh not found — queued/completed membership uses the no-record fallbacks` and continue; never substitute another session's singleton as this session's own round.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — Est column renders as unestimated` and continue.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — clock columns render as —` and continue. Still print the table: it carries the round's shape and run order even with three empty columns, and the line above already said why they are empty.
+- `HANDOFF_STATE_SH` empty → **optional**. Print `DEGRADED: handoff-state.sh not found (checked all three paths) — PR-backed rows render the Model cell as —; pre-PR rows read the session routing record` and continue.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — this render is not recorded against the hourly table-freshness floor` and continue. The board is still correct; only the clock in Step 5 is lost.
 
 ---
@@ -626,12 +628,12 @@ the mislabelling this guard exists to prevent.
 ```markdown
 **Running now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
-|-------|-------|--------|-----|-----------|--------------------|-----------|
-| #1512 | Universal dispatch + progress table | Phase B | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
-| #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
-| #1480 | Key catalog entries on normalized path | merged | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
-| #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|
+| #1512 | Universal dispatch + progress table | Phase B | Sonnet | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
+| #1489 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
+| #1480 | Key catalog entries on normalized path | merged | Haiku | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
+| #1504 | Re-anchor the scripts README gate | queued | — | Est: 15–30 min · plan on 30 | — | — | — |
 ```
 
 Per row:
@@ -669,6 +671,8 @@ Per row:
   --started-at ISO`, using the start read in Step 2. Never re-implement the time math.
   An **unestimated** started row has no `M`, so it gets no projection — but it keeps
   its recorded Start, which is a fact rather than a forecast.
+- **Model** — the family name from the routing record, computed by the block below.
+  A queued row is `—` with no lookup; so is a missing or unreadable record.
 - **Queued rows** — `—` in all three clock columns.
 - **Completed rows** — `merged`, with the delivered clock time in `Projected end` and
   `—` in `Remaining` (`time-estimates.md` §"Running now Table"). They never reach
@@ -744,6 +748,55 @@ elif [[ -n "$STARTED_AT_ET" ]]; then
   # branch does: an unestimated row loses its forecast, not its history.
   CELL_START="$STARTED_AT_ET"
 fi
+```
+
+**Model cell.** Read the saved routing record for the phase the row shows, pre-PR from
+session state and post-PR from the handoff (`time-estimates.md` §"Model cell"). A
+merged row takes the latest phase with a readable record. Anything other than the four
+known aliases renders `—`, never a guess.
+
+```bash
+model_raw() {  # model_raw <A|B|C> -> stored alias, "unrecognised" for a record that is not an
+  # object with a non-empty string model (a string, a null decision, ...), or empty when
+  # the phase has no record. A PR-backed row reads its handoff only; the session record is
+  # the source only before a PR exists (its Phase A record never describes a later route)
+  local phase="$1" raw="" hf rec=""
+  if [[ -n "$ROW_PR" ]]; then
+    if [[ -n "$HANDOFF_STATE_SH" ]]; then
+      hf=$("$HANDOFF_STATE_SH" --owner-repo "$ROW_REPO" --path "$ROW_PR" 2>/dev/null) \
+        && [[ -r "$hf" ]] \
+        && raw=$(jq -r --arg t "issue-$ROW_ISSUE" --arg p "$phase" \
+          '(.model_routing | if type == "object" then . else {} end) | (.[$t] | if type == "object" then . else {} end) | .[$p]
+           | if . == null then empty
+             elif type != "object" or (.decision | type) != "object" or (.decision.model | type) != "string" or .decision.model == "" then "unrecognised"
+             else .decision.model end' "$hf" 2>/dev/null)
+    fi
+  else
+    rec=$(sget ".repos[\"$ROW_REPO\"].tasks[\"issue-$ROW_ISSUE\"].model_routing[\"$phase\"]")
+    [[ -n "$rec" ]] && raw=$(printf '%s' "$rec" | jq -r 'if type != "object" or (.decision | type) != "object" or (.decision.model | type) != "string" or .decision.model == "" then "unrecognised" else .decision.model end' 2>/dev/null)
+  fi
+  printf '%s' "$raw"
+}
+model_family() {  # model_family <stored alias> -> Opus|Sonnet|Haiku|Fable, or —
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    haiku) printf 'Haiku' ;; sonnet) printf 'Sonnet' ;; opus) printf 'Opus' ;; fable) printf 'Fable' ;;
+    *) printf '—' ;;   # includes "unrecognised": a record with no usable model
+  esac
+}
+CELL_MODEL="—"
+case "$ROW_STATUS" in
+  queued) ;;
+  merged)
+    # The latest phase that HAS a record decides, read from the handoff: after the merge
+    # the handoff is deleted, so no record is left and the cell is —. A record that is
+    # unusable (malformed, or an unknown model) still stops the walk and renders —; it
+    # never falls back to an earlier phase's model.
+    for MP in C B A; do
+      MRAW=$(model_raw "$MP")
+      if [[ -n "$MRAW" ]]; then CELL_MODEL=$(model_family "$MRAW"); break; fi
+    done ;;
+  Phase?*) CELL_MODEL=$(model_family "$(model_raw "${ROW_STATUS:6:1}")") ;;   # "Phase A", "Phase A (unconfirmed)"
+esac
 ```
 
 ### One summary line after the table
