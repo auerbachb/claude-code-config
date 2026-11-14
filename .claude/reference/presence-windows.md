@@ -186,7 +186,7 @@ prompt is taken as the signal, which is weaker; a bare CLI listing (`off`, a thr
 no delivery ref and no record and is marked when rendered, as before. The transcript file need not exist
 when the record is written: until it can be read the list counts as undelivered.
 
-Two interruption paths remain open: a hook killed at the five-emission cap before it emits the final list, and a hook killed before emission when the payload named no transcript path (the same session's next prompt then retires the record). Both need a kill in a narrow window, and the questions stay in the questions file (`unattended.sh pending`); the redesign that removes the whole class (never mark a question shown on listing) is Issue #2352.
+Two interruption paths remain open: a hook killed at the five-emission cap before it emits the final list, and a hook killed before emission when the payload named no transcript path (the same session's next prompt then retires the record). Both need a kill in a narrow window, and the questions stay in the per-repo questions file (`~/.claude/unattended/<owner>__<repo>.jsonl`, lowercase) but no command re-lists them: `digest` and `pending` count only questions after the `listed` watermark, so the file has to be read directly; the redesign that removes the whole class (never mark a question shown on listing) is Issue #2352.
 
 **A return that fails is not silent.** The hook treats `presence.sh return` exit 0 as returned, 10 as
 lost to another session, 1 as nothing left to return from (he declared a window meanwhile), and
