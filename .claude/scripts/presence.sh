@@ -2,13 +2,16 @@
 # presence.sh — the operator's here-or-away state, one record for every thread.
 # catalog: scheduling-monitoring — Presence windows: one global here-or-away state with an end time, read with one call; one thread asks the dialog
 #
-# PURPOSE (issue #2293, increment 1 of 4)
+# PURPOSE (issues #2293 and #2294, increments 1 and 2 of 4)
 #   Agents otherwise guess whether the operator is at the computer. This stores
 #   the declared answer once, globally (the operator is one person), and
-#   arbitrates which single thread asks the dialog that collects it. It ends
-#   there: what happens when a window runs out, pushes, the pre-leave pass and
-#   work planning are later increments (issues #2294-#2296). Nothing here runs
-#   on a timer, and nothing opens a question by itself.
+#   arbitrates which single thread asks the dialog that collects it. A window
+#   that runs out ends QUIETLY: `expire` (called lazily by the hooks, or by a
+#   thread's own watch) makes threads record questions and take reversible
+#   defaults, once for all threads; the operator's next message ends that
+#   (`return`). Nothing here runs on a timer and nothing opens a question by
+#   itself. The pre-leave pass, the long-away check-in and work planning are
+#   later increments (issues #2295, #2296).
 #   Contract and rationale: .claude/reference/presence-windows.md.
 #
 # USAGE
@@ -28,17 +31,33 @@
 #   presence.sh ask                 claim the one dialog; see exit codes
 #   presence.sh release --generation <token> [--dismissed]
 #                                   give the claim back; --dismissed (no answer) pauses `ask` for an hour
+#   presence.sh expire              a window ran out? Claim it once for all threads and print what to do.
+#                                   Exit 0 this caller won and printed the notice; 1 no window has run out;
+#                                   10 it ran out but another thread holds the claim (or the write was refused,
+#                                   which the next evaluation retries); 11 the claim could not be written, or a closing-deadline
+#                                   correction is still pending (nothing is claimed until it lands)
+#   presence.sh return [--no-dialog]  the operator spoke after a window ran out: end away handling, record a
+#                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race, 11 the write failed (or a closing correction is pending)
+#   presence.sh relist              a return winner stopped listing (the dialog is still "listing" after two
+#                                   minutes): take over the return and list. Exit 0 taken, 10 another took it, 1 none stale, 11 the write failed
+#   presence.sh dialog-claim        claim the pending post-return dialog once, globally. Exit 0 claimed, else 1
+#   presence.sh dialog-ready [--now]  the return's winner finished listing: open the dialog for the next message,
+#                                   or with --now claim it for this turn (nothing was saved). Exit 0 done, else 1
+#   presence.sh probe               one read, one word for a hook: lapsed | lapsed-claimed | returning | dialog | none
+#   presence.sh push-result sent|missed --generation <epoch>   record whether the expiry push was delivered
 #   Global flags: --repo <owner/name> | --cwd DIR resolve which repo's /leave-by deadline `closing` reads.
 #
 # STATE  ~/.claude/session-state.json `.presence` = {state, until_epoch|null, declared_epoch,
-#        machine_on, declared_by, dismissed_until, reservation}. Written only through session-state.sh;
+#        machine_on, declared_by, dismissed_until, reservation, closing_repo, expiry_claim, return,
+#        returned_epoch}. Written only through session-state.sh;
 #        read directly with jq (hooks may read it on every prompt). An active `.unattended` window reads as
 #        away when it is the newer declaration, so the existing unattended switch needs no second step.
 #
 # EXIT CODES
 #   0 ok / ask granted (prints the token); 1 is-away false, or a write failed; 2 usage error;
 #   3 closing with no armed leave deadline; 10 another thread holds the dialog, or a set used a stale token (read `status`);
-#   12 a live declaration exists (printed; do not ask); 13 the dialog was dismissed in the last hour;
+#   12 a live declaration exists, or a window ran out and the operator has not spoken since (printed; do not ask);
+#   13 the dialog was dismissed in the last hour;
 #   20 the claim could not be verified (do not ask).
 #
 # Bash 3.2 compatible (macOS /bin/bash).
@@ -47,6 +66,8 @@ set -uo pipefail
 HERE=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || HERE="."
 SESSION_STATE_SH="${PRESENCE_SESSION_STATE_SH:-$HERE/session-state.sh}"
 RESERVE_SH="${PRESENCE_RESERVE_SH:-$HERE/prompt-reservation.sh}"
+UNATTENDED_SH="${PRESENCE_UNATTENDED_SH:-$HERE/unattended.sh}"
+SELF_Q=$(printf '%q' "$HERE/presence.sh")
 STATE_FILE="${HOME}/.claude/session-state.json"
 DISMISS_SECONDS=3600
 
@@ -61,56 +82,45 @@ fi
 # locations above may not be on it, so append the resolved jq directory (never prepend: it must not shadow the caller tools) for children.
 [ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
 
-usage() { sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# Bash 3.2/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die_usage() { printf 'presence.sh: %s\n' "$1" >&2; exit 2; }
 now() { date +%s; }
 fmt_time() { date -r "$1" '+%a %H:%M %Z' 2>/dev/null || date -d "@$1" '+%a %H:%M %Z' 2>/dev/null || printf '%s' "$1"; }
 
 # --- reading ----------------------------------------------------------------
+# The decision "what is the operator's state, did a window lapse, does away handling apply?" is ONE
+# jq definition in lib/presence-decision.jq (truth table in its header), shared by every reader here
+# AND by `unattended.sh is-active`, so status, is-away, expire, return, probe and is-active cannot
+# disagree. A LAPSED window is a declared window whose end passed and that the operator has not
+# answered with a message since (return clears it); open-ended windows never lapse.
+LIB_DIR="$HERE/lib"
+JQ_DECIDE_INCLUDE='include "presence-decision";'
+
 # The effective state as one JSON object. Never fails: an unreadable file is "unset".
 effective_json() {
   local n
   n=$(now)
   if [ ! -f "$STATE_FILE" ]; then
-    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
+    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"lapsed":false,"away":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
     return 0
   fi
-  "$JQ" -c --argjson now "$n" '
-    def isnum: type == "number";
-    (.presence // {}) as $p | (.unattended // {}) as $u
-    | ($p.state // "") as $ps
-    | (($u.active == true) and (($u.until_epoch | isnum | not) or $u.until_epoch > $now)) as $ua
-    | ($ps == "here" or $ps == "away") as $pv
-    | ($p.declared_epoch // 0) as $pt
-    | ($u.since_epoch // 0) as $ut
-    | (if $ua and (($pv | not) or $ut >= $pt) then
-         {state: "away", source: "unattended",
-          until_epoch: (if ($u.until_epoch | isnum) then $u.until_epoch else null end),
-          declared_epoch: ($u.since_epoch // null), machine_on: true}
-       elif $pv then
-         # Away was armed through unattended mode; turning that off by hand ends it early.
-         (if $ps == "away" and $u.active == false
-             and (($p.until_epoch | isnum | not) or $p.until_epoch > $now) then
-            {state: "here", source: "unattended-off", until_epoch: null, declared_epoch: null, machine_on: true}
-          else
-            {state: $ps, source: "presence",
-             until_epoch: (if ($p.until_epoch | isnum) then $p.until_epoch else null end),
-             declared_epoch: ($p.declared_epoch // null), machine_on: ($p.machine_on != false)}
-          end)
-       else
-         {state: "unset", source: "none", until_epoch: null, declared_epoch: null, machine_on: true}
-       end)
+  "$JQ" -L "$LIB_DIR" -c --argjson now "$n" "$JQ_DECIDE_INCLUDE"'
+    (.presence | if type == "object" then . else {} end) as $p
+    | (.unattended | if type == "object" then . else {} end) as $u
+    | decide($p; $u; $now)
     | . + {expired: (.until_epoch | isnum and . <= $now),
+           lapsed: (.lapse != null),
            remaining_seconds: (if (.until_epoch | isnum) then ([.until_epoch - $now, 0] | max) else null end),
-           now_epoch: $now}' "$STATE_FILE" 2>/dev/null ||
-    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
+           now_epoch: $now}
+    | del(.lapse)' "$STATE_FILE" 2>/dev/null ||
+    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"lapsed":false,"away":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
 }
 
 status_line() { # JSON
-  local f state source until expired left machine out
+  local f state source until expired left machine lapsed out
   f=$(printf '%s' "$1" | "$JQ" -r '[.state, .source, (.until_epoch // ""), (.expired | tostring),
-    ((.remaining_seconds // 0) / 60 | floor | tostring), (.machine_on | tostring)] | join("|")') || f=""
-  IFS='|' read -r state source until expired left machine <<EOF
+    ((.remaining_seconds // 0) / 60 | floor | tostring), (.machine_on | tostring), (.lapsed | tostring)] | join("|")') || f=""
+  IFS='|' read -r state source until expired left machine lapsed <<EOF
 $f
 EOF
   if [ "$state" = unset ] || [ -z "$state" ]; then printf 'unset (no presence declared)\n'; return 0; fi
@@ -118,6 +128,9 @@ EOF
   [ "$machine" = false ] && out="$out (laptop closes at the end)"
   if [ -z "$until" ]; then
     out="$out, until you say otherwise"
+  elif [ "$lapsed" = true ]; then
+    # The window ran out and the operator has not spoken since: threads handle questions as in away mode.
+    out="$out, ended $(fmt_time "$until"); threads record questions and take reversible defaults until you send a message"
   elif [ "$expired" = true ]; then
     out="$out, ended $(fmt_time "$until")"
   else
@@ -134,12 +147,15 @@ cmd_status() {
       *) die_usage "unknown argument to status: $1" ;;
     esac
   done
+  reconcile_closing
   j=$(effective_json)
   if [ "$json" -eq 1 ]; then printf '%s\n' "$j"; else status_line "$j"; fi
 }
 
+# Away, or a window that ran out unanswered (threads handle questions as in away mode).
 cmd_is_away() {
-  [ "$(effective_json | "$JQ" -r 'if .state == "away" and (.expired | not) then "yes" else "no" end')" = yes ]
+  reconcile_closing
+  [ "$(effective_json | "$JQ" -r 'if .away == true then "yes" else "no" end')" = yes ]
 }
 
 # --- time helpers -----------------------------------------------------------
@@ -170,7 +186,7 @@ rest_of_day_epoch() { # STATE
 # --- repo / leave deadline --------------------------------------------------
 REPO=""
 CWD=""
-leave_deadline() { # prints the armed /leave-by deadline epoch, or returns 1
+leave_deadline() { # prints "<repo key> <armed /leave-by deadline epoch>", or returns 1
   local k="$REPO" d="${CWD:-$PWD}" v
   if [ -n "$k" ]; then
     # State keys are lowercase; an explicit --repo Acme/Widgets must find acme/widgets.
@@ -186,12 +202,12 @@ leave_deadline() { # prints the armed /leave-by deadline epoch, or returns 1
   v=$("$SESSION_STATE_SH" --repo "$k" --get-json ".repos[\"$k\"].window.deadline_epoch" 2>/dev/null) || return 1
   case "$v" in ''|null|*[!0-9]*) return 1 ;; esac
   [ "$v" -gt "$(now)" ] || return 1
-  printf '%s\n' "$v"
+  printf '%s %s\n' "$k" "$v"
 }
 
 # --- set ----------------------------------------------------------------------
 cmd_set() {
-  local want="${1-}" by="" dur="" until="" open=0 rod=0 gen="" n given=0 machine=true out rc
+  local want="${1-}" by="" dur="" until="" open=0 rod=0 gen="" n given=0 machine=true out rc closing_repo=""
   [ -n "$want" ] || die_usage "set needs here, away or closing"
   shift
   case "$want" in here|away|closing) ;; *) die_usage "set takes here, away or closing" ;; esac
@@ -222,10 +238,13 @@ cmd_set() {
 
   if [ "$want" = closing ]; then
     [ "$given" -eq 0 ] || die_usage "closing takes its end from the armed /leave-by deadline; give no duration"
-    until=$(leave_deadline) || {
+    local ld
+    ld=$(leave_deadline) || {
       printf 'presence.sh: no /leave-by deadline is armed for this repo; run /leave-by <time> first, then set closing\n' >&2
       return 3
     }
+    closing_repo=${ld% *}
+    until=${ld#* }
     machine=false
   elif [ "$open" -eq 1 ]; then
     until=""
@@ -253,7 +272,15 @@ cmd_set() {
         --set ".presence.declared_epoch=$n"
         --set ".presence.machine_on=$machine"
         --set ".presence.declared_by=$by"
-        --set ".presence.dismissed_until=null")
+        --set ".presence.dismissed_until=null"
+        --set ".presence.return=null")
+  # A closing window remembers whose /leave-by deadline it follows, so a later evaluation can
+  # compare it with that record (reconcile_closing); every other declaration forgets it.
+  if [ -n "$closing_repo" ]; then
+    sets+=(--set ".presence.closing_repo=$closing_repo")
+  else
+    sets+=(--set ".presence.closing_repo=null")
+  fi
 
   # One write carries presence AND unattended mode, so a failed or interleaved write can
   # never leave the operator reading as away (questions suppressed) without a declaration.
@@ -312,14 +339,21 @@ cmd_set() {
       printf 'unattended: on until %s (epoch %s)\n' "$(fmt_time "$until")" "$until"
     fi
     printf 'pre-leave check: list linked sessions and confirm none is waiting on the user; say so.\n'
-    if [ -n "$until" ]; then
-      printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "unattended window ended: run unattended.sh digest --mark and list the questions"\n' "$until"
-    fi
+  fi
+  if [ -n "$until" ] && [ "$want" != closing ]; then
+    print_expiry_watch "$until"
   fi
   cmd_status
   if [ "$want" = closing ]; then
     printf 'closing: the /leave-by wind-down owns the stop at that time; nothing else is armed here.\n'
   fi
+}
+
+# The watch that wakes THIS thread at the deadline so it can run `expire` (a hook cannot call a model
+# tool, and nothing runs between turns). A Monitor can be gone before a long deadline (the desktop
+# app ends one after about 30 minutes); the hooks evaluate expiry too, so a lost watch only delays it.
+print_expiry_watch() { # EPOCH
+  printf 'window-end watch (persistent Monitor): until [ "$(date +%%s)" -ge %s ]; do sleep 60; done; echo "presence window ended: run %s expire and follow what it prints"\n' "$1" "$SELF_Q"
 }
 
 GEN_HELD=""
@@ -343,6 +377,12 @@ ask_blocker() {
   state=$(printf '%s' "$j" | "$JQ" -r '.state')
   expired=$(printf '%s' "$j" | "$JQ" -r '.expired')
   if [ "$state" != unset ] && [ "$expired" != true ]; then
+    status_line "$j"
+    return 12
+  fi
+  # A window that ran out with no message since: threads are in away handling, and no question is
+  # opened on a timer. The dialog is asked after the operator's next message (return), not before.
+  if [ "$(printf '%s' "$j" | "$JQ" -r '.lapsed')" = true ]; then
     status_line "$j"
     return 12
   fi
@@ -411,6 +451,293 @@ cmd_release() {
   case "$rc" in 0|10) return 0 ;; *) printf 'presence.sh: claim not released (rc=%s)\n' "$rc" >&2; return 1 ;; esac
 }
 
+# --- expiry, return ----------------------------------------------------------
+jf() { printf '%s' "$1" | "$JQ" -c "$2" 2>/dev/null; }          # JSON field
+jr() { printf '%s' "$1" | "$JQ" -r "$2" 2>/dev/null; }          # raw field
+
+# Everything one evaluation needs, from ONE read of the state file: the lapsed window (or null),
+# whether it was already claimed, the values the claim must still find unchanged, and a closing
+# window whose end no longer matches its /leave-by record.
+eval_json() {
+  if [ ! -f "$STATE_FILE" ]; then printf '{"lapse":null,"rec":null}\n'; return 0; fi
+  "$JQ" -L "$LIB_DIR" -c --argjson now "$(now)" "$JQ_DECIDE_INCLUDE"'
+    (.presence | if type == "object" then . else {} end) as $p
+    | (.unattended | if type == "object" then . else {} end) as $u
+    | . as $root
+    | decide($p; $u; $now).lapse as $lp
+    | (if $p.state == "here" and $p.machine_on == false and ($p.until_epoch | isnum)
+          and (($p.closing_repo // "") | type == "string" and length > 0) then
+         ($root.repos[$p.closing_repo].leave // {}) as $lv
+         | ($root.repos[$p.closing_repo].window.deadline_epoch // null) as $dl
+         | (if ($lv | has("active")) then $lv.active else null end) as $la
+         | if $lv.active == true and ($dl | isnum) then
+             (if $dl != $p.until_epoch then {action: "set", new_until: $dl, old_until: $p.until_epoch, repo: $p.closing_repo, leave_active: $la} else null end)
+           elif $p.until_epoch > $now then {action: "clear", old_until: $p.until_epoch, repo: $p.closing_repo, leave_active: $la, deadline: $dl}
+           else null end
+       else null end) as $rec
+    | {lapse: $lp,
+       claimed: (($lp != null) and ($p.expiry_claim | type == "object") and ($p.expiry_claim.generation == $lp.generation)),
+       claim: ($p.expiry_claim // null), ps: ($p.state // null), pt: ($p.declared_epoch // null),
+       ut: ($u.since_epoch // null), ua: (if ($u | has("active")) then $u.active else null end), rec: $rec,
+       dlg: ($p.return.dialog? // null), dlg_gen: ($p.return.generation? // null)}' "$STATE_FILE" 2>/dev/null ||
+    printf '{"lapse":null,"rec":null}\n'
+}
+
+# The state file is large (megabytes) and a read costs tens of milliseconds, so one command reads it
+# once and shares the result; a write that changes it drops the cache.
+EVAL=""
+get_eval() { [ -n "$EVAL" ] || EVAL=$(eval_json); }
+
+# A stored closing window follows the /leave-by record it was set from. Compare them on every
+# evaluation and correct the window when the leave time moved, clear it when the leave time was
+# cancelled while the window was still live. A deadline that already passed with the record gone
+# is left alone: the laptop is closing, and the expiry handling stands.
+#
+# Returns 0 when nothing is pending (nothing to correct, or the correction landed) and 1 when a
+# correction is STILL pending after three tries (the compare-and-set lost to a concurrent change that
+# did not settle, or the write failed). Each try re-reads the state, so a correction that lost to a
+# legitimate concurrent change is judged afresh. Callers that act on a deadline (expire, return,
+# probe) must not trust the stored end while this returns 1: an expiry claimed on a stale, already
+# elapsed end would send the notice early and, since the claim is per declaration, suppress the real
+# notice when the corrected end passes (PR #2328 review).
+RECONCILE_PENDING=0
+reconcile_closing() {
+  local e rec act nu ou pt ck la try=0
+  RECONCILE_PENDING=0
+  [ -f "$STATE_FILE" ] || return 0
+  while [ "$try" -lt 3 ]; do
+    try=$((try + 1))
+    get_eval; e="$EVAL"
+    rec=$(jf "$e" '.rec')
+    [ -n "$rec" ] && [ "$rec" != null ] || return 0
+    EVAL=""   # about to write: the next read must see the corrected record
+    act=$(jr "$rec" '.action'); ou=$(jf "$rec" '.old_until'); pt=$(jf "$e" '.pt')
+    # Each write also guards the leave record it was decided from, so a /leave-by change that lands
+    # between the read and the write makes this correction lose (the next try redoes it).
+    ck=$(jr "$rec" '.repo'); la=$(jf "$rec" '.leave_active')
+    case "$act" in
+      set)
+        nu=$(jf "$rec" '.new_until')
+        "$SESSION_STATE_SH" --cas ".presence.until_epoch=$nu" --expect "$ou" \
+          --expect-at ".presence.declared_epoch" "$pt" --expect-at ".presence.state" '"here"' \
+          --expect-at ".repos[\"$ck\"].leave.active" "$la" \
+          --expect-at ".repos[\"$ck\"].window.deadline_epoch" "$nu" >/dev/null 2>&1 || true ;;
+      clear)
+        "$SESSION_STATE_SH" --cas ".presence.state=null" --expect '"here"' \
+          --expect-at ".presence.declared_epoch" "$pt" --expect-at ".presence.until_epoch" "$ou" \
+          --expect-at ".repos[\"$ck\"].leave.active" "$la" \
+          --expect-at ".repos[\"$ck\"].window.deadline_epoch" "$(jf "$rec" '.deadline')" \
+          --set ".presence.until_epoch=null" --set ".presence.machine_on=true" \
+          --set ".presence.closing_repo=null" >/dev/null 2>&1 || true ;;
+      *) return 0 ;;
+    esac
+  done
+  EVAL=""
+  get_eval; e="$EVAL"
+  rec=$(jf "$e" '.rec')
+  if [ -n "$rec" ] && [ "$rec" != null ]; then RECONCILE_PENDING=1; return 1; fi
+  return 0
+}
+
+# Which stored end a lapse was judged by, so a claim can refuse when that end moved meanwhile.
+deadline_path() { # LAPSE JSON
+  if [ "$(jr "$1" '.source')" = unattended ]; then printf '.unattended.until_epoch\n'; else printf '.presence.until_epoch\n'; fi
+}
+
+# The text of the single phone push. ASCII, no links, short: it is typed into a model tool call.
+PUSH_TEXT='Presence window ended: threads now save questions and work on defaults until you message.'
+
+# A window ran out. Exactly one caller, across every thread and hook, wins the claim and prints what
+# to do; everyone else prints nothing. The claim is one compare-and-set on the window's generation
+# (its declaration time), refused if the window was re-declared, ended or answered in the meantime.
+# Deliberately before delivery: a crash after the claim loses the notice rather than duplicating it.
+cmd_expire() {
+  [ $# -eq 0 ] || die_usage "expire takes no arguments"
+  local e lp kind gen until n claim newclaim rc=0
+  # Never claim an expiry judged by a stored end that a pending correction would move: exit 11
+  # (nothing claimed, nothing printed); the next evaluation retries the correction first.
+  reconcile_closing || return 11
+  get_eval; e="$EVAL"
+  lp=$(jf "$e" '.lapse')
+  [ -n "$lp" ] && [ "$lp" != null ] || return 1
+  [ "$(jr "$e" '.claimed')" != true ] || return 10
+  kind=$(jr "$lp" '.kind'); gen=$(jf "$lp" '.generation'); until=$(jf "$lp" '.until')
+  n=$(now)
+  newclaim=$("$JQ" -cn --argjson g "$gen" --argjson n "$n" --arg k "$kind" '{generation: $g, epoch: $n, kind: $k, push: null}') || return 11
+  claim=$(jf "$e" '.claim')
+  "$SESSION_STATE_SH" --cas ".presence.expiry_claim=$newclaim" --expect "$claim" \
+    --expect-at ".presence.declared_epoch" "$(jf "$e" '.pt')" \
+    --expect-at ".unattended.since_epoch" "$(jf "$e" '.ut')" \
+    --expect-at ".unattended.active" "$(jf "$e" '.ua')" \
+    --expect-at ".presence.state" "$(jf "$e" '.ps')" \
+    --expect-at "$(deadline_path "$lp")" "$until" >/dev/null 2>&1 || rc=$?
+  # Lost the claim (7): another thread printed the notice. Any other failure: nothing was printed,
+  # so the next evaluation still sees an unclaimed lapse and tries again. Never a second notice.
+  case "$rc" in
+    0) : ;;
+    7) return 10 ;;
+    *) return 11 ;;
+  esac
+  if [ "$kind" = here ]; then
+    printf 'presence: your at-computer window ended %s. Threads now record questions and take reversible defaults, and park steps that are not reversible, until you send a message; no menu opens before that.\n' "$(fmt_time "$until")"
+    printf 'Print the line above once, then (once only) call the PushNotification tool with exactly this text: %s\n' "$PUSH_TEXT"
+    printf 'Afterwards run: %s push-result sent|missed --generation %s   (missed when the push could not be delivered; never retry it)\n' "$SELF_Q" "$gen"
+  else
+    # Keep what was listed even when one repo's file could not be read: those questions are marked.
+    local list="" lrc=0
+    if [ -x "$UNATTENDED_SH" ]; then list=$("$UNATTENDED_SH" digest --all --mark 2>/dev/null) || lrc=$?; fi
+    printf 'presence: your away window ended %s. Threads stay in away handling (questions recorded, reversible defaults, no menu) until you send a message. No push is sent.\n' "$(fmt_time "$until")"
+    if [ -n "$list" ]; then
+      printf 'Show the operator this list once, without opening a menu:\n%s\n' "$list"
+    else
+      printf 'No saved questions yet.\n'
+    fi
+    [ "$lrc" -eq 0 ] || printf 'Some repo question files could not be read: run %s digest --all --mark again.\n' "$(printf '%q' "$UNATTENDED_SH")"
+  fi
+  return 0
+}
+
+# The operator spoke after a window ran out: away handling ends, and the presence dialog is owed.
+# One compare-and-set per window generation, so only one session handles each return. Acts only on
+# a LAPSED window: a message inside a window the operator declared and that is still running
+# changes nothing (he may be writing from his phone while away).
+cmd_return() {
+  local nodialog=0 e lp n ret rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-dialog) nodialog=1; shift ;;
+      *) die_usage "unknown argument to return: $1" ;;
+    esac
+  done
+  [ -f "$STATE_FILE" ] || return 1
+  reconcile_closing || return 11   # a pending correction may mean the window has not really lapsed
+  get_eval; e="$EVAL"
+  lp=$(jf "$e" '.lapse')
+  [ -n "$lp" ] && [ "$lp" != null ] || return 1
+  n=$(now)
+  # dialog starts as "listing": the winner is still listing the saved questions, and no other
+  # hook may ask the dialog until it says so (dialog-ready).
+  if [ "$nodialog" -eq 1 ]; then ret=null; else ret="{\"generation\":$n,\"dialog\":\"listing\"}"; fi
+  "$SESSION_STATE_SH" --cas ".presence.state=null" --expect "$(jf "$e" '.ps')" \
+    --expect-at ".presence.declared_epoch" "$(jf "$e" '.pt')" \
+    --expect-at ".unattended.since_epoch" "$(jf "$e" '.ut')" \
+    --expect-at ".unattended.active" "$(jf "$e" '.ua')" \
+    --expect-at "$(deadline_path "$lp")" "$(jf "$lp" '.until')" \
+    --set ".presence.until_epoch=null" --set ".presence.machine_on=true" --set ".presence.closing_repo=null" \
+    --set ".presence.returned_epoch=$n" --set ".presence.return=$ret" \
+    --set ".unattended.active=false" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    7) return 10 ;;
+    *) return 11 ;;   # the state write failed (lock timeout or error): the window is NOT cleared
+  esac
+}
+
+# What a hook should do about presence, from one read: lapsed (a window ran out, nobody has claimed
+# its notice: run `expire`), lapsed-claimed (it ran out and the notice went out: the operator's next
+# message runs `return`), dialog (a return left the dialog pending: `dialog-claim`), or none.
+cmd_probe() {
+  local e lp
+  [ -f "$STATE_FILE" ] || { printf 'none\n'; return 0; }
+  # A pending closing correction means the stored end may be stale: report nothing to act on; the
+  # next evaluation retries the correction before it judges the deadline.
+  reconcile_closing || { printf 'none\n'; return 0; }
+  get_eval; e="$EVAL"
+  lp=$(jf "$e" '.lapse')
+  if [ -n "$lp" ] && [ "$lp" != null ]; then
+    if [ "$(jr "$e" '.claimed')" = true ]; then printf 'lapsed-claimed\n'; else printf 'lapsed\n'; fi
+  elif [ "$(jr "$e" '.dlg')" = pending ]; then
+    printf 'dialog\n'
+  elif [ "$(jr "$e" '.dlg')" = listing ]; then
+    # A return just happened and its winner is still listing: nobody else lists or asks yet. After
+    # two minutes the winner is presumed dead: listing-stale, which any hook may take over (relist).
+    if [ $(( $(now) - $(jr "$e" '.dlg_gen // 0') )) -lt 120 ]; then printf 'returning\n'; else printf 'listing-stale\n'; fi
+  else
+    printf 'none\n'
+  fi
+}
+
+# A return winner that stopped listing (dialog still "listing" after two minutes) must not strand the
+# saved questions of the other repos. Take the return over: one compare-and-set on the stale
+# generation, so exactly one hook lists in its place. The caller then lists every repo as a return does.
+cmd_relist() {
+  local e g n rc=0
+  [ -f "$STATE_FILE" ] || return 1
+  reconcile_closing
+  get_eval; e="$EVAL"
+  [ "$(jr "$e" '.dlg')" = listing ] || return 1
+  [ $(( $(now) - $(jr "$e" '.dlg_gen // 0') )) -ge 120 ] || return 1
+  g=$(jf "$e" '.dlg_gen'); n=$(now)
+  "$SESSION_STATE_SH" --cas ".presence.return.generation=$n" --expect "$g" \
+    --expect-at ".presence.return.dialog" '"listing"' >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    7) return 10 ;;
+    *) return 11 ;;   # the write failed: the takeover did not happen
+  esac
+}
+
+# The return's winner has finished listing the saved questions: open the dialog for the next
+# message (pending), or, with --now (nothing was saved), claim it for this very turn (asked; exit 0).
+# A dismissal's one-hour cooldown is live (ask would refuse with exit 13). A cooldown POSTPONES the
+# post-return dialog: it stays pending for the first operator message after the cooldown ends.
+dismissal_cooling() {
+  local dis
+  dis=$("$JQ" -r '.presence.dismissed_until // 0 | if type == "number" then . else 0 end' "$STATE_FILE" 2>/dev/null) || dis=0
+  [ "$dis" -gt "$(now)" ]
+}
+
+cmd_dialog_ready() {
+  local now_flag=0 g target rc=0 postponed=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --now) now_flag=1; shift ;;
+      *) die_usage "unknown argument to dialog-ready: $1" ;;
+    esac
+  done
+  [ -f "$STATE_FILE" ] || return 1
+  [ "$("$JQ" -r '.presence.return.dialog // ""' "$STATE_FILE" 2>/dev/null)" = listing ] || return 1
+  g=$("$JQ" -c '.presence.return.generation // null' "$STATE_FILE" 2>/dev/null) || return 1
+  target=pending
+  if [ "$now_flag" -eq 1 ]; then
+    if dismissal_cooling; then postponed=1; else target=asked; fi
+  fi
+  "$SESSION_STATE_SH" --cas ".presence.return.dialog=$target" --expect listing \
+    --expect-at ".presence.return.generation" "$g" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  # Postponed by a cooldown: the dialog waits pending, so this turn does not ask it (exit 1).
+  [ "$postponed" -eq 0 ]
+}
+
+# After a return the dialog is asked once, in total, after the saved questions: this claim moves the
+# pending dialog to asked exactly once across every session. The caller then runs `ask` as usual.
+# Refused (exit 1, still pending) while a dismissal cooldown is live, so the next prompt retries.
+cmd_dialog_claim() {
+  local g rc=0
+  [ -f "$STATE_FILE" ] || return 1
+  [ "$("$JQ" -r '.presence.return.dialog // ""' "$STATE_FILE" 2>/dev/null)" = pending ] || return 1
+  dismissal_cooling && return 1
+  g=$("$JQ" -c '.presence.return.generation // null' "$STATE_FILE" 2>/dev/null) || return 1
+  "$SESSION_STATE_SH" --cas ".presence.return.dialog=asked" --expect pending \
+    --expect-at ".presence.return.generation" "$g" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 0 ]
+}
+
+# Record whether the expiry push reached the phone (the model tool's result; never verified here).
+cmd_push_result() {
+  local res="${1-}" gen=""
+  case "$res" in sent|missed) shift ;; *) die_usage "push-result takes sent or missed" ;; esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --generation) [ $# -ge 2 ] || die_usage "--generation needs a value"; gen="$2"; shift 2 ;;
+      *) die_usage "unknown argument to push-result: $1" ;;
+    esac
+  done
+  case "$gen" in ''|*[!0-9]*) die_usage "push-result needs --generation <epoch>" ;; esac
+  "$SESSION_STATE_SH" --cas ".presence.expiry_claim.push=$res" --expect null \
+    --expect-at ".presence.expiry_claim.generation" "$gen" >/dev/null 2>&1 || true
+}
+
 # --- main -----------------------------------------------------------------------
 [ $# -gt 0 ] || { usage; exit 2; }
 sub="$1"; shift
@@ -433,5 +760,12 @@ case "$sub" in
   set) cmd_set "$@" ;;
   ask) cmd_ask ;;
   release) cmd_release "$@" ;;
+  expire) cmd_expire "$@" ;;
+  return) cmd_return "$@" ;;
+  relist) cmd_relist "$@" ;;
+  dialog-claim) cmd_dialog_claim ;;
+  dialog-ready) cmd_dialog_ready "$@" ;;
+  push-result) cmd_push_result "$@" ;;
+  probe) cmd_probe ;;
   *) die_usage "unknown subcommand: $sub" ;;
 esac

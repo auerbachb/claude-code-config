@@ -570,11 +570,17 @@ question recorded for the operator's return")"
   check_contains "[$SH] unattended: names the unattended receipt" "$UCTX" "(question U-<n> recorded for the operator's return)"
   check_absent "[$SH] unattended: never demands the question tool" "$UCTX" "AskUserQuestion"
 
-  # A window that has ended is attended again.
+  # A window whose end passed is still away handling until the operator speaks (issue #2294).
   printf '{"unattended":{"active":true,"since_epoch":1,"until_epoch":2}}\n' >"$HOMEDIR/.claude/session-state.json"
   reset_markers
   hook "$SH" "$(msg "$M_PROSE")"
-  expect_warn "[$SH] unattended window ended" "$Q_MERGE"
+  check "[$SH] away deadline passed, no return: still the unattended warning" \
+    "$(field '.hookSpecificOutput.additionalContext' | grep -c 'The operator is away (unattended mode)')" "1"
+  # After his message (presence.sh return clears the flag) it is attended again.
+  printf '{"unattended":{"active":false,"since_epoch":1,"until_epoch":2}}\n' >"$HOMEDIR/.claude/session-state.json"
+  reset_markers
+  hook "$SH" "$(msg "$M_PROSE")"
+  expect_warn "[$SH] after the return: attended again" "$Q_MERGE"
   rm -f "$HOMEDIR/.claude/session-state.json"
 done
 

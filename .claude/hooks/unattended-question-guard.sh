@@ -14,6 +14,11 @@
 # Not unattended (the common case): prints nothing, the menu renders as usual
 # (and human-queue-capture.sh decides as before).
 #
+# Window expiry (issue #2294): a declared at-computer window that ran out is away handling too, and
+# nothing runs between turns, so this hook is one of the places expiry is noticed. Before deciding it
+# runs `presence.sh expire`; the ONE caller (of all threads and hooks) that wins the claim gets the
+# notice and the phone-push instruction appended to its deny reason, everyone else gets nothing extra.
+#
 # The deny never depends on the record succeeding: if recording fails while
 # unattended, the call is still denied and the reason says to put the question
 # in the final report instead. Without jq or unattended.sh the hook cannot
@@ -37,11 +42,41 @@ fi
 payload=$(cat 2>/dev/null) || exit 0
 [ -n "$payload" ] || exit 0
 
-"$UNATTENDED_SH" is-active >/dev/null 2>&1 || exit 0
+# Expiry first, cheaply: `probe` is one read and prints `lapsed` only while an unclaimed window end
+# is waiting. Fails open (no notice) when presence.sh is missing or errors.
+PRESENCE_SH="${PRESENCE_SH:-${HERE%/hooks}/scripts/presence.sh}"
+notice=""
+if [ -x "$PRESENCE_SH" ] && [ "$("$PRESENCE_SH" probe 2>/dev/null)" = lapsed ]; then
+  # An away-expiry list is persisted before it is marked listed (unattended.sh DELIVERY): export the
+  # delivery identity so `expire`'s digest writes the record, and name the ref in the notice so the
+  # next prompt hook can find it in this session's transcript, or show the list again.
+  DELIVERY_REF="pd-$(date +%s)-$$"
+  UNATTENDED_DELIVERY_SESSION=$(printf '%s' "$payload" | "$JQ" -r '(.session_id // "") | tostring' 2>/dev/null) || UNATTENDED_DELIVERY_SESSION=""
+  UNATTENDED_DELIVERY_TRANSCRIPT=$(printf '%s' "$payload" | "$JQ" -r '(.transcript_path // "") | tostring' 2>/dev/null) || UNATTENDED_DELIVERY_TRANSCRIPT=""
+  export UNATTENDED_DELIVERY_REF="$DELIVERY_REF" UNATTENDED_DELIVERY_SESSION UNATTENDED_DELIVERY_TRANSCRIPT
+  notice=$("$PRESENCE_SH" expire 2>/dev/null) || notice=""
+  PENDING_DIR="${UNATTENDED_DIR:-${HOME:-/nonexistent}/.claude/unattended}/pending"
+  if [ -n "$notice" ] && grep -lF "\"ref\":\"$DELIVERY_REF\"" "$PENDING_DIR"/*.json >/dev/null 2>&1; then
+    notice="$notice
+(Delivery reference $DELIVERY_REF: internal bookkeeping, do not mention it to the operator.)"
+  fi
+fi
+
+if ! "$UNATTENDED_SH" is-active >/dev/null 2>&1; then
+  # A return can clear the window between the claim above and this read. The claimed notice, with
+  # the questions it listed (already marked), must still reach the thread: never drop it here.
+  if [ -n "$notice" ]; then
+    printf '%s' "$notice" | "$JQ" -Rsc '{hookSpecificOutput: {hookEventName: "PreToolUse",
+      additionalContext: .}}' 2>/dev/null
+  fi
+  exit 0
+fi
 
 deny() { # REASON
-  "$JQ" -cn --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",
-    permissionDecision: "deny", permissionDecisionReason: $r}}' 2>/dev/null
+  # On stdin, not --arg: an expiry notice can carry a long saved-question list.
+  { printf '%s' "$1"; [ -z "$notice" ] || printf '\n%s' "$notice"; } |
+    "$JQ" -Rsc '{hookSpecificOutput: {hookEventName: "PreToolUse",
+      permissionDecision: "deny", permissionDecisionReason: .}}' 2>/dev/null
   exit 0
 }
 
