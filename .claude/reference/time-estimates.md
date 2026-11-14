@@ -348,16 +348,18 @@ The Model cell is read from the routing record `model-route.sh` saved for the is
 before its launch (`task-model-routing.md` §"State and dispatch integration"), never
 from the chat or from a guess:
 
-- **Pre-PR, or a PR whose handoff has no record:** `.repos["<key>"].tasks["issue-N"].model_routing["<phase>"].decision.model`
-  in the session state.
+- **Pre-PR (no PR yet):** `.repos["<key>"].tasks["issue-N"].model_routing["<phase>"].decision.model`
+  in the session state. This is the only time the session record is read.
 - **Once a PR exists:** `.model_routing["issue-N"]["<phase>"].decision.model` in that
-  PR's handoff, which carries the same record for the phase.
+  PR's handoff only. A missing or unreadable handoff, or a missing phase record, renders
+  `—`; the session record is never a fallback here.
 - **`<phase>`** is the letter of the row's Status (`A`, `B`, `C`). A `merged` row shows
   the latest phase that has a record (`C`, then `B`, then `A`), read from the handoff only.
   The parent deletes the handoff after the merge, and the session record holds Phase A
   alone, so a merged row whose handoff is gone renders `—` rather than the Phase A model
-  presented as the latest route. An unrecognised model in a readable record also renders
-  `—` rather than falling back to an earlier phase.
+  presented as the latest route. A record that is malformed (not an object with a string
+  model, for example the string `bad`) or holds an unknown model also renders `—` and stops
+  the walk, rather than falling back to an earlier phase.
 - The stored value is a lowercase alias (`haiku`, `sonnet`, `opus`, `fable`); the cell
   renders its family name. Anything else, a missing field or an unreadable file renders
   `—`. A queued row renders `—` without a lookup.
