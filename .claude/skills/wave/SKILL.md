@@ -200,7 +200,7 @@ Record `IN_FLIGHT` = the number of **distinct in-flight pipelines of yours**: ea
 
 For every candidate, produce a footprint (a set of paths) using the **first** source that yields anything:
 
-1. **Implementation plan file list** — scan the issue's comments (any author, CR plans included) for the most structured plan, preferring the one with the most detail, then take its file list from headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive), then the following bullet/numbered list or fenced block, plus inline backticked paths.
+1. **Implementation plan file list** — use the CodeRabbit implementation plan when the issue has one (the same plan `/subagent` Step 2 selects); otherwise the most structured human-authored plan in the issue's comments, never a bot comment other than CodeRabbit's. Take its file list from headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive), then the following bullet/numbered list or fenced block, plus inline backticked paths.
 2. **`## Related Files` section** of the issue body — one path per bullet.
 3. **Backticked paths anywhere in the body or acceptance criteria** — strings containing `/` or ending in a known extension (`.md`, `.sh`, `.py`, `.json`, `.yml`, `.yaml`, `.ts`), excluding anything starting with `http://` or `https://`.
 4. **Subject inference** — the issue names a component without a path (e.g. "the `/pm` skill", "the merge gate rule", "the polling script"). Map it to the obvious file(s). Mark the footprint `inferred`.
