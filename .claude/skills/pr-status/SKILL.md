@@ -1,5 +1,5 @@
 ---
-name: status
+name: pr-status
 description: Show a dashboard of all open PRs with review state, unresolved findings, and blockers.
 triggers:
   - show PRs
@@ -41,7 +41,7 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 
 > **Invoking-repo scope (issue #687).** "in this repo" is load-bearing: the `gh pr list`
 > below is cwd-repo-scoped by `gh`, and `pr-state.sh --pr N` resolves the repo via
-> `gh repo view` — so the dashboard never surfaces another repo's PRs. `/status`
+> `gh repo view` — so the dashboard never surfaces another repo's PRs. `/pr-status`
 > reads no cross-repo session-state aggregate; if that ever changes, use
 > `session-state.sh --session-view` (repo-scoped), never `--get .`.
 

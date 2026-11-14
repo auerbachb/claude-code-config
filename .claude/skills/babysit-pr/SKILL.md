@@ -1274,7 +1274,7 @@ Conflict rounds: <conflict_streak> of <max_conflict_rounds> (omit when conflict_
 
 - **Stop anytime:** `/babysit-pr-stop <PR>` sets `stop_requested=true`; the next tick's T0 terminates cleanly. See `.claude/skills/babysit-pr-stop/SKILL.md`.
 - **One watcher per PR** — arm mode refuses a duplicate (A2).
-- **Session-scoped by design.** The watcher dies with the session. A watcher left `active` by a session that ended is cleared at the next session start by `session-scheduling-reconcile.sh`, so `/status` never reports a watcher that is not running.
+- **Session-scoped by design.** The watcher dies with the session. A watcher left `active` by a session that ended is cleared at the next session start by `session-scheduling-reconcile.sh`, so `/pr-status` never reports a watcher that is not running.
 - **One persistent Monitor per PR** — arm mode refuses a duplicate and stores the task ID for stop/re-arm.
 - **Monitor mode:** while a dispatch subagent is in flight, the parent follows `monitor-mode.md` (orchestration only, ≤5-min heartbeat). The per-tick heartbeat satisfies the heartbeat requirement.
 - **Post-merge install:** after this skill lands on `main`, symlink it globally via the skills worktree per `skill-symlinks.md`.

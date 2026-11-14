@@ -237,7 +237,7 @@ Recovery is always the same: apologize briefly, arm a persistent `Monitor`, reco
 
 **Root cause (diagnosed post-hoc).** The 11:57 turn ran substantive work and exited without re-arming `ScheduleWakeup`. No error was surfaced because no re-schedule call was made. The 5-minute heartbeat hook could not fire because there was no subsequent turn.
 
-**Historical fix applied.** Re-established via `/loop 5m /status`; issue #924 later showed that
+**Historical fix applied.** Re-established via `/loop 5m /status` (the skill is now `/pr-status`); issue #924 later showed that
 both `/loop` modes are unreliable for recurrence, so current recovery uses `Monitor`.
 
 **Lesson.** Documented in memory (`feedback_schedulewakeup_silent_drop.md`) so future sessions recognize the pattern on the first instance rather than the Nth.
