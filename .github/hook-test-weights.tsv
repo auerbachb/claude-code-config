@@ -53,6 +53,7 @@
 5	.claude/scripts/tests/backlog-health.test.sh
 7	.claude/scripts/tests/backlog-staleness.test.sh
 11	.claude/scripts/tests/bgwork-ceiling.test.sh
+1	.claude/scripts/tests/board-actual-vs-plan.test.sh
 1	.claude/scripts/tests/board-model-cell.test.sh
 9	.claude/scripts/tests/board-round-membership.test.sh
 41	.claude/scripts/tests/bounded-run.test.sh
