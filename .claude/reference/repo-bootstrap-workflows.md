@@ -18,6 +18,8 @@ Each entry in `BOOTSTRAP_FILES` is `"relative-path|file-mode"` (e.g. `".claude/s
 | `.github/workflows/ac-gate.yml` | 644 | CI gate that rejects PRs with unchecked AC boxes |
 | `.claude/scripts/ac-gate.sh` | 644 | Logic for the AC gate (called by the workflow) |
 | `.claude/scripts/pr-issue-ref.sh` | 755 | Extracts linked issue numbers from PR bodies; must be executable because callers test `[[ -x ]]` |
+| `.github/workflows/pr-claim-check.yml` | 644 | Non-required PR claim check (issue #2288); passes with a notice when `issue-claim.sh` is not on the base branch |
+| `.claude/scripts/pr-claim-check.sh` | 644 | Compares a PR's `claim-holder` line with each linked issue's winning claim (called by the workflow with `--report`) |
 
 ## Per-file add-only guarantee
 

@@ -176,6 +176,7 @@
 25	.claude/scripts/tests/post-merge-bookkeeping.test.sh
 0	.claude/scripts/tests/pr-authorship.test.sh
 1	.claude/scripts/tests/pr-body-review-note.test.sh
+2	.claude/scripts/tests/pr-claim-check.test.sh
 2	.claude/scripts/tests/pr-issue-ref.test.sh
 21	.claude/scripts/tests/pr-preflight-tier-triggers.test.sh
 21	.claude/scripts/tests/pr-preflight.test.sh
