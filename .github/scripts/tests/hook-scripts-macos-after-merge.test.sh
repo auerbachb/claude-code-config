@@ -4,17 +4,20 @@
 #
 # WHAT IS UNDER TEST
 #   .github/workflows/hook-scripts.yml, parsed with PyYAML and checked as data:
-#     - on pull_request the macOS plan is skipped (its `if` admits push only), so the
-#       shards are skipped with it and no macOS runner is queued;
-#     - the aggregate `hook-tests-macos` still reports and passes on a pull_request
-#       with the "run after merge" notice, and on push it passes only when the plan
-#       and every shard succeeded;
-#     - `hook-tests-macos-report` runs only on push after a failed macOS aggregate,
-#       holds `issues: write` as its only permission, and never interpolates
-#       `${{ }}` into a run script (values travel through env);
+#     - the trigger set is exactly pull_request, push (main), schedule (one weekly
+#       cron, early Monday UTC) and workflow_dispatch (issue #2351);
+#     - on pull_request and push the macOS plan is skipped (its `if` admits the
+#       schedule and dispatch events only), so the shards are skipped with it and no
+#       macOS runner is queued;
+#     - the aggregate `hook-tests-macos` still reports and passes on a pull_request or
+#       push with the "weekly schedule" notice, and on schedule or dispatch it passes
+#       only when the plan and every shard succeeded;
+#     - `hook-tests-macos-report` runs only on a schedule, or a dispatch of main, after
+#       a failed macOS aggregate, holds `issues: write` as its only permission, and
+#       never interpolates `${{ }}` into a run script (values travel through env);
 #     - the workflow-level permissions stay `contents: read`, and no other job gains
 #       `issues: write`;
-#     - the Linux and Python jobs carry no event gate (they still run on PRs);
+#     - the Linux and Python jobs carry no event gate (they still run on PRs and push);
 #     - the shard that uploads the failing-suite list does so only after a failure,
 #       and the runner's contract is written through SUMMARY_CONTRACT_FILE.
 #
@@ -58,9 +61,9 @@ import sys
 import yaml
 
 WORKFLOW_PATH = sys.argv[1]
-PUSH_GATE = "github.event_name == 'push'"
-NOTICE = "macOS hook tests run after merge on main (issue #2265)"
-REPORT_GATE = "always() && github.event_name == 'push' && needs.hook-tests-macos.result == 'failure'"
+MACOS_GATE = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+NOTICE = "macOS hook tests run on the weekly schedule and by manual dispatch (issue #2351)"
+REPORT_GATE = "always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && needs.hook-tests-macos.result == 'failure'"
 EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
 
 
@@ -71,11 +74,13 @@ def run_blocks(job):
 AGG_CASES = [
     # (event, plan result, shard result, expected pass)
     ("pull_request", "skipped", "skipped", True),
-    ("push", "success", "success", True),
-    ("push", "skipped", "skipped", False),
-    ("push", "success", "failure", False),
-    ("push", "failure", "success", False),
-    ("push", "success", "cancelled", False),
+    ("push", "skipped", "skipped", True),
+    ("schedule", "success", "success", True),
+    ("workflow_dispatch", "success", "success", True),
+    ("schedule", "skipped", "skipped", False),
+    ("schedule", "success", "failure", False),
+    ("workflow_dispatch", "failure", "success", False),
+    ("schedule", "success", "cancelled", False),
 ]
 
 
@@ -96,8 +101,8 @@ def aggregate_behaviour(run):
         passed = res.returncode == 0
         if passed != want_pass:
             errs.append(f"aggregate on {event} plan={plan} shards={shard} exited {res.returncode}, expected {'pass' if want_pass else 'fail'}")
-        elif event == "pull_request" and NOTICE not in res.stdout:
-            errs.append("aggregate on pull_request passes without the run-after-merge notice")
+        elif event in ("pull_request", "push") and NOTICE not in res.stdout:
+            errs.append(f"aggregate on {event} passes without the weekly-schedule notice")
     return errs
 
 
@@ -110,6 +115,17 @@ def check(doc):
 
     if doc.get("permissions") != {"contents": "read"}:
         errors.append(f"workflow permissions must be exactly contents: read, got {doc.get('permissions')!r}")
+
+    # PyYAML (YAML 1.1) reads a bare `on:` key as boolean True.
+    on_block = doc.get("on", doc.get(True))
+    if not isinstance(on_block, dict) or set(on_block) != {"pull_request", "push", "schedule", "workflow_dispatch"}:
+        errors.append(f"trigger set must be exactly pull_request, push, schedule, workflow_dispatch, got {on_block!r}")
+    else:
+        crons = [s.get("cron") for s in (on_block.get("schedule") or []) if isinstance(s, dict)]
+        if crons != ["17 6 * * 1"]:
+            errors.append(f"weekly schedule must be exactly one cron '17 6 * * 1', got {crons!r}")
+        if on_block.get("push") != {"branches": ["main"]}:
+            errors.append(f"push trigger must stay limited to branches: [main], got {on_block.get('push')!r}")
 
     for job_id, job in jobs.items():
         if not isinstance(job, dict):
@@ -125,8 +141,8 @@ def check(doc):
                 errors.append(f"job {job_id!r} grants issues: {perms['issues']!r}; only the report job may")
 
     plan = jobs.get("hook-tests-macos-plan") or {}
-    if plan.get("if") != PUSH_GATE:
-        errors.append(f"hook-tests-macos-plan must be gated `if: {PUSH_GATE}`, got {plan.get('if')!r}")
+    if plan.get("if") != MACOS_GATE:
+        errors.append(f"hook-tests-macos-plan must be gated `if: {MACOS_GATE}`, got {plan.get('if')!r}")
 
     shard = jobs.get("hook-tests-macos-shard") or {}
     if shard.get("needs") != "hook-tests-macos-plan":
@@ -215,7 +231,7 @@ if errs:
     for e in errs:
         bad(f"shipped workflow: {e}")
 else:
-    ok("shipped hook-scripts.yml gates macOS to main and reports the failure issue")
+    ok("shipped hook-scripts.yml runs macOS weekly and by dispatch and reports the failure issue")
 
 
 def mutate(fn):
@@ -226,6 +242,26 @@ def mutate(fn):
 
 def drop_plan_gate(d):
     d["jobs"]["hook-tests-macos-plan"].pop("if", None)
+
+
+def plan_gated_back_to_push(d):
+    d["jobs"]["hook-tests-macos-plan"]["if"] = "github.event_name == 'push'"
+
+
+def _on(d):
+    return d["on"] if "on" in d else d[True]
+
+
+def drop_schedule(d):
+    _on(d).pop("schedule", None)
+
+
+def drop_dispatch(d):
+    _on(d).pop("workflow_dispatch", None)
+
+
+def daily_cron(d):
+    _on(d)["schedule"] = [{"cron": "17 6 * * *"}]
 
 
 def report_extra_perm(d):
@@ -250,9 +286,9 @@ def report_job_wide_concurrency(d):
 
 
 def aggregate_fails_on_pr(d):
-    # The original rule: a skipped plan fails the aggregate on a pull_request.
+    # A skipped plan must not pass the aggregate on a pull_request: the skip guard is disabled.
     run = d["jobs"]["hook-tests-macos"]["steps"][0]["run"]
-    d["jobs"]["hook-tests-macos"]["steps"][0]["run"] = run.replace('if [ "$EVENT_NAME" != "push" ]; then', 'if false; then')
+    d["jobs"]["hook-tests-macos"]["steps"][0]["run"] = run.replace('if [ "$EVENT_NAME" != "schedule" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then', 'if false; then')
 
 
 def shard_issues_write(d):
@@ -278,7 +314,11 @@ def hardcode_shard_result(d):
 
 
 NEGATIVES = [
-    ("plan not gated to push", drop_plan_gate),
+    ("plan not gated to schedule or dispatch", drop_plan_gate),
+    ("plan gated back to push", plan_gated_back_to_push),
+    ("weekly schedule dropped", drop_schedule),
+    ("workflow_dispatch dropped", drop_dispatch),
+    ("schedule cron changed to daily", daily_cron),
     ("report job with extra permission", report_extra_perm),
     ("Linux plan gated off PRs", linux_pr_gate),
     ("expression interpolated into report script", report_interpolates),

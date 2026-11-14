@@ -3,13 +3,18 @@ name: Hook scripts
 # Every PR runs the Linux and Python hook-test jobs, each running only the suites the PR can
 # affect (issue #2153; selector: .github/scripts/select-hook-tests.sh). A push to main
 # runs the full set as the backstop: the selector answers ALL for any non-PR event.
-# The macOS hook tests run after merge only (issue #2265): on a PR their jobs are skipped and
-# the `hook-tests-macos` check passes with a notice; on push to main they run in full and a
-# failure files or comments on a tracking issue (`hook-tests-macos-report`).
+# The macOS hook tests run on a weekly schedule and on manual dispatch only (issue #2351), not on
+# every push to main (issue #2265 gated them to push). On a PR or a push their jobs are skipped and
+# the `hook-tests-macos` check passes with a notice. On a scheduled or dispatched run they run in
+# full, and a failure on main files or comments on a tracking issue (`hook-tests-macos-report`).
+# The weekly cron fires early Monday UTC, away from the top of the hour (issue #2351).
 on:
   pull_request: {}
   push:
     branches: [main]
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -185,14 +190,15 @@ jobs:
   # both jobs with no edit here.
   # Issue #2207: the macOS full run is split into two shards on two macOS runners, because one
   # 3-vCPU job cannot finish the full suite under the 30-minute target. The selector answers ALL
-  # for every push to main, so the main run always uses two shards.
+  # for every non-PR event, so a scheduled or dispatched run always uses two shards (issue #2351).
   # The required check name stays `hook-tests-macos`: the aggregate job below carries that name
   # and passes only when the plan and every shard succeed.
-  # Issue #2265: the macOS run is gated to push-to-main. On a pull_request the plan and shards are
-  # skipped (no Mac runner is queued), and the aggregate reports success with a notice. A failure
-  # on main is reported by `hook-tests-macos-report`.
+  # Issue #2351: the macOS run is gated to the weekly schedule and manual dispatch. On a pull_request
+  # or a push the plan and shards are skipped (no Mac runner is queued), and the aggregate reports
+  # success with a notice. A failure on a scheduled or dispatched run is reported by
+  # `hook-tests-macos-report`.
   hook-tests-macos-plan:
-    if: github.event_name == 'push'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
@@ -330,10 +336,11 @@ jobs:
           if [ -s "$F" ]; then sort -t "$(printf '\t')" -k1,1nr "$F"; else echo "no timing table was written"; fi
           echo "::endgroup::"
 
-  # The one check reported for macOS. On a pull_request the plan and shards are skipped and this
-  # job passes with a notice (issue #2265: macOS runs after merge). On push to main it passes only
-  # when the plan and every shard finished with success. Cancelled, skipped and failed shards all
-  # fail it there. The zero-suite case is preserved: the shard still runs the runner, which exits 0.
+  # The one check reported for macOS. On a pull_request or a push the plan and shards are skipped and
+  # this job passes with a notice (issue #2351: macOS runs on the weekly schedule and by dispatch). On
+  # a schedule or dispatch it passes only when the plan and every shard finished with success.
+  # Cancelled, skipped and failed shards all fail it there. The zero-suite case is preserved: the
+  # shard still runs the runner, which exits 0.
   hook-tests-macos:
     needs: [hook-tests-macos-plan, hook-tests-macos-shard]
     if: always()
@@ -345,8 +352,8 @@ jobs:
           PLAN_RESULT: ${{ needs.hook-tests-macos-plan.result }}
           SHARD_RESULT: ${{ needs.hook-tests-macos-shard.result }}
         run: |
-          if [ "$EVENT_NAME" != "push" ]; then
-            echo "macOS hook tests run after merge on main (issue #2265); skipped for this pull request."
+          if [ "$EVENT_NAME" != "schedule" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "macOS hook tests run on the weekly schedule and by manual dispatch (issue #2351); skipped for this $EVENT_NAME event."
             exit 0
           fi
           if [ "$PLAN_RESULT" = "success" ] && [ "$SHARD_RESULT" = "success" ]; then
@@ -357,6 +364,8 @@ jobs:
           exit 1
 
   # Issue #2265: a failed macOS run on main files a tracking issue, or comments on the open one.
+  # Issue #2351: only a scheduled run, or a dispatch of main, reports; a manual run on another ref
+  # stays red in Actions and does not touch the alert issue.
   # Only this job holds `issues: write`. It downloads the shards' failing-suite lists (best effort:
   # a missing list still files with the run URL) and passes every value through env, never shell
   # interpolation of suite names or titles. No concurrency group: a queued group keeps only one
@@ -364,7 +373,7 @@ jobs:
   # open-issue search can at worst file one duplicate issue, which is cheaper than a lost report.
   hook-tests-macos-report:
     needs: [hook-tests-macos]
-    if: always() && github.event_name == 'push' && needs.hook-tests-macos.result == 'failure'
+    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && needs.hook-tests-macos.result == 'failure'
     runs-on: ubuntu-24.04
     permissions:
       issues: write
