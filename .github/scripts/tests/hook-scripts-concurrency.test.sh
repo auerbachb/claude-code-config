@@ -14,7 +14,8 @@
 #     - runs without a PR number (a future non-pull_request trigger) get a
 #       per-run group, never one global group, and never a PR's group;
 #     - `cancel-in-progress` is the YAML boolean true (not the string "true");
-#     - the trigger set is exactly {pull_request, push limited to main} and no job
+#     - the trigger set is exactly {pull_request, push limited to main, schedule,
+#       workflow_dispatch} and no job
 #       declares its own concurrency, so push/main runs cannot join a PR's group.
 #   The evaluator knows only a handful of `github.*` names and the `||`
 #   operator; any other token is an error, so a new key ingredient forces this
@@ -137,9 +138,10 @@ def check(doc):
     else:
         on = doc[trigger_keys[0]]
         events = set(on) if isinstance(on, (dict, list)) else {on}
-        if events != {"pull_request", "push"}:
+        if events != {"pull_request", "push", "schedule", "workflow_dispatch"}:
             errors.append(
-                f"trigger set must be exactly {{pull_request, push}}, got {sorted(map(str, events))}"
+                "trigger set must be exactly {pull_request, push, schedule, workflow_dispatch}, "
+                f"got {sorted(map(str, events))}"
             )
         elif not (isinstance(on, dict) and isinstance(on.get("push"), dict)
                   and on["push"].get("branches") == ["main"]):
