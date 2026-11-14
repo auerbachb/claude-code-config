@@ -324,6 +324,21 @@ availability_gate() {
   if [[ "$nro_min" =~ ^[0-9]+$ ]]; then win=$(( nro_min * 60 )); else win=600; can_skip=0; fi
   REQ_CAN_SKIP="$can_skip"
   REQ_WINDOW_S="$win"
+  # Refresh observations before choosing for a new eligible HEAD. A refusal on the
+  # previous HEAD must survive even if no merge-gate tick ran between requests.
+  # Read failures retain stored evidence; they never manufacture unavailability.
+  if (( ! DRY_RUN )); then
+    local repo_name notices reviews
+    repo_name="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || repo_name=""
+    if [[ "$repo_name" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+      if notices="$(gh api --paginate "repos/$repo_name/issues/$PR_NUM/comments?per_page=100" 2>/dev/null)"; then
+        printf '%s' "$notices" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" record --repo "$repo_name" --pr "$PR_NUM" >/dev/null 2>&1 || true
+      fi
+      if reviews="$(gh api --paginate "repos/$repo_name/pulls/$PR_NUM/reviews?per_page=100" 2>/dev/null)"; then
+        printf '%s' "$reviews" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" observe --repo "$repo_name" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
   # choose (issue #2257) answers both questions: skip when no free reviewer can answer in
   # the window (the same verdict decide gives), else the reviewer to ask for this HEAD.
   dec="$("$av" choose --window-s "$win" 2>/dev/null)" || return 0

@@ -139,3 +139,5 @@ The default wait is 10 minutes from the HEAD anchor described above in this file
 - **Project file demanding a completed review: not run.** It needs a second repository.
 
 Two gaps the run exposed: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201, open), and stable-state backoff told a waiting thread to stop polling while the gate was unmet (Issue #2202, fixed by PR #2204 on 2026-11-11).
+
+An explicit reviewer refusal with no known reset time is ranking evidence only. It never satisfies the all-reviewers-unavailable request skip or shortens the ordinary no-review window; all current-HEAD verdict and CI hard stops remain in force.

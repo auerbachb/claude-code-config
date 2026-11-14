@@ -161,5 +161,36 @@ c=$(choose)
 expect_eq "limited reviewer's queue starts at its return time" \
   "$(jq -r '.reviewers.codeant.avail' <<<"$c")" "$((NOW + 120 + 480))"
 
+
+# Untimed refusals rank only: no invented reset, skip, or paid fallback (#2336).
+unknown=$(jq -cn --argjson t "$((NOW - 60))" '{refusal_kind:"untimed",notice_epoch:$t,next_available_epoch:null,window_seconds:null}')
+busy=$(reqs "$(req codeant 1)" "$(req codeant 2)" "$(req codeant 3)")
+write_state "{\"coderabbit\":$unknown}" "$busy"
+c=$(choose)
+expect_eq "recent refusal prefers busy but eligible CodeAnt" "$(jq -r '.reviewer' <<<"$c")" "codeant"
+expect_eq "refusal ranking is explained" "$(jq -r '.choice_reason' <<<"$c")" "prefer_without_recent_refusal"
+expect_eq "unknown reset stays null" "$(jq -r '.reviewers.coderabbit.next' <<<"$c")" "null"
+write_state "{\"coderabbit\":$unknown,\"codeant\":$unknown}" "$busy"
+c=$(choose)
+expect_eq "both unknown refusals still ask a free reviewer" "$(jq -r '.skip' <<<"$c")" "false"
+expect_eq "both unknown use ordinary queue ranking" "$(jq -r '.reviewer' <<<"$c")" "coderabbit"
+write_state "{\"coderabbit\":$unknown,\"codeant\":$(av_record $((NOW + 1200)) $NOW)}"
+c=$(choose)
+expect_eq "unknown plus timed unavailable still asks unknown reviewer" "$(jq -r '.reviewer' <<<"$c")" "coderabbit"
+"$AV" mark-skip --repo o/r --pr 99 --head abc --reason fixture >/dev/null
+c=$("$AV" check-skip --repo o/r --pr 99 --head abc --window-s "$WIN" --now "$NOW")
+expect_eq "unknown refusal never activates an old skip/NRO record" "$(jq -r '.applies' <<<"$c")" "false"
+write_state "{\"codeant\":$unknown}" "[]" "$(spent_events)"
+c=$(choose)
+expect_eq "spent CR cap plus unknown CodeAnt still asks CodeAnt" "$(jq -r '.reviewer' <<<"$c")" "codeant"
+aged=$(jq -c --argjson t "$((NOW - 3600))" '.notice_epoch=$t' <<<"$unknown")
+write_state "{\"coderabbit\":$aged}" "$busy"
+c=$(choose)
+expect_eq "aged refusal returns to ordinary queue ranking" "$(jq -r '.reviewer' <<<"$c")" "coderabbit"
+expect_eq "aged refusal reported as aged rather than available" "$(jq -r '.reviewers.coderabbit.why' <<<"$c")" "untimed_refusal_aged"
+write_state '{"coderabbit":"garbage"}'
+c=$(choose)
+expect_eq "malformed individual record fails toward asking" "$(jq -r '.skip' <<<"$c")" "false"
+
 echo "review-availability choose tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

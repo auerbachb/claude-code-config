@@ -111,7 +111,7 @@ case "$args" in
         '. + [{user: {login: "me"}, body: $b, created_at: $at, updated_at: $at}]' "$FX/comments.json" > "$FX/c.tmp" \
         && mv "$FX/c.tmp" "$FX/comments.json"
     fi ;;
-  *"/issues/"*"/comments"*) serve "$FX/comments.json" ;;
+  *"/issues/"*"/comments"*) [[ -z "${FIXTURE_COMMENTS_FAIL:-}" ]] || exit 1; serve "$FX/comments.json" ;;
   *"/pulls/"*"/reviews"*) echo '[]' ;;
   *"/check-runs"*) jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
   *"/actions/runs"*) jq -c --arg head "$FIXTURE_HEAD" '.check_runs[0] as $check | {total_count:1,workflow_runs:[{id:1,workflow_id:1,event:"push",head_branch:"fixture",head_sha:$head,pull_requests:[],check_suite_id:1,html_url:"https://github.com/acme/one/actions/runs/1",status:$check.status,conclusion:$check.conclusion}]}' "$FX/checks.json" ;;
@@ -141,7 +141,7 @@ OK_CAP='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"c
 reset() { # <tier json>
   export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC=0 FIXTURE_HEAD="$HEAD" FIXTURE_ROUNDS=3
   export FIXTURE_REFUSED="" FIXTURE_CAP_OUT="$OK_CAP" FIXTURE_CAP_RC=0 FIXTURE_POST_FAIL="" FIXTURE_INVISIBLE=""
-  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER=""
+  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER="" FIXTURE_COMMENTS_FAIL=""
   rm -f "$HOME/.claude/session-state.json"
   : > "$POSTED"
   echo '[]' > "$FX/comments.json"
@@ -287,5 +287,29 @@ run
 PR=99601 run
 check_eq "first PR asks CodeAnt, second asks CodeRabbit" "@codeant-ai review;@coderabbitai review;" "$(posted)"
 check_eq "second PR's choice is recorded" "coderabbit" "$(choice_of 99601)"
+
+echo "== untimed refusal refresh beats a busy eligible queue and preserves one request per HEAD =="
+reset "$NRO_TIER"
+write_av '{}'
+jq --argjson t "$(date +%s)" '.review_requests=[range(3)|{reviewer:"codeant",at_epoch:$t}]' "$HOME/.claude/session-state.json" > "$TMP/state.tmp"
+mv "$TMP/state.tmp" "$HOME/.claude/session-state.json"
+jq -cn --arg t "$(ago 60)" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t},{user:{login:"coderabbitai[bot]"},body:"Review triggered. Your full review will begin shortly.",created_at:$t,updated_at:$t}]' > "$FX/comments.json"
+run
+check_eq "fresh notice selects busy CodeAnt instead of refused CodeRabbit" "@codeant-ai review;" "$(posted)"
+check_eq "unknown reset preserved" "null" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$HOME/.claude/session-state.json")"
+run
+check_eq "second tick cannot request again on same HEAD" "@codeant-ai review;" "$(posted)"
+export FIXTURE_HEAD="$HEAD2"
+run
+check_eq "new HEAD still prefers eligible CodeAnt" "@codeant-ai review;@codeant-ai review;" "$(posted)"
+
+
+echo "== failed metadata refresh preserves account-wide refusal =="
+reset "$NRO_TIER"
+write_av "{\"coderabbit\":$(jq -cn --argjson t "$(date +%s)" '{refusal_kind:"untimed",notice_epoch:$t,source_repo:"other/repo",source_pr:1}') }"
+export FIXTURE_COMMENTS_FAIL=1
+REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=1 run
+check_eq "failed comments read asks CodeAnt from stored cross-repo evidence" "@codeant-ai review;" "$(posted)"
+
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
