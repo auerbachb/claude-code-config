@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# catalog: tests — Fixture tests for the /board Model cell extracted from board/SKILL.md: malformed records stop the merged walk at an em dash, a PR-backed row never falls back to session state, and each row and retry reads its own routed model
 # Fixture tests for the /board Model cell (time-estimates.md §"Model cell"). The functions
 # under test are extracted from the real .claude/skills/board/SKILL.md block, so the spec
 # and the code cannot drift apart silently. Session and handoff state are fixture JSON.

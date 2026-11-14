@@ -92,7 +92,7 @@ silently.**
 - `ROUND_MEMBERSHIP_SH` empty → **optional**. Print `DEGRADED: round-membership.sh not found — queued/completed membership uses the no-record fallbacks` and continue; never substitute another session's singleton as this session's own round.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — Est column renders as unestimated` and continue.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — clock columns render as —` and continue. Still print the table: it carries the round's shape and run order even with three empty columns, and the line above already said why they are empty.
-- `HANDOFF_STATE_SH` empty → **optional**. Print `DEGRADED: handoff-state.sh not found (checked all three paths) — Model cell reads the session routing record only` and continue.
+- `HANDOFF_STATE_SH` empty → **optional**. Print `DEGRADED: handoff-state.sh not found (checked all three paths) — PR-backed rows render the Model cell as —; pre-PR rows read the session routing record` and continue.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — this render is not recorded against the hourly table-freshness floor` and continue. The board is still correct; only the clock in Step 5 is lost.
 
 ---
