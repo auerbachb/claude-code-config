@@ -340,6 +340,10 @@ against the working directory's repo, so the one path that exists to recover a
 missing start is also the one most able to invent a wrong one. Re-deriving a start
 moves the Start column on every rebuild after a compaction, which is precisely what
 the recorded value prevents (`time-estimates.md` §"Start times come from state").
+`RECORDED_START` is the start **only** when it was read from state (either field above);
+it is empty when the start came from the `createdAt` fallback. A fallback start feeds the
+Start column alone, labelled approximate, and never the Remaining cell: the actual is a
+duration from a recorded launch, so an empty `RECORDED_START` renders `—`.
 
 ---
 
@@ -744,7 +748,7 @@ if [[ "$ROW_STATUS" == merged ]]; then
   # Remaining carries the actual against the plan: a fact, measured from the recorded
   # launch to mergedAt (time-estimates.md §"Completed rows"). "—" when the start or
   # the bound cannot be read.
-  CELL_REMAINING=$(actual_cell "$BOUND_MIN" "$STARTED_AT" "$MERGED_AT")
+  CELL_REMAINING=$(actual_cell "$BOUND_MIN" "$RECORDED_START" "$MERGED_AT")
   DELIVERED_CELLS+=("$CELL_REMAINING")
   DELIVERED_REPOS+=("$ROW_REPO")
   DELIVERED_APPROX+=("${DELIVERED_APPROX_FLAG:-false}")  # Step 4's per-repo approximate qualifier
@@ -765,7 +769,7 @@ fi
 **Actual cell (finished rows).** `actual_cell` is the one place a delivered row's
 duration is computed. It calls `overrun-check.sh --actual-cell`, so the minute
 arithmetic is the same as every other clock here, and it measures from the **recorded
-launch** (`STARTED_AT`, Step 2) to `MERGED_AT` (Step 3's live `mergedAt`). The rule is
+launch** (`RECORDED_START`, Step 2; a `createdAt` fallback never qualifies) to `MERGED_AT` (Step 3's live `mergedAt`). The rule is
 the same as the clock cells: an empty result renders `—`, never a guess.
 
 ```bash
