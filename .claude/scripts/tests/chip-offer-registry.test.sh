@@ -10,7 +10,8 @@
 #   TTL expiry
 #   Emitter allowlist drift: header VALID EMITTERS (printed verbatim by --help)
 #     must match the --emitter case allowlist (Issue #1464)
-#   Emitter call-site coverage: all four canonical emitter SKILL.md files carry an
+#   Emitter call-site coverage: all four canonical emitter procedure files (pm's is
+#     modules/flow/launch.md, the rest are SKILL.md) carry an
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
 #   HOME-uniqueness invariant: no two tests may share a session-state.json, with
 #     a planted-duplicate negative control proving the check can fail (#1601)

@@ -228,7 +228,7 @@ This does not touch the placement rule above — the claim instruction is *conte
 
 ### Model names are literal
 
-Every emitter writes the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table. `chip-model-guard-lint.sh` checks each of the five emitters for the pre-click warning. (The `model-fleet.sh` resolver that a retired emitter once used is still available as a utility; no chip emitter uses it.)
+Every emitter writes the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table. `chip-model-guard-lint.sh` checks each of the four emitters for the pre-click warning. (The `model-fleet.sh` resolver that a retired emitter once used is still available as a utility; no chip emitter uses it.)
 
 **Why prompt-level, not tooling-level:** there is no `spawn_task` model/effort parameter and no runtime mechanism for a thread to introspect its own active model — model identity is always asserted by the caller, never read back. The guard is therefore a best-effort self-report, not a hard technical guarantee. Full trade-off: `chip-model-guard-decision.md`.
 
