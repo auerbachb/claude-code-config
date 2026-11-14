@@ -801,7 +801,7 @@ if [[ "${HORIZON_STATUS:-unknown}" == critical ]]; then
 fi
 ```
 
-**The hold releases itself.** The cadence is recomputed from `HORIZON_STATUS` every tick, so the first tick that reads `clear` returns to whichever tier the digest streak selects — there is no held flag to clear and nothing to resume by hand. `horizon_held_since` is stamped on the first consecutive `critical` tick and nulled the moment the verdict leaves `critical`; it exists for the heartbeat and for `/recap`, and no other loop reads it.
+**The hold releases itself.** The cadence is recomputed from `HORIZON_STATUS` every tick, so the first tick that reads `clear` returns to whichever tier the digest streak selects — there is no held flag to clear and nothing to resume by hand. `horizon_held_since` is stamped on the first consecutive `critical` tick and nulled the moment the verdict leaves `critical`; it exists for the heartbeat and for the session summary, and no other loop reads it.
 
 | `digest_streak` | Effective cadence |
 |-----------------|-------------------|
