@@ -956,17 +956,47 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   | Option label | Effect |
   |---|---|
   | `Skip for now (Recommended)` | The decline stands: the issue stays queued, exactly as today |
-  | `Split and start the first increment now` | **Only when the issue's bound exceeds `SPLIT_OVER_MIN`** — run Step 5.1's decomposition, then launch the head increment alone |
+  | `Split and start the first increment now` | **Only when the issue's bound exceeds `SPLIT_OVER_MIN` AND `SPLIT_HEAD_FITS=true`** (the head check below) — run Step 5.1's decomposition, then launch the head increment alone |
   | `Launch anyway — parks at the pause point` | Launch this pipeline; the check-in renders its row `parks` |
   | `Change my leave time` | Route to `/leave-by` Step 9's re-declaration path, then Steps 1–7, then re-run this gate against the new deadline |
 
-  **The split option is conditional, and its condition is the same one Step 4 uses** (#1680):
-  offer it only when `$BOUND_MIN > $SPLIT_OVER_MIN` (this gate's own bound against the threshold
-  Step 4's block resolved), strictly. Below the line there is
-  nothing to split into — the issue is already one pipeline's worth of work and offering to cut
-  it up would be offering a worse shape. Its recommendation rank is deliberately second rather
-  than first: it files issues, which `Skip for now` does not, so it is the option a user chooses
-  rather than the one they get by clicking through. Everything else about the menu is unchanged.
+  **The split option is conditional on two things, both required** (#1680, #2381). First, the
+  Step 4 size test: `$BOUND_MIN > $SPLIT_OVER_MIN` (this gate's own bound against the threshold
+  Step 4's block resolved), strictly. Below the line there is nothing to split into — the issue is
+  already one pipeline's worth of work and offering to cut it up would be offering a worse shape.
+  Second, the head-fit test: the split's head is a child at up to `$INCREMENT_BOUND_MIN`, and it
+  must be startable in the time left before the pause point after the filing itself has taken its
+  allowance. This is the same strict `<` the gate applies, so an exact fit is declined here too:
+
+  <!-- test-anchor: subagent-step7-split-head-fit -->
+
+  ```bash
+  # #2381: the menu must not promise a start the gate will then decline. Filing the chain
+  # spends SPLIT_FILING_ALLOWANCE_SEC before the head's own gate re-runs, so the head must fit
+  # the remainder by strictly more than that allowance. The test uses the configured
+  # INCREMENT_BOUND_MIN deliberately: the menu is offered before the chain is filed, so a
+  # child's smaller estimate does not exist yet, and the bound is the promise #2381 asks for.
+  # The allowance is the menu's promise, not a guarantee about filing time. If filing runs
+  # long, the head's own gate below re-runs against the real remaining time and declines
+  # with its existing line; children already filed stay as Step 5.1's mid-chain rule names them.
+  SPLIT_FILING_ALLOWANCE_SEC=300
+  SPLIT_HEAD_FITS=false
+  if (( 10#$INCREMENT_BOUND_MIN * 60 + SPLIT_FILING_ALLOWANCE_SEC < REMAINING_SEC )); then
+    SPLIT_HEAD_FITS=true
+  fi
+  SPLIT_OFFER=false
+  if (( BOUND_MIN > SPLIT_OVER_MIN )) && [[ "$SPLIT_HEAD_FITS" == true ]]; then
+    SPLIT_OFFER=true
+  fi
+  ```
+
+  When `SPLIT_OFFER=false`, **omit** the split row from the menu. The question text must then
+  name why, in the same clause as the bound and the pause-point clock: for an oversize issue,
+  `a head increment of ${INCREMENT_BOUND_MIN} min does not fit the $((REMAINING_SEC / 60)) min left before the pause point (${SPLIT_FILING_ALLOWANCE_SEC}s allowance for filing)`;
+  for an issue at or under `SPLIT_OVER_MIN`, `it is already one pipeline's worth of work, so there is nothing to split`.
+  The menu then has three options. Its recommendation rank is deliberately second rather
+  than first when offered: it files issues, which `Skip for now` does not, so it is the option a user
+  chooses rather than the one they get by clicking through. Everything else about the menu is unchanged.
 
   **Choosing it does four things, in this order:**
 
