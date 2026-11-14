@@ -23,4 +23,4 @@ Any offer to start a new coding thread via `mcp__ccd_session__spawn_task` or a c
 3. **MODEL GUARD preamble** immediately after those lines — verbatim from `chip-launching.md`, no blank line between the three.
 4. **Both lines** in the visible short summary.
 
-The five canonical chip emitters are listed in `chip-launching.md`. When the parent thread is on Fable and the chip recommends a different model, emitters MUST add the pre-click warning from `chip-launching.md` "Upstream requirement" in the short summary.
+The four canonical chip emitters are listed in `chip-launching.md`. When the parent thread is on Fable and the chip recommends a different model, emitters MUST add the pre-click warning from `chip-launching.md` "Upstream requirement" in the short summary.

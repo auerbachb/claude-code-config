@@ -191,6 +191,6 @@ Optional sections, appended when relevant:
 - `## Related Files` — auto-added footer when the user names paths under `.claude/rules/…` or `.claude/skills/…` (or any concrete repo path).
 - `## Implementation notes` — only for deep hand-offs, or when the explicit-ask override is in effect (then the walkthrough leads).
 
-**Complexity hint (optional):** if the user states or the description clearly implies a tier, tag the issue with `complexity:quick|light|medium|heavy` (only if that label exists in the repo — see Step 7) so `/prompt` and `/pm` can pick it up later.
+**Complexity hint (optional):** if the user states or the description clearly implies a tier, tag the issue with `complexity:quick|light|medium|heavy` (only if that label exists in the repo — see Step 7) so `/pm` can pick it up later.
 
 **Filing is a separate phase.** Finish the draft and dedup first, then resolve/read `create:file` for label validation and the sole `issue-file.sh` invocation. This module performs no remote writes.

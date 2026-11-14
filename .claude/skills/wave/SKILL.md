@@ -200,7 +200,7 @@ Record `IN_FLIGHT` = the number of **distinct in-flight pipelines of yours**: ea
 
 For every candidate, produce a footprint (a set of paths) using the **first** source that yields anything:
 
-1. **CR implementation plan file list** — parse the issue's comments exactly as `/prompt` Step 2 does: headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive), then the following bullet/numbered list or fenced block, plus inline backticked paths.
+1. **Implementation plan file list** — use the CodeRabbit implementation plan when the issue has one (the same plan `/subagent` Step 2 selects); otherwise the most structured human-authored plan in the issue's comments, never a bot comment other than CodeRabbit's. Take its file list from headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive), then the following bullet/numbered list or fenced block, plus inline backticked paths.
 2. **`## Related Files` section** of the issue body — one path per bullet.
 3. **Backticked paths anywhere in the body or acceptance criteria** — strings containing `/` or ending in a known extension (`.md`, `.sh`, `.py`, `.json`, `.yml`, `.yaml`, `.ts`), excluding anything starting with `http://` or `https://`.
 4. **Subject inference** — the issue names a component without a path (e.g. "the `/pm` skill", "the merge gate rule", "the polling script"). Map it to the obvious file(s). Mark the footprint `inferred`.
@@ -339,7 +339,7 @@ For each issue still offered as a chip:
 - **`title`** — ≤60 chars, starts with a verb, includes the issue number.
 - **`tldr`** — 1–2 plain sentences, no paths, no jargon.
 - **`cwd`** — repo root.
-- **Model and effort lines** (`**Model:** {MODEL} — {REASON}` then `**Effort:** {LEVEL} — {REASON}`) — take both recommendations from `/prompt`'s tier classification if it ran in this thread; otherwise infer them from the issue's signals with the same Heavy/Standard/Light mapping (`/prompt` Steps 4–5). Both lines appear **both** inside the chip prompt and in the visible summary, because chips preset neither picker control.
+- **Model and effort lines** (`**Model:** {MODEL} — {REASON}` then `**Effort:** {LEVEL} — {REASON}`) — infer both from the issue's signals with the Heavy/Standard/Light mapping in `issue-maker/references/tier-inference.md`. Both lines appear **both** inside the chip prompt and in the visible summary, because chips preset neither picker control.
 
 Print only the short summary per issue. A failed `spawn_task` falls back to a printed block **for that issue alone**; the rest of the wave keeps its chips. Every issue in the wave ends with exactly one of: a chip, or a printed block — never both, never neither.
 

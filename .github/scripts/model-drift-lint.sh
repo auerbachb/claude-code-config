@@ -27,8 +27,8 @@
 #   from the pattern.  Fable has never carried a 4.x enumeration.
 #
 # Why digit, not 'x':
-#   `Opus 4.x` is the generational prose that /prompt uses for its Legacy
-#   list — a legitimate reference that must not be flagged.  The deny-list
+#   `Opus 4.x` is the generational prose a Legacy list uses — a legitimate
+#   reference that must not be flagged.  The deny-list
 #   matches only a literal digit after the dot, so `4.8` matches but `4.x`
 #   does not.
 #

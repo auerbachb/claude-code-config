@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint merge-authority conformance across canonical chip/prompt emitters (issue #753).
+# Lint merge-authority conformance across canonical chip emitters (issue #753).
 #
 # A launched thread reads its own prompt up close and the global rules only if it
 # goes looking. #674 made auto-merge the default in the rules; this lint keeps that
@@ -31,7 +31,7 @@ CLAUDE_MD="CLAUDE.md"
 SKILLS_DIR=".claude/skills"
 REFERENCE_DIR=".claude/reference"
 
-CANONICAL_EMITTERS=(pm prompt start-issue issue-maker wave)
+CANONICAL_EMITTERS=(pm start-issue issue-maker wave)
 
 # The one sentence every emitter's Constraints block must carry, character for
 # character. Kept here as the lint's single source of truth; the prose copy lives

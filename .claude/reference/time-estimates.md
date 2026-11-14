@@ -1,7 +1,7 @@
 # Time Estimate Vocabulary
 
-> This document is the single source of truth for capture-time estimates. All three
-> skills — `/issue-maker`, `/prompt`, `/start-issue` — share this table and format.
+> This document is the single source of truth for capture-time estimates. Both
+> skills — `/issue-maker`, `/start-issue` — share this table and format.
 > The tier table below is derived from measured merge history by the formula in
 > "The Rounds-Based Estimate", and is re-tuned as history accumulates —
 > see [`estimate-actuals.md`](estimate-actuals.md) for the current measured minutes
@@ -142,8 +142,7 @@ The round counts track the measured distribution rather than being picked: the
 `{hi}` of 180 min likewise clears the measured 122-min median and sits 5 min under
 the 185-min mean, where the retired seed value of 90 sat well below both.
 
-**Tier vocabulary** is identical to `tier-inference.md` (issue-maker) and `/prompt`
-Step 5: Heavy / Standard / Light, evaluated using the same signals. **XL is not one of
+**Tier vocabulary** is identical to `tier-inference.md` (issue-maker): Heavy / Standard / Light, evaluated using the same signals. **XL is not one of
 them** — see below.
 
 ### The XL row — a bound marker, not a rounds row (issue #1680)
@@ -198,8 +197,7 @@ them would break the arithmetic each example teaches.
 | Skill | Behavior |
 |-------|----------|
 | `/issue-maker` | Infer tier from the issue signals, look up the estimate line, add `## Estimate` section to the issue body before filing. |
-| `/prompt` | Surface the estimate in the Tier Recommendation output. If the issue body already has `## Estimate`, echo that line; otherwise derive from tier + this table. |
-| `/start-issue` | Surface the estimate in the ready-to-code summary. Same fallback logic as `/prompt`. |
+| `/start-issue` | Surface the estimate in the ready-to-code summary. Same fallback logic as `/issue-maker`. |
 | `/pm` | Show `Est:` line under each suggested issue. Resolved via `estimate-resolve.sh`. |
 | `/subagent` | Show `Est:` line in the launch report and completion summary. Resolved via `estimate-resolve.sh`. |
 | `/wave` | Show batch makespan after the wave block. Computed via `makespan.sh`. |

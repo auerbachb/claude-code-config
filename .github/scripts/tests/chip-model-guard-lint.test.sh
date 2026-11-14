@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for chip-model-guard-lint.sh (issue #731)
-# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
+# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 
@@ -14,7 +14,7 @@ failures=0
 case_num=0
 
 # Canonical chip emitters. Each names its model directly in the chip payload.
-ALL_EMITTERS=(pm prompt start-issue issue-maker wave)
+ALL_EMITTERS=(pm start-issue issue-maker wave)
 
 make_fixture() {
   local dir="$1" skill
@@ -127,7 +127,7 @@ expect "missing chip-spawn rule index fails" 1 \
 
 # Functions rather than inline commands: `expect` runs "$@" in a subshell of
 # this shell, so shell functions resolve there just like `noop` above.
-drop_effort_from_prompt() { mutate .claude/skills/prompt/SKILL.md '/\*\*Effort:\*\*/d'; }
+drop_effort_from_issue_maker() { mutate .claude/skills/issue-maker/SKILL.md '/\*\*Effort:\*\*/d'; }
 drop_effort_from_contract() { mutate .claude/reference/chip-launching.md '/\*\*Effort:\*\*/d'; }
 drop_effort_from_rule() { mutate .claude/rules/chip-spawn.md '/\*\*Effort:\*\*/d'; }
 reintroduce_versioned_name() { append_line .claude/rules/chip-spawn.md 'Historical aside: Opus 5 was once the picker default.'; }
@@ -141,9 +141,9 @@ drop_ultra_code_guidance() { mutate .claude/reference/chip-launching.md '/Ultra 
 # the case would pass whether or not the check is strict, proving nothing.
 weaken_fable_warning() { mutate .claude/skills/wave/SKILL.md 's/parent thread is on Fable/chip may recommend Fable/'; }
 
-expect "missing Effort line in prompt skill fails" 1 \
-  'prompt \*\*Effort:\*\* requirement' \
-  drop_effort_from_prompt
+expect "missing Effort line in issue-maker skill fails" 1 \
+  'issue-maker \*\*Effort:\*\* requirement' \
+  drop_effort_from_issue_maker
 
 expect "missing Effort line in chip-launching fails" 1 \
   'Missing required Effort line contract' \

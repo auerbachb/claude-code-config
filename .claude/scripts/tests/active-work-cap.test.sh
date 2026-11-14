@@ -917,8 +917,8 @@ for FLAG in -- --json --free --cap --ceiling --repo --path \
 done
 ok "--help prints every documented section, flag, and tunable"
 
-# --- 19. Registry chips (from /pm, /prompt, /wave) count toward the cap ------
-# Before this fix, chips offered by /pm and /prompt were invisible to the count
+# --- 19. Registry chips (from /pm, /wave) count toward the cap ------
+# Before this fix, chips offered by /pm and /wave were invisible to the count
 # because only the issue-maker log was read. Now the registry covers all emitters.
 #
 # Use a real chip-offer-registry.sh (via a minimal fake session-state) so that
@@ -971,12 +971,12 @@ CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
 [[ "$CHIPS" == "1" ]] || fail "19: /pm chip in registry should count as 1, got '$CHIPS'"
 ok "a chip offered by /pm through the registry is counted toward the cap"
 
-# A /prompt chip in running state also counts.
+# A /wave chip in running state also counts.
 export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
-  '[{task_id:"tid-p-2",emitter:"prompt",issue:102,state:"running",offered_at:$now,
+  '[{task_id:"tid-p-2",emitter:"wave",issue:102,state:"running",offered_at:$now,
      expires_at:$now,pr:null,last_updated:$now}]')"
 CHIPS=$(run --json | jq -r '.live_chips') || fail "19: --json failed for running state"
-[[ "$CHIPS" == "1" ]] || fail "19: /prompt chip in 'running' state should count, got '$CHIPS'"
+[[ "$CHIPS" == "1" ]] || fail "19: /wave chip in 'running' state should count, got '$CHIPS'"
 ok "a chip in 'running' state (clicked, no PR yet) is counted"
 
 # A /wave chip in pr-backed state is NOT counted (its PR is already in source 1).

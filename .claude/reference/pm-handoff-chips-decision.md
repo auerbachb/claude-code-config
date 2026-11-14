@@ -4,7 +4,7 @@
 
 **`/pm-handoff` does not offer task chips, and will not.** Its output stays what it is today: the complete handoff prompt printed to stdout, optionally copied to the clipboard via the `copy` argument. No `spawn_task` / `dismiss_task` wiring, no chip-mode branch, no availability detection.
 
-PR #555 wired chips into `/pm` (Step 3.1) and `/prompt` (Step 6). Issue #548 deferred `/pm-handoff` by explicit scope decision rather than on the merits; this record settles it on the merits so it stays decided.
+PR #555 wired chips into `/pm` (Step 3.1) and `/prompt` (Step 6, skill since retired). Issue #548 deferred `/pm-handoff` by explicit scope decision rather than on the merits; this record settles it on the merits so it stays decided.
 
 ## Rationale
 
@@ -31,7 +31,7 @@ A handoff prompt has no issue number, no model recommendation, and no lifecycle 
 ## References
 
 - Issue [#548](https://github.com/auerbachb/claude-code-config/issues/548) — original chip work; deferred `/pm-handoff` by scope decision
-- PR [#555](https://github.com/auerbachb/claude-code-config/pull/555) — wired chips into `/pm` and `/prompt`
+- PR [#555](https://github.com/auerbachb/claude-code-config/pull/555) — wired chips into `/pm` and `/prompt` (since retired)
 - Issue [#562](https://github.com/auerbachb/claude-code-config/issues/562) — this decision
 - `chip-launching.md` — canonical chip mechanics (the contract this decision declines to extend)
 - `.claude/skills/pm-handoff/SKILL.md` — the skill whose behavior is intentionally unchanged
