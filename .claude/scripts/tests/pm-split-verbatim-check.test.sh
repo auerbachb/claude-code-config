@@ -328,7 +328,8 @@ class PMReadTrace(unittest.TestCase):
     def test_resume_no_longer_depends_on_a_handoff_prompt(self):
         skill = (ROOT / '.claude/skills/pm/SKILL.md').read_text()
         self.assertNotIn('pm-handoff', skill)
-        self.assertIn('if the remaining `$ARGUMENTS` contains "resume", enter Resume mode', skill)
+        self.assertIn('if the first whitespace-delimited token of the remaining `$ARGUMENTS` is exactly `resume`', skill)
+        self.assertNotIn('contains "resume"', skill)
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)

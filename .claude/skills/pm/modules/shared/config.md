@@ -201,9 +201,13 @@ Enumerate section names via the shared parser, then extract each body by name:
 
 ```bash
 # Enumerate headers, then fetch each body verbatim.
-SECTION_LIST=$("$PM_CONFIG_GET" --list 2>/tmp/pm-config-list.err); LIST_RC=$?
+# Private diagnostic files per run. A mktemp failure only loses the diagnostic text;
+# the exit codes below still decide, so the refresh never proceeds on a failed read.
+LIST_ERR="$(mktemp)" || LIST_ERR=/dev/null
+SEC_ERR="$(mktemp)" || SEC_ERR=/dev/null
+SECTION_LIST=$("$PM_CONFIG_GET" --list 2>"$LIST_ERR"); LIST_RC=$?
 if (( LIST_RC != 0 && LIST_RC != 1 )); then
-  echo "ERROR: pm-config-get.sh --list exited ${LIST_RC} — $(cat /tmp/pm-config-list.err)" >&2
+  echo "ERROR: pm-config-get.sh --list exited ${LIST_RC} — $(cat "$LIST_ERR")" >&2
   REFRESH_OK=false            # skip Steps 3b-3g; never write on an unexplained read failure
 else
   # `while read` rather than `mapfile` — macOS ships Bash 3.2, which has no mapfile.
@@ -214,17 +218,19 @@ else
   REFRESH_OK=true
   for name in "${SECTIONS[@]}"; do
     [[ -n "$name" ]] || continue
-    body="$("$PM_CONFIG_GET" --section "$name" 2>/tmp/pm-config-section.err)"; SEC_RC=$?
+    body="$("$PM_CONFIG_GET" --section "$name" 2>"$SEC_ERR")"; SEC_RC=$?
     if (( SEC_RC != 0 && SEC_RC != 1 )); then
-      echo "ERROR: pm-config-get.sh --section '${name}' exited ${SEC_RC} — $(cat /tmp/pm-config-section.err)" >&2
+      echo "ERROR: pm-config-get.sh --section '${name}' exited ${SEC_RC} — $(cat "$SEC_ERR")" >&2
       REFRESH_OK=false; break   # abort the refresh before anything is written
     fi
     # store (name, body) — reused by Steps 3b-3g
   done
 fi
+[[ "$LIST_ERR" == /dev/null ]] || rm -f -- "$LIST_ERR"
+[[ "$SEC_ERR" == /dev/null ]] || rm -f -- "$SEC_ERR"
 ```
 
-Only **0** (section present, non-empty body) and **1** (section missing or body empty) are documented non-error statuses — those two continue. Anything else (2 = config file missing, 3 = usage, or any unexpected code) sets `REFRESH_OK=false`: report the error, **skip Steps 3b-3g entirely so `pm-config.md` is never rewritten from a partial parse**, and return to the caller with whatever sections were read. A failed read degrades the handoff's config capture; it must never corrupt the config itself.
+Only **0** (section present, non-empty body) and **1** (section missing or body empty) are documented non-error statuses — those two continue. Anything else (2 = config file missing, 3 = usage, or any unexpected code) sets `REFRESH_OK=false`: report the error, **skip Steps 3b-3g entirely so `pm-config.md` is never rewritten from a partial parse**, and return to the caller with whatever sections were read. A failed read degrades the config capture; it must never corrupt the config itself.
 
 `pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), the next-header/EOF boundary, and preserves body content verbatim. Preserve the file's title line (`# PM Config — ...`) separately — it sits above all `## ` sections.
 
@@ -253,21 +259,7 @@ Store the content of these sections verbatim — do not modify them:
 
 ### Step 3c: Re-scan infrastructure
 
-Run the same infrastructure detection as Step 2b:
-
-| Signal file | Service |
-|-------------|---------|
-| `railway.toml` or `railway.json` | Railway |
-| `vercel.json` or `.vercel/` | Vercel |
-| `fly.toml` | Fly.io |
-| `render.yaml` | Render |
-| `docker-compose.yml` or `Dockerfile` | Docker |
-| `supabase/` or `supabase.json` | Supabase |
-| `.neon` or references to `neon.tech` in config | Neon DB |
-| `netlify.toml` | Netlify |
-| `package.json` | Node.js (extract key deps) |
-| `requirements.txt` or `pyproject.toml` or `Pipfile` | Python (extract key deps) |
-| `.env.example` | Environment variables (list key names, not values) |
+Run the infrastructure detection in Step 2b against the current repo. Its signal table is the single copy of those rules.
 
 Generate a new Infrastructure section from the scan results.
 
