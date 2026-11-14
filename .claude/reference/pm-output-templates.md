@@ -6,16 +6,16 @@ Presentation format templates for `/pm` Step 1B.5. Extracted from `pm/SKILL.md` 
 
 ## User-Scoped Sections (Step 1B.5)
 
-`## Forgotten PRs` **always** renders — `forgotten-pr-triage.sh` defaults to `@me`, so it runs regardless of whether `$GH_USER` is set. The three `$GH_USER`-dependent sections render only when `$GH_USER` is set.
+`## Forgotten PRs (>N days)` renders **only when the forgotten set is non-empty** — silent when clean (`forgotten-prs.md`). `forgotten-pr-triage.sh` defaults to `@me`, so it runs regardless of whether `$GH_USER` is set. The three `$GH_USER`-dependent sections render only when `$GH_USER` is set.
 
-When `$GH_USER` is set, render all four in this order before the backlog ranking; when `$GH_USER` is **not** set, render only `## Forgotten PRs` in the same position (before `## Suggested Next Issues`):
+When `$GH_USER` is set, render all four in this order before the backlog ranking; when `$GH_USER` is **not** set, render only a non-empty `## Forgotten PRs (>N days)` block in the same position (before `## Suggested Next Issues`); with an empty forgotten set nothing renders:
 
 ```
 ## Your Open PRs
 {List of open PRs authored by $GH_USER with last update time — or "none" if empty — only when $GH_USER is set}
 
 ## Forgotten PRs (>N days)
-{Step 1D output — the forgotten set with per-PR close/merge recommendations, or a one-line "none" note when empty. Informational; never alters the ranking below. Always rendered.}
+{Step 1D output — one line per forgotten PR: `PR #N — <title> — Nd idle → close (<reason>)` or `→ merge`. Omitted entirely (no heading, no line) when the set is empty. Informational; never alters the ranking below.}
 
 ## PRs Awaiting Your Review
 {List of open PRs where $GH_USER is a requested reviewer — or "none" if empty — only when $GH_USER is set}
