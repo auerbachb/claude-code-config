@@ -740,9 +740,12 @@ if [[ "$ROW_STATUS" == merged ]]; then
   # STARTED_AT directly also keeps the recorded Start on an UNESTIMATED merged row:
   # routing it through the helper would drop Start whenever BOUND_MIN is empty,
   # losing a value that is right there in state.
-  # Guarded, not assigned outright: a pipeline that predates the start record has
-  # no STARTED_AT_ET, and an unguarded assignment would blank the cell instead of
-  # leaving the `—` that every other unknown clock renders.
+  # Guarded, not assigned outright: a pipeline with no start at all (no recorded start
+  # and no createdAt fallback) has no STARTED_AT_ET, and an unguarded assignment would
+  # blank the cell instead of leaving the `—` that every other unknown clock renders.
+  # A pipeline that predates the start record may still have one from the createdAt
+  # fallback: its Start column shows that value, labelled approximate. The Remaining
+  # cell never uses it (RECORDED_START only).
   [[ -n "$STARTED_AT_ET" ]] && CELL_START="$STARTED_AT_ET"  # et_clock "$STARTED_AT"
   [[ -n "$MERGED_AT_ET" ]] && CELL_END="$MERGED_AT_ET"      # et_clock "$MERGED_AT"
   # Remaining carries the actual against the plan: a fact, measured from the recorded
