@@ -607,10 +607,12 @@ reset_state
 RO29="$TMP/ro29"; mkdir -p "$RO29"; RO29_MARKER="$RO29/marker.json"
 jq -n --arg s "$NE1_SEED" '{schema_version: 1, repos: {"acme/widgets": {last_reviewed_commit: $s, updated_at: "2026-11-01T00:00:00Z"}}}' > "$RO29_MARKER"
 BEFORE="$(cat "$RO29_MARKER")"
-chmod 555 "$RO29"
-OUT="$(BACKFILL_RANGE_MARKER="$RO29_MARKER" "$RUN_BASH" "$SCRIPT" --range --repo-dir "$NE1_DIR" --repo acme/widgets \
+# The write is failed by a mv shim, not by a read-only directory: root ignores
+# chmod, so a permission trick would let the write succeed and the test pass for
+# the wrong reason. The shim fails the marker's atomic rename and nothing else.
+mkdir -p "$TMP/mvshim"; printf '#!/bin/sh\nexit 1\n' > "$TMP/mvshim/mv"; chmod +x "$TMP/mvshim/mv"
+OUT="$(env PATH="$TMP/mvshim:$PATH" BACKFILL_RANGE_MARKER="$RO29_MARKER" "$RUN_BASH" "$SCRIPT" --range --repo-dir "$NE1_DIR" --repo acme/widgets \
   --timeout 30 --channels coderabbit --range-bound 3 --max-reviews 5 --ignore-window 2>"$TMP/stderr")"; RC=$?
-chmod 755 "$RO29"
 check_eq "31: failed skipped_empty write exits 5" "5" "$RC"
 check_contains "31: stop reason is named" "stop=range_skipped_empty_write_failed" "$OUT"
 check_eq "31: marker byte-identical (no advance without the record)" "$BEFORE" "$(cat "$RO29_MARKER")"
