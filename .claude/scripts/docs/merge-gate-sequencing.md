@@ -15,12 +15,14 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [admin-merge.sh](../admin-merge.sh) | Generate or execute the solo-owner branch-protection bypass |
 | [backfill-review.sh](../backfill-review.sh) | Review merges logged by the no-review override with the FREE local CLIs only, file deduped issues for real bugs, mark each ledger row reviewed |
 | [check-runs-dedup.sh](../check-runs-dedup.sh) | Collapse a check-run list to one verdict per check (newest check suite wins) |
+| [check-runs-snapshot.sh](../check-runs-snapshot.sh) | Read workflow-scoped check evidence without masking queued workflows |
 | [ci-status.sh](../ci-status.sh) | Summarize CI check-run health for a commit or PR |
 | [clean-behind-check.sh](../clean-behind-check.sh) | Decide whether a BEHIND PR is safe for /admin-merge (hunk-level overlap check) vs a rebase |
 | [dismiss-stale-bot-changes.sh](../dismiss-stale-bot-changes.sh) | Dismiss stale bot CHANGES_REQUESTED reviews on old SHAs after a push |
 | [merge-gate.sh](../merge-gate.sh) | Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus) |
 | [merge-sequence.sh](../merge-sequence.sh) | Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet |
 | [no-review-override.sh](../no-review-override.sh) | Decide whether the merge gate may waive missing AI-review coverage after the no-review window |
+| [required-checks.sh](../required-checks.sh) | Read required contexts without interpreting an unreadable requirement as empty |
 | [rerun-cancelled-required-ci.sh](../rerun-cancelled-required-ci.sh) | Re-run one verified cancelled required Actions job per PR HEAD. |
 | [review-coverage-measure.sh](../review-coverage-measure.sh) | Classify merged PRs by real AI review coverage at merge HEAD, reusing review-substance.sh |
 | [review-substance.sh](../review-substance.sh) | Decide whether a bot's `APPROVED` on a SHA is real review coverage or a hollow rubber stamp |

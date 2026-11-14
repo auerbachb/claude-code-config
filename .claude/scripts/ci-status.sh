@@ -18,11 +18,11 @@
 # check is counted as passing here yet holds the merge there; do not read an exit 0 from
 # this script as "every required check passed" — run merge-gate.sh for that.
 #
-# Check-runs are deduped through check-runs-dedup.sh before classification: per
-# (app, check name) only runs from that check's newest check suite are counted, so a
-# superseded failure from an earlier re-trigger on the same commit stops blocking the
-# moment a newer run of that check lands (issue #675). This matches what GitHub's own
-# merge box shows. Matrix legs sharing a name inside the newest suite are all kept.
+# Live reads use check-runs-snapshot.sh to retain distinct Actions workflows and
+# events, including queued executions without jobs. Newer executions in the
+# same verified scope supersede completed older runs; unfinished runs stay. Other apps retain the
+# newest-suite-per-name rule (issue #675); unknown Actions identity is not
+# collapsed. Matrix siblings inside the selected execution are all kept.
 #
 # Used by .claude/scripts/merge-gate.sh (internally) and can be called standalone
 # from any skill/agent that needs a CI-only health check without running the full
@@ -234,7 +234,7 @@ else
   OWNER="${OWNER_REPO%/*}"
   REPO="${OWNER_REPO#*/}"
 
-  if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>&1); then
+  if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" 2>&1); then
     # Distinguish 404 (SHA not found) from other gh errors by pattern-matching
     # the stderr message text. `gh api` exits non-zero and writes "HTTP 404" /
     # "Not Found" / "No commit found for SHA" to stderr; it does not expose the

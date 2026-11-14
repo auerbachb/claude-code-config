@@ -121,6 +121,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/issue-claim-guard.sh",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit|NotebookEdit",
         "hooks": [
           {

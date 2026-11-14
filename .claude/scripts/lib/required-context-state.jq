@@ -3,12 +3,15 @@ include "check-run-conclusions";
 $req | map(
   . as $c
   | ($apps[$c] // null)                                          as $app
-  | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $named
+  | [ $runs.check_runs[]? | select(._workflow_inventory != true) | select((.name // "") == $c) ]        as $named
   | (if $app == null then $named
      else [ $named[] | select((.app.id // null) == $app) ] end)  as $r
   | ( [ $statuses[]? | select((.context // "") == $c) ] | first ) as $s
   | ($s != null and ($s.state // "") != "success") as $status_blocks
-  | (if (($r | length) == 0 and $s == null and ($named | length) > 0) then
+  | (if ($app != null and ($r | length) == 0) then
+       # Legacy statuses expose no app identity and cannot prove an app pin.
+       {context: $c, state: (if ($named | length) > 0 or $s != null then "wrong_app" else "absent" end), satisfied: false}
+     elif (($r | length) == 0 and $s == null and ($named | length) > 0) then
        {context: $c, state: "wrong_app", satisfied: false}
      elif (($r | length) == 0 and $s == null) then
        {context: $c, state: "absent", satisfied: false}

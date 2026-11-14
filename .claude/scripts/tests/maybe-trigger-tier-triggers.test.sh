@@ -45,10 +45,11 @@ HEAD2="dddddddddddddddddddddddddddddddddddddddd"
 S="$TMP/scripts"
 mkdir -p "$S/lib" "$TMP/reference"
 for f in maybe-trigger-ai-review.sh review-triggers-allowed.sh bugbot-tier-excluded.sh ci-status.sh \
-         check-runs-dedup.sh session-state.sh state-lock.sh review-request-gate.sh \
+         check-runs-dedup.sh check-runs-snapshot.sh required-checks.sh session-state.sh state-lock.sh review-request-gate.sh \
          review-availability.sh pr-authorship.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
+cp "$REPO_ROOT/.claude/scripts/lib/check_run_workflows.py" "$REPO_ROOT/.claude/scripts/lib/required-context-state.jq" "$S/lib/"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" \
    "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" \
    "$REPO_ROOT/.claude/scripts/lib/cr-retry-window.jq" "$S/lib/"
@@ -94,6 +95,7 @@ case "$args" in
   "repo view"*) echo "acme/one" ;;
   "api user"*) echo "me" ;;
   "api repos/acme/one/pulls/99600") printf '{"number":99600,"state":"open","draft":false,"user":{"login":"me"}}\n' ;;
+  "pr view"*"baseRefName"*) echo main ;;
   "pr view"*"-q"*) echo "$FIXTURE_HEAD" ;;
   "pr view"*) printf '{"headRefOid":"%s","state":"OPEN"}\n' "$FIXTURE_HEAD" ;;
   "pr comment"*)
@@ -106,7 +108,11 @@ case "$args" in
     fi ;;
   *"/issues/"*"/comments"*) serve "$FX/comments.json" ;;
   *"/pulls/"*"/reviews"*) echo '[]' ;;
-  *"/check-runs"*) serve "$FX/checks.json" ;;
+  *"/check-runs"*) jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
+  *"/actions/runs"*) jq --arg head "$FIXTURE_HEAD" ' .workflow_runs |= map(.head_sha=$head) ' "$FX/workflows.json" ;;
+  *"/protection/required_status_checks"*) if [[ -f "$FX/required.json" ]]; then cat "$FX/required.json"; else exit 1; fi ;;
+  *"/branches/"*) if [[ -f "$FX/branch.json" ]]; then cat "$FX/branch.json"; else echo '{"name":"main","protected":false}'; fi ;;
+  *"/statuses"*) if [[ -f "$FX/statuses.json" ]]; then cat "$FX/statuses.json"; else echo '[]'; fi ;;
   *"/timeline"*) echo '[]' | jq -r "${jqexpr:-.}" ;;
   *"/commits/"*) serve "$FX/commit.json" ;;
   *) echo "unexpected gh call: $args" >&2; exit 1 ;;
@@ -127,13 +133,15 @@ checks() { # <conclusion|null> <secs ago> [status]
     '{check_runs: [{id: 1, name: "build", status: $st, conclusion: (if $c == "null" then null else $c end),
        check_suite: {id: 1}, app: {slug: "github-actions", id: 1}, started_at: $at, created_at: $at}]}' > "$FX/checks.json"
   jq -cn --arg d "$(ago "$2")" '{commit: {committer: {date: $d}}}' > "$FX/commit.json"
+  jq -cn --arg head "$FIXTURE_HEAD" --arg status "${3:-completed}" --arg conclusion "$1" \
+    '{total_count:1,workflow_runs:[{id:1,workflow_id:1,event:"push",head_branch:"feature",head_sha:$head,pull_requests:[],check_suite_id:1,html_url:"https://github.com/acme/one/actions/runs/1",path:".github/workflows/test.yml",status:$status,conclusion:(if $conclusion=="null" then null else $conclusion end)}]}' > "$FX/workflows.json"
 }
 OK_CAP='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"cap_usd":10,"status":"ok"}'
 reset() { # <tier json>
   export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC=0 FIXTURE_HEAD="$HEAD" FIXTURE_ROUNDS=3
   export FIXTURE_REFUSED="" FIXTURE_CAP_OUT="$OK_CAP" FIXTURE_CAP_RC=0 FIXTURE_POST_FAIL="" FIXTURE_INVISIBLE=""
   export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER=""
-  rm -f "$HOME/.claude/session-state.json"
+  rm -f "$HOME/.claude/session-state.json" "$FX/required.json" "$FX/branch.json" "$FX/statuses.json"
   : > "$POSTED"
   echo '[]' > "$FX/comments.json"
   checks success 7200
@@ -311,6 +319,7 @@ check_eq "legacy: the approval skip is back" "approval_required" "$(f .bugbot_sk
 reset "$(tier_json absent legacy)"
 grant_for "$HEAD"
 export FIXTURE_HEAD="$HEAD2"
+checks success 7200
 run
 check_eq "legacy: a grant for the old HEAD never posts on a new push" "@codeant-ai review;" "$(posted)"
 check_eq "legacy: the stale grant stays unused" "unused" "$(grant_status)"
@@ -464,6 +473,75 @@ run   # cadence due: the CodeAnt request would post, and is held by the availabi
 check_eq "tiered, cadence due: the request is held, nothing posted" "" "$(posted)"
 check_eq "tiered, cadence due: skip marker recorded for this HEAD" "no_reviewer_available_until" \
   "$(jq -r --arg h "$HEAD" '(.repos["acme/one"].prs["99600"].review_request_skips[$h].reason // "") | split(" ")[0]' "$HOME/.claude/session-state.json")"
+
+
+echo "== exact workflow and required-context evidence (Issue 2316) =="
+reset "$(tier_json absent legacy)"
+# The green build belongs to workflow 1. A second workflow has no jobs yet.
+jq --arg head "$FIXTURE_HEAD" '.total_count=2 | .workflow_runs += [{id:2,workflow_id:2,event:"push",head_branch:"feature",head_sha:$head,pull_requests:[],check_suite_id:2,html_url:"https://github.com/acme/one/actions/runs/2",path:".github/workflows/other.yml",status:"queued",conclusion:null}]' "$FX/workflows.json" > "$FX/w.tmp"
+mv "$FX/w.tmp" "$FX/workflows.json"
+run
+check_eq "queued workflow with no aggregate: no request" "" "$(posted)"
+check_eq "queued workflow inventory stays pending" "ci_pending" "$(f '.reason | sub("^review_request_"; "")')"
+jq '.workflow_runs |= map(.status="completed" | .conclusion="success")' "$FX/workflows.json" > "$FX/w.tmp"
+mv "$FX/w.tmp" "$FX/workflows.json"
+run
+check_eq "all workflows complete: one free request" "@codeant-ai review;" "$(posted)"
+
+reset "$(tier_json absent legacy)"
+printf '%s\n' '{"name":"main","protected":true}' > "$FX/branch.json"
+printf '%s\n' '{"contexts":["aggregate"],"checks":[{"context":"aggregate","app_id":1}]}' > "$FX/required.json"
+run
+check_eq "missing required aggregate: no request" "" "$(posted)"
+check_eq "missing required aggregate has a distinct hold" "required_checks_unsatisfied" "$(f '.reason | sub("^review_request_"; "")')"
+# An old observed HEAD does not let required absence expire like an optional name.
+(cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --set ".prs[\"$PR\"].review_request_seen_epoch=1") >/dev/null
+run
+check_eq "required absence never expires after grace" "required_checks_unsatisfied" "$(f '.reason | sub("^review_request_"; "")')"
+jq '.check_runs[0].name="aggregate"' "$FX/checks.json" > "$FX/c.tmp"
+mv "$FX/c.tmp" "$FX/checks.json"
+run
+check_eq "required aggregate appears green: one request" "@codeant-ai review;" "$(posted)"
+
+reset "$(tier_json absent legacy)"
+printf '%s\n' '{"name":"main","protected":true}' > "$FX/branch.json"
+printf '%s\n' '{"contexts":["build"],"checks":[{"context":"build","app_id":99}]}' > "$FX/required.json"
+run
+check_eq "wrong required publisher: no request" "" "$(posted)"
+check_eq "wrong required publisher stays unsatisfied" "required_checks_unsatisfied" "$(f '.reason | sub("^review_request_"; "")')"
+printf '%s\n' '[{"context":"build","state":"success"}]' > "$FX/statuses.json"
+run
+check_eq "unattributed green status cannot satisfy a required app pin" "" "$(posted)"
+check_eq "app-pinned status fallback remains unsatisfied" "required_checks_unsatisfied" "$(f '.reason | sub("^review_request_"; "")')"
+rm "$FX/statuses.json"
+printf '%s\n' '{"contexts":["build"]}' > "$FX/required.json"
+export REAL_REVIEW_TEST_JQ="$(command -v jq)"
+cat > "$TMP/bin/jq" <<'SH'
+#!/usr/bin/env bash
+for argument in "$@"; do
+  case "$argument" in *required-context-state.jq) echo '[]'; exit 0 ;; esac
+done
+exec "$REAL_REVIEW_TEST_JQ" "$@"
+SH
+chmod +x "$TMP/bin/jq"
+run
+check_eq "empty required evaluator cannot prove all gates passed" "" "$(posted)"
+check_eq "empty evaluator fails closed" "required_checks_unsatisfied" "$(f '.reason | sub("^review_request_"; "")')"
+rm "$TMP/bin/jq"
+
+
+reset "$(tier_json absent legacy)"
+printf '%s\n' '{"message":"forbidden"}' > "$FX/branch.json"
+run
+check_eq "unreadable required-context evidence: no request" "" "$(posted)"
+check_eq "unreadable requirements fail closed" "required_checks_unreadable" "$(f '.reason | sub("^review_request_"; "")')"
+
+reset "$(tier_json absent legacy)"
+jq '.total_count=2' "$FX/workflows.json" > "$FX/w.tmp"
+mv "$FX/w.tmp" "$FX/workflows.json"
+run
+check_eq "truncated workflow response: no request" "" "$(posted)"
+check_eq "truncated workflow response fails closed" "ci_unreadable" "$(f '.reason | sub("^review_request_"; "")')"
 
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

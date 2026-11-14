@@ -457,9 +457,31 @@ if [[ "$REQ_HEAD_DONE" != "$HEAD_SHA" && "$REQ_GATE_NAME" != "ci-only" ]]; then
     if [[ -n "$REQ_SEEN_EPOCH" && ( -z "$REQ_HEAD_EPOCH" || "$REQ_SEEN_EPOCH" -gt "$REQ_HEAD_EPOCH" ) ]]; then
       REQ_HEAD_EPOCH="$REQ_SEEN_EPOCH"
     fi
-    # Every page, then one verdict per check (newest suite wins), as the merge gate reads them (#2195).
-    REQ_RUNS="$(gh api --paginate "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_page=100" --jq '.check_runs[]?' 2>/dev/null \
-      | "${SCRIPT_DIR}/check-runs-dedup.sh" 2>/dev/null)" || REQ_RUNS=""
+    # Every page and exact-HEAD workflow scope, shared with the merge gate (#2316).
+    REQ_RUNS="$("${SCRIPT_DIR}/check-runs-snapshot.sh" --head "$HEAD_SHA" 2>/dev/null)" || REQ_RUNS=""
+    # Required aggregate gates may not exist yet. Unlike optional named review
+    # checks, a missing required context never expires into a green decision.
+    if [[ -n "$REQ_RUNS" && -z "$REQ_BLOCK" ]]; then
+      REQ_BASE="$(gh pr view "$PR_NUM" --json baseRefName --jq '.baseRefName' 2>/dev/null)" || REQ_BASE=""
+      REQ_REQUIRED="$("${SCRIPT_DIR}/required-checks.sh" --base "$REQ_BASE" 2>/dev/null)" || REQ_REQUIRED=""
+      if [[ -z "$REQ_REQUIRED" ]] || ! jq -e '.source != "unavailable" and (.contexts | type == "array") and (.apps | type == "object")' >/dev/null 2>&1 <<<"$REQ_REQUIRED"; then
+        REQ_BLOCK="required_checks_unreadable"
+      elif [[ "$(jq '.contexts | length' <<<"$REQ_REQUIRED")" -gt 0 ]]; then
+        REQ_STATUSES="$(gh api --paginate "repos/{owner}/{repo}/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null | jq -sec 'if length > 0 and all(.[]; type == "array" and all(.[]; type == "object" and (.context | type) == "string")) then add else error("invalid status pages") end')" || REQ_STATUSES=""
+        if [[ -z "$REQ_STATUSES" ]]; then
+          REQ_BLOCK="required_checks_unreadable"
+        else
+          REQ_REQUIRED_STATE="$(jq -cen -L "${SCRIPT_DIR}/lib" \
+            --argjson req "$(jq -c '.contexts' <<<"$REQ_REQUIRED")" \
+            --argjson apps "$(jq -c '.apps' <<<"$REQ_REQUIRED")" \
+            --argjson runs "$(jq -c '{check_runs:.}' <<<"$REQ_RUNS")" \
+            --argjson statuses "$REQ_STATUSES" -f "${SCRIPT_DIR}/lib/required-context-state.jq")" || REQ_REQUIRED_STATE=""
+          if [[ -z "$REQ_REQUIRED_STATE" ]] || ! jq -e --argjson contexts "$(jq -c '.contexts' <<<"$REQ_REQUIRED")" 'type == "array" and ((map(.context) | sort) == ($contexts | sort)) and all(.[]; .satisfied == true)' >/dev/null 2>&1 <<<"$REQ_REQUIRED_STATE"; then
+            REQ_BLOCK="required_checks_unsatisfied"
+          fi
+        fi
+      fi
+    fi
     if [[ ! -x "$REQUEST_SH" ]]; then
       echo "maybe-trigger-ai-review.sh: ERROR: review-request-gate.sh not found — the CodeAnt request is held this tick" >&2
       REQ_BLOCK="gate_missing"

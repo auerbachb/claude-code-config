@@ -247,13 +247,13 @@ check_eq "absent" "$(unsat_state typecheck)" "(j) protection endpoint refused: s
 #     (Vercel, CircleCI). Blocking one of those as "absent" would be a false
 #     block, so statuses are matched too.
 # --------------------------------------------------------------------------
-FAKE_REQUIRED_STATUS_CHECKS="$(protection ci/legacy)" \
+FAKE_REQUIRED_STATUS_CHECKS='{"contexts":["ci/legacy"]}' \
 FAKE_BRANCH_PROTECTED=true \
 FAKE_COMMIT_STATUSES='[{"context":"ci/legacy","state":"success","created_at":"2026-07-21T10:00:00Z"}]' \
 run_gate "$(bundle "$(cr 1 'Some Check' success 100)")"
 check_eq "no" "$(has_required_entry)" "(k) commit status satisfies a required context"
 
-FAKE_REQUIRED_STATUS_CHECKS="$(protection ci/legacy)" \
+FAKE_REQUIRED_STATUS_CHECKS='{"contexts":["ci/legacy"]}' \
 FAKE_BRANCH_PROTECTED=true \
 FAKE_COMMIT_STATUSES='[{"context":"ci/legacy","state":"pending","created_at":"2026-07-21T10:00:00Z"}]' \
 run_gate "$(bundle "$(cr 1 'Some Check' success 100)")"
@@ -298,6 +298,14 @@ run_gate "$(bundle "$(cr 1 'rule-lint' success 100 impostor completed 99)")"
 check_eq "yes" "$(has_required_entry)" "(m) same-named check from the wrong app does NOT satisfy the context"
 check_eq "wrong_app" "$(unsat_state rule-lint)" "(m) reported as wrong_app, distinct from absent"
 check_eq "0" "$(echo "$OUT" | jq -r '.ci_status.failing')" "(m) CI reports zero failures — the pre-#1361 signal is blind to a wrong publisher"
+
+# A legacy status has no app identity; success cannot redeem a missing pinned app.
+FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \
+FAKE_BRANCH_PROTECTED=true \
+FAKE_COMMIT_STATUSES='[{"context":"rule-lint","state":"success"}]' \
+run_gate "$(bundle "$(cr 1 'rule-lint' success 100 impostor completed 99)")"
+check_eq "yes" "$(has_required_entry)" "(m) successful legacy status cannot satisfy an app pin"
+check_eq "wrong_app" "$(unsat_state rule-lint)" "(m) app pin requires the app's own evidence"
 
 # The same check from the REQUIRED app satisfies it.
 FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \

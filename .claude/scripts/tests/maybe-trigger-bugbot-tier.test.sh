@@ -46,6 +46,8 @@ HEAD_SHA="deadbeef0000000000000000000000000000abce"
 # ---- stub SCRIPT_DIR: real script + real helpers + stubbed inputs ------------
 STUB_DIR="$TMP/scripts"
 mkdir -p "$STUB_DIR/lib"
+cp "$REPO_ROOT/.claude/scripts/check-runs-snapshot.sh" "$REPO_ROOT/.claude/scripts/required-checks.sh" "$STUB_DIR/"
+cp "$REPO_ROOT/.claude/scripts/lib/check_run_workflows.py" "$REPO_ROOT/.claude/scripts/lib/required-context-state.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" "$STUB_DIR/lib/"
 cp "$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
@@ -85,7 +87,7 @@ sub="${1-}"; shift || true
 case "$sub" in
   pr)
     case "${1-}" in
-      view) if [[ "$*" == *isDraft* ]]; then echo '{"state":"OPEN","isDraft":false}'; else echo "$FIXTURE_HEAD_SHA"; fi; exit 0 ;;
+      view) if [[ "$*" == *baseRefName* ]]; then echo main; elif [[ "$*" == *isDraft* ]]; then echo '{"state":"OPEN","isDraft":false}'; else echo "$FIXTURE_HEAD_SHA"; fi; exit 0 ;;
       comment)
         prev=""
         for a in "$@"; do
@@ -105,7 +107,9 @@ case "$sub" in
     # No refusal anywhere: the refusal guard always answers "post". The review
     # request waits for a green CI check on a HEAD that is past its grace (#2195).
     case "$*" in
-      *check-runs*) echo '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}' ;;
+      *actions/runs*) jq -cn --arg head "$FIXTURE_HEAD_SHA" '{total_count:1,workflow_runs:[{id:1,workflow_id:1,event:"push",head_branch:"fixture",head_sha:$head,pull_requests:[],check_suite_id:1,html_url:"https://github.com/fixture/repo/actions/runs/1",status:"completed",conclusion:"success"}]}' ;;
+      */branches/*) echo '{"name":"main","protected":false}' ;;
+      *check-runs*) echo '{"total_count":1,"check_runs":[{"id":1,"check_suite":{"id":1},"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}' ;;
       */commits/*) jq -rn 'now - 7200 | todate' ;;
       *) echo "[]" ;;
     esac

@@ -42,12 +42,13 @@ case "$ARGS" in
     echo "${FAKE_VIEWER:-alice}"; exit 0 ;;
   *"pr view "*)
     jq -cn --arg author "${FAKE_PR_AUTHOR:-alice}" \
-      '{number:1, state:"OPEN", headRefOid:"deadbeef", baseRefName:"main",
+      '{number:1, state:"OPEN", headRefOid:"deadbeef00000000000000000000000000000000", baseRefName:"main",
         mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED",
         author:{login:$author, type:"User"}}'
     exit 0 ;;
+  *actions/runs*) echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
   *check-runs*)
-    jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
+    jq -cn '{total_count:1,check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
               check_suite:{id:1},app:{slug:"gha",id:1}}]}'; exit 0 ;;
   *git/commits/*)
     jq -cn '{committer:{date:"2026-07-23T12:00:00Z"}}'; exit 0 ;;
@@ -55,7 +56,7 @@ case "$ARGS" in
     # body is substantive on purpose (issue #875): the gate discounts an approval
     # with no evidence anything read the commit, and this fixture stands in for a
     # genuine review so the authorship logic stays the only thing under test.
-    jq -cn '[{user:{login:"coderabbitai[bot]",type:"Bot"},commit_id:"deadbeef",
+    jq -cn '[{user:{login:"coderabbitai[bot]",type:"Bot"},commit_id:"deadbeef00000000000000000000000000000000",
               body:"Actionable comments posted: 0. Reviewed the changed files; no issues found.",
               state:"APPROVED",submitted_at:"2026-07-23T13:00:00Z"}]'; exit 0 ;;
   *pulls/*/comments*)  echo "[]"; exit 0 ;;
