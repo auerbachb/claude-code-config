@@ -141,14 +141,14 @@ OK_CAP='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"c
 reset() { # <tier json>
   export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC=0 FIXTURE_HEAD="$HEAD" FIXTURE_ROUNDS=3
   export FIXTURE_REFUSED="" FIXTURE_CAP_OUT="$OK_CAP" FIXTURE_CAP_RC=0 FIXTURE_POST_FAIL="" FIXTURE_INVISIBLE=""
-  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER="" FIXTURE_COMMENTS_FAIL=""
+  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER="" FIXTURE_COMMENTS_FAIL="" FIXTURE_AV_FAIL=""
   rm -f "$HOME/.claude/session-state.json"
   : > "$POSTED"
   echo '[]' > "$FX/comments.json"
   checks success 7200
 }
-OUT=""; RC=0; ERR=""
-run() { RC=0; OUT="$(cd "$WORK" && bash "$S/maybe-trigger-ai-review.sh" "$PR" --json "$@" 2>"$TMP/err")" || RC=$?; ERR="$(cat "$TMP/err")"; }
+OUT=""; RC=0
+run() { RC=0; OUT="$(cd "$WORK" && bash "$S/maybe-trigger-ai-review.sh" "$PR" --json 2>"$TMP/err")" || RC=$?; }
 posted() { tr '\n' ';' < "$POSTED"; }
 f() { jq -r "$1" <<<"$OUT" 2>/dev/null; }
 ledger() { ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get-json ".prs[\"$PR\"].review_trigger_ledger.$1.count" 2>/dev/null ) || echo null; }
@@ -310,6 +310,41 @@ write_av "{\"coderabbit\":$(jq -cn --argjson t "$(date +%s)" '{refusal_kind:"unt
 export FIXTURE_COMMENTS_FAIL=1
 REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=1 run
 check_eq "failed comments read asks CodeAnt from stored cross-repo evidence" "@codeant-ai review;" "$(posted)"
+
+
+echo "== availability processing failures cannot suppress a request using stale limits =="
+mv "$S/review-availability.sh" "$S/review-availability-real.sh"
+cat > "$S/review-availability.sh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${FIXTURE_AV_FAIL:-}" == "$1" ]]; then cat >/dev/null; exit 5; fi
+exec "$(dirname "$0")/review-availability-real.sh" "$@"
+STUB
+chmod +x "$S/review-availability.sh"
+for method in record observe; do
+  reset "$NRO_TIER"
+  write_av "{\"codeant\":$LIMIT_CA,\"coderabbit\":$LIMIT_CA}"
+  export FIXTURE_AV_FAIL="$method"
+  run
+  check_eq "$method failure asks instead of trusting stale all-limited skip" "@codeant-ai review;" "$(posted)"
+  check_eq "$method failure records no immediate-NRO skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
+  run
+  check_eq "$method failure still preserves one request per HEAD" "@codeant-ai review;" "$(posted)"
+done
+reset "$NRO_TIER"
+write_av "{\"codeant\":$LIMIT_CA}"
+export FIXTURE_AV_FAIL=record
+cat > "$S/cr-review-hourly.sh" <<STUB
+#!/usr/bin/env bash
+n=\$(cat "$TMP/cr-check-count" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$TMP/cr-check-count"
+case "\$1" in --check) [ "\$n" -le 1 ] && exit 0 || exit 1 ;; *) exit 0 ;; esac
+STUB
+chmod +x "$S/cr-review-hourly.sh"; rm -f "$TMP/cr-check-count"
+run
+check_eq "processing failure also disables later hourly-budget skip" "@codeant-ai review;" "$(posted)"
+check_eq "hourly fallback after processing failure records no skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
+cp "$TMP/cr-review-hourly.real" "$S/cr-review-hourly.sh"
+mv "$S/review-availability-real.sh" "$S/review-availability.sh"
+unset FIXTURE_AV_FAIL
 
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

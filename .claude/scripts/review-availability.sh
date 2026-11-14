@@ -168,7 +168,9 @@ cmd_record() {
       # A tombstone left by observe (the reviewer answered after this notice) keeps a notice no
       # newer than the one it cleared from being written again on the next run.
       keep="$(jq -rn --argjson o "$old" --argjson n "$new" --argjson u "$unr" '
-        if ($o | type) == "object" and (($o.cleared_notice_epoch | type) == "number")
+        if ($n.refusal_kind // "") == "untimed" and (if ($o | type) == "object" then ($o.recovery_epoch | type) == "number" else false end)
+           and $n.notice_epoch <= $o.recovery_epoch then "same"
+        elif ($o | type) == "object" and (($o.cleared_notice_epoch | type) == "number")
            and (if $n == null then $u <= $o.cleared_notice_epoch
                 else $n.notice_epoch <= $o.cleared_notice_epoch end) then "same"
         elif $n == null then
@@ -182,9 +184,17 @@ cmd_record() {
         outcome="$keep"
         break
       fi
+      # Keep proven account-wide recovery across later record replacements/clears.
+      # It suppresses only old untimed notices, never legacy timed availability.
+      local write_value
+      write_value="$(jq -cn --argjson n "$new" --argjson o "$old" '
+        if ($o | type) == "object" then
+          if ($o.recovery_epoch | type) == "number" then ($n // {}) + {recovery_epoch: $o.recovery_epoch}
+          else $n end
+        else $n end')"
       # Compare-and-set under the state lock: a concurrent writer that won (exit 7) is re-read.
       rc=0
-      "$STATE" --raw-path --cas ".review_availability.$key=$new" --expect "$old" >/dev/null 2>&1 || rc=$?
+      "$STATE" --raw-path --cas ".review_availability.$key=$write_value" --expect "$old" >/dev/null 2>&1 || rc=$?
       if (( rc == 0 )); then
         outcome="wrote"
         break
@@ -417,29 +427,36 @@ cmd_observe() {
       rec="$(jq -c --arg k "$key" 'if type == "object" then (.[$k] // null) else null end' <<<"$recs_now")"
       if [[ "$(jq -r 'type' <<<"$rec")" != object ]]; then outcome="none"; break; fi
       baseline_epoch="$(jq -r 'if .refusal_kind == "untimed" then (.notice_epoch | select(type == "number"))
+        elif .notice_epoch == null and (.recovery_epoch | type) == "number" then .recovery_epoch
         else ((.read_at // "") | fromdateiso8601? // empty) end' <<<"$rec")"
       # Discovery may happen after a real recovery: untimed ranking follows event
       # time. Keep the legacy timed recovery boundary and CAS behavior unchanged.
       if ! [[ "$baseline_epoch" =~ ^[0-9]+$ ]]; then outcome="unreadable"; break; fi
       answered="$(jq -r --arg l "$login" --argjson rd "$baseline_epoch" --arg n "$notice" --argjson rec "$rec" '
+        def opening: sub("^[[:space:]]*(<!--[^>]*-->[[:space:]]*)*"; "");
         [ .[] | select((.user.login // "") == $l)
                | select((.submitted_at // "") | type == "string" and . != "")
                | select(((.submitted_at | fromdateiso8601?) // 0) > $rd)
-               | select(if $rec.refusal_kind == "untimed" then
+               | select(if $rec.refusal_kind == "untimed" or ($rec.notice_epoch == null and ($rec.recovery_epoch | type) == "number") then
                    # Ranking-only refusal recovery requires a real completed review,
                    # never a blank approval, command ACK, skipped run or old notice.
                    ((.state // "") | IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED"))
                    and ((.commit_id // "") | test("^[a-f0-9]{40}$"))
-                   and ((.body // "") | type == "string" and length >= 40
-                     and (test($n + "|review triggered|review request|review queued|review skipped|analysis skipped|auto.?resolve|automatically resolved|instruction.*saved"; "i") | not))
+                   and ((.body // "") | type == "string" and (opening | length >= 40)
+                     and (opening | test("^[[:space:]>#*]*(review (triggered|queued|skipped|requested)|review request (has been |was |is )?(received|queued|accepted|saved|submitted)|analysis skipped|auto.?resolve|automatically resolved|instruction.*saved)([[:space:].:!*#]|$)"; "i") | not)
+                     and (opening | test("^[[:space:]>#*]*(review rate[- ]limited|review limit reached|usage limit (reached|exceeded|exhausted)|rate limit(ed| (reached|exceeded|exhausted)))([[:space:].:!*#]|$)"; "i") | not)
+                     and (test("^[[:space:]]*(<!--[^>]*-->[[:space:]]*)*<!--[^>]*rate[- ]?limited by coderabbit[.]ai"; "i") | not))
                  else ((.state // "") == "APPROVED")
-                   or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not)) end) ]
-        | length > 0' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
-      if [[ "$answered" != true ]]; then outcome="kept"; break; fi
+                   or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not)) end)
+               | (.submitted_at | fromdateiso8601) ]
+        | max // empty' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
+      if ! [[ "$answered" =~ ^[0-9]+$ ]]; then outcome="kept"; break; fi
       # Clear to a tombstone, not null: record re-reads every notice still in the PR on each
       # run, and a null slot would resurrect this already-answered notice between passes.
-      tomb="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{cleared_notice_epoch: .notice_epoch, cleared_at: $at, next_available: null}' <<<"$rec")" \
+      tomb="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson recovered "$answered" \
+        '{cleared_notice_epoch: (.notice_epoch // .cleared_notice_epoch), cleared_at: $at, next_available: null}
+          + (if .refusal_kind == "untimed" or (.notice_epoch == null and (.recovery_epoch | type) == "number") then {recovery_epoch: ([$recovered, .recovery_epoch // 0] | max)}
+             elif (.recovery_epoch | type) == "number" then {recovery_epoch: .recovery_epoch} else {} end)' <<<"$rec")" \
         || die 4 "could not build the $key tombstone — nothing cleared"
       rc=0
       "$STATE" --raw-path --cas ".review_availability.$key=$tomb" --expect "$rec" >/dev/null 2>&1 || rc=$?

@@ -326,16 +326,17 @@ availability_gate() {
   REQ_WINDOW_S="$win"
   # Refresh observations before choosing for a new eligible HEAD. A refusal on the
   # previous HEAD must survive even if no merge-gate tick ran between requests.
-  # Read failures retain stored evidence; they never manufacture unavailability.
+  # Fetch failures retain stored evidence. Processing failures disable every skip
+  # for this tick, including the later hourly-budget fallback, so stale limits cannot suppress asking.
   if (( ! DRY_RUN )); then
     local repo_name notices reviews
     repo_name="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || repo_name=""
     if [[ "$repo_name" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
       if notices="$(gh api --paginate "repos/$repo_name/issues/$PR_NUM/comments?per_page=100" 2>/dev/null)"; then
-        printf '%s' "$notices" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" record --repo "$repo_name" --pr "$PR_NUM" >/dev/null 2>&1 || true
+        printf '%s' "$notices" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" record --repo "$repo_name" --pr "$PR_NUM" >/dev/null 2>&1 || { can_skip=0; REQ_CAN_SKIP=0; }
       fi
       if reviews="$(gh api --paginate "repos/$repo_name/pulls/$PR_NUM/reviews?per_page=100" 2>/dev/null)"; then
-        printf '%s' "$reviews" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" observe --repo "$repo_name" >/dev/null 2>&1 || true
+        printf '%s' "$reviews" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" observe --repo "$repo_name" >/dev/null 2>&1 || { can_skip=0; REQ_CAN_SKIP=0; }
       fi
     fi
   fi

@@ -337,6 +337,49 @@ newer=$(jq -cn --arg t "$(iso $((NOW - 10)))" '[{user:{login:"coderabbitai[bot]"
 out=$("$AV" observe --repo other/repo <<<"$recovered")
 expect_eq "newer refusal survives earlier recovery replay" "$(jq -c '.cleared' <<<"$out")" '[]'
 
+
+# Substantive prose may discuss the review machinery without being an acknowledgment.
+for body in 'Reviewed the review request chooser and regression tests; no actionable findings.' 'Reviewed rate limit handling and queued review request tests; no actionable findings.' $'<!-- coderabbit-ai-generated:v1 -->\n\nReviewed the review request chooser and regression tests; no actionable findings.'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  valid=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$valid")
+  expect_eq "substantive recovery accepts review-request prose: $body" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+done
+for body in 'Review request has been queued. The analysis will begin shortly.' 'Review requested. The complete analysis will begin shortly.' $'<!-- coderabbit-ai-generated:v1 -->\n\nReview request has been queued. The analysis will begin shortly.' $'<!-- coderabbit-ai-generated:v1 -->\n\nReview rate limited.' $'<!-- coderabbit-ai-generated:v1 -->\n<!-- review-status:complete -->' $'<!-- coderabbit-ai-generated:v1 -->\n<!-- review-status:complete -->\nLGTM'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  ack=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$ack")
+  expect_eq "opening acknowledgment cannot recover: $body" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+
+# Recovery is account-wide event evidence, including notices first seen on another PR.
+rm -f "$STATE_FILE"
+"$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+recoveries=$(jq -cn --arg a "$(iso $((NOW - 40)))" --arg b "$(iso $((NOW - 30)))" '[$b,$a]|map({user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:.,body:"Reviewed the selector and regression tests; no actionable findings."})')
+"$AV" observe --repo one/repo <<<"$recoveries" >/dev/null
+expect_eq "recovery stores max qualifying event time, not discovery" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 30))"
+for t in "$((NOW - 45))" "$((NOW - 30))"; do
+  hidden=$(jq -cn --arg t "$(iso "$t")" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+  "$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+  expect_eq "cross-PR untimed notice at/before recovery cannot resurrect: $t" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" null
+done
+later_review=$(jq --arg t "$(iso $((NOW - 20)))" '.[0].submitted_at=$t|.[0:1]' <<<"$recoveries")
+"$AV" observe --repo one/repo <<<"$later_review" >/dev/null
+expect_eq "new substantive review advances existing recovery tombstone" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 20))"
+# Timed evidence remains governed by its old notice boundary, not the untimed watermark.
+timed=$(jq -cn --arg t "$(iso $((NOW - 25)))" '[{user:{login:"coderabbitai[bot]"},body:"Review limit reached. Next review available in 20 minutes.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$timed" >/dev/null
+expect_eq "recovery watermark does not reject legacy timed notice" "$(jq -r '.review_availability.coderabbit.window_seconds' "$STATE_FILE")" 1200
+zero=$(jq -cn --arg t "$(iso $((NOW - 15)))" '[{user:{login:"coderabbitai[bot]"},body:"Review limit reached. Next review available in 0 minutes.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$zero" >/dev/null
+expect_eq "known zero clears timing while preserving proven recovery" "$(jq -r '.review_availability.coderabbit|[.next_available_epoch,.recovery_epoch]|@json' "$STATE_FILE")" "[null,$((NOW - 20))]"
+"$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+expect_eq "intermediate record replacement cannot erase recovery watermark" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" null
+"$AV" record --repo two/repo --pr 2 <<<"$newer" >/dev/null
+expect_eq "untimed refusal after successful recovery remains valid" "$(jq -r '.review_availability.coderabbit.notice_epoch' "$STATE_FILE")" "$((NOW - 10))"
+
 # --- Usage ---------------------------------------------------------------------------------
 "$AV" decide --window-s 0 >/dev/null 2>&1 && rc=0 || rc=$?
 expect_eq "decide: zero window is a usage error" "$rc" "2"
