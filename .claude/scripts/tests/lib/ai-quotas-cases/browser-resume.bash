@@ -86,7 +86,7 @@ run --json --account resume-other --browser-results "$TMP/not-needed"
 check_eq "$RC" "3" "resume refuses a Claude label without browser configured, before any read"
 write_config "$(account_json cursor shared-label "$TMP/browser-account")" "$(account_json claude shared-label "$C1" Claude-resume-other)"
 run --json --account shared-label --browser-results "$TMP/not-needed"
-check_eq "$RC" "3" "resume refuses an ambiguous cross-provider label"
+check_eq "$RC" "3" "resume refuses an unreadable observation for a cross-provider label before any read (#2337)"
 # Scheduled context ignores resume flags and performs its normal source chain.
 run --json --quiet --account shared-label --browser-results "$TMP/not-needed"
 check_eq "$RC" "0" "scheduled context ignores browser result mode"

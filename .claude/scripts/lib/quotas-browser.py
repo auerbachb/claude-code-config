@@ -27,6 +27,10 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['schema_
 CLAUDE_SCHEMA = json.loads(json.dumps(SCHEMA))
 CLAUDE_SCHEMA['properties']['provider'] = {'const': 'claude'}
 CLAUDE_SCHEMA['properties']['rows']['items']['properties']['window'] = {'enum': ['7-day', '5-hour']}
+# Organization ID (#2337): a Claude observation's email stays required. An optional
+# organization_id, from the claude.ai Account page, is an extra check only: it never
+# identifies the account by itself, because one organization can have many members.
+CLAUDE_SCHEMA['properties']['organization_id'] = {'type': 'string'}
 SCHEMAS = {'cursor': SCHEMA, 'claude': CLAUDE_SCHEMA}
 WINDOWS = {'cursor': ('cursor-models', 'other-models'), 'claude': ('7-day', '5-hour')}
 STAGE_CLASSES = {'connection': 'browser_connection_unavailable', 'denied': 'browser_tool_denied',
@@ -105,19 +109,30 @@ def number(value):
         return False
 
 
-def validate(doc, label, expected_email, now, provider='cursor'):
+def validate(doc, label, expected_email, now, provider='cursor', expected_org=''):
     """Allow only fresh, account-matched usage observations with known fields."""
     if provider not in SCHEMAS:
         raise ValueError('provider')
-    if not isinstance(doc, dict) or set(doc) != set(SCHEMA['required']):
+    schema = SCHEMAS[provider]
+    if not isinstance(doc, dict) or not set(schema['required']) <= set(doc) or not set(doc) <= set(schema['properties']):
         raise ValueError('shape')
     # type() check: Python's True == 1, so a boolean must not pass as schema version 1.
     if type(doc['schema_version']) is not int or doc['schema_version'] != 1 or doc['provider'] != provider or doc['label'] != label or doc['status'] not in ('ok', 'logged_out', 'unreadable'):
         raise ValueError('account')
-    if not isinstance(doc['email'], str) or len(doc['email']) > 254 or (doc['email'] and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', doc['email'])):
+    email = doc.get('email', '')
+    if not isinstance(email, str) or len(email) > 254 or (email and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email)):
         raise ValueError('email')
-    if doc['status'] == 'ok' and (not expected_email or doc['email'].casefold() != expected_email.casefold()):
-        raise ValueError('identity')
+    organization = doc.get('organization_id')
+    if organization is not None and (not isinstance(organization, str) or not re.fullmatch(
+            r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', organization)):
+        raise ValueError('organization')
+    if doc['status'] == 'ok':
+        # Usage needs a matching email. An organization ID is checked only when the profile
+        # records one to compare against; it never replaces the email (#2337).
+        if not email or not expected_email or email.casefold() != expected_email.casefold():
+            raise ValueError('identity')
+        if organization is not None and expected_org and organization.casefold() != expected_org.casefold():
+            raise ValueError('identity')
     if not number(doc['observed_at_epoch']) or abs(doc['observed_at_epoch'] - now) > 300:
         raise ValueError('stale')
     if not isinstance(doc['rows'], list) or len(doc['rows']) > 2:
@@ -137,7 +152,26 @@ def validate(doc, label, expected_email, now, provider='cursor'):
     return doc
 
 
-def read_observation(path, label, email, now, cli, facts=None, provider='cursor'):
+def load_observation(path):
+    """Open a private result file with the one set of safety checks every caller shares."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 65536:
+            raise ValueError('unsafe_file')
+        return json.load(stream)
+
+
+def observation_provider(path):
+    """The provider a private result file declares, so the caller can pick the account first (#2337)."""
+    payload = load_observation(path)
+    provider = payload.get('provider') if isinstance(payload, dict) else None
+    if not isinstance(provider, str) or provider not in SCHEMAS:
+        raise ValueError('provider')
+    return provider
+
+
+def read_observation(path, label, email, now, cli, facts=None, provider='cursor', organization=''):
     """Read a private fixture/result or invoke the supported explicit Chrome CLI."""
     if facts is None:
         facts = {}
@@ -146,12 +180,7 @@ def read_observation(path, label, email, now, cli, facts=None, provider='cursor'
         raise ValueError('live_unsupported')
     if path:
         facts['result_file'] = True
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd) as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 65536:
-                raise ValueError('unsafe_file')
-            payload = json.load(stream)
+        payload = load_observation(path)
     else:
         # No arbitrary URL, JavaScript, credential read, account control or shell tool.
         tools = 'ToolSearch,' + ','.join('mcp__claude-in-chrome__' + name for name in
@@ -191,7 +220,7 @@ def read_observation(path, label, email, now, cli, facts=None, provider='cursor'
         if not isinstance(envelope, dict):
             raise ValueError('envelope')
         payload = envelope.get('structured_output')
-    validated = validate(payload, label, email, now, provider)
+    validated = validate(payload, label, email, now, provider, organization)
     if not path and validated['status'] == 'ok' and not facts.get('completed_read'):
         raise ReadProvenanceError('completed_read_unverified')
     return validated
@@ -200,10 +229,20 @@ def read_observation(path, label, email, now, cli, facts=None, provider='cursor'
 def main(args=None):
     facts = {}
     args = sys.argv[1:] if args is None else args
+    if len(args) == 2 and args[0] == '--print-provider':
+        # ai-quotas.sh asks for the provider before choosing the account (#2337). Failures print nothing.
+        try:
+            provider = observation_provider(args[1])
+        except Exception:
+            sys.exit(1)
+        print(provider)
+        return
     # Optional trailing provider (#2299). Absent means Cursor, the original call shape.
     provider = args[5] if len(args) > 5 else 'cursor'
+    # Optional trailing Claude organization ID (#2337), the profile's expected value.
+    organization = args[6] if len(args) > 6 else ''
     try:
-        result = read_observation(args[0], args[1], args[2], int(args[3]), args[4], facts, provider)
+        result = read_observation(args[0], args[1], args[2], int(args[3]), args[4], facts, provider, organization)
         if result['status'] == 'unreadable':
             result = dict(status='unreadable', rows=[], email='', error_class=failure_class(None, facts))
     except Exception as exc:
