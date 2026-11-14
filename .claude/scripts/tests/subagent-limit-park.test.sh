@@ -1214,6 +1214,42 @@ check_eq "attested absence: named reason" "counter-never-seen" "$(field "$MINE" 
 check_eq "attested absence: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
 check_eq "attested absence: no park" "false" "$(field "$MINE" HORIZON_PARK)"
 
+# #2376: the attestation is cross-checked against the helper's own log, keyed on
+# the harness conversation id. A slot holding another conversation's old reading
+# (the state found on 2026-11-14) still attests; a conversation with a reading
+# of its own in the log is refused. Neither ever permits automatic refill.
+ANCHOR_HOME="$TMP_HOME/anchor-horizon-home"
+mkdir -p "$ANCHOR_HOME/.claude"
+printf '%s' '{"usage_horizon":{"reading":{"ts":"2026-10-27T21:57:36Z","session_id":"derived-872ab4b35369993b5d38","remaining":11693000,"limit":null},"status":"clear","status_at":"2026-10-27T21:57:36Z","source":"observed"}}' \
+  > "$ANCHOR_HOME/.claude/session-state.json"
+MINE=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a \
+  HOME="$ANCHOR_HOME" run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON")
+check_eq "foreign old slot, no attestation: another session's reading" \
+  "no-reading-this-session" "$(field "$MINE" HORIZON_REASON)"
+MINE=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a \
+  HOME="$ANCHOR_HOME" HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON")
+THEIRS=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a \
+  HOME="$ANCHOR_HOME" HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON")
+check_eq "foreign old slot, attested: full gate output parity" "$THEIRS" "$MINE"
+check_eq "foreign old slot, attested: named reason" "counter-never-seen" "$(field "$MINE" HORIZON_REASON)"
+check_eq "foreign old slot, attested: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
+( export HOME="$ANCHOR_HOME" CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID=""
+  CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a "$REAL_HORIZON" --observe 14000000 --limit 15000000 >/dev/null 2>&1
+  CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-b "$REAL_HORIZON" --observe 14000000 --limit 15000000 >/dev/null 2>&1 )
+MINE=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a \
+  HOME="$ANCHOR_HOME" HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON")
+THEIRS=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a \
+  HOME="$ANCHOR_HOME" HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON")
+check_eq "displaced own reading, attested: full gate output parity" "$THEIRS" "$MINE"
+check_eq "displaced own reading, attested: attestation refused" \
+  "counter-seen-reading-displaced" "$(field "$MINE" HORIZON_REASON)"
+check_eq "displaced own reading, attested: still unknown" "unknown" "$(field "$MINE" HORIZON_STATUS)"
+check_eq "displaced own reading, attested: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
+check_eq "displaced own reading, attested: no park" "false" "$(field "$MINE" HORIZON_PARK)"
+MINE=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-b \
+  HOME="$ANCHOR_HOME" run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON")
+check_eq "the slot's owner still reads clear through the gate (control)" "clear" "$(field "$MINE" HORIZON_STATUS)"
+
 # Negative control for the parity comparison itself: two DIFFERENT verdicts must
 # not compare equal, or every check above would pass vacuously.
 MINE=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear)" 900000 1000000 \
@@ -1394,6 +1430,29 @@ require_text "the subagent monitor loop gates refill on the verdict" \
   "$SUBAGENT" "Step 0's horizon verdict gates this step"
 require_text "  and gates the first dispatch on it too" \
   "$SUBAGENT" 'Check the usage horizon before every one of those launches'
+
+# #2376: every hold line says this is not the account usage reader, the
+# explicit request is defined, and the attestation survives a compaction.
+HOLD_LINES=$(grep -c 'Launch held:' "$DOC")
+HOLD_NOTED=$(grep 'Launch held:' "$DOC" | grep -c 'not the account usage reader; signing in will not change it\.')
+check_eq "the hold table has six hold lines" "6" "$HOLD_LINES"
+check_eq "every hold line says it is not the account usage reader" "$HOLD_LINES" "$HOLD_NOTED"
+require_text "the displaced-reading reason has a hold line" \
+  "$DOC" 'counter-seen-reading-displaced.*Wait for a fresh harness counter'
+require_text "an unconfirmed attestation keeps the continuous-observation basis" \
+  "$DOC" 'counter-never-seen-unverified.*stricter basis'
+require_text "a live chat message naming the work is the explicit request" \
+  "$DOC" 'names the work to start is the'
+require_text "the one-time note is kept" \
+  "$DOC" '\[horizon counter absent\] Proceeding with the launches you requested\.'
+require_text "a compaction no longer bars the attestation" \
+  "$DOC" 'A compaction no longer bars the flag'
+require_text "the exception still cannot become refill permission" \
+  "$DOC" 'Do not set'
+require_text "/subagent treats a named invocation as the request and asks nothing" \
+  "$SUBAGENT" 'ask nothing about the horizon, and launch'
+require_text "the day tick carries the same hold-line sentence" \
+  "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" 'not the account usage reader'
 
 # ---------------------------------------------------------------------------
 echo "== Pre-emptive: a park day mode already opened is ADOPTED, never doubled =="
