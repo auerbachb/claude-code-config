@@ -135,6 +135,7 @@ All 37 commands are invoked as `/command` in a Claude Code session. They are def
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/review-stack-audit` | Workflow | Monthly re-measure of the AI review stack — each tool's billed state, observed caps, throughput, and unique value, compared against the recorded baseline; files one issue per drift finding, advisory only, never edits |
+| `/infra-cost-audit` | Workflow | Read provider-reported infrastructure usage across configured repositories and flag costly settings; preview findings by default |
 | `/memory-clean` | Workflow | Audit the durable memory store — report orphaned files, dangling index pointers, index size, advisory stale entries; prune only on confirmation |
 | `/quotas` | Workflow | How much of each registered account's weekly cap is gone and when it resets — one row per account per window (used %, remaining %, reset in Eastern, countdown) for `claude` and `codex`; display only, never a dispatch or spend gate |
 | `/quotas-setup` | Workflow | Register the AI subscription accounts whose quotas you track — one isolated login profile per account (`claude`, `codex`, `cursor`), the provider's own login flow launched for each, and a report of which are logged in; labels and paths only, never a credential, and never a dispatch or spend gate |

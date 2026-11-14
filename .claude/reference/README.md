@@ -83,6 +83,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `issue-completion.md` — repo-qualified post-merge issue verification, full-scope missed closure recovery, interrupted/resumed PM reconciliation, and consumer audit (Issue #1973)
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3); strong/weak/none classification, exact-artifact dedup, and the comment-vs-file rule
 - `review-stack-audit.md` — `/review-stack-audit` rationale and contracts: measured versus declared billing state, roles and deduplication, reply verdict and fallback attribution, value and velocity fields, scorecard, and study limits (Issues #1201 and #1949).
+- `infra-cost-audit.md` — advisory Vercel, GitHub Actions, and Railway audit: provider coverage, private snapshots, and opt-in issue filing (#2134)
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
 - `final-wrapup-format.md` — minimal terminal outcome or actionable blocker; explicit summaries and machine reports retain their formats (Issue #1396, Issue #1873)
