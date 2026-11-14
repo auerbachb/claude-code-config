@@ -384,6 +384,21 @@ expect_eq "untimed refusal after successful recovery remains valid" "$(jq -r '.r
 # Semantic blankness includes HTML whitespace and formatting, not only source length.
 unicode_blank=$(jq -nr '"\u00a0\u2000\u200b\u200d\u00ad\ufeff\u202f" * 8')
 for body in \
+  $'[ref]: https://example.com/a\n  "A long metadata-only title that is never visible to the reader"' \
+  $'[ref]:\n  https://example.com/a\n  "A long metadata-only title that is never visible to the reader"' \
+  $'[ref]: <https://example.com/a>\n  (A long metadata-only title that is never visible to the reader)' \
+  '[ ](https://example.com/path "A hidden title with a ) and much more metadata that is not prose")' \
+  '[[]](https://example.com/path "A hidden title with enough words to exceed the threshold")' \
+  '----------------------------------------' \
+  '...!!!???+++===:::;;;,,,,...!!!???+++===:::;;;' \
+  '[ ](https://example.com/very-long-destination-with-no-visible-words)' \
+  '![ ](https://example.com/very-long-image-destination "a very long title is hidden too")' \
+  '[ ](https://example.com/outer(inner(deeper))very-long-destination)' \
+  '[ ](https://example.com/escaped\(path\)very-long-destination)' \
+  '[ ][very-long-reference-identifier-that-is-only-metadata]' \
+  '[ref]: https://example.com/very-long-destination-with-no-visible-words' \
+  'https://example.com/very-long-bare-destination-with-no-explanation' \
+  'www.example.com/very-long-bare-destination-with-no-explanation' \
   '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;' \
   '&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;' \
   '&#160;&#0160;&#xA0;&#xa0;&#x00a0;&#160;&#160;' \
@@ -408,6 +423,17 @@ rm -f "$STATE_FILE"
 rich=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"<p>Reviewed&nbsp;the <strong>request chooser</strong> and regression cases; no actionable findings.</p>"}]')
 out=$("$AV" observe --repo one/repo <<<"$rich")
 expect_eq "formatted substantive prose still recovers" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+
+# Link labels remain explanatory text; hidden destinations/titles do not pad it.
+for body in \
+  'Reviewed [the request chooser and regression tests](https://example.com/nested(path)); no actionable findings.' \
+  'Reviewed [the request chooser and regression tests][reference]; no actionable findings.'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  rich=$(jq -cn --arg t "$(iso $((NOW - 30)))" --arg b "$body" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$rich")
+  expect_eq "explanatory link labels still recover: $body" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+done
 
 # A strict qualifying review establishes recovery regardless of the active record type.
 for key in coderabbit codeant; do
@@ -475,7 +501,8 @@ done
 for state in 'false' '[]' '"broken"' '{"coderabbit":false}' '{"coderabbit":[]}' '{"coderabbit":"broken"}' '{"coderabbit":{}}'; do
   state_with_av "$state"
   before=$(cat "$STATE_FILE")
-  "$AV" observe --repo one/repo <<<"$first_review" >/dev/null
+  rc=0; "$AV" observe --repo one/repo <<<"$first_review" >/dev/null 2>&1 || rc=$?
+  expect_eq "malformed existing state reports processing failure: $state" "$rc" 5
   expect_eq "malformed existing state is not promoted to absence: $state" "$(cat "$STATE_FILE")" "$before"
 done
 

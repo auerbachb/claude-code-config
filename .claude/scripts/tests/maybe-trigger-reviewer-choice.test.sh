@@ -313,6 +313,17 @@ REVIEW_EXPECTED_RESPONSE_CODERABBIT_MIN=1 run
 check_eq "failed comments read asks CodeAnt from stored cross-repo evidence" "@codeant-ai review;" "$(posted)"
 
 
+echo "== actual unreadable timed observation cannot suppress a request =="
+reset "$NRO_TIER"
+broken=$(jq '.read_at="malformed"' <<<"$LIMIT_CA")
+write_av "{\"codeant\":$broken,\"coderabbit\":$broken}"
+before=$(jq -c '.review_availability' "$HOME/.claude/session-state.json")
+run
+check_eq "unreadable timed observation asks successfully" "0" "$RC"
+check_eq "unreadable timed observation asks instead of stale skip" "@codeant-ai review;" "$(posted)"
+check_eq "unreadable timed observation preserves original records" "$before" "$(jq -c '.review_availability' "$HOME/.claude/session-state.json")"
+check_eq "unreadable timed observation records no NRO skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
+
 echo "== availability processing failures cannot suppress a request using stale limits =="
 mv "$S/review-availability.sh" "$S/review-availability-real.sh"
 cat > "$S/review-availability.sh" <<'STUB'

@@ -410,8 +410,7 @@ cmd_observe() {
     || die 4 "reviews are not a JSON array of objects — nothing cleared"
   recs="$(state_get '.review_availability' "$repo")" || die 5 "could not read the review availability records"
   if [[ "$recs" != null && "$(jq -r 'type' <<<"$recs")" != object ]]; then
-    jq -cn '{cleared: []}'
-    return 0
+    die 5 "malformed review availability container — nothing cleared"
   fi
   for key in coderabbit codeant; do
     if [[ "$key" == coderabbit ]]; then
@@ -442,9 +441,16 @@ cmd_observe() {
         # Conservatively count text, excluding HTML, entity references and formatting.
         # Unicode separator/format/control categories cannot make a blank body substantive.
         def visible:
-          gsub("<!--[\\s\\S]*?-->|<[^>]*>"; " ")
+          gsub("<!--[\\s\\S]*?-->"; " ")
+          # Retain link labels, never destinations/titles or reference definitions.
+          # Recursive balanced parentheses include nested/escaped URL parentheses.
+          | gsub("!?\\[(?<label>(?:[^][\\\\]|\\\\.|\\[\\g<label>\\])*)\\](?<dest>\\((?:\"(?:[^\"\\\\]|\\\\.)*\"|\\x27(?:[^\\x27\\\\]|\\\\.)*\\x27|[^()\\\\]|\\\\.|\\g<dest>)*\\))"; "\(.label)")
+          | gsub("(?m)^[ \\t]{0,3}\\[[^]\\r\\n]+\\]:[ \\t]*(?:\\r?\\n[ \\t]+)?(?:<[^>\\r\\n]*>|[^ \\t\\r\\n]+)[ \\t]*(?:(?:\\r?\\n[ \\t]+)?(?:\"(?:[^\"\\\\]|\\\\.)*\"|\\x27(?:[^\\x27\\\\]|\\\\.)*\\x27|(?<title>\\((?:[^()\\\\]|\\\\.|\\g<title>)*\\)))[ \\t]*)?\\r?$"; " ")
+          | gsub("!?\\[(?<label>(?:[^][\\\\]|\\\\.|\\[\\g<label>\\])*)\\][ \\t]*\\[[^]\\r\\n]*\\]"; "\(.label)")
+          | gsub("(?i)(?:[a-z][a-z0-9+.-]*://|mailto:|www\\.)[^[:space:]<>]+"; " ")
+          | gsub("<[^>]*>"; " ")
           | gsub("&(?:amp;)*(?:[A-Za-z][A-Za-z0-9]+|#[0-9]+|#[xX][0-9A-Fa-f]+);"; " ")
-          | gsub("[>*#_`~\\[\\]()!|]"; " ")
+          | gsub("[\\p{P}\\p{S}]"; " ")
           | gsub("[[:space:]\\p{Z}\\p{Cf}\\p{Cc}]+"; " ")
           | sub("^ +"; "") | sub(" +$"; "");
         def substantive:
@@ -489,7 +495,8 @@ cmd_observe() {
     done
     case "$outcome" in
       cleared) cleared="$cleared $key" ;;
-      none|unreadable|kept|recovered) ;;
+      unreadable) die 5 "could not evaluate the $key availability record — nothing cleared" ;;
+      none|kept|recovered) ;;
       *) die 5 "could not settle the $key availability record after retries — nothing cleared" ;;
     esac
   done
