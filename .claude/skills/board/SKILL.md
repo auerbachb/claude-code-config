@@ -756,16 +756,17 @@ merged row takes the latest phase with a readable record. Anything other than th
 known aliases renders `—`, never a guess.
 
 ```bash
-model_raw() {  # model_raw <A|B|C> -> stored alias, "unrecognised" for a record with no
-  # usable model, or empty when the phase has no record at all
-  local phase="$1" raw="" hf rec=""
+model_raw() {  # model_raw <A|B|C> [session=1|0] -> stored alias, "unrecognised" for a record
+  # with no usable model, or empty when the phase has no record at all. session=0 reads
+  # the handoff only: a merged row's session record holds Phase A alone, never the latest route
+  local phase="$1" use_session="${2:-1}" raw="" hf rec=""
   if [[ -n "$ROW_PR" && -n "$HANDOFF_STATE_SH" ]]; then
     hf=$("$HANDOFF_STATE_SH" --owner-repo "$ROW_REPO" --path "$ROW_PR" 2>/dev/null) \
       && [[ -r "$hf" ]] \
       && raw=$(jq -r --arg t "issue-$ROW_ISSUE" --arg p "$phase" \
         '.model_routing[$t][$p] | if . == null then empty elif (.decision.model | type) == "string" and .decision.model != "" then .decision.model else "unrecognised" end' "$hf" 2>/dev/null)
   fi
-  if [[ -z "$raw" ]]; then
+  if [[ -z "$raw" && "$use_session" == 1 ]]; then
     rec=$(sget ".repos[\"$ROW_REPO\"].tasks[\"issue-$ROW_ISSUE\"].model_routing[\"$phase\"]")
     [[ -n "$rec" ]] && raw=$(printf '%s' "$rec" | jq -r 'if (.decision.model | type) == "string" and .decision.model != "" then .decision.model else "unrecognised" end' 2>/dev/null)
   fi
@@ -781,11 +782,12 @@ CELL_MODEL="—"
 case "$ROW_STATUS" in
   queued) ;;
   merged)
-    # The latest phase that HAS a record decides. A readable record with an
-    # unrecognised model still stops the walk and renders —; it never falls back to
-    # an earlier phase's model.
+    # The latest phase that HAS a record decides, read from the handoff only: after
+    # the merge the handoff is deleted, so no record is left and the cell is —. A
+    # readable record with an unrecognised model still stops the walk and renders —;
+    # it never falls back to an earlier phase's model.
     for MP in C B A; do
-      MRAW=$(model_raw "$MP")
+      MRAW=$(model_raw "$MP" 0)
       if [[ -n "$MRAW" ]]; then CELL_MODEL=$(model_family "$MRAW"); break; fi
     done ;;
   Phase?*) CELL_MODEL=$(model_family "$(model_raw "${ROW_STATUS:6:1}")") ;;   # "Phase A", "Phase A (unconfirmed)"
