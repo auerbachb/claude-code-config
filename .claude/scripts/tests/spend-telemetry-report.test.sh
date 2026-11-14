@@ -164,8 +164,10 @@ STUB_BIN="$TMP_BASE/stub-bin"
 mkdir -p "$STUB_BIN"
 printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/gh"
 chmod +x "$STUB_BIN/gh"
+link_status=0
 env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID HOME="$HOME" PATH="$STUB_BIN:$PATH" \
-  bash "$LINK" --repo owner/repo --issue 5 --pr 9 --source wrap_post_merge >/dev/null 2>&1 || true
+  bash "$LINK" --repo owner/repo --issue 5 --pr 9 --source wrap_post_merge >/dev/null 2>&1 || link_status=$?
+[[ "$link_status" -eq 0 ]] || fail "sessionless link writer exited $link_status; it must exit 0 so /wrap is never failed by telemetry"
 link_row="$(grep $'\ttask_correlation\t' "$LOG" | tail -n 1)"
 [[ -n "$link_row" ]] || fail "sessionless link did not write a correlation row"
 [[ "$(cut -f6 <<<"$link_row")" == "unknown" ]] || fail "sessionless link should carry an unknown session"
