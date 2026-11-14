@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only on an owner grant spent through `paid-review-grant.sh` (#1897, #1898); without one, agents keep polling for a free review or the no-review override.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges. The running worktree and branch are left intact and reaped out-of-band by `/pm-clean`.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 41 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 38 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -111,14 +111,13 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 41 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 38 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
 | `/pm` | PM | Rank the backlog by business-goal impact, dispatch work and track threads. Loads the procedure for the current phase. |
 | `/pm-handoff` | PM | Generate a self-contained handoff prompt for a new PM thread; bootstraps or re-scans `pm-config.md`, preserving user-edited sections |
 | `/pm-clean` | PM | Detect stale issues and suggest closures; sole home for the stale worktree/branch sweep |
-| `/pm-forgotten-pr` | PM | One-shot triage of open PRs idle above a threshold — classify as close or merge, render a Forgotten PRs block, dispatch confirmed merges |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/wave` | PM | Offer the largest dependency- and overlap-free set of backlog issues as click-to-launch chips, capped at the concurrent-pipeline ceiling |
 | `/board` | PM | Render the canonical "Running now" table on demand in any orchestration thread — the current round's phases, recorded starts, projected ends, and remaining time, recomputed live from durable state. Complete from the dispatching thread; any other thread renders no queued rows at all and labels the delivered count approximate, since round membership is not yet durable. Changes no pipeline, writing only the shared table-render timestamp |
@@ -132,12 +131,10 @@ All 41 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pr-monitor-and-manage-stop` | Review | Clean-cancel companion to `/pr-monitor-and-manage` — tears down the fleet Monitor and its state |
 | `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet monitor and re-arms it |
 | `/receiving-code-review` | Review | Judgment layer for evaluating bot review findings before implementing — six-step READ→UNDERSTAND→VERIFY→EVALUATE→RESPOND→IMPLEMENT pattern with rationalization table and decline discipline |
-| `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
 | `/tldr` | Workflow | Plain-English summary of what the thread changed and what it means for you, with a needs-you line first; `/tldr all` covers the whole thread |
 | `/why-stopped` | Workflow | Answers "why weren't you working?" from the thread's stoppage entry in the desk database and saves the operator's correction against it |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
-| `/harness-audit` | Workflow | Monthly check of whether the harness now does natively what our rules, skills, scripts, and hooks do by hand — verdicts each artifact against live harness behavior and files issues; advisory only, never edits |
 | `/review-stack-audit` | Workflow | Monthly re-measure of the AI review stack — each tool's billed state, observed caps, throughput, and unique value, compared against the recorded baseline; files one issue per drift finding, advisory only, never edits |
 | `/memory-clean` | Workflow | Audit the durable memory store — report orphaned files, dangling index pointers, index size, advisory stale entries; prune only on confirmation |
 | `/quotas` | Workflow | How much of each registered account's weekly cap is gone and when it resets — one row per account per window (used %, remaining %, reset in Eastern, countdown) for `claude` and `codex`; display only, never a dispatch or spend gate |

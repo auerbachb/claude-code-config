@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for chip-model-guard-lint.sh (issue #731)
-# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/harness-audit/SKILL.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
+# covers: .claude/reference/chip-launching.md .claude/reference/chip-model-guard-decision.md .claude/reference/harness-model-audit-2026-06.md .claude/rules/chip-spawn.md .claude/skills/issue-maker/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 
@@ -13,12 +13,8 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 failures=0
 case_num=0
 
-# Canonical emitters, split by class (issue #770). Literal emitters name the
-# model; resolver emitters look it up via model-fleet.sh and must contain no
-# model literal at all.
-LITERAL_EMITTERS=(pm prompt start-issue issue-maker wave)
-RESOLVER_EMITTERS=(harness-audit)
-ALL_EMITTERS=("${LITERAL_EMITTERS[@]}" "${RESOLVER_EMITTERS[@]}")
+# Canonical chip emitters. Each names its model directly in the chip payload.
+ALL_EMITTERS=(pm prompt start-issue issue-maker wave)
 
 make_fixture() {
   local dir="$1" skill
@@ -202,87 +198,8 @@ expect "dated reference audit records are exempt from the versioned-name scan" 0
   'chip-model-guard-lint: OK' \
   add_dated_audit_record
 
-# --- sixth emitter + resolver class (issue #770) -----------------------------
-
-expect "missing /harness-audit emitter in chip-launching fails" 1 \
-  'chip-launching /harness-audit emitter reference' \
-  sed -i.bak '/harness-audit/d' .claude/reference/chip-launching.md
-
-expect "missing /harness-audit in decision record fails" 1 \
-  'decision record /harness-audit reference' \
-  sed -i.bak '/harness-audit/d' .claude/reference/chip-model-guard-decision.md
-
-expect "deleted harness-audit skill fails" 1 \
-  'canonical chip emitter missing' \
-  rm -f .claude/skills/harness-audit/SKILL.md
-
-# The resolver emitter is checked on the resolver reference, NOT on a model
-# literal — dropping model-fleet.sh means it can no longer resolve a tier.
-expect "resolver emitter without model-fleet.sh fails" 1 \
-  'harness-audit model-fleet.sh resolver reference' \
-  sed -i.bak '/model-fleet\.sh/d' .claude/skills/harness-audit/SKILL.md
-
-expect "resolver emitter without pre-click warning fails" 1 \
-  'harness-audit pre-click warning requirement' \
-  sed -i.bak '/pre-click/d' .claude/skills/harness-audit/SKILL.md
-
-# The inverted check: a hardcoded model name in a resolver emitter is an error,
-# because it reintroduces exactly the drift the resolver removes (#749).
-plant_model_literal() {
-  printf '\nRecommend Opus 5 for this pass.\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "model literal planted in resolver emitter fails" 1 \
-  'must not hardcode a model name' \
-  plant_model_literal
-
-plant_api_id_literal() {
-  printf '\nUse claude-fable-5 for the judgment pass.\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "api-id model literal in resolver emitter fails" 1 \
-  'must not hardcode a model name' \
-  plant_api_id_literal
-
-# Bare aliases are caught only in a model-value position, so both field spellings
-# must trip the check.
-plant_alias_model_field() {
-  printf '\nmodel: opus\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "bare alias in a model: field fails" 1 \
-  'must not hardcode a bare model alias' \
-  plant_alias_model_field
-
-plant_capitalized_alias() {
-  printf '\nmodel: Opus\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "capitalized alias in a model: field fails" 1 \
-  'must not hardcode a bare model alias' \
-  plant_capitalized_alias
-
-plant_uppercase_literal() {
-  printf '\nUse CLAUDE-OPUS-5 for this pass.\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "uppercase api-id literal fails" 1 \
-  'must not hardcode a model name' \
-  plant_uppercase_literal
-
-plant_alias_chip_line() {
-  printf '\n**Model:** sonnet — cheap pass\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "bare alias on a **Model:** line fails" 1 \
-  'must not hardcode a bare model alias' \
-  plant_alias_chip_line
-
-# ...and prose that merely contains the word must NOT trip it, or the check is
-# unusable in any document that discusses model tiers.
-plant_alias_in_prose() {
-  printf '\nThe fleet spans fable, opus, sonnet, and haiku tiers.\n' >> .claude/skills/harness-audit/SKILL.md
-}
-expect "bare alias in ordinary prose still passes" 0 \
-  'chip-model-guard-lint: OK' \
-  plant_alias_in_prose
-
-# A literal emitter must NOT be subject to the inverted rule — naming the model
-# is the whole point there. This guards against the classes being swapped.
+# A literal emitter may name the model — that is the whole point of the chip
+# payload. This pins that a family name in a literal emitter is not flagged.
 # The literal is a bare family name: since #791 a *versioned* one fails
 # everywhere, so this case would otherwise pass for the wrong reason and stop
 # testing the class split at all (the next case pins that half).

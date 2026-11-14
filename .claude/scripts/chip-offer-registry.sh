@@ -81,8 +81,8 @@
 #   not treated as old). Matches the stale-agent guard in active-work-cap.sh.
 #
 # VALID EMITTERS
-#   pm, prompt, wave, issue-maker, start-issue, harness-audit
-#   (the six canonical chip emitters named in chip-launching.md; kept in sync
+#   pm, prompt, wave, issue-maker, start-issue
+#   (the five canonical chip emitters named in chip-launching.md; kept in sync
 #   with the --emitter case allowlist by chip-offer-registry.test.sh)
 #
 # FLAGS
@@ -441,12 +441,11 @@ if [[ "$MODE" == "reserve" ]]; then
   [[ -n "$CAP_FREE" ]] || die_usage "--reserve requires --cap-free"
   [[ "$CAP_FREE" =~ ^[0-9]+$ ]] || die_usage "--cap-free must be a non-negative integer (got: $CAP_FREE)"
 
-  # Validate emitter name — must match one of the six canonical spawn_task emitters
-  # listed in chip-launching.md. harness-audit is included here because chip-launching.md
-  # §"Literal vs resolved model names" names it as the sixth canonical emitter.
+  # Validate emitter name — must match one of the five canonical spawn_task emitters
+  # listed in chip-launching.md.
   case "$EMITTER" in
-    pm|prompt|wave|issue-maker|start-issue|harness-audit) ;;
-    *) die_usage "--emitter must be one of: pm, prompt, wave, issue-maker, start-issue, harness-audit (got: $EMITTER)" ;;
+    pm|prompt|wave|issue-maker|start-issue) ;;
+    *) die_usage "--emitter must be one of: pm, prompt, wave, issue-maker, start-issue (got: $EMITTER)" ;;
   esac
 
   # Build the JSON array of issue numbers (already validated as integers during parsing).

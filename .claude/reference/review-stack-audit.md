@@ -21,16 +21,15 @@ That is the failure mode: an audit that depends on someone remembering. Between
 audits, the gap between what we pay for and what the workflow assumes reopens
 silently, and surfaces as PRs queuing on review rather than as a line item.
 
-## Why a sibling skill rather than a section of `/harness-audit`
+## Why a standalone skill
 
-`/harness-audit` asks *"does the harness already do this natively?"* — internal
-redundancy against a moving upstream. This asks *"does this external spend still
+The retired harness-redundancy audit asked whether the harness already does a thing natively. This asks *"does this external spend still
 buy value?"* Different inputs (GitHub review activity and vendor billing signals
 vs. harness release notes), different verdicts (roles and subscriptions vs. keep
 /redundant/conflicting), different remedy owners (the person holding the credit
 card vs. whoever edits the rule corpus).
 
-Folding them together would give one skill two inventories and two verdict
+Merging the two would give one skill two inventories and two verdict
 vocabularies. They share the *shape* — monthly, advisory, issue-filing,
 watermark-driven — and that shape is deliberately copied, which is why the
 session-start nudge and the exact-marker dedup are near-identical. CodeRabbit's
@@ -38,9 +37,8 @@ plan for #1201 reached the same conclusion independently.
 
 ## Why the judgment is one pass, not two
 
-`/harness-audit` splits into a cheap inventory tick and an expensive top-tier
-judgment pass reached by a chip, because verdicting ~100 artifacts against live
-harness behavior needs real reasoning per artifact.
+Verdicting many artifacts against live harness behavior once needed a per-artifact
+reasoning pass, which the retired harness-redundancy audit split off into a chip.
 
 This audit does not. Measurement is a script, and the comparison is a bounded
 diff of two JSON documents over six tools and five rules — `drift.sh` does it
@@ -188,7 +186,7 @@ date — may enter the key, and there is a test asserting the marker survives a
 moved window.
 
 Compare the **fully-substituted** marker by string equality, never the
-`<!-- review-stack-audit:` prefix. `/harness-audit` hit this on its first live
+`<!-- review-stack-audit:` prefix. The retired harness-redundancy audit hit this on its first live
 run: its own tracking issue documented the convention, so it contained the
 template text, and a prefix match read that as an existing filing for every
 artifact. This document and `SKILL.md` both contain such text.
@@ -212,11 +210,9 @@ possible outcome for a skill whose entire job is noticing silent staleness.
 
 The watermark file is durable, and `session-scheduling-reconcile.sh` reads it on
 every session start. Sessions start far more often than monthly, so a month
-cannot be missed. The review-stack block there is `2a-bis`, deliberately adjacent
-to `/harness-audit`'s `2a` and computing its own `RS_MONTH` rather than reusing
-`MONTH`, which only exists when the harness-audit watermark does.
+cannot be missed. The review-stack block there is `2a-bis`, computing its own `RS_MONTH`.
 
-Its state machine is simpler than `/harness-audit`'s: **off / done / due**, with
+Its state machine is **off / done / due**, with
 no `offered` state, because its tick runs the real comparison instead of offering
 a step-up chip. A corrupt watermark reads as `off` — fail-soft and silent, never
 as `due`, so a garbled file cannot nag every session start.
