@@ -221,7 +221,17 @@ cmd_off() {
     # That return is global and clears the lapsed window: list every repo's saved questions FIRST
     # (emitted and marked together, per file), and only then clear the window.
     cmd_digest --all --mark
-    "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || true
+    local rrc=0
+    "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || rrc=$?
+    # A failed write (exit 11, e.g. a lock timeout) gets one retry, then a visible failure: menus stay
+    # denied until the window is cleared, so `off` must not report success.
+    if [ "$rrc" -eq 11 ]; then
+      rrc=0; "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || rrc=$?
+    fi
+    if [ "$rrc" -eq 11 ]; then
+      printf 'unattended: off, but the expired at-computer window could not be cleared: menus may still be suppressed. Retry: %s return --no-dialog\n' "$PRESENCE_SH" >&2
+      return 1
+    fi
   else
     cmd_digest --mark
   fi

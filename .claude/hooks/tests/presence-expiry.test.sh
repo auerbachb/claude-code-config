@@ -408,6 +408,41 @@ OFF_OUT=$(U off)
 has "off lists the current repo's saved question" "$OFF_OUT" "Off A?"
 has "and the other repo's saved question" "$OFF_OUT" "Off B?"
 
+# A dismissal's cooldown postpones the post-return dialog: it stays pending, and the first operator
+# message after the cooldown asks it. (The dialog must not be consumed while the cooldown refuses it.)
+printf '== a dismissal cooldown postpones the post-return dialog instead of consuming it\n'
+lapse away
+P return >/dev/null
+check "a return left the dialog listing" "$(sj '.presence.return.dialog')" listing
+CN=$(date +%s)
+"$STATE" --set ".presence.dismissed_until=$((CN + 1800))" >/dev/null
+P dialog-ready >/dev/null
+check "the list is done: the dialog waits for his next message" "$(sj '.presence.return.dialog')" pending
+OUTC=$(operator s-cool)
+lacks "during the cooldown his message does not ask the dialog" "$(ctx "$OUTC")" "PRESENCE DIALOG"
+check "and the dialog stays pending" "$(sj '.presence.return.dialog')" pending
+"$STATE" --set ".presence.dismissed_until=$((CN - 10))" >/dev/null
+OUTD=$(operator s-cool)
+has "after the cooldown his next message asks the dialog" "$(ctx "$OUTD")" "PRESENCE DIALOG"
+check "and the dialog is asked once" "$(sj '.presence.return.dialog')" asked
+
+# `off` clears a lapsed at-computer window through presence.sh return. If that write fails, off must
+# not report success while menus stay denied: it exits non-zero and says so. The stub fails only the
+# compare-and-set writes (exit 6, lock timeout after the retry), the real session-state.sh otherwise.
+printf '== off whose window clear fails: visible failure, not success\n'
+lapse here
+CAS_STUB="$TMP/cas-fail-state.sh"
+cat > "$CAS_STUB" <<CASSTUB
+#!/usr/bin/env bash
+# Stands in for a lock timeout on every compare-and-set write.
+for a in "\$@"; do [ "\$a" = --cas ] && exit 6; done
+exec "$STATE" "\$@"
+CASSTUB
+chmod +x "$CAS_STUB"
+OFFRES=$( export PRESENCE_SESSION_STATE_SH="$CAS_STUB"; U off 2>&1; echo "rc=$?")
+has "off says menus may still be suppressed" "$OFFRES" "menus may still be suppressed"
+has "and exits non-zero" "$OFFRES" "rc=1"
+
 printf '== guard and digest hooks do nothing without state\n'
 rm -rf "$HOME/.claude/session-state.json" "$HOME/.claude/unattended"
 check "guard: silent with no state" "$(guard s-1)" ""

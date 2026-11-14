@@ -36,7 +36,7 @@
 #                                   10 it ran out but another thread holds the claim (or the write was refused,
 #                                   which the next evaluation retries); 11 the claim could not be written
 #   presence.sh return [--no-dialog]  the operator spoke after a window ran out: end away handling, record a
-#                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race
+#                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race, 11 the write failed
 #   presence.sh relist              a return winner stopped listing (the dialog is still "listing" after two
 #                                   minutes): take over the return and list. Exit 0 taken, 10 another took it, 1 none stale
 #   presence.sh dialog-claim        claim the pending post-return dialog once, globally. Exit 0 claimed, else 1
@@ -644,7 +644,7 @@ cmd_return() {
   case "$rc" in
     0) return 0 ;;
     7) return 10 ;;
-    *) return 1 ;;
+    *) return 11 ;;   # the state write failed (lock timeout or error): the window is NOT cleared
   esac
 }
 
@@ -692,8 +692,16 @@ cmd_relist() {
 
 # The return's winner has finished listing the saved questions: open the dialog for the next
 # message (pending), or, with --now (nothing was saved), claim it for this very turn (asked; exit 0).
+# A dismissal's one-hour cooldown is live (ask would refuse with exit 13). A cooldown POSTPONES the
+# post-return dialog: it stays pending for the first operator message after the cooldown ends.
+dismissal_cooling() {
+  local dis
+  dis=$("$JQ" -r '.presence.dismissed_until // 0 | if type == "number" then . else 0 end' "$STATE_FILE" 2>/dev/null) || dis=0
+  [ "$dis" -gt "$(now)" ]
+}
+
 cmd_dialog_ready() {
-  local now_flag=0 g target rc=0
+  local now_flag=0 g target rc=0 postponed=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --now) now_flag=1; shift ;;
@@ -703,18 +711,25 @@ cmd_dialog_ready() {
   [ -f "$STATE_FILE" ] || return 1
   [ "$("$JQ" -r '.presence.return.dialog // ""' "$STATE_FILE" 2>/dev/null)" = listing ] || return 1
   g=$("$JQ" -c '.presence.return.generation // null' "$STATE_FILE" 2>/dev/null) || return 1
-  target=pending; [ "$now_flag" -eq 0 ] || target=asked
+  target=pending
+  if [ "$now_flag" -eq 1 ]; then
+    if dismissal_cooling; then postponed=1; else target=asked; fi
+  fi
   "$SESSION_STATE_SH" --cas ".presence.return.dialog=$target" --expect listing \
     --expect-at ".presence.return.generation" "$g" >/dev/null 2>&1 || rc=$?
-  [ "$rc" -eq 0 ]
+  [ "$rc" -eq 0 ] || return 1
+  # Postponed by a cooldown: the dialog waits pending, so this turn does not ask it (exit 1).
+  [ "$postponed" -eq 0 ]
 }
 
 # After a return the dialog is asked once, in total, after the saved questions: this claim moves the
 # pending dialog to asked exactly once across every session. The caller then runs `ask` as usual.
+# Refused (exit 1, still pending) while a dismissal cooldown is live, so the next prompt retries.
 cmd_dialog_claim() {
   local g rc=0
   [ -f "$STATE_FILE" ] || return 1
   [ "$("$JQ" -r '.presence.return.dialog // ""' "$STATE_FILE" 2>/dev/null)" = pending ] || return 1
+  dismissal_cooling && return 1
   g=$("$JQ" -c '.presence.return.generation // null' "$STATE_FILE" 2>/dev/null) || return 1
   "$SESSION_STATE_SH" --cas ".presence.return.dialog=asked" --expect pending \
     --expect-at ".presence.return.generation" "$g" >/dev/null 2>&1 || rc=$?
