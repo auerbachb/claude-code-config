@@ -32,7 +32,7 @@
 #              Record one upstream reading. `<remaining>` is the number the
 #              harness printed; `--limit <total>` is the window total when the
 #              harness also stated one. Appends
-#              `{ts, session_id, remaining, limit?}` to the observation log,
+#              `{ts, session_id, remaining, limit, anchors}` to the observation log,
 #              computes the stable verdict (applying hysteresis against the
 #              previous reading in THIS session), and persists both to
 #              session-state via session-state.sh --set.
@@ -52,35 +52,87 @@
 #   --limit <total>   Window total for the reading. Positive integer, and
 #                     `<remaining>` must not exceed it. Percentage thresholds
 #                     apply when given; the absolute floor applies when absent.
-#   --session <id>    Session identity override. Resolution order is
-#                     --session, then $CLAUDE_SESSION_ID, then a digest of the
-#                     nearest ancestor `claude` process (pid + start time).
+#   --session <id>    Session identity override. See SESSION IDENTITY.
 #   --counter-never-seen
-#                     With --check only: caller attests the harness has not
-#                     emitted a counter at any point in this session, based
-#                     on continuous first-hand observation since session start.
-#                     Missing or foreign-only readings can then report
-#                     REASON=counter-never-seen. STATUS remains unknown, exit 3.
-#                     Omit on uncertain history (including resume/compaction),
-#                     after any counter, or if the only evidence is this turn.
+#                     With --check only: caller attests that no harness counter
+#                     appears anywhere in the context it can see. The script
+#                     then cross-checks its own records for a reading this
+#                     conversation recorded: the seen marker (one line per
+#                     conversation, never rotated; see FILES) and the
+#                     observation log (current file and the `.1` generation).
+#                     So the attestation no longer rests on memory that a
+#                     compaction removes, nor on log lines that a rotation
+#                     drops. Missing or foreign-only readings then report:
+#                       REASON=counter-never-seen             nothing recorded,
+#                         under an identity that is stable for the conversation
+#                         (explicit, or a harness conversation id)
+#                       REASON=counter-never-seen-unverified  nothing logged,
+#                         but the identity is the derived fallback, which can
+#                         change under one conversation, so an earlier reading
+#                         of this conversation's could be filed under a key
+#                         this call cannot see. The log proves nothing here;
+#                         only the caller's own continuous observation can.
+#                       REASON=counter-seen-reading-displaced a reading from
+#                         this conversation is on record (marker or log); the
+#                         attestation is refused and a fresh counter is required
+#                       REASON=observation-log-unreadable     the marker or a
+#                         log file exists but cannot be read; the attestation
+#                         is refused
+#                     STATUS remains unknown, exit 3, on all four. Omit the
+#                     flag after any counter appeared in visible context, or
+#                     when the only evidence is that this turn lacks one.
+#
+# SESSION IDENTITY (issue #2376)
+#   A reading belongs to the conversation that recorded it. The key is the
+#   first of:
+#     1. `--session <id>`, then `$CLAUDE_SESSION_ID` — an EXPLICIT identity.
+#        Matched exactly, and it never borrows the ambient conversation ids
+#        below (a caller that states its identity is taken at its word).
+#     2. `anchor-<digest>` of `$CLAUDE_CODE_HOST_SESSION_ID` — the id the
+#        desktop host gives each conversation's `claude` process.
+#     3. `anchor-<digest>` of `$CLAUDE_CODE_SESSION_ID` — the CLI session id
+#        the harness exports to Bash tool subshells.
+#     4. `derived-<digest>` of the nearest ancestor `claude` process (pid +
+#        start time). That process is replaced when a conversation is resumed
+#        or the app restarts, so this key can change within one conversation;
+#        it is the fallback, and its drift fails closed to `unknown`.
+#   These are the anchors issue-maker's resolve-log.sh records (issue #1572),
+#   in the same order. Only DIGESTS are stored: `reading.anchors` carries
+#   `{host, sid}` (each a 20-hex digest or null) in the state slot and on every
+#   log line. A non-explicit caller owns a reading when the session key is
+#   equal, or when a recorded anchor equals its own: host against host when
+#   both sides have one, otherwise sid against sid. So a call that sees only
+#   one of the two ids still finds a reading recorded with both. A reading with
+#   no `anchors` object (written before #2376) matches on the key alone.
+#   `CLAUDE_USAGE_HORIZON_CONV_ID` replaces the ancestor walk in step 4 with a
+#   given identity string. Nothing sets it outside the test suite.
 #
 # RUNTIME COVERAGE
 #   The counter was observed in a Claude Code session on 2026-08-27 (see the
 #   signal audit above). It did not appear in the Claude Code 2.1.322 /
-#   Fable 5.2 session reported in #2147. Neither observation generalizes to
-#   a version, model, or other runtime; check this session, not its label.
+#   Fable 5.2 session reported in #2147, and the observation log shows no
+#   reading from any conversation between 2026-10-27 and 2026-11-14 (#2376:
+#   `.claude/reference/usage-horizon-desktop-investigation-2026-11.md`). None
+#   of this generalizes to a version, model, or other runtime; check this
+#   session, not its label.
 #
 # OUTPUT
 #   stdout: exactly two lines —
 #             STATUS=clear|approaching|critical|unknown
 #             REASON=<slug>
-#   stderr: one-line diagnostic on every degraded or failed path.
+#   stderr: one diagnostic line naming the cause on every degraded or failed
+#           path. Every `unknown` then ends with one fixed `note:` line saying
+#           this is not the account usage reader, and a never-seen attestation
+#           that is refused or cannot be confirmed adds one line saying why
+#           before it. Parse stdout; stderr is for a reader.
 #
 # EXIT STATUS (the gate; unknown is NEVER read as clear)
 #   0  clear        — runway above the approaching threshold (--observe: recorded)
 #   1  approaching  — at or below the approaching threshold
 #   2  critical     — at or below the critical threshold
-#   3  unknown      — no reading this session, stale, corrupt, or malformed
+#   3  unknown      — no reading this session, stale, corrupt, or malformed.
+#                    This is the in-session horizon check, not the account
+#                    usage reader: signing in does not change it.
 #   4  Usage error (missing/invalid mode, unknown flag, malformed argument)
 #   5  Write failed (log append, jq failure, session-state.sh refusal)
 #   6  Lock timeout (CLAUDE_STATE_LOCK_TIMEOUT; nothing written)
@@ -155,12 +207,23 @@
 #                                  with CLAUDE_USAGE_HORIZON_DIR). The evidence
 #                                  source for characterizing what the counter
 #                                  actually tracks across sessions and resets.
+#   ~/.claude/usage-horizon-seen.jsonl
+#                                  seen marker, mode 600, same directory as the
+#                                  log. One `{session_id, anchors}` line per
+#                                  conversation identity that has ever recorded
+#                                  a reading, written by --observe under the
+#                                  log lock BEFORE the log line, and never
+#                                  rotated or pruned: it is what keeps "this
+#                                  conversation saw a counter" true after the
+#                                  log has rotated the reading out. It holds no
+#                                  timestamp and no token figure. Growth is one
+#                                  line of about 120 bytes per conversation.
 #   ~/.claude/session-state.json   `.usage_horizon` — last reading + verdict.
 #
 # DEPENDENCIES
 #   - jq
 #   - session-state.sh (sibling; --observe only)
-#   - shasum or sha256sum (only when no explicit/env session id is available)
+#   - shasum or sha256sum (only when no explicit session id is given)
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
@@ -172,6 +235,7 @@ mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
 
 _HORIZON_DIR="${CLAUDE_USAGE_HORIZON_DIR:-${HOME}/.claude}"
 OBS_LOG="${_HORIZON_DIR}/usage-horizon.jsonl"
+SEEN_FILE="${_HORIZON_DIR}/usage-horizon-seen.jsonl"
 LOCK_DIR="${_HORIZON_DIR}/.usage-horizon.lock"
 LOG_MAX_SIZE=262144 # 256 KiB, then rotate to .1
 
@@ -220,12 +284,39 @@ emit() {
 # property of the code rather than a convention.
 unknown() {
   echo "usage-horizon.sh: $2" >&2
-  local reason="$1"
+  local reason="$1" logged_rc=0
   if [[ "$COUNTER_NEVER_SEEN" == true ]]; then
     case "$reason" in
-      no-state-file|no-reading|no-reading-this-session) reason=counter-never-seen ;;
+      no-state-file|no-reading|no-reading-this-session)
+        # The caller's attestation covers only the context it can still see.
+        # The script's own records are the durable half: the seen marker
+        # holds every conversation that ever recorded a reading, whatever a
+        # compaction removed from context or a rotation removed from the log.
+        conversation_logged || logged_rc=$?
+        case "$logged_rc" in
+          1)
+            # "Nothing logged" is evidence only under a key that cannot have
+            # changed since the conversation began. The derived fallback can.
+            if [[ "$IDENT_SOURCE" == "derived" ]]; then
+              reason=counter-never-seen-unverified
+              echo "usage-horizon.sh: no harness conversation id is available, so the log cannot confirm the never-seen attestation" >&2
+            else
+              reason=counter-never-seen
+            fi
+            ;;
+          0)
+            reason=counter-seen-reading-displaced
+            echo "usage-horizon.sh: a reading from this conversation is on record (seen marker or observation log); the never-seen attestation is refused" >&2
+            ;;
+          *)
+            reason=observation-log-unreadable
+            echo "usage-horizon.sh: the seen marker or the observation log could not be read; the never-seen attestation is refused" >&2
+            ;;
+        esac
+        ;;
     esac
   fi
+  echo "usage-horizon.sh: note: this is the in-session horizon check, not the account usage reader; signing in does not change it" >&2
   emit unknown "$reason"
   exit "$EXIT_UNKNOWN"
 }
@@ -236,6 +327,10 @@ OBS_REMAINING=""
 OBS_LIMIT=""
 SESSION_OVERRIDE=""
 COUNTER_NEVER_SEEN=false
+SESSION_ID=""
+IDENT_SOURCE="" # explicit | anchor | derived
+ANCHOR_HOST=""  # digest of the host conversation id, or empty
+ANCHOR_SID=""   # digest of the CLI session id, or empty
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -298,11 +393,10 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # --- session identity ----------------------------------------------------------
-# Order: --session, $CLAUDE_SESSION_ID, then a digest of the nearest ancestor
-# `claude` process. The ancestor walk (rather than $PPID) is what survives the
-# varying shell depth between Bash tool calls, documented at length in
-# .claude/skills/issue-maker/scripts/resolve-log.sh. The digest is a pure
-# function of that identity, so it needs no marker file to stay stable.
+# Order and ownership rule: SESSION IDENTITY in the header. The harness ids come
+# first because they are per-conversation by construction; the ancestor walk is
+# the fallback and can change under one conversation (measured in issue #1572;
+# .claude/skills/issue-maker/scripts/resolve-log.sh records the same anchors).
 sanitize_session() {
   printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'
 }
@@ -315,6 +409,17 @@ digest20() {
   else
     return 1
   fi
+}
+
+# anchor_digest <kind> <raw id> — digest of one harness conversation id, or
+# nothing when the id is absent or no SHA-256 tool exists. The raw id is never
+# stored or printed. Always returns 0: an anchor that cannot be formed is simply
+# absent, and resolution moves on to the next source.
+anchor_digest() {
+  local value
+  value="$(printf '%s' "$2" | tr -d '\r\n')"
+  [[ -n "$value" ]] || return 0
+  digest20 "$1=$value" 2>/dev/null || true
 }
 
 # Nearest ancestor process literally named `claude`. Case-sensitive on purpose:
@@ -342,6 +447,9 @@ claude_ancestor_identity() {
   return 0
 }
 
+# resolve_session_id — sets SESSION_ID, IDENT_SOURCE, ANCHOR_HOST, ANCHOR_SID.
+# Runs in the main shell (not a command substitution) so all four survive.
+# Returns 1 when no key can be formed.
 resolve_session_id() {
   local raw="${SESSION_OVERRIDE:-${CLAUDE_SESSION_ID:-}}"
   local key=""
@@ -350,24 +458,110 @@ resolve_session_id() {
     # An id made only of separators sanitizes to a non-empty but meaningless
     # key; treat it as absent rather than letting two such ids collide.
     case "$key" in
-      *[A-Za-z0-9]*) printf '%s' "$key"; return 0 ;;
-      *) key="" ;;
+      *[A-Za-z0-9]*)
+        SESSION_ID="$key"
+        IDENT_SOURCE=explicit
+        return 0
+        ;;
     esac
   fi
-  local ident
-  ident="$(claude_ancestor_identity)"
+  ANCHOR_HOST="$(anchor_digest host "${CLAUDE_CODE_HOST_SESSION_ID:-}")"
+  ANCHOR_SID="$(anchor_digest sid "${CLAUDE_CODE_SESSION_ID:-}")"
+  if [[ -n "$ANCHOR_HOST" ]]; then
+    SESSION_ID="anchor-$ANCHOR_HOST"
+    IDENT_SOURCE=anchor
+    return 0
+  fi
+  if [[ -n "$ANCHOR_SID" ]]; then
+    SESSION_ID="anchor-$ANCHOR_SID"
+    IDENT_SOURCE=anchor
+    return 0
+  fi
+  local ident="${CLAUDE_USAGE_HORIZON_CONV_ID:-}"
+  [[ -n "$ident" ]] || ident="$(claude_ancestor_identity)"
   [[ -n "$ident" ]] || ident="ppid=${PPID:-0}|start=$(ps -o lstart= -p "${PPID:-0}" 2>/dev/null | tr -s ' ' || true)"
   local dg
   dg="$(digest20 "$ident")" || return 1
   [[ -n "$dg" ]] || return 1
-  printf 'derived-%s' "$dg"
+  SESSION_ID="derived-$dg"
+  IDENT_SOURCE=derived
+  return 0
 }
 
-SESSION_ID=""
-if ! SESSION_ID="$(resolve_session_id)" || [[ -z "$SESSION_ID" ]]; then
+# --- reading ownership ---------------------------------------------------------
+# ONE rule, used by --check, by the hysteresis anchor, and by the log
+# cross-check, so the three can never disagree about whose reading this is.
+OWNED_JQ='
+  def nonempty: (type == "string") and (length > 0);
+  def owned($key; $loose; $host; $cli):
+    (.session_id == $key)
+    or ($loose
+        and ((.anchors | type) == "object")
+        and (.anchors as $a
+             | if ($a.host | nonempty) and ($host | nonempty) then $a.host == $host
+               elif ($a.sid | nonempty) and ($cli | nonempty) then $a.sid == $cli
+               else false
+               end));'
+
+# reading_is_owned <json> <jq path to the reading> — true when the reading at
+# that path belongs to this conversation. Anything jq cannot evaluate is not
+# owned.
+reading_is_owned() {
+  local loose=true out
+  [[ "$IDENT_SOURCE" == "explicit" ]] && loose=false
+  out="$(printf '%s' "$1" | jq -r \
+    --arg key "$SESSION_ID" --argjson loose "$loose" \
+    --arg host "$ANCHOR_HOST" --arg cli "$ANCHOR_SID" \
+    "$OWNED_JQ $2 | owned(\$key; \$loose; \$host; \$cli) | tostring" 2>/dev/null)" || return 1
+  [[ "$out" == "true" ]]
+}
+
+# conversation_logged — has this conversation ever recorded a reading?
+#   0  yes: a line in the seen marker, or in the retained log (current file or
+#      `.1`), is owned
+#   1  no:  no such line is owned (or none of the three files exists)
+#   2  cannot tell: one of the three is present but is not a readable regular
+#      file, or jq failed on it
+# Reads this script's OWN files and nothing else. It answers "was a reading
+# recorded", never "how much is left": no figure is read out of a line.
+# A line that does not parse (a torn append) is skipped, not fatal.
+#
+# The seen marker is the authority: --observe writes a conversation's marker
+# line before its log line and nothing ever removes it, so a reading the log
+# has rotated out of both generations still answers 0 here. The log is scanned
+# as well because readings recorded before the marker existed are only there.
+# Those older lines can still rotate away; no reading recorded from now on can
+# be forgotten that way.
+#
+# Lock-free, like every other --check read. A rotation racing this scan moves
+# the current file to `.1`; the scan reads the current file first and `.1`
+# second, so a line that moves between the two reads is still seen in `.1`, and
+# a file that vanishes between the existence test and the read makes jq fail,
+# which is answer 2 (refuse), never answer 1.
+conversation_logged() {
+  local loose=true f hit
+  [[ "$IDENT_SOURCE" == "explicit" ]] && loose=false
+  [[ -n "$SESSION_ID" ]] || return 2
+  if [[ -e "$_HORIZON_DIR" ]] && [[ ! -d "$_HORIZON_DIR" || ! -r "$_HORIZON_DIR" || ! -x "$_HORIZON_DIR" ]]; then
+    return 2
+  fi
+  for f in "$SEEN_FILE" "$OBS_LOG" "${OBS_LOG}.1"; do
+    [[ -e "$f" || -L "$f" ]] || continue
+    [[ -f "$f" && -r "$f" ]] || return 2
+    hit="$(jq -n -R -r \
+      --arg key "$SESSION_ID" --argjson loose "$loose" \
+      --arg host "$ANCHOR_HOST" --arg cli "$ANCHOR_SID" \
+      "$OWNED_JQ"' first(inputs | fromjson? | select(type == "object") | select(owned($key; $loose; $host; $cli))) | "hit"' \
+      "$f" 2>/dev/null)" || return 2
+    [[ "$hit" == "hit" ]] && return 0
+  done
+  return 1
+}
+
+if ! resolve_session_id || [[ -z "$SESSION_ID" ]]; then
   if [[ "$MODE" == "check" ]]; then
     unknown session-unresolvable \
-      "could not resolve a session identity (no --session, no CLAUDE_SESSION_ID, no SHA-256 tool)"
+      "could not resolve a session identity (no --session, no CLAUDE_SESSION_ID, no harness conversation id, no SHA-256 tool)"
   fi
   echo "usage-horizon.sh: could not resolve a session identity; refusing to record against a shared key" >&2
   exit "$EXIT_WRITE"
@@ -620,14 +814,36 @@ take_log_lock() {
   return 1
 }
 
-append_observation() { # $1 = one-line JSON record
-  local record="$1"
+# mark_conversation_seen <marker line> — record, once, that this conversation
+# identity has had a reading. Called with the log lock held. The line is
+# compared whole and literally (grep -Fx), so no identity is ever used as a
+# pattern. Returns non-zero when the marker could not be confirmed present.
+mark_conversation_seen() {
+  local marker="$1"
+  [[ -n "$marker" ]] || return 1
+  if [[ -f "$SEEN_FILE" && -r "$SEEN_FILE" ]] && grep -Fxq -- "$marker" "$SEEN_FILE" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\n' "$marker" >> "$SEEN_FILE" 2>/dev/null || return 1
+  chmod 600 "$SEEN_FILE" 2>/dev/null || true
+  return 0
+}
+
+append_observation() { # $1 = one-line JSON record, $2 = seen-marker line
+  local record="$1" marker="$2" marker_rc=0
   if ! take_log_lock; then
     echo "usage-horizon.sh: could not acquire the observation-log lock at $LOCK_DIR" >&2
     return "$EXIT_LOCK"
   fi
   # shellcheck disable=SC2064
   trap "rmdir '$LOCK_DIR' 2>/dev/null || true" EXIT
+
+  # Marker first, in the same locked write: there is then no moment at which a
+  # reading is in the log without its marker. A marker that cannot be written
+  # fails the observation (below) after the reading has still been appended as
+  # evidence, because a reading with no marker is one a later rotation could
+  # erase, and the never-seen check would then answer for it wrongly.
+  mark_conversation_seen "$marker" || marker_rc=1
 
   local size record_bytes
   size="$(file_size "$OBS_LOG")"
@@ -663,6 +879,10 @@ append_observation() { # $1 = one-line JSON record
   # by then. The trap stays armed for the error returns above.
   rmdir "$LOCK_DIR" 2>/dev/null || true
   trap - EXIT
+  if [[ $marker_rc -ne 0 ]]; then
+    echo "usage-horizon.sh: could not record this conversation in $SEEN_FILE; reading appended to $OBS_LOG but not persisted to session-state" >&2
+    return "$EXIT_WRITE"
+  fi
   return 0
 }
 
@@ -689,7 +909,8 @@ case "$MODE" in
     }
 
     # Prior verdict for hysteresis. It anchors the new verdict ONLY when the
-    # previous reading came from this same session AND is still inside the TTL:
+    # previous reading came from this same conversation (reading_is_owned) AND
+    # is still inside the TTL:
     # another session's level is not this session's runway, and a prior
     # `unknown` is not a level at all. The TTL half matters as much as the
     # session half — a reading past the TTL is precisely what --check reports as
@@ -700,8 +921,7 @@ case "$MODE" in
     PRIOR_STATUS=""
     PRIOR_RAW=""
     if PRIOR_RAW="$(read_horizon_state)"; then
-      PRIOR_SESSION="$(printf '%s' "$PRIOR_RAW" | jq -r '.reading.session_id | select(type == "string")' 2>/dev/null)" || PRIOR_SESSION=""
-      if [[ "$PRIOR_SESSION" == "$SESSION_ID" ]] && prior_reading_is_fresh "$PRIOR_RAW"; then
+      if reading_is_owned "$PRIOR_RAW" '.reading' && prior_reading_is_fresh "$PRIOR_RAW"; then
         PRIOR_STATUS="$(printf '%s' "$PRIOR_RAW" | jq -r '.status // ""' 2>/dev/null)" || PRIOR_STATUS=""
       fi
     fi
@@ -713,8 +933,11 @@ case "$MODE" in
     VERDICT="$(compute_verdict "$OBS_REMAINING" "$OBS_LIMIT" "$PRIOR_STATUS")"
 
     # `--argjson limit` carries a real JSON null when no limit was supplied, so
-    # the record shape is `{ts, session_id, remaining, limit}` with limit null
-    # rather than a string "null" a reader would have to special-case.
+    # the record shape is `{ts, session_id, remaining, limit, anchors}` with
+    # limit null rather than a string "null" a reader would have to
+    # special-case. `anchors` holds digests only, each null when that harness id
+    # was absent — and both null under an explicit identity, which never borrows
+    # the ambient conversation's ids.
     LIMIT_JSON="null"
     [[ -n "$OBS_LIMIT" ]] && LIMIT_JSON="$OBS_LIMIT"
 
@@ -723,8 +946,20 @@ case "$MODE" in
       --arg session_id "$SESSION_ID" \
       --argjson remaining "$OBS_REMAINING" \
       --argjson limit "$LIMIT_JSON" \
-      '{ts: $ts, session_id: $session_id, remaining: $remaining, limit: $limit}')" || {
+      --arg host "$ANCHOR_HOST" \
+      --arg cli "$ANCHOR_SID" \
+      '{ts: $ts, session_id: $session_id, remaining: $remaining, limit: $limit,
+        anchors: {host: (if $host == "" then null else $host end),
+                  sid: (if $cli == "" then null else $cli end)}}')" || {
       echo "usage-horizon.sh: jq failed building the observation record" >&2
+      exit "$EXIT_WRITE"
+    }
+
+    # The seen marker: this conversation's identity and nothing else. Built
+    # from the record so the two can never name different conversations.
+    SEEN_MARK="$(printf '%s' "$RECORD" | jq -c '{session_id, anchors}')" || SEEN_MARK=""
+    [[ -n "$SEEN_MARK" ]] || {
+      echo "usage-horizon.sh: jq failed building the seen marker" >&2
       exit "$EXIT_WRITE"
     }
 
@@ -732,7 +967,7 @@ case "$MODE" in
     umask 077
     mkdir -p "$_HORIZON_DIR" 2>/dev/null || true
     APPEND_RC=0
-    append_observation "$RECORD" || APPEND_RC=$?
+    append_observation "$RECORD" "$SEEN_MARK" || APPEND_RC=$?
     if [[ $APPEND_RC -ne 0 ]]; then
       exit "$APPEND_RC"
     fi
@@ -792,7 +1027,9 @@ case "$MODE" in
     if [[ -z "$READ_SESSION" ]]; then
       unknown reading-malformed "stored reading carries no session_id"
     fi
-    if [[ "$READ_SESSION" != "$SESSION_ID" && "$COUNTER_NEVER_SEEN" != true ]]; then
+    READ_OWNED=false
+    reading_is_owned "$HORIZON_RAW" '.reading' && READ_OWNED=true
+    if [[ "$READ_OWNED" != true && "$COUNTER_NEVER_SEEN" != true ]]; then
       unknown no-reading-this-session \
         "stored reading belongs to session $READ_SESSION, not $SESSION_ID"
     fi
@@ -835,7 +1072,7 @@ case "$MODE" in
     fi
     # A foreign reading need not be fresh, but must be structurally valid
     # before we use it to distinguish absence from damaged state.
-    if [[ "$READ_SESSION" != "$SESSION_ID" ]]; then
+    if [[ "$READ_OWNED" != true ]]; then
       unknown no-reading-this-session \
         "stored reading belongs to session $READ_SESSION, not $SESSION_ID"
     fi
