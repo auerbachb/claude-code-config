@@ -325,10 +325,11 @@ class PMReadTrace(unittest.TestCase):
         self.assertIn('../rank/fetch.md#1b2-fetch-github-state', resume)
 
 
-    def test_handoff_routes_saved_round_through_resume(self):
-        handoff = (ROOT / '.claude/skills/pm-handoff/SKILL.md').read_text()
-        self.assertIn('1. Run `/pm resume` for a saved PM round.', handoff)
-        self.assertIn('Run `/pm` to start a fresh ranking round when there is no saved work.', handoff)
+    def test_resume_no_longer_depends_on_a_handoff_prompt(self):
+        skill = (ROOT / '.claude/skills/pm/SKILL.md').read_text()
+        self.assertNotIn('pm-handoff', skill)
+        self.assertIn('if the first whitespace-delimited token of the remaining `$ARGUMENTS` is exactly `resume`', skill)
+        self.assertNotIn('contains "resume"', skill)
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)

@@ -4,7 +4,6 @@ The single definition of **what a handoff reads**. Two skills consume it and ren
 
 | Consumer | Renders into |
 |---|---|
-| `/pm-handoff` | a Claude-native prompt for a fresh PM thread — keeps our vocabulary, because the reader is another thread in this harness |
 | `/end` | a portable Markdown document for a reader outside this harness — strips our vocabulary entirely (`end/references/portable-handoff-template.md`) |
 
 Collection is identical; only rendering differs. Keeping one collector is the point — two copies drift, and the copy that drifts is always the one used less often.

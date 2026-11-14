@@ -161,7 +161,7 @@
 #
 #   --session-view     Print a repo-scoped projection of the WHOLE state file
 #                      (issue #687) — the read every orchestration skill (`/pm`,
-#                      `/pm-handoff`, …) uses instead of `--get .` so its default
+#                      `/end`, …) uses instead of `--get .` so its default
 #                      view stays in the invoking repo's lane. The invoking repo
 #                      is resolved by the same precedence as every other mode
 #                      (see REPO SCOPING: --repo / $CLAUDE_SESSION_REPO / cwd
@@ -435,7 +435,7 @@
 #   # not-yet-migrated legacy file, or read a genuinely global field:
 #   session-state.sh --raw-path --get '.repos | keys'
 #
-#   # Repo-scoped session view — what /pm and /pm-handoff read instead of
+#   # Repo-scoped session view — what /pm and /end read instead of
 #   # `--get .`, so their default output never spans repos (issue #687):
 #   session-state.sh --session-view          # scoped to the cwd repo
 #   session-state.sh --repo org/x --session-view

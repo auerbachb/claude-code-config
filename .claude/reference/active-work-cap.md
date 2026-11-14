@@ -163,7 +163,7 @@ This is a narrowing *within* the sources the script already reads. The one remai
 
 ## Portability
 
-The cap and the count resolve from the **target** repo, not the orchestrator's checkout (#1189): `repo-root.sh` resolves the root, and the cap is read with `pm-config-get.sh --section "Active work" --file <resolved-path>`. A `/pm` thread running in one repo and a chip-spawned thread running in another therefore see that repo's own cap. The `/pm-handoff` bootstrap emits the `## Active work` section, so a newly bootstrapped repo has the knob without anyone adding it.
+The cap and the count resolve from the **target** repo, not the orchestrator's checkout (#1189): `repo-root.sh` resolves the root, and the cap is read with `pm-config-get.sh --section "Active work" --file <resolved-path>`. A `/pm` thread running in one repo and a chip-spawned thread running in another therefore see that repo's own cap. The `/pm` config bootstrap (`shared:config`) emits the `## Active work` section, so a newly bootstrapped repo has the knob without anyone adding it.
 
 Repos whose primary reviewer is BugBot or Greptile have a different budget — BugBot's is a monthly spend cap and Greptile's a monthly credit pool, neither of which is an hourly burst limit. The knob is per-repo for exactly this reason; the default derived here is a CodeRabbit-primary default.
 

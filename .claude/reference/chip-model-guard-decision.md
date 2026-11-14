@@ -93,5 +93,4 @@ Adding a guard that only some threads receive forces a choice: put it in the chi
 - Issue [#838](https://github.com/auerbachb/claude-code-config/issues/838) — the stale-chip backlog #837 does not reach; see the scope limit above
 - Issue [#1398](https://github.com/auerbachb/claude-code-config/issues/1398) — the mismatch stop as a clickable `AskUserQuestion` menu, and the model-switch feasibility answer; see the amendment above
 - Issue [#859](https://github.com/auerbachb/claude-code-config/issues/859) — cross-session `dismiss_task` gap; documented as an upstream requirement in `chip-launching.md`
-- `pm-handoff-chips-decision.md` — the house style this record follows (`## Decision` / `## Rationale` / `## Explicitly Rejected` / `## References`)
 - Issue [#547](https://github.com/auerbachb/claude-code-config/issues/547) (closed) — model fleet reconciliation across selection surfaces, the related prior work this ticket builds on
