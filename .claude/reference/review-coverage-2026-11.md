@@ -66,7 +66,7 @@ Third correction (review round 3): the foreign-bot test was widened from any `[b
 .claude/scripts/review-coverage-measure.sh --from-cache --repo auerbachb/claude-code-config --author auerbachb --since 2026-10-30   # offline re-run from the cache
 ```
 
-Per-PR classes land in `<cache-dir>/classified.jsonl`. Aggregates print as JSON on stdout. The cache holds GitHub payloads, so it stays out of the repo. Cache files are keyed by repo: the population by repo, `--author` and `--since` (`<repo>.population.author-<login>.since-<date>.base-main.json`), and each PR payload by repo, PR and endpoint. An offline `--from-cache` run therefore needs the same `--author` and `--since` as the online run that fetched the population.
+Per-PR classes land in `<cache-dir>/classified.jsonl`. Aggregates print as JSON on stdout. The cache holds GitHub payloads, so it stays out of the repo. Cache files are keyed by repo: the population by repo, `--author` and `--since` (`<repo>.population.author-<login>.since-<date>.base-main.json`), and each PR payload by repo, PR and endpoint. An offline `--from-cache` run therefore needs the same `--author` and `--since` as the online run that fetched the population. Keys are injective: `[` and `]` in a bot login are percent-escaped (`name[bot]` becomes `name%5Bbot%5D`), and `_` in a repo name is escaped (`%5F`) before `/` becomes `_`. A cache written before this change (the unkeyed `population.json` and the un-prefixed `pr-N.*.json` files) cannot be read by this script as is: it needs re-keying (rename each file to `<owner>_<repo>.<name>`, and the population to the keyed name with the escaped author) or a refetch without `--from-cache`.
 
 ## Numbers measured versus judgment
 

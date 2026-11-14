@@ -268,6 +268,47 @@ check "an author with no population file is refused (exit 2)" "2" "$?"
   --cache-dir "$OVL" >/dev/null 2>&1
 check "an author that is not a login is refused (exit 2)" "2" "$?"
 
+# Cross-window contamination (issue #2323). The pre-fix script kept ONE unkeyed
+# population.json per cache, so a run over one window could read another window's
+# population. Here the legacy shared file holds a 2-PR population (window 11-20) and the
+# keyed file for window 10-30 holds 8 PRs. A run over 11-20 has no keyed file: it must be
+# refused, never served the legacy file. Run 10-30 must still see its own 8 PRs, and its
+# keyed file must be byte-identical after the other run.
+LEG="$TMP/legacy"
+mkdir -p "$LEG"
+cp "$CACHE"/fixture_fixture.pr-*.json "$LEG/"
+cp "$CACHE/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json" "$LEG/"
+jq '[.[] | select(.number == 101 or .number == 102)]' "$CACHE/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json" > "$LEG/population.json"
+cp "$LEG/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json" "$TMP/legA.before"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$LEG" --ledger-json "$LEDGER" > "$TMP/leg1.json" 2>/dev/null
+check "legacy run 10-30 exits 0" "0" "$?"
+check "legacy run 10-30 sees its own 8 PRs" "8" "$(jq -r '.prs_total' "$TMP/leg1.json")"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-11-20 \
+  --cache-dir "$LEG" --ledger-json "$LEDGER" > "$TMP/leg2.json" 2>/dev/null
+check "window 11-20 with only the legacy file is refused (exit 2)" "2" "$?"
+check "refused window prints no report" "0" "$(wc -c < "$TMP/leg2.json" | tr -d ' ')"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$LEG" --ledger-json "$LEDGER" > "$TMP/leg3.json" 2>/dev/null
+check "run 10-30 after the other window still sees 8 PRs" "8" "$(jq -r '.prs_total' "$TMP/leg3.json")"
+check "run 10-30 keyed population is byte-identical after the other window" "0" "$(cmp -s "$LEG/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json" "$TMP/legA.before"; echo $?)"
+
+# Author key collision (issue #2323, CodeAnt). name[bot] and name_bot_ must not share a
+# population file. Each login has its own population here (8 PRs and 2 PRs); the file
+# names are the injective keys. A key that collapses the two logins would hand one run the
+# other's population, so the reported prs_total would not match that login's population.
+AK="$TMP/authorkey"
+mkdir -p "$AK"
+cp "$CACHE"/fixture_fixture.pr-*.json "$AK/"
+cp "$CACHE/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json" "$AK/fixture_fixture.population.author-name%5Bbot%5D.since-2026-10-30.base-main.json"
+jq '[.[] | select(.number == 101 or .number == 102)]' "$CACHE/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json" > "$AK/fixture_fixture.population.author-name_bot_.since-2026-10-30.base-main.json"
+"$SUT" --from-cache --repo fixture/fixture --author 'name[bot]' --since 2026-10-30 \
+  --cache-dir "$AK" --ledger-json "$LEDGER" > "$TMP/ak1.json" 2>/dev/null
+check "name[bot] reads its own 8-PR population" "8" "$(jq -r '.prs_total' "$TMP/ak1.json" 2>/dev/null)"
+"$SUT" --from-cache --repo fixture/fixture --author 'name_bot_' --since 2026-10-30 \
+  --cache-dir "$AK" --ledger-json "$LEDGER" > "$TMP/ak2.json" 2>/dev/null
+check "name_bot_ reads its own 2-PR population" "2" "$(jq -r '.prs_total' "$TMP/ak2.json" 2>/dev/null)"
+
 # Run directories. A successful run, a refused run (exit 2) and a --fail-on-unknown run
 # (exit 4) must each leave no .run.* directory behind, and the exit status must survive
 # the cleanup trap.

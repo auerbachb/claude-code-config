@@ -156,11 +156,12 @@ if [ -z "$AUTHOR" ]; then
   fi
 fi
 # The author becomes part of a cache file name, so only login characters are accepted.
-# Brackets (bot logins such as name[bot]) map to underscores in the file name.
 if ! LC_ALL=C grep -Eq '^[][A-Za-z0-9._-]+$' <<<"$AUTHOR"; then
   die "--author must be a GitHub login (letters, digits, '.', '_', '-', '[bot]')" 2
 fi
-AUTHOR_KEY=$(printf '%s' "$AUTHOR" | tr '[]' '__')
+# Injective key: '%' is never a login character, so percent-escaping '%' and the brackets
+# keeps distinct logins distinct (name[bot] -> name%5Bbot%5D, name_bot_ stays name_bot_).
+AUTHOR_KEY=$(printf '%s' "$AUTHOR" | sed -e 's/%/%25/g' -e 's/\[/%5B/g' -e 's/\]/%5D/g')
 
 if [ -z "$CACHE_DIR" ]; then
   [ -n "${HOME:-}" ] || die "HOME is unset; pass --cache-dir" 2
@@ -201,7 +202,8 @@ fi
 # same temporary path; each finished file is then renamed into place atomically.
 tmpf() { mktemp "$RUN_DIR/tmp.XXXXXX"; }
 
-REPO_KEY=$(printf '%s' "$REPO" | tr '/' '_')
+# Injective as well: '_' is escaped before '/' becomes '_', so a_b/c and a/b_c stay apart.
+REPO_KEY=$(printf '%s' "$REPO" | sed -e 's/%/%25/g' -e 's/_/%5F/g' -e 's|/|_|g')
 # The population is keyed by everything that selects it: repo, author, window start and
 # base (fixed to main). Two runs with different windows or authors therefore never share
 # a population file, and a window with no file is refused rather than served another's.
