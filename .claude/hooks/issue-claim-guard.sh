@@ -1,26 +1,34 @@
 #!/usr/bin/env bash
 # Issue-claim guard — PreToolUse hook (Bash matcher). Issue #2287.
 #
-# Blocks starting work on an issue-N-* branch unless the claim verdict for
-# issue N is `mine`. Covered Bash commands: `git worktree add` (branch from -b/-B,
-# or the commit-ish/path), `git checkout -b|-B`, `git switch -c|-C`, and
-# `gh pr create` (the current branch, or --head). Commands that name no issue
-# branch are allowed and never reach the helper.
+# Blocks starting work on a branch named issue-N-* unless the claim verdict for
+# issue N is `mine`. It acts ONLY on positive evidence: a branch-creating command
+# (`git worktree add ... -b|-B NAME`, `git checkout -b|-B NAME`,
+# `git switch -c|-C|--create NAME`, `gh pr create`) whose branch name literally
+# contains issue-<digits>. Commands that merely mention those words, unparseable
+# text, heredoc bodies, and dynamic branch names ("$X", globs, substitutions) are
+# ALLOWED: the GitHub-side check (#2288) covers what this hook cannot see.
 #
-# Verdicts (from `issue-claim.sh N --check --json`):
+# Parsing: backslash-newline continuations are joined, comment-only lines dropped,
+# heredoc bodies stripped, then the command is tokenised per line. If tokenising
+# still fails, a regular-expression scan of the raw text runs instead.
+#
+# Holder candidates, checked in this order (any `mine` allows):
+#   1. CLAUDE_CLAIM_HOLDER (or CLAUDE_SESSION_ID when that is unset)
+#   2. the holder recorded at claim time: session-state.sh
+#      .repos["<owner/name>"].pipelines["<N>"].claim_holder
+#   3. no explicit holder (the helper's own default)
+# A failed session-state read is never "no candidate": it blocks (GUARD FAILED)
+# unless another candidate reads `mine`.
+#
+# Verdicts (from `issue-claim.sh N --check --json [--holder H]`):
 #   mine                 allow (cached 60s per checkout + issue + holder)
-#   unclaimed | stale    block: run the claim command (stale is taken over there, with a warning)
+#   unclaimed | stale    block: run the claim command (stale is taken over there)
 #   claimed | unknown    block, naming the holder/provider/device/label when known
-#   helper missing       block, naming the plain-gh fallback recipe
-#   internal fault       block with a DISTINCT "GUARD FAILED" message (never "claimed")
+#   helper missing, helper fault, unreadable helper output: GUARD FAILED block
 #
 # Override: a file $HOME/.claude/issue-claim-overrides/<owner>__<repo>/<N> lets a
-# CLAIMED issue N through, for that repo and number only. The user's chat
-# instruction (naming the issue) is what the orchestrating agent writes there.
-# It never covers `unknown`, `stale`, or any other issue.
-#
-# Holder: CLAUDE_CLAIM_HOLDER, else CLAUDE_SESSION_ID, else the helper's own
-# default (a digest of hostname and checkout) — the same chain the helper uses.
+# CLAIMED issue N through for that repo and number only (never `unknown`).
 #
 # Contract:
 #   stdin  — hook JSON {session_id, cwd, tool_name, tool_input:{command}}
@@ -36,57 +44,20 @@ HELPER_TIMEOUT=25
 read -r -d '' PY_PARSE <<'PYEOF'
 import json, os, re, shlex, sys
 
-def out(status, cwd=""):
-    cwd = cwd.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    sys.stdout.write(status + "\t" + cwd + "\n")
+ISSUE_NAME = re.compile(r"(^|/)issue-([0-9]+)(-|$)")
+DYN_RE = re.compile(r"[$`*?\[~]")
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1([^\n]*)\n(?:.*?\n)?[ \t]*\2[ \t]*(?=\n|$)", re.S)
+CREATE_FLAGS = {"checkout": ("-b", "-B", "--orphan"), "switch": ("-c", "-C", "--create", "--force-create", "--orphan")}
+FALLBACK_VERB = re.compile(r"git\s+worktree\s+add\b|git\s+(?:checkout|switch)\b|gh\s+pr\s+create\b")
+FALLBACK_CREATE = re.compile(r"\s-[bBcC]|\s--(?:create|force-create)\b")
+FALLBACK_FLAG_ARG = ("-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan")
+FALLBACK_ATTACHED = re.compile(r"-[bBcC](.+)$|--(?:create|force-create)=(.+)$")
 
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except Exception:
-    d = None
-if not isinstance(d, dict):
-    out("FAULT:bad-input")
-    sys.exit(0)
-cwd = d.get("cwd") if isinstance(d.get("cwd"), str) else ""
-if d.get("tool_name") != "Bash":
-    out("NOTRIGGER", cwd)
-    sys.exit(0)
-ti = d.get("tool_input")
-cmd = ti.get("command") if isinstance(ti, dict) else None
-if not isinstance(cmd, str):
-    out("FAULT:no-command", cwd)
-    sys.exit(0)
-if not re.search(r"worktree|checkout|switch|pr\s+create", cmd):
-    out("NOTRIGGER", cwd)
-    sys.exit(0)
-try:
-    lex = shlex.shlex(cmd.replace("\n", " ; "), posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
-    toks = list(lex)
-except ValueError:
-    out("FAULT:unparseable-command", cwd)
-    sys.exit(0)
-
-segs, cur = [], []
-for t in toks:
-    if t in ("&&", "||", ";", "|", "&"):
-        segs.append(cur)
-        cur = []
-    else:
-        cur.append(t)
-segs.append(cur)
-
-names = []
-dir_moved = False
-branch_moved = False
+BASE = os.getcwd()
+recs = []
 
 
-ISSUE_NAME = re.compile(r"(^|/)issue-[0-9]+(-|$)")
-
-
-def attached_value(a, flags):
-    # Git also takes the value attached: -bNAME, -cNAME, --create=NAME.
+def attached(a, flags):
     for f in flags:
         if f.startswith("--"):
             if a.startswith(f + "="):
@@ -96,108 +67,192 @@ def attached_value(a, flags):
     return None
 
 
-def add_creation(nm, cdir):
-    # A dynamic name (shell variable, substitution, glob) cannot be checked: fail closed.
-    if re.search(r"[$`*?\[]", nm):
-        names.append("UNRESOLVED")
-        return
-    # Only issue branches are checked, so a non-issue creation never fails closed.
-    if not ISSUE_NAME.search(nm):
-        return
-    # A creation needs the repo it runs in. After a cd, that is unknown here.
-    if dir_moved:
-        names.append("UNRESOLVED")
-    else:
-        names.append(nm + "\t" + cdir)
+def join(base, p):
+    if base == "DYN" or p in ("", "-") or DYN_RE.search(p):
+        return "DYN"
+    if os.path.isabs(p):
+        return os.path.normpath(p)
+    return os.path.normpath(os.path.join(base, p))
 
 
-for seg in segs:
-    for i, t in enumerate(seg):
-        if t == "git":
-            j = i + 1
-            cdir = ""
-            while j < len(seg) and seg[j].startswith("-"):
-                if seg[j] == "-C" and j + 1 < len(seg):
-                    cdir = seg[j + 1]
-                j += 2 if seg[j] in ("-C", "-c") else 1
-            if j >= len(seg):
-                continue
-            sub = seg[j]
-            rest = seg[j + 1:]
-            if sub == "worktree" and rest[:1] == ["add"]:
-                args = rest[1:]
-                named, pos, k = [], [], 0
-                after_dd = False
-                while k < len(args):
-                    a = args[k]
-                    if not after_dd and a == "--":
-                        after_dd = True
+def add_branch(dirv, nm):
+    # Dynamic names are not evidence; only literal issue-N branch names count.
+    if DYN_RE.search(nm):
+        return
+    m = ISSUE_NAME.search(nm)
+    if not m:
+        return
+    recs.append(("BRANCH", dirv, m.group(2), nm))
+
+
+def prep(cmd):
+    s = cmd.replace("\r\n", "\n").replace("\\\n", "")
+    s = HEREDOC.sub(lambda m: "<< " + m.group(2) + m.group(3), s)
+    return "\n".join(l for l in s.split("\n") if not re.match(r"\s*#", l))
+
+
+def cmd_pos(seg, i):
+    # A command word: only wrappers (command, env, exec, VAR=x, options) may precede it.
+    return all(tok in ("command", "env", "exec") or "=" in tok or tok.startswith("-") for tok in seg[:i])
+
+
+def analyse_full(src):
+    lex = shlex.shlex(src.replace("\n", " ; "), posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    toks = list(lex)
+    segs, cur = [], []
+    for t in toks:
+        if t in ("&&", "||", ";", "|", "&"):
+            segs.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    segs.append(cur)
+    dir_t = BASE
+    switch_targets = []
+    for seg in segs:
+        if seg and seg[0] in ("cd", "pushd"):
+            dir_t = join(dir_t, seg[1]) if len(seg) > 1 else "DYN"
+        elif seg and seg[0] == "popd":
+            dir_t = "DYN"
+        for i, t in enumerate(seg):
+            if os.path.basename(t) == "git" and cmd_pos(seg, i):
+                gdir = dir_t
+                j = i + 1
+                while j < len(seg) and seg[j].startswith("-"):
+                    if seg[j] == "-C" and j + 1 < len(seg):
+                        gdir = join(gdir, seg[j + 1])
+                    j += 2 if seg[j] in ("-C", "-c") else 1
+                if j >= len(seg):
+                    continue
+                sub, rest = seg[j], seg[j + 1:]
+                if sub == "worktree" and rest[:1] == ["add"]:
+                    args = rest[1:]
+                    named, pos, k, after_dd = [], [], 0, False
+                    while k < len(args):
+                        a = args[k]
+                        if not after_dd and a == "--":
+                            after_dd = True
+                            k += 1
+                            continue
+                        if not after_dd and a in ("-b", "-B"):
+                            if k + 1 < len(args):
+                                named.append(args[k + 1])
+                            k += 2
+                            continue
+                        if not after_dd and attached(a, ("-b", "-B")) is not None:
+                            named.append(attached(a, ("-b", "-B")))
+                            k += 1
+                            continue
+                        if not after_dd and a == "--reason":
+                            k += 2
+                            continue
+                        if not after_dd and a.startswith("-"):
+                            k += 1
+                            continue
+                        pos.append(a)
                         k += 1
-                        continue
-                    if not after_dd and a in ("-b", "-B"):
-                        if k + 1 < len(args):
-                            named.append(args[k + 1])
-                        k += 2
-                        continue
-                    if not after_dd and attached_value(a, ("-b", "-B")) is not None:
-                        named.append(attached_value(a, ("-b", "-B")))
-                        k += 1
-                        continue
-                    if not after_dd and a == "--reason":
-                        k += 2
-                        continue
-                    if not after_dd and a.startswith("-"):
-                        k += 1
-                        continue
-                    pos.append(a)
-                    k += 1
-                if named:
-                    for nm in named:
-                        add_creation(nm, cdir)
-                elif len(pos) >= 2:
-                    add_creation(pos[1], cdir)
-                elif pos:
-                    add_creation(os.path.basename(pos[0].rstrip("/")), cdir)
-            elif sub == "checkout" or sub == "switch":
-                branch_moved = True
-                flags = ("-b", "-B") if sub == "checkout" else ("-c", "-C", "--create", "--force-create")
-                for k, a in enumerate(rest):
-                    if a in flags and k + 1 < len(rest):
-                        add_creation(rest[k + 1], cdir)
-                    elif attached_value(a, flags) is not None:
-                        add_creation(attached_value(a, flags), cdir)
-        if t == "gh" and seg[i + 1:i + 3] == ["pr", "create"]:
-            args = seg[i + 3:]
-            head = ""
-            for k, a in enumerate(args):
-                if a in ("--head", "-H") and k + 1 < len(args):
-                    head = args[k + 1]
+                    if named:
+                        names = named
+                    elif len(pos) >= 2:
+                        names = [pos[1]]
+                    elif pos:
+                        names = [os.path.basename(pos[0].rstrip("/"))]
+                    else:
+                        names = []
+                    for nm in names:
+                        add_branch(gdir, nm)
+                elif sub in ("checkout", "switch"):
+                    flags = CREATE_FLAGS[sub]
+                    creating = False
+                    for k, a in enumerate(rest):
+                        if a in flags and k + 1 < len(rest):
+                            creating = True
+                            add_branch(gdir, rest[k + 1])
+                        elif attached(a, flags) is not None:
+                            creating = True
+                            add_branch(gdir, attached(a, flags))
+                    if not creating:
+                        target = next((a for a in rest if not a.startswith("-")), None)
+                        if target is not None:
+                            switch_targets.append("DYN" if DYN_RE.search(target) else target)
+            if os.path.basename(t) == "gh" and cmd_pos(seg, i) and seg[i + 1:i + 3] == ["pr", "create"]:
+                args = seg[i + 3:]
+                head = None
+                for k, a in enumerate(args):
+                    if a in ("--head", "-H") and k + 1 < len(args):
+                        head = args[k + 1]
+                    elif a.startswith("--head="):
+                        head = a.split("=", 1)[1]
+                if head is not None:
+                    add_branch(dir_t, head.split(":", 1)[1] if ":" in head else head)
+                elif switch_targets:
+                    if "DYN" not in switch_targets:
+                        for s in switch_targets:
+                            add_branch(dir_t, s)
+                else:
+                    recs.append(("CURRENT", dir_t))
+
+
+def analyse_fallback(src):
+    for seg in re.split(r"[;&|\n]+", src):
+        m = FALLBACK_VERB.search(seg)
+        if not m:
+            continue
+        rest = seg[m.end():]
+        toks = [x.strip("'\"") for x in rest.split()]
+        if m.group(0).startswith("gh"):
+            for k, a in enumerate(toks):
+                head = None
+                if a in ("--head", "-H") and k + 1 < len(toks):
+                    head = toks[k + 1]
                 elif a.startswith("--head="):
                     head = a.split("=", 1)[1]
-            if ":" in head:
-                head = head.split(":", 1)[1]
-            repo_flag = any(a in ("-R", "--repo") or a.startswith("--repo=") for a in args)
-            if dir_moved or repo_flag:
-                names.append("UNRESOLVED")
-            elif head:
-                names.append(head + "\t")
-            elif branch_moved:
-                names.append("UNRESOLVED")
+                if head is not None:
+                    add_branch(BASE, head.split(":", 1)[1] if ":" in head else head)
+            continue
+        if not FALLBACK_CREATE.search(" " + rest):
+            continue
+        for k, tok in enumerate(toks):
+            if tok in FALLBACK_FLAG_ARG and k + 1 < len(toks):
+                add_branch(BASE, toks[k + 1])
             else:
-                names.append("CURRENT")
-    if any(tok in ("cd", "pushd", "popd") for tok in seg):
-        dir_moved = True
+                mm = FALLBACK_ATTACHED.match(tok)
+                if mm:
+                    add_branch(BASE, mm.group(1) or mm.group(2))
 
-seen = []
-for n in names:
-    if n and n not in seen:
-        seen.append(n)
-if not seen:
-    out("NOTRIGGER", cwd)
-    sys.exit(0)
-out("TRIGGER", cwd)
-for n in seen:
-    sys.stdout.write(n + "\n")
+
+def main():
+    try:
+        d = json.loads(sys.stdin.read())
+    except Exception:
+        return
+    if not isinstance(d, dict) or d.get("tool_name") != "Bash":
+        return
+    ti = d.get("tool_input")
+    cmd = ti.get("command") if isinstance(ti, dict) else None
+    if not isinstance(cmd, str) or not re.search(r"worktree|checkout|switch|pr\s+create", cmd):
+        return
+    global BASE
+    cwd = d.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        BASE = os.path.normpath(cwd)
+    src = prep(cmd)
+    try:
+        analyse_full(src)
+    except Exception:
+        recs[:] = []
+        analyse_fallback(src)
+    seen = set()
+    for r in recs:
+        if r in seen:
+            continue
+        seen.add(r)
+        sys.stdout.write("\t".join(str(x) for x in r) + "\n")
+
+
+main()
 PYEOF
 
 read -r -d '' PY_VERDICT <<'PYEOF' || true
@@ -248,15 +303,15 @@ fault() {
 }
 
 # Helper resolution: the same three candidates, in the same order, as the skills.
-resolve_helper() {
-  local cwdx=$1 c
+resolve_script() {
+  local name=$1 cwdx=$2 c
   if [ -n "${HOME:-}" ]; then
-    for c in "$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh" \
-             "$HOME/.claude/scripts/issue-claim.sh"; do
+    for c in "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+             "$HOME/.claude/scripts/$name"; do
       if [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
     done
   fi
-  c="${cwdx:-$PWD}/.claude/scripts/issue-claim.sh"
+  c="${cwdx:-$PWD}/.claude/scripts/$name"
   if [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
   return 1
 }
@@ -266,23 +321,30 @@ show() {
 }
 
 override_allows() {
-  local r=$1 n=$2
+  local r=$1 n=$2 f ts now
   [ -n "${HOME:-}" ] || return 1
   [[ "$r" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
-  [ -f "$HOME/.claude/issue-claim-overrides/${r/\//__}/$n" ]
+  f="$HOME/.claude/issue-claim-overrides/${r/\//__}/$n"
+  [ -f "$f" ] || return 1
+  # The file holds its creation time (epoch seconds). It expires after the
+  # 4-hour claim stale window; any other content does not allow.
+  ts=$(sed -n 1p "$f" 2>/dev/null) || return 1
+  [[ "$ts" =~ ^[0-9]+$ ]] || return 1
+  now=$(date +%s)
+  [ $((now - ts)) -ge 0 ] && [ $((now - ts)) -lt 14400 ]
 }
 
-decide_issue() {
-  local n=$1 br=$2 cwd=$3
-  local helper holder top key cdir cfile out rc fields verdict repo claimant prov dev label now cts
-  local harg=()
+# Verdict of one holder check, stored in V_*. Returns 0 on `mine` (allow), 1 on
+# any other verdict. A helper fault exits through fault().
+V_verdict=""; V_repo=""; V_claimant=""; V_prov=""; V_dev=""; V_label=""
 
-  helper=$(resolve_helper "$cwd") || deny "BLOCKED: issue-claim.sh not found (checked all three paths). Branch $br names issue #$n, and its claim cannot be checked. The claim cannot be checked, so work must not proceed on this branch. The plain-gh check in .claude/reference/agent-issue-claims-block.md shows who holds the issue, but this guard cannot accept its result. Stop and report why if you cannot get a verified claim through issue-claim.sh."
-
-  holder="${CLAUDE_CLAIM_HOLDER:-${CLAUDE_SESSION_ID:-}}"
+check_holder() {  # n dir helper holder
+  local n=$1 work=$2 helper=$3 holder=$4
+  local top key cdir cfile cts now out rc fields
+  local -a harg=()
   if [ -n "$holder" ]; then harg=(--holder "$holder"); fi
 
-  top=$(git -C "${cwd:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || top=""
+  top=$(git -C "$work" rev-parse --show-toplevel 2>/dev/null) || top=""
   key="$top|$n|$holder"
   cdir="${TMPDIR:-/tmp}/claude-issue-claim-guard-$(id -u)"
   cfile="$cdir/$(printf '%s' "$key" | cksum | awk '{print $1 "-" $2}')"
@@ -295,7 +357,7 @@ decide_issue() {
   fi
 
   command -v perl >/dev/null 2>&1 || fault "perl is needed to bound the helper call"
-  out=$(cd "${cwd:-$PWD}" 2>/dev/null && perl -e 'alarm shift; exec @ARGV or exit 127' "$HELPER_TIMEOUT" "$helper" "$n" --check --json ${harg[@]+"${harg[@]}"} 2>/dev/null)
+  out=$(cd "$work" 2>/dev/null && perl -e 'alarm shift; exec @ARGV or exit 127' "$HELPER_TIMEOUT" "$helper" "$n" --check --json ${harg[@]+"${harg[@]}"} 2>/dev/null)
   rc=$?
   case "$rc" in
     0|1|4) ;;
@@ -303,79 +365,121 @@ decide_issue() {
   esac
 
   fields=$(printf '%s' "$out" | python3 -c "$PY_VERDICT" "$n" 2>/dev/null) || fault "helper output for issue #$n was unreadable"
-  IFS='|' read -r verdict repo claimant prov dev label <<< "$fields"
-  [ -n "$verdict" ] || fault "helper gave no verdict for issue #$n"
+  IFS='|' read -r V_verdict V_repo V_claimant V_prov V_dev V_label <<< "$fields"
+  [ -n "$V_verdict" ] || fault "helper gave no verdict for issue #$n"
 
-  case "$verdict" in
-    mine)
-      if [ -n "$top" ]; then
-        mkdir -p "$cdir" 2>/dev/null && printf '%s\n' "$(date +%s)" > "$cfile" 2>/dev/null
+  if [ "$V_verdict" = "mine" ]; then
+    if [ -n "$top" ]; then
+      mkdir -p "$cdir" 2>/dev/null && printf '%s\n' "$(date +%s)" > "$cfile" 2>/dev/null
+    fi
+    return 0
+  fi
+  return 1
+}
+
+check_issue() {  # n dir branch
+  local n=$1 work=$2 br=$3
+  local helper ss key sh rc h state_failed=0
+  local -a cands=()
+
+  helper=$(resolve_script issue-claim.sh "$work") || deny "GUARD FAILED: issue-claim.sh not found (checked all three paths) for branch $br, which names issue #$n. Its claim cannot be checked, so the branch must not be created. Run the plain-gh claim check in .claude/reference/agent-issue-claims-block.md by hand, and stop with a named reason if that cannot verify the claim."
+
+  # Candidate 1: the explicit holder from the environment.
+  if [ -n "${CLAUDE_CLAIM_HOLDER:-}" ]; then
+    cands+=("$CLAUDE_CLAIM_HOLDER")
+  elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    cands+=("$CLAUDE_SESSION_ID")
+  fi
+
+  # Candidate 2: the holder recorded for this repo and issue in session state.
+  ss=$(resolve_script session-state.sh "$work") || ss=""
+  if [ -z "$ss" ]; then
+    state_failed=1
+  elif key=$(cd "$work" 2>/dev/null && "$ss" --repo-key 2>/dev/null); then
+    key=$(printf '%s' "$key" | tr 'A-Z' 'a-z')
+    if [ -n "$key" ] && [ "$key" != "_unknown" ]; then
+      sh=$(cd "$work" 2>/dev/null && "$ss" --get ".repos[\"$key\"].pipelines[\"$n\"].claim_holder" 2>/dev/null)
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        case "$sh" in
+          ""|null|_unknown) ;;
+          *) cands+=("$sh") ;;
+        esac
+      elif [ "$rc" -ne 3 ]; then
+        state_failed=1
       fi
+    fi
+  else
+    state_failed=1
+  fi
+
+  # Candidate 3: no explicit holder (the helper's own default). Checked last, so
+  # its verdict is the one reported when nothing reads mine.
+  cands+=("")
+
+  for h in "${cands[@]}"; do
+    if check_holder "$n" "$work" "$helper" "$h"; then
       return 0
-      ;;
+    fi
+  done
+
+  if [ "$state_failed" = "1" ]; then
+    fault "the session-state holder for issue #$n could not be read, and no holder checked as mine (last verdict: $V_verdict)"
+  fi
+
+  case "$V_verdict" in
     claimed)
-      if override_allows "$repo" "$n"; then return 0; fi
-      deny "BLOCKED: issue #$n ($repo) is claimed by another holder: $(show "$claimant"), provider $(show "$prov"), device $(show "$dev"), label $(show "$label"). Do not start branch $br. The claim command is $helper $n --claim, and it will refuse while the claim is live. Only the user can allow starting it, by naming issue #$n in chat."
+      if override_allows "$V_repo" "$n"; then return 0; fi
+      deny "BLOCKED: issue #$n ($V_repo) is claimed by another holder: $(show "$V_claimant"), provider $(show "$V_prov"), device $(show "$V_dev"), label $(show "$V_label"). Do not start branch $br. The claim command is $helper $n --claim, and it will refuse while the claim is live. Only the user can allow starting it, by naming issue #$n in chat."
       ;;
     unknown)
-      deny "BLOCKED: the claim state of issue #$n ($repo) is unknown, so it is not permission to start. Do not start branch $br. Re-check with $helper $n --check, and claim with $helper $n --claim once it reads unclaimed or mine."
+      deny "BLOCKED: the claim state of issue #$n ($V_repo) is unknown, so it is not permission to start. Do not start branch $br. Re-check with $helper $n --check, and claim with $helper $n --claim once it reads unclaimed or mine."
       ;;
     unclaimed|stale)
-      deny "BLOCKED: issue #$n ($repo) has no live claim for this session (verdict: $verdict). Before branch $br is created, claim it with: $helper $n --claim${repo:+ --repo $repo}. A stale claim is taken over there with a warning. Then retry."
+      deny "BLOCKED: issue #$n ($V_repo) has no live claim for this session (verdict: $V_verdict). Before branch $br is created, claim it with: $helper $n --claim${V_repo:+ --repo $V_repo}. A stale claim is taken over there with a warning. Then retry."
       ;;
   esac
-  fault "unexpected verdict $verdict for issue #$n"
+  fault "unexpected verdict $V_verdict for issue #$n"
 }
 
 main() {
-  local input parsed first status cwd names line name n checked
+  local input parsed kind dirv n name br key checked="" line
 
-  input=$(cat) || fault "stdin was unreadable"
-  parsed=$(printf '%s' "$input" | python3 -c "$PY_PARSE" 2>/dev/null) || fault "the command parser failed"
-  first=$(printf '%s\n' "$parsed" | sed -n '1p')
-  status=${first%%$'\t'*}
-  cwd=${first#*$'\t'}
-  case "$status" in
-    NOTRIGGER) exit 0 ;;
-    TRIGGER) ;;
-    FAULT:*) fault "${status#FAULT:}" ;;
-    *) fault "unexpected parser output" ;;
-  esac
+  input=$(cat) || exit 0
+  parsed=$(printf '%s' "$input" | python3 -c "$PY_PARSE" 2>/dev/null) || exit 0
+  [ -n "$parsed" ] || exit 0
 
-  names=$(printf '%s\n' "$parsed" | sed -n '2,$p')
-  checked=""
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    name=${line%%$'\t'*}
-    dirx=""
-    case "$line" in
-      *$'\t'*) dirx=${line#*$'\t'} ;;
+  while IFS=$'\t' read -r kind dirv n name; do
+    case "$kind" in
+      BRANCH) br="$name" ;;
+      CURRENT) br="" ;;
+      *) continue ;;
     esac
-    if [ "$name" = "UNRESOLVED" ]; then
-      fault "a directory change or branch switch precedes this command, so the repo or branch it acts on cannot be resolved"
-    fi
-    work="${cwd:-$PWD}"
-    if [ -n "$dirx" ]; then
-      case "$dirx" in
-        /*) work="$dirx" ;;
-        *) work="${cwd:-$PWD}/$dirx" ;;
-      esac
-    fi
-    if [ "$name" = "CURRENT" ]; then
-      name=$(git -C "$work" symbolic-ref --short -q HEAD 2>/dev/null) || name=""
-    fi
-    [ -n "$name" ] || continue
-    if [[ "$name" =~ $ISSUE_RE ]]; then
-      n=${BASH_REMATCH[2]}
-    else
+    if [ "$dirv" = "DYN" ]; then
+      # A branch literally named issue-N is evidence, but the repo it lands in
+      # cannot be resolved: fault. A current-branch check with an unknown
+      # directory is not evidence, so it is allowed.
+      if [ "$kind" = "BRANCH" ]; then
+        fault "a directory change or -C path precedes the issue branch $br, so the repo it acts on cannot be resolved"
+      fi
       continue
     fi
-    case " $checked " in
-      *" $n|$work "*) continue ;;
+    if [ "$kind" = "CURRENT" ]; then
+      br=$(git -C "$dirv" symbolic-ref --short -q HEAD 2>/dev/null) || br=""
+      [ -n "$br" ] || continue
+      if [[ "$br" =~ $ISSUE_RE ]]; then
+        n=${BASH_REMATCH[2]}
+      else
+        continue
+      fi
+    fi
+    key=" $n|$dirv "
+    case "$checked" in
+      *"$key"*) continue ;;
     esac
-    checked="$checked $n|$work "
-    decide_issue "$n" "$name" "$work"
-  done <<< "$names"
+    checked="$checked$key"
+    check_issue "$n" "$dirv" "$br"
+  done <<< "$parsed"
   exit 0
 }
 
