@@ -22,6 +22,11 @@ ok() { echo "ok   — $*"; }
 
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude" "$TMP/bin" "$TMP/stub" "$TMP/claims"
+# bgwork markers default to the machine-wide /tmp, keyed only by session id. safe-close-stop.test.sh
+# writes a `subagent` marker for sess-1 there and runs in parallel on the same CI shard, so this suite
+# keeps its markers in its own directory (issue #2391).
+export CLAUDE_BGWORK_MARKER_DIR="$TMP/markers"; mkdir -p "$CLAUDE_BGWORK_MARKER_DIR"
+[[ "$CLAUDE_BGWORK_MARKER_DIR" == "$TMP/markers" && -d "$CLAUDE_BGWORK_MARKER_DIR" ]] || { echo "FAIL: bgwork marker directory is not isolated" >&2; exit 1; }
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 REPO=acme/widgets
