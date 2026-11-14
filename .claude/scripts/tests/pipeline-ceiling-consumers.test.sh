@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Regression coverage for Issue #1729: the pipeline ceiling is a per-repo knob.
-# catalog: tests — Static check that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal
+# catalog: tests — Static check that `/subagent`, `/pm`, and `/wave` read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal
 #
 # The three original consumers used to hard-code the 3–4 band (`CEILING = 4` in
 # /wave, "3–4 concurrent pipelines" in /subagent and /pm), so widening one repo
 # meant a global rule edit. They now resolve PIPELINE_CEILING through
-# `active-work-cap.sh --ceiling`, and so does the fourth consumer,
-# /pm-forgotten-pr's merge dispatch. This suite fails if any of them stops
+# `active-work-cap.sh --ceiling`. This suite fails if any of them stops
 # resolving it, or if a literal ceiling creeps back into slot math.
 
 set -euo pipefail
@@ -39,7 +38,6 @@ PM_OWNERSHIP=.claude/skills/pm/modules/shared/ownership.md
 PM_FLOW_LAUNCH=.claude/skills/pm/modules/flow/launch.md
 PM_FLOW_REFILL=.claude/skills/pm/modules/flow/refill.md
 WAVE=.claude/skills/wave/SKILL.md
-FORGOTTEN=.claude/skills/pm-forgotten-pr/SKILL.md
 
 # --- each consumer resolves the ceiling from the script ---------------------
 require_text "$SUBAGENT" 'ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh' \
@@ -50,9 +48,7 @@ require_text "$PM" 'CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling)' \
   '/pm Step 0 must read the ceiling via active-work-cap.sh --ceiling'
 require_text "$WAVE" 'CEILING    = "$ACTIVE_WORK_CAP_SH" --ceiling' \
   '/wave Step 6 must read CEILING via active-work-cap.sh --ceiling'
-require_text "$FORGOTTEN" '"$(resolve_script active-work-cap.sh)" --ceiling' \
-  '/pm-forgotten-pr merge dispatch must read the ceiling via active-work-cap.sh --ceiling'
-ok "/subagent, /pm, /wave, and /pm-forgotten-pr resolve the ceiling from active-work-cap.sh --ceiling"
+ok "/subagent, /pm, and /wave resolve the ceiling from active-work-cap.sh --ceiling"
 
 # --- no literal ceiling left in slot math -----------------------------------
 # The historical literals, in both dash spellings — an alternation, not a
@@ -60,9 +56,7 @@ ok "/subagent, /pm, /wave, and /pm-forgotten-pr resolve the ceiling from active-
 # default ("default 4", the shell fallback `CEILING=4` when the script is
 # absent) is fine; the band itself, or the slot-math pseudo-code form
 # `CEILING    = <n>` (spaces around `=`, which no shell assignment has), is not.
-# /pm-forgotten-pr's merge dispatch honours the same ceiling, so it is held to
-# the literal checks too.
-for FILE in "$SUBAGENT" "$PM" "$PM_RANK_PRESENT" "$PM_RANK_SCORE" "$PM_WINDOW_FIT" "$PM_FLOW_LAUNCH" "$PM_FLOW_REFILL" "$WAVE" "$FORGOTTEN"; do
+for FILE in "$SUBAGENT" "$PM" "$PM_RANK_PRESENT" "$PM_RANK_SCORE" "$PM_WINDOW_FIT" "$PM_FLOW_LAUNCH" "$PM_FLOW_REFILL" "$WAVE"; do
   reject_pattern "$FILE" '3(–|-)4 (concurrent|pipeline|ceiling|active|slots?|parallel|band)' \
     "$FILE still hard-codes the 3–4 band"
   reject_pattern "$FILE" 'CEILING[[:space:]]+=[[:space:]]*[0-9]' \
@@ -74,10 +68,6 @@ ok "no consumer hard-codes a numeric ceiling in slot math"
 # --- launches fill to LIMIT = min(CEILING, CAP), never the raw ceiling ------
 # A consumer that launches up to the bare CEILING outruns ACTIVE_WORK_CAP
 # whenever a repo sets the ceiling above the cap (PR #1732 review round 1).
-require_text "$FORGOTTEN" 'min(PIPELINE_CEILING, ACTIVE_WORK_CAP)' \
-  '/pm-forgotten-pr merge dispatch must launch up to min(PIPELINE_CEILING, ACTIVE_WORK_CAP)'
-require_text "$FORGOTTEN" '`--cap`' \
-  '/pm-forgotten-pr must read the cap as well as the ceiling'
 require_text "$PM_RANK_PRESENT" 'up to the **`LIMIT` concurrent-pipeline** limit' \
   '/pm launch guidance must fill up to Step 0 LIMIT'
 require_text "$PM_FLOW_REFILL" 'below the effective limit (`LIMIT`, Step 0)' \
@@ -90,7 +80,7 @@ for FILE in "$PM" "$PM_RANK_PRESENT" "$PM_FLOW_LAUNCH"; do
 done
 reject_pattern "$PM_FLOW_REFILL" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
   '/pm 3.4 refill must trigger below Step 0 LIMIT, not the raw CEILING'
-ok "/pm and /pm-forgotten-pr launch up to min(CEILING, CAP), not the raw ceiling"
+ok "/pm launches up to Step 0 LIMIT, not the raw ceiling"
 
 # --- the short recommendation list cannot become the cold-start batch ---
 PM_SHORTLIST=$(sed -n '/^### 1B\.3:/,/^### 1B\.4:/p' "$ROOT/$PM_RANK_SCORE")

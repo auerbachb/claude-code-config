@@ -10,10 +10,8 @@
 #   TTL expiry
 #   Emitter allowlist drift: header VALID EMITTERS (printed verbatim by --help)
 #     must match the --emitter case allowlist (Issue #1464)
-#   Emitter call-site coverage: all six canonical emitter SKILL.md files carry an
+#   Emitter call-site coverage: all five canonical emitter SKILL.md files carry an
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
-#   Runnable-invocation pin: /harness-audit ships its reservation as an executable
-#     snippet, so that snippet must survive deletion detection on its own
 #   HOME-uniqueness invariant: no two tests may share a session-state.json, with
 #     a planted-duplicate negative control proving the check can fail (#1601)
 #
@@ -496,7 +494,7 @@ fi
 # 36. Header VALID EMITTERS list matches the --emitter case allowlist.
 #     usage() prints the header verbatim (sed '2,/^$/p'), so --help output IS
 #     the header: a stale emitter list is a user-facing contract bug, not a
-#     comment typo.  Pins the harness-audit drift found in Issue #1464.
+#     comment typo.  Pins the emitter-list drift found in Issue #1464.
 #     Both lists are extracted by anchoring on a structural marker and reading
 #     the next line -- the VALID EMITTERS heading for the header, the
 #     `case "$EMITTER" in` statement for the allowlist -- then sorted before
@@ -504,8 +502,8 @@ fi
 #     bash) does not trip the guard.
 #     Each list is split into tokens BEFORE whitespace is trimmed, and only the
 #     token edges are trimmed, so whitespace interior to a name is preserved --
-#     a malformed header entry like "harness -audit" stays distinct from
-#     "harness-audit" and is reported as drift rather than normalized away.
+#     a malformed header entry like "start -issue" stays distinct from
+#     "start-issue" and is reported as drift rather than normalized away.
 #     Fails closed if either list cannot be extracted.
 # ---------------------------------------------------------------------------
 new_home H
@@ -523,26 +521,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 37. harness-audit is accepted by --reserve (behavioral pin for the sixth
-#     canonical emitter named in chip-launching.md).
-# ---------------------------------------------------------------------------
-new_home H
-rc_ha=0
-tid_ha="$(run_registry "$H" --reserve --emitter harness-audit --issue 1464 --cap-free 3 2>/dev/null)" || rc_ha=$?
-if [[ $rc_ha -eq 0 && -n "$tid_ha" ]]; then
-  ok "--emitter harness-audit is accepted by --reserve"
-else
-  fail "--emitter harness-audit should be accepted (rc=$rc_ha, tid='$tid_ha')"
-fi
-
-# ---------------------------------------------------------------------------
 # 38. Every canonical emitter SKILL.md carries an EXPLICIT --reserve call site.
 #     chip-launching.md §Offer Registry requires every spawn_task emitter to
 #     reserve first, but a requirement inherited purely by reference is not
-#     greppable: /harness-audit satisfied it that way for months and the census
+#     greppable: one emitter satisfied it that way for months and the census
 #     silently undercounted whenever it emitted (Issue #1388, found by the
-#     chip-emission audit).  Test 37 pins that the registry ACCEPTS
-#     harness-audit; this pins that the skill actually CALLS it.
+#     chip-emission audit).  This pins that each skill actually CALLS it.
 #
 #     The check is PROXIMITY-bounded, not same-line and not file-wide.  The file
 #     is flattened to one whitespace-normalized line, then chip-offer-registry.sh
@@ -554,7 +538,7 @@ fi
 #         merely name-drops the script in unrelated prose would satisfy it.
 #       - Either order is required because emitters genuinely spell the call
 #         three ways: bare `chip-offer-registry.sh --reserve` (pm, prompt,
-#         wave), `--reserve --emitter X` (start-issue, harness-audit), and
+#         wave), `--reserve --emitter X` (start-issue), and
 #         `--emitter X ... --reserve` (issue-maker).  Requiring the --emitter
 #         value itself would fail the first three outright, so it is not part
 #         of the assertion.  The widest real gap is issue-maker's ~60 chars, so
@@ -568,7 +552,7 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SKILLS_DIR="$REPO_ROOT/.claude/skills"
-CANONICAL_EMITTERS=(pm prompt wave issue-maker start-issue harness-audit)
+CANONICAL_EMITTERS=(pm prompt wave issue-maker start-issue)
 missing_reserve=()
 missing_file=()
 for emitter in "${CANONICAL_EMITTERS[@]}"; do
@@ -595,70 +579,6 @@ elif (( ${#missing_reserve[@]} > 0 )); then
   fail "emitters without an explicit chip-offer-registry.sh --reserve call site: ${missing_reserve[*]}"
 else
   ok "all ${#CANONICAL_EMITTERS[@]} canonical emitters carry an explicit --reserve call site"
-fi
-
-# ---------------------------------------------------------------------------
-# 39. /harness-audit's reservation must exist as a RUNNABLE invocation, not only
-#     as a mandate sentence.
-#
-#     Test 38 asks a narrower question than its name suggests: does the skill
-#     name the reserve command anywhere in its own text?  For five emitters that
-#     IS the call site — a SKILL.md instruction is what gets executed.
-#     /harness-audit is the exception: it states the mandate in prose AND ships a
-#     runnable snippet, and test 38 sees only the prose, because the snippet
-#     spells the command as "$REGISTRY" rather than the literal script name.
-#     Measured on this tree: deleting the snippet leaves test 38 green, and the
-#     snippet alone does not satisfy test 38 at all (CodeAnt review, PR #1615).
-#     So 38 cannot detect the executable call site disappearing.
-#
-#     Test 38 is deliberately NOT tightened to require a fenced call for every
-#     emitter: five of the six state the call in prose only, so a file-wide fence
-#     rule would fail them (measured — the reason the same requirement was
-#     declined in review round 2).  The fence requirement is therefore scoped to
-#     the one emitter that actually ships a fence.
-#
-#     Only lines that could actually invoke the registry are considered.  Shell
-#     fences alone open a scanned region (a ```text block naming the flags is not
-#     a call); every other fence marker closes it.  Inside, comment lines and
-#     pure output statements (echo/printf) are dropped.  Each dropped line and
-#     fence marker is replaced by a separator wider than the match window, so a
-#     window can never span two blocks and a dropped line cannot join its
-#     neighbours into a false one.
-#
-#     Two conditions must then hold together: a command expression must sit near
-#     --reserve, and --emitter harness-audit must sit near it too.  The command
-#     expression is matched name-agnostically -- the literal script name OR any
-#     "$VAR" command -- deliberately NOT pinned to "$REGISTRY".  Pinning the
-#     current spelling would false-fail a rename, and would also fail if the
-#     snippet ever switched to the literal script name, which is the direction
-#     this guard should welcome.  What it does reject is a bare flag string
-#     assignment with no command in front of it.
-#     (CodeAnt and CodeRabbit reviews, PR #1615.)
-# ---------------------------------------------------------------------------
-HA_SKILL_MD="$SKILLS_DIR/harness-audit/SKILL.md"
-if [[ ! -f "$HA_SKILL_MD" ]]; then
-  fail "harness-audit SKILL.md not found at $HA_SKILL_MD"
-else
-  ha_sep="$(printf '%*s' 130 '' | tr ' ' '#')"
-  ha_fenced="$(awk -v sep="$ha_sep" '
-      /^[[:space:]]*```(bash|sh|shell)[[:space:]]*$/ { in_fence = 1; printf "%s ", sep; next }
-      /^[[:space:]]*```/                             { in_fence = 0; printf "%s ", sep; next }
-      !in_fence                                      { next }
-      /^[[:space:]]*#/                               { printf "%s ", sep; next }
-      /^[[:space:]]*(echo|printf)[[:space:]]/        { printf "%s ", sep; next }
-                                                     { print }
-    ' "$HA_SKILL_MD" 2>/dev/null | tr '\n' ' ' | tr -s '[:space:]' ' ')"
-  ha_cmd_re='(chip-offer-registry\.sh|"\$[A-Za-z_][A-Za-z0-9_]*").{0,160}--reserve'
-  ha_flag_re='--emitter harness-audit.{0,120}--reserve|--reserve.{0,120}--emitter harness-audit'
-  if [[ -z "$ha_fenced" ]]; then
-    fail "harness-audit SKILL.md: no shell-fenced lines found to check"
-  elif ! grep -qE -- "$ha_cmd_re" <<<"$ha_fenced"; then
-    fail "harness-audit: --reserve appears in a shell fence but with no command expression in front of it (a bare flag string is not an invocation)"
-  elif ! grep -qE -- "$ha_flag_re" <<<"$ha_fenced"; then
-    fail "harness-audit: --reserve invocation missing from every shell fence (test 38 still passes on the prose mandate alone, so it cannot catch this)"
-  else
-    ok "harness-audit ships a runnable --reserve invocation inside a shell fence"
-  fi
 fi
 
 # ---------------------------------------------------------------------------

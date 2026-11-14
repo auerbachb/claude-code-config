@@ -5,7 +5,6 @@
 # PURPOSE
 #   Reads `.claude/model-fleet.json` and answers "what is the top-tier model
 #   right now?" so callers never carry a model literal in their own body. The
-#   audit skill `/harness-audit` (issue #770) is the first consumer; the
 #   broader migration of `/prompt`, chip `**Model:**` lines, and the agent
 #   definitions off their hardcoded names is tracked in issue #749.
 #

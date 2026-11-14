@@ -1,6 +1,6 @@
 # Chip Launching — One-Click Coding Threads
 
-Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the six canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), `/wave` (Step 7.1), and `/harness-audit` (Step 5). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`. **That rule also decides whether such an offer may exist at all:** its §"Emission gate" bars an ad-hoc chip from any thread that could run the work itself, so the mechanics below apply only to a chip that gate already permits. Recovery when one slips out anyway: §Wrong-chip recovery below.
+Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the five canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), and `/wave` (Step 7.1). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`. **That rule also decides whether such an offer may exist at all:** its §"Emission gate" bars an ad-hoc chip from any thread that could run the work itself, so the mechanics below apply only to a chip that gate already permits. Recovery when one slips out anyway: §Wrong-chip recovery below.
 
 **Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
 
@@ -12,7 +12,7 @@ Canonical mechanics for offering a coding-thread prompt as a **task chip** the u
 
 Per [#613](https://github.com/auerbachb/claude-code-config/issues/613), inline execution is the default for subagent-fit work; a separate thread is for work too big for a subagent. [#1229](https://github.com/auerbachb/claude-code-config/issues/1229) made that default unconditional — it holds in **any** thread that can execute, not only one that has already announced itself as a PM thread. `/pm`, `/prompt`, and `/subagent` already partition inline-vs-thread with `/subagent` Step 4's three-criterion too-big test, so they satisfy this by construction. The **chip surfaces that do not partition** — `/wave`, `/issue-maker`, `/start-issue` — apply this gate **before offering a standalone-thread chip** for subagent-fit work. Audit + rationale: `pm-routing-audit-2026-07.md` (#701, routing), `too-big-recalibration-2026-07.md` (#776, the fit bar itself), and `inline-default-any-thread-2026-08.md` (#1229, this flip).
 
-> **The section name is historical.** It is cited by name from six surfaces and from four `ERROR: … PM-context inline gate unavailable` strings, so it stays stable. The check it names is **execution capability**, not the presence of PM context.
+> **The section name is historical.** It is cited by name from several surfaces and from four `ERROR: … PM-context inline gate unavailable` strings, so it stays stable. The check it names is **execution capability**, not the presence of PM context.
 
 **Two checks decide inline vs separate thread. Slot availability is not one of them** — it decides only *when* inline work starts (#776, AC4).
 
@@ -226,24 +226,9 @@ Two forms — pick by whether the emitter already holds the claim:
 
 This does not touch the placement rule above — the claim instruction is *content following* the preamble, so the `**Model:**`-first / `**Effort:**`-next / no-blank-line ordering that `chip-model-guard-lint.sh` enforces is unchanged. Contract: `.claude/reference/issue-claim.md` (issue #873).
 
-### Literal vs resolved model names (emitter classes)
+### Model names are literal
 
-Most emitters write the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table.
-
-`/harness-audit` is the exception, and the reason generalizes. Its recommendation is always "whatever the strongest model is right now" — it is not reasoning about the work, it is naming the top of the fleet. A literal there is guaranteed to go stale the next time the fleet moves, which is exactly what happened across surfaces in #749. So it resolves the tier at run time through `model-fleet.sh` and carries **no model name in its body at all**.
-
-This makes two emitter classes, both enforced by `chip-model-guard-lint.sh`:
-
-| Class | Emitters | Model line | Lint check |
-|-------|----------|------------|------------|
-| **Literal** | `/pm`, `/prompt`, `/start-issue`, `/issue-maker`, `/wave` | Named in the skill body | Must contain the top-tier literal (the pre-click warning) |
-| **Resolver** | `/harness-audit` | Resolved via `model-fleet.sh` | Must reference the resolver and the pre-click warning, and must **not** contain any model literal |
-
-The resolver check is strictly stronger, not a carve-out: a literal appearing in a resolver emitter is a lint **error**, since it would reintroduce precisely the drift the indirection removes. Everything else in this document — first-line placement, the `**Effort:**` line, the verbatim guard, the short-summary repetition, the pre-click picker warning — applies identically to both classes. A resolver emitter still repeats its `**Model:**` line in the visible summary; it just computes the name instead of quoting it.
-
-**The classes split on the model line only — effort is a literal in both.** What makes the model resolvable is that "the top of the fleet" is a fact about the fleet, which moves; the effort a piece of work needs is a judgment about the work, which does not. So a resolver emitter writes its `**Effort:**` level out like everyone else. Since #791 the resolved model name is itself versionless (`model-fleet.json`'s `display` values are family names), so the two indirections compose: #770 removed the drift of *where* the name is written, #791 removed the drift *inside* it.
-
-Use the resolver class only when the right model genuinely is "the top of the fleet" (or another position in it) rather than a per-task judgment. Everything else stays literal.
+Every emitter writes the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table. `chip-model-guard-lint.sh` checks each of the five emitters for the pre-click warning. (The `model-fleet.sh` resolver that a retired emitter once used is still available as a utility; no chip emitter uses it.)
 
 **Why prompt-level, not tooling-level:** there is no `spawn_task` model/effort parameter and no runtime mechanism for a thread to introspect its own active model — model identity is always asserted by the caller, never read back. The guard is therefore a best-effort self-report, not a hard technical guarantee. Full trade-off: `chip-model-guard-decision.md`.
 

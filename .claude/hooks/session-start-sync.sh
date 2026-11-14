@@ -1029,8 +1029,8 @@ fi
 # --- Reconcile durable scheduling state (issue #827) ---
 # CronCreate jobs are in-memory and die with the session that armed them, so
 # every job this file recorded before now is already gone. Purge that dead
-# bookkeeping and surface the durable on-disk records that DID survive (an
-# overdue harness-audit, a paused PR fleet). Fail-soft by contract — the
+# bookkeeping and surface the durable on-disk records that DID survive (a
+# due review-stack audit, a paused PR fleet). Fail-soft by contract — the
 # script always exits 0, and any failure here must not block the session.
 
 # Resolved from this hook's own location, not from the skills worktree: the

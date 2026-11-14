@@ -7,7 +7,7 @@
 # previous session is already gone by the time this runs. Rather than trying to
 # re-arm them (there is nothing left to re-arm), this purges the dead
 # bookkeeping and surfaces the durable on-disk records that DO survive — a
-# harness-audit month that came due, a paused PR fleet waiting to resume.
+# review-stack-audit month that came due, a paused PR fleet waiting to resume.
 #
 # Issue #874 FIX — multi-session safety:
 #   SessionStart fires across concurrent sessions sharing the same HOME.
@@ -36,7 +36,6 @@
 set -uo pipefail
 
 STATE_FILE="${HOME}/.claude/session-state.json"
-AUDIT_WATERMARK="${HOME}/.claude/harness-audit/last-run.json"
 REVIEW_STACK_WATERMARK="${HOME}/.claude/review-stack-audit/last-run.json"
 
 usage() {
@@ -72,7 +71,6 @@ WHAT IT PURGES (writes go through session-state.sh, the locked single writer)
                                           last tick is legitimately minutes old.
 
 WHAT IT SURFACES (durable, still meaningful)
-  harness-audit due this month  (~/.claude/harness-audit/last-run.json)
   review-stack-audit due this month
                                 (~/.claude/review-stack-audit/last-run.json)
   a paused PR fleet             (.pmm.paused_at)
@@ -380,29 +378,10 @@ fi
 # 2. Surface the durable records that DID survive
 # ---------------------------------------------------------------------------
 
-# 2a. harness-audit — the watermark file is the durable record; a session start
-#     is the tick. Sessions start far more often than monthly, so this cannot
-#     miss a month the way an expiring in-memory cron could.
-if [[ -f "$AUDIT_WATERMARK" ]]; then
-  MONTH="$(TZ='America/New_York' date +%Y-%m)"
-  AUDIT_DUE="$(jq -r --arg m "$MONTH" '
-      if (.nudge_enabled // false) != true then "off"
-      elif (.last_completed_month // "") == $m then "done"
-      elif (.last_offered_month // "") == $m then "offered"
-      else "due" end
-    ' "$AUDIT_WATERMARK" 2>/dev/null || echo "off")"
-  case "$AUDIT_DUE" in
-    due)     NOTICES+=("harness-audit is due for $MONTH — run /harness-audit --tick to inventory and get the judgment-pass chip.") ;;
-    offered) NOTICES+=("harness-audit already offered its $MONTH step-up chip — click it, or run /harness-audit to audit now.") ;;
-  esac
-fi
-
-# 2a-bis. review-stack-audit — same durable-watermark mechanism as 2a, for the
-#     sibling audit that asks whether the AI review tools still earn what we pay
-#     (issue #1201). It has no "offered" state: its tick runs the real comparison
-#     rather than offering a step-up chip, so a month is either done or due.
-#     MONTH is computed locally rather than reused from 2a, which only defines it
-#     when the harness-audit watermark exists.
+# 2a. review-stack-audit — the watermark file is the durable record; a session
+#     start is the tick (issue #1201). It has no "offered" state: its tick runs
+#     the real comparison rather than offering a step-up chip, so a month is
+#     either done or due.
 if [[ -f "$REVIEW_STACK_WATERMARK" ]]; then
   RS_MONTH="$(TZ='America/New_York' date +%Y-%m)"
   RS_DUE="$(jq -r --arg m "$RS_MONTH" '

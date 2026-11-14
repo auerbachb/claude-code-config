@@ -282,9 +282,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert skill.count('`model: ROUTED_MODEL`') == 3
     assert 'model-route.sh' in skill and 'failed write' in skill
     pmm = (root / '.claude/skills/pr-monitor-and-manage/references/pmm-act.md').read_text(encoding="utf-8")
-    forgotten = (root / '.claude/skills/pm-forgotten-pr/SKILL.md').read_text(encoding="utf-8")
     assert 'model: ROUTED_MODEL' in pmm and 'task-model-route-dispatch' in pmm
-    assert 'model: ROUTED_MODEL' in forgotten and 'task-model-route-dispatch' in forgotten
     reference = (root / '.claude/reference/task-model-routing.md').read_text(encoding='utf-8')
     handoff_block = reference.split('# routed-handoff-write\n', 1)[1].split('\n```', 1)[0]
     submission_block = reference.split('# model-route-submission\n', 1)[1].split('\n```', 1)[0]

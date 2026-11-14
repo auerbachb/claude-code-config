@@ -880,7 +880,7 @@ classify_as() {
 }
 
 # Abbreviated verbatim body of CodeAnt inline finding 4157391754 (PR #1745).
-CODEANT_FINDING_BODY='**Suggestion:** The catalog claims `/pm-forgotten-pr` is covered, but the test never verifies its actual `--ceiling` read; leaving explanatory text intact could let dispatch regressions pass.
+CODEANT_FINDING_BODY='**Suggestion:** The catalog claims `/pm` is covered, but the test never verifies its actual `--ceiling` read; leaving explanatory text intact could let dispatch regressions pass.
 
 **Assessment:** 🟠 `Major` · 🔁 `Occurrence: Rarely` · 🏷️ `Incomplete implementation`
 

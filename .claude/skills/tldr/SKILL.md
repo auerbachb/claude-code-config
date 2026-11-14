@@ -10,7 +10,7 @@ argument-hint: "[all]"
 model: sonnet
 ---
 
-Explain this thread to someone who was not following it. Thread summary only — for one PR or issue use `/recap`.
+Explain this thread to someone who was not following it. Thread summary only.
 
 ## Read-only (hard rule)
 
@@ -22,7 +22,7 @@ Parse `$ARGUMENTS`:
 
 - Empty → **default** window.
 - `all` → **all** window (whole thread).
-- A PR/issue reference (`#N`, a number, a GitHub PR/issue URL) → print exactly one line, `For a PR or issue summary use /recap <ref>.`, and stop.
+- A PR/issue reference (`#N`, a number, a GitHub PR/issue URL) → if this thread touched that PR or issue, summarize this thread's work on it using the default window; otherwise print exactly one line, `No single-PR summary exists any more; this summary covers the thread only.`, and stop.
 
 ## Step 2: Choose the window
 

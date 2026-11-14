@@ -2,9 +2,7 @@
 
 ## Decision
 
-**The model guard rides in both the chip `prompt` and the fallback block.** Every chip-launched or pasted coding thread carries a mandatory model-guard preamble, positioned immediately after the `**Model:** {MODEL} — {REASON}` line and the `**Effort:** {LEVEL} — {REASON}` line that now follows it, defined once in `chip-launching.md` and inherited by reference — not restated — in all six canonical chip emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), `/wave` (Step 7.1), and `/harness-audit` (Step 5). Ad-hoc `spawn_task` offers inherit the same contract via `chip-spawn.md` (Issue #731).
-
-**Amendment (#770) — the `**Model:**` value may be resolved rather than written.** `/harness-audit` joined as the sixth emitter with one difference: its recommendation is definitionally "the top of the fleet", not a per-task judgment, so writing a literal would guarantee staleness on the next fleet change. It resolves the name at run time via `.claude/scripts/model-fleet.sh` and carries no model literal at all. This changes **nothing** about the guard itself — same verbatim preamble, same placement, same short-summary repetition, same pre-click warning. Only the provenance of the string differs. `chip-model-guard-lint.sh` splits emitters into literal and resolver classes accordingly, and forbids literals in the resolver class; the class table lives in `chip-launching.md` under "Literal vs resolved model names".
+**The model guard rides in both the chip `prompt` and the fallback block.** Every chip-launched or pasted coding thread carries a mandatory model-guard preamble, positioned immediately after the `**Model:** {MODEL} — {REASON}` line and the `**Effort:** {LEVEL} — {REASON}` line that now follows it, defined once in `chip-launching.md` and inherited by reference — not restated — in all five canonical chip emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), `/wave` (Step 7.1). Ad-hoc `spawn_task` offers inherit the same contract via `chip-spawn.md` (Issue #731).
 
 Since #791 the resolver returns a **family name** (`Fable`), not a versioned one — the two changes compose exactly: #770 removed the drift of *where* the name is written, #791 removed the drift inside the name itself.
 
@@ -86,9 +84,7 @@ Adding a guard that only some threads receive forces a choice: put it in the chi
 
 - Issue [#601](https://github.com/auerbachb/claude-code-config/issues/601) — this decision
 - `chip-launching.md` — canonical chip mechanics; defines the model-guard preamble this decision authorizes
-- `.claude/skills/pm/SKILL.md` Step 3.1, `.claude/skills/prompt/SKILL.md` Step 6, `.claude/skills/start-issue/SKILL.md` Step 7, `.claude/skills/issue-maker/SKILL.md` Step 9c, `.claude/skills/wave/SKILL.md` Step 7.1, `.claude/skills/harness-audit/SKILL.md` Step 5 — the six canonical chip emitters that inherit the guard by reference; ad-hoc offers via `.claude/rules/chip-spawn.md`
-- Issue [#770](https://github.com/auerbachb/claude-code-config/issues/770) — `/harness-audit` as the sixth emitter and the resolver-class amendment above
-- `.claude/reference/harness-audit.md` — why that emitter offers a step-up chip instead of spawning the top tier unattended
+- `.claude/skills/pm/SKILL.md` Step 3.1, `.claude/skills/prompt/SKILL.md` Step 6, `.claude/skills/start-issue/SKILL.md` Step 7, `.claude/skills/issue-maker/SKILL.md` Step 9c, `.claude/skills/wave/SKILL.md` Step 7.1, the five canonical chip emitters that inherit the guard by reference; ad-hoc offers via `.claude/rules/chip-spawn.md`
 - Issue [#731](https://github.com/auerbachb/claude-code-config/issues/731) — universal enforcement + conformance lint
 - Issue [#735](https://github.com/auerbachb/claude-code-config/issues/735) — upstream ask for `spawn_task` `model` parameter
 - Issue [#791](https://github.com/auerbachb/claude-code-config/issues/791) — versionless model names + the `**Effort:**` line; amended this record to hold the guard at model-only

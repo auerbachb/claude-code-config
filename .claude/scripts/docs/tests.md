@@ -136,7 +136,7 @@ opt-in of issue #1544.
 | [park-wake-publish.test.sh](../tests/park-wake-publish.test.sh) | Exercises both PM wake-publication fences with real state CAS and deterministic retirement races |
 | [pause-multisession.test.sh](../tests/pause-multisession.test.sh) | Tests per-session pause records and resume receipts (#1576) — interleaved concurrent pause writes staying independent, the extracted `/pause-resume` Step 1 selection program returning every un-resumed record newest-first, no masking when one is marked resumed, the legacy `.pause` / `.suspend` singletons as union members rather than an empty-map else-branch, and per-session resume receipts |
 | [phone-push-wait.test.sh](../tests/phone-push-wait.test.sh) | Tests for `phone-push-wait.sh` |
-| [pipeline-ceiling-consumers.test.sh](../tests/pipeline-ceiling-consumers.test.sh) | Static check that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal |
+| [pipeline-ceiling-consumers.test.sh](../tests/pipeline-ceiling-consumers.test.sh) | Static check that `/subagent`, `/pm`, and `/wave` read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal |
 | [pm-backlog-new-issue.test.sh](../tests/pm-backlog-new-issue.test.sh) | Runs the real `/pm` Step 1B.2 `pm-1b2-new-issues` block against a stubbed gh and the real session-state.sh, proving a freshly filed issue lands in NEW_ISSUES on the next scan |
 | [pm-board-page.test.sh](../tests/pm-board-page.test.sh) | Verifies the PM project page, private publication and real session-state wiring. |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
@@ -184,7 +184,7 @@ opt-in of issue #1544.
 | [reply-thread.test.sh](../tests/reply-thread.test.sh) | Tests for `reply-thread.sh` |
 | [repo-bootstrap.test.sh](../tests/repo-bootstrap.test.sh) | Tests for `repo-bootstrap.sh` — file-set check/apply/report behavior and the exit-code contract |
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
-| [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control |
+| [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free monthly report destination for `/review-stack-audit`, over two series, with a month-only negative control |
 | [rerun-cancelled-required-ci.test.sh](../tests/rerun-cancelled-required-ci.test.sh) | Exercises the exact cancelled-required-job retry, GitHub identity checks and repo-scoped CAS. |
 | [review-availability-choose.test.sh](../tests/review-availability-choose.test.sh) | Tests the free-reviewer choice and request log in `review-availability.sh` (choose, record-request) — earliest answer, limited and capped reviewers, fewer-recent tie-break, alternation across PRs, recorded choice |
 | [review-availability.test.sh](../tests/review-availability.test.sh) | Tests the account-wide reviewer availability record and the request-skip decision in `review-availability.sh` — recording, decide, mark-skip, check-skip, fail-toward-asking cases |

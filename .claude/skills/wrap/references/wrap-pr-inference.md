@@ -82,7 +82,7 @@ Scan the **current conversation** for signals that this thread never contained c
 
 - The thread ran `/issue-maker`, or declared itself capture-only / issue-only mode.
 - The thread's entire output was creating/editing/commenting on issues — no implementation.
-- The thread is PM/monitoring/orchestration only (`/pm`, `/status`, `/standup`, `/recap`) with no code written.
+- The thread is PM/monitoring/orchestration only (`/pm`, `/status`, `/standup`) with no code written.
 - The thread explicitly concluded the work was already solved elsewhere, or nothing to implement.
 - No branch, worktree, commit, push, or PR was ever created or discussed.
 

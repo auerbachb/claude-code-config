@@ -32,7 +32,7 @@
 #
 #   So the anchor is an explicit HTML comment on its own line above the opening
 #   fence, reusing the `<!-- key: value -->` idiom already in this repo
-#   (`<!-- churn-hotspot: … -->`, `<!-- harness-audit: … -->`):
+#   (`<!-- churn-hotspot: … -->`):
 #
 #       <!-- test-anchor: pmm-wake-step-4a-scan -->
 #       ```bash
