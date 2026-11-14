@@ -28,7 +28,7 @@
 #   review-availability.sh observe [--repo <owner/name>] < reviews.json
 #   review-availability.sh --help
 #   observe     — clears a reviewer's record once a completed, non-notice review by that bot
-#                 is newer than the record's read time (the account is answering again).
+#                 follows its refusal event (untimed), or discovery time (legacy timed).
 #
 # SETTINGS (expected response time from a request to a free reviewer's review, minutes)
 #   REVIEW_EXPECTED_RESPONSE_CODEANT_MIN     default 4   (2026-11-11 baseline median)
@@ -104,7 +104,7 @@ cmd_record() {
   now_iso="$(jq -rn --argjson n "$now" '$n | todateiso8601')"
   # One item per reviewer whose NEWEST notice is present. A usable newest notice carries
   # its record. An untimed refusal retains provenance but never asserts availability.
-  # Over-cap windows keep the existing fail-toward-asking clearing behavior.
+  # Known zero and over-cap windows keep the existing clearing behavior.
   items="$(printf '%s' "$comments" | jq -c -L "$LIB_DIR" \
     --arg repo "${repo:-unknown}" --argjson pr "$pr" --arg now_iso "$now_iso" --argjson cap "$CR_WINDOW_CAP_SECONDS" '
     include "cr-retry-window";
@@ -122,11 +122,11 @@ cmd_record() {
     [ reviewers[] as $r
       | ([ .[] | select((.user.login // "") == $r.login)
               | select((.body // "") | type == "string" and test($r.notice; "i"))
-              | {t: notice_epoch, body: .body, w: (.body | cr_retry_window_seconds)}
+              | {t: notice_epoch, body: .body, w: (.body | cr_retry_window_seconds), window_known: ((.body | cr_retry_capture) != null)}
               | select(.t != null)
               # Ignore prose BEFORE choosing the newest notice: it must neither
               # replace nor clear a genuine older notice, including in this page set.
-              | select(.w > 0 or (.body | explicit_untimed($r.key))) ] | sort_by(.t) | last) as $n
+              | select(.window_known or (.body | explicit_untimed($r.key))) ] | sort_by(.t) | last) as $n
       | select($n != null)
       | $n.w as $w
       | if ($w > 0 and $w <= $cap) then
@@ -140,7 +140,7 @@ cmd_record() {
             source_repo: $repo,
             source_pr: $pr,
             read_at: $now_iso}}
-        elif ($w == null or $w == 0) then
+        elif ($n.window_known | not) then
           {key: $r.key, usable: true, value: {
             refusal_kind: "untimed", next_available_epoch: null, next_available: null,
             notice_epoch: $n.t, notice_at: ($n.t | todateiso8601), window_seconds: null,
@@ -381,12 +381,13 @@ cmd_check_skip() {
 
 # cmd_observe --repo <owner/name> < reviews.json
 # Clears a free reviewer's availability record when a completed review by that bot is
-# newer than the record's read time and is not itself a limit notice (issue #2256).
+# newer than its refusal notice (untimed), or discovery time (legacy timed records),
+# and is not itself a limit notice (issues #2256, #2336).
 # CodeRabbit's allowance is account-wide, so such a review shows it is answering again
 # and the stale wait must not keep blocking a request or a green-HEAD override. Only a
 # review object is evidence here: a notice edited in place is not (a known residual).
 cmd_observe() {
-  local repo="" reviews recs cleared="" key login notice rec read_epoch answered tomb
+  local repo="" reviews recs cleared="" key login notice rec baseline_epoch answered tomb
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) [[ $# -ge 2 ]] || die 2 "--repo needs a value"; repo="$2"; shift 2 ;;
@@ -415,18 +416,19 @@ cmd_observe() {
       recs_now="$(state_get '.review_availability' "$repo")" || die 5 "could not re-read the review availability records"
       rec="$(jq -c --arg k "$key" 'if type == "object" then (.[$k] // null) else null end' <<<"$recs_now")"
       if [[ "$(jq -r 'type' <<<"$rec")" != object ]]; then outcome="none"; break; fi
-      read_epoch="$(jq -r '(.read_at // "") | fromdateiso8601? // empty' <<<"$rec")"
-      # An unreadable read time already reads as "no record" in decide: nothing to clear.
-      if ! [[ "$read_epoch" =~ ^[0-9]+$ ]]; then outcome="unreadable"; break; fi
-      answered="$(jq -r --arg l "$login" --argjson rd "$read_epoch" --arg n "$notice" --argjson rec "$rec" '
+      baseline_epoch="$(jq -r 'if .refusal_kind == "untimed" then (.notice_epoch | select(type == "number"))
+        else ((.read_at // "") | fromdateiso8601? // empty) end' <<<"$rec")"
+      # Discovery may happen after a real recovery: untimed ranking follows event
+      # time. Keep the legacy timed recovery boundary and CAS behavior unchanged.
+      if ! [[ "$baseline_epoch" =~ ^[0-9]+$ ]]; then outcome="unreadable"; break; fi
+      answered="$(jq -r --arg l "$login" --argjson rd "$baseline_epoch" --arg n "$notice" --argjson rec "$rec" '
         [ .[] | select((.user.login // "") == $l)
                | select((.submitted_at // "") | type == "string" and . != "")
                | select(((.submitted_at | fromdateiso8601?) // 0) > $rd)
                | select(if $rec.refusal_kind == "untimed" then
                    # Ranking-only refusal recovery requires a real completed review,
                    # never a blank approval, command ACK, skipped run or old notice.
-                   (((.submitted_at | fromdateiso8601?) // 0) > $rec.notice_epoch)
-                   and ((.state // "") | IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED"))
+                   ((.state // "") | IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED"))
                    and ((.commit_id // "") | test("^[a-f0-9]{40}$"))
                    and ((.body // "") | type == "string" and length >= 40
                      and (test($n + "|review triggered|review request|review queued|review skipped|analysis skipped|auto.?resolve|automatically resolved|instruction.*saved"; "i") | not))
@@ -435,8 +437,7 @@ cmd_observe() {
         | length > 0' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
       if [[ "$answered" != true ]]; then outcome="kept"; break; fi
       # Clear to a tombstone, not null: record re-reads every notice still in the PR on each
-      # run, and a null slot would let it rewrite this already-answered notice with a fresh
-      # read time, which observe could then never clear again.
+      # run, and a null slot would resurrect this already-answered notice between passes.
       tomb="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{cleared_notice_epoch: .notice_epoch, cleared_at: $at, next_available: null}' <<<"$rec")" \
         || die 4 "could not build the $key tombstone — nothing cleared"

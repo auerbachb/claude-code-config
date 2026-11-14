@@ -309,6 +309,34 @@ expect_eq "fresh substantive formal review clears untimed refusal" "$(jq -c '.cl
 "$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
 expect_eq "cleared untimed refusal cannot resurrect from the same notice" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" "null"
 
+
+# A parsed zero-minute reset is known timing, not an unknown refusal (6871668555 #1).
+for login in 'coderabbitai[bot]' 'codeant-ai[bot]'; do
+  rm -f "$STATE_FILE"
+  zero=$(jq -cn --arg t "$(iso $NOW)" --arg l "$login" '[{user:{login:$l},body:"Review limit reached. Next review available in 0 minutes.",created_at:$t,updated_at:$t}]')
+  out=$("$AV" record --repo o/r --pr 7 <<<"$zero")
+  expect_eq "zero-minute reset creates no unknown refusal: $login" "$(jq -c '.written' <<<"$out")" '[]'
+  older=$(jq -cn --arg t "$(iso $((NOW - 60)))" --arg l "$login" '[{user:{login:$l},body:"**Review limit reached**",created_at:$t,updated_at:$t}]')
+  "$AV" record --repo o/r --pr 7 <<<"$older" >/dev/null
+  "$AV" record --repo o/r --pr 7 <<<"$zero" >/dev/null
+  key=coderabbit; [[ "$login" == 'codeant-ai[bot]' ]] && key=codeant
+  expect_eq "new zero-minute reset clears prior unknown refusal: $login" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" 'null'
+done
+
+# A valid recovery after the refusal but before discovery must count (6871668555 #2).
+rm -f "$STATE_FILE"
+"$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
+recovered=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the changed selector and regression tests; no actionable findings."}]')
+out=$("$AV" observe --repo other/repo <<<"$recovered")
+expect_eq "post-notice pre-discovery substantive recovery clears refusal" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+"$AV" record --repo other/repo --pr 1213 < "$TMP/literal.json" >/dev/null
+expect_eq "pre-discovery recovery tombstone prevents replay" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" 'null'
+# After a newer refusal arrives, the same successful review cannot clear it.
+newer=$(jq -cn --arg t "$(iso $((NOW - 10)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo other/repo --pr 1213 <<<"$newer" >/dev/null
+out=$("$AV" observe --repo other/repo <<<"$recovered")
+expect_eq "newer refusal survives earlier recovery replay" "$(jq -c '.cleared' <<<"$out")" '[]'
+
 # --- Usage ---------------------------------------------------------------------------------
 "$AV" decide --window-s 0 >/dev/null 2>&1 && rc=0 || rc=$?
 expect_eq "decide: zero window is a usage error" "$rc" "2"
