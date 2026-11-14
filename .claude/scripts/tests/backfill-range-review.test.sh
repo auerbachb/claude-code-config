@@ -646,6 +646,32 @@ check_eq "33: not recorded as skipped_empty (net diff is one file)" "null" \
   "$(jq -r '.repos["acme/widgets"].skipped_empty' "$MARKER")"
 check_eq "33: the reviewer ran once on the ordinary stretch" "1" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
 
+# 34: a failed `git diff --name-only` must stop the run, never read as "zero files".
+# A shim fails only the name-only diff; the net-empty pair must not be skipped and
+# the marker must not move (the stop is the named internal error, exit 5).
+nerepo ne5
+printf 'x\n' > "$NR/t34.txt"; git -C "$NR" add t34.txt; git -C "$NR" commit -qm "Add t34 (#741)"
+NE5_A="$(git -C "$NR" rev-parse HEAD)"
+git -C "$NR" rm -q t34.txt; git -C "$NR" commit -qm "Revert t34 (#742)"
+git -C "$NR" push -q origin main 2>/dev/null
+reset_state
+seed_marker "$NSEED"
+mkdir -p "$TMP/gitshim"
+REAL_GIT="$(command -v git)"
+cat > "$TMP/gitshim/git" <<'SHIM'
+#!/bin/sh
+case " $* " in *" --name-only "*) exit 128 ;; esac
+exec "$REAL_GIT" "$@"
+SHIM
+chmod +x "$TMP/gitshim/git"
+BEFORE34="$(marker_sha)"
+OUT="$(env PATH="$TMP/gitshim:$PATH" REAL_GIT="$REAL_GIT" "$RUN_BASH" "$SCRIPT" --range --repo-dir "$NR" --repo acme/widgets \
+  --timeout 30 --channels coderabbit --range-bound 3 --max-reviews 5 --ignore-window 2>"$TMP/stderr")"; RC=$?
+check_eq "34: a failed diff stops the run with exit 5" "5" "$RC"
+check_contains "34: stop reason is the named internal error" "stop=range_internal_error" "$OUT"
+check_eq "34: marker unchanged (no advance on a failed diff)" "$BEFORE34" "$(marker_sha)"
+check_eq "34: nothing recorded as skipped_empty" "null" "$(jq -r '.repos["acme/widgets"].skipped_empty' "$MARKER")"
+
 echo
 echo "backfill-range-review tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

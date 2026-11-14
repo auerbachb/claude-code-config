@@ -77,11 +77,11 @@
 #   a reviewer: it is recorded in the marker's repos[<repo>].uncovered list and
 #   the marker moves past it in the same atomic write. That is the only case
 #   where the marker passes code no reviewer saw; a lowered bound yields
+#   A stretch is always covered in full: the reviewer is only ever handed a
+#   stretch within its own hard cap, so no range record is partial.
 #   A net-empty stretch (zero changed files, e.g. a change and its revert) is
 #   passed without a reviewer and recorded in repos[<repo>].skipped_empty; the
 #   tree is unchanged from the marker, so nothing from it remains (issue #2338).
-#   A stretch is always covered in full: the reviewer is only ever handed a
-#   stretch within its own hard cap, so no range record is partial.
 #   Reference: .claude/reference/backfill-review.md §Range mode
 #
 # ENVIRONMENT
