@@ -79,8 +79,15 @@ miss.
 `unattended.sh digest --mark` prints each question not yet listed with its recommended option, its
 options, and what was done meanwhile, then appends a `listed` watermark so nothing is listed twice.
 The UserPromptSubmit hook does this automatically; `unattended.sh off` does it when the operator ends
-the mode in chat. The watermark is marked when the list is injected, not when the reply is read — a
-crash in between loses the reminder, not the record (the file keeps every question).
+the mode in chat. A list the UserPromptSubmit hook (or the guard, for an away expiry) triggers is first persisted as a
+pending-delivery record under `~/.claude/unattended/pending/` and only then marked listed; it counts
+as **delivered** when the hook's delivery reference shows up in the session's transcript (the harness
+records injected context there), and the next operator prompt (`unattended.sh settle`) shows any
+record that did not reach the model again. A hook killed after the mark costs a repeat, never a
+lost question. Residual window: the model may have received a list and not printed it for him, which
+nothing here can see; and a listing with no readable transcript (a bare CLI call such as `off`, or a
+payload without `transcript_path`) is marked when rendered, as before. Details:
+`presence-windows.md` §Delivery of the saved questions.
 
 ## When the window runs out (issue #2294)
 

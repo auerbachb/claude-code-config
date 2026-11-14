@@ -34,11 +34,12 @@
 #   presence.sh expire              a window ran out? Claim it once for all threads and print what to do.
 #                                   Exit 0 this caller won and printed the notice; 1 no window has run out;
 #                                   10 it ran out but another thread holds the claim (or the write was refused,
-#                                   which the next evaluation retries); 11 the claim could not be written
+#                                   which the next evaluation retries); 11 the claim could not be written, or a closing-deadline
+#                                   correction is still pending (nothing is claimed until it lands)
 #   presence.sh return [--no-dialog]  the operator spoke after a window ran out: end away handling, record a
-#                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race, 11 the write failed
+#                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race, 11 the write failed (or a closing correction is pending)
 #   presence.sh relist              a return winner stopped listing (the dialog is still "listing" after two
-#                                   minutes): take over the return and list. Exit 0 taken, 10 another took it, 1 none stale
+#                                   minutes): take over the return and list. Exit 0 taken, 10 another took it, 1 none stale, 11 the write failed
 #   presence.sh dialog-claim        claim the pending post-return dialog once, globally. Exit 0 claimed, else 1
 #   presence.sh dialog-ready [--now]  the return's winner finished listing: open the dialog for the next message,
 #                                   or with --now claim it for this turn (nothing was saved). Exit 0 done, else 1
@@ -87,68 +88,32 @@ now() { date +%s; }
 fmt_time() { date -r "$1" '+%a %H:%M %Z' 2>/dev/null || date -d "@$1" '+%a %H:%M %Z' 2>/dev/null || printf '%s' "$1"; }
 
 # --- reading ----------------------------------------------------------------
-# One jq definition of a LAPSED window, shared by every reader, so status, expire and return can
-# never disagree: a declared window whose end passed and that the operator has not answered with a
-# message since (return clears it). Open-ended windows never lapse. kind is the window's own kind:
-# here (at the computer) or away. source says which record carries it: presence, or a plain
-# `unattended.sh on --for` window that has no presence record (or an older one). On a tie of the
-# two declaration times unattended wins, as in effective_json (`set away` writes both with one time).
-# An away window counts only while its unattended flag is still on: turning it off by hand ends it.
-LAPSE_DEF='
-def isnum: type == "number";
-def lapse($p; $u; $now):
-  ($p.state // "") as $ps | ($p.declared_epoch // 0) as $pt | ($u.since_epoch // 0) as $ut
-  | if ($u.active == true) and ($u.until_epoch | isnum) and $u.until_epoch <= $now and $ut >= $pt
-    then {kind: "away", generation: $ut, until: $u.until_epoch, source: "unattended"}
-    elif ($ps == "here" or ($ps == "away" and $u.active == true))
-         and ($p.until_epoch | isnum) and $p.until_epoch <= $now
-         and (($u.active == true and $ut >= $pt) | not)
-    then {kind: $ps, generation: $pt, until: $p.until_epoch, source: "presence"}
-    else null end;
-'
+# The decision "what is the operator's state, did a window lapse, does away handling apply?" is ONE
+# jq definition in lib/presence-decision.jq (truth table in its header), shared by every reader here
+# AND by `unattended.sh is-active`, so status, is-away, expire, return, probe and is-active cannot
+# disagree. A LAPSED window is a declared window whose end passed and that the operator has not
+# answered with a message since (return clears it); open-ended windows never lapse.
+LIB_DIR="$HERE/lib"
+JQ_DECIDE_INCLUDE='include "presence-decision";'
 
 # The effective state as one JSON object. Never fails: an unreadable file is "unset".
 effective_json() {
   local n
   n=$(now)
   if [ ! -f "$STATE_FILE" ]; then
-    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"lapsed":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
+    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"lapsed":false,"away":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
     return 0
   fi
-  "$JQ" -c --argjson now "$n" "$LAPSE_DEF"'
+  "$JQ" -L "$LIB_DIR" -c --argjson now "$n" "$JQ_DECIDE_INCLUDE"'
     (.presence | if type == "object" then . else {} end) as $p
     | (.unattended | if type == "object" then . else {} end) as $u
-    | lapse($p; $u; $now) as $lp
-    | ($p.state // "") as $ps
-    | (($u.active == true) and (($u.until_epoch | isnum | not) or $u.until_epoch > $now)) as $ua
-    | ($ps == "here" or $ps == "away") as $pv
-    | ($p.declared_epoch // 0) as $pt
-    | ($u.since_epoch // 0) as $ut
-    | (if $ua and (($pv | not) or $ut >= $pt) then
-         {state: "away", source: "unattended",
-          until_epoch: (if ($u.until_epoch | isnum) then $u.until_epoch else null end),
-          declared_epoch: ($u.since_epoch // null), machine_on: true}
-       elif ($lp != null and $lp.source == "unattended") then
-         {state: "away", source: "unattended", until_epoch: $lp.until,
-          declared_epoch: ($u.since_epoch // null), machine_on: true}
-       elif $pv then
-         # Away was armed through unattended mode; turning that off by hand ends it early.
-         (if $ps == "away" and $u.active == false
-             and (($p.until_epoch | isnum | not) or $p.until_epoch > $now) then
-            {state: "here", source: "unattended-off", until_epoch: null, declared_epoch: null, machine_on: true}
-          else
-            {state: $ps, source: "presence",
-             until_epoch: (if ($p.until_epoch | isnum) then $p.until_epoch else null end),
-             declared_epoch: ($p.declared_epoch // null), machine_on: ($p.machine_on != false)}
-          end)
-       else
-         {state: "unset", source: "none", until_epoch: null, declared_epoch: null, machine_on: true}
-       end)
+    | decide($p; $u; $now)
     | . + {expired: (.until_epoch | isnum and . <= $now),
-           lapsed: ($lp != null),
+           lapsed: (.lapse != null),
            remaining_seconds: (if (.until_epoch | isnum) then ([.until_epoch - $now, 0] | max) else null end),
-           now_epoch: $now}' "$STATE_FILE" 2>/dev/null ||
-    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"lapsed":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
+           now_epoch: $now}
+    | del(.lapse)' "$STATE_FILE" 2>/dev/null ||
+    printf '{"state":"unset","source":"none","until_epoch":null,"declared_epoch":null,"machine_on":true,"expired":false,"lapsed":false,"away":false,"remaining_seconds":null,"now_epoch":%s}\n' "$n"
 }
 
 status_line() { # JSON
@@ -190,7 +155,7 @@ cmd_status() {
 # Away, or a window that ran out unanswered (threads handle questions as in away mode).
 cmd_is_away() {
   reconcile_closing
-  [ "$(effective_json | "$JQ" -r 'if (.state == "away" and (.expired | not)) or .lapsed then "yes" else "no" end')" = yes ]
+  [ "$(effective_json | "$JQ" -r 'if .away == true then "yes" else "no" end')" = yes ]
 }
 
 # --- time helpers -----------------------------------------------------------
@@ -495,11 +460,11 @@ jr() { printf '%s' "$1" | "$JQ" -r "$2" 2>/dev/null; }          # raw field
 # window whose end no longer matches its /leave-by record.
 eval_json() {
   if [ ! -f "$STATE_FILE" ]; then printf '{"lapse":null,"rec":null}\n'; return 0; fi
-  "$JQ" -c --argjson now "$(now)" "$LAPSE_DEF"'
+  "$JQ" -L "$LIB_DIR" -c --argjson now "$(now)" "$JQ_DECIDE_INCLUDE"'
     (.presence | if type == "object" then . else {} end) as $p
     | (.unattended | if type == "object" then . else {} end) as $u
     | . as $root
-    | lapse($p; $u; $now) as $lp
+    | decide($p; $u; $now).lapse as $lp
     | (if $p.state == "here" and $p.machine_on == false and ($p.until_epoch | isnum)
           and (($p.closing_repo // "") | type == "string" and length > 0) then
          ($root.repos[$p.closing_repo].leave // {}) as $lv
@@ -527,33 +492,51 @@ get_eval() { [ -n "$EVAL" ] || EVAL=$(eval_json); }
 # evaluation and correct the window when the leave time moved, clear it when the leave time was
 # cancelled while the window was still live. A deadline that already passed with the record gone
 # is left alone: the laptop is closing, and the expiry handling stands.
+#
+# Returns 0 when nothing is pending (nothing to correct, or the correction landed) and 1 when a
+# correction is STILL pending after three tries (the compare-and-set lost to a concurrent change that
+# did not settle, or the write failed). Each try re-reads the state, so a correction that lost to a
+# legitimate concurrent change is judged afresh. Callers that act on a deadline (expire, return,
+# probe) must not trust the stored end while this returns 1: an expiry claimed on a stale, already
+# elapsed end would send the notice early and, since the claim is per declaration, suppress the real
+# notice when the corrected end passes (PR #2328 review).
+RECONCILE_PENDING=0
 reconcile_closing() {
-  local e rec act nu ou pt
+  local e rec act nu ou pt ck la try=0
+  RECONCILE_PENDING=0
   [ -f "$STATE_FILE" ] || return 0
+  while [ "$try" -lt 3 ]; do
+    try=$((try + 1))
+    get_eval; e="$EVAL"
+    rec=$(jf "$e" '.rec')
+    [ -n "$rec" ] && [ "$rec" != null ] || return 0
+    EVAL=""   # about to write: the next read must see the corrected record
+    act=$(jr "$rec" '.action'); ou=$(jf "$rec" '.old_until'); pt=$(jf "$e" '.pt')
+    # Each write also guards the leave record it was decided from, so a /leave-by change that lands
+    # between the read and the write makes this correction lose (the next try redoes it).
+    ck=$(jr "$rec" '.repo'); la=$(jf "$rec" '.leave_active')
+    case "$act" in
+      set)
+        nu=$(jf "$rec" '.new_until')
+        "$SESSION_STATE_SH" --cas ".presence.until_epoch=$nu" --expect "$ou" \
+          --expect-at ".presence.declared_epoch" "$pt" --expect-at ".presence.state" '"here"' \
+          --expect-at ".repos[\"$ck\"].leave.active" "$la" \
+          --expect-at ".repos[\"$ck\"].window.deadline_epoch" "$nu" >/dev/null 2>&1 || true ;;
+      clear)
+        "$SESSION_STATE_SH" --cas ".presence.state=null" --expect '"here"' \
+          --expect-at ".presence.declared_epoch" "$pt" --expect-at ".presence.until_epoch" "$ou" \
+          --expect-at ".repos[\"$ck\"].leave.active" "$la" \
+          --expect-at ".repos[\"$ck\"].window.deadline_epoch" "$(jf "$rec" '.deadline')" \
+          --set ".presence.until_epoch=null" --set ".presence.machine_on=true" \
+          --set ".presence.closing_repo=null" >/dev/null 2>&1 || true ;;
+      *) return 0 ;;
+    esac
+  done
+  EVAL=""
   get_eval; e="$EVAL"
   rec=$(jf "$e" '.rec')
-  [ -n "$rec" ] && [ "$rec" != null ] || return 0
-  EVAL=""   # about to write: the next read must see the corrected record
-  act=$(jr "$rec" '.action'); ou=$(jf "$rec" '.old_until'); pt=$(jf "$e" '.pt')
-  # Each write also guards the leave record it was decided from, so a /leave-by change that lands
-  # between the read and the write makes this correction lose (the next evaluation redoes it).
-  local ck la
-  ck=$(jr "$rec" '.repo'); la=$(jf "$rec" '.leave_active')
-  case "$act" in
-    set)
-      nu=$(jf "$rec" '.new_until')
-      "$SESSION_STATE_SH" --cas ".presence.until_epoch=$nu" --expect "$ou" \
-        --expect-at ".presence.declared_epoch" "$pt" --expect-at ".presence.state" '"here"' \
-        --expect-at ".repos[\"$ck\"].leave.active" "$la" \
-        --expect-at ".repos[\"$ck\"].window.deadline_epoch" "$nu" >/dev/null 2>&1 || true ;;
-    clear)
-      "$SESSION_STATE_SH" --cas ".presence.state=null" --expect '"here"' \
-        --expect-at ".presence.declared_epoch" "$pt" --expect-at ".presence.until_epoch" "$ou" \
-        --expect-at ".repos[\"$ck\"].leave.active" "$la" \
-        --expect-at ".repos[\"$ck\"].window.deadline_epoch" "$(jf "$rec" '.deadline')" \
-        --set ".presence.until_epoch=null" --set ".presence.machine_on=true" \
-        --set ".presence.closing_repo=null" >/dev/null 2>&1 || true ;;
-  esac
+  if [ -n "$rec" ] && [ "$rec" != null ]; then RECONCILE_PENDING=1; return 1; fi
+  return 0
 }
 
 # Which stored end a lapse was judged by, so a claim can refuse when that end moved meanwhile.
@@ -571,7 +554,9 @@ PUSH_TEXT='Presence window ended: threads now save questions and work on default
 cmd_expire() {
   [ $# -eq 0 ] || die_usage "expire takes no arguments"
   local e lp kind gen until n claim newclaim rc=0
-  reconcile_closing
+  # Never claim an expiry judged by a stored end that a pending correction would move: exit 11
+  # (nothing claimed, nothing printed); the next evaluation retries the correction first.
+  reconcile_closing || return 11
   get_eval; e="$EVAL"
   lp=$(jf "$e" '.lapse')
   [ -n "$lp" ] && [ "$lp" != null ] || return 1
@@ -625,7 +610,7 @@ cmd_return() {
     esac
   done
   [ -f "$STATE_FILE" ] || return 1
-  reconcile_closing
+  reconcile_closing || return 11   # a pending correction may mean the window has not really lapsed
   get_eval; e="$EVAL"
   lp=$(jf "$e" '.lapse')
   [ -n "$lp" ] && [ "$lp" != null ] || return 1
@@ -654,7 +639,9 @@ cmd_return() {
 cmd_probe() {
   local e lp
   [ -f "$STATE_FILE" ] || { printf 'none\n'; return 0; }
-  reconcile_closing
+  # A pending closing correction means the stored end may be stale: report nothing to act on; the
+  # next evaluation retries the correction before it judges the deadline.
+  reconcile_closing || { printf 'none\n'; return 0; }
   get_eval; e="$EVAL"
   lp=$(jf "$e" '.lapse')
   if [ -n "$lp" ] && [ "$lp" != null ]; then
@@ -686,7 +673,7 @@ cmd_relist() {
   case "$rc" in
     0) return 0 ;;
     7) return 10 ;;
-    *) return 1 ;;
+    *) return 11 ;;   # the write failed: the takeover did not happen
   esac
 }
 

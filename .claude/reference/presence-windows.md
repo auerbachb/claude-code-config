@@ -141,11 +141,51 @@ window is returned from.
 (every repo's saved questions, labelled by repo) and says not to ask the presence question this turn.
 While the winner lists, the dialog is `listing`: `probe` says `returning`, and no other hook lists or
 asks (so the list always comes first and exactly once; a winner that died is given up on after two
-minutes and its dialog is lost). When listing ends (`dialog-ready`) with nothing saved the winner
+minutes, and the next operator message takes its place with `relist`, shows any list the dead winner
+persisted but never delivered, and lists the rest: see §Delivery of the saved questions). When listing ends (`dialog-ready`) with nothing saved the winner
 claims the dialog in the same turn. Otherwise it becomes `pending` and is claimed on his next
 operator message in any thread (`presence.sh dialog-claim`: one compare-and-set, `pending` to
 `asked`, so it goes out once in total), and the claiming thread runs `presence.sh ask` as before for
 the token. A declaration (`set`) clears a pending dialog; a dismissal keeps `ask`'s one-hour pause.
+
+**One decision for "is away handling in force?".** The unattended flag and the presence declaration
+can each say away, and delayed writes or an `unattended.sh on|off` by hand can leave them
+disagreeing. `lib/presence-decision.jq` holds the one rule, and `presence.sh status|is-away|expire|
+return|probe` and `unattended.sh is-active|status` all read it, so they cannot differ. The newer
+declaration governs; when neither is clearly newer the answer is **away**, because wrongly denying a
+menu to a present operator costs a question he sees on his next message while wrongly opening one
+while he is away stalls the night. Concretely: a flag older than a newer `set away` still reads away
+(a delayed `unattended.sh on` must not reopen menus; the presence end governs); a flag older than a
+newer `set here` by more than 3 seconds reads here; a tie, or a `here` newer by 3 seconds or less,
+reads away; a flag turned off by hand under a live away reads here; a window with no stored end
+never lapses. The full table is the header of the library, and `presence-delivery.test.sh` checks
+every combination against it.
+
+**Delivery of the saved questions.** `digest --mark` writes the `listed` watermark when it renders
+a list, so a hook killed between the mark and the model seeing the list would lose it, and the
+takeover of a dead return winner would then find nothing unlisted and say "No questions were saved".
+So when a hook triggers a listing (`unattended-digest.sh`, and `unattended-question-guard.sh` for an
+away expiry) it exports a delivery ref and the payload's `session_id` and `transcript_path`, and
+`unattended.sh` persists the rendered block as a record under `~/.claude/unattended/pending/`
+(temp file, then rename) **before** it appends the watermark. The hook appends the ref to its output.
+**Delivered** means the ref appears in that session's transcript: the harness records injected
+context there, so the model had the list. At the top of an operator prompt `unattended.sh settle`
+drops delivered records and returns the others: a record of the same session at once (its earlier hook
+was killed or its output dropped), one of another session after 120 seconds, and every undelivered
+one at once on a `relist` takeover. A returned record is re-owned by the new emission and settled the
+same way next time; it is dropped after 5 emissions (logged in `delivery.log`). The dialog waits while
+another session's list is still inside its 120 seconds. A list may therefore be shown twice; it is not
+shown zero times. A list that cannot be persisted is not marked. Residual window: delivered to the
+model is not shown to the operator (the model may not print it; nothing here can observe that); a
+listing with no readable transcript (`off`, a thread's own `expire`, a payload without
+`transcript_path`) has no record and is marked when rendered, as before.
+
+**A return that fails is not silent.** The hook treats `presence.sh return` exit 0 as returned, 10 as
+lost to another session, 1 as nothing left to return from (he declared a window meanwhile), and
+anything else as a failed return: it records the line in `~/.claude/unattended/delivery.log`, tells
+the model that away handling has not ended, that other repos' saved questions were not listed and the
+dialog was not asked, and that his next message retries. `relist` returns 11 on a failed write for the
+same reason.
 
 **A stored closing deadline follows its source.** `set closing` stores `.presence.closing_repo`. On
 every evaluation (`status`, `is-away`, `probe`, `expire`, `return`) a closing window is compared with
@@ -153,7 +193,10 @@ that repo's `.leave.active` and `.window.deadline_epoch`: a moved leave time cor
 end; a cancelled leave time clears the window while it is still live. A closing window whose deadline
 already passed stays: the laptop closed, and the expiry handling stands. This reconciles the race
 where `set closing` reads the deadline and a leave change lands before the write (declined on
-PR #2307 for exactly this increment).
+PR #2307 for exactly this increment). The correction is retried three times, re-reading each time.
+While one is still pending (the compare-and-set kept losing, or the write failed) `expire` exits 11
+and `return` exits 11 and `probe` says `none`: an expiry is never claimed on a stored end the
+correction would move, because the per-declaration claim would then suppress the real notice.
 
 **Decisions taken on the recommended default.** No grace period before the switch (the issue's open
 question): the notice and push are the mitigation. Return acts only on a lapsed window (above). The

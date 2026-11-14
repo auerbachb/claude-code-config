@@ -47,7 +47,19 @@ payload=$(cat 2>/dev/null) || exit 0
 PRESENCE_SH="${PRESENCE_SH:-${HERE%/hooks}/scripts/presence.sh}"
 notice=""
 if [ -x "$PRESENCE_SH" ] && [ "$("$PRESENCE_SH" probe 2>/dev/null)" = lapsed ]; then
+  # An away-expiry list is persisted before it is marked listed (unattended.sh DELIVERY): export the
+  # delivery identity so `expire`'s digest writes the record, and name the ref in the notice so the
+  # next prompt hook can find it in this session's transcript, or show the list again.
+  DELIVERY_REF="pd-$(date +%s)-$$"
+  UNATTENDED_DELIVERY_SESSION=$(printf '%s' "$payload" | "$JQ" -r '(.session_id // "") | tostring' 2>/dev/null) || UNATTENDED_DELIVERY_SESSION=""
+  UNATTENDED_DELIVERY_TRANSCRIPT=$(printf '%s' "$payload" | "$JQ" -r '(.transcript_path // "") | tostring' 2>/dev/null) || UNATTENDED_DELIVERY_TRANSCRIPT=""
+  export UNATTENDED_DELIVERY_REF="$DELIVERY_REF" UNATTENDED_DELIVERY_SESSION UNATTENDED_DELIVERY_TRANSCRIPT
   notice=$("$PRESENCE_SH" expire 2>/dev/null) || notice=""
+  PENDING_DIR="${UNATTENDED_DIR:-${HOME:-/nonexistent}/.claude/unattended}/pending"
+  if [ -n "$notice" ] && grep -lF "\"ref\":\"$DELIVERY_REF\"" "$PENDING_DIR"/*.json >/dev/null 2>&1; then
+    notice="$notice
+(Delivery reference $DELIVERY_REF: internal bookkeeping, do not mention it to the operator.)"
+  fi
 fi
 
 if ! "$UNATTENDED_SH" is-active >/dev/null 2>&1; then
