@@ -22,6 +22,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [merge-gate.sh](../merge-gate.sh) | Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus) |
 | [merge-sequence.sh](../merge-sequence.sh) | Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet |
 | [no-review-override.sh](../no-review-override.sh) | Decide whether the merge gate may waive missing AI-review coverage after the no-review window |
+| [pr-claim-check.sh](../pr-claim-check.sh) | PR-side claim gate: flags a PR opened on an issue another agent holds, or a PR that names no claim (CI runs it via pr-claim-check.yml) |
 | [required-checks.sh](../required-checks.sh) | Read required contexts without interpreting an unreadable requirement as empty |
 | [rerun-cancelled-required-ci.sh](../rerun-cancelled-required-ci.sh) | Re-run one verified cancelled required Actions job per PR HEAD. |
 | [review-coverage-measure.sh](../review-coverage-measure.sh) | Classify merged PRs by real AI review coverage at merge HEAD, reusing review-substance.sh |
