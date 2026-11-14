@@ -151,7 +151,7 @@ the token. A declaration (`set`) clears a pending dialog; a dismissal keeps `ask
 **One decision for "is away handling in force?".** The unattended flag and the presence declaration
 can each say away, and delayed writes or an `unattended.sh on|off` by hand can leave them
 disagreeing. `lib/presence-decision.jq` holds the one rule, and `presence.sh status|is-away|expire|
-return|probe` and `unattended.sh is-active|status` all read it, so they cannot differ. The newer
+return|probe` and `unattended.sh is-active|status` all read it, on the same reconciled inputs (`unattended.sh is-active` asks `presence.sh is-away`, which corrects a closing window's end against `/leave-by` first), so they cannot differ. The newer
 declaration governs; when neither is clearly newer the answer is **away**, because wrongly denying a
 menu to a present operator costs a question he sees on his next message while wrongly opening one
 while he is away stalls the night. Concretely: a flag older than a newer `set away` still reads away
@@ -173,14 +173,18 @@ context there, so the model had the list. At the top of an operator prompt `unat
 drops delivered records and returns the others: a record of the same session at once (its earlier hook
 was killed or its output dropped), one of another session after 120 seconds, and every undelivered
 one at once on a `relist` takeover. A returned record is re-owned by the new emission and settled the
-same way next time; it never expires by age (a return after days must still show it) and is dropped only after 5 emissions in which the ref never reached the transcript (logged in `delivery.log`). The dialog waits while
-another session's list is still inside its 120 seconds. A list may therefore be shown twice; it is not
-shown zero times. A list that cannot be persisted is not marked. Residual window: delivered to the
-model is not shown to the operator (the model may not print it; nothing here can observe that); a
-listing with no transcript path (`off`, a thread's own `expire`, a payload without
-`transcript_path`, which Claude Code always sends) has no record and is marked when rendered, as
-before. The transcript file need not exist when the record is written: until it can be read the list
-counts as undelivered.
+same way next time. The invariant: once a question's watermark is written there is a retained record of
+its list until delivery is confirmed; no path deletes an unconfirmed record silently. A record never
+expires by age; one that cannot be read is kept and logged; one that cannot be written means nothing is
+marked. After 5 emissions in which the ref never reached the transcript the list is emitted a last time
+with a plain note saying it was never confirmed, then retired (logged in `delivery.log`). The dialog
+waits while another session's list is still inside its 120 seconds. A list may therefore be shown
+twice; it is not shown zero times. Residual window: delivered to the model is not shown to the operator
+(the model may not print it; nothing here can observe that). A record whose payload named no
+`transcript_path` (Claude Code always sends one) cannot be confirmed at all, so that session's next
+prompt is taken as the signal, which is weaker; a bare CLI listing (`off`, a thread's own `expire`) has
+no delivery ref and no record and is marked when rendered, as before. The transcript file need not exist
+when the record is written: until it can be read the list counts as undelivered.
 
 **A return that fails is not silent.** The hook treats `presence.sh return` exit 0 as returned, 10 as
 lost to another session, 1 as nothing left to return from (he declared a window meanwhile), and

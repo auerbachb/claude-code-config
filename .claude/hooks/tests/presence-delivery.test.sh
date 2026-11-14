@@ -180,6 +180,27 @@ check "a newer live unattended window over a lapsed here: away, not lapsed" "$(P
 write_state onlive awaylive older
 check "unattended status shows the presence end that governs" "$(U status)" "active until $(date -r $((NOW + 3600)) '+%a %H:%M %Z' 2>/dev/null || date -d "@$((NOW + 3600))" '+%a %H:%M %Z')"
 
+printf '== 1c. is-active and is-away read the same RECONCILED inputs when a /leave-by time moves\n'
+KEY='.repos["acme/widgets"]'
+LV() { "$STATE" --repo acme/widgets "$@" >/dev/null; }
+# Deadline extended past now: the stored end already passed, but /leave-by moved it into the future.
+rm -f "$SF"
+D1=$(( $(date +%s) + 3600 ))
+LV --set "$KEY.leave.active=true" --set "$KEY.window.deadline_epoch=$D1"
+P set closing --by operator-message >/dev/null
+n=$(date +%s)
+"$STATE" --set ".presence.until_epoch=$((n - 5))" --set ".presence.declared_epoch=$((n - 4000))" >/dev/null
+LV --set "$KEY.window.deadline_epoch=$((n + 7200))"
+check "extended past now: is-active (asked FIRST, before any presence call) says not away" "$(U is-active; echo $?)" 1
+check "and is-away agrees" "$(P is-away; echo $?)" 1
+# Deadline moved into the past: the stored end is still in the future, but /leave-by ended it.
+rm -f "$SF"
+LV --set "$KEY.leave.active=true" --set "$KEY.window.deadline_epoch=$((n + 3600))"
+P set closing --by operator-message >/dev/null
+LV --set "$KEY.window.deadline_epoch=$(( $(date +%s) - 5 ))"
+check "moved into the past: is-active (asked FIRST) says away handling applies" "$(U is-active; echo $?)" 0
+check "and is-away agrees" "$(P is-away; echo $?)" 0
+
 # ============================================================================
 # Hook harness: payloads carry a transcript path; deliver records a hook's output in it the way the
 # harness does, so delivery can be verified.
@@ -325,14 +346,23 @@ deliver s-g "$OUT"
 OUT=$(operator s-g)
 lacks "the deny reached the transcript, so the list is not repeated" "$(ctx "$OUT")" "Saved before the end?"
 
-printf '== 2g. no transcript in the payload: behaves as before (marked when rendered, no record)\n'
+printf '== 2g. no transcript path in the payload: still retained (never marked without a record)\n'
 seed here
 U record --question "No transcript?" --recommended "y" >/dev/null
-OUT=$(jq -cn --arg cwd "$REPO_A" '{session_id: "s-n", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back"}' | "$DIGEST")
+nopath() { jq -cn --arg sid "$1" --arg cwd "$REPO_A" '{session_id: $sid, cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back"}' | "$DIGEST"; }
+OUT=$(nopath s-n)
 has "listed" "$(ctx "$OUT")" "No transcript?"
-check "marked" "$(U pending)" 0
-check "no record" "$(npend)" 0
-lacks "and no delivery reference" "$(ctx "$OUT")" "Delivery reference"
+check "marked listed" "$(U pending)" 0
+check "and a record is retained, since nothing can confirm it" "$(npend)" 1
+OUT=$(nopath s-n)
+lacks "the same session's next prompt is the only signal there is: not repeated" "$(ctx "$OUT")" "No transcript?"
+check "and the record is retired" "$(npend)" 0
+seed here
+U record --question "No transcript, killed?" --recommended "y" >/dev/null
+jq -cn --arg sid s-n --arg cwd "$REPO_A" '{session_id: $sid, cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back"}' | PATH="$STUB:$PATH" "$DIGEST" >/dev/null
+for rec in "$PEND"/*.json; do jq -c ".stamped_at = $(( $(date +%s) - 300 ))" "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
+OUT=$(nopath s-other)
+has "killed before the emit, no path: another session shows it after the grace window" "$(ctx "$OUT")" "No transcript, killed?"
 
 printf '== 2h. a list that cannot be persisted is not marked listed\n'
 seed here
@@ -365,15 +395,36 @@ for rec in "$PEND"/*.json; do jq -c ".stamped_at = $(( $(date +%s) - 864000 )) |
 OUT=$(operator s-2)
 has "ten days on, another session still shows it" "$(ctx "$OUT")" "Days later?"
 
-printf '== 2k. emitted the cap times without the ref ever reaching the transcript: dropped and logged\n'
+printf '== 2k. past the emission cap: shown once more with a plain note, then retired and logged (never silent)\n'
 seed here
 U record --question "Never confirmed?" --recommended "y" >/dev/null
 operator_lost s-1 >/dev/null
 for rec in "$PEND"/*.json; do jq -c '.emits = 5' "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
 OUT=$(operator s-1)
-lacks "no sixth emission" "$(ctx "$OUT")" "Never confirmed?"
-check "the record is dropped" "$(npend)" 0
-has "and the give-up is logged" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "gave up on a pending list after 5 emissions"
+has "the operator prompt shows it one last time" "$(ctx "$OUT")" "Never confirmed?"
+has "with a plain note that it was never confirmed" "$(ctx "$OUT")" "emitted 5 times and the transcript never confirmed them"
+check "then the record is retired" "$(npend)" 0
+has "and the last emission is logged" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "last emission of a pending list after 5 unconfirmed emissions"
+
+printf '== 2l. a record that cannot be read is kept and logged, never deleted\n'
+seed here
+U record --question "Unreadable record?" --recommended "y" >/dev/null
+operator_lost s-1 >/dev/null
+REC1=$(ls "$PEND"/*.json | head -1)
+printf '{not json' >"$REC1"
+operator s-1 >/dev/null
+check "the unreadable record is still there" "$(npend)" 1
+has "and the failure is logged" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "could not read pending record"
+rm -f "$REC1"
+
+printf '== 2m. invariant: once a question is marked listed, a record exists or delivery was confirmed (every path above)\n'
+seed here
+U record --question "Invariant A?" --recommended "y" >/dev/null
+operator_killed s-1 >/dev/null
+check "killed after the mark: marked and retained" "$(U pending)/$(npend)" "0/1"
+operator s-1 >/dev/null
+operator s-1 >/dev/null
+check "confirmed by the transcript: marked and the record retired" "$(U pending)/$(npend)" "0/0"
 
 # ============================================================================
 printf '== 3. a failed return is reported, not swallowed\n'

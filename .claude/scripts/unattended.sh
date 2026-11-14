@@ -38,7 +38,7 @@
 #                                                (hooks, issue #2294) pending-delivery records: drop the ones
 #                                                whose list reached the model, print (and re-own) the ones that
 #                                                did not; see DELIVERY below
-#   unattended.sh undelivered --not-ref REF      count of undelivered records another emission still owns
+#   unattended.sh undelivered --not-ref REF      count of confirmable undelivered records another emission still owns
 #   unattended.sh --help
 #
 # STATE
@@ -53,23 +53,29 @@
 #
 # DELIVERY (issue #2294, PR #2328 review)
 #   A listing that marks questions `listed` must not lose them when the process dies between the mark
-#   and the model seeing the list. When a hook sets UNATTENDED_DELIVERY_REF, UNATTENDED_DELIVERY_SESSION
-#   and UNATTENDED_DELIVERY_TRANSCRIPT (the hook payload's session_id and transcript_path) and the
-#   transcript path is given (the file may not exist yet), `digest --mark` writes one record per repo block to
+#   and the model seeing the list. INVARIANT: once a question's watermark is written there is a
+#   retained record of its list until delivery is confirmed (or, past the emission cap, until it has
+#   been shown once more with a plain note); no path deletes an unconfirmed record silently, errors
+#   included (a record that cannot be read is kept and logged; a record that cannot be written means
+#   nothing is marked).
+#   When a hook sets UNATTENDED_DELIVERY_REF (and SESSION and TRANSCRIPT: the hook payload's
+#   session_id and transcript_path), `digest --mark` writes one record per repo block to
 #   ${UNATTENDED_DIR:-~/.claude/unattended}/pending/<id>.json (atomically: temp file, then rename)
 #   BEFORE it appends the `listed` watermark. The record holds the rendered text, the emission's ref
-#   and the session's transcript path. DELIVERED means: the ref text appears in that transcript, which
-#   is where the harness records the context a hook injected, so the model had it. `settle` runs at the
-#   top of the operator's prompt hook: a record whose ref is in its transcript is deleted; one that is
-#   not is re-emitted when it belongs to the same session (its earlier hook was killed or its output
-#   dropped), or to any session once it is 120 s old, or at once with --force (a takeover of a dead
-#   return winner). A re-emitted record is re-owned by the new emission and settled the same way, so a
-#   question can be shown twice but not zero times. A record never expires by age; after 5 emissions in
-#   which the ref never reached the transcript it is dropped and noted in
-#   ${UNATTENDED_DIR:-~/.claude/unattended}/delivery.log (the harness is evidently not recording hook
-#   output there). Without a transcript path (none in the payload, or a bare CLI call such as `off` or
-#   a thread's own `expire`) no record is written and `digest --mark` behaves as before: marked when
-#   rendered. Claude Code puts transcript_path in every hook payload.
+#   and the transcript path. DELIVERED means: the ref text appears in that transcript, which is where
+#   the harness records the context a hook injected, so the model had it. `settle` runs at the top of
+#   the operator's prompt hook: a delivered record is deleted; an undelivered one is re-emitted when
+#   it belongs to the same session (its earlier hook was killed or its output dropped), or to any
+#   session once it is 120 s old, or at once with --force (a takeover of a dead return winner). A
+#   re-emitted record is re-owned by the new emission and settled the same way, so a question can be
+#   shown twice but not zero times. A record never expires by age. After 5 emissions in which the ref
+#   never reached the transcript it is emitted a last time with a plain note saying so, then retired
+#   (logged in ${UNATTENDED_DIR:-~/.claude/unattended}/delivery.log). The transcript file need not
+#   exist when the record is written: until it can be read the list counts as undelivered. A record
+#   whose payload named NO transcript path cannot be confirmed at all; the same session's next prompt
+#   is then taken as the signal (weaker, documented residual). Without a delivery ref (a bare CLI
+#   call such as `off`, or a thread's own `expire`) no record is written and `digest --mark` marks
+#   when rendered, as before.
 #
 # EXIT CODES
 #   0 ok; 1 is-active/window-ended false, or a write failed; 2 usage error.
@@ -107,17 +113,27 @@ read_flag() {
 }
 
 # Away handling applies (issue #2294) per lib/presence-decision.jq, the ONE decision presence.sh
-# status|is-away|expire|return|probe read as well, so the two scripts cannot disagree (see its truth
-# table). In short: the newer of the unattended flag and the presence declaration governs; when
-# neither is clearly newer the answer is away; an away window that ran out stays away handling until
-# the operator speaks (presence.sh return) or `off`; an at-computer window that ran out counts too.
-# Here only the stored records are read, so this stays one cheap read.
-is_active() {
-  [ -f "$STATE_FILE" ] || return 1
-  [ "$("$JQ" -L "$LIB_DIR" -r --argjson n "$(now)" 'include "presence-decision";
+# status|is-away|expire|return|probe read as well (see its truth table). It must also see the SAME
+# inputs: presence.sh reconciles a closing window's end against /leave-by before deciding, so when
+# presence.sh is available this asks `presence.sh is-away` (which does that) rather than evaluating
+# the decision on unreconciled records. Fallback with no presence.sh: the decision alone. In short:
+# the newer of the unattended flag and the presence declaration governs; when neither is clearly newer
+# the answer is away; an away window that ran out stays away handling until the operator speaks
+# (presence.sh return) or `off`; an at-computer window that ran out counts too.
+decide_local() { # prints yes|no
+  [ -f "$STATE_FILE" ] || { printf 'no\n'; return 0; }
+  "$JQ" -L "$LIB_DIR" -r --argjson n "$(now)" 'include "presence-decision";
     (.presence | if type == "object" then . else {} end) as $p
     | (.unattended | if type == "object" then . else {} end) as $u
-    | if decide($p; $u; $n).away then "yes" else "no" end' "$STATE_FILE" 2>/dev/null)" = yes ]
+    | if decide($p; $u; $n).away then "yes" else "no" end' "$STATE_FILE" 2>/dev/null || printf 'no\n'
+}
+is_active() {
+  [ -f "$STATE_FILE" ] || return 1
+  if [ -x "$PRESENCE_SH" ]; then
+    "$PRESENCE_SH" is-away >/dev/null 2>&1
+  else
+    [ "$(decide_local)" = yes ]
+  fi
 }
 
 window_ended() {
@@ -202,11 +218,11 @@ delivery_log() { # LINE — best effort
   printf '%s %s\n' "$(now)" "$1" >>"$Q_DIR/delivery.log" 2>/dev/null || true
 }
 
-# Persist one rendered block. 0 staged; 2 not applicable (no ref or no transcript path: legacy
+# Persist one rendered block. 0 staged; 2 not applicable (no delivery ref, i.e. a bare CLI call: legacy
 # behaviour); 1 the record could not be written (the caller must NOT mark the questions listed).
 stage_record() { # LABEL TEXT
   local ref="${UNATTENDED_DELIVERY_REF:-}" tp="${UNATTENDED_DELIVERY_TRANSCRIPT:-}" name tmp
-  [ -n "$ref" ] && [ -n "$tp" ] || return 2
+  [ -n "$ref" ] || return 2
   mkdir -p "$PDIR" 2>/dev/null || return 1
   name="$(now)-$$-$RANDOM"
   tmp="$PDIR/.$name.tmp"
@@ -225,7 +241,7 @@ rewrite_record() { # FILE SESSION TRANSCRIPT REF
 }
 
 cmd_settle() {
-  local sid="" tp="" ref="" force=0 f fields rref rsid rtp rstamp remits n out="" txt owed
+  local sid="" tp="" ref="" force=0 f fields rref rsid rtp rstamp remits n out="" txt owed nq
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) sid="${2-}"; shift 2 || die_usage "--session needs a value" ;;
@@ -242,21 +258,22 @@ cmd_settle() {
   n=$(now)
   for f in "$PDIR"/*.json; do
     [ -f "$f" ] || continue
-    fields=$("$JQ" -r '[.ref // "", .session // "", .transcript // "", (.stamped_at // 0 | tostring), (.emits // 1 | tostring)] | join("\u001f")' "$f" 2>/dev/null) || fields=""
-    if [ -z "$fields" ]; then rm -f "$f" 2>/dev/null; continue; fi   # unreadable: nothing recoverable
+    # A read failure keeps the record (its list is marked listed, so it is the only copy): log it.
+    fields=$("$JQ" -r '[.ref // "", .session // "", .transcript // "", (.stamped_at // 0 | tostring), (.emits // 1 | tostring)] | join("\u001f")' "$f" 2>/dev/null) ||
+      { delivery_log "could not read pending record $f; kept"; continue; }
+    [ -n "$fields" ] || { delivery_log "could not read pending record $f; kept"; continue; }
     IFS=$(printf '\037') read -r rref rsid rtp rstamp remits <<EOF
 $fields
 EOF
+    case "$rstamp" in ''|*[!0-9]*) rstamp=0 ;; esac
+    case "$remits" in ''|*[!0-9]*) remits=1 ;; esac
     # Delivered: the ref is in the owning session's transcript, so the model had the list.
     if [ -n "$rref" ] && [ -n "$rtp" ] && [ -r "$rtp" ] && grep -qF -- "$rref" "$rtp" 2>/dev/null; then
       rm -f "$f" 2>/dev/null; continue
     fi
-    # Emitted as often as we ever will (an undelivered list never expires by age: a return after days
-    # must still show it).
-    case "$rstamp" in ''|*[!0-9]*) rstamp=0 ;; esac
-    case "$remits" in ''|*[!0-9]*) remits=1 ;; esac
-    if [ "$remits" -ge "$DELIVERY_MAX_EMITS" ]; then
-      delivery_log "gave up on a pending list after $remits emissions (ref $rref)"
+    # No transcript path was ever known for this record (a payload without one): nothing can confirm
+    # it, so the same session's next prompt is the only signal there is (weaker; see DELIVERY).
+    if [ -z "$rtp" ] && [ "$force" -eq 0 ] && [ -n "$sid" ] && [ "$rsid" = "$sid" ]; then
       rm -f "$f" 2>/dev/null; continue
     fi
     owed=0
@@ -264,8 +281,19 @@ EOF
     elif [ -n "$sid" ] && [ "$rsid" = "$sid" ]; then owed=1
     elif [ $((n - rstamp)) -ge "$DELIVERY_GRACE" ]; then owed=1; fi
     [ "$owed" -eq 1 ] || continue
-    txt=$("$JQ" -r '.text // ""' "$f" 2>/dev/null) || txt=""
-    [ -n "$txt" ] || { rm -f "$f" 2>/dev/null; continue; }
+    txt=$("$JQ" -r '.text // ""' "$f" 2>/dev/null) || { delivery_log "could not read pending list $f; kept"; continue; }
+    [ -n "$txt" ] || { rm -f "$f" 2>/dev/null; continue; }   # genuinely empty: nothing to deliver
+    if [ "$remits" -ge "$DELIVERY_MAX_EMITS" ]; then
+      # The last time: say plainly that it was never confirmed, show it once more, then retire it.
+      nq=$(printf '%s\n' "$txt" | grep -c '^[0-9][0-9]*\. U-')
+      delivery_log "last emission of a pending list after $remits unconfirmed emissions (ref $rref)"
+      out="${out:+$out
+
+}(These $nq saved question(s) were emitted $remits times and the transcript never confirmed them. This is the last time they are shown; the questions file still holds every question.)
+$txt"
+      rm -f "$f" 2>/dev/null
+      continue
+    fi
     out="${out:+$out
 
 }$txt"
@@ -288,8 +316,9 @@ cmd_undelivered() {
   if [ -d "$PDIR" ]; then
     for f in "$PDIR"/*.json; do
       [ -f "$f" ] || continue
-      r=$("$JQ" -r '.ref // ""' "$f" 2>/dev/null) || r=""
-      [ "$r" = "$ref" ] || count=$((count + 1))
+      # A record with no transcript path can never be confirmed, so it never holds the dialog back.
+      r=$("$JQ" -r 'if (.transcript // "") == "" then "" else (.ref // "x") end' "$f" 2>/dev/null) || r="x"
+      [ -z "$r" ] || [ "$r" = "$ref" ] || count=$((count + 1))
     done
   fi
   printf '%s\n' "$count"
@@ -368,10 +397,14 @@ cmd_status() {
   if is_active; then
     # The governing window's own end is the deadline to show (an at-computer window that lapsed has
     # its presence end, not whatever the unattended flag last recorded).
-    u=$("$JQ" -L "$LIB_DIR" -r --argjson n "$(now)" 'include "presence-decision";
-      (.presence | if type == "object" then . else {} end) as $p
-      | (.unattended | if type == "object" then . else {} end) as $u
-      | decide($p; $u; $n) | (.until_epoch // empty)' "$STATE_FILE" 2>/dev/null)
+    if [ -x "$PRESENCE_SH" ]; then
+      u=$("$PRESENCE_SH" status --json 2>/dev/null | "$JQ" -r '.until_epoch // empty' 2>/dev/null) || u=""
+    else
+      u=$("$JQ" -L "$LIB_DIR" -r --argjson n "$(now)" 'include "presence-decision";
+        (.presence | if type == "object" then . else {} end) as $p
+        | (.unattended | if type == "object" then . else {} end) as $u
+        | decide($p; $u; $n) | (.until_epoch // empty)' "$STATE_FILE" 2>/dev/null)
+    fi
     if [ -z "$u" ]; then printf 'active\n'
     elif [ "$u" -gt "$(now)" ]; then printf 'active until %s\n' "$(fmt_time "$u")"
     else printf 'active (window ended %s; until you send a message)\n' "$(fmt_time "$u")"; fi

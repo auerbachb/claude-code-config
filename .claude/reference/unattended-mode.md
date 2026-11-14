@@ -84,9 +84,11 @@ pending-delivery record under `~/.claude/unattended/pending/` and only then mark
 as **delivered** when the hook's delivery reference shows up in the session's transcript (the harness
 records injected context there), and the next operator prompt (`unattended.sh settle`) shows any
 record that did not reach the model again. A hook killed after the mark costs a repeat, never a
-lost question. Residual window: the model may have received a list and not printed it for him, which
-nothing here can see; and a listing with no transcript path (a bare CLI call such as `off`, or a
-payload without `transcript_path`) is marked when rendered, as before. Details:
+lost question. No path deletes an unconfirmed record silently (an unreadable one is kept and logged; after 5
+unconfirmed emissions it is shown a last time with a plain note). Residual window: the model may have
+received a list and not printed it for him, which nothing here can see; a payload without
+`transcript_path` can only be confirmed by the session's next prompt; and a bare CLI listing (`off`)
+is marked when rendered, as before. Details:
 `presence-windows.md` §Delivery of the saved questions.
 
 ## When the window runs out (issue #2294)
