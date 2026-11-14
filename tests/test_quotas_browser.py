@@ -320,6 +320,58 @@ class Browser(unittest.TestCase):
             self.assertEqual(json.loads(out.getvalue())['error_class'],'browser_stage_unknown')
             self.assertEqual(err.getvalue(),'')
 
+    def test_claude_organization_binding_and_provider_only_read(self):
+        """A Claude observation may verify identity by organization ID (#2337); Cursor's schema stays exact."""
+        org = '6f1c2a4e-0d3b-4c5e-9a7b-123456789abc'
+        other = '0a0a0a0a-0b0b-4c0c-8d0d-e1e1e1e1e1e1'
+
+        def claude(**fields):
+            doc = dict(schema_version=1, provider='claude', label='fixture', status='ok', observed_at_epoch=1000,
+                       rows=[dict(window='7-day', used_pct=64, resets_at_epoch=None)])
+            doc.update(fields)
+            return doc
+
+        # The email stays required; a matching email with a matching organization ID is accepted.
+        self.assertEqual(browser.validate(claude(email='FIXTURE@example.com', organization_id=org.upper()), 'fixture',
+                                          'fixture@example.com', 1000, 'claude', org)['organization_id'], org.upper())
+        # A profile with no recorded organization ID has nothing to compare: the email match stands.
+        self.assertEqual(browser.validate(claude(email='fixture@example.com', organization_id=org), 'fixture',
+                                          'fixture@example.com', 1000, 'claude', '')['status'], 'ok')
+        self.assertEqual(browser.validate(claude(email='fixture@example.com'), 'fixture',
+                                          'fixture@example.com', 1000, 'claude', '')['status'], 'ok')
+        rejected = [
+            (claude(organization_id=org), 'fixture', 'fixture@example.com', 1000, 'claude', org),   # no email: organization alone
+            (claude(organization_id=org), 'fixture', '', 1000, 'claude', org),                      # no email, no expected email
+            (claude(), 'fixture', 'fixture@example.com', 1000, 'claude', org),                      # neither field
+            (claude(email='fixture@example.com', organization_id=other), 'fixture', 'fixture@example.com', 1000, 'claude', org),  # org mismatch
+            (claude(email='other@example.com', organization_id=org), 'fixture', 'fixture@example.com', 1000, 'claude', org),      # email mismatch
+            (claude(email='fixture@example.com', organization_id='not-a-uuid'), 'fixture', 'fixture@example.com', 1000, 'claude', org),
+            (claude(email='fixture@example.com', organization_id=''), 'fixture', 'fixture@example.com', 1000, 'claude', ''),
+        ]
+        for doc, label, email, now, provider, expected_org in rejected:
+            with self.assertRaises(ValueError):
+                browser.validate(doc, label, email, now, provider, expected_org)
+        # Cursor observations never carry an organization ID.
+        doc = observation()
+        doc['organization_id'] = org
+        with self.assertRaises(ValueError):
+            browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'observation'
+            path.write_text(json.dumps(claude())); path.chmod(0o600)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                browser.main(['--print-provider', str(path)])
+            self.assertEqual(out.getvalue(), 'claude\n')
+            for content, mode in [(json.dumps(dict(provider='codex')), 0o600), ('not json', 0o600),
+                                  (json.dumps(dict(provider=['claude'])), 0o600), (json.dumps(claude()), 0o644)]:
+                path.write_text(content); path.chmod(mode)
+                out, err = io.StringIO(), io.StringIO()
+                with self.assertRaises(SystemExit), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    browser.main(['--print-provider', str(path)])
+                self.assertEqual((out.getvalue(), err.getvalue()), ('', ''))
+
     def test_actual_shell_reader_accepts_only_fixed_classes(self):
         source = Path(browser.__file__).parents[1] / 'ai-quotas.sh'
         text = source.read_text()

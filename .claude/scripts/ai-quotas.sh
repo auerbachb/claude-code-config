@@ -987,11 +987,22 @@ claude_expected_email() { # <label> <profile_dir>
   if [[ -n "$profile" ]]; then printf '%s' "$profile"; else printf '%s' "$from_label"; fi
 }
 
+# The organization ID the profile records (#2337), read like the email above: a
+# symlinked or missing profile file yields nothing, so an observation carrying an
+# organization ID is then rejected rather than trusted.
+claude_expected_org() { # <profile_dir>
+  local dir="$1" org=""
+  if [[ -n "$dir" && -f "$dir/.claude.json" && ! -L "$dir/.claude.json" ]]; then
+    org="$(jq -r '.oauthAccount.organizationUuid // empty' "$dir/.claude.json" 2>/dev/null || true)"
+  fi
+  printf '%s' "$org"
+}
+
 # Claude browser source (#2299). Observation-only: the agent reads the
 # claude.ai usage page with its own browser tools and passes the result file
 # through --browser-results. The reader never opens a page for Claude.
 read_claude_browser() { # <label> <profile_dir>
-  local label="$1" dir="$2" expected result status email row used reset window span extra emitted=0
+  local label="$1" dir="$2" expected expected_org result status email row used reset window span extra emitted=0
   if [[ -z "$BROWSER_RESULTS" ]]; then
     set_outcome unreadable browser browser_agent_observation_required
     emit_row claude "$label" "" "7-day" "" "" unreadable \
@@ -999,7 +1010,8 @@ read_claude_browser() { # <label> <profile_dir>
     return 0
   fi
   expected="$(claude_expected_email "$label" "$dir")"
-  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$expected" "$NOW" "" claude 2>/dev/null)"
+  expected_org="$(claude_expected_org "$dir")"
+  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$expected" "$NOW" "" claude "$expected_org" 2>/dev/null)"
   status="$(printf '%s' "$result" | jq -r '.status' 2>/dev/null)" || status=""
   if [[ "$status" != "ok" ]]; then
     if [[ "$status" == "logged_out" ]]; then
@@ -1121,9 +1133,14 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
 # Bare call: see read_config's own note on why this must not be a `$(…)`.
 read_config
 if [[ -n "$BROWSER_RESULTS" ]]; then
-  resume_targets="$(printf '%s' "$CONFIG" | jq --arg label "$ACCOUNT_FILTER" '[.accounts[] | select(.label == $label)]')"
-  printf '%s' "$resume_targets" | jq -e 'length == 1 and (.[0].provider == "cursor" or .[0].provider == "claude") and ((.[0].sources // (if .[0].provider == "claude" then ["oauth-usage","browser"] else ["ide-token","browser"] end)) | index("browser") != null)' >/dev/null \
-    || die_usage "--browser-results requires one unambiguous Cursor or Claude label with browser configured"
+  # The observation's provider picks the account among any that share the label (#2337).
+  # An unreadable file or an unsupported provider is refused here, before any read.
+  RESUME_PROVIDER="$(python3 "$SELF_DIR/lib/quotas-browser.py" --print-provider "$BROWSER_RESULTS" 2>/dev/null)" \
+    && [[ "$RESUME_PROVIDER" == cursor || "$RESUME_PROVIDER" == claude ]] \
+    || die_usage "--browser-results requires a readable Cursor or Claude observation file"
+  resume_targets="$(printf '%s' "$CONFIG" | jq --arg account_label "$ACCOUNT_FILTER" --arg provider "$RESUME_PROVIDER" '[.accounts[] | select(.label == $account_label and .provider == $provider)]')"
+  printf '%s' "$resume_targets" | jq -e 'length == 1 and ((.[0].sources // (if .[0].provider == "claude" then ["oauth-usage","browser"] else ["ide-token","browser"] end)) | index("browser") != null)' >/dev/null \
+    || die_usage "--browser-results requires one unambiguous Cursor or Claude label with browser configured for the observation's provider"
 fi
 COUNT="$(printf '%s' "$CONFIG" | jq '.accounts | length' 2>/dev/null || true)"
 # read_config only returns on a config it has already validated, so a count
@@ -1143,6 +1160,11 @@ for (( i = 0; i < COUNT; i++ )); do
   SERVICE="$(printf '%s' "$CONFIG" | jq -r --argjson i "$i" '.accounts[$i].credential_ref.service // ""')"
 
   if [[ -n "$ACCOUNT_FILTER" && "$LABEL" != "$ACCOUNT_FILTER" ]]; then
+    continue
+  fi
+  # An observation belongs to one (provider, label) pair (#2337). A same-label account of
+  # another provider is left out, as other labels are, and never receives the observation.
+  if [[ -n "$BROWSER_RESULTS" && "$PROVIDER" != "$RESUME_PROVIDER" ]]; then
     continue
   fi
   MATCHED=$(( MATCHED + 1 ))
