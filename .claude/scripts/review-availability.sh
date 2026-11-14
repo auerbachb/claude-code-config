@@ -397,7 +397,7 @@ cmd_check_skip() {
 # and the stale wait must not keep blocking a request or a green-HEAD override. Only a
 # review object is evidence here: a notice edited in place is not (a known residual).
 cmd_observe() {
-  local repo="" reviews recs cleared="" key login notice rec baseline_epoch answered tomb
+  local repo="" reviews recs cleared="" key login notice rec baseline_epoch recovery_baseline evidence answered recovered tomb
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) [[ $# -ge 2 ]] || die 2 "--repo needs a value"; repo="$2"; shift 2 ;;
@@ -432,40 +432,59 @@ cmd_observe() {
       # Discovery may happen after a real recovery: untimed ranking follows event
       # time. Keep the legacy timed recovery boundary and CAS behavior unchanged.
       if ! [[ "$baseline_epoch" =~ ^[0-9]+$ ]]; then outcome="unreadable"; break; fi
-      answered="$(jq -r --arg l "$login" --argjson rd "$baseline_epoch" --arg n "$notice" --argjson rec "$rec" '
-        def opening: sub("^[[:space:]]*(<!--[^>]*-->[[:space:]]*)*"; "");
+      recovery_baseline="$(jq -c '[.notice_epoch, .cleared_notice_epoch, .recovery_epoch] | map(select(type == "number")) | max' <<<"$rec")"
+      evidence="$(jq -c --arg l "$login" --argjson rd "$baseline_epoch" --argjson rb "$recovery_baseline" --arg n "$notice" --argjson rec "$rec" '
+        # Conservatively count text, excluding HTML, entity references and formatting.
+        # Unicode separator/format/control categories cannot make a blank body substantive.
+        def visible:
+          gsub("<!--[\\s\\S]*?-->|<[^>]*>"; " ")
+          | gsub("&(?:amp;)*(?:[A-Za-z][A-Za-z0-9]+|#[0-9]+|#[xX][0-9A-Fa-f]+);"; " ")
+          | gsub("[>*#_`~\\[\\]()!|]"; " ")
+          | gsub("[[:space:]\\p{Z}\\p{Cf}\\p{Cc}]+"; " ")
+          | sub("^ +"; "") | sub(" +$"; "");
+        def substantive:
+          ((.state // "") | IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED"))
+          and ((.commit_id // "") | test("^[a-f0-9]{40}$"))
+          and ((.body // "") | type == "string"
+            and (visible | length >= 40
+              and (test("^(review (triggered|queued|skipped|requested)|review request (has been |was |is )?(received|queued|accepted|saved|submitted)|analysis skipped|auto.?resolve|automatically resolved|instruction.*saved)([[:space:].:!*#]|$)"; "i") | not)
+              and (test("^(review rate[- ]limited|review limit reached|usage limit (reached|exceeded|exhausted)|rate limit(ed| (reached|exceeded|exhausted)))([[:space:].:!*#]|$)"; "i") | not))
+            and (test("^[[:space:]]*(<!--[^>]*-->[[:space:]]*)*<!--[^>]*rate[- ]?limited by coderabbit[.]ai"; "i") | not));
         [ .[] | select((.user.login // "") == $l)
-               | select((.submitted_at // "") | type == "string" and . != "")
-               | select(((.submitted_at | fromdateiso8601?) // 0) > $rd)
-               | select(if $rec.refusal_kind == "untimed" or ($rec.notice_epoch == null and ($rec.recovery_epoch | type) == "number") then
-                   # Ranking-only refusal recovery requires a real completed review,
-                   # never a blank approval, command ACK, skipped run or old notice.
-                   ((.state // "") | IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED"))
-                   and ((.commit_id // "") | test("^[a-f0-9]{40}$"))
-                   and ((.body // "") | type == "string" and (opening | length >= 40)
-                     and (opening | test("^[[:space:]>#*]*(review (triggered|queued|skipped|requested)|review request (has been |was |is )?(received|queued|accepted|saved|submitted)|analysis skipped|auto.?resolve|automatically resolved|instruction.*saved)([[:space:].:!*#]|$)"; "i") | not)
-                     and (opening | test("^[[:space:]>#*]*(review rate[- ]limited|review limit reached|usage limit (reached|exceeded|exhausted)|rate limit(ed| (reached|exceeded|exhausted)))([[:space:].:!*#]|$)"; "i") | not)
-                     and (test("^[[:space:]]*(<!--[^>]*-->[[:space:]]*)*<!--[^>]*rate[- ]?limited by coderabbit[.]ai"; "i") | not))
-                 else ((.state // "") == "APPROVED")
-                   or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not)) end)
-               | (.submitted_at | fromdateiso8601) ]
-        | max // empty' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
-      if ! [[ "$answered" =~ ^[0-9]+$ ]]; then outcome="kept"; break; fi
-      # Clear to a tombstone, not null: record re-reads every notice still in the PR on each
-      # run, and a null slot would resurrect this already-answered notice between passes.
-      tomb="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson recovered "$answered" \
-        '{cleared_notice_epoch: (.notice_epoch // .cleared_notice_epoch), cleared_at: $at, next_available: null}
-          + (if .refusal_kind == "untimed" or (.notice_epoch == null and (.recovery_epoch | type) == "number") then {recovery_epoch: ([$recovered, .recovery_epoch // 0] | max)}
-             elif (.recovery_epoch | type) == "number" then {recovery_epoch: .recovery_epoch} else {} end)' <<<"$rec")" \
-        || die 4 "could not build the $key tombstone — nothing cleared"
+          | ((.submitted_at // "") | fromdateiso8601?) as $at
+          | select($at != null)
+          | {at: $at, strict: substantive,
+             legacy: (((.state // "") == "APPROVED")
+               or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not)))} ] as $ev
+        | {answered: ([$ev[] | select(.at > $rd)
+             | select(if $rec.refusal_kind == "untimed" or ($rec.notice_epoch == null and ($rec.recovery_epoch | type) == "number") then .strict else .legacy end)
+             | .at] | max),
+           recovered: ([$ev[] | select(($rb | type) == "number" and .strict and .at > $rb) | .at] | max)}
+        ' <<<"$reviews")" || die 4 "could not evaluate the review objects — nothing cleared"
+      answered="$(jq -r '.answered // empty' <<<"$evidence")"
+      recovered="$(jq -c '.recovered' <<<"$evidence")"
+      if [[ -z "$answered" && "$recovered" == null ]]; then outcome="kept"; break; fi
+      # Timed clearing keeps its legacy discovery fence. Strict recovery evidence may
+      # predate discovery: retain it independently without clearing that timed state.
+      tomb="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg answered "$answered" --argjson recovered "$recovered" '
+        . as $old
+        | (if $answered != "" then
+             {cleared_notice_epoch: (.notice_epoch // .cleared_notice_epoch), cleared_at: $at, next_available: null}
+           else . end)
+        + (([$recovered, $old.recovery_epoch] | map(select(type == "number")) | max) as $r
+           | if $r != null then {recovery_epoch: $r} else {} end)' <<<"$rec")" \
+        || die 4 "could not build the $key recovery record — nothing cleared"
       rc=0
       "$STATE" --raw-path --cas ".review_availability.$key=$tomb" --expect "$rec" >/dev/null 2>&1 || rc=$?
-      if (( rc == 0 )); then outcome="cleared"; break; fi
+      if (( rc == 0 )); then
+        if [[ -n "$answered" ]]; then outcome="cleared"; else outcome="recovered"; fi
+        break
+      fi
       (( rc == 7 )) || die 5 "could not clear the $key availability record"
     done
     case "$outcome" in
       cleared) cleared="$cleared $key" ;;
-      none|unreadable|kept) ;;
+      none|unreadable|kept|recovered) ;;
       *) die 5 "could not settle the $key availability record after retries — nothing cleared" ;;
     esac
   done

@@ -380,6 +380,59 @@ expect_eq "intermediate record replacement cannot erase recovery watermark" "$(j
 "$AV" record --repo two/repo --pr 2 <<<"$newer" >/dev/null
 expect_eq "untimed refusal after successful recovery remains valid" "$(jq -r '.review_availability.coderabbit.notice_epoch' "$STATE_FILE")" "$((NOW - 10))"
 
+
+# Semantic blankness includes HTML whitespace and formatting, not only source length.
+unicode_blank=$(jq -nr '"\u00a0\u2000\u200b\u200d\u00ad\ufeff\u202f" * 8')
+for body in \
+  '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;' \
+  '&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;' \
+  '&#160;&#0160;&#xA0;&#xa0;&#x00a0;&#160;&#160;' \
+  '&ensp;&emsp;&thinsp;&Tab;&NewLine;&ensp;&emsp;' \
+  '&#32;&#9;&#10;&#13;&#x20;&#x09;&#x0A;&#x0D;' \
+  '<p><br><br><br><span>&nbsp;&nbsp;&nbsp;</span></p>' \
+  '** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **' \
+  "$unicode_blank" \
+  '&#8192;&#8192;&#8192;&#8192;&#8192;&#8192;' \
+  '&#x200B;&#x200B;&#x200B;&#x200B;&#x200B;&#x200B;' \
+  '&ZeroWidthSpace;&ZeroWidthSpace;&ZeroWidthSpace;' \
+  '&amp;amp;nbsp;&amp;amp;nbsp;&amp;amp;nbsp;&amp;amp;nbsp;' \
+  '<!-- metadata -->LGTM<!-- long metadata padding cannot make four letters substantive -->'; do
+  rm -f "$STATE_FILE"
+  "$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+  blank=$(jq -cn --arg b "$body" --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:$b}]')
+  out=$("$AV" observe --repo one/repo <<<"$blank")
+  expect_eq "non-substantive rendered content cannot recover: $body" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+rm -f "$STATE_FILE"
+"$AV" record --repo one/repo --pr 1 < "$TMP/literal.json" >/dev/null
+rich=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"<p>Reviewed&nbsp;the <strong>request chooser</strong> and regression cases; no actionable findings.</p>"}]')
+out=$("$AV" observe --repo one/repo <<<"$rich")
+expect_eq "formatted substantive prose still recovers" "$(jq -c '.cleared' <<<"$out")" '["coderabbit"]'
+
+# A strict qualifying review establishes recovery regardless of the active record type.
+for key in coderabbit codeant; do
+  login='coderabbitai[bot]'; [[ "$key" == codeant ]] && login='codeant-ai[bot]'
+  for discovery in "$((NOW - 90))" "$NOW"; do
+    state_with_av "$(jq -cn --arg k "$key" --argjson n "$((NOW + 1200))" --argjson t "$((NOW - 120))" --arg read "$(iso "$discovery")" '{($k):{notice_epoch:$t,next_available_epoch:$n,read_at:$read,window_seconds:1320}}')"
+    recovery=$(jq -cn --arg l "$login" --arg t "$(iso $((NOW - 60)))" '[{user:{login:$l},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the selector and regression tests; no actionable findings."}]')
+    out=$("$AV" observe --repo one/repo <<<"$recovery")
+    expect_eq "timed record stores strict recovery event for $key, discovery $discovery" "$(jq -r --arg k "$key" '.review_availability[$k].recovery_epoch' "$STATE_FILE")" "$((NOW - 60))"
+    if (( discovery < NOW - 60 )); then expected='["'"$key"'"]'; timing=null; else expected='[]'; timing="$((NOW + 1200))"; fi
+    expect_eq "timed legacy clearing keeps discovery fence for $key, discovery $discovery" "$(jq -c '.cleared' <<<"$out")" "$expected"
+    expect_eq "timed eligibility is unchanged by recovery-only update for $key" "$(jq -r --arg k "$key" '.review_availability[$k].next_available_epoch' "$STATE_FILE")" "$timing"
+    hidden=$(jq -cn --arg l "$login" --arg t "$(iso $((NOW - 75)))" '[{user:{login:$l},body:"Review limit reached.",created_at:$t,updated_at:$t}]')
+    "$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+    expect_eq "old hidden untimed notice cannot undo timed-record recovery for $key" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" null
+  done
+  state_with_av "$(jq -cn --arg k "$key" --argjson t "$((NOW - 120))" --arg read "$(iso $((NOW - 90)))" '{($k):{notice_epoch:$t,next_available_epoch:9999999999,read_at:$read}}')"
+  blank=$(jq --arg l "$login" '.[0].user.login=$l|.[0].body=""' <<<"$recovery")
+  out=$("$AV" observe --repo one/repo <<<"$blank")
+  expect_eq "legacy blank approval still clears timed state for $key" "$(jq -c '.cleared' <<<"$out")" '["'"$key"'"]'
+  expect_eq "legacy blank approval creates no strict recovery for $key" "$(jq -r --arg k "$key" '.review_availability[$k].recovery_epoch' "$STATE_FILE")" null
+  "$AV" record --repo two/repo --pr 2 <<<"$hidden" >/dev/null
+  expect_eq "unproven timed clear cannot suppress a later-discovered untimed refusal for $key" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" untimed
+done
+
 # --- Usage ---------------------------------------------------------------------------------
 "$AV" decide --window-s 0 >/dev/null 2>&1 && rc=0 || rc=$?
 expect_eq "decide: zero window is a usage error" "$rc" "2"
