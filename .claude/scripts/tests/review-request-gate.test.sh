@@ -101,7 +101,7 @@ check_eq "the same names inside the grace still wait" "wait/named_checks_pending
 out="$(run after-ci " rule-lint , " "" "$HEAD_OLD" "$GREEN")"
 check_eq "names are trimmed and empty entries dropped" "request/named_checks_green" "$(decision "$out")"
 
-echo "== superseded runs, through the merge gate's dedup rule (check-runs-dedup.sh) =="
+echo "== unknown Actions identities cannot prove supersession (Issue 2316) =="
 dedup_gate() { # <setting> <checks> <head-epoch> <raw check runs> -> decision line
   printf '%s' "$4" | bash "$REPO_ROOT/.claude/scripts/check-runs-dedup.sh" \
     | bash "$GATE" --setting "$1" --head "$SHA" --checks "$2" --requested-head "" \
@@ -109,7 +109,7 @@ dedup_gate() { # <setting> <checks> <head-epoch> <raw check runs> -> decision li
 }
 SUPERSEDED='{"check_runs":[{"id":1,"name":"rule-lint","status":"completed","conclusion":"failure","started_at":"2026-11-11T09:00:00Z","check_suite":{"id":10},"app":{"slug":"github-actions"}},{"id":2,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T10:00:00Z","check_suite":{"id":11},"app":{"slug":"github-actions"}}]}'
 out="$(dedup_gate after-ci "" "$HEAD_OLD" "$SUPERSEDED")"
-check_eq "an older failed run superseded by a newer successful suite → request" "request/ci_green" "$(decision "$out")"
+check_eq "a newer successful suite without workflow identity cannot erase a failure" "none/ci_failed" "$(decision "$out")"
 NEWEST_FAILS='{"check_runs":[{"id":1,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T09:00:00Z","check_suite":{"id":10},"app":{"slug":"github-actions"}},{"id":2,"name":"rule-lint","status":"completed","conclusion":"failure","started_at":"2026-11-11T10:00:00Z","check_suite":{"id":11},"app":{"slug":"github-actions"}}]}'
 out="$(dedup_gate after-ci "" "$HEAD_OLD" "$NEWEST_FAILS")"
 check_eq "a failing run in the newest suite → held (none)" "none/ci_failed" "$(decision "$out")"
@@ -130,7 +130,7 @@ out="$(run after-ci "rule-lint" "" "$HEAD_OLD" "$QUEUED")"
 check_eq "a newer queued re-run (higher id, no start time) is the one that counts → wait" "wait/named_checks_pending" "$(decision "$out")"
 RERUN_GREEN='{"check_runs":[{"id":1,"name":"rule-lint","status":"queued","conclusion":null,"app":{"slug":"github-actions"}},{"id":2,"name":"rule-lint","status":"completed","conclusion":"success","started_at":"2026-11-11T10:00:00Z","app":{"slug":"github-actions"}}]}'
 out="$(run after-ci "rule-lint" "" "$HEAD_OLD" "$RERUN_GREEN")"
-check_eq "an older queued run followed by a newer successful re-run → request" "request/named_checks_green" "$(decision "$out")"
+check_eq "a newer success without workflow identity cannot erase an older pending check" "wait/named_checks_pending" "$(decision "$out")"
 CANCELLED='{"check_runs":[{"name":"rule-lint","status":"completed","conclusion":"cancelled","started_at":"2026-11-11T10:00:00Z","app":{"slug":"github-actions"}}]}'
 out="$(run after-ci "" "" "$HEAD_OLD" "$CANCELLED")"
 check_eq "a cancelled check is not green → no request" "none/ci_failed" "$(decision "$out")"

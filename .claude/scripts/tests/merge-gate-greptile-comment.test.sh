@@ -79,12 +79,13 @@ case "$ARGS" in
     # Return FAKE_COMMIT_TS as the committer date — used for Greptile freshness.
     jq -cn --arg d "$FAKE_COMMIT_TS" '{committer:{date:$d}}'
     exit 0 ;;
+  *actions/runs*) echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
   *check-runs*)
     # Single passing check by default; focused tests can inject failures.
     if [[ -n "${FAKE_CHECK_RUNS:-}" ]]; then
-      printf '%s' "$FAKE_CHECK_RUNS"
+      printf '%s' "$FAKE_CHECK_RUNS" | jq '. + {total_count:(.check_runs|length)}'
     else
-      jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
+      jq -cn '{total_count:1,check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
         completed_at:"2026-07-23T13:01:00Z",check_suite:{id:1},app:{slug:"gha",id:1}}]}'
     fi
     exit 0 ;;

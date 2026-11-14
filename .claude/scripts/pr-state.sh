@@ -548,8 +548,7 @@ if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
 fi
-run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
-  --jq '.check_runs[]' | "$CHECK_RUNS_DEDUP" > "$WORKDIR/check-runs.json"
+"$SCRIPT_DIR/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" > "$WORKDIR/check-runs.json" || exit 5
 
 jq -L "$SCRIPT_DIR/lib" -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
 

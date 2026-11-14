@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix='pr-state-stdout-') as td:
 import json,os,sys,time
 a=sys.argv[1:]
 with open(os.environ['CALLS'],'a') as f:f.write(json.dumps(a)+'\\n')
-if a[:2]==['pr','view']: print(json.dumps(dict(number=7,headRefName='fixture',headRefOid='abc123',state='OPEN',url='https://github.com/org/repo/pull/7',mergeStateStatus='CLEAN',mergeable='MERGEABLE',reviewDecision='REVIEW_REQUIRED')))
+if a[:2]==['pr','view']: print(json.dumps(dict(number=7,headRefName='fixture',headRefOid='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',state='OPEN',url='https://github.com/org/repo/pull/7',mergeStateStatus='CLEAN',mergeable='MERGEABLE',reviewDecision='REVIEW_REQUIRED')))
 elif a[:2]==['repo','view']: print('org/repo')
 elif a[:2]==['api','graphql']:
  if os.environ.get('BLOCK')=='yes':
@@ -25,7 +25,9 @@ elif a[0]=='api':
  if any('/reviews?' in x for x in a) and os.environ.get('FAIL')=='yes':sys.exit(1)
  if any('/pulls/7/comments?' in x for x in a) and os.environ.get('LARGE_INLINE'):
   print(open(os.environ['LARGE_INLINE']).read())
- elif not any('/check-runs?' in x for x in a):print('[]')
+ elif any('/check-runs?' in x for x in a): print('{"total_count":0,"check_runs":[]}')
+ elif any('/actions/runs?' in x for x in a): print('{"total_count":0,"workflow_runs":[]}')
+ else:print('[]')
 else:sys.exit(2)
 ''');stub.chmod(0o755)
  date=b/'date';date.write_text('#!/bin/bash\ncase "$*" in *%s*) echo 1793412000;; *) echo 2026-10-31T02:00:00Z;; esac\n');date.chmod(0o755)
@@ -71,8 +73,8 @@ else:sys.exit(2)
 
 
  calls=[json.loads(x) for x in (t/'calls').read_text().splitlines()]
- # One unpaginated fixture success executes 1 thread GraphQL + 5 REST APIs,
+ # One unpaginated fixture success executes 1 thread GraphQL + 6 REST APIs,
  # plus pr/repo-view CLI requests. Pagination and merge-gate add further calls.
- first=calls[:8];assert len(first)==8 and sum(a[:1]==['api'] for a in first)==6,first
- print('PASS: real pr-state default path/stdout JSON parity; stdout success/failure/interruption allocate no bundle; fixture request floor is six API calls plus two views')
+ first=calls[:9];assert len(first)==9 and sum(a[:1]==['api'] for a in first)==7,first
+ print('PASS: real pr-state default path/stdout JSON parity; stdout success/failure/interruption allocate no bundle; fixture request floor is seven API calls plus two views')
 PY
