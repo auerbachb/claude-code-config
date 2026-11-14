@@ -244,7 +244,7 @@ if [[ -n "$REPO_ROOT" && -d "$REPO_ROOT/.claude/skills" ]]; then
   [[ -n "$SKILL_NAMES" ]] && CATALOG_RESOLVED=1
 fi
 
-# Longest-first so `/pm-handoff` is preferred over `/pm` when both could match,
+# Longest-first so a longer skill name is preferred over its prefix when both could match,
 # which keeps the reported violation text honest.
 COMMAND_ALTERNATION=$(
   printf '%s\n' $SKILL_NAMES $BUILTIN_COMMANDS \

@@ -25,7 +25,7 @@ Day mode adds exactly two things: **between-turn persistence**, and **a contract
 
 A day tick is `monitor-mode.md`'s existing per-cycle checklist wrapped in a `Monitor`. D1 (reconcile and transition) is items 1–3 of that checklist verbatim; D2 (refill) is `/pm` Step 3.4 verbatim. Only D0, D3, D4, and D5 are new, and three of those are bookkeeping.
 
-This matters more than it looks. The alternative — a day-mode-specific transition loop — would be a second implementation of phase transitions that drifts from `phase-protocols.md` the first time that file changes. The same argument retires `/pm`'s old count-only backlog-health block in favour of running `/pm-clean` inline (Step 1C), and it is why teardown runs the full `/pm-handoff` workflow rather than printing a summary of its own.
+This matters more than it looks. The alternative — a day-mode-specific transition loop — would be a second implementation of phase transitions that drifts from `phase-protocols.md` the first time that file changes. The same argument retires `/pm`'s old count-only backlog-health block in favour of running `/pm-clean` inline (Step 1C), and it is why teardown names the resume command rather than printing a summary of its own.
 
 ### The digest tuple
 
@@ -211,7 +211,7 @@ the Monitor, keeps the park, and says so in one line; a park that never comes ba
 
 ## Handoff as the session seam
 
-Teardown runs the full `/pm-handoff` workflow inline and prints its prompt, on **every** exit and pause. A day is expected to be a chain of long sessions rather than one marathon (#773), so the seam between them has to be automatic: a run that ends without a handoff makes the next thread cold-start from nothing, which is the cost this mode exists to remove.
+Teardown prints the resume pointer on **every** exit and pause. A day is expected to be a chain of long sessions rather than one marathon (#773), so the seam between them has to be automatic: a run that ends without its resume pointer leaves the next thread guessing where to start, which is the cost this mode exists to remove.
 
 This is also the intended integration point for the usage-limit wind-down (#824). A wind-down that fires while a day loop is running should reach the same teardown path — stop the Monitor, emit the handoff — rather than growing a second, parallel notion of "the day is over."
 

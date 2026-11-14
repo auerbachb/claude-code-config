@@ -1,6 +1,6 @@
 ---
 name: pm
-description: Active PM orchestrator — manages issue pipeline, tracks coding threads, ranks the open backlog (OKR-aware) against a business goal, and suggests next work. Cold-starts from GitHub state, resumes from a /pm-handoff prompt, or runs continuously all day via `/pm day`. Triggers on "pm", "project manager", "orchestrate", "what should I work on", "rank issues", "work the backlog all day".
+description: Active PM orchestrator — manages issue pipeline, tracks coding threads, ranks the open backlog (OKR-aware) against a business goal, and suggests next work. Cold-starts from GitHub state, resumes saved in-flight state, or runs continuously all day via `/pm day`. Triggers on "pm", "project manager", "orchestrate", "what should I work on", "rank issues", "work the backlog all day".
 triggers:
   - project manager
   - orchestrate
@@ -14,7 +14,7 @@ triggers:
 argument-hint: "[day | --run] (optional — continuous mode: this thread becomes the repo's standing worker, looping rank → dispatch → merge → refill with between-turn liveness; see Step 2D) | [resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [--no-clean | fast] (optional — skip the always-on inline /pm-clean cleanup for a ranking-only run) | [--window \"until HH:MM\"|\"N hours\"|\"overnight\"] (optional — fit the batch inside a planning window; see Step 0b) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
 ---
 
-> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Use 3.3a for explicit status or verbose requests and for scheduled PM reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery. Required successor handoff/turnover prompts remain complete artifacts; minimal terminal output never suppresses continuation context.
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Use 3.3a for explicit status or verbose requests and for scheduled PM reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery. Required successor handoff records remain complete artifacts; minimal terminal output never suppresses continuation context.
 
 
 **Run receipt (#2161).** Each user invocation starts one receipt in Step 0 and ends with the [receipt block](#finish-the-invocation). The arming invocation includes its immediate day tick. Internal `--tick` and `--probe-wake` calls never start, mark, or render receipts. Retain the resolved helper, repository and literal run ID across Bash calls. At each step's end, record the observed `ran`, `skipped`, or `failed` outcome. Give an explicit reason for skips and failures. A step without an outcome remains `not recorded`. A mark records what the run reached.
@@ -39,7 +39,8 @@ Parse `$ARGUMENTS` in this order — day tokens first (so they never fall throug
   **Validate both as unsigned integers with `[[ "$v" =~ ^[0-9]+$ ]]` before range-checking**, and reject anything failing either test — naming the rejected input and falling back to the documented default. The pattern test is not belt-and-braces: both values are interpolated into 2D.2's `--set` JSON payload and into 2D.3's shell arithmetic, so `2.5` or `abc` does not merely produce a bad cadence, it writes a malformed `day` object into session state that every later read then fails on.
 - **Cleanup escape hatch:** if the remaining `$ARGUMENTS` contains the `--no-clean` flag or a bare `fast` token (its own whitespace-delimited word, e.g. `/pm fast`), set `NO_CLEAN=true` and strip that flag/token from the arguments before the checks below (so it is never read as a business goal); otherwise `NO_CLEAN=false`. `NO_CLEAN=true` suppresses the always-on Step 1C inline cleanup in **both** modes — see Step 1C.
 - **Window flag:** if the remaining `$ARGUMENTS` contains `--window` followed by a value, extract the complete value as `WINDOW_STR` and strip `--window <value>` from the arguments so it never falls through to the business goal. Empty `WINDOW_STR` means no window. Step 0b processes it. **Multi-word values must be quoted** (e.g. `--window "3 hours"`, `--window "until 5:00 PM"`) — an unquoted multi-word value will be split by the shell, leaving the first token as the value and the remaining words misread as part of the business goal.
-- **Mode:** if the remaining `$ARGUMENTS` contains "resume" or "handoff", enter Resume mode (Step 1A, `PM_ENTRY_MODE=resume`). Otherwise enter Cold Start mode (Step 1B, `PM_ENTRY_MODE=cold`). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
+- **Mode:** if the remaining `$ARGUMENTS` contains "resume", enter Resume mode (Step 1A, `PM_ENTRY_MODE=resume`). Otherwise enter Cold Start mode (Step 1B, `PM_ENTRY_MODE=cold`). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
+- **Config refresh:** if the remaining `$ARGUMENTS` contains the phrase `refresh config`, strip it and set `CONFIG_REFRESH=true`. Step 1B.1 then runs the `shared:config` refresh (re-scan of Infrastructure and Architecture, confirmed before writing). Without it, `/pm` creates a missing `.claude/pm-config.md` and never rewrites an existing one.
 
 Day mode composes with everything above rather than replacing it: `/pm day` is a cold start that then keeps running, `/pm day resume` resumes and then keeps running, and `/pm day increase scraping throughput` carries that goal into every re-rank for the whole run.
 
@@ -86,6 +87,7 @@ Resume and rank presentation resolve the cleanup and forgotten-PR modules at the
 | Assignment reconciliation | `flow:track` |
 | Status, due progress, or board report | `flow:progress` |
 | Available-capacity evaluation | `flow:refill` |
+| Config bootstrap (file missing) or `refresh config` | `shared:config` at Step 1A.1 and 1B.1 |
 | Handoff awareness | `flow:handoff` |
 
 Before an autonomous launch, apply the persisted pause and scope, credit budget, usage horizon, deadline, and author scope at their existing gates. Use Step 0a for author scope, Step 0b and the /subagent prelaunch checks for deadline, Step 3.4 for refill admission, and D2 for a day tick's horizon. Day-mode initial 1B.5 dispatch checks the credit budget in flow:launch before handing the batch to /subagent. A gate's missing or unreadable evidence keeps the affected launch held.
@@ -407,7 +409,7 @@ Read `flow:refill` when this step is reached. Evaluate available capacity using 
 <!-- pm-routing:end -->
 ### 3.5: Handoff awareness
 <!-- pm-routing:begin -->
-Read `flow:handoff` when this step is reached. Consider the existing handoff prompt only at its context-length gate.
+Read `flow:handoff` when this step is reached. Suggest a fresh `/pm` thread only at its context-length gate.
 <!-- pm-routing:end -->
 ---
 

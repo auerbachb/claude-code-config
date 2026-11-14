@@ -51,7 +51,7 @@ pm_resume_config
 ```
 
 Continue with defaults on `defaults` or with no section bodies on `empty`.
-On `missing`, tell the user to run `/pm-handoff` to bootstrap the config
+On `missing`, tell the user that `.claude/pm-config.md` does not exist yet (a cold `/pm` run creates it through `shared:config`)
 and finish this resume as config unavailable. On `unreadable` or `failed`,
 report the read failure and stop before using any section. The list and
 all section lookups use one private snapshot whose bytes matched a second read before parsing.

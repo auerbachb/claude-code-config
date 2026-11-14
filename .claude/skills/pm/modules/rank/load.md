@@ -9,7 +9,8 @@ Route `rank:load`. Load the project config, operator order, pause and scope befo
 LIST_RC=$?
 ```
 
-- If `LIST_RC == 2` (**BOOTSTRAP**): run the same bootstrap logic as `/pm-handoff` Step 2 (detect infrastructure, map architecture, generate pm-config.md). Then continue.
+- If `LIST_RC == 2` (**BOOTSTRAP**): resolve `shared:config` and run its bootstrap (detect infrastructure, map architecture, generate pm-config.md). Then continue.
+- If `CONFIG_REFRESH=true` (the operator asked to refresh), run `shared:config`'s refresh after the read below, before ranking. Its confirmation gate applies; a declined or failed refresh leaves the config untouched and ranking proceeds.
 - Otherwise (**CONFIG_EXISTS**): parse sections via `--list` + per-section `--section <name>` as in 1A.1.
 
 Extract the `## OKRs` section via `"$PM_CONFIG_GET" --section OKRs`. If `rc=0` **and** the body does not start with "No OKRs set", set `OKR_MODE=true`.
