@@ -1,0 +1,43 @@
+on:
+  pull_request:
+    # The claim holder named in the PR body is read from the event payload and
+    # the body is re-read on every edit, so each of these events can change the verdict.
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  # Informational until promoted: this check is NOT a required status check.
+  # Do not add it to branch protection until it has a track record.
+  pr-claim-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Check out the base-branch commit so the claim gate is trusted code
+          # that the PR cannot modify. The PR body is read via the API below.
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Check PR claim
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # If the gate or the issue-claim helper it reads is not on the base
+          # branch (the bootstrap PR introducing it, or a repo without the claim
+          # helpers), print a notice and pass. The check is advisory either way.
+          if [[ ! -f .claude/scripts/pr-claim-check.sh ]]; then
+            echo "::notice::pr-claim-check: PASS (bootstrap - script not yet on base branch)"
+            exit 0
+          fi
+          if [[ ! -f .claude/scripts/issue-claim.sh ]]; then
+            echo "::notice::pr-claim-check: PASS (issue-claim.sh not on base branch; ownership not checked here)"
+            exit 0
+          fi
+          bash .claude/scripts/pr-claim-check.sh "$PR_NUMBER" --repo "$REPO" --report

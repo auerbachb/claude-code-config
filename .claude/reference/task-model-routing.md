@@ -101,7 +101,8 @@ same inventory row:
   field, or a non-object), is **disregarded**. The tier stays eligible: a fresh
   start chooses the cheapest eligible tier, a retry keeps its current tier, and
   `capability_fallback` names the tier with `basis` `missing` or `malformed`.
-  `reason` says the flag was disregarded.
+  `reason` says the flag was disregarded for every such tier, including one
+  routing moved past (marked `not selected`).
 - `capable: true` ignores any stray `capability_gap`. A missing, null or
   non-boolean `capable` stays ineligible, as before.
 - An owner pin keeps its selection. An unsupported `false` on the pinned row is

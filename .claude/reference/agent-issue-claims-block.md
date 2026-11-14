@@ -36,4 +36,6 @@ gh issue edit N --remove-label in-progress --remove-assignee @me
 ```
 
 A fallback claim cannot be renewed; it expires after 4 hours without a renewal. If you are still working, post a fresh claim comment.
+
+Opening a PR for a claimed issue? Put a hidden line in the PR body so the PR-side check can match it to the claim: `<!-- claim-holder: h-<12 hex> -->`. The value is the first 12 hex characters of the SHA-256 of your raw holder token, prefixed `h-`. Compute it with `printf '%s' "$HOLDER" | shasum -a 256 | cut -c1-12` (or `sha256sum`) and write `h-` in front of the result. A holder already shaped `h-<12 hex>` is used unchanged. Never paste the raw token, since it can carry a hostname or a path. `.claude/scripts/pr-claim-line.sh <N> --holder "$HOLDER"` prints the finished line.
 <!-- END agent-issue-claims -->
