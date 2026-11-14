@@ -257,6 +257,26 @@ AFTER_REFS="$(git -C "$REPO_DIR" show-ref)"
 [[ "$BEFORE_STATUS" == "$AFTER_STATUS" ]] && pass "Test6: worktree/index unchanged" || fail "Test6: worktree changed"
 [[ "$BEFORE_REFS" == "$AFTER_REFS" ]] && pass "Test6: refs unchanged (no origin/main mutation)" || fail "Test6: refs mutated"
 
+# ---------------------------------------------------------------------------
+# Test7: fail closed — a linked-issue state lookup that errors must not yield a
+# "merge" recommendation. Run with a gh stub whose `issue view` exits 1; the
+# helper must exit 3 and emit no records.
+# ---------------------------------------------------------------------------
+FAIL_BIN="$TMP/bin_fail"
+mkdir -p "$FAIL_BIN"
+cat > "$FAIL_BIN/gh" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  "issue view "*) echo "boom" >&2; exit 1 ;;
+  *) PATH="$STUB_BIN:/usr/bin:/bin" exec "$STUB_BIN/gh" "\$@" ;;
+esac
+STUB
+chmod +x "$FAIL_BIN/gh"
+OUT7="$(cd "$REPO_DIR" && PATH="$FAIL_BIN:$PATH" bash "$SCRIPT" --days 3 --json 2>"$TMP/t7.err")"
+RC7=$?
+[[ "$RC7" == "3" ]] && pass "Test7: indeterminate linked-issue lookup exits 3 (fail closed)" || fail "Test7: expected exit 3, got $RC7"
+[[ -z "$OUT7" ]] && pass "Test7: no recommendations emitted on indeterminate lookup" || fail "Test7: records emitted despite lookup failure"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
