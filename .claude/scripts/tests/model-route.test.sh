@@ -206,6 +206,29 @@ with tempfile.TemporaryDirectory() as tmp:
     row_of(data, 'sonnet')['capability_gap'] = dict(GAP)
     check('escalation with sonnet gap skips to opus', data, 'escalate', 'opus',
           fallback=[], gaps=[('sonnet', 'tool')])
+    # Routing moves past a disregarded current tier: reason must name it even though sonnet is chosen.
+    data = copy.deepcopy(base)
+    data['current_model'] = 'haiku'
+    data['attempts'] = [attempt(1), attempt(2)]
+    row_of(data, 'haiku')['capable'] = False
+    data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                             evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                             why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
+    result = check('escalation past disregarded haiku names it in reason', data, 'escalate', 'sonnet',
+                   fallback=[('haiku', 'missing')], gaps=[], reason=['disregarded for haiku (basis missing); not selected'])
+    assert result['reason'].endswith('Unsupported capable:false disregarded for haiku (basis missing); not selected.'), result
+    row_of(data, 'sonnet')['available'] = False
+    row_of(data, 'opus')['available'] = False
+    result = check('blocked escalation still names disregarded haiku', data, 'blocked', code=3,
+                   fallback=[('haiku', 'missing')], gaps=[], reason=['disregarded for haiku (basis missing); not selected'])
+    row_of(data, 'sonnet')['available'] = True
+    row_of(data, 'opus')['available'] = True
+    # Control: when the disregarded tier is the chosen one, the clause keeps its original wording.
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    result = check('chosen disregarded haiku keeps original clause', data, 'start', 'haiku',
+                   fallback=[('haiku', 'missing')], gaps=[])
+    assert result['reason'].endswith(' Unsupported capable:false disregarded for haiku (basis missing).'), result
     data = copy.deepcopy(base)
     data['owner_model'] = 'opus'
     row_of(data, 'opus')['capable'] = False

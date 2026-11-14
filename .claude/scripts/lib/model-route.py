@@ -113,8 +113,10 @@ def decide(request):
     }
 
     def finish(action, reason, model=None):
-        clauses = [" Unsupported capable:false disregarded for %s (basis %s)." % (note["model"], note["basis"])
-                   for note in fallbacks if note["model"] == model]
+        # Every disregarded tier is named, including one routing moved past.
+        clauses = [" Unsupported capable:false disregarded for %s (basis %s)%s." % (
+                       note["model"], note["basis"], "" if note["model"] == model else "; not selected")
+                   for note in fallbacks]
         # A gap on a tier the router moved past is "skipped"; on a blocked
         # decision (e.g. an owner pin) that tier was held, not passed over.
         verb = "blocked by" if action == "blocked" else "skipped for"
