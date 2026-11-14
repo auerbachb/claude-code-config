@@ -62,11 +62,11 @@ Third correction (review round 3): the foreign-bot test was widened from any `[b
 ## Reproduce
 
 ```bash
-.claude/scripts/review-coverage-measure.sh --since 2026-10-30   # ~740 read-only REST calls, cached
-.claude/scripts/review-coverage-measure.sh --from-cache         # offline re-run from the cache
+.claude/scripts/review-coverage-measure.sh --repo auerbachb/claude-code-config --author auerbachb --since 2026-10-30   # ~740 read-only REST calls, cached
+.claude/scripts/review-coverage-measure.sh --from-cache --repo auerbachb/claude-code-config --author auerbachb --since 2026-10-30   # offline re-run from the cache
 ```
 
-Per-PR classes land in `<cache-dir>/classified.jsonl`. Aggregates print as JSON on stdout. The cache holds GitHub payloads, so it stays out of the repo.
+Per-PR classes land in `<cache-dir>/classified.jsonl`. Aggregates print as JSON on stdout. The cache holds GitHub payloads, so it stays out of the repo. Cache files are keyed by repo: the population by repo, `--author` and `--since` (`<repo>.population.author-<login>.since-<date>.base-main.json`), and each PR payload by repo, PR and endpoint. An offline `--from-cache` run therefore needs the same `--author` and `--since` as the online run that fetched the population.
 
 ## Numbers measured versus judgment
 
