@@ -292,9 +292,9 @@ find . -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -delete
 
 Related: [anthropics/claude-code#17017](https://github.com/anthropics/claude-code/issues/17017), [#13340](https://github.com/anthropics/claude-code/issues/13340), [#27139](https://github.com/anthropics/claude-code/issues/27139).
 
-**Cause 2: Trust dialog flags reset on new worktrees.**
+**Cause 2: Trust dialog flags on new worktrees.**
 
-Every worktree creates a new project entry in `~/.claude.json` with trust flags set to `false`.
+Each worktree path gets its own project entry in `~/.claude.json`. The docs say worktrees use the main checkout's trust root, but a live fresh-worktree check is still unverified; see `.claude/rules/trust-dialog-fix.md`.
 
 **Fix:** The `trust-flag-repair.sh` hook auto-repairs flags after every response. For manual repair:
 
