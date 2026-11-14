@@ -1277,7 +1277,7 @@ action_sources() {
   else
     index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
     provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
-    case "$provider" in claude) allowed=oauth-usage ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
+    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
     if [[ "$ARG_NICK" == default ]]; then
       config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
     else
@@ -2093,7 +2093,7 @@ action_list() {
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     local source_order
-    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
     [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \

@@ -21,6 +21,14 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['schema_
                                       'window': {'enum': ['cursor-models', 'other-models']},
                                       'used_pct': {'type': ['number', 'null'], 'minimum': 0},
                                       'resets_at_epoch': {'type': ['number', 'null'], 'minimum': 0}}}}}}
+# Claude observations (#2299) use the same envelope with Claude's window names.
+# The Cursor schema above is unchanged; this one is only ever used for
+# provider "claude", and only through a private --browser-results file.
+CLAUDE_SCHEMA = json.loads(json.dumps(SCHEMA))
+CLAUDE_SCHEMA['properties']['provider'] = {'const': 'claude'}
+CLAUDE_SCHEMA['properties']['rows']['items']['properties']['window'] = {'enum': ['7-day', '5-hour']}
+SCHEMAS = {'cursor': SCHEMA, 'claude': CLAUDE_SCHEMA}
+WINDOWS = {'cursor': ('cursor-models', 'other-models'), 'claude': ('7-day', '5-hour')}
 STAGE_CLASSES = {'connection': 'browser_connection_unavailable', 'denied': 'browser_tool_denied',
                  'create': 'browser_tab_create_failed', 'destination': 'browser_destination_unverified'}
 ERROR_CLASSES = set(STAGE_CLASSES.values()) | {'browser_launch_failed', 'browser_observation_rejected',
@@ -97,11 +105,14 @@ def number(value):
         return False
 
 
-def validate(doc, label, expected_email, now):
+def validate(doc, label, expected_email, now, provider='cursor'):
     """Allow only fresh, account-matched usage observations with known fields."""
+    if provider not in SCHEMAS:
+        raise ValueError('provider')
     if not isinstance(doc, dict) or set(doc) != set(SCHEMA['required']):
         raise ValueError('shape')
-    if doc['schema_version'] != 1 or doc['provider'] != 'cursor' or doc['label'] != label or doc['status'] not in ('ok', 'logged_out', 'unreadable'):
+    # type() check: Python's True == 1, so a boolean must not pass as schema version 1.
+    if type(doc['schema_version']) is not int or doc['schema_version'] != 1 or doc['provider'] != provider or doc['label'] != label or doc['status'] not in ('ok', 'logged_out', 'unreadable'):
         raise ValueError('account')
     if not isinstance(doc['email'], str) or len(doc['email']) > 254 or (doc['email'] and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', doc['email'])):
         raise ValueError('email')
@@ -115,7 +126,7 @@ def validate(doc, label, expected_email, now):
     for row in doc['rows']:
         if not isinstance(row, dict) or set(row) != {'window', 'used_pct', 'resets_at_epoch'}:
             raise ValueError('row')
-        if row['window'] not in ('cursor-models', 'other-models') or row['window'] in seen:
+        if row['window'] not in WINDOWS[provider] or row['window'] in seen:
             raise ValueError('pool')
         seen.add(row['window'])
         for key in ('used_pct', 'resets_at_epoch'):
@@ -126,10 +137,13 @@ def validate(doc, label, expected_email, now):
     return doc
 
 
-def read_observation(path, label, email, now, cli, facts=None):
+def read_observation(path, label, email, now, cli, facts=None, provider='cursor'):
     """Read a private fixture/result or invoke the supported explicit Chrome CLI."""
     if facts is None:
         facts = {}
+    if not path and provider != 'cursor':
+        # Claude has no live collector (#2299): the agent-collected observation file is the only source.
+        raise ValueError('live_unsupported')
     if path:
         facts['result_file'] = True
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -177,7 +191,7 @@ def read_observation(path, label, email, now, cli, facts=None):
         if not isinstance(envelope, dict):
             raise ValueError('envelope')
         payload = envelope.get('structured_output')
-    validated = validate(payload, label, email, now)
+    validated = validate(payload, label, email, now, provider)
     if not path and validated['status'] == 'ok' and not facts.get('completed_read'):
         raise ReadProvenanceError('completed_read_unverified')
     return validated
@@ -186,8 +200,10 @@ def read_observation(path, label, email, now, cli, facts=None):
 def main(args=None):
     facts = {}
     args = sys.argv[1:] if args is None else args
+    # Optional trailing provider (#2299). Absent means Cursor, the original call shape.
+    provider = args[5] if len(args) > 5 else 'cursor'
     try:
-        result = read_observation(args[0], args[1], args[2], int(args[3]), args[4], facts)
+        result = read_observation(args[0], args[1], args[2], int(args[3]), args[4], facts, provider)
         if result['status'] == 'unreadable':
             result = dict(status='unreadable', rows=[], email='', error_class=failure_class(None, facts))
     except Exception as exc:

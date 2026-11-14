@@ -5,11 +5,11 @@ unset BASH_ENV ENV
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TEST_FILE="$ROOT/.claude/scripts/tests/ai-quotas.test.sh"
 CASE_DIR="$ROOT/.claude/scripts/tests/lib/ai-quotas-cases"
-GROUPS_LIST="core acceptance failure-isolation renewal renewal-files cursor cursor-identity codex codex-duration row-shape codex-cleanup overage credential-output history snapshot-footer nicknames table forecast forecast-failures forecast-types history-errors reset-credits outcomes outcomes-protocol outcomes-preflight layout fallback browser-resume recommendations notifications last-known"
+GROUPS_LIST="core acceptance failure-isolation renewal renewal-files cursor cursor-identity codex codex-duration row-shape codex-cleanup overage credential-output history snapshot-footer nicknames table forecast forecast-failures forecast-types history-errors reset-credits outcomes outcomes-protocol outcomes-preflight layout fallback browser-resume claude-browser recommendations notifications last-known"
 case "${1:-}" in
   --fixture-worker)
     FIXTURE_GROUP="${2:-}"
-    case "$FIXTURE_GROUP" in core|acceptance|failure-isolation|renewal|renewal-files|cursor|cursor-identity|codex|codex-duration|row-shape|codex-cleanup|overage|credential-output|history|snapshot-footer|nicknames|table|forecast|forecast-failures|forecast-types|history-errors|reset-credits|outcomes|outcomes-protocol|outcomes-preflight|layout|fallback|browser-resume|recommendations|notifications|last-known) ;; *) echo 'FAIL — unknown quota fixture group' >&2; exit 2 ;; esac
+    case "$FIXTURE_GROUP" in core|acceptance|failure-isolation|renewal|renewal-files|cursor|cursor-identity|codex|codex-duration|row-shape|codex-cleanup|overage|credential-output|history|snapshot-footer|nicknames|table|forecast|forecast-failures|forecast-types|history-errors|reset-credits|outcomes|outcomes-protocol|outcomes-preflight|layout|fallback|browser-resume|claude-browser|recommendations|notifications|last-known) ;; *) echo 'FAIL — unknown quota fixture group' >&2; exit 2 ;; esac
     echo "== quota fixture group: $FIXTURE_GROUP =="
     # Every group sources the same fixture module before its original cases.
     load_fixture_group() {
@@ -98,6 +98,9 @@ case "${1:-}" in
         browser-resume)
           # shellcheck source=lib/ai-quotas-cases/browser-resume.bash
           source "$CASE_DIR/browser-resume.bash" ;;
+        claude-browser)
+          # shellcheck source=lib/ai-quotas-cases/claude-browser.bash
+          source "$CASE_DIR/claude-browser.bash" ;;
         recommendations)
           # shellcheck source=lib/ai-quotas-cases/recommendations.bash
           source "$CASE_DIR/recommendations.bash" ;;
@@ -144,8 +147,10 @@ case "${1:-}" in
         BATCH_RC=1
       fi
     done
-    echo "passed: $BATCH_PASS   failed: $BATCH_FAILED   completed groups: $COMPLETED/31"
-    [[ "$BATCH_FAILED" -eq 0 && "$COMPLETED" -eq 31 ]] || BATCH_RC=1
+    # Derived from GROUPS_LIST, so adding or removing a group keeps the check honest.
+    EXPECTED_GROUPS="$(printf '%s\n' $GROUPS_LIST | wc -l | tr -d ' ')"
+    echo "passed: $BATCH_PASS   failed: $BATCH_FAILED   completed groups: $COMPLETED/$EXPECTED_GROUPS"
+    [[ "$BATCH_FAILED" -eq 0 && "$COMPLETED" -eq "$EXPECTED_GROUPS" ]] || BATCH_RC=1
     exit "$BATCH_RC" ;;
 esac
 SUITE_BOUND_LIB="$ROOT/.claude/scripts/lib/bounded-run.sh"
