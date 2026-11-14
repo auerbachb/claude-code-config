@@ -980,6 +980,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   # long, the head's own gate below re-runs against the real remaining time and declines
   # with its existing line; children already filed stay as Step 5.1's mid-chain rule names them.
   SPLIT_FILING_ALLOWANCE_SEC=300
+  # Re-read the clock here: the reservation and verification above run after the launch gate
+  # captured REMAINING_SEC, and the runway may have shrunk since.
+  REMAINING_SEC=$(( PAUSE_POINT_EPOCH - $(date -u +%s) ))
   SPLIT_HEAD_FITS=false
   if (( 10#$INCREMENT_BOUND_MIN * 60 + SPLIT_FILING_ALLOWANCE_SEC < REMAINING_SEC )); then
     SPLIT_HEAD_FITS=true
