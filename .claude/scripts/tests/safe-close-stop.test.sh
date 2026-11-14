@@ -23,6 +23,8 @@ ok() { echo "ok   — $*"; }
 
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude" "$TMP/bin"
+# Keep bgwork markers out of the shared /tmp: this suite writes sess-1 markers that safe-close-clean reads (issue #2391).
+export CLAUDE_BGWORK_MARKER_DIR="$TMP/markers"; mkdir -p "$CLAUDE_BGWORK_MARKER_DIR"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 REPO=acme/widgets
