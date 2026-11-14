@@ -433,6 +433,78 @@ for key in coderabbit codeant; do
   expect_eq "unproven timed clear cannot suppress a later-discovered untimed refusal for $key" "$(jq -r --arg k "$key" '.review_availability[$k].refusal_kind' "$STATE_FILE")" untimed
 done
 
+
+# Missing state records only strict event evidence, never an availability deadline.
+recovery_at=$(iso $((NOW - 60)))
+for timestamp in "$recovery_at" "${recovery_at%Z}.123Z" "${recovery_at%Z}+00:00" "${recovery_at%Z}.987+00:00"; do
+  rm -f "$STATE_FILE"
+  first_review=$(jq -cn --arg t "$timestamp" '[{user:{login:"coderabbitai[bot]"},state:"APPROVED",commit_id:("a"*40),submitted_at:$t,body:"Reviewed the chooser and regression tests; no actionable findings."}]')
+  out=$("$AV" observe --repo one/repo <<<"$first_review")
+  expect_eq "empty-state recovery stores actual normalized event: $timestamp" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 60))"
+  expect_eq "recovery-only observation reports no cleared record: $timestamp" "$(jq -c '.cleared' <<<"$out")" '[]'
+  expect_eq "pure recovery does not invent a deadline: $timestamp" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$STATE_FILE")" null
+  before=$(jq -c '.review_availability' "$STATE_FILE")
+  "$AV" observe --repo one/repo <<<"$first_review" >/dev/null
+  expect_eq "same recovery replay is idempotent: $timestamp" "$(jq -c '.review_availability' "$STATE_FILE")" "$before"
+done
+expect_eq "pure recovery cannot justify an availability skip" "$("$AV" decide --window-s 600 | jq -r '.skip')" false
+older_notice=$(jq -cn --arg t "$(iso $((NOW - 90)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$older_notice" >/dev/null
+expect_eq "older notice discovered after empty-state recovery stays suppressed" "$(jq -r '.review_availability.coderabbit.refusal_kind' "$STATE_FILE")" null
+newer_notice=$(jq -cn --arg t "$(iso $((NOW - 30)))" '[{user:{login:"coderabbitai[bot]"},body:"Review rate limited.",created_at:$t,updated_at:$t}]')
+"$AV" record --repo two/repo --pr 2 <<<"$newer_notice" >/dev/null
+"$AV" observe --repo one/repo <<<"$first_review" >/dev/null
+expect_eq "newer refusal survives empty-state recovery replay" "$(jq -r '.review_availability.coderabbit.notice_epoch' "$STATE_FILE")" "$((NOW - 30))"
+for state in '{}' '{"coderabbit":null}' '{"coderabbit":{"cleared_notice_epoch":1,"next_available":null}}'; do
+  state_with_av "$state"
+  out=$("$AV" observe --repo one/repo <<<"$first_review")
+  expect_eq "empty/null/cleared slot receives strict recovery: $state" "$(jq -r '.review_availability.coderabbit.recovery_epoch' "$STATE_FILE")" "$((NOW - 60))"
+  expect_eq "empty/null/cleared update does not report a clear: $state" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+for review in \
+  '.[0].body=""' \
+  '.[0].body="Review request has been queued. Full analysis will start shortly."' \
+  '.[0].state="PENDING"' \
+  '.[0].submitted_at="not-a-time"'; do
+  rm -f "$STATE_FILE"
+  out=$(jq "$review" <<<"$first_review" | "$AV" observe --repo one/repo)
+  [[ -e "$STATE_FILE" ]] && exists=yes || exists=no
+  expect_eq "unqualified evidence cannot create initial recovery: $review" "$exists" no
+  expect_eq "unqualified initial observation reports no clear: $review" "$(jq -c '.cleared' <<<"$out")" '[]'
+done
+for state in 'false' '[]' '"broken"' '{"coderabbit":false}' '{"coderabbit":[]}' '{"coderabbit":"broken"}' '{"coderabbit":{}}'; do
+  state_with_av "$state"
+  before=$(cat "$STATE_FILE")
+  "$AV" observe --repo one/repo <<<"$first_review" >/dev/null
+  expect_eq "malformed existing state is not promoted to absence: $state" "$(cat "$STATE_FILE")" "$before"
+done
+
+# A newer refusal wins the real CAS while initial recovery is being persisted.
+rm -f "$STATE_FILE"
+RACE="$TMP/cas-race"
+mkdir -p "$RACE/lib"
+cp "$AV" "$RACE/review-availability.sh"
+cp "$SCRIPT_DIR/../lib/cr-retry-window.jq" "$RACE/lib/"
+export AV_TEST_REAL_STATE="$SCRIPT_DIR/../session-state.sh" AV_TEST_RACE_MARKER="$RACE/won"
+export AV_TEST_WINNER
+AV_TEST_WINNER=$(jq -cn --argjson t "$((NOW - 10))" '{refusal_kind:"untimed",notice_epoch:$t,next_available_epoch:null,source_repo:"concurrent/repo",source_pr:3}')
+cat > "$RACE/session-state.sh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"--cas .review_availability.coderabbit="* && ! -e "$AV_TEST_RACE_MARKER" ]]; then
+  : > "$AV_TEST_RACE_MARKER"
+  "$AV_TEST_REAL_STATE" --raw-path --set ".review_availability.coderabbit=$AV_TEST_WINNER" >/dev/null || exit 5
+fi
+exec "$AV_TEST_REAL_STATE" "$@"
+STUB
+chmod +x "$RACE/session-state.sh"
+out=$("$RACE/review-availability.sh" observe --repo one/repo <<<"$first_review"); rc=$?
+expect_eq "initial recovery settles after concurrent CAS winner" "$rc" 0
+[[ -e "$AV_TEST_RACE_MARKER" ]] && raced=yes || raced=no
+expect_eq "CAS regression actually injected a newer refusal" "$raced" yes
+expect_eq "newer concurrent refusal is preserved exactly" "$(jq -c '.review_availability.coderabbit' "$STATE_FILE")" "$AV_TEST_WINNER"
+expect_eq "losing recovery write reports no clear" "$(jq -c '.cleared' <<<"$out")" '[]'
+unset AV_TEST_REAL_STATE AV_TEST_RACE_MARKER AV_TEST_WINNER
+
 # --- Usage ---------------------------------------------------------------------------------
 "$AV" decide --window-s 0 >/dev/null 2>&1 && rc=0 || rc=$?
 expect_eq "decide: zero window is a usage error" "$rc" "2"

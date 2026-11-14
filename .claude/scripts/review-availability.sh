@@ -409,7 +409,7 @@ cmd_observe() {
   printf '%s' "$reviews" | jq -e 'type == "array" and all(.[]; type == "object")' >/dev/null 2>&1 \
     || die 4 "reviews are not a JSON array of objects — nothing cleared"
   recs="$(state_get '.review_availability' "$repo")" || die 5 "could not read the review availability records"
-  if [[ "$(jq -r 'type' <<<"$recs")" != object ]]; then
+  if [[ "$recs" != null && "$(jq -r 'type' <<<"$recs")" != object ]]; then
     jq -cn '{cleared: []}'
     return 0
   fi
@@ -424,16 +424,21 @@ cmd_observe() {
     # (exit 7) is re-read and re-judged, so the clear can never erase a newer record.
     for attempt in 1 2 3 4 5; do
       recs_now="$(state_get '.review_availability' "$repo")" || die 5 "could not re-read the review availability records"
-      rec="$(jq -c --arg k "$key" 'if type == "object" then (.[$k] // null) else null end' <<<"$recs_now")"
-      if [[ "$(jq -r 'type' <<<"$rec")" != object ]]; then outcome="none"; break; fi
-      baseline_epoch="$(jq -r 'if .refusal_kind == "untimed" then (.notice_epoch | select(type == "number"))
+      if [[ "$recs_now" != null && "$(jq -r 'type' <<<"$recs_now")" != object ]]; then outcome="unreadable"; break; fi
+      rec="$(jq -c --arg k "$key" 'if type == "object" then (if has($k) then .[$k] else null end) else null end' <<<"$recs_now")"
+      if [[ "$rec" != null && "$(jq -r 'type' <<<"$rec")" != object ]]; then outcome="unreadable"; break; fi
+      baseline_epoch="$(jq -r -L "$LIB_DIR" 'include "cr-retry-window";
+        if . == null then 0
+        elif .refusal_kind == "untimed" then (.notice_epoch | select(type == "number"))
         elif .notice_epoch == null and (.recovery_epoch | type) == "number" then .recovery_epoch
-        else ((.read_at // "") | fromdateiso8601? // empty) end' <<<"$rec")"
+        elif .notice_epoch == null and (.cleared_notice_epoch | type) == "number" then .cleared_notice_epoch
+        else ((.read_at // "") | cr_iso_epoch // empty) end' <<<"$rec")"
       # Discovery may happen after a real recovery: untimed ranking follows event
       # time. Keep the legacy timed recovery boundary and CAS behavior unchanged.
       if ! [[ "$baseline_epoch" =~ ^[0-9]+$ ]]; then outcome="unreadable"; break; fi
-      recovery_baseline="$(jq -c '[.notice_epoch, .cleared_notice_epoch, .recovery_epoch] | map(select(type == "number")) | max' <<<"$rec")"
-      evidence="$(jq -c --arg l "$login" --argjson rd "$baseline_epoch" --argjson rb "$recovery_baseline" --arg n "$notice" --argjson rec "$rec" '
+      recovery_baseline="$(jq -c 'if . == null then 0 else [.notice_epoch, .cleared_notice_epoch, .recovery_epoch] | map(select(type == "number")) | max end' <<<"$rec")"
+      evidence="$(jq -c -L "$LIB_DIR" --arg l "$login" --argjson rd "$baseline_epoch" --argjson rb "$recovery_baseline" --arg n "$notice" --argjson rec "$rec" '
+        include "cr-retry-window";
         # Conservatively count text, excluding HTML, entity references and formatting.
         # Unicode separator/format/control categories cannot make a blank body substantive.
         def visible:
@@ -451,12 +456,12 @@ cmd_observe() {
               and (test("^(review rate[- ]limited|review limit reached|usage limit (reached|exceeded|exhausted)|rate limit(ed| (reached|exceeded|exhausted)))([[:space:].:!*#]|$)"; "i") | not))
             and (test("^[[:space:]]*(<!--[^>]*-->[[:space:]]*)*<!--[^>]*rate[- ]?limited by coderabbit[.]ai"; "i") | not));
         [ .[] | select((.user.login // "") == $l)
-          | ((.submitted_at // "") | fromdateiso8601?) as $at
+          | ((.submitted_at // "") | cr_iso_epoch) as $at
           | select($at != null)
           | {at: $at, strict: substantive,
              legacy: (((.state // "") == "APPROVED")
                or (((.body // "") | type == "string") and ((.body // "") | test($n; "i") | not)))} ] as $ev
-        | {answered: ([$ev[] | select(.at > $rd)
+        | {answered: ([$ev[] | select($rec != null and ($rec.notice_epoch != null or $rec.read_at != null)) | select(.at > $rd)
              | select(if $rec.refusal_kind == "untimed" or ($rec.notice_epoch == null and ($rec.recovery_epoch | type) == "number") then .strict else .legacy end)
              | .at] | max),
            recovered: ([$ev[] | select(($rb | type) == "number" and .strict and .at > $rb) | .at] | max)}
@@ -470,7 +475,7 @@ cmd_observe() {
         . as $old
         | (if $answered != "" then
              {cleared_notice_epoch: (.notice_epoch // .cleared_notice_epoch), cleared_at: $at, next_available: null}
-           else . end)
+           else (. // {}) end)
         + (([$recovered, $old.recovery_epoch] | map(select(type == "number")) | max) as $r
            | if $r != null then {recovery_epoch: $r} else {} end)' <<<"$rec")" \
         || die 4 "could not build the $key recovery record — nothing cleared"

@@ -298,6 +298,7 @@ run
 check_eq "fresh notice selects busy CodeAnt instead of refused CodeRabbit" "@codeant-ai review;" "$(posted)"
 check_eq "unknown reset preserved" "null" "$(jq -r '.review_availability.coderabbit.next_available_epoch' "$HOME/.claude/session-state.json")"
 run
+check_eq "same-HEAD rerun exits successfully" "0" "$RC"
 check_eq "second tick cannot request again on same HEAD" "@codeant-ai review;" "$(posted)"
 export FIXTURE_HEAD="$HEAD2"
 run
@@ -328,6 +329,7 @@ for method in record observe; do
   check_eq "$method failure asks instead of trusting stale all-limited skip" "@codeant-ai review;" "$(posted)"
   check_eq "$method failure records no immediate-NRO skip" "0" "$(jq '(.repos["acme/one"].prs["99600"].review_request_skips // {})|length' "$HOME/.claude/session-state.json")"
   run
+  check_eq "$method failure same-HEAD rerun exits successfully" "0" "$RC"
   check_eq "$method failure still preserves one request per HEAD" "@codeant-ai review;" "$(posted)"
 done
 reset "$NRO_TIER"
