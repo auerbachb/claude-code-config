@@ -53,8 +53,8 @@
 5	.claude/scripts/tests/backlog-health.test.sh
 7	.claude/scripts/tests/backlog-staleness.test.sh
 11	.claude/scripts/tests/bgwork-ceiling.test.sh
-9	.claude/scripts/tests/board-round-membership.test.sh
 1	.claude/scripts/tests/board-model-cell.test.sh
+9	.claude/scripts/tests/board-round-membership.test.sh
 41	.claude/scripts/tests/bounded-run.test.sh
 23	.claude/scripts/tests/bugbot-invitation-process.test.sh
 2	.claude/scripts/tests/bugbot-tier-excluded.test.sh
