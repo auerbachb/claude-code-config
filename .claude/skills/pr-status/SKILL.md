@@ -1,5 +1,5 @@
 ---
-name: status
+name: pr-status
 description: Show a dashboard of all open PRs with review state, unresolved findings, and blockers.
 triggers:
   - show PRs
@@ -41,7 +41,7 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 
 > **Invoking-repo scope (issue #687).** "in this repo" is load-bearing: the `gh pr list`
 > below is cwd-repo-scoped by `gh`, and `pr-state.sh --pr N` resolves the repo via
-> `gh repo view` — so the dashboard never surfaces another repo's PRs. `/status`
+> `gh repo view` — so the dashboard never surfaces another repo's PRs. `/pr-status`
 > reads no cross-repo session-state aggregate; if that ever changes, use
 > `session-state.sh --session-view` (repo-scoped), never `--get .`.
 
@@ -100,7 +100,7 @@ jq '.check_runs.all[] | select(.name == "Cursor Bugbot") | {name, status, conclu
 For a structured merge-readiness call per PR, run the shared merge-gate verifier:
 
 ```bash
-"$MERGE_GATE_SH" "$PR_NUM"
+"$MERGE_GATE_SH" "$N"
 ```
 
 Exit `0` → Clean (merge-ready). Exit `1` → parse `.missing[]` to classify: entries about findings/threads = **Has findings**, entries about CI incomplete or review not yet posted = **Review pending**, entries about rate limits = **Rate-limited**. Exit `3` → PR not found. Exit `2`/`4` → script/gh error.

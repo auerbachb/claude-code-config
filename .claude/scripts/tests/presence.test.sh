@@ -328,5 +328,38 @@ check "the repo-scoped leave slot is unaffected" "$rc" 0
 check "presence lives at .presence.reservation, not under .repos" \
   "$(jq -r '[.presence.reservation.generation | type] | .[0]' "$HOME/.claude/session-state.json")" null
 
+printf '== a leave-time cancel, re-declaration or retirement follows the closing window (#2339)\n'
+"$UNATT" off >/dev/null 2>&1
+jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"
+d1=$(( $(date +%s) + 3 * 3600 ))
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$d1" --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
+P $owner1 set closing --by operator-message; check "closing armed for the cancel case" "$rc" 0
+# Cancel: the leave record goes inactive; the next reader settles the closing window.
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].leave.active=false" >/dev/null
+P $owner2 status --json
+check "cancelled leave: closing window cleared (state unset)" "$(field .state)" unset
+check "cancelled leave: no machine-off window left" "$(field .machine_on)" true
+check "cancelled leave: the stored state is no longer closing" "$(jq -r '.presence.state // "null"' "$HOME/.claude/session-state.json")" null
+check "cancelled leave: the stored window end is cleared" "$(jq -r '.presence.until_epoch // "null"' "$HOME/.claude/session-state.json")" null
+
+jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"
+d2=$(( $(date +%s) + 2 * 3600 ))
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$d2" --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
+P $owner1 set closing --by operator-message; check "closing armed for the re-declare case" "$rc" 0
+d3=$(( $(date +%s) + 5 * 3600 ))
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$d3" >/dev/null
+P $owner2 status --json
+check "re-declared leave: closing window end moves to the new deadline" "$(field .until_epoch)" "$d3"
+check "re-declared leave: still closing (machine off)" "$(field .machine_on)" false
+
+jq 'del(.presence)' "$HOME/.claude/session-state.json" > "$tmp/s.json" && mv "$tmp/s.json" "$HOME/.claude/session-state.json"
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$d1" --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
+P $owner1 set here --by operator-message --for 2h; check "here window set" "$rc" 0
+P $owner2 status --json; here_until=$(field .until_epoch)
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].leave.active=false" >/dev/null
+P $owner2 status --json
+check "leave cancel leaves a here window untouched (state)" "$(field .state)" here
+check "leave cancel leaves a here window untouched (end)" "$(field .until_epoch)" "$here_until"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

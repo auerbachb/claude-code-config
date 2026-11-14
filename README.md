@@ -133,7 +133,7 @@ All 37 commands are invoked as `/command` in a Claude Code session. They are def
 | `/tldr` | Workflow | Plain-English summary of what the thread changed and what it means for you, with a needs-you line first; `/tldr all` covers the whole thread |
 | `/why-stopped` | Workflow | Answers "why weren't you working?" from the thread's stoppage entry in the desk database and saves the operator's correction against it |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
-| `/status` | Workflow | Dashboard of open PRs with review state |
+| `/pr-status` | Workflow | Dashboard of open PRs with review state |
 | `/review-stack-audit` | Workflow | Monthly re-measure of the AI review stack — each tool's billed state, observed caps, throughput, and unique value, compared against the recorded baseline; files one issue per drift finding, advisory only, never edits |
 | `/memory-clean` | Workflow | Audit the durable memory store — report orphaned files, dangling index pointers, index size, advisory stale entries; prune only on confirmation |
 | `/quotas` | Workflow | How much of each registered account's weekly cap is gone and when it resets — one row per account per window (used %, remaining %, reset in Eastern, countdown) for `claude` and `codex`; display only, never a dispatch or spend gate |
@@ -292,9 +292,9 @@ find . -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -delete
 
 Related: [anthropics/claude-code#17017](https://github.com/anthropics/claude-code/issues/17017), [#13340](https://github.com/anthropics/claude-code/issues/13340), [#27139](https://github.com/anthropics/claude-code/issues/27139).
 
-**Cause 2: Trust dialog flags reset on new worktrees.**
+**Cause 2: Trust dialog flags on new worktrees.**
 
-Every worktree creates a new project entry in `~/.claude.json` with trust flags set to `false`.
+Each worktree path gets its own project entry in `~/.claude.json`. The docs say worktrees use the main checkout's trust root, but a live fresh-worktree check is still unverified; see `.claude/rules/trust-dialog-fix.md`.
 
 **Fix:** The `trust-flag-repair.sh` hook auto-repairs flags after every response. For manual repair:
 

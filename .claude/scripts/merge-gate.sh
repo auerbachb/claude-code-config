@@ -955,7 +955,7 @@ fi
 MISSING=()
 
 # Authorship guard (issue #733) — the `authorship` field is emitted on every
-# result so read-only callers (/status) can display and separate collaborator
+# result so read-only callers (/pr-status) can display and separate collaborator
 # PRs. A merge is a write, and /wrap + /merge run this gate before `gh pr merge`,
 # so a merge is BLOCKED on a CONFIRMED foreign author. "unknown" (author or
 # viewer unresolvable) does NOT block here — the strict fail-closed lives at the

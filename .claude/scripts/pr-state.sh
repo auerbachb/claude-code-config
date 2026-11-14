@@ -2,7 +2,7 @@
 # pr-state.sh — Gather all PR state into a single JSON file.
 # catalog: pr-state-polling — Gather full PR state (threads, CI, comments, merge state) into a JSON snapshot
 #
-# Shared helper used by /fixpr, /merge, /wrap, /go-on, /status, phase-b-reviewer,
+# Shared helper used by /fixpr, /merge, /wrap, /go-on, /pr-status, phase-b-reviewer,
 # and phase-c-merger. Collapses the 3-endpoint comment scan + GraphQL review threads
 # + check-runs + commit statuses into one JSON bundle. Call sites read the bundle
 # via jq instead of re-issuing overlapping gh api calls inline.
