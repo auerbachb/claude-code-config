@@ -56,12 +56,14 @@
 #   --counter-never-seen
 #                     With --check only: caller attests that no harness counter
 #                     appears anywhere in the context it can see. The script
-#                     then cross-checks its own observation log (current file
-#                     and the `.1` generation) for a reading this conversation
-#                     recorded, so the attestation no longer rests on memory
-#                     that a compaction removes. Missing or foreign-only
-#                     readings then report:
-#                       REASON=counter-never-seen             nothing logged,
+#                     then cross-checks its own records for a reading this
+#                     conversation recorded: the seen marker (one line per
+#                     conversation, never rotated; see FILES) and the
+#                     observation log (current file and the `.1` generation).
+#                     So the attestation no longer rests on memory that a
+#                     compaction removes, nor on log lines that a rotation
+#                     drops. Missing or foreign-only readings then report:
+#                       REASON=counter-never-seen             nothing recorded,
 #                         under an identity that is stable for the conversation
 #                         (explicit, or a harness conversation id)
 #                       REASON=counter-never-seen-unverified  nothing logged,
@@ -71,10 +73,11 @@
 #                         this call cannot see. The log proves nothing here;
 #                         only the caller's own continuous observation can.
 #                       REASON=counter-seen-reading-displaced a reading from
-#                         this conversation is in the log; the attestation is
-#                         refused and a fresh counter is required
-#                       REASON=observation-log-unreadable     the log exists
-#                         but cannot be read; the attestation is refused
+#                         this conversation is on record (marker or log); the
+#                         attestation is refused and a fresh counter is required
+#                       REASON=observation-log-unreadable     the marker or a
+#                         log file exists but cannot be read; the attestation
+#                         is refused
 #                     STATUS remains unknown, exit 3, on all four. Omit the
 #                     flag after any counter appeared in visible context, or
 #                     when the only evidence is that this turn lacks one.
@@ -117,7 +120,11 @@
 #   stdout: exactly two lines —
 #             STATUS=clear|approaching|critical|unknown
 #             REASON=<slug>
-#   stderr: one-line diagnostic on every degraded or failed path.
+#   stderr: one diagnostic line naming the cause on every degraded or failed
+#           path. Every `unknown` then ends with one fixed `note:` line saying
+#           this is not the account usage reader, and a never-seen attestation
+#           that is refused or cannot be confirmed adds one line saying why
+#           before it. Parse stdout; stderr is for a reader.
 #
 # EXIT STATUS (the gate; unknown is NEVER read as clear)
 #   0  clear        — runway above the approaching threshold (--observe: recorded)
@@ -200,6 +207,17 @@
 #                                  with CLAUDE_USAGE_HORIZON_DIR). The evidence
 #                                  source for characterizing what the counter
 #                                  actually tracks across sessions and resets.
+#   ~/.claude/usage-horizon-seen.jsonl
+#                                  seen marker, mode 600, same directory as the
+#                                  log. One `{session_id, anchors}` line per
+#                                  conversation identity that has ever recorded
+#                                  a reading, written by --observe under the
+#                                  log lock BEFORE the log line, and never
+#                                  rotated or pruned: it is what keeps "this
+#                                  conversation saw a counter" true after the
+#                                  log has rotated the reading out. It holds no
+#                                  timestamp and no token figure. Growth is one
+#                                  line of about 120 bytes per conversation.
 #   ~/.claude/session-state.json   `.usage_horizon` — last reading + verdict.
 #
 # DEPENDENCIES
@@ -217,6 +235,7 @@ mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
 
 _HORIZON_DIR="${CLAUDE_USAGE_HORIZON_DIR:-${HOME}/.claude}"
 OBS_LOG="${_HORIZON_DIR}/usage-horizon.jsonl"
+SEEN_FILE="${_HORIZON_DIR}/usage-horizon-seen.jsonl"
 LOCK_DIR="${_HORIZON_DIR}/.usage-horizon.lock"
 LOG_MAX_SIZE=262144 # 256 KiB, then rotate to .1
 
@@ -270,8 +289,9 @@ unknown() {
     case "$reason" in
       no-state-file|no-reading|no-reading-this-session)
         # The caller's attestation covers only the context it can still see.
-        # The observation log is the durable half: every reading this
-        # conversation ever recorded is in it, whatever a compaction removed.
+        # The script's own records are the durable half: the seen marker
+        # holds every conversation that ever recorded a reading, whatever a
+        # compaction removed from context or a rotation removed from the log.
         conversation_logged || logged_rc=$?
         case "$logged_rc" in
           1)
@@ -286,11 +306,11 @@ unknown() {
             ;;
           0)
             reason=counter-seen-reading-displaced
-            echo "usage-horizon.sh: the observation log holds a reading from this conversation; the never-seen attestation is refused" >&2
+            echo "usage-horizon.sh: a reading from this conversation is on record (seen marker or observation log); the never-seen attestation is refused" >&2
             ;;
           *)
             reason=observation-log-unreadable
-            echo "usage-horizon.sh: the observation log could not be read; the never-seen attestation is refused" >&2
+            echo "usage-horizon.sh: the seen marker or the observation log could not be read; the never-seen attestation is refused" >&2
             ;;
         esac
         ;;
@@ -497,21 +517,27 @@ reading_is_owned() {
 }
 
 # conversation_logged — has this conversation ever recorded a reading?
-#   0  yes: a line in the retained log (current file or `.1`) is owned
-#   1  no:  no retained line is owned (or no log exists)
-#   2  cannot tell: a log is present but is not a readable regular file, or jq
-#      failed on it
-# Reads this script's OWN log and nothing else. It answers "was a reading
+#   0  yes: a line in the seen marker, or in the retained log (current file or
+#      `.1`), is owned
+#   1  no:  no such line is owned (or none of the three files exists)
+#   2  cannot tell: one of the three is present but is not a readable regular
+#      file, or jq failed on it
+# Reads this script's OWN files and nothing else. It answers "was a reading
 # recorded", never "how much is left": no figure is read out of a line.
 # A line that does not parse (a torn append) is skipped, not fatal.
+#
+# The seen marker is the authority: --observe writes a conversation's marker
+# line before its log line and nothing ever removes it, so a reading the log
+# has rotated out of both generations still answers 0 here. The log is scanned
+# as well because readings recorded before the marker existed are only there.
+# Those older lines can still rotate away; no reading recorded from now on can
+# be forgotten that way.
 #
 # Lock-free, like every other --check read. A rotation racing this scan moves
 # the current file to `.1`; the scan reads the current file first and `.1`
 # second, so a line that moves between the two reads is still seen in `.1`, and
 # a file that vanishes between the existence test and the read makes jq fail,
-# which is answer 2 (refuse), never answer 1. The one loss a race can cause is
-# the one rotation causes anyway: a line already in `.1` is dropped when the
-# next rotation replaces it.
+# which is answer 2 (refuse), never answer 1.
 conversation_logged() {
   local loose=true f hit
   [[ "$IDENT_SOURCE" == "explicit" ]] && loose=false
@@ -519,7 +545,7 @@ conversation_logged() {
   if [[ -e "$_HORIZON_DIR" ]] && [[ ! -d "$_HORIZON_DIR" || ! -r "$_HORIZON_DIR" || ! -x "$_HORIZON_DIR" ]]; then
     return 2
   fi
-  for f in "$OBS_LOG" "${OBS_LOG}.1"; do
+  for f in "$SEEN_FILE" "$OBS_LOG" "${OBS_LOG}.1"; do
     [[ -e "$f" || -L "$f" ]] || continue
     [[ -f "$f" && -r "$f" ]] || return 2
     hit="$(jq -n -R -r \
@@ -788,14 +814,36 @@ take_log_lock() {
   return 1
 }
 
-append_observation() { # $1 = one-line JSON record
-  local record="$1"
+# mark_conversation_seen <marker line> — record, once, that this conversation
+# identity has had a reading. Called with the log lock held. The line is
+# compared whole and literally (grep -Fx), so no identity is ever used as a
+# pattern. Returns non-zero when the marker could not be confirmed present.
+mark_conversation_seen() {
+  local marker="$1"
+  [[ -n "$marker" ]] || return 1
+  if [[ -f "$SEEN_FILE" && -r "$SEEN_FILE" ]] && grep -Fxq -- "$marker" "$SEEN_FILE" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\n' "$marker" >> "$SEEN_FILE" 2>/dev/null || return 1
+  chmod 600 "$SEEN_FILE" 2>/dev/null || true
+  return 0
+}
+
+append_observation() { # $1 = one-line JSON record, $2 = seen-marker line
+  local record="$1" marker="$2" marker_rc=0
   if ! take_log_lock; then
     echo "usage-horizon.sh: could not acquire the observation-log lock at $LOCK_DIR" >&2
     return "$EXIT_LOCK"
   fi
   # shellcheck disable=SC2064
   trap "rmdir '$LOCK_DIR' 2>/dev/null || true" EXIT
+
+  # Marker first, in the same locked write: there is then no moment at which a
+  # reading is in the log without its marker. A marker that cannot be written
+  # fails the observation (below) after the reading has still been appended as
+  # evidence, because a reading with no marker is one a later rotation could
+  # erase, and the never-seen check would then answer for it wrongly.
+  mark_conversation_seen "$marker" || marker_rc=1
 
   local size record_bytes
   size="$(file_size "$OBS_LOG")"
@@ -831,6 +879,10 @@ append_observation() { # $1 = one-line JSON record
   # by then. The trap stays armed for the error returns above.
   rmdir "$LOCK_DIR" 2>/dev/null || true
   trap - EXIT
+  if [[ $marker_rc -ne 0 ]]; then
+    echo "usage-horizon.sh: could not record this conversation in $SEEN_FILE; reading appended to $OBS_LOG but not persisted to session-state" >&2
+    return "$EXIT_WRITE"
+  fi
   return 0
 }
 
@@ -903,11 +955,19 @@ case "$MODE" in
       exit "$EXIT_WRITE"
     }
 
+    # The seen marker: this conversation's identity and nothing else. Built
+    # from the record so the two can never name different conversations.
+    SEEN_MARK="$(printf '%s' "$RECORD" | jq -c '{session_id, anchors}')" || SEEN_MARK=""
+    [[ -n "$SEEN_MARK" ]] || {
+      echo "usage-horizon.sh: jq failed building the seen marker" >&2
+      exit "$EXIT_WRITE"
+    }
+
     # Owner-only: the log carries session identifiers and account runway.
     umask 077
     mkdir -p "$_HORIZON_DIR" 2>/dev/null || true
     APPEND_RC=0
-    append_observation "$RECORD" || APPEND_RC=$?
+    append_observation "$RECORD" "$SEEN_MARK" || APPEND_RC=$?
     if [[ $APPEND_RC -ne 0 ]]; then
       exit "$APPEND_RC"
     fi

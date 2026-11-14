@@ -33,7 +33,8 @@ pre-emptive signal has since appeared via in-context injection),
 ### Probe 0 — In-context remaining-token counter (pre-emptive)
 
 **Files:** `~/.claude/usage-horizon.jsonl` (append-only observation log, mode
-600) and `~/.claude/session-state.json` `.usage_horizon` (last reading + last
+600), `~/.claude/usage-horizon-seen.jsonl` (one identity line per conversation
+that has recorded a reading, never rotated, no figure in it) and `~/.claude/session-state.json` `.usage_horizon` (last reading + last
 stable verdict).
 
 **Written by:** `.claude/scripts/usage-horizon.sh --observe <remaining>

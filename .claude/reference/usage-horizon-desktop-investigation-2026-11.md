@@ -39,7 +39,16 @@ So in a Fable 5.2 conversation the default is `off`: no figure in the system pro
 - The reported parent transcript contains no counter-shaped string. This is weak evidence on its own: harness-injected text is not necessarily kept in a transcript.
 - It agrees with issue #2147, which reported the counter absent throughout a Claude Code 2.1.322 / Fable 5.2 session.
 
-**Not determined.** Whether the parent conversation saw a figure before its first compaction was not observed first-hand; a sub-agent cannot read the parent's context. The binary evidence says it did not. Whether a server-side flag can turn the capability on for a model at run time was not determined.
+**The override (read from the binary, not exercised).** "Off" is the default for a model without the capability, not a fixed property. The function that picks the mode consults, in order:
+
+1. the environment variable `CLAUDE_CODE_TOTAL_TOKENS_REMINDER`;
+2. the setting `totalTokensReminder` (marked `@internal` in the settings schema);
+3. a server-side flag (`tengu_lapis_anchor`), which can name a mode or switch the counter off;
+4. only then the per-model capability: `padded-countdown` if the model has it, else `off`.
+
+Accepted values for 1 and 2 are `off`, `infinite`, `fixed`, `countdown` and `padded-countdown`; any other value is ignored. Two companions exist: `CLAUDE_CODE_TOTAL_TOKENS_REMINDER_BUDGET` (starting budget for `padded-countdown`, default 15,000,000) and `CLAUDE_CODE_TOTAL_TOKENS_REMINDER_AFTER_USER_TURN` (whether the figure is also printed, and the budget reset, on each user message; default on). The variable name occurs 10 times in the strings of each of the two installed 2.1.321 builds (`ddbdf2b334e1`, `e6736b2d954d`). None of the three variables was set in the session, and nothing in this repo sets one. So on Fable 5.2 a figure can be made to appear, and the server can also do it without any local change. What it would then measure is item 2 under "Open, for the owner".
+
+**Not determined.** Whether the parent conversation saw a figure before its first compaction was not observed first-hand; a sub-agent cannot read the parent's context. The binary evidence says it did not, absent an override. Whether the server-side flag is ever set for this account was not determined. The override was read, not run: no session was started with it.
 
 **Reproduce.**
 
@@ -91,14 +100,14 @@ An anchor is present and stable across compaction, so the reading is keyed on it
 
 1. **Identity.** `usage-horizon.sh` resolves `--session`, `CLAUDE_SESSION_ID`, then a digest of `CLAUDE_CODE_HOST_SESSION_ID`, then of `CLAUDE_CODE_SESSION_ID`, then the derived key. These are the anchors `resolve-log.sh` records for issue #1572, in the same order. They are reused as environment inputs; the marker files are not, because a reading keyed directly on the anchor needs no adoption step. Only digests are stored (`reading.anchors.{host,sid}`).
 2. **Ownership.** One rule serves `--check`, the hysteresis anchor and the log cross-check: equal key, or an equal recorded anchor. An explicit identity stays exact and never borrows the ambient ids.
-3. **The never-seen attestation has a durable half.** `--check --counter-never-seen` now scans the script's own observation log for a reading this conversation recorded. None: `counter-never-seen`. One: `counter-seen-reading-displaced`, and the attestation is refused. So the caller attests only what it can still see, and a compaction no longer bars it. Where the Bash environment carries no harness id, the key is the derived fallback and an empty search proves nothing: the answer is then `counter-never-seen-unverified`, which keeps the old continuous-observation requirement.
+3. **The never-seen attestation has a durable half.** `--check --counter-never-seen` now scans the script's own records for a reading this conversation recorded: a seen marker (`~/.claude/usage-horizon-seen.jsonl`, one `{session_id, anchors}` line per conversation, written by `--observe` under the log lock before the log line, never rotated) and the observation log. None: `counter-never-seen`. One: `counter-seen-reading-displaced`, and the attestation is refused. A marker or log that is present but unreadable: `observation-log-unreadable`, refused. So the caller attests only what it can still see, and a compaction no longer bars it. Where the Bash environment carries no harness id, the key is the derived fallback and an empty search proves nothing: the answer is then `counter-never-seen-unverified`, which keeps the old continuous-observation requirement.
 4. **Hold lines** say this is not the account usage reader and that signing in will not change it.
 
 **Unchanged.** `unknown` exits 3 and is never `clear`. Automatic refill stays held on every `unknown`. Nothing counts, converts or infers tokens: the log scan asks whether a line exists and reads no figure from it. `.claude/rules/safety.md` is untouched.
 
 **Residual risks.** Each can only let through a launch the user asked for in chat; none reaches automatic refill.
 
-- Log rotation (256 KiB, one retained generation) can drop a conversation's old lines.
+- Log rotation (256 KiB, one retained generation) no longer loses the fact that a conversation recorded a reading: the seen marker holds it. This was first left as a residual risk and then closed in review. A line is gone after the second rotation that follows it, which takes between about 1,500 and 3,000 later readings at roughly 180 bytes a line. On a model that prints the figure, each orchestrating conversation records one per monitor cycle, so eight concurrent conversations get there in about three hours. A conversation that recorded a reading and then stopped (a model switch to one without the capability is enough) could by then have been reported `counter-never-seen`. Lines written before the marker existed are still only in the log and can still rotate away; on 2026-11-14 that is 245 lines, the newest 18 days old.
 - With no harness id at all, a drifted derived key misses its own earlier lines. This case is reported as `counter-never-seen-unverified` and keeps the stricter attestation.
 - A counter that was printed but never recorded with `--observe` leaves no line.
 - A reading written before this change carries no anchors. A conversation that recorded one and then upgraded reads `unknown` until its next observation.
@@ -109,7 +118,7 @@ Items 1 and 2 are tracked in issue #2390.
 
 1. **Automatic refill never runs on a model without the capability.** With no figure there is never a reading, the verdict is `unknown` on every cycle, and `unknown` starts nothing automatically (`monitor-mode.md` item 0). That is by rule and this change does not touch it. On Fable 5.2 it means a pipeline is refilled only by a chat request.
 2. **What the figure measures.** The harness text above says the default mode counts down from a configured budget (15,000,000 by default) and re-anchors to the full budget on each user prompt, and that another mode reports remaining context-window tokens. Neither is the account's usage window. `budget-source-probe.md` Probe 0 and the script header describe it as account runway. The characterization question Probe 0 left open has an answer in the binary, and it does not match the description. Thresholds and the park at `critical` were designed on the account-runway reading.
-3. **The env override exists** (`CLAUDE_CODE_TOTAL_TOKENS_REMINDER`). It is marked internal. Setting it would make a figure appear on this model, with the meaning in item 2. Not done here.
+3. **The env override exists** (`CLAUDE_CODE_TOTAL_TOKENS_REMINDER`; details under Finding 1). It is marked internal. Setting it to `padded-countdown` or `countdown` would make a figure appear on this model, and automatic refill would then have a reading to work from, but with the meaning in item 2: a per-conversation countdown or the context window, not account usage. Whether to set it is the owner's call. Not done here, and no settings file was touched.
 
 ## Manual verification
 

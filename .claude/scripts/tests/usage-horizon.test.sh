@@ -856,6 +856,70 @@ if [[ ! -r "$(LOG)" ]]; then
 fi
 chmod 600 "$(LOG)"
 
+# Rotation must not erase the fact that a counter was seen. One generation is
+# kept, so a line is gone after the second rotation that follows it. Build that
+# for real: conversation X records, then two rotations driven by conversation
+# Y's readings push X's line out of both retained files.
+reset_home
+renv "$HOST_X" "$SID_S" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
+X_KEY="$(jq -r '.session_id' "$(LOG)" | head -1)"
+head -c 262144 /dev/zero | tr '\0' 'x' >> "$(LOG)"
+renv "$HOST_Y" "$SID_T" "$PROC_A" "$SCRIPT" --observe 13000000 --limit 15000000
+head -c 262144 /dev/zero | tr '\0' 'x' >> "$(LOG)"
+renv "$HOST_Y" "$SID_T" "$PROC_A" "$SCRIPT" --observe 13000000 --limit 15000000
+if [[ -n "$X_KEY" && "$X_KEY" == anchor-* ]] && ! grep -qF -- "$X_KEY" "$(LOG)" "$(LOG).1"; then
+  ok "premise: the first conversation's reading has rotated out of both log files"
+else
+  bad "premise not built: the first conversation's line is still in a retained log file (key '${X_KEY}')"
+fi
+renv "$HOST_X" "$SID_S" "$PROC_B" "$SCRIPT" --check --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=counter-seen-reading-displaced' "a reading rotated out of both log files still refuses the attestation"
+check_eq "$RC" "3" "  with the unknown exit"
+renv "$HOST_X" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "  through the host anchor alone"
+renv "CLAUDE_CODE_HOST_SESSION_ID=local_conversation-z" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen" "  and a conversation that never recorded is still attested"
+
+# The marker itself: one line per conversation, identity only, owner-only.
+SEEN() { printf '%s' "$FAKE_HOME/.claude/usage-horizon-seen.jsonl"; }
+check_eq "$(wc -l < "$(SEEN)" | tr -d ' ')" "2" "three readings from two conversations leave two marker lines"
+check_eq "$(jq -c 'keys' "$(SEEN)" | sort -u)" '["anchors","session_id"]' "a marker line holds the identity and nothing else"
+SEEN_BITS="$(file_mode "$(SEEN)")" || SEEN_BITS="<undeterminable>"
+check_eq "$SEEN_BITS" "600" "the seen marker is mode 600"
+
+# An explicit identity is exact against the marker too.
+renv "$SCRIPT" --check --counter-never-seen --session "$X_KEY"
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "an explicit identity equal to a marked key is refused"
+renv "$HOST_X" "$SID_S" "$SCRIPT" --check --counter-never-seen --session stated-other
+check_eq "$(reason_of)" "counter-never-seen" "an explicit identity never borrows the ambient conversation's marker"
+
+# A marker that is present but cannot be read is not "never seen".
+cp "$(SEEN)" "$TMP/seen.keep"
+rm -f "$(SEEN)"
+mkdir "$(SEEN)"
+renv "CLAUDE_CODE_HOST_SESSION_ID=local_conversation-z" "$SCRIPT" --check --counter-never-seen
+check_eq "$OUT" $'STATUS=unknown\nREASON=observation-log-unreadable' "a marker that is not a regular file refuses the attestation"
+check_eq "$RC" "3" "  with the unknown exit"
+# ... and an observation that cannot write its marker fails instead of leaving
+# a reading that a later rotation could erase.
+renv "CLAUDE_CODE_HOST_SESSION_ID=local_conversation-w" "$SCRIPT" --observe 14000000 --limit 15000000
+check_eq "$RC" "5" "an observation that cannot write its marker fails with the write code"
+check_contains "$(cat "$TMP/stderr")" "could not record this conversation" "  and says why"
+check_eq "$(jq -r '.usage_horizon.reading.remaining' "$(STATE)")" "13000000" "  and does not persist the unmarked reading as the verdict"
+rmdir "$(SEEN)"
+cp "$TMP/seen.keep" "$(SEEN)"
+chmod 000 "$(SEEN)"
+if [[ ! -r "$(SEEN)" ]]; then
+  renv "CLAUDE_CODE_HOST_SESSION_ID=local_conversation-z" "$SCRIPT" --check --counter-never-seen
+  check_eq "$(reason_of)" "observation-log-unreadable" "an unreadable marker refuses the attestation"
+fi
+chmod 600 "$(SEEN)"
+printf '%s\n' 'not json' '{"session_id":"anchor-0000' >> "$(SEEN)"
+renv "CLAUDE_CODE_HOST_SESSION_ID=local_conversation-z" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-never-seen" "unparseable marker lines are skipped"
+renv "$HOST_X" "$SCRIPT" --check --counter-never-seen
+check_eq "$(reason_of)" "counter-seen-reading-displaced" "  without hiding a marked conversation"
+
 # The attestation never hides this conversation's own stale reading.
 reset_home
 renv "$HOST_X" "$PROC_A" "$SCRIPT" --observe 14000000 --limit 15000000
