@@ -21,7 +21,9 @@
 #                       (from --stall-margin or pm-config.md STALL_MARGIN_MIN;
 #                       default 0; unattended default 60).
 #   effective_window_min  window_minutes - stall_margin_min (floor 0).
-#   deadline_epoch      Unix epoch of window end (now + window_minutes).
+#   deadline_epoch      Unix epoch of window end. Duration forms: now + window_minutes.
+#                       Clock-time forms ("until H:MM"): the stated minute at second zero
+#                       (ET), so the value is divisible by 60.
 #
 # WINDOW FORMATS ACCEPTED
 #   "until H:MM AM/PM [ET]"     End clock time today in ET
@@ -95,6 +97,7 @@ fi
 # ---------------------------------------------------------------------------
 WINDOW_MINUTES=0
 IS_UNATTENDED=false
+CLOCK_DEADLINE_EPOCH=""
 
 w=$(printf '%s' "$WINDOW_STR" | tr '[:upper:]' '[:lower:]')  # lowercase
 
@@ -148,6 +151,8 @@ elif [[ "$w" =~ ^until[[:space:]]+([0-9]+):([0-9]{2})([[:space:]]*([ap]m)?)?([[:
       "$(( -DIFF ))" >&2
     exit 1
   fi
+  # The stated clock minute is the deadline itself (second zero), not now + window.
+  CLOCK_DEADLINE_EPOCH=$TARGET_EPOCH
   # Round up to nearest minute so a deadline 5 min 30 s away gives 6 min, not 5.
   WINDOW_MINUTES=$(( (DIFF + 59) / 60 ))
   # Unattended heuristic: > 6 h
@@ -235,7 +240,12 @@ if (( EFFECTIVE < 0 )); then EFFECTIVE=0; fi
 # ---------------------------------------------------------------------------
 # Compute deadline epoch
 # ---------------------------------------------------------------------------
-DEADLINE_EPOCH=$(( NOW_EPOCH + WINDOW_MINUTES * 60 ))
+# A clock-time window ends at the stated minute exactly (HH:MM:00); duration forms end now + window.
+if [[ -n "$CLOCK_DEADLINE_EPOCH" ]]; then
+  DEADLINE_EPOCH=$CLOCK_DEADLINE_EPOCH
+else
+  DEADLINE_EPOCH=$(( NOW_EPOCH + WINDOW_MINUTES * 60 ))
+fi
 
 # ---------------------------------------------------------------------------
 # Emit result
