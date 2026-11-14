@@ -36,6 +36,14 @@ class Browser(unittest.TestCase):
         with self.assertRaises(ValueError):
             browser.validate(doc, 'fixture', '', 1000)
 
+    def test_schema_version_is_an_integer_not_a_boolean(self):
+        """Python treats True == 1; a boolean schema_version must not pass as version 1."""
+        for value in [True, False, 1.0, '1']:
+            doc = observation()
+            doc['schema_version'] = value
+            with self.assertRaises(ValueError):
+                browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
+
     def test_secret_fields_and_bad_numbers(self):
         """Reject unrecognized fields, boolean percentages and malformed pools."""
         for change in ['token', 'cookie', 'password']:
@@ -315,22 +323,27 @@ class Browser(unittest.TestCase):
     def test_actual_shell_reader_accepts_only_fixed_classes(self):
         source = Path(browser.__file__).parents[1] / 'ai-quotas.sh'
         text = source.read_text()
-        function = text.split('read_cursor_browser() {',1)[1].split('\n}\n',1)[0]
+        def shell_function(name):
+            return text.split(name+'() {',1)[1].split('\n}\n',1)[0]
+        # read_cursor_browser delegates the failure mapping to browser_failure_row (#2299),
+        # so the harness must define both or the reader fails with "command not found".
         harness = '''set -u
 python3() { printf '%s' "$BRIDGE_PAYLOAD"; }
 claude_bin() { printf 'unused'; }
 set_outcome() { printf 'OUTCOME %s %s %s\\n' "$1" "$2" "$3"; }
 emit_row() { printf 'ROW %s\\n' "$*"; }
 CURSOR_EMAIL=fixture@example.invalid SELF_DIR=/unused BROWSER_RESULTS='' NOW=1000 CURSOR_WINDOW=weekly
-read_cursor_browser() {''' + function + '\n}\nread_cursor_browser fixture\n'
+browser_failure_row() {''' + shell_function('browser_failure_row') + '''
+}
+read_cursor_browser() {''' + shell_function('read_cursor_browser') + '\n}\nread_cursor_browser fixture\n'
         for name in sorted(browser.ERROR_CLASSES) + ['RAW-SECRET-UNSAFE', '', None]:
             payload = json.dumps(dict(status='unreadable',error_class=name))
             result = subprocess.run(['bash','-c',harness],env=dict(os.environ,BRIDGE_PAYLOAD=payload),
                                     capture_output=True,text=True,timeout=5,check=True)
             expected = name if name in browser.ERROR_CLASSES else 'browser_stage_unknown'
             status = 'timeout' if expected == 'browser_timeout' else 'unreadable'
+            self.assertEqual(result.stderr,'',msg='reader wrote to stderr for %r' % (name,))
             self.assertIn('OUTCOME '+status+' browser '+expected, result.stdout)
-            self.assertEqual(result.stderr,'')
             self.assertNotIn('RAW-SECRET-UNSAFE',result.stdout)
 
     def test_actual_internal_cli_requires_completed_native_read(self):
