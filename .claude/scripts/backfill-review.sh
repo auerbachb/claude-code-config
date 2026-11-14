@@ -77,7 +77,8 @@
 #   a reviewer: it is recorded in the marker's repos[<repo>].uncovered list and
 #   the marker moves past it in the same atomic write. That is the only case
 #   where the marker passes code no reviewer saw; a lowered bound yields
-#   `partial` (some reviewer saw it), never `uncovered`.
+#   A stretch is always covered in full: the reviewer is only ever handed a
+#   stretch within its own hard cap, so no range record is partial.
 #   Reference: .claude/reference/backfill-review.md §Range mode
 #
 # ENVIRONMENT
@@ -157,17 +158,19 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --range) RANGE_MODE=1; shift ;;
     --from) FROM_SHA="${2:-}"; [[ -n "$FROM_SHA" ]] || die 2 "--from needs a commit"; shift 2 ;;
-    --default-days) RANGE_DEFAULT_DAYS="${2:-}"; [[ "$RANGE_DEFAULT_DAYS" =~ ^[1-9][0-9]*$ ]] || die 2 "--default-days needs a positive integer"; shift 2 ;;
-    --range-bound) RANGE_BOUND_OVERRIDE="${2:-}"; [[ "$RANGE_BOUND_OVERRIDE" =~ ^[1-9][0-9]*$ ]] || die 2 "--range-bound needs a positive integer"; shift 2 ;;
+    --default-days) RANGE_DEFAULT_DAYS="${2:-}"; [[ -n "$RANGE_DEFAULT_DAYS" ]] || die 2 "--default-days needs a value"; shift 2 ;;
+    --range-bound) RANGE_BOUND_OVERRIDE="${2:-}"; [[ -n "$RANGE_BOUND_OVERRIDE" ]] || die 2 "--range-bound needs a value"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die 2 "unknown argument: $1" ;;
   esac
 done
-if [[ -n "$RANGE_BOUND_OVERRIDE" && ! "$RANGE_BOUND_OVERRIDE" =~ ^[1-9][0-9]*$ ]]; then
-  die 2 "BACKFILL_RANGE_BOUND needs a positive integer"
-fi
 if [[ -n "$FROM_SHA" && "$RANGE_MODE" -eq 0 ]]; then die 2 "--from needs --range"; fi
-if [[ ! "$RANGE_DEFAULT_DAYS" =~ ^[1-9][0-9]*$ ]]; then die 2 "BACKFILL_RANGE_DEFAULT_DAYS needs a positive integer"; fi
+# Range-only settings (env and flags) are validated only when --range is selected:
+# a per-PR run must behave identically whatever these hold.
+if [[ "$RANGE_MODE" -eq 1 ]]; then
+  if [[ ! "$RANGE_DEFAULT_DAYS" =~ ^[1-9][0-9]*$ ]]; then die 2 "--default-days / BACKFILL_RANGE_DEFAULT_DAYS needs a positive integer"; fi
+  if [[ -n "$RANGE_BOUND_OVERRIDE" && ! "$RANGE_BOUND_OVERRIDE" =~ ^[1-9][0-9]*$ ]]; then die 2 "--range-bound / BACKFILL_RANGE_BOUND needs a positive integer"; fi
+fi
 if ! [[ "$MAX_ROW_ATTEMPTS" =~ ^[0-9]+$ ]] || (( 10#$MAX_ROW_ATTEMPTS < 1 )); then
   die 2 "--max-row-attempts / BACKFILL_MAX_ROW_ATTEMPTS needs an integer >= 1"
 fi
@@ -553,7 +556,7 @@ file_finding() {
 # Everything below is defined before the dispatch at the end of this section,
 # so the helpers above (verify_finding, marker_lookup, file_finding's
 # neutralize/safe_inline, cleanup_worktree, drop_channel) are all in scope.
-RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_CUT_PARTIAL=0 RANGE_FIRST=""
+RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_FIRST=""
 RANGE_LAST=""
 short() { printf '%s' "${1:0:12}"; }
 
@@ -610,10 +613,12 @@ range_marker_read() {
   RANGE_LAST="$sha"
 }
 
-# range_marker_write <sha> <files> <bound> <channel> <partial 0|1> — atomic:
-# temp file in the same directory, then rename. Uses RANGE_FIRST / RANGE_CUT_COMMITS.
+# range_marker_write <sha> <files> <bound> <channel> — atomic: temp file in the
+# same directory, then rename. Uses RANGE_FIRST / RANGE_CUT_COMMITS. A reviewed
+# stretch is covered in full: every reviewer in range mode is only handed a
+# stretch within its own hard cap, so no reviewed stretch is ever partial.
 range_marker_write() {
-  local sha="$1" files="$2" bound="$3" ch="$4" partial="$5" dir tmp now
+  local sha="$1" files="$2" bound="$3" ch="$4" dir tmp now
   dir="$(dirname "$RANGE_MARKER")"
   mkdir -p "$dir" 2>/dev/null || return 1
   tmp="$(mktemp "$dir/.backfill-range-marker.XXXXXX")" || return 1
@@ -622,19 +627,16 @@ range_marker_write() {
     if [[ -e "$RANGE_MARKER" ]]; then cat "$RANGE_MARKER"; else printf '%s' '{"schema_version":1,"repos":{}}'; fi
   } | jq --arg r "$REPO" --arg sha "$sha" --arg now "$now" --arg first "$RANGE_FIRST" \
         --argjson commits "$RANGE_CUT_COMMITS" --argjson files "$files" --argjson bound "$bound" \
-        --arg ch "$ch" --argjson partial "$partial" '
+        --arg ch "$ch" '
       .repos[$r] = ((.repos[$r] // {}) + {last_reviewed_commit: $sha, updated_at: $now,
         last_range: {first: $first, last: $sha, commits: $commits, files: $files,
-                     bound: $bound, channel: $ch, partial: ($partial == 1)}})
-      | if $partial == 1
-        then .repos[$r].partial_commits = ((.repos[$r].partial_commits // []) + [{commit: $sha, files: $files, bound: $bound}])
-        else . end' > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
+                     bound: $bound, channel: $ch}})' > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
 }
 
 # range_marker_write_uncovered <sha> <files> <largest-cap> — the one case where the
 # marker moves past code no reviewer saw. A single commit over every channel's
 # hard cap is appended to repos[<repo>].uncovered and the marker advances to it
-# in ONE atomic write. last_range and partial_commits are not touched: nothing
+# in ONE atomic write. last_range is not touched: nothing
 # was reviewed. Failure returns 1 with the marker unchanged (the caller stops).
 range_marker_write_uncovered() {
   local sha="$1" files="$2" cap="$3" dir tmp now
@@ -653,29 +655,39 @@ range_marker_write_uncovered() {
     > "$tmp" && mv "$tmp" "$RANGE_MARKER" || { rm -f "$tmp"; return 1; }
 }
 
+# range_distinct_files <start> <end> — the number of distinct changed paths between
+# two commits. NUL-terminated (-z), so a name with spaces or a newline is one path
+# and is never dropped or split. Prints the count; returns 1 on a git failure
+# (pipefail is set, so a failing git fails the pipeline, not just tr or wc).
+range_distinct_files() {
+  local start="$1" end="$2" n
+  n="$(git -C "$REPO_DIR" diff --no-renames --name-only -z "$start" "$end" 2>/dev/null | tr -cd '\0' | wc -c | tr -d ' ')" || return 1
+  printf '%s' "$n"
+}
+
 # range_cut <start> <end> <bound> — walks first-parent commits after start and
 # cuts at the last boundary whose cumulative distinct-file count (diff from
 # start, renames off) is at or under <bound>. A first commit alone over the
-# bound is the cut, flagged partial. Sets RANGE_CUT_*, RANGE_FIRST.
+# bound is still cut and reviewed in full, provided it fits its channel's hard
+# cap (the callers enforce that). Sets RANGE_CUT_*, RANGE_FIRST.
 # Returns 1 on a git failure, 2 when there is no commit to cut.
 range_cut() {
-  local start="$1" end="$2" bound="$3" c n=0 diffout nfiles cut="" cfiles=0 cn=0 first="" partial=0 commits
-  RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_CUT_PARTIAL=0 RANGE_FIRST=""
+  local start="$1" end="$2" bound="$3" c n=0 nfiles cut="" cfiles=0 cn=0 first="" commits
+  RANGE_CUT_SHA="" RANGE_CUT_FILES=0 RANGE_CUT_COMMITS=0 RANGE_FIRST=""
   commits="$(git -C "$REPO_DIR" rev-list --first-parent --reverse "$start..$end" 2>/dev/null)" || return 1
   while IFS= read -r c; do
     [[ -n "$c" ]] || continue
     n=$(( n + 1 ))
     [[ -n "$first" ]] || first="$c"
-    diffout="$(git -C "$REPO_DIR" diff --no-renames --name-only "$start" "$c" 2>/dev/null)" || return 1
-    nfiles="$(printf '%s' "$diffout" | awk 'NF' | wc -l | tr -d ' ')"
+    nfiles="$(range_distinct_files "$start" "$c")" || return 1
     if (( nfiles > bound )); then
-      if [[ -z "$cut" ]]; then cut="$c"; cfiles=$nfiles; cn=$n; partial=1; fi
+      if [[ -z "$cut" ]]; then cut="$c"; cfiles=$nfiles; cn=$n; fi
       break
     fi
     cut="$c"; cfiles=$nfiles; cn=$n
   done <<< "$commits"
   [[ -n "$cut" ]] || return 2
-  RANGE_CUT_SHA="$cut" RANGE_CUT_FILES=$cfiles RANGE_CUT_COMMITS=$cn RANGE_CUT_PARTIAL=$partial RANGE_FIRST="$first"
+  RANGE_CUT_SHA="$cut" RANGE_CUT_FILES=$cfiles RANGE_CUT_COMMITS=$cn RANGE_FIRST="$first"
 }
 
 # range_introducer <path> <start> <cut> — the PR behind the last commit in the
@@ -691,6 +703,16 @@ range_introducer() {
   else
     printf 'commit %s (no PR number in its subject; path-level, approximate)' "$(short "$c")"
   fi
+}
+
+# range_on_first_parent_chain <sha> — 0 when <sha> is on origin/main's first-parent
+# chain, 1 when it is not (an ancestor reached only through a second parent is 1),
+# 2 on a git failure. The list is read once per call, from a here-string, so no
+# early pipe exit can hide a failure.
+range_on_first_parent_chain() {
+  local sha="$1" list
+  list="$(git -C "$REPO_DIR" rev-list --first-parent "$MAIN_SHA" 2>/dev/null)" || return 2
+  grep -qxF "$sha" <<<"$list"
 }
 
 # range_review_channel <start> <cut> <channel> — one committed-range review in a
@@ -769,7 +791,7 @@ file_range_finding() {
 
 # range_main — the range loop. Always exits (summary + exit code).
 range_main() {
-  local start="" source="" cursor="" ch bound cut nfiles ncommits partial rc2 dry_count=0
+  local start="" source="" cursor="" ch bound cut nfiles ncommits rc2 rc_chain dry_count=0
   local f vline verdict main_path intro url ok ISSUES BUGS FINDINGS reported parsed info
   if ! range_marker_read; then summary range_marker_unreadable; exit 6; fi
   if [[ -n "$FROM_SHA" && -n "$RANGE_LAST" ]]; then
@@ -793,9 +815,14 @@ range_main() {
     if [[ -z "$start" ]]; then summary range_no_start; exit 0; fi
     source="default: commits since $RANGE_DEFAULT_DAYS days ago"
   fi
-  if ! git -C "$REPO_DIR" merge-base --is-ancestor "$start" "$MAIN_SHA" 2>/dev/null; then
+  # The range walk follows FIRST parents, so the start must sit on origin/main's
+  # first-parent chain. A second-parent commit is an ancestor too, but the walk
+  # from it would review mainline commits that predate it.
+  rc_chain=0; range_on_first_parent_chain "$start" || rc_chain=$?
+  if [[ $rc_chain -eq 2 ]]; then summary range_internal_error; exit 5; fi
+  if [[ $rc_chain -ne 0 ]]; then
     if [[ "$source" == marker ]]; then summary range_marker_not_ancestor; exit 6; fi
-    die 2 "range start $start is not an ancestor of origin/main"
+    die 2 "range start $start is not on origin/main's first-parent chain"
   fi
   cursor="$start"
   printf 'backfill-review: range start=%s source=%s\n' "$(short "$start")" "$source"
@@ -817,14 +844,14 @@ range_main() {
     ch="${ALIVE[0]:-coderabbit}"; bound="$(range_bound "$ch")"
     rc2=0; range_cut "$cursor" "$MAIN_SHA" "$bound" || rc2=$?
     if [[ $rc2 -ne 0 ]]; then summary range_internal_error; exit 5; fi
-    cut="$RANGE_CUT_SHA"; nfiles="$RANGE_CUT_FILES"; ncommits="$RANGE_CUT_COMMITS"; partial="$RANGE_CUT_PARTIAL"
+    cut="$RANGE_CUT_SHA"; nfiles="$RANGE_CUT_FILES"; ncommits="$RANGE_CUT_COMMITS"
 
     # A single commit over EVERY channel's hard cap fits no reviewer. It is never
     # handed to one and never stalls the run: it is recorded as uncovered and the
     # marker moves past it, in one atomic write. An unavailable channel is not
     # this case (that stays capacity_exhausted below, marker untouched).
     max_hard="$(range_max_hard_bound)"
-    if [[ "$partial" -eq 1 ]] && (( nfiles > max_hard )); then
+    if (( nfiles > max_hard )); then
       if [[ "$DRY_RUN" -eq 1 ]]; then
         printf 'would record uncovered commit %s files=%s largest_cap=%s (no reviewer run; nothing written)\n' \
           "$cut" "$nfiles" "$max_hard"
@@ -842,7 +869,7 @@ range_main() {
     if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
 
     info="$ncommits commit(s), $nfiles changed file(s), bound $bound for $ch"
-    [[ "$partial" -eq 1 ]] && info="$info; single commit over the bound, reviewed alone and recorded partially covered"
+    if (( nfiles > bound )); then info="$info; single commit over the lowered bound, reviewed in full"; fi
     if (( nfiles == 0 )); then summary range_empty; exit 0; fi
 # A channel never reviews more files than ITS OWN bound (not the lowered
 # --range-bound). A single oversized commit cut for CodeRabbit (150) would
@@ -854,8 +881,8 @@ if (( nfiles > hard )); then
 fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      printf 'would review range %s..%s commits=%s files=%s bound=%s channel=%s partial=%s\n' \
-        "$(short "$RANGE_FIRST")" "$(short "$cut")" "$ncommits" "$nfiles" "$bound" "$ch" "$([[ $partial -eq 1 ]] && echo yes || echo no)"
+      printf 'would review range %s..%s commits=%s files=%s bound=%s channel=%s\n' \
+        "$(short "$RANGE_FIRST")" "$(short "$cut")" "$ncommits" "$nfiles" "$bound" "$ch"
       dry_count=$(( dry_count + 1 )); cursor="$cut"; continue
     fi
 
@@ -891,7 +918,7 @@ fi
     if [[ $ok -eq 0 ]]; then cleanup_worktree; summary range_filing_failed; exit 0; fi
 
     # Marker last: only a verified run whose findings were all parsed and filed.
-    if ! range_marker_write "$cut" "$nfiles" "$bound" "$ch" "$partial"; then
+    if ! range_marker_write "$cut" "$nfiles" "$bound" "$ch"; then
       cleanup_worktree; summary range_marker_write_failed; exit 5
     fi
     REVIEWED=$(( REVIEWED + 1 ))

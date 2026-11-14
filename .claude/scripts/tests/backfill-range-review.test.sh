@@ -14,14 +14,15 @@
 #     C2                   Document things (#202)      touches docs.md
 #     C3                   Five files (#203)           touches a..e.txt (5 files)
 #   With --range-bound 3, the cut from BASE is C1..C2 (2 distinct files) and
-#   C3 alone is over the bound: reviewed alone and recorded partial.
+#   C3 alone is over the lowered bound: reviewed alone, in full (5 files is
+#   within CodeRabbit's 150-file hard cap), and recorded as an ordinary range.
 #   Cases:
-#     1. dry-run lists the two ranges (bound cut, partial), writes nothing;
+#     1. dry-run lists the two ranges (bound cut), writes nothing;
 #     2. a default start (no --from, no marker) is the parent of the oldest
 #        commit in the window, and is printed with its source;
 #     3. a default window that reaches the root refuses (range_no_start);
 #     4. a real run files the buggy range's bug once, attributes it to PR #201,
-#        records the partial commit, advances the marker to main, and makes
+#        records the lowered-bound commit as covered, advances the marker to main, and makes
 #        no PR write (no pr edit, no comment);
 #     5. a clean verified run advances the marker by exactly its range;
 #     6. a failed run (rate limit, the only channel) leaves the marker unchanged;
@@ -173,9 +174,9 @@ reset_state
 OUT="$(run --from "$BASE" --range-bound 3 --dry-run --ignore-window)"; RC=$?
 check_eq "1: dry run exits 0" "0" "$RC"
 check_contains "1: first range is C1..C2 with 2 commits and 2 files" \
-  "would review range $(short12 "$C1")..$(short12 "$C2") commits=2 files=2 bound=3 channel=coderabbit partial=no" "$OUT"
-check_contains "1: C3 alone is listed as partial (5 files over bound 3)" \
-  "would review range $(short12 "$C3")..$(short12 "$C3") commits=1 files=5 bound=3 channel=coderabbit partial=yes" "$OUT"
+  "would review range $(short12 "$C1")..$(short12 "$C2") commits=2 files=2 bound=3 channel=coderabbit" "$OUT"
+check_contains "1: C3 alone is listed, reviewed in full (5 files over lowered bound 3)" \
+  "would review range $(short12 "$C3")..$(short12 "$C3") commits=1 files=5 bound=3 channel=coderabbit" "$OUT"
 check_contains "1: dry run stops with dry_run" "stop=dry_run" "$OUT"
 check_eq "1: dry run wrote no marker" "" "$( [ -e "$MARKER" ] && echo yes)"
 check_eq "1: dry run filed no issue" "[]" "$(cat "$STUB/issues.json")"
@@ -188,7 +189,7 @@ check_eq "2: default start exits 0" "0" "$RC"
 check_contains "2: default start is BASE and says why" \
   "range start=$(short12 "$BASE") source=default: commits since 14 days ago" "$OUT"
 check_contains "2: default bound is the CodeRabbit 150-file bound; C1..C3 is one range of 7 files" \
-  "would review range $(short12 "$C1")..$(short12 "$C3") commits=3 files=7 bound=150 channel=coderabbit partial=no" "$OUT"
+  "would review range $(short12 "$C1")..$(short12 "$C3") commits=3 files=7 bound=150 channel=coderabbit" "$OUT"
 
 # ---- 3. a window reaching the root refuses to start from the first commit ----------
 reset_state
@@ -197,17 +198,19 @@ check_eq "3: refused start exits 0" "0" "$RC"
 check_contains "3: stop names no usable start" "stop=range_no_start" "$OUT"
 check_eq "3: no marker written" "" "$( [ -e "$MARKER" ] && echo yes)"
 
-# ---- 4. real run: bug filed once, attributed, partial recorded, marker to main --
+# ---- 4. real run: bug filed once, attributed, lowered-bound commit covered, marker to main --
 reset_state
 OUT="$(run --from "$BASE" --range-bound 3 --max-reviews 3 --ignore-window)"; RC=$?
 check_eq "4: exit 0" "0" "$RC"
 check_contains "4: summary: two ranges, one filed" "reviewed=2 clean=1 issues_filed=1" "$OUT"
 check_contains "4: run completes" "stop=done" "$OUT"
 check_eq "4: marker advanced to main" "$MAIN_SHA" "$(marker_sha)"
-check_eq "4: the partial commit is recorded as partial" "$C3" \
-  "$(jq -r '.repos["acme/widgets"].partial_commits[0].commit' "$MARKER")"
-check_eq "4: partial record names the file count and bound" "5/3" \
-  "$(jq -r '.repos["acme/widgets"].partial_commits[0] | "\(.files)/\(.bound)"' "$MARKER")"
+check_eq "4: the lowered-bound commit is covered in full: no partial record" "null" \
+  "$(jq -r '.repos["acme/widgets"].partial_commits' "$MARKER")"
+check_eq "4: the last range is the full 5-file commit" "5" \
+  "$(jq -r '.repos["acme/widgets"].last_range.files' "$MARKER")"
+check_eq "4: last_range carries no partial flag" "null" \
+  "$(jq -r '.repos["acme/widgets"].last_range.partial' "$MARKER")"
 check_eq "4: exactly one issue created" "1" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
 BODY="$(jq -r '.[0].body' "$STUB/issues.json")"
 TITLE="$(jq -r '.[0].title' "$STUB/issues.json")"
@@ -408,12 +411,105 @@ OUT="$(rrun "$U" --dry-run --ignore-window 2>/dev/null)"; RC=$?
 check_eq "19: dry run exits 0" "0" "$RC"
 check_contains "19: dry run says would record uncovered, with the SHA and count" \
   "would record uncovered commit $UBIG files=151 largest_cap=150" "$OUT"
-check_contains "19: dry run still plans the small commit" "commits=1 files=1 bound=150 channel=coderabbit partial=no" "$OUT"
+check_contains "19: dry run still plans the small commit" "commits=1 files=1 bound=150 channel=coderabbit" "$OUT"
 check_contains "19: dry run stops with dry_run" "stop=dry_run" "$OUT"
 check_eq "19: dry run left the marker at its seed" "$USEED" "$(marker_sha)"
 check_eq "19: dry run has no uncovered entry" "null" "$(jq -r '.repos["acme/widgets"].uncovered' "$MARKER")"
 check_eq "19: dry run ran no review CLI" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
 check_eq "19: dry run filed nothing" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+
+# ---- 20-21. file counts are NUL-delimited: a name with spaces or a newline ---------
+# Commit A: 15 top-level files plus one top-level name of three spaces. Real count 16;
+# awk NF drops the spaces-only line (15). Git does not quote it.
+# Commit B: a.txt, b.txt and a name with a newline in it. Real count 3. Git quotes a
+# newline name onto one line, so this case is a regression check, not a discriminator.
+# (Filesystem check: APFS accepts a newline in a file name; the test asserts it.)
+SP="$TMP/spaces"; git init -q --bare "$TMP/spaces.git"; git clone -q "$TMP/spaces.git" "$SP" 2>/dev/null
+printf 'seed\n' > "$SP/seed.txt"; git -C "$SP" add seed.txt; git -C "$SP" commit -qm "Seed (#95)"
+SPSEED="$(git -C "$SP" rev-parse HEAD)"
+for i in $(seq 1 15); do printf 'x\n' > "$SP/n$i.txt"; done
+printf 'x\n' > "$SP/   "
+git -C "$SP" add -A; git -C "$SP" commit -qm "Fifteen plus a spaces-only name (#501)"
+SPA="$(git -C "$SP" rev-parse HEAD)"
+printf 'x\n' > "$SP/a.txt"; printf 'x\n' > "$SP/b.txt"
+NLNAME="$(printf 'p\nq')"; printf 'x\n' > "$SP/$NLNAME"
+git -C "$SP" add -- a.txt b.txt "$NLNAME"; git -C "$SP" commit -qm "Two plain files and a newline name (#502)"
+SPB="$(git -C "$SP" rev-parse HEAD)"
+git -C "$SP" push -q origin main 2>/dev/null
+NL_OK="no"; [ "$(git -C "$SP" diff --name-only "$SPA" "$SPB" | wc -l | tr -d ' ')" = "3" ] && NL_OK="yes"
+check_eq "20-21: fixture: commit B holds a newline-named file (3 real paths)" "yes" "$NL_OK"
+
+# 20: a 16-file commit (one name is spaces only) must not be counted as 15 and handed to
+# CodeAnt. Its real count is over CodeAnt's 15-file cap, so the run stops.
+reset_state
+seed_marker "$SPSEED"
+OUT="$(STUB_CODEANT_MODE=ok "$RUN_BASH" "$SCRIPT" --range --repo-dir "$SP" --repo acme/widgets --timeout 30 --channels codeant --max-reviews 5 --ignore-window 2>/dev/null)"
+check_contains "20: a 16-real-file commit is refused for CodeAnt and the run stops" "stop=capacity_exhausted" "$OUT"
+check_eq "20: CodeAnt never ran on the 16 files" "0" "$(grep -c '^codeant' "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "20: marker unchanged" "$SPSEED" "$(marker_sha)"
+
+# 21: a newline in a name is ONE path. Counted per line it would be 4, not 3.
+reset_state
+OUT="$(rrun "$SP" --from "$SPA" --dry-run --ignore-window 2>/dev/null)"
+check_contains "21: the newline-named commit is counted as 3 files" \
+  "would review range $(short12 "$SPB")..$(short12 "$SPB") commits=1 files=3 bound=150 channel=coderabbit" "$OUT"
+
+# ---- 22-24. the start must be on origin/main's first-parent chain -----------
+# Fixture: side branch S0 -> SIDE2; mainline S0 -> MAIN1; merge MERGE (second parent SIDE2).
+FP="$TMP/fp"; git init -q --bare "$TMP/fp.git"; git clone -q "$TMP/fp.git" "$FP" 2>/dev/null
+printf 'seed\n' > "$FP/seed.txt"; git -C "$FP" add seed.txt; git -C "$FP" commit -qm "Seed (#96)"
+FPS0="$(git -C "$FP" rev-parse HEAD)"
+git -C "$FP" checkout -q -b side "$FPS0"
+printf 'x\n' > "$FP/side.txt"; git -C "$FP" add side.txt; git -C "$FP" commit -qm "Side work (#611)"
+FPSIDE2="$(git -C "$FP" rev-parse HEAD)"
+git -C "$FP" checkout -q main
+printf 'x\n' > "$FP/main.txt"; git -C "$FP" add main.txt; git -C "$FP" commit -qm "Mainline work (#612)"
+FPMAIN1="$(git -C "$FP" rev-parse HEAD)"
+git -C "$FP" merge -q --no-ff side -m "Merge side (#613)"
+FPMERGE="$(git -C "$FP" rev-parse HEAD)"
+git -C "$FP" push -q origin main 2>/dev/null
+
+# 22: --from on the second-parent commit is refused; no marker is written.
+reset_state
+OUT="$("$RUN_BASH" "$SCRIPT" --range --repo-dir "$FP" --repo acme/widgets --timeout 30 --channels coderabbit --from "$FPSIDE2" --dry-run --ignore-window 2>&1)"; RC=$?
+check_eq "22: --from on a second-parent commit exits 2" "2" "$RC"
+check_contains "22: refusal is named (first-parent chain)" "is not on origin/main's first-parent chain" "$OUT"
+check_eq "22: no marker written on refusal" "no" "$([ -e "$MARKER" ] && echo yes || echo no)"
+check_not_contains "22: no range was planned" "would review range" "$OUT"
+
+# 23: a stored marker on the second-parent commit is refused; marker untouched.
+reset_state
+seed_marker "$FPSIDE2"
+BEFORE="$(cat "$MARKER")"
+OUT="$("$RUN_BASH" "$SCRIPT" --range --repo-dir "$FP" --repo acme/widgets --timeout 30 --channels coderabbit --ignore-window 2>/dev/null)"; RC=$?
+check_eq "23: marker on a second-parent commit exits 6" "6" "$RC"
+check_contains "23: refusal is named" "stop=range_marker_not_ancestor" "$OUT"
+check_eq "23: marker byte-identical on refusal" "$BEFORE" "$(cat "$MARKER")"
+check_eq "23: no review ran on refusal" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+
+# 24: positive control: a first-parent commit is accepted.
+reset_state
+OUT="$("$RUN_BASH" "$SCRIPT" --range --repo-dir "$FP" --repo acme/widgets --timeout 30 --channels coderabbit --from "$FPMAIN1" --dry-run --ignore-window 2>/dev/null)"; RC=$?
+check_eq "24: --from on a first-parent commit is accepted (exit 0)" "0" "$RC"
+check_contains "24: the merge is planned from it" "would review range $(short12 "$FPMERGE")..$(short12 "$FPMERGE")" "$OUT"
+
+# ---- 25-27. range-only settings are validated only under --range -------------
+# Per-PR mode (no --range) must behave exactly as without the range-only setting.
+reset_state
+OUT_A="$(BACKFILL_RANGE_DEFAULT_DAYS=abc "$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --timeout 30 --channels coderabbit --dry-run --ignore-window 2>&1)"; RC_A=$?
+OUT_B="$("$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --timeout 30 --channels coderabbit --dry-run --ignore-window 2>&1)"; RC_B=$?
+check_eq "25: per-PR run with BACKFILL_RANGE_DEFAULT_DAYS=abc exits as without it" "$RC_B" "$RC_A"
+check_eq "25: per-PR output identical with BACKFILL_RANGE_DEFAULT_DAYS=abc" "$OUT_B" "$OUT_A"
+check_not_contains "25: per-PR run never names the range-only setting" "BACKFILL_RANGE_DEFAULT_DAYS" "$OUT_A"
+OUT_C="$(BACKFILL_RANGE_BOUND=abc "$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --timeout 30 --channels coderabbit --dry-run --ignore-window 2>&1)"; RC_C=$?
+check_eq "26: per-PR run with BACKFILL_RANGE_BOUND=abc exits as without it" "$RC_B" "$RC_C"
+check_eq "26: per-PR output identical with BACKFILL_RANGE_BOUND=abc" "$OUT_B" "$OUT_C"
+OUT_D="$("$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --timeout 30 --channels coderabbit --default-days abc --dry-run --ignore-window 2>&1)"; RC_D=$?
+check_eq "26: per-PR run with --default-days abc exits as without it" "$RC_B" "$RC_D"
+# --range still validates the same value.
+OUT_E="$(BACKFILL_RANGE_DEFAULT_DAYS=abc "$RUN_BASH" "$SCRIPT" --range --repo-dir "$R" --repo acme/widgets --timeout 30 --channels coderabbit --dry-run --ignore-window 2>&1)"; RC_E=$?
+check_eq "27: --range with BACKFILL_RANGE_DEFAULT_DAYS=abc is a usage error" "2" "$RC_E"
+check_contains "27: the range-only setting is named in the error" "BACKFILL_RANGE_DEFAULT_DAYS needs a positive integer" "$OUT_E"
 
 echo
 echo "backfill-range-review tests: $PASS passed, $FAIL failed"
