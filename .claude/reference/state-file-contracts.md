@@ -176,6 +176,10 @@ not a disposable sample.
 4. Document rationale and migration detail here. Do not copy the complete typed-field list into a
    script header, rule, skill, or another reference file.
 
+`usage_horizon.reading.anchors` (issue #2376) is an additive, untyped sub-field. A reader that
+does not know it ignores it, and the next `--observe` replaces the whole `usage_horizon` object,
+so there is nothing to migrate. A reading written without it is matched on `session_id` alone.
+
 Sub-shape documents may explain their own state machines without becoming schema owners.
 `merge-sequencing.md` owns merge-hold behavior, and `/babysit-pr` owns its Monitor lifecycle; the
 JSON field names and enforced types remain authoritative in `session-state-schema.json`.
