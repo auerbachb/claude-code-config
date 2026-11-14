@@ -87,7 +87,7 @@ Resume and rank presentation resolve the cleanup and forgotten-PR modules at the
 | Assignment reconciliation | `flow:track` |
 | Status, due progress, or board report | `flow:progress` |
 | Available-capacity evaluation | `flow:refill` |
-| Config bootstrap (file missing) or `refresh config` | `shared:config` at Step 1A.1 and 1B.1 |
+| Config bootstrap (file missing, cold start only) or `refresh config` | `shared:config` at Step 1B.1. Resume mode (`resume:load`, Step 1A.1) never bootstraps or writes a config: a missing file is reported as config unavailable and the resume finishes without it. |
 | Handoff awareness | `flow:handoff` |
 
 Before an autonomous launch, apply the persisted pause and scope, credit budget, usage horizon, deadline, and author scope at their existing gates. Use Step 0a for author scope, Step 0b and the /subagent prelaunch checks for deadline, Step 3.4 for refill admission, and D2 for a day tick's horizon. Day-mode initial 1B.5 dispatch checks the credit budget in flow:launch before handing the batch to /subagent. A gate's missing or unreadable evidence keeps the affected launch held.
