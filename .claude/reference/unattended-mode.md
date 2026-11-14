@@ -85,7 +85,7 @@ as **delivered** when the hook's delivery reference shows up in the session's tr
 records injected context there), and the next operator prompt (`unattended.sh settle`) shows any
 record that did not reach the model again. A hook killed after the mark costs a repeat, never a
 lost question. Residual window: the model may have received a list and not printed it for him, which
-nothing here can see; and a listing with no readable transcript (a bare CLI call such as `off`, or a
+nothing here can see; and a listing with no transcript path (a bare CLI call such as `off`, or a
 payload without `transcript_path`) is marked when rendered, as before. Details:
 `presence-windows.md` §Delivery of the saved questions.
 

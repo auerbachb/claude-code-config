@@ -55,7 +55,7 @@
 #   A listing that marks questions `listed` must not lose them when the process dies between the mark
 #   and the model seeing the list. When a hook sets UNATTENDED_DELIVERY_REF, UNATTENDED_DELIVERY_SESSION
 #   and UNATTENDED_DELIVERY_TRANSCRIPT (the hook payload's session_id and transcript_path) and the
-#   transcript file exists, `digest --mark` writes one record per repo block to
+#   transcript path is given (the file may not exist yet), `digest --mark` writes one record per repo block to
 #   ${UNATTENDED_DIR:-~/.claude/unattended}/pending/<id>.json (atomically: temp file, then rename)
 #   BEFORE it appends the `listed` watermark. The record holds the rendered text, the emission's ref
 #   and the session's transcript path. DELIVERED means: the ref text appears in that transcript, which
@@ -64,10 +64,12 @@
 #   not is re-emitted when it belongs to the same session (its earlier hook was killed or its output
 #   dropped), or to any session once it is 120 s old, or at once with --force (a takeover of a dead
 #   return winner). A re-emitted record is re-owned by the new emission and settled the same way, so a
-#   question can be shown twice but not zero times. At most 5 emissions per record, then it is dropped
-#   and noted in ${UNATTENDED_DIR:-~/.claude/unattended}/delivery.log. Without a readable transcript
-#   (no path in the payload, a bare CLI call such as `off` or a thread's own `expire`) no record is
-#   written and `digest --mark` behaves as before: marked when rendered.
+#   question can be shown twice but not zero times. A record never expires by age; after 5 emissions in
+#   which the ref never reached the transcript it is dropped and noted in
+#   ${UNATTENDED_DIR:-~/.claude/unattended}/delivery.log (the harness is evidently not recording hook
+#   output there). Without a transcript path (none in the payload, or a bare CLI call such as `off` or
+#   a thread's own `expire`) no record is written and `digest --mark` behaves as before: marked when
+#   rendered. Claude Code puts transcript_path in every hook payload.
 #
 # EXIT CODES
 #   0 ok; 1 is-active/window-ended false, or a write failed; 2 usage error.
@@ -200,11 +202,11 @@ delivery_log() { # LINE — best effort
   printf '%s %s\n' "$(now)" "$1" >>"$Q_DIR/delivery.log" 2>/dev/null || true
 }
 
-# Persist one rendered block. 0 staged; 2 not applicable (no ref or no readable transcript: legacy
+# Persist one rendered block. 0 staged; 2 not applicable (no ref or no transcript path: legacy
 # behaviour); 1 the record could not be written (the caller must NOT mark the questions listed).
 stage_record() { # LABEL TEXT
   local ref="${UNATTENDED_DELIVERY_REF:-}" tp="${UNATTENDED_DELIVERY_TRANSCRIPT:-}" name tmp
-  [ -n "$ref" ] && [ -n "$tp" ] && [ -f "$tp" ] || return 2
+  [ -n "$ref" ] && [ -n "$tp" ] || return 2
   mkdir -p "$PDIR" 2>/dev/null || return 1
   name="$(now)-$$-$RANDOM"
   tmp="$PDIR/.$name.tmp"
@@ -249,10 +251,10 @@ EOF
     if [ -n "$rref" ] && [ -n "$rtp" ] && [ -r "$rtp" ] && grep -qF -- "$rref" "$rtp" 2>/dev/null; then
       rm -f "$f" 2>/dev/null; continue
     fi
-    # Old enough to give up on, or emitted as often as we ever will.
+    # Emitted as often as we ever will (an undelivered list never expires by age: a return after days
+    # must still show it).
     case "$rstamp" in ''|*[!0-9]*) rstamp=0 ;; esac
     case "$remits" in ''|*[!0-9]*) remits=1 ;; esac
-    if [ $((n - rstamp)) -gt 604800 ]; then rm -f "$f" 2>/dev/null; continue; fi
     if [ "$remits" -ge "$DELIVERY_MAX_EMITS" ]; then
       delivery_log "gave up on a pending list after $remits emissions (ref $rref)"
       rm -f "$f" 2>/dev/null; continue
@@ -269,8 +271,7 @@ EOF
 }$txt"
     # Re-own it: this emission's ref is what the next settle looks for. If the rewrite fails the old
     # ref stays and a later settle shows the list again, which is the safe direction.
-    if [ -n "$tp" ] && [ -f "$tp" ]; then rewrite_record "$f" "$sid" "$tp" "$ref" || true
-    else rm -f "$f" 2>/dev/null; fi
+    rewrite_record "$f" "$sid" "$tp" "$ref" || true
   done
   unlock
   [ -z "$out" ] || printf '%s\n' "$out"

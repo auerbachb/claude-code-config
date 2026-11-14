@@ -343,6 +343,38 @@ check "the question stays unlisted" "$(U pending)" 1
 lacks "and nothing is claimed as listed" "$(ctx "$OUT")" "Cannot persist?"
 rm -f "$HOME/.claude/unattended/pending"
 
+printf '== 2i. a transcript path whose file does not exist yet still gets a record\n'
+seed here
+U record --question "Early first prompt?" --recommended "y" >/dev/null
+NEWTP="$TMP/tr/not-yet.jsonl"
+rm -f "$NEWTP"
+OUT=$(jq -cn --arg cwd "$REPO_A" --arg tp "$NEWTP" '{session_id: "s-late", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back", transcript_path: $tp}' | "$DIGEST")
+has "the list is emitted" "$(ctx "$OUT")" "Early first prompt?"
+check "a record was written although the transcript file was missing" "$(npend)" 1
+check "and the question is marked listed" "$(U pending)" 0
+# The harness never recorded it, and the file shows up empty: the next prompt shows the list again.
+: >"$NEWTP"
+OUT=$(jq -cn --arg cwd "$REPO_A" --arg tp "$NEWTP" '{session_id: "s-late", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back", transcript_path: $tp}' | "$DIGEST")
+has "undelivered: shown again on the next prompt" "$(ctx "$OUT")" "Early first prompt?"
+
+printf '== 2j. an undelivered list never expires by age\n'
+seed here
+U record --question "Days later?" --recommended "y" >/dev/null
+operator_lost s-1 >/dev/null
+for rec in "$PEND"/*.json; do jq -c ".stamped_at = $(( $(date +%s) - 864000 )) | .staged_at = $(( $(date +%s) - 864000 ))" "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
+OUT=$(operator s-2)
+has "ten days on, another session still shows it" "$(ctx "$OUT")" "Days later?"
+
+printf '== 2k. emitted the cap times without the ref ever reaching the transcript: dropped and logged\n'
+seed here
+U record --question "Never confirmed?" --recommended "y" >/dev/null
+operator_lost s-1 >/dev/null
+for rec in "$PEND"/*.json; do jq -c '.emits = 5' "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
+OUT=$(operator s-1)
+lacks "no sixth emission" "$(ctx "$OUT")" "Never confirmed?"
+check "the record is dropped" "$(npend)" 0
+has "and the give-up is logged" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "gave up on a pending list after 5 emissions"
+
 # ============================================================================
 printf '== 3. a failed return is reported, not swallowed\n'
 seed here

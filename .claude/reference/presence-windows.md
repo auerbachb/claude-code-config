@@ -173,12 +173,14 @@ context there, so the model had the list. At the top of an operator prompt `unat
 drops delivered records and returns the others: a record of the same session at once (its earlier hook
 was killed or its output dropped), one of another session after 120 seconds, and every undelivered
 one at once on a `relist` takeover. A returned record is re-owned by the new emission and settled the
-same way next time; it is dropped after 5 emissions (logged in `delivery.log`). The dialog waits while
+same way next time; it never expires by age (a return after days must still show it) and is dropped only after 5 emissions in which the ref never reached the transcript (logged in `delivery.log`). The dialog waits while
 another session's list is still inside its 120 seconds. A list may therefore be shown twice; it is not
 shown zero times. A list that cannot be persisted is not marked. Residual window: delivered to the
 model is not shown to the operator (the model may not print it; nothing here can observe that); a
-listing with no readable transcript (`off`, a thread's own `expire`, a payload without
-`transcript_path`) has no record and is marked when rendered, as before.
+listing with no transcript path (`off`, a thread's own `expire`, a payload without
+`transcript_path`, which Claude Code always sends) has no record and is marked when rendered, as
+before. The transcript file need not exist when the record is written: until it can be read the list
+counts as undelivered.
 
 **A return that fails is not silent.** The hook treats `presence.sh return` exit 0 as returned, 10 as
 lost to another session, 1 as nothing left to return from (he declared a window meanwhile), and
