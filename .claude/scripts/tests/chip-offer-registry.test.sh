@@ -10,7 +10,7 @@
 #   TTL expiry
 #   Emitter allowlist drift: header VALID EMITTERS (printed verbatim by --help)
 #     must match the --emitter case allowlist (Issue #1464)
-#   Emitter call-site coverage: all five canonical emitter SKILL.md files carry an
+#   Emitter call-site coverage: all four canonical emitter SKILL.md files carry an
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
 #   HOME-uniqueness invariant: no two tests may share a session-state.json, with
 #     a planted-duplicate negative control proving the check can fail (#1601)
@@ -119,7 +119,7 @@ fi
 # 4. --reserve with explicit --task-id is echoed back
 new_home H
 custom_id="my-custom-task-99"
-tid2="$(run_registry "$H" --reserve --emitter prompt --issue 42 --cap-free 5 --task-id "$custom_id")"
+tid2="$(run_registry "$H" --reserve --emitter wave --issue 42 --cap-free 5 --task-id "$custom_id")"
 rc2=$?
 if [[ $rc2 -eq 0 && "$tid2" == "$custom_id" ]]; then
   ok "--reserve --task-id echo back custom id"
@@ -133,7 +133,7 @@ fi
 new_home H
 # Fill 2 slots (cap-free=2)
 run_registry "$H" --reserve --emitter pm --issue 10 --cap-free 2 > /dev/null
-run_registry "$H" --reserve --emitter prompt --issue 11 --cap-free 2 > /dev/null
+run_registry "$H" --reserve --emitter wave --issue 11 --cap-free 2 > /dev/null
 # Third one should be refused
 run_registry "$H" --reserve --emitter wave --issue 12 --cap-free 2 >/dev/null 2>&1
 rc_cap=$?
@@ -190,7 +190,7 @@ fi
 # ---------------------------------------------------------------------------
 new_home H
 t_a="$(run_registry "$H" --reserve --emitter pm --issue 30 --cap-free 5)"
-t_b="$(run_registry "$H" --reserve --emitter prompt --issue 31 --cap-free 5)"
+t_b="$(run_registry "$H" --reserve --emitter wave --issue 31 --cap-free 5)"
 run_registry "$H" --transition --task-id "$t_b" --state running >/dev/null
 n_off="$(run_registry "$H" --count --state offered)"
 n_run="$(run_registry "$H" --count --state running)"
@@ -240,7 +240,7 @@ fi
 # ---------------------------------------------------------------------------
 new_home H
 t_c="$(run_registry "$H" --reserve --emitter pm --issue 60 --cap-free 5)"
-t_d="$(run_registry "$H" --reserve --emitter prompt --issue 61 --cap-free 5)"
+t_d="$(run_registry "$H" --reserve --emitter wave --issue 61 --cap-free 5)"
 run_registry "$H" --transition --task-id "$t_c" --state done >/dev/null 2>>"$TR_ERR"
 run_registry "$H" --transition --task-id "$t_d" --state retracted >/dev/null 2>>"$TR_ERR"
 n_term="$(run_registry "$H" --count)"
@@ -287,7 +287,7 @@ fi
 new_home H
 t_a="$(run_registry "$H" --reserve --emitter pm --issue 100 --cap-free 1 2>/dev/null)"
 rc_a=$?
-t_b="$(run_registry "$H" --reserve --emitter prompt --issue 101 --cap-free 1 2>/dev/null)"
+t_b="$(run_registry "$H" --reserve --emitter wave --issue 101 --cap-free 1 2>/dev/null)"
 rc_b=$?
 if [[ $rc_a -eq 0 && $rc_b -eq 7 ]]; then
   ok "sequential double-reserve against FREE=1: first wins, second exits 7"
@@ -309,7 +309,7 @@ fi
 # confirm the code ran rather than errored out silently.
 new_home H2
 ( run_registry "$H2" --reserve --emitter pm --issue 200 --cap-free 1 > /dev/null 2>&1 ) & pid_r1=$!
-( run_registry "$H2" --reserve --emitter prompt --issue 201 --cap-free 1 > /dev/null 2>&1 ) & pid_r2=$!
+( run_registry "$H2" --reserve --emitter wave --issue 201 --cap-free 1 > /dev/null 2>&1 ) & pid_r2=$!
 wait "$pid_r1"; rc_r1=$?
 wait "$pid_r2"; rc_r2=$?
 n_race="$(run_registry "$H2" --count)"
@@ -464,7 +464,7 @@ HOME="$H" bash "$REGISTRY" --repo test/repo --retract >/dev/null 2>&1
 new_home H
 # Seed 3 baseline entries (cap-free=10 as an unconstrained seed)
 run_registry "$H" --reserve --emitter pm --issue 700 --cap-free 10 >/dev/null
-run_registry "$H" --reserve --emitter prompt --issue 701 --cap-free 10 >/dev/null
+run_registry "$H" --reserve --emitter wave --issue 701 --cap-free 10 >/dev/null
 run_registry "$H" --reserve --emitter wave --issue 702 --cap-free 10 >/dev/null
 baseline_count="$(run_registry "$H" --count)"
 
@@ -537,7 +537,7 @@ fi
 #       - File-wide presence of both tokens was rejected too: an emitter that
 #         merely name-drops the script in unrelated prose would satisfy it.
 #       - Either order is required because emitters genuinely spell the call
-#         three ways: bare `chip-offer-registry.sh --reserve` (pm, prompt,
+#         three ways: bare `chip-offer-registry.sh --reserve` (pm,
 #         wave), `--reserve --emitter X` (start-issue), and
 #         `--emitter X ... --reserve` (issue-maker).  Requiring the --emitter
 #         value itself would fail the first three outright, so it is not part
@@ -552,7 +552,7 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SKILLS_DIR="$REPO_ROOT/.claude/skills"
-CANONICAL_EMITTERS=(pm prompt wave issue-maker start-issue)
+CANONICAL_EMITTERS=(pm wave issue-maker start-issue)
 missing_reserve=()
 missing_file=()
 for emitter in "${CANONICAL_EMITTERS[@]}"; do

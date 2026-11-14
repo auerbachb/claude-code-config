@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for merge-authority-lint.sh (issue #753)
-# covers: .claude/reference/chip-launching.md .claude/skills/issue-maker/modules/handoff.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/prompt/SKILL.md .claude/skills/start-issue/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
+# covers: .claude/reference/chip-launching.md .claude/skills/issue-maker/modules/handoff.md .claude/skills/pm/SKILL.md .claude/skills/pm/modules/flow/launch.md .claude/skills/start-issue/SKILL.md .claude/skills/subagent/SKILL.md .claude/skills/wave/SKILL.md CLAUDE.md
 
 set -euo pipefail
 
@@ -16,14 +16,14 @@ case_num=0
 make_fixture() {
   local dir="$1"
   mkdir -p "$dir/.claude/reference" \
-    "$dir/.claude/skills"/{pm,prompt,start-issue,issue-maker,wave,subagent}
+    "$dir/.claude/skills"/{pm,start-issue,issue-maker,wave,subagent}
   cp "$REPO_ROOT/.claude/reference/chip-launching.md" "$dir/.claude/reference/"
   mkdir -p "$dir/.claude/skills/issue-maker/modules"
   cp "$REPO_ROOT/.claude/skills/issue-maker/modules/handoff.md" "$dir/.claude/skills/issue-maker/modules/"
   mkdir -p "$dir/.claude/skills/pm/modules/flow"
   cp "$REPO_ROOT/.claude/skills/pm/modules/flow/launch.md" "$dir/.claude/skills/pm/modules/flow/"
   cp "$REPO_ROOT/CLAUDE.md" "$dir/CLAUDE.md"
-  for skill in pm prompt start-issue issue-maker wave subagent; do
+  for skill in pm start-issue issue-maker wave subagent; do
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
   done
 }
@@ -122,10 +122,6 @@ expect "subagent losing its mirrored opt-out scoping fails" 1 \
   'subagent mirrored excluded-surfaces rule' \
   sed -i.bak '/never an opt-out/d' .claude/skills/subagent/SKILL.md
 
-expect "missing merge-authority bullet in prompt emitter fails" 1 \
-  'prompt merge-authority bullet' \
-  sed -i.bak '/Merging is automatic and yours to do/d' .claude/skills/prompt/SKILL.md
-
 expect "missing merge-authority bullet in issue-maker emitter fails" 1 \
   'issue-maker merge-authority bullet' \
   sed -i.bak '/Merging is automatic and yours to do/d' .claude/skills/issue-maker/modules/handoff.md
@@ -149,7 +145,7 @@ expect "bare 'ask before merging' fails" 1 \
 
 expect "bare 'wait for approval before merging' fails" 1 \
   'Approval-flavored merge wording in a template' \
-  plant_wording prompt '- Wait for approval before merging'
+  plant_wording start-issue '- Wait for approval before merging'
 
 expect "'wait for the user approval before merging' fails" 1 \
   'Approval-flavored merge wording in a template' \

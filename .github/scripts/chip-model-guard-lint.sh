@@ -3,13 +3,13 @@
 #
 # Validates:
 #   1. chip-launching.md defines the full contract: MODEL GUARD preamble,
-#      the **Model:**/**Effort:** unit, all five canonical emitters,
+#      the **Model:**/**Effort:** unit, all four canonical emitters,
 #      first-line/no-blank-line placement, short-summary format, and the
 #      parent/chip model-mismatch pre-click warning.
 #   2. Each canonical emitter SKILL.md requires spawn_task, **Model:** as
 #      first prompt line, an **Effort:** line, model-guard preamble (no blank
 #      line), short-summary repetition, and the pre-click warning.
-#   3. chip-model-guard-decision.md references all five emitters.
+#   3. chip-model-guard-decision.md references all four emitters.
 #   4. Global enforcement exists in chip-spawn.md (indexed from CLAUDE.md).
 #   5. No versioned model name ("Opus 5", "Haiku 4.5", ...) appears anywhere
 #      in the operative corpus — families only (#791). Dated .claude/reference/
@@ -31,7 +31,7 @@ CHIP_RULE=".claude/rules/chip-spawn.md"
 CLAUDE_MD="CLAUDE.md"
 SKILLS_DIR=".claude/skills"
 
-CANONICAL_EMITTERS=(pm prompt start-issue issue-maker wave)
+CANONICAL_EMITTERS=(pm start-issue issue-maker wave)
 
 # The MODEL GUARD preamble is SHIPPED BYTES — the fenced block a chip payload
 # copies verbatim. The prose around it is commentary about those bytes, and the
@@ -211,7 +211,7 @@ if [[ -f "$CHIP_LAUNCHING" ]]; then
     echo "::error file=${CHIP_LAUNCHING}::MODEL GUARD menu must offer exactly two numbered options, found ${guard_option_count} — see \"exactly these two options\" in the preamble"
     errors=$((errors + 1))
   fi
-  require_pattern "$CHIP_LAUNCHING" 'five canonical emitters' 'canonical emitters preamble'
+  require_pattern "$CHIP_LAUNCHING" 'four canonical emitters' 'canonical emitters preamble'
   require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'Short-summary transcript format' 'short-summary format section'
@@ -252,7 +252,7 @@ for skill in "${CANONICAL_EMITTERS[@]}"; do
   require_pattern "$skill_file" 'parent thread is on Fable' "${skill} Fable pre-click warning requirement"
 done
 
-# --- 3. Decision record lists all five -----------------------------------
+# --- 3. Decision record lists all four -----------------------------------
 if [[ -f "$CHIP_DECISION" ]]; then
   for skill in "${CANONICAL_EMITTERS[@]}"; do
     require_pattern "$CHIP_DECISION" "/${skill}" "decision record /${skill} reference"

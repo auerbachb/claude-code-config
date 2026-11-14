@@ -347,7 +347,7 @@ elif [[ -z "$canonical_claim" ]]; then
 elif [[ "$canonical_claim" != *"$WORKTREE_PREFIX"issue-claim.sh* ]]; then
   err "${CHIP_LAUNCHING}: the claim bullet does not carry the skills-worktree candidate — a generated chip runs in another repo, where a bare .claude/scripts path does not exist"
 else
-  for skill in pm prompt wave issue-maker; do
+  for skill in pm wave issue-maker; do
     f=".claude/skills/${skill}/SKILL.md"
     if [[ "$skill" == "issue-maker" ]]; then
       f=".claude/skills/${skill}/modules/handoff.md"

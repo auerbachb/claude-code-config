@@ -355,7 +355,7 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 | `tldr` | 1–2 plain-English sentences from `TITLE` / the merged plan: what the session will do and why. No file paths, no jargon |
 | `cwd` | `WORKTREE_PATH` — the worktree created in Step 6 |
 
-> **`cwd` deliberately differs from `/pm` and `/prompt`,** which pass the repo root. By Step 7, `/start-issue` has already created an issue-specific worktree, so the launched thread must start *there* — repo root would land it in the wrong checkout, on the wrong branch. This is an intentional divergence, not an inconsistency with the shared contract.
+> **`cwd` deliberately differs from `/pm`,** which passes the repo root. By Step 7, `/start-issue` has already created an issue-specific worktree, so the launched thread must start *there* — repo root would land it in the wrong checkout, on the wrong branch. This is an intentional divergence, not an inconsistency with the shared contract.
 
 **The `**Model:**` line, the `**Effort:**` line, and the guard live in the base block, not as a chip-only addition** — chips preset neither picker control, so both a fallback-mode reader and a chip-mode spawned session need the recommendations and the guard in the text itself. The visible short summary in chip mode still repeats both lines (not the guard) so the user can set the picker before clicking. When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
@@ -381,9 +381,9 @@ Every handoff — chip or fallback — needs a `{MODEL}`, a `{LEVEL}`, and a `{R
 
 `{LEVEL}` is a picker label — **Low**, **Medium**, **High**, **Extra**, **Max** — never a bare API token. **Medium** is the middle ground: an ordinary multi-file change that is neither trivial nor rules-adjacent.
 
-The two step-ups are separate on purpose. Collapsing them would put skill-only work on Extra while `/prompt` classifies exactly that as Standard → High, so the same issue would get a different recommendation depending on which surface handed it over — and a user comparing the two has no way to tell which is right. These levels match `/prompt`'s tier mapping (`touches_skill` → Standard → High; `touches_rules` / `touches_claude_md` / orchestration → Heavy → Extra) without importing its multi-signal pipeline.
+The two step-ups are separate on purpose. Collapsing them would put skill-only work on Extra while the tier mapping classifies exactly that as Standard → High, so the same issue would get a different recommendation depending on which surface handed it over — and a user comparing the two has no way to tell which is right. These levels match the tier mapping in `issue-maker/references/tier-inference.md` (`touches_skill` → Standard → High; `touches_rules` / `touches_claude_md` / orchestration → Heavy → Extra) without importing its batch or dependency logic.
 
-Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model or effort concept beyond this rule. When `/prompt` already produced recommendations for the issue, prefer them.
+Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate the Heavy/Standard/Light signal pipeline in `issue-maker/references/tier-inference.md` — `/start-issue` is single-issue and has no model or effort concept beyond this rule.
 
 ### Estimate
 

@@ -20,7 +20,7 @@ Spawn pattern reference: `.claude/rules/subagent-orchestration.md` (Phase A fixe
 ## Prohibited for the parent thread (refuse and redirect)
 
 - Writing or editing **feature code directly** — dispatch a `phase-a-fixer` subagent instead (merge conflicts, CR findings, CI failures are all dispatch cases, not refusal cases).
-- Invoking `/start-issue`, `/prompt`, or spawning subagents for **new work unrelated to the discovered fleet**.
+- Invoking `/start-issue` or spawning subagents for **new work unrelated to the discovered fleet**.
 - Creating issues or PRs (other than the follow-ups `/wrap` itself creates on merge).
 - Any task unrelated to managing the discovered PR fleet.
 

@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only on an owner grant spent through `paid-review-grant.sh` (#1897, #1898); without one, agents keep polling for a free review or the no-review override.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges. The running worktree and branch are left intact and reaped out-of-band by `/pm-clean`.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 38 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 37 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -111,7 +111,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 38 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 37 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -121,7 +121,6 @@ All 38 commands are invoked as `/command` in a Claude Code session. They are def
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/wave` | PM | Offer the largest dependency- and overlap-free set of backlog issues as click-to-launch chips, capped at the concurrent-pipeline ceiling |
 | `/board` | PM | Render the canonical "Running now" table on demand in any orchestration thread — the current round's phases, recorded starts, projected ends, and remaining time, recomputed live from durable state. Complete from the dispatching thread; any other thread renders no queued rows at all and labels the delivered count approximate, since round membership is not yet durable. Changes no pipeline, writing only the shared table-render timestamp |
-| `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/issue-maker` | Planning | Capture-only thread mode — drafts and opens well-structured issues, reflects before writing, no implementation |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |

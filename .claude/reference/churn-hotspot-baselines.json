@@ -64,7 +64,6 @@
     ".claude/skills/pm-handoff/SKILL.md": {"issue": 1122, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
     ".claude/skills/pm/SKILL.md": {"issue": 860, "score_at_decision": 10, "pr_count_at_decision": 10, "as_of": "2026-08-25"},
     ".claude/skills/pr-monitor-and-manage/SKILL.md": {"issue": 881, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
-    ".claude/skills/prompt/SKILL.md": {"issue": 949, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
     ".claude/skills/start-issue/SKILL.md": {"issue": 981, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
     ".claude/skills/subagent/SKILL.md": {"issue": 866, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
     ".claude/skills/wave/SKILL.md": {"issue": 961, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},

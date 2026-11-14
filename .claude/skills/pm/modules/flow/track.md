@@ -33,7 +33,7 @@ Maintain a state table in the conversation. Update it as work progresses:
 
 **Task ID column:** every `Chip offered` row MUST carry the `task_id` returned by its `spawn_task` call — it is the only handle for dismissing that chip later, and a chip whose `task_id` was not recorded cannot be withdrawn. `Prompt generated` and `Active` rows leave it empty (`—`).
 
-`Chip offered` and `Prompt generated` are the same state from the pipeline's view — offered, not yet started — and both pair with the `Awaiting thread start` status. Both are excluded from re-offering: `/prompt`'s Path B scan treats an offered-but-unstarted chip exactly as it treats `Prompt generated`, so a re-run never double-offers the same issue.
+`Chip offered` and `Prompt generated` are the same state from the pipeline's view — offered, not yet started — and both pair with the `Awaiting thread start` status. Both are excluded from re-offering, so a re-run never double-offers the same issue.
 
 
 Mark `3.2 ran` when the invocation records or reconciles its assignment ledger.

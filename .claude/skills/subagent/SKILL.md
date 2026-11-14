@@ -238,24 +238,24 @@ If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run
 Apply Step 4's verdict per issue. **Being too big is not a failure.** Every issue reaches exactly one of three outcomes, and none of them drops work:
 
 - **Inline-eligible** issues → proceed to Step 6 and run them.
-- **Criterion 3** (should be split into multiple PRs) → **decompose it here** (Step 5.1). Do **not** emit a thread prompt and do **not** print a `/prompt #N` line — the pieces run inline in this thread.
-- **Criterion 1 or 2** → do NOT execute here. Emit a thread prompt so the work isn't lost:
+- **Criterion 3** (should be split into multiple PRs) → **decompose it here** (Step 5.1). Do **not** route it to a separate thread — the pieces run inline in this thread.
+- **Criterion 1 or 2** → do NOT execute here. Route it to its own coding thread so the work isn't lost:
 
   ```
   Issue #N is too big for inline subagent execution — {named criterion: implementation can't be carried across sequential subagent turns / needs interactive judgment mid-build}: {why, in one line}.
-  Routing to a separate thread — run `/prompt #N` to generate the thread prompt.
+  Next step: start a separate coding thread for #N and work it from the issue body and its implementation plan. Printing this message does not create that thread, and the issue is not done until that thread merges it.
   ```
 
   The named criterion is mandatory (Step 4) — "too big" without one is not a valid verdict.
 
-  (`/prompt #N` with an explicit issue number always produces a full thread-prompt block — see `/prompt` Path A. Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
+  (Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
 
 **Why criterion 3 is the exception.** Criteria 1 and 2 describe work a subagent cannot *carry* — non-resumable across turns, or blocked on a decision only the user can make mid-build. Splitting those does not help: every piece inherits the same defect. Criterion 3 describes the opposite — work that is subagent-fit *in pieces* and fails only as one unit. Routing it out whole converts several small pipelines into one large thread, which is exactly the fan-out inline-first exists to end (#1193; rationale in `too-big-recalibration-2026-07.md`).
 
 **Batch outcomes:**
 - **All inline-eligible** → proceed with all of them (Step 6).
-- **All routed out** (criteria 1/2) → report each issue's reason and its `/prompt` routing. This is a clean outcome, not an error — stop here.
-- **Mixed** → run the inline-eligible issues now, name the decomposed ones and their chains, and list the routed-out ones: "Running inline: #{a}, #{b}. Decomposed: #{c} → #{c1}, #{c2}, #{c3} (chain queued). Too big for a subagent (routed to a thread): #{d} ({criterion 1 or 2 reason}) — run `/prompt #d` for that one."
+- **All routed out** (criteria 1/2) → report each issue's reason and that it is routed to its own thread. This is a clean outcome, not an error — stop here.
+- **Mixed** → run the inline-eligible issues now, name the decomposed ones and their chains, and list the routed-out ones: "Running inline: #{a}, #{b}. Decomposed: #{c} → #{c1}, #{c2}, #{c3} (chain queued). Too big for a subagent (routed to a thread): #{d} ({criterion 1 or 2 reason}) — start that one in its own coding thread."
 
 ### 5.1: Decompose a criterion-3 issue into an increment chain
 
@@ -2150,4 +2150,4 @@ When all subagent PRs are either merged or blocked:
 ```
 /subagent #42 #55
 ```
-(Issues run inline as subagents by default, regardless of tier. Only two of the three too-big criteria route out to a separate thread via `/prompt`, each naming which one fired: the implementation can't be carried across sequential subagent turns, or it needs interactive judgment mid-build. The third — should be split into multiple PRs — is **decomposed into an inline increment chain** instead, never routed out.)
+(Issues run inline as subagents by default, regardless of tier. Only two of the three too-big criteria route out to a separate coding thread, each naming which one fired: the implementation can't be carried across sequential subagent turns, or it needs interactive judgment mid-build. The third — should be split into multiple PRs — is **decomposed into an inline increment chain** instead, never routed out.)

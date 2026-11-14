@@ -59,7 +59,7 @@
 #        Author-scoped per #732/#733; a collaborator's PR is never counted.
 #     2. Live offered issue-maker work — the UNION of:
 #          a. The chip offer registry (chip-offer-registry.sh --count), which
-#             covers all emitters (/pm, /prompt, /wave, /issue-maker,
+#             covers all emitters (/pm, /wave, /issue-maker,
 #             /start-issue). Entries in `offered` or `running` state are counted;
 #             `pr-backed`, `done`, `retracted`, and `expired` are not.
 #             chip-offer-registry.sh "Offer Registry" (chip-launching.md) is the
