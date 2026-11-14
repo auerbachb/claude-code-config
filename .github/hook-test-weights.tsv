@@ -14,6 +14,7 @@
 3	.claude/hooks/tests/ai-account-session-start.test.sh
 3	.claude/hooks/tests/babysit-tick-watchdog.test.sh
 4	.claude/hooks/tests/bgwork-ceiling-hooks.test.sh
+2	.claude/hooks/tests/issue-claim-guard.test.sh
 20	.claude/hooks/tests/pause-lifecycle-hooks.test.sh
 11	.claude/hooks/tests/polling-backoff-warn.test.sh
 0	.claude/hooks/tests/post-compact-reconcile.test.sh
