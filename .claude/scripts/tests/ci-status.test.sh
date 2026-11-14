@@ -176,7 +176,9 @@ case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "solo/repo"; exit 0 ;;
   *check-runs*)
-    printf '%s' "$FAKE_CHECK_RUNS"; exit 0 ;;
+    printf '%s' "$FAKE_CHECK_RUNS" | jq '. + {total_count:(.check_runs | length)}'; exit 0 ;;
+  *actions/runs*)
+    echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
 esac
 echo "unexpected gh call: $ARGS" >&2
 exit 1

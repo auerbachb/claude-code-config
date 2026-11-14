@@ -41,10 +41,14 @@ case "$ARGS" in
       '{number:1, created_at:$c, draft:$d, user:{login:"solo"}, head:{ref:"feature", repo:{full_name:"solo/repo"}}}'
     exit 0 ;;
   *" repos/solo/repo/actions/runs?head_sha="*)
-    if [[ -n "${FAKE_RUNS:-}" ]]; then printf '%s' "$FAKE_RUNS"; exit 0; fi
+    if [[ -n "${FAKE_RUNS:-}" ]]; then
+      printf '%s' "$FAKE_RUNS" | jq '.workflow_runs |= map(. + {id:1,workflow_id:1,run_attempt:1,pull_requests:[],check_suite_id:1,html_url:"https://github.com/solo/repo/actions/runs/1",status:"completed",conclusion:"success"})'
+      exit 0
+    fi
     jq -cn --arg t "${FAKE_PUSH_AT:-2026-07-21T09:58:00Z}" \
-      '{total_count:1, workflow_runs:[{event:"pull_request", created_at:$t, head_branch:"feature",
-         head_sha:"deadbeefcafedeadbeefcafedeadbeefcafedead", head_repository:{full_name:"solo/repo"}}]}'
+      '{total_count:1, workflow_runs:[{id:1,workflow_id:1,run_attempt:1,event:"pull_request",created_at:$t,head_branch:"feature",
+         pull_requests:[{number:1,base:{ref:"main",repo:{id:1}}}],check_suite_id:1,html_url:"https://github.com/solo/repo/actions/runs/1",status:"completed",conclusion:"success",
+         head_sha:"deadbeefcafedeadbeefcafedeadbeefcafedead",head_repository:{full_name:"solo/repo"}}]}'
     exit 0 ;;
   *" repos/solo/repo/issues/1/comments?per_page=100 "*)
     if [[ -n "${FAKE_COMMENT_SEQUENCE:-}" ]]; then
@@ -502,6 +506,7 @@ done
 reset; FAKE_REVIEWS="$(head_approval "")"
 mkdir -p "$TMP/nro-sut/lib"
 cp "$(dirname "$SUT")"/*.sh "$TMP/nro-sut/"; cp "$(dirname "$SUT")"/lib/*.sh "$(dirname "$SUT")"/lib/*.jq "$TMP/nro-sut/lib/"
+if [[ -f "$(dirname "$SUT")/lib/check_run_workflows.py" ]]; then cp "$(dirname "$SUT")/lib/check_run_workflows.py" "$TMP/nro-sut/lib/"; fi
 printf '#!/usr/bin/env bash\necho "not json"\n' > "$TMP/nro-sut/review-substance.sh"; chmod +x "$TMP/nro-sut/review-substance.sh"
 run_gate_on greptile "$GREEN_11" "$TMP/nro-sut/merge-gate.sh"
 check_eq "false" "$(j .no_review_override.applied)" "#1932 greptile: broken evaluator -> hollow approval still a verdict, override off"

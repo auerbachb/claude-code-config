@@ -43,9 +43,10 @@ SHA="1212121212121212121212121212121212121212"
 S="$TMP/scripts"
 mkdir -p "$S/lib" "$TMP/reference"
 for f in fixpr-reviewer-triggers.sh review-triggers-allowed.sh bugbot-tier-excluded.sh ci-status.sh \
-         check-runs-dedup.sh session-state.sh state-lock.sh pr-body-review-note.sh; do
+         check-runs-dedup.sh check-runs-snapshot.sh session-state.sh state-lock.sh pr-body-review-note.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
+cp "$REPO_ROOT/.claude/scripts/lib/check_run_workflows.py" "$S/lib/"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" "$S/lib/"
 cp "$REPO_ROOT/.claude/reference/session-state-schema.json" "$TMP/reference/"
 cat > "$S/review-tier.sh" <<'EOF'
@@ -99,7 +100,8 @@ case "$args" in
       && mv "$FX/c.tmp" "$FX/comments.json" ;;
   *"/issues/"*"/comments"*) serve "$FX/comments.json" ;;
   *"/pulls/"*"/reviews"*) echo '[]' ;;
-  *"/check-runs"*) serve "$FX/checks.json" ;;
+  *"/check-runs"*) jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
+  *"/actions/runs"*) jq -c --arg head "$FIXTURE_HEAD" '.check_runs[0] as $check | {total_count:1,workflow_runs:[{id:1,workflow_id:1,run_attempt:1,event:"push",head_branch:"fixture",head_sha:$head,pull_requests:[],check_suite_id:1,html_url:"https://github.com/acme/one/actions/runs/1",status:$check.status,conclusion:$check.conclusion}]}' "$FX/checks.json" ;;
   *"/timeline"*) echo '[]' | jq -r "${jqexpr:-.}" ;;
   *"/commits/"*) serve "$FX/commit.json" ;;
   *) echo "unexpected gh call: $args" >&2; exit 1 ;;

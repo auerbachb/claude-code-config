@@ -44,10 +44,11 @@ HEAD2="ffffffffffffffffffffffffffffffffffffffff"
 
 S="$TMP/scripts"
 mkdir -p "$S/lib" "$TMP/reference"
-for f in review-triggers-allowed.sh ci-status.sh check-runs-dedup.sh session-state.sh state-lock.sh; do
+for f in review-triggers-allowed.sh ci-status.sh check-runs-dedup.sh check-runs-snapshot.sh session-state.sh state-lock.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" "$S/lib/"
+cp "$REPO_ROOT/.claude/scripts/lib/check_run_workflows.py" "$S/lib/"
 cp "$REPO_ROOT/.claude/reference/session-state-schema.json" "$TMP/reference/"
 cat > "$S/review-tier.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -101,7 +102,17 @@ case "$args" in
   *"/pulls/"*"/comments"*) echo '[]' ;;
   *"/pulls/"*"/reviews"*) echo '[]' ;;
   *"/issues/"*"/comments"*) serve "$FX/comments.json" ;;
-  *"/check-runs"*) serve "$FX/checks.json" ;;
+  *"/check-runs"*)
+    jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
+  *"/actions/runs"*)
+    if [[ -n "${FIXTURE_WORKFLOWS:-}" ]]; then printf '%s\n' "$FIXTURE_WORKFLOWS"; exit 0; fi
+    jq -c --arg head "$FIXTURE_HEAD" '
+      [.check_runs[] | select(.app.slug == "github-actions")]
+      | group_by(.check_suite.id) | map(.[0].check_suite.id as $suite |
+        {id:$suite,workflow_id:$suite,run_attempt:1,event:"push",head_branch:"fixture",head_sha:$head,
+         pull_requests:[],check_suite_id:$suite,html_url:("https://github.com/acme/one/actions/runs/" + ($suite|tostring)),
+         status:"completed",conclusion:"success"})
+      | {total_count:length,workflow_runs:.}' "$FX/checks.json" ;;
   *"/timeline"*) echo '[]' | jq -r "${jqexpr:-.}" ;;
   *"/commits/"*) serve "$FX/commit.json" ;;
   *) echo "unexpected gh call: $args" >&2; exit 1 ;;

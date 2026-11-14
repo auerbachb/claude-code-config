@@ -119,7 +119,7 @@ FAKE_MERGE_STATE=BLOCKED \
 run_gate "$(pr319_payload cancelled)"
 check_eq "752daf7943966629da8e6e86938af640f4f91b8f" "$(echo "$OUT" | jq -r '.head_sha')" \
   "(n) PR 319 replay: evaluated at the incident's exact HEAD"
-check_eq 8 "$(echo "$OUT" | jq -r '.ci_status.total')" "(n) PR 319 replay: all eight check-runs present"
+check_eq 10 "$(echo "$OUT" | jq -r '.ci_status.total')" "(n) PR 319 replay: eight check-runs and two workflow inventory rows present"
 check_eq "false" "$(met)" "(n) PR 319 replay: gate NOT met (was met:true)"
 check_eq 1 "$RC" "(n) PR 319 replay: exit 1"
 check_eq 1 "$(unsat_count)" "(n) PR 319 replay: exactly one required context unsatisfied"

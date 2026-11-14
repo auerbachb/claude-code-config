@@ -34,7 +34,8 @@
 #      by app slug or name) never count as CI.
 #   2. A blocking conclusion (failure, timed_out, cancelled, action_required,
 #      startup_failure, stale) on a counted check → none, whatever else runs.
-#   3. Named checks: each name's newest run decides. A name with no run yet is
+#   3. Named checks: every retained workflow-scoped run for a name decides.
+#      A name with no run yet is
 #      `pending` until the grace (900 s, from `--head-epoch`: the later of the commit time and the first poll that saw the HEAD) has passed;
 #      after that it is ignored and listed in ignored_checks, so a check that
 #      never reports cannot hold the request forever. Unnamed checks are not
@@ -105,9 +106,8 @@ RESULT="$(jq -c \
       end;
   def state:
     if (.status // "") != "completed" or (.conclusion // null) == null then "pending"
-    elif (.conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale")) then "blocking"
-    else "ok" end;
-  def newest($runs; $n): [ $runs[] | select(.name == $n) ] | sort_by(.id // 0) | last;
+    elif (.conclusion | IN("success", "neutral", "skipped")) then "ok"
+    else "blocking" end;
   def past_grace: if $head == null then false else (($now - $head) > $grace) end;
   ((if type == "array" then . else .check_runs end)) | map(select(reviewer | not)) as $ci
   | if ($names | length) == 0 then
@@ -118,9 +118,11 @@ RESULT="$(jq -c \
           (if past_grace then {decision: "request", reason: "no_checks"} else {decision: "wait", reason: "no_checks_yet"} end)
         else {decision: "request", reason: "ci_green"} end
     else
-      [ $names[] as $n | newest($ci; $n) as $r
-        | if $r == null then (if past_grace then {n: $n, s: "ignored"} else {n: $n, s: "pending"} end)
-          else {n: $n, s: ($r | state)} end ] as $per
+      [ $names[] as $n | [ $ci[] | select(.name == $n) | state ] as $states
+        | if ($states | length) == 0 then (if past_grace then {n: $n, s: "ignored"} else {n: $n, s: "pending"} end)
+          elif any($states[]; . == "blocking") then {n: $n, s: "blocking"}
+          elif any($states[]; . == "pending") then {n: $n, s: "pending"}
+          else {n: $n, s: "ok"} end ] as $per
       | [ $per[] | select(.s == "blocking") | .n ] as $bad
       | [ $per[] | select(.s == "pending") | .n ] as $wait
       | [ $per[] | select(.s == "ignored") | .n ] as $ign

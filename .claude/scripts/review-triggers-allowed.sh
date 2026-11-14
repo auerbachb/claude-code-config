@@ -461,8 +461,8 @@ if [[ "$READ_FACTS" -eq 1 && "$FACTS_OK" -eq 1 ]]; then
   fi
 fi
 if [[ "$READ_FACTS" -eq 1 && "$FACTS_OK" -eq 1 ]]; then
-  if gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" >"$TMPD/k" 2>/dev/null; then
-    CHECKS_RAW="$(cat "$TMPD/k")"
+  if "$SELF_DIR/check-runs-snapshot.sh" --repo "$REPO" --head "$HEAD_SHA" >"$TMPD/k" 2>/dev/null; then
+    CHECKS_RAW="$(jq -c '{check_runs: .}' "$TMPD/k")"
     DEDUP="$SELF_DIR/check-runs-dedup.sh"
     if [[ -x "$DEDUP" ]] && D="$(printf '%s\n' "$CHECKS_RAW" | "$DEDUP" 2>/dev/null)" && [[ -n "$D" ]]; then
       CHECKS="$(jq -c "$JQ_ACTIVE_CHECK"'{check_runs: map(select(active_check))}' <<<"$D" 2>/dev/null || echo '{"check_runs":[]}')"

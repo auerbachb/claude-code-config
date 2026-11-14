@@ -146,9 +146,10 @@ case "$ARGS" in
     exit 0 ;;
   *"git/commits/"*)
     jq -cn --arg d "$FIXTURE_PUSH_TS" '{committer:{date:$d}}'; exit 0 ;;
+  *actions/runs*) echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
   *check-runs*)
     jq -cn --arg d "$FIXTURE_PUSH_TS" \
-      '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
+      '{total_count:1,check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
                      completed_at:$d,check_suite:{id:1},app:{slug:"gha",id:1}}]}'
     exit 0 ;;
   *commits/*/statuses*) printf '%s' "[]"; exit 0 ;;

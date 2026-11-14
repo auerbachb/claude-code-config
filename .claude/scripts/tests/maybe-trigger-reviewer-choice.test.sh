@@ -45,10 +45,11 @@ HEAD2="dddddddddddddddddddddddddddddddddddddddd"
 S="$TMP/scripts"
 mkdir -p "$S/lib" "$TMP/reference"
 for f in maybe-trigger-ai-review.sh review-triggers-allowed.sh bugbot-tier-excluded.sh ci-status.sh \
-         check-runs-dedup.sh session-state.sh state-lock.sh review-request-gate.sh \
+         check-runs-dedup.sh check-runs-snapshot.sh required-checks.sh session-state.sh state-lock.sh review-request-gate.sh \
          review-availability.sh pr-authorship.sh cr-review-hourly.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
+cp "$REPO_ROOT/.claude/scripts/lib/check_run_workflows.py" "$REPO_ROOT/.claude/scripts/lib/required-context-state.jq" "$S/lib/"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" \
    "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" \
    "$REPO_ROOT/.claude/scripts/lib/cr-retry-window.jq" "$S/lib/"
@@ -94,6 +95,7 @@ case "$args" in
   "repo view"*) echo "acme/one" ;;
   "api user"*) echo "me" ;;
   "api repos/acme/one/pulls/99600") printf '{"number":99600,"state":"open","draft":false,"user":{"login":"me"}}\n' ;;
+  "pr view"*"baseRefName"*) echo main ;;
   "pr view"*"-q"*) echo "$FIXTURE_HEAD" ;;
   "pr view"*) printf '{"headRefOid":"%s","state":"OPEN"}\n' "$FIXTURE_HEAD" ;;
   "pr comment"*)
@@ -111,7 +113,9 @@ case "$args" in
     fi ;;
   *"/issues/"*"/comments"*) serve "$FX/comments.json" ;;
   *"/pulls/"*"/reviews"*) echo '[]' ;;
-  *"/check-runs"*) serve "$FX/checks.json" ;;
+  *"/check-runs"*) jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
+  *"/actions/runs"*) jq -c --arg head "$FIXTURE_HEAD" '.check_runs[0] as $check | {total_count:1,workflow_runs:[{id:1,workflow_id:1,event:"push",head_branch:"fixture",head_sha:$head,pull_requests:[],check_suite_id:1,html_url:"https://github.com/acme/one/actions/runs/1",status:$check.status,conclusion:$check.conclusion}]}' "$FX/checks.json" ;;
+  *"/branches/"*) echo '{"name":"main","protected":false}' ;;
   *"/timeline"*) echo '[]' | jq -r "${jqexpr:-.}" ;;
   *"/commits/"*) serve "$FX/commit.json" ;;
   *) echo "unexpected gh call: $args" >&2; exit 1 ;;

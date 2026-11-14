@@ -79,11 +79,12 @@ case "$ARGS" in
     fi
     jq -cn --arg d "$FAKE_COMMIT_TS" '{committer:{date:$d}}'
     exit 0 ;;
+  *actions/runs*) echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
   *check-runs*)
     if [[ -n "${FAKE_CHECK_RUNS:-}" ]]; then
-      printf '%s' "$FAKE_CHECK_RUNS"; exit 0
+      printf '%s' "$FAKE_CHECK_RUNS" | jq '. + {total_count:(.check_runs|length)}'; exit 0
     fi
-    jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
+    jq -cn '{total_count:1,check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
                completed_at:"2026-07-30T19:32:00Z",
                check_suite:{id:1},app:{slug:"gha",id:1}}]}'
     exit 0 ;;

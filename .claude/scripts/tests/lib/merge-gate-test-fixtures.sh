@@ -99,7 +99,19 @@ case "\$ARGS" in
              author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *check-runs*)
-    printf '%s' "\$FAKE_CHECK_RUNS"; exit 0 ;;
+    printf '%s' "\$FAKE_CHECK_RUNS" | jq '. + {total_count:(.check_runs | length)}'; exit 0 ;;
+  *actions/runs*)
+    if [[ -n "\${FAKE_WORKFLOW_RUNS:-}" ]]; then printf '%s' "\$FAKE_WORKFLOW_RUNS"; exit 0; fi
+    # Existing concern tests use synthetic app gha; only explicit Actions
+    # fixtures need authoritative workflow identity for the snapshot join.
+    printf '%s' "\$FAKE_CHECK_RUNS" | jq -sc --arg head "$HEAD_SHA" '
+      [.[].check_runs[] | select(.app.slug == "github-actions")]
+      | group_by(.check_suite.id) | map(.[0].check_suite.id as \$suite |
+        {id:\$suite, workflow_id:\$suite, run_attempt:1, event:"push", head_branch:"fixture", head_sha:\$head,
+         pull_requests:[], check_suite_id:\$suite, html_url:("https://github.com/solo/repo/actions/runs/" + (\$suite|tostring)),
+         path:".github/workflows/fixture.yml", status:"completed", conclusion:"success"})
+      | {total_count:length,workflow_runs:.}'
+    exit 0 ;;
   *commits/*/statuses*)
     # Legacy commit statuses (issue #1361) — a required context can be satisfied
     # by one of these instead of a check-run. Empty unless a test supplies them.
