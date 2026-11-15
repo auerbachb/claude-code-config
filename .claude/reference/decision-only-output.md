@@ -7,7 +7,8 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 | Situation | Human-facing default | Required record/action |
 |---|---|---|
 | Routine progress, successful check, launch or dispatch | Silent | Update existing issue/PR/session records and continue |
-| Unchanged monitoring, first/resume tick, backoff, table age | Silent | Persist tick, digest, watermarks, cadence; retain script-side filtering |
+| Unchanged monitoring, first/resume tick, backoff | Silent | Persist tick, digest, watermarks, cadence; retain script-side filtering |
+| Round dispatch, and each `TABLE FLOOR:` line from the armed floor watch (last full board over an hour old while work runs) | Full "Running now" table, running and queued rows together, once per dispatch and once per floor line | `table-freshness.sh --note-rendered` after every render; watch, wake-up check and re-arm per `time-estimates.md` §"Table freshness" |
 | Board below limit after a refill evaluation | One line when occupied slots or reason counts change, including a verified `refill_missed` fault | Persist every census and keep unchanged notices and full boards quiet |
 | Ordinary recoverable failure | Silent during authorized recovery | Preserve full failure capture and nonzero exit; repair/retry within existing bounds |
 | Owner-only blocker, ambiguity, safety event, exhausted recovery or genuine stall | Immediate concise notice | State action, practical options/consequence, evidence; persist stop and resume state |
@@ -18,7 +19,7 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 
 A stopped pipeline must never disappear: when recovery ends, surface why and how it can resume even if the owner cannot fix the underlying service. Do not repeat an unchanged notice every tick. A materially changed blocker, failed notification, or a new required decision may notify again. Never silence a safety event merely because recovery is possible.
 
-Use one or two concise sentences for an ask: “Choose A (effect) or B (effect) so work can resume. Evidence: [PR/issue/log].” Include time only when it affects that choice, such as a real deadline or reset time. No timestamp prefixes for ceremony. Scheduled PM reports cover the invoking repository. Ordinary recap tables, hourly board floors, file-write counters, refill announcements, and skill banners remain silent. Explicit requests for status remain immediate.
+Use one or two concise sentences for an ask: “Choose A (effect) or B (effect) so work can resume. Evidence: [PR/issue/log].” Include time only when it affects that choice, such as a real deadline or reset time. No timestamp prefixes for ceremony. Scheduled PM reports cover the invoking repository. Ordinary recap tables, file-write counters, refill announcements, and skill banners remain silent. A `TABLE FLOOR:` line is the exception: it means render the full table now, the same rule `/subagent` Step 8 and `time-estimates.md` apply. Explicit requests for status remain immediate.
 
 ## Evidence and recovery
 
