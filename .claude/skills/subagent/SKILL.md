@@ -1566,7 +1566,9 @@ thread believes the hourly guarantee is live while the tick reads an absent
 record and exits silently every minute. Reporting it is what turns a silent
 non-guarantee into a known degraded mode with a stated fallback.
 
-Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): **only when `CLOCK_RECORDED` is true**, run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`.
+Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): **only when `CLOCK_RECORDED` is true**, run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`. Then keep the pair the watch was armed with: `FLOOR_REPO_KEY="$REPO_KEY"` and `FLOOR_SESSION="$TF_SESSION"`. Expiry recovery (Step 8) reads only these, because the Step 8 gate re-derives `REPO_KEY` from the current directory on every wake-up.
+
+**The record cannot show that the watch is armed.** A script cannot observe Monitor liveness, so this step is the only evidence of arming. If the `Monitor` call fails or is not made when `CLOCK_RECORDED` is true, print one line `DEGRADED: floor watch not armed — re-render the "Running now" table on every heartbeat instead` and treat the floor as absent for the round.
 
 **`CLOCK_RECORDED` is the whole condition — not just a non-empty `REPO_KEY`.** Every way the record fails to be written ends the same: the tick polls a record that does not exist and exits silently every minute, so the floor *looks* armed and guarantees nothing. An unresolved repo key is only one of those ways; an unset count and a `--note-rendered` that exited non-zero are the others, and gating on the repo key alone would arm the watch for both. When it is false the `DEGRADED:` line above already said which one happened, and the stated fallback — re-render the table on every heartbeat — is what replaces the guarantee.
 
@@ -1764,7 +1766,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
    **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it.
 
-   **A floor-watch expiry notice re-arms the watch.** The desktop Monitor expires after 30 minutes (Issue #2201), so a floor watch dies on its own. When its expiry notice arrives and `--status --repo "$REPO_KEY" --session "$TF_SESSION"` shows `active_pipelines` above zero, re-run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` with the same pair 7.3 armed the watch with, hand its output to `Monitor` with `persistent: true`, then run the table-freshness gate above on this same wake-up. If that pair was lost in a compaction, re-derive it once as the gate does and confirm with `--status` that `last_rendered_at` is this round's render before re-arming (the residual case above applies). A zero count means the round has ended, so there is nothing to re-arm.
+   **A floor-watch expiry notice re-arms the watch.** The desktop Monitor expires after 30 minutes (Issue #2201), so a floor watch dies on its own. When its expiry notice arrives, re-arm only if **this thread still has a round open**: `.repos["<key>"].rounds["<session>"]` is non-null (the slot 7.0 wrote and the teardown below clears), and `--status --repo "$FLOOR_REPO_KEY" --session "$FLOOR_SESSION"` shows `active_pipelines` above zero. The stored count alone is not enough, because a failed round-end write can leave it positive after the round has ended. When both hold, re-run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$FLOOR_REPO_KEY" --session "$FLOOR_SESSION"`, hand its output to `Monitor` with `persistent: true`, then run the table-freshness gate above on this same wake-up. If the pair was lost in a compaction, re-derive it once as the gate does and confirm with `--status` that `last_rendered_at` is this round's render before re-arming (the residual case above applies). An empty slot or a zero count means the round has ended, so there is nothing to re-arm.
 
    One residual case re-deriving cannot fix: if `CLAUDE_SESSION_ID` was set when 7.3 armed the watch but is unset now, the watch polls the real id while these calls resolve `default`, and the floor fires against a board you are faithfully re-rendering. The tell is a `TABLE FLOOR` line that keeps arriving right after you rendered. Confirm with `"$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION"`: an `age_s` that keeps growing across renders means you are writing a different record than the watch reads. Re-arm with the session the renders actually use rather than editing state by hand.
 
@@ -1781,7 +1783,9 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
      "$TABLE_FRESHNESS_SH" --note-rendered --active 0 \
        --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
-       || echo 'DEGRADED: terminal board not recorded — floor may fire at an idle thread'
+       || "$TABLE_FRESHNESS_SH" --note-rendered --active 0 \
+            --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
+       || echo 'DEGRADED: terminal board not recorded after one retry — the floor may fire at an idle thread'
    fi
 
    ```

@@ -84,6 +84,9 @@ TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 # catch, the same way a carried-over 1 does.
 TABLE_RENDERED=0
 # … render the table (via /board, or the inline fallback above) …
+# Inline fallback only. /board records its own renders in Step 5, and a
+# dispatch render goes through /subagent Step 7.3, so this block runs only when
+# /board did not resolve. The caller must set ACTIVE_COUNT from the table just printed.
 # … then, on the success path ONLY — a table was emitted:
 TABLE_RENDERED=1
 if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "$TABLE_RENDERED" -eq 1 \
@@ -98,12 +101,12 @@ fi
 
 Render only for an explicit status request, a scheduled report when due, a round dispatch, a `TABLE FLOOR:` line, or a `stale` verdict from `--check` on a wake-up (`time-estimates.md` §"Table freshness"). Keep the complete machine-readable launch and queue records at every dispatch.
 
-**Floor check at dispatch.** Once a round dispatches, confirm the record the floor watch polls was written by this dispatch's render, using the same `REPO_KEY` and `TF_SESSION` as the render block above. A record written moments ago has an `age_s` of a few seconds; an older record belongs to an earlier render and does not count. The watch's own liveness is re-established on each Monitor expiry notice (`time-estimates.md` §"Table freshness", rule 3), so this check reads only the record.
+**Floor check at dispatch.** Once a round dispatches, confirm the freshness record holds a render written moments ago, using the same `REPO_KEY` and `TF_SESSION` as the render block above. An `age_s` of a few seconds means this dispatch's render; an older record belongs to an earlier render. **This check does not establish that the watch is armed.** A script cannot observe Monitor liveness, and the record exists whether or not a watch was started. Arming is `/subagent` Step 7.3's own step: it prints its own `DEGRADED:` line when the arm call fails or is skipped, and that line is the evidence. The watch's liveness is re-established on each Monitor expiry notice (`time-estimates.md` §"Table freshness", rule 3).
 
 ```bash
 FLOOR_STATUS=$("$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null) || FLOOR_STATUS=""
 if [[ -z "$FLOOR_STATUS" ]] || ! printf '%s' "$FLOOR_STATUS" | jq -e '.last_rendered_at != null and (.active_pipelines // 0) > 0 and (.age_s // 999999) < 120' >/dev/null 2>&1; then
-  echo 'DEGRADED: no render recorded for this dispatch — render the "Running now" table now, record it, and re-render on every wake-up until the floor is armed'
+  echo 'DEGRADED: no fresh render recorded for this dispatch — the floor may be unarmed; render the "Running now" table now and check Step 7.3's arm call'
 fi
 ```
 
@@ -117,7 +120,7 @@ fi
 
 | Trigger | Render |
 |---------|--------|
-| Round dispatch (first launch of a round) | `/subagent` Step 7.3 already prints and records the full table at dispatch, and `/pm` dispatches through it, so do not render again here. Run the floor check above; render the full table and record it with the block above only when that check shows no render recorded for this dispatch. |
+| Round dispatch (first launch of a round) | `/subagent` Step 7.3 renders the full table once, records it, and arms the floor watch in the same step. `/pm` does not render again here; run the floor check above. The table appears once per dispatch. |
 | Refill | Preserve the complete launch and queue records. Render when an explicit request, a scheduled report, or a `TABLE FLOOR:` line calls for it. |
 | `TABLE FLOOR:` line from the armed floor watch | Re-render the full table in the next message and record it. A one-liner does not satisfy the floor. |
 | Existing day or PM-owned inline monitor tick | Evaluate the scheduled report gate below |
