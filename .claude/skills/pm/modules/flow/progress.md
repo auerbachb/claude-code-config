@@ -106,7 +106,7 @@ Render only for an explicit status request, a scheduled report when due, a round
 ```bash
 FLOOR_STATUS=$("$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null) || FLOOR_STATUS=""
 if [[ -z "$FLOOR_STATUS" ]] || ! printf '%s' "$FLOOR_STATUS" | jq -e '.last_rendered_at != null and (.active_pipelines // 0) > 0 and (.age_s // 999999) < 120' >/dev/null 2>&1; then
-  echo 'DEGRADED: no fresh render recorded for this dispatch — the floor may be unarmed; render the "Running now" table now and check Step 7.3's arm call'
+  echo 'DEGRADED: no fresh render recorded for this dispatch — the floor may be unarmed; render the "Running now" table now and check the arm call in Step 7.3'
 fi
 ```
 
