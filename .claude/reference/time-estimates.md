@@ -568,12 +568,34 @@ stale/fresh arithmetic, so no caller re-derives either:
    not a one-liner. Exit 0 (`fresh`, `idle`, `unrecorded`) leaves the one-liner
    available. Pass `--active` whenever the count is known — with no recorded render
    it is what makes the verdict fail closed rather than guess.
+   **Consult the gate on every wake-up, not only before a message.** An orchestrating
+   thread that gets a wake-up of any kind — a sub-agent completion, a CI event, a
+   floor-watch or ceiling-watch expiry notice, or a tick — runs `--check` first. A
+   `stale` verdict renders the full table on that wake-up even when the thread has
+   nothing else to say. This is what keeps the hour honest when the watch itself has
+   died (below).
 3. **A hard floor fires unprompted.** Arm `table-freshness.sh --arm-command` as a
    **persistent `Monitor`** in the same step as the round's first dispatch — the same
    primitive and the same reasoning as the ceiling watch (`scheduling-reliability.md`;
    never `CronCreate`, never chained one-shot wake-ups). The tick prints one line when
    the hour elapses with work still active, deduped per recorded render, so a thread
    re-rendering on its own cadence never sees a floor message at all.
+   **The desktop Monitor expires after 30 minutes** (Issue #2201). A floor watch
+   therefore cannot be relied on for an hour by itself. Each expiry notice is a
+   wake-up: re-arm the watch at once with the same repo and session pair while work
+   is still active (`--status` reports `active_pipelines` above zero), then run the
+   gate in rule 2. Two kinds of wake-up exist. An expiry notice re-arms the watch and
+   runs the gate. Any other wake-up runs the gate only. The bound follows from that:
+   while the watch is re-armed on each expiry notice, the tick announces a stale hour
+   inside an armed window, so the table is re-rendered about an hour after its last
+   render plus one re-arm delay. If the watch is missing and only other wake-ups
+   arrive, the table renders at the first wake-up after the hour mark, so the bound is
+   the gap between wake-ups, not the hour. Nothing in this mechanism renders without a
+   recorded render, and nothing fires for an idle thread.
+4. **Dispatch renders once.** When `/pm` or `/subagent` launches a round, the full
+   table (running and queued rows together) is printed once at dispatch and recorded
+   with `--note-rendered --active <N>`. That render starts the hour; no separate
+   status message is needed to start it.
 
 **Idle threads are exempt, explicitly.** When nothing is running or queued, the
 round-end summary is the terminal board and the thread stays quiet. The exemption is

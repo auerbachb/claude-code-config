@@ -96,7 +96,16 @@ else
 fi
 ```
 
-Render only for an explicit status request or a scheduled report when due. Keep the complete machine-readable launch and queue records at every dispatch.
+Render only for an explicit status request, a scheduled report when due, a round dispatch, a `TABLE FLOOR:` line, or a `stale` verdict from `--check` on a wake-up (`time-estimates.md` §"Table freshness"). Keep the complete machine-readable launch and queue records at every dispatch.
+
+**Floor check at dispatch.** Once a round dispatches, confirm the record the floor watch polls was written by this dispatch's render, using the same `REPO_KEY` and `TF_SESSION` as the render block above. A record written moments ago has an `age_s` of a few seconds; an older record belongs to an earlier render and does not count. The watch's own liveness is re-established on each Monitor expiry notice (`time-estimates.md` §"Table freshness", rule 3), so this check reads only the record.
+
+```bash
+FLOOR_STATUS=$("$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null) || FLOOR_STATUS=""
+if [[ -z "$FLOOR_STATUS" ]] || ! printf '%s' "$FLOOR_STATUS" | jq -e '.last_rendered_at != null and (.active_pipelines // 0) > 0 and (.age_s // 999999) < 120' >/dev/null 2>&1; then
+  echo 'DEGRADED: table-freshness floor not armed for this round — re-render the "Running now" table on every wake-up'
+fi
+```
 
 **`/pm` is the dispatching thread, so the board renders complete.** `/board` Step 3 draws queued rows from the dispatching thread's own queue and confirms a pre-PR row from a live agent handle — both of which `/pm` holds (3.1's queued-behind-the-ceiling list, and the handles for pipelines `/subagent` launched for this round). Supply them: a board rendered from `/pm` carries its queued rows, shows no `Phase A (unconfirmed)` row for a pipeline it is holding, and qualifies neither its running nor its delivered count. Those qualifications exist for threads that did *not* dispatch the round; adopting them here would understate a round `/pm` can account for exactly.
 
@@ -108,7 +117,9 @@ Render only for an explicit status request or a scheduled report when due. Keep 
 
 | Trigger | Render |
 |---------|--------|
-| Dispatch or refill | Preserve the complete launch and queue records. Render when an explicit request or a scheduled report calls for it. |
+| Round dispatch (first launch of a round) | Render the full table once, running and queued rows together, then record it with the block above. Then run the floor check below. |
+| Refill | Preserve the complete launch and queue records. Render when an explicit request, a scheduled report, or a `TABLE FLOOR:` line calls for it. |
+| `TABLE FLOOR:` line from the armed floor watch | Re-render the full table in the next message and record it. A one-liner does not satisfy the floor. |
 | Existing day or PM-owned inline monitor tick | Evaluate the scheduled report gate below |
 | A progress question — "how far along?", "where is everything?", "status" | This table, recomputed, whatever the count: one shape whether one pipeline is running or five |
 | Observed `merged` or `blocked` outcome in this PM run | Evaluate the scheduled report gate immediately, even when the round just drained |
