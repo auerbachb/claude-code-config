@@ -117,7 +117,7 @@ fi
 
 | Trigger | Render |
 |---------|--------|
-| Round dispatch (first launch of a round) | Render the full table once, running and queued rows together, then record it with the block above. Then run the floor check below. |
+| Round dispatch (first launch of a round) | Render the full table once, running and queued rows together, then record it with the block above. Then run the floor check above. |
 | Refill | Preserve the complete launch and queue records. Render when an explicit request, a scheduled report, or a `TABLE FLOOR:` line calls for it. |
 | `TABLE FLOOR:` line from the armed floor watch | Re-render the full table in the next message and record it. A one-liner does not satisfy the floor. |
 | Existing day or PM-owned inline monitor tick | Evaluate the scheduled report gate below |
