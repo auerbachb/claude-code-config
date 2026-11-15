@@ -550,7 +550,8 @@ drops a guarantee — say so before merging them.
 
 **The guarantee:** while at least one pipeline is running or queued, a full "Running
 now" table is never more than an hour old, whatever mix of one-liners, notifications
-and merge lines the thread emits in between.
+and merge lines the thread emits in between. That holds while wake-ups keep arriving or the floor watch is re-armed; with
+neither, rule 3 bounds the delay by the gap between wake-ups instead of the hour.
 
 Three rules, all owned by `table-freshness.sh` — it holds the floor number and the
 stale/fresh arithmetic, so no caller re-derives either:
