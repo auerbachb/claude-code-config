@@ -103,7 +103,7 @@ Render only for an explicit status request, a scheduled report when due, a round
 ```bash
 FLOOR_STATUS=$("$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null) || FLOOR_STATUS=""
 if [[ -z "$FLOOR_STATUS" ]] || ! printf '%s' "$FLOOR_STATUS" | jq -e '.last_rendered_at != null and (.active_pipelines // 0) > 0 and (.age_s // 999999) < 120' >/dev/null 2>&1; then
-  echo 'DEGRADED: table-freshness floor not armed for this round — re-render the "Running now" table on every wake-up'
+  echo 'DEGRADED: no render recorded for this dispatch — render the "Running now" table now, record it, and re-render on every wake-up until the floor is armed'
 fi
 ```
 
@@ -117,7 +117,7 @@ fi
 
 | Trigger | Render |
 |---------|--------|
-| Round dispatch (first launch of a round) | Render the full table once, running and queued rows together, then record it with the block above. Then run the floor check above. |
+| Round dispatch (first launch of a round) | `/subagent` Step 7.3 already prints and records the full table at dispatch, and `/pm` dispatches through it, so do not render again here. Run the floor check above; render the full table and record it with the block above only when that check shows no render recorded for this dispatch. |
 | Refill | Preserve the complete launch and queue records. Render when an explicit request, a scheduled report, or a `TABLE FLOOR:` line calls for it. |
 | `TABLE FLOOR:` line from the armed floor watch | Re-render the full table in the next message and record it. A one-liner does not satisfy the floor. |
 | Existing day or PM-owned inline monitor tick | Evaluate the scheduled report gate below |
