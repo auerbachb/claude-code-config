@@ -55,8 +55,24 @@ read_antigravity_account() { # <label>
   stale_after=10800
   [[ -z "${AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS:-}" ]] \
     || stale_after="$(positive_int_or_default "$AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS" 10800 AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS)"
-  local line window used resets group models fet_et res_et
+  local line window used resets group models fet_et res_et top
   fet_et="$(epoch_to_et "$captured")"
+  # The top tier (#2415): the group the panel prints with no "Models within this group"
+  # line, because it is a single named model with its own allowance ("GEMINI 4 ARGON").
+  # Its label is the last word of the printed group name, its percent is USED (the
+  # panel prints remaining), and it is taken from the weekly window when there is one.
+  # The first such group wins. A window whose reset passed since the capture, or a
+  # capture older than the stale cutoff, shows nothing rather than an old figure.
+  top="$(printf '%s' "$result" | jq -c --argjson now "$NOW" '
+    ([.groups[] | select((.models | length) == 0)][0]) as $g
+    | if $g == null then {}
+      else ([$g.windows[] | select(.name == "7-day")][0] // $g.windows[0]) as $w
+        | (($g.name | gsub("[\u0000-\u001f\u007f]"; "") | split(" ") | map(select(. != "")) | last | if . == null then null else .[0:20] end) // null) as $l
+        | if $w == null or $l == null or ($w.resets_at_epoch != null and $w.resets_at_epoch <= $now) then {}
+          else {top_label: $l, top_used_pct: $w.used_pct, top_resets_at_epoch: $w.resets_at_epoch} end
+      end' 2>/dev/null || printf '{}')"
+  [[ -n "$top" ]] || top="{}"
+  [[ "$age" -le "$stale_after" ]] || top="{}"
   while IFS= read -r line; do
     window="$(printf '%s' "$line" | jq -r '.window')"
     used="$(printf '%s' "$line" | jq -r '.used_pct')"
@@ -80,8 +96,8 @@ read_antigravity_account() { # <label>
     else
       emit_row antigravity "$label" "$account" "$window" "$used" "$resets" ok \
         "from ${via_note}, observed $(antigravity_age "$age") ago; account not verified" observation "" \
-        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" \
-             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at}')"
+        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" --argjson top "$top" \
+             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at} + $top')"
     fi
   done < <(printf '%s' "$result" | jq -c '.groups[] | .name as $g | .models as $m | .slug as $s
       | .windows[] | {window: ($s + " " + .name), used_pct, resets_at_epoch, group: $g, models: $m}')

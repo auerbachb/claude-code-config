@@ -160,6 +160,32 @@ class LastKnownTests(unittest.TestCase):
         self.assertEqual((line['pool'], line['used_pct'], line['source']),
                          ('cursor-models', 100, 'owner-reported'))
 
+    def test_account_columns_round_trip_with_the_row(self):
+        # Issue #2409/#2408/#2415: paid usage, resets and top tier travel with the series.
+        block = {'paid_enabled': False, 'paid_cap_usd': 1000.0, 'paid_spent_usd': 0.0, 'paid_currency': 'USD',
+                 'paid_period': 'monthly', 'paid_read_at_epoch': NOW - 60, 'limit_resets_available': 2,
+                 'limit_resets': [{'kind': 'Fable reset', 'expires_at_epoch': NOW + 99}],
+                 'top_label': 'Fable', 'top_used_pct': 0, 'top_resets_at_epoch': NOW + 5}
+        saved = dict(row('7-day', 54), account=block)
+        self.assertEqual(self.record([account('claude', 'one@example.com', NOW, [saved])]).returncode, 0)
+        self.assertEqual(self.load('claude--one@example.com.json')['rows'][0]['account'], block)
+        result = run_helper(['lookup', '--dir', str(self.folder), '--now', str(NOW)],
+                            stdin='{"provider": "claude", "label": "one@example.com"}\n')
+        self.assertEqual(json.loads(result.stdout.splitlines()[0])['account'], block)
+
+    def test_account_block_keeps_only_well_typed_keys(self):
+        # A false flag and a zero spend are figures; a wrong type, a negative amount, text with
+        # control characters and an unknown key are dropped, never coerced.
+        dirty = {'paid_enabled': 'yes', 'paid_cap_usd': -5, 'paid_spent_usd': 0, 'paid_currency': 'usd',
+                 'limit_resets_available': 1.5, 'limit_resets': [{'kind': 'x\x00y', 'expires_at_epoch': 1}],
+                 'top_label': 'Fa\nble', 'top_used_pct': True, 'unknown_key': 'x'}
+        self.record([account('claude', 'one@example.com', NOW, [dict(row('7-day', 54), account=dirty)])])
+        saved = self.load('claude--one@example.com.json')['rows'][0]
+        self.assertEqual(saved.get('account'), {'paid_spent_usd': 0})
+        empty = dict(row('5-hour', 10), account={'top_label': 'bad\x07'})
+        self.record([account('claude', 'two@example.com', NOW, [empty])])
+        self.assertNotIn('account', self.load('claude--two@example.com.json')['rows'][0])
+
     def test_invalid_identity_is_refused_at_the_path_boundary(self):
         result = self.record([account('evil', 'x', NOW, [row('7-day', 1)]),
                               account('claude', '../escape', NOW, [row('7-day', 1)])])

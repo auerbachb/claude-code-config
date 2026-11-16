@@ -42,6 +42,7 @@
 10	.claude/scripts/tests/admin-merge.test.sh
 4	.claude/scripts/tests/ai-account-ledger.test.sh
 3	.claude/scripts/tests/ai-quotas-antigravity.test.sh
+45	.claude/scripts/tests/ai-quotas-columns.test.sh
 7	.claude/scripts/tests/ai-quotas-keychain-native.test.sh
 2	.claude/scripts/tests/ai-quotas-library-loading.test.sh
 7	.claude/scripts/tests/ai-quotas-reauth.test.sh

@@ -215,13 +215,15 @@ stamp_snapshot_field() {
 
 # #2406. When each row's figure was read: `fetched_at` (ISO-8601 UTC), `fetched`
 # (`live` | `saved`) and `fetched_display` (`now` | `Mmm dd` in Eastern time).
-# A row with no figure gets all three null. A figure is SAVED when a provider set
-# `fetched_at_epoch` on the row or apply_last_known attached a last-known
-# reading; it is LIVE only when the row is `ok` with a number from a source that
-# is by construction a network read made in this run (oauth-usage, app-server,
-# http, ide-token), or a browser or saved-text observation captured at or after this run began.
-# Every other source needs an explicit `fetched_at_epoch` or stays blank: a
-# default of `now` would claim a read nobody made.
+# A row with no figure gets all three null. A figure is LIVE (`now`) when it was
+# read within 120 seconds before this run began, whatever the source: a provider
+# sets `fetched_at_epoch` on the row for a saved reading or an observation, and
+# that instant is kept exactly in `fetched_at`. A figure older than that is SAVED
+# and shows its date, as does any last-known reading apply_last_known attached.
+# A row with a number from a source that is by construction a network read made
+# in this run (oauth-usage, app-server, http, ide-token) is LIVE at this run's
+# own time. Every other source needs an explicit `fetched_at_epoch` or stays
+# blank: a default of `now` would claim a read nobody made.
 # Reads the epoch the provider already holds; invents no second clock. `live` and
 # `now` never depend on the date helper; only a saved date (and any ISO instant)
 # degrades, to null, when date operations are unavailable.
@@ -248,9 +250,12 @@ stamp_fetched_field() { # <doc-json-file>
       .rows |= map(
         (.fetched_at_epoch // .last_known_at_epoch) as $saved
         | if ((.used_pct | num) or (.last_known_used_pct | num)) | not then blank
-          elif ((.source == "browser" or .source == "observation") and .status == "ok" and (.used_pct | num)
-                and (.fetched_at_epoch | num) and (.fetched_at_epoch >= $now)) then
-            stamp("live"; $now)
+          elif ((.fetched_at_epoch | num) and (.used_pct | num) and ($now - .fetched_at_epoch) <= 120) then
+            # Read within 120 seconds before this run began: for this request that is a
+            # fresh read, whatever produced it (a saved status-line or app reading, a
+            # browser or text observation). fetched_at keeps the exact instant. A
+            # last-known figure never takes this branch.
+            stamp("live"; .fetched_at_epoch)
           elif ($saved | num) then stamp("saved"; $saved)
           elif (.status == "ok" and (.used_pct | num)
                 and ((.source // "") as $s | ["oauth-usage","app-server","http","ide-token"] | index($s) != null)) then
@@ -262,122 +267,161 @@ stamp_fetched_field() { # <doc-json-file>
   fi
 }
 
+# #2409, #2408. Account-level figures a provider reports under older field names are
+# lifted into the uniform ones, over the finished rows file (a JSON array), before
+# anything else reads them. Cursor: on-demand spending is possible when the limit is
+# above zero or the page said unlimited, off when the limit is zero, and unknown when
+# no limit was reported; the dollars are the plan-wide on-demand figures. Codex: the
+# free resets remaining become the resets available. Nothing is inferred from a
+# missing figure, and no value is ever invented.
+derive_account_fields() { # <rows-json-file>
+  local rows="$1" out="$TMP/rows.derived.json"
+  if jq --argjson now "$NOW" '
+      def num: type == "number";
+      def unset: .paid_enabled == null and .paid_cap_usd == null and .paid_cap_unlimited == null and .paid_spent_usd == null;
+      map(
+        (if .provider == "cursor" and unset
+            and (.spend_limit_unlimited == true or (.spend_limit_usd | num) or (.spend_limit_used_usd | num)) then
+           . + {paid_enabled: (if .spend_limit_unlimited == true then true
+                               elif (.spend_limit_usd | num) then (.spend_limit_usd > 0) else null end),
+                paid_cap_usd: (if .spend_limit_unlimited == true then null
+                               elif (.spend_limit_usd | num) then .spend_limit_usd else null end),
+                paid_cap_unlimited: (if .spend_limit_unlimited == true then true else null end),
+                paid_spent_usd: (if (.spend_limit_used_usd | num) then .spend_limit_used_usd else null end),
+                paid_currency: "USD",
+                paid_period: "monthly",
+                paid_read_at_epoch: (.fetched_at_epoch // (if .status == "ok" then $now else null end))}
+         else . end)
+        | if .limit_resets_available == null and (.free_resets_remaining | num)
+          then . + {limit_resets_available: .free_resets_remaining} else . end)' "$rows" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    mv "$out" "$rows"
+  else
+    warn "DEGRADED: could not derive the paid-usage and resets columns — they show as unknown"
+  fi
+}
+
+# Marks, on each row, whether it carries its account's values in the table: the first
+# row of the account that has any of them, or its first row when none does, so a
+# multi-row account (Cursor pools, Antigravity groups, five-hour rows) is shown once.
+stamp_account_primary() { # <doc-json-file>
+  local doc="$1" out="$TMP/doc.primary.json"
+  if jq '
+      def has_data: (.paid_enabled != null or .paid_cap_usd != null or .paid_cap_unlimited != null or .paid_spent_usd != null
+                     or .limit_resets_available != null or .top_label != null);
+      .rows as $rows
+      | ($rows | to_entries
+         | reduce .[] as $e ({first: {}, data: {}};
+             ([$e.value.provider, $e.value.label] | tojson) as $k
+             | .first[$k] = (.first[$k] // $e.key)
+             | if ($e.value | has_data) then .data[$k] = (.data[$k] // $e.key) else . end)) as $idx
+      | .rows = [ $rows | to_entries[] | .key as $i | .value
+                  | . + {account_primary: ($i == ($idx.data[([.provider, .label] | tojson)] // $idx.first[([.provider, .label] | tojson)]))} ]' \
+      "$doc" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    mv "$out" "$doc"
+  else
+    warn "could not mark each account's first row"
+  fi
+}
+
 render_quota_table() {
-  # Rendered ONCE, to a file, so the no-`column` fallback prints the same table
-  # unaligned rather than something else entirely. Piping into `column` and
-  # falling back to `cat "$ROWS"` printed the TSV header over the raw JSON rows —
-  # a fallback that does not degrade the output but replaces it.
-  TABLE="$TMP/table.tsv"
+  # Rendered ONCE, to a file, then printed.
+  TABLE="$TMP/table.txt"
   # Each action leads its account output and is printed once even for multi-pool
   # accounts. Keep the diagnostic detail unchanged in JSON for existing callers.
   jq -r '[.rows[] | select(.action != null) | {provider,label,action}] | unique[] | .action' "$DOC"
-  {
-    printf '%s\n' 'ACCOUNT	WINDOW	USED	FETCHED	START	%/DAY	LEFT	OVERAGE	RESETS (ET)	IN	NOTE'
-    jq -r '
+  # Laid out here rather than by column(1) (#2409): the paid-usage, resets and top-tier
+  # columns put the table at the edge of 140 columns, so cells are one space apart, a
+  # note or overage label too long for its cell is moved to a numbered footnote under the
+  # table (`[1]` in the row, the text below), and the two icons are measured as the two
+  # terminal columns they occupy, which column(1) does not do. Every cell is stripped of
+  # control characters, so a hostile label or detail cannot forge a row or a column.
+  jq -r '
       def pct: if . == null then "-" else "\(.)%" end;
       def dash: if . == null or . == "" then "-" else . end;
-      # One decimal, always — `25` and `25.0` in one column read as different
-      # kinds of number, and the projection is an estimate in every cell.
+      # One decimal, always: 25 and 25.0 in one column read as different kinds of
+      # number, and the projection is an estimate in every cell.
       def one_dp: if . == null then "-"
                   else (tostring | if test("\\.") then . else . + ".0" end) end;
-      .rows[] |
-      [ # The nickname when the owner set one, the provider-reported email
-        # otherwise (#1700). A five-account table of full subscription emails
-        # is what pushed this table past 100 columns; `GPT LM` is also simply
-        # what the owner calls the account. The label is still reachable —
-        # the note below says `registered as <label>` whenever it differs from
-        # the reported email, so a nickname can shorten a row without hiding
-        # which registry entry produced it.
-        #
-        # No PROVIDER column (#1701). It was a fixed-width column repeating
-        # what the account name already tells the owner — the same trade #1700
-        # made when it dropped REMAIN — and the ten columns it cost are what
-        # the three projection columns needed to keep a five-account table
-        # inside 100. `provider` is still on every --json row.
-        (.nickname // .reported_email),
-        # The pool name when the provider has pools, the window otherwise. A
-        # Cursor account contributes TWO rows for one window, so printing the
-        # window here would render them as two identical lines differing only
-        # in a percentage — the reader could not tell which pool was which.
-        (.pool // .window),
-        (.used_pct | pct),
-        # When the figure was read (#2406): `now` for a live read, `Mmm dd` in
-        # Eastern time for a saved one, `-` when the row has no figure.
-        (.fetched_display | dash),
-        # No REMAIN column (#1700): it was `100 - USED` on every row, so it
-        # carried no information the reader did not already have, and the width
-        # it cost is what a five-account table needs to stay inside 100
-        # columns. `remaining_pct` is still on every --json row.
-        #
-        # The projection (#1701), in three columns: when usage started in this
-        # window, how much a day it has been going, and how many days that
-        # leaves. A `-` in any of them is the same `-` every other unknown in
-        # this table uses — no window to place the reading in, no usage yet, or
-        # a row that did not read — and never a zero, which would read as
-        # "nothing is being spent". A START cell prefixed `<=` means the record
-        # does not reach back to the window start, so usage may have begun
-        # earlier: the day shown is the latest it can have been.
-        (.usage_start_display | dash),
-        (.pct_per_day | one_dp),
-        # `resets first` is not a number of days, so it lives in a note rather
-        # than in `days_left`, and the cell prints the note when there is one:
-        # the window comes back before the pace runs the account out.
-        (if .days_left != null then (.days_left | one_dp)
-         else (.days_left_note | if . == "resets first" then "resets" else . end | dash) end),
-        # What continuing past this cap costs. `-` when no price is known — a
-        # provider this reader has no table row for, or a run where the helper
-        # was unavailable — never a blank that reads as "free".
-        (.overage.label? | dash),
-        # Weekday and time only (#1701) — the date and the zone are what the
-        # countdown beside it and the column heading already say. The full
-        # string is on every --json row as `resets_at_et`.
-        (.resets_at_et_short // .resets_at_et | dash),
-        # Without its `in ` prefix, which the heading supplies. `reset` — the
-        # word this prints once the moment has passed — is unchanged.
-        (.countdown | dash | sub("^in "; "")),
-        # ACTIONABLE TEXT ONLY (#1700). `plan pro` and `via app-server` are
-        # provenance — which subscription tier answered, which of the two Codex
-        # read paths did — and on an `ok` row there is nothing to do about
-        # either. Together they were the widest thing on a healthy row, and the
-        # columns they cost are what a five-account table needs to stay inside
-        # 100. Both are still on every --json row, which is where you go when a
-        # number looks wrong. What stays here is what the reader must act on:
-        # the mislabelled-account warning, and the detail belonging to the row
-        # — a relogin command, a retry window, the keys an unreadable response
-        # actually had. The note on a failing row is therefore as long as the
-        # instruction it carries; truncating a relogin command to save columns
-        # would trade the one line worth printing for the merely tidy ones.
-        #
-        # NO APOSTROPHES ANYWHERE IN THIS jq PROGRAM. It is a single-quoted
-        # shell string, so one apostrophe in a comment closes it, and the jq
-        # source after that point is parsed by bash — which reports a syntax
-        # error a hundred lines away from the comment that caused it.
-        #
-        # No STATUS column either (#1701), for the same width reason — and
-        # because it was never the whole answer on its own: what a reader does
-        # about `needs-login` is in the note beside it. The status WORD now
-        # leads the note on any row that is not `ok`, so the vocabulary is
-        # unchanged and the two are read as one sentence rather than as two
-        # columns that must be crossed. An `ok` row says nothing, which is what
-        # `ok` was worth. `status` is still on every --json row, and it is
-        # still the field to branch on.
-        # The saved figure (#2280) follows the live status, so a row that could
-        # not be read says so first and then shows what was last read. It is
-        # always labelled last known with its date and source, and an expired
-        # one says so; USED stays a dash on every such row.
-        ([ (if (.status // "ok") != "ok" then .status else empty end),
-           (if .label != .reported_email then "registered as \(.label)" else empty end),
-           (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end),
-           (if .last_known_used_pct == null then empty
-            else ((if .last_known_expired == true then "expired: " else "" end)
-                  + "\(.last_known_used_pct)% (last known, \(.last_known_at_et // "" | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0] // "-"), \(.last_known_source // "unknown"))"
-                  + (if .last_known_resets_et == null then ""
-                     else "; \(if .last_known_expired == true then "reset" else "resets" end) \(.last_known_resets_et | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0] // "-")" end))
-            end) ]
-         | join("; ") | if . == "" then "-" else . end)
-      ] | @tsv' "$DOC"
-  } > "$TABLE"
-  column -t -s $'\t' "$TABLE" 2>/dev/null || cat "$TABLE"
+      def cents: (. * 100 | round);
+      def two_dp: cents as $c | (($c / 100) | floor | tostring) + "." + (($c % 100) | tostring | if length < 2 then "0" + . else . end);
+      # A cap prints without cents when it is a whole number of dollars ($500), spend
+      # always with them ($0.00), so a $0 spend is plainly a figure and not a gap.
+      def cap_usd: if (cents % 100) == 0 then "$" + ((cents / 100) | tostring) else "$" + two_dp end;
+      def num: type == "number";
+      def clean: if type == "string" then gsub("[\u0000-\u001f\u007f]"; " ") else . end;
+      # Terminal width: the two icons take two columns.
+      def wide: explode | map(if . == 9989 or . == 10060 or . >= 127744 then 2 else 1 end) | add // 0;
+      def spaces($n): [range(0; $n)] | map(" ") | join("");
+      def pad($w): . + spaces($w - wide);
+      # Account-level values print on the row that carries them and are blank on the
+      # rest, so a two-pool or two-window account is never counted twice by eye.
+      def fnum($foot; $t): "[" + (([$foot | to_entries[] | select(.value == $t) | .key][0]) + 1 | tostring) + "]";
+      .rows
+      | map(
+          . as $x
+          | {
+            acct: (.nickname // .reported_email),
+            # The pool name when the provider has pools, the window otherwise. A
+            # composite Antigravity window (`<group> <window>`) is shortened to
+            # `<group> 7d` / `<group> 5h`.
+            win: ((.pool // .window) | if test(" ") then (sub("-hour$"; "h") | sub("-day$"; "d")) else . end),
+            used: (.used_pct | pct),
+            fetched: (.fetched_display | dash),
+            # `<=` (the record does not reach back to the window start) is one symbol wide here.
+            start: (.usage_start_display | dash | sub("^<="; "≤")),
+            pday: (.pct_per_day | one_dp),
+            left: (if .days_left != null then (.days_left | one_dp)
+                   else (.days_left_note | if . == "resets first" then "resets" else . end | dash) end),
+            ovg: (.overage.label? | dash),
+            paid: (if .account_primary == false then "-"
+                   elif .paid_enabled == true then "✅" elif .paid_enabled == false then "❌" else "-" end),
+            cap: (if .account_primary == false then "-"
+                  elif .paid_cap_unlimited == true then "none"
+                  elif (.paid_cap_usd | num) then (.paid_cap_usd | cap_usd)
+                  elif .paid_enabled == false then "off"
+                  else "-" end),
+            spent: (if .account_primary == false or ((.paid_spent_usd | num) | not) then "-" else "$" + (.paid_spent_usd | two_dp) end),
+            rst: (if .account_primary == false or ((.limit_resets_available | num) | not) then "-" else (.limit_resets_available | tostring) end),
+            top: (if .account_primary == false then "-" else (.top_label | dash) end),
+            toppct: (if .account_primary == false or ((.top_used_pct | num) | not) then "-"
+                     else (.top_used_pct | (if . == floor then floor else . end) | tostring) + "%" end),
+            reset: (.resets_at_et_short // .resets_at_et | dash | sub("(?<h>[0-9]) (?<p>[AP]M)"; "\(.h)\(.p)")),
+            inn: (.countdown | dash | sub("^in "; "")),
+            # ACTIONABLE TEXT ONLY (#1700). Provenance (`plan pro`, `via app-server`) is on
+            # every --json row. What stays is what the reader must act on: the status word
+            # on a row that is not `ok`, the mislabelled-account warning, the detail belonging
+            # to the row, and a saved figure (#2280), always labelled last known with its
+            # date and source. USED stays a dash on every such row.
+            #
+            # NO APOSTROPHES ANYWHERE IN THIS jq PROGRAM. It is a single-quoted shell
+            # string, so one apostrophe in a comment closes it.
+            note: ([ (if (.status // "ok") != "ok" then .status else empty end),
+                     (if .label != .reported_email then "registered as \(.label)" else empty end),
+                     (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end),
+                     (if .last_known_used_pct == null then empty
+                      else ((if .last_known_expired == true then "expired: " else "" end)
+                            + "\(.last_known_used_pct)% (last known, \(.last_known_at_et // "" | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0] // "-"), \(.last_known_source // "unknown"))"
+                            + (if .last_known_resets_et == null then ""
+                               else "; \(if .last_known_expired == true then "reset" else "resets" end) \(.last_known_resets_et | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0] // "-")" end))
+                      end) ]
+                   | join("; ") | if . == "" then "-" else . end)
+          }
+          | with_entries(.value |= clean)) as $R
+      # A label or note longer than its cell goes under the table, numbered in the
+      # order it first appears; identical texts share one number.
+      | ($R | map((if (.ovg | length) > 12 then .ovg else empty end), (if (.note | length) > 11 then .note else empty end))
+         | reduce .[] as $t ([]; if any(.[]; . == $t) then . else . + [$t] end)) as $foot
+      | ($R | map([.acct, .win, .used, .fetched, .start, .pday, .left,
+                   (if (.ovg | length) > 12 then fnum($foot; .ovg) else .ovg end),
+                   .paid, .cap, .spent, .rst, .top, .toppct, .reset, .inn,
+                   (if (.note | length) > 11 then fnum($foot; .note) else .note end)])) as $body
+      | ([["ACCOUNT", "WINDOW", "USED", "FETCHED", "START", "%/DAY", "LEFT", "OVERAGE", "$?", "$ CAP", "$", "RST", "TOP", "TOP%", "RESET (ET)", "IN", "NOTE"]] + $body) as $all
+      | ($all[0] | length) as $n
+      | ([range(0; $n)] | map(. as $c | [$all[] | .[$c] | wide] | max)) as $w
+      | ($all[] | . as $row | [range(0; $n)]
+         | map(. as $c | if $c == $n - 1 then $row[$c] else ($row[$c] | pad($w[$c])) end) | join(" ")),
+        (if ($foot | length) > 0 then "", ($foot | to_entries[] | "[\(.key + 1)] \(.value)") else empty end)' "$DOC" > "$TABLE"
+  cat "$TABLE"
 
   # The cheapest-next hint, printed ONLY when the helper returned one — i.e.
   # when at least one account is at or below the threshold. Nothing prints while

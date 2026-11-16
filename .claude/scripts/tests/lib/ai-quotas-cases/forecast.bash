@@ -24,7 +24,7 @@ check_not_contains "$OUT" "STATUS" "and so is the STATUS column"
 # no zone — the countdown beside it and the ET in the heading say the rest.
 check_not_contains "$(table_only "$OUT")" "EDT" \
   "the table prints the reset without its date and zone"
-check_contains "$(table_only "$OUT")" "8:00 PM" "keeping the weekday and the time"
+check_contains "$(table_only "$OUT")" "8:00PM" "keeping the weekday and the time (AM/PM joined to the time to save a column)"
 # The window this reader placed the reading in is the reset minus the window
 # length the payload reported — the figure every projection is measured from.
 run --json

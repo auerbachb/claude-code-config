@@ -191,13 +191,40 @@ usage. Say "last known" when you quote one, never "current". The JSON fields are
 
 ## Step 3a-ii — The FETCHED column (#2406)
 
-**FETCHED** says when the row's figure was read: `now` for a live read in this run, otherwise
-the date it was read as `Mmm dd` in Eastern time (`Nov 16`, `Jan 01`), `-` when the row has no
-figure. A figure saved earlier today shows today's date, not `now`. A Claude status-line
-figure is saved, so it shows its capture date. When you quote a figure, say how old it is if
-FETCHED is not `now`. `--json` rows carry `fetched_at` (ISO-8601 UTC), `fetched` (`live` or
-`saved`) and `fetched_display`. The table prints `resets` in LEFT for `resets first` to stay
-inside 100 columns.
+**FETCHED** says when the row's figure was read: `now` for a figure read within 120 seconds
+before this run started (a live read, or a saved status-line, app or observation reading that
+fresh), otherwise the date it was read as `Mmm dd` in Eastern time (`Nov 16`, `Jan 01`), `-`
+when the row has no figure. A figure saved earlier today shows today's date, not `now`. When
+you quote a figure, say how old it is if FETCHED is not `now`. `--json` rows carry `fetched_at`
+(ISO-8601 UTC, the exact instant read), `fetched` (`live` or `saved`) and `fetched_display`.
+The table prints `resets` in LEFT for `resets first` to stay inside its 140 columns.
+
+## Step 3a-iii — Paid usage, resets and top tier ($?, $ CAP, $, RST, TOP, TOP%)
+
+Six columns, one value per account (on the account's first row; `-` on its other rows):
+
+| Column | Reads as |
+|--------|----------|
+| `$?` | ✅ paid usage is on, ❌ the provider says it is off, `-` unknown. It follows whether spending can happen, not whether a limit is set. |
+| `$ CAP` | The paid-usage limit for the period (`$500`), `none` when the provider said unlimited, `off` when paid usage is off with no limit figure, `-` unknown. |
+| `$` | Dollars of paid usage spent this period. `$0.00` means the provider said zero. |
+| `RST` | How many limit resets are available. `0` means none left; `-` means unknown or the provider has none (Cursor and Antigravity have no reset allowance). |
+| `TOP` / `TOP%` | The top-tier model with its own allowance, by the provider's own label (`Fable`, `Argon`), and the percent of it **used**. |
+
+An unknown is `-`, never ❌ or `$0`: do not read a `-` as "off" or "free". On contract work
+say plainly when `$?` is ✅ and what `$` has already been spent, because that money may not be
+reimbursable; the columns are display only and never block or gate work. Claude's reset count
+is in no saved reading, and an account whose saved reading has no extra-usage block (a
+status-line reading) has blank paid columns, until an agent reads the claude.ai usage page
+and supplies them (`.claude/reference/ai-quotas.md` §"Paid usage, resets and top tier" has
+the observation fields and the `limit_resets` block for `claude-usage-observe.sh`). `--json` carries `paid_enabled`, `paid_cap_usd`,
+`paid_cap_unlimited`, `paid_spent_usd`, `paid_currency`, `paid_period`, `paid_read_at_epoch`,
+`limit_resets_available`, `limit_resets`, `top_label`, `top_used_pct`, `top_resets_at_epoch`
+and `account_primary` on every row (the row the table uses for the account).
+
+A note or overage label too long for its cell prints as `[1]` in the row and the full text
+as a numbered footnote under the table; the footnotes are part of the table. The time column
+is `RESET (ET)`, and START prints `≤` where `--json` has `<=`.
 
 ## Step 3b — The Overage column and the cheapest-next line
 
@@ -238,7 +265,7 @@ run's own reading:
 
 | Column | Reads as |
 |--------|----------|
-| `START` | `Wed d3` — usage was first recorded on day 3 of this window, a Wednesday. `<=Tue d2` means the record does not reach back to the window start, so usage may have begun **earlier**: the day shown is the latest it can have been, and the rate is computed from the window start. |
+| `START` | `Wed d3` — usage was first recorded on day 3 of this window, a Wednesday. `≤Tue d2` (`<=Tue d2` in `--json`) means the record does not reach back to the window start, so usage may have begun **earlier**: the day shown is the latest it can have been, and the rate is computed from the window start. |
 | `%/DAY` | The pace: used percent over days since that start, one decimal. |
 | `LEFT` | Days of runway at that pace — or `resets first`, meaning the window comes back before the account runs out. |
 
@@ -250,7 +277,7 @@ every row, and no other column is affected.
 
 The numbers are an **estimate over day-granularity readings**, and a window with one
 recorded day behind it is a straight line drawn through one point. Say so when you relay
-a `LEFT` figure on a floor (`<=`) row; do not present it as a deadline.
+a `LEFT` figure on a floor (`≤`) row; do not present it as a deadline.
 
 **Restating the boundary at the point of use:** this projection is **informational
 only**. It never gates dispatch, never pauses, defers, or downgrades work, never

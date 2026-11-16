@@ -646,12 +646,32 @@ claude_age_text() { # <seconds>
   else printf '%ss' "$1"; fi
 }
 
+# The account-level fields (paid usage, limit resets, top tier) for one account,
+# from the chosen reading first and, for any group it lacks, from the other usable
+# reading. <usable> holds "<age>\t<file>" lines. Always prints one JSON object.
+claude_account_fields_from() { # <best-file> <usable-lines>
+  local best="$1" usable="$2" other="" line f merged
+  while IFS= read -r line; do
+    f="${line#*$'\t'}"
+    [[ -n "$f" && "$f" != "$best" ]] && other="$f"
+  done <<<"$usable"
+  merged="$(csr_account_fields "$best")"
+  if [[ -n "$other" ]]; then
+    merged="$(jq -cn --argjson a "$merged" --argjson b "$(csr_account_fields "$other")" '
+      def grp($o; $re): $o | with_entries(select(.key | test($re)));
+      reduce ["^paid_", "^limit_resets", "^top_"][] as $g ({};
+        . + (if (grp($a; $g) | length) > 0 then grp($a; $g) else grp($b; $g) end))' 2>/dev/null)" || merged="{}"
+    [[ -n "$merged" ]] || merged="{}"
+  fi
+  printf '%s' "$merged"
+}
+
 # Emit rows from a fresh saved reading. Returns 0 when it emitted, 1 when the
 # caller should read through the token instead (with CLAUDE_STATUSLINE_NOTE set
 # when a reading existed but could not be used).
 claude_statusline_rows() { # <label>
   local label="$1" win pair used resets span key emitted=0 five_emitted=0 note extra age_txt
-  local kind kind_name best_kind="" best_age="" best_file="" notes="" why
+  local kind kind_name best_kind="" best_age="" best_file="" notes="" why usable_files="" acct_extra
   CLAUDE_STATUSLINE_NOTE=""
   [[ -n "$CLAUDE_STATUSLINE_LIB" ]] || return 1
   # Two producers can file a reading: the status line (CLI sessions) and the
@@ -667,8 +687,13 @@ claude_statusline_rows() { # <label>
       resets="${pair#* }"
       if [[ -z "$pair" || ! "$resets" =~ ^[0-9]+$ || "$resets" -le "$NOW" ]]; then
         why="the saved ${kind_name} reading predates the current 7-day window, so it was not used"
-      elif [[ -z "$best_kind" || "$CSR_AGE" -lt "$best_age" ]]; then
-        best_kind="$kind"; best_age="$CSR_AGE"; best_file="$CSR_FILE"
+      else
+        # Every usable reading is remembered: the account-level columns (paid usage,
+        # resets, top tier) are taken from the newer one that carries them.
+        usable_files="${usable_files:+$usable_files$'\n'}${CSR_AGE}"$'\t'"${CSR_FILE}"
+        if [[ -z "$best_kind" || "$CSR_AGE" -lt "$best_age" ]]; then
+          best_kind="$kind"; best_age="$CSR_AGE"; best_file="$CSR_FILE"
+        fi
       fi
     else
       case "$CSR_STATE" in
@@ -683,6 +708,7 @@ claude_statusline_rows() { # <label>
     return 1
   fi
   CSR_FILE="$best_file"; CSR_AGE="$best_age"
+  acct_extra="$(claude_account_fields_from "$best_file" "$usable_files")"
   age_txt="$(claude_age_text "$CSR_AGE")"
   case "$best_kind" in
     status-line) note="from the Claude status line, taken ${age_txt} ago" ;;
@@ -701,7 +727,7 @@ claude_statusline_rows() { # <label>
     extra="$(with_window_start "{}" "$resets" "$span")"
     # fetched_at_epoch: a saved reading was not read live in this run, so the row
     # names when the figure was captured and the table shows that date.
-    extra="$(printf '%s' "$extra" | jq -c --argjson c "$(( NOW - CSR_AGE ))" '. + {fetched_at_epoch: $c}')"
+    extra="$(printf '%s' "$extra" | jq -c --argjson c "$(( NOW - CSR_AGE ))" --argjson a "$acct_extra" '. + $a + {fetched_at_epoch: $c}')"
     emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "$best_kind" "" "$extra"
     emitted=1
     [[ "$key" == "five_hour" ]] && five_emitted=1
