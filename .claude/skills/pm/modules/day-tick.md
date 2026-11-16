@@ -64,7 +64,8 @@ fi
 if [ "$HORIZON_OBSERVE_RC" -ne 0 ]; then
   HORIZON_REASON=observe-failed
 elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
-  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation.
+  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation;
+  # the helper then answers clear/counter-never-seen (exit 0) when no counter was ever seen (#2390).
   HORIZON_CHECK_RC=0
   if [ "${HORIZON_COUNTER_NEVER_SEEN:-}" = true ] && [ -z "${HORIZON_REMAINING:-}" ] &&
      [ -z "${HORIZON_LIMIT:-}" ]; then
@@ -77,7 +78,7 @@ elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
   HORIZON_REASON=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^REASON=//p' | head -1)
   HORIZON_REASON=${HORIZON_REASON:-helper-unavailable}
   if [ "$HORIZON_REASON" = counter-never-seen ] &&
-     { [ "$HORIZON_CHECK_RC" -ne 3 ] || [ "$_HS" != unknown ] ||
+     { [ "$HORIZON_CHECK_RC" -ne 0 ] || [ "$_HS" != clear ] ||
        [ "${HORIZON_COUNTER_NEVER_SEEN:-}" != true ] || [ -n "${HORIZON_REMAINING:-}${HORIZON_LIMIT:-}" ]; }; then
     HORIZON_REASON=helper-unavailable
   fi
@@ -103,7 +104,7 @@ printf 'HORIZON_STATUS=%s\nHORIZON_REFILL_OK=%s\nHORIZON_PARK=%s\nHORIZON_IDLE_R
 | `critical` | stop | **yes — run 2D.7 before this tick ends**, then stop the tick | 2D.7's ≤2-line park surface |
 | `unknown` | no automatic refill | **never** | reason on the idle line; §7.3 message on first requested dispatch |
 
-`unknown` never starts automatic work or triggers a park. An explicit live chat request to launch a current set of picks may proceed only on `counter-never-seen` (or `counter-never-seen-unverified` on §7.3's stricter basis), with §7.3's note and the remaining dispatch checks. This applies on the arming turn if the user actually requested those launches; periodic ticks and a request to keep the board full cannot inherit the exception. Use §7.3's hold line for the first requested dispatch when the horizon holds it; each ends by saying this is not the account usage reader and that signing in will not change it. The attestation rests on what is visible in context plus the helper's own log cross-check, so a compaction does not bar it (#2376).
+`unknown` never starts automatic work or triggers a park. `clear` with `HORIZON_REASON=counter-never-seen` (#2390) means the app prints no figure by design: refill then depends only on the weekly reserve, the daily budget, and the pause, failure-halt, and deadline gates. An explicit live chat request to launch a current set of picks may proceed on `counter-never-seen-unverified` (on §7.3's stricter basis), with §7.3's note and the remaining dispatch checks. This applies on the arming turn if the user actually requested those launches; periodic ticks and a request to keep the board full cannot inherit the exception. Use §7.3's hold line for the first requested dispatch when the horizon holds it; each ends by saying this is not the account usage reader and that signing in will not change it. The attestation rests on what is visible in context plus the helper's own log cross-check, so a compaction does not bar it (#2376).
 
 - **Automatic refill runs only when `HORIZON_REFILL_OK=true`.** Report the horizon reason on the idle line (`paused (horizon approaching)` / `paused (horizon critical)` / `paused (horizon unknown)`). On `unknown`, append ` — {HORIZON_REASON}` to chat only. Keep the bare `IDLE_REASON` for the digest so the annotation never perturbs the stable-state hash.
 - **Record every horizon-held refill evaluation.** For `approaching`, `unknown`, or `critical`, use 3.4’s Slot census with `CENSUS_GATE=horizon`, the observed `HORIZON_STATUS` as `CENSUS_HORIZON`, and an empty candidate ledger. Take the same author-scoped counts without running any selection or launch. Record `critical` before 2D.7 parks the tick. D0 rejections and standalone probes do not evaluate refill.

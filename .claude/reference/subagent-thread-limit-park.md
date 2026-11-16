@@ -785,8 +785,9 @@ alike. That is the default, not a guarantee: the same binary reads an override
 (the `CLAUDE_CODE_TOTAL_TOKENS_REMINDER` environment variable, then a
 `totalTokensReminder` setting, then a server-side flag) that can turn the
 counter on for any model. Nothing here sets one. On such a model with no
-override there is no reading, so the verdict is `unknown` on every cycle and
-§7.3 is the normal path, not a degraded one. Evidence, the override, the
+override there is no reading. With the attestation (§7.3) the verdict is
+`clear` / `counter-never-seen` (#2390), so the pipeline refills on its own,
+gated by the weekly reserve and daily budget; without it, `unknown`. Evidence, the override, the
 identity rule, and what stays open:
 [the desktop investigation](usage-horizon-desktop-investigation-2026-11.md).
 
@@ -823,7 +824,8 @@ fi
 if [ "$HORIZON_OBSERVE_RC" -ne 0 ]; then
   HORIZON_REASON=observe-failed
 elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
-  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation.
+  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation;
+  # the helper then answers clear/counter-never-seen (exit 0) when no counter was ever seen (#2390).
   HORIZON_CHECK_RC=0
   if [ "${HORIZON_COUNTER_NEVER_SEEN:-}" = true ] && [ -z "${HORIZON_REMAINING:-}" ] &&
      [ -z "${HORIZON_LIMIT:-}" ]; then
@@ -836,7 +838,7 @@ elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
   HORIZON_REASON=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^REASON=//p' | head -1)
   HORIZON_REASON=${HORIZON_REASON:-helper-unavailable}
   if [ "$HORIZON_REASON" = counter-never-seen ] &&
-     { [ "$HORIZON_CHECK_RC" -ne 3 ] || [ "$_HS" != unknown ] ||
+     { [ "$HORIZON_CHECK_RC" -ne 0 ] || [ "$_HS" != clear ] ||
        [ "${HORIZON_COUNTER_NEVER_SEEN:-}" != true ] || [ -n "${HORIZON_REMAINING:-}${HORIZON_LIMIT:-}" ]; }; then
     HORIZON_REASON=helper-unavailable
   fi
@@ -894,18 +896,22 @@ A compaction no longer bars the flag (#2376). You attest only to what you can
 still see; the helper supplies the rest by searching its own records (a seen
 marker with one line per conversation, and the observation log) for a reading
 this conversation recorded, which a compaction does not remove.
-It answers `counter-never-seen` when it finds none, and refuses with
-`counter-seen-reading-displaced` when it finds one, or with
+It answers `clear` with `REASON=counter-never-seen` (exit 0) when it finds none
+(#2390): the model prints no figure by design, the horizon check holds nothing,
+and automatic refill is gated only by the controls that read real usage (the
+weekly reserve, the daily budget, pause, refill, failure halt, deadline). It
+refuses with `counter-seen-reading-displaced` when it finds a reading, or with
 `observation-log-unreadable` when the marker or the log is there but cannot be
-read. In every
-case it reports `unknown` and exits 3. Never estimate a reading.
+read, and reports `unknown` (exit 3) on both. A figure that was seen and then
+went missing or stale stays `unknown`. Never estimate a reading.
 
 Log rotation does not weaken this: `--observe` writes the conversation's marker
 line with its reading, and the marker is never rotated. What the cross-check
 cannot see is a counter that was printed but never handed to `--observe`. So
 `counter-never-seen` means no counter is visible to you and none is on record,
-not that the harness provably never printed one. That gap can only let through
-a launch the user asked for in chat; it never reaches automatic refill.
+not that the harness provably never printed one. A counter printed but never
+handed to `--observe` is the gap; it can only let through a launch the weekly
+reserve, daily budget, and the other gates would also have to allow.
 
 `counter-never-seen-unverified` means the helper found nothing but had no
 harness conversation id to search under, only the derived key, which can change
@@ -919,7 +925,7 @@ explicit request: `/subagent <issue>`, "start #N now". Ask nothing further about
 the horizon.
 
 On the first dispatch of a request, use the line below if the horizon holds
-it. Only the two counter-absent rows allow an exception (the second only on its
+it. Only the unverified counter-absent row allows an exception (on its
 stricter basis), and only when the user explicitly asks in live chat to launch
 those picks now. Print
 `[horizon counter absent] Proceeding with the launches you requested.` once,
@@ -931,7 +937,6 @@ leftover picks on a later tick cannot supply this permission. Do not set
 
 | Horizon result | First hold line | Explicit chat request |
 | --- | --- | --- |
-| `unknown / counter-never-seen` | `Launch held: no horizon counter is visible or on record for this session. Ask in chat to launch the specific work now. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | May launch the requested picks only. |
 | `unknown / counter-never-seen-unverified` | `Launch held: no horizon counter seen, and no conversation id to confirm it. Ask in chat to launch the specific work now. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | May launch the requested picks only on the stricter basis above. Otherwise remains held. |
 | `unknown / no-reading-this-session` | `Launch held: the stored horizon reading belongs to another session. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | If no counter is visible anywhere in context, check once more with the attestation above and follow the row for the reason it returns. Otherwise remains held. |
 | `unknown / reading-stale` or `counter-seen-reading-displaced` | `Launch held: this session's horizon reading is stale or was displaced. Wait for a fresh harness counter, then retry. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. Check once more if a fresh counter appears. |
