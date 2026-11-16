@@ -337,15 +337,31 @@ Infrastructure and Architecture are always written — Steps 3c-3d regenerate th
 **Write atomically.** Never write into `.claude/pm-config.md` directly. Build the reconstruction in a temp file in the same directory, so the final step is a same-filesystem rename:
 
 ```bash
+TMP_CFG=""
 TMP_CFG="$(mktemp "${CONFIG_FILE}.refresh.XXXXXX")" || { echo "pm-config.md refresh skipped: temp file unavailable; file kept." >&2; REFRESH_OK=false; }
-# ... write the reconstruction above into "$TMP_CFG" ...
-# Verify before the rename: every expected "## " header exactly once (each SECTIONS name plus Infrastructure and Architecture).
-# Any mismatch, empty output, or write error:
-#   rm -f -- "$TMP_CFG"; print the one-line reason; leave .claude/pm-config.md untouched.
-mv -f -- "$TMP_CFG" "$CONFIG_FILE" || { rm -f -- "$TMP_CFG"; echo "pm-config.md refresh failed; file kept." >&2; }
+# mktemp creates the file as 0600. Seed it from the current config with `cp -p`, which keeps the
+# original mode on both BSD and GNU (`chmod --reference` is GNU-only). The content is replaced below.
+if [[ "$REFRESH_OK" == true ]] && ! cp -p -- "$CONFIG_FILE" "$TMP_CFG" 2>/dev/null; then
+  echo "pm-config.md refresh skipped: could not copy the file mode; file kept." >&2; REFRESH_OK=false
+fi
+if [[ "$REFRESH_OK" == true ]]; then
+  # ... write the reconstruction above into "$TMP_CFG" with `>` (truncates in place, keeps the mode);
+  #     any write error sets REFRESH_OK=false ...
+  # Verify: non-empty, and every expected "## " header exactly once (each SECTIONS name plus
+  # Infrastructure and Architecture). Set VERIFY_OK=true only when that check passes; any
+  # mismatch leaves VERIFY_OK unset or false and sets REFRESH_OK=false.
+  :
+fi
+if [[ "$REFRESH_OK" == true && "${VERIFY_OK:-false}" == true ]] && mv -f -- "$TMP_CFG" "$CONFIG_FILE"; then
+  :   # renamed: the file now holds the verified reconstruction with its original mode
+else
+  # Any failed gate, failed verification, or failed rename: never rename. Drop the temp file and keep the file.
+  [[ -n "$TMP_CFG" ]] && rm -f -- "$TMP_CFG"
+  echo "pm-config.md refresh skipped or failed; file kept." >&2
+fi
 ```
 
-The rename replaces the file in one step, so a crash or error mid-write leaves the previous `pm-config.md` in place. The temp file is removed on every path that does not rename it.
+The rename is the only step that touches `.claude/pm-config.md`, and it runs only when the scan gate, the verification, and the write all passed. A crash or error before the rename leaves the previous file in place. The temp file is removed on every path that does not rename it.
 
 ### Step 3g: Report config changes
 
