@@ -1984,18 +1984,28 @@ Every `--json` row carries three fields, stamped last (after saved figures are p
 
 | Field | Value |
 |-------|-------|
-| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live read; `null` with no figure. |
-| `fetched` | `live`, `saved`, or `null` (no figure). |
-| `fetched_display` | What the table prints: `now`, `Mmm dd`, or `null`. |
+| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live read; `null` with no figure, or when date operations are unavailable. |
+| `fetched` | `live`, `saved`, or `null` (no figure). Never depends on the date helper. |
+| `fetched_display` | What the table prints: `now`, `Mmm dd`, or `null`. With date operations unavailable a live read still says `now`; only a saved date degrades, to `null` (the blank marker), never to `now`. |
 
 **Adding a source of saved figures.** A provider only has to set one field on its row: pass
-`{"fetched_at_epoch": <epoch the figure was read>}` in the `emit_row` extra object (the
-status-line reader does, from the capture time in its saved file). The stamp then marks the
-row `saved` and prints the date. A row with a figure and no `fetched_at_epoch` counts as live
-only when its `source` is a live read (`oauth-usage`, `app-server`, `http`, `ide-token`,
-`browser`); any other source is left blank rather than claiming `now`. Last-known rows take
-`last_known_at_epoch`. The figure in `record_last_known` keeps a row's own `fetched_at_epoch`
-instead of the run time, so a saved reading is never re-dated as new.
+`{"fetched_at_epoch": <epoch the figure was read>}` in the `emit_row` extra object. The
+status-line reader does (the capture time of its saved file) and so do the browser
+observations (the observation's own `observed_at_epoch`). The stamp then marks the row
+`saved` and prints the date. The default is strict: a row with a figure and no
+`fetched_at_epoch` counts as live only when its `source` is by construction a network read
+made in this run (`oauth-usage`, `app-server`, `http`, `ide-token`); every other source,
+including one added later (an app-usage observation, Antigravity), is left blank rather than
+claiming `now`. The one exception is a `browser` observation whose capture time is at or
+after the run began: it is live. An observation captured before the run, even seconds before,
+shows its date. Last-known rows take `last_known_at_epoch`.
+
+**Per-row read times.** `record_last_known` keeps each row's own `fetched_at_epoch` (the run
+time only when a row has none), so a saved reading is never re-dated as new, and
+`quotas-last-known.py` stores and returns that time per row. The file's account-level
+`fetched_at_epoch` is the newest row time, and is the fallback for older files whose rows
+carry none. Rows read at different times (a status-line weekly row beside a live five-hour
+row) therefore each show their own date.
 
 To keep a five-account table inside 100 columns the LEFT cell prints `resets` where
 `days_left_note` says `resets first`; the `--json` value is unchanged.

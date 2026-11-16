@@ -261,5 +261,41 @@ cb_obs_org "{\"email\":\"$CB_LABEL\",\"organization_id\":\"$CB_ORG\"}"
 run --json --account "$CB_LABEL" --browser-results "$CB_OBS"
 check_eq "$(field_of "$CB_LABEL" 7-day status)" "unreadable" "a conflicting profile email is not rescued by a matching organization ID"
 
+# #2406: a browser observation is a file an agent saved earlier, so the FETCHED column
+# dates it by the observation's own capture time and says `now` only for one captured
+# at or after this run began.
+cb_setup "$CB_LABEL"
+cb_obs ok "$CB_LABEL" claude "$CB_LABEL" "$((NOW - 120))" "$CB_ROWS_OK"
+run --json --account "$CB_LABEL" --browser-results "$CB_OBS"
+check_eq "$(field_of "$CB_LABEL" 7-day fetched)" "saved" "an observation captured before the run is saved, not live"
+check_eq "$(field_of "$CB_LABEL" 7-day fetched_at)" "$(utc_iso "$((NOW - 120))")" "and carries the observation's own capture instant"
+check_eq "$(field_of "$CB_LABEL" 7-day fetched_display)" "$(TZ=America/New_York date -j -f %s "$NOW" '+%b %d' 2>/dev/null || TZ=America/New_York date -d "@$NOW" '+%b %d')" "and the FETCHED cell is its date, never now"
+check_eq "$(cat "$CB_DIR_ROOT"/last-known/*.json 2>/dev/null | jq -r "[.rows[].fetched_at_epoch] | unique | join(\",\")")" "$((NOW - 120))" "the saved last-known figure keeps that capture time, never the run time"
+cb_setup "$CB_LABEL"
+cb_obs ok "$CB_LABEL" claude "$CB_LABEL" "$NOW" "$CB_ROWS_OK"
+run --json --account "$CB_LABEL" --browser-results "$CB_OBS"
+check_eq "$(field_of "$CB_LABEL" 7-day fetched_display)" "now" "an observation captured at the start of this run is shown as now"
+check_eq "$(field_of "$CB_LABEL" 7-day fetched)" "live" "and is marked live"
+# A browser row that carries no capture epoch (a future source that forgets it) is blank,
+# never `now`: the default is a network read made in this run, and a browser is not one.
+fetch_row() { # <row-json> — "fetched|fetched_display" for one row stamped on its own
+  local d="$TMP/fetch-doc.json"
+  printf '{"rows":[%s]}' "$1" > "$d"
+  bash "$ROOT/.claude/scripts/tests/lib/fetched-stamp-harness.sh" "$TMP" "$NOW" "$d" "$ROOT/.claude/scripts/lib" 2>/dev/null
+  jq -r '.rows[0] | "\(.fetched // "null")|\(.fetched_display // "null")"' "$d"
+}
+check_eq "$(fetch_row '{"source":"browser","status":"ok","used_pct":40}')" "null|null" "a browser figure with no capture time is blank, never now"
+check_eq "$(fetch_row '{"source":"antigravity-app","status":"ok","used_pct":40}')" "null|null" "an unlisted source with no capture time is blank, never now"
+check_eq "$(fetch_row '{"source":"status-line","status":"ok","used_pct":40}')" "null|null" "a status-line figure with no capture time is blank, never now"
+fetch_row_nodate() { # <row-json> — same, with the date helper unavailable
+  local d="$TMP/fetch-doc.json"
+  printf '{"rows":[%s]}' "$1" > "$d"
+  bash "$ROOT/.claude/scripts/tests/lib/fetched-stamp-harness.sh" "$TMP" "$NOW" "$d" "$ROOT/.claude/scripts/lib" nodate 2>/dev/null
+  jq -r '.rows[0] | "\(.fetched // "null")|\(.fetched_display // "null")"' "$d"
+}
+check_eq "$(fetch_row_nodate '{"source":"oauth-usage","status":"ok","used_pct":40}')" "live|now" "a live read stays live and now with the date helper unavailable"
+check_eq "$(fetch_row_nodate "{\"source\":\"browser\",\"status\":\"ok\",\"used_pct\":40,\"fetched_at_epoch\":$((NOW - 3600))}")" "saved|null" "a saved figure loses only its date then, to the blank marker, never now"
+check_eq "$(fetch_row '{"source":"oauth-usage","status":"ok","used_pct":40}')" "live|now" "control: a source that is a network read in this run is now"
+check_eq "$(fetch_row "{\"source\":\"browser\",\"status\":\"ok\",\"used_pct\":40,\"fetched_at_epoch\":$((NOW - 3600))}" | cut -d'|' -f1)" "saved" "control: a browser figure with an earlier capture time is saved"
 # Unset the group's private folder override so later groups see their own defaults.
 unset AI_QUOTAS_LAST_KNOWN_DIR

@@ -217,9 +217,14 @@ stamp_snapshot_field() {
 # (`live` | `saved`) and `fetched_display` (`now` | `Mmm dd` in Eastern time).
 # A row with no figure gets all three null. A figure is SAVED when a provider set
 # `fetched_at_epoch` on the row or apply_last_known attached a last-known
-# reading; it is LIVE only when the row is `ok` with a number from a live
-# read source. Anything else stays blank rather than claiming `now`.
-# Reads the epoch the provider already holds; invents no second clock.
+# reading; it is LIVE only when the row is `ok` with a number from a source that
+# is by construction a network read made in this run (oauth-usage, app-server,
+# http, ide-token), or a browser observation captured at or after this run began.
+# Every other source needs an explicit `fetched_at_epoch` or stays blank: a
+# default of `now` would claim a read nobody made.
+# Reads the epoch the provider already holds; invents no second clock. `live` and
+# `now` never depend on the date helper; only a saved date (and any ISO instant)
+# degrades, to null, when date operations are unavailable.
 stamp_fetched_field() { # <doc-json-file>
   local doc="$1" e iso md map="{}" out="$TMP/doc.fetched.json"
   while IFS= read -r e; do
@@ -238,14 +243,17 @@ stamp_fetched_field() { # <doc-json-file>
       def blank: . + {fetched_at: null, fetched: null, fetched_display: null};
       def stamp($kind; $e):
         ($map[($e | floor | tostring)] // {iso: null, md: null}) as $m
-        | . + {fetched_at: $m.iso, fetched: (if $m.iso == null then null else $kind end),
-               fetched_display: (if $kind == "live" and $m.iso != null then "now" else $m.md end)};
+        | . + {fetched_at: $m.iso, fetched: $kind,
+               fetched_display: (if $kind == "live" then "now" else $m.md end)};
       .rows |= map(
         (.fetched_at_epoch // .last_known_at_epoch) as $saved
         | if ((.used_pct | num) or (.last_known_used_pct | num)) | not then blank
+          elif (.source == "browser" and .status == "ok" and (.used_pct | num)
+                and (.fetched_at_epoch | num) and (.fetched_at_epoch >= $now)) then
+            stamp("live"; $now)
           elif ($saved | num) then stamp("saved"; $saved)
           elif (.status == "ok" and (.used_pct | num)
-                and ((.source // "") as $s | ["oauth-usage","app-server","http","ide-token","browser"] | index($s) != null)) then
+                and ((.source // "") as $s | ["oauth-usage","app-server","http","ide-token"] | index($s) != null)) then
             stamp("live"; $now)
           else blank end)' "$doc" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
     mv "$out" "$doc" 2>/dev/null || warn "could not stamp fetched times onto the report"

@@ -95,6 +95,27 @@ class LastKnownTests(unittest.TestCase):
         self.assertEqual(rows['cursor-auto']['used_pct'], 20)
         self.assertEqual(rows['cursor-auto']['fetched_at_epoch'], NOW)
 
+    def test_rows_read_at_different_times_keep_their_own_time(self):
+        # #2406: one account, two rows read at different times (e.g. a status-line
+        # weekly row and a live five-hour row). Each keeps its own time on disk and
+        # on lookup; the account-level time is the newest.
+        older, newer = NOW - 86400, NOW
+        a = account('claude', 'k@example.com', newer, [row('7-day', 40), row('5-hour', 10)])
+        a['rows'][0]['fetched_at_epoch'] = older
+        a['rows'][1]['fetched_at_epoch'] = newer
+        self.assertEqual(self.record([a]).returncode, 0)
+        saved = {r['window']: r['fetched_at_epoch'] for r in self.load('claude--k@example.com.json')['rows']}
+        self.assertEqual(saved, {'7-day': older, '5-hour': newer})
+        looked = run_helper(['lookup', '--dir', str(self.folder), '--now', str(NOW)],
+                            stdin=json.dumps({'provider': 'claude', 'label': 'k@example.com'}) + '\n')
+        got = {json.loads(l)['window']: json.loads(l)['fetched_at_epoch'] for l in looked.stdout.splitlines()}
+        self.assertEqual(got, {'7-day': older, '5-hour': newer})
+
+    def test_row_without_its_own_time_takes_the_account_time(self):
+        self.assertEqual(self.record([account('claude', 'k@example.com', NOW, [row('7-day', 40)])]).returncode, 0)
+        rows = self.load('claude--k@example.com.json')['rows']
+        self.assertEqual(rows[0]['fetched_at_epoch'], NOW)
+
     def test_ordering_refuses_to_replace_a_newer_reading(self):
         self.record([account('codex', 'a@example.com', NOW + 3600, [row('7-day', 40)])])
         before = (self.folder / 'codex--a@example.com.json').read_bytes()

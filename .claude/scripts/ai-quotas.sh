@@ -1004,6 +1004,20 @@ claude_expected_org() { # <profile_dir>
   printf '%s' "$org"
 }
 
+# #2406. A browser observation is a file an agent saved earlier, so its figure
+# was read at the observation's own capture time, not by this request. Stamp that
+# time onto the row's `extra`; with no usable capture time the row gets none and
+# the FETCHED column stays blank rather than claiming `now`.
+browser_fetched_extra() { # <extra-json> <validated-observation-json>
+  local extra="$1" obs="$2" e
+  e="$(printf '%s' "$obs" | jq -r '.observed_at_epoch | if type == "number" and . >= 0 and . <= 253402300799 then floor else empty end' 2>/dev/null || true)"
+  if [[ "$e" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$extra" | jq -c --argjson e "$e" '. + {fetched_at_epoch: $e}'
+  else
+    printf '%s' "$extra"
+  fi
+}
+
 # Claude browser source (#2299). Observation-only: the agent reads the
 # claude.ai usage page with its own browser tools and passes the result file
 # through --browser-results. The reader never opens a page for Claude.
@@ -1044,6 +1058,7 @@ read_claude_browser() { # <label> <profile_dir>
     span=604800
     [[ "$window" != "5-hour" ]] || span=18000
     extra="$(with_window_start "{}" "$reset" "$span")"
+    extra="$(browser_fetched_extra "$extra" "$result")"
     emit_row claude "$label" "$email" "$window" "$used" "$reset" ok \
       "browser observation; account verified" browser "" "$extra"
     emitted=1
@@ -1115,8 +1130,8 @@ read_cursor_browser() { # <label>
     cycle_start="$(monthly_cycle_start "$reset")"
     emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email')" "$CURSOR_WINDOW" "$used" "$reset" ok \
       "browser observation; $identity_note" browser "$plan_name" \
-      "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" '{pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
-        spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')"
+      "$(browser_fetched_extra "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" '{pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
+        spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')" "$result")"
   done < <(printf '%s' "$result" | jq -c '.rows[]')
 }
 
@@ -1374,8 +1389,10 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
            label: .[0].label,
            nickname: .[0].nickname,
            source: ("live: " + (.[0].source // "unknown")),
-           fetched_at_epoch: (.[0].fetched_at_epoch // $now),
-           fetched_at_et: (if .[0].fetched_at_epoch == null then $now_et else null end),
+           # The account-level time is the NEWEST row read. Each row keeps its own
+           # (below), so rows read at different times never share one date (#2406).
+           fetched_at_epoch: (map(.fetched_at_epoch // $now) | max),
+           fetched_at_et: (if (map(.fetched_at_epoch // $now) | max) == $now then $now_et else null end),
            rows: map({window: (.pool // .window),
                       pool: .pool,
                       used_pct: .used_pct,
