@@ -650,7 +650,7 @@ claude_age_text() { # <seconds>
 # caller should read through the token instead (with CLAUDE_STATUSLINE_NOTE set
 # when a reading existed but could not be used).
 claude_statusline_rows() { # <label>
-  local label="$1" win pair used resets span key emitted=0 note extra age_txt
+  local label="$1" win pair used resets span key emitted=0 five_emitted=0 note extra age_txt
   CLAUDE_STATUSLINE_NOTE=""
   [[ -n "$CLAUDE_STATUSLINE_LIB" ]] || return 1
   if ! csr_load "$label" "$NOW" "$CLAUDE_STATUSLINE_MAX_AGE"; then
@@ -683,7 +683,16 @@ claude_statusline_rows() { # <label>
     extra="$(with_window_start "{}" "$resets" "$span")"
     emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "status-line" "" "$extra"
     emitted=1
+    [[ "$key" == "five_hour" ]] && five_emitted=1
   done
+  # A good weekly reading is kept, never discarded for the token path (which is
+  # the rate-limited endpoint this reader exists to avoid). But a missing or
+  # already-reset 5-hour window must be visible, not a silently absent row: emit
+  # an explicit row with no figure (never 0%) saying why.
+  if [[ "$FIVE_HOUR" -eq 1 && "$five_emitted" -eq 0 ]]; then
+    emit_row claude "$label" "" "5-hour" "" "" unreadable \
+      "the saved status-line reading (taken ${age_txt} ago) has no current 5-hour window, so no 5-hour figure is available" "status-line" ""
+  fi
   [[ "$emitted" -eq 1 ]]
 }
 

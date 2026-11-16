@@ -214,6 +214,23 @@ check_lacks "$(cat "$CURL_LOG")" "SECRET" "no credential reached a request"
 # Five-hour only on request.
 json5="$(AI_QUOTAS_NOW="$(( NOW + 30 ))" "$READER" --json --no-last-known --five-hour 2>/dev/null)"
 check_eq "$(row_field "$json5" "$WORK" 5-hour used_pct)" "12" "--five-hour reports the saved 5-hour figure"
+check_eq "$(row_field "$json5" "$WORK" 5-hour status)" "ok" "and the 5-hour row reads ok"
+# 5-hour window already reset in the saved reading: weekly kept, 5-hour row explicit, no token call.
+: > "$CURL_LOG"
+cp "$(reading_file "$WORK")" "$TMP/work-reading5.json"
+jq --argjson r "$(( NOW + 10 ))" '.windows.five_hour.resets_at_epoch = $r | .windows.five_hour.resets_at = $r' "$TMP/work-reading5.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
+json5="$(AI_QUOTAS_NOW="$(( NOW + 30 ))" "$READER" --json --no-last-known --five-hour --account "$WORK" 2>/dev/null)"
+check_eq "$(row_field "$json5" "$WORK" 7-day source)" "status-line" "a reset 5-hour window keeps the weekly status-line row"
+check_eq "$(row_field "$json5" "$WORK" 5-hour status)" "unreadable" "and the 5-hour row is explicit, not absent"
+check_eq "$(row_field "$json5" "$WORK" 5-hour used_pct)" "null" "with no figure (never 0%)"
+check_contains "$(row_field "$json5" "$WORK" 5-hour detail)" "no current 5-hour window" "and says why"
+check_eq "$(curl_calls .)" "0" "and the token endpoint was not asked"
+# 5-hour window missing from the saved reading entirely.
+jq 'del(.windows.five_hour)' "$TMP/work-reading5.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
+json5="$(AI_QUOTAS_NOW="$(( NOW + 30 ))" "$READER" --json --no-last-known --five-hour 2>/dev/null)"
+check_eq "$(row_field "$json5" "$WORK" 7-day source)" "status-line" "a missing 5-hour window keeps the weekly row"
+check_eq "$(row_field "$json5" "$WORK" 5-hour status)" "unreadable" "and the 5-hour row is explicit"
+cp "$TMP/work-reading5.json" "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 
 # --- 4. a stale reading is not used ------------------------------------------
 : > "$CURL_LOG"; rm -rf "$AI_QUOTAS_COOLOFF_DIR"
@@ -231,8 +248,13 @@ check_eq "$(row_field "$json" "$WORK" 7-day source)" "oauth-usage" "from the tok
 
 # A reading whose weekly window has since reset describes another week.
 : > "$CURL_LOG"
+# Recapture just before the reset so only the reset check can reject it (age is not stale).
+cp "$(reading_file "$WORK")" "$TMP/work-reading-reset.json"
+jq --argjson c "$(( PAYLOAD_FUTURE + 5 ))" '.captured_at_epoch = $c' "$TMP/work-reading-reset.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 json="$(run_reader "$(( PAYLOAD_FUTURE + 10 ))" "$WORK")"
 check_eq "$(row_field "$json" "$WORK" 7-day source)" "oauth-usage" "a reading from a window that has since reset is not used"
+check_contains "$(row_field "$json" "$WORK" 7-day detail)" "predates the current 7-day window" "and the note names the weekly reset check"
+cp "$TMP/work-reading-reset.json" "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 
 # A reading filed under another label is invalid for this account.
 cp "$(reading_file "$WORK")" "$TMP/work-reading.json"
