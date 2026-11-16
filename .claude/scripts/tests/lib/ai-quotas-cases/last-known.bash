@@ -49,6 +49,12 @@ check_not_contains "$(cat "$LK_FILE")" "$CURSOR_FIXTURE_TOKEN" "no token reaches
 check_not_contains "$(cat "$LK_FILE")" "FIXTURE-CURSOR-USER" "no user id reaches the folder"
 check_eq "$(lk_row cursor-models last_known_used_pct)" "null" \
   "a healthy row carries no last-known figure"
+# #2406: a figure read in this run is live, shown as `now`.
+check_eq "$(lk_row cursor-models fetched)" "live" "a live read is marked live"
+check_eq "$(lk_row cursor-models fetched_display)" "now" "and the FETCHED cell says now"
+check_eq "$(lk_row cursor-models fetched_at)" "$(utc_iso "$NOW")" "with this run's time as an ISO-8601 UTC instant"
+run
+check_contains "$(table_only "$OUT")" "FETCHED" "the table has a FETCHED column"
 
 # --- 22b. a failed read keeps the file byte-for-byte and shows the figure ---
 
@@ -66,6 +72,12 @@ check_eq "$(lk_row cursor-models last_known_source)" "live: ide-token" \
   "and names where it came from"
 check_eq "$(lk_row cursor-models last_known_expired)" "false" \
   "a saved figure with no passed reset is not expired"
+# #2406: a figure saved earlier in the day shows the date, never `now`.
+check_eq "$(lk_row cursor-models fetched)" "saved" "a saved figure is marked saved"
+check_eq "$(lk_row cursor-models fetched_display)" "Sep 08" "and shows its date, not now"
+check_eq "$(lk_row cursor-models fetched_at)" "$(utc_iso "$NOW")" "and the instant it was read"
+run
+check_contains "$(table_only "$OUT")" "Sep 08" "the table prints that date in the FETCHED column"
 echo "ok" > "$STUB_CURSOR_MODE"
 
 # --- 22c. the ticket fixture: an owner-reported 100% on both pools ---------
@@ -178,3 +190,25 @@ check_eq "$(wc -c < "$LOG" | tr -d ' ')" "0" "a scheduled --no-last-known run al
 unset AI_QUOTAS_LAST_KNOWN_BIN
 
 unset AI_QUOTAS_LAST_KNOWN_DIR
+
+# --- 22e. #2406: zero-padded day, year boundary, and no figure -------------
+
+# 2026-01-01 17:00Z is Jan 01 in Eastern time; 2026-01-01 04:30Z is still Dec 31.
+lk_reset
+lk_seed_owner 100 "Nov 28 2026" "1767286800"
+echo "shape" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(lk_row cursor-models fetched_display)" "Jan 01" "a single-digit day is zero-padded"
+lk_reset
+lk_seed_owner 100 "Nov 28 2026" "1767241800"
+echo "shape" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(lk_row cursor-models fetched_display)" "Dec 31" "the date is Eastern, so a UTC new year can still be Dec 31"
+lk_reset
+echo "shape" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r '[.rows[] | .fetched // "null"] | unique | join(",")')" "null" "a row with no figure at all has no fetched kind"
+check_eq "$(printf '%s' "$DOC" | jq -r '[.rows[] | .fetched_display // "null"] | unique | join(",")')" "null" "and no display, never now"
+run
+check_not_contains "$(table_only "$OUT")" "now" "and the table never claims now for it"
+echo "ok" > "$STUB_CURSOR_MODE"

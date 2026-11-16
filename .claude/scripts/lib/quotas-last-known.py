@@ -294,7 +294,10 @@ def cmd_record(args):
                     "overage": row.get("overage") if isinstance(row.get("overage"), dict) else None,
                     "source": row.get("source") if isinstance(row.get("source"), str)
                     else account.get("source") if isinstance(account.get("source"), str) else None,
-                    "fetched_at_epoch": fetched,
+                    # The row's own read time; the account time only when the row has none.
+                    "fetched_at_epoch": row["fetched_at_epoch"]
+                    if isinstance(row.get("fetched_at_epoch"), int) and not isinstance(row.get("fetched_at_epoch"), bool)
+                    else fetched,
                 })
             # A partial live read keeps the saved series it did not return,
             # so a failed window or pool never erases its last good reading.

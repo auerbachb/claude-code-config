@@ -80,7 +80,8 @@ read_antigravity_account() { # <label>
     else
       emit_row antigravity "$label" "$account" "$window" "$used" "$resets" ok \
         "from ${via_note}, observed $(antigravity_age "$age") ago; account not verified" observation "" \
-        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" '{group: $g, group_models: $m, observed_age_seconds: $a}')"
+        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" \
+             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at}')"
     fi
   done < <(printf '%s' "$result" | jq -c '.groups[] | .name as $g | .models as $m | .slug as $s
       | .windows[] | {window: ($s + " " + .name), used_pct, resets_at_epoch, group: $g, models: $m}')

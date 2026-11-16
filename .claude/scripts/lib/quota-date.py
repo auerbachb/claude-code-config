@@ -15,6 +15,7 @@ FORMATS = {
     '+%Y-%m-%dT%H:%M:%SZ': r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z',
     '+%a': r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)',
     '+%a %b %-d %-I:%M %p %Z': r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Z][a-z]{2} [0-9]{1,2} [0-9]{1,2}:[0-9]{2} (AM|PM) (EST|EDT)',
+    '+%b %d': r'[A-Z][a-z]{2} [0-9]{2}',
     '+%a %-I:%M %p': r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun) [0-9]{1,2}:[0-9]{2} (AM|PM)',
     '+%b %-d %-I:%M %p ET': r'[A-Z][a-z]{2} [0-9]{1,2} [0-9]{1,2}:[0-9]{2} (AM|PM) ET',
 }
