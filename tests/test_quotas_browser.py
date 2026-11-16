@@ -506,6 +506,46 @@ print(json.dumps({'structured_output':doc}))
             (Path(str(path)+'.failed')).touch()
             self.assertFalse(browser.completed_read(path, attempt))
 
+    def test_spending_page_fields_and_old_files(self):
+        """Spending-page fields (#1870) validate for Cursor, stay optional, and never reach Claude."""
+        doc = observation()
+        doc.update(plan='Ultra', on_demand_used_usd=6.33, on_demand_limit_usd=50, cycle_resets_at_epoch=1796000000)
+        self.assertEqual(browser.validate(doc, 'fixture', 'fixture@example.com', 1000), doc)
+        unlimited = dict(doc, on_demand_limit_usd=None, on_demand_unlimited=True)
+        self.assertTrue(browser.validate(unlimited, 'fixture', 'fixture@example.com', 1000))
+        for change in [dict(plan=3), dict(plan='x' * 41), dict(plan='bad\nname'), dict(on_demand_used_usd=-1),
+                       dict(on_demand_used_usd=True), dict(on_demand_limit_usd='50'), dict(cycle_resets_at_epoch=float('inf')),
+                       dict(on_demand_unlimited=1), dict(on_demand_unlimited=True, on_demand_limit_usd=50), dict(cycle_resets_at_epoch=1),
+                       dict(rows=[dict(window='cursor-models', used_pct=101, resets_at_epoch=None)]),
+                       dict(rows=[dict(window='cursor-models', used_pct=50, resets_at_epoch=1)])]:
+            if 'rows' in change or 'cycle_resets_at_epoch' in change:
+                now_value = 1000000
+            else:
+                now_value = 1000
+            if now_value != 1000:
+                change = dict(change, observed_at_epoch=now_value)
+                with self.assertRaises(ValueError):
+                    browser.validate(dict(doc, **change), 'fixture', 'fixture@example.com', now_value)
+                continue
+            with self.assertRaises(ValueError):
+                browser.validate(dict(doc, **change), 'fixture', 'fixture@example.com', 1000)
+        claude = dict(doc, provider='claude', rows=[dict(window='7-day', used_pct=5, resets_at_epoch=None)])
+        with self.assertRaises(ValueError):
+            browser.validate(claude, 'fixture', 'fixture@example.com', 1000, 'claude')
+
+    def test_print_instructions_name_the_spending_page_and_the_browser_pane(self):
+        """The observation route is documented from the helper itself and carries no credential wording to fill in."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            browser.main(['--print-instructions', 'cursor'])
+        text = out.getvalue()
+        for needle in ['https://cursor.com/dashboard/spending', 'mcp__Claude_Browser__', 'mcp__claude-in-chrome__',
+                       'Cursor Models', 'Other Models', 'Monthly Limit', 'Save', 'Never click', 'On-Demand Usage', 'reset on', 'on_demand_limit_usd']:
+            self.assertIn(needle, text)
+        self.assertLess(text.index('mcp__Claude_Browser__'), text.index('mcp__claude-in-chrome__'))
+        with self.assertRaises(SystemExit):
+            browser.main(['--print-instructions', 'claude'])
+
 
 if __name__ == '__main__':
     unittest.main()

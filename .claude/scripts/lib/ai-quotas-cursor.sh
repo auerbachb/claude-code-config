@@ -45,6 +45,7 @@ CURSOR_TOKEN_DETAIL=""
 # detail below so "I could not read the store" never reaches the user as
 # "sign in again" — the one instruction that cannot fix it.
 CURSOR_TOKEN_STATUS=""
+CURSOR_TOKEN_CLASS=""
 
 # Read display-only IDE identity, clearing terminal controls identically for every source.
 cursor_cached_email() { # <state-db>
@@ -61,6 +62,7 @@ cursor_token_for() { # <state-db>
   CURSOR_USER_ID=""
   CURSOR_TOKEN_DETAIL=""
   CURSOR_TOKEN_STATUS=""
+  CURSOR_TOKEN_CLASS=""
 
   # Read-only, and deliberately NOT a copy. The plan of record said to copy
   # the store to a temp file because Cursor holds it locked; measured on this
@@ -99,8 +101,11 @@ cursor_token_for() { # <state-db>
   # through Electron safeStorage; direct SQLite ciphertext is not a JWT.
   case "$CURSOR_TOKEN" in
     cursor-safe-storage:v1:*)
-      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"
-      CURSOR_TOKEN_DETAIL="the Cursor IDE stores this access token encrypted; use --browser with an already signed-in Chrome profile"
+      # A known, standing condition (#1870), not a new failure each run: the fixed class
+      # lets the outcome ledger and the source recommendations treat it as such. The
+      # ciphertext is never decrypted and the OS keychain is never asked for the key.
+      CURSOR_TOKEN=""; CURSOR_TOKEN_STATUS="unreadable"; CURSOR_TOKEN_CLASS="ide_token_encrypted"
+      CURSOR_TOKEN_DETAIL="the Cursor IDE stores this access token encrypted and it is not read; take a browser reading of cursor.com/dashboard/spending (agent route: quotas-browser.py --print-instructions cursor, or --browser with an already signed-in Chrome profile)"
       return 1
       ;;
   esac
@@ -267,6 +272,7 @@ read_cursor_account() { # <label>
     # could not decode is `unreadable`. Collapsing all three into
     # `needs-login` would tell a user to sign in again over a missing sqlite3
     # or a changed token format, which is the one instruction that cannot help.
+    [[ -z "$CURSOR_TOKEN_CLASS" ]] || set_outcome unreadable "$source" "$CURSOR_TOKEN_CLASS"
     if [[ "$CURSOR_TOKEN_STATUS" == "needs-login" ]]; then
       emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" needs-login \
         "${CURSOR_TOKEN_DETAIL} — ${CURSOR_SIGNIN_HINT}" "$source" ""
