@@ -132,6 +132,14 @@ jq -e '[.rows[] | select(.window == "gemini-4-argon 7-day")] | .[0] | .used_pct 
 jq -e '[.rows[] | select(.provider == "antigravity" and ((.detail // "") | test("not verified"))) ] | length == 5' <<<"$rows" >/dev/null || fail "rows say the account is not verified"
 pass "/quotas rows: one per group and window, used percent, reset, source, not verified"
 
+# FETCHED (#2406): the observation's capture time is when the figure was read, so a
+# row shows that date; `now` only for a capture at or after the run began.
+cap_date="$(python3 -c 'import sys,datetime,zoneinfo; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), zoneinfo.ZoneInfo("America/New_York")).strftime("%b %d"))' "$CAP")"
+jq -e --arg d "$cap_date" '[.rows[] | select(.provider == "antigravity")] | all(.fetched == "saved" and .fetched_display == $d and .fetched_at_epoch == '"$CAP"')' <<<"$rows" >/dev/null || fail "figures read from a saved observation show its capture date, not now"
+live_now="$(AI_QUOTAS_NOW="$CAP" bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
+jq -e '[.rows[] | select(.provider == "antigravity")] | all(.fetched == "live" and .fetched_display == "now")' <<<"$live_now" >/dev/null || fail "an observation captured at the start of the run is now"
+pass "FETCHED on Antigravity rows: capture date, now only when captured during the run"
+
 # Stale: shown with its age and the last known figure, not as a live one.
 stale="$(AI_QUOTAS_NOW=$((CAP + 4*3600)) bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | all(.status == "unreadable" and .used_pct == null and (.detail | test("stale: captured 4h 0m ago.*account not verified")) )' <<<"$stale" >/dev/null || fail "stale rows carry age and no live figure"
@@ -139,12 +147,14 @@ jq -e '[.rows[] | select(.window == "gemini 7-day")] | .[0].last_known_used_pct 
 # A reset that passed after the capture also makes that window stale.
 expired="$(AI_QUOTAS_NOW=$((CAP + 154*3600)) AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS=99999999 bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '([.rows[] | select(.window == "gemini 7-day")] | .[0].status == "unreadable") and ([.rows[] | select(.window == "claude-gpt 5-hour")] | .[0].status == "ok")' <<<"$expired" >/dev/null || fail "only the window whose reset passed goes stale"
+jq -e --arg d "$cap_date" '[.rows[] | select(.provider == "antigravity")] | all(.fetched == "saved" and .fetched_display == $d)' <<<"$stale" >/dev/null || fail "stale rows show the capture date of their last-known figure"
 pass "stale observations show age and last known; no figure invented"
 
 # Missing observation: a clear unreadable row.
 rm -f "$OBS"
 none="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and .[0].used_pct == null and (.[0].detail | test("no Antigravity reading yet"))' <<<"$none" >/dev/null || fail "no observation -> one unreadable row naming what is missing"
+jq -e '[.rows[] | select(.provider == "antigravity")] | all(has("fetched_at") and .fetched == null and .fetched_display == null and .fetched_at == null)' <<<"$none" >/dev/null || fail "no figure: the new fields are present and null, never now"
 printf 'not json' > "$OBS"
 bad="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | .[0].status == "unreadable" and .[0].used_pct == null' <<<"$bad" >/dev/null || fail "a corrupt observation is unreadable, not 0%"

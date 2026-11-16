@@ -213,6 +213,55 @@ stamp_snapshot_field() {
   fi
 }
 
+# #2406. When each row's figure was read: `fetched_at` (ISO-8601 UTC), `fetched`
+# (`live` | `saved`) and `fetched_display` (`now` | `Mmm dd` in Eastern time).
+# A row with no figure gets all three null. A figure is SAVED when a provider set
+# `fetched_at_epoch` on the row or apply_last_known attached a last-known
+# reading; it is LIVE only when the row is `ok` with a number from a source that
+# is by construction a network read made in this run (oauth-usage, app-server,
+# http, ide-token), or a browser or saved-text observation captured at or after this run began.
+# Every other source needs an explicit `fetched_at_epoch` or stays blank: a
+# default of `now` would claim a read nobody made.
+# Reads the epoch the provider already holds; invents no second clock. `live` and
+# `now` never depend on the date helper; only a saved date (and any ISO instant)
+# degrades, to null, when date operations are unavailable.
+stamp_fetched_field() { # <doc-json-file>
+  local doc="$1" e iso md map="{}" out="$TMP/doc.fetched.json"
+  while IFS= read -r e; do
+    [[ "$e" =~ ^[0-9]+$ ]] || continue
+    iso="$(epoch_to_utc_iso "$e")"
+    md=""
+    if [[ "$QUOTA_DATE_DIALECT" != unavailable ]]; then
+      md="$(quota_date_format "$QUOTA_DATE_DIALECT" "$e" '+%b %d' America/New_York 2>/dev/null || true)"
+    fi
+    map="$(printf '%s' "$map" | jq -c --arg e "$e" --arg iso "$iso" --arg md "$md" \
+      '. + {($e): {iso: (if $iso == "" then null else $iso end), md: (if $md == "" then null else $md end)}}')"
+  done < <(jq -r --argjson now "$NOW" '[.rows[] | (.fetched_at_epoch // .last_known_at_epoch)
+                   | select(type == "number") | floor] + [$now] | unique[]' "$doc" 2>/dev/null)
+  if jq --argjson map "$map" --argjson now "$NOW" '
+      def num: type == "number";
+      def blank: . + {fetched_at: null, fetched: null, fetched_display: null};
+      def stamp($kind; $e):
+        ($map[($e | floor | tostring)] // {iso: null, md: null}) as $m
+        | . + {fetched_at: $m.iso, fetched: $kind,
+               fetched_display: (if $kind == "live" then "now" else $m.md end)};
+      .rows |= map(
+        (.fetched_at_epoch // .last_known_at_epoch) as $saved
+        | if ((.used_pct | num) or (.last_known_used_pct | num)) | not then blank
+          elif ((.source == "browser" or .source == "observation") and .status == "ok" and (.used_pct | num)
+                and (.fetched_at_epoch | num) and (.fetched_at_epoch >= $now)) then
+            stamp("live"; $now)
+          elif ($saved | num) then stamp("saved"; $saved)
+          elif (.status == "ok" and (.used_pct | num)
+                and ((.source // "") as $s | ["oauth-usage","app-server","http","ide-token"] | index($s) != null)) then
+            stamp("live"; $now)
+          else blank end)' "$doc" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    mv "$out" "$doc" 2>/dev/null || warn "could not stamp fetched times onto the report"
+  else
+    warn "could not stamp fetched times onto the report"
+  fi
+}
+
 render_quota_table() {
   # Rendered ONCE, to a file, so the no-`column` fallback prints the same table
   # unaligned rather than something else entirely. Piping into `column` and
@@ -223,7 +272,7 @@ render_quota_table() {
   # accounts. Keep the diagnostic detail unchanged in JSON for existing callers.
   jq -r '[.rows[] | select(.action != null) | {provider,label,action}] | unique[] | .action' "$DOC"
   {
-    printf '%s\n' 'ACCOUNT	WINDOW	USED	START	%/DAY	LEFT	OVERAGE	RESETS (ET)	IN	NOTE'
+    printf '%s\n' 'ACCOUNT	WINDOW	USED	FETCHED	START	%/DAY	LEFT	OVERAGE	RESETS (ET)	IN	NOTE'
     jq -r '
       def pct: if . == null then "-" else "\(.)%" end;
       def dash: if . == null or . == "" then "-" else . end;
@@ -252,6 +301,9 @@ render_quota_table() {
         # in a percentage — the reader could not tell which pool was which.
         (.pool // .window),
         (.used_pct | pct),
+        # When the figure was read (#2406): `now` for a live read, `Mmm dd` in
+        # Eastern time for a saved one, `-` when the row has no figure.
+        (.fetched_display | dash),
         # No REMAIN column (#1700): it was `100 - USED` on every row, so it
         # carried no information the reader did not already have, and the width
         # it cost is what a five-account table needs to stay inside 100
@@ -271,7 +323,7 @@ render_quota_table() {
         # than in `days_left`, and the cell prints the note when there is one:
         # the window comes back before the pace runs the account out.
         (if .days_left != null then (.days_left | one_dp)
-         else (.days_left_note | dash) end),
+         else (.days_left_note | if . == "resets first" then "resets" else . end | dash) end),
         # What continuing past this cap costs. `-` when no price is known — a
         # provider this reader has no table row for, or a run where the helper
         # was unavailable — never a blank that reads as "free".

@@ -935,7 +935,12 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       last_known_source: null,
       last_known_resets_at_epoch: null,
       last_known_resets_et: null,
-      last_known_expired: null}
+      last_known_expired: null,
+      # #2406. The ONE field a provider sets when its figure was NOT read in
+      # this run: the epoch the figure was actually read. Left null, the figure
+      # counts as live only when `source` is a live read. stamp_fetched_field
+      # turns it into fetched_at / fetched / fetched_display.
+      fetched_at_epoch: null}
      + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
@@ -1010,6 +1015,20 @@ claude_expected_org() { # <profile_dir>
   printf '%s' "$org"
 }
 
+# #2406. A browser observation is a file an agent saved earlier, so its figure
+# was read at the observation's own capture time, not by this request. Stamp that
+# time onto the row's `extra`; with no usable capture time the row gets none and
+# the FETCHED column stays blank rather than claiming `now`.
+browser_fetched_extra() { # <extra-json> <validated-observation-json>
+  local extra="$1" obs="$2" e
+  e="$(printf '%s' "$obs" | jq -r '.observed_at_epoch | if type == "number" and . >= 0 and . <= 253402300799 then floor else empty end' 2>/dev/null || true)"
+  if [[ "$e" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$extra" | jq -c --argjson e "$e" '. + {fetched_at_epoch: $e}'
+  else
+    printf '%s' "$extra"
+  fi
+}
+
 # Claude browser source (#2299). Observation-only: the agent reads the
 # claude.ai usage page with its own browser tools and passes the result file
 # through --browser-results. The reader never opens a page for Claude.
@@ -1050,6 +1069,7 @@ read_claude_browser() { # <label> <profile_dir>
     span=604800
     [[ "$window" != "5-hour" ]] || span=18000
     extra="$(with_window_start "{}" "$reset" "$span")"
+    extra="$(browser_fetched_extra "$extra" "$result")"
     emit_row claude "$label" "$email" "$window" "$used" "$reset" ok \
       "browser observation; account verified" browser "" "$extra"
     emitted=1
@@ -1121,8 +1141,8 @@ read_cursor_browser() { # <label>
     cycle_start="$(monthly_cycle_start "$reset")"
     emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email')" "$CURSOR_WINDOW" "$used" "$reset" ok \
       "browser observation; $identity_note" browser "$plan_name" \
-      "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" '{pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
-        spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')"
+      "$(browser_fetched_extra "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" '{pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
+        spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')" "$result")"
   done < <(printf '%s' "$result" | jq -c '.rows[]')
 }
 
@@ -1381,8 +1401,10 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
            label: .[0].label,
            nickname: .[0].nickname,
            source: ("live: " + (.[0].source // "unknown")),
-           fetched_at_epoch: $now,
-           fetched_at_et: $now_et,
+           # The account-level time is the NEWEST row read. Each row keeps its own
+           # (below), so rows read at different times never share one date (#2406).
+           fetched_at_epoch: (map(.fetched_at_epoch // $now) | max),
+           fetched_at_et: (if (map(.fetched_at_epoch // $now) | max) == $now then $now_et else null end),
            rows: map({window: (.pool // .window),
                       pool: .pool,
                       used_pct: .used_pct,
@@ -1390,7 +1412,7 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
                       resets: .resets_at_et,
                       overage: .overage,
                       source: ("live: " + (.source // "unknown")),
-                      fetched_at_epoch: $now})})
+                      fetched_at_epoch: (.fetched_at_epoch // $now)})})
     | {accounts: .}' "$1" > "$payload" 2>/dev/null || { warn "DEGRADED: could not stage last-known readings — the report is unaffected"; return 0; }
   [[ "$(jq '.accounts | length' "$payload" 2>/dev/null)" -gt 0 ]] || return 0
   if ! lk_run record --dir "$LK_DIR" < "$payload" 2>"$err"; then
@@ -1567,6 +1589,7 @@ fi
 # Saved figures go in AFTER notification and history, so neither ever sees a
 # derived row. Accounts with a usable live row are left exactly as read (#2280).
 apply_last_known "$DOC"
+stamp_fetched_field "$DOC"
 
 if [[ "$JSON" -eq 1 ]]; then
   cat "$DOC"

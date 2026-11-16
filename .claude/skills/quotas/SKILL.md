@@ -189,6 +189,16 @@ usage. Say "last known" when you quote one, never "current". The JSON fields are
 `last_known_used_pct`, `last_known_at_epoch`, `last_known_source` and `last_known_expired`;
 `used_pct` stays `null`. The folder is display only, and the gates never read it.
 
+## Step 3a-ii — The FETCHED column (#2406)
+
+**FETCHED** says when the row's figure was read: `now` for a live read in this run, otherwise
+the date it was read as `Mmm dd` in Eastern time (`Nov 16`, `Jan 01`), `-` when the row has no
+figure. A figure saved earlier today shows today's date, not `now`. A Claude status-line
+figure is saved, so it shows its capture date. When you quote a figure, say how old it is if
+FETCHED is not `now`. `--json` rows carry `fetched_at` (ISO-8601 UTC), `fetched` (`live` or
+`saved`) and `fetched_display`. The table prints `resets` in LEFT for `resets first` to stay
+inside 100 columns.
+
 ## Step 3b — The Overage column and the cheapest-next line
 
 The **OVERAGE** column is what continuing PAST that row's cap costs: `1 free reset` or

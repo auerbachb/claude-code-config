@@ -2005,6 +2005,44 @@ job now keeps the folder itself, so delete `refresh.sh` and any scheduler that r
 reader does not maintain `LATEST.md`; the `/quotas` table supersedes it. `/quotas-setup doctor`
 reports both leftovers and the folder mode, read-only.
 
+## The FETCHED column (#2406)
+
+The table has a **FETCHED** column after USED: when the figure on that row was read.
+`now` means it was read live during this request. A figure read earlier shows its date as
+`Mmm dd` in Eastern time with a zero-padded day (`Nov 16`, `Jan 01`); a figure saved
+earlier today shows today's date, never `now`. A row with no figure shows `-`.
+
+Every `--json` row carries three fields, stamped last (after saved figures are placed) by
+`stamp_fetched_field` in `lib/ai-quotas-report.sh`:
+
+| Field | Value |
+|-------|-------|
+| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live read; `null` with no figure, or when date operations are unavailable. |
+| `fetched` | `live`, `saved`, or `null` (no figure). Never depends on the date helper. |
+| `fetched_display` | What the table prints: `now`, `Mmm dd`, or `null`. With date operations unavailable a live read still says `now`; only a saved date degrades, to `null` (the blank marker), never to `now`. |
+
+**Adding a source of saved figures.** A provider only has to set one field on its row: pass
+`{"fetched_at_epoch": <epoch the figure was read>}` in the `emit_row` extra object. The
+status-line reader does (the capture time of its saved file) and so do the browser
+observations (the observation's own `observed_at_epoch`). The stamp then marks the row
+`saved` and prints the date. The default is strict: a row with a figure and no
+`fetched_at_epoch` counts as live only when its `source` is by construction a network read
+made in this run (`oauth-usage`, `app-server`, `http`, `ide-token`); every other source,
+including one added later, is left blank rather than claiming `now`. The exception is an
+observation (source `browser` or `observation`) whose capture time is at or after the run
+began: it is live. The Antigravity reader sets it to the saved observation's capture time, so
+its rows show that date; a stale row (no figure) shows its last-known date. An observation captured before the run, even seconds before,
+shows its date. Last-known rows take `last_known_at_epoch`.
+
+**Per-row read times.** `record_last_known` keeps each row's own `fetched_at_epoch` (the run
+time only when a row has none), so a saved reading is never re-dated as new, and
+`quotas-last-known.py` stores and returns that time per row. The file's account-level
+`fetched_at_epoch` is the newest row time, and is the fallback for older files whose rows
+carry none. Rows read at different times (a status-line weekly row beside a live five-hour
+row) therefore each show their own date.
+
+To keep a five-account table inside 100 columns the LEFT cell prints `resets` where
+`days_left_note` says `resets first`; the `--json` value is unchanged.
 
 ## Antigravity (Issue #2407)
 
