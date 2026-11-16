@@ -492,8 +492,41 @@ estimated usage.
   issue, not from a captured live payload; the tests use fixtures of that shape.
   Confirm once with `claude-work`: send a message, run `/quotas`, compare with the
   app's usage page.
-- **Not covered.** The desktop app renders no status line, and headless `-p` runs may
-  not either; those accounts still read through the token path.
+- **Not covered.** The desktop app renders no status line (its agent files a reading
+  instead, below), and headless `-p` runs may not either; those accounts still read
+  through the token path.
+
+### The app usage tool reading (#2404)
+
+The Claude desktop app runs no status line, and its usage tool
+(`mcp__ccd_session_mgmt__get_usage`) is callable only by an agent, never by a hook or the
+scheduled reader. So the agent takes the reading and pipes the tool's JSON (the whole
+object, or just `plan`) to `claude-usage-observe.sh -` (or a file path). The skills name the
+points: `/quotas` before printing the table, `/pm` and `/subagent` at session start and
+before an autonomous launch or refill. A missing tool, or a refusal, is skipped silently:
+the reading is optional and gates nothing.
+
+- **Refused** (one-line reason, exit 1, nothing written): plan `status` not `ok`; no single
+  `Weekly · all models` window; its `percentUsed` not a number from 0 to 100; its `resetsAt`
+  not a UTC ISO-8601 timestamp or already past; the session's account unreadable (`CLAUDE_CODE_USER_EMAIL` unset and no signed-in `.claude.json`), those two disagreeing, unregistered, or matching
+  several registered accounts (compared case-insensitively, exactly; never guessed).
+- **Where.** `claude-app--<label>.json` beside the status line's file (same folder, mode
+  600/700, temp file then move, no credential). It has the status-line file's `windows`
+  shape, `source: "app-usage-tool"`, `captured_at_epoch`, and two blocks kept for later
+  readers and not rendered yet (Issue #2409, Issue #2415): `extra_usage` (enabled, percent,
+  spent, monthly limit, currency) and `weekly_models` (the per-model weekly windows).
+- **Newer of two.** The reader looks at both files for an account and uses the usable one
+  with the smaller age (fresh within `AI_QUOTAS_STATUSLINE_MAX_AGE`, weekly window not yet
+  reset). The row's `source` is `status-line` or `app-usage-tool` and its note says which.
+  A passed-over reading adds a note only when neither was usable.
+- **Capture time.** Every saved-reading row sets `fetched_at_epoch` to the capture time, the
+  field a provider sets for a figure not read live in this run, so the `fetched` column shows
+  the figure's own date.
+- **Reserve.** `quota-reserve.sh --refresh` reads through `ai-quotas.sh --json`, so the row
+  is an ordinary provider-reported one. A reading older than the limit is not used, the
+  account reads `unknown`, and the reserve fails open as before.
+- **Live check owed.** Run `/quotas` in a desktop-app session and compare with the app's
+  usage card.
 
 ### Renewing an expired access token (#1716)
 

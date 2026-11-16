@@ -35,10 +35,18 @@ csr_home_dir() { printf '%s' "${AI_QUOTAS_STATUSLINE_DIR:-${HOME:-}/.claude/ai-q
 # alphabet is refused rather than escaped.
 csr_label_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._@+-]*$ && "$1" != *..* ]]; }
 
-csr_file_for() { # <label>
+# A second producer files its reading BESIDE the status line's, never over it:
+# the desktop app runs no status line, so its agent saves what the app's usage
+# tool returned (claude-usage-observe.sh, #2404). The reader takes the newer of
+# the two.
+csr_file_for() { # <label> [status-line|app-usage-tool]
   csr_label_ok "$1" || return 1
   [[ -n "${HOME:-}" || -n "${AI_QUOTAS_STATUSLINE_DIR:-}" ]] || return 1
-  printf '%s/claude--%s.json' "$(csr_home_dir)" "$1"
+  case "${2:-status-line}" in
+    status-line) printf '%s/claude--%s.json' "$(csr_home_dir)" "$1" ;;
+    app-usage-tool) printf '%s/claude-app--%s.json' "$(csr_home_dir)" "$1" ;;
+    *) return 1 ;;
+  esac
 }
 
 # The email a registered account is expected to be signed in as: its profile's
@@ -54,14 +62,13 @@ csr_account_email() { # <label> <profile_dir>
   printf '%s' "$email" | tr '[:upper:]' '[:lower:]'
 }
 
-# Prints the registered Claude account label for the running session, or nothing.
-csr_resolve_label() {
+# Prints the registered Claude account label whose email equals <email>
+# (case-insensitive exact equality), or nothing when zero or several match.
+csr_label_for_email() { # <email>
   local cfg="${AI_QUOTAS_CONFIG:-${HOME:-}/.claude/ai-quotas.json}"
-  local cj="${CLAUDE_CONFIG_DIR:-${HOME:-}}/.claude.json"
-  local session_email label dir acct_email match="" matches=0 line
-  [[ -r "$cfg" && -f "$cj" ]] || return 0
-  session_email="$(jq -r '.oauthAccount.emailAddress // empty' "$cj" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  [[ -n "$session_email" ]] || return 0
+  local session_email label dir acct_email match="" matches=0
+  session_email="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ -r "$cfg" && -n "$session_email" ]] || return 0
   while IFS=$'\t' read -r label dir; do
     [[ -n "$label" ]] || continue
     acct_email="$(csr_account_email "$label" "$dir")"
@@ -74,11 +81,51 @@ csr_resolve_label() {
   return 0
 }
 
+# Prints the registered Claude account label for the running session, or nothing.
+csr_resolve_label() {
+  local cj="${CLAUDE_CONFIG_DIR:-${HOME:-}}/.claude.json"
+  [[ -f "$cj" ]] || return 0
+  csr_label_for_email "$(jq -r '.oauthAccount.emailAddress // empty' "$cj" 2>/dev/null)"
+}
+
+# Writes <doc> to <file> unless a NEWER reading (larger captured_at_epoch) is
+# already there. Overlapping writers (two sessions on one account, or an old
+# observation finishing late) would otherwise let an older reading rename over a
+# newer one. The compare and the rename run under a mkdir lock; <tries> bounds
+# the wait at 50 ms each (1 for the status line, which must never block: a held
+# lock just means another writer is saving a reading about as fresh).
+# Returns 0 saved or deliberately skipped, 3 kept a newer reading, 1 write
+# failed or the lock stayed busy for every try.
+csr_write_reading() { # <doc> <file> <captured_epoch> <tries> <tmp-prefix>
+  local doc="$1" file="$2" cap="$3" tries="$4" prefix="$5" dir lock tmp n=0 have rc
+  dir="$(dirname "$file")"; lock="$file.lock"
+  ( umask 077
+    mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
+    tmp="$(mktemp "$dir/$prefix.XXXXXX" 2>/dev/null)" || exit 1
+    printf '%s\n' "$doc" > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 1; }
+    until mkdir "$lock" 2>/dev/null; do
+      # A lock left by a killed writer is cleared after a minute.
+      find "$lock" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null
+      n=$((n + 1))
+      if [[ "$n" -ge "$tries" ]]; then rm -f "$tmp"; [[ "$tries" -le 1 ]] && exit 0; exit 1; fi
+      sleep 0.05
+    done
+    have=""
+    [[ -f "$file" ]] && have="$(jq -r 'if (.captured_at_epoch | type) == "number" then .captured_at_epoch else empty end' "$file" 2>/dev/null)"
+    if [[ "$have" =~ ^[0-9]+$ && "$have" -gt "$cap" ]]; then
+      rmdir "$lock" 2>/dev/null; rm -f "$tmp"; exit 3
+    fi
+    mv -f "$tmp" "$file" 2>/dev/null; rc=$?
+    rmdir "$lock" 2>/dev/null
+    [[ "$rc" -eq 0 ]] || rm -f "$tmp"
+    exit "$rc" )
+}
+
 # Save the rate_limits of one status-line payload. <session-json> is the raw
 # stdin of the status line. Silent; returns 0 when it saved or had nothing to
 # save, non-zero only on a write failure (the caller ignores it).
 csr_save_from_session() { # <session-json>
-  local json="$1" now label file dir tmp doc old
+  local json="$1" now label file doc old
   [[ "$json" == *rate_limits* ]] || return 0
   now="${AI_QUOTAS_NOW:-$(date -u +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || return 0
@@ -98,7 +145,6 @@ csr_save_from_session() { # <session-json>
   label="$(csr_resolve_label)"
   [[ -n "$label" ]] || return 0
   file="$(csr_file_for "$label")" || return 0
-  dir="$(dirname "$file")"
   # Skip the write when nothing moved and the file is recent.
   if [[ -f "$file" ]]; then
     old="$(jq -c --argjson now "$now" --argjson t "$CSR_THROTTLE_SECONDS" --argjson new "$doc" \
@@ -107,14 +153,9 @@ csr_save_from_session() { # <session-json>
     [[ -z "$old" ]] || return 0
   fi
   doc="$(printf '%s' "$doc" | jq -c --arg l "$label" '. + {account_label: $l}' 2>/dev/null)" || return 0
-  ( umask 077
-    mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
-    tmp="$(mktemp "$dir/.claude-reading.XXXXXX" 2>/dev/null)" || exit 1
-    if printf '%s\n' "$doc" > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null; then
-      exit 0
-    fi
-    rm -f "$tmp"
-    exit 1 )
+  csr_write_reading "$doc" "$file" "$now" 1 .claude-reading
+  # 3 (a newer reading is already saved) is not a failure.
+  [[ $? -ne 1 ]]
 }
 
 # Reader side ---------------------------------------------------------------
@@ -124,10 +165,10 @@ CSR_AGE=""          # seconds since capture
 CSR_FILE=""
 
 # Classify the saved reading for <label>. <max-age> is seconds.
-csr_load() { # <label> <now> <max-age>
+csr_load() { # <label> <now> <max-age> [status-line|app-usage-tool]
   local label="$1" now="$2" max="$3" captured
   CSR_STATE="absent"; CSR_AGE=""; CSR_FILE=""
-  CSR_FILE="$(csr_file_for "$label")" || return 1
+  CSR_FILE="$(csr_file_for "$label" "${4:-status-line}")" || return 1
   [[ -f "$CSR_FILE" && ! -L "$CSR_FILE" ]] || return 1
   captured="$(jq -r 'if .provider == "claude" and (.account_label | type) == "string"
                         and (.captured_at_epoch | type) == "number"
@@ -144,4 +185,107 @@ csr_load() { # <label> <now> <max-age>
 # Prints "<used_pct> <resets_at_epoch>" for a window in the loaded file, or nothing.
 csr_window() { # <seven_day|five_hour>
   jq -r --arg k "$1" '.windows[$k] // empty | select((.used_pct | type) == "number" and .used_pct >= 0 and .used_pct <= 100 and (.resets_at_epoch | type) == "number") | "\(.used_pct) \(.resets_at_epoch)"' "$CSR_FILE" 2>/dev/null || true
+}
+
+# App usage tool side (#2404) -----------------------------------------------
+#
+# The desktop app runs no status line, so its agent calls the app's usage tool
+# (mcp__ccd_session_mgmt__get_usage) and hands the result to
+# claude-usage-observe.sh, which calls csr_observe_app. The saved file has the
+# same `windows` shape the reader already uses, with `source` "app-usage-tool",
+# plus two blocks kept for later readers and not rendered yet: `extra_usage`
+# (the tool's extraUsage object) and `weekly_models` (the per-model weekly
+# windows). Only fields named here are copied, so nothing else the tool returns
+# can reach the file.
+#
+# Prints one line and returns 0 on success; sets CSR_OBSERVE_REASON and returns
+# 1 when the input is refused or cannot be saved.
+CSR_OBSERVE_REASON=""
+
+# The jq program lives in a variable, not inside $( ): bash 3.2 counts parens
+# in a command substitution and misparses a program this size.
+CSR_OBSERVE_JQ='
+  def pct: if type == "number" and . >= 0 and . <= 100 then (. * 10 | round / 10) else null end;
+  def ep: if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$")
+          then (try (sub("[.][0-9]+Z$"; "Z") | fromdateiso8601) catch null) else null end;
+  def lbl: (.label // "" | if type == "string" then . else "" end);
+  def weekly: (lbl | test("^weekly"; "i"));
+  def allmodels: (lbl | test("all models"; "i"));
+  def fivehour: (lbl | test("(5|five)[ -]?h"; "i"));
+  def str: if type == "string" or type == "number" then tostring else null end;
+  (if type != "object" then null elif (.plan | type) == "object" then .plan elif has("status") then . else null end) as $p
+  | if $p == null then {err: "the input is not the usage tool result or its plan object"}
+    elif $p.status != "ok" then {err: ("plan status is " + ($p.status | tostring) + ", not ok")}
+    elif ($p.windows | type) != "array" then {err: "the plan names no windows"}
+    else
+      ([$p.windows[] | select(type == "object" and weekly and allmodels)]) as $w
+      | if ($w | length) == 0 then {err: "no weekly all-models window"}
+        elif ($w | length) > 1 then {err: "several weekly all-models windows"}
+        elif ($w[0].percentUsed | pct) == null then {err: "the weekly all-models percentUsed is not a number from 0 to 100"}
+        elif ($w[0].resetsAt | ep) == null then {err: "the weekly all-models reset time is not a UTC ISO-8601 timestamp"}
+        else
+          ([$p.windows[] | select(type == "object" and fivehour and (weekly | not))
+            | {used_pct: (.percentUsed | pct), resets_at_epoch: (.resetsAt | ep)}
+            | select(.used_pct != null and .resets_at_epoch != null)] | first // null) as $f
+          | {doc: {schema_version: "1.0", provider: "claude", source: "app-usage-tool",
+                   captured_at_epoch: $now, captured_at: ($now | todate),
+                   subscription_type: (if ($p.plan | type) == "string" then ($p.plan | ascii_downcase) else null end),
+                   windows: ({seven_day: {used_pct: ($w[0].percentUsed | pct), resets_at_epoch: ($w[0].resetsAt | ep)}}
+                             + (if $f == null then {} else {five_hour: $f} end)),
+                   weekly_models: [$p.windows[] | select(type == "object" and weekly and (allmodels | not))
+                                   | {label: lbl, used_pct: (.percentUsed | pct), resets_at_epoch: (.resetsAt | ep)}
+                                   | select(.used_pct != null and .resets_at_epoch != null)],
+                   extra_usage: (if ($p.extraUsage | type) == "object" then
+                                   {enabled: ($p.extraUsage.enabled == true), used_pct: ($p.extraUsage.percentUsed | pct),
+                                    spent: ($p.extraUsage.spent | str), monthly_limit: ($p.extraUsage.monthlyLimit | str),
+                                    currency: (if ($p.extraUsage.currency | type) == "string" then $p.extraUsage.currency else null end)}
+                                 else null end)}}
+        end
+    end'
+
+csr_observe_app() { # <tool-json>
+  local json="$1" now email label file doc res cj cj_email
+  CSR_OBSERVE_REASON=""
+  now="${AI_QUOTAS_NOW:-$(date -u +%s)}"
+  [[ "$now" =~ ^[0-9]+$ ]] || { CSR_OBSERVE_REASON="the clock is unreadable"; return 1; }
+  # Slurped: exactly one JSON value is accepted, never the first of several.
+  res="$(printf '%s' "$json" | jq -c -s --argjson now "$now" "if length != 1 then {err: \"expected exactly one JSON value\"} else .[0] | $CSR_OBSERVE_JQ end" 2>/dev/null)" || res=""
+  if [[ -z "$res" ]]; then CSR_OBSERVE_REASON="the input is not valid JSON"; return 1; fi
+  if [[ "$(printf '%s' "$res" | jq -r 'has("err")')" == "true" ]]; then
+    CSR_OBSERVE_REASON="$(printf '%s' "$res" | jq -r '.err')"; return 1
+  fi
+  # A weekly window that has already reset describes a week that no longer exists.
+  if [[ "$(printf '%s' "$res" | jq -r --argjson now "$now" '.doc.windows.seven_day.resets_at_epoch <= $now')" == "true" ]]; then
+    CSR_OBSERVE_REASON="the weekly all-models reset time is already past"; return 1
+  fi
+  # The account is the one the calling session runs on, resolved to exactly one
+  # registry entry by exact (case-insensitive) equality. CLAUDE_CODE_USER_EMAIL
+  # is preferred; the session's own .claude.json is the fallback when it is
+  # unset, and the two must agree when both are present. Never a default.
+  email="${CLAUDE_CODE_USER_EMAIL:-}"
+  cj="${CLAUDE_CONFIG_DIR:-${HOME:-}}/.claude.json"
+  cj_email=""
+  [[ -f "$cj" ]] && cj_email="$(jq -r '.oauthAccount.emailAddress // empty' "$cj" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "$email" ]]; then
+    if [[ -n "$cj_email" && "$cj_email" != "$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')" ]]; then
+      CSR_OBSERVE_REASON="CLAUDE_CODE_USER_EMAIL and the session's signed-in account disagree, so the account cannot be named"; return 1
+    fi
+  else
+    email="$cj_email"
+    [[ -n "$email" ]] || { CSR_OBSERVE_REASON="CLAUDE_CODE_USER_EMAIL is not set and the session's signed-in account is unreadable, so the account cannot be named"; return 1; }
+  fi
+  label="$(csr_label_for_email "$email")"
+  [[ -n "$label" ]] || { CSR_OBSERVE_REASON="the session's account matches no registered Claude account, or matches several"; return 1; }
+  file="$(csr_file_for "$label" app-usage-tool)" || { CSR_OBSERVE_REASON="the account label cannot name a file"; return 1; }
+  doc="$(printf '%s' "$res" | jq -c --arg l "$label" '.doc + {account_label: $l}')" || { CSR_OBSERVE_REASON="could not build the reading"; return 1; }
+  dir="$(dirname "$file")"
+  csr_write_reading "$doc" "$file" "$now" 40 .claude-app-reading
+  case $? in
+    0) printf 'saved the app usage tool reading for %s (7-day %s%% used)\n' "$label" "$(printf '%s' "$doc" | jq -r '.windows.seven_day.used_pct')"
+       return 0 ;;
+    3) printf 'a newer reading is already saved for %s; kept it\n' "$label"
+       return 0 ;;
+  esac
+  CSR_OBSERVE_REASON="the reading could not be written"
+  return 1
 }

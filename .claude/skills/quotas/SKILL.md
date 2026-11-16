@@ -86,6 +86,13 @@ AI_QUOTAS_SH=$(resolve_script ai-quotas.sh || true)
 reader — a second caller of the provider APIs is how two answers start disagreeing, and
 reading a credential by hand is exactly what this design forbids.
 
+## Step 1a — Take the desktop-app reading first (#2404)
+
+In the Claude desktop app, when `mcp__ccd_session_mgmt__get_usage` is available, call it
+and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -` before Step 2; a
+refusal or a missing tool is skipped silently (detail: `.claude/reference/ai-quotas.md`
+§The app usage tool reading).
+
 ## Step 2 — Route the request
 
 | The user asked | Run |

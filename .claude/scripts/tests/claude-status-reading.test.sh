@@ -236,6 +236,20 @@ check_eq "$(row_field "$json5" "$WORK" 7-day source)" "status-line" "a missing 5
 check_eq "$(row_field "$json5" "$WORK" 5-hour status)" "unreadable" "and the 5-hour row is explicit"
 cp "$TMP/work-reading5.json" "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 
+# #2406: an app-usage-tool reading is saved too, so its rows show the capture DATE, never `now`
+# (a saved-file reading is always dated, even when captured in the run's own second); the explicit no-5-hour row has no figure, so it is blank.
+APP_FILE="$AI_QUOTAS_STATUSLINE_DIR/claude-app--$WORK.json"
+mv "$(reading_file "$WORK")" "$TMP/work-status-line-hidden.json"
+jq '.source = "app-usage-tool" | del(.windows.five_hour)' "$TMP/work-reading5.json" > "$APP_FILE"; chmod 600 "$APP_FILE"
+jsonA="$(AI_QUOTAS_NOW="$(( NOW + 30 ))" "$READER" --json --no-last-known --five-hour --account "$WORK" 2>/dev/null)"
+check_eq "$(row_field "$jsonA" "$WORK" 7-day source)" "app-usage-tool" "control: the row really is sourced app-usage-tool"
+check_eq "$(row_field "$jsonA" "$WORK" 7-day fetched)" "saved" "an app-usage-tool figure is saved, not live"
+check_eq "$(row_field "$jsonA" "$WORK" 7-day fetched_display)" "Jan 15" "and shows its capture date, not now"
+check_eq "$(row_field "$jsonA" "$WORK" 5-hour fetched)" "null" "the no-current-5-hour row has no figure, so no fetched kind"
+check_eq "$(row_field "$jsonA" "$WORK" 5-hour fetched_display)" "null" "and the blank marker, never now"
+rm -f "$APP_FILE"
+mv "$TMP/work-status-line-hidden.json" "$(reading_file "$WORK")"
+
 # --- 4. a stale reading is not used ------------------------------------------
 : > "$CURL_LOG"; rm -rf "$AI_QUOTAS_COOLOFF_DIR"
 echo 429 > "$TOKEN_MODE"
@@ -254,7 +268,7 @@ check_eq "$(row_field "$json" "$WORK" 7-day source)" "oauth-usage" "from the tok
 : > "$CURL_LOG"
 # Recapture just before the reset so only the reset check can reject it (age is not stale).
 cp "$(reading_file "$WORK")" "$TMP/work-reading-reset.json"
-jq --argjson c "$(( PAYLOAD_FUTURE + 5 ))" '.captured_at_epoch = $c' "$TMP/work-reading-reset.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
+jq --argjson c "$(( PAYLOAD_FUTURE - 60 ))" '.captured_at_epoch = $c' "$TMP/work-reading-reset.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 json="$(run_reader "$(( PAYLOAD_FUTURE + 10 ))" "$WORK")"
 check_eq "$(row_field "$json" "$WORK" 7-day source)" "oauth-usage" "a reading from a window that has since reset is not used"
 check_contains "$(row_field "$json" "$WORK" 7-day detail)" "predates the current 7-day window" "and the note names the weekly reset check"
