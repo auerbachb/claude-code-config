@@ -684,6 +684,9 @@ else
   elif [ "$PARK_CAUSE" = "preemptive" ] && [ "$PARK_TOKEN" = null ]; then
     # Written by the removed figure-driven path (#2416): the provider never
     # returned a limit. Retire it — never re-arm a probe, never leave it manual.
+    # Carry the snapshot THIS classification read: retirement must compare against
+    # it, never against a later read that could be a replacement park.
+    printf 'PARK_RETIRE_SNAPSHOT=%s\n' "$(printf '%s\n' "$DAY_SNAPSHOT" | jq -c .)"
     emit_recovery_rearm retire_preemptive
   elif [[ "$PARK_FIRES" =~ ^[1-9][0-9]*$ ]]; then
     # A pre-emptive park with fires LEFT (#1445): re-arm 2D.7's probe Monitor
@@ -731,14 +734,20 @@ state write.
 
 - **`retire_preemptive`** → the park was written by the pre-emptive path
   that #2416 removed (cause `preemptive`): the provider never returned a limit,
-  so nothing is waiting to reopen. Re-arm no wake. Read a fresh
-  `.repos["$REPO_KEY"].day` snapshot with `--get-json` and clear the park with
-  `park-retire.sh --repo "$REPO_KEY" --snapshot "$SNAPSHOT" --state-helper
-  "$SESSION_STATE_SH"` (the helper `/pause-resume` Step 5 uses; exit 7 means a
-  newer park owns the slot — leave it). Then resume the parked pipelines through
-  `/go-on`: the retired `parked_until` over surviving per-PR records is its
-  resume-now park. A live probe `Monitor` from this session may still fire; its
-  horizon read answers `clear`, so it resumes the same board harmlessly.
+  so nothing is waiting to reopen. Re-arm no wake. Retain `PARK_RETIRE_SNAPSHOT`
+  from this output as data: it is the snapshot whose cause was read as exactly
+  `preemptive`. Clear the park with `park-retire.sh --repo "$REPO_KEY" --snapshot
+  "$PARK_RETIRE_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (the helper
+  `/pause-resume` Step 5 uses). **Never pass a fresh read:** a fresh snapshot can
+  be a replacement park (a reactive one written after classification), and the
+  helper's compare-and-set checks ownership only against what it is given.
+  - Exit 0 → hand the board to `/go-on`: the retired `parked_until` over
+    surviving per-PR records is its resume-now park. A live probe `Monitor` from
+    this session may still fire; its horizon read answers `clear`, so it resumes
+    the same board harmlessly.
+  - Exit 7 → the slot changed since classification. Leave that park untouched,
+    do not resume, take a fresh snapshot and classify it again from the top.
+  - Any other exit → stop and report it; the park stays as it is.
 - **`rearm_probe`** → select `/pm` 2D.7's bounded probe `Monitor` with the
   recorded fires left, never a fresh bound. Publish through the guarded §4
   block above; keep the captured probe count unchanged.

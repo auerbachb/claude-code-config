@@ -842,6 +842,22 @@ check_eq "  and recovery then reads no park" "PARK_RECOVERY=none" "$(run_recover
 seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
 check_eq "a reactive park is never routed to retirement" "PARK_RECOVERY=rearm" "$(run_recovery)"
 
+# #2416 review: retirement compares against the snapshot classification read. If
+# a reactive park replaces the slot first, park-retire.sh exits 7 and leaves it.
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+CLS_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null)
+CAPTURED=$(printf '%s\n' "$CLS_OUT" | sed -n 's/^PARK_RETIRE_SNAPSHOT=//p')
+check_eq "classification sees the pre-emptive park and carries its snapshot" "retire_preemptive|1" \
+  "$(field "$CLS_OUT" PARK_RECOVERY)|$([ -n "$CAPTURED" ] && echo 1 || echo 0)"
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 3600 )))" 'null'
+REPL_BEFORE=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+"$REPO_ROOT/.claude/scripts/park-retire.sh" --repo "$REPO_KEY" --snapshot "$CAPTURED" \
+  --state-helper "$SESSION_STATE_SH" >/dev/null 2>&1
+RETIRE_RC=$?
+check_eq "retiring the captured snapshot over a replacement park exits 7" "7" "$RETIRE_RC"
+check_eq "  and the replacement reactive park is intact" "$REPL_BEFORE" \
+  "$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")"
+
 # #2416 fail-closed: only the exact cause string `preemptive` retires. A record
 # with no cause, a differently-cased or non-string cause, or an open claim keeps
 # today's path (re-arm / unreadable), never a retirement.

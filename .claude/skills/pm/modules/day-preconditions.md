@@ -205,9 +205,11 @@ printf 'PARK_ROUTE=%s\n' "$PARK_ROUTE"
 provider limit stands behind it. That path also activated the execution gate and
 left a per-PR record for each parked pipeline, so clearing the day park alone
 would leave the board stopped. Clear the park with `park-retire.sh --repo
-"$REPO_KEY" --snapshot "$DAY_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (exit
-7: a newer park owns the slot: read a fresh snapshot and route it again). On exit
-0 route to `/go-on` and stop this invocation: it lifts the execution gate and
+"$REPO_KEY" --snapshot "$DAY_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (that
+`DAY_SNAPSHOT` is the one `pm_day_park_route` classified; never pass a fresh
+read, which could be a replacement park). Exit 7: the slot changed since
+classification, so leave that park, read a fresh snapshot and route it again. On
+exit 0 route to `/go-on` and stop this invocation: it lifts the execution gate and
 relaunches each parked pipeline from its `usage_limit_park` record. On any other
 exit stop and report it. Do not continue as `normal`.
 
