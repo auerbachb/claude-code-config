@@ -60,6 +60,36 @@ class Browser(unittest.TestCase):
             with self.assertRaises(ValueError):
                 browser.validate(doc, 'fixture', 'fixture@example.com', 1000, 'claude')
 
+    def test_verified_only_when_a_supplied_email_matched_a_known_expected_one(self):
+        """#1870: identity_verified is never claimed for a non-ok status or an unchecked email."""
+        ok = browser.validate(observation(), 'fixture', 'fixture@example.com', 1000)
+        self.assertIs(ok['identity_verified'], True)
+        # No known expected email to compare against: nothing was matched.
+        self.assertIs(browser.validate(dict(observation(), status='logged_out', rows=[]), 'fixture', '', 1000)['identity_verified'], False)
+        for status in ('logged_out', 'unreadable'):
+            base = dict(observation(), status=status, rows=[])
+            wrong = dict(base, email='other@example.com')
+            with self.assertRaises(ValueError):
+                browser.validate(wrong, 'fixture', 'fixture@example.com', 1000)
+            none = dict(base)
+            del none['email']
+            self.assertIs(browser.validate(none, 'fixture', 'fixture@example.com', 1000)['identity_verified'], False)
+            self.assertIs(browser.validate(dict(base, email=''), 'fixture', 'fixture@example.com', 1000)['identity_verified'], False)
+            matched = browser.validate(base, 'fixture', 'fixture@example.com', 1000)
+            self.assertIs(matched['identity_verified'], True)
+            self.assertIs(browser.validate(base, 'fixture', '', 1000)['identity_verified'], False)
+
+    def test_claude_non_ok_status_is_no_looser_than_before(self):
+        """Claude observations carry no identity_verified, and an ok one with a wrong email is rejected."""
+        rows = [dict(observation()['rows'][0], window='7-day')]
+        base = dict(observation(), provider='claude', rows=rows)
+        with self.assertRaises(ValueError):
+            browser.validate(dict(base, email='other@example.com'), 'fixture', 'fixture@example.com', 1000, 'claude')
+        out = browser.validate(dict(base, email='fixture@example.com'), 'fixture', 'fixture@example.com', 1000, 'claude')
+        self.assertNotIn('identity_verified', out)
+        signed_out = dict(base, status='logged_out', rows=[], email='')
+        self.assertNotIn('identity_verified', browser.validate(signed_out, 'fixture', 'fixture@example.com', 1000, 'claude'))
+
     def test_schema_version_is_an_integer_not_a_boolean(self):
         """Python treats True == 1; a boolean schema_version must not pass as version 1."""
         for value in [True, False, 1.0, '1']:

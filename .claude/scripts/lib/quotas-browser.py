@@ -176,6 +176,10 @@ def validate(doc, label, expected_email, now, provider='cursor', expected_org=''
                 raise ValueError('identity')
         if organization is not None and expected_org and organization.casefold() != expected_org.casefold():
             raise ValueError('identity')
+    elif provider == 'cursor' and email and expected_email and email.casefold() != expected_email.casefold():
+        # A signed-out or unreadable page may carry no email, but one it does carry must not
+        # name another account (#1870).
+        raise ValueError('identity')
     if not number(doc['observed_at_epoch']) or abs(doc['observed_at_epoch'] - now) > 300:
         raise ValueError('stale')
     if not isinstance(doc['rows'], list) or len(doc['rows']) > 2:
@@ -201,8 +205,9 @@ def validate(doc, label, expected_email, now, provider='cursor', expected_org=''
     if doc['status'] == 'ok' and not any(number(row['used_pct']) for row in doc['rows']):
         raise ValueError('missing_usage')
     if provider == 'cursor':
-        # True only when a supplied email matched the expected one; False when the page gave none.
-        doc = dict(doc, email=email, identity_verified=bool(email))
+        # True only when a supplied email was compared to a known expected email and matched.
+        verified = bool(email and expected_email and email.casefold() == expected_email.casefold())
+        doc = dict(doc, email=email, identity_verified=verified)
     return doc
 
 
