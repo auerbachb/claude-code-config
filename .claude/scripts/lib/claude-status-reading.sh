@@ -83,11 +83,12 @@ csr_save_from_session() { # <session-json>
   now="${AI_QUOTAS_NOW:-$(date -u +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || return 0
   doc="$(printf '%s' "$json" | jq -c --argjson now "$now" '
-      def pct: if type == "number" and . >= 0 and . <= 1000 then (. * 10 | round / 10) else empty end;
+      def pct: if type == "number" and . >= 0 and . <= 100 then (. * 10 | round / 10) else empty end;
       def ep: if type == "number" and . > 0 then (if . > 253402300799 then (. / 1000 | floor) else floor end) else empty end;
       def win($k): (.rate_limits[$k] // null) as $w
-        | if ($w | type) == "object" and (($w.used_percentage | pct) != null) and (($w.resets_at | ep) != null)
-          then {($k): {used_pct: ($w.used_percentage | pct), resets_at_epoch: ($w.resets_at | ep)}} else {} end;
+        | (if ($w | type) == "object" then ([$w.used_percentage | pct] | first // null) else null end) as $p
+        | (if ($w | type) == "object" then ([$w.resets_at | ep] | first // null) else null end) as $r
+        | if $p != null and $r != null then {($k): {used_pct: $p, resets_at_epoch: $r}} else {} end;
       (win("seven_day") + win("five_hour")) as $w
       | if ($w | length) == 0 then empty
         else {schema_version: "1.0", provider: "claude", captured_at_epoch: $now,
@@ -142,5 +143,5 @@ csr_load() { # <label> <now> <max-age>
 
 # Prints "<used_pct> <resets_at_epoch>" for a window in the loaded file, or nothing.
 csr_window() { # <seven_day|five_hour>
-  jq -r --arg k "$1" '.windows[$k] // empty | select((.used_pct | type) == "number" and (.resets_at_epoch | type) == "number") | "\(.used_pct) \(.resets_at_epoch)"' "$CSR_FILE" 2>/dev/null || true
+  jq -r --arg k "$1" '.windows[$k] // empty | select((.used_pct | type) == "number" and .used_pct >= 0 and .used_pct <= 100 and (.resets_at_epoch | type) == "number") | "\(.used_pct) \(.resets_at_epoch)"' "$CSR_FILE" 2>/dev/null || true
 }

@@ -88,7 +88,8 @@ done
 printf '%s\n' "\$url" >> "$CURL_LOG"
 case "\$url" in
   *token.test*)
-    if [[ "\$(cat "$TOKEN_MODE" 2>/dev/null)" == "429" ]]; then
+    if [[ "\$(cat "$TOKEN_MODE" 2>/dev/null)" == 429* ]]; then
+      if [[ -n "\$hdr" && -s "$TMP/retry-after" ]]; then printf 'Retry-After: %s\r\n' "\$(cat "$TMP/retry-after")" > "\$hdr"; fi
       printf '{"error":{"type":"rate_limit_error"}}' > "\$out"; printf '429'
     else
       printf '{"access_token":"NEW","refresh_token":"NEWR","expires_in":3600}' > "\$out"; printf '200'
@@ -132,8 +133,8 @@ check_eq "$(jq -c '.rate_limits.spend_limit' "$F" 2>/dev/null)" '{"used_credits"
 check_eq "$(jq -r '.rate_limits.seven_day.used_percentage' "$F" 2>/dev/null)" "63" "with the payload's own field names"
 check_eq "$(jq -r '.subscription_type' "$F" 2>/dev/null)" "max" "the subscription type is kept"
 check_eq "$(jq -r '.captured_at' "$F" 2>/dev/null)" "2027-01-15T08:00:00Z" "the capture time is also saved as UTC ISO-8601"
-check_eq "$(stat -f '%Lp' "$F" 2>/dev/null || stat -c '%a' "$F")" "600" "the reading file is mode 600"
-check_eq "$(stat -f '%Lp' "$AI_QUOTAS_STATUSLINE_DIR" 2>/dev/null || stat -c '%a' "$AI_QUOTAS_STATUSLINE_DIR")" "700" "the folder is mode 700"
+check_eq "$(stat -c '%a' "$F" 2>/dev/null || stat -f '%Lp' "$F")" "600" "the reading file is mode 600"
+check_eq "$(stat -c '%a' "$AI_QUOTAS_STATUSLINE_DIR" 2>/dev/null || stat -f '%Lp' "$AI_QUOTAS_STATUSLINE_DIR")" "700" "the folder is mode 700"
 check_lacks "$(cat "$F")" "SECRET" "the file holds no credential, even when the payload carried one"
 [[ ! -e "$(reading_file "$PERS")" ]] && ok "the other account's file is untouched (no cross-attribution)" || fail "the personal account got a reading it did not earn"
 check_eq "$(ls -A "$AI_QUOTAS_STATUSLINE_DIR" | wc -l | tr -d ' ')" "1" "no temp file is left behind"
@@ -178,10 +179,22 @@ rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
 CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$(payload 63 12)" > /dev/null
 touch -t 202001010000 "$(reading_file "$WORK")"
 CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$(payload 63 12)" > /dev/null
-[[ "$(stat -f '%Sm' -t '%Y' "$(reading_file "$WORK")" 2>/dev/null || stat -c '%y' "$(reading_file "$WORK")" | cut -c1-4)" == "2020" ]] \
+[[ "$(stat -c '%y' "$(reading_file "$WORK")" 2>/dev/null | cut -c1-4 | grep -E '^[0-9]{4}$' || stat -f '%Sm' -t '%Y' "$(reading_file "$WORK")")" == "2020" ]] \
   && ok "an unchanged reading inside the throttle window is not rewritten" || fail "the file was rewritten despite no change"
 CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$(payload 64 12)" > /dev/null
 check_eq "$(jq -r '.windows.seven_day.used_pct' "$(reading_file "$WORK")")" "64" "a changed figure is written at once"
+
+# One malformed window must not drop a valid one (each window stands alone).
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+mixed="$(jq -nc --argjson r "$PAYLOAD_FUTURE" '{cwd:"/tmp", rate_limits:{five_hour:{used_percentage:12, resets_at:null}, seven_day:{used_percentage:40, resets_at:$r}}}')"
+CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$mixed" > /dev/null
+check_eq "$(jq -r '.windows.seven_day.used_pct' "$(reading_file "$WORK")" 2>/dev/null)" "40" "a malformed 5-hour window does not lose a valid 7-day one"
+check_eq "$(jq -r '.windows.five_hour // "none"' "$(reading_file "$WORK")" 2>/dev/null)" "none" "and the malformed window is left out"
+# A percentage outside 0-100 is rejected.
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$(payload 140 12)" > /dev/null
+check_eq "$(jq -r '.windows.seven_day // "none"' "$(reading_file "$WORK")" 2>/dev/null)" "none" "a 7-day percentage above 100 is not saved"
+CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$(payload 64 12)" > /dev/null
 
 # --- 3. the reader uses a fresh reading and never touches the token ----------
 run_sl "$(payload 22 5)" > /dev/null
@@ -247,10 +260,29 @@ json="$(run_reader "$(( NOW + 60 ))" "$WORK")"
 check_eq "$(curl_calls token.test)" "1" "a run inside the cool-off makes no renewal request"
 check_contains "$(row_field "$json" "$WORK" 7-day detail)" "paused" "and the row says renewal is paused"
 check_eq "$(row_field "$json" "$WORK" 7-day status)" "rate-limited" "with the same status"
-check_eq "$(stat -f '%Lp' "$AI_QUOTAS_COOLOFF_DIR/claude--$WORK.json" 2>/dev/null || stat -c '%a' "$AI_QUOTAS_COOLOFF_DIR/claude--$WORK.json")" "600" "the cool-off file is mode 600"
+check_eq "$(stat -c '%a' "$AI_QUOTAS_COOLOFF_DIR/claude--$WORK.json" 2>/dev/null || stat -f '%Lp' "$AI_QUOTAS_COOLOFF_DIR/claude--$WORK.json")" "600" "the cool-off file is mode 600"
 check_lacks "$(cat "$AI_QUOTAS_COOLOFF_DIR/claude--$WORK.json")" "SECRET" "and holds no credential"
 json="$(run_reader "$(( NOW + 2000 ))" "$WORK")"
 check_eq "$(curl_calls token.test)" "2" "once the cool-off ends, renewal is attempted again"
+
+# An HTTP-date Retry-After longer than the default cool-off is honoured.
+rm -rf "$AI_QUOTAS_COOLOFF_DIR"; : > "$CURL_LOG"
+RA_EPOCH=$(( NOW + 7200 ))
+date -u -d "@$RA_EPOCH" '+%a, %d %b %Y %H:%M:%S GMT' > "$TMP/retry-after" 2>/dev/null \
+  || LC_ALL=C date -u -r "$RA_EPOCH" '+%a, %d %b %Y %H:%M:%S GMT' > "$TMP/retry-after"
+seed_expired_credentials
+run_reader "$NOW" "$WORK" > /dev/null
+check_eq "$(jq -r '.until_epoch' "$AI_QUOTAS_COOLOFF_DIR/claude--$WORK.json" 2>/dev/null)" "$RA_EPOCH" "a Retry-After HTTP-date sets the cool-off to that time"
+run_reader "$(( NOW + 3600 ))" "$WORK" > /dev/null
+check_eq "$(curl_calls token.test)" "1" "and no renewal request is made before it"
+rm -f "$TMP/retry-after"
+
+# A cool-off that cannot be written is disclosed, not silent.
+rm -rf "$AI_QUOTAS_COOLOFF_DIR"; : > "$CURL_LOG"
+seed_expired_credentials
+: > "$TMP/not-a-dir"
+json="$(AI_QUOTAS_COOLOFF_DIR="$TMP/not-a-dir/sub" run_reader "$NOW" "$WORK")"
+check_contains "$(row_field "$json" "$WORK" 7-day detail)" "cool-off could not be saved" "an unwritable cool-off folder is disclosed on the row"
 
 echo "----------------------------------------"
 echo "claude-status-reading.test.sh: $PASS passed, $FAILED failed"

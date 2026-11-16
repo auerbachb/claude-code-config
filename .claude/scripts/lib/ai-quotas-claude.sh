@@ -426,6 +426,13 @@ claude_refresh_access_token() {
         CLAUDE_REFRESH_DETAIL="$CLAUDE_REFRESH_DETAIL, retry after ${retry}s"
       elif [[ -n "$retry" ]]; then
         CLAUDE_REFRESH_DETAIL="$CLAUDE_REFRESH_DETAIL, retry after ${retry}"
+        # Best effort: turn a valid HTTP-date into seconds from now so the
+        # cool-off honours it (GNU date -d, else BSD date -j -f).
+        local rt_epoch=""
+        rt_epoch="$(date -u -d "$retry" +%s 2>/dev/null || LC_ALL=C date -u -j -f '%a, %d %b %Y %H:%M:%S GMT' "$retry" +%s 2>/dev/null || true)"
+        if [[ "$rt_epoch" =~ ^[0-9]+$ && -n "${NOW:-}" && "$rt_epoch" -gt "$NOW" ]]; then
+          CLAUDE_REFRESH_RETRY_AFTER="$(( rt_epoch - NOW ))"
+        fi
       fi
       return 3
     fi
@@ -699,25 +706,27 @@ claude_cooloff_active() { # <label>
   f="$(claude_cooloff_file "$1")" || return 1
   [[ -f "$f" && ! -L "$f" ]] || return 1
   until="$(jq -r 'if (.until_epoch | type) == "number" then (.until_epoch | floor) else empty end' "$f" 2>/dev/null || true)"
-  [[ "$until" =~ ^[0-9]+$ && "$until" -gt "$NOW" ]] || return 1
+  [[ "$until" =~ ^[0-9]+$ && "$until" -gt "$NOW" && "$(( until - NOW ))" -le 21600 ]] || return 1
   CLAUDE_REFRESH_DETAIL="renewal is paused for another $(claude_age_text $(( until - NOW ))) after the token endpoint rate-limited it, so no renewal request was made"
   return 0
 }
 
-claude_cooloff_start() { # <label>
+claude_cooloff_start() { # <label> [fixed-seconds]
   local f dir secs tmp
-  f="$(claude_cooloff_file "$1")" || return 0
+  f="$(claude_cooloff_file "$1")" || return 1
   secs="$CLAUDE_COOLOFF_SECONDS"
   if [[ "$CLAUDE_REFRESH_RETRY_AFTER" =~ ^[0-9]+$ && "$CLAUDE_REFRESH_RETRY_AFTER" -gt "$secs" ]]; then
     secs="$CLAUDE_REFRESH_RETRY_AFTER"
   fi
+  [[ "${2:-}" =~ ^[0-9]+$ ]] && secs="$2"
   [[ "$secs" -le 21600 ]] || secs=21600
   dir="$(dirname "$f")"
   ( umask 077
     mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
-    tmp="$(mktemp "$dir/.cooloff.XXXXXX" 2>/dev/null)" || exit 0
+    tmp="$(mktemp "$dir/.cooloff.XXXXXX" 2>/dev/null)" || exit 1
     jq -nc --argjson s "$NOW" --argjson u "$(( NOW + secs ))" '{started_epoch: $s, until_epoch: $u}' > "$tmp" 2>/dev/null \
-      && mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" ) || true
+      && mv -f "$tmp" "$f" 2>/dev/null && exit 0
+    rm -f "$tmp"; exit 1 )
 }
 
 claude_cooloff_clear() { # <label>
@@ -733,10 +742,16 @@ claude_try_refresh() { # <label>
   local rc=0
   CLAUDE_REFRESH_RETRY_AFTER=""
   if claude_cooloff_active "$1"; then return 3; fi
+  # Claim the account for two minutes before asking, so a second reader that
+  # starts meanwhile (the scheduled reader and a hook-triggered refresh can
+  # overlap) sees the pause instead of renewing too. The window between the
+  # check above and this write is a few milliseconds; that residue is accepted.
+  claude_cooloff_start "$1" 120 || true
   claude_refresh_access_token || rc=$?
   case "$rc" in
-    0) claude_cooloff_clear "$1" ;;
-    3) claude_cooloff_start "$1" ;;
+    3) claude_cooloff_start "$1" \
+         || CLAUDE_REFRESH_DETAIL="$CLAUDE_REFRESH_DETAIL (the cool-off could not be saved, so the next read will ask again)" ;;
+    *) claude_cooloff_clear "$1" ;;
   esac
   return "$rc"
 }
