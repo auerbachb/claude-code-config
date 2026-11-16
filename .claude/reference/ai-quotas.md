@@ -448,6 +448,53 @@ place, and never routes model traffic through it. Renewing that same token for t
 read is the same call, restated (2026-09-14, #1716): the renewal uses the credential
 already in the store, through Claude Code's own grant, and still routes no model traffic.
 
+### The status-line reading, tried before the token (#2403)
+
+Claude Code passes the status line a `rate_limits` object (Claude Code 2.1.321:
+`five_hour` and `seven_day`, each with `used_percentage` and `resets_at` in epoch
+seconds; it appears after the session's first API response and only for subscription
+sign-ins). `statusline.sh` already runs every 10 seconds in each CLI profile, so it now
+files those figures and the reader prefers them — they are the provider's own number
+handed over by the harness, need no token, and cannot hit the token endpoint's rate limit.
+Display and the reserve therefore stay inside `safety.md`'s rule against locally
+estimated usage.
+
+- **Where.** `~/.claude/ai-quotas/status-line/claude--<label>.json` (override:
+  `AI_QUOTAS_STATUSLINE_DIR`). Mode 600 in a 700 folder, written to a temp file and moved
+  into place. It holds the whole `rate_limits` object as handed over (`spend_limit`
+  included), `subscription_type`, the capture time (`captured_at_epoch` and UTC ISO-8601
+  `captured_at`), the account label, and a normalised `windows` view the reader uses. Later
+  columns (fetched, resets, paid usage) read their fields from this file. Only those
+  payload keys are copied, so a credential elsewhere in the payload cannot reach it.
+- **Which account.** The session's own `.claude.json` names the signed-in email
+  (`${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`); the registry's Claude account whose
+  profile `.claude.json` (or email-shaped label) carries the same email owns the reading.
+  Never by folder name (#1850). Zero or several matches: the reading is dropped. The
+  default `~/.claude` install is the same account as the profile that shares its email.
+- **When it is used.** The reader (`lib/claude-status-reading.sh`, called first in
+  `read_claude_account`) uses a reading no older than `AI_QUOTAS_STATUSLINE_MAX_AGE`
+  (default 1800 s) whose 7-day window has not since reset, and whose stored label matches.
+  The row's `source` is `status-line` and its note says how old the figure is. Otherwise
+  the token path runs, and a successful token-path row notes why the saved reading was
+  passed over. `--five-hour` adds the saved 5-hour window.
+- **No network, no slow work.** The status line does only local file reads and writes,
+  skips the write when nothing changed inside 60 s, does nothing when the payload has no
+  `rate_limits`, and prints its line whatever happens in this path.
+- **Reserve.** `quota-reserve.sh --refresh` reads through `ai-quotas.sh --json
+  --no-last-known`, so a status-line row is a normal provider-reported row for it.
+- **Cool-off after a 429.** When the token endpoint answers 429, renewal for that
+  account is skipped for `AI_QUOTAS_CLAUDE_COOLOFF_SECONDS` (default 1800, or the
+  `Retry-After` when longer, at most 6 h). The marker is
+  `~/.claude/ai-quotas/token-cooloff/claude--<label>.json` (`AI_QUOTAS_COOLOFF_DIR`),
+  two timestamps only; a successful renewal clears it. During the cool-off the row reads
+  `rate-limited` and says renewal is paused.
+- **Live check owed.** The payload shape was taken from the 2.1.321 binary and the
+  issue, not from a captured live payload; the tests use fixtures of that shape.
+  Confirm once with `claude-work`: send a message, run `/quotas`, compare with the
+  app's usage page.
+- **Not covered.** The desktop app renders no status line, and headless `-p` runs may
+  not either; those accounts still read through the token path.
+
 ### Renewing an expired access token (#1716)
 
 **The bug this removes.** On 2026-09-14 both Claude rows read `needs-login` three days
