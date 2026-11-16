@@ -59,9 +59,11 @@ Options for a follow-up, cheapest first:
 
 1. **Agent-taken observation.** With the owner present, drive `View Usage` in the IDE (or
    `/usage` in `agy`) once, record the real percentages and reset times, and add them as
-   a recorded sample. A provider can then reuse the private observation-file shape that
-   `ai-quotas.sh --browser-results` uses for Cursor and Claude (`lib/quotas-browser.py`),
-   with windows `5-hour` and `weekly`. This needs a live, signed-in session.
+   a recorded sample. The private observation-file shape that `ai-quotas.sh --browser-results`
+   uses (`.claude/scripts/lib/quotas-browser.py`) allows at most two rows per account, one per
+   window name, and has no model-group field. A provider must add a group identifier to each row
+   and extend the row limit before it can record the Gemini and Claude/GPT readings for both
+   `5-hour` and `weekly`. This needs a live, signed-in session.
 2. Ask Google for a documented usage endpoint or a machine-readable `agy` command.
 
 Design constraints for whichever lands: display-only (never feed `quota-reserve.sh`);
