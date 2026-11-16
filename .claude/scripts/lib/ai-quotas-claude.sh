@@ -422,9 +422,17 @@ claude_refresh_access_token() {
       # Retry-After is delta-seconds or an HTTP-date (RFC 9110 §10.2.3);
       # appending "s" to a date would produce a duration that is neither.
       if [[ "$retry" =~ ^[0-9]+$ ]]; then
+        CLAUDE_REFRESH_RETRY_AFTER="$retry"
         CLAUDE_REFRESH_DETAIL="$CLAUDE_REFRESH_DETAIL, retry after ${retry}s"
       elif [[ -n "$retry" ]]; then
         CLAUDE_REFRESH_DETAIL="$CLAUDE_REFRESH_DETAIL, retry after ${retry}"
+        # Best effort: turn a valid HTTP-date into seconds from now so the
+        # cool-off honours it (GNU date -d, else BSD date -j -f).
+        local rt_epoch=""
+        rt_epoch="$(date -u -d "$retry" +%s 2>/dev/null || LC_ALL=C date -u -j -f '%a, %d %b %Y %H:%M:%S GMT' "$retry" +%s 2>/dev/null || true)"
+        if [[ "$rt_epoch" =~ ^[0-9]+$ && -n "${NOW:-}" && "$rt_epoch" -gt "$NOW" ]]; then
+          CLAUDE_REFRESH_RETRY_AFTER="$(( rt_epoch - NOW ))"
+        fi
       fi
       return 3
     fi
@@ -614,6 +622,149 @@ claude_usage_request() { # <body-file> <headers-file>
   return "$rc"
 }
 
+# --- status-line reading and renewal cool-off (#2403) ------------------------
+#
+# Claude Code hands the status line `rate_limits` — the account's own 5-hour and
+# 7-day usage — and statusline.sh files it per registered account (see
+# lib/claude-status-reading.sh). A fresh reading is the provider's own figure
+# passed through the harness, needs no token, and so cannot hit the token
+# endpoint's rate limit. The token path below is the fallback.
+CLAUDE_STATUSLINE_MAX_AGE="${AI_QUOTAS_STATUSLINE_MAX_AGE:-1800}"
+[[ "$CLAUDE_STATUSLINE_MAX_AGE" =~ ^[1-9][0-9]*$ ]] || CLAUDE_STATUSLINE_MAX_AGE=1800
+CLAUDE_STATUSLINE_NOTE=""
+CLAUDE_STATUSLINE_LIB="${SELF_DIR:-}/lib/claude-status-reading.sh"
+if [[ -r "$CLAUDE_STATUSLINE_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$CLAUDE_STATUSLINE_LIB" 2>/dev/null || CLAUDE_STATUSLINE_LIB=""
+else
+  CLAUDE_STATUSLINE_LIB=""
+fi
+
+claude_age_text() { # <seconds>
+  if [[ "$1" -ge 3600 ]]; then printf '%sh %sm' $(( $1 / 3600 )) $(( ($1 % 3600) / 60 ))
+  elif [[ "$1" -ge 60 ]]; then printf '%sm' $(( $1 / 60 ))
+  else printf '%ss' "$1"; fi
+}
+
+# Emit rows from a fresh saved reading. Returns 0 when it emitted, 1 when the
+# caller should read through the token instead (with CLAUDE_STATUSLINE_NOTE set
+# when a reading existed but could not be used).
+claude_statusline_rows() { # <label>
+  local label="$1" win pair used resets span key emitted=0 five_emitted=0 note extra age_txt
+  CLAUDE_STATUSLINE_NOTE=""
+  [[ -n "$CLAUDE_STATUSLINE_LIB" ]] || return 1
+  if ! csr_load "$label" "$NOW" "$CLAUDE_STATUSLINE_MAX_AGE"; then
+    case "$CSR_STATE" in
+      stale) CLAUDE_STATUSLINE_NOTE="the saved status-line reading is $(claude_age_text "$CSR_AGE") old (limit $(claude_age_text "$CLAUDE_STATUSLINE_MAX_AGE")), so it was not used" ;;
+      invalid) CLAUDE_STATUSLINE_NOTE="the saved status-line reading is unusable, so it was not used" ;;
+    esac
+    return 1
+  fi
+  age_txt="$(claude_age_text "$CSR_AGE")"
+  note="from the Claude status line, taken ${age_txt} ago"
+  # The 7-day window decides usability: a reading whose weekly window has since
+  # reset describes a week that no longer exists.
+  pair="$(csr_window seven_day)"
+  resets="${pair#* }"
+  if [[ -z "$pair" || ! "$resets" =~ ^[0-9]+$ || "$resets" -le "$NOW" ]]; then
+    CLAUDE_STATUSLINE_NOTE="the saved status-line reading predates the current 7-day window, so it was not used"
+    return 1
+  fi
+  for key in seven_day five_hour; do
+    case "$key" in
+      seven_day) win="7-day"; span=604800 ;;
+      five_hour) win="5-hour"; span=18000
+                 [[ "$FIVE_HOUR" -eq 1 ]] || continue ;;
+    esac
+    pair="$(csr_window "$key")"
+    [[ -n "$pair" ]] || continue
+    used="${pair%% *}"; resets="${pair#* }"
+    [[ "$resets" =~ ^[0-9]+$ && "$resets" -gt "$NOW" ]] || continue
+    extra="$(with_window_start "{}" "$resets" "$span")"
+    emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "status-line" "" "$extra"
+    emitted=1
+    [[ "$key" == "five_hour" ]] && five_emitted=1
+  done
+  # A good weekly reading is kept, never discarded for the token path (which is
+  # the rate-limited endpoint this reader exists to avoid). But a missing or
+  # already-reset 5-hour window must be visible, not a silently absent row: emit
+  # an explicit row with no figure (never 0%) saying why.
+  if [[ "$FIVE_HOUR" -eq 1 && "$five_emitted" -eq 0 ]]; then
+    emit_row claude "$label" "" "5-hour" "" "" unreadable \
+      "the saved status-line reading (taken ${age_txt} ago) has no current 5-hour window, so no 5-hour figure is available" "status-line" ""
+  fi
+  [[ "$emitted" -eq 1 ]]
+}
+
+# After the token endpoint answers 429, renewal is skipped for a cool-off so
+# every later run does not ask again. One small file per account; it holds two
+# timestamps and nothing else.
+CLAUDE_COOLOFF_SECONDS="${AI_QUOTAS_CLAUDE_COOLOFF_SECONDS:-1800}"
+[[ "$CLAUDE_COOLOFF_SECONDS" =~ ^[1-9][0-9]*$ ]] || CLAUDE_COOLOFF_SECONDS=1800
+CLAUDE_REFRESH_RETRY_AFTER=""
+
+claude_cooloff_file() { # <label>
+  local base="${AI_QUOTAS_COOLOFF_DIR:-${HOME:-}/.claude/ai-quotas/token-cooloff}"
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._@+-]*$ && "$1" != *..* && -n "$base" && "$base" != /.claude/* ]] || return 1
+  printf '%s/claude--%s.json' "$base" "$1"
+}
+
+# Returns 0 and sets CLAUDE_REFRESH_DETAIL when renewal is paused for <label>.
+claude_cooloff_active() { # <label>
+  local f until
+  f="$(claude_cooloff_file "$1")" || return 1
+  [[ -f "$f" && ! -L "$f" ]] || return 1
+  until="$(jq -r 'if (.until_epoch | type) == "number" then (.until_epoch | floor) else empty end' "$f" 2>/dev/null || true)"
+  [[ "$until" =~ ^[0-9]+$ && "$until" -gt "$NOW" && "$(( until - NOW ))" -le 21600 ]] || return 1
+  CLAUDE_REFRESH_DETAIL="renewal is paused for another $(claude_age_text $(( until - NOW ))) after the token endpoint rate-limited it, so no renewal request was made"
+  return 0
+}
+
+claude_cooloff_start() { # <label> [fixed-seconds]
+  local f dir secs tmp
+  f="$(claude_cooloff_file "$1")" || return 1
+  secs="$CLAUDE_COOLOFF_SECONDS"
+  if [[ "$CLAUDE_REFRESH_RETRY_AFTER" =~ ^[0-9]+$ && "$CLAUDE_REFRESH_RETRY_AFTER" -gt "$secs" ]]; then
+    secs="$CLAUDE_REFRESH_RETRY_AFTER"
+  fi
+  [[ "${2:-}" =~ ^[0-9]+$ ]] && secs="$2"
+  [[ "$secs" -le 21600 ]] || secs=21600
+  dir="$(dirname "$f")"
+  ( umask 077
+    mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
+    tmp="$(mktemp "$dir/.cooloff.XXXXXX" 2>/dev/null)" || exit 1
+    jq -nc --argjson s "$NOW" --argjson u "$(( NOW + secs ))" '{started_epoch: $s, until_epoch: $u}' > "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$f" 2>/dev/null && exit 0
+    rm -f "$tmp"; exit 1 )
+}
+
+claude_cooloff_clear() { # <label>
+  local f
+  f="$(claude_cooloff_file "$1")" || return 0
+  if [[ -f "$f" && ! -L "$f" ]]; then rm -f "$f" 2>/dev/null; fi
+  return 0
+}
+
+# One renewal attempt, honouring the cool-off. Same return codes as
+# claude_refresh_access_token (3 = rate-limited).
+claude_try_refresh() { # <label>
+  local rc=0
+  CLAUDE_REFRESH_RETRY_AFTER=""
+  if claude_cooloff_active "$1"; then return 3; fi
+  # Claim the account for two minutes before asking, so a second reader that
+  # starts meanwhile (the scheduled reader and a hook-triggered refresh can
+  # overlap) sees the pause instead of renewing too. The window between the
+  # check above and this write is a few milliseconds; that residue is accepted.
+  claude_cooloff_start "$1" 120 || true
+  claude_refresh_access_token || rc=$?
+  case "$rc" in
+    3) claude_cooloff_start "$1" \
+         || CLAUDE_REFRESH_DETAIL="$CLAUDE_REFRESH_DETAIL (the cool-off could not be saved, so the next read will ask again)" ;;
+    *) claude_cooloff_clear "$1" ;;
+  esac
+  return "$rc"
+}
+
 # A note to hang on this account's successful rows — used only to disclose a
 # write-back that did not land, so a renewal that silently stopped persisting
 # is visible in the table instead of costing a fresh refresh on every run
@@ -628,6 +779,14 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
 
   CLAUDE_ROW_NOTE=""
 
+  # A fresh status-line reading answers without touching the credential store
+  # or the network. Otherwise fall through to the token path, keeping the
+  # reason a stale reading was passed over for the row's note.
+  if claude_statusline_rows "$label"; then
+    return 0
+  fi
+  [[ -z "$CLAUDE_STATUSLINE_NOTE" ]] || CLAUDE_ROW_NOTE="$CLAUDE_STATUSLINE_NOTE"
+
   if ! claude_token_for "$dir" "$service"; then
     emit_row claude "$label" "" "7-day" "" "" needs-login \
       "$CLAUDE_TOKEN_DETAIL — run: $(relogin_hint claude "$label")" "" ""
@@ -638,11 +797,11 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   # Claude Code renews on launch; a profile nobody launches has nothing else
   # to do it (#1716).
   if claude_token_expired; then
-    claude_refresh_access_token || refresh_rc=$?
+    claude_try_refresh "$label" || refresh_rc=$?
     case "$refresh_rc" in
       0)
         refreshed=1
-        CLAUDE_ROW_NOTE="$CLAUDE_REFRESH_DETAIL"
+        CLAUDE_ROW_NOTE="${CLAUDE_STATUSLINE_NOTE:+$CLAUDE_STATUSLINE_NOTE; }$CLAUDE_REFRESH_DETAIL"
         ;;
       1)
         claude_forget_credentials
@@ -677,11 +836,11 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   if [[ "$rc" -eq 0 && ( "$code" == "401" || "$code" == "403" ) \
         && "$refreshed" -eq 0 && -n "$CLAUDE_REFRESH_TOKEN" ]]; then
     refresh_rc=0
-    claude_refresh_access_token || refresh_rc=$?
+    claude_try_refresh "$label" || refresh_rc=$?
     case "$refresh_rc" in
       0)
         refreshed=1
-        CLAUDE_ROW_NOTE="$CLAUDE_REFRESH_DETAIL"
+        CLAUDE_ROW_NOTE="${CLAUDE_STATUSLINE_NOTE:+$CLAUDE_STATUSLINE_NOTE; }$CLAUDE_REFRESH_DETAIL"
         rc=0
         claude_usage_request "$body" "$hdrs" || rc=$?
         code="$CLAUDE_HTTP_CODE"
