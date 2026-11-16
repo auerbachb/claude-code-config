@@ -28,13 +28,37 @@ class Browser(unittest.TestCase):
     def test_identity_freshness_and_null(self):
         """Require identity and freshness, without converting missing usage to zero."""
         doc = observation()
-        self.assertEqual(browser.validate(doc, 'fixture', 'FIXTURE@example.com', 1000), doc)
+        self.assertEqual(browser.validate(doc, 'fixture', 'FIXTURE@example.com', 1000), dict(doc, identity_verified=True))
         for email, now in [('other@example.com', 1000), ('fixture@example.com', 1400)]:
             with self.assertRaises(ValueError):
                 browser.validate(doc, 'fixture', email, now)
         doc['rows'][0]['used_pct'] = None
         with self.assertRaises(ValueError):
             browser.validate(doc, 'fixture', '', 1000)
+
+    def test_cursor_email_optional_but_never_loosened_otherwise(self):
+        """#1870: only Cursor may omit the email; it is then unverified. Claude and bad emails stay rejected."""
+        for shape in ('absent', None, ''):
+            doc = observation()
+            if shape == 'absent':
+                del doc['email']
+            else:
+                doc['email'] = shape
+            out = browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
+            self.assertIs(out['identity_verified'], False)
+        for bad in ('   ', 'not-an-email', 'other@example.com'):
+            with self.assertRaises(ValueError):
+                browser.validate(dict(observation(), email=bad), 'fixture', 'fixture@example.com', 1000)
+        claude = dict(observation(), provider='claude')
+        claude['rows'] = [dict(claude['rows'][0], window='7-day')]
+        for shape in ('absent', None, ''):
+            doc = dict(claude)
+            if shape == 'absent':
+                del doc['email']
+            else:
+                doc['email'] = shape
+            with self.assertRaises(ValueError):
+                browser.validate(doc, 'fixture', 'fixture@example.com', 1000, 'claude')
 
     def test_schema_version_is_an_integer_not_a_boolean(self):
         """Python treats True == 1; a boolean schema_version must not pass as version 1."""
@@ -510,7 +534,7 @@ print(json.dumps({'structured_output':doc}))
         """Spending-page fields (#1870) validate for Cursor, stay optional, and never reach Claude."""
         doc = observation()
         doc.update(plan='Ultra', on_demand_used_usd=6.33, on_demand_limit_usd=50, cycle_resets_at_epoch=1796000000)
-        self.assertEqual(browser.validate(doc, 'fixture', 'fixture@example.com', 1000), doc)
+        self.assertEqual(browser.validate(doc, 'fixture', 'fixture@example.com', 1000), dict(doc, identity_verified=True))
         unlimited = dict(doc, on_demand_limit_usd=None, on_demand_unlimited=True)
         self.assertTrue(browser.validate(unlimited, 'fixture', 'fixture@example.com', 1000))
         for change in [dict(plan=3), dict(plan='x' * 41), dict(plan='bad\nname'), dict(on_demand_used_usd=-1),

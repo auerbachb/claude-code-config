@@ -1385,7 +1385,8 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
                       resets_at_epoch: .resets_at_epoch,
                       resets: .resets_at_et,
                       overage: .overage,
-                      source: ("live: " + (.source // "unknown")),
+                      source: ("live: " + (.source // "unknown")
+                               + (if .identity_verified == false then " (account not verified)" else "" end)),
                       fetched_at_epoch: $now})})
     | {accounts: .}' "$1" > "$payload" 2>/dev/null || { warn "DEGRADED: could not stage last-known readings — the report is unaffected"; return 0; }
   [[ "$(jq '.accounts | length' "$payload" 2>/dev/null)" -gt 0 ]] || return 0
