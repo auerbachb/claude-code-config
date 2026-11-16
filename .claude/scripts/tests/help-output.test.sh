@@ -357,27 +357,15 @@ pr-preflight.sh :: body :: gh, jq. Optionally cr-review-hourly.sh
 pr-preflight.sh :: head :: PER-SHA TRIGGER DEDUPE (issue #576)
 pr-preflight.sh :: body :: preflight_trigger_head_sha
 usage-horizon.sh :: head :: PURPOSE
-usage-horizon.sh :: body :: Turn the harness-injected in-context remaining-token counter
+usage-horizon.sh :: body :: The script remains only so callers that still invoke it keep working
 usage-horizon.sh :: head :: USAGE
 usage-horizon.sh :: body :: usage-horizon.sh --observe <remaining> [--limit <total>]
 usage-horizon.sh :: head :: MODES
-usage-horizon.sh :: body :: --observe <remaining>
-usage-horizon.sh :: head :: FLAGS
-usage-horizon.sh :: body :: --limit <total>   Window total for the reading
+usage-horizon.sh :: body :: --observe <remaining>   Accepted and ignored
 usage-horizon.sh :: head :: OUTPUT
 usage-horizon.sh :: body :: stdout: exactly two lines
-usage-horizon.sh :: head :: EXIT STATUS (the gate; unknown is NEVER read as clear)
-usage-horizon.sh :: body :: runway above the approaching threshold
-usage-horizon.sh :: head :: HYSTERESIS
-usage-horizon.sh :: body :: Worsening is immediate; improving must clear the threshold
-usage-horizon.sh :: head :: CONCURRENT SESSIONS (known limitation, deliberately not papered over)
-usage-horizon.sh :: body :: is a SINGLE slot in a machine-wide state file
-usage-horizon.sh :: head :: DEGRADATION CONTRACT (fail closed — mirrors credit-budget.sh)
-usage-horizon.sh :: body :: produces STATUS=unknown and exit 3
-usage-horizon.sh :: head :: FILES
-usage-horizon.sh :: body :: observation log, mode 600
-usage-horizon.sh :: head :: DEPENDENCIES
-usage-horizon.sh :: body :: - shasum or sha256sum
+usage-horizon.sh :: head :: EXIT STATUS
+usage-horizon.sh :: body :: 0  clear (always, for a well-formed invocation)
 review-substance.sh :: head :: Usage:
 review-substance.sh :: body :: review-substance.sh --help
 review-substance.sh :: body :: represents an actual review, or is a hollow rubber stamp

@@ -128,7 +128,13 @@ Items 1 and 2 above are decided. The owner does not manage the context figure an
 - **Unchanged.** A figure that was seen and then went missing or stale (`reading-stale`, `counter-seen-reading-displaced`, `observation-log-unreadable`) is still `unknown`: start nothing new. `counter-never-seen-unverified` (no harness conversation id) is still `unknown`. A present figure is judged by the thresholds as before; they are now a heuristic on the figure's own value, not on account usage. The reactive usage-limit park is untouched. Nothing estimates usage locally, so `safety.md`'s ban holds and no rule text changed.
 - **Not verified live.** What the figure reads across several messages on a model that prints it, and whether the server-side flag is ever set for this account, are still unobserved.
 
+## Decision (issue #2416, owner, 2026-11-16) — the figure gates nothing
+
+The owner does not manage a thread's context window and the app compacts conversations itself, so the low-figure behaviour is removed too, on every model. `usage-horizon.sh` now answers `STATUS=clear`, `REASON=not-a-launch-input` for any call and records nothing; `--observe` is accepted and ignored. The `approaching` hold, the `critical` pre-emptive park and the `usage_horizon_*` knobs no longer act. The weekly reserve, the daily budget and the reactive usage-limit park are untouched. A park record the old pre-emptive path left behind is retired by `subagent-thread-limit-park.md` §6 (`retire_preemptive`) and `/pm` day's park route (`retire:preemptive`). The consumer branches for `approaching`, `unknown` and `critical` in the `/pm`, `/subagent`, `/pr-monitor-and-manage` and `/babysit-pr` skills are now unreachable and remain only until a follow-up removes them.
+
 ## Manual verification
+
+> Historical since #2416: the checklist below describes the helper before it began answering `clear` / `not-a-launch-input` for every call.
 
 These need a live conversation and were not run by the investigating sub-agent.
 

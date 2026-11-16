@@ -638,7 +638,7 @@ read_day() {  # read_day <field> -> DAY_VALUE, DAY_RC, from this snapshot only
 read_day parked_until; PARKED_UNTIL="$DAY_VALUE"; PU_RC="$DAY_RC"
 read_day limit_kind;   PARK_KIND="$DAY_VALUE";   LK_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_FIRES="$DAY_VALUE"; PF_RC="$DAY_RC"
-read_day limit_cause; PC_RC="$DAY_RC"
+read_day limit_cause; PC_RC="$DAY_RC"; PARK_CAUSE="$DAY_VALUE"
 read_day park_claim_token; CT_RC="$DAY_RC"
 read_day park_generation; PG_RC="$DAY_RC"
 PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
@@ -677,6 +677,10 @@ else
     echo "PARK_RECOVERY=expired"       # window reopened — resume via /go-on
   elif [ "$PARK_KIND" != "rolling_window" ]; then
     echo "PARK_RECOVERY=manual"        # weekly cap, or an unrecognised kind
+  elif [ "$PARK_CAUSE" = "preemptive" ]; then
+    # Written by the removed figure-driven path (#2416): the provider never
+    # returned a limit. Retire it — never re-arm a probe, never leave it manual.
+    emit_recovery_rearm retire_preemptive
   elif [[ "$PARK_FIRES" =~ ^[1-9][0-9]*$ ]]; then
     # A pre-emptive park with fires LEFT (#1445): re-arm 2D.7's probe Monitor
     # with THAT count, never a fresh bound — re-arming twelve on every restart
@@ -721,6 +725,16 @@ On any nonzero, follow §4's stop-only-own-new-Monitor handling and do not claim
 an automatic resume. Never overwrite an occupied task with an unconditional
 state write.
 
+- **`retire_preemptive`** → the park was written by the pre-emptive path
+  that #2416 removed (cause `preemptive`): the provider never returned a limit,
+  so nothing is waiting to reopen. Re-arm no wake. Read a fresh
+  `.repos["$REPO_KEY"].day` snapshot with `--get-json` and clear the park with
+  `park-retire.sh --repo "$REPO_KEY" --snapshot "$SNAPSHOT" --state-helper
+  "$SESSION_STATE_SH"` (the helper `/pause-resume` Step 5 uses; exit 7 means a
+  newer park owns the slot — leave it). Then resume the parked pipelines through
+  `/go-on`: the retired `parked_until` over surviving per-PR records is its
+  resume-now park. A live probe `Monitor` from this session may still fire; its
+  horizon read answers `clear`, so it resumes the same board harmlessly.
 - **`rearm_probe`** → select `/pm` 2D.7's bounded probe `Monitor` with the
   recorded fires left, never a fresh bound. Publish through the guarded §4
   block above; keep the captured probe count unchanged.
@@ -747,6 +761,14 @@ pipelines resume regardless of which owner armed the wake.
 ---
 
 ## 7. Pre-emptive — park at the usage horizon (#1619)
+
+> **Inert since #2416.** The figure this section reads is the conversation's own
+> context or a per-message budget, not account usage, and `usage-horizon.sh`
+> now answers `clear` unconditionally, so §7.1's gate never reaches
+> `approaching`, `unknown` or `critical` and nothing parks here. The reactive
+> park (§1–§6) and the weekly reserve are untouched. A park record this path
+> wrote earlier is retired by §6's `retire_preemptive`. The text below is kept
+> for the fixtures that still exercise the code blocks, pending their removal.
 
 **Trigger.** This thread's own horizon read, once per monitor cycle — not a
 kill. §1–§6 wait for the wall; §7 sees it coming, so the board winds down with a

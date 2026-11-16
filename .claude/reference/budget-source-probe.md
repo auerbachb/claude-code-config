@@ -32,6 +32,12 @@ pre-emptive signal has since appeared via in-context injection),
 
 ### Probe 0 — In-context remaining-token counter (pre-emptive)
 
+> **Retired (#2416).** The counter measures the conversation's own context or a
+> per-message budget, not account usage, so it is no longer a probe:
+> `usage-horizon.sh` answers `clear` unconditionally, records nothing, and gates
+> no launch. The text below describes the retired design for history. Account
+> usage is read by Probe 1 (reactive), `quota-reserve.sh` and `credit-budget.sh`.
+
 **Files:** `~/.claude/usage-horizon.jsonl` (append-only observation log, mode
 600), `~/.claude/usage-horizon-seen.jsonl` (one identity line per conversation
 that has recorded a reading, never rotated, no figure in it) and `~/.claude/session-state.json` `.usage_horizon` (last reading + last
