@@ -81,6 +81,9 @@ cmp "$OBS" "$T/good.json" || fail "the newer observation is kept"
 if bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$SAMPLE" --captured-at "$(( $(date +%s) + 9999 ))" 2>/dev/null; then fail "a future capture time is refused"; fi
 jq --argjson c "$((CAP + 99999))" '.captured_at_epoch = $c' "$OBS" > "$T/future.json"
 python3 -I "$PARSER" show "$T/future.json" "$CAP" | jq -e '.status == "unreadable" and (.reason | test("future"))' >/dev/null || fail "show refuses a future capture time"
+helpout="$(bash "$SCRIPTS/quotas-antigravity-capture.sh" --help)"
+grep -Fq 'Exit: 0 saved' <<<"$helpout" || fail "--help prints the whole header"
+if grep -Eq 'set -euo|SELF_PATH' <<<"$helpout"; then fail "--help must stop at the end of the header comment"; fi
 pass "capture: file, stdin refusal, --live with a fake agy, atomic and private"
 
 # --- /quotas rows --------------------------------------------------------------------

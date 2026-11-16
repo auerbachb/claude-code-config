@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
     --live) MODE=live; shift ;;
     --captured-at) [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || die 2 "--captured-at needs an epoch"; CAPTURED="$2"; shift 2 ;;
     --observation) [[ $# -ge 2 ]] || die 2 "--observation needs a path"; OBS="$2"; shift 2 ;;
-    -h|--help) sed -n '3,22p' "$SELF_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR >= 3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$SELF_PATH"; exit 0 ;;
     *) die 2 "unknown argument: $1" ;;
   esac
 done
