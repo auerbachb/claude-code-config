@@ -842,6 +842,29 @@ check_eq "  and recovery then reads no park" "PARK_RECOVERY=none" "$(run_recover
 seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
 check_eq "a reactive park is never routed to retirement" "PARK_RECOVERY=rearm" "$(run_recovery)"
 
+# #2416 fail-closed: only the exact cause string `preemptive` retires. A record
+# with no cause, a differently-cased or non-string cause, or an open claim keeps
+# today's path (re-arm / unreadable), never a retirement.
+PD=".repos[\"$REPO_KEY\"].day"
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+"$SESSION_STATE_SH" --set "$PD.limit_cause=null" >/dev/null
+check_eq "a park with no cause is not retired as pre-emptive" "PARK_RECOVERY=rearm" "$(run_recovery)"
+seed_existing_park Preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+check_eq "a wrongly-cased cause is not retired as pre-emptive" "PARK_RECOVERY=rearm" "$(run_recovery)"
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+"$SESSION_STATE_SH" --set "$PD.limit_cause=7" >/dev/null
+check_eq "a malformed (non-string) cause reads unreadable, not retired" "PARK_RECOVERY=unreadable" "$(run_recovery)"
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+"$SESSION_STATE_SH" --set "$PD.park_claim_token=\"in-flight\"" >/dev/null
+check_eq "a pre-emptive record with an open claim is not retired" "PARK_RECOVERY=rearm" "$(run_recovery)"
+
+# #2416 review: an unset or unresolvable repo key must never read as "no park".
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+UNSET_OUT=$(REPO_KEY="" SESSION_STATE_SH=/usr/bin/false "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1)
+check_eq "an unresolvable repo key is unreadable, never none" "PARK_RECOVERY=unreadable" "$UNSET_OUT"
+UNSET_OUT=$(REPO_KEY="" CLAUDE_SESSION_REPO="$REPO_KEY" "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1)
+check_eq "an unset repo key resolves from the state helper and sees the park" "PARK_RECOVERY=rearm" "$UNSET_OUT"
+
 seed_unparked
 check_eq "no park: recovery is a no-op"          "PARK_RECOVERY=none" "$(run_recovery)"
 OUT=$(SESSION_STATE_SH="$CORRUPT_STATE" bash -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1)
@@ -870,7 +893,10 @@ run_recovery_record() (
   printf 'SELECTED_UNTIL=%s\n' "$PARKED_UNTIL"
 )
 snapshot_prefix() {
-  printf '%s\n' "$1" | sed -n '/^# One lock-protected record/,/^read_day parked_until/p' | sed '$d'
+  # The subagent block alone resolves an unset REPO_KEY and fails closed on an
+  # unresolved one (#2416 review); those lines are the only permitted difference.
+  printf '%s\n' "$1" | sed -n '/^# One lock-protected record/,/^read_day parked_until/p' | sed '$d' \
+    | grep -v -e '^\[ -n "\$REPO_KEY" \] || DAY_SNAPSHOT_RC=4$'
 }
 check_eq "PM and subagent use the identical snapshot mechanism" \
   "$(snapshot_prefix "$BLOCK_PM_SNAPSHOT")" "$(snapshot_prefix "$BLOCK_RECOVERY")"

@@ -56,6 +56,16 @@ run --check --observe 5
 check_eq "$RC" "4" "two modes are a usage error"
 run --observe
 check_eq "$RC" "4" "--observe without a value is a usage error"
+run --observe --check
+check_eq "$RC|$OUT" "4|" "--observe swallowing --check is a usage error with no STATUS line"
+run --observe abc
+check_eq "$RC" "4" "a non-numeric --observe value is a usage error"
+run --observe -5
+check_eq "$RC" "4" "a negative --observe value is a usage error"
+run --check --session --observe
+check_eq "$RC" "4" "--session swallowing a flag is a usage error"
+run --check --limit
+check_eq "$RC" "4" "--limit without a value is a usage error"
 run --bogus
 check_eq "$RC" "4" "an unknown flag is a usage error"
 run --check -- stray

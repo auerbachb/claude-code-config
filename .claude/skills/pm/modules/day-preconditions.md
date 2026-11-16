@@ -161,7 +161,7 @@ pm_day_park_route() {
   done
 
   if [ "$PARK_CLAIM_TOKEN" != null ]; then echo manual:unfinished; return; fi
-  if [ "$PARK_LIMIT_CAUSE" = preemptive ] && [ "$PARK_LIMIT_KIND" != weekly ]; then echo retire:preemptive; return; fi
+  if [ "$PARK_LIMIT_CAUSE" = preemptive ] && [ "$PARK_LIMIT_KIND" = rolling_window ]; then echo retire:preemptive; return; fi
   if [ "$PARK_LIMIT_KIND" = weekly ] &&
       { [ "${PM_DAY_WEEKLY_RESUMED_SNAPSHOT:-}" != "$DAY_SNAPSHOT" ] || [ "$PARKED_UNTIL" = null ]; }; then
     echo manual:weekly
@@ -202,10 +202,14 @@ printf 'PARK_ROUTE=%s\n' "$PARK_ROUTE"
 ```
 
 `retire:preemptive` is a park the removed figure-driven path wrote (#2416); no
-provider limit stands behind it. Clear it with `park-retire.sh --repo "$REPO_KEY"
---snapshot "$DAY_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (exit 7: a newer
-park owns the slot: read a fresh snapshot and route it again). Continue as
-`normal` only after exit 0; on any other exit stop and report it.
+provider limit stands behind it. That path also activated the execution gate and
+left a per-PR record for each parked pipeline, so clearing the day park alone
+would leave the board stopped. Clear the park with `park-retire.sh --repo
+"$REPO_KEY" --snapshot "$DAY_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (exit
+7: a newer park owns the slot: read a fresh snapshot and route it again). On exit
+0 route to `/go-on` and stop this invocation: it lifts the execution gate and
+relaunches each parked pipeline from its `usage_limit_park` record. On any other
+exit stop and report it. Do not continue as `normal`.
 
 Only `normal` continues to the day claim and Steps 1 and 2. For either
 `recover:*` route, use 2D.5's **Recover the captured wake** with the same

@@ -594,9 +594,13 @@ that is still closed.
 ```bash
 # Inputs: SESSION_STATE_SH, REPO_KEY. Outputs: PARK_RECOVERY=<verdict>,
 # plus a compact PARK_RECOVERY_BINDING only for rearm/rearm_probe.
+# An unset key would read `.repos[""].day`, find nothing, and report `none` over a
+# live park. Resolve it first; an unresolved key is unreadable, never `none`.
+if [ -z "${REPO_KEY:-}" ]; then REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; fi
 # One lock-protected record per recovery attempt; never mix park generations.
 DAY_SNAPSHOT_RC=0
 DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
+[ -n "$REPO_KEY" ] || DAY_SNAPSHOT_RC=4
 if [ "$DAY_SNAPSHOT_RC" -eq 6 ]; then
   DAY_SNAPSHOT_RC=0
   DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
@@ -639,7 +643,7 @@ read_day parked_until; PARKED_UNTIL="$DAY_VALUE"; PU_RC="$DAY_RC"
 read_day limit_kind;   PARK_KIND="$DAY_VALUE";   LK_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_FIRES="$DAY_VALUE"; PF_RC="$DAY_RC"
 read_day limit_cause; PC_RC="$DAY_RC"; PARK_CAUSE="$DAY_VALUE"
-read_day park_claim_token; CT_RC="$DAY_RC"
+read_day park_claim_token; CT_RC="$DAY_RC"; PARK_TOKEN="$DAY_VALUE"
 read_day park_generation; PG_RC="$DAY_RC"
 PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; RG_RC="$DAY_RC"
@@ -677,7 +681,7 @@ else
     echo "PARK_RECOVERY=expired"       # window reopened — resume via /go-on
   elif [ "$PARK_KIND" != "rolling_window" ]; then
     echo "PARK_RECOVERY=manual"        # weekly cap, or an unrecognised kind
-  elif [ "$PARK_CAUSE" = "preemptive" ]; then
+  elif [ "$PARK_CAUSE" = "preemptive" ] && [ "$PARK_TOKEN" = null ]; then
     # Written by the removed figure-driven path (#2416): the provider never
     # returned a limit. Retire it — never re-arm a probe, never leave it manual.
     emit_recovery_rearm retire_preemptive

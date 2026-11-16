@@ -61,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --observe)
       [[ -n "$MODE" ]] && die_usage "only one of --observe, --check may be given"
       [[ $# -lt 2 ]] && die_usage "--observe requires a remaining-token value"
+      [[ "$2" =~ ^[0-9]+$ ]] || die_usage "--observe requires a non-negative integer, got: $2"
       MODE=observe; shift 2 ;;
     --check)
       [[ -n "$MODE" ]] && die_usage "only one of --observe, --check may be given"
@@ -68,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --counter-never-seen) shift ;;
     --limit|--session)
       [[ $# -lt 2 ]] && die_usage "$1 requires a value"
+      [[ "$2" == -* ]] && die_usage "$1 requires a value, got a flag: $2"
       shift 2 ;;
     --) shift; break ;;
     -*) die_usage "unknown flag: $1" ;;

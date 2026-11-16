@@ -1193,6 +1193,14 @@ check_eq "positive bound on a weekly park needs manual recovery" PARK_ROUTE=manu
   "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","limit_kind":"weekly","limit_cause":"preemptive","limit_probe_fires_remaining":2}')"
 check_eq "a REACTIVE park with a bound is not retired by the pre-emptive rule" PARK_ROUTE=recover:oneshot \
   "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":"reactive"}')"
+check_eq "no cause field is not retired as pre-emptive (#2416)" PARK_ROUTE=recover:oneshot \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window"}')"
+check_eq "a wrongly-cased cause is not retired as pre-emptive (#2416)" PARK_ROUTE=recover:oneshot \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":"Preemptive"}')"
+check_eq "a pre-emptive cause with no recognised kind is not retired (#2416)" PARK_ROUTE=manual:unverified \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_cause":"preemptive"}')"
+check_eq "a malformed cause fails closed, not retired (#2416)" PARK_ROUTE=manual:unreadable \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":7}')"
 check_eq "unfinished claim precedes bound and expiry" PARK_ROUTE=manual:unfinished \
   "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","park_claim_token":"in-flight","limit_probe_fires_remaining":2}')"
 check_eq "invalid deadline fails closed" PARK_ROUTE=manual:unreadable \
