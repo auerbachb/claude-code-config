@@ -594,9 +594,13 @@ that is still closed.
 ```bash
 # Inputs: SESSION_STATE_SH, REPO_KEY. Outputs: PARK_RECOVERY=<verdict>,
 # plus a compact PARK_RECOVERY_BINDING only for rearm/rearm_probe.
+# An unset key would read `.repos[""].day`, find nothing, and report `none` over a
+# live park. Resolve it first; an unresolved key is unreadable, never `none`.
+if [ -z "${REPO_KEY:-}" ]; then REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; fi
 # One lock-protected record per recovery attempt; never mix park generations.
 DAY_SNAPSHOT_RC=0
 DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
+[ -n "$REPO_KEY" ] || DAY_SNAPSHOT_RC=4
 if [ "$DAY_SNAPSHOT_RC" -eq 6 ]; then
   DAY_SNAPSHOT_RC=0
   DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
@@ -638,8 +642,8 @@ read_day() {  # read_day <field> -> DAY_VALUE, DAY_RC, from this snapshot only
 read_day parked_until; PARKED_UNTIL="$DAY_VALUE"; PU_RC="$DAY_RC"
 read_day limit_kind;   PARK_KIND="$DAY_VALUE";   LK_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_FIRES="$DAY_VALUE"; PF_RC="$DAY_RC"
-read_day limit_cause; PC_RC="$DAY_RC"
-read_day park_claim_token; CT_RC="$DAY_RC"
+read_day limit_cause; PC_RC="$DAY_RC"; PARK_CAUSE="$DAY_VALUE"
+read_day park_claim_token; CT_RC="$DAY_RC"; PARK_TOKEN="$DAY_VALUE"
 read_day park_generation; PG_RC="$DAY_RC"
 PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; RG_RC="$DAY_RC"
@@ -677,6 +681,13 @@ else
     echo "PARK_RECOVERY=expired"       # window reopened — resume via /go-on
   elif [ "$PARK_KIND" != "rolling_window" ]; then
     echo "PARK_RECOVERY=manual"        # weekly cap, or an unrecognised kind
+  elif [ "$PARK_CAUSE" = "preemptive" ] && [ "$PARK_TOKEN" = null ]; then
+    # Written by the removed figure-driven path (#2416): the provider never
+    # returned a limit. Retire it — never re-arm a probe, never leave it manual.
+    # Carry the snapshot THIS classification read: retirement must compare against
+    # it, never against a later read that could be a replacement park.
+    printf 'PARK_RETIRE_SNAPSHOT=%s\n' "$(printf '%s\n' "$DAY_SNAPSHOT" | jq -c .)"
+    emit_recovery_rearm retire_preemptive
   elif [[ "$PARK_FIRES" =~ ^[1-9][0-9]*$ ]]; then
     # A pre-emptive park with fires LEFT (#1445): re-arm 2D.7's probe Monitor
     # with THAT count, never a fresh bound — re-arming twelve on every restart
@@ -721,6 +732,22 @@ On any nonzero, follow §4's stop-only-own-new-Monitor handling and do not claim
 an automatic resume. Never overwrite an occupied task with an unconditional
 state write.
 
+- **`retire_preemptive`** → the park was written by the pre-emptive path
+  that #2416 removed (cause `preemptive`): the provider never returned a limit,
+  so nothing is waiting to reopen. Re-arm no wake. Retain `PARK_RETIRE_SNAPSHOT`
+  from this output as data: it is the snapshot whose cause was read as exactly
+  `preemptive`. Clear the park with `park-retire.sh --repo "$REPO_KEY" --snapshot
+  "$PARK_RETIRE_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (the helper
+  `/pause-resume` Step 5 uses). **Never pass a fresh read:** a fresh snapshot can
+  be a replacement park (a reactive one written after classification), and the
+  helper's compare-and-set checks ownership only against what it is given.
+  - Exit 0 → hand the board to `/go-on`: the retired `parked_until` over
+    surviving per-PR records is its resume-now park. A live probe `Monitor` from
+    this session may still fire; its horizon read answers `clear`, so it resumes
+    the same board harmlessly.
+  - Exit 7 → the slot changed since classification. Leave that park untouched,
+    do not resume, take a fresh snapshot and classify it again from the top.
+  - Any other exit → stop and report it; the park stays as it is.
 - **`rearm_probe`** → select `/pm` 2D.7's bounded probe `Monitor` with the
   recorded fires left, never a fresh bound. Publish through the guarded §4
   block above; keep the captured probe count unchanged.
@@ -747,6 +774,14 @@ pipelines resume regardless of which owner armed the wake.
 ---
 
 ## 7. Pre-emptive — park at the usage horizon (#1619)
+
+> **Inert since #2416.** The figure this section reads is the conversation's own
+> context or a per-message budget, not account usage, and `usage-horizon.sh`
+> now answers `clear` unconditionally, so §7.1's gate never reaches
+> `approaching`, `unknown` or `critical` and nothing parks here. The reactive
+> park (§1–§6) and the weekly reserve are untouched. A park record this path
+> wrote earlier is retired by §6's `retire_preemptive`. The text below is kept
+> for the fixtures that still exercise the code blocks, pending their removal.
 
 **Trigger.** This thread's own horizon read, once per monitor cycle — not a
 kill. §1–§6 wait for the wall; §7 sees it coming, so the board winds down with a
