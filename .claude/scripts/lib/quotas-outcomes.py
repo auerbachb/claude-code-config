@@ -17,6 +17,7 @@ import tempfile
 import time
 
 STATUSES = {'ok', 'logged_out', 'unreadable', 'rate_limited', 'timeout', 'parse_error'}
+KNOWN_STANDING = {'ide_token_encrypted'}
 RETENTION = 45 * 86400
 MAX_ROWS = 50000
 
@@ -115,6 +116,14 @@ def reliability(rows, current, now):
             failures = 0
             for record, _ in reversed(history):
                 if record['status'] == 'ok':
+                    break
+                # A known standing condition (the IDE keeps its token encrypted, #1870) is
+                # recorded but is not a fresh failure: it must not climb into a
+                # "source failed N consecutive reads" recommendation on every run.
+                # Failures recorded before the class existed were this same encrypted store
+                # (28 parse_error rows on the Cursor IDE token), so the streak stops here
+                # rather than surviving on them. Newer, different failures were counted above.
+                if record.get('error_class') in KNOWN_STANDING:
                     break
                 failures += 1
             sources.append(dict(source=source, consecutive_failures=failures,
