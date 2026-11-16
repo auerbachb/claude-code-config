@@ -204,7 +204,7 @@
 #           resets_at_et_short, status, action,
 #           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
-#           spend_limit_usd, overage, window_start_epoch, and the projection
+#           spend_limit_usd, spend_limit_unlimited, overage, window_start_epoch, and the projection
 #           fields usage_start_epoch, usage_start_is_floor, usage_start_day,
 #           usage_start_display, pct_per_day, days_left, and days_left_note.
 #           `days_left` is a NUMBER or null — never the table's `resets first`
