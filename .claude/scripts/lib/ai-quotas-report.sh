@@ -374,7 +374,13 @@ render_quota_table() {
             # composite Antigravity window (`<group> <window>`) is shortened to
             # `<group> 7d` / `<group> 5h`.
             win: ((.pool // .window) | if test(" ") then (sub("-hour$"; "h") | sub("-day$"; "d")) else . end),
-            used: (.used_pct | pct),
+            # A failed read with a saved (last-known) figure shows the saved percent here and
+            # its date in FETCHED; the reason and the "last known" explanation are in the
+            # note, which is a footnote. An expired saved figure, or none, stays `-`.
+            # --json keeps used_pct null for such a row; only this table cell borrows it.
+            used: (if (.used_pct | num) then (.used_pct | pct)
+                   elif (.last_known_used_pct | num) and .last_known_expired != true then (.last_known_used_pct | pct)
+                   else "-" end),
             fetched: (.fetched_display | dash),
             # `<=` (the record does not reach back to the window start) is one symbol wide here.
             start: (.usage_start_display | dash | sub("^<="; "≤")),
@@ -396,7 +402,10 @@ render_quota_table() {
             top: (if .account_primary == false then "-" else (.top_label | dash) end),
             toppct: (if .account_primary == false or ((.top_used_pct | num) | not) or .top_used_pct < 0 or .top_used_pct > 100 then "-"
                      else (.top_used_pct | (if . == floor then floor else . end) | tostring) + "%" end),
-            reset: (.resets_at_et_short // .resets_at_et | dash | sub("(?<h>[0-9]) (?<p>[AP]M)"; "\(.h)\(.p)")),
+            reset: ((.resets_at_et_short // .resets_at_et
+                     // (if (.last_known_used_pct | num) and .last_known_expired != true
+                         then (.last_known_resets_et // "" | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0]) else null end))
+                    | dash | sub("(?<h>[0-9]) (?<p>[AP]M)"; "\(.h)\(.p)")),
             inn: (.countdown | dash | sub("^in "; "")),
             # ACTIONABLE TEXT ONLY (#1700). Provenance (`plan pro`, `via app-server`) is on
             # every --json row. What stays is what the reader must act on: the status word

@@ -296,7 +296,7 @@ cursor_browser_account() { # <on_demand_limit-json|omit> <unlimited:true|false> 
   write_config "$(account_json cursor "$CURSOR_ACCT" "$TMP/browser-account" | jq '. + {nickname: "Cursor"}')"
   CURSOR_DB_UNDER_TEST="$TMP/cursor-columns-encrypted.vscdb"
   build_cursor_db "$CURSOR_DB_UNDER_TEST" 'cursor-safe-storage:v1:FIXTURE_CIPHER_SENTINEL'
-  jq -n --argjson ob "$NOW" --arg label "$CURSOR_ACCT" --arg email "$CURSOR_FIXTURE_EMAIL" --arg lim "$1" --arg unl "$2" --arg used "$3" \
+  jq -n --argjson ob "$NOW" --arg label "$CURSOR_ACCT" --arg email "${CURSOR_OBS_EMAIL-$CURSOR_FIXTURE_EMAIL}" --arg lim "$1" --arg unl "$2" --arg used "$3" \
     '{schema_version:1,provider:"cursor",label:$label,email:$email,status:"ok",observed_at_epoch:$ob,plan:"Ultra",
       rows:[{window:"cursor-models",used_pct:41,resets_at_epoch:null},{window:"other-models",used_pct:12,resets_at_epoch:null}]}
      + (if $lim == "omit" then {} else {on_demand_limit_usd: ($lim | fromjson)} end)
@@ -326,6 +326,17 @@ check_eq "$(cursor_cell paid_enabled),$(cursor_cell paid_cap_usd),$(cursor_cell 
 has_row "$(cursor_table_row)" ' - +- +- ' "table: and shows the blank marker, never ❌ or \$0"
 cursor_browser_account omit false 6.33
 check_eq "$(cursor_cell paid_enabled),$(cursor_cell paid_cap_usd),$(cursor_cell paid_spent_usd)" "null,null,6.33" "spend without a limit: the flag and cap stay unknown, the spend is kept"
+# An observation with no email (PR #2425: the Spending page shows none): the figures still show,
+# marked not verified, and the paid columns come from the same observation.
+CURSOR_OBS_EMAIL="" cursor_browser_account 50 false 6.33
+check_eq "$(cursor_cell identity_verified)" "false" "an observation with no email is not verified"
+check_eq "$(cursor_cell paid_enabled),$(cursor_cell paid_cap_usd),$(cursor_cell paid_spent_usd)" "true,50,6.33" "and still carries on, \$50 and \$6.33 from the same observation"
+run --account "$CURSOR_ACCT" --browser-results "$TMP/cursor-columns-obs.json"
+UNV_TABLE="$(row_of "$(table_only "$OUT")" Cursor)"
+has_row "$UNV_TABLE" '✅ \$50 +\$6\.33 ' "table: the unverified Cursor row shows ✅, \$50, \$6.33"
+has_row "$UNV_TABLE" ' now ' "and FETCHED is now (read within 120 seconds)"
+check_contains "$OUT" "account not verified" "and the not-verified marking is printed (in the footnote under the table)"
+check_contains "$UNV_TABLE" "[" "and the row points at that footnote"
 CURSOR_DB_UNDER_TEST=""
 
 # --- 5. FETCHED: read within 120 seconds before the run counts as fetched now ---------------

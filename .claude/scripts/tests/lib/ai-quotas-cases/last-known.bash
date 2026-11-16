@@ -112,6 +112,44 @@ run
 check_contains "$OUT" "expired: " "and the table says expired, not current"
 echo "ok" > "$STUB_CURSOR_MODE"
 
+# --- 22d2. the table shows a saved figure in USED, dated in FETCHED, explained in a footnote ---
+
+lk_reset
+lk_seed_owner 77 "Nov 28 2026" "$((NOW - 3 * 86400))"
+echo "shape" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(lk_row cursor-models used_pct)" "null" "json: used_pct stays null for a saved figure"
+check_eq "$(lk_row cursor-models last_known_used_pct)" "77" "json: the saved figure stays in last_known_used_pct"
+run
+LK_TABLE="$(table_only "$OUT")"
+LK_ROW="$(printf '%s\n' "$LK_TABLE" | grep -E '^cursor-fixture' | head -n 1)"
+check_contains "$LK_ROW" " 77% " "table: a fresh saved figure shows its percent in USED"
+check_not_contains "$LK_ROW" " now " "and FETCHED is a date, never now"
+check_contains "$LK_ROW" "Nov " "and the reset column shows the saved reset"
+check_contains "$LK_ROW" "[" "and the row points at a footnote"
+check_contains "$OUT" "(last known" "whose text says it is last known"
+check_not_contains "$(printf '%s\n' "$LK_ROW" | sed 's/\[[0-9]*\]//')" "last known" "and the explanation is not in the row itself"
+check_eq "$(printf '%s\n' "$LK_TABLE" | awk '{ if (length($0) > m) m = length($0) } END { print (m <= 140) ? "fits" : "wide" }')" "fits" "and the table stays within 140 columns"
+
+# An expired saved figure is blank in USED, with the footnote saying expired.
+lk_reset
+YESTERDAY_ET="$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($NOW - 86400, datetime.timezone.utc).strftime('%Y-%m-%d'))")"
+lk_seed_owner 77 "$YESTERDAY_ET" "$((NOW - 3 * 86400))"
+echo "shape" > "$STUB_CURSOR_MODE"
+run
+LK_ROW="$(printf '%s\n' "$(table_only "$OUT")" | grep -E '^cursor-fixture' | head -n 1)"
+check_not_contains "$LK_ROW" "77%" "table: an expired saved figure is not shown in USED"
+check_contains "$OUT" "expired: 77%" "and the footnote says it expired"
+
+# No saved figure at all: blank USED and no FETCHED date.
+lk_reset
+echo "shape" > "$STUB_CURSOR_MODE"
+run
+LK_ROW="$(printf '%s\n' "$(table_only "$OUT")" | grep -E '^cursor-fixture' | head -n 1)"
+check_not_contains "$LK_ROW" "%" "table: with no saved figure USED is blank"
+check_not_contains "$OUT" "last known" "and nothing claims a last known figure"
+echo "ok" > "$STUB_CURSOR_MODE"
+
 # --- 22e. the next usable live read replaces an owner reading ---------------
 
 lk_reset

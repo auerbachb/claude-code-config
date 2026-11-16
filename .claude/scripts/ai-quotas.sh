@@ -213,7 +213,7 @@
 #           resets_at_et_short, status, action,
 #           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
-#           spend_limit_usd, spend_limit_unlimited, overage, window_start_epoch, and the projection
+#           spend_limit_usd, spend_limit_unlimited, identity_verified, overage, window_start_epoch, and the projection
 #           fields usage_start_epoch, usage_start_is_floor, usage_start_day,
 #           usage_start_display, pct_per_day, days_left, and days_left_note.
 #           The account-level columns (#2409, #2408, #2415) have fields too, on every
@@ -907,6 +907,9 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       spend_limit_used_usd: null,
       spend_limit_usd: null,
       spend_limit_unlimited: null,
+      # #1870. Whether the account behind a browser observation was tied to the
+      # expected account (false: the page showed no email). Null where it does not apply.
+      identity_verified: null,
       # The two speculative Codex live figures. `codex_live_overage` DROPS a
       # key it could not read as a plain number, so without these defaults the
       # field would be present on some Codex rows and absent on every other
@@ -1168,8 +1171,7 @@ read_cursor_browser() { # <label>
     [[ ! -f "$db" ]] || email="$(cursor_cached_email "$db")"
   fi
   [[ -n "$email" || "$label" != *@* ]] || email="$label"
-  local identity_note="account not verified"
-  [[ -z "$email" ]] || identity_note="account verified"
+  local identity_note="account not verified" identity_verified="false"
   browser_cli="${AI_QUOTAS_BROWSER_CLI:-}"
   [[ -n "$browser_cli" ]] || browser_cli="$(claude_bin || true)"
   result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$email" "$NOW" "$browser_cli" 2>/dev/null)"
@@ -1186,6 +1188,11 @@ read_cursor_browser() { # <label>
   # Spending-page fields (#1870): plan, on-demand dollars and limit, and the cycle reset
   # date. All optional in the observation; an absent one stays null, never zero.
   local spend plan_name cycle_start
+  # Cursor's dashboard shows no account email (#1870), so the observation may carry none. The
+  # figures still show, marked unverified in the detail and in identity_verified.
+  if [[ "$(printf '%s' "$result" | jq -r '.identity_verified // false' 2>/dev/null)" == "true" ]]; then
+    identity_note="account verified"; identity_verified="true"
+  fi
   spend="$(printf '%s' "$result" | jq -c '{plan: (.plan // ""), used: .on_demand_used_usd, limit: .on_demand_limit_usd,
     unlimited: (.on_demand_unlimited // false), cycle_reset: .cycle_resets_at_epoch}' 2>/dev/null || printf '{}')"
   [[ -n "$spend" ]] || spend='{}'
@@ -1195,9 +1202,9 @@ read_cursor_browser() { # <label>
     reset="$(printf '%s' "$row" | jq -r --argjson s "$spend" '(.resets_at_epoch // $s.cycle_reset) | if type == "number" and . <= 253402300799 then floor else empty end')"
     window="$(printf '%s' "$row" | jq -r '.window')"
     cycle_start="$(monthly_cycle_start "$reset")"
-    emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email')" "$CURSOR_WINDOW" "$used" "$reset" ok \
+    emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email // ""')" "$CURSOR_WINDOW" "$used" "$reset" ok \
       "browser observation; $identity_note" browser "$plan_name" \
-      "$(browser_fetched_extra "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" '{pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
+      "$(browser_fetched_extra "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" --argjson iv "$identity_verified" '{identity_verified:$iv,pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
         spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')" "$result")"
   done < <(printf '%s' "$result" | jq -c '.rows[]')
 }
@@ -1456,7 +1463,8 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
     | map({provider: .[0].provider,
            label: .[0].label,
            nickname: .[0].nickname,
-           source: ("live: " + (.[0].source // "unknown")),
+           source: ("live: " + (.[0].source // "unknown")
+                    + (if ([ .[] | select(.identity_verified == false) ] | length) > 0 then " (account not verified)" else "" end)),
            # The account-level time is the NEWEST row read. Each row keeps its own
            # (below), so rows read at different times never share one date (#2406).
            fetched_at_epoch: (map(.fetched_at_epoch // $now) | max),
@@ -1467,7 +1475,8 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
                       resets_at_epoch: .resets_at_epoch,
                       resets: .resets_at_et,
                       overage: .overage,
-                      source: ("live: " + (.source // "unknown")),
+                      source: ("live: " + (.source // "unknown")
+                               + (if .identity_verified == false then " (account not verified)" else "" end)),
                       # The account-level columns travel with the series (#2409, #2408,
                       # #2415), so a saved figure restored later keeps them.
                       account: ({paid_enabled, paid_cap_usd, paid_cap_unlimited, paid_spent_usd, paid_currency,

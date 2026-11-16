@@ -46,7 +46,7 @@ if not os.environ.get('BROWSER_STUB_STATUS'):
  event('read_page',dict(tabId=tab))
  event('read_page',dict(tabId=tab),'PostToolUse',[{'type':'text','text':'Synthetic quota fixture usage: 37%'}])
 print(json.dumps({'structured_output': {'schema_version':1, 'provider':'cursor',
-  'label':os.environ['BROWSER_STUB_LABEL'], 'email':'cursor-fixture@example.com',
+  'label':os.environ['BROWSER_STUB_LABEL'], 'email':os.environ.get('BROWSER_STUB_EMAIL','cursor-fixture@example.com'),
   'status':os.environ.get('BROWSER_STUB_STATUS','ok'), 'observed_at_epoch':int(os.environ['BROWSER_STUB_NOW']),
   'rows':[] if os.environ.get('BROWSER_STUB_STATUS') else [{'window':'cursor-models','used_pct':37,'resets_at_epoch':float(os.environ['BROWSER_STUB_RESET']) if os.environ.get('BROWSER_STUB_RESET') else None}]}}))
 BROWSER_STUB
@@ -59,6 +59,16 @@ cp "$AI_QUOTAS_BROWSER_CLI" "$BIN/claude"
 unset AI_QUOTAS_BROWSER_CLI
 run --json --browser
 check_eq "$(printf '%s' "$OUT" | jq -r '.[0].source')" "browser" "browser resolves Claude through the existing provider binary resolver"
+# Chrome-collector path (#1870): a page that shows no email is accepted as unverified through the
+# same flag as an observation file; a supplied email that differs is still rejected.
+BROWSER_STUB_EMAIL="" run --json --browser
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.status == "ok")] | length')" "1" "the Chrome collector accepts a page with no email"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].identity_verified')" "false" "a collector reading with no email is marked unverified"
+check_contains "$(printf '%s' "$OUT" | jq -r '.[0].detail')" "account not verified" "a collector reading with no email says so"
+BROWSER_STUB_EMAIL="someone-else@example.com" run --json --browser
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.status == "ok")] | length')" "0" "the Chrome collector rejects a supplied email that differs"
+BROWSER_STUB_EMAIL="   " run --json --browser
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.status == "ok")] | length')" "0" "a whitespace-only email is rejected, not treated as empty"
 cp "$TMP/claude-before-browser" "$BIN/claude"
 export AI_QUOTAS_BROWSER_CLI="$BIN/browser-bridge"
 # Browser-first identity lookup applies the same control filter as the IDE reader.
@@ -139,6 +149,49 @@ chmod 600 "$TMP/cursor-spending-old.json"
 run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-old.json"
 check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "2" "an older observation without spending fields still reads"
 check_eq "$(field_of "$OBS_LABEL" billing-cycle spend_limit_usd | head -n 1)" "null" "absent on-demand figures stay null, never zero"
+CURSOR_DB_UNDER_TEST=""
+
+# Identity (#1870): the dashboard shows no account email, so a Cursor observation may leave it
+# empty, null or absent and is shown marked unverified. A supplied email must still match.
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-obs.json"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .identity_verified] | unique | join(",")')" "true" "a matching email marks the rows verified"
+for _shape in '.email=""' '.email=null' 'del(.email)'; do
+  jq "$_shape" "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-noemail.json"
+  chmod 600 "$TMP/cursor-spending-noemail.json"
+  run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-noemail.json"
+  check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "2" "a Cursor observation with email $_shape is accepted"
+  check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .identity_verified] | unique | join(",")')" "false" "email $_shape is marked identity_verified false"
+  check_contains "$(field_of "$OBS_LABEL" billing-cycle detail)" "account not verified" "email $_shape says the account was not verified"
+done
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .used_pct] | unique | join(",")')" "100" "an unverified observation still shows its figures"
+check_eq "$(grep -rl 'account not verified' "$CASE_HOME/.claude/ai-quotas/last-known" 2>/dev/null | wc -l | tr -d ' ')" "1" "an unverified observation is saved under an unverified last-known source"
+jq '.email="someone-else@example.com"' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-wrong.json"
+chmod 600 "$TMP/cursor-spending-wrong.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-wrong.json"
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "0" "a supplied email that does not match is still rejected"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .identity_verified] | unique | join(",")')" "" "a rejected observation carries no verification claim"
+# Restore (#1870): an unverified reading stays marked unverified when it is shown later, and a
+# later verified reading replaces it with no mark.
+jq '.email=""' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-noemail.json"; chmod 600 "$TMP/cursor-spending-noemail.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-noemail.json"
+_lkfile="$(grep -rl 'account not verified' "$CASE_HOME/.claude/ai-quotas/last-known" | head -n 1)"
+check_eq "$(jq -r '[.rows[].source] | unique | join(",")' "$_lkfile")" "live: browser (account not verified)" "every saved row of an unverified reading carries the unverified source"
+jq '.status="logged_out" | .rows=[]' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-out.json"; chmod 600 "$TMP/cursor-spending-out.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-out.json"
+check_contains "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .last_known_source] | unique | join(",")')" "account not verified" "a restored unverified reading still says it was not verified"
+# A later verified reading replaces it.
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-obs.json"
+check_eq "$(jq -r '[.rows[].source] | unique | join(",")' "$_lkfile")" "live: browser" "a later verified reading replaces the unverified marking"
+# An unverified observation captured earlier than this run keeps BOTH its unverified mark and its
+# own capture date, live and restored (#1870 with #2406).
+jq --argjson ob "$((NOW - 120))" '.email="" | .observed_at_epoch=$ob' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-old.json"; chmod 600 "$TMP/cursor-spending-old.json"
+rm -rf "$CASE_HOME/.claude/ai-quotas/last-known"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-old.json"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | "\(.identity_verified)|\(.fetched)|\(.fetched_at)"] | unique | join(",")')" "false|saved|$(utc_iso "$((NOW - 120))")" "an unverified earlier observation is unverified and carries its own capture date"
+jq '.status="logged_out" | .rows=[]' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-out.json"; chmod 600 "$TMP/cursor-spending-out.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-out.json"
+check_contains "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .last_known_source] | unique | join(",")')" "account not verified" "the restored reading keeps its unverified marking"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .last_known_at_epoch] | unique | join(",")')" "$((NOW - 120))" "and its own capture date, not the run time"
 CURSOR_DB_UNDER_TEST=""
 
 # The cycle start comes from the observed reset: the same day and time one calendar month
