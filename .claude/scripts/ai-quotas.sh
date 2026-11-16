@@ -1079,7 +1079,8 @@ claude_browser_account_extra() { # <validated-observation-json>
              paid_period: "monthly", paid_read_at_epoch: $at} | keep end)
     + ((.limit_resets // null) | if . == null then {}
        else {limit_resets_available: .count,
-             limit_resets: (if (.items | type) == "array" and (.items | length) > 0 then .items else null end)} | keep end)
+             limit_resets: (if (.items | type) == "array" and (.items | length) > 0
+                             then [.items[] | .expires_at_epoch |= floor] else null end)} | keep end)
     + ((.top_model // null) | if . == null or ((.resets_at_epoch | type) == "number" and .resets_at_epoch <= $now) then {}
        else {top_label: .label, top_used_pct: .used_pct, top_resets_at_epoch: (.resets_at_epoch | if type == "number" then floor else null end)} | keep end)' 2>/dev/null || printf '{}'
 }
@@ -1520,9 +1521,22 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
            resets_et: (if $res_et == "" then null else $res_et end)}' <<<"$line" >> "$enriched" 2>/dev/null || true
   done < "$saved"
   [[ -s "$enriched" ]] || return 0
-  jq --slurpfile series "$enriched" '
+  jq --argjson now "$NOW" --slurpfile series "$enriched" '
     def usable: (.status == "ok") and ((.used_pct | type) == "number");
     def key: {provider: .provider, label: .label};
+    # The account-level columns of a restored row: ONE saved observation for the whole account
+    # (the newest unexpired saved row that carries any), never a mix; its top-tier group is
+    # dropped when the allowance own reset has passed; and any value the current observation
+    # already carries on the row wins over the saved one.
+    def akeys: ["paid_enabled","paid_cap_usd","paid_cap_unlimited","paid_spent_usd","paid_currency","paid_period",
+                "paid_read_at_epoch","limit_resets_available","limit_resets","top_label","top_used_pct","top_resets_at_epoch"];
+    def acct_for($r):
+      ([ $series[] | select(.provider == $r.provider and .label == $r.label and .expired != true
+                            and (.account | type) == "object" and (.account | length) > 0) ]
+        | sort_by(.fetched_at_epoch // 0) | last | (.account // {})) as $a
+      | (if ($a.top_resets_at_epoch | type) == "number" and $a.top_resets_at_epoch <= $now
+         then $a | del(.top_label, .top_used_pct, .top_resets_at_epoch) else $a end)
+      + ($r | with_entries(select(.key as $k | (akeys | index($k)) != null and .value != null)));
     . as $doc
     | ([ .rows[] | select(usable) | key ]) as $ok
     | .rows = [ $doc.rows | to_entries[] | .key as $i | .value as $r
@@ -1556,7 +1570,7 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
                     last_known_resets_at_epoch: $x.resets_at_epoch,
                     last_known_resets_et: $x.resets_et,
                     last_known_expired: $x.expired
-                  } + (if $x.expired == true then {} else ($x.account // {}) end)
+                  } + acct_for($r)
               end
           end
       ]' "$1" > "$TMP/lk-doc.json" 2>/dev/null && mv "$TMP/lk-doc.json" "$1" \

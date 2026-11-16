@@ -277,7 +277,7 @@ CSR_OBSERVE_JQ='
   def lrnorm:
     if . == null then {ok: true, v: null}
     else (if type == "array" then {count: length, items: .}
-          elif type == "object" then {count: .count, items: (.items // null)} else null end) as $o
+          elif type == "object" then {count: .count, items: (if has("items") then .items else null end)} else null end) as $o
       | if $o == null then {ok: false}
         elif ($o.count | type) != "number" or $o.count < 0 or $o.count > 1000 or $o.count != ($o.count | floor) then {ok: false}
         elif $o.items == null then {ok: true, v: {count: $o.count, items: []}}
@@ -286,7 +286,12 @@ CSR_OBSERVE_JQ='
         else {ok: true, v: {count: $o.count, items: [$o.items[] | lritem]}} end
     end;
   (if type != "object" then null elif (.plan | type) == "object" then .plan elif has("status") then . else null end) as $p
-  | (if type != "object" then null else (.limit_resets // $p.limit_resets // null) end | lrnorm) as $lr
+  # Only a missing or null block is absent: `false` (which jq `//` would treat as absent) stays
+  # a malformed block and is refused.
+  | (if type != "object" then null
+     elif has("limit_resets") and .limit_resets != null then .limit_resets
+     elif ($p | type) == "object" and ($p | has("limit_resets")) then $p.limit_resets
+     else null end | lrnorm) as $lr
   | if $p == null then {err: "the input is not the usage tool result or its plan object"}
     elif $lr.ok != true then {err: "limit_resets is malformed (expected a count and, optionally, items with a kind and a UTC ISO-8601 expires_at)"}
     elif $p.status != "ok" then {err: ("plan status is " + ($p.status | tostring) + ", not ok")}

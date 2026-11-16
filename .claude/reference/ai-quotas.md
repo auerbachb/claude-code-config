@@ -2115,7 +2115,7 @@ row).
 an expiry for each; no saved reading carries it (the status-line input and the usage tool
 do not). An agent that reads the page supplies it as an optional `limit_resets` object next
 to the tool result passed to `claude-usage-observe.sh`
-(`{"count": 2, "items": [{"kind": "Fable reset", "expires_at": "2027-03-09T00:00:00Z"}]}`;
+(`{"count": 1, "items": [{"kind": "Weekly reset", "expires_at": "2027-03-09T00:00:00Z"}]}`;
 a bare list of items also works, `items` may be omitted), or as `limit_resets` in a
 claude.ai page observation (`expires_at_epoch`). It is validated (a count of 0 to 1000,
 items matching the count, a plain kind, a UTC ISO-8601 expiry); a malformed block refuses the

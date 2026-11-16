@@ -318,8 +318,19 @@ stamp_account_primary() { # <doc-json-file>
              ([$e.value.provider, $e.value.label] | tojson) as $k
              | .first[$k] = (.first[$k] // $e.key)
              | if ($e.value | has_data) then .data[$k] = (.data[$k] // $e.key) else . end)) as $idx
-      | .rows = [ $rows | to_entries[] | .key as $i | .value
-                  | . + {account_primary: ($i == ($idx.data[([.provider, .label] | tojson)] // $idx.first[([.provider, .label] | tojson)]))} ]' \
+      | def groups: [["paid_enabled","paid_cap_usd","paid_cap_unlimited","paid_spent_usd","paid_currency","paid_period","paid_read_at_epoch"],
+                      ["limit_resets_available","limit_resets"], ["top_label","top_used_pct","top_resets_at_epoch"]];
+        # Each group of values (paid usage, resets, top tier) is shown once per account, on the
+        # primary row. A group the primary row lacks is taken whole from the first other row of the
+        # same account that has it, so one known value never prints as `-` because it sits on a
+        # different row; groups are never mixed field by field.
+        def fill($r; $all): reduce groups[] as $g ($r;
+          if ([$g[] as $k | $r[$k]] | any(. != null)) then .
+          else ([$all[] | select(.provider == $r.provider and .label == $r.label) | select([$g[] as $k | .[$k]] | any(. != null))] | first) as $src
+               | if $src == null then . else . + ($src | with_entries(select(.key as $k | ($g | index($k)) != null))) end end);
+      .rows = [ $rows | to_entries[] | .key as $i | .value
+                | (($i == ($idx.data[([.provider, .label] | tojson)] // $idx.first[([.provider, .label] | tojson)]))) as $p
+                | (if $p then fill(.; $rows) else . end) + {account_primary: $p} ]' \
       "$doc" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
     mv "$out" "$doc"
   else
@@ -352,6 +363,8 @@ render_quota_table() {
       # always with them ($0.00), so a $0 spend is plainly a figure and not a gap.
       def cap_usd: if (cents % 100) == 0 then "$" + ((cents / 100) | tostring) else "$" + two_dp end;
       def num: type == "number";
+      # A currency other than USD never prints as dollars (the JSON keeps whatever was saved).
+      def foreign: (.paid_currency | type) == "string" and .paid_currency != "USD";
       def clean: if type == "string" then gsub("[\u0000-\u001f\u007f]"; " ") else . end;
       # Terminal width: the two icons and East Asian wide characters take two columns, combining marks none.
       def wide: explode | map(if . >= 768 and . <= 879 then 0
@@ -395,9 +408,10 @@ render_quota_table() {
             cap: (if .account_primary == false then "-"
                   elif .paid_enabled == false then "off"
                   elif .paid_cap_unlimited == true then "none"
+                  elif foreign then "-"
                   elif ((.paid_cap_usd | num) and .paid_cap_usd >= 0) then (.paid_cap_usd | cap_usd)
                   else "-" end),
-            spent: (if .account_primary == false or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else "$" + (.paid_spent_usd | two_dp) end),
+            spent: (if .account_primary == false or foreign or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else "$" + (.paid_spent_usd | two_dp) end),
             rst: (if .account_primary == false or ((.limit_resets_available | num) | not) or .limit_resets_available < 0 then "-" else (.limit_resets_available | floor | tostring) end),
             top: (if .account_primary == false then "-" else (.top_label | dash) end),
             toppct: (if .account_primary == false or ((.top_used_pct | num) | not) or .top_used_pct < 0 or .top_used_pct > 100 then "-"

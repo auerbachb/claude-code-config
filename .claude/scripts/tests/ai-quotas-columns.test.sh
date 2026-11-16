@@ -156,8 +156,8 @@ check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | . as $r | ["paid_enabled","paid_c
 
 # Claude Personal: paid usage on, $315.79 of $500.00, Weekly · Fable 84% used.
 check_eq "$(row_json "$PERS" 7-day '.paid_enabled')" "true" "Claude Personal: paid usage is on"
-check_eq "$(row_json "$PERS" 7-day '.paid_cap_usd')" "500.00" "Claude Personal: the cap is \$500"
-check_eq "$(row_json "$PERS" 7-day '.paid_spent_usd')" "315.79" "Claude Personal: \$315.79 spent"
+check_eq "$(row_json "$PERS" 7-day '.paid_cap_usd == 500')" "true" "Claude Personal: the cap is \$500"
+check_eq "$(row_json "$PERS" 7-day '.paid_spent_usd == 315.79')" "true" "Claude Personal: \$315.79 spent"
 check_eq "$(row_json "$PERS" 7-day '.paid_currency')" "USD" "Claude Personal: in dollars"
 check_eq "$(row_json "$PERS" 7-day '.paid_period')" "monthly" "Claude Personal: the spend covers the month"
 check_eq "$(row_json "$PERS" 7-day '.paid_read_at_epoch')" "$(( NOW - 300 ))" "Claude Personal: the figures carry the time the reading was taken"
@@ -168,8 +168,8 @@ check_eq "$(row_json "$PERS" 7-day '.top_resets_at_epoch')" "$WEEK_RESET" "Claud
 check_eq "$(row_json "$PERS" 7-day '.limit_resets_available')" "null" "Claude Personal: no reading carries a reset count, so it is unknown, not zero"
 # Claude Work: credits off with a $1,000 limit set, $0.00 spent, two limit resets.
 check_eq "$(row_json "$WORK" 7-day '.paid_enabled')" "false" "Claude Work: credits are off, although a limit is set"
-check_eq "$(row_json "$WORK" 7-day '.paid_cap_usd')" "1000.00" "Claude Work: the \$1,000 limit is kept"
-check_eq "$(row_json "$WORK" 7-day '.paid_spent_usd')" "0.00" "Claude Work: \$0.00 spent is a figure the provider gave"
+check_eq "$(row_json "$WORK" 7-day '.paid_cap_usd == 1000')" "true" "Claude Work: the \$1,000 limit is kept"
+check_eq "$(row_json "$WORK" 7-day '.paid_spent_usd == 0')" "true" "Claude Work: \$0.00 spent is a figure the provider gave"
 check_eq "$(row_json "$WORK" 7-day '.limit_resets_available')" "2" "Claude Work: two limit resets available"
 check_eq "$(row_json "$WORK" 7-day '[.limit_resets[].kind] | join(",")')" "Fable reset,Weekly reset" "Claude Work: each reset names its kind"
 check_eq "$(row_json "$WORK" 7-day '[.limit_resets[].expires_at_epoch] | join(",")')" "1804000000,1790000000" "Claude Work: and its expiry"
@@ -262,8 +262,8 @@ check_not_contains "$TABLE" '✅' "nor as ✅"
 one_claude 300 '{"extra_usage":{"spent":"12.50","monthly_limit":"40.00","currency":"USD"}}'
 run --json
 check_eq "$(claude_field '.paid_enabled')" "null" "extra usage without an enabled flag leaves on/off unknown"
-check_eq "$(claude_field '.paid_cap_usd')" "40.00" "but keeps the cap"
-check_eq "$(claude_field '.paid_spent_usd')" "12.50" "and the spend"
+check_eq "$(claude_field '.paid_cap_usd == 40')" "true" "but keeps the cap"
+check_eq "$(claude_field '.paid_spent_usd == 12.5')" "true" "and the spend"
 run
 has_row "$(row_of "$(table_only "$OUT")" 'Claude Personal')" ' - +\$40 +\$12\.50 ' "table: blank flag, \$40 cap, \$12.50 spend (cents shown on spend, dropped on a whole cap)"
 # Another currency is never printed as dollars.
@@ -519,6 +519,30 @@ cb_page_obs '{"top_model":{"label":"Fable","used_pct":50,"resets_at_epoch":'"$WE
 check_eq "$(claude_field '[.top_label, .top_used_pct] | map(tostring) | join(",")')" "Fable,50" "control: a top-tier window that resets later is shown"
 CB_OBS_AT=$(( NOW + 100 )) cb_page_obs '{}'
 check_eq "$(claude_field '.fetched_display')" "$(TZ=America/New_York date -j -f %s "$(( NOW + 100 ))" '+%b %d' 2>/dev/null || TZ=America/New_York date -d "@$(( NOW + 100 ))" '+%b %d')" "an observation stamped 100 seconds after the run began shows its date, never now"
+
+# --- 8. review round 3: contracts the second review found --------------------------------------
+
+# The documented limit_resets example is itself valid input.
+DOC_EXAMPLE="$(grep -o '{"count": 1, "items": \[{"kind": "[^"]*", "expires_at": "[^"]*"}\]}' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../reference/ai-quotas.md" | head -n 1)"
+check_contains "$DOC_EXAMPLE" '"count": 1' "the documented limit_resets example was found in the reference"
+observe_json "$(jq -c --argjson lr "$DOC_EXAMPLE" '. + {limit_resets: $lr}' <<<"$TOOL_BASE")" >/dev/null
+check_eq "$?,$(jq -c '.limit_resets.count' "$OBS_FILE")" "0,1" "the documented example passes the real validator and is saved"
+
+# false is not "absent": a false block or false items list is refused and nothing is written.
+for bad in 'false' '{"count":2,"items":false}'; do
+  before="$(cat "$OBS_FILE")"
+  out="$(observe_json "$(jq -c --argjson lr "$bad" '. + {limit_resets: $lr}' <<<"$TOOL_BASE")")"; rc=$?
+  check_eq "$rc,$(printf '%s' "$out" | grep -c 'limit_resets is malformed')" "1,1" "limit_resets $bad is refused as malformed"
+  check_eq "$(cat "$OBS_FILE")" "$before" "and nothing is written for it"
+done
+
+# A fractional expiry is saved as a whole number, so it survives the last-known file.
+cb_page_obs '{"limit_resets":{"count":1,"items":[{"kind":"Weekly reset","expires_at_epoch":1804550400.5}]}}'
+check_eq "$(claude_field '.limit_resets | map(.expires_at_epoch) | join(",")')" "1804550400" "a fractional reset expiry is normalised to an integer"
+
+# Paid usage off stays off (false is not missing), and a zero reset count stays 0.
+cb_page_obs '{"extra_usage":{"enabled":false},"limit_resets":{"count":0}}'
+check_eq "$(claude_field '[.paid_enabled, .limit_resets_available] | map(tostring) | join(",")')" "false,0" "enabled false is kept as false and a count of 0 as 0"
 
 printf 'ai-quotas-columns.test.sh: %s passed, %s failed\n' "$PASS" "$FAILED"
 [[ "$FAILED" -eq 0 ]]

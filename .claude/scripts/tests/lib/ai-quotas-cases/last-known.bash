@@ -150,6 +150,27 @@ check_not_contains "$LK_ROW" "%" "table: with no saved figure USED is blank"
 check_not_contains "$OUT" "last known" "and nothing claims a last known figure"
 echo "ok" > "$STUB_CURSOR_MODE"
 
+# --- 22d3. restored account columns: one observation, own top-tier expiry, never a foreign currency ---
+
+lk_reset
+run --json
+jq --argjson t "$((NOW - 100))" '.rows |= map(. + {account: {paid_enabled: true, paid_cap_usd: 40, paid_spent_usd: 12.5,
+     paid_currency: "EUR", paid_period: "monthly", limit_resets_available: 3, top_label: "Zed", top_used_pct: 40, top_resets_at_epoch: $t}})' \
+  "$LK_FILE" > "$TMP/lk-acct.json"
+cat "$TMP/lk-acct.json" > "$LK_FILE"
+echo "shape" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(lk_row cursor-models paid_enabled)" "true" "restore: the saved paid flag comes back with the saved reading"
+check_eq "$(lk_row other-models limit_resets_available)" "3" "restore: the other pool row carries the same account observation"
+check_eq "$(lk_row cursor-models top_label)" "null" "restore: a top tier whose own reset has passed is not restored, though the saved window is still valid"
+check_eq "$(lk_row cursor-models top_used_pct)" "null" "and neither is its percent"
+run
+LK_ROW="$(printf '%s\n' "$(table_only "$OUT")" | grep -E '^cursor-fixture' | head -n 1)"
+check_not_contains "$LK_ROW" '$40' "table: a euro cap is never printed as dollars"
+check_not_contains "$LK_ROW" '12.50' "and neither is a euro spend"
+check_contains "$OUT" "paid amounts are in EUR, not shown" "and the footnote says why"
+echo "ok" > "$STUB_CURSOR_MODE"
+
 # --- 22e. the next usable live read replaces an owner reading ---------------
 
 lk_reset
