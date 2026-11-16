@@ -72,6 +72,13 @@ run --json --account "$CB_LABEL" --browser-results "$CB_OBS"
 check_eq "$(field_of "$CB_LABEL" 7-day status)" "unreadable" "an account mismatch keeps the row failed"
 check_eq "$(cb_ledger_class)" "browser_observation_rejected" "an account mismatch is a fixed rejected class"
 
+# Provider claude keeps requiring the email (#1870 loosened Cursor only): an empty one is rejected.
+cb_setup "$CB_LABEL"
+cb_obs ok "" claude "$CB_LABEL" "$NOW" "$CB_ROWS_OK"
+run --json --account "$CB_LABEL" --browser-results "$CB_OBS"
+check_eq "$(field_of "$CB_LABEL" 7-day status)" "unreadable" "a Claude observation with no email is still rejected"
+check_eq "$(cb_ledger_class)" "browser_observation_rejected" "a Claude observation with no email is a fixed rejected class"
+
 # A label that is not an email, with no profile email, has no known identity: reject.
 cb_setup "claude-noemail"
 cb_obs ok "claude-noemail@example.com" claude "claude-noemail" "$NOW" "$CB_ROWS_OK"

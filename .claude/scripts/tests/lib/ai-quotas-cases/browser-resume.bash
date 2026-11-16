@@ -141,6 +141,27 @@ check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" a
 check_eq "$(field_of "$OBS_LABEL" billing-cycle spend_limit_usd | head -n 1)" "null" "absent on-demand figures stay null, never zero"
 CURSOR_DB_UNDER_TEST=""
 
+# Identity (#1870): the dashboard shows no account email, so a Cursor observation may leave it
+# empty, null or absent and is shown marked unverified. A supplied email must still match.
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-obs.json"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .identity_verified] | unique | join(",")')" "true" "a matching email marks the rows verified"
+for _shape in '.email=""' '.email=null' 'del(.email)'; do
+  jq "$_shape" "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-noemail.json"
+  chmod 600 "$TMP/cursor-spending-noemail.json"
+  run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-noemail.json"
+  check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "2" "a Cursor observation with email $_shape is accepted"
+  check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .identity_verified] | unique | join(",")')" "false" "email $_shape is marked identity_verified false"
+  check_contains "$(field_of "$OBS_LABEL" billing-cycle detail)" "account not verified" "email $_shape says the account was not verified"
+done
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .used_pct] | unique | join(",")')" "100" "an unverified observation still shows its figures"
+check_eq "$(grep -rl 'account not verified' "$CASE_HOME/.claude/ai-quotas/last-known" 2>/dev/null | wc -l | tr -d ' ')" "1" "an unverified observation is saved under an unverified last-known source"
+jq '.email="someone-else@example.com"' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-wrong.json"
+chmod 600 "$TMP/cursor-spending-wrong.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-wrong.json"
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "0" "a supplied email that does not match is still rejected"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .identity_verified] | unique | join(",")')" "" "a rejected observation carries no verification claim"
+CURSOR_DB_UNDER_TEST=""
+
 # The cycle start comes from the observed reset: the same day and time one calendar month
 # earlier (UTC), not reset minus 30 days, and a day the earlier month lacks falls back to
 # that month's last day (#1870).

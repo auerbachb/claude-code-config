@@ -1882,6 +1882,14 @@ Observation fields added on top of the pool rows, all optional so older files st
 `spend_limit_usd` and `spend_limit_unlimited` (`true` or `null`). The table keeps its existing columns; separate
 paid-usage columns are Issue #2409, which only has to render these fields.
 
+Cursor identity (#1870): the Cursor dashboard shows no account email, so a Cursor observation's `email` is optional
+(empty, null or absent). Without one the figures still show, the row detail says `account not verified`, `--json`
+carries `identity_verified: false`, and the last-known record is saved under the source `live: browser (account not
+verified)`. A supplied email must match the IDE's cached email (`identity_verified: true`); a mismatch is rejected
+as before. `identity_verified` is on every row, null for every provider and path where it does not apply. Provider
+`claude` is unchanged: its email stays required. The page shows a spinner first; the figures can take 15 seconds or
+more, so the reader waits and re-reads before calling it unreadable.
+
 ### Completed native browser reads
 
 Internal Chrome-CLI `ok` observations require a private per-attempt completion
