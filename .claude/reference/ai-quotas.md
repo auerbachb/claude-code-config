@@ -1950,3 +1950,30 @@ job now keeps the folder itself, so delete `refresh.sh` and any scheduler that r
 reader does not maintain `LATEST.md`; the `/quotas` table supersedes it. `/quotas-setup doctor`
 reports both leftovers and the folder mode, read-only.
 
+## The FETCHED column (#2406)
+
+The table has a **FETCHED** column after USED: when the figure on that row was read.
+`now` means it was read live during this request. A figure read earlier shows its date as
+`Mmm dd` in Eastern time with a zero-padded day (`Nov 16`, `Jan 01`); a figure saved
+earlier today shows today's date, never `now`. A row with no figure shows `-`.
+
+Every `--json` row carries three fields, stamped last (after saved figures are placed) by
+`stamp_fetched_field` in `lib/ai-quotas-report.sh`:
+
+| Field | Value |
+|-------|-------|
+| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live read; `null` with no figure. |
+| `fetched` | `live`, `saved`, or `null` (no figure). |
+| `fetched_display` | What the table prints: `now`, `Mmm dd`, or `null`. |
+
+**Adding a source of saved figures.** A provider only has to set one field on its row: pass
+`{"fetched_at_epoch": <epoch the figure was read>}` in the `emit_row` extra object (the
+status-line reader does, from the capture time in its saved file). The stamp then marks the
+row `saved` and prints the date. A row with a figure and no `fetched_at_epoch` counts as live
+only when its `source` is a live read (`oauth-usage`, `app-server`, `http`, `ide-token`,
+`browser`); any other source is left blank rather than claiming `now`. Last-known rows take
+`last_known_at_epoch`. The figure in `record_last_known` keeps a row's own `fetched_at_epoch`
+instead of the run time, so a saved reading is never re-dated as new.
+
+To keep a five-account table inside 100 columns the LEFT cell prints `resets` where
+`days_left_note` says `resets first`; the `--json` value is unchanged.

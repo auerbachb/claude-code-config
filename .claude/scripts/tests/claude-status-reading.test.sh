@@ -205,6 +205,10 @@ check_eq "$(row_field "$json" "$WORK" 7-day used_pct)" "64" "the row carries the
 check_eq "$(row_field "$json" "$WORK" 7-day resets_at_epoch)" "$PAYLOAD_FUTURE" "and its reset time"
 check_eq "$(row_field "$json" "$WORK" 7-day source)" "status-line" "and says it came from the status line"
 check_contains "$(row_field "$json" "$WORK" 7-day detail)" "status line" "with a note naming the status line"
+# #2406: a status-line figure is SAVED, shown by the capture date (2027-01-15 08:00Z is Jan 15 in ET), never "now".
+check_eq "$(row_field "$json" "$WORK" 7-day fetched)" "saved" "a status-line figure is marked saved, not live"
+check_eq "$(row_field "$json" "$WORK" 7-day fetched_at)" "2027-01-15T08:00:00Z" "and carries the capture time of the saved file"
+check_eq "$(row_field "$json" "$WORK" 7-day fetched_display)" "Jan 15" "and the FETCHED cell is the capture date"
 check_eq "$(curl_calls .)" "0" "no request was made to either endpoint"
 check_eq "$(printf '%s' "$json" | jq -r --arg l "$PERS" '[.rows[] | select(.label == $l)] | length')" "1" "the personal account has its own row"
 check_eq "$(row_field "$json" "$PERS" 7-day used_pct)" "22" "and carries its own figure, never the work account's"

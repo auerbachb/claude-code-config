@@ -111,7 +111,7 @@ except (ValueError,IndexError,OSError):sys.exit(1)
             verify(result.returncode==3 and result.stdout=='',kind+' rejects impossible ISO '+invalid)
         for fmt,wanted in [('+%a','Tue'),('+%Y-%m','2026-09'),('+%Y-%m-%d','2026-09-08'),
                            ('+%a %b %-d %-I:%M %p %Z','Tue Sep 8 4:00 PM EDT'),
-                           ('+%a %-I:%M %p','Tue 4:00 PM'),('+%b %-d %-I:%M %p ET','Sep 8 4:00 PM ET')]:
+                           ('+%a %-I:%M %p','Tue 4:00 PM'),('+%b %-d %-I:%M %p ET','Sep 8 4:00 PM ET'),('+%b %d','Sep 08')]:
             result=run(kind,'format',dialect,'1788897600',fmt,'America/New_York')
             verify(result.returncode==0 and result.stdout.strip()==wanted,kind+' ET format '+fmt)
         result=run(kind,'format',dialect,'1788897600','+%Y-%m-%dT%H:%M:%SZ','UTC')

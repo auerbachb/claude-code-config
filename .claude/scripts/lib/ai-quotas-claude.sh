@@ -681,6 +681,8 @@ claude_statusline_rows() { # <label>
     used="${pair%% *}"; resets="${pair#* }"
     [[ "$resets" =~ ^[0-9]+$ && "$resets" -gt "$NOW" ]] || continue
     extra="$(with_window_start "{}" "$resets" "$span")"
+    # The capture time of the saved file, so the FETCHED column shows its date.
+    extra="$(printf '%s' "$extra" | jq -c --argjson e "$(( NOW - CSR_AGE ))" '. + {fetched_at_epoch: $e}')"
     emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "status-line" "" "$extra"
     emitted=1
     [[ "$key" == "five_hour" ]] && five_emitted=1

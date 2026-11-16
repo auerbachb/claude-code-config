@@ -924,7 +924,12 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       last_known_source: null,
       last_known_resets_at_epoch: null,
       last_known_resets_et: null,
-      last_known_expired: null}
+      last_known_expired: null,
+      # #2406. The ONE field a provider sets when its figure was NOT read in
+      # this run: the epoch the figure was actually read. Left null, the figure
+      # counts as live only when `source` is a live read. stamp_fetched_field
+      # turns it into fetched_at / fetched / fetched_display.
+      fetched_at_epoch: null}
      + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
@@ -1335,8 +1340,8 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
            label: .[0].label,
            nickname: .[0].nickname,
            source: ("live: " + (.[0].source // "unknown")),
-           fetched_at_epoch: $now,
-           fetched_at_et: $now_et,
+           fetched_at_epoch: (.[0].fetched_at_epoch // $now),
+           fetched_at_et: (if .[0].fetched_at_epoch == null then $now_et else null end),
            rows: map({window: (.pool // .window),
                       pool: .pool,
                       used_pct: .used_pct,
@@ -1344,7 +1349,7 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
                       resets: .resets_at_et,
                       overage: .overage,
                       source: ("live: " + (.source // "unknown")),
-                      fetched_at_epoch: $now})})
+                      fetched_at_epoch: (.fetched_at_epoch // $now)})})
     | {accounts: .}' "$1" > "$payload" 2>/dev/null || { warn "DEGRADED: could not stage last-known readings — the report is unaffected"; return 0; }
   [[ "$(jq '.accounts | length' "$payload" 2>/dev/null)" -gt 0 ]] || return 0
   if ! lk_run record --dir "$LK_DIR" < "$payload" 2>"$err"; then
@@ -1521,6 +1526,7 @@ fi
 # Saved figures go in AFTER notification and history, so neither ever sees a
 # derived row. Accounts with a usable live row are left exactly as read (#2280).
 apply_last_known "$DOC"
+stamp_fetched_field "$DOC"
 
 if [[ "$JSON" -eq 1 ]]; then
   cat "$DOC"
