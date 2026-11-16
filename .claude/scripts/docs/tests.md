@@ -51,6 +51,7 @@ opt-in of issue #1544.
 | [ci-status.test.sh](../tests/ci-status.test.sh) | Tests for `ci-status.sh` |
 | [claim-renewal-wiring.test.sh](../tests/claim-renewal-wiring.test.sh) | Asserts /subagent, /start-issue and /wrap renew the claim at their documented points, stop on exit 5, and that Form B stays identical in both copies |
 | [claude-config-sync.test.sh](../tests/claude-config-sync.test.sh) | Tests `claude-config-sync.sh` against a real local origin + clone — stale-machine catch-up, the restart marker and its startup clear, the failure counter/threshold/recovery, the lock-contention skip, and the root-repo scope guard |
+| [claude-status-reading.test.sh](../tests/claude-status-reading.test.sh) | Tests the status-line usage path offline — statusline.sh saves `rate_limits` per registered account (mode 600, no credential, never misattributed), `ai-quotas.sh` reads a fresh saved figure with no token and falls back when it is stale, the weekly reserve accepts it, and a 429 from the token endpoint pauses renewal for a cool-off |
 | [clean-behind-check.test.sh](../tests/clean-behind-check.test.sh) | Tests for `clean-behind-check.sh` |
 | [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
 | [config-sync-tail.test.sh](../tests/config-sync-tail.test.sh) | Private-home integration checks for bounded config-sync setup, pending recovery, and ownership |
