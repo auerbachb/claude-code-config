@@ -902,6 +902,9 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       # dashboard says — so each path supplies it through the extra object and
       # this default covers every row that has no window to place.
       window_start_epoch: null,
+      # #2404. When a saved reading (status line or app usage tool) was captured;
+      # null on a row read live through the token.
+      observed_at_epoch: null,
       # The projection itself is filled in AFTER every row is built, by
       # quotas-forecast.sh, for the same reason `overage` is: it is a property
       # of the recorded history rather than of this read. Declaring the fields

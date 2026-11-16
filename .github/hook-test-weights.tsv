@@ -71,6 +71,7 @@
 0	.claude/scripts/tests/claim-renewal-wiring.test.sh
 35	.claude/scripts/tests/claude-config-sync.test.sh
 4	.claude/scripts/tests/claude-status-reading.test.sh
+6	.claude/scripts/tests/claude-usage-observe.test.sh
 13	.claude/scripts/tests/clean-behind-check.test.sh
 6	.claude/scripts/tests/compaction-resume-polling-state-gate.test.sh
 30	.claude/scripts/tests/config-sync-tail.test.sh

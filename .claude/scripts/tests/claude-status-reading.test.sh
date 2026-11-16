@@ -250,7 +250,7 @@ check_eq "$(row_field "$json" "$WORK" 7-day source)" "oauth-usage" "from the tok
 : > "$CURL_LOG"
 # Recapture just before the reset so only the reset check can reject it (age is not stale).
 cp "$(reading_file "$WORK")" "$TMP/work-reading-reset.json"
-jq --argjson c "$(( PAYLOAD_FUTURE + 5 ))" '.captured_at_epoch = $c' "$TMP/work-reading-reset.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
+jq --argjson c "$(( PAYLOAD_FUTURE - 60 ))" '.captured_at_epoch = $c' "$TMP/work-reading-reset.json" > "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 json="$(run_reader "$(( PAYLOAD_FUTURE + 10 ))" "$WORK")"
 check_eq "$(row_field "$json" "$WORK" 7-day source)" "oauth-usage" "a reading from a window that has since reset is not used"
 check_contains "$(row_field "$json" "$WORK" 7-day detail)" "predates the current 7-day window" "and the note names the weekly reset check"
