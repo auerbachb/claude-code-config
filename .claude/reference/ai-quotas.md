@@ -1893,6 +1893,28 @@ still follows duration rather than slot position. The app-server path and older
 HTTP camelCase bodies retain their existing behavior. An unlabelled
 `credits.balance` is not evidence of a USD amount and is not converted.
 
+### Cursor observation route and the encrypted IDE token (Issue #1870)
+
+Cursor 3.29.9 keeps the IDE access token encrypted (`cursor-safe-storage:v1:`), so the IDE-token reader
+cannot read a user id and reports `unreadable` with a pointer to the observation route. That state is a standing
+condition, not a new fault each run: the outcome ledger records it under the fixed class `ide_token_encrypted`,
+and `quotas-outcomes.py` leaves that class out of each source's `consecutive_failures`, so it never grows into a
+"source failed N consecutive reads" recommendation. The account-level streak still counts the unreadable reads,
+because the account really was unreadable. The reader does not decrypt the token and does not ask the macOS
+keychain for the storage key.
+
+The working route is an agent reading the signed-in Spending page, `https://cursor.com/dashboard/spending`, in the
+Claude desktop app's built-in browser pane (`mcp__Claude_Browser__*`), or in Chrome (`mcp__claude-in-chrome__*`).
+`lib/quotas-browser.py --print-instructions cursor` prints the fields and file shape; the agent records them in a
+private file and passes it with `--browser-results`. Reading of 2026-11-16 (Ultra): Cursor Models 100% used,
+Other Models 100% used, On-Demand $6.33 of $50, limits reset Nov 28.
+
+Observation fields added on top of the pool rows, all optional so older files still validate: `plan`,
+`on_demand_used_usd`, `on_demand_limit_usd` (or `on_demand_unlimited: true`, never both), `cycle_resets_at_epoch`
+(fills pool rows with no reset of their own). In `--json` rows they appear as `plan`, `spend_limit_used_usd`,
+`spend_limit_usd` and `spend_limit_unlimited` (`true` or `null`). The table keeps its existing columns; separate
+paid-usage columns are Issue #2409, which only has to render these fields.
+
 ### Completed native browser reads
 
 Internal Chrome-CLI `ok` observations require a private per-attempt completion
