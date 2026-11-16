@@ -1,6 +1,6 @@
 ---
 name: quotas-setup
-description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, or sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds. Display and config only — reads no usage figures, gates no work.
+description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, registering the Google Antigravity account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, or sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds. Display and config only — reads no usage figures, gates no work.
 triggers:
   - quotas-setup
   - register my AI accounts
@@ -15,7 +15,7 @@ triggers:
   - generate the account launchers
   - make a shell function for my second Claude account
   - share my skills and rules with the other profile
-argument-hint: "[list [--json] | add <claude|codex|cursor> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
+argument-hint: "[list [--json] | add <claude|codex|cursor|antigravity> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
 model: sonnet
 allowed-tools:
   - Read
@@ -99,7 +99,7 @@ launching a login, which is what you want when the user cannot complete an inter
 flow right now. `list` reports whether the credential is present: a reserved slot can
 already report `ok` if the registered profile or Cursor IDE holds one.
 
-Providers are `claude`, `codex`, and `cursor`. The label is what the user types — for
+Providers are `claude`, `codex`, `cursor`, and `antigravity`. The label is what the user types — for
 these accounts, the email on the subscription. Ask for it rather than guessing; the
 label names the profile directory and is how `remove` and `relogin` find the account
 later.
@@ -132,6 +132,15 @@ login. Its status still reflects the credential the helper can see.
   (two labels would otherwise render two `/quotas` rows with identical usage).
   A `relogin` no longer retires anything: signing in again in the IDE replaces the token,
   so there is no profile to move aside and nothing to roll back.
+- **`antigravity`** (Issue #2407) — **no profile directory and no login to launch.** `agy` holds
+  one signed-in Google account, so one machine registers one (a second label is refused with
+  exit `3`). `add` only checks that the `agy` CLI is installed — it never runs it, because a
+  run contacts the signed-in backend — and says the account is **not verified**. The figures
+  come from the `/usage` panel text: tell the user to run `agy`, type `/usage`, copy the panel,
+  then run `pbpaste | quotas-antigravity-capture.sh --stdin` (`--stdin` reads piped input, not the
+  clipboard itself; or `--from-file <file>`); `--live` tries
+  `agy -p "/usage"` and is unverified. `list` shows only whether the CLI is installed;
+  `/quotas` shows whether a saved panel exists and how old it is. Display only.
 
 The `claude` and `codex` logins are interactive and blocking. Tell the user one is about
 to open, and let it run — a magic link or SSO round trip can take a minute. Adding a
@@ -372,7 +381,7 @@ over the journal.
 
 ## Usage source preferences
 
-Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`; Antigravity `observation`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
 
 ## Session ledger hooks
 

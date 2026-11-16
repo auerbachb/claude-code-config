@@ -1,11 +1,11 @@
 # Google Antigravity — quota research (Issue #2407)
 
-Research date: 2026-11-16. Not auto-loaded. Part of the quota-tracking reference set
-(`ai-quotas.md`). **Outcome: the interactive `/usage` panel in `agy` prints parseable text**
-(percent remaining per group, relative reset times, and "Quota available" when full). No
-`antigravity` provider is built yet. The remaining work for Issue #2407 is a parser for that
-text plus a capture route. What was and was not verified is below so the next attempt does
-not repeat it.
+Research date: 2026-11-16; reader built the same day (Issue #2407). Not auto-loaded. Part of
+the quota-tracking reference set (`ai-quotas.md`). **Outcome: the interactive `/usage` panel
+in `agy` prints parseable text** (percent remaining per group, relative reset times, and
+"Quota available" when full), and `/quotas` now has an `antigravity` provider that parses it.
+The panel is not a "no machine-readable source" case: no JSON or file exists, but the text is
+stable enough to parse. What was and was not verified is below.
 
 ## How the limits work (documented, vendor sources)
 
@@ -99,17 +99,46 @@ parseable text (sample above). Reading the backend directly would mean borrowing
 token the product holds for the signed-in Google user and calling an undocumented endpoint;
 that is neither documented nor verified, so it is not done.
 
-Remaining work for Issue #2407:
+## What the reader does (built)
 
-1. **A parser** for the `/usage` text, with the sample above as the fixture. It must
-   convert percent remaining to percent used, parse "Refreshes in Nh Mm", map "Quota
-   available" to a full window with no countdown, and keep the three groups distinct.
-2. **A capture route.** Either drive `agy` then `/usage` in a terminal, or accept the pasted
-   panel text as an observation. The existing observation-file shape that `ai-quotas.sh
-   --browser-results` uses (`.claude/scripts/lib/quotas-browser.py`) allows at most two rows
-   per account, one per window name, and has no model-group field, so it needs a group
-   identifier and a larger row limit before it can hold this sample.
+- **Parser** (`.claude/scripts/lib/quotas-antigravity.py`): reads the panel text with the sample
+  above as its fixture (`tests/fixtures/antigravity-usage-panel.txt`). It converts percent
+  remaining to percent used (one decimal), turns "Refreshes in 153h 32m" into an absolute
+  epoch computed from the capture time, reads "Quota available" as a full window with no
+  reset, keeps the account line, and keeps groups it has not seen before. It ignores bar
+  characters, ANSI colour and blank lines, copes with a missing group, and returns
+  `unreadable` (never 0%) when no window can be read or a percent is out of range.
+- **Observation file** (`~/.claude/ai-quotas-antigravity.json`, mode 0600, or the path in
+  `AI_QUOTAS_ANTIGRAVITY_OBSERVATION`): `{schema:"antigravity-usage/1", provider, captured_at_epoch,
+  via, text}`. It is a new shape rather than the browser-observation one, because that shape
+  (`quotas-browser.py`) allows at most two rows per account and has no group field. The text
+  is parsed at read time so a parser fix applies to old captures. It holds the account line as
+  printed (the owner's own file, never committed); fixtures and docs use `<email>`.
+- **Provider** (`.claude/scripts/lib/ai-quotas-antigravity.sh`): one row per group and window,
+  window label `<group> <window>` (`gemini 7-day`, `gemini 5-hour`, `claude-gpt 7-day`,
+  `claude-gpt 5-hour`, `gemini-4-argon 7-day`), `source` `observation`, the detail naming
+  where the text came from (`pasted /usage text` or `agy -p /usage`) and its age, plus
+  `group` and `group_models` fields. Registered by `/quotas-setup add antigravity <label>`
+  (one account per machine; checks only that `agy` is installed; "account not verified").
+- **Stale and missing**: an observation older than 3 hours (`AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS`),
+  or a window whose computed reset has passed, is shown `unreadable` with its age and the last
+  known figure; no figure is invented. With no saved text the row says so and names the capture
+  command. The resets-left columns stay blank (no reset allowance exists).
+- **Display only:** `quota-reserve.sh` keeps only Claude and Codex rows, so Antigravity never
+  feeds the weekly reserve gate. Last-known staging and the history-based forecast do not apply
+  (the observation file is its own last-known); the outcomes ledger records it.
+- **Capture** (`.claude/scripts/quotas-antigravity-capture.sh`): `--from-file FILE` or `--stdin`
+  save pasted text (manual route: run `agy`, type `/usage`, copy the panel, `pbpaste |
+  quotas-antigravity-capture.sh --stdin`). `--live` runs `agy -p "/usage"` with stdin closed
+  and a 90 s limit, keeps stdout only, and saves nothing unless a usage panel parses.
 
-Design constraints for whichever lands: display-only (never feed `quota-reserve.sh`);
-no credential printed, logged, or stored; the `unreadable` row must name "open View Usage in
-Antigravity" as the action.
+## Needs a live check
+
+`agy --help` (v1.5.9) shows print mode (`-p`, `--output-format`) and `--disable-slash-commands`,
+which suggests slash commands may expand in print mode, but nothing confirms `agy -p "/usage"`
+prints the panel instead of sending "/usage" to a model. It was not run (it contacts the
+signed-in backend). Until the owner runs `quotas-antigravity-capture.sh --live` once and sees
+`saved: 5 windows in 3 groups`, treat `--live` as unverified and use the manual route.
+
+Design constraints kept: display-only; no credential read, printed, logged or stored; the
+`unreadable` row names the capture command to run.

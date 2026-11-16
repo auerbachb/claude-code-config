@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile, `agy` presence check only) likewise — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -135,6 +135,12 @@
 #             and both confirm afterwards that a token is there — presence
 #             only, through sqlite3, never reading the value. One IDE holds
 #             one account, so this machine can register one cursor account.
+#   antigravity  Google Antigravity (Issue #2407). `agy` holds one signed-in
+#             account, so one is registered per machine and there is no profile
+#             to create or log in to. `add` only checks that the `agy` CLI is
+#             installed (it never runs it) and says plainly that the account is
+#             not verified; `/quotas` reads the `/usage` panel text saved by
+#             quotas-antigravity-capture.sh. Display only: it never gates work.
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
@@ -467,7 +473,7 @@ fi
 # --- validation --------------------------------------------------------------
 
 valid_provider() { # <provider>
-  case "$1" in claude|codex|cursor) return 0 ;; *) return 1 ;; esac
+  case "$1" in claude|codex|cursor|antigravity) return 0 ;; *) return 1 ;; esac
 }
 
 # A label becomes a directory name, so it is restricted rather than escaped:
@@ -509,7 +515,7 @@ valid_nickname() { # <nickname>
 
 if [[ -n "$ARG_PROVIDER" ]]; then
   valid_provider "$ARG_PROVIDER" \
-    || die_usage "unknown provider: $ARG_PROVIDER (expected claude, codex, or cursor)"
+    || die_usage "unknown provider: $ARG_PROVIDER (expected claude, codex, cursor, or antigravity)"
 fi
 if [[ $NICK_GIVEN -eq 1 && -n "$ARG_NICK" ]]; then
   valid_nickname "$ARG_NICK" \
@@ -709,6 +715,16 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
         "/usr/local/bin/sqlite3"
       )
       ;;
+    antigravity)
+      # The Antigravity CLI is `agy`. Presence is all setup checks: it never runs
+      # it, because a run would contact the signed-in backend.
+      override="${AI_QUOTAS_AGY_BIN:-}"
+      lookup="agy"
+      candidates=(
+        "/opt/homebrew/bin/agy"
+        "/usr/local/bin/agy"
+      )
+      ;;
     *) return 1 ;;
   esac
   if [[ -n "$override" ]]; then
@@ -796,6 +812,7 @@ manual_login_command() { # <provider> <profile_dir>
     # the IDE. Printed in the same slot every other provider prints one so the
     # "log in by hand with:" line stays true for all three.
     cursor) printf 'open the Cursor IDE and sign in' ;;
+    antigravity) printf 'run agy and sign in with your Google account' ;;
   esac
 }
 
@@ -821,7 +838,7 @@ run_login() { # <provider> <profile_dir>
   # Not said for cursor: nothing is launched and no window opens, because the
   # IDE already holds that login. Announcing one anyway would leave the user
   # waiting for a browser that is never coming.
-  if [[ "$provider" != "cursor" ]]; then
+  if [[ "$provider" != "cursor" && "$provider" != "antigravity" ]]; then
     echo "${SELF_NAME}: launching ${provider} login for this profile — complete it in the window/browser it opens."
   fi
   case "$provider" in
@@ -844,6 +861,13 @@ run_login() { # <provider> <profile_dir>
       CLAUDE_CONFIG_DIR="$dir" "$bin" ${claude_args[@]+"${claude_args[@]}"}
       ;;
     codex)  CODEX_HOME="$dir" "$bin" login ;;
+    antigravity)
+      # Nothing to run: the CLI holds its own sign-in and this tool never reads
+      # it. Setup only confirms the CLI is installed; `/quotas` reads the panel
+      # text saved by quotas-antigravity-capture.sh.
+      echo "${SELF_NAME}: agy found at ${bin}; sign in by running agy yourself, then save its /usage panel with quotas-antigravity-capture.sh." >&2
+      return 0
+      ;;
     cursor)
       # There is no login to run. The Cursor IDE owns this credential, and it
       # is the ONLY thing that can create one: cursor.com's sign-in page runs
@@ -918,6 +942,16 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       CRED_DETAIL="no .credentials.json in profile"
       return 1
       ;;
+    antigravity)
+      # Presence of the CLI only; a sign-in is not probed (a probe would call the
+      # backend). `/quotas` says whether a saved panel exists.
+      if provider_bin antigravity >/dev/null; then
+        CRED_DETAIL="agy is installed; /quotas shows the saved /usage panel"
+        return 0
+      fi
+      CRED_DETAIL="agy CLI not found"
+      return 1
+      ;;
     cursor)
       # "Logged in" for cursor means "the Cursor IDE on this machine is
       # signed in" (#1703): the credential lives in the IDE, not in a
@@ -990,6 +1024,11 @@ match_indices() { # <config-json> <label> <provider|"">
 # means.
 cursor_label_held() { # <config-json> -> label on stdout, empty if none
   printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""'
+}
+
+# Antigravity is a singleton like cursor: `agy` holds one signed-in account.
+antigravity_label_held() { # <config-json> -> label on stdout, empty if none
+  printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "antigravity") | .label] | .[0] // ""'
 }
 
 resolve_single_index() { # <config-json> <label> <provider|""> -> index on stdout
@@ -1171,6 +1210,12 @@ action_add() {
     die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
   fi
 
+  local agy_held
+  agy_held="$(antigravity_label_held "$config")"
+  if [[ "$provider" == "antigravity" && -n "$agy_held" ]]; then
+    die 3 "antigravity is already registered as '$agy_held' — agy holds one account, so a second label would report the same usage twice. Use 'remove $agy_held antigravity' first."
+  fi
+
   dir="$(profile_dir_for "$label" "$provider")"
   # Not for cursor (#1703): its credential lives in the Cursor IDE, so this
   # tool creates no directory for it. The registry still carries the field —
@@ -1178,6 +1223,8 @@ action_add() {
   # cursor, and an empty directory nobody opens is just litter in ~/.claude.
   if [[ "$provider" == "cursor" ]]; then
     echo "${SELF_NAME}: cursor reads the Cursor IDE login at $(cursor_state_db) — no profile directory is created."
+  elif [[ "$provider" == "antigravity" ]]; then
+    echo "${SELF_NAME}: antigravity reads the /usage panel text saved by quotas-antigravity-capture.sh — no profile directory is created."
   else
     ensure_profile_dir "$dir"
   fi
@@ -1187,6 +1234,8 @@ action_add() {
     # would point the user at something that was never created (CodeRabbit).
     if [[ "$provider" == "cursor" ]]; then
       echo "${SELF_NAME}: --no-login — slot reserved; sign in to the Cursor IDE, then run 'relogin $label cursor'."
+    elif [[ "$provider" == "antigravity" ]]; then
+      echo "${SELF_NAME}: --no-login — slot reserved; save a /usage panel with quotas-antigravity-capture.sh."
     else
       echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
     fi
@@ -1238,6 +1287,11 @@ action_add() {
   # `add cursor` runs under different labels both clear the pre-flight check,
   # and without this the second one appends a duplicate row the reference doc
   # promises cannot exist. Re-read under the lock is what makes that promise true.
+  agy_held="$(antigravity_label_held "$config")"
+  if [[ "$provider" == "antigravity" && -n "$agy_held" ]]; then
+    state_lock_release || true
+    die 3 "antigravity was registered as '$agy_held' by another process while this add ran — nothing was added."
+  fi
   cursor_held="$(cursor_label_held "$config")"
   if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
     state_lock_release || true
@@ -1256,6 +1310,7 @@ action_add() {
   # could go looking for and never find (CodeAnt).
   local where="profile: ${dir}"
   [[ "$provider" != "cursor" ]] || where="reads the Cursor IDE login at $(cursor_state_db)"
+  [[ "$provider" != "antigravity" ]] || where="reads the saved agy /usage panel; account not verified"
   if [[ -n "$ARG_NICK" ]]; then
     echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (${where})."
   else
@@ -1277,7 +1332,7 @@ action_sources() {
   else
     index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
     provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
-    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
+    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; antigravity) allowed=observation ;; *) die_usage "unsupported provider" ;; esac
     if [[ "$ARG_NICK" == default ]]; then
       config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
     else
@@ -1663,7 +1718,7 @@ action_relogin() {
 
   # Not for cursor: nothing here writes to <profile_dir> any more, so creating
   # one would leave an empty directory the tool never reads again.
-  [[ "$provider" == "cursor" ]] || ensure_profile_dir "$dir"
+  [[ "$provider" == "cursor" || "$provider" == "antigravity" ]] || ensure_profile_dir "$dir"
   if [[ "$provider" == "claude" ]]; then
     before="$(keychain_claude_services)"
   fi
@@ -2071,7 +2126,7 @@ action_list() {
       echo "[]"
     else
       echo "No accounts registered yet."
-      echo "Add one with: ${SELF_NAME} add <claude|codex|cursor> <label>"
+      echo "Add one with: ${SELF_NAME} add <claude|codex|cursor|antigravity> <label>"
       layout_warning "$config"
     fi
     return 0
@@ -2093,7 +2148,7 @@ action_list() {
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     local source_order
-    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["observation"] else ["ide-token","browser"] end) | join(",")')"
     [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \

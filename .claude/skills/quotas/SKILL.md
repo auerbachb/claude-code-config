@@ -1,6 +1,6 @@
 ---
 name: quotas
-description: Use when deciding which AI subscription to work on next — how much of each registered account's cap is gone, when each one resets, what continuing past a drained cap costs on each provider, and which need a re-login. Covers every account /quotas-setup registers — Claude, Codex, and Cursor (two monthly usage pools, reported as percent used, read with the token the Cursor IDE holds for the signed-in user). Display only — it never switches accounts, never buys anything, and never gates dispatch.
+description: Use when deciding which AI subscription to work on next — how much of each registered account's cap is gone, when each one resets, what continuing past a drained cap costs on each provider, and which need a re-login. Covers every account /quotas-setup registers — Claude, Codex, Cursor (two monthly usage pools, reported as percent used, read with the token the Cursor IDE holds for the signed-in user), and Google Antigravity (one row per model group and window, from the saved text of the `agy` `/usage` panel). Display only — it never switches accounts, never buys anything, and never gates dispatch.
 triggers:
   - quotas
   - how much quota is left
@@ -127,6 +127,16 @@ email the note says
 **Cursor rows carry that email too**, read from the IDE's `cursorAuth/cachedEmail`, so a
 mislabelled Cursor account is now as visible as any other — through #1668 those rows had
 no email at all and could never carry the note.
+
+**Antigravity rows (Issue #2407)** are one per model group and window, shown as
+`<group> <window>` (for example `gemini 7-day`, `claude-gpt 5-hour`, `gemini-4-argon 7-day`).
+The panel prints percent remaining; the row shows percent used. The text comes from a file
+saved by `quotas-antigravity-capture.sh` (paste the panel with `pbpaste | … --stdin`, or
+`--live` to try `agy -p "/usage"`, which is not yet verified), so every row says how old
+that text is and that the account is not verified. Older than 3 h, or past its window's
+reset, a row turns `unreadable`, names its age, and shows the last known figure. With no
+saved text there is one `unreadable` row saying what is missing. Antigravity is display
+only: it never feeds the weekly reserve gate. Details: `.claude/reference/ai-quotas-antigravity.md`.
 
 The third column is the **pool** where a provider has pools and the window otherwise. A
 Cursor account normally contributes **two** rows — `cursor-models` (Composer, Cursor
