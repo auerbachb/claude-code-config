@@ -250,11 +250,13 @@ stamp_fetched_field() { # <doc-json-file>
       .rows |= map(
         (.fetched_at_epoch // .last_known_at_epoch) as $saved
         | if ((.used_pct | num) or (.last_known_used_pct | num)) | not then blank
-          elif ((.fetched_at_epoch | num) and (.used_pct | num) and ($now - .fetched_at_epoch) <= 120) then
+          elif (.status == "ok" and (.fetched_at_epoch | num) and (.used_pct | num)
+                and .fetched_at_epoch <= $now and ($now - .fetched_at_epoch) <= 120) then
             # Read within 120 seconds before this run began: for this request that is a
             # fresh read, whatever produced it (a saved status-line or app reading, a
             # browser or text observation). fetched_at keeps the exact instant. A
-            # last-known figure never takes this branch.
+            # last-known figure never takes this branch, and neither does a capture time
+            # after this run began (a clock that cannot be trusted shows its date).
             stamp("live"; .fetched_at_epoch)
           elif ($saved | num) then stamp("saved"; $saved)
           elif (.status == "ok" and (.used_pct | num)
@@ -278,21 +280,23 @@ derive_account_fields() { # <rows-json-file>
   local rows="$1" out="$TMP/rows.derived.json"
   if jq --argjson now "$NOW" '
       def num: type == "number";
+      def nn: type == "number" and . >= 0;
       def unset: .paid_enabled == null and .paid_cap_usd == null and .paid_cap_unlimited == null and .paid_spent_usd == null;
       map(
         (if .provider == "cursor" and unset
-            and (.spend_limit_unlimited == true or (.spend_limit_usd | num) or (.spend_limit_used_usd | num)) then
+            and (.spend_limit_unlimited == true or (.spend_limit_usd | nn) or (.spend_limit_used_usd | nn)) then
            . + {paid_enabled: (if .spend_limit_unlimited == true then true
-                               elif (.spend_limit_usd | num) then (.spend_limit_usd > 0) else null end),
+                               elif (.spend_limit_usd | nn) then (.spend_limit_usd > 0) else null end),
                 paid_cap_usd: (if .spend_limit_unlimited == true then null
-                               elif (.spend_limit_usd | num) then .spend_limit_usd else null end),
+                               elif (.spend_limit_usd | nn) then .spend_limit_usd else null end),
                 paid_cap_unlimited: (if .spend_limit_unlimited == true then true else null end),
-                paid_spent_usd: (if (.spend_limit_used_usd | num) then .spend_limit_used_usd else null end),
+                paid_spent_usd: (if (.spend_limit_used_usd | nn) then .spend_limit_used_usd else null end),
                 paid_currency: "USD",
                 paid_period: "monthly",
                 paid_read_at_epoch: (.fetched_at_epoch // (if .status == "ok" then $now else null end))}
          else . end)
         | if .limit_resets_available == null and (.free_resets_remaining | num)
+             and .free_resets_remaining >= 0 and .free_resets_remaining == (.free_resets_remaining | floor)
           then . + {limit_resets_available: .free_resets_remaining} else . end)' "$rows" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
     mv "$out" "$rows"
   else
@@ -349,8 +353,13 @@ render_quota_table() {
       def cap_usd: if (cents % 100) == 0 then "$" + ((cents / 100) | tostring) else "$" + two_dp end;
       def num: type == "number";
       def clean: if type == "string" then gsub("[\u0000-\u001f\u007f]"; " ") else . end;
-      # Terminal width: the two icons take two columns.
-      def wide: explode | map(if . == 9989 or . == 10060 or . >= 127744 then 2 else 1 end) | add // 0;
+      # Terminal width: the two icons and East Asian wide characters take two columns, combining marks none.
+      def wide: explode | map(if . >= 768 and . <= 879 then 0
+                                       elif . == 9989 or . == 10060 or . >= 127744
+                                         or (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191)
+                                         or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255)
+                                         or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135)
+                                         or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) then 2 else 1 end) | add // 0;
       def spaces($n): [range(0; $n)] | map(" ") | join("");
       def pad($w): . + spaces($w - wide);
       # Account-level values print on the row that carries them and are blank on the
@@ -375,15 +384,17 @@ render_quota_table() {
             ovg: (.overage.label? | dash),
             paid: (if .account_primary == false then "-"
                    elif .paid_enabled == true then "✅" elif .paid_enabled == false then "❌" else "-" end),
+            # `off` when the provider said paid usage is off, whatever limit is set (the
+            # limit stays in --json), so a $1000 limit never reads as spendable money.
             cap: (if .account_primary == false then "-"
-                  elif .paid_cap_unlimited == true then "none"
-                  elif (.paid_cap_usd | num) then (.paid_cap_usd | cap_usd)
                   elif .paid_enabled == false then "off"
+                  elif .paid_cap_unlimited == true then "none"
+                  elif ((.paid_cap_usd | num) and .paid_cap_usd >= 0) then (.paid_cap_usd | cap_usd)
                   else "-" end),
-            spent: (if .account_primary == false or ((.paid_spent_usd | num) | not) then "-" else "$" + (.paid_spent_usd | two_dp) end),
-            rst: (if .account_primary == false or ((.limit_resets_available | num) | not) then "-" else (.limit_resets_available | tostring) end),
+            spent: (if .account_primary == false or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else "$" + (.paid_spent_usd | two_dp) end),
+            rst: (if .account_primary == false or ((.limit_resets_available | num) | not) or .limit_resets_available < 0 then "-" else (.limit_resets_available | floor | tostring) end),
             top: (if .account_primary == false then "-" else (.top_label | dash) end),
-            toppct: (if .account_primary == false or ((.top_used_pct | num) | not) then "-"
+            toppct: (if .account_primary == false or ((.top_used_pct | num) | not) or .top_used_pct < 0 or .top_used_pct > 100 then "-"
                      else (.top_used_pct | (if . == floor then floor else . end) | tostring) + "%" end),
             reset: (.resets_at_et_short // .resets_at_et | dash | sub("(?<h>[0-9]) (?<p>[AP]M)"; "\(.h)\(.p)")),
             inn: (.countdown | dash | sub("^in "; "")),
@@ -397,6 +408,8 @@ render_quota_table() {
             # string, so one apostrophe in a comment closes it.
             note: ([ (if (.status // "ok") != "ok" then .status else empty end),
                      (if .label != .reported_email then "registered as \(.label)" else empty end),
+                     (if .account_primary != false and (.paid_currency | type) == "string" and .paid_currency != "USD"
+                      then "paid amounts are in \(.paid_currency), not shown" else empty end),
                      (if .status == "needs-login" then empty else (.detail | if . == null or . == "" then empty else . end) end),
                      (if .last_known_used_pct == null then empty
                       else ((if .last_known_expired == true then "expired: " else "" end)

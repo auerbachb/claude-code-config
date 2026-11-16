@@ -2067,7 +2067,7 @@ number or an icon.
 | Column | `--json` field(s) | Meaning |
 |--------|-------------------|---------|
 | `$?` | `paid_enabled` | ✅ when the provider says paid usage can happen, ❌ when it says it cannot, `-` when unknown. It follows whether spending can actually happen, not whether a limit is set: Claude Work has a $1,000 limit set with usage credits off and shows ❌. |
-| `$ CAP` | `paid_cap_usd`, `paid_cap_unlimited` | The limit on paid usage for the period: `$500`, `$50`; `none` when the provider said there is no limit; `off` when paid usage is off and no limit figure was reported; `-` when unknown. A whole-dollar cap prints without cents. |
+| `$ CAP` | `paid_cap_usd`, `paid_cap_unlimited` | The limit on paid usage for the period: `$500`, `$50`; `none` when the provider said there is no limit; `off` whenever the provider said paid usage is off, even with a limit set (the limit stays in `--json` as `paid_cap_usd`, so a $1000 limit never reads as spendable money); `-` when unknown. A whole-dollar cap prints without cents. A non-USD currency leaves the amounts blank and adds a note to the row (`paid amounts are in EUR, not shown`); the `$?` flag is kept. A figure restored from last-known after a failed read is shown only while its window has not passed. |
 | `$` | `paid_spent_usd` | Dollars of paid usage this period, always with cents (`$315.79`, `$0.00`). |
 | `RST` | `limit_resets_available`, `limit_resets` | How many limit resets are available. `0` only when the provider said none are left; `-` when unknown **or** when the provider has no reset allowance. |
 | `TOP` | `top_label` | The provider's own label for the top-tier model or pool that has a separate allowance (`Fable`, `Argon`). Taken from the data, never hard-coded; `-` when there is none or it is unknown. |
@@ -2131,7 +2131,7 @@ cannot forge a row. The time column's header is now `RESET (ET)`.
 
 **Needs a live check.** The columns are built from readings recorded on 2026-11-16; compare
 each against the provider's own page once in a live session: Claude Personal (✅ $500
-$315.79, Fable), Claude Work (❌ $1000 $0.00, 2 resets), Cursor (✅ $50 $6.33), Antigravity
+$315.79, Fable), Claude Work (❌ off $0.00, 2 resets), Cursor (✅ $50 $6.33), Antigravity
 (Argon), Codex (0 resets).
 
 ## Antigravity (Issue #2407)

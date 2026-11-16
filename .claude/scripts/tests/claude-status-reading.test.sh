@@ -199,16 +199,19 @@ CLAUDE_CONFIG_DIR="$WORK_DIR" run_sl "$(payload 64 12)" > /dev/null
 # --- 3. the reader uses a fresh reading and never touches the token ----------
 run_sl "$(payload 22 5)" > /dev/null
 : > "$CURL_LOG"
-json="$(run_reader "$(( NOW + 30 ))")"
+json="$(run_reader "$(( NOW + 121 ))")"
 check_eq "$(row_field "$json" "$WORK" 7-day status)" "ok" "a fresh reading reads ok with the stored token expired"
 check_eq "$(row_field "$json" "$WORK" 7-day used_pct)" "64" "the row carries the 7-day used percentage"
 check_eq "$(row_field "$json" "$WORK" 7-day resets_at_epoch)" "$PAYLOAD_FUTURE" "and its reset time"
 check_eq "$(row_field "$json" "$WORK" 7-day source)" "status-line" "and says it came from the status line"
 check_contains "$(row_field "$json" "$WORK" 7-day detail)" "status line" "with a note naming the status line"
-# #2406: a status-line figure is SAVED, shown by the capture date (2027-01-15 08:00Z is Jan 15 in ET), never "now".
+# #2406/#2409: a status-line figure read more than 120 seconds before the run is SAVED, shown by the
+# capture date (2027-01-15 08:00Z is Jan 15 in ET); within 120 seconds it counts as fetched now.
 check_eq "$(row_field "$json" "$WORK" 7-day fetched)" "saved" "a status-line figure is marked saved, not live"
 check_eq "$(row_field "$json" "$WORK" 7-day fetched_at)" "2027-01-15T08:00:00Z" "and carries the capture time of the saved file"
 check_eq "$(row_field "$json" "$WORK" 7-day fetched_display)" "Jan 15" "and the FETCHED cell is the capture date"
+json_now="$(run_reader "$(( NOW + 30 ))")"
+check_eq "$(row_field "$json_now" "$WORK" 7-day fetched_display)" "now" "control: the same file read 30 seconds after its capture shows now"
 check_eq "$(curl_calls .)" "0" "no request was made to either endpoint"
 check_eq "$(printf '%s' "$json" | jq -r --arg l "$PERS" '[.rows[] | select(.label == $l)] | length')" "1" "the personal account has its own row"
 check_eq "$(row_field "$json" "$PERS" 7-day used_pct)" "22" "and carries its own figure, never the work account's"
@@ -236,12 +239,12 @@ check_eq "$(row_field "$json5" "$WORK" 7-day source)" "status-line" "a missing 5
 check_eq "$(row_field "$json5" "$WORK" 5-hour status)" "unreadable" "and the 5-hour row is explicit"
 cp "$TMP/work-reading5.json" "$(reading_file "$WORK")"; chmod 600 "$(reading_file "$WORK")"
 
-# #2406: an app-usage-tool reading is saved too, so its rows show the capture DATE, never `now`
-# (a saved-file reading is always dated, even when captured in the run's own second); the explicit no-5-hour row has no figure, so it is blank.
+# #2406/#2409: an app-usage-tool reading older than 120 seconds is saved too, so its rows show the capture DATE;
+# the explicit no-5-hour row has no figure, so it is blank.
 APP_FILE="$AI_QUOTAS_STATUSLINE_DIR/claude-app--$WORK.json"
 mv "$(reading_file "$WORK")" "$TMP/work-status-line-hidden.json"
 jq '.source = "app-usage-tool" | del(.windows.five_hour)' "$TMP/work-reading5.json" > "$APP_FILE"; chmod 600 "$APP_FILE"
-jsonA="$(AI_QUOTAS_NOW="$(( NOW + 30 ))" "$READER" --json --no-last-known --five-hour --account "$WORK" 2>/dev/null)"
+jsonA="$(AI_QUOTAS_NOW="$(( NOW + 121 ))" "$READER" --json --no-last-known --five-hour --account "$WORK" 2>/dev/null)"
 check_eq "$(row_field "$jsonA" "$WORK" 7-day source)" "app-usage-tool" "control: the row really is sourced app-usage-tool"
 check_eq "$(row_field "$jsonA" "$WORK" 7-day fetched)" "saved" "an app-usage-tool figure is saved, not live"
 check_eq "$(row_field "$jsonA" "$WORK" 7-day fetched_display)" "Jan 15" "and shows its capture date, not now"

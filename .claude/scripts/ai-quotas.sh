@@ -1067,7 +1067,7 @@ browser_fetched_extra() { # <extra-json> <validated-observation-json>
 # usage, limit resets and the top model's allowance. Only what the page showed is
 # set; an absent block leaves its fields out, never zero.
 claude_browser_account_extra() { # <validated-observation-json>
-  printf '%s' "$1" | jq -c '
+  printf '%s' "$1" | jq -c --argjson now "${NOW:-0}" '
     (.observed_at_epoch | if type == "number" then floor else null end) as $at
     | def keep: with_entries(select(.value != null));
     ((.extra_usage // null) | if . == null then {}
@@ -1077,7 +1077,7 @@ claude_browser_account_extra() { # <validated-observation-json>
     + ((.limit_resets // null) | if . == null then {}
        else {limit_resets_available: .count,
              limit_resets: (if (.items | type) == "array" and (.items | length) > 0 then .items else null end)} | keep end)
-    + ((.top_model // null) | if . == null then {}
+    + ((.top_model // null) | if . == null or ((.resets_at_epoch | type) == "number" and .resets_at_epoch <= $now) then {}
        else {top_label: .label, top_used_pct: .used_pct, top_resets_at_epoch: (.resets_at_epoch | if type == "number" then floor else null end)} | keep end)' 2>/dev/null || printf '{}'
 }
 
@@ -1114,7 +1114,10 @@ read_claude_browser() { # <label> <profile_dir>
     reset="$(printf '%s' "$row" | jq -r '.resets_at_epoch | if type == "number" and . <= 253402300799 then floor else empty end')"
     if [[ -z "$used" ]]; then
       # One window unread on the page: report it unreadable, never as an invented figure.
-      emit_row claude "$label" "$email" "$window" "" "$reset" unreadable "window not shown on the observed page" browser ""
+      # The account-level values belong to the account, not to this window, so an
+      # unreadable window still carries them (the table shows them once per account).
+      emit_row claude "$label" "$email" "$window" "" "$reset" unreadable "window not shown on the observed page" browser "" \
+        "$(claude_browser_account_extra "$result")"
       emitted=1
       continue
     fi
@@ -1544,7 +1547,7 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
                     last_known_resets_at_epoch: $x.resets_at_epoch,
                     last_known_resets_et: $x.resets_et,
                     last_known_expired: $x.expired
-                  } + ($x.account // {})
+                  } + (if $x.expired == true then {} else ($x.account // {}) end)
               end
           end
       ]' "$1" > "$TMP/lk-doc.json" 2>/dev/null && mv "$TMP/lk-doc.json" "$1" \

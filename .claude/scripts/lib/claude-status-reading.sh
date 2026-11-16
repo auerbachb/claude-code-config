@@ -194,7 +194,7 @@ csr_window() { # <seven_day|five_hour>
 # absent figure into a zero. Dollar amounts are taken only when the provider names
 # the currency USD, because the fields are dollars.
 #   app-usage tool file: `extra_usage` (enabled, spent, monthly_limit, currency),
-#     `weekly_models` ("Weekly · Fable": the label after the prefix is `top`, the
+#     `weekly_models` ("Weekly · <Name>": the label after the prefix is `top`, the
 #     first such window when there are several) and `limit_resets`.
 #   status-line file: `rate_limits.spend_limit`, whose shape has never been seen
 #     live, so only an explicit boolean `enabled`/`is_enabled` and amounts under a
@@ -210,12 +210,13 @@ CSR_ACCOUNT_JQ='
     if ($e | type) != "boolean" and $cap == null and $spent == null then {}
     else {paid_enabled: (if ($e | type) == "boolean" then $e else null end),
           paid_cap_usd: $cap, paid_spent_usd: $spent,
-          paid_currency: (if $cap != null or $spent != null then "USD" else null end),
+          paid_currency: (if $cap != null or $spent != null then "USD" else $cur end),
           paid_period: "monthly", paid_read_at_epoch: $at} | keep end;
   (.captured_at_epoch | epoch) as $at
   | (if (.extra_usage | type) == "object" then .extra_usage else null end) as $x
   | (if ($x != null) then ($x.currency == "USD") else false end) as $usd
-  | (if $x != null then paid($x.enabled; (if $usd then ($x.monthly_limit | money) else null end); (if $usd then ($x.spent | money) else null end); null; $at) else {} end) as $paid_app
+  | (if $x != null then paid($x.enabled; (if $usd then ($x.monthly_limit | money) else null end); (if $usd then ($x.spent | money) else null end);
+                                    ($x.currency | if type == "string" and test("^[A-Z]{3}$") then . else null end); $at) else {} end) as $paid_app
   | (if (.rate_limits.spend_limit | type) == "object" then .rate_limits.spend_limit else null end) as $s
   | (if $s != null then paid((if ($s.enabled | type) == "boolean" then $s.enabled else $s.is_enabled end);
                              ($s.limit_usd // $s.monthly_limit_usd | money); ($s.used_usd // $s.spent_usd | money); null; $at) else {} end) as $paid_sl
@@ -230,12 +231,13 @@ CSR_ACCOUNT_JQ='
           | if $m != null then {top_label: ($m.key | sub("^seven_day_"; "") | clean | if . == null then null else (.[0:1] | ascii_upcase) + .[1:] end),
                                 top_used_pct: ($m.value.used_percentage | pct), top_resets_at_epoch: ($m.value.resets_at | epoch)} | keep
             else {} end end) as $top
-  | (if ($top.top_label // null) == null then {} else $top end) as $top
+  | (if ($top.top_label // null) == null
+        or (($top.top_resets_at_epoch // null) != null and $top.top_resets_at_epoch <= $now) then {} else $top end) as $top
   | $paid_app + (if ($paid_app | length) == 0 then $paid_sl else {} end) + $lr + $top'
 
 csr_account_fields() { # <file> — one JSON object, `{}` when the file carries none
   local out
-  out="$(jq -c "$CSR_ACCOUNT_JQ" "$1" 2>/dev/null)" || out=""
+  out="$(jq -c --argjson now "${NOW:-0}" "$CSR_ACCOUNT_JQ" "$1" 2>/dev/null)" || out=""
   [[ -n "$out" ]] || out="{}"
   printf '%s' "$out"
 }

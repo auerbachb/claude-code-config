@@ -58,13 +58,13 @@ read_antigravity_account() { # <label>
   local line window used resets group models fet_et res_et top
   fet_et="$(epoch_to_et "$captured")"
   # The top tier (#2415): the group the panel prints with no "Models within this group"
-  # line, because it is a single named model with its own allowance ("GEMINI 4 ARGON").
+  # line, because it is a single named model with its own allowance ("<VENDOR> <N> <NAME>").
   # Its label is the last word of the printed group name, its percent is USED (the
   # panel prints remaining), and it is taken from the weekly window when there is one.
   # The first such group wins. A window whose reset passed since the capture, or a
   # capture older than the stale cutoff, shows nothing rather than an old figure.
   top="$(printf '%s' "$result" | jq -c --argjson now "$NOW" '
-    ([.groups[] | select((.models | length) == 0)][0]) as $g
+    ([.groups[] | select((.models | length) == 0 and .slug != "unknown")][0]) as $g
     | if $g == null then {}
       else ([$g.windows[] | select(.name == "7-day")][0] // $g.windows[0]) as $w
         | (($g.name | gsub("[\u0000-\u001f\u007f]"; "") | split(" ") | map(select(. != "")) | last | if . == null then null else .[0:20] end) // null) as $l

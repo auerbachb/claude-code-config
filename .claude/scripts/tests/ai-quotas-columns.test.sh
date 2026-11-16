@@ -152,7 +152,7 @@ run --json --five-hour
 check_eq "$RC" "0" "the six-account run exits 0"
 check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.provider == "antigravity")] | length')" "5" "control: Antigravity produced its five rows"
 # Every row declares every new field, so the shape never varies by provider.
-check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | [.paid_enabled, .paid_cap_usd, .paid_cap_unlimited, .paid_spent_usd, .paid_currency, .paid_period, .paid_read_at_epoch, .limit_resets_available, .limit_resets, .top_label, .top_used_pct, .top_resets_at_epoch, .account_primary] | length] | unique | join(",")')" "13" "every row has all thirteen new fields"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | . as $r | ["paid_enabled","paid_cap_usd","paid_cap_unlimited","paid_spent_usd","paid_currency","paid_period","paid_read_at_epoch","limit_resets_available","limit_resets","top_label","top_used_pct","top_resets_at_epoch","account_primary"] | map(. as $k | $r | has($k)) | all] | all')" "true" "every row declares all thirteen new fields as keys"
 
 # Claude Personal: paid usage on, $315.79 of $500.00, Weekly · Fable 84% used.
 check_eq "$(row_json "$PERS" 7-day '.paid_enabled')" "true" "Claude Personal: paid usage is on"
@@ -215,7 +215,8 @@ if [[ "$WIDTH" -le 140 && "$WIDTH" -gt 0 ]]; then ok "the six-account table fits
 else bad "the six-account table does not fit 140 terminal columns (widest line: $WIDTH)"; fi
 check_eq "$(printf '%s\n' "$TABLE" | grep -c '^Antigravity ')" "5" "control(+): all five Antigravity rows are in the measured table"
 has_row "$(row_of "$TABLE" 'Claude Personal')" '✅ \$500 +\$315\.79 +- +Fable +84% ' "Claude Personal row: ✅, \$500 cap, \$315.79 spent, no resets, Fable 84%"
-has_row "$(row_of "$TABLE" 'Claude Work')" '❌ \$1000 +\$0\.00 +2 +Fable +0% ' "Claude Work row: ❌ (credits off), the \$1000 limit, \$0.00, 2 resets, Fable 0%"
+has_row "$(row_of "$TABLE" 'Claude Work')" '❌ off +\$0\.00 +2 +Fable +0% ' "Claude Work row: ❌ (credits off), off in \$ CAP despite the \$1000 limit, \$0.00, 2 resets, Fable 0%"
+check_not_contains "$(row_of "$TABLE" 'Claude Work')" '1000' "Claude Work row: the unused \$1000 limit is not printed beside a ❌"
 has_row "$(row_of "$TABLE" 'GPT LM')" ' - +- +- +0 +- +- ' "GPT LM row: 0 resets, paid usage blank (never ❌ or \$0)"
 has_row "$(row_of "$TABLE" 'GPT Personal')" ' - +- +- +- +- +- ' "GPT Personal row: resets unknown shows the blank marker, not 0"
 check_not_contains "$(row_of "$TABLE" 'GPT Personal')" ' 0 ' "GPT Personal row: no 0 anywhere in the new columns"
@@ -236,6 +237,14 @@ check_not_contains "$OUT" "Informational only" "--quiet drops the cheapest-next 
 check_not_contains "$OUT" "RELIABILITY" "--quiet drops the reliability lines"
 check_contains "$OUT" "[1] from the Claude app" "--quiet keeps the footnotes, which are part of the table"
 check_eq "$(table_width "$(table_only "$OUT")")" "$WIDTH" "--quiet prints the same table"
+# The layout is computed in jq on code points, so a runner whose locale is C or POSIX (bytes, not
+# characters) prints the identical table.
+for loc in C POSIX C.UTF-8; do
+  LC_ALL="$loc" LANG="$loc" run --quiet
+  check_eq "$(table_width "$(table_only "$OUT")")" "$WIDTH" "the table is the same width under LC_ALL=$loc"
+done
+# Wide East Asian characters in an account nickname count as two columns each.
+check_eq "$(jq -n -r 'def wide: explode | map(if . >= 768 and . <= 879 then 0 elif . == 9989 or . == 10060 or . >= 127744 or (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191) or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255) or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135) or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) then 2 else 1 end) | add // 0; ["日本語","✅","ab","é"] | map(wide) | join(",")')" "6,2,2,1" "the width rule counts CJK as 2, an icon as 2, ASCII and accented letters as 1"
 
 # --- 3. unknown is blank, never zero or off ------------------------------------------------
 
@@ -260,7 +269,9 @@ has_row "$(row_of "$(table_only "$OUT")" 'Claude Personal')" ' - +\$40 +\$12\.50
 # Another currency is never printed as dollars.
 one_claude 300 '{"extra_usage":{"enabled":true,"spent":"12.50","monthly_limit":"40.00","currency":"EUR"}}'
 run --json
-check_eq "$(claude_field '[.paid_enabled, .paid_cap_usd, .paid_spent_usd, .paid_currency] | map(tostring) | join(",")')" "true,null,null,null" "a non-dollar currency keeps the on flag and drops the amounts"
+check_eq "$(claude_field '[.paid_enabled, .paid_cap_usd, .paid_spent_usd, .paid_currency] | map(tostring) | join(",")')" "true,null,null,EUR" "a non-dollar currency keeps the on flag, drops the amounts and names the currency"
+run
+check_contains "$OUT" "paid amounts are in EUR, not shown" "and the table says why the amounts are blank"
 # Garbage amounts are not figures.
 one_claude 300 '{"extra_usage":{"enabled":true,"spent":"lots","monthly_limit":"-5","currency":"USD"}}'
 run --json
@@ -309,7 +320,7 @@ check_eq "$(cursor_cell paid_enabled),$(cursor_cell paid_cap_unlimited),$(cursor
 has_row "$(cursor_table_row)" '✅ none +\$6\.33 ' "table: unlimited on-demand shows ✅ and none in \$ CAP"
 cursor_browser_account 0 false 0
 check_eq "$(cursor_cell paid_enabled),$(cursor_cell paid_cap_usd),$(cursor_cell paid_spent_usd)" "false,0,0" "Cursor Spending page: a limit of 0 is off, and the provider-said 0 spend is kept"
-has_row "$(cursor_table_row)" '❌ \$0 +\$0\.00 ' "table: limit 0 shows ❌, \$0 cap, \$0.00 (the provider said so)"
+has_row "$(cursor_table_row)" '❌ off +\$0\.00 ' "table: limit 0 shows ❌, off in \$ CAP, \$0.00 (the provider said so)"
 cursor_browser_account omit false omit
 check_eq "$(cursor_cell paid_enabled),$(cursor_cell paid_cap_usd),$(cursor_cell paid_spent_usd)" "null,null,null" "Cursor Spending page without on-demand figures leaves the paid fields null"
 has_row "$(cursor_table_row)" ' - +- +- ' "table: and shows the blank marker, never ❌ or \$0"
@@ -333,6 +344,10 @@ run --json
 check_eq "$(fetched_of fetched)" "saved" "121 seconds before the run is saved"
 check_eq "$(fetched_of fetched_display)" "$(TZ=America/New_York date -j -f %s "$(( NOW - 121 ))" '+%b %d' 2>/dev/null || TZ=America/New_York date -d "@$(( NOW - 121 ))" '+%b %d')" "and shows its date"
 check_eq "$(fetched_of fetched_at)" "$(utc_iso "$(( NOW - 121 ))")" "with its exact instant"
+# A capture time after the run began is never "now".
+one_claude -60 "$PERS_EXTRA"
+run --json
+check_not_contains "$(fetched_of fetched_display)" "now" "a reading stamped after the run began is not fetched now"
 one_claude 5 "$PERS_EXTRA"
 run
 has_row "$(row_of "$(table_only "$OUT")" 'Claude Personal')" ' now ' "a 5-second-old status reading shows now in the table"
@@ -461,7 +476,7 @@ cb_page_obs() { # <extra-json merged into the observation>
   dir="$(seed_claude_profile "$CB_LABEL" "Claude-browser-svc")"
   echo ratelimit > "$STUB_ANTHROPIC_MODE"
   write_config "$(account_json claude "$CB_LABEL" "$dir" Claude-browser-svc)"
-  jq -n --arg l "$CB_LABEL" --argjson ob "$NOW" --argjson wk "$WEEK_RESET" --argjson x "$1" \
+  jq -n --arg l "$CB_LABEL" --argjson ob "${CB_OBS_AT:-$NOW}" --argjson wk "$WEEK_RESET" --argjson x "$1" \
     '{schema_version: 1, provider: "claude", label: $l, email: $l, status: "ok", observed_at_epoch: $ob,
       rows: [{window: "7-day", used_pct: 64, resets_at_epoch: $wk}]} + $x' > "$TMP/claude-page-obs.json"
   chmod 600 "$TMP/claude-page-obs.json"
@@ -482,6 +497,17 @@ cb_page_obs '{"top_model":{"label":"Fable","used_pct":140,"resets_at_epoch":null
 check_eq "$(claude_field '.status')" "unreadable" "a top-model percent above 100 is rejected"
 cb_page_obs '{"top_model":{"label":"Fa\nble","used_pct":3,"resets_at_epoch":null}}'
 check_eq "$(claude_field '.status')" "unreadable" "a top-model label with control characters is rejected"
+
+# --- 7. review round: account values survive an unreadable window; stale and future figures ---
+
+cb_page_obs '{"rows":[{"window":"7-day","used_pct":null,"resets_at_epoch":null},{"window":"5-hour","used_pct":10,"resets_at_epoch":'"$FIVE_RESET"'}],"extra_usage":{"enabled":true,"spent_usd":4,"monthly_limit_usd":20}}'
+check_eq "$(claude_field '[.status, .paid_enabled, .paid_cap_usd, .paid_spent_usd] | map(tostring) | join(",")')" "unreadable,true,20,4" "an unreadable window still carries the account's paid figures"
+cb_page_obs '{"top_model":{"label":"Fable","used_pct":50,"resets_at_epoch":'"$(( NOW - 10 ))"'}}'
+check_eq "$(claude_field '[.top_label, .top_used_pct] | map(tostring) | join(",")')" "null,null" "a top-tier window whose reset has passed is blank, not an old percent"
+cb_page_obs '{"top_model":{"label":"Fable","used_pct":50,"resets_at_epoch":'"$WEEK_RESET"'}}'
+check_eq "$(claude_field '[.top_label, .top_used_pct] | map(tostring) | join(",")')" "Fable,50" "control: a top-tier window that resets later is shown"
+CB_OBS_AT=$(( NOW + 100 )) cb_page_obs '{}'
+check_eq "$(claude_field '.fetched_display')" "$(TZ=America/New_York date -j -f %s "$(( NOW + 100 ))" '+%b %d' 2>/dev/null || TZ=America/New_York date -d "@$(( NOW + 100 ))" '+%b %d')" "an observation stamped 100 seconds after the run began shows its date, never now"
 
 printf 'ai-quotas-columns.test.sh: %s passed, %s failed\n' "$PASS" "$FAILED"
 [[ "$FAILED" -eq 0 ]]

@@ -196,17 +196,17 @@ before this run started (a live read, or a saved status-line, app or observation
 fresh), otherwise the date it was read as `Mmm dd` in Eastern time (`Nov 16`, `Jan 01`), `-`
 when the row has no figure. A figure saved earlier today shows today's date, not `now`. When
 you quote a figure, say how old it is if FETCHED is not `now`. `--json` rows carry `fetched_at`
-(ISO-8601 UTC, the exact instant read), `fetched` (`live` or `saved`) and `fetched_display`.
+(ISO-8601 UTC, the exact instant read), `fetched` (`live` or `saved`) and `fetched_display`; all three are `null` on a row with no figure.
 The table prints `resets` in LEFT for `resets first` to stay inside its 140 columns.
 
 ## Step 3a-iii — Paid usage, resets and top tier ($?, $ CAP, $, RST, TOP, TOP%)
 
-Six columns, one value per account (on the account's first row; `-` on its other rows):
+Six columns, one value per account (on the account's first row that carries any of them, or its first row when none does; `-` on its other rows):
 
 | Column | Reads as |
 |--------|----------|
 | `$?` | ✅ paid usage is on, ❌ the provider says it is off, `-` unknown. It follows whether spending can happen, not whether a limit is set. |
-| `$ CAP` | The paid-usage limit for the period (`$500`), `none` when the provider said unlimited, `off` when paid usage is off with no limit figure, `-` unknown. |
+| `$ CAP` | The paid-usage limit for the period (`$500`), `none` when the provider said unlimited, `off` whenever the provider said paid usage is off (even with a limit set), `-` unknown. |
 | `$` | Dollars of paid usage spent this period. `$0.00` means the provider said zero. |
 | `RST` | How many limit resets are available. `0` means none left; `-` means unknown or the provider has none (Cursor and Antigravity have no reset allowance). |
 | `TOP` / `TOP%` | The top-tier model with its own allowance, by the provider's own label (`Fable`, `Argon`), and the percent of it **used**. |
@@ -215,7 +215,7 @@ An unknown is `-`, never ❌ or `$0`: do not read a `-` as "off" or "free". On c
 say plainly when `$?` is ✅ and what `$` has already been spent, because that money may not be
 reimbursable; the columns are display only and never block or gate work. Claude's reset count
 is in no saved reading, and an account whose saved reading has no extra-usage block (a
-status-line reading) has blank paid columns, until an agent reads the claude.ai usage page
+status-line reading) has blank paid columns unless the status line carries a `rate_limits.spend_limit` or a per-model `rate_limits.seven_day_<model>` window (its shape is unverified), until an agent reads the claude.ai usage page
 and supplies them (`.claude/reference/ai-quotas.md` §"Paid usage, resets and top tier" has
 the observation fields and the `limit_resets` block for `claude-usage-observe.sh`). `--json` carries `paid_enabled`, `paid_cap_usd`,
 `paid_cap_unlimited`, `paid_spent_usd`, `paid_currency`, `paid_period`, `paid_read_at_epoch`,
