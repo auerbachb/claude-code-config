@@ -1,9 +1,11 @@
 # Google Antigravity — quota research (Issue #2407)
 
 Research date: 2026-11-16. Not auto-loaded. Part of the quota-tracking reference set
-(`ai-quotas.md`). **Outcome: no verified machine-readable usage source exists, so no
-`antigravity` provider is built yet.** What was and was not verified is below so the next
-attempt does not repeat it.
+(`ai-quotas.md`). **Outcome: the interactive `/usage` panel in `agy` prints parseable text**
+(percent remaining per group, relative reset times, and "Quota available" when full). No
+`antigravity` provider is built yet. The remaining work for Issue #2407 is a parser for that
+text plus a capture route. What was and was not verified is below so the next attempt does
+not repeat it.
 
 ## How the limits work (documented, vendor sources)
 
@@ -25,9 +27,51 @@ plans page above is treated as authoritative and the rest as unverified.
 - **IDE:** model selector under the prompt box, then `View Usage`; Settings also shows
   baseline usage across models (vendor plans page and third-party guides).
 - **CLI (`agy`):** the interactive slash command `/usage` (alias `/quota`) opens a
-  "Models & Quota" panel and refreshes from the backend first. The docs do not say
-  whether values are percentages or counts, give no reset timestamps, and describe no
-  file or non-interactive output.
+  "Models & Quota" panel and refreshes from the backend first. The vendor docs describe no
+  file or non-interactive output. **Owner-reported 2026-11-16, not captured by an agent:**
+  the panel prints text with three groups. Each figure is percent **remaining** (the
+  `/quotas` row shows percent used, so convert), resets are relative "Refreshes in Nh Mm",
+  and a full window reads "Quota available" with no countdown.
+
+Recorded sample from the owner's account (email redacted as `<email>`; the source is the
+owner's comment on Issue #2407, 2026-11-16):
+
+```text
+  Account: <email>
+
+GEMINI MODELS
+  Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash
+
+  Weekly Limit Remaining
+    [████████████████████████████████████░░░░░░░░░░░░░░] 71.68%
+    Refreshes in 153h 32m
+
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B
+
+  Weekly Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+GEMINI 4 ARGON
+  For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.
+
+  Gemini 4 Argon Weekly Limit
+    [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 24.95%
+    Refreshes in 153h 28m
+```
+
+The three groups are: Gemini models (weekly and five-hour windows), Claude and GPT models
+(weekly and five-hour windows), and Gemini 4 Argon (weekly only, a separate top-tier
+allowance on paid Pro plans).
 
 ## What was verified on this Mac (read-only; nothing signed in, no endpoint called)
 
@@ -50,22 +94,22 @@ plans page above is treated as authoritative and the rest as unverified.
 
 ## Conclusion and what would change it
 
-Readable only through the interactive in-app panel (or, unverified, an interactive CLI
-panel). Reading the backend directly would mean borrowing the OAuth token the product
-holds for the signed-in Google user and calling an undocumented endpoint; that is
-neither documented nor verified, so it is not done.
+The figure is readable from the interactive `/usage` panel in `agy`, and that panel prints
+parseable text (sample above). Reading the backend directly would mean borrowing the OAuth
+token the product holds for the signed-in Google user and calling an undocumented endpoint;
+that is neither documented nor verified, so it is not done.
 
-Options for a follow-up, cheapest first:
+Remaining work for Issue #2407:
 
-1. **Agent-taken observation.** With the owner present, drive `View Usage` in the IDE (or
-   `/usage` in `agy`) once, record the real percentages and reset times, and add them as
-   a recorded sample. The private observation-file shape that `ai-quotas.sh --browser-results`
-   uses (`.claude/scripts/lib/quotas-browser.py`) allows at most two rows per account, one per
-   window name, and has no model-group field. A provider must add a group identifier to each row
-   and extend the row limit before it can record the Gemini and Claude/GPT readings for both
-   `5-hour` and `weekly`. This needs a live, signed-in session.
-2. Ask Google for a documented usage endpoint or a machine-readable `agy` command.
+1. **A parser** for the `/usage` text, with the sample above as the fixture. It must
+   convert percent remaining to percent used, parse "Refreshes in Nh Mm", map "Quota
+   available" to a full window with no countdown, and keep the three groups distinct.
+2. **A capture route.** Either drive `agy` then `/usage` in a terminal, or accept the pasted
+   panel text as an observation. The existing observation-file shape that `ai-quotas.sh
+   --browser-results` uses (`.claude/scripts/lib/quotas-browser.py`) allows at most two rows
+   per account, one per window name, and has no model-group field, so it needs a group
+   identifier and a larger row limit before it can hold this sample.
 
 Design constraints for whichever lands: display-only (never feed `quota-reserve.sh`);
-no credential printed, logged, or stored; resets-left blank, since no reset allowance is
-documented; the `unreadable` row must name "open View Usage in Antigravity" as the action.
+no credential printed, logged, or stored; the `unreadable` row must name "open View Usage in
+Antigravity" as the action.
