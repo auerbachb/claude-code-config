@@ -48,6 +48,14 @@ r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n  Five Hour Limi
 jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "a mixed valid and out-of-range panel is unreadable"
 r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n  Five Hour Limit Remaining\n    -5%%\n' | python3 -I "$PARSER" parse - "$CAP")"
 jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "a negative percent beside a valid window is unreadable"
+for bad in "Refreshes in -2h" "Refreshes in 1.5h" "Refreshes in" "Refreshes in 5m 2h" "Refreshes in soon"; do
+  r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n    %s\n' "$bad" | python3 -I "$PARSER" parse - "$CAP")"
+  jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "malformed countdown is unreadable: $bad"
+done
+r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n    Refreshes in 1d 2h 5m\n' | python3 -I "$PARSER" parse - "$CAP")"
+jq -e '.status == "ok" and .groups[0].windows[0].resets_at_epoch == '"$((CAP + 86400 + 7200 + 300))"'' <<<"$r" >/dev/null || fail "a well-formed d/h/m countdown still parses"
+r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n  Five Hour Limit Remaining\n    N/A%%\n' | python3 -I "$PARSER" parse - "$CAP")"
+jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "an unrecognised percent beside a valid window is unreadable"
 pass "unparseable input is unreadable, never 0%"
 
 # --- capture helper -----------------------------------------------------------------
@@ -99,15 +107,23 @@ printf '%s\n' '{"schema_version":"1.0","accounts":[]}' > "$AI_QUOTAS_CONFIG"
 bash "$SCRIPTS/ai-quotas-setup.sh" add antigravity personal >/dev/null 2>&1 || fail "setup registers an antigravity account"
 if bash "$SCRIPTS/ai-quotas-setup.sh" add antigravity second >/dev/null 2>&1; then fail "a second antigravity account must be refused"; fi
 jq -e '[.accounts[] | select(.provider == "antigravity")] | length == 1' "$AI_QUOTAS_CONFIG" >/dev/null || fail "one antigravity account is held"
+setup_refuses() { # <name> <setup args...>
+  local name="$1" out
+  shift
+  if out="$(bash "$SCRIPTS/ai-quotas-setup.sh" "$@" 2>&1)"; then fail "setup $name must refuse antigravity"; fi
+  [[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" == 1 ]] || { printf '%s\n' "$out" >&2; fail "setup $name refuses in one line"; }
+  grep -Eiq 'antigravity' <<<"$out" || fail "setup $name refusal names antigravity"
+}
 list_out="$(bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
 grep -Fq 'agy is installed' <<<"$list_out" || { printf '%s\n' "$list_out" >&2; fail "list shows the CLI presence note"; }
 [[ ! -e "$HOME/.claude/ai-quotas/profiles/personal/antigravity" ]] || fail "no profile directory is created"
-for sub in "report personal 7-day 50" "relogin personal" "share-config personal"; do
-  # shellcheck disable=SC2086
-  if out="$(bash "$SCRIPTS/ai-quotas-setup.sh" $sub antigravity 2>&1)"; then fail "setup $sub must refuse antigravity"; fi
-  [[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" == 1 ]] || { printf '%s\n' "$out" >&2; fail "setup $sub refuses in one line"; }
-  grep -Eiq 'antigravity' <<<"$out" || fail "setup $sub refusal names antigravity"
-done
+setup_refuses report report personal 7-day 50 antigravity
+setup_refuses relogin relogin personal antigravity
+setup_refuses share-config share-config personal antigravity
+setup_refuses "a repeated add" add antigravity personal
+dup="$(bash "$SCRIPTS/ai-quotas-setup.sh" add antigravity personal 2>&1 || true)"
+grep -Fq 'quotas-antigravity-capture.sh' <<<"$dup" || fail "a repeated add points at the capture command"
+if grep -Fq relogin <<<"$dup"; then fail "a repeated add must not recommend relogin"; fi
 
 rows="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5' <<<"$rows" >/dev/null || fail "one row per group and window"

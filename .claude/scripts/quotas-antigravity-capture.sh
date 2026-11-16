@@ -57,7 +57,10 @@ case "$MODE" in
   live)
     AGY="${AI_QUOTAS_AGY_BIN:-}"
     [[ -n "$AGY" ]] || AGY="$(command -v agy 2>/dev/null || true)"
-    [[ -n "$AGY" ]] || AGY="/opt/homebrew/bin/agy"
+    # Same install locations ai-quotas-setup.sh accepts.
+    for candidate in /opt/homebrew/bin/agy /usr/local/bin/agy; do
+      [[ -n "$AGY" ]] || { [[ -x "$candidate" ]] && AGY="$candidate"; } || true
+    done
     [[ -x "$AGY" ]] || die 5 "no agy CLI found; install Antigravity or use --from-file"
     RESULT="$(python3 -I "$PARSER" capture "$AGY" "$CAPTURED" "$OBS")" || RC=$? ;;
 esac

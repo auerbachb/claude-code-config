@@ -28,12 +28,12 @@ FUTURE_SLACK = 300
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 BAR_CHARS = "█░▓▒▏▎▍▌▋▊▉▕■□▪▫"
 PERCENT = re.compile(r"^(\d{1,3}(?:\.\d+)?)\s*%$")
-STRAY_PERCENT = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%$")
+STRAY_PERCENT = re.compile(r"^[^\s%]*\s*%$")
 ACCOUNT = re.compile(r"^\s*Account:\s*(.+?)\s*$", re.I)
 MODELS = re.compile(r"^\s*Models within this group:\s*(.+?)\s*$", re.I)
-REFRESH = re.compile(r"^refreshes\s+in\s+(.+)$", re.I)
-DURATION = re.compile(r"(\d+)\s*([dhms])\b", re.I)
-UNIT = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+REFRESH = re.compile(r"^refreshes\s+in\b(.*)$", re.I)
+DURATION = re.compile(r"^(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?$", re.I)
+UNIT = (86400, 3600, 60, 1)
 
 
 def clean_lines(text):
@@ -83,17 +83,18 @@ def is_header(line):
 
 
 def parse_reset(text, captured):
-    """-> (resets_at_epoch|None, full, reset_text)"""
+    """-> (resets_at_epoch|None, full, reset_text, malformed)"""
     stripped = text.strip()
     if re.fullmatch(r"quota available\.?", stripped, re.I):
-        return None, True, stripped
+        return None, True, stripped, False
     m = REFRESH.match(stripped)
     if m:
-        parts = DURATION.findall(m.group(1))
-        if parts:
-            seconds = sum(int(n) * UNIT[u.lower()] for n, u in parts)
-            return int(captured) + seconds, False, stripped
-    return None, False, stripped
+        d = DURATION.match(m.group(1).strip())
+        if d and any(g is not None for g in d.groups()):
+            seconds = sum(int(g) * u for g, u in zip(d.groups(), UNIT) if g is not None)
+            return int(captured) + seconds, False, stripped, False
+        return None, False, stripped, True
+    return None, False, stripped, False
 
 
 def parse_panel(text, captured):
@@ -102,6 +103,7 @@ def parse_panel(text, captured):
     groups = []
     group = None
     out_of_range = False
+    malformed = None
     entries = [(raw, strip_bars(raw)) for raw in lines]
     # Drop blank lines for lookahead but keep order.
     items = [(raw, s) for raw, s in entries if s]
@@ -136,7 +138,10 @@ def parse_panel(text, captured):
             if group is None:
                 group = {"name": "Unknown", "raw_name": "UNKNOWN", "slug": "unknown", "models": [], "windows": []}
                 groups.append(group)
-            resets, full, reset_text = parse_reset(reset_line or "", captured)
+            resets, full, reset_text, bad_reset = parse_reset(reset_line or "", captured)
+            if bad_reset:
+                malformed = "a reset countdown is not in the d/h/m/s form; the panel is not trusted"
+                continue
             group["windows"].append({
                 "name": window_name(s),
                 "title": s,
@@ -148,10 +153,12 @@ def parse_panel(text, captured):
             })
             continue
         if STRAY_PERCENT.match(s):
-            # A percent no window title claimed (negative, or detached): the panel is not trusted.
-            out_of_range = True
+            # A percent-looking line no window title claimed (negative, "N/A%", detached): not trusted.
+            malformed = malformed or "a percent line was not recognised; the panel is not trusted"
         i += 1
     groups = [g for g in groups if g["windows"]]
+    if malformed:
+        return {"status": "unreadable", "reason": malformed, "account": account, "groups": []}
     if out_of_range:
         return {"status": "unreadable", "reason": "a percent outside 0-100 was printed; the panel is not trusted", "account": account, "groups": []}
     if not groups:

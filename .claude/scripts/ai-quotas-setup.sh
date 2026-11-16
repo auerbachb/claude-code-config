@@ -1188,6 +1188,9 @@ action_add() {
   config="$(read_config)"
   local existing
   existing="$(match_indices "$config" "$label" "$provider")"
+  if [[ -n "$existing" && "$provider" == antigravity ]]; then
+    die 3 "'$label' is already registered for antigravity — save a new /usage panel with quotas-antigravity-capture.sh, or 'remove $label antigravity' first"
+  fi
   if [[ -n "$existing" ]]; then
     die 3 "'$label' is already registered for $provider — use 'relogin $label $provider' instead"
   fi
