@@ -1,10 +1,10 @@
 <!-- pm-routing:begin -->
-Route `shared:config`. Create `.claude/pm-config.md` when it is absent; refresh its auto-generated sections only when the operator asks in chat (`/pm refresh config`). Resolve `PM_CONFIG_GET` from `/pm` Step 0; if it is empty, stop with `ERROR: pm-config-get.sh not found (checked all three paths) — PM config unavailable`.
+Route `shared:config`. Create `.claude/pm-config.md` when a cold start finds it absent. Refresh its auto-generated sections when the start gate of a cold or resumed `/pm` finds it present (automatic mode), or when the operator asks in chat (`/pm refresh config`, explicit mode with confirmation). Resolve `PM_CONFIG_GET` from `/pm` Step 0; if it is empty, stop with `ERROR: pm-config-get.sh not found (checked all three paths) — PM config unavailable`.
 <!-- pm-routing:end -->
 
 ### Config procedure (shared:config)
 
-This module owns `.claude/pm-config.md`. It moved here from the retired PM handoff skill (#2344): a cold `/pm` run creates the file when it is missing, and the refresh re-scans Infrastructure and Architecture while preserving every user-edited section. Step numbers below are local to this module.
+This module owns `.claude/pm-config.md`. It moved here from the retired PM handoff skill (#2344). A cold `/pm` run creates the file when it is missing. The refresh re-scans Infrastructure and Architecture while preserving every user-edited section. It runs automatically at the start of every cold or resumed `/pm` (#2405), and on demand through `/pm refresh config`. Step numbers below are local to this module.
 
 ## Step 1: Detect mode (bootstrap vs. standard)
 
@@ -35,9 +35,9 @@ contract), so both map to `CONFIG_EXISTS`. Anything else — rc=2 with the
 file present, a usage error (rc=3), or any other unexpected exit code — maps
 to `UNREADABLE` rather than being silently treated as a healthy config.
 
-- If `MODE == BOOTSTRAP` (file genuinely absent): create the config from the repo scan (Step 2)
+- If `MODE == BOOTSTRAP` (file genuinely absent): a cold start creates the config from the repo scan (Step 2, via `rank:load` 1B.1). A resumed start never creates it: it reports the file as missing and continues without config. The start gate does nothing here.
 - If `MODE == UNREADABLE` (file exists but `pm-config-get.sh` returned an error for it, or returned an exit code outside the documented contract): **STOP.** Tell the user: "`.claude/pm-config.md` exists but could not be read — check file permissions and encoding before continuing." Do NOT proceed to Step 2 — bootstrapping here would silently overwrite the existing file's content, including any user-customized Role/OKRs/Team/Notes sections and any non-canonical sections.
-- Otherwise (**CONFIG_EXISTS**): if the operator asked for a refresh, go to Step 3; otherwise return to the caller with the config unchanged.
+- Otherwise (**CONFIG_EXISTS**): go to Step 3 in the mode the caller set. **Automatic** is the default at every start. **Explicit** applies when `CONFIG_REFRESH=true` (`/pm refresh config`). Step 3 is the same in both; they differ only at Steps 3e and 3g.
 
 ## Step 2: Bootstrap — create pm-config.md from repo discovery
 
@@ -169,11 +169,11 @@ always works.
 
 Tell the user the config was bootstrapped and they should review/customize the Role, OKRs, Team, and Notes sections.
 
-**Non-canonical sections (e.g. `Complexity triggers`).** Step 1 now only dispatches here (`MODE == BOOTSTRAP`) when the config file is genuinely absent — an existing-but-unreadable file instead stops with an error (`MODE == UNREADABLE`, see #606) rather than reaching this bootstrap. So this path never has parseable prior sections to work from, and there is nothing to preserve here. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule the config-refresh path uses in its Step 3f: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see Step 3f below for the full algorithm and worked example.
+**Non-canonical sections (e.g. `Complexity triggers`).** Cold start reaches here (`MODE == BOOTSTRAP`) only when the config file is genuinely absent; the start gate never bootstraps — an existing-but-unreadable file instead stops with an error (`MODE == UNREADABLE`, see #606) rather than reaching this bootstrap. So this path never has parseable prior sections to work from, and there is nothing to preserve here. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule the config-refresh path uses in its Step 3f: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see Step 3f below for the full algorithm and worked example.
 
 ## Step 3: Read and refresh the existing config
 
-This module is the one place `.claude/pm-config.md` is created (Step 2) or refreshed (this step). The auto-generated sections (Infrastructure, Architecture) are regenerated from the repo's current state; every user-edited section is preserved verbatim. Refreshing runs only when the operator asks for it, so a routine `/pm` run never rewrites the file.
+This module is the one place `.claude/pm-config.md` is created (Step 2) or refreshed (this step). The auto-generated sections (Infrastructure, Architecture) are regenerated from the repo's current state; every user-edited section is preserved verbatim. Automatic refresh rewrites the file only when the reconstructed content differs from what is on disk, so a start where nothing changed writes nothing. Explicit refresh shows the diff and asks before writing. The refresh makes no GitHub or network call: it reads local files and the config itself, so it needs no time bound.
 
 **Stale worktree and branch cleanup is not part of this flow.** `/pm-clean` is the sole documented caller of `stale-cleanup.sh` — never invoke it from this module. Config staleness and workspace staleness are independent concerns with independent skills.
 
@@ -270,9 +270,9 @@ Scan the directory structure (depth 2) and detect:
 
 Same detection logic as Step 2c. Generate a new Architecture section.
 
-### Step 3e: Display diff for review
+### Step 3e: Display diff for review (explicit) or apply it (automatic)
 
-Before writing, show the user what will change:
+Build the reconstruction first, then branch on the mode. In **automatic** mode no prompt is shown: items 5 and 6 decide, and a refused read or duplicate header prints a one-line warning instead of a silent skip. In **explicit** mode, show what will change:
 
 1. Compare the current Infrastructure section against the newly scanned version
 2. Compare the current Architecture section against the newly scanned version
@@ -287,17 +287,17 @@ Before writing, show the user what will change:
    - Added: api/ directory (new)
    - Updated: CI workflows (added deploy.yml)
    ```
-4. **Preview the whole reconstructed file, not just those two sections.** Step 3f rewrites `pm-config.md` end to end, so the write can also reorder canonical sections into the fixed schema order, move a non-canonical section to its recorded anchor, and collapse trailing whitespace (Step 3a's note). Build the Step 3f output in memory and `diff` it against the file on disk, then show that diff alongside the summaries above — a confirmation gate that previews only Infrastructure and Architecture is asking the user to approve edits they were never shown.
-5. If the reconstructed file is byte-identical to the one on disk: skip Step 3f with the message "Infrastructure and Architecture are unchanged — config is up to date." Do not write the file; continue to Step 3g.
-6. If the diff is non-empty, ask the user: "Apply these updates to `.claude/pm-config.md`?" Wait for confirmation before writing — via `AskUserQuestion` when available, prose fallback in headless runs (`ask-menu.md`).
-7. If the user declines, do not write. Report "Config refresh declined — no changes written," and return to the caller using the sections as parsed in Step 3a.
-8. If the user confirms, proceed to Step 3f to apply them.
+4. **Preview the whole reconstructed file, not just those two sections.** Step 3f rewrites `pm-config.md` end to end, so the write can also reorder canonical sections into the fixed schema order, move a non-canonical section to its recorded anchor, and collapse trailing whitespace (Step 3a's note). Build the Step 3f output in memory and `diff` it against the file on disk. In explicit mode, show that diff alongside the summaries above — a confirmation gate that previews only Infrastructure and Architecture is asking the user to approve edits they were never shown.
+5. If the reconstructed file is byte-identical to the one on disk: do not write the file. **Automatic:** print nothing and return to the caller. **Explicit:** report "Infrastructure and Architecture are unchanged — config is up to date." and return to the caller.
+6. If the diff is non-empty and the mode is **automatic**: write without asking — proceed to Step 3f, then print the Step 3g line. The user-edited sections are carried over verbatim, so no approval is needed for them.
+7. If the diff is non-empty and the mode is **explicit**: ask the user: "Apply these updates to `.claude/pm-config.md`?" Wait for confirmation before writing — via `AskUserQuestion` when available, prose fallback in headless runs (`ask-menu.md`). If the user declines, do not write. Report "Config refresh declined — no changes written," and return to the caller using the sections as parsed in Step 3a.
+8. If the user confirms (explicit mode), proceed to Step 3f to apply them.
 
 ### Step 3f: Reassemble and write config
 
-**Gate:** only run this step when `REFRESH_OK` is true (Step 3a), no duplicate header was found (Step 3a), and the user confirmed (Step 3e). Any of those failing means no write happens at all.
+**Gate:** only run this step when `REFRESH_OK` is true (Step 3a), no duplicate header was found (Step 3a), and the write is authorised: a non-identical diff in automatic mode (Step 3e item 6), or the user's confirmation in explicit mode (Step 3e item 8). Any of those failing means no write happens at all.
 
-**Re-check the file has not changed under you.** Step 3e pauses for a human answer, and the natural thing to do while deciding is to open `pm-config.md` — so the parse this write is built from can be stale by the time the answer arrives. Record the file's hash in Step 3a, immediately before parsing, and compare it again here:
+**Re-check the file has not changed under you.** In explicit mode, Step 3e pauses for a human answer, and the natural thing to do while deciding is to open `pm-config.md` — so the parse this write is built from can be stale by the time the answer arrives. The same check guards automatic mode against a concurrent `/pm` in another thread. Record the file's hash in Step 3a, immediately before parsing, and compare it again here:
 
 ```bash
 CONFIG_HASH_BEFORE=$(git hash-object "$CONFIG_FILE")   # Step 3a, before parsing
@@ -336,7 +336,9 @@ Write back to `.claude/pm-config.md`.
 
 ### Step 3g: Report config changes
 
-Output a summary showing what changed in the config:
+**Automatic mode:** print one line instead of the block below, naming the regenerated sections that changed — e.g. `pm-config.md refreshed: Infrastructure (added Fly.io), Architecture (new api/ directory). User-edited sections untouched.` Print nothing when Step 3e item 5 found no change.
+
+**Explicit mode:** output a summary showing what changed in the config:
 
 ```
 ## PM Config Refreshed
@@ -350,5 +352,5 @@ Output a summary showing what changed in the config:
 - Architecture: {brief diff — e.g., "detected new api/ directory"}
 ```
 
-If nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date." Either way, return to the caller — the ranking proceeds whether or not the config needed a refresh.
+In explicit mode, if nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date." Either way, return to the caller — the start proceeds whether or not the config needed a refresh.
 

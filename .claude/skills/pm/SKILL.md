@@ -39,7 +39,7 @@ Parse `$ARGUMENTS` in this order — day tokens first (so they never fall throug
   **Validate both as unsigned integers with `[[ "$v" =~ ^[0-9]+$ ]]` before range-checking**, and reject anything failing either test — naming the rejected input and falling back to the documented default. The pattern test is not belt-and-braces: both values are interpolated into 2D.2's `--set` JSON payload and into 2D.3's shell arithmetic, so `2.5` or `abc` does not merely produce a bad cadence, it writes a malformed `day` object into session state that every later read then fails on.
 - **Cleanup escape hatch:** if the remaining `$ARGUMENTS` contains the `--no-clean` flag or a bare `fast` token (its own whitespace-delimited word, e.g. `/pm fast`), set `NO_CLEAN=true` and strip that flag/token from the arguments before the checks below (so it is never read as a business goal); otherwise `NO_CLEAN=false`. `NO_CLEAN=true` suppresses the always-on Step 1C inline cleanup in **both** modes — see Step 1C.
 - **Window flag:** if the remaining `$ARGUMENTS` contains `--window` followed by a value, extract the complete value as `WINDOW_STR` and strip `--window <value>` from the arguments so it never falls through to the business goal. Empty `WINDOW_STR` means no window. Step 0b processes it. **Multi-word values must be quoted** (e.g. `--window "3 hours"`, `--window "until 5:00 PM"`) — an unquoted multi-word value will be split by the shell, leaving the first token as the value and the remaining words misread as part of the business goal.
-- **Config refresh:** if the remaining `$ARGUMENTS` contains the phrase `refresh config`, strip it and set `CONFIG_REFRESH=true`. Step 1B.1 then runs the `shared:config` refresh (re-scan of Infrastructure and Architecture, confirmed before writing). Without it, `/pm` creates a missing `.claude/pm-config.md` and never rewrites an existing one.
+- **Config refresh:** if the remaining `$ARGUMENTS` contains the phrase `refresh config`, strip it and set `CONFIG_REFRESH=true`. The Step 1 gate then runs the `shared:config` refresh in explicit mode (re-scan of Infrastructure and Architecture, confirmed before writing). Without it, the same gate refreshes an existing `.claude/pm-config.md` automatically at every cold or resumed start. A cold start creates a missing file at Step 1B.1.
 - **Mode:** if the first whitespace-delimited token of the remaining `$ARGUMENTS` is exactly `resume`, strip that token and enter Resume mode (Step 1A, `PM_ENTRY_MODE=resume`). The match is argument-position only: the word `resume` anywhere else, such as inside a business goal like "increase throughput so jobs resume faster", is goal text and never switches the mode. Otherwise enter Cold Start mode (Step 1B, `PM_ENTRY_MODE=cold`). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
 
 Day mode composes with everything above rather than replacing it: `/pm day` is a cold start that then keeps running, `/pm day resume` resumes and then keeps running, and `/pm day increase scraping throughput` carries that goal into every re-rank for the whole run.
@@ -87,7 +87,7 @@ Resume and rank presentation resolve the cleanup and forgotten-PR modules at the
 | Assignment reconciliation | `flow:track` |
 | Status, due progress, or board report | `flow:progress` |
 | Available-capacity evaluation | `flow:refill` |
-| Config bootstrap (file missing, cold start only) or `refresh config` | `shared:config` at Step 1B.1. Resume mode (`resume:load`, Step 1A.1) never bootstraps or writes a config: a missing file is reported as config unavailable and the resume finishes without it. |
+| Config refresh of an existing file (cold start and resume) or `refresh config` | `shared:config` from the Step 1 gate, before Step 1A or 1B. Config bootstrap of a missing file stays cold-start only, at Step 1B.1. Resume mode (`resume:load`, Step 1A.1) never bootstraps: a missing file is reported as config unavailable and the resume finishes without it. |
 | Handoff awareness | `flow:handoff` |
 
 Before an autonomous launch, apply the persisted pause and scope, credit budget, usage horizon, deadline, and author scope at their existing gates. Use Step 0a for author scope, Step 0b and the /subagent prelaunch checks for deadline, Step 3.4 for refill admission, and D2 for a day tick's horizon. Day-mode initial 1B.5 dispatch checks the credit budget in flow:launch before handing the batch to /subagent. A gate's missing or unreadable evidence keeps the affected launch held.
@@ -309,6 +309,16 @@ Mark `0b ran` after a requested window is parsed and persisted. Mark
 `0b skipped (no window requested)` when the original arguments had no window,
 `skipped (window helper unavailable)` when it was unavailable, or `failed`
 with the parse or persistence failure.
+
+---
+
+## Step 1 gate: Config refresh (cold start and resume)
+
+Runs once per start, before Step 1A or 1B, in both modes (#2405). It never runs on `DAY_TICK` or `DAY_PROBE_WAKE` invocations. Those skip Step 1, and this gate repeats that exclusion explicitly. If `PM_CONFIG_GET` is empty, the Step 0 degraded line already covers it and this gate does nothing.
+
+<!-- pm-routing:begin -->
+Use the config-refresh row in [PM module routing](#pm-module-routing). Read `shared:config` and run its Step 1 detection. When the file exists, its refresh runs: automatic by default (silent when nothing changed, one line when it rewrites; user-edited sections are carried over verbatim), explicit when `CONFIG_REFRESH=true` (confirms before writing). A missing file is left to cold start's bootstrap at Step 1B. An unreadable file stops the refresh, and the mode continues without rewriting it.
+<!-- pm-routing:end -->
 
 ---
 
