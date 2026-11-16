@@ -43,21 +43,35 @@ into its own context. Nothing writes here automatically — there is no hook tha
 can see this number (see the audit's §2), so the model reading it out and
 handing it over IS the transport.
 
-**What it tells you:** How much runway the account has left, *before* the wall.
-The harness injects `<total_tokens>N tokens left</total_tokens>` at session
-start and refreshes it after every tool result; on 2026-08-27 it was observed
-starting at 15,000,000 and decrementing per turn. This is the first
-quantitative, **pre-emptive** quota signal reachable from a session — Probe 1 is
-binary and post-hoc, Probe 2 is not automatable, Probe 3 does not exist.
+**What it tells you (#2376, #2390).** What the harness prints in
+`<total_tokens>N tokens left</total_tokens>`, which is **not** the account's
+usage window. The Claude Code 2.1.321 binary describes the default mode
+(`padded-countdown`) as a countdown from a configured budget (15,000,000 tokens
+by default) that resets on each user message; another mode (`countdown`) reports
+remaining context-window tokens. Neither is account usage. The 2026-08-27
+reading ("starting at 15,000,000 and decrementing per turn") fits the budget
+mode, and the four sessions killed together that day were a coincidence of the
+real account window, not something this figure showed. This is read from the
+binary and **not verified in a live session**: what the figure reads across
+several messages on a model that prints it has not been observed first-hand.
+Account usage comes from Probe 1 (post-hoc) and from the weekly reserve
+(`quota-reserve.sh`) and daily budget (`credit-budget.sh`), which read real
+provider figures.
 
-**Where it is missing, and what it may measure (#2376).** The counter is a
+**Where it is missing, and what that means (#2376, #2390).** The counter is a
 per-model harness capability. In the Claude Code 2.1.321 binary, Fable 5.2,
 Opus 5.5, Sonnet 5.5 and Mythos 5.2 do not have it, so a session on one of them
-never has a reading and Probe 0 answers `unknown` throughout. The same binary
-describes the default figure as a countdown from a configured budget that
-re-anchors on each user prompt, which is not the account's usage window. That
-contradicts the paragraph above and is recorded as an open question, not
-resolved here:
+never has a reading. That is by design, so it is not a signal about the
+account. When the caller attests that no counter was ever visible in the
+conversation and the helper's own records hold no reading for it,
+`--check` answers `STATUS=clear`, `REASON=counter-never-seen` (exit 0): the
+horizon check holds nothing, and automatic launches are gated only by the
+controls that read real usage — the weekly reserve, the daily budget, and the
+pause, refill and deadline gates. A figure that WAS seen and then goes missing
+or stale still answers `unknown` (start nothing new), and a present figure is
+judged by the thresholds below. The reactive usage-limit park is unchanged.
+Nothing here sets `CLAUDE_CODE_TOTAL_TOKENS_REMINDER` (the owner dropped that
+option). Evidence:
 [`usage-horizon-desktop-investigation-2026-11.md`](usage-horizon-desktop-investigation-2026-11.md).
 
 **How `usage-horizon.sh` uses it:** Comparison only. `--observe` records the
@@ -70,9 +84,10 @@ transcript, never converts or counts tokens, and has no estimation fallback
 path — the ban in `safety.md` is satisfied architecturally, exactly as it is
 for `credit-budget.sh`.
 
-**Open characterization question (deliberately unanswered):** does the counter
-track the **account 5-hour window**, a **per-session allowance**, or a **shared
-pool** across concurrent sessions? Suggestive evidence for the account-window
+**Characterization (binary evidence, not verified live):** the counter is a
+per-message budget or a context-window count (see above), not a pool shared
+across sessions. The older open question was whether it tracks the **account
+5-hour window**, a **per-session allowance**, or a **shared pool**; suggestive evidence for the account-window
 reading: on 2026-08-27 four concurrent sessions on one machine were killed
 within 15 minutes of each other, all naming a single reset time. That is
 consistent with a pooled account window but does not establish it. The
@@ -81,7 +96,10 @@ evidence source for settling this is the observation log,
 limit}` across sessions and window resets, which is precisely the series
 needed to tell a per-session allowance (each session decrements its own budget
 from the same start) from a shared pool (concurrent sessions decrement one
-series). Until it is settled, no consumer may assume either interpretation.
+series. The thresholds and the `critical` park were designed on the
+account-window reading; with that reading unsupported they are a conservative
+heuristic on the figure's own value when one is printed, never a statement about
+account usage.
 
 **Corroboration, not a source:** a vendor-classified usage warning appearing in
 context (`USAGE_WARNING_PREFIXES` — "You've used", "You're close to"; see the
@@ -92,9 +110,10 @@ is the failure mode `classifier-override-patterns-source-specific` records.
 **Limitations:**
 
 - **Model-mediated.** A session that never calls `--observe` has no reading, so
-  its verdict is `unknown` — never `clear`.
-- **Uncharacterized semantics** (the open question above). No consumer may
-  assume the counter means a session budget or an account pool.
+  its verdict is `unknown` — `clear` only on the attested never-seen path
+  (#2390), which this script itself cross-checks against its own records.
+- **Not account usage** (see above). No consumer may read it as the account's
+  runway; it is a per-message budget or a context count.
 - **Ages out** at `usage_horizon_reading_ttl_s`.
 - **One state slot, machine-wide.** `.usage_horizon` holds the most recent
   `--observe` from *any* session. A session displaced by another reads
@@ -206,9 +225,9 @@ degrades as follows:
 | Probe 1 unreadable (file missing, corrupt, unwritable) | `2` (`unknown`) | Conservative: finish in-flight, start nothing new |
 | Classifier library missing | `5` | Loud failure, not a verdict — the gate cannot tell the kinds apart, and both silent alternatives are wrong |
 
-Probe 0 is **model-mediated**, so it degrades on its own axis — a session that
-never observed a reading is indistinguishable from one whose reading went
-stale, and both are `unknown`:
+Probe 0 is **model-mediated**, so it degrades on its own axis. A session whose
+reading went stale, or that never recorded one while a counter was visible, is
+`unknown`; a session that never saw a counter at all is `clear` (#2390):
 
 | Signal state | `usage-horizon.sh --check` exits | Posture |
 |---|---|---|
@@ -216,6 +235,7 @@ stale, and both are `unknown`:
 | Fresh reading at/below `usage_horizon_approaching_pct` (or the floor) | `1` (`approaching`) | Prefer landing work over starting it |
 | Fresh reading at/below `usage_horizon_critical_pct` (or the derived floor) | `2` (`critical`) | Wind down; checkpoint and hand off |
 | No reading, foreign session, past TTL, corrupt/malformed state, jq or session identity unavailable | `3` (`unknown`) | Conservative: finish in-flight, start nothing new |
+| Caller attests no counter was ever visible and the helper's records hold none for this conversation (`REASON=counter-never-seen`, stable identity only) | `0` (`clear`) | The check holds nothing; the weekly reserve, daily budget and pause/deadline gates still apply (#2390) |
 
 A reading is owned by the conversation that recorded it, keyed on the harness's
 conversation id where the Bash environment carries one, so it survives a

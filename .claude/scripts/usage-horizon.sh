@@ -8,6 +8,20 @@
 #   into a stable, configurable verdict:
 #   clear | approaching | critical | unknown.
 #
+#   WHAT THE FIGURE IS (#2376, #2390). It is NOT the account's usage window. In
+#   the Claude Code 2.1.321 binary the default mode counts down from a
+#   configured budget (15,000,000 tokens) that resets on each user message, and
+#   another mode reports remaining context-window tokens (read from the binary;
+#   not verified in a live session). Account usage is read by quota-reserve.sh
+#   and credit-budget.sh. The thresholds below are a heuristic on the figure's
+#   own value, never a statement about the account. Evidence:
+#   `.claude/reference/usage-horizon-desktop-investigation-2026-11.md`.
+#
+#   Some models print no figure by design. When the caller attests none was ever
+#   visible AND this script's own records hold none for the conversation,
+#   `--check` answers clear (REASON=counter-never-seen). A figure that WAS seen
+#   and went missing or stale stays unknown.
+#
 #   The model reads the number the HARNESS printed into its context and hands
 #   it to this script. This script performs COMPARISONS ONLY. It never reads a
 #   transcript, never counts or converts tokens, never derives a figure from
@@ -18,9 +32,9 @@
 #   Probe order:  `.claude/reference/budget-source-probe.md` §"Probe 0"
 #   Signal audit: `.claude/reference/usage-limit-signal-audit-2026-07.md`
 #
-#   Distinct wallet from credit-budget.sh: that script governs Anthropic credit
-#   SPEND against a dollar budget; this one governs WINDOW QUOTA runway. Neither
-#   reads the other's state, and this script changes nothing in credit-budget.sh.
+#   Distinct from credit-budget.sh: that script governs Anthropic credit SPEND
+#   against a dollar budget; this one reads the in-context figure. Neither reads
+#   the other's state, and this script changes nothing in credit-budget.sh.
 #
 # USAGE
 #   usage-horizon.sh --observe <remaining> [--limit <total>] [--session <id>]
@@ -63,9 +77,12 @@
 #                     So the attestation no longer rests on memory that a
 #                     compaction removes, nor on log lines that a rotation
 #                     drops. Missing or foreign-only readings then report:
-#                       REASON=counter-never-seen             nothing recorded,
-#                         under an identity that is stable for the conversation
-#                         (explicit, or a harness conversation id)
+#                       STATUS=clear REASON=counter-never-seen, exit 0 (#2390)
+#                         nothing recorded, under an identity that is stable
+#                         for the conversation (explicit, or a harness
+#                         conversation id). The model prints no figure by
+#                         design, so this holds nothing; account usage is the
+#                         weekly reserve's and the daily budget's job.
 #                       REASON=counter-never-seen-unverified  nothing logged,
 #                         but the identity is the derived fallback, which can
 #                         change under one conversation, so an earlier reading
@@ -78,7 +95,7 @@
 #                       REASON=observation-log-unreadable     the marker or a
 #                         log file exists but cannot be read; the attestation
 #                         is refused
-#                     STATUS remains unknown, exit 3, on all four. Omit the
+#                     STATUS remains unknown, exit 3, on the other three. Omit the
 #                     flag after any counter appeared in visible context, or
 #                     when the only evidence is that this turn lacks one.
 #
@@ -130,6 +147,7 @@
 #   0  clear        — runway above the approaching threshold (--observe: recorded)
 #   1  approaching  — at or below the approaching threshold
 #   2  critical     — at or below the critical threshold
+#   0  also: --check --counter-never-seen with nothing recorded (see above)
 #   3  unknown      — no reading this session, stale, corrupt, or malformed.
 #                    This is the in-session horizon check, not the account
 #                    usage reader: signing in does not change it.
@@ -140,7 +158,9 @@
 #
 #   `clear` is the ONLY code a caller may read as refill permission. Every degraded
 #   input lands on 3, which is a distinct code precisely so `unknown` can never
-#   be mistaken for `clear` by an `if script; then proceed; fi` caller.
+#   be mistaken for `clear` by an `if script; then proceed; fi` caller. The one
+#   non-reading `clear` is the attested never-seen case above; without the flag
+#   no absent reading is ever clear.
 #
 # CONFIGURATION (pm-config.md `## Budget`; env override wins)
 #   usage_horizon_approaching_pct   CLAUDE_USAGE_HORIZON_APPROACHING_PCT   25
@@ -315,6 +335,16 @@ unknown() {
         esac
         ;;
     esac
+  fi
+  if [[ "$reason" == counter-never-seen ]]; then
+    # Issue #2390: the app prints no figure by design for some models, so its
+    # absence says nothing about the account. The caller attested that none was
+    # ever visible AND this script's own records hold no reading for this
+    # conversation. Refill is then gated by the controls that read real usage
+    # (weekly reserve, daily budget, pause, deadline), not by this check.
+    echo "usage-horizon.sh: note: no counter is printed in this conversation, so this check holds nothing; account usage is read by the weekly reserve and daily budget" >&2
+    emit clear "$reason"
+    exit "$EXIT_CLEAR"
   fi
   echo "usage-horizon.sh: note: this is the in-session horizon check, not the account usage reader; signing in does not change it" >&2
   emit unknown "$reason"

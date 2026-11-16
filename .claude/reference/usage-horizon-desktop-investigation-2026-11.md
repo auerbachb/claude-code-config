@@ -120,6 +120,14 @@ Items 1 and 2 are tracked in issue #2390.
 2. **What the figure measures.** The harness text above says the default mode counts down from a configured budget (15,000,000 by default) and re-anchors to the full budget on each user prompt, and that another mode reports remaining context-window tokens. Neither is the account's usage window. `budget-source-probe.md` Probe 0 and the script header describe it as account runway. The characterization question Probe 0 left open has an answer in the binary, and it does not match the description. Thresholds and the park at `critical` were designed on the account-runway reading.
 3. **The env override exists** (`CLAUDE_CODE_TOTAL_TOKENS_REMINDER`; details under Finding 1). It is marked internal. Setting it to `padded-countdown` or `countdown` would make a figure appear on this model, and automatic refill would then have a reading to work from, but with the meaning in item 2: a per-conversation countdown or the context window, not account usage. Whether to set it is the owner's call. Not done here, and no settings file was touched.
 
+## Decision (issue #2390, owner, 2026-11-16)
+
+Items 1 and 2 above are decided. The owner does not manage the context figure and does not want it printed, so item 3 (the env override) is dropped: nothing sets `CLAUDE_CODE_TOTAL_TOKENS_REMINDER`.
+
+- **No figure by design is not a hold.** With `--check --counter-never-seen` and nothing recorded for this conversation under a stable identity, the helper now answers `STATUS=clear`, `REASON=counter-never-seen`, exit 0. Automatic launches are then gated only by the controls that read real usage or an owner setting: the weekly reserve (`quota-reserve.sh`), the daily budget (`credit-budget.sh`), and the pause, refill, failure-halt and deadline gates. The consumers' clamp (`/pm` day tick, `subagent-thread-limit-park.md` §7.1) now accepts that reason only with exit 0 and `clear`.
+- **Unchanged.** A figure that was seen and then went missing or stale (`reading-stale`, `counter-seen-reading-displaced`, `observation-log-unreadable`) is still `unknown`: start nothing new. `counter-never-seen-unverified` (no harness conversation id) is still `unknown`. A present figure is judged by the thresholds as before; they are now a heuristic on the figure's own value, not on account usage. The reactive usage-limit park is untouched. Nothing estimates usage locally, so `safety.md`'s ban holds and no rule text changed.
+- **Not verified live.** What the figure reads across several messages on a model that prints it, and whether the server-side flag is ever set for this account, are still unobserved.
+
 ## Manual verification
 
 These need a live conversation and were not run by the investigating sub-agent.
