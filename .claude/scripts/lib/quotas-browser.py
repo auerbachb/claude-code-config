@@ -64,9 +64,9 @@ Write a private file (chmod 600, not a symlink) holding only these figures:
   {"schema_version":1,"provider":"cursor","label":"<label>","email":"","status":"ok",
    "observed_at_epoch":<now>,"plan":"<plan>","on_demand_used_usd":<n>,"on_demand_limit_usd":<n or null>,
    "on_demand_unlimited":<true|false, optional>,"cycle_resets_at_epoch":<epoch of the reset date, optional>,
-   (email: "" or null when the page shows none; a supplied email must match the account)
    "rows":[{"window":"cursor-models","used_pct":<n>,"resets_at_epoch":<same epoch>},
            {"window":"other-models","used_pct":<n>,"resets_at_epoch":<same epoch>}]}
+email: "" (or null) when the page shows none; a supplied email must match the account.
 A signed-out page is status "logged_out" with rows []; an unreadable one is "unreadable". Never guess a missing figure: use null.
 Then run: ai-quotas.sh --json --account <label> --browser-results <file>
 '''

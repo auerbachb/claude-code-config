@@ -557,6 +557,22 @@ print(json.dumps({'structured_output':doc}))
         with self.assertRaises(ValueError):
             browser.validate(claude, 'fixture', 'fixture@example.com', 1000, 'claude')
 
+    def test_printed_cursor_sample_is_valid_json(self):
+        """The sample observation in the instructions parses once its <placeholders> are filled."""
+        import contextlib
+        import io
+        import re
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            browser.main(['--print-instructions', 'cursor'])
+        text = out.getvalue()
+        start = text.index('{"schema_version"')
+        end = text.index(']}', start) + 2
+        sample = re.sub(r'"<[^<>"]*>"', '"x"', text[start:end])
+        sample = re.sub(r'<[^<>]*>', '1', sample)
+        doc = json.loads(sample)
+        self.assertEqual(doc['provider'], 'cursor')
+
     def test_print_instructions_name_the_spending_page_and_the_browser_pane(self):
         """The observation route is documented from the helper itself and carries no credential wording to fill in."""
         out = io.StringIO()
