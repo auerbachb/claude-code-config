@@ -119,6 +119,51 @@ rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
 observe_as "Personal@Example.COM" "$TMP/tool.json" >/dev/null; rc=$?
 check_eq "$rc" "0" "the session email matches the registry case-insensitively"
 
+# A relative file name starting with a dash is a file, not an option.
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+cp "$TMP/tool.json" "$TMP/-dash.json"
+out="$(cd "$TMP" && AI_QUOTAS_NOW="$NOW" CLAUDE_CODE_USER_EMAIL="$PERS" "$OBSERVE" -dash.json 2>&1)"; rc=$?
+check_eq "$rc" "0" "a file named -dash.json is read as a file"
+check_eq "$(jq -r '.windows.seven_day.used_pct' "$APP_FILE")" "35" "and saved"
+
+# Overlapping writers: an older reading finishing late never replaces a newer one.
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+jq -c '.plan.windows[0].percentUsed = 50' "$TMP/tool.json" > "$TMP/newer.json"
+AI_QUOTAS_NOW="$(( NOW + 100 ))" CLAUDE_CODE_USER_EMAIL="$PERS" "$OBSERVE" "$TMP/newer.json" >/dev/null 2>&1
+out="$(AI_QUOTAS_NOW="$NOW" CLAUDE_CODE_USER_EMAIL="$PERS" "$OBSERVE" "$TMP/tool.json" 2>&1)"; rc=$?
+check_eq "$rc" "0" "an older observation arriving late is not an error"
+check_contains "$out" "newer reading is already saved" "and says it kept the newer one"
+check_eq "$(jq -r '.windows.seven_day.used_pct' "$APP_FILE")" "50" "the newer reading is still the saved one"
+check_eq "$(jq -r '.captured_at_epoch' "$APP_FILE")" "$(( NOW + 100 ))" "with its own capture time"
+[[ ! -e "$APP_FILE.lock" && "$(ls -A "$AI_QUOTAS_STATUSLINE_DIR" | wc -l | tr -d ' ')" == "1" ]] && ok "no lock or temp file is left behind" || fail "a lock or temp file was left"
+# A held lock: the observation waits and then refuses; the status-line writer returns at once.
+mkdir "$APP_FILE.lock"
+out="$(AI_QUOTAS_NOW="$(( NOW + 200 ))" CLAUDE_CODE_USER_EMAIL="$PERS" "$OBSERVE" "$TMP/tool.json" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 ]] && ok "a lock that stays held: the observation is refused" || fail "a busy lock was ignored"
+rmdir "$APP_FILE.lock"
+# The status-line writer shares the rule and never blocks.
+mkdir -p "$AI_QUOTAS_STATUSLINE_DIR"
+write_sl_new() { jq -nc --argjson c "$1" --argjson r "$RESET_EPOCH" --arg l "$PERS" '{schema_version:"1.0",provider:"claude",captured_at_epoch:$c,captured_at:($c|todate),account_label:$l,subscription_type:"max",rate_limits:{},windows:{seven_day:{used_pct:60,resets_at_epoch:$r}}}' > "$SL_FILE"; }
+write_sl_new "$(( NOW + 100 ))"
+SESSION_OLD="{\"rate_limits\":{\"seven_day\":{\"used_percentage\":10,\"resets_at\":$RESET_EPOCH}}}"
+( source "$REPO_ROOT/.claude/scripts/lib/claude-status-reading.sh"; AI_QUOTAS_NOW="$NOW" CLAUDE_CODE_USER_EMAIL="" csr_save_from_session "$SESSION_OLD" ); rc=$?
+check_eq "$rc" "0" "the status-line writer returns 0 for an older payload"
+check_eq "$(jq -r '.windows.seven_day.used_pct' "$SL_FILE")" "60" "and keeps the newer saved status-line reading"
+mkdir "$SL_FILE.lock"
+( source "$REPO_ROOT/.claude/scripts/lib/claude-status-reading.sh"; AI_QUOTAS_NOW="$(( NOW + 300 ))" csr_save_from_session "$SESSION_OLD" ); rc=$?
+check_eq "$rc" "0" "with the lock held the status-line writer still returns 0 at once"
+check_eq "$(jq -r '.windows.seven_day.used_pct' "$SL_FILE")" "60" "and wrote nothing"
+rmdir "$SL_FILE.lock"
+( source "$REPO_ROOT/.claude/scripts/lib/claude-status-reading.sh"; AI_QUOTAS_NOW="$(( NOW + 300 ))" csr_save_from_session "$SESSION_OLD" )
+check_eq "$(jq -r '.windows.seven_day.used_pct' "$SL_FILE")" "10" "a newer status-line payload does replace it"
+# The explicit 5-hour row of a saved reading with no 5-hour window carries the capture time.
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+observe "$TMP/tool.json" >/dev/null
+json5="$(AI_QUOTAS_NOW="$(( NOW + 60 ))" "$READER" --json --no-last-known --five-hour --account "$PERS" 2>/dev/null)"
+check_eq "$(printf '%s' "$json5" | jq -r '.rows[] | select(.window == "5-hour") | .status')" "unreadable" "no 5-hour window: the 5-hour row is explicit"
+check_eq "$(printf '%s' "$json5" | jq -r '.rows[] | select(.window == "5-hour") | .fetched_at_epoch')" "$NOW" "and it carries the reading's capture time"
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+
 # --- 2. refusals write nothing -----------------------------------------------
 refused "plan status not_applicable" '.plan.status = "not_applicable"' "not_applicable"
 refused "plan status unavailable" '.plan.status = "unavailable"' "unavailable"

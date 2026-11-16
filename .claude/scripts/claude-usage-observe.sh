@@ -36,7 +36,10 @@
 # Test seams: AI_QUOTAS_STATUSLINE_DIR, AI_QUOTAS_CONFIG, AI_QUOTAS_NOW.
 set -uo pipefail
 
-print_help() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+print_help() {
+  awk 'NR == 1 { next } /^# catalog:/ { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
 
 case "${1:-}" in
   -h|--help) print_help; exit 0 ;;
@@ -59,7 +62,7 @@ if [[ "$1" == "-" ]]; then
   INPUT="$(cat)"
 else
   [[ -f "$1" && -r "$1" ]] || { echo "claude-usage-observe.sh: refused: cannot read $1" >&2; exit 1; }
-  INPUT="$(cat "$1")"
+  INPUT="$(cat -- "$1")"
 fi
 
 if csr_observe_app "$INPUT"; then

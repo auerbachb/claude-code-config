@@ -712,7 +712,7 @@ claude_statusline_rows() { # <label>
   # an explicit row with no figure (never 0%) saying why.
   if [[ "$FIVE_HOUR" -eq 1 && "$five_emitted" -eq 0 ]]; then
     emit_row claude "$label" "" "5-hour" "" "" unreadable \
-      "the saved ${best_kind} reading (taken ${age_txt} ago) has no current 5-hour window, so no 5-hour figure is available" "$best_kind" ""
+      "the saved ${best_kind} reading (taken ${age_txt} ago) has no current 5-hour window, so no 5-hour figure is available" "$best_kind" "" "{\"fetched_at_epoch\": $(( NOW - CSR_AGE ))}"
   fi
   [[ "$emitted" -eq 1 ]]
 }

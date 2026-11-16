@@ -88,11 +88,44 @@ csr_resolve_label() {
   csr_label_for_email "$(jq -r '.oauthAccount.emailAddress // empty' "$cj" 2>/dev/null)"
 }
 
+# Writes <doc> to <file> unless a NEWER reading (larger captured_at_epoch) is
+# already there. Overlapping writers (two sessions on one account, or an old
+# observation finishing late) would otherwise let an older reading rename over a
+# newer one. The compare and the rename run under a mkdir lock; <tries> bounds
+# the wait at 50 ms each (1 for the status line, which must never block: a held
+# lock just means another writer is saving a reading about as fresh).
+# Returns 0 saved or deliberately skipped, 3 kept a newer reading, 1 write
+# failed or the lock stayed busy for every try.
+csr_write_reading() { # <doc> <file> <captured_epoch> <tries> <tmp-prefix>
+  local doc="$1" file="$2" cap="$3" tries="$4" prefix="$5" dir lock tmp n=0 have rc
+  dir="$(dirname "$file")"; lock="$file.lock"
+  ( umask 077
+    mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
+    tmp="$(mktemp "$dir/$prefix.XXXXXX" 2>/dev/null)" || exit 1
+    printf '%s\n' "$doc" > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 1; }
+    until mkdir "$lock" 2>/dev/null; do
+      # A lock left by a killed writer is cleared after a minute.
+      find "$lock" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null
+      n=$((n + 1))
+      if [[ "$n" -ge "$tries" ]]; then rm -f "$tmp"; [[ "$tries" -le 1 ]] && exit 0; exit 1; fi
+      sleep 0.05
+    done
+    have=""
+    [[ -f "$file" ]] && have="$(jq -r 'if (.captured_at_epoch | type) == "number" then .captured_at_epoch else empty end' "$file" 2>/dev/null)"
+    if [[ "$have" =~ ^[0-9]+$ && "$have" -gt "$cap" ]]; then
+      rmdir "$lock" 2>/dev/null; rm -f "$tmp"; exit 3
+    fi
+    mv -f "$tmp" "$file" 2>/dev/null; rc=$?
+    rmdir "$lock" 2>/dev/null
+    [[ "$rc" -eq 0 ]] || rm -f "$tmp"
+    exit "$rc" )
+}
+
 # Save the rate_limits of one status-line payload. <session-json> is the raw
 # stdin of the status line. Silent; returns 0 when it saved or had nothing to
 # save, non-zero only on a write failure (the caller ignores it).
 csr_save_from_session() { # <session-json>
-  local json="$1" now label file dir tmp doc old
+  local json="$1" now label file doc old
   [[ "$json" == *rate_limits* ]] || return 0
   now="${AI_QUOTAS_NOW:-$(date -u +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || return 0
@@ -112,7 +145,6 @@ csr_save_from_session() { # <session-json>
   label="$(csr_resolve_label)"
   [[ -n "$label" ]] || return 0
   file="$(csr_file_for "$label")" || return 0
-  dir="$(dirname "$file")"
   # Skip the write when nothing moved and the file is recent.
   if [[ -f "$file" ]]; then
     old="$(jq -c --argjson now "$now" --argjson t "$CSR_THROTTLE_SECONDS" --argjson new "$doc" \
@@ -121,14 +153,9 @@ csr_save_from_session() { # <session-json>
     [[ -z "$old" ]] || return 0
   fi
   doc="$(printf '%s' "$doc" | jq -c --arg l "$label" '. + {account_label: $l}' 2>/dev/null)" || return 0
-  ( umask 077
-    mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
-    tmp="$(mktemp "$dir/.claude-reading.XXXXXX" 2>/dev/null)" || exit 1
-    if printf '%s\n' "$doc" > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null; then
-      exit 0
-    fi
-    rm -f "$tmp"
-    exit 1 )
+  csr_write_reading "$doc" "$file" "$now" 1 .claude-reading
+  # 3 (a newer reading is already saved) is not a failure.
+  [[ $? -ne 1 ]]
 }
 
 # Reader side ---------------------------------------------------------------
@@ -217,7 +244,7 @@ CSR_OBSERVE_JQ='
     end'
 
 csr_observe_app() { # <tool-json>
-  local json="$1" now email label file dir tmp doc res cj cj_email
+  local json="$1" now email label file doc res cj cj_email
   CSR_OBSERVE_REASON=""
   now="${AI_QUOTAS_NOW:-$(date -u +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || { CSR_OBSERVE_REASON="the clock is unreadable"; return 1; }
@@ -252,17 +279,13 @@ csr_observe_app() { # <tool-json>
   file="$(csr_file_for "$label" app-usage-tool)" || { CSR_OBSERVE_REASON="the account label cannot name a file"; return 1; }
   doc="$(printf '%s' "$res" | jq -c --arg l "$label" '.doc + {account_label: $l}')" || { CSR_OBSERVE_REASON="could not build the reading"; return 1; }
   dir="$(dirname "$file")"
-  if ( umask 077
-       mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
-       tmp="$(mktemp "$dir/.claude-app-reading.XXXXXX" 2>/dev/null)" || exit 1
-       if printf '%s\n' "$doc" > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null; then
-         exit 0
-       fi
-       rm -f "$tmp"
-       exit 1 ); then
-    printf 'saved the app usage tool reading for %s (7-day %s%% used)\n' "$label" "$(printf '%s' "$doc" | jq -r '.windows.seven_day.used_pct')"
-    return 0
-  fi
+  csr_write_reading "$doc" "$file" "$now" 40 .claude-app-reading
+  case $? in
+    0) printf 'saved the app usage tool reading for %s (7-day %s%% used)\n' "$label" "$(printf '%s' "$doc" | jq -r '.windows.seven_day.used_pct')"
+       return 0 ;;
+    3) printf 'a newer reading is already saved for %s; kept it\n' "$label"
+       return 0 ;;
+  esac
   CSR_OBSERVE_REASON="the reading could not be written"
   return 1
 }
