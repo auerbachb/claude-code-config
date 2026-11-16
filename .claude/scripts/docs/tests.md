@@ -20,6 +20,7 @@ opt-in of issue #1544.
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
 | [ai-account-ledger.test.sh](../tests/ai-account-ledger.test.sh) | Verify metadata-only Codex backfill, idempotency, historical branch provenance, and rolling account/project reports. |
+| [ai-quotas-antigravity.test.sh](../tests/ai-quotas-antigravity.test.sh) | Verifies the Antigravity /usage parser, observation capture, the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample (Issue #2407) |
 | [ai-quotas-keychain-native.test.sh](../tests/ai-quotas-keychain-native.test.sh) | Verify the native service-only Keychain adapter against a private temporary Keychain, preserving fixed synthetic bytes, ACLs and the user search list |
 | [ai-quotas-library-loading.test.sh](../tests/ai-quotas-library-loading.test.sh) | Verifies quota reader library loading through installed symlinks and fails closed on a missing or broken library. |
 | [ai-quotas-reauth.test.sh](../tests/ai-quotas-reauth.test.sh) | Exercise owner-run fresh-profile reauthentication with private mixed/non-cycle stores, preserved original identities and publication failures |

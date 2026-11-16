@@ -31,7 +31,7 @@ def validate(row):
     for key in ('provider', 'label', 'source', 'ts'):
         if not isinstance(row.get(key), str):
             return None
-    if row['provider'] not in ('claude', 'codex', 'cursor'):
+    if row['provider'] not in ('claude', 'codex', 'cursor', 'antigravity'):
         return None
     if not re.fullmatch(r'[a-z][a-z0-9_-]{0,39}', row['source']):
         return None
