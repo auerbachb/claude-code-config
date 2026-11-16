@@ -213,7 +213,7 @@
 #           resets_at_et_short, status, action,
 #           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
-#           spend_limit_usd, overage, window_start_epoch, and the projection
+#           spend_limit_usd, spend_limit_unlimited, overage, window_start_epoch, and the projection
 #           fields usage_start_epoch, usage_start_is_floor, usage_start_day,
 #           usage_start_display, pct_per_day, days_left, and days_left_note.
 #           `days_left` is a NUMBER or null — never the table's `resets first`
@@ -895,6 +895,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       overage: null,
       spend_limit_used_usd: null,
       spend_limit_usd: null,
+      spend_limit_unlimited: null,
       # The two speculative Codex live figures. `codex_live_overage` DROPS a
       # key it could not read as a plain number, so without these defaults the
       # field would be present on some Codex rows and absent on every other
@@ -1060,6 +1061,30 @@ read_claude_browser() { # <label> <profile_dir>
   fi
 }
 
+# The start of a monthly cycle that resets at <epoch>: the same day and time one calendar
+# month earlier (UTC), never "reset minus 30 days". A day the earlier month lacks (Mar 31)
+# falls back to that month's last day, validated through the quota date helper. Prints
+# nothing when the instant cannot be placed, so the row keeps a null window start (#1870).
+monthly_cycle_start() { # <resets_epoch>
+  local reset="${1:-}" iso y m d t pm py cand start
+  [[ "$reset" =~ ^[0-9]+$ && "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0
+  iso="$(quota_date_format "$QUOTA_DATE_DIALECT" "$reset" '+%Y-%m-%dT%H:%M:%SZ' UTC)" || return 0
+  y="${iso:0:4}"; m="${iso:5:2}"; d="${iso:8:2}"; t="${iso:11:8}"
+  py=$((10#$y)); pm=$((10#$m - 1)); d=$((10#$d))
+  if [[ "$pm" -eq 0 ]]; then pm=12; py=$((py - 1)); fi
+  # Day 28 exists in every month, so this loop always returns.
+  while [[ "$d" -ge 28 ]]; do
+    printf -v cand '%04d-%02d-%02d' "$py" "$pm" "$d"
+    if quota_date_calendar "$QUOTA_DATE_DIALECT" "$cand" >/dev/null 2>&1; then
+      start="$(quota_date_iso "$QUOTA_DATE_DIALECT" "${cand}T${t}Z")" || return 0
+      if [[ "$start" =~ ^[0-9]+$ && "$start" -gt 0 && "$start" -lt "$reset" ]]; then printf '%s' "$start"; fi
+      return 0
+    fi
+    d=$((d - 1))
+  done
+  return 0
+}
+
 read_cursor_browser() { # <label>
   local label="$1" email="$CURSOR_EMAIL" result row used reset window db browser_cli status error_class detail outcome_status
   if [[ -z "$email" ]]; then
@@ -1082,13 +1107,22 @@ read_cursor_browser() { # <label>
     fi
     return 0
   fi
+  # Spending-page fields (#1870): plan, on-demand dollars and limit, and the cycle reset
+  # date. All optional in the observation; an absent one stays null, never zero.
+  local spend plan_name cycle_start
+  spend="$(printf '%s' "$result" | jq -c '{plan: (.plan // ""), used: .on_demand_used_usd, limit: .on_demand_limit_usd,
+    unlimited: (.on_demand_unlimited // false), cycle_reset: .cycle_resets_at_epoch}' 2>/dev/null || printf '{}')"
+  [[ -n "$spend" ]] || spend='{}'
+  plan_name="$(printf '%s' "$spend" | jq -r '.plan // ""' 2>/dev/null || true)"
   while IFS= read -r row; do
     used="$(printf '%s' "$row" | jq -r '.used_pct // empty')"
-    reset="$(printf '%s' "$row" | jq -r '.resets_at_epoch | if type == "number" and . <= 253402300799 then floor else empty end')"
+    reset="$(printf '%s' "$row" | jq -r --argjson s "$spend" '(.resets_at_epoch // $s.cycle_reset) | if type == "number" and . <= 253402300799 then floor else empty end')"
     window="$(printf '%s' "$row" | jq -r '.window')"
+    cycle_start="$(monthly_cycle_start "$reset")"
     emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email')" "$CURSOR_WINDOW" "$used" "$reset" ok \
-      "browser observation; $identity_note" browser "" \
-      "$(jq -nc --arg pool "$window" '{pool:$pool,plan_used_usd:null,plan_included_usd:null,spend_limit_used_usd:null,spend_limit_usd:null}')"
+      "browser observation; $identity_note" browser "$plan_name" \
+      "$(jq -nc --arg pool "$window" --arg ws "$cycle_start" --argjson s "$spend" '{pool:$pool,window_start_epoch:(if $ws == "" then null else ($ws | tonumber) end),plan_used_usd:null,plan_included_usd:null,
+        spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')"
   done < <(printf '%s' "$result" | jq -c '.rows[]')
 }
 
