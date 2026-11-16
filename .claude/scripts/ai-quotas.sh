@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas.sh — report each registered AI account's remaining allowance
 # (issue #1667).
-# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), and `cursor` (the dashboard's own usage response, read with the access token the Cursor IDE already holds for the signed-in user), recording each reading to `~/.claude/ai-quotas-history.jsonl`; display only, never a dispatch or spend gate
+# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), `cursor` (the dashboard's own usage response, read with the access token the Cursor IDE already holds for the signed-in user), and `antigravity` (the saved text of the `agy` `/usage` panel), recording each reading to `~/.claude/ai-quotas-history.jsonl`; display only, never a dispatch or spend gate
 #
 # PURPOSE
 #   The owner runs several premium AI subscriptions side by side and drains
@@ -148,6 +148,15 @@
 #                   automation browser, which is what retired the Playwright
 #                   reader this replaced (#1703). One IDE holds one Cursor
 #                   account, so one machine reads one Cursor account.
+#   antigravity     The text of the `agy` `/usage` panel, saved with its capture
+#                   time by quotas-antigravity-capture.sh (observation file
+#                   ~/.claude/ai-quotas-antigravity.json, or the path in
+#                   AI_QUOTAS_ANTIGRAVITY_OBSERVATION). One row per model group
+#                   and window, `<group> <window>` (percent used, reset time).
+#                   An observation older than 3 h, or whose window reset since the
+#                   capture, shows its age and the last known figure, never a
+#                   guess. No credential is read and the backend is not called.
+#                   Display only: it never feeds quota-reserve.sh.
 #
 # WINDOW SELECTION
 #   The weekly Codex window is chosen by `windowDurationMins == 10080`,
@@ -430,7 +439,7 @@ SELF_DIR="$(cd -P "$(dirname "$SELF_PATH")" && pwd -P)" \
   || die 5 "could not resolve quota reader directory"
 
 # Require the modules before reading any provider or writing usage history.
-for quota_library in "$SELF_DIR/lib/ai-quotas-"{claude,codex,cursor,forecast,report}.sh; do
+for quota_library in "$SELF_DIR/lib/ai-quotas-"{antigravity,claude,codex,cursor,forecast,report}.sh; do
   # shellcheck source=/dev/null
   if [[ ! -f "$quota_library" || ! -r "$quota_library" ]] || ! source "$quota_library" 2>/dev/null; then
     die 5 "required quota library could not load: lib/${quota_library##*/} — install the complete scripts directory or link to the skills worktree"
@@ -780,6 +789,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       claude:*) outcome_source="oauth-usage" ;;
       codex:*) outcome_source="app-server" ;;
       cursor:*) outcome_source="ide-token" ;;
+      antigravity:*) outcome_source="observation" ;;
     esac
   fi
   if [[ "$7" == "ok" ]]; then
@@ -949,7 +959,8 @@ relogin_hint() { # <provider> <label>
 effective_sources() { # <provider> <account-index>
   printf '%s' "$CONFIG" | jq -r --arg p "$1" --argjson i "$2" '
     .accounts[$i].sources // (if $p == "claude" then ["oauth-usage","browser"]
-      elif $p == "codex" then ["app-server","http"] else ["ide-token","browser"] end) | .[]'
+      elif $p == "codex" then ["app-server","http"]
+      elif $p == "antigravity" then ["observation"] else ["ide-token","browser"] end) | .[]'
 }
 
 # Shared mapping from a browser observation's fixed error class to a row and
@@ -1143,6 +1154,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
         cursor:ide-token) read_cursor_account "$label" ;;
         cursor:browser) read_cursor_browser "$label" ;;
         claude:browser) read_claude_browser "$label" "$dir" ;;
+        antigravity:observation) read_antigravity_account "$label" ;;
         *) set_outcome unreadable "$source" source_unsupported
            emit_row "$provider" "$label" "" "7-day" "" "" unsupported "source is unavailable for this provider" "$source" "" ;;
       esac
@@ -1234,7 +1246,7 @@ for (( i = 0; i < COUNT; i++ )); do
   # down with it and nothing else — which is the whole point of a report
   # across five subscriptions.
   case "$PROVIDER" in
-    claude|codex|cursor) read_source_chain "$PROVIDER" "$LABEL" "$DIR" "$SERVICE" "$i" ;;
+    claude|codex|cursor|antigravity) read_source_chain "$PROVIDER" "$LABEL" "$DIR" "$SERVICE" "$i" ;;
     *) emit_row "$PROVIDER" "$LABEL" "" "7-day" "" "" unsupported "provider unsupported" "" "" ;;
   esac
 done
@@ -1370,7 +1382,7 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
   local payload="$TMP/lk-record.json" err="$TMP/lk-record.err" now_et
   now_et="$(epoch_to_et "$NOW")"
   jq --argjson now "$NOW" --arg now_et "$now_et" '
-    [ .rows[] | select(.status == "ok" and ((.used_pct | type) == "number")) ]
+    [ .rows[] | select(.provider != "antigravity" and .status == "ok" and ((.used_pct | type) == "number")) ]
     | group_by([.provider, .label])
     | map({provider: .[0].provider,
            label: .[0].label,
@@ -1497,7 +1509,7 @@ if [[ "$COUNT" -eq 0 ]]; then
     annotate_rows "$EMPTY_ROWS"; stamp_snapshot_field; cat "$DOC"
   else
     echo "No accounts registered yet."
-    echo "Register one with: /quotas-setup add <claude|codex|cursor> <label>"
+    echo "Register one with: /quotas-setup add <claude|codex|cursor|antigravity> <label>"
   fi
   exit 0
 fi

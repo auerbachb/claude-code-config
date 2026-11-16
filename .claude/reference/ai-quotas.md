@@ -1980,3 +1980,7 @@ job now keeps the folder itself, so delete `refresh.sh` and any scheduler that r
 reader does not maintain `LATEST.md`; the `/quotas` table supersedes it. `/quotas-setup doctor`
 reports both leftovers and the folder mode, read-only.
 
+
+## Antigravity (Issue #2407)
+
+`antigravity` is a fourth provider: one registered account, rows read from the saved text of the `agy` `/usage` panel through an observation file (`~/.claude/ai-quotas-antigravity.json`), one row per model group and window, display only (never read by `quota-reserve.sh`). Limits, sample, parser, stale rule and the one unverified live step: [ai-quotas-antigravity.md](./ai-quotas-antigravity.md).
