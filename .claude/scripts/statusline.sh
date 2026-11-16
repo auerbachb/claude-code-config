@@ -40,6 +40,11 @@
 #   its own working directory. stdin is only read when it is not a TTY, so a
 #   manual run from a terminal returns immediately instead of blocking on `cat`.
 #
+# Side effect (issue #2403): when the payload carries `.rate_limits`, the 5-hour
+#   and 7-day figures are saved to ~/.claude/ai-quotas/status-line/ for the
+#   registered account the session is signed in as, so /quotas needs no token.
+#   See lib/claude-status-reading.sh. Never affects the printed line.
+#
 # Output (stdout, exactly one line):
 #   <ET time> · <branch> [· N agents] [· M watchers] [· ⚠ sync failing] [· ↻ restart]
 #
@@ -155,6 +160,22 @@ if [[ -n "$SESSION_JSON" ]]; then
 fi
 if [[ -z "$WORK_DIR" || "$WORK_DIR" == "null" || ! -d "$WORK_DIR" ]]; then
   WORK_DIR="$PWD"
+fi
+
+# --------------------------------------------------------------------------
+# 2b. Save the Claude usage figures this payload carries (issue #2403)
+# --------------------------------------------------------------------------
+# Claude Code passes `rate_limits` (5-hour and 7-day used_percentage + resets_at)
+# for subscription sign-ins. /quotas and the weekly reserve read the saved copy
+# instead of borrowing a token. Local files only, no network; the work happens
+# only when the payload mentions rate_limits, so an API-key session pays nothing.
+# Any failure is swallowed: the line below must print regardless.
+if [[ -n "$SESSION_JSON" && "$SESSION_JSON" == *rate_limits* ]]; then
+  _SL_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/claude-status-reading.sh"
+  if [[ -r "$_SL_LIB" ]]; then
+    # shellcheck source=/dev/null
+    ( source "$_SL_LIB" 2>/dev/null && csr_save_from_session "$SESSION_JSON" ) >/dev/null 2>&1 || true
+  fi
 fi
 
 # --------------------------------------------------------------------------
