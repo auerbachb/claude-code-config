@@ -103,9 +103,9 @@ An anchor is present and stable across compaction, so the reading is keyed on it
 3. **The never-seen attestation has a durable half.** `--check --counter-never-seen` now scans the script's own records for a reading this conversation recorded: a seen marker (`~/.claude/usage-horizon-seen.jsonl`, one `{session_id, anchors}` line per conversation, written by `--observe` under the log lock before the log line, never rotated) and the observation log. None: `counter-never-seen`. One: `counter-seen-reading-displaced`, and the attestation is refused. A marker or log that is present but unreadable: `observation-log-unreadable`, refused. So the caller attests only what it can still see, and a compaction no longer bars it. Where the Bash environment carries no harness id, the key is the derived fallback and an empty search proves nothing: the answer is then `counter-never-seen-unverified`, which keeps the old continuous-observation requirement.
 4. **Hold lines** say this is not the account usage reader and that signing in will not change it.
 
-**Unchanged.** `unknown` exits 3 and is never `clear`. Automatic refill stays held on every `unknown`. Nothing counts, converts or infers tokens: the log scan asks whether a line exists and reads no figure from it. `.claude/rules/safety.md` is untouched.
+**Unchanged by that change (as of #2376; since amended by #2390, see Decision).** An absent reading with no attestation is `unknown`, exits 3 and is never `clear`. Automatic refill stays held on every `unknown`. Nothing counts, converts or infers tokens: the log scan asks whether a line exists and reads no figure from it. `.claude/rules/safety.md` is untouched.
 
-**Residual risks.** Each can only let through a launch the user asked for in chat; none reaches automatic refill.
+**Residual risks (as written for #2376, before #2390).** Each could only let through a launch the user asked for in chat. Since #2390 an attested `counter-never-seen` is `clear`, so a miss here can let through an automatic launch that the weekly reserve, daily budget and other gates must still allow.
 
 - Log rotation (256 KiB, one retained generation) no longer loses the fact that a conversation recorded a reading: the seen marker holds it. This was first left as a residual risk and then closed in review. A line is gone after the second rotation that follows it, which takes between about 1,500 and 3,000 later readings at roughly 180 bytes a line. On a model that prints the figure, each orchestrating conversation records one per monitor cycle, so eight concurrent conversations get there in about three hours. A conversation that recorded a reading and then stopped (a model switch to one without the capability is enough) could by then have been reported `counter-never-seen`. Lines written before the marker existed are still only in the log and can still rotate away; on 2026-11-14 that is 245 lines, the newest 18 days old.
 - With no harness id at all, a drifted derived key misses its own earlier lines. This case is reported as `counter-never-seen-unverified` and keeps the stricter attestation.
@@ -116,17 +116,25 @@ An anchor is present and stable across compaction, so the reading is keyed on it
 
 Items 1 and 2 are tracked in issue #2390.
 
-1. **Automatic refill never runs on a model without the capability.** With no figure there is never a reading, the verdict is `unknown` on every cycle, and `unknown` starts nothing automatically (`monitor-mode.md` item 0). That is by rule and this change does not touch it. On Fable 5.2 it means a pipeline is refilled only by a chat request.
+1. **Automatic refill never ran on a model without the capability (pre-#2390; decided, see Decision).** With no figure there is never a reading, the verdict is `unknown` on every cycle, and `unknown` starts nothing automatically (`monitor-mode.md` item 0). That is by rule and this change does not touch it. On Fable 5.2 it means a pipeline is refilled only by a chat request.
 2. **What the figure measures.** The harness text above says the default mode counts down from a configured budget (15,000,000 by default) and re-anchors to the full budget on each user prompt, and that another mode reports remaining context-window tokens. Neither is the account's usage window. `budget-source-probe.md` Probe 0 and the script header describe it as account runway. The characterization question Probe 0 left open has an answer in the binary, and it does not match the description. Thresholds and the park at `critical` were designed on the account-runway reading.
 3. **The env override exists** (`CLAUDE_CODE_TOTAL_TOKENS_REMINDER`; details under Finding 1). It is marked internal. Setting it to `padded-countdown` or `countdown` would make a figure appear on this model, and automatic refill would then have a reading to work from, but with the meaning in item 2: a per-conversation countdown or the context window, not account usage. Whether to set it is the owner's call. Not done here, and no settings file was touched.
+
+## Decision (issue #2390, owner, 2026-11-16)
+
+Items 1 and 2 above are decided. The owner does not manage the context figure and does not want it printed, so item 3 (the env override) is dropped: nothing sets `CLAUDE_CODE_TOTAL_TOKENS_REMINDER`.
+
+- **No figure by design is not a hold.** With `--check --counter-never-seen` and nothing recorded for this conversation under a stable identity, the helper now answers `STATUS=clear`, `REASON=counter-never-seen`, exit 0. Automatic launches are then gated only by the controls that read real usage or an owner setting: the weekly reserve (`quota-reserve.sh`), the daily budget (`credit-budget.sh`), and the pause, refill, failure-halt and deadline gates. The consumers' clamp (`/pm` day tick, `subagent-thread-limit-park.md` §7.1) now accepts that reason only with exit 0 and `clear`.
+- **Unchanged.** A figure that was seen and then went missing or stale (`reading-stale`, `counter-seen-reading-displaced`, `observation-log-unreadable`) is still `unknown`: start nothing new. `counter-never-seen-unverified` (no harness conversation id) is still `unknown`. A present figure is judged by the thresholds as before; they are now a heuristic on the figure's own value, not on account usage. The reactive usage-limit park is untouched. Nothing estimates usage locally, so `safety.md`'s ban holds and no rule text changed.
+- **Not verified live.** What the figure reads across several messages on a model that prints it, and whether the server-side flag is ever set for this account, are still unobserved.
 
 ## Manual verification
 
 These need a live conversation and were not run by the investigating sub-agent.
 
 1. On a model that prints the figure: record it (`usage-horizon.sh --observe <n>`), run `--check`, force a compaction (`/compact`), run `--check` again. Expect the same two lines and the same exit code.
-2. On Fable 5.2, in a conversation that has compacted: run `usage-horizon.sh --check --counter-never-seen`. Expect `STATUS=unknown`, `REASON=counter-never-seen`, exit 3.
-3. In that conversation, type `/subagent <issue>`. Expect one `[horizon counter absent]` note, a launch, and no question about the horizon.
-4. Let the same thread reach a refill tick with a free slot. Expect no automatic launch and `paused (horizon unknown) — counter-never-seen` on the idle line.
+2. On Fable 5.2, in a conversation that has compacted: run `usage-horizon.sh --check --counter-never-seen`. Expect `STATUS=clear`, `REASON=counter-never-seen`, exit 0 (#2390). Before #2390 (2026-11-16) the expected result was `STATUS=unknown`, exit 3.
+3. In that conversation, type `/subagent <issue>`. Expect a launch with no question about the horizon and no `[horizon counter absent]` note (that note now applies only to `counter-never-seen-unverified`).
+4. Let the same thread reach a refill tick with a free slot. Expect an automatic launch if the weekly reserve, daily budget and pause, failure-halt and deadline gates allow it. Before #2390 the expected result was no launch and `paused (horizon unknown) — counter-never-seen`.
 
 The scripted equivalents of 1 and 2 are in `.claude/scripts/tests/usage-horizon.test.sh` sections 10 and 11.
