@@ -25,7 +25,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [quotas-notify.sh](../quotas-notify.sh) | Deliver private, once-per-account/local-day logout notifications for scheduled quota reports; never log in or read credentials. |
 | [spend-telemetry-link.sh](../spend-telemetry-link.sh) | Record explicit session/task to issue/PR correlation and bounded post-merge evidence |
 | [spend-telemetry-report.sh](../spend-telemetry-report.sh) | Summarize model, usage, lifecycle, and coverage from `~/.claude/spend-telemetry.log` |
-| [usage-horizon.sh](../usage-horizon.sh) | Turn the harness-injected remaining-token counter into a `clear` / `approaching` / `critical` / `unknown` verdict |
+| [usage-horizon.sh](../usage-horizon.sh) | Always answers clear; the in-thread tokens-left figure no longer gates launches or parks a board |
 <!-- catalog:rows:end -->
 
 ---

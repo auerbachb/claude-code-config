@@ -228,7 +228,7 @@ opt-in of issue #1544.
 | [task-packet-design.test.sh](../tests/task-packet-design.test.sh) | Offline task-packet design walkthrough: overlap, resume, source drift, unknown evidence and context bounds |
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
-| [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
+| [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — the shim always answers clear, records nothing, and still rejects malformed invocations |
 | [window-plan.test.sh](../tests/window-plan.test.sh) | Proves window-plan.sh ends a clock-time window at second zero of the stated minute, and leaves duration windows at now + N |
 | [workspace-artifacts.test.sh](../tests/workspace-artifacts.test.sh) | Verify cadence artifact cleanup with disposable Git/files, terminal PRs, liveness, guarded publication and retention races |
 | [workspace-sweep.test.sh](../tests/workspace-sweep.test.sh) | Exercise finished-worktree cadence with real disposable Git cleanup and extracted orchestration commands |

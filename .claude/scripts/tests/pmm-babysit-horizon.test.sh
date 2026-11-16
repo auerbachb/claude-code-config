@@ -300,8 +300,12 @@ require_text "  keyed on launch ownership" "$DOC" 'launch ownership, not loop se
 require_text "  and forbids the day-slot write outright" \
   "$DOC" 'never .--set. on .\.repos\["<key>"\]\.day\.\*'
 require_text "  citing the shared-signal precedent" "$DOC" 'bgwork-ceiling\.sh. and .credit-budget\.sh'
-require_text "monitor-mode.md's per-cycle checklist already consults the horizon" \
-  "$REPO_ROOT/.claude/rules/monitor-mode.md" 'Usage horizon.*usage-horizon\.sh --observe'
+refute_text "monitor-mode.md's per-cycle checklist no longer consults the figure (#2416)" \
+  "$REPO_ROOT/.claude/rules/monitor-mode.md" 'usage-horizon\.sh'
+refute_text "  and safety.md no longer carves the figure out as a gate (#2416)" \
+  "$REPO_ROOT/.claude/rules/safety.md" 'horizon decisions may gate'
+require_text "  and says it gates nothing" \
+  "$REPO_ROOT/.claude/rules/safety.md" 'It gates no launch and parks nothing'
 
 # AC 4: the out-of-scope notes are gone from both places that carried them.
 refute_text "pm-day-mode.md no longer excludes the two loops" \

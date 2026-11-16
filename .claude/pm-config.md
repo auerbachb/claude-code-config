@@ -79,12 +79,6 @@ LEAVE_LEAD_TIME_MIN = 30
 SPLIT_OVER_MIN = 180
 INCREMENT_BOUND_MIN = 120
 
-usage_horizon_approaching_pct = 25
-usage_horizon_critical_pct    = 10
-usage_horizon_floor_tokens    = 2000000
-usage_horizon_hysteresis_pct  = 3
-usage_horizon_reading_ttl_s   = 1800
-
 quotas_cheapest_next_threshold_pct = 20
 ```
 
@@ -98,19 +92,9 @@ quotas_cheapest_next_threshold_pct = 20
 - **INCREMENT_BOUND_MIN** — the planning bound, in minutes, each increment of a split must fit **at or under**. Must be an **integer in [15, 480]** and **strictly below `SPLIT_OVER_MIN`**; an incoherent pair (a slice bound at or above the split line, which would make every slice its own split trigger) is reported and **both** knobs fall back to the shipped defaults, the same way an inverted usage-horizon pair does. **`CLAUDE_INCREMENT_BOUND_MIN` env overrides** when set. Same reader and same cascade as `SPLIT_OVER_MIN`.
 - **Default 120** — two hours keeps a slice inside a single attended sitting and clear of the 30-minute `LEAVE_LEAD_TIME_MIN` wind-down. Two distinct thresholds apply here. The overrun menu offers the split option only when a head at the bound fits the time left before the pause point after the 5-minute filing allowance: at the defaults that means a leave time more than **2 h 35 min** away, and a leave time exactly 2 hours out leaves 90 minutes before the pause point, so the option is omitted (#2381). An already-filed head is different: it starts whenever its own estimate fits the time left (strictly), so a 90-minute head starts with a leave time 2 h 10 min away (100 minutes before the pause point), and the menu threshold does not apply to it. Against the seed table in `time-estimates.md` that admits the **Light** row (`plan on 90`) and excludes the Standard row (`plan on 180`): an increment that genuinely needs 180 minutes is a slice cut too coarse, not a reason to raise the knob.
 
-### Usage horizon (window runway)
+### Usage horizon (removed)
 
-Five knobs turning the harness-injected in-context remaining-token counter into a verdict. All are read by **`.claude/scripts/usage-horizon.sh`**; a per-invocation env override always wins over the value here. **Distinct wallet from `daily_credit_budget_usd`** — that one is credit *spend*, these are window *quota runway*.
-
-- **usage_horizon_approaching_pct** — integer percent `0`–`100`, default **25**. Env: **`CLAUDE_USAGE_HORIZON_APPROACHING_PCT`**. A reading at or below this share of the stated window total is `approaching`.
-- **usage_horizon_critical_pct** — integer percent `0`–`100`, default **10**, and must be strictly below the approaching knob (an inverted pair is reported and falls back to the shipped defaults). Env: **`CLAUDE_USAGE_HORIZON_CRITICAL_PCT`**. At or below this share, `critical`.
-- **usage_horizon_floor_tokens** — non-negative integer below 1e12, default **2000000**. Env: **`CLAUDE_USAGE_HORIZON_FLOOR_TOKENS`**. The absolute stand-in used when a reading carries **no known total**: the percentage knobs need a denominator, so the floor supplies the approaching threshold directly and the critical threshold scales by the same ratio the percentages express (`floor × critical_pct ÷ approaching_pct`). One absolute knob, same severity ordering — the `RELEASE_BUILD_FACTOR` + `RELEASE_NOTIFY_FLOOR_MIN` pairing from `release-policy.sh`, where a proportional rule keeps an absolute stand-in for the case the proportion cannot be computed.
-- **usage_horizon_hysteresis_pct** — integer percent `0`–`100`, default **3**. Env: **`CLAUDE_USAGE_HORIZON_HYSTERESIS_PCT`**. Stops adjacent readings from flapping the verdict: worsening applies immediately, while leaving a band requires exceeding that band's threshold by this margin (scaled into tokens by the same ratio in floor mode). `0` disables hysteresis.
-- **usage_horizon_reading_ttl_s** — seconds, `1`–`999999999`, default **1800**. Env: **`CLAUDE_USAGE_HORIZON_TTL_SECONDS`**. A stored reading older than this is `unknown`, not `clear`.
-
-**Consuming the verdict — `/pm` day mode (#1428).** Three further values shape what day mode *does* with a verdict, and they are **env-only** — deliberately not `ini` keys here, because nothing reads this file for them and a knob that silently does nothing is worse than no knob: `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` (default **2** — the landing window the pre-emptive park gives `/pause`; `0` selects exact reactive-park parity), `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` (default **30**), and `CLAUDE_HORIZON_PROBE_MAX_FIRES` (default **12**) — the bounded probe wake used when a park has no known reset time. Contract: `/pm` Step 2D.7; rationale: `.claude/reference/pm-day-mode.md`.
-
-**These knobs gate horizon verdicts only.** They never authorize local token estimation — `usage-horizon.sh` compares an upstream-supplied number and has no code path that could consume an estimate (`.claude/rules/safety.md` §"Anthropic Quota & Spend Authority"; `.claude/reference/budget-source-probe.md` §"Probe 0").
+The five `usage_horizon_*` knobs, their `CLAUDE_USAGE_HORIZON_*` overrides and the day-mode `CLAUDE_HORIZON_*` park values are gone (#2416). The in-thread tokens-left figure measures a conversation's own context, not the account, so no launch or park reads it. Account usage still gates through the weekly reserve, `daily_credit_budget_usd` and the reactive usage-limit park.
 
 ### Quota tracker — cheapest-next threshold (display only)
 
