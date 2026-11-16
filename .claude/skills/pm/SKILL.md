@@ -314,7 +314,15 @@ with the parse or persistence failure.
 
 ## Step 1 gate: Config refresh (cold start and resume)
 
-Runs once per start, before Step 1A or 1B, in both modes (#2405). It never runs on `DAY_TICK` or `DAY_PROBE_WAKE` invocations. Those skip Step 1, and this gate repeats that exclusion explicitly. If `PM_CONFIG_GET` is empty, the Step 0 degraded line already covers it and this gate does nothing.
+Runs once per start, before Step 1A or 1B, in both modes (#2405). First test the invocation. When `DAY_TICK` or `DAY_PROBE_WAKE` is true, skip this whole gate and do not read `shared:config` for it:
+
+```bash
+if [[ "${DAY_TICK:-false}" == true || "${DAY_PROBE_WAKE:-false}" == true ]]; then
+  : # internal tick or probe: Step 1 is skipped, so the config refresh never runs here
+fi
+```
+
+If `PM_CONFIG_GET` is empty, the Step 0 degraded line already covers it and this gate does nothing.
 
 <!-- pm-routing:begin -->
 Use the config-refresh row in [PM module routing](#pm-module-routing). Read `shared:config` and run its Step 1 detection. When the file exists, its refresh runs: automatic by default (silent when nothing changed, one line when it rewrites; user-edited sections are carried over verbatim), explicit when `CONFIG_REFRESH=true` (confirms before writing). A missing file is left to cold start's bootstrap at Step 1B. An unreadable file stops the refresh, and the mode continues without rewriting it.

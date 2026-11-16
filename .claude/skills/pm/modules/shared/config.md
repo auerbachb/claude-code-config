@@ -270,6 +270,8 @@ Scan the directory structure (depth 2) and detect:
 
 Same detection logic as Step 2c. Generate a new Architecture section.
 
+**Scan health (applies to 3c and 3d).** A scan that did not finish is a failed scan, and a failed scan never rewrites the file. Set `REFRESH_OK=false` (Step 3a's gate) when any detection command exits non-zero, or when Infrastructure or Architecture comes out empty while the existing section had content. In automatic mode, print one line — `pm-config.md refresh skipped: <section> scan incomplete; file kept.` — and return to the caller. Explicit mode shows the empty result in the Step 3e diff, so the operator decides there.
+
 ### Step 3e: Display diff for review (explicit) or apply it (automatic)
 
 Build the reconstruction first, then branch on the mode. In **automatic** mode no prompt is shown: items 5 and 6 decide, and a refused read or duplicate header prints a one-line warning instead of a silent skip. In **explicit** mode, show what will change:
@@ -332,7 +334,18 @@ Infrastructure and Architecture are always written — Steps 3c-3d regenerate th
 
 *Worked example — this repo's own `pm-config.md`:* the original order is Role, OKRs, **Complexity triggers**, Infrastructure, Architecture, Team, Notes. `Complexity triggers` is non-canonical and anchored to OKRs (its nearest preceding canonical section). `Workflow Rules` and `Dependency Rules` are both absent and skipped. Reassembly emits Role, OKRs, **Complexity triggers**, Infrastructure, Architecture, Team, Notes, in the same content and order as the original — `Complexity triggers` stays pinned immediately after OKRs regardless of which canonical sections around it are present.
 
-Write back to `.claude/pm-config.md`.
+**Write atomically.** Never write into `.claude/pm-config.md` directly. Build the reconstruction in a temp file in the same directory, so the final step is a same-filesystem rename:
+
+```bash
+TMP_CFG="$(mktemp "${CONFIG_FILE}.refresh.XXXXXX")" || { echo "pm-config.md refresh skipped: temp file unavailable; file kept." >&2; REFRESH_OK=false; }
+# ... write the reconstruction above into "$TMP_CFG" ...
+# Verify before the rename: every expected "## " header exactly once (each SECTIONS name plus Infrastructure and Architecture).
+# Any mismatch, empty output, or write error:
+#   rm -f -- "$TMP_CFG"; print the one-line reason; leave .claude/pm-config.md untouched.
+mv -f -- "$TMP_CFG" "$CONFIG_FILE" || { rm -f -- "$TMP_CFG"; echo "pm-config.md refresh failed; file kept." >&2; }
+```
+
+The rename replaces the file in one step, so a crash or error mid-write leaves the previous `pm-config.md` in place. The temp file is removed on every path that does not rename it.
 
 ### Step 3g: Report config changes
 
