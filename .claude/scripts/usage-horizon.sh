@@ -304,7 +304,7 @@ emit() {
 # property of the code rather than a convention.
 unknown() {
   echo "usage-horizon.sh: $2" >&2
-  local reason="$1" logged_rc=0
+  local reason="$1" logged_rc=0 never_seen_clear=false
   if [[ "$COUNTER_NEVER_SEEN" == true ]]; then
     case "$reason" in
       no-state-file|no-reading|no-reading-this-session)
@@ -322,6 +322,7 @@ unknown() {
               echo "usage-horizon.sh: no harness conversation id is available, so the log cannot confirm the never-seen attestation" >&2
             else
               reason=counter-never-seen
+              never_seen_clear=true
             fi
             ;;
           0)
@@ -336,7 +337,10 @@ unknown() {
         ;;
     esac
   fi
-  if [[ "$reason" == counter-never-seen ]]; then
+  # Reachable only through the verified branch above: attested, an explicit or
+  # harness-anchored identity, and a clean "nothing recorded" cross-check. Any
+  # other path (including a caller passing this reason string) stays unknown.
+  if [[ "$never_seen_clear" == true && "$COUNTER_NEVER_SEEN" == true && "$reason" == counter-never-seen ]]; then
     # Issue #2390: the app prints no figure by design for some models, so its
     # absence says nothing about the account. The caller attested that none was
     # ever visible AND this script's own records hold no reading for this
