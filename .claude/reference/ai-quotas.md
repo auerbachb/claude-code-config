@@ -1995,9 +1995,10 @@ observations (the observation's own `observed_at_epoch`). The stamp then marks t
 `saved` and prints the date. The default is strict: a row with a figure and no
 `fetched_at_epoch` counts as live only when its `source` is by construction a network read
 made in this run (`oauth-usage`, `app-server`, `http`, `ide-token`); every other source,
-including one added later (an app-usage observation, Antigravity), is left blank rather than
-claiming `now`. The one exception is a `browser` observation whose capture time is at or
-after the run began: it is live. An observation captured before the run, even seconds before,
+including one added later, is left blank rather than claiming `now`. The exception is an
+observation (source `browser` or `observation`) whose capture time is at or after the run
+began: it is live. The Antigravity reader sets it to the saved observation's capture time, so
+its rows show that date; a stale row (no figure) shows its last-known date. An observation captured before the run, even seconds before,
 shows its date. Last-known rows take `last_known_at_epoch`.
 
 **Per-row read times.** `record_last_known` keeps each row's own `fetched_at_epoch` (the run
@@ -2009,3 +2010,7 @@ row) therefore each show their own date.
 
 To keep a five-account table inside 100 columns the LEFT cell prints `resets` where
 `days_left_note` says `resets first`; the `--json` value is unchanged.
+
+## Antigravity (Issue #2407)
+
+`antigravity` is a fourth provider: one registered account, rows read from the saved text of the `agy` `/usage` panel through an observation file (`~/.claude/ai-quotas-antigravity.json`), one row per model group and window, display only (never read by `quota-reserve.sh`). Limits, sample, parser, stale rule and the one unverified live step: [ai-quotas-antigravity.md](./ai-quotas-antigravity.md).

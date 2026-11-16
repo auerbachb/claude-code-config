@@ -199,7 +199,7 @@ stamp_snapshot_field() {
   if jq --arg v "$iso" --argjson threshold "$threshold" --argjson config "$CONFIG" --slurpfile reliability "$RELIABILITY" \
       '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end), account_reliability: ($reliability[0] // []), recommendations: [($reliability[0] // [])[] |
        . as $r | ($config.accounts | map(select(.provider == $r.provider and .label == $r.label)) | first) as $a |
-       ($a.sources // (if .provider == "claude" then ["oauth-usage"] elif .provider == "codex" then ["app-server","http"] else ["ide-token","browser"] end)) as $order |
+       ($a.sources // (if .provider == "claude" then ["oauth-usage"] elif .provider == "codex" then ["app-server","http"] elif .provider == "antigravity" then ["observation"] else ["ide-token","browser"] end)) as $order |
        (.sources | map(select(.source == $order[0] and .consecutive_failures >= $threshold)) | first) as $failed |
        select($failed != null) |
        {provider:.provider,label:.label,source:$failed.source,failures:$failed.consecutive_failures,
@@ -219,7 +219,7 @@ stamp_snapshot_field() {
 # `fetched_at_epoch` on the row or apply_last_known attached a last-known
 # reading; it is LIVE only when the row is `ok` with a number from a source that
 # is by construction a network read made in this run (oauth-usage, app-server,
-# http, ide-token), or a browser observation captured at or after this run began.
+# http, ide-token), or a browser or saved-text observation captured at or after this run began.
 # Every other source needs an explicit `fetched_at_epoch` or stays blank: a
 # default of `now` would claim a read nobody made.
 # Reads the epoch the provider already holds; invents no second clock. `live` and
@@ -248,7 +248,7 @@ stamp_fetched_field() { # <doc-json-file>
       .rows |= map(
         (.fetched_at_epoch // .last_known_at_epoch) as $saved
         | if ((.used_pct | num) or (.last_known_used_pct | num)) | not then blank
-          elif (.source == "browser" and .status == "ok" and (.used_pct | num)
+          elif ((.source == "browser" or .source == "observation") and .status == "ok" and (.used_pct | num)
                 and (.fetched_at_epoch | num) and (.fetched_at_epoch >= $now)) then
             stamp("live"; $now)
           elif ($saved | num) then stamp("saved"; $saved)
