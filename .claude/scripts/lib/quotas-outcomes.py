@@ -17,6 +17,7 @@ import tempfile
 import time
 
 STATUSES = {'ok', 'logged_out', 'unreadable', 'rate_limited', 'timeout', 'parse_error'}
+KNOWN_STANDING = {'ide_token_encrypted'}
 RETENTION = 45 * 86400
 MAX_ROWS = 50000
 
@@ -116,6 +117,11 @@ def reliability(rows, current, now):
             for record, _ in reversed(history):
                 if record['status'] == 'ok':
                     break
+                # A known standing condition (the IDE keeps its token encrypted, #1870) is
+                # recorded but is not a fresh failure: it must not climb into a
+                # "source failed N consecutive reads" recommendation on every run.
+                if record.get('error_class') in KNOWN_STANDING:
+                    continue
                 failures += 1
             sources.append(dict(source=source, consecutive_failures=failures,
                                 last_status=history[-1][0]['status'] if history else None))

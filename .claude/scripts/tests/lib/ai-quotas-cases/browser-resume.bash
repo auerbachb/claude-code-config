@@ -91,3 +91,52 @@ check_eq "$RC" "3" "resume refuses an unreadable observation for a cross-provide
 run --json --quiet --account shared-label --browser-results "$TMP/not-needed"
 check_eq "$RC" "0" "scheduled context ignores browser result mode"
 unset AI_QUOTAS_BROWSER_CLI
+
+# --- Cursor Spending-page observation and the encrypted IDE token (#1870) -----
+# The recorded reading is the one an agent took from cursor.com/dashboard/spending:
+# Ultra, both pools 100% used, on-demand $6.33 of $50, limits reset Nov 28. Only
+# figures and the fixture identity are in the file.
+reset_state
+OBS_LABEL="cursor-spending"
+write_config "$(account_json cursor "$OBS_LABEL" "$TMP/browser-account")"
+CURSOR_DB_UNDER_TEST="$TMP/cursor-spending-encrypted.vscdb"
+build_cursor_db "$CURSOR_DB_UNDER_TEST" 'cursor-safe-storage:v1:FIXTURE_CIPHER_SENTINEL'
+OBS_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
+OBS_RESET="$(python3 -c 'import datetime as d; print(int(d.datetime(2026,11,28,17,0,tzinfo=d.timezone.utc).timestamp()))')"
+for _i in 1 2 3 4; do run --json; done
+check_eq "$(field_of "$OBS_LABEL" billing-cycle status)" "unreadable" "encrypted IDE token reports unreadable, never zero usage"
+check_contains "$(field_of "$OBS_LABEL" billing-cycle detail)" "--print-instructions cursor" "encrypted IDE token hint names the observation route"
+check_eq "$(jq -r 'select(.source == "ide-token") | .error_class' "$OBS_LEDGER" | sort -u)" "ide_token_encrypted" "encrypted IDE token is recorded under one fixed class"
+check_eq "$(printf '%s' "$DOC" | jq '.recommendations | length')" "0" "a standing encrypted-token state never becomes a repeated source-failed alert"
+check_eq "$(printf '%s' "$OUT" | grep -c 'FIXTURE_CIPHER_SENTINEL' || true)" "0" "the stored ciphertext never reaches the output"
+
+jq -n --argjson ob "$NOW" --argjson reset "$OBS_RESET" --arg label "$OBS_LABEL" --arg email "$CURSOR_FIXTURE_EMAIL" \
+  '{schema_version:1,provider:"cursor",label:$label,email:$email,status:"ok",observed_at_epoch:$ob,plan:"Ultra",
+    on_demand_used_usd:6.33,on_demand_limit_usd:50,cycle_resets_at_epoch:$reset,
+    rows:[{window:"cursor-models",used_pct:100,resets_at_epoch:null},{window:"other-models",used_pct:100,resets_at_epoch:null}]}' > "$TMP/cursor-spending-obs.json"
+chmod 600 "$TMP/cursor-spending-obs.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-obs.json"
+check_eq "$RC" "0" "a Spending-page observation resumes the Cursor account"
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "2" "both pool rows are shown"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .pool] | sort | join(",")')" "cursor-models,other-models" "the two pools are named"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .used_pct] | unique | join(",")')" "100" "both pools read 100 percent"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .spend_limit_used_usd] | unique | join(",")')" "6.33" "on-demand spend is exposed"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .spend_limit_usd] | unique | join(",")')" "50" "on-demand limit is exposed"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .plan] | unique | join(",")')" "Ultra" "plan is exposed"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .resets_at_epoch] | unique | join(",")')" "$OBS_RESET" "the cycle reset date fills rows that carry none"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .source] | unique | join(",")')" "browser" "the rows name the browser source"
+
+# An unlimited on-demand limit is reported as such, not as a number.
+jq '.on_demand_limit_usd=null | .on_demand_unlimited=true' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-unl.json"
+chmod 600 "$TMP/cursor-spending-unl.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-unl.json"
+check_eq "$(field_of "$OBS_LABEL" billing-cycle spend_limit_unlimited | head -n 1)" "true" "unlimited on-demand is flagged"
+check_eq "$(field_of "$OBS_LABEL" billing-cycle spend_limit_usd | head -n 1)" "null" "unlimited on-demand carries no dollar limit"
+
+# An observation file without the new fields still works.
+jq 'del(.plan,.on_demand_used_usd,.on_demand_limit_usd,.cycle_resets_at_epoch)' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-old.json"
+chmod 600 "$TMP/cursor-spending-old.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-old.json"
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "2" "an older observation without spending fields still reads"
+check_eq "$(field_of "$OBS_LABEL" billing-cycle spend_limit_usd | head -n 1)" "null" "absent on-demand figures stay null, never zero"
+CURSOR_DB_UNDER_TEST=""

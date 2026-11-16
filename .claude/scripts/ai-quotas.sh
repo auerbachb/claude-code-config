@@ -885,6 +885,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       overage: null,
       spend_limit_used_usd: null,
       spend_limit_usd: null,
+      spend_limit_unlimited: null,
       # The two speculative Codex live figures. `codex_live_overage` DROPS a
       # key it could not read as a plain number, so without these defaults the
       # field would be present on some Codex rows and absent on every other
@@ -1071,13 +1072,21 @@ read_cursor_browser() { # <label>
     fi
     return 0
   fi
+  # Spending-page fields (#1870): plan, on-demand dollars and limit, and the cycle reset
+  # date. All optional in the observation; an absent one stays null, never zero.
+  local spend plan_name
+  spend="$(printf '%s' "$result" | jq -c '{plan: (.plan // ""), used: .on_demand_used_usd, limit: .on_demand_limit_usd,
+    unlimited: (.on_demand_unlimited // false), cycle_reset: .cycle_resets_at_epoch}' 2>/dev/null || printf '{}')"
+  [[ -n "$spend" ]] || spend='{}'
+  plan_name="$(printf '%s' "$spend" | jq -r '.plan // ""' 2>/dev/null || true)"
   while IFS= read -r row; do
     used="$(printf '%s' "$row" | jq -r '.used_pct // empty')"
-    reset="$(printf '%s' "$row" | jq -r '.resets_at_epoch | if type == "number" and . <= 253402300799 then floor else empty end')"
+    reset="$(printf '%s' "$row" | jq -r --argjson s "$spend" '(.resets_at_epoch // $s.cycle_reset) | if type == "number" and . <= 253402300799 then floor else empty end')"
     window="$(printf '%s' "$row" | jq -r '.window')"
     emit_row cursor "$label" "$(printf '%s' "$result" | jq -r '.email')" "$CURSOR_WINDOW" "$used" "$reset" ok \
-      "browser observation; $identity_note" browser "" \
-      "$(jq -nc --arg pool "$window" '{pool:$pool,plan_used_usd:null,plan_included_usd:null,spend_limit_used_usd:null,spend_limit_usd:null}')"
+      "browser observation; $identity_note" browser "$plan_name" \
+      "$(jq -nc --arg pool "$window" --argjson s "$spend" '{pool:$pool,plan_used_usd:null,plan_included_usd:null,
+        spend_limit_used_usd:($s.used // null),spend_limit_usd:($s.limit // null),spend_limit_unlimited:(($s.unlimited // false) | if . then true else null end)}')"
   done < <(printf '%s' "$result" | jq -c '.rows[]')
 }
 

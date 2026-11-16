@@ -76,6 +76,18 @@ class Ledger(unittest.TestCase):
         self.process([row(status='ok')])
         self.assertIsNone(json.loads(Path(self.ledger).read_text().splitlines()[-1])['error_class'])
 
+    def test_standing_encrypted_token_is_recorded_but_not_a_new_source_failure(self):
+        """The IDE keeping its token encrypted (#1870) must not climb into a failure streak per source."""
+        stats = None
+        for _ in range(5):
+            stats = self.process([dict(row(), source='ide-token', error_class='ide_token_encrypted')])[0]
+        ide = [item for item in stats['sources'] if item['source'] == 'ide-token'][0]
+        self.assertEqual(ide['consecutive_failures'], 0)
+        self.assertEqual(stats['streak_count'], 5)  # the account really has been unreadable
+        stats = self.process([dict(row(), source='ide-token', error_class='http_500')])[0]
+        ide = [item for item in stats['sources'] if item['source'] == 'ide-token'][0]
+        self.assertEqual(ide['consecutive_failures'], 1)
+
     def test_browser_classes_round_trip_without_new_statuses_or_fields(self):
         classes = ['browser_launch_failed','browser_connection_unavailable','browser_tool_denied',
                    'browser_tab_create_failed','browser_destination_unverified','browser_observation_rejected',
