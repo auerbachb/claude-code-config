@@ -187,16 +187,72 @@ csr_window() { # <seven_day|five_hour>
   jq -r --arg k "$1" '.windows[$k] // empty | select((.used_pct | type) == "number" and .used_pct >= 0 and .used_pct <= 100 and (.resets_at_epoch | type) == "number") | "\(.used_pct) \(.resets_at_epoch)"' "$CSR_FILE" 2>/dev/null || true
 }
 
+# Account-level fields of one saved file: paid usage (`paid_*`), the limit resets
+# available (`limit_resets_available`, `limit_resets`) and the top-tier model's
+# separate allowance (`top_*`). Prints one JSON object holding ONLY the keys the
+# file actually carries, `{}` when it carries none, so the caller never turns an
+# absent figure into a zero. Dollar amounts are taken only when the provider names
+# the currency USD, because the fields are dollars.
+#   app-usage tool file: `extra_usage` (enabled, spent, monthly_limit, currency),
+#     `weekly_models` ("Weekly · <Name>": the label after the prefix is `top`, the
+#     first such window when there are several) and `limit_resets`.
+#   status-line file: `rate_limits.spend_limit`, whose shape has never been seen
+#     live, so only an explicit boolean `enabled`/`is_enabled` and amounts under a
+#     `*_usd` key are read (never a bare number, which could be cents), plus any
+#     `rate_limits.seven_day_<model>` window as the top tier.
+CSR_ACCOUNT_JQ='
+  def money: if type == "number" and . >= 0 then . elif type == "string" then (gsub("[$,[:space:]]"; "") | if test("^[0-9]+(\\.[0-9]+)?$") then tonumber else null end) else null end;
+  def clean: if type == "string" then (gsub("[\u0000-\u001f\u007f]"; "") | .[0:40] | gsub("^[[:space:]]+|[[:space:]]+$"; "") | if . == "" then null else . end) else null end;
+  def pct: if type == "number" and . >= 0 and . <= 100 then . else null end;
+  def epoch: if type == "number" and . > 0 then (if . > 253402300799 then (. / 1000) else . end | floor) else null end;
+  def keep: with_entries(select(.value != null));
+  def paid($e; $cap; $spent; $cur; $at):
+    if ($e | type) != "boolean" and $cap == null and $spent == null then {}
+    else {paid_enabled: (if ($e | type) == "boolean" then $e else null end),
+          paid_cap_usd: $cap, paid_spent_usd: $spent,
+          paid_currency: (if $cap != null or $spent != null then "USD" else $cur end),
+          paid_period: "monthly", paid_read_at_epoch: $at} | keep end;
+  (.captured_at_epoch | epoch) as $at
+  | (if (.extra_usage | type) == "object" then .extra_usage else null end) as $x
+  | (if ($x != null) then ($x.currency == "USD") else false end) as $usd
+  | (if $x != null then paid($x.enabled; (if $usd then ($x.monthly_limit | money) else null end); (if $usd then ($x.spent | money) else null end);
+                                    ($x.currency | if type == "string" and test("^[A-Z]{3}$") then . else null end); $at) else {} end) as $paid_app
+  | (if (.rate_limits.spend_limit | type) == "object" then .rate_limits.spend_limit else null end) as $s
+  | (if $s != null then paid((if ($s.enabled | type) == "boolean" then $s.enabled else $s.is_enabled end);
+                             ($s.limit_usd // $s.monthly_limit_usd | money); ($s.used_usd // $s.spent_usd | money); null; $at) else {} end) as $paid_sl
+  | (if (.limit_resets | type) == "object" and (.limit_resets.count | type) == "number"
+     then {limit_resets_available: (.limit_resets.count | floor),
+           limit_resets: (if (.limit_resets.items | type) == "array" and (.limit_resets.items | length) > 0 then .limit_resets.items else null end)} | keep
+     else {} end) as $lr
+  | ([(.weekly_models // [])[] | select(type == "object" and ((.label | clean) != null) and (.used_pct | pct) != null)][0]) as $w
+  | (if $w != null then {top_label: ($w.label | sub("^weekly[ \\t]*[·:|/-]?[ \\t]*"; ""; "i") | clean), top_used_pct: ($w.used_pct | pct), top_resets_at_epoch: ($w.resets_at_epoch | epoch)} | keep
+     else ([(.rate_limits // {}) | to_entries[] | select((.key | test("^seven_day_.+")) and (.value | type) == "object"
+                and (.value.used_percentage | pct) != null) ][0]) as $m
+          | if $m != null then {top_label: ($m.key | sub("^seven_day_"; "") | clean | if . == null then null else (.[0:1] | ascii_upcase) + .[1:] end),
+                                top_used_pct: ($m.value.used_percentage | pct), top_resets_at_epoch: ($m.value.resets_at | epoch)} | keep
+            else {} end end) as $top
+  | (if ($top.top_label // null) == null
+        or (($top.top_resets_at_epoch // null) != null and $top.top_resets_at_epoch <= $now) then {} else $top end) as $top
+  | $paid_app + (if ($paid_app | length) == 0 then $paid_sl else {} end) + $lr + $top'
+
+csr_account_fields() { # <file> — one JSON object, `{}` when the file carries none
+  local out
+  out="$(jq -c --argjson now "${NOW:-0}" "$CSR_ACCOUNT_JQ" "$1" 2>/dev/null)" || out=""
+  [[ -n "$out" ]] || out="{}"
+  printf '%s' "$out"
+}
+
 # App usage tool side (#2404) -----------------------------------------------
 #
 # The desktop app runs no status line, so its agent calls the app's usage tool
 # (mcp__ccd_session_mgmt__get_usage) and hands the result to
 # claude-usage-observe.sh, which calls csr_observe_app. The saved file has the
 # same `windows` shape the reader already uses, with `source` "app-usage-tool",
-# plus two blocks kept for later readers and not rendered yet: `extra_usage`
-# (the tool's extraUsage object) and `weekly_models` (the per-model weekly
-# windows). Only fields named here are copied, so nothing else the tool returns
-# can reach the file.
+# plus three blocks the paid-usage, resets and top-tier columns read
+# (csr_account_fields above): `extra_usage` (the tool's extraUsage object),
+# `weekly_models` (the per-model weekly windows) and `limit_resets` (an optional
+# block an agent adds, validated). Only fields named here are copied, so nothing
+# else the tool returns can reach the file.
 #
 # Prints one line and returns 0 on success; sets CSR_OBSERVE_REASON and returns
 # 1 when the input is refused or cannot be saved.
@@ -213,8 +269,31 @@ CSR_OBSERVE_JQ='
   def allmodels: (lbl | test("all models"; "i"));
   def fivehour: (lbl | test("(5|five)[ -]?h"; "i"));
   def str: if type == "string" or type == "number" then tostring else null end;
+  # An optional block an agent adds beside the tool result: the web usage page shows
+  # "Limit resets: N available" and the tool does not carry it. A bare array counts as
+  # its own items; an object names a count and, optionally, one item per reset.
+  def lritem: if type == "object" and ((.kind | type) == "string") and (.kind | test("^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$")) and ((.expires_at | ep) != null)
+              then {kind: .kind, expires_at_epoch: (.expires_at | ep)} else null end;
+  def lrnorm:
+    if . == null then {ok: true, v: null}
+    else (if type == "array" then {count: length, items: .}
+          elif type == "object" then {count: .count, items: (if has("items") then .items else null end)} else null end) as $o
+      | if $o == null then {ok: false}
+        elif ($o.count | type) != "number" or $o.count < 0 or $o.count > 1000 or $o.count != ($o.count | floor) then {ok: false}
+        elif $o.items == null then {ok: true, v: {count: $o.count, items: []}}
+        elif ($o.items | type) != "array" or ($o.items | length) != $o.count or ($o.items | length) > 50 then {ok: false}
+        elif ([$o.items[] | lritem] | any(. == null)) then {ok: false}
+        else {ok: true, v: {count: $o.count, items: [$o.items[] | lritem]}} end
+    end;
   (if type != "object" then null elif (.plan | type) == "object" then .plan elif has("status") then . else null end) as $p
+  # Only a missing or null block is absent: `false` (which jq `//` would treat as absent) stays
+  # a malformed block and is refused.
+  | (if type != "object" then null
+     elif has("limit_resets") and .limit_resets != null then .limit_resets
+     elif ($p | type) == "object" and ($p | has("limit_resets")) then $p.limit_resets
+     else null end | lrnorm) as $lr
   | if $p == null then {err: "the input is not the usage tool result or its plan object"}
+    elif $lr.ok != true then {err: "limit_resets is malformed (expected a count and, optionally, items with a kind and a UTC ISO-8601 expires_at)"}
     elif $p.status != "ok" then {err: ("plan status is " + ($p.status | tostring) + ", not ok")}
     elif ($p.windows | type) != "array" then {err: "the plan names no windows"}
     else
@@ -236,10 +315,12 @@ CSR_OBSERVE_JQ='
                                    | {label: lbl, used_pct: (.percentUsed | pct), resets_at_epoch: (.resetsAt | ep)}
                                    | select(.used_pct != null and .resets_at_epoch != null)],
                    extra_usage: (if ($p.extraUsage | type) == "object" then
-                                   {enabled: ($p.extraUsage.enabled == true), used_pct: ($p.extraUsage.percentUsed | pct),
+                                   {enabled: (if ($p.extraUsage.enabled | type) == "boolean" then $p.extraUsage.enabled else null end),
+                                    used_pct: ($p.extraUsage.percentUsed | pct),
                                     spent: ($p.extraUsage.spent | str), monthly_limit: ($p.extraUsage.monthlyLimit | str),
                                     currency: (if ($p.extraUsage.currency | type) == "string" then $p.extraUsage.currency else null end)}
-                                 else null end)}}
+                                 else null end),
+                   limit_resets: $lr.v}}
         end
     end'
 

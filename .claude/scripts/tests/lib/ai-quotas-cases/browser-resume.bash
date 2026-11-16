@@ -182,16 +182,16 @@ check_contains "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-sp
 # A later verified reading replaces it.
 run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-obs.json"
 check_eq "$(jq -r '[.rows[].source] | unique | join(",")' "$_lkfile")" "live: browser" "a later verified reading replaces the unverified marking"
-# An unverified observation captured earlier than this run keeps BOTH its unverified mark and its
+# An unverified observation captured more than 120 seconds before this run keeps BOTH its unverified mark and its
 # own capture date, live and restored (#1870 with #2406).
-jq --argjson ob "$((NOW - 120))" '.email="" | .observed_at_epoch=$ob' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-old.json"; chmod 600 "$TMP/cursor-spending-old.json"
+jq --argjson ob "$((NOW - 121))" '.email="" | .observed_at_epoch=$ob' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-old.json"; chmod 600 "$TMP/cursor-spending-old.json"
 rm -rf "$CASE_HOME/.claude/ai-quotas/last-known"
 run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-old.json"
-check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | "\(.identity_verified)|\(.fetched)|\(.fetched_at)"] | unique | join(",")')" "false|saved|$(utc_iso "$((NOW - 120))")" "an unverified earlier observation is unverified and carries its own capture date"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | "\(.identity_verified)|\(.fetched)|\(.fetched_at)"] | unique | join(",")')" "false|saved|$(utc_iso "$((NOW - 121))")" "an unverified earlier observation is unverified and carries its own capture date"
 jq '.status="logged_out" | .rows=[]' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-out.json"; chmod 600 "$TMP/cursor-spending-out.json"
 run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-out.json"
 check_contains "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .last_known_source] | unique | join(",")')" "account not verified" "the restored reading keeps its unverified marking"
-check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .last_known_at_epoch] | unique | join(",")')" "$((NOW - 120))" "and its own capture date, not the run time"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .last_known_at_epoch] | unique | join(",")')" "$((NOW - 121))" "and its own capture date, not the run time"
 CURSOR_DB_UNDER_TEST=""
 
 # The cycle start comes from the observed reset: the same day and time one calendar month

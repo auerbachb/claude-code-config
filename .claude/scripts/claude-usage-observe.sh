@@ -15,6 +15,15 @@
 #   claude-usage-observe.sh <file|->     the tool's whole result, or just its `plan`
 #   claude-usage-observe.sh --help | -h
 #
+# LIMIT RESETS (optional)
+#   The usage tool does not return the "Limit resets: N available" the claude.ai usage
+#   page shows. An agent that read the page may add it next to the tool result (or inside
+#   the plan object) as `limit_resets`: {"count": 2, "items": [{"kind": "Example reset",
+#   "expires_at": "2027-03-09T00:00:00Z"}, ...]}, or a bare list of such items. It is
+#   validated (count 0-1000, items matching it, a plain kind, a UTC ISO-8601 expiry); a
+#   malformed block refuses the whole input and writes nothing. Absent, the saved reading
+#   carries no reset count, and /quotas shows the blank marker, never 0.
+#
 # ACCOUNT
 #   The account the calling session runs on: CLAUDE_CODE_USER_EMAIL when set,
 #   else the session's signed-in .claude.json (CLAUDE_CONFIG_DIR, else HOME),

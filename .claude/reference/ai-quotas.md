@@ -512,9 +512,11 @@ the reading is optional and gates nothing.
   several registered accounts (compared case-insensitively, exactly; never guessed).
 - **Where.** `claude-app--<label>.json` beside the status line's file (same folder, mode
   600/700, temp file then move, no credential). It has the status-line file's `windows`
-  shape, `source: "app-usage-tool"`, `captured_at_epoch`, and two blocks kept for later
-  readers and not rendered yet (Issue #2409, Issue #2415): `extra_usage` (enabled, percent,
-  spent, monthly limit, currency) and `weekly_models` (the per-model weekly windows).
+  shape, `source: "app-usage-tool"`, `captured_at_epoch`, and the blocks the paid-usage,
+  resets and top-tier columns read (Issues #2409, #2408, #2415; see "Paid usage, resets and
+  top tier" below): `extra_usage` (enabled, percent, spent, monthly limit, currency),
+  `weekly_models` (the per-model weekly windows) and `limit_resets` (an optional block an
+  agent supplies, because the tool does not return it).
 - **Newer of two.** The reader looks at both files for an account and uses the usable one
   with the smaller age (fresh within `AI_QUOTAS_STATUSLINE_MAX_AGE`, weekly window not yet
   reset). The row's `source` is `status-line` or `app-usage-tool` and its note says which.
@@ -1315,14 +1317,16 @@ to do about either on an `ok` row, and together they were the widest thing on a 
 one. `remaining_pct`, `plan`, and `source` are all still on every `--json` row —
 dropping a derived column from the display is not a reason to break a consumer.
 
-**The 100-column budget.** Five accounts with nicknames of about a dozen characters and
-rows reading `ok` render at 98 columns, which the suite asserts by measuring the widest
-line of an actual five-account render rather than by eyeballing a fixture. Two things can
-legitimately exceed it, and both should: the note on a **failing** row is as long as the
-instruction it carries, because truncating a `/quotas-setup relogin` command to save
-columns trades the one line worth printing for the merely tidy ones; and a Cursor
-`on-demand $1007.50 of $1000` overage label carries live dollars nobody would want
-abbreviated.
+**The column budget.** The table first had a 100-column budget (five accounts at 98). The
+FETCHED, paid-usage, resets and top-tier columns moved it to **140 terminal columns for
+six accounts** (Issue #2409): `ai-quotas-columns.test.sh` measures the widest line of a
+six-account render (Claude Personal and Work, two Codex, Cursor, Antigravity) with the two
+icons counted as two columns, and the older table suite holds the five-account render to
+the same 140. What makes room is described in "Paid usage, resets and top tier" below:
+one space between cells, and a note or overage label too long for its cell printed as a
+numbered footnote under the table instead of inside the row. Nothing is truncated: a
+`/quotas-setup relogin` command or a Cursor `on-demand $1007.50 of $1000` label is printed
+in full, one line under the table.
 
 Under the table, `LAST SNAPSHOT` names the most recent **scheduled** snapshot —
 `stale (>1 day)` past 24 hours, `none yet` (with the install command) when the job has
@@ -1370,7 +1374,7 @@ sentence printed to the owner, and the owner decides what to do with it.
 
 | Column | What it is |
 |--------|-----------|
-| `START` | The first day of this window any usage was recorded, as the ET weekday plus `d<N>` — `Wed d3` is "day 3 of the window, a Wednesday". A `<=` prefix (`<=Tue d2`) means the record does not reach back to the window start, so usage may have begun earlier: the day shown is the **latest** it can have been. |
+| `START` | The first day of this window any usage was recorded, as the ET weekday plus `d<N>` — `Wed d3` is "day 3 of the window, a Wednesday". A `<=` prefix (`<=Tue d2`; the table prints it as `≤Tue d2`, see below) means the record does not reach back to the window start, so usage may have begun earlier: the day shown is the **latest** it can have been. |
 | `%/DAY` | `used_pct / max(days_since_start, 1)`, one decimal. The `max` is what keeps a window whose usage started today from dividing by nothing. |
 | `LEFT` | `remaining_pct / pct_per_day` in days, one decimal — or `resets first` when that runs past the reset, because the window comes back before the account runs out. |
 
@@ -1412,14 +1416,15 @@ snapshot. That is the slowest pace consistent with the record, which is the hone
 direction to be wrong in — computing from the snapshot would divide by a shorter elapsed
 time, report a faster burn, and promise a shorter runway than the evidence supports.
 
-### `<=` and `-`, not `≤` and `—`
+### `<=` in `--json`, `≤` in the table, `-` for every unknown
 
-The table is aligned by `column -t`, which pads by counting **bytes** under the C locale
-this fleet runs in. A three-byte character in one cell shifts every column to its right
-on that row only, so the symbol that says "we are not sure it started this late" would be
-paid for in a table nobody can read across. `<=` says the same thing in ASCII and
-survives a pipe into anything; `-` is the marker every other unknown in this table
-already uses.
+The table used to be aligned by `column -t`, which pads by counting **bytes** under the C
+locale this fleet runs in, so a three-byte `≤` shifted every column to its right on that
+row and the table used `<=` instead. Since Issue #2409 the reader lays the table out
+itself (jq pads by characters and counts the two ✅/❌ icons as two terminal columns), so
+the table's START cell prints the one-column `≤` and saves a column. `usage_start_display`
+in `--json` and the forecast helper keep the ASCII `<=`, which survives a pipe into
+anything. `-` is the marker every other unknown in this table already uses.
 
 ### What the table gave up to fit
 
@@ -2020,13 +2025,22 @@ The table has a **FETCHED** column after USED: when the figure on that row was r
 `Mmm dd` in Eastern time with a zero-padded day (`Nov 16`, `Jan 01`); a figure saved
 earlier today shows today's date, never `now`. A row with no figure shows `-`.
 
+**The 120-second rule.** A figure read within 120 seconds before the run started counts as
+fetched for this request and shows `now`, whatever produced it: a live read, a saved
+status-line or app-usage reading, or a browser or text observation. The check is
+`run time - fetched_at_epoch <= 120`, so a figure exactly 120 seconds old is `now` and one
+121 seconds old shows its date. `fetched_at` keeps the **exact** instant the figure was
+read (it is not rounded to the run time), so `--json` still says when. A last-known
+reading restored after a failed live read never takes this rule: it is by definition not
+a figure read for this request.
+
 Every `--json` row carries three fields, stamped last (after saved figures are placed) by
 `stamp_fetched_field` in `lib/ai-quotas-report.sh`:
 
 | Field | Value |
 |-------|-------|
-| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live read; `null` with no figure, or when date operations are unavailable. |
-| `fetched` | `live`, `saved`, or `null` (no figure). Never depends on the date helper. |
+| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live network read; the exact capture instant for a saved reading or observation; `null` with no figure, or when date operations are unavailable. |
+| `fetched` | `live` (read within the 120-second rule or by a network read in this run), `saved`, or `null` (no figure). Never depends on the date helper. |
 | `fetched_display` | What the table prints: `now`, `Mmm dd`, or `null`. With date operations unavailable a live read still says `now`; only a saved date degrades, to `null` (the blank marker), never to `now`. |
 
 **Adding a source of saved figures.** A provider only has to set one field on its row: pass
@@ -2036,11 +2050,11 @@ observations (the observation's own `observed_at_epoch`). The stamp then marks t
 `saved` and prints the date. The default is strict: a row with a figure and no
 `fetched_at_epoch` counts as live only when its `source` is by construction a network read
 made in this run (`oauth-usage`, `app-server`, `http`, `ide-token`); every other source,
-including one added later, is left blank rather than claiming `now`. The exception is an
-observation (source `browser` or `observation`) whose capture time is at or after the run
-began: it is live. The Antigravity reader sets it to the saved observation's capture time, so
-its rows show that date; a stale row (no figure) shows its last-known date. An observation captured before the run, even seconds before,
-shows its date. Last-known rows take `last_known_at_epoch`.
+including one added later, is left blank rather than claiming `now`. A reading whose
+`fetched_at_epoch` is within 120 seconds of the run is `live` (the rule above); an older one
+is `saved`. The Antigravity reader sets it to the saved observation's capture time, so its
+rows show that date unless it was captured within 120 seconds; a stale row (no figure) shows
+its last-known date. Last-known rows take `last_known_at_epoch`.
 
 **Per-row read times.** `record_last_known` keeps each row's own `fetched_at_epoch` (the run
 time only when a row has none), so a saved reading is never re-dated as new, and
@@ -2049,8 +2063,84 @@ time only when a row has none), so a saved reading is never re-dated as new, and
 carry none. Rows read at different times (a status-line weekly row beside a live five-hour
 row) therefore each show their own date.
 
-To keep a five-account table inside 100 columns the LEFT cell prints `resets` where
+To keep the table inside its column budget the LEFT cell prints `resets` where
 `days_left_note` says `resets first`; the `--json` value is unchanged.
+
+## Paid usage, resets and top tier (Issues #2409, #2408, #2415)
+
+Six columns say what the owner needs on contract work, where a client may not reimburse
+paid usage. All are display only: they gate nothing, and an unknown is never turned into a
+number or an icon.
+
+| Column | `--json` field(s) | Meaning |
+|--------|-------------------|---------|
+| `$?` | `paid_enabled` | ✅ when the provider says paid usage can happen, ❌ when it says it cannot, `-` when unknown. It follows whether spending can actually happen, not whether a limit is set: Claude Work has a $1,000 limit set with usage credits off and shows ❌. |
+| `$ CAP` | `paid_cap_usd`, `paid_cap_unlimited` | The limit on paid usage for the period: `$500`, `$50`; `none` when the provider said there is no limit; `off` whenever the provider said paid usage is off, even with a limit set (the limit stays in `--json` as `paid_cap_usd`, so a $1000 limit never reads as spendable money); `-` when unknown. A whole-dollar cap prints without cents. A non-USD currency leaves the amounts blank and adds a note to the row (`paid amounts are in EUR, not shown`); the `$?` flag is kept. A figure restored from last-known after a failed read is shown only while its window has not passed. |
+| `$` | `paid_spent_usd` | Dollars of paid usage this period, always with cents (`$315.79`, `$0.00`). |
+| `RST` | `limit_resets_available`, `limit_resets` | How many limit resets are available. `0` only when the provider said none are left; `-` when unknown **or** when the provider has no reset allowance. |
+| `TOP` | `top_label` | The provider's own label for the top-tier model or pool that has a separate allowance (`Fable`, `Argon`). Taken from the data, never hard-coded; `-` when there is none or it is unknown. |
+| `TOP%` | `top_used_pct`, `top_resets_at_epoch` | Percent of that allowance **used**, on the same basis as USED. |
+
+`--json` also carries `paid_currency` (always `USD`: amounts in another currency are
+dropped, because the fields are dollars), `paid_period` (`monthly`), and
+`paid_read_at_epoch` (when the figures were read). Every row of every provider declares all
+of these (null when unknown), so a consumer never tests for a missing key.
+
+**The blank-versus-zero rule.** `❌`, `0` and `$0.00` appear only when the provider said so.
+A reading that lacks the data leaves the fields `null` and the table prints `-`; nothing is
+estimated locally. Missing or unreadable amounts are dropped, not zeroed: `"lots"`, a
+negative number, or an amount in another currency becomes null while the on/off flag, if the
+provider gave one, is kept. A paid-usage cap is `none` only when the provider said
+unlimited, never because the cap was simply absent.
+
+**One value per account.** The columns describe the account, so the table shows them on one
+row only: the account's first row that carries any of them (or its first row when none
+does), and `-` on the rest, so a Cursor account's two pools or an Antigravity account's five
+groups are never double-counted by eye. `--json` repeats the values on every row of the
+account and says which row the table uses with `account_primary` (true or false on every
+row).
+
+**Where each provider's value comes from.**
+
+| Provider | Source | Notes |
+|----------|--------|-------|
+| Claude, app usage tool file (`claude-app--<label>.json`) | `extra_usage` (`enabled`, `spent`, `monthly_limit`, `currency`), `weekly_models` (`Weekly · Fable`: the label after the `Weekly · ` prefix is `top`; with several windows the first), `limit_resets` | `enabled` is saved as true, false, or null when the tool omitted it. |
+| Claude, status-line file (`claude--<label>.json`) | `rate_limits.spend_limit` and any `rate_limits.seven_day_<model>` window | **Unverified shape.** No live sample of `spend_limit` has been seen, so only an explicit boolean `enabled`/`is_enabled` and amounts under a `*_usd` key are read (a bare number could be cents); a per-model window is named from its key. A reading without them leaves the columns blank. |
+| Claude, claude.ai usage-page observation (`--browser-results`) | optional `extra_usage` (`enabled`, `spent_usd`, `monthly_limit_usd`), `limit_resets`, `top_model` (`label`, `used_pct`, `resets_at_epoch`) | Validated; a malformed block rejects the observation, an absent block means not reported. |
+| Codex | `limit_resets_available` from `free_resets_remaining` (the reset-credit count) | The payload reports credits in unlabelled units and no spend or cap, so `$?`, `$ CAP`, `$` stay blank rather than invent dollars. |
+| Cursor | `spend_limit_used_usd`, `spend_limit_usd`, `spend_limit_unlimited` (the on-demand block) | ✅ when the limit is above 0 or unlimited, ❌ when it is 0, unknown with no limit figure. `RST` and `TOP` stay blank: Cursor has no reset allowance (its [pricing page](https://cursor.com/docs/account/pricing), the one the overage table cites, describes only pay-as-you-go on-demand usage) and no separate top-tier pool is known. |
+| Antigravity | the group the `/usage` panel prints with no "Models within this group" line (a single named model with its own allowance) | `TOP` is the last word of the group name as printed (`Gemini 4 Argon` shows as `Argon`), `TOP%` is 100 minus the remaining percent the panel prints. No reset allowance is documented (see [ai-quotas-antigravity.md](./ai-quotas-antigravity.md)), so `RST` is blank. A stale capture shows none. |
+
+**Claude limit resets.** The usage page shows "Limit resets: N available" with a kind and
+an expiry for each; no saved reading carries it (the status-line input and the usage tool
+do not). An agent that reads the page supplies it as an optional `limit_resets` object next
+to the tool result passed to `claude-usage-observe.sh`
+(`{"count": 1, "items": [{"kind": "Weekly reset", "expires_at": "2027-03-09T00:00:00Z"}]}`;
+a bare list of items also works, `items` may be omitted), or as `limit_resets` in a
+claude.ai page observation (`expires_at_epoch`). It is validated (a count of 0 to 1000,
+items matching the count, a plain kind, a UTC ISO-8601 expiry); a malformed block refuses the
+observation with the reason, and writes nothing. Without it the Claude `RST` cell is `-`,
+never `0`.
+
+**Saved figures keep the columns.** `record_last_known` saves each row's account-level
+fields beside the series (`account` in the last-known file, type-checked on read), and a
+saved figure restored after a failed live read brings them back with the row's own read time
+(`paid_read_at_epoch` stays the time they were read, not the time of this run).
+
+**Why the table changed shape.** Fitting the extra columns in 140 columns meant: cells one
+space apart; the two icons counted as two columns (so the table is laid out by the reader,
+not `column -t`); the Antigravity composite window shortened (`gemini-4-argon 7d`); `AM`/`PM`
+joined to the time (`Thu 8:00PM`); the resets-count header `RST` and the top-percent header
+`TOP%`; and any note over 11 characters or overage label over 12 printed as a numbered
+footnote under the table (`[1]` in the row, `[1] text` below, identical texts sharing one
+number). The footnotes are part of the table, so `--quiet` keeps them and drops only the
+advisory sections. Every cell has control characters replaced by spaces, so a hostile label
+cannot forge a row. The time column's header is now `RESET (ET)`.
+
+**Needs a live check.** The columns are built from readings recorded on 2026-11-16; compare
+each against the provider's own page once in a live session: Claude Personal (✅ $500
+$315.79, Fable), Claude Work (❌ off $0.00, 2 resets), Cursor (✅ $50 $6.33), Antigravity
+(Argon), Codex (0 resets).
 
 ## Antigravity (Issue #2407)
 

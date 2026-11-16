@@ -216,6 +216,15 @@
 #           spend_limit_usd, spend_limit_unlimited, identity_verified, overage, window_start_epoch, and the projection
 #           fields usage_start_epoch, usage_start_is_floor, usage_start_day,
 #           usage_start_display, pct_per_day, days_left, and days_left_note.
+#           The account-level columns (#2409, #2408, #2415) have fields too, on every
+#           row: paid_enabled, paid_cap_usd, paid_cap_unlimited, paid_spent_usd,
+#           paid_currency, paid_period, paid_read_at_epoch (paid usage: the table
+#           columns $?, $ CAP and $), limit_resets_available and limit_resets (RST),
+#           top_label, top_used_pct and top_resets_at_epoch (TOP, TOP%), and
+#           account_primary (the row of the account the table shows them on). Each is
+#           null when the provider did not report it, never zero or off. The table also
+#           has fetched_at, fetched and fetched_display (FETCHED: now for a figure read
+#           within 120 seconds before the run began, otherwise its date).
 #           `days_left` is a NUMBER or null — never the table's `resets first`
 #           wording, which lives in `days_left_note`.
 #           Every row DECLARES all of them, so
@@ -227,7 +236,9 @@
 #
 #           The table has no REMAIN column (#1700): it was `100 - USED` on
 #           every row, and the width it cost is what a five-account table
-#           needs to stay inside 100 columns. `remaining_pct` is STILL on
+#           needs to stay inside its column budget (140 columns for six accounts since
+#           #2409; a note too long for its cell prints as a numbered footnote under the
+#           table). `remaining_pct` is STILL on
 #           every JSON row — dropping a derived column from the display is
 #           not a reason to break a consumer that already reads the field.
 #
@@ -943,7 +954,30 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       # this run: the epoch the figure was actually read. Left null, the figure
       # counts as live only when `source` is a live read. stamp_fetched_field
       # turns it into fetched_at / fetched / fetched_display.
-      fetched_at_epoch: null}
+      fetched_at_epoch: null,
+      # #2409, #2408, #2415. Account-level figures, declared on EVERY row (null where
+      # the provider did not report them, never zero) so --json has one shape. Paid
+      # usage: `paid_enabled` true/false only when the provider said so, the cap in
+      # dollars (or `paid_cap_unlimited` true for no cap), the dollars spent this
+      # period, the currency, the period and when the figures were read. Resets:
+      # how many limit resets are available (0 only when the provider said none) and
+      # each one kind and expiry. Top tier: the own label the provider gives the model
+      # with a separate allowance and the percent of it used. `account_primary`
+      # (set after every row exists) marks the row of the account that carries
+      # these values in the table; the others repeat them in JSON only.
+      paid_enabled: null,
+      paid_cap_usd: null,
+      paid_cap_unlimited: null,
+      paid_spent_usd: null,
+      paid_currency: null,
+      paid_period: null,
+      paid_read_at_epoch: null,
+      limit_resets_available: null,
+      limit_resets: null,
+      top_label: null,
+      top_used_pct: null,
+      top_resets_at_epoch: null,
+      account_primary: null}
      + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
@@ -1032,6 +1066,25 @@ browser_fetched_extra() { # <extra-json> <validated-observation-json>
   fi
 }
 
+# The account-level fields a Claude observation carries (#2409, #2408, #2415): paid
+# usage, limit resets and the top model's allowance. Only what the page showed is
+# set; an absent block leaves its fields out, never zero.
+claude_browser_account_extra() { # <validated-observation-json>
+  printf '%s' "$1" | jq -c --argjson now "${NOW:-0}" '
+    (.observed_at_epoch | if type == "number" then floor else null end) as $at
+    | def keep: with_entries(select(.value != null));
+    ((.extra_usage // null) | if . == null then {}
+       else {paid_enabled: .enabled, paid_cap_usd: .monthly_limit_usd, paid_spent_usd: .spent_usd,
+             paid_currency: (if .monthly_limit_usd != null or .spent_usd != null then "USD" else null end),
+             paid_period: "monthly", paid_read_at_epoch: $at} | keep end)
+    + ((.limit_resets // null) | if . == null then {}
+       else {limit_resets_available: .count,
+             limit_resets: (if (.items | type) == "array" and (.items | length) > 0
+                             then [.items[] | .expires_at_epoch |= floor] else null end)} | keep end)
+    + ((.top_model // null) | if . == null or ((.resets_at_epoch | type) == "number" and .resets_at_epoch <= $now) then {}
+       else {top_label: .label, top_used_pct: .used_pct, top_resets_at_epoch: (.resets_at_epoch | if type == "number" then floor else null end)} | keep end)' 2>/dev/null || printf '{}'
+}
+
 # Claude browser source (#2299). Observation-only: the agent reads the
 # claude.ai usage page with its own browser tools and passes the result file
 # through --browser-results. The reader never opens a page for Claude.
@@ -1065,7 +1118,10 @@ read_claude_browser() { # <label> <profile_dir>
     reset="$(printf '%s' "$row" | jq -r '.resets_at_epoch | if type == "number" and . <= 253402300799 then floor else empty end')"
     if [[ -z "$used" ]]; then
       # One window unread on the page: report it unreadable, never as an invented figure.
-      emit_row claude "$label" "$email" "$window" "" "$reset" unreadable "window not shown on the observed page" browser ""
+      # The account-level values belong to the account, not to this window, so an
+      # unreadable window still carries them (the table shows them once per account).
+      emit_row claude "$label" "$email" "$window" "" "$reset" unreadable "window not shown on the observed page" browser "" \
+        "$(claude_browser_account_extra "$result")"
       emitted=1
       continue
     fi
@@ -1073,6 +1129,7 @@ read_claude_browser() { # <label> <profile_dir>
     [[ "$window" != "5-hour" ]] || span=18000
     extra="$(with_window_start "{}" "$reset" "$span")"
     extra="$(browser_fetched_extra "$extra" "$result")"
+    extra="$(printf '%s' "$extra" | jq -c --argjson a "$(claude_browser_account_extra "$result")" '. + $a')"
     emit_row claude "$label" "$email" "$window" "$used" "$reset" ok \
       "browser observation; account verified" browser "" "$extra"
     emitted=1
@@ -1421,6 +1478,12 @@ record_last_known() { # <doc-json-file> — save usable live rows; the helper ke
                       overage: .overage,
                       source: ("live: " + (.source // "unknown")
                                + (if .identity_verified == false then " (account not verified)" else "" end)),
+                      # The account-level columns travel with the series (#2409, #2408,
+                      # #2415), so a saved figure restored later keeps them.
+                      account: ({paid_enabled, paid_cap_usd, paid_cap_unlimited, paid_spent_usd, paid_currency,
+                                 paid_period, paid_read_at_epoch, limit_resets_available, limit_resets,
+                                 top_label, top_used_pct, top_resets_at_epoch}
+                                | with_entries(select(.value != null))),
                       fetched_at_epoch: (.fetched_at_epoch // $now)})})
     | {accounts: .}' "$1" > "$payload" 2>/dev/null || { warn "DEGRADED: could not stage last-known readings — the report is unaffected"; return 0; }
   [[ "$(jq '.accounts | length' "$payload" 2>/dev/null)" -gt 0 ]] || return 0
@@ -1458,9 +1521,22 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
            resets_et: (if $res_et == "" then null else $res_et end)}' <<<"$line" >> "$enriched" 2>/dev/null || true
   done < "$saved"
   [[ -s "$enriched" ]] || return 0
-  jq --slurpfile series "$enriched" '
+  jq --argjson now "$NOW" --slurpfile series "$enriched" '
     def usable: (.status == "ok") and ((.used_pct | type) == "number");
     def key: {provider: .provider, label: .label};
+    # The account-level columns of a restored row: ONE saved observation for the whole account
+    # (the newest unexpired saved row that carries any), never a mix; its top-tier group is
+    # dropped when the allowance own reset has passed; and any value the current observation
+    # already carries on the row wins over the saved one.
+    def akeys: ["paid_enabled","paid_cap_usd","paid_cap_unlimited","paid_spent_usd","paid_currency","paid_period",
+                "paid_read_at_epoch","limit_resets_available","limit_resets","top_label","top_used_pct","top_resets_at_epoch"];
+    def acct_for($r):
+      ([ $series[] | select(.provider == $r.provider and .label == $r.label and .expired != true
+                            and (.account | type) == "object" and (.account | length) > 0) ]
+        | sort_by(.fetched_at_epoch // 0) | last | (.account // {})) as $a
+      | (if ($a.top_resets_at_epoch | type) == "number" and $a.top_resets_at_epoch <= $now
+         then $a | del(.top_label, .top_used_pct, .top_resets_at_epoch) else $a end)
+      + ($r | with_entries(select(.key as $k | (akeys | index($k)) != null and .value != null)));
     . as $doc
     | ([ .rows[] | select(usable) | key ]) as $ok
     | .rows = [ $doc.rows | to_entries[] | .key as $i | .value as $r
@@ -1494,7 +1570,7 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
                     last_known_resets_at_epoch: $x.resets_at_epoch,
                     last_known_resets_et: $x.resets_et,
                     last_known_expired: $x.expired
-                  }
+                  } + acct_for($r)
               end
           end
       ]' "$1" > "$TMP/lk-doc.json" 2>/dev/null && mv "$TMP/lk-doc.json" "$1" \
@@ -1567,6 +1643,7 @@ jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001
   else null end)})' "$ROWS_JSON" > "$TMP/actions.json" \
   || die 70 "could not build account actions"
 mv "$TMP/actions.json" "$ROWS_JSON"
+derive_account_fields "$ROWS_JSON"
 annotate_rows "$ROWS_JSON"
 
 # Recorded BEFORE the footer is read, so a scheduled run's own snapshot is the
@@ -1598,6 +1675,7 @@ fi
 # Saved figures go in AFTER notification and history, so neither ever sees a
 # derived row. Accounts with a usable live row are left exactly as read (#2280).
 apply_last_known "$DOC"
+stamp_account_primary "$DOC"
 stamp_fetched_field "$DOC"
 
 if [[ "$JSON" -eq 1 ]]; then

@@ -44,6 +44,12 @@ CLAUDE_SCHEMA['properties']['rows']['items']['properties']['window'] = {'enum': 
 CLAUDE_SCHEMA['properties']['organization_id'] = {'type': 'string'}
 for _key in CURSOR_SPENDING_PROPS:
     del CLAUDE_SCHEMA['properties'][_key]
+# Optional account-level figures from the claude.ai usage page (#2409, #2408, #2415), all
+# absent unless the page showed them: usage credits on or off with the monthly spend limit and
+# spend (dollars), the limit resets available (a count and, optionally, one kind and expiry
+# each), and the top model's separate weekly allowance. An absent block is "not reported".
+CLAUDE_EXTRA_PROPS = {'extra_usage': {'type': 'object'}, 'limit_resets': {'type': 'object'}, 'top_model': {'type': 'object'}}
+CLAUDE_SCHEMA['properties'].update(CLAUDE_EXTRA_PROPS)
 SCHEMAS = {'cursor': SCHEMA, 'claude': CLAUDE_SCHEMA}
 
 # How an agent takes a Cursor reading (#1870). The IDE keeps its token encrypted, so the
@@ -202,6 +208,8 @@ def validate(doc, label, expected_email, now, provider='cursor', expected_org=''
             raise ValueError('stale_reset')
     if provider == 'cursor':
         validate_spending(doc, now)
+    else:
+        validate_claude_extras(doc)
     if doc['status'] == 'ok' and not any(number(row['used_pct']) for row in doc['rows']):
         raise ValueError('missing_usage')
     if provider == 'cursor':
@@ -209,6 +217,45 @@ def validate(doc, label, expected_email, now, provider='cursor', expected_org=''
         verified = bool(email and expected_email and email.casefold() == expected_email.casefold())
         doc = dict(doc, email=email, identity_verified=verified)
     return doc
+
+
+def _text(value, pattern=r'[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}'):
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def validate_claude_extras(doc):
+    """Check the optional claude.ai page figures; a malformed block rejects the observation."""
+    usage = doc.get('extra_usage')
+    if usage is not None:
+        if not isinstance(usage, dict) or not set(usage) <= {'enabled', 'spent_usd', 'monthly_limit_usd'}:
+            raise ValueError('extra_usage')
+        if usage.get('enabled') is not None and type(usage['enabled']) is not bool:
+            raise ValueError('extra_usage')
+        for key in ('spent_usd', 'monthly_limit_usd'):
+            if usage.get(key) is not None and not number(usage[key]):
+                raise ValueError('extra_usage')
+    resets = doc.get('limit_resets')
+    if resets is not None:
+        if not isinstance(resets, dict) or not set(resets) <= {'count', 'items'}:
+            raise ValueError('limit_resets')
+        count, items = resets.get('count'), resets.get('items')
+        if type(count) is not int or not 0 <= count <= 1000:
+            raise ValueError('limit_resets')
+        if items is not None:
+            if not isinstance(items, list) or len(items) != count or len(items) > 50:
+                raise ValueError('limit_resets')
+            for item in items:
+                if (not isinstance(item, dict) or set(item) != {'kind', 'expires_at_epoch'} or not _text(item['kind'])
+                        or not number(item['expires_at_epoch']) or item['expires_at_epoch'] > 253402300799):
+                    raise ValueError('limit_resets')
+    top = doc.get('top_model')
+    if top is not None:
+        if not isinstance(top, dict) or set(top) != {'label', 'used_pct', 'resets_at_epoch'} or not _text(top['label']):
+            raise ValueError('top_model')
+        if not number(top['used_pct']) or top['used_pct'] > 100:
+            raise ValueError('top_model')
+        if top['resets_at_epoch'] is not None and (not number(top['resets_at_epoch']) or top['resets_at_epoch'] > 253402300799):
+            raise ValueError('top_model')
 
 
 def validate_spending(doc, now):

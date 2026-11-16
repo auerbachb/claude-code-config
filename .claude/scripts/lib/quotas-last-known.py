@@ -151,6 +151,53 @@ def resolve_reset(text):
     return int(moment.timestamp())
 
 
+ACCOUNT_KEYS = ("paid_enabled", "paid_cap_usd", "paid_cap_unlimited", "paid_spent_usd", "paid_currency", "paid_period",
+                "paid_read_at_epoch", "limit_resets_available", "limit_resets", "top_label", "top_used_pct", "top_resets_at_epoch")
+
+
+def _num(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
+def _int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _word(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}", value) is not None
+
+
+def clean_account(value):
+    """The account-level columns (paid usage, resets, top tier) of one row: only keys of the right
+    type survive, so a hand-edited file cannot smuggle text or a negative figure into the table."""
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in ACCOUNT_KEYS:
+        item = value.get(key)
+        if item is None:
+            continue
+        if key in ("paid_enabled", "paid_cap_unlimited"):
+            ok = isinstance(item, bool)
+        elif key in ("paid_cap_usd", "paid_spent_usd", "top_used_pct"):
+            ok = _num(item)
+        elif key in ("paid_read_at_epoch", "limit_resets_available", "top_resets_at_epoch"):
+            ok = _int(item)
+        elif key == "paid_currency":
+            ok = isinstance(item, str) and re.fullmatch(r"[A-Z]{3}", item) is not None
+        elif key == "paid_period":
+            ok = item == "monthly"
+        elif key == "top_label":
+            ok = _word(item)
+        else:  # limit_resets
+            ok = (isinstance(item, list) and len(item) <= 50 and all(
+                isinstance(entry, dict) and set(entry) == {"kind", "expires_at_epoch"} and _word(entry["kind"])
+                and _int(entry["expires_at_epoch"]) for entry in item))
+        if ok:
+            out[key] = item
+    return out or None
+
+
 def normalise_rows(document, provider, label):
     """Series rows with provenance and pools resolved. Malformed rows are skipped."""
     file_source = document.get("source") if isinstance(document.get("source"), str) else None
@@ -179,7 +226,7 @@ def normalise_rows(document, provider, label):
             fetched = None
         source = row.get("source") if isinstance(row.get("source"), str) else file_source
         overage = row.get("overage") if isinstance(row.get("overage"), dict) else None
-        series.append({
+        entry = {
             "window": window,
             "pool": pool,
             "used_pct": row["used_pct"],
@@ -188,7 +235,11 @@ def normalise_rows(document, provider, label):
             "overage": overage,
             "source": source,
             "fetched_at_epoch": fetched,
-        })
+        }
+        account = clean_account(row.get("account"))
+        if account:
+            entry["account"] = account
+        series.append(entry)
     return series
 
 
@@ -285,7 +336,7 @@ def cmd_record(args):
                     continue
                 if not isinstance(row.get("window"), str):
                     continue
-                rows.append({
+                saved_row = {
                     "window": row["window"],
                     "pool": row.get("pool") if isinstance(row.get("pool"), str) else None,
                     "used_pct": row["used_pct"],
@@ -298,7 +349,11 @@ def cmd_record(args):
                     "fetched_at_epoch": row["fetched_at_epoch"]
                     if isinstance(row.get("fetched_at_epoch"), int) and not isinstance(row.get("fetched_at_epoch"), bool)
                     else fetched,
-                })
+                }
+                account_block = clean_account(row.get("account"))
+                if account_block:
+                    saved_row["account"] = account_block
+                rows.append(saved_row)
             # A partial live read keeps the saved series it did not return,
             # so a failed window or pool never erases its last good reading.
             fresh_keys = {(row["window"], row["pool"]) for row in rows}
@@ -341,10 +396,11 @@ def cmd_owner_report(args):
             "resets_at_epoch": resolve_reset(args.resets_text), "resets": args.resets_text or None,
             "overage": None, "source": "owner-reported", "fetched_at_epoch": args.now,
         })
-        rows = [{"window": row["window"], "pool": row["pool"], "used_pct": row["used_pct"],
-                 "resets_at_epoch": row["resets_at_epoch"], "resets": row["resets"],
-                 "overage": row["overage"], "source": row["source"],
-                 "fetched_at_epoch": row["fetched_at_epoch"]} for row in series]
+        rows = [dict({"window": row["window"], "pool": row["pool"], "used_pct": row["used_pct"],
+                      "resets_at_epoch": row["resets_at_epoch"], "resets": row["resets"],
+                      "overage": row["overage"], "source": row["source"],
+                      "fetched_at_epoch": row["fetched_at_epoch"]},
+                     **({"account": row["account"]} if row.get("account") else {})) for row in series]
         newest = max(row["fetched_at_epoch"] or 0 for row in rows)
         newest_row = next(row for row in rows if row["fetched_at_epoch"] == newest)
         write_account(folder, args.provider, args.label, {
@@ -410,7 +466,7 @@ def cmd_lookup(args):
             if effective is None:
                 effective = parse_reset_date(row["resets"])
             expired = effective is not None and effective <= args.now
-            print(json.dumps({
+            line = {
                 "provider": provider,
                 "label": label,
                 "window": row["window"],
@@ -420,7 +476,10 @@ def cmd_lookup(args):
                 "source": row["source"],
                 "resets_at_epoch": effective,
                 "expired": expired,
-            }, sort_keys=True))
+            }
+            if row.get("account"):
+                line["account"] = row["account"]
+            print(json.dumps(line, sort_keys=True))
     return 0
 
 
