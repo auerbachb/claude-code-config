@@ -1211,7 +1211,8 @@ THEIRS=$(CLAUDE_SESSION_ID=absence-case HOME="$EMPTY_HOME" \
   HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON")
 check_eq "attested absence: full gate output parity" "$THEIRS" "$MINE"
 check_eq "attested absence: named reason" "counter-never-seen" "$(field "$MINE" HORIZON_REASON)"
-check_eq "attested absence: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
+check_eq "attested absence: clear, so refill is not held by the horizon (#2390)" "clear" "$(field "$MINE" HORIZON_STATUS)"
+check_eq "attested absence: refill allowed by the horizon" "true" "$(field "$MINE" HORIZON_REFILL_OK)"
 check_eq "attested absence: no park" "false" "$(field "$MINE" HORIZON_PARK)"
 
 # #2376: the attestation is cross-checked against the helper's own log, keyed on
@@ -1232,7 +1233,7 @@ THEIRS=$(CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID="" CLAUDE_CODE_HOST_SESSION
   HOME="$ANCHOR_HOME" HORIZON_COUNTER_NEVER_SEEN=true run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON")
 check_eq "foreign old slot, attested: full gate output parity" "$THEIRS" "$MINE"
 check_eq "foreign old slot, attested: named reason" "counter-never-seen" "$(field "$MINE" HORIZON_REASON)"
-check_eq "foreign old slot, attested: no automatic refill" "false" "$(field "$MINE" HORIZON_REFILL_OK)"
+check_eq "foreign old slot, attested: refill allowed by the horizon (#2390)" "true" "$(field "$MINE" HORIZON_REFILL_OK)"
 ( export HOME="$ANCHOR_HOME" CLAUDE_SESSION_ID="" CLAUDE_CODE_SESSION_ID=""
   CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-a "$REAL_HORIZON" --observe 14000000 --limit 15000000 >/dev/null 2>&1
   CLAUDE_CODE_HOST_SESSION_ID=local_gate-case-b "$REAL_HORIZON" --observe 14000000 --limit 15000000 >/dev/null 2>&1 )
@@ -1435,7 +1436,7 @@ require_text "  and gates the first dispatch on it too" \
 # explicit request is defined, and the attestation survives a compaction.
 HOLD_LINES=$(grep -c 'Launch held:' "$DOC")
 HOLD_NOTED=$(grep 'Launch held:' "$DOC" | grep -c 'not the account usage reader; signing in will not change it\.')
-check_eq "the hold table has six hold lines" "6" "$HOLD_LINES"
+check_eq "the hold table has five hold lines" "5" "$HOLD_LINES"
 check_eq "every hold line says it is not the account usage reader" "$HOLD_LINES" "$HOLD_NOTED"
 require_text "the displaced-reading reason has a hold line" \
   "$DOC" 'counter-seen-reading-displaced.*Wait for a fresh harness counter'

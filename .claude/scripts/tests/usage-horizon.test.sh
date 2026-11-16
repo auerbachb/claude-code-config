@@ -170,8 +170,10 @@ check_eq "$(status_of)" "clear" "the owning session still reads its own reading"
 
 # #2147: full-session absence is an attestation, never a clear verdict.
 run --check --session s-two --counter-never-seen
-check_eq "$OUT" $'STATUS=unknown\nREASON=counter-never-seen' "attested absence distinguishes a valid foreign slot"
-check_eq "$RC" "3" "attested absence retains the unknown exit"
+check_eq "$OUT" $'STATUS=clear\nREASON=counter-never-seen' "attested absence on a valid foreign slot is clear (#2390)"
+check_eq "$RC" "0" "attested absence exits 0: the model prints no figure by design"
+run --check --session s-two
+check_eq "$(status_of)" "unknown" "without the attestation the same slot is still unknown"
 run --check --session s-one --counter-never-seen
 check_eq "$(status_of)" "clear" "the flag does not mask a fresh current-session reading"
 
@@ -792,8 +794,8 @@ renv "$HOST_X" "$SID_S" "$SCRIPT" --check
 check_eq "$OUT" $'STATUS=unknown\nREASON=no-reading-this-session' "an old foreign slot reads as another session's without the attestation"
 check_eq "$RC" "3" "  with the unknown exit"
 renv "$HOST_X" "$SID_S" "$SCRIPT" --check --counter-never-seen
-check_eq "$OUT" $'STATUS=unknown\nREASON=counter-never-seen' "with nothing logged for this conversation the attestation stands"
-check_eq "$RC" "3" "  and still exits unknown, never clear"
+check_eq "$OUT" $'STATUS=clear\nREASON=counter-never-seen' "with nothing logged for this conversation the attestation stands (#2390)"
+check_eq "$RC" "0" "  and exits clear"
 
 # This conversation recorded a reading, then another conversation took the slot.
 reset_home
