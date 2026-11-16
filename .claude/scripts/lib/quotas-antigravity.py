@@ -26,6 +26,7 @@ MAX_TEXT = 256 * 1024
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 BAR_CHARS = "█░▓▒▏▎▍▌▋▊▉▕■□▪▫"
 PERCENT = re.compile(r"^(\d{1,3}(?:\.\d+)?)\s*%$")
+STRAY_PERCENT = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%$")
 ACCOUNT = re.compile(r"^\s*Account:\s*(.+?)\s*$", re.I)
 MODELS = re.compile(r"^\s*Models within this group:\s*(.+?)\s*$", re.I)
 REFRESH = re.compile(r"^refreshes\s+in\s+(.+)$", re.I)
@@ -144,6 +145,9 @@ def parse_panel(text, captured):
                 "reset_text": reset_text or None,
             })
             continue
+        if STRAY_PERCENT.match(s):
+            # A percent no window title claimed (negative, or detached): the panel is not trusted.
+            out_of_range = True
         i += 1
     groups = [g for g in groups if g["windows"]]
     if out_of_range:

@@ -46,6 +46,8 @@ r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    150%%\n' | python3 -I 
 jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "an out-of-range percent is refused"
 r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n  Five Hour Limit Remaining\n    150%%\n' | python3 -I "$PARSER" parse - "$CAP")"
 jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "a mixed valid and out-of-range panel is unreadable"
+r="$(printf 'GEMINI MODELS\n  Weekly Limit Remaining\n    50%%\n  Five Hour Limit Remaining\n    -5%%\n' | python3 -I "$PARSER" parse - "$CAP")"
+jq -e '.status == "unreadable"' <<<"$r" >/dev/null || fail "a negative percent beside a valid window is unreadable"
 pass "unparseable input is unreadable, never 0%"
 
 # --- capture helper -----------------------------------------------------------------
