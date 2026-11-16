@@ -140,3 +140,16 @@ run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-old.js
 check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "cursor-spending" and .status == "ok")] | length')" "2" "an older observation without spending fields still reads"
 check_eq "$(field_of "$OBS_LABEL" billing-cycle spend_limit_usd | head -n 1)" "null" "absent on-demand figures stay null, never zero"
 CURSOR_DB_UNDER_TEST=""
+
+# The cycle start comes from the observed reset: the same day and time one calendar month
+# earlier (UTC), not reset minus 30 days, and a day the earlier month lacks falls back to
+# that month's last day (#1870).
+OBS_START="$(python3 -c 'import datetime as d; print(int(d.datetime(2026,10,28,17,0,tzinfo=d.timezone.utc).timestamp()))')"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-obs.json"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .window_start_epoch] | unique | join(",")')" "$OBS_START" "the cycle start is the reset day one month earlier"
+MAR31="$(python3 -c 'import datetime as d; print(int(d.datetime(2027,3,31,17,0,tzinfo=d.timezone.utc).timestamp()))')"
+FEB28="$(python3 -c 'import datetime as d; print(int(d.datetime(2027,2,28,17,0,tzinfo=d.timezone.utc).timestamp()))')"
+jq --argjson r "$MAR31" '.cycle_resets_at_epoch=$r' "$TMP/cursor-spending-obs.json" > "$TMP/cursor-spending-mar.json"
+chmod 600 "$TMP/cursor-spending-mar.json"
+run --json --account "$OBS_LABEL" --browser-results "$TMP/cursor-spending-mar.json"
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.label == "cursor-spending") | .window_start_epoch] | unique | join(",")')" "$FEB28" "a reset on the 31st starts on the last day of the shorter earlier month"

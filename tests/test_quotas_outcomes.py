@@ -88,6 +88,18 @@ class Ledger(unittest.TestCase):
         ide = [item for item in stats['sources'] if item['source'] == 'ide-token'][0]
         self.assertEqual(ide['consecutive_failures'], 1)
 
+    def test_failures_recorded_before_the_encrypted_class_do_not_keep_the_streak(self):
+        """28 older parse_error rows on the IDE token were the same encrypted store (#1870)."""
+        legacy = [dict(row(days=d), source='ide-token', status='parse_error', error_class='ide_token_parse') for d in range(10, 2, -1)] * 3
+        self.write(self.ledger, [dict(r, ts=r['ts'][:-3] + ':%02dZ' % i) for i, r in enumerate(legacy[:24])])
+        stats = self.process([dict(row(), source='ide-token', error_class='ide_token_encrypted')])[0]
+        ide = [item for item in stats['sources'] if item['source'] == 'ide-token'][0]
+        self.assertEqual(ide['consecutive_failures'], 0)
+        # A different real failure after the encrypted state still counts on its own.
+        stats = self.process([dict(row(), source='ide-token', error_class='http_500')])[0]
+        ide = [item for item in stats['sources'] if item['source'] == 'ide-token'][0]
+        self.assertEqual(ide['consecutive_failures'], 1)
+
     def test_browser_classes_round_trip_without_new_statuses_or_fields(self):
         classes = ['browser_launch_failed','browser_connection_unavailable','browser_tool_denied',
                    'browser_tab_create_failed','browser_destination_unverified','browser_observation_rejected',

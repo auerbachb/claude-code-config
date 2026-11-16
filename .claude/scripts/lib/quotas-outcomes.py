@@ -120,8 +120,11 @@ def reliability(rows, current, now):
                 # A known standing condition (the IDE keeps its token encrypted, #1870) is
                 # recorded but is not a fresh failure: it must not climb into a
                 # "source failed N consecutive reads" recommendation on every run.
+                # Failures recorded before the class existed were this same encrypted store
+                # (28 parse_error rows on the Cursor IDE token), so the streak stops here
+                # rather than surviving on them. Newer, different failures were counted above.
                 if record.get('error_class') in KNOWN_STANDING:
-                    continue
+                    break
                 failures += 1
             sources.append(dict(source=source, consecutive_failures=failures,
                                 last_status=history[-1][0]['status'] if history else None))

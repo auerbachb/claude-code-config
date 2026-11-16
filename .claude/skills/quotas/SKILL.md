@@ -57,8 +57,9 @@ what continuing past it would cost — one row per account per window.
 > you must not act on this table yourself.
 
 > **No credential value ever passes through you.** The helper borrows each account's
-> live token in place for one request — for Cursor, the token the Cursor IDE already
-> holds for the signed-in user, turned into a session cookie in memory — and never
+> live token in place for one request — for Cursor, the token the Cursor IDE holds for
+> the signed-in user when it is stored readable (today it is encrypted, so Cursor is read
+> through the Spending-page observation route below instead) — and never
 > prints any of them. Do not run a command that reads a credential out of the Keychain,
 > a profile directory, or the Cursor IDE's state store yourself, and never repeat a
 > token, cookie, or `auth.json` body into the conversation.
@@ -148,7 +149,7 @@ every `--json` row as `status` — that is the field to branch on:
 | `needs-login` | No usable credential for that profile | Lead with its JSON `action` or the command printed before the table: `/quotas-setup relogin <label> <provider>`. Preserve quoting. Cursor's action names the IDE or Chrome surface that needs sign-in. The human completes login; never type a password or finish OAuth for them. |
 | `rate-limited` | The provider answered 429 | when to retry; the note carries the window |
 | `unreachable` | Nothing answered: a network failure, a missing runtime, a store that could not be read, or a probe that hit its time bound | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
-| `unreadable` | The source could not be interpreted; the note names the specific cause | The figure is unknown. Follow the note: encrypted Cursor IDE storage uses the configured browser fallback; changed response formats may need a reader update. |
+| `unreadable` | The source could not be interpreted; the note names the specific cause | The figure is unknown. Follow the note: encrypted Cursor IDE storage is read through the Spending-page observation route (`--print-instructions cursor`); changed response formats may need a reader update. |
 | `unsupported` | A provider this reader does not know | that it is not covered |
 
 A `needs-login`, `rate-limited`, `unreachable`, or `unreadable` row is **not** a reason
