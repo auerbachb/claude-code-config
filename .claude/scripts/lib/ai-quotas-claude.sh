@@ -651,25 +651,43 @@ claude_age_text() { # <seconds>
 # when a reading existed but could not be used).
 claude_statusline_rows() { # <label>
   local label="$1" win pair used resets span key emitted=0 five_emitted=0 note extra age_txt
+  local kind kind_name best_kind="" best_age="" best_file="" notes="" why
   CLAUDE_STATUSLINE_NOTE=""
   [[ -n "$CLAUDE_STATUSLINE_LIB" ]] || return 1
-  if ! csr_load "$label" "$NOW" "$CLAUDE_STATUSLINE_MAX_AGE"; then
-    case "$CSR_STATE" in
-      stale) CLAUDE_STATUSLINE_NOTE="the saved status-line reading is $(claude_age_text "$CSR_AGE") old (limit $(claude_age_text "$CLAUDE_STATUSLINE_MAX_AGE")), so it was not used" ;;
-      invalid) CLAUDE_STATUSLINE_NOTE="the saved status-line reading is unusable, so it was not used" ;;
-    esac
+  # Two producers can file a reading: the status line (CLI sessions) and the
+  # desktop app's usage tool (#2404). Use the NEWER of the usable ones; a
+  # reading that is stale, invalid or from a finished week is passed over.
+  for kind in status-line app-usage-tool; do
+    case "$kind" in status-line) kind_name="status-line" ;; *) kind_name="app usage tool" ;; esac
+    why=""
+    if csr_load "$label" "$NOW" "$CLAUDE_STATUSLINE_MAX_AGE" "$kind"; then
+      # The 7-day window decides usability: a reading whose weekly window has
+      # since reset describes a week that no longer exists.
+      pair="$(csr_window seven_day)"
+      resets="${pair#* }"
+      if [[ -z "$pair" || ! "$resets" =~ ^[0-9]+$ || "$resets" -le "$NOW" ]]; then
+        why="the saved ${kind_name} reading predates the current 7-day window, so it was not used"
+      elif [[ -z "$best_kind" || "$CSR_AGE" -lt "$best_age" ]]; then
+        best_kind="$kind"; best_age="$CSR_AGE"; best_file="$CSR_FILE"
+      fi
+    else
+      case "$CSR_STATE" in
+        stale) why="the saved ${kind_name} reading is $(claude_age_text "$CSR_AGE") old (limit $(claude_age_text "$CLAUDE_STATUSLINE_MAX_AGE")), so it was not used" ;;
+        invalid) why="the saved ${kind_name} reading is unusable, so it was not used" ;;
+      esac
+    fi
+    [[ -z "$why" ]] || notes="${notes:+$notes; }$why"
+  done
+  if [[ -z "$best_kind" ]]; then
+    CLAUDE_STATUSLINE_NOTE="$notes"
     return 1
   fi
+  CSR_FILE="$best_file"; CSR_AGE="$best_age"
   age_txt="$(claude_age_text "$CSR_AGE")"
-  note="from the Claude status line, taken ${age_txt} ago"
-  # The 7-day window decides usability: a reading whose weekly window has since
-  # reset describes a week that no longer exists.
-  pair="$(csr_window seven_day)"
-  resets="${pair#* }"
-  if [[ -z "$pair" || ! "$resets" =~ ^[0-9]+$ || "$resets" -le "$NOW" ]]; then
-    CLAUDE_STATUSLINE_NOTE="the saved status-line reading predates the current 7-day window, so it was not used"
-    return 1
-  fi
+  case "$best_kind" in
+    status-line) note="from the Claude status line, taken ${age_txt} ago" ;;
+    *) note="from the Claude app's usage tool, taken ${age_txt} ago" ;;
+  esac
   for key in seven_day five_hour; do
     case "$key" in
       seven_day) win="7-day"; span=604800 ;;
@@ -681,7 +699,10 @@ claude_statusline_rows() { # <label>
     used="${pair%% *}"; resets="${pair#* }"
     [[ "$resets" =~ ^[0-9]+$ && "$resets" -gt "$NOW" ]] || continue
     extra="$(with_window_start "{}" "$resets" "$span")"
-    emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "status-line" "" "$extra"
+    # fetched_at_epoch: a saved reading was not read live in this run, so the row
+    # names when the figure was captured and the table shows that date.
+    extra="$(printf '%s' "$extra" | jq -c --argjson c "$(( NOW - CSR_AGE ))" '. + {fetched_at_epoch: $c}')"
+    emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "$best_kind" "" "$extra"
     emitted=1
     [[ "$key" == "five_hour" ]] && five_emitted=1
   done
@@ -691,7 +712,7 @@ claude_statusline_rows() { # <label>
   # an explicit row with no figure (never 0%) saying why.
   if [[ "$FIVE_HOUR" -eq 1 && "$five_emitted" -eq 0 ]]; then
     emit_row claude "$label" "" "5-hour" "" "" unreadable \
-      "the saved status-line reading (taken ${age_txt} ago) has no current 5-hour window, so no 5-hour figure is available" "status-line" ""
+      "the saved ${best_kind} reading (taken ${age_txt} ago) has no current 5-hour window, so no 5-hour figure is available" "$best_kind" "" "{\"fetched_at_epoch\": $(( NOW - CSR_AGE ))}"
   fi
   [[ "$emitted" -eq 1 ]]
 }
