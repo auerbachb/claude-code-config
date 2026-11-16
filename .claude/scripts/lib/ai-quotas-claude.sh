@@ -699,9 +699,9 @@ claude_statusline_rows() { # <label>
     used="${pair%% *}"; resets="${pair#* }"
     [[ "$resets" =~ ^[0-9]+$ && "$resets" -gt "$NOW" ]] || continue
     extra="$(with_window_start "{}" "$resets" "$span")"
-    # observed_at_epoch: when the figure was captured (one named field for every
-    # saved-reading row; null on token-path rows).
-    extra="$(printf '%s' "$extra" | jq -c --argjson c "$(( NOW - CSR_AGE ))" '. + {observed_at_epoch: $c}')"
+    # fetched_at_epoch: a saved reading was not read live in this run, so the row
+    # names when the figure was captured and the table shows that date.
+    extra="$(printf '%s' "$extra" | jq -c --argjson c "$(( NOW - CSR_AGE ))" '. + {fetched_at_epoch: $c}')"
     emit_row claude "$label" "" "$win" "$used" "$resets" ok "$note" "$best_kind" "" "$extra"
     emitted=1
     [[ "$key" == "five_hour" ]] && five_emitted=1

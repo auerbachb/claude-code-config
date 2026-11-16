@@ -16,9 +16,11 @@
 #   claude-usage-observe.sh --help | -h
 #
 # ACCOUNT
-#   Named by CLAUDE_CODE_USER_EMAIL, matched case-insensitively and exactly
-#   against the registered Claude accounts (~/.claude/ai-quotas.json). Zero or
-#   several matches, or the variable unset: refused. Never guessed.
+#   The account the calling session runs on: CLAUDE_CODE_USER_EMAIL when set,
+#   else the session's signed-in .claude.json (CLAUDE_CONFIG_DIR, else HOME),
+#   matched case-insensitively and exactly against the registered Claude
+#   accounts (~/.claude/ai-quotas.json). Both present and different, zero or
+#   several matches, or neither readable: refused. Never guessed, never defaulted.
 #
 # OUTPUT
 #   One line. On success it names the account and the 7-day percent. On refusal

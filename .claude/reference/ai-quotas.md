@@ -508,7 +508,7 @@ the reading is optional and gates nothing.
 
 - **Refused** (one-line reason, exit 1, nothing written): plan `status` not `ok`; no single
   `Weekly · all models` window; its `percentUsed` not a number from 0 to 100; its `resetsAt`
-  not a UTC ISO-8601 timestamp; `CLAUDE_CODE_USER_EMAIL` unset, unregistered, or matching
+  not a UTC ISO-8601 timestamp or already past; the session's account unreadable (`CLAUDE_CODE_USER_EMAIL` unset and no signed-in `.claude.json`), those two disagreeing, unregistered, or matching
   several registered accounts (compared case-insensitively, exactly; never guessed).
 - **Where.** `claude-app--<label>.json` beside the status line's file (same folder, mode
   600/700, temp file then move, no credential). It has the status-line file's `windows`
@@ -519,8 +519,9 @@ the reading is optional and gates nothing.
   with the smaller age (fresh within `AI_QUOTAS_STATUSLINE_MAX_AGE`, weekly window not yet
   reset). The row's `source` is `status-line` or `app-usage-tool` and its note says which.
   A passed-over reading adds a note only when neither was usable.
-- **Capture time.** Every saved-reading row carries `observed_at_epoch` (null on rows read
-  live through the token), the one field a `fetched` column should read.
+- **Capture time.** Every saved-reading row sets `fetched_at_epoch` to the capture time, the
+  field a provider sets for a figure not read live in this run, so the `fetched` column shows
+  the figure's own date.
 - **Reserve.** `quota-reserve.sh --refresh` reads through `ai-quotas.sh --json`, so the row
   is an ordinary provider-reported one. A reading older than the limit is not used, the
   account reads `unknown`, and the reserve fails open as before.

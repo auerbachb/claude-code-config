@@ -217,7 +217,7 @@ CSR_OBSERVE_JQ='
     end'
 
 csr_observe_app() { # <tool-json>
-  local json="$1" now email label file dir tmp doc res
+  local json="$1" now email label file dir tmp doc res cj cj_email
   CSR_OBSERVE_REASON=""
   now="${AI_QUOTAS_NOW:-$(date -u +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || { CSR_OBSERVE_REASON="the clock is unreadable"; return 1; }
@@ -227,10 +227,28 @@ csr_observe_app() { # <tool-json>
   if [[ "$(printf '%s' "$res" | jq -r 'has("err")')" == "true" ]]; then
     CSR_OBSERVE_REASON="$(printf '%s' "$res" | jq -r '.err')"; return 1
   fi
+  # A weekly window that has already reset describes a week that no longer exists.
+  if [[ "$(printf '%s' "$res" | jq -r --argjson now "$now" '.doc.windows.seven_day.resets_at_epoch <= $now')" == "true" ]]; then
+    CSR_OBSERVE_REASON="the weekly all-models reset time is already past"; return 1
+  fi
+  # The account is the one the calling session runs on, resolved to exactly one
+  # registry entry by exact (case-insensitive) equality. CLAUDE_CODE_USER_EMAIL
+  # is preferred; the session's own .claude.json is the fallback when it is
+  # unset, and the two must agree when both are present. Never a default.
   email="${CLAUDE_CODE_USER_EMAIL:-}"
-  [[ -n "$email" ]] || { CSR_OBSERVE_REASON="CLAUDE_CODE_USER_EMAIL is not set, so the account cannot be named"; return 1; }
+  cj="${CLAUDE_CONFIG_DIR:-${HOME:-}}/.claude.json"
+  cj_email=""
+  [[ -f "$cj" ]] && cj_email="$(jq -r '.oauthAccount.emailAddress // empty' "$cj" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "$email" ]]; then
+    if [[ -n "$cj_email" && "$cj_email" != "$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')" ]]; then
+      CSR_OBSERVE_REASON="CLAUDE_CODE_USER_EMAIL and the session's signed-in account disagree, so the account cannot be named"; return 1
+    fi
+  else
+    email="$cj_email"
+    [[ -n "$email" ]] || { CSR_OBSERVE_REASON="CLAUDE_CODE_USER_EMAIL is not set and the session's signed-in account is unreadable, so the account cannot be named"; return 1; }
+  fi
   label="$(csr_label_for_email "$email")"
-  [[ -n "$label" ]] || { CSR_OBSERVE_REASON="CLAUDE_CODE_USER_EMAIL matches no registered Claude account, or matches several"; return 1; }
+  [[ -n "$label" ]] || { CSR_OBSERVE_REASON="the session's account matches no registered Claude account, or matches several"; return 1; }
   file="$(csr_file_for "$label" app-usage-tool)" || { CSR_OBSERVE_REASON="the account label cannot name a file"; return 1; }
   doc="$(printf '%s' "$res" | jq -c --arg l "$label" '.doc + {account_label: $l}')" || { CSR_OBSERVE_REASON="could not build the reading"; return 1; }
   dir="$(dirname "$file")"

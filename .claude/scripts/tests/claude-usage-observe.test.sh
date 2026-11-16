@@ -135,6 +135,7 @@ refused "reset not a timestamp" '.plan.windows[0].resetsAt = "in 7h"' "reset tim
 refused "reset an impossible date" '.plan.windows[0].resetsAt = "2026-13-45T99:00:00Z"' "reset time"
 refused "reset missing" 'del(.plan.windows[0].resetsAt)' "reset time"
 refused "reset with an offset (not UTC Z)" '.plan.windows[0].resetsAt = "2026-11-16T22:00:00+05:00"' "reset time"
+refused "reset already past" '.plan.windows[0].resetsAt = "2026-11-16T14:00:00Z"' "already past"
 refused "plan is not an object" '.plan = "ok"' "not the usage tool result"
 
 rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
@@ -153,19 +154,46 @@ out="$(observe "$TMP/missing.json")"; rc=$?
 out="$("$OBSERVE" 2>&1)"; rc=$?
 check_eq "$rc" "3" "no argument is a usage error"
 
-# --- 3. the account is never guessed -----------------------------------------
+# --- 3. the account is the calling session's, never guessed -------------------
+# Fallback: the variable unset, the session's own signed-in account (HOME here)
+# names the account by exact equality.
 rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
 out="$(AI_QUOTAS_NOW="$NOW" "$OBSERVE" "$TMP/tool.json" 2>&1)"; rc=$?
-[[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "CLAUDE_CODE_USER_EMAIL unset: refused, nothing written" || fail "an unset email was accepted"
+[[ "$rc" -eq 0 && -f "$APP_FILE" ]] && ok "variable unset: the signed-in account names the account" || fail "the signed-in fallback did not save ($out)"
+# Neither source readable: refused, nothing written.
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+mv "$HOME/.claude.json" "$TMP/home-claude.json.keep"
+out="$(AI_QUOTAS_NOW="$NOW" "$OBSERVE" "$TMP/tool.json" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "variable unset and no signed-in account: refused, nothing written" || fail "an unnamed account was accepted"
 check_contains "$out" "CLAUDE_CODE_USER_EMAIL" "and the reason names the variable"
+# Variable set, no signed-in file: the variable alone names it.
+out="$(observe "$TMP/tool.json")"; rc=$?
+[[ "$rc" -eq 0 && -f "$APP_FILE" ]] && ok "variable set, no signed-in file: saved for the variable's account" || fail "the variable alone did not save ($out)"
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
+mv "$TMP/home-claude.json.keep" "$HOME/.claude.json"
+# Variable and signed-in account disagree: refused, nothing written.
+out="$(observe_as "$WORK" "$TMP/tool.json")"; rc=$?
+[[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "variable disagrees with the signed-in account: refused, nothing written" || fail "a disagreeing pair was accepted"
+check_contains "$out" "disagree" "and the reason says so"
+out="$(CLAUDE_CONFIG_DIR="$WORK_DIR" observe "$TMP/tool.json")"; rc=$?
+[[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "CLAUDE_CONFIG_DIR's account disagrees with the variable: refused" || fail "a disagreement through CLAUDE_CONFIG_DIR was accepted"
+# Variable and signed-in account agree (case-insensitively): saved.
+out="$(observe_as "$(printf '%s' "$PERS" | tr '[:lower:]' '[:upper:]')" "$TMP/tool.json")"; rc=$?
+[[ "$rc" -eq 0 && -f "$APP_FILE" ]] && ok "agreeing pair, different case: saved" || fail "an agreeing pair was refused ($out)"
+rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
 out="$(observe_as "stranger@example.com" "$TMP/tool.json")"; rc=$?
 [[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "an unregistered email: refused" || fail "an unregistered email was accepted"
-# The signed-in .claude.json and the folder names are not consulted.
+# The signed-in account is unregistered, variable unset: refused, never the default profile.
+printf '{"oauthAccount":{"emailAddress":"stranger@example.com"}}' > "$HOME/.claude.json"
+out="$(AI_QUOTAS_NOW="$NOW" "$OBSERVE" "$TMP/tool.json" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "an unregistered signed-in account is not attributed to any profile" || fail "an unregistered signed-in account was attributed"
+printf '{"oauthAccount":{"emailAddress":"%s"}}' "$PERS" > "$HOME/.claude.json"
+# Two registered accounts claiming one email: refused, not guessed.
 printf '{"oauthAccount":{"emailAddress":"%s"}}' "$PERS" > "$WORK_DIR/.claude.json"
 out="$(observe_as "$WORK" "$TMP/tool.json")"; rc=$?
 [[ "$rc" -ne 0 && ! -e "$AI_QUOTAS_STATUSLINE_DIR" ]] && ok "two registered accounts claiming one email: refused, not guessed" || fail "an ambiguous email was accepted"
 printf '{"oauthAccount":{"emailAddress":"%s"}}' "$WORK" > "$WORK_DIR/.claude.json"
-observe_as "$WORK" "$TMP/tool.json" >/dev/null
+CLAUDE_CONFIG_DIR="$WORK_DIR" observe_as "$WORK" "$TMP/tool.json" >/dev/null
 [[ -f "$AI_QUOTAS_STATUSLINE_DIR/claude-app--$WORK.json" && ! -e "$APP_FILE" ]] && ok "the work account's session files under the work account" || fail "the reading was misfiled"
 rm -rf "$AI_QUOTAS_STATUSLINE_DIR"
 
@@ -203,7 +231,7 @@ check_eq "$(row "$json" used_pct)" "35" "with the 7-day used percentage"
 check_eq "$(row "$json" resets_at_epoch)" "$RESET_EPOCH" "and the reset time"
 check_eq "$(row "$json" source)" "app-usage-tool" "the row names the app usage tool as its source"
 check_contains "$(row "$json" detail)" "usage tool" "and the note says so"
-check_eq "$(row "$json" observed_at_epoch)" "$NOW" "the row carries the capture time as observed_at_epoch"
+check_eq "$(row "$json" fetched_at_epoch)" "$NOW" "the row carries the capture time as fetched_at_epoch"
 check_eq "$(grep -c . "$CURL_LOG" 2>/dev/null || true)" "0" "no request was made to either endpoint"
 
 # Newer of two: the status line is newer -> it wins.
@@ -211,7 +239,7 @@ write_sl 40 "$(( NOW + 30 ))"
 json="$(run_reader "$(( NOW + 60 ))")"
 check_eq "$(row "$json" source)" "status-line" "a newer status-line reading beats an older app reading"
 check_eq "$(row "$json" used_pct)" "40" "and its figure is the one shown"
-check_eq "$(row "$json" observed_at_epoch)" "$(( NOW + 30 ))" "with its own capture time"
+check_eq "$(row "$json" fetched_at_epoch)" "$(( NOW + 30 ))" "with its own capture time"
 # Newer of two: the app reading is newer -> it wins.
 write_sl 40 "$(( NOW - 120 ))"
 json="$(run_reader "$(( NOW + 60 ))")"
