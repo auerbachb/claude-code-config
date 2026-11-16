@@ -123,7 +123,7 @@ that is neither documented nor verified, so it is not done.
 - **Stale and missing**: an observation older than 3 hours (`AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS`),
   or a window whose computed reset has passed, is shown `unreadable` with its age and the last
   known figure; no figure is invented. With no saved text the row says so and names the capture
-  command. The resets-left columns stay blank (no reset allowance exists).
+  command. The forecast columns (START, %/DAY, LEFT) stay blank: no history-based forecast applies.
 - **Display only:** `quota-reserve.sh` keeps only Claude and Codex rows, so Antigravity never
   feeds the weekly reserve gate. Last-known staging and the history-based forecast do not apply
   (the observation file is its own last-known); the outcomes ledger records it.

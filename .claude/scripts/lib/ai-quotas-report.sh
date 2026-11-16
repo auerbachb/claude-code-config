@@ -199,7 +199,7 @@ stamp_snapshot_field() {
   if jq --arg v "$iso" --argjson threshold "$threshold" --argjson config "$CONFIG" --slurpfile reliability "$RELIABILITY" \
       '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end), account_reliability: ($reliability[0] // []), recommendations: [($reliability[0] // [])[] |
        . as $r | ($config.accounts | map(select(.provider == $r.provider and .label == $r.label)) | first) as $a |
-       ($a.sources // (if .provider == "claude" then ["oauth-usage"] elif .provider == "codex" then ["app-server","http"] else ["ide-token","browser"] end)) as $order |
+       ($a.sources // (if .provider == "claude" then ["oauth-usage"] elif .provider == "codex" then ["app-server","http"] elif .provider == "antigravity" then ["observation"] else ["ide-token","browser"] end)) as $order |
        (.sources | map(select(.source == $order[0] and .consecutive_failures >= $threshold)) | first) as $failed |
        select($failed != null) |
        {provider:.provider,label:.label,source:$failed.source,failures:$failed.consecutive_failures,

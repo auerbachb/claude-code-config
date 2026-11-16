@@ -14,6 +14,7 @@ no window yields status "unreadable", never 0%. No credential is read: the live
 capture runs the CLI's own slash command and keeps neither stderr nor raw bytes beyond
 the panel text. Observation files are written 0600, atomically.
 """
+import fcntl
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import tempfile
 
 SCHEMA = "antigravity-usage/1"
 MAX_TEXT = 256 * 1024
+FUTURE_SLACK = 300
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 BAR_CHARS = "█░▓▒▏▎▍▌▋▊▉▕■□▪▫"
 PERCENT = re.compile(r"^(\d{1,3}(?:\.\d+)?)\s*%$")
@@ -162,22 +164,38 @@ def read_text(path):
     return data.decode("utf-8", "replace")
 
 
+class NewerKept(Exception):
+    """A newer observation is already saved; the older capture is not written."""
+
+
 def write_observation(path, captured, via, text):
     doc = {"schema": SCHEMA, "provider": "antigravity", "captured_at_epoch": int(captured), "via": via, "text": text[:MAX_TEXT]}
     folder = os.path.dirname(os.path.abspath(path))
     os.makedirs(folder, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".agy-obs.", dir=folder)
+    lock = os.open(os.path.join(folder, ".agy-obs.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(doc, handle)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
+        fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            existing = json.load(open(path))
+            kept = existing.get("captured_at_epoch") if isinstance(existing, dict) else None
+        except (OSError, ValueError):
+            kept = None
+        if isinstance(kept, int) and not isinstance(kept, bool) and kept > int(captured):
+            raise NewerKept()
+        fd, tmp = tempfile.mkstemp(prefix=".agy-obs.", dir=folder)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(doc, handle)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(lock)
 
 
 def main(argv):
@@ -212,6 +230,9 @@ def main(argv):
                 print(json.dumps({"status": "unreadable", "reason": "observation file has an unknown shape"}))
                 return 0
             captured = doc["captured_at_epoch"]
+            if captured > int(argv[3]) + FUTURE_SLACK:
+                print(json.dumps({"status": "unreadable", "reason": "the saved capture time is in the future"}))
+                return 0
             result = parse_panel(doc["text"], captured)
             result.update(captured_at_epoch=captured, age_seconds=max(0, int(argv[3]) - captured),
                           via=doc.get("via") if isinstance(doc.get("via"), str) else "unknown")
@@ -236,6 +257,9 @@ def main(argv):
             write_observation(argv[4], int(argv[3]), "agy-print", text)
             print(json.dumps(result))
             return 0
+    except NewerKept:
+        print(json.dumps({"status": "unreadable", "reason": "a newer reading is already saved; this older capture was not written"}))
+        return 3
     except (ValueError, OSError) as exc:
         print(json.dumps({"status": "unreadable", "reason": "%s" % type(exc).__name__}))
         return 3

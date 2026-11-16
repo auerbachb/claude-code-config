@@ -75,6 +75,12 @@ jq -e '.via == "agy-print"' "$OBS" >/dev/null || fail "--live records where the 
 cp "$OBS" "$T/good.json"
 if AI_QUOTAS_AGY_BIN="$T/agy-bad" bash "$SCRIPTS/quotas-antigravity-capture.sh" --live 2>/dev/null; then fail "--live must refuse non-panel output"; fi
 cmp "$OBS" "$T/good.json" || fail "--live leaves the saved observation untouched on refusal"
+if bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$SAMPLE" --captured-at "$((CAP - 600))" 2>"$T/err"; then fail "an older capture must not replace a newer one"; fi
+grep -Fq 'newer reading' "$T/err" || fail "older-capture refusal names the reason"
+cmp "$OBS" "$T/good.json" || fail "the newer observation is kept"
+if bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$SAMPLE" --captured-at "$(( $(date +%s) + 9999 ))" 2>/dev/null; then fail "a future capture time is refused"; fi
+jq --argjson c "$((CAP + 99999))" '.captured_at_epoch = $c' "$OBS" > "$T/future.json"
+python3 -I "$PARSER" show "$T/future.json" "$CAP" | jq -e '.status == "unreadable" and (.reason | test("future"))' >/dev/null || fail "show refuses a future capture time"
 pass "capture: file, stdin refusal, --live with a fake agy, atomic and private"
 
 # --- /quotas rows --------------------------------------------------------------------
@@ -84,6 +90,7 @@ export AI_QUOTAS_LAST_KNOWN_DIR="$T/last-known"
 export AI_QUOTAS_NOW="$NOW"
 export AI_QUOTAS_CLAUDE_VERSION=1.0.0
 export AI_QUOTAS_AGY_BIN="$T/agy-good"
+rm -f "$OBS"
 bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$SAMPLE" --captured-at "$CAP" >/dev/null
 printf '%s\n' '{"schema_version":"1.0","accounts":[]}' > "$AI_QUOTAS_CONFIG"
 bash "$SCRIPTS/ai-quotas-setup.sh" add antigravity personal >/dev/null 2>&1 || fail "setup registers an antigravity account"
@@ -92,6 +99,12 @@ jq -e '[.accounts[] | select(.provider == "antigravity")] | length == 1' "$AI_QU
 list_out="$(bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
 grep -Fq 'agy is installed' <<<"$list_out" || { printf '%s\n' "$list_out" >&2; fail "list shows the CLI presence note"; }
 [[ ! -e "$HOME/.claude/ai-quotas/profiles/personal/antigravity" ]] || fail "no profile directory is created"
+for sub in "report personal 7-day 50" "relogin personal" "share-config personal"; do
+  # shellcheck disable=SC2086
+  if out="$(bash "$SCRIPTS/ai-quotas-setup.sh" $sub antigravity 2>&1)"; then fail "setup $sub must refuse antigravity"; fi
+  [[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" == 1 ]] || { printf '%s\n' "$out" >&2; fail "setup $sub refuses in one line"; }
+  grep -Eiq 'antigravity' <<<"$out" || fail "setup $sub refusal names antigravity"
+done
 
 rows="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5' <<<"$rows" >/dev/null || fail "one row per group and window"
@@ -102,7 +115,7 @@ pass "/quotas rows: one per group and window, used percent, reset, source, not v
 
 # Stale: shown with its age and the last known figure, not as a live one.
 stale="$(AI_QUOTAS_NOW=$((CAP + 4*3600)) bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
-jq -e '[.rows[] | select(.provider == "antigravity")] | all(.status == "unreadable" and .used_pct == null and (.detail | test("stale: captured 4h 0m ago")) )' <<<"$stale" >/dev/null || fail "stale rows carry age and no live figure"
+jq -e '[.rows[] | select(.provider == "antigravity")] | all(.status == "unreadable" and .used_pct == null and (.detail | test("stale: captured 4h 0m ago.*account not verified")) )' <<<"$stale" >/dev/null || fail "stale rows carry age and no live figure"
 jq -e '[.rows[] | select(.window == "gemini 7-day")] | .[0].last_known_used_pct == 28.3' <<<"$stale" >/dev/null || fail "stale rows keep the last known figure"
 # A reset that passed after the capture also makes that window stale.
 expired="$(AI_QUOTAS_NOW=$((CAP + 154*3600)) AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS=99999999 bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"

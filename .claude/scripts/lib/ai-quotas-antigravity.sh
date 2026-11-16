@@ -68,7 +68,7 @@ read_antigravity_account() { # <label>
       res_et="$(epoch_to_et "$resets")"
       [[ "$OUTCOME_USABLE" -eq 1 ]] || set_outcome unreadable observation observation_stale
       emit_row antigravity "$label" "$account" "$window" "" "" unreadable \
-        "stale: captured $(antigravity_age "$age") ago via ${via_note} — ${ANTIGRAVITY_HINT}" observation "" \
+        "stale: captured $(antigravity_age "$age") ago via ${via_note}; account not verified — ${ANTIGRAVITY_HINT}" observation "" \
         "$(jq -nc --arg g "$group" --argjson m "$models" --argjson u "$used" --argjson at "$captured" --argjson a "$age" --argjson now "$NOW" --arg fet "$fet_et" \
              --arg r "$resets" --arg ret "$res_et" '
              {group: $g, group_models: $m, observed_age_seconds: $a,

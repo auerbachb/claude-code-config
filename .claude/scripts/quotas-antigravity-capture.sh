@@ -44,6 +44,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$MODE" ]] || die 2 "choose --from-file, --stdin or --live (try --help)"
+[[ "$CAPTURED" -le $(( ${AI_QUOTAS_NOW:-$(date +%s)} + 300 )) ]] || die 2 "--captured-at is in the future"
 [[ "$OBS" == /* ]] || die 2 "observation path must be absolute (HOME unset?)"
 command -v python3 >/dev/null 2>&1 || die 5 "python3 is required"
 [[ -r "$PARSER" ]] || die 5 "lib/quotas-antigravity.py not found — install the complete scripts directory"
