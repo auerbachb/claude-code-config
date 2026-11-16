@@ -270,7 +270,10 @@ Scan the directory structure (depth 2) and detect:
 
 Same detection logic as Step 2c. Generate a new Architecture section.
 
-**Scan health (applies to 3c and 3d).** A scan that did not finish is a failed scan, and a failed scan never rewrites the file. Set `REFRESH_OK=false` (Step 3a's gate) when any detection command exits non-zero, or when Infrastructure or Architecture comes out empty while the existing section had content. In automatic mode, print one line — `pm-config.md refresh skipped: <section> scan incomplete; file kept.` — and return to the caller. Explicit mode shows the empty result in the Step 3e diff, so the operator decides there.
+**Scan health (applies to 3c and 3d).** A scan that did not finish is a failed scan, and a failed scan is never written silently. A scan is incomplete when any detection command exits non-zero, or when Infrastructure or Architecture comes out empty while the existing section had content. What happens next depends on the mode:
+
+- **Automatic mode:** Set `REFRESH_OK=false` (Step 3a's gate), print one line — `pm-config.md refresh skipped: <section> scan incomplete; file kept.` — and return to the caller. The file is not rewritten.
+- **Explicit mode:** Leave `REFRESH_OK` unchanged and set `SCAN_INCOMPLETE=<section>` instead. Show the empty or failed result, with a warning naming the section, in the Step 3e diff. The operator's confirmation at Step 3e decides whether the write happens; declining keeps the file as it is.
 
 ### Step 3e: Display diff for review (explicit) or apply it (automatic)
 
