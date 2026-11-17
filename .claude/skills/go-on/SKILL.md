@@ -634,6 +634,8 @@ An unreachable database keeps both operations locally and sends them later, in o
 
 ### 0.6 Dispatch
 
+**PM run mode reread (before any lane, silent).** Read the mode with the installed `run-mode.sh` only (`$HOME/.claude/skills-worktree/.claude/scripts/run-mode.sh`, then `$HOME/.claude/scripts/run-mode.sh`): `run-mode.sh --repo "$REPO_KEY" get` only when `REPO_KEY` is nonempty. An empty `REPO_KEY` skips the call and uses `default` directly, since an empty `--repo` would resolve an unscoped key. Print nothing on success; a missing helper also reads as `default`. Never take the mode from a stoppage record or a summary (`.claude/reference/run-modes.md`).
+
 For ranks 2–4, run 0.5a first (it records the stoppage and never blocks the dispatch below), and close the entry after a dispatch that actually resumed work.
 
 **Never duplicate a live task or Monitor.** Before any lane, list live registry entries (`"$TASK_REGISTRY_SH" --list --live`) and read `.prs["<N>"].babysit.active`. Work already covered by a live identity is reported, not relaunched; the delegated commands take the locked `stopped -> rearming` claim that makes concurrent resumes single-writer.

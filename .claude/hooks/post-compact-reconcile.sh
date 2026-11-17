@@ -61,8 +61,10 @@ Context compaction just completed. Run the Post-Compaction Recovery sequence fro
 .claude/rules/monitor-mode.md §\"Post-Compaction Recovery\" now:
 
 1. Silently rerun session-start checks.
-2. Read session-state.json + handoffs; reconcile each open PR on GitHub (all 3
-   endpoints per cr-github-review.md).
+2. Read session-state.json + handoffs; reread the PM run mode silently with
+   run-mode.sh get for this repo before recovered work launches (never take the mode
+   from the compact summary); reconcile each open PR on GitHub (all 3 endpoints per
+   cr-github-review.md).
 3. Per polled PR: polling-state-gate.sh <N> --verify-state (optional --root-repo <path>),
    then polling-state-gate.sh <N> (shells merge-gate.sh).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled
@@ -80,8 +82,10 @@ Context compaction just completed. Run the Post-Compaction Recovery sequence fro
 .claude/rules/monitor-mode.md §\"Post-Compaction Recovery\" now:
 
 1. Silently rerun session-start checks.
-2. Read session-state.json + handoffs; reconcile each open PR on GitHub (all 3
-   endpoints per cr-github-review.md).
+2. Read session-state.json + handoffs; reread the PM run mode silently with
+   run-mode.sh get for this repo before recovered work launches (never take the mode
+   from the compact summary); reconcile each open PR on GitHub (all 3 endpoints per
+   cr-github-review.md).
 3. Per polled PR: polling-state-gate.sh <N> --verify-state (optional --root-repo <path>),
    then polling-state-gate.sh <N> (shells merge-gate.sh).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled

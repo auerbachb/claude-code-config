@@ -317,3 +317,7 @@ The hook skips re-emitting a widen instruction when `.type == "update"` and `.in
 ## Paid review grants (issue #1898)
 
 `.prs["<N>"].paid_review_grants["<vendor>"]` has exactly one writer: `.claude/scripts/paid-review-grant.sh`. A grant is written only after the owner's live approval and spent with a `session-state.sh --cas` on the exact record read, so of two racing triggers exactly one posts. An unparseable or mistyped slot is `grant_unreadable`, which refuses. Field list: `session-state-schema.json` `_paid_review_grants_comment`. Ask contract: `paid-review-approval.md`.
+
+## PM run mode (issue #2428)
+
+Path: `.repos["<key>"].run_mode`, a JSON string enum (`default`, `speed`, `cheap`). Writer: `run-mode.sh set <mode>`. Reader: `run-mode.sh get`, the only supported read path. Fail-open: absent, invalid, unreadable or unresolved-repo state reads as `default` with exit 0 and never blocks a launch. Full contract: `.claude/reference/run-modes.md`.
