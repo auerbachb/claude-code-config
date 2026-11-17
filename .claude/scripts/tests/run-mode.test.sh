@@ -12,6 +12,7 @@ RUN_MODE="$scripts/run-mode.sh"
 tmp_home="$(mktemp -d)"
 trap 'rm -rf "$tmp_home"' EXIT
 export HOME="$tmp_home"
+unset CLAUDE_SESSION_REPO
 state_file="$tmp_home/.claude/session-state.json"
 
 pass=0
@@ -69,6 +70,8 @@ t "no state file prints default" eq "$("$RUN_MODE" get --repo "$repo_a" 2>/dev/n
 mkdir -p "$(dirname "$state_file")"
 printf '%s' '{"schema_version":2,"repos":{"owner-a/repo-a":{"run_mode":"turbo"}}}' >"$state_file"
 t "stored non-enum string prints default" eq "$("$RUN_MODE" get --repo "$repo_a" 2>/dev/null)" default
+printf '%s' '{"schema_version":2,"repos":{"owner-a/repo-a":{"run_mode":"speed\n"}}}' >"$state_file"
+t "stored speed with trailing newline prints default" eq "$("$RUN_MODE" get --repo "$repo_a" 2>/dev/null)" default
 
 printf '%s' '{"schema_version":2,"repos":{"owner-a/repo-a":{"run_mode":42}}}' >"$state_file"
 t "stored number prints default" eq "$("$RUN_MODE" get --repo "$repo_a" 2>/dev/null)" default

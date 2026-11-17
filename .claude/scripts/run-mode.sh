@@ -110,7 +110,11 @@ read_mode() {
     CONFIRMED=1
     return 0
   fi
-  mode=$(jq -r 'if type == "string" then . else "" end' <<<"$raw" 2>/dev/null) || mode=""
+  # Validate the exact raw JSON value before decoding: command substitution strips
+  # trailing newlines, so decoding first would accept "speed\n" as "speed".
+  if jq -e 'type == "string" and (. == "default" or . == "speed" or . == "cheap")' <<<"$raw" >/dev/null 2>&1; then
+    mode=$(jq -r . <<<"$raw" 2>/dev/null) || mode=""
+  fi
   if [[ -n "$mode" ]] && is_mode "$mode"; then
     STORED="$mode"
     CONFIRMED=1

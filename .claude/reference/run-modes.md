@@ -41,6 +41,7 @@ Decision-only output: an explicit set prints one line; routine reads print nothi
 
 - `--mode <value>` is always consumed as a mode value, even if invalid.
 - A leading bare `speed`, `cheap` or `default` (before or after a leading `resume`) is the mode.
+- A leading `switch to <mode> mode`, `<mode> mode` or `back to <mode>` names the mode the same way and is stripped from the goal.
 - Unknown bare words remain business goal text. The documented trade-off: a goal that starts with `default`, `speed` or `cheap` is read as a mode.
 - `fast` keeps its cleanup meaning and is not a synonym for `speed`.
 - Internal `--tick`, `--probe-wake` and `--day-generation` forms never carry or reparse a mode.
