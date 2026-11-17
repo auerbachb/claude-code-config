@@ -583,16 +583,17 @@ cmd_expire() {
     printf 'Print the line above once, then (once only) call the PushNotification tool with exactly this text: %s\n' "$PUSH_TEXT"
     printf 'Afterwards run: %s push-result sent|missed --generation %s   (missed when the push could not be delivered; never retry it)\n' "$SELF_Q" "$gen"
   else
-    # Keep what was listed even when one repo's file could not be read: those questions are marked.
+    # Keep what was listed even when one repo's file could not be read: the others still print.
     local list="" lrc=0
-    if [ -x "$UNATTENDED_SH" ]; then list=$("$UNATTENDED_SH" digest --all --mark 2>/dev/null) || lrc=$?; fi
+    # A missing or non-executable lister is a failed read, never "no questions": saved ones may exist.
+    if [ -x "$UNATTENDED_SH" ]; then list=$("$UNATTENDED_SH" digest --all 2>/dev/null) || lrc=$?; else lrc=1; fi
     printf 'presence: your away window ended %s. Threads stay in away handling (questions recorded, reversible defaults, no menu) until you send a message. No push is sent.\n' "$(fmt_time "$until")"
     if [ -n "$list" ]; then
       printf 'Show the operator this list once, without opening a menu:\n%s\n' "$list"
     else
       printf 'No saved questions yet.\n'
     fi
-    [ "$lrc" -eq 0 ] || printf 'Some repo question files could not be read: run %s digest --all --mark again.\n' "$(printf '%q' "$UNATTENDED_SH")"
+    [ "$lrc" -eq 0 ] || printf 'Some repo question files could not be read: run %s digest --all again.\n' "$(printf '%q' "$UNATTENDED_SH")"
   fi
   return 0
 }

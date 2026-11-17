@@ -159,6 +159,20 @@ sleep 1
 P $owner1 set here --by operator-message --for 1h
 P $owner1 status --json; check "here after unattended: here" "$(field .state)" here
 check "here turned unattended off" "$("$UNATT" is-active; echo $?)" 1
+# Issue #2352: the return key for question listing is .unattended.since_epoch. here and closing only
+# clear `active`; only a new away arming writes a new one.
+SINCE_1=$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")
+check "here left a since_epoch in place" "$(( SINCE_1 > 0 ))" 1
+sleep 1
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$(( $(date +%s) + 7200 ))" --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
+P $owner1 set closing --by operator-message; check "closing set from an armed deadline" "$rc" 0
+check "closing keeps the since_epoch" "$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")" "$SINCE_1"
+P $owner1 set here --by operator-message --for 1h >/dev/null
+check "here again keeps the since_epoch" "$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")" "$SINCE_1"
+P $owner1 set away --by operator-message --for 1h >/dev/null
+SINCE_2=$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")
+check "a new away arming writes a new since_epoch (a new return)" "$(( SINCE_2 > SINCE_1 ))" 1
+P $owner1 set here --by operator-message --for 1h >/dev/null
 sleep 1
 "$UNATT" on --for 1h >/dev/null
 P $owner1 status --json; check "unattended after here: away" "$(field .state)" away
