@@ -1055,4 +1055,24 @@ if [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]]; the
     echo "polling-state-gate.sh: notice: PR #$PR_NUMBER — operating under the per-PR authorship override recorded at enrolment (.prs[\"$PR_NUMBER\"].allow_nonauthor, .claude/rules/safety.md §Authorship); merge-gate.sh's authorship block is suppressed. Clear it by re-running --ensure-session without --allow-nonauthor." >&2
   fi
 fi
-(cd "$canon" && exec "$MERGE_GATE" "${GATE_ARGS[@]}")
+# Run the gate (not exec) so its result can be saved for escalate-review.sh in
+# the same cycle (issue #2442). Stdout, stderr and exit code are passed through
+# exactly; nothing about saving can change the verdict or the exit code.
+GATE_CACHE_LIB="$SCRIPT_DIR/lib/gate-result-cache.sh"
+GATE_OUT=""
+GATE_RC=0
+GATE_OUT="$(cd "$canon" && "$MERGE_GATE" "${GATE_ARGS[@]}")" || GATE_RC=$?
+printf '%s\n' "$GATE_OUT"
+# Only a met result is worth saving (the one consumer asks "met via the override"),
+# so an unmet cycle pays no extra read. The head/base snapshot is read after the
+# gate and the saved gate's own head_sha must equal it, or nothing is saved.
+if [[ "$GATE_RC" -eq 0 && -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
+  GC_ALLOW=0
+  [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]] && GC_ALLOW=1
+  GC_SHAS="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""
+  if [[ -n "$GC_SHAS" ]]; then
+    read -r GC_OR GC_HEAD GC_BASE <<<"$GC_SHAS"
+    gate_cache_save "$GC_OR" "$PR_NUMBER" "$GC_HEAD" "$GC_BASE" "$GC_ALLOW" "$GATE_RC" "$GATE_OUT" >/dev/null 2>&1 || true
+  fi
+fi
+exit "$GATE_RC"

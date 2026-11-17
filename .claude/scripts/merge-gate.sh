@@ -969,7 +969,13 @@ MISSING=()
 # viewer unresolvable) does NOT block here — the strict fail-closed lives at the
 # enrolment gate (polling-state-gate --ensure-session) and pr-authorship.sh, so
 # a transient `gh api user` blip cannot wedge merges on the user's own PRs.
-VIEWER_LOGIN="$(gh api user --jq '.login' 2>/dev/null || true)"
+# One user lookup per token, shared with pr-authorship.sh (issue #2442); a missing
+# library falls back to the live call, a failed lookup is never cached.
+if [[ -r "${SCRIPT_DIR}/lib/gh-viewer.sh" ]] && . "${SCRIPT_DIR}/lib/gh-viewer.sh" 2>/dev/null; then
+  VIEWER_LOGIN="$(gh_viewer_login || true)"
+else
+  VIEWER_LOGIN="$(gh api user --jq '.login' 2>/dev/null || true)"
+fi
 AUTHORSHIP="unknown"
 if [[ -n "$VIEWER_LOGIN" && -n "$PR_AUTHOR" ]]; then
   if [[ "$PR_AUTHOR" == "$VIEWER_LOGIN" ]]; then AUTHORSHIP="mine"; else AUTHORSHIP="not_mine"; fi
