@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "pushed_at": "2026-11-10T15:34:18Z",
+  "pushed_at": "2026-11-17T15:41:13Z",
   "hostname": "Mac",
-  "log_lines": 1306,
-  "csv_rows": 50
+  "log_lines": 1398,
+  "csv_rows": 54
 }
