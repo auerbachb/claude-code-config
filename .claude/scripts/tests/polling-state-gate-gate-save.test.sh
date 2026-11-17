@@ -97,7 +97,8 @@ check_eq "(s2) saved rc and met" "1 false" "$(jq -r '[(.rc|tostring), (.gate.met
 # The consumer side: the file the producer just wrote is a hit for the same SHAs.
 . "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh"
 check_eq "(s2) the consumer's loader accepts it (unmet hit)" "false" \
-  "$(gate_cache_load org/c "$PR" "$HEAD40" "$BASE40" | jq -r '.met|tostring')"
+  "$(gate_cache_load org/c "$PR" "$HEAD40" "$BASE40" "$(jq -r .viewer "$CACHE_FILE")" | jq -r '.met|tostring')"
+check_eq "(s2) the viewer login is recorded" "1" "$([[ -n "$(jq -r '.viewer // empty' "$CACHE_FILE")" ]] && echo 1 || echo 0)"
 
 echo "== (s3): gate exit 4 passes through and is never saved =="
 rm -rf "$GATE_CACHE_DIR"; gate_stub true 4
@@ -146,6 +147,18 @@ check_eq "(s6) both reads were made (before and after)" "2" "$(cat "$TMP/flips")
 rm -rf "$GATE_CACHE_DIR"; gate_stub false 1
 cycle; rc=$?
 check_eq "(s6) control: stable base -> saved" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
+
+echo "== (s7): a met result saved earlier never outlives a later evaluation that fails or cannot save =="
+gate_stub true 0; rm -rf "$GATE_CACHE_DIR"
+cycle; check_eq "(s7) met result saved" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
+gate_stub true 4
+cycle; rc=$?
+check_eq "(s7) next evaluation exits 4 (passes through)" "4" "$rc"
+check_eq "(s7) ...and the earlier met result is gone" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+gate_stub true 0; rm -rf "$GATE_CACHE_DIR"; cycle
+FAKE_SNAPSHOT_FAIL=1 cycle; rc=$?
+check_eq "(s7) next evaluation cannot read SHAs (exit still 0)" "0" "$rc"
+check_eq "(s7) ...and the earlier result is gone, not left to be loaded" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
 
 echo "== polling-state-gate-gate-save: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]]

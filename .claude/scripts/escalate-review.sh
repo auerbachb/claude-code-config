@@ -192,12 +192,18 @@ emit() {
 # paid verdict. FAILS OPEN to today's routing: a missing gate, any non-zero
 # exit, or unparseable output changes nothing.
 gate_cache_reuse() {
-  local lib="$SCRIPT_DIR/lib/gate-result-cache.sh" shas="" h="" b="" r=""
+  local lib="$SCRIPT_DIR/lib/gate-result-cache.sh" vlib="" viewer="" shas="" h="" b="" r=""
   [[ -r "$lib" ]] && . "$lib" 2>/dev/null || return 1
+  # No saved file for this PR: skip the live SHA read (it could not hit anyway).
+  [[ -f "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" ]] || return 1
+  vlib="$SCRIPT_DIR/lib/gh-viewer.sh"
+  [[ -r "$vlib" ]] && . "$vlib" 2>/dev/null || return 1
+  viewer="$(gh_viewer_login 2>/dev/null)" || return 1
+  [[ -n "$viewer" ]] || return 1
   shas="$(gate_cache_live_shas "$PR_NUMBER" "$OWNER/$REPO")" || return 1
   read -r r h b <<<"$shas"
   [[ "$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" && "$h" == "$HEAD_SHA" ]] || return 1
-  gate_cache_load "$OWNER/$REPO" "$PR_NUMBER" "$h" "$b"
+  gate_cache_load "$OWNER/$REPO" "$PR_NUMBER" "$h" "$b" "$viewer"
 }
 override_gate_met() {
   local gate="$SCRIPT_DIR/merge-gate.sh" out="" rc=0 here=""

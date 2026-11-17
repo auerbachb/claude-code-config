@@ -289,6 +289,13 @@ if [[ -z "$PR_NUMBER" ]] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
+# A new evaluation begins: drop any saved gate result for this PR now, before any
+# early exit can leave the previous one behind for escalate-review.sh to load
+# (issue #2442). Best effort, cycle mode only; the later save is the only writer.
+if [[ "$MODE" == "cycle" && -r "$SCRIPT_DIR/lib/gate-result-cache.sh" ]]; then
+  ( . "$SCRIPT_DIR/lib/gate-result-cache.sh" 2>/dev/null && gate_cache_invalidate "$PR_NUMBER" ) 2>/dev/null || true
+fi
+
 # Directory whose repo identity scopes every session-state read below (issue
 # #638). Defaults to the active checkout; --root-repo overrides it.
 STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
@@ -1069,6 +1076,10 @@ GC_PRE=""
 GC_OK=0
 if [[ -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
   GC_OK=1
+  gate_cache_invalidate "$PR_NUMBER" || true   # a failed or unsaved evaluation must not leave the last result behind
+  GC_VIEWER=""
+  GC_VIEWER_LIB="$SCRIPT_DIR/lib/gh-viewer.sh"
+  if [[ -r "$GC_VIEWER_LIB" ]] && . "$GC_VIEWER_LIB" 2>/dev/null; then GC_VIEWER="$(gh_viewer_login 2>/dev/null)" || GC_VIEWER=""; fi
   GC_PRE="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_PRE=""
 fi
 GATE_OUT="$(cd "$canon" && "$MERGE_GATE" "${GATE_ARGS[@]}")" || GATE_RC=$?
@@ -1083,7 +1094,7 @@ if [[ "$GATE_RC" -le 1 && "$GC_OK" -eq 1 && -n "$GC_PRE" ]]; then
   GC_SHAS="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""
   if [[ -n "$GC_SHAS" && "$GC_SHAS" == "$GC_PRE" ]]; then
     read -r GC_OR GC_HEAD GC_BASE <<<"$GC_SHAS"
-    gate_cache_save "$GC_OR" "$PR_NUMBER" "$GC_HEAD" "$GC_BASE" "$GC_ALLOW" "$GATE_RC" "$GATE_OUT" >/dev/null 2>&1 || true
+    gate_cache_save "$GC_OR" "$PR_NUMBER" "$GC_HEAD" "$GC_BASE" "$GC_ALLOW" "$GATE_RC" "$GATE_OUT" "$GC_VIEWER" >/dev/null 2>&1 || true
   fi
 fi
 exit "$GATE_RC"

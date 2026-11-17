@@ -8,7 +8,8 @@
 #   - the file parses and carries the full schema (schema 1, repo, PR, head,
 #     base, rc, saved time, and a gate object with met/head_sha/pr_number/
 #     owner_repo/missing of the right types);
-#   - repo, PR, HEAD SHA and base SHA match what the caller just read live;
+#   - repo, PR, HEAD SHA, base SHA and the authenticated viewer login (whose
+#     authorship check produced the result) match what the caller just read live;
 #   - it was saved without --allow-nonauthor (a consumer never passes it);
 #   - the gate exited 0 (met) or 1 (unmet) and its own `met` agrees with that
 #     exit; any other exit (usage, state or gh failure) is never saved. A saved
@@ -61,12 +62,12 @@ gate_cache_live_shas() {
   printf '%s' "$out"
 }
 
-# gate_cache_save <owner/repo> <pr> <head> <base> <allow_nonauthor 0|1> <rc> <gate-json>
+# gate_cache_save <owner/repo> <pr> <head> <base> <allow_nonauthor 0|1> <rc> <gate-json> <viewer-login>
 # Returns 0 saved, 1 not saved. Never prints.
 gate_cache_save() {
-  local or="$1" pr="$2" head="$3" base="$4" allow="$5" rc="$6" json="$7" f dir tmp now
+  local or="$1" pr="$2" head="$3" base="$4" allow="$5" rc="$6" json="$7" viewer="${8:-}" f dir tmp now
   f="$(gate_cache_file "$or" "$pr")" || return 1
-  [[ "$rc" =~ ^[01]$ && "$allow" =~ ^[01]$ ]] || return 1
+  [[ "$rc" =~ ^[01]$ && "$allow" =~ ^[01]$ && -n "$viewer" ]] || return 1
   printf '%s' "$json" | jq -e --arg h "$head" --argjson p "$pr" --argjson rc "$rc" \
     'type == "object" and (.met | type) == "boolean" and .met == ($rc == 0) and .head_sha == $h and .pr_number == $p
      and (.owner_repo | type) == "string" and (.missing | type) == "array"' >/dev/null 2>&1 || return 1
@@ -76,8 +77,8 @@ gate_cache_save() {
   now="$(date +%s)"
   if printf '%s' "$json" | jq -c --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" \
        --argjson pr "$pr" --arg head "$head" --arg base "$base" --argjson allow "$allow" \
-       --argjson rc "$rc" --argjson now "$now" \
-       '{schema: 1, saved_epoch: $now, owner_repo: $or, pr: $pr, head_sha: $head, base_sha: $base,
+       --argjson rc "$rc" --argjson now "$now" --arg viewer "$viewer" \
+       '{schema: 1, viewer: $viewer, saved_epoch: $now, owner_repo: $or, pr: $pr, head_sha: $head, base_sha: $base,
          allow_nonauthor: ($allow == 1), rc: $rc, gate: .}' > "$tmp" 2>/dev/null \
      && [[ -s "$tmp" ]] && mv -f "$tmp" "$f" 2>/dev/null; then
     return 0
@@ -86,22 +87,35 @@ gate_cache_save() {
   return 1
 }
 
-# gate_cache_load <owner/repo> <pr> <live_head> <live_base> -> prints gate JSON; 0 hit, 1 miss. A hit may be an unmet result.
+# gate_cache_load <owner/repo> <pr> <live_head> <live_base> <live_viewer> -> prints gate JSON; 0 hit, 1 miss. A hit may be an unmet result.
 gate_cache_load() {
-  local or="$1" pr="$2" head="$3" base="$4" f now
+  local or="$1" pr="$2" head="$3" base="$4" viewer="${5:-}" f now
   f="$(gate_cache_file "$or" "$pr")" || return 1
-  [[ -n "$head" && -n "$base" && -f "$f" && -r "$f" ]] || return 1
+  [[ -n "$head" && -n "$base" && -n "$viewer" && -f "$f" && -r "$f" ]] || return 1
   now="$(date +%s)"
   jq -ce --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --argjson pr "$pr" \
-     --arg head "$head" --arg base "$base" --argjson now "$now" --argjson ttl "$(gate_cache_ttl)" '
+     --arg head "$head" --arg base "$base" --arg viewer "$viewer" --argjson now "$now" --argjson ttl "$(gate_cache_ttl)" '
     select(type == "object" and .schema == 1
       and (.saved_epoch | type) == "number" and (.rc | type) == "number"
       and .owner_repo == $or and .pr == $pr and .head_sha == $head and .base_sha == $base
-      and .allow_nonauthor == false and (.rc == 0 or .rc == 1)
+      and .allow_nonauthor == false and (.viewer | type) == "string" and .viewer == $viewer and (.rc == 0 or .rc == 1)
       and .gate.met == (.rc == 0)
       and ($now - .saved_epoch) >= 0 and ($now - .saved_epoch) < $ttl
       and (.gate | type) == "object" and (.gate.met | type) == "boolean"
       and .gate.head_sha == $head and .gate.pr_number == $pr
       and ((.gate.owner_repo | ascii_downcase) == $or) and (.gate.missing | type) == "array")
     | .gate' "$f" 2>/dev/null
+}
+
+# gate_cache_invalidate <pr> - drop every saved result for this PR number (any
+# repo). Called at the start of each evaluation so a later gate run that exits
+# with an error, or cannot be saved, never leaves the previous result behind for
+# the consumer to load (a stale met must not outlive a failed re-evaluation).
+gate_cache_invalidate() {
+  local pr="$1" f
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 1
+  for f in "$(gate_cache_dir)"/*__pr"$pr".json; do
+    [[ -e "$f" ]] && rm -f "$f" 2>/dev/null
+  done
+  return 0
 }

@@ -16,6 +16,8 @@ source "$TEST_DIR/lib/escalate-review-fixtures.sh"
 
 mkdir -p "$STUB_DIR/lib"
 cp "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh" "$STUB_DIR/lib/gate-result-cache.sh"
+cp "$REPO_ROOT/.claude/scripts/lib/gh-viewer.sh" "$STUB_DIR/lib/gh-viewer.sh"
+export VIEWER_CACHE_DIR="$TMP/viewer-cache-es"
 export GATE_CACHE_DIR="$TMP/gate-cache"
 export GATE_CACHE_TTL=60
 
@@ -37,7 +39,10 @@ mkdir -p "$OVR_BIN"
 cat > "$OVR_BIN/gh" <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "repo" && "\${2:-}" == "view" ]]; then echo "$OWNER/$REPO"; exit 0; fi
+if [[ "\${1:-}" == "auth" ]]; then exit 1; fi
+if [[ "\${1:-}" == "api" && "\${2:-}" == "user" ]]; then echo "\${FAKE_VIEWER:-octo}"; exit 0; fi
 if [[ "\${1:-}" == "api" && "\${2:-}" == "repos/$OWNER/$REPO/pulls/$PR_NUM" ]]; then
+  echo x >> "$TMP/pulls-reads"
   [[ -n "\${FAKE_PULLS_FAIL:-}" ]] && exit 1
   echo "$OWNER/$REPO \${FAKE_LIVE_HEAD:-$HEAD_SHA} \${FAKE_LIVE_BASE:-$BASE_SHA}"; exit 0
 fi
@@ -52,10 +57,10 @@ GATE_MET_JSON="$(jq -cn --argjson p "$PR_NUM" --arg h "$HEAD_SHA" --arg or "$OWN
 . "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh"
 CACHE_FILE="$(gate_cache_file "$OWNER/$REPO" "$PR_NUM")"
 
-seed() { # [head] [base] [allow] [rc] [json]
+seed() { # [head] [base] [allow] [rc] [json] [viewer]
   rm -rf "$GATE_CACHE_DIR"
   gate_cache_save "$OWNER/$REPO" "$PR_NUM" "${1:-$HEAD_SHA}" "${2:-$BASE_SHA}" "${3:-0}" "${4:-0}" \
-    "${5:-$(jq -c --arg h "${1:-$HEAD_SHA}" '.head_sha = $h' <<<"$GATE_MET_JSON")}" \
+    "${5:-$(jq -c --arg h "${1:-$HEAD_SHA}" '.head_sha = $h' <<<"$GATE_MET_JSON")}" "${6:-octo}" \
     || { echo "FAIL — could not seed the saved gate result"; exit 1; }
 }
 mutate() { # jq filter over the saved file
@@ -97,6 +102,19 @@ seed;                                  mutate '.rc = 2';                     run
 seed;                                  mutate '.rc = 1';                     run_case "g3 exit 1 but body says met" no_reviewer 1
 seed;                                  mutate '.gate.met = false';           run_case "g3 exit 0 but body says unmet" no_reviewer 1
 seed;                                  FAKE_PULLS_FAIL=1 run_case "g3 live SHA read fails" no_reviewer 1
+
+echo "== (g3b): the result is bound to the viewer login whose authorship check produced it =="
+seed;                                  FAKE_VIEWER="someone-else" run_case "g3b other viewer now" no_reviewer 1
+seed "$HEAD_SHA" "$BASE_SHA" 0 0 "" "someone-else"; run_case "g3b saved under another viewer" no_reviewer 1
+seed;                                  mutate 'del(.viewer)';                run_case "g3b no viewer recorded" no_reviewer 1
+rm -rf "$GATE_CACHE_DIR"
+gate_cache_save "$OWNER/$REPO" "$PR_NUM" "$HEAD_SHA" "$BASE_SHA" 0 0 "$GATE_MET_JSON" "" && echo "FAIL — saved without a viewer" && exit 1
+check_eq "(g3b) nothing saved without a viewer" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+
+echo "== (g3c): no saved file -> no live SHA read at all =="
+rm -rf "$GATE_CACHE_DIR"; rm -f "$TMP/pulls-reads"
+run_case "g3c nothing saved" no_reviewer 1
+check_eq "(g3c) no pulls/N read when nothing is saved" "0" "$([[ -f "$TMP/pulls-reads" ]] && wc -l < "$TMP/pulls-reads" | tr -d " " || echo 0)"
 
 echo "== (g4): boundary — a 50s-old result (margin for run time) is still reused =="
 seed; mutate '.saved_epoch -= 50'
@@ -157,9 +175,9 @@ echo "== (u): gh-viewer.sh — one user lookup per token, a failed lookup is nev
 UBIN="$TMP/ubin"; mkdir -p "$UBIN"
 cat > "$UBIN/gh" <<'STUB'
 #!/usr/bin/env bash
-echo x >> "$U_CALLS"
+echo "$*|T=${GH_TOKEN:-}|E=${GH_ENTERPRISE_TOKEN:-}|H=${GH_HOST:-}" >> "$U_CALLS"
 case "$*" in
-  "auth token") exit 1 ;;
+  "auth token --hostname "*) [[ -n "${U_STORED:-}" ]] && { echo "$U_STORED"; exit 0; }; exit 1 ;;
   "api user --jq .login") [[ -n "${U_FAIL:-}" ]] && exit 1; echo "${U_LOGIN:-octo}" ;;
 esac
 STUB
@@ -186,6 +204,26 @@ check_eq "(u4) failure was not cached: next call asks again" "octo2" "$r5"
 unset GH_TOKEN GITHUB_TOKEN; rm -f "$U_CALLS"
 PATH="$UBIN:$PATH" gh_viewer_login >/dev/null; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
 check_eq "(u5) no token readable -> nothing cached (2 lookups + 2 token reads)" "4" "$(ucount)"
+echo "-- bound to the captured credential and host --"
+export GH_TOKEN="tok-A" U_LOGIN="octo"; rm -f "$U_CALLS"; rm -rf "$VIEWER_CACHE_DIR"
+PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
+check_eq "(u7) the live request carries the captured token" "1" "$(grep -c 'api user.*|T=tok-A|' "$U_CALLS")"
+unset GH_TOKEN; export U_STORED="stored-tok"; rm -f "$U_CALLS"; rm -rf "$VIEWER_CACHE_DIR"
+PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
+check_eq "(u7) a stored credential is pinned onto the request too" "1" "$(grep -c 'api user.*|T=stored-tok|' "$U_CALLS")"
+unset U_STORED
+export GH_TOKEN="tok-A" GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="ent-1" U_LOGIN="ent-user"; rm -f "$U_CALLS"; rm -rf "$VIEWER_CACHE_DIR"
+r6="$(PATH="$UBIN:$PATH" gh_viewer_login)"
+check_eq "(u8) enterprise host answers with its own login" "ent-user" "$r6"
+check_eq "(u8) the request is pinned to the enterprise token and host" "1" "$(grep -c 'api user.*|E=ent-1|H=ghe.example.com' "$U_CALLS")"
+unset GH_HOST GH_ENTERPRISE_TOKEN; export U_LOGIN="dotcom-user"; rm -f "$U_CALLS"
+r7="$(PATH="$UBIN:$PATH" gh_viewer_login)"
+check_eq "(u8) the github.com entry never answers for the enterprise host (and vice versa)" "dotcom-user" "$r7"
+export GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="ent-2" U_LOGIN="ent-user-2"
+r8="$(PATH="$UBIN:$PATH" gh_viewer_login)"
+check_eq "(u8) a different enterprise token never serves the old login" "ent-user-2" "$r8"
+unset GH_HOST GH_ENTERPRISE_TOKEN
+export GH_TOKEN="tok-A" U_LOGIN="octo"
 export GH_TOKEN="tok-A" U_LOGIN="octo"
 touch -t 200001010000 "$VIEWER_CACHE_DIR"/*
 rm -f "$U_CALLS"; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
