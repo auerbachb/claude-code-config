@@ -1937,11 +1937,17 @@ if grep -n -E 'stays 60|[Pp]oll(ing)? every 60|60-second cycle|cadence stays 60'
 fi
 # The cadence is repo-scoped: never written or read at the state-file root, so
 # another repo's monitor cannot overwrite this repo's value.
-if grep -n -E -- '--set \.poll_interval_s|--get \.poll_interval_s' "$SK" "$PB" >/dev/null; then
+# Matches bare, single- or double-quoted root forms of --set, --get and --get-json.
+if grep -n -E -- "--(set|get|get-json)[[:space:]]+['\"]?\.poll_interval_s" "$SK" "$PB" >/dev/null; then
   fail "39j: poll_interval_s must be read and written under .repos[\"<key>\"], not at the root"
 fi
 grep -q -F '].poll_interval_s' "$SK" || fail "39j: the subagent monitor must write poll_interval_s under the repo key"
 grep -q -F '].poll_interval_s' "$PB" || fail "39j: phase-b-reviewer must read poll_interval_s under the repo key"
+grep -q -F -- '--repo-key' "$PB" || fail "39j: phase-b-reviewer must read the normalized --repo-key, not the raw repo name"
+grep -n -F 'enter 60s' "$REPO_ROOT/.claude/rules/subagent-orchestration.md" >/dev/null && \
+  fail "39j: subagent-orchestration.md still instructs 60s polling"
+grep -n -F 'Widening the ceiling itself is the repo' "$REPO_ROOT/.claude/skills/wave/SKILL.md" >/dev/null && \
+  fail "39j: wave still says widening is the PIPELINE_CEILING knob"
 # Width wording must match the reader: default and speed are 15 only by default
 # (configurable to 20), and cheap may sit below PIPELINE_CEILING.
 for F in "$SK" "$REPO_ROOT/.claude/skills/wave/SKILL.md" "$REPO_ROOT/.claude/rules/subagent-orchestration.md"; do

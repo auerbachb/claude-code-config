@@ -43,7 +43,7 @@ actual cost or unknown; routine retries stay silent.
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter GitHub polling on the cycle `active-work-cap.sh --poll-interval` gives (60s, or 120s above 8 pipelines); fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
 
 **Ask first only:** respawning a crashed/no-handoff subagent.
 
