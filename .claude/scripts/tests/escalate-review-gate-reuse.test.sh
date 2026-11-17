@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests: escalate-review.sh reuses polling-state-gate.sh's merge-gate result
 # only on a fully fail-closed match (issue #2442, slice of #2421).
-# catalog: tests — Same-cycle merge-gate result reuse in `escalate-review.sh` and `lib/gate-result-cache.sh`: hit, every invalidation case, corrupt-file fallback, stand-alone run, authenticated-user memo
+# catalog: tests — Same-cycle merge-gate result reuse in `escalate-review.sh` and `lib/gate-result-cache.sh`: hit, every invalidation case, corrupt-file fallback, stand-alone run, in-memory authenticated-user sharing
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh. No test calls GitHub.
 #
 # Every scenario reaches override_gate_met (the one place escalate-review.sh runs
@@ -17,7 +17,6 @@ source "$TEST_DIR/lib/escalate-review-fixtures.sh"
 mkdir -p "$STUB_DIR/lib"
 cp "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh" "$STUB_DIR/lib/gate-result-cache.sh"
 cp "$REPO_ROOT/.claude/scripts/lib/gh-viewer.sh" "$STUB_DIR/lib/gh-viewer.sh"
-export VIEWER_CACHE_DIR="$TMP/viewer-cache-es"
 export GATE_CACHE_DIR="$TMP/gate-cache"
 export GATE_CACHE_TTL=60
 
@@ -145,6 +144,7 @@ seed; mutate 'del(.rc)';                                              run_case "
 seed; mutate '.schema = 2';                                           run_case "g5 unknown schema" no_reviewer 1
 seed; mutate '.gate = []';                                            run_case "g5 gate not object" no_reviewer 1
 seed; chmod 000 "$CACHE_FILE";                                        run_case "g5 unreadable"     no_reviewer 1
+seed; chmod 444 "$CACHE_FILE";                                        run_case "g5 readable but not overwritable (invalidation could not neutralise it)" no_reviewer 1
 chmod 600 "$CACHE_FILE" 2>/dev/null || true
 
 echo "== (g6): a saved UNMET result (the waiting cycle) is reused with no second gate run =="
@@ -176,97 +176,86 @@ seed
 check_eq "(g7) saved file holds no token-like field" "0" "$(grep -ciE 'token|password|secret' "$CACHE_FILE" || true)"
 check_eq "(g7) saved file lives under the cache dir, not a worktree" "$GATE_CACHE_DIR" "$(dirname "$CACHE_FILE")"
 
-echo "== (u): gh-viewer.sh — one user lookup per token, a failed lookup is never cached =="
-. "$REPO_ROOT/.claude/scripts/lib/gh-viewer.sh"
+echo "== (u): gh-viewer.sh — one in-memory user lookup per script chain =="
 UBIN="$TMP/ubin"; mkdir -p "$UBIN"
 cat > "$UBIN/gh" <<'STUB'
 #!/usr/bin/env bash
-echo "$*|T=${GH_TOKEN:-}|E=${GH_ENTERPRISE_TOKEN:-}|H=${GH_HOST:-}" >> "$U_CALLS"
-echo "$0 $*" >> "$U_ARGV"
+echo "$*" >> "$U_CALLS"
 case "$*" in
-  "auth token --hostname "*) [[ -n "${U_STORED:-}" ]] && { echo "$U_STORED"; exit 0; }; exit 1 ;;
   "api user --jq .login") [[ -n "${U_FAIL:-}" ]] && exit 1; echo "${U_LOGIN:-octo}" ;;
 esac
 STUB
 chmod +x "$UBIN/gh"
-# An `env` spy: any call that carries a credential in env's own arguments is logged.
-cat > "$UBIN/env" <<'SPY'
-#!/usr/bin/env bash
-echo "env $*" >> "$U_ARGV"
-exec /usr/bin/env "$@"
-SPY
-chmod +x "$UBIN/env"
-export U_ARGV="$TMP/u-argv" U_CALLS="$TMP/u-calls" VIEWER_CACHE_DIR="$TMP/viewer-cache" GH_CONFIG_DIR="$TMP/ghcfg"
-mkdir -p "$GH_CONFIG_DIR"
+export U_CALLS="$TMP/u-calls"
 ucount() { [[ -f "$U_CALLS" ]] && grep -c . "$U_CALLS" || echo 0; }
-export GH_TOKEN="tok-A"
+unset GH_VIEWER_LOGIN_CACHED GH_VIEWER_LOGIN_OWNER
+
+# A chain of stand-ins named like the real scripts (the helper checks the owner's
+# command line): polling-state-gate -> merge-gate and pr-authorship, as the real
+# gate runs them, each resolving the login through the real library.
+CH="$TMP/chain"; mkdir -p "$CH"
+LIBPATH="$REPO_ROOT/.claude/scripts/lib/gh-viewer.sh"
+for n in merge-gate pr-authorship; do
+  cat > "$CH/$n.sh" <<STUB
+#!/usr/bin/env bash
+. "$LIBPATH"
+gh_viewer_resolve || { echo "$n:FAIL"; exit 1; }
+echo "$n:\$GH_VIEWER_LOGIN"
+STUB
+done
+cat > "$CH/polling-state-gate.sh" <<STUB
+#!/usr/bin/env bash
+. "$LIBPATH"
+gh_viewer_resolve || echo "psg:FAIL"
+echo "psg:\${GH_VIEWER_LOGIN:-}"
+( cd "$CH" && "$CH/merge-gate.sh" )
+"$CH/pr-authorship.sh"
+STUB
+chmod +x "$CH"/*.sh
+
 rm -f "$U_CALLS"
-r1="$(PATH="$UBIN:$PATH" gh_viewer_login)"; r2="$(PATH="$UBIN:$PATH" gh_viewer_login)"; r3="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u1) same login every time" "octo octo octo" "$r1 $r2 $r3"
-check_eq "(u1) one gh call for three lookups" "1" "$(ucount)"
-check_eq "(u2) cache holds only the login" "octo" "$(cat "$VIEWER_CACHE_DIR"/* | tr -d '\n')"
-check_eq "(u2) no token in the cache dir" "0" "$(grep -rc 'tok-A' "$VIEWER_CACHE_DIR" | awk -F: '{s+=$2} END{print s+0}')"
-export GH_TOKEN="tok-B" U_LOGIN="someone-else"; rm -f "$U_CALLS"
-r4="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u3) a different token never serves the old user" "someone-else" "$r4"
-check_eq "(u3) ...with its own lookup" "1" "$(ucount)"
-export GH_TOKEN="tok-C" U_FAIL=1; rm -f "$U_CALLS"
-rc=0; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null || rc=$?
-check_eq "(u4) failed lookup fails (no fabricated login)" "1" "$rc"
-unset U_FAIL; export U_LOGIN="octo2"; rm -f "$U_CALLS"
-r5="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u4) failure was not cached: next call asks again" "octo2" "$r5"
-unset GH_TOKEN GITHUB_TOKEN; rm -f "$U_CALLS"
-PATH="$UBIN:$PATH" gh_viewer_login >/dev/null; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-check_eq "(u5) no token readable -> nothing cached (2 lookups + 2 token reads)" "4" "$(ucount)"
-echo "-- bound to the captured credential and host --"
-export GH_TOKEN="tok-A" U_LOGIN="octo"; rm -f "$U_CALLS"; rm -rf "$VIEWER_CACHE_DIR"
-PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-check_eq "(u7) the live request carries the captured token" "1" "$(grep -c 'api user.*|T=tok-A|' "$U_CALLS")"
-unset GH_TOKEN; export U_STORED="stored-tok"; rm -f "$U_CALLS"; rm -rf "$VIEWER_CACHE_DIR"
-PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-check_eq "(u7) a stored credential is pinned onto the request too" "1" "$(grep -c 'api user.*|T=stored-tok|' "$U_CALLS")"
-unset U_STORED
-export GH_TOKEN="tok-A" GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="ent-1" U_LOGIN="ent-user"; rm -f "$U_CALLS"; rm -rf "$VIEWER_CACHE_DIR"
-r6="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u8) enterprise host answers with its own login" "ent-user" "$r6"
-check_eq "(u8) the request is pinned to the enterprise token and host" "1" "$(grep -c 'api user.*|E=ent-1|H=ghe.example.com' "$U_CALLS")"
-unset GH_HOST GH_ENTERPRISE_TOKEN; export U_LOGIN="dotcom-user"; rm -f "$U_CALLS"
-r7="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u8) the github.com entry never answers for the enterprise host (and vice versa)" "dotcom-user" "$r7"
-export GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="ent-2" U_LOGIN="ent-user-2"
-r8="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u8) a different enterprise token never serves the old login" "ent-user-2" "$r8"
-unset GH_HOST GH_ENTERPRISE_TOKEN
-echo "-- *.ghe.com uses GH_TOKEN, not GH_ENTERPRISE_TOKEN --"
-export GH_HOST="tenant.ghe.com" GH_TOKEN="fake-ghe-1" GH_ENTERPRISE_TOKEN="fake-ent-const" U_LOGIN="ghe-user-1"; rm -rf "$VIEWER_CACHE_DIR"
-r9="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-export GH_TOKEN="fake-ghe-2" U_LOGIN="ghe-user-2"
-r10="$(PATH="$UBIN:$PATH" gh_viewer_login)"
-check_eq "(u9) changing GH_TOKEN on a ghe.com host changes the answer even if GH_ENTERPRISE_TOKEN is constant" "ghe-user-1 ghe-user-2" "$r9 $r10"
-unset GH_HOST GH_ENTERPRISE_TOKEN
-echo "-- unset GH_HOST with a single enterprise host configured -> nothing cached, plain live call --"
-printf 'ghe.example.com:\n    user: x\n' > "$GH_CONFIG_DIR/hosts.yml"
-export GH_TOKEN="fake-dot" U_LOGIN="octo"; rm -rf "$VIEWER_CACHE_DIR"; rm -f "$U_CALLS"
-PATH="$UBIN:$PATH" gh_viewer_login >/dev/null; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-check_eq "(u10) no host this helper can name -> two live lookups, nothing cached" "0" "$([[ -d "$VIEWER_CACHE_DIR" ]] && ls "$VIEWER_CACHE_DIR" | wc -l | tr -d ' ' || echo 0)"
-printf 'github.com:\n    user: x\n' > "$GH_CONFIG_DIR/hosts.yml"
-rm -f "$U_CALLS"; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-check_eq "(u10) a sole github.com host is named and cached (one live lookup)" "1" "$(grep -c 'api user' "$U_CALLS")"
-rm -f "$GH_CONFIG_DIR/hosts.yml"
-echo "-- the credential never reaches an argument vector --"
-export GH_TOKEN="fake-secret-token-123" U_LOGIN="octo"; rm -rf "$VIEWER_CACHE_DIR"; rm -f "$U_ARGV"
-PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-export GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="fake-secret-ent-456"; rm -rf "$VIEWER_CACHE_DIR"
-PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-unset GH_HOST GH_ENTERPRISE_TOKEN
-check_eq "(u11) stubbed gh calls carry no token in their arguments" "0" "$(grep -c 'fake-secret' "$U_ARGV" || true)"
-check_eq "(u11) ...and the gh calls were really made" "1" "$([[ $(wc -l < "$U_ARGV") -ge 2 ]] && echo 1 || echo 0)"
-check_eq "(u11) no token text in the cache dir (names or contents)" "0" "$( { ls "$VIEWER_CACHE_DIR"; cat "$VIEWER_CACHE_DIR"/*; } 2>/dev/null | grep -c 'fake-secret' || true)"
-export GH_TOKEN="tok-A" U_LOGIN="octo"
-export GH_TOKEN="tok-A" U_LOGIN="octo"
-touch -t 200001010000 "$VIEWER_CACHE_DIR"/*
-rm -f "$U_CALLS"; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
-check_eq "(u6) an old cache file is not trusted" "1" "$(ucount)"
+out="$(PATH="$UBIN:$PATH" "$CH/polling-state-gate.sh" | tr '\n' ' ')"
+check_eq "(u1) every script in the chain sees the one login" "psg:octo merge-gate:octo pr-authorship:octo " "$out"
+check_eq "(u1) one gh api user call for the whole chain" "1" "$(ucount)"
+
+echo "-- an inherited value that this chain did not set is never trusted --"
+for owner in "" "1" "abc" "$$" "$PPID" "999999"; do
+  rm -f "$U_CALLS"
+  r="$(GH_VIEWER_LOGIN_CACHED=forged GH_VIEWER_LOGIN_OWNER="$owner" PATH="$UBIN:$PATH" "$CH/pr-authorship.sh")"
+  check_eq "(u2) hand-exported login, owner '${owner:-<empty>}': live lookup wins" "pr-authorship:octo 1" "$r $(ucount)"
+done
+rm -f "$U_CALLS"
+r="$(GH_VIEWER_LOGIN_CACHED=forged PATH="$UBIN:$PATH" "$CH/pr-authorship.sh")"
+check_eq "(u2) login without any owner: live lookup wins" "pr-authorship:octo 1" "$r $(ucount)"
+sleep 30 & SLP=$!
+rm -f "$U_CALLS"
+r="$(GH_VIEWER_LOGIN_CACHED=forged GH_VIEWER_LOGIN_OWNER="$SLP" PATH="$UBIN:$PATH" "$CH/pr-authorship.sh")"
+check_eq "(u2) owner is a live process that is not an ancestor: live lookup wins" "pr-authorship:octo 1" "$r $(ucount)"
+kill "$SLP" 2>/dev/null; wait "$SLP" 2>/dev/null || true
+rm -f "$U_CALLS"
+r="$(GH_VIEWER_LOGIN_CACHED='not a login!' GH_VIEWER_LOGIN_OWNER=1 PATH="$UBIN:$PATH" "$CH/pr-authorship.sh")"
+check_eq "(u2) implausible value: live lookup wins" "pr-authorship:octo 1" "$r $(ucount)"
+echo "-- a forged pair does not survive into a legitimate chain --"
+rm -f "$U_CALLS"
+out="$(GH_VIEWER_LOGIN_CACHED=forged GH_VIEWER_LOGIN_OWNER=$$ PATH="$UBIN:$PATH" "$CH/polling-state-gate.sh" | tr '\n' ' ')"
+check_eq "(u2) forged pair replaced by one live lookup shared down the chain" "psg:octo merge-gate:octo pr-authorship:octo  1" "$out $(ucount)"
+
+echo "-- a failed lookup is never exported or reused --"
+rm -f "$U_CALLS"
+out="$(U_FAIL=1 PATH="$UBIN:$PATH" "$CH/polling-state-gate.sh" | tr '\n' ' ')"
+check_eq "(u3) nothing fabricated when the lookup fails" "psg:FAIL psg: merge-gate:FAIL pr-authorship:FAIL " "$out"
+check_eq "(u3) every script retried live (3 calls, none reused)" "3" "$(ucount)"
+rm -f "$U_CALLS"
+unset GH_VIEWER_LOGIN_CACHED GH_VIEWER_LOGIN_OWNER
+. "$LIBPATH"
+PATH="$UBIN:$PATH" U_FAIL=1 gh_viewer_resolve && echo "FAIL — resolved on a failed lookup" && exit 1
+check_eq "(u3) a failed lookup exports nothing" "" "${GH_VIEWER_LOGIN_CACHED:-}${GH_VIEWER_LOGIN_OWNER:-}"
+PATH="$UBIN:$PATH" gh_viewer_resolve
+check_eq "(u3) the next call asks again and succeeds" "octo 2" "$GH_VIEWER_LOGIN $(ucount)"
+unset GH_VIEWER_LOGIN_CACHED GH_VIEWER_LOGIN_OWNER
+
+echo "-- no token handling and no on-disk cache --"
+check_eq "(u4) the library reads no token and writes no file" "0" \
+  "$(grep -cE 'GH_TOKEN|GITHUB_TOKEN|ENTERPRISE_TOKEN|auth token|viewer-cache|hosts\.yml|mktemp' "$LIBPATH" || true)"
 
 finish_escalate_review_tests "gate result reuse"

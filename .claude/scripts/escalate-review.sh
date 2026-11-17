@@ -198,7 +198,8 @@ gate_cache_reuse() {
   [[ -f "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" && -r "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" ]] || return 1
   vlib="$SCRIPT_DIR/lib/gh-viewer.sh"
   [[ -r "$vlib" ]] && . "$vlib" 2>/dev/null || return 1
-  viewer="$(gh_viewer_login 2>/dev/null)" || return 1
+  gh_viewer_resolve || return 1
+  viewer="${GH_VIEWER_LOGIN:-}"
   [[ -n "$viewer" ]] || return 1
   shas="$(gate_cache_live_shas "$PR_NUMBER" "$OWNER/$REPO")" || return 1
   read -r r h b <<<"$shas"

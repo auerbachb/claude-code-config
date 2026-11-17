@@ -62,6 +62,18 @@ gate_cache_live_shas() {
   printf '%s' "$out"
 }
 
+# gate_cache_live_state <pr> [owner/repo] -> "<owner/repo> <head> <base> <author-login>", or fail.
+# The same single REST call plus the PR author's login. The producer uses it to
+# check that the login it saves under is the PR's author, whatever account the
+# gate ran as.
+gate_cache_live_state() {
+  local pr="$1" path out
+  if [[ -n "${2:-}" ]]; then path="repos/$2/pulls/$pr"; else path="repos/{owner}/{repo}/pulls/$pr"; fi
+  out="$(gh api "$path" --jq '[.base.repo.full_name, .head.sha, .base.sha, .user.login] | join(" ")' 2>/dev/null)" || return 1
+  [[ "$out" =~ ^[^[:space:]]+\ [0-9a-f]{40}\ [0-9a-f]{40}\ [A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]] || return 1
+  printf '%s' "$out"
+}
+
 # gate_cache_save <owner/repo> <pr> <head> <base> <allow_nonauthor 0|1> <rc> <gate-json> <viewer-login>
 # Returns 0 saved, 1 not saved. Never prints.
 gate_cache_save() {
@@ -91,7 +103,9 @@ gate_cache_save() {
 gate_cache_load() {
   local or="$1" pr="$2" head="$3" base="$4" viewer="${5:-}" f now
   f="$(gate_cache_file "$or" "$pr")" || return 1
-  [[ -n "$head" && -n "$base" && -n "$viewer" && -f "$f" && -r "$f" ]] || return 1
+  # A file this process cannot even overwrite is one invalidation could not
+  # neutralise (it could not delete, empty or chmod it either): never load it.
+  [[ -n "$head" && -n "$base" && -n "$viewer" && -f "$f" && -r "$f" && -w "$f" ]] || return 1
   now="$(date +%s)"
   jq -ce --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --argjson pr "$pr" \
      --arg head "$head" --arg base "$base" --arg viewer "$viewer" --argjson now "$now" --argjson ttl "$(gate_cache_ttl)" '

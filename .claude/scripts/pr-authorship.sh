@@ -176,7 +176,8 @@ emit() {
 # viewer to compare against, and guessing would defeat the guard.
 _PA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -r "$_PA_DIR/lib/gh-viewer.sh" ]] && . "$_PA_DIR/lib/gh-viewer.sh" 2>/dev/null; then
-  VIEWER="$(gh_viewer_login || true)"   # once per token (issue #2442)
+  gh_viewer_resolve || true   # once per script chain, in memory (issue #2442)
+  VIEWER="${GH_VIEWER_LOGIN:-}"
 else
   VIEWER="$(gh api user --jq '.login' 2>/dev/null || true)"
 fi

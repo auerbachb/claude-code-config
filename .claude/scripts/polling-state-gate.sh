@@ -1080,8 +1080,8 @@ if [[ -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
   gate_cache_invalidate "$PR_NUMBER" || GC_OK=0   # a failed or unsaved evaluation must not leave the last result behind
   GC_VIEWER=""
   GC_VIEWER_LIB="$SCRIPT_DIR/lib/gh-viewer.sh"
-  if [[ -r "$GC_VIEWER_LIB" ]] && . "$GC_VIEWER_LIB" 2>/dev/null; then GC_VIEWER="$(gh_viewer_login 2>/dev/null)" || GC_VIEWER=""; fi
-  GC_PRE="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_PRE=""
+  if [[ -r "$GC_VIEWER_LIB" ]] && . "$GC_VIEWER_LIB" 2>/dev/null; then gh_viewer_resolve && GC_VIEWER="$GH_VIEWER_LOGIN"; fi
+  GC_PRE="$(cd "$canon" && gate_cache_live_state "$PR_NUMBER" 2>/dev/null)" || GC_PRE=""
 fi
 GATE_OUT="$(cd "$canon" && "$MERGE_GATE" "${GATE_ARGS[@]}")" || GATE_RC=$?
 printf '%s\n' "$GATE_OUT"
@@ -1089,22 +1089,21 @@ printf '%s\n' "$GATE_OUT"
 # is exactly where escalate-review.sh would otherwise run the gate a second time.
 # Reusing unmet is the fail-closed direction. The saved gate's own head_sha must
 # also equal the snapshot, or nothing is saved.
-# Authorship: the gate ran its own viewer lookup. Bind to it by requiring the
-# gate itself to report authorship "mine" and the cached login to be the same
-# before and after the run; anything else (unknown, a failed or changed lookup)
-# means nothing is saved.
-GC_VIEWER_POST=""
-if [[ "$GC_OK" -eq 1 && -n "$GC_VIEWER" ]] && declare -F gh_viewer_login >/dev/null; then
-  GC_VIEWER_POST="$(gh_viewer_login 2>/dev/null)" || GC_VIEWER_POST=""
-fi
+# Authorship: merge-gate.sh inherits the login resolved above (lib/gh-viewer.sh),
+# so the saved result is bound to that login by construction. It is also required
+# to report authorship "mine"; no login, or anything else, means nothing is saved.
 GC_MINE=0
 printf '%s' "$GATE_OUT" | jq -e '.authorship == "mine"' >/dev/null 2>&1 && GC_MINE=1
-if [[ "$GATE_RC" -le 1 && "$GC_OK" -eq 1 && -n "$GC_PRE" && -n "$GC_VIEWER" && "$GC_VIEWER" == "$GC_VIEWER_POST" && "$GC_MINE" -eq 1 ]]; then
+if [[ "$GATE_RC" -le 1 && "$GC_OK" -eq 1 && -n "$GC_PRE" && -n "$GC_VIEWER" && "$GC_MINE" -eq 1 ]]; then
   GC_ALLOW=0
   [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]] && GC_ALLOW=1
-  GC_SHAS="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""
+  GC_SHAS="$(cd "$canon" && gate_cache_live_state "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""
   if [[ -n "$GC_SHAS" && "$GC_SHAS" == "$GC_PRE" ]]; then
-    read -r GC_OR GC_HEAD GC_BASE <<<"$GC_SHAS"
+    read -r GC_OR GC_HEAD GC_BASE GC_AUTHOR <<<"$GC_SHAS"
+  fi
+  # The saved login must be the PR's own author: the gate's "mine" then means it
+  # ran as that same account, even if the active gh account changed mid-run.
+  if [[ -n "${GC_AUTHOR:-}" && "$GC_AUTHOR" == "$GC_VIEWER" ]]; then
     gate_cache_save "$GC_OR" "$PR_NUMBER" "$GC_HEAD" "$GC_BASE" "$GC_ALLOW" "$GATE_RC" "$GATE_OUT" "$GC_VIEWER" >/dev/null 2>&1 || true
   fi
 fi

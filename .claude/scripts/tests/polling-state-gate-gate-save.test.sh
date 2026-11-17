@@ -43,18 +43,23 @@ cat > "$STUB_BIN/gh-wrap" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/{owner}/{repo}/pulls/84" && "$*" == *"--jq"* ]]; then
   [[ -n "${FAKE_SNAPSHOT_FAIL:-}" ]] && exit 1
+  AUTH=""; [[ "$*" == *".user.login"* ]] && AUTH=" ${FAKE_PR_AUTHOR:-testuser}"
   if [[ -n "${FAKE_BASE_FLIPS:-}" ]]; then   # second and later reads see a moved base
     n=$(cat "$FAKE_BASE_FLIPS" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_BASE_FLIPS"
-    if (( n >= 1 )); then echo "org/c $HEAD40 cccccccc0000000000000000000000000000cccc"; exit 0; fi
+    if (( n >= 1 )); then echo "org/c $HEAD40 cccccccc0000000000000000000000000000cccc$AUTH"; exit 0; fi
   fi
-  echo "org/c $HEAD40 $BASE40"; exit 0
+  echo "org/c $HEAD40 $BASE40$AUTH"; exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
+  echo x >> "$TMP/user-calls"
+  [[ -n "${FAKE_USER_FAIL:-}" ]] && exit 1
 fi
 exec "$REAL_STUB_GH" "$@"
 STUB
 mv "$STUB_BIN/gh" "$STUB_BIN/gh.real"
 mv "$STUB_BIN/gh-wrap" "$STUB_BIN/gh"
 chmod +x "$STUB_BIN/gh"
-export REAL_STUB_GH="$STUB_BIN/gh.real" HEAD40 BASE40
+export REAL_STUB_GH="$STUB_BIN/gh.real" HEAD40 BASE40 TMP
 
 write_handoff "org/c" "$PR" "$HEAD40"
 cycle() { # prints stdout to $TMP/out, stderr to $TMP/err, returns the script's rc
@@ -68,6 +73,7 @@ gate_stub() { # <met true|false> <exit code> [authorship, default mine]
   cat > "$PROJ/.claude/scripts/merge-gate.sh" <<STUB
 #!/usr/bin/env bash
 echo "stub-gate-stderr" >&2
+echo "\${GH_VIEWER_LOGIN_CACHED:-}" > "$TMP/gate-saw-login"
 printf '{"pr_number":$PR,"owner_repo":"org/c","met":$1,"head_sha":"$HEAD40","missing":[],"authorship":"${3:-mine}"}\n'
 exit $2
 STUB
@@ -180,6 +186,23 @@ check_eq "(s9) gate exit 4 passes through" "4" "$rc"
 check_eq "(s9) the old result can no longer be loaded" "" \
   "$(gate_cache_load org/c "$PR" "$HEAD40" "$BASE40" "$(jq -r .viewer "$CACHE_FILE" 2>/dev/null || echo x)" 2>/dev/null)"
 chmod 700 "$GATE_CACHE_DIR"; chmod 600 "$CACHE_FILE" 2>/dev/null || true
+
+echo "== (s10): the login is looked up once and handed to the gate; no login -> nothing saved =="
+rm -rf "$GATE_CACHE_DIR" "$TMP/user-calls" "$TMP/gate-saw-login"; gate_stub true 0
+cycle
+check_eq "(s10) one user lookup for the cycle's polling script" "1" "$(grep -c x "$TMP/user-calls" 2>/dev/null || echo 0)"
+check_eq "(s10) the gate inherited that login" "testuser" "$(cat "$TMP/gate-saw-login")"
+check_eq "(s10) saved result records it" "testuser" "$(jq -r .viewer "$CACHE_FILE")"
+rm -rf "$GATE_CACHE_DIR"; gate_stub true 0
+FAKE_USER_FAIL=1 cycle; rc=$?
+check_eq "(s10) verdict unchanged when the user lookup fails" "0" "$rc"
+check_eq "(s10) no login -> nothing saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+
+echo "== (s11): the gate said mine but the saved login is not the PR's author -> nothing saved =="
+rm -rf "$GATE_CACHE_DIR"; gate_stub true 0
+FAKE_PR_AUTHOR=someone-else cycle; rc=$?
+check_eq "(s11) verdict unchanged" "0" "$rc"
+check_eq "(s11) author differs from the login used -> not saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
 
 echo "== polling-state-gate-gate-save: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]]
