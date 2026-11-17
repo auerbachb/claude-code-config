@@ -191,12 +191,34 @@ emit() {
 # spend exactly what the owner's policy exists to save. gate_met, never a
 # paid verdict. FAILS OPEN to today's routing: a missing gate, any non-zero
 # exit, or unparseable output changes nothing.
+gate_cache_reuse() {
+  local lib="$SCRIPT_DIR/lib/gate-result-cache.sh" vlib="" viewer="" shas="" h="" b="" r=""
+  [[ -r "$lib" ]] && . "$lib" 2>/dev/null || return 1
+  # No saved file for this PR: skip the live SHA read (it could not hit anyway).
+  [[ -f "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" && -r "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" ]] || return 1
+  vlib="$SCRIPT_DIR/lib/gh-viewer.sh"
+  [[ -r "$vlib" ]] && . "$vlib" 2>/dev/null || return 1
+  gh_viewer_resolve || return 1
+  viewer="${GH_VIEWER_LOGIN:-}"
+  [[ -n "$viewer" ]] || return 1
+  shas="$(gate_cache_live_shas "$PR_NUMBER" "$OWNER/$REPO")" || return 1
+  read -r r h b <<<"$shas"
+  [[ "$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" && "$h" == "$HEAD_SHA" ]] || return 1
+  gate_cache_load "$OWNER/$REPO" "$PR_NUMBER" "$h" "$b" "$viewer"
+}
 override_gate_met() {
   local gate="$SCRIPT_DIR/merge-gate.sh" out="" rc=0 here=""
   [[ -x "$gate" ]] || return 1
   # merge-gate.sh judges the cwd's repo; never let it answer for another one.
   here="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
   [[ "$(printf '%s' "$here" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]] || return 1
+  # Same-cycle reuse (issue #2442): the gate result polling-state-gate.sh just
+  # saved, used only on a fully fail-closed match (gate-result-cache.sh header);
+  # any miss falls through to the live run below, exactly as before.
+  if out="$(gate_cache_reuse)"; then
+    printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1
+    return
+  fi
   out="$("$gate" "$PR_NUMBER" 2>/dev/null)" || rc=$?
   [[ "$rc" -eq 0 ]] || return 1
   printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1

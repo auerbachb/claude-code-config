@@ -72,6 +72,7 @@ opt-in of issue #1544.
 | [escalate-review-cr-retry-window.test.sh](../tests/escalate-review-cr-retry-window.test.sh) | CodeRabbit retry-window grace tests for `escalate-review.sh` |
 | [escalate-review-evaluator-outage.test.sh](../tests/escalate-review-evaluator-outage.test.sh) | Bounded evaluator-outage suppression in `escalate-review.sh` — a `review-substance.sh` outage caps the verdict at `polling_cr` for an hour instead of authorising a paid review, then resumes escalation. The inclusive 3600 s boundary is both pinned in the source and **executed**: scenario (f2) lands a run on exactly the cap by re-aiming on the overshoot the script itself reports (a fixed exactly-3600 fixture races the clock upward, and a fixed-width sweep would just encode a guess about runner speed) and fails if no probe lands, and (f3) pins the first excluded second |
 | [escalate-review-gate-met.test.sh](../tests/escalate-review-gate-met.test.sh) | Approval freshness and gate short-circuit tests for `escalate-review.sh` |
+| [escalate-review-gate-reuse.test.sh](../tests/escalate-review-gate-reuse.test.sh) | Same-cycle merge-gate result reuse in `escalate-review.sh` and `lib/gate-result-cache.sh`: hit, every invalidation case, corrupt-file fallback, stand-alone run, in-memory authenticated-user sharing |
 | [escalate-review-head-observation-anchor.test.sh](../tests/escalate-review-head-observation-anchor.test.sh) | Head-observation anchor tests for `escalate-review.sh` — a force-pushed older commit must not make a prior-HEAD banner or `@cursor review` trigger read as fresh |
 | [escalate-review-merge-gate-freshness-parity.test.sh](../tests/escalate-review-merge-gate-freshness-parity.test.sh) | Drift guard that `escalate-review.sh` and `merge-gate.sh` reach the same approval-freshness verdict on one PR state, in-place re-reviews included |
 | [escalate-review-never-invited.test.sh](../tests/escalate-review-never-invited.test.sh) | Invitation, grace-window, and cache-state tests for `escalate-review.sh` |
@@ -161,6 +162,7 @@ opt-in of issue #1544.
 | [pmm-pre-dispatch.test.sh](../tests/pmm-pre-dispatch.test.sh) | Verify PMM pre-dispatch change detection, silent unchanged polling, retry/ack, and Monitor-loop zero-dispatch behavior |
 | [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
 | [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |
+| [polling-state-gate-gate-save.test.sh](../tests/polling-state-gate-gate-save.test.sh) | `polling-state-gate.sh` passes merge-gate stdout and exit code through unchanged and saves a complete met or unmet result for same-cycle reuse; a failed save changes nothing |
 | [polling-state-gate-multirepo.test.sh](../tests/polling-state-gate-multirepo.test.sh) | Tests multi-repo isolation in `polling-state-gate.sh` |
 | [polling-state-gate.test.sh](../tests/polling-state-gate.test.sh) | Tests for `polling-state-gate.sh` |
 | [portable-handoff-context.test.sh](../tests/portable-handoff-context.test.sh) | Tests for `portable-handoff-context.sh` |

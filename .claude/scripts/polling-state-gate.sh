@@ -289,6 +289,13 @@ if [[ -z "$PR_NUMBER" ]] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
+# A new evaluation begins: drop any saved gate result for this PR now, before any
+# early exit can leave the previous one behind for escalate-review.sh to load
+# (issue #2442). Best effort, cycle mode only; the later save is the only writer.
+if [[ "$MODE" == "cycle" && -r "$SCRIPT_DIR/lib/gate-result-cache.sh" ]]; then
+  ( . "$SCRIPT_DIR/lib/gate-result-cache.sh" 2>/dev/null && gate_cache_invalidate "$PR_NUMBER" ) 2>/dev/null || true
+fi
+
 # Directory whose repo identity scopes every session-state read below (issue
 # #638). Defaults to the active checkout; --root-repo overrides it.
 STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
@@ -1055,4 +1062,49 @@ if [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]]; the
     echo "polling-state-gate.sh: notice: PR #$PR_NUMBER — operating under the per-PR authorship override recorded at enrolment (.prs[\"$PR_NUMBER\"].allow_nonauthor, .claude/rules/safety.md §Authorship); merge-gate.sh's authorship block is suppressed. Clear it by re-running --ensure-session without --allow-nonauthor." >&2
   fi
 fi
-(cd "$canon" && exec "$MERGE_GATE" "${GATE_ARGS[@]}")
+# Run the gate (not exec) so its result can be saved for escalate-review.sh in
+# the same cycle (issue #2442). Stdout, stderr and exit code are passed through
+# exactly; nothing about saving can change the verdict or the exit code.
+GATE_CACHE_LIB="$SCRIPT_DIR/lib/gate-result-cache.sh"
+GATE_OUT=""
+GATE_RC=0
+# Repo/HEAD/base are read BEFORE and AFTER the gate and a result is saved only
+# when both reads succeeded and agree, so a push or base update during the run is
+# never attached to a result evaluated against the older state. Any failed or
+# unlike read means no save (the consumer then runs the gate live).
+GC_PRE=""
+GC_OK=0
+if [[ -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
+  GC_OK=1
+  # A failed invalidation (file could not be removed or neutralised) disables saving.
+  gate_cache_invalidate "$PR_NUMBER" || GC_OK=0   # a failed or unsaved evaluation must not leave the last result behind
+  GC_VIEWER=""
+  GC_VIEWER_LIB="$SCRIPT_DIR/lib/gh-viewer.sh"
+  if [[ -r "$GC_VIEWER_LIB" ]] && . "$GC_VIEWER_LIB" 2>/dev/null; then gh_viewer_resolve && GC_VIEWER="$GH_VIEWER_LOGIN"; fi
+  GC_PRE="$(cd "$canon" && gate_cache_live_state "$PR_NUMBER" 2>/dev/null)" || GC_PRE=""
+fi
+GATE_OUT="$(cd "$canon" && "$MERGE_GATE" "${GATE_ARGS[@]}")" || GATE_RC=$?
+printf '%s\n' "$GATE_OUT"
+# Save every complete result, met (0) or unmet (1): a waiting cycle is unmet and
+# is exactly where escalate-review.sh would otherwise run the gate a second time.
+# Reusing unmet is the fail-closed direction. The saved gate's own head_sha must
+# also equal the snapshot, or nothing is saved.
+# Authorship: merge-gate.sh inherits the login resolved above (lib/gh-viewer.sh),
+# so the saved result is bound to that login by construction. It is also required
+# to report authorship "mine"; no login, or anything else, means nothing is saved.
+GC_MINE=0
+printf '%s' "$GATE_OUT" | jq -e '.authorship == "mine"' >/dev/null 2>&1 && GC_MINE=1
+if [[ "$GATE_RC" -le 1 && "$GC_OK" -eq 1 && -n "$GC_PRE" && -n "$GC_VIEWER" && "$GC_MINE" -eq 1 ]]; then
+  GC_ALLOW=0
+  [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]] && GC_ALLOW=1
+  GC_SHAS="$(cd "$canon" && gate_cache_live_state "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""
+  if [[ -n "$GC_SHAS" && "$GC_SHAS" == "$GC_PRE" ]]; then
+    read -r GC_OR GC_HEAD GC_BASE GC_AUTHOR <<<"$GC_SHAS"
+  fi
+  # The saved login must be the PR's own author: the gate's "mine" then means it
+  # ran as that same account, even if the active gh account changed mid-run.
+  if [[ -n "${GC_AUTHOR:-}" && "$GC_AUTHOR" == "$GC_VIEWER" ]]; then
+    gate_cache_save "$GC_OR" "$PR_NUMBER" "$GC_HEAD" "$GC_BASE" "$GC_ALLOW" "$GATE_RC" "$GATE_OUT" "$GC_VIEWER" >/dev/null 2>&1 || true
+  fi
+fi
+exit "$GATE_RC"
