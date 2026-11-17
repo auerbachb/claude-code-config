@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests: polling-state-gate.sh saves the merge-gate result it just
 # produced for escalate-review.sh, without changing the verdict (issue #2442).
-# catalog: tests — `polling-state-gate.sh` passes merge-gate stdout and exit code through unchanged and saves a met result for same-cycle reuse; a failed save changes nothing
+# catalog: tests — `polling-state-gate.sh` passes merge-gate stdout and exit code through unchanged and saves a complete met or unmet result for same-cycle reuse; a failed save changes nothing
 #
 # Runs a COPY of .claude/scripts with a stub merge-gate.sh, a temp HOME and a
 # stub gh: no test calls GitHub.
@@ -82,17 +82,31 @@ check_eq "(s1) saved key fields" "$HEAD40 $BASE40 false 0" \
   "$(jq -r '[.head_sha, .base_sha, (.allow_nonauthor|tostring), (.rc|tostring)] | join(" ")' "$CACHE_FILE")"
 check_eq "(s1) saved file holds the gate result" "true" "$(jq -r '.gate.met|tostring' "$CACHE_FILE")"
 
-echo "== (s2): not-met gate (exit 1) -> exit 1 passes through, nothing saved =="
+echo "== (s2): not-met gate (exit 1) -> exit 1 passes through; the unmet result IS saved, once =="
 rm -rf "$GATE_CACHE_DIR"; gate_stub false 1
 cycle; rc=$?
 check_eq "(s2) exit code is the gate's (1)" "1" "$rc"
-check_eq "(s2) not-met result is not saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+check_eq "(s2) stdout is exactly the gate's JSON" \
+  "{\"pr_number\":$PR,\"owner_repo\":\"org/c\",\"met\":false,\"head_sha\":\"$HEAD40\",\"missing\":[]}" "$(cat "$TMP/out")"
+check_eq "(s2) saved file exists" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
+check_eq "(s2) saved rc and met" "1 false" "$(jq -r '[(.rc|tostring), (.gate.met|tostring)] | join(" ")' "$CACHE_FILE")"
+# The consumer side: the file the producer just wrote is a hit for the same SHAs.
+. "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh"
+check_eq "(s2) the consumer's loader accepts it (unmet hit)" "false" \
+  "$(gate_cache_load org/c "$PR" "$HEAD40" "$BASE40" | jq -r '.met|tostring')"
 
-echo "== (s3): gate exit 4 passes through =="
+echo "== (s3): gate exit 4 passes through and is never saved =="
 rm -rf "$GATE_CACHE_DIR"; gate_stub true 4
 cycle; rc=$?
 check_eq "(s3) exit code is the gate's (4)" "4" "$rc"
 check_eq "(s3) nothing saved on a gate error" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+rm -rf "$GATE_CACHE_DIR"; gate_stub false 4
+cycle; rc=$?
+check_eq "(s3) exit 4 with an unmet-looking body: not saved either" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+rm -rf "$GATE_CACHE_DIR"; gate_stub true 1
+cycle; rc=$?
+check_eq "(s3) met body with exit 1 (disagreement): exit passes through" "1" "$rc"
+check_eq "(s3) ...and is not saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
 
 echo "== (s4): a failed save never changes the verdict or exit code =="
 gate_stub true 0

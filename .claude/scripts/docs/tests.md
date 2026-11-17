@@ -162,7 +162,7 @@ opt-in of issue #1544.
 | [pmm-pre-dispatch.test.sh](../tests/pmm-pre-dispatch.test.sh) | Verify PMM pre-dispatch change detection, silent unchanged polling, retry/ack, and Monitor-loop zero-dispatch behavior |
 | [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
 | [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |
-| [polling-state-gate-gate-save.test.sh](../tests/polling-state-gate-gate-save.test.sh) | `polling-state-gate.sh` passes merge-gate stdout and exit code through unchanged and saves a met result for same-cycle reuse; a failed save changes nothing |
+| [polling-state-gate-gate-save.test.sh](../tests/polling-state-gate-gate-save.test.sh) | `polling-state-gate.sh` passes merge-gate stdout and exit code through unchanged and saves a complete met or unmet result for same-cycle reuse; a failed save changes nothing |
 | [polling-state-gate-multirepo.test.sh](../tests/polling-state-gate-multirepo.test.sh) | Tests multi-repo isolation in `polling-state-gate.sh` |
 | [polling-state-gate.test.sh](../tests/polling-state-gate.test.sh) | Tests for `polling-state-gate.sh` |
 | [portable-handoff-context.test.sh](../tests/portable-handoff-context.test.sh) | Tests for `portable-handoff-context.sh` |

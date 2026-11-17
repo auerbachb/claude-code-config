@@ -26,6 +26,7 @@ MG_RUNS="$TMP/mg-runs"
 cat > "$STUB_DIR/merge-gate.sh" <<STUB
 #!/usr/bin/env bash
 echo run >> "$MG_RUNS"
+if [[ -n "\${MG_LIVE_MET:-}" ]]; then printf '{"met":true,"no_review_override":{"applied":true}}\n'; exit 0; fi
 printf '{"met":false,"no_review_override":{"applied":false}}\n'
 exit 1
 STUB
@@ -92,7 +93,9 @@ seed;                                  mutate '.owner_repo = "other/repo"';  run
 seed;                                  mutate '.saved_epoch -= 61';          run_case "g3 stale (61s)"    no_reviewer 1
 seed;                                  mutate '.saved_epoch += 600';         run_case "g3 from the future" no_reviewer 1
 seed "$HEAD_SHA" "$BASE_SHA" 1;        run_case "g3 saved under --allow-nonauthor" no_reviewer 1
-seed "$HEAD_SHA" "$BASE_SHA" 0 1;      run_case "g3 gate exited non-zero" no_reviewer 1
+seed;                                  mutate '.rc = 2';                     run_case "g3 gate exited 2 (error)" no_reviewer 1
+seed;                                  mutate '.rc = 1';                     run_case "g3 exit 1 but body says met" no_reviewer 1
+seed;                                  mutate '.gate.met = false';           run_case "g3 exit 0 but body says unmet" no_reviewer 1
 seed;                                  FAKE_PULLS_FAIL=1 run_case "g3 live SHA read fails" no_reviewer 1
 
 echo "== (g4): boundary — a 50s-old result (margin for run time) is still reused =="
@@ -112,9 +115,19 @@ seed; mutate '.gate = []';                                            run_case "
 seed; chmod 000 "$CACHE_FILE";                                        run_case "g5 unreadable"     no_reviewer 1
 chmod 600 "$CACHE_FILE" 2>/dev/null || true
 
-echo "== (g6): the saved verdict is the gate's own — a saved NOT-met result is not a pass =="
-seed "$HEAD_SHA" "$BASE_SHA" 0 0 "$(jq -c '.met=false | .no_review_override.applied=false' <<<"$GATE_MET_JSON")"
-run_case g6 no_reviewer 0
+echo "== (g6): a saved UNMET result (the waiting cycle) is reused with no second gate run =="
+UNMET_JSON="$(jq -c '.met=false | .no_review_override.applied=false | .missing=["no review"]' <<<"$GATE_MET_JSON")"
+seed "$HEAD_SHA" "$BASE_SHA" 0 1 "$UNMET_JSON"
+run_case "g6 unmet reused" no_reviewer 0
+echo "-- the same unmet result is refused under every invalidation case --"
+seed "$HEAD_SHA" "$BASE_SHA" 0 1 "$UNMET_JSON"; mutate '.saved_epoch -= 61'; run_case "g6 stale unmet" no_reviewer 1
+seed "$HEAD_SHA" "$BASE_SHA" 0 1 "$UNMET_JSON"; FAKE_LIVE_HEAD="$OTHER_SHA" run_case "g6 unmet, HEAD moved" no_reviewer 1
+seed "$HEAD_SHA" "$BASE_SHA" 0 1 "$UNMET_JSON"; FAKE_LIVE_BASE="$OTHER_SHA" run_case "g6 unmet, base moved" no_reviewer 1
+echo "-- straddling the override window: saved unmet, live would now be met --"
+# A within-lifetime unmet result can only DELAY gate_met by one cycle; it can
+# never turn into a pass, and past the lifetime the live gate answers.
+seed "$HEAD_SHA" "$BASE_SHA" 0 1 "$UNMET_JSON"; MG_LIVE_MET=1 run_case "g6 window elapsed inside lifetime: delayed, not wrong" no_reviewer 0
+seed "$HEAD_SHA" "$BASE_SHA" 0 1 "$UNMET_JSON"; mutate '.saved_epoch -= 61'; MG_LIVE_MET=1 run_case "g6 window elapsed, result past lifetime: live gate decides" gate_met 1
 
 echo "== (g7): save refuses bad input and a failed write is harmless =="
 rm -rf "$GATE_CACHE_DIR"

@@ -1063,10 +1063,11 @@ GATE_OUT=""
 GATE_RC=0
 GATE_OUT="$(cd "$canon" && "$MERGE_GATE" "${GATE_ARGS[@]}")" || GATE_RC=$?
 printf '%s\n' "$GATE_OUT"
-# Only a met result is worth saving (the one consumer asks "met via the override"),
-# so an unmet cycle pays no extra read. The head/base snapshot is read after the
-# gate and the saved gate's own head_sha must equal it, or nothing is saved.
-if [[ "$GATE_RC" -eq 0 && -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
+# Save every complete result, met (0) or unmet (1): a waiting cycle is unmet and
+# is exactly where escalate-review.sh would otherwise run the gate a second time.
+# Reusing unmet is the fail-closed direction. The head/base snapshot is read after
+# the gate and the saved gate's own head_sha must equal it, or nothing is saved.
+if [[ "$GATE_RC" -le 1 && -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
   GC_ALLOW=0
   [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]] && GC_ALLOW=1
   GC_SHAS="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""
