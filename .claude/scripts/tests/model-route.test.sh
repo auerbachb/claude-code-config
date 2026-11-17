@@ -18,7 +18,7 @@ root = Path(sys.argv[1])
 script = root / '.claude/scripts/model-route.sh'
 report = []
 base = {
-    'task': 'fixture-task', 'phase': 'A', 'launch_allowed': True,
+    'task': 'fixture-task', 'phase': 'A', 'tier': 'Light', 'launch_allowed': True,
     'permissions_preserved': True, 'attempts': [],
     'runtime': {'version':'2.1.312', 'model_override_forced':False},
     'models': [dict(model=m, available=True, capable=True, budget_allowed=True,
@@ -300,6 +300,106 @@ with tempfile.TemporaryDirectory() as tmp:
     data['attempts'] = [dict(id='exhaust-1', model='haiku', outcome='exhaustion',
                              evidence=['fixture/valid-handoff.json'], next_action='resume preserved investigation')]
     check('exhaustion is not a quality failure', data, 'retry', 'haiku')
+
+    # Run mode x issue tier: starting model with every tier available (fable included, never a start).
+    START = {
+        ('default', 'Light'): 'haiku', ('default', 'Standard'): 'sonnet', ('default', 'Heavy'): 'opus',
+        ('speed', 'Light'): 'sonnet', ('speed', 'Standard'): 'opus', ('speed', 'Heavy'): 'opus',
+        ('cheap', 'Light'): 'haiku', ('cheap', 'Standard'): 'haiku', ('cheap', 'Heavy'): 'haiku',
+    }
+    for (mode, tier), expected in START.items():
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier=tier)
+        result = check(f'{mode} mode {tier} starts on {expected}', data, 'start', expected)
+        assert result['mode'] == mode and result['tier'] == tier, result
+    data = copy.deepcopy(base)
+    data['tier'] = 'Heavy'
+    check('absent mode reads as default', data, 'start', 'opus', reason=['default mode'])
+    data['mode'] = 'turbo'
+    assert check('unknown mode reads as default', data, 'start', 'opus')['mode'] == 'default'
+    # An unresolved tier (no tier key, or null) routes as Standard and the reason says so.
+    no_tier = copy.deepcopy(base)
+    del no_tier['tier']
+    assert check('no tier routes as standard', no_tier, 'start', 'sonnet',
+                 reason=['Tier unresolved; routed as Standard'])['tier'] == 'Standard'
+    null_tier = copy.deepcopy(base)
+    null_tier.update(mode='speed', tier=None)
+    check('null speed tier routes as standard on opus', null_tier, 'start', 'opus',
+          reason=['Tier unresolved; routed as Standard'])
+    check('supplied tier names no unresolved note', copy.deepcopy(base), 'start', 'haiku', reason=[])
+    data = copy.deepcopy(base)
+    data['tier'] = 'Huge'
+    check('unrecognized tier is invalid', data, 'invalid', code=2)
+    # Fable is never a starting tier in any mode: speed Heavy starts on opus even with fable
+    # available, and an unavailable opus falls back to sonnet (never fable) with a note.
+    data = copy.deepcopy(base)
+    data.update(mode='speed', tier='Heavy')
+    check('speed heavy with fable available starts on opus', data, 'start', 'opus')
+    next(r for r in data['models'] if r['model'] == 'opus')['available'] = False
+    check('speed opus unavailable falls back to sonnet and says so', data, 'start', 'sonnet',
+          reason=['preferred opus unavailable', 'started on sonnet'])
+    # Owner pins win in every mode; an unavailable pin still blocks in every mode.
+    for mode in ('default', 'speed', 'cheap'):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', owner_model='haiku')
+        check(f'{mode} owner pin overrides mode', data, 'start', 'haiku')
+        next(r for r in data['models'] if r['model'] == 'haiku')['available'] = False
+        check(f'{mode} unavailable owner pin blocks', data, 'blocked', code=3)
+    # Speed escalates after one failure without new evidence; default and cheap do not.
+    for mode, action, model in (('speed', 'escalate', 'opus'), ('default', 'retry', 'sonnet'),
+                                ('cheap', 'retry', 'sonnet')):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, current_model='sonnet', attempts=[attempt(1, model='sonnet')])
+        check(f'{mode} one failed attempt', data, action, model)
+    # Two equivalent failures: diagnosis is still required in default and cheap; speed moves up.
+    two = copy.deepcopy(base)
+    two.update(current_model='sonnet', attempts=[attempt(1, model='sonnet'), attempt(2, model='sonnet')])
+    for mode in ('default', 'cheap'):
+        data = copy.deepcopy(two)
+        data['mode'] = mode
+        check(f'{mode} two failures need diagnosis', data, 'diagnose', 'sonnet', 3)
+        data['diagnosis'] = dict(model='sonnet', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                                 evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                                 why_more_retries_unlikely='Two distinct approaches failed without new evidence.')
+        check(f'{mode} diagnosed failures escalate', data, 'escalate', 'opus')
+    data = copy.deepcopy(two)
+    data['mode'] = 'speed'
+    check('speed two failures escalate', data, 'escalate', 'opus')
+    # Speed escalation reaches fable only from an opus worker, and only when fable is eligible.
+    for mode in ('speed',):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', current_model='opus', attempts=[attempt(1, model='opus')])
+        check('speed opus one failure escalates to fable', data, 'escalate', 'fable')
+        next(r for r in data['models'] if r['model'] == 'fable')['available'] = False
+        check('speed opus one failure with fable unavailable retries opus', data, 'retry', 'opus')
+        two_opus = copy.deepcopy(base)
+        two_opus.update(mode='speed', tier='Heavy', current_model='opus',
+                        attempts=[attempt(1, model='opus'), attempt(2, model='opus')])
+        check('speed opus two failures escalate to fable', two_opus, 'escalate', 'fable')
+    # Default and cheap never escalate opus to fable: one failure retries, and a diagnosed
+    # repeat has no eligible next tier (blocked) rather than fable.
+    for mode in ('default', 'cheap'):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', current_model='opus', attempts=[attempt(1, model='opus')])
+        check(f'{mode} opus one failure never reaches fable', data, 'retry', 'opus')
+        two_opus = copy.deepcopy(base)
+        two_opus.update(mode=mode, tier='Heavy', current_model='opus',
+                        attempts=[attempt(1, model='opus'), attempt(2, model='opus')])
+        two_opus['diagnosis'] = dict(model='opus', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                                     evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                                     why_more_retries_unlikely='Two distinct approaches failed without new evidence.')
+        check(f'{mode} diagnosed opus has no fable escalation', two_opus, 'blocked', code=3)
+    # A speed-started fable worker is kept (no owner pin); other modes block it as before.
+    fable_run = copy.deepcopy(base)
+    fable_run.update(current_model='fable', attempts=[attempt(1, model='fable')], mode='speed')
+    check('speed fable worker retries on fable', fable_run, 'retry', 'fable')
+    fable_run['mode'] = 'default'
+    check('default mode does not keep an unpinned fable worker', fable_run, 'blocked', code=3)
+    # A mode change affects only later launches: a running cheap-tier worker keeps its model.
+    running = copy.deepcopy(base)
+    running.update(mode='speed', current_model='opus',
+                   attempts=[attempt(1, model='opus', outcome='progress', new_evidence=['fixture/ok.json'])])
+    check('mode change keeps running worker model', running, 'retry', 'opus')
     # The caller examples must still feed all three phase call sites through routing.
     skill = (root / '.claude/skills/subagent/SKILL.md').read_text(encoding="utf-8")
     assert skill.count('`model: ROUTED_MODEL`') == 3

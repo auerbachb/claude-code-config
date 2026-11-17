@@ -94,6 +94,14 @@
 #   while its policy is unreadable. The merge gate is unaffected.
 
 set -euo pipefail
+# Per-run GitHub REST call count (issue #2441): off unless GH_REST_COUNT=1 or GH_REST_WARN_AT is set.
+if [[ -z "${GH_REST_COUNT_ACTIVE:-}" && ( -n "${GH_REST_COUNT:-}" || -n "${GH_REST_WARN_AT:-}" ) ]]; then
+  if . "$(dirname "${BASH_SOURCE[0]}")/lib/gh-count.sh" 2>/dev/null; then
+    gh_count_reexec "${BASH_SOURCE[0]}" "$@" || true
+  else
+    printf '%s: REST call count unavailable (counter library missing)\n' "$(basename "${BASH_SOURCE[0]}")" >&2
+  fi
+fi
 
 # Installed BEFORE anything else can fail, and it owns two jobs (issue #1600).
 #

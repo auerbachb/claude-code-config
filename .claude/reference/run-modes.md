@@ -2,7 +2,7 @@
 
 Orchestration threads (`/pm`, `/subagent`) can be given one of three named run modes: **default**, **speed** and **cheap**. A human sets the mode in one word, and it stays until changed.
 
-**Increment 1 (issue #2428) has no behavioral effect.** The mode is settable, readable, shown on the board and recovered after compaction. It does not yet change which models run or how many pipelines run. Those land in later increments (#2429 model routing, #2430 parallel width).
+The mode is settable, readable, shown on the board and recovered after compaction (#2428). Its model effect (#2429) is in `task-model-routing.md` §Run mode and issue tier: it sets each worker's starting tier and escalation patience, not how many pipelines run. Parallel width is #2430 and is unaffected.
 
 ## Storage and the one read path
 
@@ -52,4 +52,4 @@ Decision-only output: an explicit set prints one line; routine reads print nothi
 
 ## Follow-ups
 
-Deferred to later increments of #2428 and #2429/#2430: `/subagent` consumers, the model-mix behavior, parallel width, and any expiry policy change.
+Deferred to later increments: parallel width (#2430) and any expiry policy change. The model mix per mode is in `task-model-routing.md` §Run mode and issue tier.

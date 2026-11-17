@@ -158,6 +158,14 @@
 # exited 0 having validated a file that was not this PR's record.
 #
 set -euo pipefail
+# Per-run GitHub REST call count (issue #2441): off unless GH_REST_COUNT=1 or GH_REST_WARN_AT is set.
+if [[ -z "${GH_REST_COUNT_ACTIVE:-}" && ( -n "${GH_REST_COUNT:-}" || -n "${GH_REST_WARN_AT:-}" ) ]]; then
+  if . "$(dirname "${BASH_SOURCE[0]}")/lib/gh-count.sh" 2>/dev/null; then
+    gh_count_reexec "${BASH_SOURCE[0]}" "$@" || true
+  else
+    printf '%s: REST call count unavailable (counter library missing)\n' "$(basename "${BASH_SOURCE[0]}")" >&2
+  fi
+fi
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
