@@ -1131,7 +1131,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
 call, follow `task-model-routing.md` through the Step 0 reference candidate order.
 Resolve `model-route.sh` through the same shared-script order. Build the current
 phase's request from scoped session/handoff state and refreshed runtime/launch
-checks, execute the reference’s `task-model-route-dispatch` block before every
+checks. Set its `mode` to the output of `run-mode.sh get` (`run-modes.md` read
+path, installed locations first; a missing helper reads as `default`) and its
+`tier` per `task-model-routing.md` §Run mode and issue tier (the one resolution rule; an unresolved tier is sent unset and routes as Standard). Then execute the reference’s `task-model-route-dispatch` block before every
 Agent call to persist `{request, decision}` with the owning locked helper and
 set `ROUTED_MODEL` only for `start`, `retry`, or `escalate`. Pass the stable task identity and current routing request/record file pointers in every child prompt; successors load them from scoped state without resetting attempts. Invalid input, blocked/diagnose/owner-decision, or a failed write
 launches nothing. Preserve attempts and targeted feedback on successors; never
