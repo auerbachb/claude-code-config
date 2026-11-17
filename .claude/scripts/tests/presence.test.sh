@@ -164,7 +164,8 @@ check "here turned unattended off" "$("$UNATT" is-active; echo $?)" 1
 SINCE_1=$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")
 check "here left a since_epoch in place" "$(( SINCE_1 > 0 ))" 1
 sleep 1
-P $owner1 set closing --by operator-message --for 1h >/dev/null
+"$STATE" --repo acme/widgets --set ".repos[\"acme/widgets\"].window.deadline_epoch=$(( $(date +%s) + 7200 ))" --set ".repos[\"acme/widgets\"].leave.active=true" >/dev/null
+P $owner1 set closing --by operator-message; check "closing set from an armed deadline" "$rc" 0
 check "closing keeps the since_epoch" "$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")" "$SINCE_1"
 P $owner1 set here --by operator-message --for 1h >/dev/null
 check "here again keeps the since_epoch" "$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")" "$SINCE_1"

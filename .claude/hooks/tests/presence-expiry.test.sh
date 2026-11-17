@@ -300,6 +300,16 @@ has "expire speaks for it" "$(P expire)" "your away window ended"
 OUT=$(operator s-1)
 check "his message ends it" "$(U is-active; echo $?)" 1
 
+printf '== a missing question lister is a failed read, never "no questions" (issue #2352)\n'
+rm -f "$SF"
+n=$(date +%s)
+U on --for 1h >/dev/null
+"$STATE" --set ".unattended.since_epoch=$((n - 7200))" --set ".unattended.until_epoch=$((n - 5))" >/dev/null
+MISSING_OUT=$(cd "$REPO_A" && PRESENCE_UNATTENDED_SH="/nonexistent/no-such-lister.sh" "$PRESENCE" expire)
+has "expire still speaks" "$MISSING_OUT" "your away window ended"
+has "and warns the question files could not be read" "$MISSING_OUT" "could not be read"
+operator s-1 >/dev/null
+
 printf '== a stored closing window follows the /leave-by record\n'
 rm -f "$SF"
 KEY='.repos["acme/widgets"]'

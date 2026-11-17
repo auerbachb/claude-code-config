@@ -421,5 +421,11 @@ both_in_full "no session id: and every prompt after it" "$(hook_run "")"
 check "and the questions file is untouched by all of it" "$(grep -c '"type":"question"' "$UDIR/acme__killme.jsonl")" "2"
 check "...with no other record type added" "$(jq -s '[.[] | select(.type != "question")] | length' "$UDIR/acme__killme.jsonl")" "0"
 
+printf '== issue #2352: answer text that looks like a global option is kept verbatim\n'
+UC record --question "Option-looking answer?" --recommended "x" >/dev/null
+OPTQ=$(UC pending >/dev/null; jq -rs '[.[] | select(.type == "question")] | last | .id' "$QC")
+check "answer text starting with --repo is kept" "$(UC answer "$OPTQ" --answer '--repo oops' --by operator)" "$OPTQ answered"
+check "...and stored as the answer, not read as a global option" "$(jq -rs --arg i "$OPTQ" '[.[] | select(.type == "answered" and .id == $i)][0].answer' "$QC")" "--repo oops"
+
 printf '\nunattended-mode.test.sh: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

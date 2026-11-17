@@ -585,7 +585,8 @@ cmd_expire() {
   else
     # Keep what was listed even when one repo's file could not be read: the others still print.
     local list="" lrc=0
-    if [ -x "$UNATTENDED_SH" ]; then list=$("$UNATTENDED_SH" digest --all 2>/dev/null) || lrc=$?; fi
+    # A missing or non-executable lister is a failed read, never "no questions": saved ones may exist.
+    if [ -x "$UNATTENDED_SH" ]; then list=$("$UNATTENDED_SH" digest --all 2>/dev/null) || lrc=$?; else lrc=1; fi
     printf 'presence: your away window ended %s. Threads stay in away handling (questions recorded, reversible defaults, no menu) until you send a message. No push is sent.\n' "$(fmt_time "$until")"
     if [ -n "$list" ]; then
       printf 'Show the operator this list once, without opening a menu:\n%s\n' "$list"

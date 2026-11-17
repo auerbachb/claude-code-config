@@ -607,6 +607,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --cwd) [ $# -ge 2 ] || die_usage "--cwd needs a value"; CWD="$2"; shift 2 ;;
     --repo) [ $# -ge 2 ] || die_usage "--repo needs a value"; REPO="$2"; shift 2 ;;
+    # A value-taking flag carries its value through verbatim, so text such as an answer that starts
+    # with --repo or --cwd is not read as a global option.
+    --answer|--reason|--question|--recommended|--options|--did|--session|--source|--by|--for|--from|--shown-file|--until-epoch)
+      args+=("$1"); shift
+      if [ $# -gt 0 ]; then args+=("$1"); shift; fi ;;
     *) args+=("$1"); shift ;;
   esac
 done
