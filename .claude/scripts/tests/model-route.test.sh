@@ -301,10 +301,10 @@ with tempfile.TemporaryDirectory() as tmp:
                              evidence=['fixture/valid-handoff.json'], next_action='resume preserved investigation')]
     check('exhaustion is not a quality failure', data, 'retry', 'haiku')
 
-    # Run mode x issue tier: starting model with every tier available (fable included).
+    # Run mode x issue tier: starting model with every tier available (fable included, never a start).
     START = {
         ('default', 'Light'): 'haiku', ('default', 'Standard'): 'sonnet', ('default', 'Heavy'): 'opus',
-        ('speed', 'Light'): 'sonnet', ('speed', 'Standard'): 'opus', ('speed', 'Heavy'): 'fable',
+        ('speed', 'Light'): 'sonnet', ('speed', 'Standard'): 'opus', ('speed', 'Heavy'): 'opus',
         ('cheap', 'Light'): 'haiku', ('cheap', 'Standard'): 'haiku', ('cheap', 'Heavy'): 'haiku',
     }
     for (mode, tier), expected in START.items():
@@ -322,13 +322,14 @@ with tempfile.TemporaryDirectory() as tmp:
     data = copy.deepcopy(base)
     data['tier'] = 'Huge'
     check('unrecognized tier is invalid', data, 'invalid', code=2)
-    # Fable is never a default or cheap start, and speed falls back to opus with a note.
+    # Fable is never a starting tier in any mode: speed Heavy starts on opus even with fable
+    # available, and an unavailable opus falls back to sonnet (never fable) with a note.
     data = copy.deepcopy(base)
     data.update(mode='speed', tier='Heavy')
-    row_of_fable = next(r for r in data['models'] if r['model'] == 'fable')
-    row_of_fable['available'] = False
-    check('speed fable unavailable falls back to opus and says so', data, 'start', 'opus',
-          reason=['preferred fable unavailable', 'started on opus'])
+    check('speed heavy with fable available starts on opus', data, 'start', 'opus')
+    next(r for r in data['models'] if r['model'] == 'opus')['available'] = False
+    check('speed opus unavailable falls back to sonnet and says so', data, 'start', 'sonnet',
+          reason=['preferred opus unavailable', 'started on sonnet'])
     # Owner pins win in every mode; an unavailable pin still blocks in every mode.
     for mode in ('default', 'speed', 'cheap'):
         data = copy.deepcopy(base)
@@ -356,6 +357,30 @@ with tempfile.TemporaryDirectory() as tmp:
     data = copy.deepcopy(two)
     data['mode'] = 'speed'
     check('speed two failures escalate', data, 'escalate', 'opus')
+    # Speed escalation reaches fable only from an opus worker, and only when fable is eligible.
+    for mode in ('speed',):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', current_model='opus', attempts=[attempt(1, model='opus')])
+        check('speed opus one failure escalates to fable', data, 'escalate', 'fable')
+        next(r for r in data['models'] if r['model'] == 'fable')['available'] = False
+        check('speed opus one failure with fable unavailable retries opus', data, 'retry', 'opus')
+        two_opus = copy.deepcopy(base)
+        two_opus.update(mode='speed', tier='Heavy', current_model='opus',
+                        attempts=[attempt(1, model='opus'), attempt(2, model='opus')])
+        check('speed opus two failures escalate to fable', two_opus, 'escalate', 'fable')
+    # Default and cheap never escalate opus to fable: one failure retries, and a diagnosed
+    # repeat has no eligible next tier (blocked) rather than fable.
+    for mode in ('default', 'cheap'):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', current_model='opus', attempts=[attempt(1, model='opus')])
+        check(f'{mode} opus one failure never reaches fable', data, 'retry', 'opus')
+        two_opus = copy.deepcopy(base)
+        two_opus.update(mode=mode, tier='Heavy', current_model='opus',
+                        attempts=[attempt(1, model='opus'), attempt(2, model='opus')])
+        two_opus['diagnosis'] = dict(model='opus', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                                     evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                                     why_more_retries_unlikely='Two distinct approaches failed without new evidence.')
+        check(f'{mode} diagnosed opus has no fable escalation', two_opus, 'blocked', code=3)
     # A speed-started fable worker is kept (no owner pin); other modes block it as before.
     fable_run = copy.deepcopy(base)
     fable_run.update(current_model='fable', attempts=[attempt(1, model='fable')], mode='speed')

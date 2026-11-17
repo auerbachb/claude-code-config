@@ -9,9 +9,9 @@ interactive picker, permissions, tool allowlists, review independence or gates.
 Resolve `model-route.sh` through the usual shared-tool paths. Run it with
 `--input <request.json>`. It makes no provider calls and changes no state.
 Supply an explicit current runtime inventory, not guessed availability. The
-cost ladder is Haiku → Sonnet → Opus; Fable requires an explicit owner choice,
-except the speed-mode Heavy start below. The run mode and issue tier choose the
-starting tier (see "Run mode and issue tier"). This is an ordinal cost policy,
+cost ladder is Haiku → Sonnet → Opus. Fable is never a starting tier without an
+explicit owner choice; speed mode reaches it only as the escalation step above a
+stalled Opus worker. The run mode and issue tier choose the starting tier (see "Run mode and issue tier"). This is an ordinal cost policy,
 not a dollar estimate or a claim that every task succeeds on Haiku. Actual
 availability and capability win over the ladder. Source: [provider pricing](https://platform.claude.com/docs/en/about-claude/pricing),
 [subagent model/tool configuration](https://code.claude.com/docs/en/sub-agents).
@@ -75,16 +75,18 @@ it. An unrecognized tier is invalid (exit 2). The decision echoes both fields.
 | Mode | Light | Standard | Heavy | Escalation after a failure |
 |------|-------|----------|-------|----------------------------|
 | default | Haiku | Sonnet | Opus | two equivalent failures plus diagnosis |
-| speed | Sonnet | Opus | Fable (Opus if unavailable) | one failed attempt without new evidence moves up |
+| speed | Sonnet | Opus | Opus | one failed attempt without new evidence moves up; an Opus worker that moves up goes to Fable |
 | cheap | Haiku | Haiku | Haiku | two equivalent failures plus diagnosis |
 
 Fallback when a preferred tier is unavailable or ineligible: the next entry in
-that row's preference order, named in `reason`. Fable is never a default or cheap
-start without an owner choice. An explicit owner pin wins in every mode, an
+that row's preference order, named in `reason`. Fable is never a starting tier in
+any mode without an owner choice. Speed mode escalates one step at a time: Sonnet
+to Opus, then Opus to Fable (only while Fable is eligible). Default and cheap
+escalate on diagnosis only and never reach Fable unless the owner pins it. A Fable
+worker started by an owner pin keeps its model on retries in speed mode and is
+blocked in default or cheap mode. An explicit owner pin wins in every mode, an
 unavailable pin still blocks, and budget, reserve, launch, review and merge gates
-are unchanged. Speed escalates by one tier at a time and never to Fable; a
-Fable worker started in speed mode keeps its model on retries and is blocked
-after a mode change to another mode. A mode change affects only later launches.
+are unchanged. A mode change affects only later launches.
 
 ### Runtime precedence preflight
 

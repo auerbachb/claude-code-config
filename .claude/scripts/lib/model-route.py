@@ -24,12 +24,13 @@ GAP_KINDS = ("tool", "context", "permissions")
 MODES = ("default", "speed", "cheap")
 TIERS = ("Light", "Standard", "Heavy")
 # Start preference per mode and issue tier; the first eligible entry wins.
-# Fable appears only in speed mode, and only for Heavy work.
+# Fable is never a starting tier. It is reached only as the speed-mode escalation
+# step above an Opus worker (see successor_for), and only by an explicit owner pin.
 START_LADDER = {
     "default": {"Light": ("haiku", "sonnet", "opus"), "Standard": ("sonnet", "haiku", "opus"),
                 "Heavy": ("opus", "sonnet", "haiku")},
     "speed": {"Light": ("sonnet", "opus", "haiku"), "Standard": ("opus", "sonnet", "haiku"),
-              "Heavy": ("fable", "opus", "sonnet", "haiku")},
+              "Heavy": ("opus", "sonnet", "haiku")},
     "cheap": {tier: ("haiku", "sonnet", "opus") for tier in TIERS},
 }
 
@@ -169,12 +170,19 @@ def decide(request):
         return True
 
     def next_tier(model):
-        # The next eligible cost-ladder tier above model; fable is start-only and never a successor.
+        # The next eligible cost-ladder tier above model.
         start = ORDER.index(model) + 1 if model in ORDER else len(ORDER)
         for candidate in ORDER[start:]:
             if assess(candidate):
                 return candidate
         return None
+
+    def successor_for(model):
+        # Speed mode's top step: an Opus worker that must move up escalates to fable when it is
+        # eligible. Default and cheap never reach fable without an explicit owner choice.
+        if mode == "speed" and model == "opus" and assess("fable"):
+            return "fable"
+        return next_tier(model)
 
     if attempts and attempts[-1]["outcome"] == "complete":
         return finish("complete", "Task finished; verify its independent acceptance and merge gates.")
@@ -237,7 +245,7 @@ def decide(request):
         return finish("retry", "Useful progress: retain discoveries and targeted feedback on the same model.", selected)
     if mode == "speed" and owner is None and latest["outcome"] == "failed":
         # Speed trades diagnosis patience for time: one failure without new evidence moves up.
-        successor = next_tier(current)
+        successor = successor_for(current)
         if successor is not None:
             return finish("escalate", "Speed mode: one failed attempt without new evidence moves up to %s; "
                           "fresh context for this task/phase only." % successor, successor)
@@ -272,7 +280,7 @@ def decide(request):
         return finish("diagnose", "Diagnosis lacks meaningful current-task attempts, evidence or rationale.", selected)
     if owner is not None:
         return finish("owner_decision", "Evidence supports escalation but an explicit owner model is pinned.", selected)
-    successor = next_tier(current)
+    successor = successor_for(current)
     if successor is None:
         return finish("blocked", "No eligible next tier; retain recovery evidence without bypassing budgets or permissions.")
     return finish("escalate", "Diagnosed " + kind + "; fresh context for this task/phase only.", successor)
