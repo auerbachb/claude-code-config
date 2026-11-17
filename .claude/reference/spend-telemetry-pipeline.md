@@ -102,3 +102,20 @@ The report keeps legacy and v2 coverage separate, shows per-field denominators a
 ## History
 
 Issue #710 originally added one `SessionStart` event and one `SubagentStop` event, with inline model tier inferred from agent frontmatter and a best-effort flat token field. That v1 schema remains readable for historical comparisons. Issue #1877 adds runtime/transcript model provenance, distinct usage components, end-of-session transcript capture, metadata-only task lifecycle IDs, replay deduplication in reports, and explicit coverage limitations.
+
+## Orchestrator session report (Issue #2434)
+
+`.claude/scripts/orchestrator-cost-report.sh` reports one session's observed tokens, split into the parent thread and its workers. It is read-only: it writes no telemetry, cursor, spool, lock or log, and makes no provider call. It gates nothing.
+
+**Inputs.** The main transcript (`<projects>/*/<session>.jsonl`, or `--transcript`) and this log, filtered to the exact session. A missing log is a `telemetry_log_absent` limitation.
+
+**Labels.** `known_subtotal` applies when any limitation holds. `complete_total` means only that no limitation was observed in the sources read, not that it equals billed spend. `unknown` (JSON `null`) means not measured. Missing data is never reported as zero. The parent share is computed only when both sides are complete. Otherwise it is `null` with a reason.
+
+**Turn grouping and classes.** A turn starts at a non-sidechain user record that is not only tool results. Classes follow this precedence: `worker_result_handling`, `instruction_skill_load`, `changed_nothing_checkin`, `data_gathering`, `user_reply`, `other`. A turn that matches more than one class is counted as ambiguous. `changed_nothing_checkin` means the parent took no action in that turn. It does not prove that no work moved elsewhere.
+
+**Output.** Markdown by default, one JSON document with `--json`, and one line with `--one-line`. `/tldr parent-share` prints the one-line form on request.
+
+**Exit status.** 0 when the session and transcript resolve, even if figures are unknown. 1 with a named error on stderr (`session_unknown`, `transcript_not_found`, `transcript_unreadable`, `transcript_ambiguous`). 2 for invalid arguments.
+
+**Known limits.** No nested-worker roll-up. No billed cost. The Fable per-session allowance is not readable from local data. Recorded results are in `.claude/reference/orchestrator-cost-baseline-2026-11.md`.
+
