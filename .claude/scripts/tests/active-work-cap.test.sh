@@ -1948,6 +1948,15 @@ grep -n -F 'enter 60s' "$REPO_ROOT/.claude/rules/subagent-orchestration.md" >/de
   fail "39j: subagent-orchestration.md still instructs 60s polling"
 grep -n -F 'Widening the ceiling itself is the repo' "$REPO_ROOT/.claude/skills/wave/SKILL.md" >/dev/null && \
   fail "39j: wave still says widening is the PIPELINE_CEILING knob"
+grep -q -F 'run_script session-state.sh' "$PB" || \
+  fail "39j: phase-b-reviewer must read the cadence through run_script session-state.sh (the resolver contract)"
+grep -n -F 'non-zero exit from `--ceiling`' "$REPO_ROOT/.claude/skills/wave/SKILL.md" >/dev/null && \
+  fail "39j: wave's failure check must name --width, the reader Step 6 calls"
+CR_RULE="$REPO_ROOT/.claude/rules/cr-github-review.md"
+grep -n -E 'every 60 seconds|Poll every 60s' "$CR_RULE" >/dev/null && \
+  fail "39j: cr-github-review.md still states a fixed 60-second cycle"
+grep -q -F 'active-work-cap.sh --poll-interval' "$CR_RULE" || \
+  fail "39j: cr-github-review.md must name the --poll-interval cadence"
 # Width wording must match the reader: default and speed are 15 only by default
 # (configurable to 20), and cheap may sit below PIPELINE_CEILING.
 for F in "$SK" "$REPO_ROOT/.claude/skills/wave/SKILL.md" "$REPO_ROOT/.claude/rules/subagent-orchestration.md"; do

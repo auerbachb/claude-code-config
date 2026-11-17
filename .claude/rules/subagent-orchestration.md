@@ -43,7 +43,7 @@ actual cost or unknown; routine retries stay silent.
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter GitHub polling on the cycle `active-work-cap.sh --poll-interval` gives (60s, or 120s above 8 pipelines); fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter `--poll-interval` GitHub polling; fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
 
 **Ask first only:** respawning a crashed/no-handoff subagent.
 
@@ -62,7 +62,7 @@ Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:
 **Orchestration:**
 
 - **Transitions:** parent launches Phase A (parallel across PRs allowed); A complete → cleanup per `phase-protocols.md`, then B; B `merge_ready` → launch C within 60s (C verifies gate + AC before `/wrap`).
-- **Ceiling:** the run mode's width from `active-work-cap.sh --width` (default and speed 15 unless configured; cheap `CHEAP_MODE_WIDTH`, which defaults to `PIPELINE_CEILING` and may be set lower) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
+- **Ceiling:** the run mode's width from `active-work-cap.sh --width` (default and speed 15 unless configured; cheap `CHEAP_MODE_WIDTH`, default `PIPELINE_CEILING`, may be lower) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
 - **Scope:** counts only PRs you authored (`@me`); a collaborator's or bot's PRs never enter it (contention is context, never a gate).
 - **Overflow:** past-ceiling work **queues inline, never becomes a thread chip** (slots: `.claude/skills/subagent/SKILL.md` Step 7).
 

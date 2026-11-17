@@ -42,12 +42,12 @@ WAVE=.claude/skills/wave/SKILL.md
 # --- each consumer resolves the ceiling from the script ---------------------
 require_text "$SUBAGENT" 'ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh' \
   '/subagent must resolve active-work-cap.sh (Step 0 helper block)'
-require_text "$SUBAGENT" 'CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling)' \
-  '/subagent Step 7 must read the ceiling via active-work-cap.sh --ceiling'
-require_text "$PM" 'CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling)' \
-  '/pm Step 0 must read the ceiling via active-work-cap.sh --ceiling'
-require_text "$WAVE" 'CEILING    = "$ACTIVE_WORK_CAP_SH" --ceiling' \
-  '/wave Step 6 must read CEILING via active-work-cap.sh --ceiling'
+require_text "$SUBAGENT" 'CEILING=$("$ACTIVE_WORK_CAP_SH" --width)' \
+  '/subagent Step 7 must read the launch width via active-work-cap.sh --width (#2430)'
+require_text "$PM" 'CEILING=$("$ACTIVE_WORK_CAP_SH" --width)' \
+  '/pm Step 0 must read the launch width via active-work-cap.sh --width (#2430)'
+require_text "$WAVE" 'CEILING    = "$ACTIVE_WORK_CAP_SH" --width' \
+  '/wave Step 6 must read CEILING via active-work-cap.sh --width (#2430)'
 ok "/subagent, /pm, and /wave resolve the ceiling from active-work-cap.sh --ceiling"
 
 # --- no literal ceiling left in slot math -----------------------------------
