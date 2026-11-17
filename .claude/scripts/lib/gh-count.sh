@@ -75,7 +75,7 @@ gh_count_reexec() {
 
   warn_at="${GH_REST_WARN_AT:-$_GH_COUNT_DEFAULT_WARN}"
   _gh_count_report "$self" "$tally" "$warn_at" || _gh_count_unavailable "$self" "tally unreadable"
-  rm -f "$dir/tally" "$dir/gh"
+  rm -f "$dir/tally" "$dir/tally.bad" "$dir/gh"
   rmdir "$dir" 2>/dev/null
   exit "$rc"
 }
@@ -93,7 +93,7 @@ if [ -z "$real" ] || [ -z "$tally" ]; then
 fi
 errf=$(mktemp "${TMPDIR:-/tmp}/gh-count-err.XXXXXX" 2>/dev/null) || {
   # Cannot capture the request log: run gh untouched, but mark the tally incomplete.
-  echo "unavailable" >>"$tally" 2>/dev/null
+  echo "unavailable" >>"$tally" 2>/dev/null || : >"${tally}.bad" 2>/dev/null
   exec "$real" "$@"
 }
 rc=0
@@ -113,7 +113,7 @@ awk -v tally="$tally" '
     print kind, (rem == "" ? "-" : rem) >> tally
   }
   END { if (inreq) record() }
-' "$errf" >&2 || echo "unavailable" >>"$tally" 2>/dev/null
+' "$errf" >&2 || { echo "unavailable" >>"$tally" 2>/dev/null || : >"${tally}.bad" 2>/dev/null; }
 rm -f "$errf"
 exit "$rc"
 SHIM
@@ -124,7 +124,7 @@ _gh_count_report() {
   local self="$1" tally="$2" warn_at="$3" line rest graphql first last
   [ -r "$tally" ] || return 1
   # A call that could not be counted makes the figure a lower bound; say so, never print it as exact.
-  if grep -q '^unavailable' "$tally"; then return 1; fi
+  if [ -e "${tally}.bad" ] || grep -q '^unavailable' "$tally"; then return 1; fi
   line=$(awk '
     $1 == "rest" { rest++; if ($2 != "-") { if (first == "") first = $2; last = $2 } }
     $1 == "graphql" { gql++ }
