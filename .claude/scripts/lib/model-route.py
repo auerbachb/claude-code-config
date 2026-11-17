@@ -4,6 +4,11 @@ A tier marked capable:false is excluded only with a valid capability_gap
 (kind tool|context|permissions, nonblank detail and evidence). Without one the
 flag is disregarded, the cheapest eligible tier is chosen, and the decision
 names the fallback in capability_fallback. Accepted gaps go in capability_gaps.
+
+The optional run mode (default|speed|cheap; absent or unknown reads as default)
+picks the starting tier for an issue tier (Light|Standard|Heavy; absent reads as
+Light, the pre-mode behaviour). Mode also sets escalation patience: speed moves up
+after one failed attempt without new evidence, default and cheap need diagnosis.
 """
 import argparse
 import json
@@ -16,6 +21,17 @@ from pathlib import Path
 ORDER = ("haiku", "sonnet", "opus")
 MODELS = ORDER + ("fable",)
 GAP_KINDS = ("tool", "context", "permissions")
+MODES = ("default", "speed", "cheap")
+TIERS = ("Light", "Standard", "Heavy")
+# Start preference per mode and issue tier; the first eligible entry wins.
+# Fable appears only in speed mode, and only for Heavy work.
+START_LADDER = {
+    "default": {"Light": ("haiku", "sonnet", "opus"), "Standard": ("sonnet", "haiku", "opus"),
+                "Heavy": ("opus", "sonnet", "haiku")},
+    "speed": {"Light": ("sonnet", "opus", "haiku"), "Standard": ("opus", "sonnet", "haiku"),
+              "Heavy": ("fable", "opus", "sonnet", "haiku")},
+    "cheap": {tier: ("haiku", "sonnet", "opus") for tier in TIERS},
+}
 
 
 def text(value):
@@ -94,8 +110,13 @@ def decide(request):
     known_costs = [a["cost_usd"] for a in attempts if a.get("cost_usd") is not None]
     known_times = [a["elapsed_seconds"] for a in attempts if a.get("elapsed_seconds") is not None]
     fallbacks, gaps = [], []
+    mode = request.get("mode")
+    mode = mode if mode in MODES else "default"
+    tier = request.get("tier", "Light")
+    require(tier in TIERS, "tier must be Light, Standard or Heavy")
     result = {
         "schema_version": 1, "task": request["task"], "phase": request["phase"],
+        "mode": mode, "tier": tier,
         "action": "blocked", "model": None, "reason": "",
         "capability_fallback": [], "capability_gaps": [],
         "attempt_ids": [a["id"] for a in attempts],
@@ -147,11 +168,19 @@ def decide(request):
         fallbacks.append({"model": model, "basis": "missing" if gap is None else "malformed"})
         return True
 
+    def next_tier(model):
+        # The next eligible cost-ladder tier above model; fable is start-only and never a successor.
+        start = ORDER.index(model) + 1 if model in ORDER else len(ORDER)
+        for candidate in ORDER[start:]:
+            if assess(candidate):
+                return candidate
+        return None
+
     if attempts and attempts[-1]["outcome"] == "complete":
         return finish("complete", "Task finished; verify its independent acceptance and merge gates.")
     if request.get("launch_allowed") is not True or request.get("permissions_preserved") is not True:
         return finish("blocked", "Launch controls or unchanged permission/tool boundaries are not explicitly clear.")
-    if current == "fable" and owner is None:
+    if current == "fable" and owner is None and mode != "speed":
         return finish("blocked", "Retain the explicit owner choice for a tier outside the unattended ladder.")
     runtime = request.get("runtime", {})
     version = runtime.get("version") if isinstance(runtime, dict) else None
@@ -170,14 +199,21 @@ def decide(request):
         selected = current
     else:
         selected = None
-        for candidate in ORDER:
+        preferred = START_LADDER[mode][tier]
+        for candidate in preferred:
             if assess(candidate):
                 selected = candidate
                 break
         if selected is None:
             return finish("blocked", "No explicitly available capable model within budget/reserve controls.")
     if not attempts:
-        return finish("start", "Owner choice preserved." if owner else "Cheapest eligible configured tier.", selected)
+        if owner:
+            return finish("start", "Owner choice preserved.", selected)
+        reason = "%s mode, %s work: start on %s." % (mode, tier, selected)
+        if selected != preferred[0]:
+            reason = ("%s mode, %s work: preferred %s unavailable or ineligible; started on %s instead."
+                      % (mode, tier, preferred[0], selected))
+        return finish("start", reason, selected)
     if owner and owner != current:
         return finish("start", "New explicit owner choice; launch a fresh context with prior discoveries.", owner)
     # A fresh tier begins its own evidence window. Earlier cheap-tier failures
@@ -199,7 +235,13 @@ def decide(request):
         return finish("retry", "Resume from the valid recovery handoff on the same model; exhaustion is not poor quality.", selected)
     if latest["outcome"] == "progress" or latest.get("new_evidence", []):
         return finish("retry", "Useful progress: retain discoveries and targeted feedback on the same model.", selected)
-    repeated = (len(window) >= 2 and all(a["outcome"] == "failed" and not a.get("new_evidence", []) for a in window[-2:])
+    if mode == "speed" and owner is None and latest["outcome"] == "failed":
+        # Speed trades diagnosis patience for time: one failure without new evidence moves up.
+        successor = next_tier(current)
+        if successor is not None:
+            return finish("escalate", "Speed mode: one failed attempt without new evidence moves up to %s; "
+                          "fresh context for this task/phase only." % successor, successor)
+    repeated =(len(window) >= 2 and all(a["outcome"] == "failed" and not a.get("new_evidence", []) for a in window[-2:])
                 and window[-2]["bug"] == latest["bug"] and window[-2]["signature"] == latest["signature"])
     poor = [a for a in window if a.get("poor_patch") is True and a["outcome"] == "failed"
             and a.get("review_rounds", 0) + a.get("ci_reruns", 0) > 0]
@@ -230,12 +272,7 @@ def decide(request):
         return finish("diagnose", "Diagnosis lacks meaningful current-task attempts, evidence or rationale.", selected)
     if owner is not None:
         return finish("owner_decision", "Evidence supports escalation but an explicit owner model is pinned.", selected)
-    start = ORDER.index(current) + 1 if current in ORDER else len(ORDER)
-    successor = None
-    for candidate in ORDER[start:]:
-        if assess(candidate):
-            successor = candidate
-            break
+    successor = next_tier(current)
     if successor is None:
         return finish("blocked", "No eligible next tier; retain recovery evidence without bypassing budgets or permissions.")
     return finish("escalate", "Diagnosed " + kind + "; fresh context for this task/phase only.", successor)

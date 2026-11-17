@@ -9,10 +9,11 @@ interactive picker, permissions, tool allowlists, review independence or gates.
 Resolve `model-route.sh` through the usual shared-tool paths. Run it with
 `--input <request.json>`. It makes no provider calls and changes no state.
 Supply an explicit current runtime inventory, not guessed availability. The
-configured unattended ladder is Haiku → Sonnet → Opus; Fable requires an explicit
-owner choice. This is an ordinal cost policy, not a dollar estimate or a claim
-that every task succeeds on Haiku. Actual availability and capability win over
-the ladder. Source: [provider pricing](https://platform.claude.com/docs/en/about-claude/pricing),
+cost ladder is Haiku → Sonnet → Opus; Fable requires an explicit owner choice,
+except the speed-mode Heavy start below. The run mode and issue tier choose the
+starting tier (see "Run mode and issue tier"). This is an ordinal cost policy,
+not a dollar estimate or a claim that every task succeeds on Haiku. Actual
+availability and capability win over the ladder. Source: [provider pricing](https://platform.claude.com/docs/en/about-claude/pricing),
 [subagent model/tool configuration](https://code.claude.com/docs/en/sub-agents).
 
 For each candidate confirm tool support, required context, the agent's unchanged
@@ -22,7 +23,7 @@ guaranteed correct. Unknown capability/availability is ineligible. Set `capable`
 to `true` when the tier's requirements are supported. If a concrete requirement
 is missing, set `false` **and** add a valid `capability_gap` (see "Capability
 gap" below). An unsupported `false` is disregarded: the router selects the
-cheapest eligible tier and names the fallback. A provider
+next eligible tier in the mode's preference order and names the fallback. A provider
 limit is handled by existing park/wake controls, never an excuse to buy another
 tier or silently switch accounts. Preserve the existing reserve gate's own
 freshness/unknown semantics; the routing helper does not reinterpret its marker.
@@ -31,7 +32,7 @@ Request shape (the inventory below is illustrative, not a live authorization):
 
 ```json
 {
-  "task": "issue-123", "phase": "A",
+  "task": "issue-123", "phase": "A", "mode": "default", "tier": "Light",
   "launch_allowed": true, "permissions_preserved": true,
   "runtime": {"version": "2.1.312", "model_override_forced": false},
   "owner_model": null, "current_model": null,
@@ -63,6 +64,27 @@ three launch. Exit 3 (`wait`, `diagnose`, `owner_decision`, `blocked`) launches 
 persist the pending work and recover or surface an owner-only decision as
 appropriate. Exit 2 means invalid/unreadable input: retain the error and repair
 the request, never fall back to a premium literal.
+
+### Run mode and issue tier
+
+`mode` is the PM run mode read with `run-mode.sh get` (`run-modes.md`); absent or
+unrecognized reads as `default`. `tier` is the issue's Light, Standard or Heavy
+tier; absent reads as Light, the pre-mode behaviour, so callers should always set
+it. An unrecognized tier is invalid (exit 2). The decision echoes both fields.
+
+| Mode | Light | Standard | Heavy | Escalation after a failure |
+|------|-------|----------|-------|----------------------------|
+| default | Haiku | Sonnet | Opus | two equivalent failures plus diagnosis |
+| speed | Sonnet | Opus | Fable (Opus if unavailable) | one failed attempt without new evidence moves up |
+| cheap | Haiku | Haiku | Haiku | two equivalent failures plus diagnosis |
+
+Fallback when a preferred tier is unavailable or ineligible: the next entry in
+that row's preference order, named in `reason`. Fable is never a default or cheap
+start without an owner choice. An explicit owner pin wins in every mode, an
+unavailable pin still blocks, and budget, reserve, launch, review and merge gates
+are unchanged. Speed escalates by one tier at a time and never to Fable; a
+Fable worker started in speed mode keeps its model on retries and is blocked
+after a mode change to another mode. A mode change affects only later launches.
 
 ### Runtime precedence preflight
 
