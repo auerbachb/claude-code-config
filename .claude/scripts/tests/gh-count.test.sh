@@ -13,9 +13,11 @@ SCRIPTS="$REPO_ROOT/.claude/scripts"
 LIB="$SCRIPTS/lib/gh-count.sh"
 [[ -f "$LIB" ]] || { echo "FAIL: missing $LIB" >&2; exit 1; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
+# Start from a clean baseline: a caller's own counter settings must not leak into any case.
+unset GH_REST_COUNT GH_REST_WARN_AT GH_REST_COUNT_ACTIVE
 
 PASS=0
 FAIL=0
