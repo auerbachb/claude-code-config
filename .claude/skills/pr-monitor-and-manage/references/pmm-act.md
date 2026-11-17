@@ -235,10 +235,11 @@ CR_BUDGET_OK=1
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt. Do **not** block spawn entirely when the cap is exhausted.
 
-**Cost-first preflight.** For each allocated task, resolve `model-route.sh`
+**Model preflight.** For each allocated task, resolve `model-route.sh`
 through the shared-script candidate order and run `task-model-routing.md`'s
 `task-model-route-dispatch` block using refreshed eligibility and its existing
-scoped session/handoff routing record. Persist request/decision before dispatch;
+scoped session/handoff routing record. Set the request's `mode` from
+`run-mode.sh get` and its `tier` per `task-model-routing.md` §Run mode and issue tier (an unresolved tier is sent unset and routes as Standard). Persist request/decision before dispatch;
 only `start`, `retry`, or `escalate` selects `ROUTED_MODEL`. Block on other
 results or failed writes. Preserve attempt evidence on successors and all
 existing permission, cap, budget and review controls.

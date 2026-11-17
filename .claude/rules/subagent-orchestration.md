@@ -23,16 +23,18 @@ Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/
 
 ## Model Selection
 
-**Cost-first selection (every spawn).** Resolve `model-route.sh` and execute
+**Run-mode selection (every spawn).** Resolve `model-route.sh` and execute
 `.claude/reference/task-model-routing.md`'s dispatch block for each task/phase.
-Choose the cheapest available capable tier; preserve explicit owner choices,
-tool/context support, permissions and launch/reserve/budget gates. Persist the
-request and decision through scoped state helpers before dispatch; failed writes
-launch nothing. Pass the returned alias explicitly; frontmatter is only a cheap
-fallback.
+The run mode (`default`, `speed`, `cheap`) and the issue tier choose the starting
+tier; preserve explicit owner choices, tool/context support, permissions and
+launch/reserve/budget gates. Persist the request and decision through scoped state
+helpers before dispatch; failed writes launch nothing. Pass the returned alias
+explicitly; frontmatter is only a cheap fallback.
 
-Keep cheap retries while producing useful evidence. Slow work, one failed test
-or an arbitrary retry count never upgrades a worker. Diagnose equivalent failures
+Retries stay on the current tier while producing useful evidence. Speed mode
+moves up after one failure without new evidence; default and cheap modes need a
+diagnosis first. In default and cheap modes, slow work, one failed test or an
+arbitrary retry count never upgrades a worker by itself. Diagnose equivalent failures
 or poor-patch review/CI churn before task-local escalation. Preserve discoveries,
 local checks, batched changed pushes, independent review and merge gates. Store
 actual cost or unknown; routine retries stay silent.
