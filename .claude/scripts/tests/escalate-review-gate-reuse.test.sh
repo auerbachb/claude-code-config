@@ -102,6 +102,14 @@ echo "== (g4): boundary — a 50s-old result (margin for run time) is still reus
 seed; mutate '.saved_epoch -= 50'
 run_case "g4 50s old" gate_met 0
 
+echo "== (g4b): an oversized or odd GATE_CACHE_TTL never extends the life past 60s =="
+seed; mutate '.saved_epoch -= 61'; GATE_CACHE_TTL=3600 run_case "g4b ttl=3600, 61s old" no_reviewer 1
+seed; mutate '.saved_epoch -= 61'; GATE_CACHE_TTL=99999999999999 run_case "g4b huge ttl" no_reviewer 1
+seed; mutate '.saved_epoch -= 61'; GATE_CACHE_TTL=abc run_case "g4b non-numeric ttl -> default 60" no_reviewer 1
+seed; GATE_CACHE_TTL=abc run_case "g4b non-numeric ttl, fresh result reused" gate_met 0
+seed; GATE_CACHE_TTL=0 run_case "g4b ttl=0 -> no reuse" no_reviewer 1
+seed; mutate '.saved_epoch -= 40'; GATE_CACHE_TTL=30 run_case "g4b smaller ttl honoured" no_reviewer 1
+
 echo "== (g5): corrupt / partial saved result -> live gate run, never a pass =="
 seed; printf '{"schema":1,"saved_epoch":' > "$CACHE_FILE";           run_case "g5 truncated file" no_reviewer 1
 seed; : > "$CACHE_FILE";                                              run_case "g5 empty file"     no_reviewer 1

@@ -43,6 +43,10 @@ cat > "$STUB_BIN/gh-wrap" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/{owner}/{repo}/pulls/84" && "$*" == *"--jq"* ]]; then
   [[ -n "${FAKE_SNAPSHOT_FAIL:-}" ]] && exit 1
+  if [[ -n "${FAKE_BASE_FLIPS:-}" ]]; then   # second and later reads see a moved base
+    n=$(cat "$FAKE_BASE_FLIPS" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_BASE_FLIPS"
+    if (( n >= 1 )); then echo "org/c $HEAD40 cccccccc0000000000000000000000000000cccc"; exit 0; fi
+  fi
   echo "org/c $HEAD40 $BASE40"; exit 0
 fi
 exec "$REAL_STUB_GH" "$@"
@@ -132,6 +136,16 @@ STUB
 cycle; rc=$?
 check_eq "(s5) exit code still the gate's" "0" "$rc"
 check_eq "(s5) head mismatch -> nothing saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+
+echo "== (s6): base (or HEAD) moving between the before and after reads -> nothing saved =="
+rm -rf "$GATE_CACHE_DIR"; gate_stub false 1; rm -f "$TMP/flips"
+FAKE_BASE_FLIPS="$TMP/flips" cycle; rc=$?
+check_eq "(s6) exit code still the gate's" "1" "$rc"
+check_eq "(s6) base changed during the gate run -> nothing saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+check_eq "(s6) both reads were made (before and after)" "2" "$(cat "$TMP/flips")"
+rm -rf "$GATE_CACHE_DIR"; gate_stub false 1
+cycle; rc=$?
+check_eq "(s6) control: stable base -> saved" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
 
 echo "== polling-state-gate-gate-save: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]]

@@ -18,7 +18,7 @@
 #     delay a no-review-override verdict by one cycle (the override window is
 #     time-based and an unmet result predates it), never create a met or a paid
 #     trigger;
-#   - it is younger than GATE_CACHE_TTL seconds (default 60) and not from the
+#   - it is younger than GATE_CACHE_TTL seconds (default and hard maximum 60) and not from the
 #     future.
 # New-review invalidation: no cheap REST read names "a review was posted", so
 # the lifetime is the guard. The consumer runs seconds after the producer in the
@@ -28,7 +28,18 @@
 # The file lives under ~/.claude/gate-cache/ (never in a worktree), is written
 # atomically, and holds no token. A failed write is ignored by the caller.
 
-GATE_CACHE_TTL="${GATE_CACHE_TTL:-60}"
+# Hard ceiling on a saved result's life, whatever the environment says: a longer
+# life would carry a result into later poll cycles, where reviews can change with
+# no SHA changing. Unset or non-numeric -> the 60s default; above the ceiling ->
+# the ceiling; 0 -> no reuse at all.
+GATE_CACHE_TTL_MAX=60
+gate_cache_ttl() {
+  local v="${GATE_CACHE_TTL:-$GATE_CACHE_TTL_MAX}"
+  [[ "$v" =~ ^[0-9]{1,9}$ ]] || v="$GATE_CACHE_TTL_MAX"
+  v=$((10#$v))
+  (( v > GATE_CACHE_TTL_MAX )) && v="$GATE_CACHE_TTL_MAX"
+  printf '%s' "$v"
+}
 
 gate_cache_dir() { printf '%s' "${GATE_CACHE_DIR:-$HOME/.claude/gate-cache}"; }
 
@@ -82,7 +93,7 @@ gate_cache_load() {
   [[ -n "$head" && -n "$base" && -f "$f" && -r "$f" ]] || return 1
   now="$(date +%s)"
   jq -ce --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --argjson pr "$pr" \
-     --arg head "$head" --arg base "$base" --argjson now "$now" --argjson ttl "$GATE_CACHE_TTL" '
+     --arg head "$head" --arg base "$base" --argjson now "$now" --argjson ttl "$(gate_cache_ttl)" '
     select(type == "object" and .schema == 1
       and (.saved_epoch | type) == "number" and (.rc | type) == "number"
       and .owner_repo == $or and .pr == $pr and .head_sha == $head and .base_sha == $base
