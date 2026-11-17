@@ -407,6 +407,21 @@ extract_knob_value() {
   '
 }
 
+# Succeeds (exit 0) when the config text carries a `KEY=`/`KEY:` line for the key,
+# whether or not it has a value. Same matching rules as extract_knob_value.
+knob_line_present() {
+  awk -v key="$1" '
+    {
+      i = match($0, /[=:]/)
+      if (i == 0) next
+      k = substr($0, 1, i - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (tolower(k) == tolower(key)) { found = 1; exit }
+    }
+    END { exit (found ? 0 : 1) }
+  '
+}
+
 # Resolve one knob: env override -> the `## Active work` config line -> the
 # built-in default. Prints "<value> <source>". Both knobs share this path so
 # their precedence and warn-and-fall-back contract cannot drift apart. An empty
@@ -440,7 +455,15 @@ resolve_knob() {
           warn "pm-config-get.sh usage error while reading the $noun; using default"
         elif [[ $rc -eq 0 ]]; then
           raw="$(printf '%s\n' "$body" | extract_knob_value "$key")"
-          [[ -n "$raw" ]] && source="config"
+          if [[ -n "$raw" ]]; then
+            source="config"
+          elif printf '%s\n' "$body" | knob_line_present "$key"; then
+            # `KEY=` with no value is a configured mistake, not an absent key:
+            # warn and take the default, like any other invalid value.
+            warn "$key is set but empty in pm-config.md — using default $def"
+            printf '%s %s' "$def" "default"
+            return
+          fi
         fi
       fi
     fi

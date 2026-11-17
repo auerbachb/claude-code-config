@@ -1957,12 +1957,13 @@ If missing, reconstruct state from GitHub API.
 
 ## Phase B Instructions
 
+0. Parent sets `POLL_INTERVAL_S={POLL_INTERVAL_S}` at launch from `"$ACTIVE_WORK_CAP_SH" --poll-interval <running pipelines>` (120 above 8 running pipelines, else 60). Use it for every poll cycle below; a rate-limited or failed response is no data.
 1. Read the handoff file (resolve path: `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}`). **Phase-order check:** rank `A=1, B=2, C=3`; you expect `phase_completed: "A"` (or `"B"` when you are a replacement Phase B). Anything else — missing, empty, unrecognized — print a warning naming both the value found and the value expected, then continue on GitHub-derived state rather than the handoff's `reviewer`/`head_sha`.
 2. Check for unresolved findings BEFORE requesting any review:
    - Fetch all 3 endpoints (reviews, inline comments, issue comments) with per_page=100.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
 3. Check ALL CI check-runs. Fix any failures before continuing.
-4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
+4. Poll for CR review every `POLL_INTERVAL_S` seconds on all 3 endpoints. Filter by coderabbitai[bot].
 5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
    - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD, or the gate is met via the no-review override (issue #1899) — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.

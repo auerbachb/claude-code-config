@@ -63,6 +63,7 @@ The parent agent provides:
 - **Handoff file path** (e.g., `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json`; resolve with `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}}`)
 - **HEAD SHA** from the previous phase
 - **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
+- **POLL_INTERVAL_S**: the seconds between poll cycles, read by the parent from `active-work-cap.sh --poll-interval <running pipelines>` at launch (120 above 8 running pipelines, else 60)
 - **Existing findings** (if any were already posted before this agent launched)
 
 ## Safety Rules (NON-NEGOTIABLE)
@@ -151,7 +152,9 @@ Run the session-start / pre-review comment audit per `cr-github-review.md` ("Ses
 
 ## CodeRabbit Review Path (when `reviewer` = `cr`)
 
-### Polling (60-second cycle)
+### Polling (POLL_INTERVAL_S cycle)
+
+Sleep `POLL_INTERVAL_S` seconds between cycles, as the parent supplied it. Use 60 only when the parent omitted it. A rate-limited or failed GitHub response is **no data** for that cycle: keep the last watermark and never read it as clean.
 
 **Call `run_script pr-state.sh --pr {{PR_NUMBER}}` ONCE per poll cycle.** It resolves the HEAD SHA fresh every invocation (eliminating the stale-SHA hazard) and bundles reviews, inline comments, issue comments, unresolved threads, check-runs, and bot statuses into one JSON file. Read everything downstream via jq — do NOT re-issue separate `gh api` calls:
 

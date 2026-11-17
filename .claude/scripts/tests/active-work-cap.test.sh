@@ -13,6 +13,11 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/active-work-cap.sh"
 
+# Inherited env overrides would make the default-width cases read the caller's
+# shell instead of the fixture. Every case sets what it needs explicitly.
+unset CLAUDE_ACTIVE_WORK_CAP CLAUDE_PIPELINE_CEILING CLAUDE_DEFAULT_MODE_WIDTH \
+  CLAUDE_SPEED_MODE_WIDTH CLAUDE_CHEAP_MODE_WIDTH CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT
+
 TMP_DIR="$(mktemp -d)"
 cleanup() { chmod -R u+w "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -1885,6 +1890,38 @@ if G_OUT=$(run --width --cap); then
 fi
 [[ -z "$G_OUT" ]] || fail "39g: a failed --width read must print no width, got '$G_OUT'"
 ok "39g: a failed width read prints nothing and exits non-zero, so callers launch nothing new"
+
+# (h) An empty configured key is a mistake, not an absent one: DEFAULT_MODE_WIDTH=
+# warns naming the key and falls back to 15. An absent key stays silent.
+set_run_mode default
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+DEFAULT_MODE_WIDTH=
+```'
+W=$(run --width 2>"$TMP_DIR/emptyerr") || fail "39h: an empty DEFAULT_MODE_WIDTH must fall back, not exit non-zero"
+[[ "$W" == "15" ]] || fail "39h: an empty DEFAULT_MODE_WIDTH should read the default 15, got '$W'"
+grep -q 'DEFAULT_MODE_WIDTH' "$TMP_DIR/emptyerr" || fail "39h: an empty DEFAULT_MODE_WIDTH must warn naming the key, stderr: $(cat "$TMP_DIR/emptyerr")"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+```'
+W=$(run --width 2>"$TMP_DIR/absenterr") || fail "39h: an absent key must not fail"
+[[ "$W" == "15" ]] || fail "39h: an absent DEFAULT_MODE_WIDTH should read 15, got '$W'"
+[[ ! -s "$TMP_DIR/absenterr" ]] || fail "39h: an absent key must stay silent, stderr: $(cat "$TMP_DIR/absenterr")"
+ok "39h: an empty configured width key warns and falls back; an absent key is silent"
+
+# (i) One reader for every launch limit. /pm, /subagent and /wave bound their
+# parallel width with --width, and the orchestration rule names that same width
+# as the per-thread limit. No skill derives a launch limit from the raw ceiling.
+for F in pm/SKILL.md subagent/SKILL.md wave/SKILL.md; do
+  P="$REPO_ROOT/.claude/skills/$F"
+  grep -q 'ACTIVE_WORK_CAP_SH" --width' "$P" || fail "39i: $F must read its launch limit with --width"
+  if grep -F -e 'ACTIVE_WORK_CAP_SH" --ceiling' -e 'ACTIVE_WORK_CAP_SH --ceiling' "$P" >/dev/null; then
+    fail "39i: $F still derives a launch limit from --ceiling (the raw PIPELINE_CEILING)"
+  fi
+done
+grep -q -- 'active-work-cap.sh --width' "$REPO_ROOT/.claude/rules/subagent-orchestration.md" \
+  || fail "39i: subagent-orchestration.md must name the mode width (--width) as the per-thread limit"
+ok "39i: pm, subagent, wave and the orchestration rule all read the one width"
 unset CLAUDE_SESSION_REPO
 
 # --- 40. Review-poll cadence (#2430) ------------------------------------------
