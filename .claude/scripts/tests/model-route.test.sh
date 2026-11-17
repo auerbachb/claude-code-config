@@ -18,7 +18,7 @@ root = Path(sys.argv[1])
 script = root / '.claude/scripts/model-route.sh'
 report = []
 base = {
-    'task': 'fixture-task', 'phase': 'A', 'launch_allowed': True,
+    'task': 'fixture-task', 'phase': 'A', 'tier': 'Light', 'launch_allowed': True,
     'permissions_preserved': True, 'attempts': [],
     'runtime': {'version':'2.1.312', 'model_override_forced':False},
     'models': [dict(model=m, available=True, capable=True, budget_allowed=True,
@@ -317,8 +317,16 @@ with tempfile.TemporaryDirectory() as tmp:
     check('absent mode reads as default', data, 'start', 'opus', reason=['default mode'])
     data['mode'] = 'turbo'
     assert check('unknown mode reads as default', data, 'start', 'opus')['mode'] == 'default'
-    no_mode = copy.deepcopy(base)
-    assert check('no tier reads as light', no_mode, 'start', 'haiku')['mode'] == 'default'
+    # An unresolved tier (no tier key, or null) routes as Standard and the reason says so.
+    no_tier = copy.deepcopy(base)
+    del no_tier['tier']
+    assert check('no tier routes as standard', no_tier, 'start', 'sonnet',
+                 reason=['Tier unresolved; routed as Standard'])['tier'] == 'Standard'
+    null_tier = copy.deepcopy(base)
+    null_tier.update(mode='speed', tier=None)
+    check('null speed tier routes as standard on opus', null_tier, 'start', 'opus',
+          reason=['Tier unresolved; routed as Standard'])
+    check('supplied tier names no unresolved note', copy.deepcopy(base), 'start', 'haiku', reason=[])
     data = copy.deepcopy(base)
     data['tier'] = 'Huge'
     check('unrecognized tier is invalid', data, 'invalid', code=2)

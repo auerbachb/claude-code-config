@@ -69,8 +69,14 @@ the request, never fall back to a premium literal.
 
 `mode` is the PM run mode read with `run-mode.sh get` (`run-modes.md`); absent or
 unrecognized reads as `default`. `tier` is the issue's Light, Standard or Heavy
-tier; absent reads as Light, the pre-mode behaviour, so callers should always set
-it. An unrecognized tier is invalid (exit 2). The decision echoes both fields.
+tier. This is the single rule for resolving it: take it from the issue's estimate
+via `estimate-resolve.sh` (`time-estimates.md` tier vocabulary; XL counts as
+Heavy). When it cannot be resolved (the issue is unestimated or the helper fails),
+omit `tier` or send null: the request routes as Standard and the decision's
+`reason` says "Tier unresolved; routed as Standard". Callers never reject a launch
+for a missing tier. An unrecognized tier value is invalid (exit 2). The decision
+echoes both fields. `/subagent`, `/pm` and `pmm-act` point here rather than
+restating it.
 
 | Mode | Light | Standard | Heavy | Escalation after a failure |
 |------|-------|----------|-------|----------------------------|
@@ -123,7 +129,8 @@ same inventory row:
   and, when a higher tier is chosen, `reason` names the skipped tier and `kind`.
 - A `false` with no gap, or with a missing or malformed one (bad `kind`, blank
   field, or a non-object), is **disregarded**. The tier stays eligible: a fresh
-  start chooses the cheapest eligible tier, a retry keeps its current tier, and
+  start chooses the first eligible tier in the mode's start order for the issue tier
+(the ladder row above), a retry keeps its current tier, and
   `capability_fallback` names the tier with `basis` `missing` or `malformed`.
   `reason` says the flag was disregarded for every such tier, including one
   routing moved past (marked `not selected`).
@@ -230,7 +237,7 @@ discoveries, remaining blocker, verification and next action. Load the relevant
 phase module, not a giant skill/transcript. Resume the same model if context
 permits; a fresh context uses that same model and compact handoff. A model step
 is a **new task/phase context**, never a mid-session switch. Other tasks and
-phases retain their own cheapest eligible routes.
+phases retain their own routes.
 
 ## Attempt evidence and diagnosis
 

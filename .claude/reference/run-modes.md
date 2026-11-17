@@ -52,4 +52,4 @@ Decision-only output: an explicit set prints one line; routine reads print nothi
 
 ## Follow-ups
 
-Deferred to later increments of #2428 and #2429/#2430: `/subagent` consumers, the model-mix behavior, parallel width, and any expiry policy change.
+Deferred to later increments: parallel width (#2430) and any expiry policy change. The model mix per mode is in `task-model-routing.md` §Run mode and issue tier.

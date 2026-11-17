@@ -6,8 +6,8 @@ flag is disregarded, the cheapest eligible tier is chosen, and the decision
 names the fallback in capability_fallback. Accepted gaps go in capability_gaps.
 
 The optional run mode (default|speed|cheap; absent or unknown reads as default)
-picks the starting tier for an issue tier (Light|Standard|Heavy; absent reads as
-Light, the pre-mode behaviour). Mode also sets escalation patience: speed moves up
+picks the starting tier for an issue tier (Light|Standard|Heavy; an unresolved tier
+routes as Standard and the reason says so). Mode also sets escalation patience: speed moves up
 after one failed attempt without new evidence, default and cheap need diagnosis.
 """
 import argparse
@@ -113,7 +113,10 @@ def decide(request):
     fallbacks, gaps = [], []
     mode = request.get("mode")
     mode = mode if mode in MODES else "default"
-    tier = request.get("tier", "Light")
+    # An unresolved tier (absent or null: unestimated, or the estimate helper failed) routes as
+    # Standard and the decision says so. A supplied but unrecognized tier is invalid.
+    tier_unresolved = request.get("tier") is None
+    tier = "Standard" if tier_unresolved else request.get("tier")
     require(tier in TIERS, "tier must be Light, Standard or Heavy")
     result = {
         "schema_version": 1, "task": request["task"], "phase": request["phase"],
@@ -144,6 +147,8 @@ def decide(request):
         verb = "blocked by" if action == "blocked" else "skipped for"
         clauses += [" %s %s accepted %s capability gap." % (note["model"], verb, note["kind"])
                     for note in gaps]
+        if tier_unresolved:
+            reason = "Tier unresolved; routed as Standard. " + reason
         result.update(action=action, reason=reason + "".join(clauses), model=model,
                       capability_fallback=list(fallbacks), capability_gaps=list(gaps))
         if action in ("blocked", "diagnose", "owner_decision", "wait"):
