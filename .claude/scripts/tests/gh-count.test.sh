@@ -52,6 +52,22 @@ req() { # url remaining
     echo "* Request took 10ms"
   } >&2
 }
+if [[ "${1:-}" == "__shape" ]]; then
+  # Echoes what it received so a test can prove the shim passes arguments and stdin through unchanged.
+  shift
+  i=0
+  for a in "$@"; do i=$((i + 1)); printf 'arg%s=[%s]\n' "$i" "$a"; done
+  case " $* " in *" --input "*) printf 'stdin=[%s]\n' "$(cat)" ;; esac
+  echo "shape-stderr-text" >&2
+  exit "${FAKE_RC:-0}"
+fi
+# Under GH_DEBUG=api the real gh also logs the git commands it runs to find the repository
+# ("[git remote -v]"), outside any request block. Real stdout is JSON; that log is not.
+if [[ "${GH_DEBUG:-}" == api ]]; then
+  case "$1 ${2:-}" in
+    "pr view" | "repo view") { echo "[git remote -v]"; echo '[git config --get-regexp ^remote\..*\.gh-resolved$]'; } >&2 ;;
+  esac
+fi
 case "$1 ${2:-}" in
   "api graphql" | "pr view" | "repo view") req https://api.github.com/graphql 4000 ;;
   "api rate_limit") req https://api.github.com/rate_limit 4000 ;;
@@ -173,6 +189,36 @@ F_OUT="$(cat "$OUT")"; F_ERR="$(cat "$ERR")"
 FAKE_FAIL=1 FAKE_PAGES=2 run env GH_REST_COUNT=1 bash "$PROBE_DIR/probe.sh"
 eq "failing gh: stdout identical" "$F_OUT" "$(cat "$OUT")"
 eq "failing gh: gh's own error text is kept" "$F_ERR" "$(grep -v 'gh-count' "$ERR")"
+
+echo "# every call shape passes through the shim unchanged"
+# pr-state.sh and others capture `gh ... 2>&1` and parse it as JSON: gh's debug logging must
+# never reach the caller, not even the "[git ...]" lines gh prints outside its request blocks.
+cat >"$TMP/shape.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ -z "${GH_REST_COUNT_ACTIVE:-}" && -n "${GH_REST_COUNT:-}" ]]; then
+  . "$LIBDIR/gh-count.sh" && gh_count_reexec "${BASH_SOURCE[0]}" "$@" || true
+fi
+echo "A:"; gh pr view 1 --json number 2>&1
+echo "B:"; gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
+echo "C:"; gh api graphql -f query='query($o: String!) { x }' -F n=1 2>&1
+echo "D:"; printf '{"k":"v w"}\n' | gh api repos/o/r/x --input - 2>&1
+echo "E:"; gh api --paginate 'repos/o/r/x?per_page=100' --jq '.[] | .a b' 2>&1
+echo "F:"; gh __shape 'two words' '' "quote'd" '$HOME' -q '.a|.b' 2>&1
+echo "G:"; printf 'in-data' | gh __shape --input - 2>&1
+FAKE_RC=3 gh __shape x >/dev/null 2>&1; echo "H:rc=$?"
+echo "I:$(FAKE_RC=3 gh __shape err 2>&1 >/dev/null)"
+SH
+cp "$LIB" "$TMP/gh-count.sh"
+SHAPE_OFF="$(PATH="$BIN:$PATH" LIBDIR="$TMP" bash "$TMP/shape.sh" 2>&1)"
+SHAPE_ON="$(PATH="$BIN:$PATH" LIBDIR="$TMP" GH_REST_COUNT=1 bash "$TMP/shape.sh" 2>&1 | grep -v 'gh-count')"
+# The shim collects stderr in a file and replays it after gh exits, so in a merged 2>&1 stream
+# stderr lines can follow the stdout lines; the content is compared, not that interleaving.
+eq "gh call shapes: stdout+stderr content identical with counting on" "$(printf '%s\n' "$SHAPE_OFF" | sort)" "$(printf '%s\n' "$SHAPE_ON" | sort)"
+case "$SHAPE_ON" in *"[git "*) bad "gh call shapes: no gh debug line leaks" ;; *) ok "gh call shapes: no gh debug line leaks" ;; esac
+case "$SHAPE_ON" in *"arg1=[two words]"*"arg2=[]"*"arg3=[quote'd]"*) ok "gh call shapes: arguments with spaces, empty and quotes arrive intact" ;; *) bad "gh call shapes: arguments intact (got: $SHAPE_ON)" ;; esac
+case "$SHAPE_ON" in *"stdin=[in-data]"*) ok "gh call shapes: stdin reaches gh" ;; *) bad "gh call shapes: stdin reaches gh" ;; esac
+case "$SHAPE_ON" in *"H:rc=3"*"I:shape-stderr-text"*) ok "gh call shapes: non-zero exit and stderr text pass through" ;; *) bad "gh call shapes: exit code and stderr text" ;; esac
 
 echo "# the three real scripts: same stdout and exit code with counting on"
 # A gh that fails on every call makes each script stop early and deterministically,

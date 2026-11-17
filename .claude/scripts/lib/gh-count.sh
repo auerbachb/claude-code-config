@@ -99,13 +99,19 @@ errf=$(mktemp "${TMPDIR:-/tmp}/gh-count-err.XXXXXX" 2>/dev/null) || {
 rc=0
 GH_DEBUG=api "$real" "$@" 2>"$errf" || rc=$?
 # gh's request log sits between "* Request at" and "* Request took". Drop it from
-# stderr, keep everything else, and record one tally line per request.
+# stderr (and gh's "[git ...]" command log), keep everything else, and record one
+# tally line per request.
 awk -v tally="$tally" '
   /^\* Request at / { inreq = 1; url = ""; rem = ""; next }
   inreq && /^\* Request to / { url = $4; next }
   inreq && tolower($0) ~ /^< x-ratelimit-remaining:/ { rem = $3; sub(/\r$/, "", rem); next }
   inreq && /^\* Request took / { record(); inreq = 0; next }
   inreq { next }
+  # With GH_DEBUG set gh also logs each git command it runs to find the repository,
+  # e.g. "[git remote -v]", outside any request block. Real callers parse the merged
+  # stdout and stderr of gh as JSON (pr-state.sh), so that log must not reach them.
+  # (No apostrophes in this program: it sits inside a single-quoted shell string.)
+  /^\[git .*\]$/ { next }
   { print }
   function record(   kind) {
     if (url ~ /\/rate_limit$/) return
