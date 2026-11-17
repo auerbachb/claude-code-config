@@ -10,12 +10,16 @@
 #        questions are recorded with the first option as the recommended one,
 #        and the reason names the receipt and says to keep working; off or
 #        expired: the hook prints nothing and the menu renders as before
-#   AC3  the operator's next message lists the recorded questions once, each
-#        with its recommended option and what was done; the next message does
-#        not list them again; an automated prompt lists them only once the
-#        window has ended
-#   script  on/off/status/is-active/window-ended, record ids, update, digest
-#        --mark watermark, per-repo files, usage errors
+#   AC3  the operator's next message lists the recorded questions, each
+#        with its recommended option and what was done; an automated prompt
+#        lists them only once the window has ended
+#   issue #2352  a question is listed until it is answered or dismissed and
+#        listing never hides it; a session sees a question in full once per
+#        return and then as one summary line; a hook killed at any point
+#        before it emits loses nothing; every question can be listed whatever
+#        was shown
+#   script  on/off/status/is-active/window-ended, record ids, update, digest,
+#        answer/dismiss/list, per-repo files, usage errors
 #   registration  global-settings.json carries both hooks once
 set -uo pipefail
 
@@ -42,7 +46,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/unattended-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude"
-unset CLAUDE_SESSION_REPO UNATTENDED_DIR
+unset CLAUDE_SESSION_REPO UNATTENDED_DIR CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID
 
 # A git repo whose origin names owner/name, so the repo key resolves.
 REPO_A="$TMP/repo-a"
@@ -145,8 +149,8 @@ IDB=$( (cd "$REPO_B" && "$SCRIPT" record --question "B?" ) )
 check "another repo has its own ids" "$IDB" "U-1"
 check "pending in repo A" "$(U pending)" "3"
 
-# ---------------------------------------------------------------- AC3: listed once
-printf '== AC3: listed once on the operator'"'"'s next message\n'
+# ---------------------------------------------------------------- AC3: listed on the next message
+printf '== AC3: listed on the operator'"'"'s next message\n'
 OUT=$(prompt_payload "$REPO_A" "<task-notification>agent done</task-notification>" | "$DIGEST")
 check "automated prompt mid-window: nothing" "$OUT" ""
 OUT=$(prompt_payload "$REPO_A" "  morning, what happened?" | "$DIGEST")
@@ -157,9 +161,11 @@ has "item 1 with its recommended option" "$CTX" "Recommended: Twilio (Recommende
 has "item 2 with what was done (update wins)" "$CTX" "Meanwhile: parked the merge"
 has "item 3 with what was done" "$CTX" "Meanwhile: kept the name"
 lacks "another repo's question is not listed" "$CTX" "B?"
-check "now nothing pending" "$(U pending)" "0"
+check "listing hid nothing: still pending" "$(U pending)" "3"
 OUT=$(prompt_payload "$REPO_A" "and now?" | "$DIGEST")
-check "the next operator prompt lists nothing again" "$OUT" ""
+SCTX=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')
+has "the same session's next prompt gets a one-line summary with the count and ids" "$SCTX" "3 saved questions still unanswered (U-1, U-2, U-3)"
+lacks "the summary is not the full list again" "$SCTX" "Recommended:"
 
 printf '== window end\n'
 U record --question "Late question?" --recommended "yes" >/dev/null
@@ -208,11 +214,212 @@ check "and appends nothing" "$(wc -l <"$QF" | tr -d ' ')" "$BEFORE"
 printf '== off\n'
 U on --for 1h >/dev/null
 U record --question "Q at off?" >/dev/null
+PEND_BEFORE_OFF=$(U pending)
 OFF=$(U off)
 has "off: switches off" "$OFF" "unattended: off"
 has "off: prints the digest" "$OFF" "Q at off?"
-check "off: marks it listed" "$(U pending)" "0"
+check "off: marks nothing (the question is still unresolved)" "$(U pending)" "$PEND_BEFORE_OFF"
+has "off: a later digest still lists it" "$(U digest)" "Q at off?"
 check "status after off" "$(U status)" "inactive"
+
+# ---------------------------------------------------------------- issue #2352
+# Everything below runs in repos of its own so the ids above stay put.
+printf '== issue #2352: listing never hides a question\n'
+export TMPDIR="$TMP/tmpdir"; mkdir -p "$TMPDIR"
+SESSION_STATE="$REPO_ROOT/.claude/scripts/session-state.sh"
+UDIR="$HOME/.claude/unattended"
+exists() { if [ -e "$1" ]; then echo present; else echo absent; fi; }
+REPO_C="$TMP/repo-c"; git init -q "$REPO_C"; git -C "$REPO_C" remote add origin https://github.com/acme/sprockets.git
+UC() { (cd "$REPO_C" && "$SCRIPT" "$@"); }
+QC="$UDIR/acme__sprockets.jsonl"
+SEEN_C="$UDIR/seen/acme__sprockets"
+sprompt() { # CWD SESSION_OR_EMPTY — the hook's additionalContext for an operator prompt
+  jq -cn --arg cwd "$1" --arg sid "$2" '{cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "what is waiting?"}
+    + (if $sid == "" then {} else {session_id: $sid} end)' | "$DIGEST" | jq -r '.hookSpecificOutput.additionalContext // ""'
+}
+"$SCRIPT" on --for 6h >/dev/null
+UC record --question "Pick the region?" --recommended "us-east" >/dev/null
+UC record --question "Rename the table?" --recommended "keep" >/dev/null
+BEFORE=$(wc -l <"$QC" | tr -d ' ')
+D1=$(UC digest); D2=$(UC digest --mark)
+has "digest lists both" "$D1" "U-2: Rename the table?"
+check "digest --mark (deprecated) prints the same" "$D2" "$D1"
+check "a digest appends nothing to the questions file" "$(wc -l <"$QC" | tr -d ' ')" "$BEFORE"
+check "and writes no listed record" "$(grep -c '"type":"listed"' "$QC")" "0"
+
+C1=$(sprompt "$REPO_C" s-c1)
+has "first prompt: full list, question 1" "$C1" "U-1: Pick the region?"
+has "first prompt: full list, question 2" "$C1" "U-2: Rename the table?"
+RKEY=$(jq -r '.unattended.since_epoch' "$HOME/.claude/session-state.json")
+check "the session's shown record holds both ids under the return key" \
+  "$(jq -r '[.key, (.ids | join(","))] | join("|")' "$SEEN_C/s-c1.json")" "$RKEY|U-1,U-2"
+C2=$(sprompt "$REPO_C" s-c1)
+has "same session: one summary line with the count and both ids" "$C2" "2 saved questions still unanswered (U-1, U-2), listed in full earlier this session"
+lacks "same session: no second full listing" "$C2" "Recommended:"
+check "still pending after being shown twice" "$(UC pending)" "2"
+
+UC record --question "Third thing?" --recommended "yes" >/dev/null
+C3=$(sprompt "$REPO_C" s-c1)
+has "a question saved after the first listing appears in full" "$C3" "U-3: Third thing?"
+has "and the header counts only the new one" "$C3" "Questions recorded while you were away (1)"
+has "the older two are one summary line" "$C3" "2 saved questions still unanswered (U-1, U-2)"
+lacks "the older two are not repeated in full" "$C3" "Pick the region?"
+C4=$(sprompt "$REPO_C" s-c2)
+has "a new session gets the full list (1)" "$C4" "U-1: Pick the region?"
+has "a new session gets the full list (3)" "$C4" "U-3: Third thing?"
+
+"$SESSION_STATE" --set ".unattended.since_epoch=424242" >/dev/null
+C5=$(sprompt "$REPO_C" s-c1)
+has "a new return lists everything in full again, same session" "$C5" "U-2: Rename the table?"
+check "and the session record now carries the new return key" "$(jq -r .key "$SEEN_C/s-c1.json")" "424242"
+
+N_SEEN=$(ls "$SEEN_C" | wc -l | tr -d ' ')
+N1=$(sprompt "$REPO_C" ""); N2=$(sprompt "$REPO_C" "")
+has "no session id: full list" "$N1" "U-2: Rename the table?"
+has "no session id: full list again, never a summary" "$N2" "U-2: Rename the table?"
+B1=$(sprompt "$REPO_C" "../escape")
+has "an unusable session id: full list" "$B1" "U-1: Pick the region?"
+check "no session id and a bad one write no record" "$(ls "$SEEN_C" | wc -l | tr -d ' ')" "$N_SEEN"
+check "nothing escaped the seen directory" "$(find "$HOME/.claude" -name "*escape*" | wc -l | tr -d " ")" "0"
+E1=$(jq -cn --arg cwd "$REPO_C" '{cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "hi"}' | CLAUDE_CODE_SESSION_ID=s-env "$DIGEST" | jq -r '.hookSpecificOutput.additionalContext')
+has "the session id may come from the environment" "$E1" "U-1: Pick the region?"
+check "and is recorded under that id" "$(exists "$SEEN_C/s-env.json")" present
+
+printf '== issue #2352: answering and dismissing are the only things that remove a question\n'
+BEFORE=$(wc -l <"$QC" | tr -d ' ')
+UC answer U-99 --answer x >/dev/null 2>&1; check "answer: an unknown id fails" "$?" "1"
+UC answer U-1x --answer x >/dev/null 2>&1; check "answer: a malformed id is a usage error" "$?" "2"
+UC answer U-1 >/dev/null 2>&1; check "answer without --answer is a usage error" "$?" "2"
+check "failed answers append nothing" "$(wc -l <"$QC" | tr -d ' ')" "$BEFORE"
+check "answer prints a receipt" "$(UC answer U-1 --answer 'us-west' --by operator)" "U-1 answered"
+check "answered record: id|answer|by|at" "$(jq -rs '[.[] | select(.type == "answered")][0] | [.id, .answer, .by, (.at | type)] | join("|")' "$QC")" "U-1|us-west|operator|number"
+UC answer U-1 --answer again >/dev/null 2>&1; check "answer: an already-resolved id fails" "$?" "1"
+check "and appends nothing" "$(jq -s '[.[] | select(.type == "answered")] | length' "$QC")" "1"
+check "pending counts the unresolved ones" "$(UC pending)" "2"
+R1=$(sprompt "$REPO_C" s-c9)
+lacks "answered: no longer listed" "$R1" "Pick the region?"
+has "the other is still listed" "$R1" "U-2: Rename the table?"
+
+BEFORE=$(wc -l <"$QC" | tr -d ' ')
+UC dismiss U-2 U-99 >/dev/null 2>&1; check "dismiss: one bad id in the set fails" "$?" "1"
+check "and nothing is written, not even the good id" "$(wc -l <"$QC" | tr -d ' ')" "$BEFORE"
+check "dismiss: the same id twice is one act" "$(UC dismiss U-2 U-2 --reason 'moot')" "U-2 dismissed"
+check "dismissed record: id|reason|by" "$(jq -rs '[.[] | select(.type == "dismissed")][0] | [.id, .reason, .by] | join("|")' "$QC")" "U-2|moot|operator"
+UC dismiss U-2 >/dev/null 2>&1; check "dismiss: an already-dismissed id fails" "$?" "1"
+check "dismiss another id" "$(UC dismiss U-3 --reason 'stale' | tr '\n' ' ')" "U-3 dismissed "
+check "all resolved: pending 0" "$(UC pending)" "0"
+check "all resolved: the hook lists nothing" "$(sprompt "$REPO_C" s-c10)" ""
+check "all resolved: digest prints nothing" "$(UC digest)" ""
+UC record --question "Fourth?" >/dev/null
+UC record --question "Fifth?" >/dev/null
+check "dismiss several ids in one act" "$(UC dismiss U-4 U-5 --reason 'bulk' | tr '\n' ' ')" "U-4 dismissed U-5 dismissed "
+check "and both are recorded" "$(jq -s '[.[] | select(.type == "dismissed" and .reason == "bulk")] | length' "$QC")" "2"
+
+LA=$(UC list)
+has "list: still shows the answered one with its answer" "$LA" "U-1 [answered]: Pick the region?"
+has "list: its answer" "$LA" "Answer: us-west"
+has "list: the dismissed one with its reason" "$LA" "Dismissed: moot"
+has "list --all: spans repos and labels them" "$(UC list --all)" "[acme/sprockets] Recorded questions (5):"
+has "list --all: includes another repo's questions" "$(UC list --all)" "[acme/widgets]"
+
+printf '== issue #2352: records written before this change\n'
+REPO_D="$TMP/repo-d"; git init -q "$REPO_D"; git -C "$REPO_D" remote add origin https://github.com/acme/legacy.git
+(cd "$REPO_D" && "$SCRIPT" record --question "Old one?" >/dev/null && "$SCRIPT" record --question "Old two?" >/dev/null)
+printf '%s\n' '{"type":"listed","through":2,"at":1}' >>"$UDIR/acme__legacy.jsonl"
+check "an old listed watermark hides nothing: pending" "$( (cd "$REPO_D" && "$SCRIPT" pending) )" "2"
+has "and both are listed" "$( (cd "$REPO_D" && "$SCRIPT" digest) )" "U-2: Old two?"
+(cd "$REPO_D" && "$SCRIPT" dismiss U-1 U-2 >/dev/null)
+check "dismiss clears the old ones" "$( (cd "$REPO_D" && "$SCRIPT" pending) )" "0"
+
+printf '== issue #2352: a hook killed at any point before it emits loses nothing\n'
+REPO_K="$TMP/repo-k"; git init -q "$REPO_K"; git -C "$REPO_K" remote add origin https://github.com/acme/killme.git
+UK() { (cd "$REPO_K" && "$SCRIPT" "$@"); }
+UK record --question "Kill A?" --recommended "a" >/dev/null
+UK record --question "Kill B?" --recommended "b" >/dev/null
+SEEN_K="$UDIR/seen/acme__killme"
+REAL_JQ=$(command -v jq); REAL_SCRIPT="$SCRIPT"
+export REAL_JQ REAL_SCRIPT KPID="$TMP/hook.pid" KMARK="$TMP/kill.marks"
+mkdir -p "$TMP/killjq"
+cat >"$TMP/killjq/jq" <<'SHIM'
+#!/bin/sh
+# Kills the hook when it builds its output JSON: after the digest was read, before anything is printed.
+for a in "$@"; do
+  case "$a" in *hookSpecificOutput*)
+    if [ -n "${KILL_AT_OUTPUT:-}" ]; then echo output >>"$KMARK"; kill -9 "$(cat "$KPID")"; sleep 1; exit 137; fi ;;
+  esac
+done
+exec "$REAL_JQ" "$@"
+SHIM
+cat >"$TMP/kill-unattended.sh" <<'SHIM'
+#!/bin/sh
+# Wraps unattended.sh for the hook: kills the hook right after `digest` has read the questions (before
+# the hook emits), or when it is about to record what was shown (after the hook emitted).
+case "$1" in
+  digest) if [ -n "${KILL_AT_DIGEST:-}" ]; then "$REAL_SCRIPT" "$@" >/dev/null 2>&1; echo digest >>"$KMARK"; kill -9 "$(cat "$KPID")"; sleep 1; exit 137; fi ;;
+  seen) if [ -n "${KILL_AT_SEEN:-}" ]; then echo seen >>"$KMARK"; kill -9 "$(cat "$KPID")"; sleep 1; exit 137; fi ;;
+esac
+exec "$REAL_SCRIPT" "$@"
+SHIM
+chmod +x "$TMP/killjq/jq" "$TMP/kill-unattended.sh"
+# hook_run SESSION [KILLVAR]: the hook's stdout. The hook is exec'd by a shell that wrote its pid, so
+# the shims can SIGKILL it for real.
+hook_run() {
+  local sid="$1" kv="${2:-}"
+  : >"$KMARK"
+  jq -cn --arg cwd "$REPO_K" --arg sid "$sid" '{cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back"}
+    + (if $sid == "" then {} else {session_id: $sid} end)' |
+    env ${kv:+"$kv=1"} UNATTENDED_SH="$TMP/kill-unattended.sh" PATH="$TMP/killjq:$PATH" \
+      bash -c 'echo $$ >"$KPID"; exec "$0"' "$DIGEST"
+}
+ctx_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null; }
+both_in_full() { # LABEL OUTPUT
+  local c; c=$(ctx_of "$2")
+  has "$1: question A in full" "$c" "U-1: Kill A?"
+  has "$1: question B in full" "$c" "U-2: Kill B?"
+  has "$1: with its recommended option" "$c" "Recommended: b"
+}
+
+OUT=$(hook_run s-k KILL_AT_DIGEST)
+check "killed between reading and emitting: nothing was printed" "$OUT" ""
+has "(the kill really fired)" "$(cat "$KMARK")" "digest"
+check "killed after the read: no shown record" "$(exists "$SEEN_K")" absent
+both_in_full "after a kill during the read, the next prompt" "$(hook_run s-k)"
+rm -rf "$SEEN_K"
+
+OUT=$(hook_run s-k KILL_AT_OUTPUT)
+check "killed while building the output: nothing was printed" "$OUT" ""
+has "(that kill really fired)" "$(cat "$KMARK")" "output"
+check "killed while building the output: no shown record" "$(exists "$SEEN_K")" absent
+both_in_full "after a kill during output construction, the next prompt" "$(hook_run s-k)"
+rm -rf "$SEEN_K"
+
+OUT=$(hook_run s-k3 KILL_AT_SEEN)
+both_in_full "killed after emitting, before recording what was shown: that prompt" "$OUT"
+check "that kill left no shown record" "$(exists "$SEEN_K/s-k3.json")" absent
+both_in_full "and the next prompt repeats the full list (a repeat, never a loss)" "$(hook_run s-k3)"
+rm -rf "$SEEN_K"
+
+# PR #2328's two residual paths: a kill at the fifth unconfirmed emission, and a kill before
+# emission with no transcript path. The payloads here never carry a transcript_path.
+for i in 1 2 3 4; do
+  OUT=$(hook_run s-k5 KILL_AT_SEEN)
+  both_in_full "emission $i (recorded nowhere)" "$OUT"
+done
+OUT=$(hook_run s-k5 KILL_AT_OUTPUT)
+check "the fifth is killed before emission" "$OUT" ""
+both_in_full "the sixth prompt still lists both questions in full" "$(hook_run s-k5)"
+check "no pending-delivery directory exists" "$(exists "$UDIR/pending")" absent
+check "no delivery log exists" "$(exists "$UDIR/delivery.log")" absent
+rm -rf "$SEEN_K"
+OUT=$(hook_run s-k6 KILL_AT_OUTPUT)
+check "no transcript path, with a session id: killed before emission, nothing printed" "$OUT" ""
+both_in_full "no transcript path, with a session id: the next prompt" "$(hook_run s-k6)"
+OUT=$(hook_run "" KILL_AT_OUTPUT)
+check "no transcript path, no session id: killed before emission, nothing printed" "$OUT" ""
+both_in_full "no transcript path, no session id: the next prompt" "$(hook_run "")"
+both_in_full "no session id: and every prompt after it" "$(hook_run "")"
+check "and the questions file is untouched by all of it" "$(grep -c '"type":"question"' "$UDIR/acme__killme.jsonl")" "2"
+check "...with no other record type added" "$(jq -s '[.[] | select(.type != "question")] | length' "$UDIR/acme__killme.jsonl")" "0"
 
 printf '\nunattended-mode.test.sh: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# catalog: tests — Proves one away-handling decision for every record combination, listed questions that survive a killed hook, a visible failed return, and no early expiry while a closing correction is pending
-# Tests for issue #2294 (PR #2328 review round 4):
+# catalog: tests — Proves one away-handling decision for every record combination, a visible failed return, and no early expiry while a closing correction is pending
+# Tests for issue #2294 (PR #2328 review round 4), trimmed by issue #2352:
 #   1. the truth table: `unattended.sh is-active`, `presence.sh is-away` and `presence.sh status` read ONE
 #      decision (lib/presence-decision.jq) for every combination of the unattended flag, the presence
 #      declaration, their age relation and whether a window ran out;
-#   2. pending delivery: a list is persisted before it is marked, shown again when the hook died before
-#      the model had it, never reported as "none saved", and not repeated once it was delivered;
 #   3. a failed `presence.sh return` is reported to the model and recorded;
-#   4. an expiry is never claimed while a closing-deadline correction is still pending.
+#   4. an expiry is never claimed while a closing-deadline correction is pending.
+# (Section 2, the pending-delivery record that kept a marked list alive, is gone: a saved question is
+# listed until it is answered or dismissed, so there is nothing to deliver or confirm. The rule and its
+# kill tests are in unattended-mode.test.sh.)
 #
 # Every run uses a throwaway HOME. State is seeded straight into the throwaway session-state.json (the
 # readers under test only read it) so the table runs fast; flows that WRITE state go through the real
-# scripts. The harness is simulated where it matters: `deliver` appends a hook's output to the session's
-# fake transcript the way Claude Code records injected context, and a killed hook is a stub `jq` that
-# dies on the hook's final emit.
+# scripts.
 set -uo pipefail
 
 REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -27,7 +26,6 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "SKIP: presence-delivery.test.sh — jq is not installed"
   exit 0
 fi
-REAL_JQ=$(command -v jq)
 
 PASS=0
 FAIL=0
@@ -41,9 +39,8 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/presence-delivery-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude" "$TMP/tr"
-unset CLAUDE_SESSION_REPO UNATTENDED_DIR UNATTENDED_DELIVERY_REF UNATTENDED_DELIVERY_SESSION UNATTENDED_DELIVERY_TRANSCRIPT
+unset CLAUDE_SESSION_REPO UNATTENDED_DIR CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID
 SF="$HOME/.claude/session-state.json"
-PEND="$HOME/.claude/unattended/pending"
 
 REPO_A="$TMP/repo-a"; git init -q "$REPO_A"; git -C "$REPO_A" remote add origin https://github.com/acme/widgets.git
 REPO_B="$TMP/repo-b"; git init -q "$REPO_B"; git -C "$REPO_B" remote add origin https://github.com/acme/gadgets.git
@@ -202,8 +199,7 @@ check "moved into the past: is-active (asked FIRST) says away handling applies" 
 check "and is-away agrees" "$(P is-away; echo $?)" 0
 
 # ============================================================================
-# Hook harness: payloads carry a transcript path; deliver records a hook's output in it the way the
-# harness does, so delivery can be verified.
+# Hook harness: payloads carry a transcript path, as the harness sends them.
 tpath() { printf '%s/tr/%s.jsonl' "$TMP" "$1"; }
 prompt_payload() { # SID CWD PROMPT
   [ -f "$(tpath "$1")" ] || : >"$(tpath "$1")"
@@ -216,33 +212,12 @@ ask_payload() { # SID CWD
     transcript_path: $tp, tool_name: "AskUserQuestion", tool_input: {questions: [{question: "Which provider?", header: "P",
     options: [{label: "Twilio (Recommended)", description: "x"}, {label: "Amazon", description: "y"}], multiSelect: false}]}}'
 }
-deliver() { # SID HOOK_OUTPUT — what the harness records of injected context
-  local c
-  c=$(printf '%s' "$2" | jq -r '.hookSpecificOutput.additionalContext // .hookSpecificOutput.permissionDecisionReason // ""')
-  [ -z "$c" ] || jq -cn --arg c "$c" '{type: "attachment", attachment: {type: "hook_additional_context", content: [$c]}}' >>"$(tpath "$1")"
-}
 ctx() { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
 operator() { # SID [CWD] -> hook output, delivered
   local out
   out=$(prompt_payload "$1" "${2:-$REPO_A}" "morning, I am back" | "$DIGEST")
-  deliver "$1" "$out"
   printf '%s' "$out"
 }
-operator_lost() { # SID [CWD]: the harness never records the output
-  prompt_payload "$1" "${2:-$REPO_A}" "morning, I am back" | "$DIGEST"
-}
-# A hook that dies on its final emit: every other jq call passes through to the real jq.
-STUB="$TMP/stubbin"; mkdir -p "$STUB"
-cat >"$STUB/jq" <<STUBJQ
-#!/usr/bin/env bash
-case "\$*" in *hookEventName*) exit 137 ;; esac
-exec "$REAL_JQ" "\$@"
-STUBJQ
-chmod +x "$STUB/jq"
-operator_killed() { # SID [CWD]: killed after persisting and marking, before the output is emitted
-  prompt_payload "$1" "${2:-$REPO_A}" "morning, I am back" | PATH="$STUB:$PATH" "$DIGEST"
-}
-
 K=0
 seed() { # here|away: a window that has run out
   K=$((K + 1))
@@ -255,176 +230,6 @@ seed() { # here|away: a window that has run out
   fi
 }
 sj() { jq -r "$1" "$SF"; }
-npend() { ls "$PEND"/*.json 2>/dev/null | wc -l | tr -d ' '; }
-
-printf '== 2a. killed after the list was persisted and marked: the next prompt shows it, never "none saved"\n'
-seed here
-U record --question "Rename the job?" --recommended "keep" >/dev/null
-UB record --question "Gadgets: which DB?" --recommended "postgres" >/dev/null
-OUT=$(operator_killed s-1)
-check "the killed hook emitted nothing" "$OUT" ""
-check "the marks were written (nothing unlisted is left)" "$(U pending)" 0
-check "a record per repo block is on disk" "$(npend)" 2
-check "the dialog waits (the winner never delivered)" "$(sj '.presence.return.dialog')" pending
-OUT=$(operator s-1)
-C=$(ctx "$OUT")
-has "his next prompt shows this repo's question" "$C" "Rename the job?"
-has "and the other repo's" "$C" "Gadgets: which DB?"
-lacks "and does not report none saved" "$C" "No questions were saved"
-has "the list says it was not confirmed shown" "$C" "not been confirmed shown"
-has "the presence dialog follows the list" "$C" "PRESENCE DIALOG"
-LIST_AT=$(printf '%s' "$C" | grep -n 'Rename the job' | head -1 | cut -d: -f1)
-DLG_AT=$(printf '%s' "$C" | grep -n 'PRESENCE DIALOG' | head -1 | cut -d: -f1)
-check "list first, dialog after" "$([ "$LIST_AT" -lt "$DLG_AT" ] && echo yes || echo no)" yes
-OUT=$(operator s-1)
-lacks "once the repeat was delivered it is not shown a third time" "$(ctx "$OUT")" "Rename the job?"
-check "and no record is left" "$(npend)" 0
-
-printf '== 2b. killed after the emit: delivered when the transcript has it, shown again when it does not\n'
-seed here
-U record --question "Emit delivered?" --recommended "y" >/dev/null
-OUT=$(operator s-1)
-has "the list went out with a delivery reference" "$(ctx "$OUT")" "Delivery reference pd-"
-check "a record exists until its delivery is confirmed" "$(npend)" 1
-OUT=$(operator s-1)
-lacks "next prompt: the transcript has the ref, so it is not repeated" "$(ctx "$OUT")" "Emit delivered?"
-check "and the record is dropped" "$(npend)" 0
-seed here
-U record --question "Emit dropped?" --recommended "y" >/dev/null
-operator_lost s-1 >/dev/null
-OUT=$(operator s-1)
-has "the harness never recorded it: shown again" "$(ctx "$OUT")" "Emit dropped?"
-OUT=$(operator s-1)
-lacks "and settled once that repeat is recorded" "$(ctx "$OUT")" "Emit dropped?"
-
-printf '== 2c. a takeover of a dead return winner never reports none saved over an undelivered list\n'
-seed here
-U record --question "Stranded?" --recommended "a" >/dev/null
-operator_killed s-1 >/dev/null
-# Rewind to what a winner that died BEFORE dialog-ready leaves: dialog still listing, 5 minutes old.
-"$STATE" --set '.presence.return.dialog="listing"' --set ".presence.return.generation=$(( $(date +%s) - 300 ))" >/dev/null
-check "probe: the dead winner is stale" "$(P probe)" listing-stale
-OUT=$(operator s-2)
-C=$(ctx "$OUT")
-has "another session takes over and lists it" "$C" "Stranded?"
-lacks "and does not say none were saved" "$C" "No questions were saved"
-check "the dialog waits for his next message" "$(sj '.presence.return.dialog')" pending
-
-printf '== 2d. the ordinary per-repo digest is closed the same way\n'
-seed here
-P return --no-dialog >/dev/null
-U record --question "Ordinary digest?" --recommended "y" >/dev/null
-OUT=$(operator_killed s-1)
-check "killed: nothing emitted" "$OUT" ""
-check "the question is marked listed" "$(U pending)" 0
-OUT=$(operator s-1)
-has "the next prompt shows it" "$(ctx "$OUT")" "Ordinary digest?"
-OUT=$(operator s-1)
-lacks "and then not again" "$(ctx "$OUT")" "Ordinary digest?"
-
-printf '== 2e. another session waits out the grace window; the dialog waits for the list\n'
-seed here
-U record --question "In flight elsewhere?" --recommended "y" >/dev/null
-operator_lost s-1 >/dev/null
-check "dialog pending after the lost emission" "$(sj '.presence.return.dialog')" pending
-OUT=$(operator s-2)
-lacks "a live session's list is not taken over inside the grace window" "$(ctx "$OUT")" "In flight elsewhere?"
-lacks "and the dialog does not jump ahead of it" "$(ctx "$OUT")" "PRESENCE DIALOG"
-for rec in "$PEND"/*.json; do jq -c ".stamped_at = $(( $(date +%s) - 300 ))" "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
-OUT=$(operator s-2)
-has "after the grace window another session shows it" "$(ctx "$OUT")" "In flight elsewhere?"
-
-printf '== 2f. an away-expiry list from the guard is persisted too\n'
-seed away
-U record --question "Saved before the end?" --recommended "go" >/dev/null
-OUT=$(ask_payload s-g "$REPO_A" | "$GUARD")
-R=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')
-has "the winner's deny carries the list" "$R" "Saved before the end?"
-has "and its delivery reference" "$R" "Delivery reference pd-"
-check "a record exists" "$(npend)" 1
-deliver s-g "$OUT"
-OUT=$(operator s-g)
-lacks "the deny reached the transcript, so the list is not repeated" "$(ctx "$OUT")" "Saved before the end?"
-
-printf '== 2g. no transcript path in the payload: still retained (never marked without a record)\n'
-seed here
-U record --question "No transcript?" --recommended "y" >/dev/null
-nopath() { jq -cn --arg sid "$1" --arg cwd "$REPO_A" '{session_id: $sid, cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back"}' | "$DIGEST"; }
-OUT=$(nopath s-n)
-has "listed" "$(ctx "$OUT")" "No transcript?"
-check "marked listed" "$(U pending)" 0
-check "and a record is retained, since nothing can confirm it" "$(npend)" 1
-OUT=$(nopath s-n)
-lacks "the same session's next prompt is the only signal there is: not repeated" "$(ctx "$OUT")" "No transcript?"
-check "and the record is retired" "$(npend)" 0
-seed here
-U record --question "No transcript, killed?" --recommended "y" >/dev/null
-jq -cn --arg sid s-n --arg cwd "$REPO_A" '{session_id: $sid, cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back"}' | PATH="$STUB:$PATH" "$DIGEST" >/dev/null
-for rec in "$PEND"/*.json; do jq -c ".stamped_at = $(( $(date +%s) - 300 ))" "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
-OUT=$(nopath s-other)
-has "killed before the emit, no path: another session shows it after the grace window" "$(ctx "$OUT")" "No transcript, killed?"
-
-printf '== 2h. a list that cannot be persisted is not marked listed\n'
-seed here
-U record --question "Cannot persist?" --recommended "y" >/dev/null
-: >"$HOME/.claude/unattended/pending"   # a file where the directory must go
-OUT=$(operator s-1)
-check "the question stays unlisted" "$(U pending)" 1
-lacks "and nothing is claimed as listed" "$(ctx "$OUT")" "Cannot persist?"
-rm -f "$HOME/.claude/unattended/pending"
-
-printf '== 2i. a transcript path whose file does not exist yet still gets a record\n'
-seed here
-U record --question "Early first prompt?" --recommended "y" >/dev/null
-NEWTP="$TMP/tr/not-yet.jsonl"
-rm -f "$NEWTP"
-OUT=$(jq -cn --arg cwd "$REPO_A" --arg tp "$NEWTP" '{session_id: "s-late", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back", transcript_path: $tp}' | "$DIGEST")
-has "the list is emitted" "$(ctx "$OUT")" "Early first prompt?"
-check "a record was written although the transcript file was missing" "$(npend)" 1
-check "and the question is marked listed" "$(U pending)" 0
-# The harness never recorded it, and the file shows up empty: the next prompt shows the list again.
-: >"$NEWTP"
-OUT=$(jq -cn --arg cwd "$REPO_A" --arg tp "$NEWTP" '{session_id: "s-late", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: "back", transcript_path: $tp}' | "$DIGEST")
-has "undelivered: shown again on the next prompt" "$(ctx "$OUT")" "Early first prompt?"
-
-printf '== 2j. an undelivered list never expires by age\n'
-seed here
-U record --question "Days later?" --recommended "y" >/dev/null
-operator_lost s-1 >/dev/null
-for rec in "$PEND"/*.json; do jq -c ".stamped_at = $(( $(date +%s) - 864000 )) | .staged_at = $(( $(date +%s) - 864000 ))" "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
-OUT=$(operator s-2)
-has "ten days on, another session still shows it" "$(ctx "$OUT")" "Days later?"
-
-printf '== 2k. past the emission cap: shown once more with a plain note, then retired and logged (never silent)\n'
-seed here
-U record --question "Never confirmed?" --recommended "y" >/dev/null
-operator_lost s-1 >/dev/null
-for rec in "$PEND"/*.json; do jq -c '.emits = 5' "$rec" >"$rec.new" && mv "$rec.new" "$rec"; done
-OUT=$(operator s-1)
-has "the operator prompt shows it one last time" "$(ctx "$OUT")" "Never confirmed?"
-has "with a plain note that it was never confirmed" "$(ctx "$OUT")" "emitted 5 times and the transcript never confirmed them"
-check "then the record is retired" "$(npend)" 0
-has "and the last emission is logged" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "last emission of a pending list after 5 unconfirmed emissions"
-
-printf '== 2l. a record that cannot be read is kept and logged, never deleted\n'
-seed here
-U record --question "Unreadable record?" --recommended "y" >/dev/null
-operator_lost s-1 >/dev/null
-REC1=$(ls "$PEND"/*.json | head -1)
-printf '{not json' >"$REC1"
-operator s-1 >/dev/null
-check "the unreadable record is still there" "$(npend)" 1
-has "and the failure is logged" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "could not read pending record"
-rm -f "$REC1"
-
-printf '== 2m. invariant: once a question is marked listed, a record exists or delivery was confirmed (every path above)\n'
-seed here
-U record --question "Invariant A?" --recommended "y" >/dev/null
-operator_killed s-1 >/dev/null
-check "killed after the mark: marked and retained" "$(U pending)/$(npend)" "0/1"
-operator s-1 >/dev/null
-operator s-1 >/dev/null
-check "confirmed by the transcript: marked and the record retired" "$(U pending)/$(npend)" "0/0"
 
 # ============================================================================
 printf '== 3. a failed return is reported, not swallowed\n'
@@ -445,9 +250,10 @@ has "and that other repos were not listed" "$C" "other repos have not been liste
 has "and that his next message retries" "$C" "next message retries"
 lacks "no dialog is asked on a failed return" "$C" "PRESENCE DIALOG"
 check "away handling is still in force" "$(U is-active; echo $?)" 0
-has "the failure is recorded" "$(cat "$HOME/.claude/unattended/delivery.log" 2>/dev/null)" "presence.sh return exited 11"
+has "the failure is recorded" "$(cat "$HOME/.claude/unattended/hook.log" 2>/dev/null)" "presence.sh return exited 11"
 OUT=$(operator s-1)
-has "his next message retries the return and lists" "$(ctx "$OUT")" "Behind a failed return?"
+# The failed-return turn already listed it in full to this session, so the retry carries the summary line.
+has "his next message retries the return and lists it (summary: seen in full this session)" "$(ctx "$OUT")" "still unanswered (U-1)"
 check "away handling ended" "$(U is-active; echo $?)" 1
 # A benign no-op (the window was re-declared in between) is not reported as a failure.
 seed here

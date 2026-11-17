@@ -137,12 +137,11 @@ session handles each return: it clears the lapsed window, switches unattended mo
 and that is still running changes nothing: he may be writing from his phone while away; only a lapsed
 window is returned from.
 
-**List first, then the dialog.** The winning session injects `unattended.sh digest --all --mark`
-(every repo's saved questions, labelled by repo) and says not to ask the presence question this turn.
+**List first, then the dialog.** The winning session injects `unattended.sh digest --all`
+(every repo's unresolved questions, labelled by repo) and says not to ask the presence question this turn.
 While the winner lists, the dialog is `listing`: `probe` says `returning`, and no other hook lists or
 asks (so the list always comes first and exactly once; a winner that died is given up on after two
-minutes, and the next operator message takes its place with `relist`, shows any list the dead winner
-persisted but never delivered, and lists the rest: see §Delivery of the saved questions). When listing ends (`dialog-ready`) with nothing saved the winner
+minutes, and the next operator message takes its place with `relist` and lists every unresolved question: see §Listing the saved questions). When listing ends (`dialog-ready`) with nothing saved the winner
 claims the dialog in the same turn. Otherwise it becomes `pending` and is claimed on his next
 operator message in any thread (`presence.sh dialog-claim`: one compare-and-set, `pending` to
 `asked`, so it goes out once in total), and the claiming thread runs `presence.sh ask` as before for
@@ -161,36 +160,37 @@ reads away; a flag turned off by hand under a live away reads here; a window wit
 never lapses. The full table is the header of the library, and `presence-delivery.test.sh` checks
 every combination against it.
 
-**Delivery of the saved questions.** `digest --mark` writes the `listed` watermark when it renders
-a list, so a hook killed between the mark and the model seeing the list would lose it, and the
-takeover of a dead return winner would then find nothing unlisted and say "No questions were saved".
-So when a hook triggers a listing (`unattended-digest.sh`, and `unattended-question-guard.sh` for an
-away expiry) it exports a delivery ref and the payload's `session_id` and `transcript_path`, and
-`unattended.sh` persists the rendered block as a record under `~/.claude/unattended/pending/`
-(temp file, then rename) **before** it appends the watermark. The hook appends the ref to its output.
-**Delivered** means the ref appears in that session's transcript: the harness records injected
-context there, so the model had the list. At the top of an operator prompt `unattended.sh settle`
-drops delivered records and returns the others: a record of the same session at once (its earlier hook
-was killed or its output dropped), one of another session after 120 seconds, and every undelivered
-one at once on a `relist` takeover. A returned record is re-owned by the new emission and settled the
-same way next time. The invariant: once a question's watermark is written there is a retained record of
-its list until delivery is confirmed; no path deletes an unconfirmed record silently. A record never
-expires by age; one that cannot be read is kept and logged; one that cannot be written means nothing is
-marked. After 5 emissions in which the ref never reached the transcript the list is emitted a last time
-with a plain note saying it was never confirmed, then retired (logged in `delivery.log`). The dialog
-waits while another session's list is still inside its 120 seconds. A list may therefore be shown
-twice; it is not shown zero times. Residual window: delivered to the model is not shown to the operator
-(the model may not print it; nothing here can observe that). A record whose payload named no
-`transcript_path` (Claude Code always sends one) cannot be confirmed at all, so that session's next
-prompt is taken as the signal, which is weaker; a bare CLI listing (`off`, a thread's own `expire`) has
-no delivery ref and no record and is marked when rendered, as before. The transcript file need not exist
-when the record is written: until it can be read the list counts as undelivered.
+**Listing the saved questions (issue #2352).** A saved question is listed on every return and every
+digest until it is **answered or dismissed** (`unattended.sh answer U-<n> --answer ...`, `dismiss U-<n>
+...`, both explicit and recorded, `unattended.sh` header). Listing alone never hides it, so a hook that
+dies at any point (before it reads, between reading and printing, after printing) loses nothing: the
+digest is a pure read with no lock and no watermark, and the next prompt lists the same questions. The
+earlier design marked a question listed and then tried to confirm delivery (a pending record, transcript
+confirmation, an emission cap, expiry, takeover handling); every confirmation step added a state that
+could itself be lost, and four review rounds on PR #2328 kept finding the next loss path. All of it is
+gone. A question may be shown more than once; it cannot fail to be shown.
 
-Two interruption paths remain open: a hook killed at the five-emission cap before it emits the final list, and a hook killed before emission when the payload named no transcript path (the same session's next prompt then retires the record). Both need a kill in a narrow window, and the questions stay in the per-repo questions file (`~/.claude/unattended/<owner>__<repo>.jsonl`, lowercase) but no command re-lists them: `digest` and `pending` count only questions after the `listed` watermark, so the file has to be read directly; the redesign that removes the whole class (never mark a question shown on listing) is Issue #2352.
+A return's list is printed first, and only then does the presence state leave `listing` (`dialog-ready`): a winner killed before it printed stays `listing`, goes stale after two minutes, and the next operator message takes over with `relist` and lists every repo again.
+
+To keep a long-standing question from flooding every prompt, the hook records, **after** its output was
+printed, which ids this session was shown in full (`unattended.sh seen`, one small file per session and
+repo under `~/.claude/unattended/seen/`). A later prompt in the same session shows those as one line
+with the count and every id; a new session, a session with no usable id (payload `session_id`, then
+`CLAUDE_CODE_SESSION_ID`, then `CLAUDE_SESSION_ID`), and a new return list in full. A kill between the
+print and the record costs one repeated full list. **A new return** is a new away arming: it writes a
+new `.unattended.since_epoch`, which is the key the record carries; `here` and `closing` leave it alone.
+The return that ends a lapsed window is not a new key by itself, so a session that already saw a
+question in full during the same arming sees it as the summary line, never as nothing. Residual window:
+a question shown to the model is not necessarily printed for the operator (nothing here can observe
+that), which is why it stays listed until he answers or dismisses it. `unattended.sh list [--all]` prints
+every recorded question with its status whatever was shown or resolved, and `pending` counts the
+unresolved ones. Old `listed` records already in a file are ignored: those questions are listed again
+until dismissed (`dismiss` takes several ids). The mechanism is in `unattended-mode.md` §Listing the
+questions.
 
 **A return that fails is not silent.** The hook treats `presence.sh return` exit 0 as returned, 10 as
 lost to another session, 1 as nothing left to return from (he declared a window meanwhile), and
-anything else as a failed return: it records the line in `~/.claude/unattended/delivery.log`, tells
+anything else as a failed return: it records the line in `~/.claude/unattended/hook.log`, tells
 the model that away handling has not ended, that other repos' saved questions were not listed and the
 dialog was not asked, and that his next message retries. `relist` returns 11 on a failed write for the
 same reason.
