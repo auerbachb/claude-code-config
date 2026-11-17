@@ -1076,7 +1076,8 @@ GC_PRE=""
 GC_OK=0
 if [[ -r "$GATE_CACHE_LIB" ]] && . "$GATE_CACHE_LIB" 2>/dev/null; then
   GC_OK=1
-  gate_cache_invalidate "$PR_NUMBER" || true   # a failed or unsaved evaluation must not leave the last result behind
+  # A failed invalidation (file could not be removed or neutralised) disables saving.
+  gate_cache_invalidate "$PR_NUMBER" || GC_OK=0   # a failed or unsaved evaluation must not leave the last result behind
   GC_VIEWER=""
   GC_VIEWER_LIB="$SCRIPT_DIR/lib/gh-viewer.sh"
   if [[ -r "$GC_VIEWER_LIB" ]] && . "$GC_VIEWER_LIB" 2>/dev/null; then GC_VIEWER="$(gh_viewer_login 2>/dev/null)" || GC_VIEWER=""; fi
@@ -1088,7 +1089,17 @@ printf '%s\n' "$GATE_OUT"
 # is exactly where escalate-review.sh would otherwise run the gate a second time.
 # Reusing unmet is the fail-closed direction. The saved gate's own head_sha must
 # also equal the snapshot, or nothing is saved.
-if [[ "$GATE_RC" -le 1 && "$GC_OK" -eq 1 && -n "$GC_PRE" ]]; then
+# Authorship: the gate ran its own viewer lookup. Bind to it by requiring the
+# gate itself to report authorship "mine" and the cached login to be the same
+# before and after the run; anything else (unknown, a failed or changed lookup)
+# means nothing is saved.
+GC_VIEWER_POST=""
+if [[ "$GC_OK" -eq 1 && -n "$GC_VIEWER" ]] && declare -F gh_viewer_login >/dev/null; then
+  GC_VIEWER_POST="$(gh_viewer_login 2>/dev/null)" || GC_VIEWER_POST=""
+fi
+GC_MINE=0
+printf '%s' "$GATE_OUT" | jq -e '.authorship == "mine"' >/dev/null 2>&1 && GC_MINE=1
+if [[ "$GATE_RC" -le 1 && "$GC_OK" -eq 1 && -n "$GC_PRE" && -n "$GC_VIEWER" && "$GC_VIEWER" == "$GC_VIEWER_POST" && "$GC_MINE" -eq 1 ]]; then
   GC_ALLOW=0
   [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]] && GC_ALLOW=1
   GC_SHAS="$(cd "$canon" && gate_cache_live_shas "$PR_NUMBER" 2>/dev/null)" || GC_SHAS=""

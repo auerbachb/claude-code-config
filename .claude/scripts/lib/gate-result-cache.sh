@@ -112,10 +112,18 @@ gate_cache_load() {
 # with an error, or cannot be saved, never leaves the previous result behind for
 # the consumer to load (a stale met must not outlive a failed re-evaluation).
 gate_cache_invalidate() {
-  local pr="$1" f
+  local pr="$1" f rc=0
   [[ "$pr" =~ ^[0-9]+$ ]] || return 1
   for f in "$(gate_cache_dir)"/*__pr"$pr".json; do
-    [[ -e "$f" ]] && rm -f "$f" 2>/dev/null
+    [[ -e "$f" ]] || continue
+    rm -f "$f" 2>/dev/null
+    [[ -e "$f" ]] || continue
+    # The directory refused the delete: neutralise the file itself (a file the
+    # owner can write stays writable in a read-only directory), so the loader
+    # sees an empty or unreadable file and misses.
+    : > "$f" 2>/dev/null
+    [[ -s "$f" ]] && chmod 000 "$f" 2>/dev/null
+    if [[ -r "$f" && -s "$f" ]]; then rc=1; fi
   done
-  return 0
+  return "$rc"
 }

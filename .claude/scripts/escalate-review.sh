@@ -195,7 +195,7 @@ gate_cache_reuse() {
   local lib="$SCRIPT_DIR/lib/gate-result-cache.sh" vlib="" viewer="" shas="" h="" b="" r=""
   [[ -r "$lib" ]] && . "$lib" 2>/dev/null || return 1
   # No saved file for this PR: skip the live SHA read (it could not hit anyway).
-  [[ -f "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" ]] || return 1
+  [[ -f "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" && -r "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" ]] || return 1
   vlib="$SCRIPT_DIR/lib/gh-viewer.sh"
   [[ -r "$vlib" ]] && . "$vlib" 2>/dev/null || return 1
   viewer="$(gh_viewer_login 2>/dev/null)" || return 1

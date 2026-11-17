@@ -64,11 +64,11 @@ cycle() { # prints stdout to $TMP/out, stderr to $TMP/err, returns the script's 
 cycle --ensure-session; check_eq "enrolment succeeds" "0" "$?"
 CACHE_FILE="$GATE_CACHE_DIR/org__c__pr$PR.json"
 
-gate_stub() { # <met true|false> <exit code>
+gate_stub() { # <met true|false> <exit code> [authorship, default mine]
   cat > "$PROJ/.claude/scripts/merge-gate.sh" <<STUB
 #!/usr/bin/env bash
 echo "stub-gate-stderr" >&2
-printf '{"pr_number":$PR,"owner_repo":"org/c","met":$1,"head_sha":"$HEAD40","missing":[]}\n'
+printf '{"pr_number":$PR,"owner_repo":"org/c","met":$1,"head_sha":"$HEAD40","missing":[],"authorship":"${3:-mine}"}\n'
 exit $2
 STUB
   chmod +x "$PROJ/.claude/scripts/merge-gate.sh"
@@ -79,7 +79,7 @@ rm -rf "$GATE_CACHE_DIR"; gate_stub true 0
 cycle; rc=$?
 check_eq "(s1) exit code is the gate's" "0" "$rc"
 check_eq "(s1) stdout is exactly the gate's JSON" \
-  "{\"pr_number\":$PR,\"owner_repo\":\"org/c\",\"met\":true,\"head_sha\":\"$HEAD40\",\"missing\":[]}" "$(cat "$TMP/out")"
+  "{\"pr_number\":$PR,\"owner_repo\":\"org/c\",\"met\":true,\"head_sha\":\"$HEAD40\",\"missing\":[],\"authorship\":\"mine\"}" "$(cat "$TMP/out")"
 check_eq "(s1) gate stderr still reaches stderr" "1" "$(grep -c stub-gate-stderr "$TMP/err" || true)"
 check_eq "(s1) saved file exists" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
 check_eq "(s1) saved key fields" "$HEAD40 $BASE40 false 0" \
@@ -91,7 +91,7 @@ rm -rf "$GATE_CACHE_DIR"; gate_stub false 1
 cycle; rc=$?
 check_eq "(s2) exit code is the gate's (1)" "1" "$rc"
 check_eq "(s2) stdout is exactly the gate's JSON" \
-  "{\"pr_number\":$PR,\"owner_repo\":\"org/c\",\"met\":false,\"head_sha\":\"$HEAD40\",\"missing\":[]}" "$(cat "$TMP/out")"
+  "{\"pr_number\":$PR,\"owner_repo\":\"org/c\",\"met\":false,\"head_sha\":\"$HEAD40\",\"missing\":[],\"authorship\":\"mine\"}" "$(cat "$TMP/out")"
 check_eq "(s2) saved file exists" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
 check_eq "(s2) saved rc and met" "1 false" "$(jq -r '[(.rc|tostring), (.gate.met|tostring)] | join(" ")' "$CACHE_FILE")"
 # The consumer side: the file the producer just wrote is a hit for the same SHAs.
@@ -132,7 +132,7 @@ rm -rf "$GATE_CACHE_DIR"
 cp "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh" "$PROJ/.claude/scripts/lib/gate-result-cache.sh"
 cat > "$PROJ/.claude/scripts/merge-gate.sh" <<STUB
 #!/usr/bin/env bash
-printf '{"pr_number":$PR,"owner_repo":"org/c","met":true,"head_sha":"cccccccc0000000000000000000000000000cccc","missing":[]}\n'
+printf '{"pr_number":$PR,"owner_repo":"org/c","met":true,"head_sha":"cccccccc0000000000000000000000000000cccc","missing":[],"authorship":"mine"}\n'
 STUB
 cycle; rc=$?
 check_eq "(s5) exit code still the gate's" "0" "$rc"
@@ -159,6 +159,27 @@ gate_stub true 0; rm -rf "$GATE_CACHE_DIR"; cycle
 FAKE_SNAPSHOT_FAIL=1 cycle; rc=$?
 check_eq "(s7) next evaluation cannot read SHAs (exit still 0)" "0" "$rc"
 check_eq "(s7) ...and the earlier result is gone, not left to be loaded" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+
+echo "== (s8): authorship not \"mine\" in the gate's own answer -> nothing saved =="
+rm -rf "$GATE_CACHE_DIR"; gate_stub true 0 unknown
+cycle; rc=$?
+check_eq "(s8) exit code still the gate's" "0" "$rc"
+check_eq "(s8) unknown authorship -> not saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+rm -rf "$GATE_CACHE_DIR"; gate_stub true 0 not_mine
+cycle
+check_eq "(s8) not_mine -> not saved" "0" "$([[ -e "$CACHE_FILE" ]] && echo 1 || echo 0)"
+
+echo "== (s9): a failed delete still neutralises the old result (read-only cache dir) =="
+gate_stub true 0; rm -rf "$GATE_CACHE_DIR"; cycle
+check_eq "(s9) met result saved" "1" "$([[ -f "$CACHE_FILE" ]] && echo 1 || echo 0)"
+chmod 500 "$GATE_CACHE_DIR"
+gate_stub true 4
+cycle; rc=$?
+check_eq "(s9) gate exit 4 passes through" "4" "$rc"
+. "$REPO_ROOT/.claude/scripts/lib/gate-result-cache.sh"
+check_eq "(s9) the old result can no longer be loaded" "" \
+  "$(gate_cache_load org/c "$PR" "$HEAD40" "$BASE40" "$(jq -r .viewer "$CACHE_FILE" 2>/dev/null || echo x)" 2>/dev/null)"
+chmod 700 "$GATE_CACHE_DIR"; chmod 600 "$CACHE_FILE" 2>/dev/null || true
 
 echo "== polling-state-gate-gate-save: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]]

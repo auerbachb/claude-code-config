@@ -116,6 +116,12 @@ rm -rf "$GATE_CACHE_DIR"; rm -f "$TMP/pulls-reads"
 run_case "g3c nothing saved" no_reviewer 1
 check_eq "(g3c) no pulls/N read when nothing is saved" "0" "$([[ -f "$TMP/pulls-reads" ]] && wc -l < "$TMP/pulls-reads" | tr -d " " || echo 0)"
 
+echo "== (g3d): an unreadable saved file -> no live SHA read, live gate run =="
+seed; chmod 000 "$CACHE_FILE"; rm -f "$TMP/pulls-reads"
+run_case "g3d unreadable" no_reviewer 1
+check_eq "(g3d) no pulls/N read for an unreadable file" "0" "$([[ -f "$TMP/pulls-reads" ]] && wc -l < "$TMP/pulls-reads" | tr -d " " || echo 0)"
+chmod 600 "$CACHE_FILE" 2>/dev/null || true
+
 echo "== (g4): boundary — a 50s-old result (margin for run time) is still reused =="
 seed; mutate '.saved_epoch -= 50'
 run_case "g4 50s old" gate_met 0
@@ -176,13 +182,22 @@ UBIN="$TMP/ubin"; mkdir -p "$UBIN"
 cat > "$UBIN/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*|T=${GH_TOKEN:-}|E=${GH_ENTERPRISE_TOKEN:-}|H=${GH_HOST:-}" >> "$U_CALLS"
+echo "$0 $*" >> "$U_ARGV"
 case "$*" in
   "auth token --hostname "*) [[ -n "${U_STORED:-}" ]] && { echo "$U_STORED"; exit 0; }; exit 1 ;;
   "api user --jq .login") [[ -n "${U_FAIL:-}" ]] && exit 1; echo "${U_LOGIN:-octo}" ;;
 esac
 STUB
 chmod +x "$UBIN/gh"
-export U_CALLS="$TMP/u-calls" VIEWER_CACHE_DIR="$TMP/viewer-cache"
+# An `env` spy: any call that carries a credential in env's own arguments is logged.
+cat > "$UBIN/env" <<'SPY'
+#!/usr/bin/env bash
+echo "env $*" >> "$U_ARGV"
+exec /usr/bin/env "$@"
+SPY
+chmod +x "$UBIN/env"
+export U_ARGV="$TMP/u-argv" U_CALLS="$TMP/u-calls" VIEWER_CACHE_DIR="$TMP/viewer-cache" GH_CONFIG_DIR="$TMP/ghcfg"
+mkdir -p "$GH_CONFIG_DIR"
 ucount() { [[ -f "$U_CALLS" ]] && grep -c . "$U_CALLS" || echo 0; }
 export GH_TOKEN="tok-A"
 rm -f "$U_CALLS"
@@ -223,6 +238,31 @@ export GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="ent-2" U_LOGIN="ent-user-2
 r8="$(PATH="$UBIN:$PATH" gh_viewer_login)"
 check_eq "(u8) a different enterprise token never serves the old login" "ent-user-2" "$r8"
 unset GH_HOST GH_ENTERPRISE_TOKEN
+echo "-- *.ghe.com uses GH_TOKEN, not GH_ENTERPRISE_TOKEN --"
+export GH_HOST="tenant.ghe.com" GH_TOKEN="fake-ghe-1" GH_ENTERPRISE_TOKEN="fake-ent-const" U_LOGIN="ghe-user-1"; rm -rf "$VIEWER_CACHE_DIR"
+r9="$(PATH="$UBIN:$PATH" gh_viewer_login)"
+export GH_TOKEN="fake-ghe-2" U_LOGIN="ghe-user-2"
+r10="$(PATH="$UBIN:$PATH" gh_viewer_login)"
+check_eq "(u9) changing GH_TOKEN on a ghe.com host changes the answer even if GH_ENTERPRISE_TOKEN is constant" "ghe-user-1 ghe-user-2" "$r9 $r10"
+unset GH_HOST GH_ENTERPRISE_TOKEN
+echo "-- unset GH_HOST with a single enterprise host configured -> nothing cached, plain live call --"
+printf 'ghe.example.com:\n    user: x\n' > "$GH_CONFIG_DIR/hosts.yml"
+export GH_TOKEN="fake-dot" U_LOGIN="octo"; rm -rf "$VIEWER_CACHE_DIR"; rm -f "$U_CALLS"
+PATH="$UBIN:$PATH" gh_viewer_login >/dev/null; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
+check_eq "(u10) no host this helper can name -> two live lookups, nothing cached" "0" "$([[ -d "$VIEWER_CACHE_DIR" ]] && ls "$VIEWER_CACHE_DIR" | wc -l | tr -d ' ' || echo 0)"
+printf 'github.com:\n    user: x\n' > "$GH_CONFIG_DIR/hosts.yml"
+rm -f "$U_CALLS"; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null; PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
+check_eq "(u10) a sole github.com host is named and cached (one live lookup)" "1" "$(grep -c 'api user' "$U_CALLS")"
+rm -f "$GH_CONFIG_DIR/hosts.yml"
+echo "-- the credential never reaches an argument vector --"
+export GH_TOKEN="fake-secret-token-123" U_LOGIN="octo"; rm -rf "$VIEWER_CACHE_DIR"; rm -f "$U_ARGV"
+PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
+export GH_HOST="ghe.example.com" GH_ENTERPRISE_TOKEN="fake-secret-ent-456"; rm -rf "$VIEWER_CACHE_DIR"
+PATH="$UBIN:$PATH" gh_viewer_login >/dev/null
+unset GH_HOST GH_ENTERPRISE_TOKEN
+check_eq "(u11) stubbed gh calls carry no token in their arguments" "0" "$(grep -c 'fake-secret' "$U_ARGV" || true)"
+check_eq "(u11) ...and the gh calls were really made" "1" "$([[ $(wc -l < "$U_ARGV") -ge 2 ]] && echo 1 || echo 0)"
+check_eq "(u11) no token text in the cache dir (names or contents)" "0" "$( { ls "$VIEWER_CACHE_DIR"; cat "$VIEWER_CACHE_DIR"/*; } 2>/dev/null | grep -c 'fake-secret' || true)"
 export GH_TOKEN="tok-A" U_LOGIN="octo"
 export GH_TOKEN="tok-A" U_LOGIN="octo"
 touch -t 200001010000 "$VIEWER_CACHE_DIR"/*
