@@ -1922,6 +1922,16 @@ done
 grep -q -- 'active-work-cap.sh --width' "$REPO_ROOT/.claude/rules/subagent-orchestration.md" \
   || fail "39i: subagent-orchestration.md must name the mode width (--width) as the per-thread limit"
 ok "39i: pm, subagent, wave and the orchestration rule all read the one width"
+
+# (j) No Phase B path keeps a fixed 60-second cadence once the parent supplies
+# one. The agent definition may name 60 only as the no-value default.
+PB="$REPO_ROOT/.claude/agents/phase-b-reviewer.md"
+if grep -n -E 'every 60 seconds|stays 60 s|Polling cadence stays 60|60-second cycle' "$PB" >/dev/null; then
+  fail "39j: phase-b-reviewer.md still hard-codes a 60-second poll cadence"
+fi
+grep -q 'poll_interval_s' "$REPO_ROOT/.claude/reference/session-state-schema.json" \
+  || fail "39j: the schema must record poll_interval_s for running Phase B agents to re-read"
+ok "39j: Phase B polls on the parent's cadence, re-read per cycle, with no fixed 60s path"
 unset CLAUDE_SESSION_REPO
 
 # --- 40. Review-poll cadence (#2430) ------------------------------------------
