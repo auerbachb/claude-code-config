@@ -36,6 +36,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [pm-standing-queue.sh](../pm-standing-queue.sh) | Read or compare-and-set one PM dispatcher's unclaimed standing refill queue |
 | [post-merge-bookkeeping.sh](../post-merge-bookkeeping.sh) | Retry confirmed-merge estimate logging and issue-claim cleanup in evidence-preserving order |
 | [prompt-reservation.sh](../prompt-reservation.sh) | Reserve an attended /subagent launch prompt across threads with the session-state CAS writer |
+| [run-mode.sh](../run-mode.sh) | Read or set the PM run mode (default\|speed\|cheap) stored at .repos["<key>"].run_mode |
 | [split-thresholds.sh](../split-thresholds.sh) | Resolve `SPLIT_OVER_MIN` / `INCREMENT_BOUND_MIN` (env → pm-config.md `## Budget` → shipped defaults) so every capture- and pick-time sizing surface reads one figure |
 | [window-plan.sh](../window-plan.sh) | Parse a user-stated planning window ("until 5:00 PM", "overnight") into canonical machine values |
 <!-- catalog:rows:end -->

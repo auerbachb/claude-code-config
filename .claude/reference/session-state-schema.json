@@ -61,6 +61,8 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_run_mode_comment": "PM run mode for this repo (issue #2428): a JSON string enum, one of default | speed | cheap. Absent, invalid or unreadable reads as default (fail-open). Written only by .claude/scripts/run-mode.sh set, only on a human's chat instruction. Read only through run-mode.sh get. The runtime type maps do not enforce repo-scoped fields; the accessor validates the value. Informational in increment 1: it changes no model choice, width or gate. Contract: .claude/reference/run-modes.md.",
+      "run_mode": "default",
       "_slot_census_comment": "Author-scoped /pm Step 3.4 refill evaluations keyed by dispatcher session. `running` includes `merge_ready_or_phase_c`. Reasons partition vacant slots. `line` is the canonical notice and changed-only key, empty for a full board. A repo-scoped CAS retains the latest 32 dispatcher sessions and 96 total history entries, up to 48 per session. /board only reads it (issue #2157).",
       "slot_census": {
         "session-example": {

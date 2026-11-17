@@ -81,6 +81,7 @@ OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 ROUND_MEMBERSHIP_SH=$(resolve_script round-membership.sh || true)
 HANDOFF_STATE_SH=$(resolve_script handoff-state.sh || true)
+RUN_MODE_SH=$(resolve_script run-mode.sh || true)
 ```
 
 Read `time-estimates.md` through the matching `.claude/reference/` candidate order.
@@ -92,6 +93,7 @@ silently.**
 - `ROUND_MEMBERSHIP_SH` empty → **optional**. Print `DEGRADED: round-membership.sh not found — queued/completed membership uses the no-record fallbacks` and continue; never substitute another session's singleton as this session's own round.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — Est column renders as unestimated` and continue.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — clock columns render as —` and continue. Still print the table: it carries the round's shape and run order even with three empty columns, and the line above already said why they are empty.
+- `RUN_MODE_SH` empty → **optional**. Print nothing extra; the `Mode:` label reads `default`, the fail-open value, and the board renders unchanged.
 - `HANDOFF_STATE_SH` empty → **optional**. Print `DEGRADED: handoff-state.sh not found (checked all three paths) — PR-backed rows render the Model cell as —; pre-PR rows read the session routing record` and continue.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — this render is not recorded against the hourly table-freshness floor` and continue. The board is still correct; only the clock in Step 5 is lost.
 
@@ -606,9 +608,14 @@ qualified line when **any** repo that reached this path lacked a record.
 
 ### The board
 
-Print the ET render timestamp, then the canonical table — the same columns and the
-same cell semantics as every other surface, per `time-estimates.md`
-§"Running now Table". Do not invent columns and do not reshape it into a list.
+Print the ET render timestamp, then one line `Mode: <mode>` (the repo's PM run mode,
+read with `run-mode.sh get --repo "$repo"`; a missing helper or failed read shows
+`default`, per `.claude/reference/run-modes.md`), then the canonical table — the same
+columns and the same cell semantics as every other surface, per `time-estimates.md`
+§"Running now Table". Do not invent columns and do not reshape it into a list. The mode
+line is a label only: it changes no row, column, order, freshness, floor arming or
+read-only status. On the no-active-round single line, append the mode to that same line
+without implying a round exists.
 
 ```bash
 # Same guard as the clock cells, for the same reason: `TZ='America/New_York' date`
