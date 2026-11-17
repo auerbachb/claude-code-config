@@ -113,7 +113,7 @@ awk -v tally="$tally" '
     print kind, (rem == "" ? "-" : rem) >> tally
   }
   END { if (inreq) record() }
-' "$errf" >&2
+' "$errf" >&2 || echo "unavailable" >>"$tally" 2>/dev/null
 rm -f "$errf"
 exit "$rc"
 SHIM
