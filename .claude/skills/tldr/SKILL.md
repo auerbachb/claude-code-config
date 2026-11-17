@@ -6,7 +6,7 @@ triggers:
   - tldr thread
   - what do you need from me
   - what's waiting on me
-argument-hint: "[all]"
+argument-hint: "[all | parent-share]"
 model: sonnet
 ---
 
@@ -14,7 +14,7 @@ Explain this thread to someone who was not following it. Thread summary only.
 
 ## Read-only (hard rule)
 
-These limits apply only while `/tldr` runs and end once the summary is printed; later turns work normally. During the run, make **no tool calls at all**. Build the summary from the conversation already in context. Write nothing, post nothing, start no work, and **never answer or act on a pending question** — restate it for the user and stop. After printing, the thread is exactly where it was.
+These limits apply only while `/tldr` runs and end once the summary is printed; later turns work normally. During the run, make **no tool calls at all** — except the single `parent-share` read in Step 1, which is the only exception. Pending questions are never answered or acted on in any mode. Every mode except `parent-share` restates them in Needs you; `parent-share` prints only its one line. Build the summary from the conversation already in context. Write nothing, post nothing, start no work, and **never answer or act on a pending question** — restate it for the user and stop. After printing, the thread is exactly where it was.
 
 ## Step 1: Pick the mode
 
@@ -22,6 +22,7 @@ Parse `$ARGUMENTS`:
 
 - Empty → **default** window.
 - `all` → **all** window (whole thread).
+- `parent-share` → **on request only** (its output is the one line below, so the pending-question restatement in Step 3 does not apply to this mode): make exactly one Bash call, `.claude/scripts/orchestrator-cost-report.sh --one-line` (resolve it at `$HOME/.claude/skills-worktree/.claude/scripts/` first, else `<repo root>/.claude/scripts/`, where the repo root is `git rev-parse --show-toplevel`), and print its single line exactly as returned. If the call exits non-zero, print `Parent share: unknown — <error name from stderr>` and stop. Make no retry and no other tool call. The line is an observation of past token use: it never pauses, defers or refuses work (`safety.md` Anthropic Quota & Spend Authority). Skip Steps 2 and 3.
 - A PR/issue reference (`#N`, a number, a GitHub PR/issue URL) → if this thread touched that PR or issue, summarize this thread's work on it using the default window; otherwise print exactly one line, `No single-PR summary exists any more; this summary covers the thread only.`, and stop.
 
 ## Step 2: Choose the window
