@@ -1875,6 +1875,16 @@ CENSUS=$(run) || fail "39f: census failed with 10 pipelines in cheap mode"
 N_AFTER=$(jq '.active_agents | length' "$HOME/.claude/session-state.json")
 [[ "$N_AFTER" == "10" ]] || fail "39f: the mode switch must stop none; expected 10 active agents, got $N_AFTER"
 ok "39f: default to cheap over 10 pipelines under cap 6 reads 6 then 5, reports FREE=0, and stops none"
+
+# (g) A failed width read prints no width and exits non-zero, so the skills'
+# `if CEILING=$(... --width)` branch sets LIMIT=0 and launches nothing new.
+# A guessed width here would be a silent uncap, so the failure must surface.
+set_run_mode default
+if G_OUT=$(run --width --cap); then
+  fail "39g: a usage error on --width must exit non-zero, got a width '$G_OUT'"
+fi
+[[ -z "$G_OUT" ]] || fail "39g: a failed --width read must print no width, got '$G_OUT'"
+ok "39g: a failed width read prints nothing and exits non-zero, so callers launch nothing new"
 unset CLAUDE_SESSION_REPO
 
 # --- 40. Review-poll cadence (#2430) ------------------------------------------

@@ -489,8 +489,8 @@ Resolve the limit once, before the first launch — both modes read only the rep
 ```bash
 CEILING=4; LIMIT=4                               # script absent: the default (Step 0 DEGRADED)
 if [[ -n "$ACTIVE_WORK_CAP_SH" ]]; then
-  if CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
-    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min() — the cap is the backstop
+  if CEILING=$("$ACTIVE_WORK_CAP_SH" --width) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
+    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min(mode width, cap) — --width already clamps; kept as the backstop
   else
     CEILING=0; LIMIT=0                          # read failed: launch nothing new
   fi
@@ -498,6 +498,9 @@ fi
 ```
 
 - Treat each issue's A→B→C run as one **pipeline**. Keep at most `LIMIT` running at once. `LIMIT` is the run mode's width from `"$ACTIVE_WORK_CAP_SH" --width` (default and speed 15, cheap the repo's `PIPELINE_CEILING`), already clamped to the repo-wide cap, so a mode never raises that cap (`active-work-cap.md` §Per-mode width). Use the resolved number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
+- **Default mode judges the width.** `LIMIT` is a maximum, not a target. Read the mode silently with `run-mode.sh get`. In default mode, launch fewer than `LIMIT` when the ready, unqueued issues, the overlap-chain heads, the open PRs still waiting on a bot verdict, or GitHub request headroom say so. Launch that judged number, then write the reason to the repo's `width_judgment` object in `session-state.json` (`mode`, `width`, `limit`, `ready`, `chain_heads`, `awaiting_review`, `reason`), via `session-state.sh --set` as in Step 6.2. A failed write launches nothing.
+- **Cheap mode launches nothing new** while any running pipeline is waiting on a retry or a review round it can still finish first. Running pipelines are untouched. Launch the next queued pipeline only once none is waiting.
+- **One-time notes, keyed in `width_judgment`.** (a) When `LIMIT` is below the mode width because the repo cap binds, print once: `Mode <mode> would run <width> wide; ACTIVE_WORK_CAP holds it at <LIMIT>.` Set `cap_note_printed` true. (b) The first time the running width exceeds the free reviewer's hourly capacity (5 reviews an hour, `active-work-cap.md` §Per-mode width), print once: `Running <N> wide: expect roughly two in three PRs in a busy hour to merge without a bot review.` Set `reviewer_note_printed` true. Never reprint either on a later tick. No paid review is triggered to cover the gap.
 - If more issues qualify than the ceiling, launch the first `LIMIT` now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
 - **A full ceiling means queue, never route out.** Subagent-fit work that arrives with every slot busy **waits inline** — it does not become a separate-thread chip or prompt. Only a named Step 4 disqualifier sends an issue to a thread; a busy pipeline is a scheduling state, not a fit verdict. (Shared gate: `.claude/reference/chip-launching.md`; rationale: `too-big-recalibration-2026-07.md`.)
 - When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
@@ -1584,7 +1587,9 @@ It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replaceme
 
 Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is now orchestration.
 
-### Monitor loop (repeat every ~60 seconds):
+### Monitor loop (repeat every `--poll-interval` seconds):
+
+Cadence: `"$ACTIVE_WORK_CAP_SH" --poll-interval <running pipelines>` prints 120 above 8 running pipelines and 60 at or below 8 (#2430; the shared GitHub request allowance holds). A rate-limited or failed GitHub response is **no data** for that cycle: keep the last watermark, never read it as clean or as zero findings.
 
 0. **Read the usage horizon** (#1619, #2147). Run `subagent-thread-limit-park.md` §7.1, resolved through Step 0.1's candidate order. Pass only a counter this turn's harness actually printed to `usage-horizon.sh --observe` before `--check`; otherwise check with the §7.3 attestation only if no counter is visible anywhere in your context. Never estimate or reuse a remembered figure.
    - `clear` → the cycle proceeds unchanged.

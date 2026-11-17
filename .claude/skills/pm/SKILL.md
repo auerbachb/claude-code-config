@@ -208,7 +208,7 @@ if [[ -n "$ACTIVE_WORK_CAP_SH" ]]; then
 fi
 ```
 
-`LIMIT` is what a launch actually fills to — a mode never raises the cap (`active-work-cap.md` §Per-mode width). Review-poll cadence: `"$ACTIVE_WORK_CAP_SH" --poll-interval <running>` (120s above 8 running pipelines, else 60s).
+`LIMIT` is what a launch actually fills to — a mode never raises the cap (`active-work-cap.md` §Per-mode width). Review-poll cadence: `"$ACTIVE_WORK_CAP_SH" --poll-interval <running>` (120s above 8 running pipelines, else 60s). The default-mode judgment, the cheap-mode refill hold and the once-per-thread notes are `/subagent` Step 7's rules on this same `LIMIT`; `/pm` dispatch (3.1) and refill (3.4) apply them there, not here.
 
 
 Mark `0 ran` after resolving dependencies and setting the limits. An unavailable

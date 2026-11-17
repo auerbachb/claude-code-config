@@ -62,6 +62,18 @@
         "at": "2026-07-30T18:40:00Z"
       },
       "_run_mode_comment": "PM run mode for this repo (issue #2428): a JSON string enum, one of default | speed | cheap. Absent, invalid or unreadable reads as default (fail-open). Written only by .claude/scripts/run-mode.sh set, only on a human's chat instruction. Read only through run-mode.sh get. The runtime type maps do not enforce repo-scoped fields; the accessor validates the value. Informational in increment 1: it changes no model choice, width or gate. Contract: .claude/reference/run-modes.md.",
+      "_width_judgment_comment": "Per-repo launch-width record (issue #2430, /subagent Step 7). Written with session-state.sh --set at each default-mode dispatch: mode, width (judged launch count), limit (min of mode width and ACTIVE_WORK_CAP), ready, chain_heads, awaiting_review, reason. cap_note_printed and reviewer_note_printed record the once-per-thread one-line notes. Informational; it holds no launch gate.",
+      "width_judgment": {
+        "mode": "default",
+        "width": 0,
+        "limit": 0,
+        "ready": 0,
+        "chain_heads": 0,
+        "awaiting_review": 0,
+        "reason": "",
+        "cap_note_printed": false,
+        "reviewer_note_printed": false
+      },
       "run_mode": "default",
       "_slot_census_comment": "Author-scoped /pm Step 3.4 refill evaluations keyed by dispatcher session. `running` includes `merge_ready_or_phase_c`. Reasons partition vacant slots. `line` is the canonical notice and changed-only key, empty for a full board. A repo-scoped CAS retains the latest 32 dispatcher sessions and 96 total history entries, up to 48 per session. /board only reads it (issue #2157).",
       "slot_census": {
