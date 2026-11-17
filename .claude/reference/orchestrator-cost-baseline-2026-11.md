@@ -19,7 +19,7 @@ Point-in-time measurement of the parent thread's share of `/pm` session tokens, 
 | Parent input / cache read / cache write / output | 1,032 / 264,000,122 / 1,285,981 / 423,996 | 1,076 / 271,209,497 / 3,771,244 / 569,784 |
 | Workers observed | 48 | 26 |
 | Worker sum (4 fields) | 698,069,979 (known_subtotal) | 227,781,862 (known_subtotal) |
-| Parent share | unknown: `partial_data:unmatched_agent_calls,unsupported_worker_row` | unknown: `partial_data:unsupported_worker_row` |
+| Parent share | unknown: `partial_data:unsupported_worker_row` | unknown: `partial_data:unsupported_worker_row` |
 | Parent turns | 189 | 144 |
 | Ambiguous turns (more than one class matched) | 4 | 2 |
 
@@ -40,7 +40,9 @@ The figures above come from the final report code. An earlier pass on the same s
 
 ## What could not be measured (recorded as unknown)
 
-- **Parent share.** Both sessions carry an `unsupported_worker_row` limitation, because the spend log holds `unsupported:*` usage rows for this session. Session A also has an `unmatched_agent_calls` limitation: some `Agent` calls have no matching worker usage row. The share is therefore `null` with those reasons. It is not computed from partial sums.
+- **Parent share.** Both sessions carry `unsupported_worker_row`. The spend log holds `SubagentStop` rows (90 in session A, 13 in session B) with `unsupported:agent_transcript_file_missing`. Each names an agent ID that matches no worker transcript file and no worker usage row, so the worker side cannot be shown to be complete. The share is therefore `null`. It is not computed from partial sums and is not estimated.
+- **Cause of the earlier `unmatched_agent_calls` reading (session A, now fixed).** Session A's transcript holds 67 distinct `Agent` tool calls. A pre-tool-use hook refused 19 of them (pause state lock-contended) before any worker started. The remaining 48 match the 48 worker transcripts and the 48 worker telemetry IDs. The report now leaves refused calls out of the launch count, so that limitation no longer applies to either session.
+- **Worker transcripts versus telemetry (cross-check, not the share source).** Session A: the 48 worker transcripts sum to the same 698,069,979 that the telemetry worker total gives. Session B: 21 top-level worker transcripts plus 5 workflow-subagent transcripts (26 workers, 1,102 distinct messages) sum to 229,704,463. The telemetry total is 227,781,862 over 1,089 messages, so telemetry is 13 messages short, a gap of 1,922,601 tokens. The report keeps telemetry as its worker source, so the session B worker figure above is that telemetry total and is a lower bound on the transcript total.
 - **Provider usage-page comparison.** Not performed. The provider usage page shows account totals for a window, and other activity in that window prevents attribution to one session. The comparison needs an operator on the authorized machine, and it is not recorded here.
 - **Per-session Fable allowance.** Not visible from local data. Unknown.
 - **Classification reliability beyond the ambiguity count.** Not separately measured. The ambiguous-turn counts above (4 and 2) are the only evidence recorded.

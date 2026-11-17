@@ -91,8 +91,14 @@ def read_transcript(path):
         if not line.strip():
             continue
         try:
-            records.append(json.loads(line))
+            rec = json.loads(line)
         except ValueError:
+            malformed += 1
+            continue
+        # A valid JSON value that is not an object (null, a number, a list) is not a transcript record.
+        if isinstance(rec, dict):
+            records.append(rec)
+        else:
             malformed += 1
     return records, {"malformed_lines": malformed, "partial_tail": partial_tail}
 
@@ -144,6 +150,23 @@ def bash_is_read_only(command):
     if any(tok == o or tok.startswith(o + "=") for tok in cmd.split() for o in WRITE_OPTIONS):
         return False
     return any(cmd == p or cmd.startswith(p + " ") for p in READ_BASH_PREFIXES)
+
+
+def refused_agent_ids(records):
+    """tool_use IDs of Agent calls a PreToolUse hook refused before any worker started."""
+    out = set()
+    for rec in records:
+        msg = rec.get("message") if isinstance(rec, dict) and isinstance(rec.get("message"), dict) else {}
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error")):
+                continue
+            text = json.dumps(b.get("content"))
+            if "PreToolUse:Agent" in text and "hook error" in text:
+                out.add(b.get("tool_use_id"))
+    return out
 
 
 def build_turns(records):
@@ -322,12 +345,21 @@ def build_report(args):
     else:
         v2 = load_v2()
         rows = []
-        with open(os.path.expanduser(args.log), encoding="utf-8", errors="replace") as fh:
-            for n, line in enumerate(fh, 1):
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) < 6 or parts[5] != session:
-                    continue
-                rows.append(v2.parse_row(parts, n))
+        try:
+            with open(os.path.expanduser(args.log), encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) < 6 or parts[5] != session:
+                        continue
+                    rows.append(v2.parse_row(parts, n))
+        except OSError:
+            raise ReportError("telemetry_log_unreadable", "telemetry log exists but cannot be read")
+        # unique_messages drops schema-v3 rows without a stable message identity. Those rows
+        # carry usage that cannot be deduplicated, so the worker side is marked partial.
+        if any(r["event_type"] == "assistant_message" and r["schema_version"] >= 3
+               and r["evidence"].get("message_identity_source") not in ("message.id", "transcript.uuid")
+               for r in rows):
+            limitations.append("unidentified_telemetry_rows")
         for row in v2.unique_messages(v2.dedupe(rows)):
             if row["event_type"] != "assistant_message":
                 continue
@@ -342,8 +374,11 @@ def build_report(args):
                 limitations.append("unsupported_worker_row")
                 break
 
-    # Agent calls in the transcript vs worker telemetry.
-    agent_calls = sum(1 for t in turns for u in t["uses"] if u.get("name") == "Agent")
+    # Launched Agent calls in the transcript vs worker telemetry. A call a PreToolUse hook
+    # refused never started a worker, so it is not expected to have telemetry.
+    refused = refused_agent_ids(records)
+    agent_ids = {u.get("id") for t in turns for u in t["uses"] if u.get("name") == "Agent"}
+    agent_calls = len(agent_ids - refused)
     if agent_calls and len(worker_ids_telemetry) < agent_calls:
         limitations.append("unmatched_agent_calls")
 
@@ -487,8 +522,9 @@ def main(argv=None):
     p.add_argument("--top", type=int, default=5)
     try:
         args = p.parse_args(argv)
-    except SystemExit:
-        return 2
+    except SystemExit as exc:
+        # argparse exits 0 for --help and 2 for a usage error; keep both codes.
+        return exc.code if isinstance(exc.code, int) else 2
     if args.top < 0:
         print("usage: --top must be >= 0", file=sys.stderr)
         return 2

@@ -3,6 +3,7 @@
 # catalog: tests — Fixture tests for `orchestrator-cost-report.sh` in a temp `HOME` (known totals, unknown data, named errors, read-only)
 # covers: .claude/scripts/orchestrator-cost-report.sh
 # covers: .claude/scripts/lib/orchestrator-cost-report.py
+# covers: .claude/skills/tldr/SKILL.md
 #
 # Synthetic transcript and telemetry only. The real ~/.claude is never read or written.
 set -euo pipefail
@@ -214,6 +215,73 @@ assert m.bash_is_read_only("find . -delete") is False
 assert m.bash_is_read_only("ls; rm -rf x") is False
 PY
 pass "read-only classification negative and positive cases"
+
+# Test 10b: a hook-refused Agent call starts no worker, so it is not an unmatched call;
+# a launched Agent call with no telemetry still is.
+AG_SID="77777777-8888-9999-0000-111111111111"
+AG_T="$HOME/.claude/projects/proj-a/$AG_SID.jsonl"
+python3 - "$AG_T" "$AG_SID" "$LOG" <<'PY'
+import json, sys
+path, sid, log = sys.argv[1:4]
+u = {"input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+def agent_turn(tid, mid, ts):
+    return [
+        {"type": "user", "timestamp": ts, "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "timestamp": ts, "message": {"id": mid, "model": "claude-opus-4-7", "content":
+            [{"type": "tool_use", "id": tid, "name": "Agent", "input": {"prompt": "p"}}], "usage": u}},
+    ]
+refused = {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_ref",
+    "is_error": True, "content": "PreToolUse:Agent hook error: BLOCKED: pause state is lock-contended"}]}}
+ok = {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_ok",
+    "content": "started"}]}}
+recs = [
+    {"type": "user", "message": {"role": "user", "content": "start"}, "timestamp": "2026-08-03T10:00:00Z"},
+    {"type": "assistant", "timestamp": "2026-08-03T10:00:01Z", "message": {"id": "msg_r", "model": "claude-opus-4-7",
+        "content": [{"type": "tool_use", "id": "tu_ref", "name": "Agent", "input": {}}], "usage": u}},
+    refused,
+    {"type": "assistant", "timestamp": "2026-08-03T10:00:02Z", "message": {"id": "msg_k", "model": "claude-opus-4-7",
+        "content": [{"type": "tool_use", "id": "tu_ok", "name": "Agent", "input": {}}], "usage": u}},
+    ok,
+]
+with open(path, "w") as fh:
+    for r in recs:
+        fh.write(json.dumps(r) + "\n")
+cols = [""] * 27
+cols[0] = "2026-08-03T10:10:00Z"; cols[1] = "assistant_message"; cols[2] = "subagent"; cols[3] = "sonnet"
+cols[5] = sid; cols[6] = "wk1"; cols[8] = "3"; cols[9] = "wk1msg"; cols[10] = "/repo"
+cols[14] = "claude-sonnet-4-6"; cols[15] = "transcript"; cols[16] = "4"; cols[17] = "2"; cols[18] = "0"; cols[19] = "0"
+cols[21] = "unsupported"; cols[24] = "subagent"; cols[25] = "transcript"
+cols[26] = json.dumps({"message_identity_source": "message.id", "repo_slug": "acme/repo"})
+with open(log, "a") as fh:
+    fh.write("\t".join(cols) + "\n")
+PY
+AG_OUT="$(bash "$REPORT" --session "$AG_SID" --transcript "$AG_T" --log "$LOG" --json)"
+python3 - "$AG_OUT" <<'PY' || fail "refused Agent call was counted as unmatched, or launched one was not"
+import json, sys
+d = json.loads(sys.argv[1])
+lim = d["coverage"]["limitations"]
+assert "unmatched_agent_calls" not in lim, lim
+PY
+pass "refused Agent call is not counted as unmatched"
+
+# Test 10c: a JSON scalar line is a malformed line, not a crash; --help exits 0; an unreadable log is named.
+SCALAR_SID="88888888-9999-0000-1111-222222222222"
+SCALAR_T="$HOME/.claude/projects/proj-a/$SCALAR_SID.jsonl"
+printf '%s\n' 'null' '42' '{"type":"user","message":{"role":"user","content":"hi"}}' > "$SCALAR_T"
+SC_OUT="$(bash "$REPORT" --session "$SCALAR_SID" --transcript "$SCALAR_T" --log "$LOG" --json)" || fail "scalar transcript lines crashed the report"
+python3 - "$SC_OUT" <<'PY' || fail "scalar lines were not counted as malformed"
+import json, sys
+d = json.loads(sys.argv[1])
+assert "malformed_transcript_lines" in d["coverage"]["limitations"], d["coverage"]
+PY
+rc=0; bash "$REPORT" --help >/dev/null || rc=$?
+[[ $rc -eq 0 ]] || fail "--help should exit 0 (got $rc)"
+if [[ "$(id -u)" -ne 0 ]]; then
+  chmod 000 "$LOG"
+  expect_error telemetry_log_unreadable --session "$SID" --transcript "$TRANSCRIPT" --log "$LOG"
+  chmod 644 "$LOG"
+fi
+pass "scalar transcript lines, --help exit 0, unreadable log named"
 
 # Test 11: /tldr contract names the mode and the script.
 TLDR="$REPO_ROOT/.claude/skills/tldr/SKILL.md"

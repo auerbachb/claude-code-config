@@ -19,7 +19,8 @@
 #
 # EXIT STATUS: 0 report produced (figures may be unknown); 1 named input error on
 # stderr (session_unknown, transcript_not_found, transcript_unreadable,
-# transcript_ambiguous); 2 invalid arguments.
+# transcript_ambiguous, transcript_session_mismatch, telemetry_log_unreadable);
+# 2 invalid arguments.
 
 set -euo pipefail
 
@@ -27,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$SCRIPT_DIR/lib/orchestrator-cost-report.py"
 
 usage() {
-  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 ARGS=()
