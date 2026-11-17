@@ -1931,7 +1931,24 @@ if grep -n -E 'every 60 seconds|stays 60 s|Polling cadence stays 60|60-second cy
 fi
 grep -q 'poll_interval_s' "$REPO_ROOT/.claude/reference/session-state-schema.json" \
   || fail "39j: the schema must record poll_interval_s for running Phase B agents to re-read"
-ok "39j: Phase B polls on the parent's cadence, re-read per cycle, with no fixed 60s path"
+SK="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
+if grep -n -E 'stays 60|[Pp]oll(ing)? every 60|60-second cycle|cadence stays 60' "$SK" "$PB" >/dev/null; then
+  fail "39j: the subagent prompt or the Phase B agent still states a fixed 60-second cadence"
+fi
+# The cadence is repo-scoped: never written or read at the state-file root, so
+# another repo's monitor cannot overwrite this repo's value.
+if grep -n -E -- '--set \.poll_interval_s|--get \.poll_interval_s' "$SK" "$PB" >/dev/null; then
+  fail "39j: poll_interval_s must be read and written under .repos[\"<key>\"], not at the root"
+fi
+grep -q -F '].poll_interval_s' "$SK" || fail "39j: the subagent monitor must write poll_interval_s under the repo key"
+grep -q -F '].poll_interval_s' "$PB" || fail "39j: phase-b-reviewer must read poll_interval_s under the repo key"
+# Width wording must match the reader: default and speed are 15 only by default
+# (configurable to 20), and cheap may sit below PIPELINE_CEILING.
+for F in "$SK" "$REPO_ROOT/.claude/skills/wave/SKILL.md" "$REPO_ROOT/.claude/rules/subagent-orchestration.md"; do
+  if grep -n -F 'allow up to 15' "$F" >/dev/null; then fail "39j: ${F#"$REPO_ROOT"/} still says default/speed allow up to 15"; fi
+  if grep -n -F 'cheap `PIPELINE_CEILING`, default 4' "$F" >/dev/null; then fail "39j: ${F#"$REPO_ROOT"/} says cheap is PIPELINE_CEILING, ignoring CHEAP_MODE_WIDTH"; fi
+done
+ok "39j: Phase B polls on the parent's cadence from the repo-scoped state, with no fixed 60s path; width wording matches the reader"
 unset CLAUDE_SESSION_REPO
 
 # --- 40. Review-poll cadence (#2430) ------------------------------------------

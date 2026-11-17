@@ -62,7 +62,7 @@ Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:
 **Orchestration:**
 
 - **Transitions:** parent launches Phase A (parallel across PRs allowed); A complete → cleanup per `phase-protocols.md`, then B; B `merge_ready` → launch C within 60s (C verifies gate + AC before `/wrap`).
-- **Ceiling:** the run mode's width from `active-work-cap.sh --width` (default and speed 15; cheap `PIPELINE_CEILING`, default 4) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
+- **Ceiling:** the run mode's width from `active-work-cap.sh --width` (default and speed 15 unless configured; cheap `CHEAP_MODE_WIDTH`, which defaults to `PIPELINE_CEILING` and may be set lower) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
 - **Scope:** counts only PRs you authored (`@me`); a collaborator's or bot's PRs never enter it (contention is context, never a gate).
 - **Overflow:** past-ceiling work **queues inline, never becomes a thread chip** (slots: `.claude/skills/subagent/SKILL.md` Step 7).
 
