@@ -283,6 +283,55 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 pass "scalar transcript lines, --help exit 0, unreadable log named"
 
+# Test 10d: both sides measured, worker side unprovable (unsupported row) -> complete share null,
+# partial share = parent known subtotal over worker known subtotal, labelled known_subtotal.
+PART_SID="99999999-aaaa-bbbb-cccc-dddddddddddd"
+PART_T="$HOME/.claude/projects/proj-a/$PART_SID.jsonl"
+python3 - "$PART_T" "$PART_SID" "$LOG" <<'PY'
+import json, sys
+path, sid, log = sys.argv[1:4]
+u = {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20}
+recs = [
+    {"type": "user", "message": {"role": "user", "content": "go"}, "timestamp": "2026-08-04T10:00:00Z"},
+    {"type": "assistant", "timestamp": "2026-08-04T10:00:01Z", "message": {"id": "msg_p1", "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "ok"}], "usage": u}},
+]
+with open(path, "w") as fh:
+    for r in recs:
+        fh.write(json.dumps(r) + "\n")
+def tel(event, agent, key, i, o, cr, cw, usage_source):
+    cols = [""] * 27
+    cols[0] = "2026-08-04T10:10:00Z"; cols[1] = event; cols[2] = "subagent"; cols[3] = "sonnet"
+    cols[5] = sid; cols[6] = agent; cols[8] = "3"; cols[9] = key; cols[10] = "/repo"
+    cols[14] = "claude-sonnet-4-6"; cols[15] = "transcript"; cols[16] = str(i); cols[17] = str(o)
+    cols[18] = str(cr); cols[19] = str(cw); cols[24] = "subagent"; cols[25] = usage_source
+    cols[26] = json.dumps({"message_identity_source": "message.id", "repo_slug": "acme/repo"})
+    return "\t".join(cols)
+rows = [
+    tel("assistant_message", "wp1", "wpmsg1", 40, 10, 400, 0, "transcript"),
+    tel("subagent_stop", "wp2", "", 0, 0, 0, 0, "unsupported:agent_transcript_file_missing"),
+]
+with open(log, "a") as fh:
+    fh.write("\n".join(rows) + "\n")
+PY
+PART_OUT="$(bash "$REPORT" --session "$PART_SID" --transcript "$PART_T" --log "$LOG" --json)"
+python3 - "$PART_OUT" <<'PY' || fail "partial share shape wrong"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["share"]["value"] is None, d["share"]
+assert d["share"]["reason"] == "partial_data:unsupported_worker_row", d["share"]
+p = d["share"]["partial"]
+assert p["label"] == "known_subtotal", p
+assert p["reason"] == "partial_data:unsupported_worker_row", p
+assert p["unsupported_rows"] == 1 and d["coverage"]["unsupported_rows"] == 1, p
+# Parent 135 known, worker 450 known: 135 / 585 = 23.1
+assert p["value"] == 23.1, p
+assert d["parent"]["sum"]["value"] == 135 and d["workers"]["sum"]["value"] == 450, d["workers"]
+PY
+PART_LINE="$(bash "$REPORT" --session "$PART_SID" --transcript "$PART_T" --log "$LOG" --one-line)"
+[[ "$PART_LINE" == *"unknown (complete)"*"partial 23.1%"* ]] || fail "one-line partial wrong: $PART_LINE"
+pass "partial share labelled known_subtotal beside the complete unknown, with unsupported row count"
+
 # Test 11: /tldr contract names the mode and the script.
 TLDR="$REPO_ROOT/.claude/skills/tldr/SKILL.md"
 if [[ -f "$TLDR" ]]; then

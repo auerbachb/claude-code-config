@@ -339,6 +339,7 @@ def build_report(args):
     # Worker observations and the telemetry parent rows from the spend log.
     worker_entries = defaultdict(list)
     worker_ids_telemetry = set()
+    unsupported_rows = 0
     log_present = os.path.isfile(os.path.expanduser(args.log))
     if not log_present:
         limitations.append("telemetry_log_absent")
@@ -369,10 +370,9 @@ def build_report(args):
             if row["agent_id"]:
                 worker_entries[row["agent_id"]].append(entry)
                 worker_ids_telemetry.add(row["agent_id"])
-        for row in rows:
-            if str(row.get("usage_source", "")).startswith("unsupported"):
-                limitations.append("unsupported_worker_row")
-                break
+        unsupported_rows = sum(1 for row in rows if str(row.get("usage_source", "")).startswith("unsupported"))
+        if unsupported_rows:
+            limitations.append("unsupported_worker_row")
 
     # Launched Agent calls in the transcript vs worker telemetry. A call a PreToolUse hook
     # refused never started a worker, so it is not expected to have telemetry.
@@ -394,7 +394,11 @@ def build_report(args):
     parent_fig = figure(parent_totals, parent_obs, len(parent_entries), limitations)
     worker_fig = figure(worker_totals, worker_obs, len(worker_flat), limitations)
 
-    share = {"value": None, "reason": None}
+    # The complete share needs both sides complete. The partial share is the parent's measured
+    # subtotal over the measured worker subtotal, labelled known_subtotal; it is never presented
+    # as complete and never fills in a missing part.
+    share = {"value": None, "reason": None, "partial": {"value": None, "label": "unknown", "reason": None,
+                                                         "unsupported_rows": unsupported_rows}}
     if not log_present:
         share["reason"] = "telemetry_log_absent"
     elif limitations:
@@ -406,6 +410,11 @@ def build_report(args):
         share["value"] = round(100.0 * parent_fig["sum"]["value"] / total, 1) if total else None
         if share["value"] is None:
             share["reason"] = "zero_total"
+    if share["value"] is None and log_present:
+        p_sum, w_sum = parent_fig["sum"]["value"], worker_fig["sum"]["value"]
+        share["partial"]["reason"] = share["reason"]
+        if p_sum is not None and w_sum is not None and p_sum + w_sum > 0:
+            share["partial"].update(value=round(100.0 * p_sum / (p_sum + w_sum), 1), label="known_subtotal")
 
     # Turn classification and drivers.
     class_counts = {c: 0 for c in CLASSES}
@@ -461,7 +470,8 @@ def build_report(args):
     return {
         "session": {"id": session, "transcript_resolved": True},
         "coverage": {"limitations": sorted(set(limitations)), "telemetry_log_present": log_present,
-                     "ambiguous_turns": ambiguous, "unallocated_messages": len(unallocated)},
+                     "ambiguous_turns": ambiguous, "unallocated_messages": len(unallocated),
+                     "unsupported_rows": unsupported_rows},
         "parent": parent_fig,
         "workers": worker_fig,
         "worker_count": len(worker_entries),
@@ -478,6 +488,10 @@ def one_line(report):
     if share["value"] is None:
         reason = share["reason"] or "unknown"
         p = report["parent"]["sum"]["value"]
+        partial = share.get("partial", {})
+        if partial.get("value") is not None:
+            return (f"Parent share: unknown (complete) — {reason}; partial {partial['value']}% "
+                    f"({partial['label']}, {partial['unsupported_rows']} unsupported rows)")
         return f"Parent share: unknown — {reason}; parent known_subtotal {p if p is not None else 'unknown'} tokens"
     return f"Parent share: {share['value']}% of observed session tokens"
 
