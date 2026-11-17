@@ -20,12 +20,12 @@ the task brief. It read only the one-line `MEMORY.md` summary, which still state
 
 | Piece | What it does |
 |---|---|
-| `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E \| --open-ended]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `pending`, `digest [--all] [--mark]`. |
+| `.claude/scripts/unattended.sh` | `on [--for 12h \| --until-epoch E \| --open-ended]`, `off`, `status`, `is-active`, `window-ended`, `record`, `update`, `answer`, `dismiss`, `pending`, `digest [--all]`, `list [--all]`, `seen` (hooks). |
 | `~/.claude/session-state.json` `.unattended` | `{active, since_epoch, until_epoch}`. Global, not per repo: the operator is one person, and a declaration made in one repo's thread covers every session. Written only through `session-state.sh`; read with `jq` directly because hooks run on every prompt. |
-| `~/.claude/unattended/<owner>__<repo>.jsonl` | Append-only per-repo questions file: `question` records (`U-<n>`, question, options, recommended, did, session, source), `update` records (a later `did`), and `listed` watermarks. |
+| `~/.claude/unattended/<owner>__<repo>.jsonl` | Append-only per-repo questions file: `question` records (`U-<n>`, question, options, recommended, did, session, source), `update` records (a later `did`), and `answered` / `dismissed` records (issue #2352). Old `listed` watermarks are ignored. |
 | `unattended-question-guard.sh` (PreToolUse, `AskUserQuestion` and `mcp__ccd_session__start_session`) | While unattended: records every question in the call (recommended = first option, the `ask-menu.md` convention), then denies the call with the receipt to print. No menu opens. A `start_session` call is denied with a reason that says to use a sub-agent. Attended: prints nothing. |
 | `question-leak-warn.sh` (Stop) | Accepts `question [U-<n>] recorded for the operator's return` as a receipt. While unattended, its warning points at `unattended.sh record`, never at the question tool. |
-| `unattended-digest.sh` (UserPromptSubmit) | Injects the questions not yet listed on the operator's next message (any prompt that is not a wrapped automated event) and marks them listed. Issue #2294: also notices an expired window on an automated prompt and returns the operator on his message after one ran out (below). |
+| `unattended-digest.sh` (UserPromptSubmit) | Injects the unresolved questions on the operator's next message (any prompt that is not a wrapped automated event); marks nothing. Issue #2294: also notices an expired window on an automated prompt and returns the operator on his message after one ran out (below). |
 | `memory-audit.py --check --strict` | Flags a memory note that marks a decision superseded (`SUPERSEDED`, `superseded by`, `superseded:`, `reversed on <date>`) whose `MEMORY.md` line does not say the decision changed; `--strict` exits 1. `/memory-clean` surfaces it as "Stale index lines". |
 
 ## Declaring it
@@ -76,20 +76,31 @@ miss.
 
 ## Listing the questions
 
-`unattended.sh digest --mark` prints each question not yet listed with its recommended option, its
-options, and what was done meanwhile, then appends a `listed` watermark so nothing is listed twice.
-The UserPromptSubmit hook does this automatically; `unattended.sh off` does it when the operator ends
-the mode in chat. A list the UserPromptSubmit hook (or the guard, for an away expiry) triggers is first persisted as a
-pending-delivery record under `~/.claude/unattended/pending/` and only then marked listed; it counts
-as **delivered** when the hook's delivery reference shows up in the session's transcript (the harness
-records injected context there), and the next operator prompt (`unattended.sh settle`) shows any
-record that did not reach the model again. A hook killed after the mark costs a repeat, never a
-lost question. No path deletes an unconfirmed record silently (an unreadable one is kept and logged; after 5
-unconfirmed emissions it is shown a last time with a plain note). Residual window: the model may have
-received a list and not printed it for him, which nothing here can see; a payload without
-`transcript_path` can only be confirmed by the session's next prompt; and a bare CLI listing (`off`)
-is marked when rendered, as before. Details:
-`presence-windows.md` §Delivery of the saved questions.
+The rule (issue #2352): **a saved question is listed until it is answered or dismissed; listing never
+hides it.** `unattended.sh digest` prints each unresolved question with its recommended option, its
+options, and what was done meanwhile. It is a pure read: no lock, nothing appended, so no process death
+can lose a question. `--mark` is still accepted and does nothing. The UserPromptSubmit hook runs it on
+the operator's next message; `unattended.sh off` runs it when he ends the mode in chat.
+
+Resolving is explicit. When the operator answers in chat the thread records it:
+`unattended.sh answer U-<n> --answer '<his answer>' --by operator`; when he drops one,
+`unattended.sh dismiss U-<n> [U-<m> ...] --reason '<why>'`. Each validates every id first (strict
+`U-<digits>`, recorded, not already resolved) and writes nothing when any is bad. Only an answer he
+gave is recorded. `pending` counts unresolved questions; `unattended.sh list [--all]` prints EVERY
+recorded question with its status (open, answered, dismissed) regardless of what was shown, which is
+the way to read the questions after anything unexpected.
+
+To avoid a flood, `digest --session ID --shown-file PATH` splits the unresolved questions into those
+this session has not been shown in full during the current return (full text) and those it has (one
+line with the count, every id, and the command that prints the full text). The hook passes the file,
+prints its output, and only then runs `seen --session ID --from PATH`, which writes
+`~/.claude/unattended/seen/<repo file key>/<session>.json = {key, ids}`. `key` is
+`.unattended.since_epoch` (each away arming writes a new one, `here` and `closing` leave it), so a new
+return lists in full again. The record can only shorten a repeat. No usable session id means no record
+and the full list every time. A hook killed before it prints leaves no record, so the next prompt lists
+the same questions in full; killed after printing, before the record, it repeats the full list once.
+Why the earlier design (mark on listing, then confirm delivery) was removed, and the tests that pin the
+rule: `presence-windows.md` §Listing the saved questions, `unattended-mode.test.sh`.
 
 ## When the window runs out (issue #2294)
 
@@ -101,7 +112,7 @@ lifecycle: `presence-windows.md` §Expiry and return. What changes here:
   denying menus, questions keep being recorded, and `question-leak-warn.sh` keeps pointing at
   `unattended.sh record`. `window-ended` still reports the deadline; `status` says
   `active (window ended ...; until you send a message)`.
-- `digest --all [--mark]` lists every repo's file, each block labelled `[owner/name]`, because the
+- `digest --all` lists every repo's unresolved questions, each block labelled `[owner/name]`, because the
   operator is one person and may come back in any thread while the questions sit in another repo's
   file. A repo's own `digest` is unchanged.
 - `off` also ends a lapsed at-computer window (silently, through `presence.sh return --no-dialog`);

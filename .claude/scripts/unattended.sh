@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 # unattended.sh — the operator-away switch and the questions recorded while he is away.
-# catalog: scheduling-monitoring — Unattended mode: declare the operator away, record questions instead of opening menus, list them once on his return
+# catalog: scheduling-monitoring — Unattended mode: declare the operator away, record questions instead of opening menus, list them until he answers or dismisses each
 #
-# PURPOSE (issue #2283)
+# PURPOSE (issue #2283, issue #2352)
 #   While the operator is away, an agent that opens a menu (AskUserQuestion)
 #   or waits on him stalls the whole night. Unattended mode is one global flag
 #   in ~/.claude/session-state.json (`.unattended`) — the operator is one
 #   person, so a declaration made in one repo covers every session — plus one
 #   append-only questions file per repo. Agents record a question here, take
 #   the recommended option where it is reversible, park only the step that is
-#   not, and keep working. The list comes back once: on the operator's next
-#   message or when the declared window ends.
+#   not, and keep working. A saved question is listed on every return and
+#   every digest until it is ANSWERED or DISMISSED: listing alone never hides
+#   it, so no kill, crash or dropped hook output can lose one.
 #   Contract and rationale: .claude/reference/unattended-mode.md.
 #
 # USAGE
 #   unattended.sh on [--for <N>h|<N>m | --until-epoch <E> | --open-ended]   (default --for 12h)
 #                                                --open-ended: no window end (until `off`); issue #2293
-#   unattended.sh off [--cwd DIR | --repo KEY]   switch off, then print and mark the digest
+#   unattended.sh off [--cwd DIR | --repo KEY]   switch off, then print the digest (nothing is marked)
 #   unattended.sh status                         one line: `active until ...` or `inactive`
 #   unattended.sh is-active                      exit 0 away handling applies, 1 not (no output). A window
 #                                                that ran out stays active until the operator speaks
@@ -27,18 +28,28 @@
 #                        [--did TEXT] [--session ID] [--source agent|hook] [--cwd DIR | --repo KEY]
 #                                                prints the new id, U-<n>
 #   unattended.sh update U-<n> --did TEXT [--cwd DIR | --repo KEY]
-#   unattended.sh pending [--cwd DIR | --repo KEY]   count of questions not yet listed
-#   unattended.sh digest [--mark] [--cwd DIR | --repo KEY]
-#                                                the questions not yet listed, one per item;
-#                                                --mark records them as listed
-#   unattended.sh digest --all [--mark]          the same for EVERY repo's file, each block labelled
-#                                                with its repo key (the operator is one person and may
-#                                                come back in any thread; issue #2294)
-#   unattended.sh settle --session ID --transcript PATH --ref REF [--force]
-#                                                (hooks, issue #2294) pending-delivery records: drop the ones
-#                                                whose list reached the model, print (and re-own) the ones that
-#                                                did not; see DELIVERY below
-#   unattended.sh undelivered --not-ref REF      count of confirmable undelivered records another emission still owns
+#   unattended.sh answer U-<n> --answer TEXT [--by operator|thread] [--session ID] [--cwd DIR | --repo KEY]
+#                                                the operator answered it (in chat or at his return): only
+#                                                this, or `dismiss`, removes a question from the lists
+#   unattended.sh dismiss U-<n> [U-<m> ...] [--reason TEXT] [--by operator|thread] [--session ID]
+#                        [--cwd DIR | --repo KEY]    the operator dropped them without answering; several ids
+#                                                in one act. Both commands validate every id first
+#                                                (strict U-<digits>, exists, not already resolved) and
+#                                                write nothing when any is bad (exit 1)
+#   unattended.sh pending [--cwd DIR | --repo KEY]   count of UNRESOLVED questions (not answered, not dismissed)
+#   unattended.sh digest [--cwd DIR | --repo KEY]    every unresolved question, one per item. A pure read:
+#                                                it takes no lock and appends nothing. `--mark` is accepted
+#                                                and does nothing (kept for callers that still pass it)
+#   unattended.sh digest --all                   the same for EVERY repo's file, each block labelled with
+#                                                its repo key (the operator is one person and may come
+#                                                back in any thread; issue #2294)
+#   unattended.sh digest --session ID --shown-file PATH       (hooks) questions this session already saw in
+#                                                full during the current return are one summary line with
+#                                                the count and every id; the ids rendered in full are
+#                                                written to PATH, to be recorded AFTER the list was emitted
+#   unattended.sh seen --session ID --from PATH  (hooks) record the ids PATH names as shown in full to ID
+#   unattended.sh list [--all]                   EVERY recorded question regardless of what was shown, with
+#                                                its status (open | answered | dismissed); --all spans repos
 #   unattended.sh --help
 #
 # STATE
@@ -47,38 +58,19 @@
 #               because hooks run on every prompt and session-state.sh takes ~1 s)
 #   Questions:  ${UNATTENDED_DIR:-~/.claude/unattended}/<owner>__<repo>.jsonl, append-only:
 #               {"type":"question","id":"U-1",...} | {"type":"update","id":"U-1","did":...}
-#               | {"type":"listed","through":N}
+#               | {"type":"answered","id":"U-1","answer":...,"by":...}
+#               | {"type":"dismissed","id":"U-1","reason":...,"by":...}
+#               Old {"type":"listed","through":N} lines (written before issue #2352) are ignored.
+#   Shown:      ${UNATTENDED_DIR:-~/.claude/unattended}/seen/<file key>/<session>.json = {key, ids}: the
+#               return key (`.unattended.since_epoch`, "none" when absent; each away arming writes a new
+#               one) and the ids this session was shown in full. Written by `seen` only, after a hook
+#               emitted its list; it can only shorten a repeat, never hide a question. No valid session
+#               id: no record, always the full list.
 #   The repo key comes from session-state.sh --repo-key run in --cwd (default: the
 #   current directory), or --repo.
 #
-# DELIVERY (issue #2294, PR #2328 review)
-#   A listing that marks questions `listed` must not lose them when the process dies between the mark
-#   and the model seeing the list. INVARIANT: once a question's watermark is written there is a
-#   retained record of its list until delivery is confirmed (or, past the emission cap, until it has
-#   been shown once more with a plain note); no path deletes an unconfirmed record silently, errors
-#   included (a record that cannot be read is kept and logged; a record that cannot be written means
-#   nothing is marked).
-#   When a hook sets UNATTENDED_DELIVERY_REF (and SESSION and TRANSCRIPT: the hook payload's
-#   session_id and transcript_path), `digest --mark` writes one record per repo block to
-#   ${UNATTENDED_DIR:-~/.claude/unattended}/pending/<id>.json (atomically: temp file, then rename)
-#   BEFORE it appends the `listed` watermark. The record holds the rendered text, the emission's ref
-#   and the transcript path. DELIVERED means: the ref text appears in that transcript, which is where
-#   the harness records the context a hook injected, so the model had it. `settle` runs at the top of
-#   the operator's prompt hook: a delivered record is deleted; an undelivered one is re-emitted when
-#   it belongs to the same session (its earlier hook was killed or its output dropped), or to any
-#   session once it is 120 s old, or at once with --force (a takeover of a dead return winner). A
-#   re-emitted record is re-owned by the new emission and settled the same way, so a question can be
-#   shown twice but not zero times. A record never expires by age. After 5 emissions in which the ref
-#   never reached the transcript it is emitted a last time with a plain note saying so, then retired
-#   (logged in ${UNATTENDED_DIR:-~/.claude/unattended}/delivery.log). The transcript file need not
-#   exist when the record is written: until it can be read the list counts as undelivered. A record
-#   whose payload named NO transcript path cannot be confirmed at all; the same session's next prompt
-#   is then taken as the signal (weaker, documented residual). Without a delivery ref (a bare CLI
-#   call such as `off`, or a thread's own `expire`) no record is written and `digest --mark` marks
-#   when rendered, as before.
-#
 # EXIT CODES
-#   0 ok; 1 is-active/window-ended false, or a write failed; 2 usage error.
+#   0 ok; 1 is-active/window-ended false, or a write failed or an id was refused; 2 usage error.
 #
 # Bash 3.2 compatible (macOS /bin/bash).
 set -uo pipefail
@@ -89,6 +81,7 @@ STATE_FILE="${HOME}/.claude/session-state.json"
 Q_DIR="${UNATTENDED_DIR:-${HOME}/.claude/unattended}"
 PRESENCE_SH="${UNATTENDED_PRESENCE_SH:-$HERE/presence.sh}"
 LIB_DIR="$HERE/lib"
+SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
 
 JQ=$(command -v jq 2>/dev/null) || JQ=""
 if [ -z "$JQ" ]; then
@@ -170,7 +163,7 @@ q_file() {
   printf '%s/%s.jsonl\n' "$Q_DIR" "$k"
 }
 
-# mkdir lock around every write: id allocation, updates, the listed watermark.
+# mkdir lock around every write: id allocation, updates, answers and dismissals.
 LOCK=""
 lock() {
   local i=0
@@ -193,137 +186,56 @@ append() { # FILE JSON — refuses an empty record (a failed jq)
   printf '%s\n' "$2" >>"$1"
 }
 
-# The digest model: questions with their latest `did`, those after the last
-# `listed` watermark.
-pending_json() { # FILE
+
+# The question model (issue #2352). Every question with its latest `did`, its status (open |
+# answered | dismissed) and what resolved it. Old `listed` watermarks are ignored on purpose: a
+# question is hidden only by an explicit `answered` or `dismissed` record. Invalid lines and
+# question objects without a string id are skipped, so one malformed record hides no other.
+all_json() { # FILE
   [ -f "$1" ] || { printf '[]\n'; return 0; }
   "$JQ" -R -s -c '
     [split("\n")[] | select(length > 0) | (fromjson? // empty) | select(type == "object")] as $r
-    | ([$r[] | select(.type == "listed") | .through | numbers] | max // 0) as $w
     | [$r[] | select(.type == "update")] as $u
-    | [$r[] | select(.type == "question")
+    | [$r[] | select(.type == "answered" or .type == "dismissed")] as $d
+    | [$r[] | select(.type == "question" and (.id | type) == "string")
         | . as $q
-        | ($q.id | ltrimstr("U-") | tonumber? // 0) as $n
-        | select($n > $w)
-        | .did = (([$u[] | select(.id == $q.id) | .did] | last) // .did)]' "$1" 2>/dev/null
+        | ([$d[] | select(.id == $q.id)] | last) as $res
+        | .did = (([$u[] | select(.id == $q.id) | .did] | last) // .did)
+        | .status = (if $res == null then "open" elif $res.type == "answered" then "answered" else "dismissed" end)
+        | .resolution = (if $res == null then null else ($res.answer // $res.reason // null) end)]' "$1" 2>/dev/null
 }
 
-# --- pending delivery (see DELIVERY above) -------------------------------------
-PDIR="$Q_DIR/pending"
-DELIVERY_GRACE=120
-DELIVERY_MAX_EMITS=5
-
-delivery_log() { # LINE — best effort
-  mkdir -p "$Q_DIR" 2>/dev/null || return 0
-  printf '%s %s\n' "$(now)" "$1" >>"$Q_DIR/delivery.log" 2>/dev/null || true
+# The questions nobody has answered or dismissed: what every digest and `pending` shows.
+unresolved_json() { # FILE
+  local a
+  a=$(all_json "$1") && [ -n "$a" ] || return 1
+  printf '%s' "$a" | "$JQ" -c '[.[] | select(.status == "open")]' 2>/dev/null
 }
 
-# Persist one rendered block. 0 staged; 2 not applicable (no delivery ref, i.e. a bare CLI call: legacy
-# behaviour); 1 the record could not be written (the caller must NOT mark the questions listed).
-stage_record() { # LABEL TEXT
-  local ref="${UNATTENDED_DELIVERY_REF:-}" tp="${UNATTENDED_DELIVERY_TRANSCRIPT:-}" name tmp
-  [ -n "$ref" ] || return 2
-  mkdir -p "$PDIR" 2>/dev/null || return 1
-  name="$(now)-$$-$RANDOM"
-  tmp="$PDIR/.$name.tmp"
-  printf '%s' "$2" | "$JQ" -Rsc --arg ref "$ref" --arg sid "${UNATTENDED_DELIVERY_SESSION:-}" --arg tp "$tp" \
-    --arg label "$1" --argjson at "$(now)" \
-    '{ref: $ref, session: $sid, transcript: $tp, label: $label, text: ., staged_at: $at, stamped_at: $at, emits: 1}' >"$tmp" 2>/dev/null &&
-    [ -s "$tmp" ] && mv "$tmp" "$PDIR/$name.json" || { rm -f "$tmp" 2>/dev/null; return 1; }
+# --- what a session was already shown (see STATE above) ---------------------------------------------
+# A session id is usable only when it is a plain token: it becomes a file name.
+valid_sid() { # ID
+  case "${1-}" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  [ "${#1}" -le 128 ]
 }
-
-rewrite_record() { # FILE SESSION TRANSCRIPT REF
-  local tmp
-  tmp="$1.$$.tmp"
-  "$JQ" -c --arg s "$2" --arg t "$3" --arg r "$4" --argjson n "$(now)" \
-    '.session = $s | .transcript = $t | .ref = $r | .stamped_at = $n | .emits += 1' "$1" >"$tmp" 2>/dev/null &&
-    [ -s "$tmp" ] && mv "$tmp" "$1" || { rm -f "$tmp" 2>/dev/null; return 1; }
+# The return key: each away arming writes a new `.unattended.since_epoch`, so a new return lists in
+# full again. "none" when it was never written.
+return_key() {
+  local k=""
+  [ -f "$STATE_FILE" ] && k=$("$JQ" -r '(.unattended.since_epoch // "none") | tostring' "$STATE_FILE" 2>/dev/null) || true
+  printf '%s\n' "${k:-none}"
 }
-
-cmd_settle() {
-  local sid="" tp="" ref="" force=0 f fields rref rsid rtp rstamp remits n out="" txt owed nq
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --session) sid="${2-}"; shift 2 || die_usage "--session needs a value" ;;
-      --transcript) tp="${2-}"; shift 2 || die_usage "--transcript needs a value" ;;
-      --ref) ref="${2-}"; shift 2 || die_usage "--ref needs a value" ;;
-      --force) force=1; shift ;;
-      *) die_usage "unknown argument to settle: $1" ;;
-    esac
-  done
-  [ -n "$ref" ] || die_usage "settle needs --ref"
-  [ -d "$PDIR" ] || return 0
-  ls "$PDIR"/*.json >/dev/null 2>&1 || return 0
-  lock "$PDIR/.settle" || { printf 'unattended.sh: pending records are locked\n' >&2; return 1; }
-  n=$(now)
-  for f in "$PDIR"/*.json; do
-    [ -f "$f" ] || continue
-    # A read failure keeps the record (its list is marked listed, so it is the only copy): log it.
-    fields=$("$JQ" -r '[.ref // "", .session // "", .transcript // "", (.stamped_at // 0 | tostring), (.emits // 1 | tostring)] | join("\u001f")' "$f" 2>/dev/null) ||
-      { delivery_log "could not read pending record $f; kept"; continue; }
-    [ -n "$fields" ] || { delivery_log "could not read pending record $f; kept"; continue; }
-    IFS=$(printf '\037') read -r rref rsid rtp rstamp remits <<EOF
-$fields
-EOF
-    case "$rstamp" in ''|*[!0-9]*) rstamp=0 ;; esac
-    case "$remits" in ''|*[!0-9]*) remits=1 ;; esac
-    # Delivered: the ref is in the owning session's transcript, so the model had the list.
-    if [ -n "$rref" ] && [ -n "$rtp" ] && [ -r "$rtp" ] && grep -qF -- "$rref" "$rtp" 2>/dev/null; then
-      rm -f "$f" 2>/dev/null; continue
-    fi
-    # No transcript path was ever known for this record (a payload without one): nothing can confirm
-    # it, so the same session's next prompt is the only signal there is (weaker; see DELIVERY).
-    if [ -z "$rtp" ] && [ "$force" -eq 0 ] && [ -n "$sid" ] && [ "$rsid" = "$sid" ]; then
-      rm -f "$f" 2>/dev/null; continue
-    fi
-    owed=0
-    if [ "$force" -eq 1 ]; then owed=1
-    elif [ -n "$sid" ] && [ "$rsid" = "$sid" ]; then owed=1
-    elif [ $((n - rstamp)) -ge "$DELIVERY_GRACE" ]; then owed=1; fi
-    [ "$owed" -eq 1 ] || continue
-    txt=$("$JQ" -r '.text // ""' "$f" 2>/dev/null) || { delivery_log "could not read pending list $f; kept"; continue; }
-    [ -n "$txt" ] || { rm -f "$f" 2>/dev/null; continue; }   # genuinely empty: nothing to deliver
-    if [ "$remits" -ge "$DELIVERY_MAX_EMITS" ]; then
-      # The last time: say plainly that it was never confirmed, show it once more, then retire it.
-      nq=$(printf '%s\n' "$txt" | grep -c '^[0-9][0-9]*\. U-')
-      delivery_log "last emission of a pending list after $remits unconfirmed emissions (ref $rref)"
-      out="${out:+$out
-
-}(These $nq saved question(s) were emitted $remits times and the transcript never confirmed them. This is the last time they are shown; the questions file still holds every question.)
-$txt"
-      rm -f "$f" 2>/dev/null
-      continue
-    fi
-    out="${out:+$out
-
-}$txt"
-    # Re-own it: this emission's ref is what the next settle looks for. If the rewrite fails the old
-    # ref stays and a later settle shows the list again, which is the safe direction.
-    rewrite_record "$f" "$sid" "$tp" "$ref" || true
-  done
-  unlock
-  [ -z "$out" ] || printf '%s\n' "$out"
+seen_path() { printf '%s/seen/%s/%s.json\n' "$Q_DIR" "$1" "$2"; } # FILEKEY SID
+# The ids this session was shown in full under return key KEY; [] on any doubt (a missing, unreadable
+# or other-return record), which only means a full list.
+seen_ids() { # FILEKEY SID KEY
+  local p out
+  p=$(seen_path "$1" "$2")
+  [ -f "$p" ] || { printf '[]\n'; return 0; }
+  out=$("$JQ" -c --arg k "$3" 'if type == "object" and .key == $k and (.ids | type) == "array"
+    then [.ids[] | strings] else [] end' "$p" 2>/dev/null) && [ -n "$out" ] || out='[]'
+  printf '%s\n' "$out"
 }
-
-cmd_undelivered() {
-  local ref="" f count=0 r
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --not-ref) ref="${2-}"; shift 2 || die_usage "--not-ref needs a value" ;;
-      *) die_usage "unknown argument to undelivered: $1" ;;
-    esac
-  done
-  if [ -d "$PDIR" ]; then
-    for f in "$PDIR"/*.json; do
-      [ -f "$f" ] || continue
-      # A record with no transcript path can never be confirmed, so it never holds the dialog back.
-      r=$("$JQ" -r 'if (.transcript // "") == "" then "" else (.ref // "x") end' "$f" 2>/dev/null) || r="x"
-      [ -z "$r" ] || [ "$r" = "$ref" ] || count=$((count + 1))
-    done
-  fi
-  printf '%s\n' "$count"
-}
-
 # --- subcommands ------------------------------------------------------------
 cmd_on() {
   local until="" dur="12h" n open=0 given=0
@@ -374,8 +286,8 @@ cmd_off() {
   printf 'unattended: off\n'
   if [ "$lapsed" -eq 1 ]; then
     # That return is global and clears the lapsed window: list every repo's saved questions FIRST
-    # (emitted and marked together, per file), and only then clear the window.
-    cmd_digest --all --mark
+    # (nothing is marked: listing never hides a question), and only then clear the window.
+    cmd_digest --all
     local rrc=0
     "$PRESENCE_SH" return --no-dialog >/dev/null 2>&1 || rrc=$?
     # A failed write (exit 11, e.g. a lock timeout) gets one retry, then a visible failure: menus stay
@@ -388,7 +300,7 @@ cmd_off() {
       return 1
     fi
   else
-    cmd_digest --mark
+    cmd_digest
   fi
 }
 
@@ -476,64 +388,198 @@ cmd_update() {
 
 cmd_pending() {
   local p
-  p=$(pending_json "$(q_file)") && [ -n "$p" ] ||
+  p=$(unresolved_json "$(q_file)") && [ -n "$p" ] ||
     { printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
   printf '%s' "$p" | "$JQ" -r 'length'
 }
 
-# One repo's file: list the questions not yet listed (with --mark, record them as listed).
-# LABEL, when non-empty, prefixes the header so a multi-repo list says whose questions they are.
-digest_file() { # FILE MARK LABEL
-  local f="$1" mark="$2" label="$3" p count last out
+# One repo's file: list its unresolved questions. A PURE READ: no lock, nothing appended, so a
+# process that dies at any point loses nothing (issue #2352). LABEL, when non-empty, prefixes the
+# header so a multi-repo list says whose questions they are. With a usable SID, the questions that
+# session was already shown in full during this return become one summary line; SHOWN (a path, or
+# empty) receives the ids rendered in full, for `seen` to record once the list was emitted.
+digest_file() { # FILE LABEL SID SHOWN
+  local f="$1" label="$2" sid="$3" shown="$4" p count fkey rkey seenj split nnew nold oldids out text sum rk noun
   [ -f "$f" ] || return 0
-  # Hold the lock from read to watermark, so two sessions answering the same
-  # prompt cannot both list the same questions.
-  if [ "$mark" -eq 1 ]; then
-    lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
-  fi
   # An unreadable file is an error, never "nothing to list".
-  p=$(pending_json "$f") && [ -n "$p" ] ||
-    { unlock; printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
+  p=$(unresolved_json "$f") && [ -n "$p" ] ||
+    { printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
   count=$(printf '%s' "$p" | "$JQ" -r 'length')
-  [ "${count:-0}" -gt 0 ] || { unlock; return 0; }
-  out=$(printf '%s' "$p" | "$JQ" -r 'to_entries[] | .value as $q
-    | "\(.key + 1). \($q.id): \($q.question)"
-      + "\n   Recommended: \($q.recommended // "none given")"
-      + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
-      + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
-  # Nothing is marked listed unless the list was rendered, persisted (when delivery can be verified)
-  # and written.
-  local text src=2
-  text=$(printf '%sQuestions recorded while you were away (%s):\n%s' "${label:+[$label] }" "$count" "$out") || text=""
-  if [ -z "$out" ] || [ -z "$text" ]; then
-    unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
+  [ "${count:-0}" -gt 0 ] || return 0
+  fkey=$(basename "$f" .jsonl)
+  seenj='[]'; rkey=""
+  if valid_sid "$sid"; then rkey=$(return_key); seenj=$(seen_ids "$fkey" "$sid" "$rkey"); else sid=""; fi
+  split=$(printf '%s' "$p" | "$JQ" -c --argjson s "$seenj" '
+    {new: [.[] | select(.id as $i | any($s[]; . == $i) | not)],
+     old: [.[] | select(.id as $i | any($s[]; . == $i)) | .id]}') || split=""
+  [ -n "$split" ] || { printf 'unattended.sh: could not render the list\n' >&2; return 1; }
+  nnew=$(printf '%s' "$split" | "$JQ" -r '.new | length')
+  nold=$(printf '%s' "$split" | "$JQ" -r '.old | length')
+  text=""
+  if [ "$nnew" -gt 0 ]; then
+    out=$(printf '%s' "$split" | "$JQ" -r '.new | to_entries[] | .value as $q
+      | "\(.key + 1). \($q.id): \($q.question)"
+        + "\n   Recommended: \($q.recommended // "none given")"
+        + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
+        + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
+    [ -n "$out" ] || { printf 'unattended.sh: could not render the list\n' >&2; return 1; }
+    text=$(printf '%sQuestions recorded while you were away (%s):\n%s' "${label:+[$label] }" "$nnew" "$out")
   fi
-  if [ "$mark" -eq 1 ]; then
-    stage_record "$label" "$text"; src=$?
-    if [ "$src" -eq 1 ]; then
-      unlock; printf 'unattended.sh: could not persist the list; nothing marked as listed\n' >&2; return 1
-    fi
+  if [ "$nold" -gt 0 ]; then
+    oldids=$(printf '%s' "$split" | "$JQ" -r '.old | join(", ")')
+    rk="${label:-$(repo_key)}"
+    if [ "$nold" -eq 1 ]; then noun="saved question"; else noun="saved questions"; fi
+    sum=$(printf '%s%s %s still unanswered (%s), listed in full earlier this session; run %s digest --repo %s for the full text.' \
+      "${label:+[$label] }" "$nold" "$noun" "$oldids" "$(printf '%q' "$SELF")" "$(printf '%q' "$rk")")
+    text="${text:+$text
+
+}$sum"
   fi
-  if ! printf '%s\n' "$text"; then
-    unlock; printf 'unattended.sh: could not render the list\n' >&2; return 1
+  printf '%s\n' "$text" || { printf 'unattended.sh: could not render the list\n' >&2; return 1; }
+  # The ids shown in full, for `seen`. Best effort: a failure only means a repeat next time.
+  if [ -n "$shown" ] && [ -n "$sid" ] && [ "$nnew" -gt 0 ]; then
+    printf '%s' "$split" | "$JQ" -c --arg f "$fkey" --arg k "$rkey" '{file: $f, key: $k, ids: [.new[].id]}' >>"$shown" 2>/dev/null || true
   fi
-  if [ "$mark" -eq 1 ]; then
-    local json
-    last=$(printf '%s' "$p" | "$JQ" -r '[.[].id | ltrimstr("U-") | tonumber? // 0] | max') &&
-      json=$("$JQ" -cn --argjson t "$last" --argjson at "$(now)" '{type: "listed", through: $t, at: $at}') &&
-      append "$f" "$json" ||
-      { unlock; printf 'unattended.sh: could not mark the list as shown\n' >&2; return 1; }
-    unlock
-  fi
+  return 0
 }
 
 cmd_digest() {
-  local mark=0 all=0 rc=0 f key
+  local all=0 rc=0 f key sid="" shown=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mark) mark=1; shift ;;
+      --mark) shift ;;   # deprecated no-op (issue #2352): listing never marks anything
       --all) all=1; shift ;;
+      --session) [ $# -ge 2 ] || die_usage "--session needs a value"; sid="$2"; shift 2 ;;
+      --shown-file) [ $# -ge 2 ] || die_usage "--shown-file needs a value"; shown="$2"; shift 2 ;;
       *) die_usage "unknown argument to digest: $1" ;;
+    esac
+  done
+  [ -z "$shown" ] || : >"$shown" 2>/dev/null || shown=""
+  if [ "$all" -eq 1 ]; then
+    [ -d "$Q_DIR" ] || return 0
+    for f in "$Q_DIR"/*.jsonl; do
+      [ -f "$f" ] || continue
+      key=$(basename "$f" .jsonl)
+      key="${key/__//}"
+      digest_file "$f" "$key" "$sid" "$shown" || rc=1
+    done
+    return "$rc"
+  fi
+  digest_file "$(q_file)" "" "$sid" "$shown"
+}
+
+# Record, after a hook emitted its list, which ids this session was shown in full.
+cmd_seen() {
+  local sid="" from="" line fk rk ids old dir tmp rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) [ $# -ge 2 ] || die_usage "--session needs a value"; sid="$2"; shift 2 ;;
+      --from) [ $# -ge 2 ] || die_usage "--from needs a value"; from="$2"; shift 2 ;;
+      *) die_usage "unknown argument to seen: $1" ;;
+    esac
+  done
+  [ -n "$from" ] || die_usage "seen needs --from"
+  valid_sid "$sid" || return 0   # no usable session id: nothing is recorded, every list stays full
+  [ -f "$from" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    fk=$(printf '%s' "$line" | "$JQ" -r '.file // ""' 2>/dev/null) || fk=""
+    rk=$(printf '%s' "$line" | "$JQ" -r '(.key // "") | tostring' 2>/dev/null) || rk=""
+    ids=$(printf '%s' "$line" | "$JQ" -c '[(.ids // [])[] | strings]' 2>/dev/null) || ids=""
+    case "$fk" in ''|*[!a-z0-9._-]*) rc=1; continue ;; esac
+    [ -n "$rk" ] && [ -n "$ids" ] || { rc=1; continue; }
+    old=$(seen_ids "$fk" "$sid" "$rk")
+    dir="$Q_DIR/seen/$fk"
+    mkdir -p "$dir" 2>/dev/null || { rc=1; continue; }
+    tmp="$dir/.$sid.$$.tmp"
+    "$JQ" -cn --argjson a "$old" --argjson b "$ids" --arg k "$rk" '{key: $k, ids: (($a + $b) | unique)}' >"$tmp" 2>/dev/null &&
+      [ -s "$tmp" ] && mv "$tmp" "$dir/$sid.json" || { rm -f "$tmp" 2>/dev/null; rc=1; }
+  done <"$from"
+  return "$rc"
+}
+
+# answer U-n --answer TEXT / dismiss U-n [U-m ...] [--reason TEXT]: the explicit act that removes a
+# question from the lists. Every id is validated under the lock before anything is written.
+cmd_resolve() { # KIND (answered|dismissed) ARGS...
+  local kind="$1" text="" by="operator" sid="" id ids f a st json block="" seenids="" rc=0 n
+  ids=()
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --answer) [ "$kind" = answered ] || die_usage "unknown argument to dismiss: $1"; [ $# -ge 2 ] || die_usage "--answer needs a value"; text="$2"; shift 2 ;;
+      --reason) [ "$kind" = dismissed ] || die_usage "unknown argument to answer: $1"; [ $# -ge 2 ] || die_usage "--reason needs a value"; text="$2"; shift 2 ;;
+      --by) [ $# -ge 2 ] || die_usage "--by needs a value"; by="$2"; shift 2 ;;
+      --session) [ $# -ge 2 ] || die_usage "--session needs a value"; sid="$2"; shift 2 ;;
+      -*) die_usage "unknown argument: $1" ;;
+      *) ids+=("$1"); shift ;;
+    esac
+  done
+  case "$by" in operator|thread) ;; *) die_usage "--by takes operator or thread" ;; esac
+  if [ "$kind" = answered ]; then
+    [ "${#ids[@]}" -eq 1 ] || die_usage "answer takes exactly one id"
+    [ -n "$text" ] || die_usage "answer needs --answer"
+  else
+    [ "${#ids[@]}" -ge 1 ] || die_usage "dismiss needs at least one id"
+  fi
+  for id in "${ids[@]}"; do
+    case "$id" in U-*) n="${id#U-}" ;; *) die_usage "bad id: $id" ;; esac
+    case "$n" in ''|*[!0-9]*) die_usage "bad id: $id" ;; esac
+  done
+  f=$(q_file)
+  mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
+  lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
+  a=$(all_json "$f") && [ -n "$a" ] || { unlock; printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
+  for id in "${ids[@]}"; do
+    case " $seenids " in *" $id "*) continue ;; esac   # the same id twice is one act
+    seenids="$seenids $id"
+    st=$(printf '%s' "$a" | "$JQ" -r --arg id "$id" '[.[] | select(.id == $id) | .status] | first // "unknown"') || st=""
+    case "$st" in
+      open) ;;
+      unknown) unlock; printf 'unattended.sh: %s is not a recorded question; nothing written\n' "$id" >&2; return 1 ;;
+      *) unlock; printf 'unattended.sh: %s is already %s; nothing written\n' "$id" "$st" >&2; return 1 ;;
+    esac
+    if [ "$kind" = answered ]; then
+      json=$("$JQ" -cn --arg id "$id" --arg t "$text" --arg by "$by" --arg s "$sid" --argjson at "$(now)" \
+        '{type: "answered", id: $id, at: $at, answer: $t, by: $by, session: (if $s == "" then null else $s end)}') || json=""
+    else
+      json=$("$JQ" -cn --arg id "$id" --arg t "$text" --arg by "$by" --arg s "$sid" --argjson at "$(now)" \
+        '{type: "dismissed", id: $id, at: $at, reason: (if $t == "" then null else $t end), by: $by,
+          session: (if $s == "" then null else $s end)}') || json=""
+    fi
+    [ -n "$json" ] || { unlock; printf 'unattended.sh: write failed\n' >&2; return 1; }
+    block="${block:+$block
+}$json"
+  done
+  append "$f" "$block" || rc=1
+  unlock
+  [ "$rc" -eq 0 ] || { printf 'unattended.sh: write failed\n' >&2; return 1; }
+  for id in $seenids; do printf '%s %s\n' "$id" "$kind"; done
+}
+
+# Every recorded question with its status, whatever was shown or resolved.
+list_file() { # FILE LABEL
+  local f="$1" label="$2" a n
+  [ -f "$f" ] || return 0
+  a=$(all_json "$f") && [ -n "$a" ] || { printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
+  n=$(printf '%s' "$a" | "$JQ" -r 'length')
+  [ "${n:-0}" -gt 0 ] || return 0
+  printf '%s' "$a" | "$JQ" -r --arg label "$label" '
+    (if $label == "" then "" else "[\($label)] " end) as $p
+    | "\($p)Recorded questions (\(length)):",
+      (.[] | "\(.id) [\(.status)]: \(.question)"
+        + "\n   Recommended: \(.recommended // "none given")"
+        + (if (.options | length) > 0 then " (options: \(.options | join(" | ")))" else "" end)
+        + "\n   Meanwhile: \(.did // "not recorded; see the thread")"
+        + (if .status == "answered" then "\n   Answer: \(.resolution // "")"
+           elif .status == "dismissed" then "\n   Dismissed: \(.resolution // "no reason given")" else "" end))'
+}
+
+cmd_list() {
+  local all=0 rc=0 f key
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all) all=1; shift ;;
+      *) die_usage "unknown argument to list: $1" ;;
     esac
   done
   if [ "$all" -eq 1 ]; then
@@ -542,11 +588,11 @@ cmd_digest() {
       [ -f "$f" ] || continue
       key=$(basename "$f" .jsonl)
       key="${key/__//}"
-      digest_file "$f" "$mark" "$key" || rc=1
+      list_file "$f" "$key" || rc=1
     done
     return "$rc"
   fi
-  digest_file "$(q_file)" "$mark" ""
+  list_file "$(q_file)" ""
 }
 
 # --- main ---------------------------------------------------------------------
@@ -561,6 +607,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --cwd) [ $# -ge 2 ] || die_usage "--cwd needs a value"; CWD="$2"; shift 2 ;;
     --repo) [ $# -ge 2 ] || die_usage "--repo needs a value"; REPO="$2"; shift 2 ;;
+    # A value-taking flag carries its value through verbatim, so text such as an answer that starts
+    # with --repo or --cwd is not read as a global option.
+    --answer|--reason|--question|--recommended|--options|--did|--session|--source|--by|--for|--from|--shown-file|--until-epoch)
+      args+=("$1"); shift
+      if [ $# -gt 0 ]; then args+=("$1"); shift; fi ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -576,7 +627,9 @@ case "$sub" in
   update) cmd_update "$@" ;;
   pending) cmd_pending ;;
   digest) cmd_digest "$@" ;;
-  settle) cmd_settle "$@" ;;
-  undelivered) cmd_undelivered "$@" ;;
+  answer) cmd_resolve answered "$@" ;;
+  dismiss) cmd_resolve dismissed "$@" ;;
+  seen) cmd_seen "$@" ;;
+  list) cmd_list "$@" ;;
   *) die_usage "unknown subcommand: $sub" ;;
 esac

@@ -72,6 +72,13 @@ lapse() { # here|away [extra flags: --by ... already added]
     --set ".unattended.since_epoch=$((n - 100000 - K * 1000))" --set ".unattended.until_epoch=$((n - 5))" >/dev/null
 }
 sj() { jq -r "$1" "$SF"; }                    # read a field of the state file
+# Listing no longer consumes a question (issue #2352): a scenario that needs "nothing saved" first
+# dismisses whatever the earlier ones left unresolved.
+clear_questions() {
+  local id
+  for id in $(U digest | sed -n 's/^[0-9]*\. \(U-[0-9]*\):.*/\1/p'); do U dismiss "$id" --reason test >/dev/null; done
+  for id in $(UB digest | sed -n 's/^[0-9]*\. \(U-[0-9]*\):.*/\1/p'); do UB dismiss "$id" --reason test >/dev/null; done
+}
 qcount() { jq -s '[.[] | select(.type == "question")] | length' "$HOME/.claude/unattended/$1.jsonl" 2>/dev/null || echo 0; }
 
 for f in "$PRESENCE" "$UNATT" "$GUARD" "$DIGEST"; do
@@ -155,6 +162,7 @@ lacks "a third message does not ask it again" "$(ctx "$OUT")" "PRESENCE DIALOG"
 
 printf '== the dialog is claimed once across concurrent sessions\n'
 lapse here
+clear_questions
 check "no questions saved this time" "$(U pending)" 0
 OUT=$(operator s-1)
 has "nothing saved: the dialog comes in the same turn" "$(ctx "$OUT")" "PRESENCE DIALOG"
@@ -292,6 +300,16 @@ has "expire speaks for it" "$(P expire)" "your away window ended"
 OUT=$(operator s-1)
 check "his message ends it" "$(U is-active; echo $?)" 1
 
+printf '== a missing question lister is a failed read, never "no questions" (issue #2352)\n'
+rm -f "$SF"
+n=$(date +%s)
+U on --for 1h >/dev/null
+"$STATE" --set ".unattended.since_epoch=$((n - 7200))" --set ".unattended.until_epoch=$((n - 5))" >/dev/null
+MISSING_OUT=$(cd "$REPO_A" && PRESENCE_UNATTENDED_SH="/nonexistent/no-such-lister.sh" "$PRESENCE" expire)
+has "expire still speaks" "$MISSING_OUT" "your away window ended"
+has "and warns the question files could not be read" "$MISSING_OUT" "could not be read"
+operator s-1 >/dev/null
+
 printf '== a stored closing window follows the /leave-by record\n'
 rm -f "$SF"
 KEY='.repos["acme/widgets"]'
@@ -347,8 +365,31 @@ OUT2=$(operator s-live)
 lacks "a later message does not list them again" "$(ctx "$OUT2")" "Stranded A?"
 has "and his next message asks the dialog" "$(ctx "$OUT2")" "PRESENCE DIALOG"
 
+printf '== a return winner killed before it printed: the next message still lists every repo (issue #2352)\n'
+lapse away
+clear_questions
+U record --question "Killed return A?" --recommended "a" >/dev/null
+UB record --question "Killed return B?" --recommended "b" >/dev/null
+KILLBIN="$TMP/killbin"; mkdir -p "$KILLBIN"
+KILL_REAL_JQ=$(command -v jq)
+cat >"$KILLBIN/jq" <<KILLJQ
+#!/bin/sh
+case "\$*" in *hookEventName*) exit 137 ;; esac
+exec "$KILL_REAL_JQ" "\$@"
+KILLJQ
+chmod +x "$KILLBIN/jq"
+OUT=$(prompt_payload s-kill "$REPO_A" "I'm back" | PATH="$KILLBIN:$PATH" "$DIGEST")
+check "killed while building the output: nothing was printed" "$OUT" ""
+check "the return is still listing, so it can be recovered" "$(sj '.presence.return.dialog')" listing
+GK=$(sj '.presence.return.generation')
+"$STATE" --set ".presence.return.generation=$((GK - 300))" >/dev/null
+check "the winner that never printed probes as listing-stale" "$(P probe)" listing-stale
+C=$(ctx "$(operator s-kill)")
+has "the next message lists this repo's question" "$C" "Killed return A?"
+has "and the other repo's, never reached" "$C" "Killed return B?"
+
 # An expiry claimed a moment before a return: the guard must still deliver the notice it claimed,
-# because the list was marked listed when it was rendered. Here a return lands between the guard's
+# because it already carries the list it rendered. Here a return lands between the guard's
 # expire and its is-active read (the wrapper runs the return just before the real is-active).
 printf '== expiry racing a return: the claimed notice and its list still reach the thread\n'
 lapse away

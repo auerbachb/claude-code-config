@@ -4,7 +4,7 @@
 # Two jobs, both ending in additionalContext for the model:
 #
 # 1. The operator's next message (a prompt that is not an automated event) lists the questions
-#    recorded while he was away, once, and marks them listed (unattended.sh digest --mark).
+#    recorded while he was away that nobody has answered or dismissed (unattended.sh digest).
 #
 # 2. Window expiry and return (issue #2294):
 #    - An AUTOMATED prompt (a Monitor wake, a task notification) is a turn in which a thread can act,
@@ -12,21 +12,20 @@
 #      threads and prints what to do (the here notice and the phone-push instruction, or the away
 #      list). Losing threads get nothing. No question is ever opened on a timer.
 #    - The operator's message after a window ran out RETURNS him: `presence.sh return` ends away
-#      handling once (a compare-and-set, one winning session), every saved question from every repo
-#      is listed first (unattended.sh digest --all --mark), and the presence dialog is asked after
+#      handling once (a compare-and-set, one winning session), every unresolved question from every repo
+#      is listed first (unattended.sh digest --all), and the presence dialog is asked after
 #      them: in the same turn when nothing was saved, otherwise on his next message
 #      (`presence.sh dialog-claim`, once in total). A message inside a window he declared and that is
 #      still running changes nothing.
 #
-# Delivery (PR #2328 review): a list is never marked listed on the strength of this process alone. The
-# hook exports a delivery ref plus the payload's session_id and transcript_path, so every listing it
-# triggers (this repo's digest, the all-repos return list, an away-expiry list) is first persisted as a
-# pending record (unattended.sh DELIVERY) and only then marked. At the top of an operator prompt it
-# settles earlier records: a record whose ref is in its transcript was delivered and is dropped, any
-# other is shown again, before anything new and before the presence dialog. A hook killed after the
-# mark but before its output reached the model therefore costs a repeat, never a lost question, and a
-# takeover of a dead return winner never reports "No questions were saved" over an undelivered list.
-# The delivery ref line it appends is how the next settle recognises the list in the transcript.
+# Listing (issue #2352): a saved question is listed until it is ANSWERED or DISMISSED
+# (unattended.sh answer|dismiss), and listing alone never hides it. The hook therefore marks
+# nothing and keeps no delivery record: it reads the unresolved questions, prints its output, and
+# only AFTER the print succeeds records which ids this session was shown in full (unattended.sh
+# seen). A hook killed anywhere before its output leaves no record, so the next prompt lists the
+# same questions in full; a kill between the print and the record costs a repeat, never a loss.
+# A question this session already saw in full during the current return (the unattended
+# since_epoch) is one summary line with a count after that.
 #
 # The automated/operator split is a heuristic on the prompt's wrapper prefix (the same prefixes
 # quota-reserve.sh --classify-prompt uses). An automated event it does not recognise would count as
@@ -67,18 +66,23 @@ payload=$(cat 2>/dev/null) || exit 0
 prompt=$(printf '%s' "$payload" | "$JQ" -r '(.prompt // .message // "") | tostring' 2>/dev/null) || exit 0
 cwd=$(printf '%s' "$payload" | "$JQ" -r '(.cwd // "") | tostring' 2>/dev/null) || cwd=""
 [ -n "$cwd" ] && [ -d "$cwd" ] || cwd="$PWD"
+# The session id: the payload's, else the environment's; usable only as a plain token (it names a
+# file). With none, every list is in full and nothing is recorded as shown.
 sid=$(printf '%s' "$payload" | "$JQ" -r '(.session_id // "") | tostring' 2>/dev/null) || sid=""
-tpath=$(printf '%s' "$payload" | "$JQ" -r '(.transcript_path // "") | tostring' 2>/dev/null) || tpath=""
-# One ref per hook run, digits and dashes only so the transcript keeps it verbatim.
-DELIVERY_REF="pd-$(date +%s)-$$"
-export UNATTENDED_DELIVERY_REF="$DELIVERY_REF" UNATTENDED_DELIVERY_SESSION="$sid" UNATTENDED_DELIVERY_TRANSCRIPT="$tpath"
-PENDING_DIR="${UNATTENDED_DIR:-${HOME:-/nonexistent}/.claude/unattended}/pending"
-# Did any listing in this run persist a record under this ref? Then the output must carry the ref.
-staged_here() { grep -lF "\"ref\":\"$DELIVERY_REF\"" "$PENDING_DIR"/*.json >/dev/null 2>&1; }
+[ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+case "$sid" in *[!A-Za-z0-9._-]*) sid="" ;; esac
+[ "${#sid}" -le 128 ] || sid=""
+STATE_DIR="${UNATTENDED_DIR:-${HOME:-/nonexistent}/.claude/unattended}"
+SHOWN=$(mktemp "${TMPDIR:-/tmp}/unattended-shown.XXXXXX" 2>/dev/null) || SHOWN=""
+trap '[ -z "$SHOWN" ] || rm -f "$SHOWN"' EXIT
 record_failure() { # LINE — kept in the questions directory, never in a worktree
-  mkdir -p "${PENDING_DIR%/pending}" 2>/dev/null &&
-    printf '%s %s\n' "$(date +%s)" "$1" >>"${PENDING_DIR%/pending}/delivery.log" 2>/dev/null || true
+  mkdir -p "$STATE_DIR" 2>/dev/null &&
+    printf '%s %s\n' "$(date +%s)" "$1" >>"$STATE_DIR/hook.log" 2>/dev/null || true
 }
+# The one digest call every listing here makes: nothing is marked, and the ids shown in full go to
+# $SHOWN for `seen` once the output was printed.
+digest_args=(--session "$sid")
+[ -z "$SHOWN" ] || digest_args=(--session "$sid" --shown-file "$SHOWN")
 
 while :; do
   case "$prompt" in
@@ -92,6 +96,10 @@ case "$prompt" in
   "<system-reminder>"*|"human-queue: D-"*|"[Artifact comment"*|"<scheduled-task"*|"<scheduled_task"*) kind=automated ;;
 esac
 
+# Set when a return's list is in $ctx: the presence state leaves `listing` (dialog-ready) only AFTER
+# that output was printed, so a hook killed before printing leaves the return stale-recoverable (the
+# next operator message lists every repo again through `relist`).
+ready_after=0
 ctx=""
 add() { ctx="${ctx:+$ctx
 }$1"; }
@@ -103,20 +111,7 @@ fi
 
 dialog_text="PRESENCE DIALOG (presence.sh, issue #2294): the operator is back. After you answer his message, run '$PRESENCE_SH' ask: exit 0 prints a token; then open the dialog as the /presence skill describes (set --by operator-dialog --generation <token>, or release --dismissed when he dismisses it). Any other exit: do not open it. Skip it entirely when his message already says where he is or for how long: set that from the message instead."
 
-# Earlier lists that did not provably reach the model (see Delivery above), shown again first. FORCE=1
-# after a takeover of a dead return winner, whose record may be younger than the usual grace.
-settle_owed() { # FORCE
-  local f=()
-  [ "$1" -eq 1 ] && f=(--force)
-  ls "$PENDING_DIR"/*.json >/dev/null 2>&1 || return 0
-  "$UNATTENDED_SH" settle --session "$sid" --transcript "$tpath" --ref "$DELIVERY_REF" ${f[@]+"${f[@]}"} 2>/dev/null || true
-}
-# Records another emission still owns (a live session's list inside the grace window).
-others_in_flight() {
-  ls "$PENDING_DIR"/*.json >/dev/null 2>&1 || { printf '0\n'; return 0; }
-  "$UNATTENDED_SH" undelivered --not-ref "$DELIVERY_REF" 2>/dev/null || printf '0\n'
-}
-owed_frame="UNATTENDED QUESTIONS (human-queue.md, Unattended): the list below was recorded while the operator was away and has not been confirmed shown to him yet (an earlier hook run may have been interrupted). Show it in your reply, before anything else, each item with its recommended option and what was done meanwhile. A repeat is expected and harmless."
+list_frame="UNATTENDED QUESTIONS (human-queue.md, Unattended): show the operator the questions below in your reply, before anything else, each item with its recommended option and what was done meanwhile. A question stays listed until it is answered or dismissed, so a repeat is expected and harmless. When he answers one in chat, record it: '$UNATTENDED_SH' answer U-<n> --answer '<his answer>' --by operator. When he dismisses one without answering, run '$UNATTENDED_SH' dismiss U-<n> --reason '<why>'. For a question of another repo (a list labelled [owner/repo]) add --repo <owner/repo> to answer and to dismiss; leave it off for this repo's own. Record an answer only when he gave one."
 
 if [ "$kind" = automated ]; then
   # A turn where a thread can act: notice an expired window. The claim decides who prints it.
@@ -132,7 +127,6 @@ else
   returned=0
   lost=0
   failed=0
-  forced=0
   if [ "$probe" = lapsed ] || [ "$probe" = lapsed-claimed ]; then
     rrc=0
     rerr=$("$PRESENCE_SH" return 2>&1 >/dev/null) || rrc=$?
@@ -145,12 +139,11 @@ else
       *) failed=1; record_failure "presence.sh return exited $rrc: $(printf '%s' "$rerr" | tr '\n' ' ' | cut -c1-200)" ;;
     esac
   elif [ "$probe" = listing-stale ]; then
-    # The return winner stopped listing: take its place, so every repo's questions are still listed,
-    # including a list it persisted and marked but never delivered.
+    # The return winner stopped listing: take its place, so every repo's questions are still listed.
     rrc=0
     rerr=$("$PRESENCE_SH" relist 2>&1 >/dev/null) || rrc=$?
     case "$rrc" in
-      0) returned=1; forced=1 ;;
+      0) returned=1 ;;
       10) lost=1 ;;
       1) : ;;
       *) failed=1; record_failure "presence.sh relist exited $rrc: $(printf '%s' "$rerr" | tr '\n' ' ' | cut -c1-200)" ;;
@@ -160,64 +153,51 @@ else
     # Lost the return to another session, which lists every repo's questions: nothing to add.
     :
   elif [ "$returned" -eq 1 ]; then
-    # Undelivered lists from before first, then every repo's saved questions: he may return in any
-    # thread. A repo whose file could not be read does not hide the others' lines (they are already
-    # marked listed).
-    owed=$(settle_owed "$forced")
+    # Every repo's unresolved questions: he may return in any thread. A repo whose file could not be
+    # read does not hide the others' lines.
     lrc=0
-    list=$("$UNATTENDED_SH" digest --all --mark 2>/dev/null) || lrc=$?
-    if [ "$lrc" -ne 0 ] && [ -z "$list" ] && [ -z "$owed" ]; then
+    list=$("$UNATTENDED_SH" digest --all "${digest_args[@]}" 2>/dev/null) || lrc=$?
+    if [ "$lrc" -ne 0 ] && [ -z "$list" ]; then
       # A failed listing is not "nothing saved": say so, and leave the dialog for his next message
       # rather than asking it this turn.
-      "$PRESENCE_SH" dialog-ready >/dev/null 2>&1 || true
-      add "UNATTENDED QUESTIONS (human-queue.md, Unattended): the operator is back, so away handling has ended and menus work again. The saved questions could not be read just now: run '$UNATTENDED_SH' digest --all --mark, and show him the list it prints before anything else. Do NOT ask the presence question in this turn."
-    elif [ -n "$list" ] || [ -n "$owed" ]; then
-      "$PRESENCE_SH" dialog-ready >/dev/null 2>&1 || true
+      ready_after=1
+      add "UNATTENDED QUESTIONS (human-queue.md, Unattended): the operator is back, so away handling has ended and menus work again. The saved questions could not be read just now: run '$UNATTENDED_SH' digest --all, and show him the list it prints before anything else. Do NOT ask the presence question in this turn."
+    elif [ -n "$list" ]; then
+      ready_after=1
       [ "$lrc" -eq 0 ] || list="$list
-(Some repos' question files could not be read: run '$UNATTENDED_SH' digest --all --mark again for the rest.)"
-      add "UNATTENDED QUESTIONS (human-queue.md, Unattended): the operator is back, so away handling has ended and menus work again. Show him this list once in your reply, before anything else, each item with its recommended option and what was done meanwhile. It is now marked listed. Do NOT ask the presence question in this turn: it is asked on his next message, after he has had the list."
-      [ -z "$owed" ] || add "(Not yet confirmed shown from an earlier run, listed again:)
-$owed"
-      [ -z "$list" ] || add "$list"
+(Some repos' question files could not be read: run '$UNATTENDED_SH' digest --all again for the rest.)"
+      add "PRESENCE RETURN (presence-windows.md): the operator is back, so away handling has ended and menus work again. Do NOT ask the presence question in this turn: it is asked on his next message, after he has had the list."
+      add "$list_frame"
+      add "$list"
     else
-      add "PRESENCE RETURN (presence-windows.md): the operator is back, so away handling has ended and menus work again. No questions were saved."
-      if [ "$(others_in_flight)" -gt 0 ]; then
-        # A list another session emitted a moment ago is still being delivered: that list comes first.
-        "$PRESENCE_SH" dialog-ready >/dev/null 2>&1 || true
-      else
-        "$PRESENCE_SH" dialog-ready --now >/dev/null 2>&1 && add "$dialog_text"
-      fi
+      add "PRESENCE RETURN (presence-windows.md): the operator is back, so away handling has ended and menus work again. No questions are waiting."
+      "$PRESENCE_SH" dialog-ready --now >/dev/null 2>&1 && add "$dialog_text"
     fi
   else
     if [ "$failed" -eq 1 ]; then
       add "PRESENCE RETURN FAILED (presence-windows.md): the operator is back, but the state write that ends away handling failed, so away handling has NOT ended and menus are still denied. The saved questions of other repos have not been listed and the presence dialog has not been asked. Tell him so in your reply. His next message retries the return; this hook does not retry within the turn."
     fi
-    owed=$(settle_owed 0)
-    if [ -n "$owed" ]; then
-      add "$owed_frame"
-      add "$owed"
-    fi
-    digest=$("$UNATTENDED_SH" digest --mark --cwd "$cwd" 2>/dev/null) || digest=""
+    digest=$("$UNATTENDED_SH" digest --cwd "$cwd" "${digest_args[@]}" 2>/dev/null) || digest=""
     if [ -n "$digest" ]; then
-      add "UNATTENDED QUESTIONS (human-queue.md, Unattended): show the operator this list once in your reply, before anything else, each item with its recommended option and what was done meanwhile. It is now marked listed and will not be injected again."
+      add "$list_frame"
       add "$digest"
     fi
-    # A return earlier left the dialog pending: ask it once, after he has had the list. A list another
-    # session is still delivering comes first, so the dialog waits for his next message.
-    if [ "$probe" = dialog ] && [ "$failed" -eq 0 ] && [ "$(others_in_flight)" -eq 0 ] && "$PRESENCE_SH" dialog-claim >/dev/null 2>&1; then
+    # A return earlier left the dialog pending: ask it once, after he has had the list.
+    if [ "$probe" = dialog ] && [ "$failed" -eq 0 ] && "$PRESENCE_SH" dialog-claim >/dev/null 2>&1; then
       add "$dialog_text"
     fi
   fi
 fi
 
 [ -n "$ctx" ] || exit 0
-# The ref is how the next settle finds this emission in the transcript: say it only when a record
-# carries it.
-if staged_here; then
-  add "(Delivery reference $DELIVERY_REF: internal bookkeeping, do not mention it to the operator.)"
+# On stdin, not --arg: a long digest must not hit the argument-size limit. Print first; only a
+# successful print is followed by the record of what was shown in full (a kill before it repeats the
+# list, never loses it).
+out=$(printf '%s' "$ctx" | "$JQ" -Rsc '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: .}}' 2>/dev/null) || out=""
+[ -n "$out" ] || exit 0
+printf '%s\n' "$out" || exit 0
+[ "$ready_after" -eq 0 ] || "$PRESENCE_SH" dialog-ready >/dev/null 2>&1 || true
+if [ -n "$SHOWN" ] && [ -s "$SHOWN" ] && [ -n "$sid" ]; then
+  "$UNATTENDED_SH" seen --session "$sid" --from "$SHOWN" >/dev/null 2>&1 || true
 fi
-
-# On stdin, not --arg: a long digest must not hit the argument-size limit
-# after the watermark is already written.
-printf '%s' "$ctx" | "$JQ" -Rsc '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: .}}' 2>/dev/null
 exit 0
