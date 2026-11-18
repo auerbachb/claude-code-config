@@ -470,6 +470,26 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
+# Per-PR snapshot (issue #2444): reviews, both comment lists, statuses and the
+# check-run list are shared with merge-gate.sh and the other scripts of this poll
+# cycle for at most 60s; any doubt is a live read (lib/pr-snapshot.sh). Missing
+# library: plain live reads, exactly as before.
+if [[ -r "$SCRIPT_DIR/lib/pr-snapshot.sh" ]] && . "$SCRIPT_DIR/lib/pr-snapshot.sh" 2>/dev/null; then
+  pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
+else
+  pr_snap_list() { gh api --paginate "$2"; }
+fi
+# run_gh for a snapshot-backed list read (same failure contract: exit 5).
+run_snap() {
+  local output status=0
+  output=$(pr_snap_list "$@" 2>&1) || status=$?
+  if [[ $status -ne 0 ]]; then
+    echo "ERROR: gh command failed (exit $status): $output" >&2
+    exit 5
+  fi
+  printf '%s' "$output"
+}
+
 RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Use mktemp so concurrent invocations for the same PR in the same second
 # (realistic now that multiple skills share this helper) don't collide.
@@ -548,14 +568,14 @@ if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
 fi
-"$SCRIPT_DIR/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" > "$WORKDIR/check-runs.json" || exit 5
+"$SCRIPT_DIR/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" --pr "$PR_NUMBER" > "$WORKDIR/check-runs.json" || exit 5
 
 jq -L "$SCRIPT_DIR/lib" -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
 
 # ----------------------------------------------------------------------
 # 4. Commit statuses — latest per context, plus CR/Greptile bot rollup
 # ----------------------------------------------------------------------
-run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []' > "$WORKDIR/statuses.json"
+run_snap statuses "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []' > "$WORKDIR/statuses.json"
 
 jq '
   [.[] | select(.context == "CodeRabbit" or .context == "Greptile")]
@@ -596,16 +616,16 @@ jq '
 # ----------------------------------------------------------------------
 PROJECT_USER='(if .user == null then null else {login: .user.login, type: .user.type, id: .user.id} end)'
 
-run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+run_snap reviews "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body, state, commit_id,
                                submitted_at, html_url, author_association}]" > "$WORKDIR/reviews.json"
-run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
+run_snap comments "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, pull_request_review_id, user: $PROJECT_USER, body,
                                path, line, original_line, start_line, original_start_line,
                                side, start_side, position, original_position, subject_type,
                                commit_id, original_commit_id, in_reply_to_id,
                                created_at, updated_at, url, html_url, author_association}]" > "$WORKDIR/inline.json"
-run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+run_snap issue-comments "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body,
                                created_at, updated_at, url, html_url, author_association}]" > "$WORKDIR/convo.json"
 

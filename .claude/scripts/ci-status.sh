@@ -173,6 +173,9 @@ fi
 # Resolve HEAD SHA (+ owner/repo only if we need to fetch check-runs ourselves)
 # --------------------------------------------------------------------------
 HEAD_SHA=""
+# The PR number when the input named one: lets check-runs-snapshot.sh share its
+# result with the other scripts of this poll cycle (issue #2444). Empty for a SHA.
+SNAP_PR=""
 # All-digits AND length < 10 -> PR number. Longer all-digit strings (e.g. a
 # 40-char all-zero SHA, or any numeric-only abbreviated SHA) fall through to
 # the SHA path so we don't mis-resolve them as astronomically large PR numbers.
@@ -210,6 +213,7 @@ if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
       echo "ERROR: could not resolve HEAD SHA for PR #$INPUT" >&2
       exit 4
     fi
+    SNAP_PR="$INPUT"
   fi
 else
   # Treat as SHA — API accepts full or abbreviated forms.
@@ -234,7 +238,7 @@ else
   OWNER="${OWNER_REPO%/*}"
   REPO="${OWNER_REPO#*/}"
 
-  if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" 2>&1); then
+  if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" ${SNAP_PR:+--pr "$SNAP_PR"} 2>&1); then
     # Distinguish 404 (SHA not found) from other gh errors by pattern-matching
     # the stderr message text. `gh api` exits non-zero and writes "HTTP 404" /
     # "Not Found" / "No commit found for SHA" to stderr; it does not expose the

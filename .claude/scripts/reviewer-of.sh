@@ -316,8 +316,9 @@ fi
 # `gh pr view --json number` because the latter has a quirk where it exits
 # 0 and echoes `{"number":N}` even for PR numbers that don't exist.
 PR_CHECK_ERR="$(mktemp)"
-trap "rm -f '$PR_CHECK_ERR' 2>/dev/null" EXIT
-if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" >/dev/null 2>"$PR_CHECK_ERR"; then
+PR_CHECK_OUT="$(mktemp)"
+trap "rm -f '$PR_CHECK_ERR' '$PR_CHECK_OUT' 2>/dev/null" EXIT
+if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" >"$PR_CHECK_OUT" 2>"$PR_CHECK_ERR"; then
   # Use ERE (-E) for portability: BSD grep on macOS treats basic-regex `\|`
   # as a literal pipe, so the original `\|` alternation silently failed to
   # match 404 error bodies and downgraded them to exit 2.
@@ -335,18 +336,46 @@ fi
 # author set. stderr is captured for diagnostics.
 AUTHORS_TMP="$(mktemp)"
 GH_ERR="$(mktemp)"
-trap "rm -f '$PR_CHECK_ERR' '$AUTHORS_TMP' '$GH_ERR' 2>/dev/null" EXIT
+trap "rm -f '$PR_CHECK_ERR' '$PR_CHECK_OUT' '$AUTHORS_TMP' '$GH_ERR' 2>/dev/null" EXIT
 
-for endpoint in \
-  "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews" \
-  "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments" \
-  "repos/{owner}/{repo}/issues/$PR_NUMBER/comments"; do
-  if ! gh api --paginate "${endpoint}?per_page=100" \
-       --jq '.[]?.user.login // empty' >>"$AUTHORS_TMP" 2>"$GH_ERR"; then
-    echo "reviewer-of.sh: failed to scan $endpoint: $(cat "$GH_ERR")" >&2
-    exit 2
-  fi
-done
+# Per-PR snapshot (issue #2444): the three lists are shared with merge-gate.sh and
+# the other scripts of this poll cycle for at most 60s (lib/pr-snapshot.sh). It
+# needs the literal repo and HEAD from the PR read above; any doubt, or a missing
+# library, leaves the original live scan below.
+SNAP_ON=0
+SNAP_REPO="" SNAP_HEAD=""
+SNAP_LIB="$(cd "$(dirname "$0")" && pwd)/lib/pr-snapshot.sh"
+if [[ -r "$SNAP_LIB" ]] && . "$SNAP_LIB" 2>/dev/null; then
+  { read -r SNAP_REPO; read -r SNAP_HEAD; } < <(jq -r '.base.repo.full_name // "", .head.sha // ""' "$PR_CHECK_OUT" 2>/dev/null)
+  pr_snap_init "$SNAP_REPO" "$PR_NUMBER" "$SNAP_HEAD" || true
+  [[ "$_PS_ON" == 1 ]] && SNAP_ON=1
+fi
+
+if [[ "$SNAP_ON" == 1 ]]; then
+  for kind_endpoint in \
+    "reviews repos/$SNAP_REPO/pulls/$PR_NUMBER/reviews" \
+    "comments repos/$SNAP_REPO/pulls/$PR_NUMBER/comments" \
+    "issue-comments repos/$SNAP_REPO/issues/$PR_NUMBER/comments"; do
+    kind="${kind_endpoint%% *}"
+    endpoint="${kind_endpoint#* }"
+    if ! pr_snap_list "$kind" "${endpoint}?per_page=100" 2>"$GH_ERR" \
+         | jq -r '.[]?.user.login // empty' >>"$AUTHORS_TMP" 2>>"$GH_ERR"; then
+      echo "reviewer-of.sh: failed to scan $endpoint: $(cat "$GH_ERR")" >&2
+      exit 2
+    fi
+  done
+else
+  for endpoint in \
+    "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews" \
+    "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments" \
+    "repos/{owner}/{repo}/issues/$PR_NUMBER/comments"; do
+    if ! gh api --paginate "${endpoint}?per_page=100" \
+         --jq '.[]?.user.login // empty' >>"$AUTHORS_TMP" 2>"$GH_ERR"; then
+      echo "reviewer-of.sh: failed to scan $endpoint: $(cat "$GH_ERR")" >&2
+      exit 2
+    fi
+  done
+fi
 
 AUTHORS="$(sort -u "$AUTHORS_TMP")"
 
