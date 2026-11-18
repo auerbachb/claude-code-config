@@ -2145,3 +2145,32 @@ $315.79, Fable), Claude Work (❌ off $0.00, 2 resets), Cursor (✅ $50 $6.33), 
 ## Antigravity (Issue #2407)
 
 `antigravity` is a fourth provider: one registered account, rows read from Google's quota service with the sign-in `agy` holds (source `backend`, Issue #2465), then (attended runs only, Issue #2466) interactive `agy` in a visible terminal (source `terminal`), then the saved text of the `agy` `/usage` panel, through an observation file (`~/.claude/ai-quotas-antigravity.json`), one row per model group and window, display only (never read by `quota-reserve.sh`). Limits, sample, parser, stale rule and the one unverified live step: [ai-quotas-antigravity.md](./ai-quotas-antigravity.md).
+
+## Plan tier and monthly price (TIER, $/MO) — Issue #2469
+
+The table's `TIER` and `$/MO` columns, and the `--json` fields `plan_tier`, `plan_tier_source`
+(`provider` | `override`), `plan_usd_month` and `plan_price_source` (`list` | `override`), are
+built by `derive_plan_fields` in `lib/ai-quotas-report.sh` from three inputs:
+
+1. **The plan the provider reports.** Each reader puts it in the row's existing `plan` field:
+   Claude takes `subscription_type` from the saved status-line or app reading, else
+   `subscriptionType` (refined by a `5x`/`20x` suffix of `rateLimitTier`, giving `max_20x`) from
+   the stored login (`claude_detect_plan`, in memory, no credential value kept); Codex takes
+   `planType`; Cursor takes `planName` from `get-plan-info`; Antigravity takes the `paidTier` or
+   `currentTier` name (else id) from the `loadCodeAssist` response of the backend read, saved
+   beside the observation as `plan`. A reader that is told nothing leaves it null: nothing is guessed.
+2. **The price list** `.claude/reference/quotas-plan-prices.json` (override with
+   `AI_QUOTAS_PRICE_LIST`): provider, then tier, with `usd_per_month`, `match` keys (lowercase,
+   non-alphanumerics collapsed to `_`), a source URL and a `last_checked` date. A tier is left
+   off when its price could not be verified; a reported tier the list lacks keeps its own name
+   and shows `-` for the price, never `$0`. Re-check the URLs and bump `last_checked` when prices move.
+3. **A manual override**, `plan_override: {tier, usd_per_month?}` on the account entry in the
+   registry, written by `ai-quotas-setup.sh plan <label> <tier> [<usd_per_month>] [<provider>]`
+   (an empty tier deletes it). It beats the reported tier; its price beats the list, and a
+   tier-only override is priced from the list when the list knows that tier. The table marks an
+   overridden cell with `*` and prints one line under it saying so. This stored shape is the one a
+   future export carries.
+
+Both columns show once per account, on its primary row. Display only: nothing gates work on
+them and `quota-reserve.sh` never reads them. To fit 140 columns, WINDOW is capped at 13, OVERAGE
+labels over 8 characters are footnoted, and an `IN` of ten or more days shows days only.

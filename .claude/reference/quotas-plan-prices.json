@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "last_checked": "2026-11-18",
+  "currency": "USD",
+  "period": "month",
+  "note": "Monthly list price before tax, month-to-month billing. Display only: /quotas never gates work on it. A tier the provider reports that is not listed here shows with price '-' (never $0). A tier is left out, not guessed, when its price could not be verified. Match keys are lowercase with every run of non-alphanumerics replaced by one underscore. Re-check each URL and bump last_checked when prices are refreshed.",
+  "providers": {
+    "claude": {
+      "source_url": "https://claude.com/pricing",
+      "detected_from": "subscriptionType and rateLimitTier in the account's stored Claude Code login (read-only; no credential value is used)",
+      "tiers": {
+        "free":   { "name": "Free",    "usd_per_month": 0,   "match": ["free"] },
+        "pro":    { "name": "Pro",     "usd_per_month": 20,  "match": ["pro"] },
+        "max":    { "name": "Max",     "usd_per_month": 100, "match": ["max", "max_5x"] },
+        "ultra":  { "name": "Ultra",   "usd_per_month": 200, "match": ["ultra"] },
+        "max20x": { "name": "Max 20x", "usd_per_month": 200, "match": ["max_20x"], "note": "$200/month per the owner and secondary sources; the official page lists the $200 tier as Ultra" }
+      }
+    },
+    "codex": {
+      "source_url": "https://chatgpt.com/pricing",
+      "detected_from": "planType in the Codex rate-limit read",
+      "tiers": {
+        "free": { "name": "Free", "usd_per_month": 0,  "match": ["free"] },
+        "plus": { "name": "Plus", "usd_per_month": 20, "match": ["plus"], "note": "the official page did not render prices on the check date; $20 agrees across every secondary source" }
+      },
+      "omitted": "Pro: ChatGPT Pro now has several usage tiers at different prices and the Codex plan type does not say which, so no price is listed."
+    },
+    "cursor": {
+      "source_url": "https://cursor.com/pricing",
+      "detected_from": "planName from Cursor's get-plan-info",
+      "tiers": {
+        "plus":    { "name": "Plus",    "usd_per_month": 8,   "match": ["plus"] },
+        "premium": { "name": "Premium", "usd_per_month": 30,  "match": ["premium"] },
+        "super":   { "name": "Super",   "usd_per_month": 100, "match": ["super"] },
+        "ultra":   { "name": "Ultra",   "usd_per_month": 200, "match": ["ultra"] }
+      },
+      "omitted": "Pro and Pro+: the pricing page now lists Plus, Premium and Super and does not say which the older names map to, so no price is listed for those names."
+    },
+    "antigravity": {
+      "source_url": "https://one.google.com/about/google-ai-plans/",
+      "detected_from": "paidTier or currentTier in Google's loadCodeAssist response, when it names one",
+      "tiers": {
+        "pro":   { "name": "Pro",             "usd_per_month": 19.99, "match": ["google_ai_pro", "ai_pro"] },
+        "ultra": { "name": "Ultra",           "usd_per_month": 99.99, "match": ["google_ai_ultra", "ai_ultra"] }
+      }
+    }
+  }
+}

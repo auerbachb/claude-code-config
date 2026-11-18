@@ -347,7 +347,23 @@ def fetch_backend(now):
     result = parse_backend(summary, int(now))
     if result["status"] != "ok":
         raise BackendError("response_shape", result["reason"])
+    plan = plan_name(loaded)
+    if plan:
+        result["plan"] = plan
     return summary, result
+
+
+def plan_name(loaded):
+    """The plan loadCodeAssist names for the account (paidTier, else currentTier): its name, else
+    its id. None when it names none; never guessed. Display text only (Issue #2469)."""
+    for key in ("paidTier", "currentTier"):
+        tier = loaded.get(key)
+        if isinstance(tier, dict):
+            for field in ("name", "id"):
+                value = tier.get(field)
+                if isinstance(value, str) and clean_text(value):
+                    return clean_text(value)[:40]
+    return None
 
 
 EMAIL = re.compile(r"[^\s@]{1,64}@[^\s@]{1,128}")
@@ -460,8 +476,10 @@ class NewerKept(Exception):
     """A newer observation is already saved; the older capture is not written."""
 
 
-def write_observation(path, captured, via, text, response=None, until=None):
+def write_observation(path, captured, via, text, response=None, until=None, plan=None):
     doc = {"schema": SCHEMA, "provider": "antigravity", "captured_at_epoch": int(captured), "via": via}
+    if isinstance(plan, str) and plan:
+        doc["plan"] = plan
     if response is not None:
         doc["response"] = response
     else:
@@ -798,6 +816,8 @@ def main(argv):
                 result = parse_panel(doc["text"], captured)
             else:
                 result = {"status": "unreadable", "reason": "observation file has an unknown shape", "account": None, "groups": []}
+            if isinstance(doc.get("plan"), str) and doc.get("via") == "backend":
+                result["plan"] = clean_text(doc["plan"])[:40]
             result.update(captured_at_epoch=captured, age_seconds=max(0, int(argv[3]) - captured),
                           via=doc.get("via") if isinstance(doc.get("via"), str) else "unknown")
             print(json.dumps(result))
@@ -820,7 +840,7 @@ def main(argv):
             except BackendError as exc:
                 print(json.dumps({"status": "unreadable", "reason": exc.reason, "error_class": exc.error_class}))
                 return 3
-            write_observation(argv[3], captured, "backend", None, response=summary)
+            write_observation(argv[3], captured, "backend", None, response=summary, plan=result.get("plan"))
             print(json.dumps(result))
             return 0
         if cmd == "terminal" and len(argv) == 5:

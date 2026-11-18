@@ -309,6 +309,50 @@ derive_account_fields() { # <rows-json-file>
   fi
 }
 
+# Issue #2469. Each row gets plan_tier, plan_tier_source (provider | override),
+# plan_usd_month and plan_price_source (list | override). The tier is what the provider
+# reported (row `plan`, set by each reader) or the account's manual override from the
+# registry (`plan_override`: {tier, usd_per_month?}, set by `ai-quotas-setup.sh plan`);
+# the override wins. The price is the override's own figure, else the dated list in
+# .claude/reference/quotas-plan-prices.json looked up by provider and tier. An unknown
+# tier or price stays null (the table shows `-`); nothing is guessed and `$0` is never
+# printed for "unknown". Display only: nothing reads these fields to gate work.
+derive_plan_fields() { # <rows-json-file>
+  local rows="$1" out="$TMP/rows.plan.json" prices="${AI_QUOTAS_PRICE_LIST:-}" cfg="${CONFIG:-}"
+  [[ -n "$prices" ]] || prices="$SELF_DIR/../reference/quotas-plan-prices.json"
+  [[ -r "$prices" ]] && jq -e 'type == "object"' "$prices" >/dev/null 2>&1 || {
+    warn "DEGRADED: plan price list not readable (${prices}) — prices show as unknown"
+    prices="$TMP/no-prices.json"; printf '{}' > "$prices"
+  }
+  printf '%s' "$cfg" | jq -e 'type == "object"' >/dev/null 2>&1 || cfg='{}'
+  if jq --slurpfile pl "$prices" --argjson cfg "$cfg" '
+      def norm: ascii_downcase | gsub("[^a-z0-9]+"; "_") | gsub("^_+|_+$"; "");
+      def clean: gsub("[\u0000-\u001f\u007f]"; " ") | gsub("^ +| +$"; "") | .[0:40];
+      def num: type == "number" and . >= 0;
+      ($pl[0].providers // {}) as $P
+      | map(
+          . as $r
+          | ((($cfg.accounts // []) | map(select(.provider == $r.provider and .label == $r.label)) | first // {}).plan_override
+             | if type == "object" and (.tier | type) == "string" and (.tier | clean) != "" then . else null end) as $ov
+          | ((($P[$r.provider].tiers // {}) | to_entries | map(.value)) as $tiers
+             | def find($s): ($s | norm) as $k | ([$tiers[] | select((.match // []) | index($k) != null)] | first // null);
+               (if $ov != null then ($ov.tier | clean) elif ($r.plan | type) == "string" and ($r.plan | clean) != "" then ($r.plan | clean) else null end) as $raw
+               | if $raw == null then {plan_tier: null, plan_tier_source: null, plan_usd_month: null, plan_price_source: null}
+                 else find($raw) as $m
+                   | {plan_tier: (if $ov != null then $raw elif $m != null then $m.name
+                                          elif ($raw | test("^[a-z]")) then (($raw[0:1] | ascii_upcase) + $raw[1:]) else $raw end),
+                      plan_tier_source: (if $ov != null then "override" else "provider" end)}
+                   + (if $ov != null and ($ov.usd_per_month | num) then {plan_usd_month: $ov.usd_per_month, plan_price_source: "override"}
+                      elif $m != null and ($m.usd_per_month | num) then {plan_usd_month: $m.usd_per_month, plan_price_source: "list"}
+                      else {plan_usd_month: null, plan_price_source: null} end)
+                 end)
+          | $r + .)' "$rows" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    mv "$out" "$rows"
+  else
+    warn "DEGRADED: could not derive the plan tier and price columns — they show as unknown"
+  fi
+}
+
 # Marks, on each row, whether it carries its account's values in the table: the first
 # row of the account that has any of them, or its first row when none does, so a
 # multi-row account (Cursor pools, Antigravity groups, five-hour rows) is shown once.
@@ -316,7 +360,7 @@ stamp_account_primary() { # <doc-json-file>
   local doc="$1" out="$TMP/doc.primary.json"
   if jq '
       def has_data: (.paid_enabled != null or .paid_cap_usd != null or .paid_cap_unlimited != null or .paid_spent_usd != null
-                     or .limit_resets_available != null or .top_label != null);
+                     or .limit_resets_available != null or .top_label != null or .plan_tier != null);
       .rows as $rows
       | ($rows | to_entries
          | reduce .[] as $e ({first: {}, data: {}};
@@ -324,7 +368,8 @@ stamp_account_primary() { # <doc-json-file>
              | .first[$k] = (.first[$k] // $e.key)
              | if ($e.value | has_data) then .data[$k] = (.data[$k] // $e.key) else . end)) as $idx
       | def groups: [["paid_enabled","paid_cap_usd","paid_cap_unlimited","paid_spent_usd","paid_currency","paid_period","paid_read_at_epoch"],
-                      ["limit_resets_available","limit_resets"], ["top_label","top_used_pct","top_resets_at_epoch"]];
+                      ["limit_resets_available","limit_resets"], ["top_label","top_used_pct","top_resets_at_epoch"],
+                      ["plan_tier","plan_tier_source","plan_usd_month","plan_price_source"]];
         # Each group of values (paid usage, resets, top tier) is shown once per account, on the
         # primary row. A group the primary row lacks is taken whole from the first other row of the
         # same account that has it, so one known value never prints as `-` because it sits on a
@@ -391,7 +436,11 @@ render_quota_table() {
             # The pool name when the provider has pools, the window otherwise. A
             # composite Antigravity window (`<group> <window>`) is shortened to
             # `<group> 7d` / `<group> 5h`.
-            win: ((.pool // .window) | if test(" ") then (sub("-hour$"; "h") | sub("-day$"; "d")) else . end),
+            win: ((.pool // .window) | if test(" ") then (sub("-hour$"; "h") | sub("-day$"; "d")) else . end
+                  # Issue #2469: capped at 13 columns to make room for TIER and $/MO; a long composite name keeps its window suffix.
+                  | if length <= 13 then .
+                    elif test(" ") then (split(" ") | .[-1] as $t | (.[:-1] | join(" ")) as $g | $g[0:(11 - ($t | length))] + "… " + $t)
+                    else .[0:12] + "…" end),
             # A failed read with a saved (last-known) figure shows the saved percent here and
             # its date in FETCHED; the reason and the "last known" explanation are in the
             # note, which is a footnote. An expired saved figure, or none, stays `-`.
@@ -418,6 +467,10 @@ render_quota_table() {
                   else "-" end),
             spent: (if .account_primary == false or foreign or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else "$" + (.paid_spent_usd | two_dp) end),
             rst: (if .account_primary == false or ((.limit_resets_available | num) | not) or .limit_resets_available < 0 then "-" else (.limit_resets_available | floor | tostring) end),
+            tier: (if .account_primary == false or (.plan_tier | type) != "string" then "-"
+                   else ((.plan_tier | if length > 9 then .[0:8] + "…" else . end) + (if .plan_tier_source == "override" then "*" else "" end)) end),
+            mo: (if .account_primary == false or ((.plan_usd_month | num) | not) then "-"
+                 else ((.plan_usd_month | cap_usd) + (if .plan_price_source == "override" then "*" else "" end)) end),
             top: (if .account_primary == false then "-" else (.top_label | dash) end),
             toppct: (if .account_primary == false or ((.top_used_pct | num) | not) or .top_used_pct < 0 or .top_used_pct > 100 then "-"
                      else (.top_used_pct | (if . == floor then floor else . end) | tostring) + "%" end),
@@ -425,7 +478,8 @@ render_quota_table() {
                      // (if (.last_known_used_pct | num) and .last_known_expired != true
                          then (.last_known_resets_et // "" | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0]) else null end))
                     | dash | sub("(?<h>[0-9]) (?<p>[AP]M)"; "\(.h)\(.p)")),
-            inn: (.countdown | dash | sub("^in "; "")),
+            # Ten or more days away shows days only (`19d`): the hours are noise at that range, and the column makes room for TIER and $/MO (#2469).
+            inn: (.countdown | dash | sub("^in "; "") | sub("^(?<d>[0-9]{2,})d [0-9]+h$"; "\(.d)d")),
             # ACTIONABLE TEXT ONLY (#1700). Provenance (`plan pro`, `via app-server`) is on
             # every --json row. What stays is what the reader must act on: the status word
             # on a row that is not `ok`, the mislabelled-account warning, the detail belonging
@@ -450,18 +504,19 @@ render_quota_table() {
           | with_entries(.value |= clean)) as $R
       # A label or note longer than its cell goes under the table, numbered in the
       # order it first appears; identical texts share one number.
-      | ($R | map((if (.ovg | length) > 12 then .ovg else empty end), (if (.note | length) > 11 then .note else empty end))
+      | ($R | map((if (.ovg | length) > 8 then .ovg else empty end), (if (.note | length) > 11 then .note else empty end))
          | reduce .[] as $t ([]; if any(.[]; . == $t) then . else . + [$t] end)) as $foot
       | ($R | map([.acct, .win, .used, .fetched, .start, .pday, .left,
-                   (if (.ovg | length) > 12 then fnum($foot; .ovg) else .ovg end),
-                   .paid, .cap, .spent, .rst, .top, .toppct, .reset, .inn,
+                   (if (.ovg | length) > 8 then fnum($foot; .ovg) else .ovg end),
+                   .paid, .cap, .spent, .rst, .tier, .mo, .top, .toppct, .reset, .inn,
                    (if (.note | length) > 11 then fnum($foot; .note) else .note end)])) as $body
-      | ([["ACCOUNT", "WINDOW", "USED", "FETCHED", "START", "%/DAY", "LEFT", "OVERAGE", "$?", "$ CAP", "$", "RST", "TOP", "TOP%", "RESET (ET)", "IN", "NOTE"]] + $body) as $all
+      | ([["ACCOUNT", "WINDOW", "USED", "FETCHED", "START", "%/DAY", "LEFT", "OVERAGE", "$?", "$ CAP", "$", "RST", "TIER", "$/MO", "TOP", "TOP%", "RESET (ET)", "IN", "NOTE"]] + $body) as $all
       | ($all[0] | length) as $n
       | ([range(0; $n)] | map(. as $c | [$all[] | .[$c] | wide] | max)) as $w
       | ($all[] | . as $row | [range(0; $n)]
          | map(. as $c | if $c == $n - 1 then $row[$c] else ($row[$c] | pad($w[$c])) end) | join(" ")),
-        (if ($foot | length) > 0 then "", ($foot | to_entries[] | "[\(.key + 1)] \(.value)") else empty end)' "$DOC" > "$TABLE"
+        (if ($foot | length) > 0 then "", ($foot | to_entries[] | "[\(.key + 1)] \(.value)") else empty end),
+        (if any($R[]; (.tier | endswith("*")) or (.mo | endswith("*"))) then (if ($foot | length) > 0 then empty else "" end), "* set by hand with ai-quotas-setup.sh plan, not read from the provider" else empty end)' "$DOC" > "$TABLE"
   cat "$TABLE"
 
   # The cheapest-next hint, printed ONLY when the helper returned one — i.e.
