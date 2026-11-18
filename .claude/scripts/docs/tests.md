@@ -175,6 +175,7 @@ opt-in of issue #1544.
 | [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
 | [pr-preflight-tier-triggers.test.sh](../tests/pr-preflight-tier-triggers.test.sh) | Tests `pr-preflight.sh` under a review tier — ci-only triggers nothing and is clean, ci+codeant-one-round invites CodeAnt once, full defers BugBot until CI is green and HEAD settled and stops at two, and a policy-free repo still triggers all four |
 | [pr-preflight.test.sh](../tests/pr-preflight.test.sh) | Tests for `pr-preflight.sh` |
+| [pr-snapshot.test.sh](../tests/pr-snapshot.test.sh) | Per-PR snapshot shared across a poll cycle: each key, each invalidation, partial/failed/corrupt fallbacks, forced-live switches, verdict identical with and without it |
 | [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |

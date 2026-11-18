@@ -120,8 +120,15 @@
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
-#                             [--allow-unverified-required-checks]
+#                             [--allow-unverified-required-checks] [--live]
 #   merge-gate.sh --help
+#
+# --live (issue #2444): every read this run makes, and every script it starts,
+# is a live GitHub read — the per-PR snapshot (lib/pr-snapshot.sh) and the slow
+# read cache (lib/slow-read-cache.sh) are pinned off. Pass it on every gate run
+# that is the last check before a merge (/wrap, /merge, Phase C). Polling runs
+# leave it off and may share reads for up to 60s. Detail:
+# .claude/reference/pr-snapshot-live-merge-paths.md
 #
 # Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
 # confirmed foreign-author PR (adds a `missing` entry; the `authorship` field is
@@ -269,6 +276,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 # library's header for the rule, the PR #883 failures that motivated it, and why
 # review-substance.sh keeps a deliberately different variant.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
 if [[ ! -f "$TS_NORMALIZER_LIB" || ! -r "$TS_NORMALIZER_LIB" ]]; then
   echo "merge-gate.sh: sibling library missing or unreadable: $TS_NORMALIZER_LIB" >&2
@@ -314,6 +322,7 @@ ALLOW_HOLLOW=false
 # check", it is "we checked and the check never ran", which is the entire defect
 # #1361 exists to close.
 ALLOW_UNVERIFIED_REQ=false
+LIVE_READS=false
 
 print_usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -336,6 +345,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-unverified-required-checks)
       ALLOW_UNVERIFIED_REQ=true
+      shift
+      ;;
+    --live)
+      LIVE_READS=true
       shift
       ;;
     --reviewer)
@@ -372,6 +385,15 @@ if [[ -z "$PR_NUMBER" ]]; then
   echo "ERROR: <pr_number> is required" >&2
   print_usage >&2
   exit 2
+fi
+
+# --live: a gate run that is the last check before a merge reads everything live.
+# Exported so every child script (pr-state.sh, check-runs-snapshot.sh, ci-status.sh,
+# reviewer-of.sh, required-checks.sh) inherits it; a TTL of 0 stores and reuses
+# nothing, and nothing a caller sets can raise it back (issues #2443, #2444).
+if [[ "$LIVE_READS" == true ]]; then
+  export SLOW_READ_CACHE_TTL=0
+  export PR_SNAPSHOT_TTL=0
 fi
 
 if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then

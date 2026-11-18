@@ -38,6 +38,10 @@ case "$ARGS" in
     echo headnow >> "$CALLS"
     [[ "${FAKE_HEADNOW_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
     printf '%s' "${FAKE_NOW_HEAD:-$CUR}"; exit 0 ;;
+  *" api graphql "*reviewThreads*)
+    echo threads >> "$CALLS"
+    if [[ -n "${FAKE_THREADS:-}" ]]; then printf '%s' "$FAKE_THREADS"; exit 0; fi
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'; exit 0 ;;
   " api repos/solo/repo/pulls/1 "|" api repos/{owner}/{repo}/pulls/1 ")
     echo pull >> "$CALLS"
     jq -cn --arg h "$CUR" '{number:1, base:{repo:{full_name:"solo/repo"}}, head:{sha:$h}}'; exit 0 ;;
@@ -219,8 +223,12 @@ corrupt_case "payload item without an id" '.value = "[{\"user\":{\"login\":\"x\"
 corrupt_case "payload is not a string" '.value = []'
 reset_all; run_gate; reset_calls; GH_HOST=ghe.example.com run_gate
 check_eq 1 "$(calls reviews)" "a different GH_HOST does not share the entry"
-reset_all; run_gate; chmod 400 "$(find "$SLOW_READ_CACHE_DIR" -name '*__pr-reviews.*.json' | head -1)"; reset_calls; run_gate
-check_eq 1 "$(calls reviews)" "an entry this process cannot overwrite is not used"
+if [[ "$(id -u)" == 0 ]]; then
+  echo "SKIP: an entry this process cannot overwrite is not used (chmod 400 does not bind root; run as a normal user)"
+else
+  reset_all; run_gate; chmod 400 "$(find "$SLOW_READ_CACHE_DIR" -name '*__pr-reviews.*.json' | head -1)"; reset_calls; run_gate
+  check_eq 1 "$(calls reviews)" "an entry this process cannot overwrite is not used"
+fi
 
 echo "== an older read never replaces a newer entry"
 . "$SCRIPTS_DIR/lib/pr-snapshot.sh"
@@ -229,6 +237,52 @@ NOW="$(date +%s)"
 pr_snap_put pr-reviews '[{"id":1}]' "$NOW"
 pr_snap_put pr-reviews '[{"id":2}]' "$((NOW - 30))"
 check_eq '[{"id":1}]' "$(pr_snap_get pr-reviews)" "the older read left the newer entry alone"
+
+echo "== two concurrent writers: the compare and the rename are one step (per-entry lock)"
+# Older writer A passes the compare (no entry yet) and is paused before its rename;
+# newer writer B starts meanwhile. Without the lock B would write first and A would
+# then overwrite it with the older read. With it B waits, then sees A's older entry
+# and replaces it: the newer read survives.
+reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
+NOW="$(date +%s)"
+slow_cache_test_hook() {
+  slow_cache_test_hook() { :; }   # only the first writer pauses
+  ( pr_snap_put pr-reviews '[{"id":2}]' "$NOW" ) &
+  HOOK_B_PID=$!
+  sleep 0.5
+}
+pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))"
+wait "$HOOK_B_PID" 2>/dev/null
+check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "older writer paused between compare and rename: the newer entry survives"
+unset -f slow_cache_test_hook
+
+# The mirror image: the newer writer holds the lock; the older one must leave its entry alone.
+reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
+slow_cache_test_hook() {
+  slow_cache_test_hook() { :; }
+  ( pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))" ) &
+  HOOK_A_PID=$!
+  sleep 0.5
+}
+pr_snap_put pr-reviews '[{"id":2}]' "$NOW"
+wait "$HOOK_A_PID" 2>/dev/null
+check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "newer writer paused between compare and rename: the older one writes nothing over it"
+unset -f slow_cache_test_hook
+
+# A lock that cannot be taken: nothing is written (fail closed), nothing is damaged.
+reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
+pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))"
+LOCKED_FILE="$(find "$SLOW_READ_CACHE_DIR" -type f -name '*__pr-reviews.*.json' | head -1)"
+mkdir "$LOCKED_FILE.lock"
+pr_snap_put pr-reviews '[{"id":2}]' "$NOW"; RC_LOCKED=$?
+check_eq 1 "$RC_LOCKED" "a held lock: the write is refused"
+rmdir "$LOCKED_FILE.lock"
+check_eq '[{"id":1}]' "$(pr_snap_get pr-reviews)" "a held lock: the existing entry is untouched"
+# A dead writer's lock (older than ten seconds) is cleared and the write goes through.
+mkdir "$LOCKED_FILE.lock"; touch -t 202001010000 "$LOCKED_FILE.lock"
+pr_snap_put pr-reviews '[{"id":2}]' "$NOW"
+check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "a stale lock directory is cleared and the newer read is stored"
+check_eq 0 "$(find "$SLOW_READ_CACHE_DIR" -name '*.lock' | wc -l | tr -d ' ')" "no lock directory is left behind"
 
 echo "== check-run list shapes (check_run_workflows.py builds id-less entries itself)"
 reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
@@ -257,24 +311,39 @@ echo "== across the scripts of one cycle"
 reset_all; export FAKE_CHECK_RUNS="$ONE_RUN"
 run_gate
 reset_calls
-"$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HEAD_SHA" --pr 1 >/dev/null 2>&1
+CRS_SHARED="$("$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HEAD_SHA" --pr 1 2>/dev/null)"; RC_CRS=$?
 check_eq 0 "$(( $(calls checkruns) + $(calls workflows) ))" "check-runs-snapshot.sh --pr: served from the gate's snapshot"
+check_eq 0 "$RC_CRS" "check-runs-snapshot.sh --pr: exits 0 (a zero-call result only counts if the command succeeded)"
+reset_calls
+CRS_LIVE="$(PR_SNAPSHOT_TTL=0 "$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HEAD_SHA" --pr 1 2>/dev/null)"
+check_eq 1 "$(calls checkruns)" "check-runs-snapshot.sh --pr, forced live control: reads live"
+check_eq "$(jq -S -c . <<<"$CRS_LIVE")" "$(jq -S -c . <<<"$CRS_SHARED")" "check-runs-snapshot.sh --pr: output identical to the forced-live control"
+[[ -n "$CRS_LIVE" ]] && ok "check-runs-snapshot.sh control produced output" || bad "check-runs-snapshot.sh control produced no output"
 reset_calls
 "$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HEAD_SHA" >/dev/null 2>&1
 check_eq 1 "$(calls checkruns)" "check-runs-snapshot.sh without --pr: always live"
 reset_calls
-"$SCRIPTS_DIR/ci-status.sh" 1 >/dev/null 2>&1
+CIS_SHARED="$("$SCRIPTS_DIR/ci-status.sh" 1 --format summary 2>/dev/null)"; RC_CIS=$?
 check_eq 0 "$(( $(calls checkruns) + $(calls workflows) ))" "ci-status.sh <PR>: check-runs shared too"
+reset_calls
+CIS_LIVE="$(PR_SNAPSHOT_TTL=0 "$SCRIPTS_DIR/ci-status.sh" 1 --format summary 2>/dev/null)"; RC_CIS_LIVE=$?
+check_eq "$RC_CIS_LIVE" "$RC_CIS" "ci-status.sh <PR>: exit status identical to the forced-live control"
+check_eq 0 "$RC_CIS" "ci-status.sh <PR>: exits 0 on a green PR"
+check_eq "$CIS_LIVE" "$CIS_SHARED" "ci-status.sh <PR>: output identical to the forced-live control"
+[[ -n "$CIS_LIVE" ]] && ok "ci-status.sh control produced output" || bad "ci-status.sh control produced no output"
 reset_calls
 "$SCRIPTS_DIR/ci-status.sh" "$HEAD_SHA" >/dev/null 2>&1
 check_eq 1 "$(calls checkruns)" "ci-status.sh <SHA>: no PR, so live"
 reset_calls
-R="$("$SCRIPTS_DIR/reviewer-of.sh" 1 2>/dev/null)" || true
+R="$("$SCRIPTS_DIR/reviewer-of.sh" 1 2>/dev/null)"; RC_RO=$?
 check_eq 0 "$(( $(calls reviews) + $(calls prcomments) + $(calls issuecomments) ))" "reviewer-of.sh: the three lists shared"
 check_eq 1 "$(calls pull)" "reviewer-of.sh: the PR read stays live (it names HEAD)"
-check_eq unknown "$R" "reviewer-of.sh: same answer"
-reset_calls; PR_SNAPSHOT_TTL=0 "$SCRIPTS_DIR/reviewer-of.sh" 1 >/dev/null 2>&1
+check_eq unknown "$R" "reviewer-of.sh: same answer as the forced-live control below"
+check_eq 1 "$RC_RO" "reviewer-of.sh: exits 1 like the live control (no reviewer yet = unknown = exit 1, never a usage error)"
+reset_calls; R_LIVE="$(PR_SNAPSHOT_TTL=0 "$SCRIPTS_DIR/reviewer-of.sh" 1 2>/dev/null)"; RC_RO_LIVE=$?
 check_eq 3 "$(( $(calls reviews) + $(calls prcomments) + $(calls issuecomments) ))" "reviewer-of.sh with PR_SNAPSHOT_TTL=0: all three live"
+check_eq "$RC_RO_LIVE" "$RC_RO" "reviewer-of.sh: exit status identical to the forced-live control"
+check_eq "$R_LIVE" "$R" "reviewer-of.sh: answer identical to the forced-live control"
 reset_all; FAKE_REVIEWS_FAIL=1 "$SCRIPTS_DIR/reviewer-of.sh" 1 >/dev/null 2>&1; RC=$?
 check_eq 2 "$RC" "reviewer-of.sh: a failed list read still exits 2"
 reset_all; export FAKE_REVIEWS='[{"id":3,"user":{"login":"coderabbitai[bot]"}}]'
@@ -296,6 +365,63 @@ check_eq 1 "$(calls statuses)" "pr-state.sh after the gate: statuses read live o
 [[ -n "$PS_LIVE" ]] || { bad "pr-state.sh produced no bundle"; cat "$TMP/ps.err" >&2; }
 check_eq "$PS_LIVE" "$PS_SHARED" "pr-state.sh bundle identical with and without the snapshot"
 unset FAKE_COMMIT_STATUSES
+
+echo "== a merge path reads live: a snapshot saying 'passed and approved' never authorises a merge"
+# The snapshot is taken while everything is green and approved; then the world
+# changes: a check fails, a human requests changes, a bot opens a thread. A gate
+# run that is the last check before a merge (merge-gate.sh --live, which /wrap,
+# /merge and Phase C pass) must see each of them at once; a polling run may lag
+# by at most the 60s lifetime, except for threads, which are always live.
+CUR_APPROVED="$(jq -cn --arg h "$HEAD_SHA" '[{id:21, user:{login:"cursor[bot]", type:"Bot"}, state:"APPROVED", commit_id:$h, submitted_at:"2026-07-21T10:01:00Z", body:"No issues found."}]')"
+GREEN_RUN="$(bundle "$(cr 1 build success 10)")"
+RED_RUN="$(bundle "$(cr 1 build failure 10)")"
+THREAD_OPEN='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"databaseId":9,"body":"bug","author":{"login":"coderabbitai[bot]","__typename":"Bot"}}]}}]}}}}}'
+run_gate_b() { GATE_RC=0; OUT=$("$SUT" 1 --reviewer bugbot "$@" 2>/dev/null) || GATE_RC=$?; }
+green_world() { export FAKE_REVIEWS="$CUR_APPROVED" FAKE_CHECK_RUNS="$GREEN_RUN"; unset FAKE_THREADS; }
+reset_all; green_world
+run_gate_b
+check_eq true "$(jq -r .met <<<"$OUT")" "baseline: the green, approved PR passes the gate"
+check_eq 0 "$GATE_RC" "baseline: exit status 0"
+
+# Polling run (no --live): the snapshot is reused inside its lifetime.
+export FAKE_THREADS="$THREAD_OPEN"
+reset_calls; run_gate_b
+check_eq 0 "$(( $(calls reviews) + $(calls checkruns) + $(calls workflows) ))" "polling run: reviews and check-runs come from the snapshot"
+check_eq 1 "$(calls threads)" "polling run: review threads are read live"
+check_eq false "$(jq -r .met <<<"$OUT")" "polling run: a new bot finding is caught in the same run (threads are live), so the gate is not met"
+check_eq true "$(jq -r '.missing | map(test("unresolved review thread")) | any' <<<"$OUT")" "polling run: the finding is named as an unresolved thread"
+unset FAKE_THREADS
+export FAKE_CHECK_RUNS="$RED_RUN" FAKE_REVIEWS="$CR_HUMAN"
+reset_calls; run_gate_b
+check_eq 0 "$(( $(calls reviews) + $(calls checkruns) ))" "polling run: a new CHANGES_REQUESTED and a newly failed check are not read again inside the lifetime (the bounded lag named in the PR body)"
+
+# Merge path (--live): the same snapshot is on disk and is ignored.
+for scenario in checks review thread; do
+  reset_all; green_world; run_gate_b
+  case "$scenario" in
+    checks) export FAKE_CHECK_RUNS="$RED_RUN" ;;
+    review) export FAKE_REVIEWS="$CR_HUMAN" ;;
+    thread) export FAKE_THREADS="$THREAD_OPEN" ;;
+  esac
+  reset_calls; run_gate_b --live
+  check_eq false "$(jq -r .met <<<"$OUT")" "--live ($scenario changed since the snapshot): gate not met"
+  check_eq 1 "$([[ "$GATE_RC" -ne 0 ]] && echo 1 || echo 0)" "--live ($scenario): non-zero exit, so no merge"
+  check_eq 1 "$(calls reviews)" "--live ($scenario): reviews read live"
+  check_eq 1 "$(calls checkruns)" "--live ($scenario): check-runs read live"
+  check_eq 1 "$(calls headcommit)" "--live ($scenario): HEAD commit read live"
+  check_eq 0 "$(calls headnow)" "--live ($scenario): no snapshot HEAD re-read (nothing is stored)"
+done
+reset_all; green_world; run_gate_b --live
+check_eq 0 "$(all_files)" "--live from cold: nothing stored"
+check_eq true "$(jq -r .met <<<"$OUT")" "--live from cold: the green, approved PR still passes"
+check_eq 1 "$(calls reviews)" "--live: the nested readers also read live (one review read in total)"
+reset_all; PR_SNAPSHOT_TTL=60 SLOW_READ_CACHE_TTL=300 run_gate_b --live
+check_eq 0 "$(all_files)" "--live beats a caller that sets both lifetimes high"
+for f in .claude/skills/wrap/SKILL.md .claude/skills/merge/SKILL.md .claude/agents/phase-c-merger.md .claude/skills/wrap/references/wrap-merge-gate-recovery.md; do
+  if grep -qE '(merge-gate\.sh|MERGE_GATE_SH).*--live' "$REPO_ROOT/$f"; then ok "$f: the pre-merge gate call passes --live"; else bad "$f: the pre-merge gate call does not pass --live"; fi
+done
+unset FAKE_REVIEWS FAKE_THREADS
+export FAKE_CHECK_RUNS="$ONE_RUN"
 
 echo
 echo "pr-snapshot.test.sh: $PASS passed, $FAIL failed"

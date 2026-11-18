@@ -298,7 +298,7 @@ Capture every gate execution with this block, including the merge-ready shortcut
 [[ -n "${CURRENT_REPO:-}" && -n "${RECOVERY_EVIDENCE_SH:-}" ]] || { echo "ERROR: verified recovery capture unavailable" >&2; exit 1; }
 WRAP_GATE_CAPTURE=$("$RECOVERY_EVIDENCE_SH" new --kind gate --repo "$CURRENT_REPO" --pr "$PR_NUM") || exit 1
 GATE_RC=0
-"$MERGE_GATE_SH" "$PR_NUM" > "$WRAP_GATE_CAPTURE/stdout" 2> "$WRAP_GATE_CAPTURE/stderr" || GATE_RC=$?
+"$MERGE_GATE_SH" "$PR_NUM" --live > "$WRAP_GATE_CAPTURE/stdout" 2> "$WRAP_GATE_CAPTURE/stderr" || GATE_RC=$?
 GATE_JSON=""  # filled only from the newly classified record, never stale memory
 ```
 
