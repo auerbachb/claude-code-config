@@ -49,7 +49,9 @@ if [[ "$cas" == true && "${AFTER_COMMIT_FAIL:-false}" == true ]] && printf '%s' 
 fi
 exec "$REAL_STATE" "$@"
 ''');self.helper.chmod(0o700)
-        self.env=os.environ.copy();self.env.update(HOME=str(self.home),SESSION_STATE_SH=str(self.helper),REAL_STATE=str(ROOT/'.claude/scripts/session-state.sh'),TEST_REPO=REPO,TEST_PR=PR,PR=PR,BABYSIT_INTERNAL_TICK='true',TICK_GENERATION='old',MONITOR_GENERATION='old',DIGEST='sha256:after',STREAK='3',BLOCKER_STREAK='4',CONFLICT_STREAK_NEW='5',NEW_TICK_COUNT='2',HORIZON_STATUS='critical',EFFECTIVE_MIN='10',PREV_EFFECTIVE_MIN='5',NEW_MONITOR_TASK_ID='replacement-task',NEW_MONITOR_GENERATION='new')
+        # The monitor loop asks the rate-budget helper for the allowance; point `gh` at a stub so no test reaches GitHub.
+        self.gh=self.home/'gh-bin';self.gh.mkdir();(self.gh/'gh').write_text('#!/usr/bin/env bash\nif [[ "$1 $2" == "api rate_limit" ]]; then printf "4000\\t5000\\t9999999999\\n"; exit 0; fi\nexit 2\n');(self.gh/'gh').chmod(0o755)
+        self.env=os.environ.copy();self.env['PATH']=str(self.gh)+':'+self.env['PATH'];self.env.update(HOME=str(self.home),SESSION_STATE_SH=str(self.helper),REAL_STATE=str(ROOT/'.claude/scripts/session-state.sh'),TEST_REPO=REPO,TEST_PR=PR,PR=PR,BABYSIT_INTERNAL_TICK='true',TICK_GENERATION='old',MONITOR_GENERATION='old',DIGEST='sha256:after',STREAK='3',BLOCKER_STREAK='4',CONFLICT_STREAK_NEW='5',NEW_TICK_COUNT='2',HORIZON_STATUS='critical',EFFECTIVE_MIN='10',PREV_EFFECTIVE_MIN='5',NEW_MONITOR_TASK_ID='replacement-task',NEW_MONITOR_GENERATION='new')
     def current(self):return json.loads(self.state.read_text())['repos'][REPO]['prs'][PR]
     def run_block(self,block,extra=None):
         env=self.env.copy();env.update(extra or {});return subprocess.run([SHELL,'-u','-c',block],cwd=ROOT,env=env,capture_output=True,text=True,timeout=20)

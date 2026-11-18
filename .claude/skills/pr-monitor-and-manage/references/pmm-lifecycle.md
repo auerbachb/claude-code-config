@@ -230,6 +230,8 @@ while sleep "<$PMM_AUTO_WAKE_CADENCE in seconds>"; do
 done
 ```
 
+Backoff (issue #2445): the sleep may use `.claude/scripts/lib/gh-rate-budget.sh --interval <seconds>` (same number unless GitHub reports the allowance low; bare value if it prints nothing numeric).
+
 Arm that command through `Monitor` with `persistent: true`; store the returned task ID in
 `.pmm.auto_wake_monitor_task_id` and the fresh generation in
 `.pmm.auto_wake_monitor_generation` in one atomic write. Resume and stop use the ID to terminate

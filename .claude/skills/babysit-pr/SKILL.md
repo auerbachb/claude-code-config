@@ -304,8 +304,19 @@ validated PR number, generation and numeric cadence in the Monitor command as `P
 <!-- test-anchor: babysit-pr-monitor-loop -->
 
 ```bash
+RATE_SH=""
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/lib/gh-rate-budget.sh}" \
+         "${HOME:+$HOME/.claude/scripts/lib/gh-rate-budget.sh}" ".claude/scripts/lib/gh-rate-budget.sh"; do
+  if [[ -n "$c" && -x "$c" ]]; then RATE_SH="$c"; break; fi
+done
 while true; do
   delay=$(( MONITOR_CADENCE * 60 ))
+  if [[ -n "$RATE_SH" ]]; then
+    # Low GitHub allowance (REST or GraphQL, as GitHub reports it) stretches the wait; any
+    # failure or non-numeric answer keeps the normal cadence (issue #2445).
+    wide=$("$RATE_SH" --interval "$delay" || true)
+    case "$wide" in ''|*[!0-9]*) ;; *) delay="$wide" ;; esac
+  fi
   if (( MONITOR_REVIEW_DEADLINE > 0 )); then
     now=$(date +%s) || exit 1
     if (( MONITOR_REVIEW_DEADLINE <= now + delay )); then

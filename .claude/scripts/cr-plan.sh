@@ -13,7 +13,7 @@
 # lives in cr-plan-filter.py (same directory; requires python3).
 #
 # Options:
-#   --poll <minutes>         Poll every 60s for up to this many minutes, returning
+#   --poll <minutes>         Poll every 60s (longer while the GitHub GraphQL allowance is low or gone) for up to this many minutes, returning
 #                            as soon as a plan is found. Without this flag, a single
 #                            check is performed.
 #   --max-age-minutes N      Cap polling by issue age: stop polling once the issue
@@ -132,6 +132,17 @@ if [ ! -f "$FILTER_PY" ]; then
   exit 4
 fi
 
+# Back off by itself when the GitHub GraphQL allowance runs low (issue #2445). If the
+# helper is missing or cannot read the figure, the interval stays 60s.
+# This poller reads GitHub through GraphQL (gh issue view), so it follows that allowance.
+GH_RATE_RESOURCE=graphql
+# shellcheck source=lib/gh-rate-budget.sh
+. "$SCRIPT_DIR/lib/gh-rate-budget.sh" 2>/dev/null \
+  || gh_rate_sleep() { local s="$1"; [ -z "${2:-}" ] || [ "$2" -ge "$s" ] || s="$2"; sleep "$s"; }
+DEADLINE_SECONDS=$(( POLL_MINUTES * 60 ))
+MAX_AGE_SECONDS=$(( MAX_AGE_MINUTES * 60 ))
+START_EPOCH=$(date +%s)
+
 # Fetch issue metadata once up-front so we can (a) error out cleanly on missing/
 # closed issues with exit 3 and (b) compute age for --max-age-minutes. Use
 # `gh --jq` for the field projection so we don't take an external `jq`
@@ -146,16 +157,26 @@ trap 'rm -rf "$TMPDIR_CR_PLAN"' EXIT
 
 ISSUE_META=""
 ISSUE_META_STDERR_FILE="$TMPDIR_CR_PLAN/issue-meta-stderr"
-if ! ISSUE_META=$(gh issue view "$ISSUE_NUMBER" --json state,createdAt --jq '"\(.state)\t\(.createdAt)"' 2>"$ISSUE_META_STDERR_FILE"); then
+while :; do
+  if ISSUE_META=$(gh issue view "$ISSUE_NUMBER" --json state,createdAt --jq '"\(.state)\t\(.createdAt)"' 2>"$ISSUE_META_STDERR_FILE"); then
+    break
+  fi
   ISSUE_META_STDERR=$(cat "$ISSUE_META_STDERR_FILE")
   if grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404' <<<"$ISSUE_META_STDERR"; then
     echo "cr-plan.sh: issue #$ISSUE_NUMBER not found" >&2
     exit 3
   fi
+  # In --poll mode a rate-limited first read is "no data", not a failure: wait and retry
+  # while the poll window is open (the age cap is unknown until this read succeeds).
+  if [ "$POLL_MINUTES" -gt 0 ] && grep -qi 'rate limit' <<<"$ISSUE_META_STDERR" \
+    && [ $(( $(date +%s) - START_EPOCH )) -lt "$DEADLINE_SECONDS" ]; then
+    gh_rate_sleep 60 $(( DEADLINE_SECONDS - ($(date +%s) - START_EPOCH) ))
+    continue
+  fi
   echo "cr-plan.sh: gh error fetching issue #$ISSUE_NUMBER:" >&2
   printf '%s\n' "$ISSUE_META_STDERR" >&2
   exit 4
-fi
+done
 
 ISSUE_STATE="${ISSUE_META%%$'\t'*}"
 CREATED_AT="${ISSUE_META#*$'\t'}"
@@ -225,12 +246,40 @@ fi
 
 # Polling loop: check immediately, then sleep 60s between checks until either
 # the plan arrives, the poll window elapses, or the issue age cap is reached.
-DEADLINE_SECONDS=$(( POLL_MINUTES * 60 ))
-MAX_AGE_SECONDS=$(( MAX_AGE_MINUTES * 60 ))
-START_EPOCH=$(date +%s)
+# Sleep one poll interval (longer while the allowance is low or gone), never past
+# the end of the poll window.
+poll_sleep() {
+  local left=$(( DEADLINE_SECONDS - ($(date +%s) - START_EPOCH) ))
+  if [ "$MAX_AGE_SECONDS" -gt 0 ]; then
+    local age_left=$(( MAX_AGE_SECONDS - $(issue_age_seconds) ))
+    [ "$age_left" -ge "$left" ] || left=$age_left
+  fi
+  [ "$left" -ge 1 ] || left=1
+  gh_rate_sleep 60 "$left"
+}
+
+# After a sleep: no further attempt once the window or the age cap has been passed. The sleep
+# is capped to land on the window's end, so one final attempt AT the end is still made and a
+# plan it finds counts (a real plan is not discarded for arriving on the last tick); an attempt
+# strictly past the end never starts.
+past_window() {
+  [ $(( $(date +%s) - START_EPOCH )) -le "$DEADLINE_SECONDS" ] || return 0
+  if [ "$MAX_AGE_SECONDS" -gt 0 ] && [ "$(issue_age_seconds)" -gt "$MAX_AGE_SECONDS" ]; then return 0; fi
+  return 1
+}
 
 while :; do
   if ! PLAN=$(fetch_plan); then
+    # A rate-limited response is "no data", never "no plan": wait (the helper
+    # stretches the wait to GitHub's reset when the allowance is gone) and try
+    # again while the poll window is open. Any other failure still exits 4.
+    if grep -qi 'rate limit' "$TMPDIR_CR_PLAN/fetch-plan-stderr" 2>/dev/null \
+      && [ $(( $(date +%s) - START_EPOCH )) -lt "$DEADLINE_SECONDS" ] \
+      && { [ "$MAX_AGE_SECONDS" -le 0 ] || [ "$(issue_age_seconds)" -lt "$MAX_AGE_SECONDS" ]; }; then
+      poll_sleep
+      if past_window; then exit 1; fi
+      continue
+    fi
     exit 4
   fi
   if [ -n "$PLAN" ]; then
@@ -251,5 +300,6 @@ while :; do
     fi
   fi
 
-  sleep 60
+  poll_sleep
+  if past_window; then exit 1; fi
 done
