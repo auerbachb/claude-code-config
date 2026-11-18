@@ -72,6 +72,34 @@ run --key pr-3 --state-dir "$TMP/ok" --digest b --what changed
 [[ $RC -ne 0 ]] || fail "a store failure must not exit 0"
 pass "store failure is loud"
 
+# Baseline-failure event honors --max-bytes and stays non-empty.
+run --key pr-4 --state-dir "$TMP/blocker/sub" --digest a --max-bytes 80
+[[ $RC -eq 4 && -n "$OUT" && ${#OUT} -le 80 ]] || fail "baseline-failure event not bounded (rc=$RC len=${#OUT})"
+pass "baseline-failure event is bounded"
+
+# An existing but unreadable record is an event, never a silent new baseline.
+mkdir -p "$TMP/unr"
+printf 'a\n' > "$TMP/unr/pr-5.digest"
+chmod 000 "$TMP/unr/pr-5.digest"
+if [[ ! -r "$TMP/unr/pr-5.digest" ]]; then
+  run --key pr-5 --state-dir "$TMP/unr" --digest a --max-bytes 120
+  [[ $RC -eq 4 && "$OUT" == EVENT*unreadable* && ${#OUT} -le 120 ]] || fail "unreadable record must emit a bounded event (rc=$RC out=$OUT)"
+  pass "unreadable record emits an event"
+else
+  pass "unreadable record check skipped (running as a user that reads mode 000)"
+fi
+chmod 644 "$TMP/unr/pr-5.digest" 2>/dev/null || true
+
+# A failed digest write leaves no temp file behind.
+mkdir -p "$TMP/clean"
+run --key pr-6 --state-dir "$TMP/clean" --digest a
+mkdir "$TMP/clean/pr-6.digest.d" 2>/dev/null || true
+rm -f "$TMP/clean/pr-6.digest"; mkdir "$TMP/clean/pr-6.digest"
+run --key pr-6 --state-dir "$TMP/clean" --digest b --what changed
+leftover=$(find "$TMP/clean" -maxdepth 1 -name '.pr-6.*' | wc -l | tr -d ' ')
+[[ "$leftover" -eq 0 ]] || fail "temp file left behind after a failed store ($leftover)"
+pass "failed store cleans its temp file"
+
 run --key 'bad key' --state-dir "$TMP" --digest a
 [[ $RC -eq 2 ]] || fail "invalid key must be a usage error"
 pass "invalid key rejected"

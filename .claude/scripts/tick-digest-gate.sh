@@ -20,8 +20,9 @@
 #
 # EXIT STATUS: 0 changed, event line printed; 10 unchanged, nothing printed;
 #   11 first observation — baseline stored, nothing printed (a first tick never
-#   wakes the parent); 2 usage error; 4 digest could not be stored — the event
-#   line is still printed (failing toward waking the parent, never toward silence).
+#   wakes the parent); 2 usage error; 4 digest could not be stored or the stored
+#   record exists but is unreadable — a bounded event line is still printed
+#   (failing toward waking the parent, never toward silence).
 set -euo pipefail
 export LC_ALL=C
 
@@ -48,7 +49,14 @@ done
 (( max_bytes >= 80 )) || max_bytes=80
 
 if [[ -z "$digest" ]]; then
-  digest=$(shasum -a 256 | awk '{print $1}')
+  if command -v shasum >/dev/null 2>&1; then
+    digest=$(shasum -a 256 | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest=$(sha256sum | awk '{print $1}')
+  else
+    echo "tick-digest-gate: needs shasum or sha256sum to hash stdin; pass --digest" >&2
+    exit 2
+  fi
 fi
 digest=$(printf '%s' "$digest" | tr -d '\n\r')
 [[ -n "$digest" ]] || { echo "tick-digest-gate: empty digest" >&2; exit 2; }
@@ -60,26 +68,47 @@ digest=$(printf '%s' "$digest" | tr -d '\n\r')
 file="$state_dir/$key.digest"
 last=""
 have_last=0
-if [[ -r "$file" ]]; then
-  last=$(head -n1 "$file" || true)
-  have_last=1
+unreadable=0
+if [[ -e "$file" ]]; then
+  if [[ -r "$file" ]] && last=$(head -n1 "$file" 2>/dev/null); then
+    have_last=1
+  else
+    # A record that exists but cannot be read is not a missing one: treating it as
+    # a first observation would hide a real change forever.
+    unreadable=1
+  fi
 fi
+
+# Cap a line at max_bytes (every printed line goes through this).
+bound_line() {
+  local l="$1"
+  if (( ${#l} > max_bytes )); then l="${l:0:$((max_bytes - 3))}..."; fi
+  printf '%s\n' "$l"
+}
 
 store() {
   mkdir -p "$state_dir" 2>/dev/null || return 1
   local tmp
   tmp=$(mktemp "$state_dir/.$key.XXXXXX") || return 1
-  printf '%s\n' "$digest" > "$tmp" && mv "$tmp" "$file"
+  if printf '%s\n' "$digest" > "$tmp" && mv "$tmp" "$file"; then return 0; fi
+  rm -f "$tmp"
+  return 1
 }
 
 if [[ "$have_last" == 1 && "$last" == "$digest" ]]; then
   exit 10
 fi
+if [[ "$unreadable" == 1 ]]; then
+  bound_line "EVENT $key digest record unreadable; unchanged-tick check unavailable"
+  store >/dev/null 2>&1 || true
+  echo "tick-digest-gate: cannot read digest record for $key" >&2
+  exit 4
+fi
 if [[ "$have_last" == 0 ]]; then
   if ! store; then
     # Without a stored baseline every later tick would look like a first one and
     # stay silent forever, so a failed baseline is loud.
-    echo "EVENT $key digest baseline could not be stored; unchanged-tick check unavailable"
+    bound_line "EVENT $key digest baseline could not be stored; unchanged-tick check unavailable"
     echo "tick-digest-gate: cannot store baseline for $key" >&2
     exit 4
   fi

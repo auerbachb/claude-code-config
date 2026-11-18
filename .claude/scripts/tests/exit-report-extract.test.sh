@@ -76,4 +76,55 @@ run "$TMP/r.txt"
 set +e; OUT=$(bash "$EX" --phase A < "$TMP/r.txt" 2>/dev/null); RC=$?; set -e
 [[ $RC -eq 0 && "$(field OUTCOME)" == pushed_fixes ]] || fail "stdin input (rc=$RC)"
 pass "last block wins, output bounded, stdin accepted"
+# Blocked and exhaustion reports raised before any PR exists may carry `none`.
+none_report() { # phase outcome
+  printf 'EXIT_REPORT\nPHASE_COMPLETE: %s\nPR_NUMBER: none\nHEAD_SHA: none\nREVIEWER: none\nOUTCOME: %s\nFILES_CHANGED: \nVERDICTS_POSTED: 0/0\nNEXT_PHASE: none\nHANDOFF_FILE: none\n' "$1" "$2"
+}
+for spec in "A blocked" "A exhaustion" "B blocked" "C blocked"; do
+  set -- $spec
+  none_report "$1" "$2" > "$TMP/r.txt"
+  run --phase "$1" "$TMP/r.txt"
+  [[ $RC -eq 0 && "$(field PR)" == none && "$(field OUTCOME)" == "$2" && "$(field FILES_COUNT)" == 0 ]] \
+    || fail "$1/$2 with PR none should extract (rc=$RC out=$OUT)"
+done
+pass "blocked/exhaustion reports with no PR accept none"
+
+# Phase B blocked_self_review is valid and needs a real PR.
+report B blocked_self_review B > "$TMP/r.txt"; run --phase B "$TMP/r.txt"
+[[ $RC -eq 0 && "$(field OUTCOME)" == blocked_self_review ]] || fail "blocked_self_review (rc=$RC)"
+none_report B blocked_self_review > "$TMP/r.txt"; run "$TMP/r.txt"
+[[ $RC -eq 1 ]] || fail "blocked_self_review with PR none must fail closed (rc=$RC)"
+pass "blocked_self_review accepted with a PR, rejected without"
+
+# PR-claiming outcomes reject none and blank required values.
+for spec in "A pushed_fixes" "A no_findings" "B clean" "B fixes_pushed" "B merge_ready" "C merged"; do
+  set -- $spec
+  report "$1" "$2" B | sed 's/^PR_NUMBER: 618/PR_NUMBER: none/' > "$TMP/r.txt"; run "$TMP/r.txt"
+  [[ $RC -eq 1 ]] || fail "$1/$2 with PR none must exit 1 (rc=$RC)"
+  for key in HEAD_SHA REVIEWER HANDOFF_FILE; do
+    report "$1" "$2" B | sed "s/^$key: .*/$key:/" > "$TMP/r.txt"; run "$TMP/r.txt"
+    [[ $RC -eq 1 ]] || fail "$1/$2 with blank $key must exit 1 (rc=$RC)"
+  done
+done
+pass "PR-claiming outcomes need an integer PR and non-blank identity fields"
+
+# Unknown outcome for B, and a missing report, still fail closed.
+report B pushed_fixes B > "$TMP/r.txt"; run "$TMP/r.txt"
+[[ $RC -eq 1 ]] || fail "unknown outcome for B must exit 1 (rc=$RC)"
+pass "unknown outcome fails closed"
+
+# Extra prose before the block, and a multi-line NOTES field with a field after it.
+{ printf 'Some prose before the report.\nPR looks fine.\n\n'
+  report B merge_ready C $'NOTES: first line\nsecond line of notes\n  third line\nFIXPR_WAIT_FINAL: clean\n'
+  printf '\ntrailing prose\n'; } > "$TMP/r.txt"
+run --phase B "$TMP/r.txt"
+[[ $RC -eq 0 && "$(field OUTCOME)" == merge_ready && "$(field FIXPR_WAIT_FINAL)" == clean ]] \
+  || fail "prose before and multi-line NOTES (rc=$RC out=$OUT)"
+pass "extra prose and multi-line NOTES handled"
+
+# Optional RESULT line is carried and bounded.
+report A pushed_fixes B "RESULT: created issue 2460" > "$TMP/r.txt"; run "$TMP/r.txt"
+[[ "$(field RESULT)" == "created issue 2460" ]] || fail "RESULT lost: $OUT"
+pass "RESULT field extracted"
+
 echo "All exit-report-extract tests passed."

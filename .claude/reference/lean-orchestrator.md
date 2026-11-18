@@ -41,11 +41,22 @@ Full detail stays in the existing records, logs, handoff files and `session-stat
 - first observation: stores a baseline, prints nothing (exit 11);
 - changed: prints one line `EVENT <key> changed: <what> | next: <decision> | record: <pointer>`, capped at 400 bytes (exit 0). The full record is at the pointer.
 
-If the digest cannot be stored it still prints the event and exits 4: failure goes toward waking the parent, never toward silence. The Monitor, the ceiling watch and the hourly table floor keep their own output unchanged. Build the digest from the same fields `scheduling-reliability.md` §Stable-State Backoff already hashes. Free text stays out of it.
+A record that exists but cannot be read is not a first observation: it prints a bounded event and exits 4. Every printed line, including the baseline-failure event, honors `--max-bytes`. If the digest cannot be stored it still prints the event and exits 4: failure goes toward waking the parent, never toward silence. The Monitor, the ceiling watch and the hourly table floor keep their own output unchanged. Build the digest from the same fields `scheduling-reliability.md` §Stable-State Backoff already hashes. Free text stays out of it.
+
+### Which monitors are quiet today
+
+| Monitor | Status | Evidence |
+|---------|--------|----------|
+| `/pr-monitor-and-manage` fleet Monitor | Quiet when unchanged (its own shell gate) | `pr-monitor-and-manage/SKILL.md` "Verify or re-arm the Monitor": `pmm-pre-dispatch.sh` prints nothing for unchanged state |
+| `bgwork-ceiling.sh --tick`, `table-freshness.sh --tick` | Quiet unless stale | the ceiling and hourly floor, unchanged |
+| `/babysit-pr` Monitor | Not gated: emits `/babysit-pr <PR> --tick` every cadence | `babysit-pr/SKILL.md` block `babysit-pr-monitor-loop` |
+| `/pm day` Monitor | Not gated: emits `/pm day --tick` every cadence | `pm/modules/day-arm.md` arm block |
+
+The last two compute the digest, the streak and backoff (widen at 3, stop or pause at 9) and the blocker-tick terminal inside the model turn that the emitted line starts. Silencing an unchanged tick in the shell would stop those counters advancing, which changes liveness behavior, so they are left unchanged here. Moving the digest and counters into the Monitor shell is tracked on Issue #2459. `/subagent`'s Step 8 loop is the parent's in-turn poll, not a Monitor.
 
 ## Worker results
 
-`.claude/scripts/exit-report-extract.sh [--phase P] [FILE]` reduces a worker's final output to `KEY=value` lines (phase, PR, head, reviewer, outcome, next phase, handoff path, files count, verdicts, `/fixpr` wait fields), each capped. It reads the last `EXIT_REPORT` block. Exit 3 means no report (`EXTRACT=absent`): the parent then classifies crash versus usage-limit park per `phase-protocols.md` §Limit-parked, never the script. Exit 1 means a malformed report and fails closed. The parent reads a worker's transcript or full log only when a blocker needs it.
+`.claude/scripts/exit-report-extract.sh [--phase P] [FILE]` reduces a worker's final output to `KEY=value` lines (phase, PR, head, reviewer, outcome, next phase, handoff path, files count, verdicts, `/fixpr` wait fields), each capped. It reads the last `EXIT_REPORT` block. Exit 3 means no report (`EXTRACT=absent`): the parent then classifies crash versus usage-limit park per `phase-protocols.md` §Limit-parked, never the script. Exit 1 means a malformed report and fails closed. An optional `RESULT:` line carries a short task result (for example a `pm-worker`'s created issue number), so the parent need not read prose above the report. The parent reads a worker's transcript or full log only when a blocker needs it. Blocked-before-push and exhaustion reports may carry `PR_NUMBER: none`; every outcome that claims a PR must carry an integer PR and non-blank head, reviewer and handoff (see `exit-report-format.md`).
 
 ## Worker conduct
 

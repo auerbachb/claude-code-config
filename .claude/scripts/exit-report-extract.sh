@@ -13,7 +13,8 @@
 #
 # OUTPUT (exit 0): KEY=value lines — PHASE, PR, HEAD, REVIEWER, OUTCOME, NEXT,
 #   HANDOFF, FILES_COUNT, FILES (cut to 300 chars), and VERDICTS /
-#   FIXPR_WAIT_ITERATIONS / FIXPR_TOTAL_WAIT_SECS / FIXPR_WAIT_FINAL when present.
+#   FIXPR_WAIT_ITERATIONS / FIXPR_TOTAL_WAIT_SECS / FIXPR_WAIT_FINAL / RESULT (optional one-line task result, e.g. a
+#   pm-worker's created issue number) when present.
 #   Every value is cut to 300 chars, so output stays bounded for any input size.
 #
 # EXIT STATUS: 0 valid; 1 malformed (missing field, bad outcome for the phase,
@@ -47,9 +48,12 @@ if [[ "$has_header" != "1" ]]; then
   exit 3
 fi
 # Last EXIT_REPORT block: header line, then contiguous KEY: value lines.
+# A multi-line NOTES field keeps the block open: its continuation lines are
+# skipped, and any later KEY: line still counts.
 block=$(printf '%s\n' "$content" | awk '
-  /^EXIT_REPORT[[:space:]]*$/ { blk=""; inblk=1; next }
-  inblk && /^[A-Z_]+:/ { blk = blk $0 "\n"; next }
+  /^EXIT_REPORT[[:space:]]*$/ { blk=""; inblk=1; last=""; next }
+  inblk && /^[A-Z_]+:/ { split($0, kv, ":"); last=kv[1]; blk = blk $0 "\n"; next }
+  inblk && last == "NOTES" { next }
   inblk { inblk=0 }
   END { printf "%s", blk }
 ')
@@ -84,7 +88,7 @@ outcome=$(get OUTCOME)
 
 case "$phase" in
   A) valid="pushed_fixes no_findings exhaustion blocked" ;;
-  B) valid="clean fixes_pushed merge_ready exhaustion" ;;
+  B) valid="clean fixes_pushed merge_ready exhaustion blocked blocked_self_review" ;;
   C) valid="merged blocked" ;;
   pm-worker) valid="completed blocked exhaustion" ;;
   researcher) valid="findings inconclusive blocked" ;;
@@ -110,8 +114,29 @@ if [[ "$phase" == "A" || "$phase" == "B" ]]; then
 fi
 
 pr=$(get PR_NUMBER)
-if [[ "$pr" != "none" && ! "$pr" =~ ^[0-9]+$ ]]; then
-  bad "PR_NUMBER is not an integer"
+head_sha=$(get HEAD_SHA)
+reviewer=$(get REVIEWER)
+handoff=$(get HANDOFF_FILE)
+# Outcomes that claim a PR exists need an integer PR and non-blank identity
+# fields. A blocked or exhaustion report raised before any PR exists, and the
+# non-phase agents, may carry `none`.
+claims_pr=0
+case "$phase:$outcome" in
+  A:pushed_fixes|A:no_findings|B:fixes_pushed|B:clean|B:merge_ready|C:merged) claims_pr=1 ;;
+esac
+if [[ "$claims_pr" == 1 ]]; then
+  [[ "$pr" =~ ^[0-9]+$ ]] || bad "PR_NUMBER must be an integer for $phase/$outcome"
+  [[ -n "$head_sha" && "$head_sha" != none ]] || bad "HEAD_SHA is blank for $phase/$outcome"
+  [[ -n "$reviewer" ]] || bad "REVIEWER is blank for $phase/$outcome"
+  [[ -n "$handoff" ]] || bad "HANDOFF_FILE is blank for $phase/$outcome"
+else
+  [[ -n "$pr" ]] || bad "PR_NUMBER is blank"
+  if [[ "$pr" != "none" && ! "$pr" =~ ^[0-9]+$ ]]; then
+    bad "PR_NUMBER is neither an integer nor none"
+  fi
+  if [[ "$phase" == "B" && "$outcome" == "blocked_self_review" ]]; then
+    [[ "$pr" =~ ^[0-9]+$ ]] || bad "PR_NUMBER must be an integer for B/blocked_self_review"
+  fi
 fi
 files=$(get FILES_CHANGED)
 files_count=0
@@ -120,10 +145,10 @@ if [[ -n "$files" ]]; then
 fi
 
 printf 'PHASE=%s\nPR=%s\nHEAD=%s\nREVIEWER=%s\nOUTCOME=%s\nNEXT=%s\nHANDOFF=%s\n' \
-  "$phase" "$pr" "$(get HEAD_SHA)" "$(get REVIEWER)" "$outcome" "$(get NEXT_PHASE)" "$(get HANDOFF_FILE)"
+  "$phase" "$pr" "$head_sha" "$reviewer" "$outcome" "$(get NEXT_PHASE)" "$handoff"
 printf 'FILES_COUNT=%s\nFILES=%s\n' "$files_count" "$files"
 for pair in VERDICTS_POSTED:VERDICTS FIXPR_WAIT_ITERATIONS:FIXPR_WAIT_ITERATIONS \
-            FIXPR_TOTAL_WAIT_SECS:FIXPR_TOTAL_WAIT_SECS FIXPR_WAIT_FINAL:FIXPR_WAIT_FINAL; do
+            FIXPR_TOTAL_WAIT_SECS:FIXPR_TOTAL_WAIT_SECS FIXPR_WAIT_FINAL:FIXPR_WAIT_FINAL RESULT:RESULT; do
   src=${pair%%:*}; dst=${pair##*:}
   if has "$src"; then printf '%s=%s\n' "$dst" "$(get "$src")"; fi
 done
