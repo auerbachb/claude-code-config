@@ -174,6 +174,8 @@ OUTS="$(set_plan "$CL" "Pro" 20 claude)"; RCS=$?
 check_eq "$RCS,$(jq -c '.accounts[0].plan_override' "$CONFIG")" '0,{"tier":"Pro","usd_per_month":20}' "tier, price and provider together"
 
 # Refusals and clearing.
+OUTS="$(set_plan "$CL" "Pro" 100000)"; RCS=$?
+check_eq "$RCS" "3" "a price above 99999.99 is refused"
 OUTS="$(set_plan "$CL" "Pro" abc)"; RCS=$?
 check_eq "$RCS" "3" "a price that is not an amount is refused"
 OUTS="$(set_plan "no-such@example.com" "Pro")"; RCS=$?
@@ -193,17 +195,25 @@ check_eq "$RCS" "3" "a tier with a control character is refused"
 LONGNICK="漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字"
 LONGTIER="Discount Platinum Plus Ultra Premium"
 LONGTIER="${LONGTIER:0:32}"
-write_config "$(account_json claude "$CL" "$c1" | jq --arg n "$LONGNICK" --arg t "$LONGTIER" '. + {nickname: $n, plan_override: {tier: $t, usd_per_month: 999999.99}}')"
+write_config "$(account_json claude "$CL" "$c1" | jq --arg n "$LONGNICK" --arg t "$LONGTIER" '. + {nickname: $n, plan_override: {tier: $t, usd_per_month: 99999.99}}')"
 run --five-hour
 W="$(table_width "$(table_only "$OUT")")"
 if [[ "$W" -le 140 && "$W" -gt 0 ]]; then ok "the worst-case accepted values fit 140 columns (widest line: $W)"; else bad "the worst-case table is $W columns wide"; fi
 run --json
-check_eq "$(plan_cells "$CL" 7-day)" "$LONGTIER|override|999999.99|override" "and --json keeps the full tier and price"
+check_eq "$(plan_cells "$CL" 7-day)" "$LONGTIER|override|99999.99|override" "and --json keeps the full tier and price"
 
 # The old nickname and the override live side by side.
 HOME="$CASE_HOME" AI_QUOTAS_CONFIG="$CONFIG" bash "$SETUP" nick "$CL" "Work" >/dev/null 2>&1
 set_plan "$CL" "Ultra" 200 >/dev/null
 check_eq "$(jq -c '.accounts[0] | [.nickname, .plan_override.tier]' "$CONFIG")" '["Work","Ultra"]' "a nickname and a plan override do not disturb each other"
+
+# Worst case on the Cursor rows: a 24-character nickname, the long cursor-models window, the longest override and a paid spend together.
+fresh
+write_config "$(account_json cursor cursor-one@example.com "$CUR" | jq '. + {nickname: "abcdefghijklmnopqrstuvwx", plan_override: {tier: "Discount", usd_per_month: 99999.99}}')"
+cursor_spend_body > "$STUB_CURSOR_USAGE"
+run --five-hour
+W="$(table_width "$(table_only "$OUT")")"
+if [[ "$W" -le 140 && "$W" -gt 0 ]]; then ok "the long-nickname Cursor override row fits 140 columns (widest line: $W)"; else bad "the long-nickname Cursor override row is $W columns wide"; fi
 
 # --- 4. display only -----------------------------------------------------------------------------
 

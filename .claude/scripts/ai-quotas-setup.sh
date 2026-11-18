@@ -451,7 +451,7 @@ case "$ACTION" in
       ARG_PLAN_USD="${POSITIONAL[3]}"
       ARG_PROVIDER="${POSITIONAL[4]}"
     fi
-    [[ -z "$ARG_PLAN_USD" || "$ARG_PLAN_USD" =~ ^[0-9]{1,6}(\.[0-9]{1,2})?$ ]] \
+    [[ -z "$ARG_PLAN_USD" || "$ARG_PLAN_USD" =~ ^[0-9]{1,5}(\.[0-9]{1,2})?$ ]] \
       || die_usage "plan: <usd_per_month> must be a plain amount like 200 or 19.99 (got '${ARG_PLAN_USD}')"
     [[ -z "$ARG_PLAN_TIER" || -z "$(printf '%s' "$ARG_PLAN_TIER" | LC_ALL=C tr -d '[:print:]')" && ${#ARG_PLAN_TIER} -le 32 && "$ARG_PLAN_TIER" != " "* && "$ARG_PLAN_TIER" != *" " ]] \
       || die_usage "plan: invalid tier (max 32 printable ASCII characters, no leading/trailing spaces)"

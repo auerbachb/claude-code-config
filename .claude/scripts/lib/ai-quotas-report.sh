@@ -424,8 +424,10 @@ render_quota_table() {
                                          or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135)
                                          or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) then 2 else 1 end) | add // 0;
       # Issue #2469: a cell wider than its ceiling is cut with an ellipsis so the table stays within 140 columns for every value setup accepts; --json keeps the full value.
-      def fit($n): . as $t | if ($t | wide) <= $n then $t
+      def fit0($n): . as $t | if ($t | wide) <= $n then $t
                           else ([range($t | length; -1; -1) | select(($t[0:.] | wide) <= ($n - 1))] | first) as $k | $t[0:$k] + "…" end;
+      # The trailing `*` (set by hand) survives a cut.
+      def fit($n): if endswith("*") and length > 1 then (.[:-1] | fit0($n - 1)) + "*" else fit0($n) end;
       def spaces($n): [range(0; $n)] | map(" ") | join("");
       def pad($w): . + spaces($w - wide);
       # Account-level values print on the row that carries them and are blank on the
@@ -515,7 +517,15 @@ render_quota_table() {
                    (if (.note | length) > 11 then fnum($foot; .note) else .note end)])) as $body
       | ([["ACCOUNT", "WINDOW", "USED", "FETCHED", "START", "%/DAY", "LEFT", "OVERAGE", "$?", "$ CAP", "$", "RST", "TIER", "$/MO", "TOP", "TOP%", "RESET (ET)", "IN", "NOTE"]] + $body) as $all
       | ($all[0] | length) as $n
-      | ([range(0; $n)] | map(. as $c | [$all[] | .[$c] | wide] | max)) as $w
+      | ([range(0; $n)] | map(. as $c | [$all[] | .[$c] | wide] | max)) as $w0
+      # Issue #2469: past 140 columns the widest of the cut-able columns (account, window, $ cap, $, tier, $/MO, top) gives up one column at a time, down to 7, and its cells are cut to fit; --json keeps every full value.
+      | ([0, 1, 9, 10, 12, 13, 14]) as $red
+      | (reduce range(0; 80) as $_ ($w0;
+           . as $w
+           | if (($w | add) + $n - 1) > 140
+             then ([$red[] | select($w[.] > 7)] | if length == 0 then $w else (max_by($w[.]) as $i | $w | .[$i] -= 1) end)
+             else $w end)) as $w
+      | ($all | map(. as $r | reduce $red[] as $c ($r; .[$c] = (.[$c] | fit($w[$c]))))) as $all
       | ($all[] | . as $row | [range(0; $n)]
          | map(. as $c | if $c == $n - 1 then $row[$c] else ($row[$c] | pad($w[$c])) end) | join(" ")),
         (if ($foot | length) > 0 then "", ($foot | to_entries[] | "[\(.key + 1)] \(.value)") else empty end),
