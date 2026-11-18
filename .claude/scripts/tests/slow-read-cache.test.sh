@@ -51,7 +51,7 @@ case "$ARGS" in
       found)
         case "$ARGS" in
           *" repos/solo/repo/contents/.github/CODEOWNERS "*)
-            jq -cn --arg c "$(printf '%s\n' "${FAKE_CODEOWNERS:-* @coderabbitai}" | base64 | tr -d '\n')" '{content:$c}'; exit 0 ;;
+            jq -cn --arg c "${FAKE_CO_B64:-$(printf '%s\n' "${FAKE_CODEOWNERS:-* @coderabbitai}" | base64 | tr -d '\n')}" '{content:$c}'; exit 0 ;;
         esac ;;
     esac
     echo '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -279,6 +279,24 @@ check_eq 0 "$(calls protection)" "host compared case-insensitively; each host ha
 reset_calls; run_req
 check_eq 1 "$(calls protection)" "GH_HOST unset (github.com) after another host's entries: miss"
 check_eq github.com "$(GH_HOST=GitHub.com slow_cache_host 2>/dev/null || true)" "host identity is the lowercased GH_HOST"
+
+echo "== CODEOWNERS: a decode that fails part-way is never stored"
+# GNU base64 prints the decoded prefix and then fails; BSD base64 prints nothing.
+# This stand-in does the GNU thing so the case is the same on every platform.
+mkdir -p "$TMP/gnu64"
+cat > "$TMP/gnu64/base64" <<'STUB'
+#!/usr/bin/env bash
+input="$(cat)"
+printf '%s' "${input%%!*}" | /usr/bin/base64 --decode
+exit 1
+STUB
+chmod +x "$TMP/gnu64/base64"
+reset_cache; BIN="$TMP/gnu64:$BIN" FAKE_CO_MODE=found FAKE_CO_B64="KiBAY29kZXJhYmJpdGFp!!!!" run_gate
+check_eq '["coderabbitai[bot]"]' "$(bots)" "partial decode: the gate keeps using the decoded text exactly as before"
+check_eq 0 "$(kind_files codeowners)" "valid base64 prefix then an invalid tail: nothing stored"
+reset_calls; FAKE_CO_MODE=found run_gate
+check_eq '["coderabbitai[bot]"]' "$(bots)" "the next run reads live and sees the whole file"
+check_eq 1 "$(kind_files codeowners)" "(control) an intact file is stored"
 
 echo "== every payload type: the exact shape the live path produces, or a live read"
 mutate() { # <name glob> <jq filter applied to the envelope>

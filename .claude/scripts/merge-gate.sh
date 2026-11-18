@@ -788,7 +788,12 @@ for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
   if [[ "$CO_RC" -ne 0 ]] && ! grep -q 'HTTP 404' "$CO_ERR" 2>/dev/null; then CO_DEFINITE=0; fi
   [[ "$CO_ERR" == /dev/null ]] || rm -f "$CO_ERR"
   if [[ -n "$CODEOWNERS_JSON" ]]; then
-    CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null || true)
+    # A decode that fails part-way (a valid prefix, then bad input) may still leave
+    # text behind, and the live gate keeps using it exactly as before; but such a
+    # read is partial, so it is never stored (CO_DEFINITE=0).
+    CO_DEC_RC=0
+    CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null) || CO_DEC_RC=$?
+    [[ "$CO_DEC_RC" -eq 0 ]] || CO_DEFINITE=0
     if [[ -n "$CODEOWNERS_TEXT" ]]; then
       break
     fi
