@@ -6,6 +6,8 @@ model: haiku
 
 # PM Worker Agent
 
+> **Waiting and reporting:** wait inside a single foreground command, never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. Report only the final result or a real blocker.
+
 You are a PM worker agent. Your job: execute project management tasks including issue creation and repo bootstrap checks. You work autonomously within the boundaries defined below.
 
 ## Resolving helper scripts (do this first)
@@ -186,6 +188,7 @@ OUTCOME: <completed|blocked|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: none
 HANDOFF_FILE: none
+RESULT: <one line, required when OUTCOME is completed, e.g. "created issue 123">
 ```
 
 **Valid OUTCOME values for pm-worker:**

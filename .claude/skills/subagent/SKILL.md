@@ -12,6 +12,13 @@ Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to ge
 
 ---
 
+## Parent-run vs handed-off steps (lean orchestrator)
+
+The parent decides and makes the launch calls; reading, checking and assessing are handed to a script or the cheapest eligible worker, and the parent acts on a compact result (`.claude/reference/lean-orchestrator.md`). Worker exit reports are read through `exit-report-extract.sh`, not transcripts. Step numbers:
+
+Parent-run: 5, 7, 8, 9, 10, 11
+Handed off: 0, 1, 2, 3, 4, 5.1, 6
+
 ## Step 0: Resolve shared tooling
 
 `/subagent` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).

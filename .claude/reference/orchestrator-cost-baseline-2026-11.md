@@ -76,3 +76,7 @@ Session A's transcript holds 67 distinct `Agent` tool calls. A pre-tool-use hook
 ## Scope of this baseline
 
 Two sessions are the minimum the acceptance criterion asks for. They do not establish a typical share. The ranked drivers are the to-do list for the next increment (Issue #2435). Changing orchestrator behavior is out of scope here.
+
+## After-change measurement (Issue #2435)
+
+The lean-orchestrator change (`lean-orchestrator.md`) is merged, but no after-numbers are recorded here yet: the two premium-model `/pm` sessions of five or more pipelines that the comparison needs could not be run from the isolated worktree that implemented it. They are measured after merge with the same report and added to this file, whichever way they come out.

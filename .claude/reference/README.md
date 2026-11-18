@@ -126,6 +126,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `model-fleet-drift-guard-decision.md` — decision record: build a generational deny-list lint (`model-drift-lint.sh`) that flags enumerated legacy model versions in live surfaces; fails open; auto-discovered by `run-doc-lints.sh` (#752)
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `workspace-sweep-cadence.md` — finished-only post-merge, PM tick and daily scheduling; registry, interval, logging and safety boundary (Issue #1962)
+- `lean-orchestrator.md` — delegate-first rule for a premium parent: permitted direct work, quiet unchanged ticks, compact worker results, the nested-worker answer, parent-run steps in `/pm` and `/subagent`, and the pending before/after measurement (Issue #2435)
 - `bgwork-ceiling.md` — why background work arms a turn-independent silence ceiling, why `Monitor` over `ScheduleWakeup`/`CronCreate`, and why the number stays unpublished (#803)
 - `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
