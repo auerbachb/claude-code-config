@@ -34,7 +34,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | `FIXPR_TOTAL_WAIT_SECS` | integer | (when the phase ran `/fixpr`) cumulative post-push review-wait time |
 | `FIXPR_WAIT_FINAL` | `clean`, `cap-exhausted`, `new-findings-pending` | (when the phase ran `/fixpr`) final wait-loop state from `FIXPR_WAIT_SUMMARY` |
 
-| `RESULT` | one line | Optional. A short task result the parent can act on without reading prose (for example a `pm-worker`'s created issue number). Capped at 300 characters by `exit-report-extract.sh`. |
+| `RESULT` | one line | Required for a `pm-worker` `completed` report, optional elsewhere. A short task result the parent can act on without reading prose (for example a `pm-worker`'s created issue number). Capped at 300 characters by `exit-report-extract.sh`. |
 
 A Phase A report that is `blocked` before any push, or `exhaustion` before a PR exists, carries `PR_NUMBER: none`, `HEAD_SHA: none` and `HANDOFF_FILE: none`. Outcomes that claim a PR exists (`pushed_fixes`, `no_findings`, `fixes_pushed`, `clean`, `merge_ready`, `merged`) must carry an integer `PR_NUMBER` and non-blank `HEAD_SHA`, `REVIEWER` and `HANDOFF_FILE`; `exit-report-extract.sh` rejects anything else.
 

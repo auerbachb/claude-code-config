@@ -73,7 +73,8 @@ run --key pr-3 --state-dir "$TMP/ok" --digest b --what changed
 pass "store failure is loud"
 
 # Baseline-failure event honors --max-bytes and stays non-empty.
-run --key pr-4 --state-dir "$TMP/blocker/sub" --digest a --max-bytes 80
+LONGKEY=$(printf "k%.0s" $(seq 1 64))
+run --key "$LONGKEY" --state-dir "$TMP/blocker/sub" --digest a --max-bytes 80
 [[ $RC -eq 4 && -n "$OUT" && ${#OUT} -le 80 ]] || fail "baseline-failure event not bounded (rc=$RC len=${#OUT})"
 pass "baseline-failure event is bounded"
 
@@ -93,7 +94,6 @@ chmod 644 "$TMP/unr/pr-5.digest" 2>/dev/null || true
 # A failed digest write leaves no temp file behind.
 mkdir -p "$TMP/clean"
 run --key pr-6 --state-dir "$TMP/clean" --digest a
-mkdir "$TMP/clean/pr-6.digest.d" 2>/dev/null || true
 rm -f "$TMP/clean/pr-6.digest"; mkdir "$TMP/clean/pr-6.digest"
 run --key pr-6 --state-dir "$TMP/clean" --digest b --what changed
 leftover=$(find "$TMP/clean" -maxdepth 1 -name '.pr-6.*' | wc -l | tr -d ' ')

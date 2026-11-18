@@ -188,7 +188,7 @@ OUTCOME: <completed|blocked|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: none
 HANDOFF_FILE: none
-RESULT: <optional one line, e.g. "created issue 123">
+RESULT: <one line, required when OUTCOME is completed, e.g. "created issue 123">
 ```
 
 **Valid OUTCOME values for pm-worker:**

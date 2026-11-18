@@ -13,8 +13,8 @@
 #
 # OUTPUT (exit 0): KEY=value lines — PHASE, PR, HEAD, REVIEWER, OUTCOME, NEXT,
 #   HANDOFF, FILES_COUNT, FILES (cut to 300 chars), and VERDICTS /
-#   FIXPR_WAIT_ITERATIONS / FIXPR_TOTAL_WAIT_SECS / FIXPR_WAIT_FINAL / RESULT (optional one-line task result, e.g. a
-#   pm-worker's created issue number) when present.
+#   FIXPR_WAIT_ITERATIONS / FIXPR_TOTAL_WAIT_SECS / FIXPR_WAIT_FINAL / RESULT (one-line task result, e.g. a pm-worker's
+#   created issue number; required for pm-worker/completed) when present.
 #   Every value is cut to 300 chars, so output stays bounded for any input size.
 #
 # EXIT STATUS: 0 valid; 1 malformed (missing field, bad outcome for the phase,
@@ -137,6 +137,11 @@ else
   if [[ "$phase" == "B" && "$outcome" == "blocked_self_review" ]]; then
     [[ "$pr" =~ ^[0-9]+$ ]] || bad "PR_NUMBER must be an integer for B/blocked_self_review"
   fi
+fi
+# A pm-worker that completed a task states its result on one RESULT line (an
+# issue number, a deferral target), so the parent never reads prose for it.
+if [[ "$phase" == "pm-worker" && "$outcome" == "completed" ]]; then
+  [[ -n "$(get RESULT)" ]] || bad "RESULT is required for pm-worker/completed"
 fi
 files=$(get FILES_CHANGED)
 files_count=0

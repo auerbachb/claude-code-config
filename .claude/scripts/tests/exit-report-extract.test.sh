@@ -122,6 +122,16 @@ run --phase B "$TMP/r.txt"
   || fail "prose before and multi-line NOTES (rc=$RC out=$OUT)"
 pass "extra prose and multi-line NOTES handled"
 
+# pm-worker completed needs a RESULT; blocked does not.
+pmw() { printf 'EXIT_REPORT\nPHASE_COMPLETE: pm-worker\nPR_NUMBER: none\nHEAD_SHA: none\nREVIEWER: none\nOUTCOME: %s\nFILES_CHANGED:\nNEXT_PHASE: none\nHANDOFF_FILE: none\n%s' "$1" "${2:-}"; }
+pmw completed > "$TMP/r.txt"; run "$TMP/r.txt"
+[[ $RC -eq 1 ]] || fail "pm-worker completed without RESULT must exit 1 (rc=$RC)"
+pmw completed "RESULT: created issue 2460" > "$TMP/r.txt"; run "$TMP/r.txt"
+[[ $RC -eq 0 && "$(field RESULT)" == "created issue 2460" ]] || fail "pm-worker completed with RESULT (rc=$RC out=$OUT)"
+pmw blocked > "$TMP/r.txt"; run "$TMP/r.txt"
+[[ $RC -eq 0 ]] || fail "pm-worker blocked needs no RESULT (rc=$RC)"
+pass "pm-worker completed requires RESULT"
+
 # Optional RESULT line is carried and bounded.
 report A pushed_fixes B "RESULT: created issue 2460" > "$TMP/r.txt"; run "$TMP/r.txt"
 [[ "$(field RESULT)" == "created issue 2460" ]] || fail "RESULT lost: $OUT"
