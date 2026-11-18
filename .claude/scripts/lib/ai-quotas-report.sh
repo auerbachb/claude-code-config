@@ -42,8 +42,7 @@ append_history() { # <doc-json-file>
         # reading (pasted, terminal, or an earlier capture) shown as a fallback would otherwise be
         # appended with the run time as its timestamp; the failed backend read is in the outcomes ledger.
         | select($source != "scheduled" or .provider != "antigravity"
-                 or (.source == "backend" and (.fetched_at_epoch | type) == "number"
-                     and ($now - .fetched_at_epoch) <= 300))
+                 or (.source == "backend" and .live_read == true))
         | {ts: $ts,
            provider: .provider,
            label: .label,

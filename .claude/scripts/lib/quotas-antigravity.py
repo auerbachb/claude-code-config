@@ -238,8 +238,10 @@ def read_stored_doc():
                                   timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired):
             raise BackendError("keychain_unreadable", "the macOS keychain could not be read")
-        if proc.returncode != 0:
+        if proc.returncode == 44:  # errSecItemNotFound: there is no saved sign-in
             raise BackendError("token_missing", "agy has no saved sign-in in the keychain")
+        if proc.returncode != 0:  # denied, locked, or failed: the sign-in could not be checked
+            raise BackendError("keychain_unreadable", "the macOS keychain could not be read")
         raw = proc.stdout.decode("utf-8", "replace").strip()
     else:
         raise BackendError("token_unsupported", "reading the agy sign-in is only supported on macOS")

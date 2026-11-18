@@ -41,7 +41,8 @@
 # ACTIONS
 #   list      Default when no action is given. Prints one row per registered
 #             account with its status: `ok` (a credential is present),
-#             `needs-login` (none visible — run `relogin`). On a readable
+#             `needs-login` (none visible — run `relogin`), `unverified` (Antigravity
+#             only: agy is installed but its sign-in could not be checked). On a readable
 #             config it exits 0 whatever the statuses say — listing is a
 #             report, never a gate. The one non-zero list is exit 5, when the
 #             config itself is unreadable, unparseable, or written by a
@@ -1001,7 +1002,7 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
           # Not checkable here (not macOS, python3 missing, unknown keychain shape): the CLI is
           # there, so say what could not be told rather than claim either state.
           CRED_DETAIL="agy is installed; sign-in not checked${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})} — /quotas reads Google with its sign-in"
-          return 0 ;;
+          return 2 ;;
       esac
       ;;
     cursor)
@@ -1050,11 +1051,14 @@ ACCOUNT_STATUS=""
 account_status() { # <provider> <profile_dir> <keychain_service|"">
   ACCOUNT_STATUS=""
   CRED_DETAIL=""
-  if credential_present "$@"; then
-    ACCOUNT_STATUS="ok"
-  else
-    ACCOUNT_STATUS="needs-login"
-  fi
+  local rc=0
+  credential_present "$@" || rc=$?
+  # 2 = present but unverifiable (agy sign-in not checkable): never reported as signed in.
+  case "$rc" in
+    0) ACCOUNT_STATUS="ok" ;;
+    2) ACCOUNT_STATUS="unverified" ;;
+    *) ACCOUNT_STATUS="needs-login" ;;
+  esac
 }
 
 # --- account lookup ----------------------------------------------------------
@@ -1372,7 +1376,7 @@ action_add() {
     case "${ANTIGRAVITY_SIGNIN:-}" in
       signed_in) where+="; signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}" ;;
       signed_out) where+="; agy is signed out — run agy and sign in" ;;
-      "") ;;
+      "") where+="; sign-in not checked (--no-login)" ;;
       *) where+="; sign-in not checked" ;;
     esac
   fi

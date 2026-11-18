@@ -144,6 +144,18 @@ live_now="$(AI_QUOTAS_NOW="$CAP" bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null
 jq -e '[.rows[] | select(.provider == "antigravity")] | all(.fetched == "live" and .fetched_display == "now")' <<<"$live_now" >/dev/null || fail "an observation captured at the start of the run is now"
 pass "FETCHED on Antigravity rows: capture date, now only when captured during the run"
 
+# Daily and monthly windows have known lengths too, so their rows are placed in the window.
+cp "$OBS" "$T/obs-keep"
+span_txt="$T/span-usage.txt"
+printf 'GEMINI MODELS\n  Daily Limit Remaining\n    50%%\n    Refreshes in 10h\n  Monthly Limit Remaining\n    80%%\n    Refreshes in 10d\n' > "$span_txt"
+rm -f "$OBS"
+bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$span_txt" --captured-at "$CAP" >/dev/null
+span_rows="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
+jq -e '[.rows[] | select(.window == "gemini 1-day")] | .[0] | .window_start_epoch == (.resets_at_epoch - 86400)' <<<"$span_rows" >/dev/null || { printf '%s\n' "$span_rows" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "a daily window is placed from its 1-day length"; }
+jq -e '[.rows[] | select(.window == "gemini 30-day")] | .[0] | .window_start_epoch == (.resets_at_epoch - 2592000)' <<<"$span_rows" >/dev/null || fail "a monthly window is placed from its 30-day length"
+cp "$T/obs-keep" "$OBS"
+pass "daily and monthly Antigravity windows carry a start for the forecast"
+
 # Stale: shown with its age and the last known figure, not as a live one.
 stale="$(AI_QUOTAS_NOW=$((CAP + 4*3600)) bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | all(.status == "unreadable" and .used_pct == null and (.detail | test("stale: captured 4h 0m ago.*account not verified")) )' <<<"$stale" >/dev/null || fail "stale rows carry age and no live figure"
@@ -295,13 +307,15 @@ pass "signin: state and account only, never a credential"
 # list and add report the state and the account instead of only "agy CLI found".
 sl="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-ok" bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
 grep -Fq "signed in as $EMAIL" <<<"$sl" || { printf '%s\n' "$sl" >&2; fail "list shows signed in and the account"; }
-grep -Eq 'antigravity +personal +- +ok' <<<"$sl" || fail "list status is ok when signed in"
+grep -Eq 'antigravity[[:space:]]+personal[[:space:]]+-[[:space:]]+ok' <<<"$sl" || fail "list status is ok when signed in"
 if grep -Fq "$SENT" <<<"$sl"; then fail "list leaks the token"; fi
 sj="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-ok" bash "$SCRIPTS/ai-quotas-setup.sh" list --json 2>&1)"
 jq -e --arg e "$EMAIL" '.[] | select(.provider == "antigravity") | .status == "ok" and (.detail | test("signed in as " + $e))' <<<"$sj" >/dev/null || fail "list --json carries the sign-in detail"
 so="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/no-such-token" bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
 grep -Fq "signed out" <<<"$so" && grep -Fq "run agy and sign in" <<<"$so" || fail "list says signed out with the sign-in step"
-grep -Eq 'antigravity +personal +- +needs-login' <<<"$so" || fail "list status is needs-login when signed out"
+grep -Eq 'antigravity[[:space:]]+personal[[:space:]]+-[[:space:]]+needs-login' <<<"$so" || fail "list status is needs-login when signed out"
+su="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-bad" bash "$SCRIPTS/ai-quotas-setup.sh" list --json 2>&1)"
+jq -e '.[] | select(.provider == "antigravity") | .status == "unverified"' <<<"$su" >/dev/null || fail "list --json reports an unverifiable sign-in as unverified, never ok"
 sx="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-lapsed" bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
 grep -Fq "renews the next time agy runs" <<<"$sx" || fail "list notes a lapsed access token renews when agy runs"
 SAVE_CFG="$AI_QUOTAS_CONFIG"
