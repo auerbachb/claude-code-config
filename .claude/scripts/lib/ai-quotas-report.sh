@@ -419,6 +419,14 @@ render_quota_table() {
       # Terminal width: the two icons and East Asian wide characters take two columns, combining marks none.
       def wide: explode | map(if . >= 768 and . <= 879 then 0
                                        elif . == 9989 or . == 10060 or . >= 127744
+                                         or (. >= 8986 and . <= 8987) or (. >= 9193 and . <= 9196) or . == 9200 or . == 9203
+                                         or (. >= 9725 and . <= 9726) or (. >= 9748 and . <= 9749) or (. >= 9800 and . <= 9811)
+                                         or . == 9855 or . == 9875 or . == 9889 or (. >= 9898 and . <= 9899)
+                                         or (. >= 9917 and . <= 9918) or (. >= 9924 and . <= 9925) or . == 9934 or . == 9940
+                                         or . == 9962 or (. >= 9970 and . <= 9971) or . == 9973 or . == 9978 or . == 9981
+                                         or (. >= 10062 and . <= 10062) or (. >= 10067 and . <= 10069) or . == 10071
+                                         or (. >= 10133 and . <= 10135) or . == 10160 or . == 10175
+                                         or (. >= 11035 and . <= 11036) or . == 11088 or . == 11093
                                          or (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191)
                                          or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255)
                                          or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135)
