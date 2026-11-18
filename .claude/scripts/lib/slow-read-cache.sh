@@ -190,7 +190,9 @@ _slow_cache_lock() {
   local lock="$1" i m now
   for (( i = 0; i < 20; i++ )); do
     if mkdir "$lock" 2>/dev/null; then return 0; fi
-    m="$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null)" || m=""
+    # GNU form first: on GNU stat `-f` means filesystem status (it prints
+    # filesystem info), so the BSD form must only be a fallback.
+    m="$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null)" || m=""
     now="$(date +%s)"
     if [[ "$m" =~ ^[0-9]+$ ]] && (( now - m > 10 )); then rmdir "$lock" 2>/dev/null; continue; fi
     sleep 0.1

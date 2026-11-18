@@ -283,6 +283,27 @@ mkdir "$LOCKED_FILE.lock"; touch -t 202001010000 "$LOCKED_FILE.lock"
 pr_snap_put pr-reviews '[{"id":2}]' "$NOW"
 check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "a stale lock directory is cleared and the newer read is stored"
 check_eq 0 "$(find "$SLOW_READ_CACHE_DIR" -name '*.lock' | wc -l | tr -d ' ')" "no lock directory is left behind"
+# The same on a GNU-style stat (what Linux CI runs): `stat -f` is filesystem status
+# there (multi-line, not a timestamp) and only `stat -c %Y` gives the mtime. A stub
+# stat that behaves that way proves a dead writer's lock is still cleared.
+GNU_BIN="$TMP/gnu-stat-bin"; mkdir -p "$GNU_BIN"
+REAL_STAT="$(command -v stat)"
+cat > "$GNU_BIN/stat" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "-c" && "\$2" == "%Y" ]]; then
+  t="\$("$REAL_STAT" -c %Y "\$3" 2>/dev/null)" || t="\$("$REAL_STAT" -f %m "\$3" 2>/dev/null)" || exit 1
+  printf '%s\n' "\$t"; exit 0
+fi
+if [[ "\$1" == "-f" ]]; then printf '  File: "%s"\n    ID: 0 Namelen: 255 Type: ext2/ext3\n' "\$3"; exit 0; fi
+exit 1
+EOF
+chmod +x "$GNU_BIN/stat"
+reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
+pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))"
+LOCKED_FILE="$(find "$SLOW_READ_CACHE_DIR" -type f -name '*__pr-reviews.*.json' | head -1)"
+mkdir "$LOCKED_FILE.lock"; touch -t 202001010000 "$LOCKED_FILE.lock"
+PATH="$GNU_BIN:$PATH" pr_snap_put pr-reviews '[{"id":2}]' "$NOW"
+check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "GNU-style stat (-f is filesystem status): the stale lock is still cleared and the newer read stored"
 
 echo "== check-run list shapes (check_run_workflows.py builds id-less entries itself)"
 reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
