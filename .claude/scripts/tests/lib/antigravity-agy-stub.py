@@ -5,6 +5,7 @@ AGY_STUB_MODE: ready    prints a banner, answers "/usage" with the panel in AGY_
                signedout asks for a sign-in, waits for ONE typed line (the "human"), then behaves as ready
                nosignin  asks for a sign-in and never continues
                repaint   like ready, but prints the panel twice (a TUI that redrew in place)
+               spinner   like nosignin, but redraws a spinner character every 3 seconds without clearing the screen
 AGY_STUB_LOG: every typed line is appended there, so a test can see exactly what was sent.
 """
 import os
@@ -27,9 +28,17 @@ def say(text):
 
 
 record("ARGS " + " ".join(sys.argv[1:]))
-if mode in ("signedout", "nosignin"):
+if mode in ("signedout", "nosignin", "spinner"):
     say("Antigravity CLI\r\nYou must sign in to continue. Open accounts.google.com in your browser, then press Enter here.\r\n")
-    if mode == "nosignin":
+    if mode == "spinner":
+        import threading
+
+        def spin():
+            while True:
+                time.sleep(3)
+                say("|\r")
+        threading.Thread(target=spin, daemon=True).start()
+    if mode in ("nosignin", "spinner"):
         # Stays signed out, but records anything typed so a test can see input sent too early.
         for line in sys.stdin:
             record("LINE " + line.strip())

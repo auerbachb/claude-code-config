@@ -106,7 +106,8 @@ read_antigravity_terminal() { # <label>
   done
   # The capture time is when this session starts (NOW predates earlier accounts and the backend
   # attempt), keeping AI_QUOTAS_NOW as the test clock.
-  started="${AI_QUOTAS_NOW:-$(date +%s)}"
+  started="${AI_QUOTAS_NOW:-}"
+  [[ "$started" =~ ^[0-9]+$ ]] || started="$(date +%s)"   # a malformed override is ignored, as for NOW
   waited=$SECONDS
   result="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" terminal "${agy:-agy-not-found}" "$started" "$obs" 2>/dev/null || true)"
   # The session can take minutes; the stale and reset checks that follow must use the time it ended.

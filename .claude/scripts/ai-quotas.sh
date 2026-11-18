@@ -1217,8 +1217,10 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
   local source skip last_skip="" last_skip_source="" last_index=-1 count=0 success=0
   [[ "$provider" != cursor ]] || CURSOR_EMAIL=""
   SOURCE_WHY=""; : > "$attempts"; : > "$last_rows"
-  # Source names come in on fd 3 so stdin stays the caller's: the terminal source needs to see it (Issue #2466).
-  while IFS= read -r -u 3 source; do
+  # Source names stay on the loop's stdin, as they always did; the caller's own stdin is kept on fd 9 for the
+  # terminal source alone (Issue #2466).
+  exec 9<&0
+  while IFS= read -r source; do
     # A result resumes at browser, so the earlier primary failure is not repeated.
     [[ -z "$BROWSER_RESULTS" || "$source" == "browser" || "$success" -eq 2 ]] || continue
     [[ -z "$BROWSER_RESULTS" || "$source" != "browser" ]] || success=2
@@ -1243,7 +1245,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
         cursor:browser) read_cursor_browser "$label" ;;
         claude:browser) read_claude_browser "$label" "$dir" ;;
         antigravity:backend) read_antigravity_backend "$label" ;;
-        antigravity:terminal) read_antigravity_terminal "$label" ;;
+        antigravity:terminal) read_antigravity_terminal "$label" <&9 ;;
         antigravity:observation) read_antigravity_account "$label" ;;
         *) set_outcome unreadable "$source" source_unsupported
            emit_row "$provider" "$label" "" "7-day" "" "" unsupported "source is unavailable for this provider" "$source" "" ;;
@@ -1262,7 +1264,8 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
       SOURCE_WHY="$(jq -sr 'first.detail // "source failed"' "$ROWS")"
     fi
     count=$((count+1))
-  done 3< <(effective_sources "$provider" "$index")
+  done < <(effective_sources "$provider" "$index")
+  exec 9<&-
   ROWS="$real_rows"
   [[ "$last_index" -lt 0 ]] || jq -sc --argjson last "$last_index" 'to_entries[] | .value + (if .key == $last then {terminal:true} else {} end)' "$attempts" >> "$OUTCOMES_RUN"
   if [[ "$last_index" -lt 0 ]]; then

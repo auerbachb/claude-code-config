@@ -415,7 +415,7 @@ class NewerKept(Exception):
     """A newer observation is already saved; the older capture is not written."""
 
 
-def write_observation(path, captured, via, text, response=None):
+def write_observation(path, captured, via, text, response=None, until=None):
     doc = {"schema": SCHEMA, "provider": "antigravity", "captured_at_epoch": int(captured), "via": via}
     if response is not None:
         doc["response"] = response
@@ -425,7 +425,17 @@ def write_observation(path, captured, via, text, response=None):
     os.makedirs(folder, exist_ok=True)
     lock = os.open(os.path.join(folder, ".agy-obs.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if until is None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        else:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= until:
+                        raise TimeoutError("observation lock busy")
+                    time.sleep(0.05)
         try:
             existing = json.load(open(path))
             kept = existing.get("captured_at_epoch") if isinstance(existing, dict) else None
@@ -590,8 +600,8 @@ def run_terminal(agy, started, obs):
                     break
             if master in ready and data is not None:
                 tty_write(tfd, data, capture_deadline)
-                if now - last_data > 1.0:
-                    burst = len(raw)
+                # Screen state survives output pauses: a sign-in prompt followed by a spinner stays
+                # on screen. Only a clear-screen sequence (handled in current_screen_text) ends it.
                 raw += data
                 if len(raw) > RAW_CAP:
                     drop = len(raw) - RAW_CAP
@@ -650,7 +660,7 @@ def run_terminal(agy, started, obs):
                 raise TerminalError("signin_timeout", "no sign-in to Antigravity within %ds" % limit)
             raise TerminalError("terminal_timeout", "agy showed no usage panel within %ds" % limit)
         parsed, at, text = panel
-        write_observation(obs, at, "terminal", text)
+        write_observation(obs, at, "terminal", text, until=capture_deadline)
         parsed["captured_at_epoch"] = at
         return parsed
     except TimeoutError:

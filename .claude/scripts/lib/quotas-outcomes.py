@@ -51,8 +51,8 @@ def validate(row):
         clean['requested_source'] = row['requested_source']
     if row.get('terminal') is False:
         clean['terminal'] = False
-    if row.get('skip_reason') == 'browser-unattended':
-        clean.update(skip_reason='browser-unattended', terminal=False)
+    if row.get('skip_reason') in ('browser-unattended', 'terminal-unattended'):
+        clean.update(skip_reason=row['skip_reason'], terminal=False)
     return clean, timestamp
 
 

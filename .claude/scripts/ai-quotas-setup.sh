@@ -2158,8 +2158,8 @@ action_list() {
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     local source_order
-    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["backend","terminal","observation"] else ["ide-token","browser"] end) | join(",")')"
-    [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["backend","terminal","observation"] elif .provider=="cursor" then ["ide-token","browser"] else [] end) | join(",")')"
+    [[ "$JSON" -eq 1 ]] || [[ -z "$source_order" ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
@@ -2167,7 +2167,7 @@ action_list() {
         '. += [{provider: $provider, label: $label,
                 nickname: (if $nickname == "" then null else $nickname end),
                 profile_dir: $profile_dir,
-                status: $status, detail: $detail, sources: ($order|split(","))}]')"
+                status: $status, detail: $detail, sources: (if $order == "" then [] else ($order|split(",")) end)}]')"
     else
       rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
     fi

@@ -364,6 +364,13 @@ q="$(AI_QUOTAS_TERMINAL_TIMEOUT=8 AGY_STUB_MODE=nosignin tdrive none bash "$SCRI
 jq -e '[.stdout | fromjson | .rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and .[0].used_pct == null and (.[0].detail | test("terminal read failed: no sign-in to Antigravity within 8s.*pbpaste"))' <<<"$q" >/dev/null \
   || { printf '%s\n' "$q" | jq -c '.stdout | fromjson | .rows[] | select(.provider == "antigravity")' >&2; fail "/quotas row is unreadable with the timeout reason and the paste command"; }
 pass "terminal: no sign-in before the timeout is unreadable with reason and manual command"
+# A spinner redrawn after an output pause must not hide the sign-in prompt still on screen.
+: > "$AGY_STUB_LOG"
+r="$(AI_QUOTAS_TERMINAL_TIMEOUT=14 AGY_STUB_MODE=spinner tdrive none bash "$SCRIPTS/quotas-antigravity-capture.sh" --terminal)"
+jq -e '.rc == 3 and (.stderr | test("no sign-in to Antigravity within 14s"))' <<<"$r" >/dev/null || { printf '%s\n' "$r" >&2; fail "a spinner after a pause keeps the sign-in prompt on screen"; }
+grep -Fq 'LINE' "$AGY_STUB_LOG" && fail "/usage was typed into a sign-in prompt after a spinner redraw"
+pass "terminal: a spinner after an output pause keeps the sign-in prompt"
+
 
 # Unattended: no terminal opened, even with a terminal available; the reason is recorded.
 rm -f "$OBS" "$AGY_STUB_LOG"
