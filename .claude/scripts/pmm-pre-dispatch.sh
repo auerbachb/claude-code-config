@@ -127,8 +127,8 @@ if [[ "$PRINT_COMMAND" == true ]]; then
   [[ -z "$ACK_ID" && -z "$FIXTURE" ]] || fail "--monitor-command cannot acknowledge or use fixtures"
   BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
   [[ -r "$BOUNDED_RUN_LIB" ]] || fail "bounded-run.sh unavailable; refusing an unbounded Monitor command"
-  printf 'STATE_HELPER=%q\nGATE=%q\nBOUND_RUN_LIB=%q\nREPO=%q\nAUTHOR=%q\nGENERATION=%q\nBASE=%q\nIDLE=%q\nMAX_DEEP=%q\nFORWARD=%q\nFORWARD_SHELL=%q\n' \
-    "$STATE_HELPER" "$SCRIPT_DIR/pmm-pre-dispatch.sh" "$BOUNDED_RUN_LIB" "$REPO" "$AUTHOR" "$GENERATION" \
+  printf 'STATE_HELPER=%q\nGATE=%q\nBOUND_RUN_LIB=%q\nRATE_SH=%q\nREPO=%q\nAUTHOR=%q\nGENERATION=%q\nBASE=%q\nIDLE=%q\nMAX_DEEP=%q\nFORWARD=%q\nFORWARD_SHELL=%q\n' \
+    "$STATE_HELPER" "$SCRIPT_DIR/pmm-pre-dispatch.sh" "$BOUNDED_RUN_LIB" "$SCRIPT_DIR/lib/gh-rate-budget.sh" "$REPO" "$AUTHOR" "$GENERATION" \
     "$BASE_CADENCE_MIN" "$IDLE_PAUSE_AFTER" "$MAX_DEEP_PRS" "$SKILL_ARGS" "$SKILL_ARGS_SHELL"
   cat <<'COMMAND'
 if [[ ! -r "$BOUND_RUN_LIB" ]]; then
@@ -153,7 +153,14 @@ TIMEOUT_SECS="$(normalize_bound "${PMM_PRE_DISPATCH_TIMEOUT_SECS:-300}" 300)"
 while :; do
   cadence=$("$STATE_HELPER" --get '.pmm_cadence' 2>/dev/null) || cadence="${BASE}m"
   [[ "$cadence" =~ ^([1-9][0-9]{0,6})m$ && "${cadence%m}" -le 2999997 ]] || cadence="${BASE}m"
-  sleep "$(( ${cadence%m} * 60 ))" || exit 0
+  delay="$(( ${cadence%m} * 60 ))"
+  if [[ -x "$RATE_SH" ]]; then
+    # Low GitHub allowance (REST or GraphQL, as GitHub reports it) stretches the wait; any
+    # failure or non-numeric answer keeps the normal cadence (issue #2445).
+    wide=$("$RATE_SH" --interval "$delay" || true)
+    if [[ "$wide" =~ ^[1-9][0-9]*$ ]]; then delay="$wide"; fi
+  fi
+  sleep "$delay" || exit 0
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch.XXXXXX")" || {
     echo "pmm-pre-dispatch Monitor: cannot create bounded capture; waking for diagnosis and stopping this loop" >&2
     printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \

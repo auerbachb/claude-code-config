@@ -213,6 +213,7 @@ LIVE_HOME="$TMP/live-home"
 mkdir -p "$LIVE/lib" "$BIN" "$LIVE_HOME/.claude"
 cp "$SCRIPT" "$LIVE/pmm-pre-dispatch.sh"
 cp "$ROOT/.claude/scripts/lib/bounded-run.sh" "$LIVE/lib/bounded-run.sh"
+cp "$ROOT/.claude/scripts/lib/gh-rate-budget.sh" "$LIVE/lib/gh-rate-budget.sh"
 cp "$ROOT/.claude/scripts/lib/pr-state-classify.jq" "$LIVE/lib/pr-state-classify.jq"
 cp "$STATE" "$LIVE/session-state.sh"
 cp "$ROOT/.claude/scripts/state-lock.sh" "$LIVE/state-lock.sh"
@@ -282,6 +283,40 @@ HOME="$LIVE_HOME" PATH="$BIN:$PATH" SLEEP_COUNT="$TMP/sleep-count" \
 monitor_rc=$?
 set -e
 check "exact generated Monitor loop collects before zero-output pre-model dispatch" '[[ "$monitor_rc" == 0 && ! -s "$TMP/live-quiet.out" && "$(cat "$TMP/sleep-count")" == 2 ]]'
+# Rate-budget wiring (issue #2445): the same generated command under the same kind of fake
+# sleep, with GitHub reporting a healthy, unreadable, low or used-up allowance. The existing
+# assertions above ran with the helper present and the stub gh failing the rate_limit read
+# (an unreadable figure), so they already prove the normal cadence is untouched.
+RATE_BIN="$TMP/rate-bin"
+mkdir -p "$RATE_BIN"
+cat > "$RATE_BIN/gh" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "api rate_limit" ]]; then
+  [[ "${RL_FAIL:-0}" != 1 ]] || { echo "gh: HTTP 502" >&2; exit 1; }
+  printf '%b\n' "$RL_LINE"
+  exit 0
+fi
+exec "$STUB_REAL_GH" "$@"
+SH
+cat > "$RATE_BIN/sleep" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" =~ ^[0-9]+$ && "$1" -ge 60 ]]; then printf '%s\n' "$1" >> "$RATE_SLEEPS"; exit 1; fi
+/bin/sleep "$@"
+SH
+chmod +x "$RATE_BIN/gh" "$RATE_BIN/sleep"
+rate_first_sleep() {   # first long sleep the generated Monitor command asks for
+  rm -rf "$LIVE_HOME/.claude/gh-rate-budget" "$TMP/rate-sleeps"
+  HOME="$LIVE_HOME" PATH="$RATE_BIN:$BIN:$PATH" STUB_REAL_GH="$BIN/gh" RATE_SLEEPS="$TMP/rate-sleeps" \
+    GH_RATE_NOW=1000000 RL_LINE="$1" RL_FAIL="${2:-0}" STUB_PULLS_JSON="$STUB_PULLS_JSON" STUB_GATE_JSON="$STUB_GATE_JSON" \
+    STUB_BUNDLE_PATH="$TMP/bundle.json" bash -c "$MONITOR_COMMAND" >/dev/null 2>"$TMP/rate-err" || true
+  head -n 1 "$TMP/rate-sleeps" 2>/dev/null || true
+}
+check "Monitor command names the helper beside the script" '[[ "$MONITOR_COMMAND" == *"RATE_SH="*"/lib/gh-rate-budget.sh"* ]]'
+check "healthy allowance keeps the 5m cadence" '[[ "$(rate_first_sleep "4000\t5000\t1001800")" == 300 ]]'
+check "unreadable allowance keeps the 5m cadence and prints nothing" '[[ "$(rate_first_sleep "" 1)" == 300 && ! -s "$TMP/rate-err" ]]'
+check "garbage allowance keeps the 5m cadence" '[[ "$(rate_first_sleep "{\"message\":\"API rate limit exceeded\"}")" == 300 ]]'
+check "low allowance doubles the wait and says so once on stderr" '[[ "$(rate_first_sleep "120\t5000\t1001800")" == 600 && "$(grep -c "allowance is low" "$TMP/rate-err")" -ge 1 ]]'
+check "used-up allowance waits for the reported reset" '[[ "$(rate_first_sleep "0\t5000\t1000900")" == 902 ]]'
 MISSING_BOUND_COMMAND="${MONITOR_COMMAND//$LIVE\/lib\/bounded-run.sh/$TMP\/missing-bounded-run.sh}"
 set +e
 HOME="$LIVE_HOME" PATH="$BIN:$PATH" SLEEP_COUNT="$TMP/missing-bound-sleep-count" \

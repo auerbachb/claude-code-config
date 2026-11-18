@@ -671,6 +671,8 @@ FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))
 fi   # end SKIP_WAIT_LOOP
 ```
 
+Backoff (issue #2445): sleep `$(run_script lib/gh-rate-budget.sh --interval "$FIXPR_WAIT_POLL_SECS")` instead of the bare interval; it prints the same number unless GitHub reports the allowance low (use the bare value if it prints nothing numeric). See `.claude/reference/gh-rate-budget.md`.
+
 **Running this block as a worktree-isolated subagent.** Write the loop to a session scratchpad file and run `bash <file>` as one plain call.
 
 **Include the persistence helper in the child file.** Copy the **entire** `fixpr-persist-wait-evidence` loader block into that same file before the pre-check/loop, and pass `HANDOFF_STATE_SH` plus the verified `OWNER_REPO` alongside the inputs below. Keep `WAIT_BASELINE` and the entry-path inputs (`DID_PUSH`, `HEAD_SHA`, `PUSHED_SHA`, `PUSHED_AT`) available there too; the snapshots assign `TICK` and `WAIT_STATE` inside the child. Missing helper/scope or failed evidence writes must stop, never fabricate a clean wait.

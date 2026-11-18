@@ -5,8 +5,14 @@
 # Source it (preferred) or run it:
 #   gh-rate-budget.sh status              print "remaining=N limit=L reset=E"; exit 1 when unreadable
 #   gh-rate-budget.sh interval <secs>     print the interval to use now (== <secs> when nothing is wrong)
+#   gh-rate-budget.sh --interval <secs>   the form a printed Monitor command uses: seconds to sleep on
+#                                         stdout, the once-per-window notice on stderr, exit 0 ALWAYS,
+#                                         <secs> unchanged whenever the allowance is unreadable.
+#                                         Reads REST and GraphQL and backs off when either is low.
 #
 # From a script:  . lib/gh-rate-budget.sh;  gh_rate_sleep 60
+# From a Monitor command:  sleep "$(gh-rate-budget.sh --interval "$delay")"  (fall back to $delay
+#                          when the helper is missing or prints nothing numeric)
 #
 # The figure comes only from GitHub: `gh api rate_limit`, which GitHub does not
 # charge. Nothing is estimated or counted locally. No token or credential is
@@ -33,9 +39,11 @@
 #   GH_RATE_SLEEP_CMD=cmd  sleep command for gh_rate_sleep (default sleep; tests inject)
 #   GH_RATE_NOW=epoch      test hook: the current time
 #   GH_RATE_QUIET=1        suppress the notice (the interval is unchanged)
-#   GH_RATE_RESOURCE=r     which allowance to read: core (REST, default) or graphql —
-#                          a poller whose calls are GraphQL (gh issue view, gh pr view)
-#                          sets graphql; anything else falls back to core
+#   GH_RATE_RESOURCE=r     which allowance to read: core (REST, default for the sourced
+#                          functions), graphql, or both (the default of --interval): both reads
+#                          the two and uses the longer interval, so the poller backs off when
+#                          either is low. A poller whose calls are only GraphQL (gh issue
+#                          view) sets graphql; anything else falls back to core
 
 _GH_RATE_DEFAULT_LOW=300
 _GH_RATE_DEFAULT_CAP=1800
@@ -100,30 +108,53 @@ EOF
   return 0
 }
 
-# Print the notice once per (reset window, level). Silent when the marker cannot be written.
+# Print the notice once per (resource, reset window, level). The marker keeps the last few
+# keys, one per line, so two resources checked in turn do not announce each other again.
+# Silent when the marker cannot be written.
 _gh_rate_announce() {
-  local level="$1" text="$2" key dir seen
+  local level="$1" text="$2" key dir seen=""
   [ "${GH_RATE_QUIET:-}" = "1" ] && return 0
   key="$(_gh_rate_resource) $GH_RATE_RESET $level"
   if dir=$(_gh_rate_dir) && [ -r "$dir/announced" ]; then
-    seen=$(cat "$dir/announced" 2>/dev/null) || seen=""
-    [ "$seen" = "$key" ] && return 0
+    seen=$(tail -n 7 "$dir/announced" 2>/dev/null) || seen=""
+    case "
+$seen
+" in *"
+$key
+"*) return 0 ;; esac
   fi
-  _gh_rate_write announced "$key" || return 0
+  if [ -n "$seen" ]; then _gh_rate_write announced "$seen
+$key" || return 0; else _gh_rate_write announced "$key" || return 0; fi
   printf 'gh-rate-budget: %s\n' "$text" >&2
 }
 
-# gh_rate_interval <base-secs> — print the interval to use now.
+# gh_rate_interval <base-secs> — print the interval to use now. With
+# GH_RATE_RESOURCE=both, the longer of the REST and the GraphQL intervals.
 gh_rate_interval() {
-  local base="${1:-}" low cap now wait wide mins
+  local base="${1:-}" a b
   _gh_rate_is_uint "$base" && [ "$base" -gt 0 ] || return 2
+  if [ "${GH_RATE_RESOURCE:-}" = both ]; then
+    a=$(GH_RATE_RESOURCE=core _gh_rate_interval_one "$base") || a=$base
+    b=$(GH_RATE_RESOURCE=graphql _gh_rate_interval_one "$base") || b=$base
+    _gh_rate_is_uint "$a" || a=$base
+    _gh_rate_is_uint "$b" || b=$base
+    if [ "$b" -gt "$a" ]; then printf '%s\n' "$b"; else printf '%s\n' "$a"; fi
+    return 0
+  fi
+  _gh_rate_interval_one "$base"
+}
+
+_gh_rate_interval_one() {
+  local base="${1:-}" low cap now wait wide mins
   if ! gh_rate_read; then printf '%s\n' "$base"; return 0; fi
   low="${GH_RATE_LOW_AT:-$_GH_RATE_DEFAULT_LOW}"
   _gh_rate_is_uint "$low" || low=$_GH_RATE_DEFAULT_LOW
   cap="${GH_RATE_MAX_INTERVAL:-$_GH_RATE_DEFAULT_CAP}"
   _gh_rate_is_uint "$cap" || cap=$_GH_RATE_DEFAULT_CAP
   now=$(_gh_rate_now)
-  if [ "$GH_RATE_REMAINING" -ge "$low" ]; then
+  # Used-up is tested first: it must wait for the reset whatever the threshold is
+  # (GH_RATE_LOW_AT=0 would otherwise make 0 remaining count as "not low").
+  if [ "$GH_RATE_REMAINING" -gt 0 ] && [ "$GH_RATE_REMAINING" -ge "$low" ]; then
     printf '%s\n' "$base"
     return 0
   fi
@@ -164,6 +195,14 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       fi
       ;;
     interval) gh_rate_interval "${2:-}" ;;
-    *) echo "usage: gh-rate-budget.sh status | interval <secs>" >&2; exit 2 ;;
+    --interval)
+      # Monitor-command form: never fails, never prints a non-number. A bad base is echoed
+      # back untouched so the caller's own fallback applies.
+      : "${GH_RATE_RESOURCE:=both}"
+      export GH_RATE_RESOURCE
+      gh_rate_interval "${2:-}" || printf '%s\n' "${2:-}"
+      exit 0
+      ;;
+    *) echo "usage: gh-rate-budget.sh status | interval <secs> | --interval <secs>" >&2; exit 2 ;;
   esac
 fi

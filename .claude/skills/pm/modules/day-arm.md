@@ -100,6 +100,8 @@ while sleep "$(( DAY_CADENCE_MIN * 60 ))"; do
 done
 ```
 
+Backoff (issue #2445): `.claude/scripts/lib/gh-rate-budget.sh --interval <seconds>` prints the seconds to sleep, the same number unless GitHub reports the allowance low; the tick may use it for the effective cadence and keeps the bare value when it prints nothing numeric (`.claude/reference/gh-rate-budget.md`).
+
 Record the returned task ID immediately under the same active reservation.
 
 <!-- test-anchor: pm-day-start-publish -->
