@@ -13,7 +13,7 @@
 # lives in cr-plan-filter.py (same directory; requires python3).
 #
 # Options:
-#   --poll <minutes>         Poll every 60s for up to this many minutes, returning
+#   --poll <minutes>         Poll every 60s (longer while the GitHub REST allowance is low or gone) for up to this many minutes, returning
 #                            as soon as a plan is found. Without this flag, a single
 #                            check is performed.
 #   --max-age-minutes N      Cap polling by issue age: stop polling once the issue
@@ -225,12 +225,40 @@ fi
 
 # Polling loop: check immediately, then sleep 60s between checks until either
 # the plan arrives, the poll window elapses, or the issue age cap is reached.
+# Back off by itself when the GitHub REST allowance runs low (issue #2445). If the
+# helper is missing or cannot read the figure, the interval stays 60s.
+# This poller reads GitHub through GraphQL (gh issue view), so it follows that allowance.
+GH_RATE_RESOURCE=graphql
+# shellcheck source=lib/gh-rate-budget.sh
+. "$SCRIPT_DIR/lib/gh-rate-budget.sh" 2>/dev/null \
+  || gh_rate_sleep() { local s="$1"; [ -z "${2:-}" ] || [ "$2" -ge "$s" ] || s="$2"; sleep "$s"; }
 DEADLINE_SECONDS=$(( POLL_MINUTES * 60 ))
 MAX_AGE_SECONDS=$(( MAX_AGE_MINUTES * 60 ))
 START_EPOCH=$(date +%s)
 
+# Sleep one poll interval (longer while the allowance is low or gone), never past
+# the end of the poll window.
+poll_sleep() {
+  local left=$(( DEADLINE_SECONDS - ($(date +%s) - START_EPOCH) ))
+  if [ "$MAX_AGE_SECONDS" -gt 0 ]; then
+    local age_left=$(( MAX_AGE_SECONDS - $(issue_age_seconds) ))
+    [ "$age_left" -ge "$left" ] || left=$age_left
+  fi
+  [ "$left" -ge 1 ] || left=1
+  gh_rate_sleep 60 "$left"
+}
+
 while :; do
   if ! PLAN=$(fetch_plan); then
+    # A rate-limited response is "no data", never "no plan": wait (the helper
+    # stretches the wait to GitHub's reset when the allowance is gone) and try
+    # again while the poll window is open. Any other failure still exits 4.
+    if grep -qi 'rate limit' "$TMPDIR_CR_PLAN/fetch-plan-stderr" 2>/dev/null \
+      && [ $(( $(date +%s) - START_EPOCH )) -lt "$DEADLINE_SECONDS" ] \
+      && { [ "$MAX_AGE_SECONDS" -le 0 ] || [ "$(issue_age_seconds)" -lt "$MAX_AGE_SECONDS" ]; }; then
+      poll_sleep
+      continue
+    fi
     exit 4
   fi
   if [ -n "$PLAN" ]; then
@@ -251,5 +279,5 @@ while :; do
     fi
   fi
 
-  sleep 60
+  poll_sleep
 done
