@@ -1,4 +1,4 @@
-# Google Antigravity — quota research (Issue #2407)
+# Google Antigravity — quota research (Issues #2407, #2465)
 
 Research date: 2026-11-16; reader built the same day (Issue #2407). Not auto-loaded. Part of
 the quota-tracking reference set (`ai-quotas.md`). **Outcome: the interactive `/usage` panel
@@ -95,9 +95,9 @@ allowance on paid Pro plans).
 ## Conclusion and what would change it
 
 The figure is readable from the interactive `/usage` panel in `agy`, and that panel prints
-parseable text (sample above). Reading the backend directly would mean borrowing the OAuth
+parseable text (sample above). Reading the backend directly means using the OAuth
 token the product holds for the signed-in Google user and calling an undocumented endpoint;
-that is neither documented nor verified, so it is not done.
+the owner approved that on 2026-11-18 and it is now the first source (see "Backend source").
 
 ## What the reader does (built)
 
@@ -132,13 +132,59 @@ that is neither documented nor verified, so it is not done.
   quotas-antigravity-capture.sh --stdin`). `--live` runs `agy -p "/usage"` with stdin closed
   and a 90 s limit, keeps stdout only, and saves nothing unless a usage panel parses.
 
+## Backend source (Issue #2465, researched 2026-11-18)
+
+The `/usage` panel is not reachable from print mode: `agy -p "/usage"` prints no panel (owner
+live check 2026-11-18, exit 0). The CLI's own `quota_manager` task reads the same figures from
+Google's backend, so `/quotas` now does too. Everything below was found read-only: the CLI log
+(`~/.gemini/antigravity-cli/log/cli-*.log`), the strings of the `agy` binary (protobuf
+descriptors), and one live call per endpoint with the product's own token (owner approval in chat,
+2026-11-18). The token was used in memory only; no value was printed, logged, saved or committed.
+
+| Fact | Finding |
+|------|---------|
+| Endpoint | `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` (the log shows `quota_manager` calling it; the log line names only the URL, never a figure). Undocumented, internal: it can change without notice. |
+| Where the token lives | The macOS login keychain, generic password, service `gemini`, account `antigravity` (log line `keyringAuth: loaded token`). Value: `go-keyring-base64:` + base64 of JSON `{"token":{"access_token","token_type","refresh_token","expiry","expires_in"},"auth_method","id_token_email","writer_id"}`. Other platforms are not supported by the reader (`token_unsupported`). |
+| Auth shape | `Authorization: Bearer <access_token>`, `Content-Type: application/json`. |
+| Token lifetime | About one hour (`expires_in` 3599). `agy` refreshes it when it runs (log: `token refreshed, new expiry=…`); the refresh needs the app's own OAuth client, so the reader does not refresh: an expired token is `unreadable` ("run agy and sign in") and the next `agy` start renews it. |
+| Project | Request body `{"project": "<id>"}` (required). The id comes from `POST …/v1internal:loadCodeAssist` with `{"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`, field `cloudaicompanionProject` (observed: `aicode-consumers`). A call with no project is a 403 `SUBSCRIPTION_REQUIRED`, which is why the project step exists. |
+| Request fields | `RetrieveUserQuotaSummaryRequest` has one field, `project` (descriptor in the binary). `metadata` is rejected (400). |
+| Response shape | `{"groups":[{"displayName","description","buckets":[{"bucketId","displayName","window","resetTime","remainingFraction", optional "remainingAmount","disabled"}]}], "buckets":[…ungrouped…], "description"}`. `displayName` of a group is e.g. `Claude and GPT models`; its `description` is `Models within this group: …`. A bucket's `displayName` is the panel's window title (`Weekly Limit Remaining`); `window` is `weekly` (other values map through the same window-name rules); `resetTime` is RFC 3339 UTC; `remainingFraction` is 0–1. Observed on a free-tier account: one group (Claude and GPT models) with one weekly bucket. |
+| Errors seen | 403 `PERMISSION_DENIED` / `SUBSCRIPTION_REQUIRED` for a missing project. 400 for an unknown field. |
+
+What stays unknown: the exact `window` value strings for the five-hour bucket (the reader falls
+back to the bucket `displayName`, then to the `window` text, and keeps an unseen name as is);
+whether a bucket with `remainingFraction` 0 is serialised with the field present (proto3 JSON
+omits zero, so the reader treats a bucket without it as `unreadable` rather than as an exhausted
+window — never an invented figure); how the service answers for Pro and Ultra accounts (only a
+free-tier account was available). These are checked on the next real reading and recorded here.
+
+**Reader:** `lib/quotas-antigravity.py backend <epoch> <observation-file>` does the two requests
+and saves `{schema, provider, captured_at_epoch, via:"backend", response}` (0600, atomically; no
+token, no email). `show` parses the saved response with the same group/window rules as the panel
+text, so rows are identical in shape: `gemini 7-day`, `claude-gpt 5-hour`, and so on, percent
+used, reset epoch. `lib/ai-quotas-antigravity.sh` adds the `backend` source: default order
+`backend,observation`; `/quotas` fetches when the saved reading is missing or older than
+`AI_QUOTAS_ANTIGRAVITY_REFRESH_SECONDS` (default 300, so repeated runs do not hit Google each
+time; the stale bound stays 3 h for the display), and the row detail says `from Google backend`
+or `from pasted /usage text`. Failures (`token_missing`, `token_expired`, `http_401/403/429`,
+`network`, `response_shape`) give an `unreadable` row naming the reason and the next step; with a
+saved reading behind it, the observation row shows its own stale state plus the backend reason.
+Only a loopback `AI_QUOTAS_ANTIGRAVITY_BACKEND_URL` is honoured (tests), so the token cannot be
+sent to another host; `AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE` replaces the keychain read in tests.
+Antigravity stays display-only: `quota-reserve.sh` never sees it.
+
 ## Needs a live check
 
-`agy --help` (v1.5.9) shows print mode (`-p`, `--output-format`) and `--disable-slash-commands`,
-which suggests slash commands may expand in print mode, but nothing confirms `agy -p "/usage"`
-prints the panel instead of sending "/usage" to a model. It was not run (it contacts the
-signed-in backend). Until the owner runs `quotas-antigravity-capture.sh --live` once and sees
-`saved: 5 windows in 3 groups`, treat `--live` as unverified and use the manual route.
+`agy -p "/usage"` is known to print no panel (see above), so `quotas-antigravity-capture.sh --live`
+is not a validation route; the manual paste (`pbpaste | quotas-antigravity-capture.sh --stdin`)
+is the panel-capture fallback. To validate the backend reader, the owner runs `/quotas` once with
+a signed-in `agy` and checks that the Antigravity rows say `from Google backend`; with no sign-in
+the row must be `unreadable` with the next step, unless a saved reading exists: a backend reading younger than 5 minutes is shown without a fetch, and any
+saved reading under 3 hours old is shown as the fallback with the backend failure reason appended, so
+neither proves the no-sign-in path. Remove the saved reading (the Antigravity observation file) before
+the no-sign-in check. The live request has not been run in tests
+(it contacts Google); the tests use a loopback stub.
 
 Design constraints kept: display-only; no credential read, printed, logged or stored; the
 `unreadable` row names the capture command to run.

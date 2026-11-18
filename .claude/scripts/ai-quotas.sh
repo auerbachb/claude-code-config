@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas.sh — report each registered AI account's remaining allowance
 # (issue #1667).
-# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), `cursor` (the dashboard's own usage response, read with the access token the Cursor IDE already holds for the signed-in user), and `antigravity` (the saved text of the `agy` `/usage` panel), recording each reading to `~/.claude/ai-quotas-history.jsonl`; display only, never a dispatch or spend gate
+# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), `cursor` (the dashboard's own usage response, read with the access token the Cursor IDE already holds for the signed-in user), and `antigravity` (Google's quota service with the sign-in `agy` holds, else the saved text of the `agy` `/usage` panel), recording each reading to `~/.claude/ai-quotas-history.jsonl`; display only, never a dispatch or spend gate
 #
 # PURPOSE
 #   The owner runs several premium AI subscriptions side by side and drains
@@ -148,14 +148,15 @@
 #                   automation browser, which is what retired the Playwright
 #                   reader this replaced (#1703). One IDE holds one Cursor
 #                   account, so one machine reads one Cursor account.
-#   antigravity     The text of the `agy` `/usage` panel, saved with its capture
+#   antigravity     Google's quota service, asked with the sign-in `agy` holds in the
+#                   keychain (Issue #2465; sources backend,observation), else the text of the `agy` `/usage` panel, saved with its capture
 #                   time by quotas-antigravity-capture.sh (observation file
 #                   ~/.claude/ai-quotas-antigravity.json, or the path in
 #                   AI_QUOTAS_ANTIGRAVITY_OBSERVATION). One row per model group
 #                   and window, `<group> <window>` (percent used, reset time).
 #                   An observation older than 3 h, or whose window reset since the
 #                   capture, shows its age and the last known figure, never a
-#                   guess. No credential is read and the backend is not called.
+#                   guess. The sign-in token is used in memory for the request only, never printed or stored.
 #                   Display only: it never feeds quota-reserve.sh.
 #
 # WINDOW SELECTION
@@ -800,7 +801,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       claude:*) outcome_source="oauth-usage" ;;
       codex:*) outcome_source="app-server" ;;
       cursor:*) outcome_source="ide-token" ;;
-      antigravity:*) outcome_source="observation" ;;
+      antigravity:*) outcome_source="backend" ;;
     esac
   fi
   if [[ "$7" == "ok" ]]; then
@@ -999,7 +1000,7 @@ effective_sources() { # <provider> <account-index>
   printf '%s' "$CONFIG" | jq -r --arg p "$1" --argjson i "$2" '
     .accounts[$i].sources // (if $p == "claude" then ["oauth-usage","browser"]
       elif $p == "codex" then ["app-server","http"]
-      elif $p == "antigravity" then ["observation"] else ["ide-token","browser"] end) | .[]'
+      elif $p == "antigravity" then ["backend","observation"] else ["ide-token","browser"] end) | .[]'
 }
 
 # Shared mapping from a browser observation's fixed error class to a row and
@@ -1231,6 +1232,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
         cursor:ide-token) read_cursor_account "$label" ;;
         cursor:browser) read_cursor_browser "$label" ;;
         claude:browser) read_claude_browser "$label" "$dir" ;;
+        antigravity:backend) read_antigravity_backend "$label" ;;
         antigravity:observation) read_antigravity_account "$label" ;;
         *) set_outcome unreadable "$source" source_unsupported
            emit_row "$provider" "$label" "" "7-day" "" "" unsupported "source is unavailable for this provider" "$source" "" ;;

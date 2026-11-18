@@ -1,0 +1,10 @@
+{
+  "groups": [
+    {
+      "displayName": "Gemini models",
+      "buckets": [
+        {"bucketId": "gemini-weekly", "displayName": "Weekly Limit Remaining", "window": "weekly", "resetTime": "2026-11-25T16:40:26Z"}
+      ]
+    }
+  ]
+}

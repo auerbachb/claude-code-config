@@ -134,10 +134,11 @@ login. Its status still reflects the credential the helper can see.
   so there is no profile to move aside and nothing to roll back.
 - **`antigravity`** (Issue #2407) — **no profile directory and no login to launch.** `agy` holds
   one signed-in Google account, so one machine registers one (a second label is refused with
-  exit `3`). `add` only checks that the `agy` CLI is installed — it never runs it, because a
-  run contacts the signed-in backend — and says the account is **not verified**. The figures
-  come from the `/usage` panel text: tell the user to run `agy`, type `/usage`, copy the panel,
-  then run `pbpaste | quotas-antigravity-capture.sh --stdin` (`--stdin` reads piped input, not the
+  exit `3`). `add` only checks that the `agy` CLI is installed — it never runs it — and says the
+  account is **not verified**. `/quotas` reads the figures itself from Google's quota service with
+  the sign-in `agy` holds (Issue #2465; source `backend`, used in memory only, never stored). If
+  that fails, the fallback is the `/usage` panel text: tell the user to run `agy` and sign in, or
+  to run `agy`, type `/usage`, copy the panel, then run `pbpaste | quotas-antigravity-capture.sh --stdin` (`--stdin` reads piped input, not the
   clipboard itself; or `--from-file <file>`); `--live` tries
   `agy -p "/usage"` and is unverified. `list` shows only whether the CLI is installed;
   `/quotas` shows whether a saved panel exists and how old it is. Display only.
@@ -381,7 +382,7 @@ over the journal.
 
 ## Usage source preferences
 
-Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`; Antigravity `observation`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`; Antigravity `backend,observation` (default order `backend,observation`). `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
 
 ## Session ledger hooks
 
