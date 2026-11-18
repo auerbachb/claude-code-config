@@ -33,6 +33,7 @@ SUT="$SCRIPTS/clean-behind-check.sh"
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
+if [ -n "${FAKE_GATE_TTL_LOG:-}" ]; then printf '%s\n' "${SLOW_READ_CACHE_TTL-unset}" >> "$FAKE_GATE_TTL_LOG"; fi
 MISSING="${FAKE_GATE_MISSING:-[\"branch is BEHIND base — rebase + force-push before merging\"]}"
 AUTHORSHIP="${FAKE_GATE_AUTHORSHIP:-mine}"
 if [ "${FAKE_GATE_AUTHORSHIP_BLOCK:-0}" = "1" ]; then
@@ -463,6 +464,17 @@ if grep -q -- "--allow-nonauthor" "$GATE_LOG2"; then
   bad "--allow-nonauthor unexpectedly forwarded when not passed (logged: $(cat "$GATE_LOG2"))"
 else
   ok "no --allow-nonauthor forwarded when the flag was not passed"
+fi
+
+# 35b. Issue #2443: this path feeds an admin merge, which can bypass branch
+#      protection, so the nested merge-gate.sh must read the required-check list
+#      live — whatever lifetime the caller's environment asks for.
+TTL_LOG="$TMP/ttl.log"; : > "$TTL_LOG"
+SLOW_READ_CACHE_TTL=300 FAKE_GATE_TTL_LOG="$TTL_LOG" run 0
+if [[ -s "$TTL_LOG" && "$(sort -u "$TTL_LOG")" == "0" ]]; then
+  ok "nested merge-gate.sh runs with the read cache off (SLOW_READ_CACHE_TTL=0), even when the caller sets 300"
+else
+  bad "nested merge-gate.sh did not get SLOW_READ_CACHE_TTL=0 (logged: $(tr '\n' ' ' < "$TTL_LOG"))"
 fi
 
 # 36. End-to-end: BEHIND + non-author + --allow-nonauthor → the authorship

@@ -123,6 +123,12 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# This path can merge past branch protection, so the merge gate it runs must read
+# the repository's required-check list live: pin the short-lived read cache off
+# for this process and everything it starts (issue #2443; lib/slow-read-cache.sh —
+# a TTL of 0 disables it, and nothing a caller sets can raise it back).
+export SLOW_READ_CACHE_TTL=0
+
 print_usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
     { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }

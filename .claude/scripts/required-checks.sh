@@ -14,6 +14,26 @@ while [[ $# -gt 0 ]]; do
   esac
   shift 2
 done
+# Short-lived reuse of a POSITIVE answer only (issue #2443; lib/slow-read-cache.sh).
+# Protection is a setting, so a change to it moves no SHA: the lifetime (120s hard
+# maximum) is the only guard against that, and the base branch's tip SHA (read
+# before and after the live read) additionally drops the entry whenever the base
+# moves. "none" and "unavailable" are never stored or served, so an old "no
+# requirement" cannot outlive a change. Any doubt is a live read.
+SC_OK=0 SC_TIP1="" SC_START=""
+if [[ -n "$BASE_REF" && "$OWNER" != "{owner}" && "$REPO" != "{repo}" \
+      && -r "$(dirname "$0")/lib/slow-read-cache.sh" ]] \
+   && . "$(dirname "$0")/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled required-checks \
+   && SC_START="$(date +%s)" && slow_cache_viewer \
+   && SC_TIP1="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF")"; then
+  SC_OK=1
+  if SC_HIT="$(slow_cache_get required-checks "$OWNER/$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER")" \
+     && jq -e 'type == "object" and (.source | IN("branch_protection", "branch_object")) and .error == ""
+               and (.contexts | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and (.apps | type == "object" and all(.[]; type == "number"))' >/dev/null 2>&1 <<<"$SC_HIT"; then
+    printf '%s\n' "$SC_HIT"
+    exit 0
+  fi
+fi
 # Ref names can contain slashes and URL-reserved characters such as # and %.
 BASE_PATH=$(jq -rn --arg ref "$BASE_REF" '$ref | @uri') || exit 5
 REQUIRED_CONTEXTS_JSON='[]'
@@ -124,6 +144,14 @@ else
   fi
 fi
 
-jq -cn --arg source "$REQUIRED_SOURCE" --arg error "$REQUIRED_ERROR" \
+REQUIRED_OUT="$(jq -cn --arg source "$REQUIRED_SOURCE" --arg error "$REQUIRED_ERROR" \
   --argjson contexts "$REQUIRED_CONTEXTS_JSON" --argjson apps "$REQUIRED_APPS_JSON" \
-  '{source:$source,error:$error,contexts:$contexts,apps:$apps}'
+  '{source:$source,error:$error,contexts:$contexts,apps:$apps}')" || exit 1
+if [[ "$SC_OK" == 1 && "$REQUIRED_ERROR" == "" && "$REQUIRED_CONTEXTS_JSON" != "[]" \
+      && ( "$REQUIRED_SOURCE" == "branch_protection" || "$REQUIRED_SOURCE" == "branch_object" ) ]]; then
+  SC_TIP2="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF" 2>/dev/null)" || SC_TIP2=""
+  if [[ -n "$SC_TIP2" && "$SC_TIP2" == "$SC_TIP1" ]]; then
+    slow_cache_put required-checks "$OWNER/$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$REQUIRED_OUT" "$SC_START" >/dev/null 2>&1 || true
+  fi
+fi
+printf '%s\n' "$REQUIRED_OUT"

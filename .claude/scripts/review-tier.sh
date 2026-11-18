@@ -389,26 +389,66 @@ if [[ -n "$CONFIG" ]]; then
 elif [[ -n "$PR_NUMBER" ]]; then
   SOURCE="base:${BASE_REF:-default-branch}"
   CONTENT_ERR="$TMP_DIR/content.err"
-  if [[ -n "$BASE_REF" ]]; then
-    CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" -f ref="$BASE_REF" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
-  else
-    CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+  # Short-lived reuse of this base-branch read (issue #2443; lib/slow-read-cache.sh):
+  # keyed by the base branch's tip SHA read before and after the live read, and
+  # bound to the repo and the signed-in login. A miss, a stale entry or any doubt
+  # is the live read below; only a definite answer (a decoded file, or an
+  # HTTP 404) is ever stored.
+  SC_OK=0 SC_TIP1="" SC_FROM_CACHE=0 SC_STORE="" SC_START=""
+  if [[ -n "$BASE_REF" && -r "$SCRIPT_DIR/lib/slow-read-cache.sh" ]] \
+     && . "$SCRIPT_DIR/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled pm-config \
+     && SC_START="$(date +%s)" && slow_cache_viewer \
+     && SC_TIP1="$(slow_cache_base_tip "$REPO" "$BASE_REF")"; then
+    SC_OK=1
+    if SC_HIT="$(slow_cache_get pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER")" \
+       && SC_PRESENT="$(printf '%s' "$SC_HIT" | jq -r 'select(type == "object") | .present | select(type == "boolean")' 2>/dev/null)" \
+       && [[ "$SC_PRESENT" == "false" ]]; then
+      SC_FROM_CACHE=1
+    elif [[ "${SC_PRESENT:-}" == "true" ]] \
+       && printf '%s' "$SC_HIT" | jq -e '(.text | type) == "string" and (.text | length) > 0' >/dev/null 2>&1 \
+       && printf '%s' "$SC_HIT" | jq -j '.text' > "$POLICY_COPY" 2>/dev/null; then
+      SC_FROM_CACHE=1
+      HAVE_POLICY=1
+    fi
   fi
-  if [[ -z "$CONTENT_JSON" ]]; then
-    # 404 = the base branch carries no pm-config.md: the normal "no policy"
-    # case (gh says "Not Found (HTTP 404)"). Anything else is a read failure
-    # and must not read as "absent".
-    grep -qE 'HTTP 404|Not Found' "$CONTENT_ERR" 2>/dev/null \
-      || die_read "could not read .claude/pm-config.md at ${BASE_REF:-the default branch}: $(head -1 "$CONTENT_ERR" 2>/dev/null)"
-  else
-    # Only a base64 file object carries the config. A symlink, a submodule,
-    # or an over-size blob (`encoding: none`) answers 200 with no usable
-    # content; defaulting that to "" would read as "no policy".
-    printf '%s' "$CONTENT_JSON" | jq -e 'type == "object" and .type == "file" and .encoding == "base64" and (.content | type) == "string"' >/dev/null 2>&1 \
-      || die_read ".claude/pm-config.md at ${BASE_REF:-the default branch} is not a readable base64 file object"
-    printf '%s' "$CONTENT_JSON" | jq -r '.content' | base64 --decode 2>/dev/null | tr -d '\r' > "$POLICY_COPY" \
-      || die_read "could not decode .claude/pm-config.md from ${BASE_REF:-the default branch}"
-    HAVE_POLICY=1
+  if [[ "$SC_FROM_CACHE" != 1 ]]; then
+    if [[ -n "$BASE_REF" ]]; then
+      # With the cache on, read the commit the key names, so the stored value is
+      # exactly that commit's file whatever the branch does meanwhile.
+      CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" -f ref="${SC_TIP1:-$BASE_REF}" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+    else
+      CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+    fi
+    if [[ -z "$CONTENT_JSON" ]]; then
+      # 404 = the base branch carries no pm-config.md: the normal "no policy"
+      # case (gh says "Not Found (HTTP 404)"). Anything else is a read failure
+      # and must not read as "absent".
+      grep -qE 'HTTP 404|Not Found' "$CONTENT_ERR" 2>/dev/null \
+        || die_read "could not read .claude/pm-config.md at ${BASE_REF:-the default branch}: $(head -1 "$CONTENT_ERR" 2>/dev/null)"
+      SC_STORE="absent"
+    else
+      # Only a base64 file object carries the config. A symlink, a submodule,
+      # or an over-size blob (`encoding: none`) answers 200 with no usable
+      # content; defaulting that to "" would read as "no policy".
+      printf '%s' "$CONTENT_JSON" | jq -e 'type == "object" and .type == "file" and .encoding == "base64" and (.content | type) == "string"' >/dev/null 2>&1 \
+        || die_read ".claude/pm-config.md at ${BASE_REF:-the default branch} is not a readable base64 file object"
+      printf '%s' "$CONTENT_JSON" | jq -r '.content' | base64 --decode 2>/dev/null | tr -d '\r' > "$POLICY_COPY" \
+        || die_read "could not decode .claude/pm-config.md from ${BASE_REF:-the default branch}"
+      HAVE_POLICY=1
+      SC_STORE="present"
+    fi
+    if [[ "$SC_OK" == 1 && -n "$SC_STORE" ]]; then
+      # Store only when the base tip did not move while the file was read.
+      if [[ "$SC_STORE" == "present" ]]; then
+        SC_VALUE="$(jq -cn --rawfile text "$POLICY_COPY" '{present: true, text: $text}' 2>/dev/null)" || SC_VALUE=""
+      else
+        SC_VALUE='{"present":false}'
+      fi
+      SC_TIP2="$(slow_cache_base_tip "$REPO" "$BASE_REF" 2>/dev/null)" || SC_TIP2=""
+      if [[ -n "$SC_VALUE" && -n "$SC_TIP2" && "$SC_TIP2" == "$SC_TIP1" ]]; then
+        slow_cache_put pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$SC_VALUE" "$SC_START" >/dev/null 2>&1 || true
+      fi
+    fi
   fi
 else
   TOP="$(git rev-parse --show-toplevel 2>/dev/null)" \
