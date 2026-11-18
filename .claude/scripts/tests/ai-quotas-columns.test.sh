@@ -13,6 +13,8 @@ LKD="$TMP/last-known"
 export AI_QUOTAS_LAST_KNOWN_DIR="$LKD"
 # Antigravity's backend source finds no sign-in here, so these cases read only the saved text (Issue #2465).
 export AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="/nonexistent/agy-token"
+# Never open a terminal from this suite (Issue #2466), even when it is run from one.
+export AI_QUOTAS_TERMINAL=off
 SL_DIR="$CASE_HOME/.claude/ai-quotas/status-line"
 AGY_OBS="$CASE_HOME/.claude/ai-quotas-antigravity.json"
 PERS="claude-personal@example.com"

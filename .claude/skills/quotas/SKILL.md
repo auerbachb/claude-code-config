@@ -143,7 +143,7 @@ The panel prints percent remaining; the row shows percent used. **`/quotas` read
 the response as the reading, so a plain `/quotas` shows fresh rows with `from Google backend` in
 the detail. A reading under 5 minutes old whose windows have not reset is reused; older, missing or past a reset, it is fetched again. When
 that read fails (no sign-in, expired, HTTP error, unexpected shape) the row is `unreadable` with
-the reason and the next step, and a saved pasted reading is the fallback: paste the panel with
+the reason and the next step. On an attended run, with `terminal` in the account's source order (the default, after `backend`), the next source is `terminal` (Issue #2466): `agy` opens in a terminal you can see, `/usage` is typed for you, and the panel is saved as source `terminal`; if `agy` asks you to sign in, sign in there and the read finishes (it never logs in for you, gives up after 5 minutes). Scheduled snapshots never open a terminal. When the row says `no visible terminal here` (an agent's shell has none), **run `quotas-antigravity-capture.sh --terminal` in the Terminal panel** (`mcp__terminal__run_in_terminal`), wait for `saved:`, and re-run `/quotas`; where no terminal panel exists (cloud, SSH without a tty), a saved pasted reading is the fallback: paste the panel with
 `pbpaste | quotas-antigravity-capture.sh --stdin`. Every row with a reading says where it came from
 (`Google backend` or `pasted /usage text`), how old it is, and that the account is not verified. Older than 3 h, or past its window's
 reset, a row turns `unreadable`, names its age, and shows the last known figure. With no

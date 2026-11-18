@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Sourced by ai-quotas.sh. Google Antigravity reader (Issue #2407): display only.
 #
-# Sources, in the order the account's `sources` lists them (default backend,observation):
+# Sources, in the order the account's `sources` lists them (default backend,terminal,observation):
 #   backend      read_antigravity_backend: asks Google's quota service for the figures with the
 #                token agy holds in the keychain (Issue #2465), saves the response as the
 #                observation, then shows it. The token lives in lib/quotas-antigravity.py's
 #                memory for the request only; nothing here sees, prints or stores it.
+#   terminal     read_antigravity_terminal (Issue #2466): attended runs only. Runs interactive `agy`
+#                in the terminal the person is looking at (the controlling tty), types /usage for
+#                them, and saves the panel it prints. It never logs in: a sign-in prompt is left
+#                for the person to answer in that terminal. Unattended runs never open one.
 #   observation  read_antigravity_account: an observation file holding either that saved
 #                response or the text of the `agy` `/usage` panel, plus its capture time
 #                (quotas-antigravity-capture.sh). Stale rules apply to both.
@@ -83,6 +87,58 @@ read_antigravity_backend() { # <label>
   return 0
 }
 
+# Visible-terminal fallback (Issue #2466). The chain only reaches this source on an attended run
+# (read_source_chain skips it for scheduled snapshots and AI_QUOTAS_TERMINAL=off). The parser
+# opens the controlling terminal itself and only when this process's stdin is a terminal, so an
+# agent's pipe-backed shell fails fast with terminal_unavailable instead of waiting on nobody.
+read_antigravity_terminal() { # <label>
+  local label="$1" obs agy result status error_class reason next_step candidate started waited
+  obs="$(antigravity_observation_file)"
+  if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$SELF_DIR/lib/quotas-antigravity.py" ]]; then
+    set_outcome unreadable terminal reader_unavailable
+    emit_row antigravity "$label" "" "usage" "" "" unreadable "Antigravity parser unavailable (python3 or lib/quotas-antigravity.py missing)" terminal ""
+    return 0
+  fi
+  agy="${AI_QUOTAS_AGY_BIN:-}"
+  [[ -n "$agy" ]] || agy="$(command -v agy 2>/dev/null || true)"
+  for candidate in /opt/homebrew/bin/agy /usr/local/bin/agy; do
+    [[ -n "$agy" ]] || { [[ -x "$candidate" ]] && agy="$candidate"; } || true
+  done
+  # The capture time is when this session starts (NOW predates earlier accounts and the backend
+  # attempt), keeping AI_QUOTAS_NOW as the test clock.
+  started="${AI_QUOTAS_NOW:-}"
+  [[ "$started" =~ ^[0-9]+$ ]] || started="$(date +%s)"   # a malformed override is ignored, as for NOW
+  waited=$SECONDS
+  result="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" terminal "${agy:-agy-not-found}" "$started" "$obs" 2>/dev/null || true)"
+  # The session can take minutes; the stale and reset checks that follow must use the time it ended.
+  NOW=$(( started + SECONDS - waited ))
+  status="$(printf '%s' "$result" | jq -r '.status // "unreadable"' 2>/dev/null || echo unreadable)"
+  if [[ "$status" == ok ]]; then
+    # The figures just read are what the rows show; the earlier backend failure is already in the outcomes.
+    ANTIGRAVITY_BACKEND_WHY=""
+    ANTIGRAVITY_SNAPSHOT="$(printf '%s' "$result" | jq -c '. + {age_seconds: 0, via: "terminal"}' 2>/dev/null || true)" \
+      read_antigravity_account "$label" terminal
+    return 0
+  fi
+  error_class="$(printf '%s' "$result" | jq -r '.error_class // "unclassified"' 2>/dev/null || echo unclassified)"
+  [[ "$error_class" =~ ^[a-z0-9_]{1,32}$ ]] || error_class=unclassified
+  reason="$(printf '%s' "$result" | jq -r '.reason // "the terminal read failed"' 2>/dev/null | tr -d '\000-\037\177' | cut -c1-200)"
+  [[ -n "$reason" ]] || reason="the terminal read failed"
+  case "$error_class" in
+    terminal_unavailable) next_step="run quotas-antigravity-capture.sh --terminal in a terminal tab you can see, then re-run /quotas" ;;
+    signin_timeout) next_step="sign in when the terminal asks, or paste the panel: pbpaste | quotas-antigravity-capture.sh --stdin" ;;
+    *) next_step="paste the agy /usage panel: pbpaste | quotas-antigravity-capture.sh --stdin" ;;
+  esac
+  ANTIGRAVITY_BACKEND_WHY="${ANTIGRAVITY_BACKEND_WHY:+${ANTIGRAVITY_BACKEND_WHY}; }terminal read failed: ${reason} — ${next_step}"
+  case "$error_class" in
+    signin_timeout) set_outcome logged_out terminal signin_timeout ;;
+    terminal_timeout) set_outcome timeout terminal terminal_timeout ;;
+    *) set_outcome unreadable terminal "$error_class" ;;
+  esac
+  emit_row antigravity "$label" "" "usage" "" "" unreadable "terminal read failed: ${reason} — ${next_step}" terminal ""
+  return 0
+}
+
 read_antigravity_account() { # <label> [<source-name>]
   local label="$1" row_source="${2:-observation}" obs result status account age stale_after captured via_note why
   obs="$(antigravity_observation_file)"
@@ -111,11 +167,15 @@ read_antigravity_account() { # <label> [<source-name>]
   account="$(printf '%s' "$result" | jq -r '.account // "" | gsub("[\u0000-\u001f\u007f]"; "")')"
   age="$(printf '%s' "$result" | jq -r '.age_seconds')"
   captured="$(printf '%s' "$result" | jq -r '.captured_at_epoch')"
-  via_note="$(printf '%s' "$result" | jq -r '.via | if . == "backend" then "Google backend" elif . == "agy-print" then "agy -p /usage" elif . == "pasted" then "pasted /usage text" else "saved /usage text" end')"
+  via_note="$(printf '%s' "$result" | jq -r '.via | if . == "backend" then "Google backend" elif . == "agy-print" then "agy -p /usage" elif . == "terminal" then "agy terminal /usage" elif . == "pasted" then "pasted /usage text" else "saved /usage text" end')"
 
   # Label rows by what the saved reading really is: a manual capture must not be credited
   # to Google, and a saved backend reading shown by the fallback keeps its backend provenance.
-  if [[ "$(printf '%s' "$result" | jq -r '.via')" == backend ]]; then row_source=backend; else row_source=observation; fi
+  case "$(printf '%s' "$result" | jq -r '.via')" in
+    backend) row_source=backend ;;
+    terminal) row_source=terminal ;;
+    *) row_source=observation ;;
+  esac
 
   stale_after=10800
   [[ -z "${AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS:-}" ]] \

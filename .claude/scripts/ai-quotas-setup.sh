@@ -139,7 +139,7 @@
 #             account, so one is registered per machine and there is no profile
 #             to create or log in to. `add` only checks that the `agy` CLI is
 #             installed (it never runs it) and says plainly that the account is
-#             not verified; `/quotas` reads usage from Google's backend with the sign-in agy holds (Issue #2465), falling back to the `/usage` panel text saved by
+#             not verified; `/quotas` reads usage from Google's backend with the sign-in agy holds (Issue #2465), then (attended runs only, Issue #2466) interactive `agy` in a visible terminal, then the `/usage` panel text saved by
 #             quotas-antigravity-capture.sh. Display only: it never gates work.
 #
 # LAYOUT
@@ -1335,7 +1335,7 @@ action_sources() {
   else
     index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
     provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
-    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; antigravity) allowed=backend,observation ;; *) die_usage "unsupported provider" ;; esac
+    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; antigravity) allowed=backend,terminal,observation ;; *) die_usage "unsupported provider" ;; esac
     if [[ "$ARG_NICK" == default ]]; then
       config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
     else
@@ -2158,8 +2158,8 @@ action_list() {
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     local source_order
-    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["backend","observation"] else ["ide-token","browser"] end) | join(",")')"
-    [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["backend","terminal","observation"] elif .provider=="cursor" then ["ide-token","browser"] else [] end) | join(",")')"
+    [[ "$JSON" -eq 1 ]] || [[ -z "$source_order" ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
@@ -2167,7 +2167,7 @@ action_list() {
         '. += [{provider: $provider, label: $label,
                 nickname: (if $nickname == "" then null else $nickname end),
                 profile_dir: $profile_dir,
-                status: $status, detail: $detail, sources: ($order|split(","))}]')"
+                status: $status, detail: $detail, sources: (if $order == "" then [] else ($order|split(",")) end)}]')"
     else
       rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
     fi
