@@ -90,7 +90,9 @@ store() {
   mkdir -p "$state_dir" 2>/dev/null || return 1
   local tmp
   tmp=$(mktemp "$state_dir/.$key.XXXXXX") || return 1
-  if printf '%s\n' "$digest" > "$tmp" && mv "$tmp" "$file"; then return 0; fi
+  # mv would move the temp file INTO a directory sitting at the digest path and
+  # report success, so a directory destination is refused up front.
+  if [[ ! -d "$file" ]] && printf '%s\n' "$digest" > "$tmp" && mv "$tmp" "$file"; then return 0; fi
   rm -f "$tmp"
   return 1
 }

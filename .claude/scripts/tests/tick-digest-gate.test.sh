@@ -96,8 +96,10 @@ mkdir -p "$TMP/clean"
 run --key pr-6 --state-dir "$TMP/clean" --digest a
 rm -f "$TMP/clean/pr-6.digest"; mkdir "$TMP/clean/pr-6.digest"
 run --key pr-6 --state-dir "$TMP/clean" --digest b --what changed
-leftover=$(find "$TMP/clean" -maxdepth 1 -name '.pr-6.*' | wc -l | tr -d ' ')
+leftover=$(find "$TMP/clean" -name '.pr-6.*' | wc -l | tr -d ' ')
 [[ "$leftover" -eq 0 ]] || fail "temp file left behind after a failed store ($leftover)"
+nested=$(find "$TMP/clean/pr-6.digest" -type f | wc -l | tr -d ' ')
+[[ "$nested" -eq 0 ]] || fail "temp file moved into a directory at the digest path ($nested)"
 pass "failed store cleans its temp file"
 
 run --key 'bad key' --state-dir "$TMP" --digest a
