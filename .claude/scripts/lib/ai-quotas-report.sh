@@ -35,9 +35,15 @@ append_history() { # <doc-json-file>
   # value the table's third column shows. Without it a Cursor account's two
   # rows land as two readings of one series per run, and a burn rate computed
   # over them is the average of two unrelated pools.
-  if ! jq -c --arg ts "$ts" --arg source "$SNAPSHOT_SOURCE" '
+  if ! jq -c --arg ts "$ts" --arg source "$SNAPSHOT_SOURCE" --argjson now "$NOW" '
         .rows[]
         | select(.status == "ok" and .used_pct != null)
+        # Issue #2467: the daily snapshot records Antigravity from the backend source alone. A saved
+        # reading (pasted, terminal, or an earlier capture) shown as a fallback would otherwise be
+        # appended with the run time as its timestamp; the failed backend read is in the outcomes ledger.
+        | select($source != "scheduled" or .provider != "antigravity"
+                 or (.source == "backend" and (.fetched_at_epoch | type) == "number"
+                     and ($now - .fetched_at_epoch) <= 300))
         | {ts: $ts,
            provider: .provider,
            label: .label,

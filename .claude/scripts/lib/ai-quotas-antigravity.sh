@@ -180,7 +180,7 @@ read_antigravity_account() { # <label> [<source-name>]
   stale_after=10800
   [[ -z "${AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS:-}" ]] \
     || stale_after="$(positive_int_or_default "$AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS" 10800 AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS)"
-  local line window used resets group models fet_et res_et top
+  local line window used resets group models fet_et res_et top span
   fet_et="$(epoch_to_et "$captured")"
   # The top tier (#2415): the group the panel prints with no "Models within this group"
   # line, because it is a single named model with its own allowance ("<VENDOR> <N> <NAME>").
@@ -219,10 +219,13 @@ read_antigravity_account() { # <label> [<source-name>]
               last_known_resets_et: (if $ret == "" then null else $ret end),
               last_known_expired: ($r != "" and (($r | tonumber) <= $now))}')"
     else
+      # Issue #2467: the window's length lets the history-based forecast (START, %/DAY, LEFT) place
+      # this reading; an unseen window name has no known length and gets none.
+      case "${window##* }" in 7-day) span=604800 ;; 5-hour) span=18000 ;; *) span="" ;; esac
       emit_row antigravity "$label" "$account" "$window" "$used" "$resets" ok \
         "from ${via_note}, observed $(antigravity_age "$age") ago; account not verified${why}" "$row_source" "" \
-        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" --argjson top "$top" \
-             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at} + $top')"
+        "$(with_window_start "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" --argjson top "$top" \
+             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at} + $top')" "$resets" "$span")"
     fi
   done < <(printf '%s' "$result" | jq -c '.groups[] | .name as $g | .models as $m | .slug as $s
       | .windows[] | {window: ($s + " " + .name), used_pct, resets_at_epoch, group: $g, models: $m}')

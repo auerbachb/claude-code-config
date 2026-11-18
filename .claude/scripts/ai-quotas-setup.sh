@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile, `agy` presence check only) likewise — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile; reports whether `agy` is signed in and as which account) likewise — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -137,9 +137,12 @@
 #             one account, so this machine can register one cursor account.
 #   antigravity  Google Antigravity (Issue #2407). `agy` holds one signed-in
 #             account, so one is registered per machine and there is no profile
-#             to create or log in to. `add` only checks that the `agy` CLI is
-#             installed (it never runs it) and says plainly that the account is
-#             not verified; `/quotas` reads usage from Google's backend with the sign-in agy holds (Issue #2465), then (attended runs only, Issue #2466) interactive `agy` in a visible terminal, then the `/usage` panel text saved by
+#             to create or log in to. `add` and `list` check that the `agy` CLI is
+#             installed (they never run it) and say whether it is signed in and as
+#             which account (Issue #2467: the keychain item is read in memory by
+#             lib/quotas-antigravity.py signin; only the state and the account email
+#             are shown, never a credential; signed out names the sign-in step and
+#             `add` still registers the slot); `/quotas` reads usage from Google's backend with the sign-in agy holds (Issue #2465), then (attended runs only, Issue #2466) interactive `agy` in a visible terminal, then the `/usage` panel text saved by
 #             quotas-antigravity-capture.sh. Display only: it never gates work.
 #
 # LAYOUT
@@ -716,8 +719,8 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
       )
       ;;
     antigravity)
-      # The Antigravity CLI is `agy`. Presence is all setup checks: it never runs
-      # it, because a run would contact the signed-in backend.
+      # The Antigravity CLI is `agy`. Setup checks that it is installed and never runs
+      # it (a run would contact the backend); sign-in comes from antigravity_signin_probe.
       override="${AI_QUOTAS_AGY_BIN:-}"
       lookup="agy"
       candidates=(
@@ -862,10 +865,19 @@ run_login() { # <provider> <profile_dir>
       ;;
     codex)  CODEX_HOME="$dir" "$bin" login ;;
     antigravity)
-      # Nothing to run: the CLI holds its own sign-in and this tool never reads
-      # it (`/quotas` uses it in memory only, Issue #2465). Setup only confirms the CLI is installed; the fallback is the panel
-      # text saved by quotas-antigravity-capture.sh.
-      echo "${SELF_NAME}: agy found at ${bin}; sign in by running agy yourself, then /quotas reads usage from Google automatically (manual fallback: quotas-antigravity-capture.sh)." >&2
+      # Nothing to run: the CLI holds its own sign-in and this tool never prints it
+      # (`/quotas` uses it in memory only, Issue #2465). Setup confirms the CLI is installed
+      # and says whether it is signed in and as whom (Issue #2467); signed out is reported
+      # with the sign-in step but does not refuse the registration (the slot is reserved).
+      antigravity_signin_probe
+      case "$ANTIGRAVITY_SIGNIN" in
+        signed_in)
+          echo "${SELF_NAME}: agy found at ${bin}; signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}${ANTIGRAVITY_TOKEN_NOTE:+ (${ANTIGRAVITY_TOKEN_NOTE})}. /quotas reads usage from Google automatically." >&2 ;;
+        signed_out)
+          echo "${SELF_NAME}: agy found at ${bin}, but it is signed out${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})}. To sign in: $(manual_login_command antigravity "") — then /quotas reads usage from Google automatically (manual fallback: quotas-antigravity-capture.sh)." >&2 ;;
+        *)
+          echo "${SELF_NAME}: agy found at ${bin}; sign-in not checked${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})}. Sign in by running agy yourself; /quotas reads usage from Google automatically (manual fallback: quotas-antigravity-capture.sh)." >&2 ;;
+      esac
       return 0
       ;;
     cursor)
@@ -890,6 +902,33 @@ run_login() { # <provider> <profile_dir>
       return 1
       ;;
   esac
+}
+
+# Issue #2467. Is agy signed in, and as which account? Asks lib/quotas-antigravity.py, which
+# reads the keychain item in memory and prints only {status, account, token, reason}. Results
+# land in globals (never stdout, so CRED_DETAIL survives a bare call, as for account_status).
+ANTIGRAVITY_SIGNIN=""      # signed_in | signed_out | unknown
+ANTIGRAVITY_ACCOUNT=""
+ANTIGRAVITY_TOKEN_NOTE=""
+ANTIGRAVITY_REASON=""
+antigravity_signin_probe() {
+  local out now
+  ANTIGRAVITY_SIGNIN="unknown"; ANTIGRAVITY_ACCOUNT=""; ANTIGRAVITY_TOKEN_NOTE=""; ANTIGRAVITY_REASON=""
+  if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$SELF_DIR/lib/quotas-antigravity.py" ]]; then
+    ANTIGRAVITY_REASON="python3 or lib/quotas-antigravity.py missing"
+    return 0
+  fi
+  now="${AI_QUOTAS_NOW:-}"
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  out="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" signin "$now" 2>/dev/null || true)"
+  ANTIGRAVITY_SIGNIN="$(printf '%s' "$out" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
+  case "$ANTIGRAVITY_SIGNIN" in signed_in|signed_out|unknown) ;; *) ANTIGRAVITY_SIGNIN="unknown" ;; esac
+  ANTIGRAVITY_ACCOUNT="$(printf '%s' "$out" | jq -r '.account // "" | gsub("[\u0000-\u001f\u007f]"; "")' 2>/dev/null || true)"
+  ANTIGRAVITY_REASON="$(printf '%s' "$out" | jq -r '.reason // "" | gsub("[\u0000-\u001f\u007f]"; "") | .[0:120]' 2>/dev/null || true)"
+  if [[ "$(printf '%s' "$out" | jq -r '.token // ""' 2>/dev/null || true)" == expired ]]; then
+    ANTIGRAVITY_TOKEN_NOTE="access token has lapsed; it renews the next time agy runs"
+  fi
+  return 0
 }
 
 # --- credential probe --------------------------------------------------------
@@ -943,14 +982,27 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       return 1
       ;;
     antigravity)
-      # Presence of the CLI only; a sign-in is not probed (a probe would call the
-      # backend). `/quotas` says whether a saved panel exists.
-      if provider_bin antigravity >/dev/null; then
-        CRED_DETAIL="agy is installed; /quotas reads Google with its sign-in, falling back to the saved /usage panel"
-        return 0
+      # Issue #2467: the CLI must be installed AND signed in. Sign-in comes from
+      # antigravity_signin_probe (the keychain item read in memory; only the state and the
+      # account email come back, never a credential). No request is made.
+      if ! provider_bin antigravity >/dev/null; then
+        CRED_DETAIL="agy CLI not found"
+        return 1
       fi
-      CRED_DETAIL="agy CLI not found"
-      return 1
+      antigravity_signin_probe
+      case "$ANTIGRAVITY_SIGNIN" in
+        signed_in)
+          CRED_DETAIL="signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}${ANTIGRAVITY_TOKEN_NOTE:+; ${ANTIGRAVITY_TOKEN_NOTE}}"
+          return 0 ;;
+        signed_out)
+          CRED_DETAIL="agy is installed but signed out${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})} — $(manual_login_command antigravity "")"
+          return 1 ;;
+        *)
+          # Not checkable here (not macOS, python3 missing, unknown keychain shape): the CLI is
+          # there, so say what could not be told rather than claim either state.
+          CRED_DETAIL="agy is installed; sign-in not checked${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})} — /quotas reads Google with its sign-in"
+          return 0 ;;
+      esac
       ;;
     cursor)
       # "Logged in" for cursor means "the Cursor IDE on this machine is
@@ -1257,7 +1309,9 @@ action_add() {
       fi
       service="$(resolve_keychain_service "$dir" "" "$NEW_KEYCHAIN_SERVICE")"
     fi
-    if ! credential_present "$provider" "$dir" "$service"; then
+    # Antigravity has no login to finish here: run_login already said whether agy is signed in,
+    # and a signed-out agy still registers (the slot is reserved until the person signs in).
+    if [[ "$provider" != "antigravity" ]] && ! credential_present "$provider" "$dir" "$service"; then
       die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); nothing was registered. Re-run, or use 'add ${provider} ${label} --no-login' to reserve the slot."
     fi
     if [[ "$provider" == "claude" ]]; then
@@ -1313,7 +1367,15 @@ action_add() {
   # could go looking for and never find (CodeAnt).
   local where="profile: ${dir}"
   [[ "$provider" != "cursor" ]] || where="reads the Cursor IDE login at $(cursor_state_db)"
-  [[ "$provider" != "antigravity" ]] || where="reads usage from Google with the sign-in agy holds, falling back to the saved /usage panel; account not verified"
+  if [[ "$provider" == "antigravity" ]]; then
+    where="reads usage from Google with the sign-in agy holds, falling back to the saved /usage panel"
+    case "${ANTIGRAVITY_SIGNIN:-}" in
+      signed_in) where+="; signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}" ;;
+      signed_out) where+="; agy is signed out — run agy and sign in" ;;
+      "") ;;
+      *) where+="; sign-in not checked" ;;
+    esac
+  fi
   if [[ -n "$ARG_NICK" ]]; then
     echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (${where})."
   else

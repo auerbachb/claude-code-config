@@ -9,6 +9,7 @@ Usage:
   quotas-antigravity.py backend <captured-epoch> <observation-file>
   quotas-antigravity.py parse-backend <json-file|-> <captured-epoch>
   quotas-antigravity.py terminal <agy-bin> <captured-epoch> <observation-file>
+  quotas-antigravity.py signin  <now-epoch>
 
 The panel prints percent REMAINING per window; this tool reports percent USED
 (one decimal). "Refreshes in 153h 32m" becomes an absolute epoch computed from the
@@ -23,6 +24,10 @@ access token `agy` keeps in the macOS login keychain (service "gemini", account
 logged, saved or put in an error message, and the saved observation holds the service's
 response (groups, buckets, fractions, reset times) and nothing else. Any failure is
 reported as status "unreadable" with a fixed reason and error_class, never as a figure.
+
+`signin` (Issue #2467) says whether `agy` is signed in and as which account, from the same keychain
+item, in memory: it prints `{status: signed_in|signed_out|unknown, account, token}` and nothing
+from the credential except the account email the item names. No request is made.
 
 `terminal` (Issue #2466) runs interactive `agy` in a terminal a person can see, types `/usage`,
 and saves the panel it prints with source "terminal". It never logs in: when `agy` shows a
@@ -218,8 +223,8 @@ def base_url():
     return override.rstrip("/")
 
 
-def read_stored_token():
-    """-> (access_token, expiry_epoch|None). The value never leaves this process."""
+def read_stored_doc():
+    """-> the saved sign-in as a dict (token plus account fields). The value never leaves this process."""
     path = os.environ.get("AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE")
     if path:
         try:
@@ -232,7 +237,7 @@ def read_stored_token():
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                   timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired):
-            raise BackendError("token_missing", "the macOS keychain could not be read")
+            raise BackendError("keychain_unreadable", "the macOS keychain could not be read")
         if proc.returncode != 0:
             raise BackendError("token_missing", "agy has no saved sign-in in the keychain")
         raw = proc.stdout.decode("utf-8", "replace").strip()
@@ -242,20 +247,31 @@ def read_stored_token():
         if raw.startswith(KEYCHAIN_PREFIX):
             raw = raw[len(KEYCHAIN_PREFIX):]
             raw = base64.b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8")
-        token = json.loads(raw)["token"]
+        doc = json.loads(raw)
+        token = doc["token"]
         access = token["access_token"]
     except (ValueError, KeyError, TypeError, UnicodeDecodeError):
         raise BackendError("token_shape", "the saved agy sign-in has an unknown shape")
-    if not isinstance(access, str) or not access or any(ord(ch) < 33 or ord(ch) > 126 for ch in access):
+    if not isinstance(doc, dict) or not isinstance(token, dict) \
+            or not isinstance(access, str) or not access or any(ord(ch) < 33 or ord(ch) > 126 for ch in access):
         raise BackendError("token_shape", "the saved agy sign-in has an unknown shape")
-    expiry = None
+    return doc
+
+
+def token_expiry(token):
     stamp = token.get("expiry")
     if isinstance(stamp, str):
         try:
-            expiry = parse_rfc3339(stamp)
+            return parse_rfc3339(stamp)
         except ValueError:
-            expiry = None
-    return access, expiry
+            return None
+    return None
+
+
+def read_stored_token():
+    """-> (access_token, expiry_epoch|None). The value never leaves this process."""
+    token = read_stored_doc()["token"]
+    return token["access_token"], token_expiry(token)
 
 
 def parse_rfc3339(text):
@@ -330,6 +346,33 @@ def fetch_backend(now):
     if result["status"] != "ok":
         raise BackendError("response_shape", result["reason"])
     return summary, result
+
+
+EMAIL = re.compile(r"[^\s@]{1,64}@[^\s@]{1,128}")
+
+
+def signin_status(now):
+    """Is agy signed in, and as whom? Reads the keychain item in memory and reports only that
+    state and the account email (not a credential); the token itself is never printed."""
+    try:
+        doc = read_stored_doc()
+    except BackendError as exc:
+        if exc.error_class == "token_missing":
+            return {"status": "signed_out", "reason": exc.reason, "account": None}
+        return {"status": "unknown", "reason": exc.reason, "account": None}
+    token = doc["token"]
+    email = doc.get("id_token_email")
+    account = None
+    if isinstance(email, str):
+        email = "".join(ch for ch in email if ch >= " " and ch != "\x7f").strip()
+        if EMAIL.fullmatch(email):
+            account = email
+    expiry = token_expiry(token)
+    expired = expiry is not None and expiry <= int(now)
+    renewable = bool(token.get("refresh_token"))
+    if expired and not renewable:
+        return {"status": "signed_out", "reason": "the saved agy sign-in has expired", "account": account}
+    return {"status": "signed_in", "account": account, "token": "expired" if expired else "current"}
 
 
 def clean_text(text):
@@ -764,6 +807,9 @@ def main(argv):
                 print(json.dumps({"status": "unreadable", "reason": "the usage response was not JSON"}))
                 return 3
             print(json.dumps(parse_backend(parsed, int(argv[3]))))
+            return 0
+        if cmd == "signin" and len(argv) == 3:
+            print(json.dumps(signin_status(int(argv[2]))))
             return 0
         if cmd == "backend" and len(argv) == 4:
             captured = int(argv[2])
