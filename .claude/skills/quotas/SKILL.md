@@ -141,10 +141,10 @@ no email at all and could never carry the note.
 The panel prints percent remaining; the row shows percent used. **`/quotas` reads them itself
 (Issue #2465):** it asks Google's quota service with the sign-in `agy` already holds, and saves
 the response as the reading, so a plain `/quotas` shows fresh rows with `from Google backend` in
-the detail. A reading under 5 minutes old is reused; older or missing, it is fetched again. When
+the detail. A reading under 5 minutes old whose windows have not reset is reused; older, missing or past a reset, it is fetched again. When
 that read fails (no sign-in, expired, HTTP error, unexpected shape) the row is `unreadable` with
 the reason and the next step, and a saved pasted reading is the fallback: paste the panel with
-`pbpaste | quotas-antigravity-capture.sh --stdin`. Every row says where its reading came from
+`pbpaste | quotas-antigravity-capture.sh --stdin`. Every row with a reading says where it came from
 (`Google backend` or `pasted /usage text`), how old it is, and that the account is not verified. Older than 3 h, or past its window's
 reset, a row turns `unreadable`, names its age, and shows the last known figure. With no
 saved text there is one `unreadable` row saying what is missing. Antigravity is display

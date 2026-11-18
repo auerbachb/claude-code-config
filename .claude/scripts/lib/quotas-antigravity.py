@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import fcntl
+import http.client
 import json
 import os
 import re
@@ -283,7 +284,7 @@ def post_json(url, body, access):
         if code == 429:
             raise BackendError("http_429", "Google rate-limited the usage request")
         raise BackendError("http_%d" % code, "Google answered HTTP %d" % code)
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         raise BackendError("network", "Google could not be reached")
     if len(raw) > MAX_BODY:
         raise BackendError("response_shape", "the usage response was too large")
@@ -359,7 +360,7 @@ def parse_backend(doc, captured):
             frac = b.get("remainingFraction")
             if isinstance(frac, bool) or not isinstance(frac, (int, float)) or frac != frac:
                 return bad("a usage bucket has no remainingFraction; the response is not trusted")
-            if not 0.0 <= float(frac) <= 1.0:
+            if not 0 <= frac <= 1:
                 return bad("a remainingFraction outside 0-1 was returned; the response is not trusted")
             title = clean_text(b.get("displayName")) if isinstance(b.get("displayName"), str) else ""
             wname = window_name(title) if title else ""

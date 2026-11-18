@@ -176,11 +176,12 @@ Antigravity stays display-only: `quota-reserve.sh` never sees it.
 
 ## Needs a live check
 
-`agy --help` (v1.5.9) shows print mode (`-p`, `--output-format`) and `--disable-slash-commands`,
-which suggests slash commands may expand in print mode, but nothing confirms `agy -p "/usage"`
-prints the panel instead of sending "/usage" to a model. It was not run (it contacts the
-signed-in backend). Until the owner runs `quotas-antigravity-capture.sh --live` once and sees
-`saved: 5 windows in 3 groups`, treat `--live` as unverified and use the manual route.
+`agy -p "/usage"` is known to print no panel (see above), so `quotas-antigravity-capture.sh --live`
+is not a validation route; the manual paste (`pbpaste | quotas-antigravity-capture.sh --stdin`)
+is the panel-capture fallback. To validate the backend reader, the owner runs `/quotas` once with
+a signed-in `agy` and checks that the Antigravity rows say `from Google backend`; with no sign-in
+the row must be `unreadable` with the next step. The live request has not been run in tests
+(it contacts Google); the tests use a loopback stub.
 
 Design constraints kept: display-only; no credential read, printed, logged or stored; the
 `unreadable` row names the capture command to run.

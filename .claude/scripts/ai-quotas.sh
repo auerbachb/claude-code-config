@@ -801,7 +801,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       claude:*) outcome_source="oauth-usage" ;;
       codex:*) outcome_source="app-server" ;;
       cursor:*) outcome_source="ide-token" ;;
-      antigravity:*) outcome_source="observation" ;;
+      antigravity:*) outcome_source="backend" ;;
     esac
   fi
   if [[ "$7" == "ok" ]]; then

@@ -109,6 +109,10 @@ read_antigravity_account() { # <label> [<source-name>]
   captured="$(printf '%s' "$result" | jq -r '.captured_at_epoch')"
   via_note="$(printf '%s' "$result" | jq -r '.via | if . == "backend" then "Google backend" elif . == "agy-print" then "agy -p /usage" elif . == "pasted" then "pasted /usage text" else "saved /usage text" end')"
 
+  # Label rows by what the saved reading really is: a manual capture that replaced the
+  # backend reading between the check and this read must not be credited to Google.
+  [[ "$row_source" != backend || "$(printf '%s' "$result" | jq -r '.via')" == backend ]] || row_source=observation
+
   stale_after=10800
   [[ -z "${AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS:-}" ]] \
     || stale_after="$(positive_int_or_default "$AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS" 10800 AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS)"
@@ -142,11 +146,11 @@ read_antigravity_account() { # <label> [<source-name>]
       [[ "$OUTCOME_USABLE" -eq 1 ]] || set_outcome unreadable "$row_source" observation_stale
       emit_row antigravity "$label" "$account" "$window" "" "" unreadable \
         "stale: captured $(antigravity_age "$age") ago via ${via_note}; account not verified${why} — ${ANTIGRAVITY_HINT}" "$row_source" "" \
-        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson u "$used" --argjson at "$captured" --argjson a "$age" --argjson now "$NOW" --arg fet "$fet_et" \
+        "$(jq -nc --arg via "$via_note" --arg g "$group" --argjson m "$models" --argjson u "$used" --argjson at "$captured" --argjson a "$age" --argjson now "$NOW" --arg fet "$fet_et" \
              --arg r "$resets" --arg ret "$res_et" '
              {group: $g, group_models: $m, observed_age_seconds: $a,
               last_known_used_pct: $u, last_known_at_epoch: $at, last_known_at_et: $fet,
-              last_known_source: "agy /usage",
+              last_known_source: $via,
               last_known_resets_at_epoch: (if $r == "" then null else ($r | tonumber) end),
               last_known_resets_et: (if $ret == "" then null else $ret end),
               last_known_expired: ($r != "" and (($r | tonumber) <= $now))}')"

@@ -946,7 +946,7 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       # Presence of the CLI only; a sign-in is not probed (a probe would call the
       # backend). `/quotas` says whether a saved panel exists.
       if provider_bin antigravity >/dev/null; then
-        CRED_DETAIL="agy is installed; /quotas shows the saved /usage panel"
+        CRED_DETAIL="agy is installed; /quotas reads Google with its sign-in, falling back to the saved /usage panel"
         return 0
       fi
       CRED_DETAIL="agy CLI not found"
@@ -1313,7 +1313,7 @@ action_add() {
   # could go looking for and never find (CodeAnt).
   local where="profile: ${dir}"
   [[ "$provider" != "cursor" ]] || where="reads the Cursor IDE login at $(cursor_state_db)"
-  [[ "$provider" != "antigravity" ]] || where="reads the saved agy /usage panel; account not verified"
+  [[ "$provider" != "antigravity" ]] || where="reads usage from Google with the sign-in agy holds, falling back to the saved /usage panel; account not verified"
   if [[ -n "$ARG_NICK" ]]; then
     echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (${where})."
   else
