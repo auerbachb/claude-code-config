@@ -382,7 +382,7 @@ over the journal.
 
 ## Usage source preferences
 
-Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`; Antigravity `backend,observation` (default order `backend,observation`). `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`; Antigravity `backend,terminal,observation` (default order `backend,terminal,observation`; `terminal` runs interactive `agy` in a visible terminal on attended runs only, Issue #2466). `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
 
 ## Session ledger hooks
 

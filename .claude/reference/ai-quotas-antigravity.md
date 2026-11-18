@@ -1,4 +1,4 @@
-# Google Antigravity — quota research (Issues #2407, #2465)
+# Google Antigravity — quota research (Issues #2407, #2465, #2466)
 
 Research date: 2026-11-16; reader built the same day (Issue #2407). Not auto-loaded. Part of
 the quota-tracking reference set (`ai-quotas.md`). **Outcome: the interactive `/usage` panel
@@ -164,7 +164,7 @@ and saves `{schema, provider, captured_at_epoch, via:"backend", response}` (0600
 token, no email). `show` parses the saved response with the same group/window rules as the panel
 text, so rows are identical in shape: `gemini 7-day`, `claude-gpt 5-hour`, and so on, percent
 used, reset epoch. `lib/ai-quotas-antigravity.sh` adds the `backend` source: default order
-`backend,observation`; `/quotas` fetches when the saved reading is missing or older than
+`backend,terminal,observation` (Issue #2466); `/quotas` fetches when the saved reading is missing or older than
 `AI_QUOTAS_ANTIGRAVITY_REFRESH_SECONDS` (default 300, so repeated runs do not hit Google each
 time; the stale bound stays 3 h for the display), and the row detail says `from Google backend`
 or `from pasted /usage text`. Failures (`token_missing`, `token_expired`, `http_401/403/429`,
@@ -173,6 +173,73 @@ saved reading behind it, the observation row shows its own stale state plus the 
 Only a loopback `AI_QUOTAS_ANTIGRAVITY_BACKEND_URL` is honoured (tests), so the token cannot be
 sent to another host; `AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE` replaces the keychain read in tests.
 Antigravity stays display-only: `quota-reserve.sh` never sees it.
+
+## Terminal source (Issue #2466)
+
+The backend read fails whenever `agy`'s ~1 h login has expired. Print mode cannot help
+(`agy -p "/usage"` prints no panel), and an agent cannot click through a login, so the next
+source is the interactive panel read in a terminal **a person can see**. Default order is now
+`backend,terminal,observation`; `terminal` is a valid name for `ai-quotas-setup.sh sources`.
+
+**What runs.** `lib/quotas-antigravity.py terminal <agy> <epoch> <observation-file>` starts `agy`
+with no arguments on a pseudo-terminal, copies everything `agy` prints to the visible terminal,
+copies the person's keystrokes to `agy`, types `/usage` and Enter once `agy` has been quiet for
+2.5 s and its latest output does not ask for a sign-in, and saves the panel text it prints with
+source `terminal` (same observation file and parser as the pasted route; rows read `source
+terminal`, detail `from agy terminal /usage`). It stops `agy` afterwards (Ctrl-C, then SIGTERM).
+The tab is the person's own terminal, never a hidden PTY and never a new window or pane.
+
+**Which terminal (host design).** A shell script cannot call the desktop app's MCP tools, and a
+script cannot open a new tab in an arbitrary terminal either, so the design is "the terminal
+this process already has":
+
+| Host | How it works |
+|------|--------------|
+| Plain terminal (the person runs `ai-quotas.sh` or `/quotas` helpers themselves) | The controlling terminal (`/dev/tty`) is the visible tab. The reader uses it only when its own stdin is a terminal. |
+| Claude desktop app (agent runs `/quotas`) | The agent's Bash tool has no terminal on stdin, so the source answers `terminal_unavailable` at once and the row names the command. The agent then runs `quotas-antigravity-capture.sh --terminal` in the **Terminal panel** with `mcp__terminal__run_in_terminal` (the panel is a real TTY the person watches and types into), waits for `saved:` (read the panel with `read_terminal`), and re-runs `/quotas`, which now has a fresh `terminal` reading. |
+| Cloud sessions, SSH without a tty, cron, CI, the scheduled snapshot | Cannot work: there is no terminal a person is looking at. The source refuses (attended runs: `terminal_unavailable`; scheduled runs: skipped before any attempt). The paste route stays. |
+
+`AI_QUOTAS_TERMINAL=off` skips the source on any run. `AI_QUOTAS_TERMINAL_TIMEOUT` (seconds,
+default 300, 5 to 1800) bounds the whole read, sign-in included. Tests aim the reader at a
+pseudo-terminal with `AI_QUOTAS_TERMINAL_DEVICE` (ignored in normal use).
+
+**Sign-in.** If the latest burst of `agy` output matches a narrow sign-in pattern (for example
+"must sign in", "not signed in", "accounts.google.com"), the terminal shows "sign in to Antigravity
+in this terminal, then wait: the read finishes by itself. Nothing here signs in for you." and the
+tool types nothing. The person signs in at that prompt (typing goes straight to `agy`). Once the
+prompt is gone, `agy` has been quiet for 2.5 s and the person has not typed for 5 s, `/usage` is
+typed. Nothing automates the login, and `/usage` is never typed into a sign-in prompt. No sign-in before
+the timeout: `unreadable`, reason `no sign-in to Antigravity within Ns`, and the next step
+`pbpaste | quotas-antigravity-capture.sh --stdin`; nothing is saved. Other failures:
+`agy_exited`, `terminal_timeout` (no panel parsed, or `agy`/the terminal stopped accepting input), `panel_garbled`,
+`agy_missing`, `terminal_unavailable`. A stalled write never outlives the timeout, and SIGTERM/SIGHUP unwind
+through the cleanup that restores the terminal.
+
+**Unattended.** A scheduled snapshot (`--quiet`, `AI_QUOTAS_SOURCE=scheduled`) never reaches the
+source: the chain skips it (`skip_reason: terminal-unattended`) before `agy` can start, the next
+source's rows carry "terminal read skipped: no terminal is opened on an unattended run", and the
+outcomes ledger records the backend failure.
+
+**After a terminal read.** Running `agy` refreshes the keychain token, so a backend read
+straight afterwards would probably succeed. Decision: the figures just read are the rows; the
+run does not call Google again. The next `/quotas` run tries `backend` first (the saved terminal
+reading is not "fresh" for the 5 minute reuse rule, which only covers backend readings), which
+will usually succeed on the renewed token and replace the terminal reading with a backend one.
+
+**Credentials.** The tool never reads, prints, stores or logs a credential. The session's
+output goes to the visible terminal only; the one thing saved is the panel text, and only when
+it parses as a usage panel (the account line as printed, like the pasted route). Failure reasons
+are fixed strings. Antigravity stays display-only (`quota-reserve.sh` never sees it).
+
+**Unverified live (needs the owner's first run).** Tests drive a stub `agy`. Not yet confirmed
+against the real TUI: that `/usage` + Enter opens the panel without a slash-command menu
+selecting first, that the repainted panel is parseable from the raw stream (a TUI that redraws
+in place could duplicate or garble lines; a panel whose windows repeat is refused as `panel_garbled` and the
+row says so), what the
+real sign-in prompt says (if it avoids the sign-in pattern the tool types `/usage` into it
+once per 20 s, at most four times, harmlessly), that Ctrl-C ends `agy` (SIGTERM follows), and that
+`agy` starts in the home directory without a folder-trust prompt. Check: run
+`quotas-antigravity-capture.sh --terminal` in a terminal with `agy` signed in, then signed out.
 
 ## Needs a live check
 

@@ -8,6 +8,7 @@ Usage:
   quotas-antigravity.py capture <agy-bin> <captured-epoch> <observation-file>
   quotas-antigravity.py backend <captured-epoch> <observation-file>
   quotas-antigravity.py parse-backend <json-file|-> <captured-epoch>
+  quotas-antigravity.py terminal <agy-bin> <captured-epoch> <observation-file>
 
 The panel prints percent REMAINING per window; this tool reports percent USED
 (one decimal). "Refreshes in 153h 32m" becomes an absolute epoch computed from the
@@ -22,6 +23,13 @@ access token `agy` keeps in the macOS login keychain (service "gemini", account
 logged, saved or put in an error message, and the saved observation holds the service's
 response (groups, buckets, fractions, reset times) and nothing else. Any failure is
 reported as status "unreadable" with a fixed reason and error_class, never as a figure.
+
+`terminal` (Issue #2466) runs interactive `agy` in a terminal a person can see, types `/usage`,
+and saves the panel it prints with source "terminal". It never logs in: when `agy` shows a
+sign-in prompt the person signs in at that terminal (keystrokes are forwarded to `agy`) and the
+read finishes by itself. The terminal is the controlling terminal (/dev/tty), used only when
+this process's own stdin is a terminal (AI_QUOTAS_TERMINAL_DEVICE names another device, for
+tests). Nothing the session prints is logged or kept except a panel that parses.
 """
 import base64
 import datetime
@@ -33,9 +41,11 @@ import http.client
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import tempfile
+import time
 
 SCHEMA = "antigravity-usage/1"
 MAX_TEXT = 256 * 1024
@@ -438,6 +448,258 @@ def write_observation(path, captured, via, text, response=None):
     finally:
         os.close(lock)
 
+# --- terminal source (Issue #2466) --------------------------------------------------------
+# A sign-in prompt, deliberately narrow: a ready screen that merely lists a /login hint must
+# not be mistaken for a signed-out one, and nothing here ever answers such a prompt.
+SIGNIN = re.compile(
+    r"(?:please|must|need\s+to)\s+(?:sign|log)[\s-]*in|not\s+(?:signed|logged)[\s-]*in"
+    r"|(?:sign|log)[\s-]*in\s+(?:required|to\s+continue|with\s+google)|authenticat\w*\s+(?:required|needed|to\s+continue)"
+    r"|accounts\.google\.com|oauth",
+    re.I)
+RAW_CAP = 512 * 1024
+HUMAN_QUIET = 5.0
+
+
+CLEAR_SCREEN = (b"\x1b[2J", b"\x1b[3J", b"\x1bc")
+
+
+def current_screen_text(raw, burst):
+    """Text of the latest burst of output, cut at the last clear-screen sequence: whatever the
+    program painted before clearing is history, not the prompt on screen now."""
+    chunk = raw[burst:]
+    cut = max(chunk.rfind(seq) + len(seq) if chunk.rfind(seq) >= 0 else 0 for seq in CLEAR_SCREEN)
+    return "\n".join(clean_lines(chunk[cut:].decode("utf-8", "replace")))
+
+
+class TerminalError(Exception):
+    def __init__(self, error_class, reason):
+        Exception.__init__(self, reason)
+        self.error_class = error_class
+        self.reason = reason
+
+
+def tty_write(fd, data, until):
+    """Write all of data to a non-blocking descriptor, never past the monotonic time `until`
+    (a stalled child or terminal raises TimeoutError instead of hanging the capture)."""
+    while data:
+        try:
+            n = os.write(fd, data)
+            data = data[n:]
+        except InterruptedError:
+            continue
+        except BlockingIOError:
+            left = until - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("write stalled")
+            select.select([], [fd], [], min(left, 0.5))
+
+
+def run_terminal(agy, started, obs):
+    import fcntl as _fcntl
+    import pty
+    import signal
+    import termios
+    import tty
+
+    override = os.environ.get("AI_QUOTAS_TERMINAL_DEVICE")
+    if not override and not sys.stdin.isatty():
+        raise TerminalError("terminal_unavailable", "no visible terminal here (this shell has no terminal on its input)")
+    try:
+        tfd = os.open(override or "/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        raise TerminalError("terminal_unavailable", "no visible terminal here (the controlling terminal cannot be opened)")
+    if not os.isatty(tfd):
+        os.close(tfd)
+        raise TerminalError("terminal_unavailable", "no visible terminal here (not a terminal)")
+    try:
+        limit = int(os.environ.get("AI_QUOTAS_TERMINAL_TIMEOUT", "300"))
+    except ValueError:
+        limit = 300
+    limit = min(max(limit, 5), 1800)
+    agy = os.path.abspath(agy)
+    if not os.path.isfile(agy) or not os.access(agy, os.X_OK):
+        os.close(tfd)
+        raise TerminalError("agy_missing", "the agy CLI was not found")
+
+    saved_attrs = termios.tcgetattr(tfd)
+    resized = []
+    old_winch = signal.signal(signal.SIGWINCH, lambda *_: resized.append(1))
+
+    def stop_requested(signum, _frame):
+        raise SystemExit(128 + signum)   # unwinds through the cleanup below, which restores the terminal
+
+    old_term = signal.signal(signal.SIGTERM, stop_requested)
+    old_hup = signal.signal(signal.SIGHUP, stop_requested)
+    mono0 = time.monotonic()
+    capture_deadline = mono0 + limit
+    pid = -1
+    master = -1
+    try:
+        pid, master = pty.fork()
+        if pid == 0:
+            try:
+                os.chdir(os.path.expanduser("~"))
+                os.environ.setdefault("TERM", "xterm-256color")
+                os.execv(agy, [agy])
+            finally:
+                os._exit(127)
+
+        def sync_size():
+            try:
+                _fcntl.ioctl(master, termios.TIOCSWINSZ, _fcntl.ioctl(tfd, termios.TIOCGWINSZ, b"\0" * 8))
+            except OSError:
+                pass
+
+        sync_size()
+        os.set_blocking(master, False)
+        os.set_blocking(tfd, False)
+        tty.setraw(tfd)
+        tty_write(tfd, b"\r\n[quotas] reading Antigravity usage in this terminal: agy starts, /usage is typed for you. "
+                       b"If agy asks you to sign in, do it here; the read finishes by itself. "
+                       b"Giving up after %ds.\r\n" % limit, capture_deadline)
+        raw = b""
+        mark = 0
+        burst = 0
+        human_at = -1e9
+        last_out = last_data = time.monotonic()
+        last_send = -1e9
+        sends = 0
+        signin_noted = False
+        signin_seen = False
+        child_gone = False
+        panel = None
+        deadline = mono0 + limit
+        while time.monotonic() < deadline:
+            if resized:
+                del resized[:]
+                sync_size()
+            try:
+                ready, _, _ = select.select([tfd, master], [], [], 0.2)
+            except InterruptedError:
+                continue
+            now = time.monotonic()
+            if master in ready:
+                try:
+                    data = os.read(master, 65536)
+                except BlockingIOError:
+                    data = None
+                except OSError:
+                    data = b""
+                if data is not None and not data:
+                    child_gone = True
+                    break
+            if master in ready and data is not None:
+                tty_write(tfd, data, capture_deadline)
+                if now - last_data > 1.0:
+                    burst = len(raw)
+                raw += data
+                if len(raw) > RAW_CAP:
+                    drop = len(raw) - RAW_CAP
+                    raw = raw[drop:]
+                    mark = max(0, mark - drop)
+                    burst = max(0, burst - drop)
+                last_out = last_data = now
+            if tfd in ready:
+                try:
+                    keys = os.read(tfd, 4096)
+                except OSError:
+                    keys = b""
+                if keys:
+                    tty_write(master, keys, capture_deadline)
+                    human_at = now
+                    last_out = now
+            quiet = now - last_out
+            if sends and quiet >= 1.5:
+                seg = raw[mark:].decode("utf-8", "replace")
+                at = int(started) + int(now - mono0)
+                parsed = parse_panel(seg, at)
+                if parsed["status"] == "ok":
+                    # A repaint that left two frames in the stream would repeat windows: refuse it.
+                    keys_seen = [(g["slug"], w["name"]) for g in parsed["groups"] for w in g["windows"]]
+                    if len(keys_seen) != len(set(keys_seen)):
+                        raise TerminalError("panel_garbled", "agy repainted the panel and the captured text repeats windows")
+                    panel = (parsed, at, "\n".join(clean_lines(seg)))
+                    break
+            if raw and quiet >= 2.5 and sends < 4 and now - last_send >= 20:
+                # Signed out = the latest burst of output still asks for a sign-in; the person also
+                # gets a few quiet seconds after typing before /usage is sent (never mid-login).
+                latest = current_screen_text(raw, burst)
+                if SIGNIN.search(latest) or (signin_seen and now - human_at < HUMAN_QUIET):
+                    signin_seen = True
+                    if not signin_noted:
+                        signin_noted = True
+                        tty_write(tfd, b"\r\n[quotas] sign in to Antigravity in this terminal, then wait: the read finishes by itself. "
+                                       b"Nothing here signs in for you.\r\n", capture_deadline)
+                else:
+                    mark = len(raw)
+                    signin_seen = False   # the sign-in, if any, is over: a later failure is not a sign-in timeout
+                    sends += 1
+                    last_send = now
+                    tty_write(master, b"/usage", capture_deadline)
+                    time.sleep(0.5)
+                    tty_write(master, b"\r", capture_deadline)
+        if panel is None:
+            if child_gone:
+                try:
+                    _, status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    status = 0
+                code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
+                raise TerminalError("agy_exited", "agy exited before showing usage (exit %d)" % code)
+            if signin_seen:
+                raise TerminalError("signin_timeout", "no sign-in to Antigravity within %ds" % limit)
+            raise TerminalError("terminal_timeout", "agy showed no usage panel within %ds" % limit)
+        parsed, at, text = panel
+        write_observation(obs, at, "terminal", text)
+        parsed["captured_at_epoch"] = at
+        return parsed
+    except TimeoutError:
+        raise TerminalError("terminal_timeout", "the terminal or agy stopped accepting input")
+    finally:
+        signal.signal(signal.SIGWINCH, old_winch)
+        signal.signal(signal.SIGTERM, old_term)
+        signal.signal(signal.SIGHUP, old_hup)
+        if pid > 0:
+            try:
+                tty_write(master, b"\x03", time.monotonic() + 0.5)
+                time.sleep(0.3)
+                tty_write(master, b"\x03", time.monotonic() + 0.5)
+            except (OSError, TimeoutError):
+                pass
+            end = time.monotonic() + 1.5
+            reaped = False
+            while time.monotonic() < end and not reaped:
+                try:
+                    done, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    reaped = True
+                    break
+                if done:
+                    reaped = True
+                else:
+                    time.sleep(0.1)
+            if not reaped:
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.kill(pid, sig)
+                        time.sleep(0.3)
+                        done, _ = os.waitpid(pid, os.WNOHANG)
+                        if done:
+                            break
+                    except (OSError, ChildProcessError):
+                        break
+        if master >= 0:
+            try:
+                os.close(master)
+            except OSError:
+                pass
+        try:
+            termios.tcsetattr(tfd, termios.TCSANOW, saved_attrs)
+            tty_write(tfd, b"\r\n", time.monotonic() + 0.5)
+        except (OSError, TimeoutError, termios.error):
+            pass
+        os.close(tfd)
+
 
 def main(argv):
     if len(argv) < 2:
@@ -501,6 +763,14 @@ def main(argv):
                 print(json.dumps({"status": "unreadable", "reason": exc.reason, "error_class": exc.error_class}))
                 return 3
             write_observation(argv[3], captured, "backend", None, response=summary)
+            print(json.dumps(result))
+            return 0
+        if cmd == "terminal" and len(argv) == 5:
+            try:
+                result = run_terminal(argv[2], int(argv[3]), argv[4])
+            except TerminalError as exc:
+                print(json.dumps({"status": "unreadable", "reason": exc.reason, "error_class": exc.error_class}))
+                return 3
             print(json.dumps(result))
             return 0
         if cmd == "capture" and len(argv) == 5:

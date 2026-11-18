@@ -149,7 +149,7 @@
 #                   reader this replaced (#1703). One IDE holds one Cursor
 #                   account, so one machine reads one Cursor account.
 #   antigravity     Google's quota service, asked with the sign-in `agy` holds in the
-#                   keychain (Issue #2465; sources backend,observation), else the text of the `agy` `/usage` panel, saved with its capture
+#                   keychain (Issue #2465; sources backend,terminal,observation; terminal, Issue #2466, runs `agy` in a visible terminal on attended runs only), else the text of the `agy` `/usage` panel, saved with its capture
 #                   time by quotas-antigravity-capture.sh (observation file
 #                   ~/.claude/ai-quotas-antigravity.json, or the path in
 #                   AI_QUOTAS_ANTIGRAVITY_OBSERVATION). One row per model group
@@ -1000,7 +1000,7 @@ effective_sources() { # <provider> <account-index>
   printf '%s' "$CONFIG" | jq -r --arg p "$1" --argjson i "$2" '
     .accounts[$i].sources // (if $p == "claude" then ["oauth-usage","browser"]
       elif $p == "codex" then ["app-server","http"]
-      elif $p == "antigravity" then ["backend","observation"] else ["ide-token","browser"] end) | .[]'
+      elif $p == "antigravity" then ["backend","terminal","observation"] else ["ide-token","browser"] end) | .[]'
 }
 
 # Shared mapping from a browser observation's fixed error class to a row and
@@ -1214,10 +1214,11 @@ read_cursor_browser() { # <label>
 read_source_chain() { # <provider> <label> <dir> <service> <index>
   local provider="$1" label="$2" dir="$3" service="$4" index="$5"
   local real_rows="$ROWS" attempts="$TMP/source-attempts.jsonl" last_rows="$TMP/source-last.jsonl"
-  local source skip last_index=-1 count=0 success=0
+  local source skip last_skip="" last_skip_source="" last_index=-1 count=0 success=0
   [[ "$provider" != cursor ]] || CURSOR_EMAIL=""
   SOURCE_WHY=""; : > "$attempts"; : > "$last_rows"
-  while IFS= read -r source; do
+  # Source names come in on fd 3 so stdin stays the caller's: the terminal source needs to see it (Issue #2466).
+  while IFS= read -r -u 3 source; do
     # A result resumes at browser, so the earlier primary failure is not repeated.
     [[ -z "$BROWSER_RESULTS" || "$source" == "browser" || "$success" -eq 2 ]] || continue
     [[ -z "$BROWSER_RESULTS" || "$source" != "browser" ]] || success=2
@@ -1225,6 +1226,15 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
     OUTCOME_STATUS=""; OUTCOME_SOURCE=""; OUTCOME_ERROR_CLASS=""; OUTCOME_USABLE=0; skip=""
     if [[ "$source" == browser && ( "$BROWSER" -eq 0 || "$SNAPSHOT_SOURCE" == scheduled ) ]]; then
       set_outcome unreadable browser browser_unattended; skip="browser-unattended"
+    elif [[ "$provider:$source" == antigravity:terminal && ( "$SNAPSHOT_SOURCE" == scheduled || "${AI_QUOTAS_TERMINAL:-on}" == off ) ]]; then
+      # Issue #2466: an unattended run never opens a terminal; the reason rides on the next source's rows.
+      if [[ "$SNAPSHOT_SOURCE" == scheduled ]]; then
+        set_outcome unreadable terminal terminal_unattended; skip="terminal-unattended"
+        ANTIGRAVITY_BACKEND_WHY="${ANTIGRAVITY_BACKEND_WHY:+${ANTIGRAVITY_BACKEND_WHY}; }terminal read skipped: no terminal is opened on an unattended run"
+      else
+        set_outcome unreadable terminal terminal_disabled; skip="terminal-disabled"
+        ANTIGRAVITY_BACKEND_WHY="${ANTIGRAVITY_BACKEND_WHY:+${ANTIGRAVITY_BACKEND_WHY}; }terminal read skipped: AI_QUOTAS_TERMINAL=off"
+      fi
     else
       case "$provider:$source" in
         claude:oauth-usage) read_claude_account "$label" "$dir" "$service" ;;
@@ -1233,6 +1243,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
         cursor:browser) read_cursor_browser "$label" ;;
         claude:browser) read_claude_browser "$label" "$dir" ;;
         antigravity:backend) read_antigravity_backend "$label" ;;
+        antigravity:terminal) read_antigravity_terminal "$label" ;;
         antigravity:observation) read_antigravity_account "$label" ;;
         *) set_outcome unreadable "$source" source_unsupported
            emit_row "$provider" "$label" "" "7-day" "" "" unsupported "source is unavailable for this provider" "$source" "" ;;
@@ -1243,18 +1254,20 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
       --arg requested_source "$source" --arg status "$OUTCOME_STATUS" --arg error_class "$OUTCOME_ERROR_CLASS" --arg trigger "$SNAPSHOT_SOURCE" --arg skip "$skip" '
       {provider:$provider,label:$account_label,source:$source,requested_source:$requested_source,status:$status,error_class:$error_class,trigger:$trigger,terminal:false}
       + (if $skip == "" then {} else {skip_reason:$skip} end)' >> "$attempts"
-    if [[ -z "$skip" ]]; then
+    if [[ -n "$skip" ]]; then
+      last_skip="$skip"; last_skip_source="$source"
+    else
       cp "$ROWS" "$last_rows"; last_index=$count
       if [[ "$OUTCOME_STATUS" == ok ]]; then success=1; break; fi
       SOURCE_WHY="$(jq -sr 'first.detail // "source failed"' "$ROWS")"
     fi
     count=$((count+1))
-  done < <(effective_sources "$provider" "$index")
+  done 3< <(effective_sources "$provider" "$index")
   ROWS="$real_rows"
   [[ "$last_index" -lt 0 ]] || jq -sc --argjson last "$last_index" 'to_entries[] | .value + (if .key == $last then {terminal:true} else {} end)' "$attempts" >> "$OUTCOMES_RUN"
   if [[ "$last_index" -lt 0 ]]; then
     cat "$attempts" >> "$OUTCOMES_RUN"
-    emit_row "$provider" "$label" "" "billing-cycle" "" "" unreachable "skipped:browser-unattended" browser ""
+    emit_row "$provider" "$label" "" "billing-cycle" "" "" unreachable "skipped:${last_skip:-browser-unattended}" "${last_skip_source:-browser}" ""
   else
     cat "$last_rows" >> "$ROWS"
   fi

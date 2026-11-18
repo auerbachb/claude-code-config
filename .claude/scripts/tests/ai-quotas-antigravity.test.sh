@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# catalog: tests — Verifies the Antigravity /usage parser, observation capture, the Google-backend source (against a loopback stub), the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample (Issues #2407, #2465)
+# catalog: tests — Verifies the Antigravity /usage parser, observation capture, the Google-backend source (against a loopback stub), the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample and the visible-terminal fallback (Issues #2407, #2465, #2466)
 set -euo pipefail
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,6 +11,8 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 export HOME="$T/home"
+# Hermetic: no case below opens a terminal unless it turns this back on (Issue #2466).
+export AI_QUOTAS_TERMINAL=off
 mkdir -p "$HOME"
 CAP=1794389000
 NOW=1794390000
@@ -268,14 +270,128 @@ pass "backend failures: unreadable with reason and next step, nothing invented o
 
 # The backend is the default source; setup accepts it; the pasted route stays.
 list_out="$(bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
-grep -Fq 'sources: backend,observation' <<<"$list_out" || { printf '%s\n' "$list_out" >&2; fail "default Antigravity source order is backend,observation"; }
+grep -Fq 'sources: backend,terminal,observation' <<<"$list_out" || { printf '%s\n' "$list_out" >&2; fail "default Antigravity source order is backend,terminal,observation"; }
 bash "$SCRIPTS/ai-quotas-setup.sh" sources personal observation,backend antigravity >/dev/null 2>&1 || fail "setup accepts the backend source in either order"
 jq -e '.accounts[] | select(.provider == "antigravity") | .sources == ["observation","backend"]' "$AI_QUOTAS_CONFIG" >/dev/null || fail "the order is saved"
-if bash "$SCRIPTS/ai-quotas-setup.sh" sources personal terminal antigravity >/dev/null 2>&1; then fail "an unknown Antigravity source is refused"; fi
+if bash "$SCRIPTS/ai-quotas-setup.sh" sources personal bogus antigravity >/dev/null 2>&1; then fail "an unknown Antigravity source is refused"; fi
+bash "$SCRIPTS/ai-quotas-setup.sh" sources personal backend,observation,terminal antigravity >/dev/null 2>&1 || fail "setup accepts terminal as a source name, in any position"
+jq -e '.accounts[] | select(.provider == "antigravity") | .sources == ["backend","observation","terminal"]' "$AI_QUOTAS_CONFIG" >/dev/null || fail "the order with terminal is saved"
 bash "$SCRIPTS/ai-quotas-setup.sh" sources personal default antigravity >/dev/null 2>&1 || fail "setup restores the default order"
 jq -e '.accounts[] | select(.provider == "antigravity") | has("sources") | not' "$AI_QUOTAS_CONFIG" >/dev/null || fail "default clears the saved order"
 kill "$STUB_PID" 2>/dev/null || true; wait "$STUB_PID" 2>/dev/null || true
 pass "sources: backend is the default, accepted by setup, with observation as the fallback"
+
+# --- terminal source (Issue #2466) -----------------------------------------------------
+# A stub `agy` runs on a pseudo-terminal that plays the visible tab; a driver plays the person.
+AGY_TERM="$T/agy-term"
+printf '#!/bin/sh\nexec python3 -I "%s/tests/lib/antigravity-agy-stub.py" "$@"\n' "$SCRIPTS" > "$AGY_TERM"
+chmod +x "$AGY_TERM"
+DRIVER="$SCRIPTS/tests/lib/antigravity-terminal-driver.py"
+export AGY_STUB_PANEL="$SAMPLE" AGY_STUB_LOG="$T/agy-log"
+tdrive() { # <none|signin> <command...>  (stub mode from AGY_STUB_MODE)
+  AI_QUOTAS_AGY_BIN="$AGY_TERM" AI_QUOTAS_TERMINAL=on python3 -I "$DRIVER" "$@"
+}
+bash "$SCRIPTS/ai-quotas-setup.sh" sources personal default antigravity >/dev/null 2>&1
+export AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/no-such-token"   # the backend finds no sign-in: the fallback runs
+unset AI_QUOTAS_ANTIGRAVITY_BACKEND_URL
+
+# Signed in: agy opens in the visible tab, /usage is typed, the panel is saved with source terminal.
+rm -f "$OBS" "$AGY_STUB_LOG"
+r="$(AGY_STUB_MODE=ready tdrive none bash "$SCRIPTS/quotas-antigravity-capture.sh" --terminal)"
+jq -e '.rc == 0 and (.stdout | test("saved: 5 windows in 3 groups"))' <<<"$r" >/dev/null || { printf '%s\n' "$r" >&2; fail "--terminal saves the panel"; }
+jq -e '.tab | test("reading Antigravity usage in this terminal") and test("GEMINI MODELS")' <<<"$r" >/dev/null || fail "the person sees agy and its panel in the tab"
+jq -e '.via == "terminal" and (.text | test("Weekly Limit Remaining")) and (has("response") | not)' "$OBS" >/dev/null || fail "the saved reading records source terminal and the panel text"
+[[ "$(stat -c %a "$OBS" 2>/dev/null || stat -f %Lp "$OBS")" == 600 ]] || fail "terminal observation is private (0600)"
+[[ "$(cat "$AGY_STUB_LOG")" == $'ARGS \nLINE /usage' ]] || { cat "$AGY_STUB_LOG" >&2; fail "agy started with no arguments and only /usage was typed"; }
+jq -e 'keys | sort == ["captured_at_epoch","provider","schema","text","via"]' "$OBS" >/dev/null || fail "the saved terminal reading holds only the panel text and its metadata"
+pass "terminal: interactive agy in the visible tab, /usage typed, saved as terminal"
+
+# Through /quotas: backend fails, the terminal source fills the rows.
+rm -f "$OBS" "$AGY_STUB_LOG"
+q="$(AGY_STUB_MODE=ready tdrive none bash "$SCRIPTS/ai-quotas.sh" --json)"
+rows="$(jq -r '.stdout' <<<"$q")"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5 and all(.status == "ok" and .source == "terminal" and (.detail | test("from agy terminal /usage, observed 0m ago")))' <<<"$rows" >/dev/null \
+  || { printf '%s\n' "$rows" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "/quotas rows come from the terminal when the backend fails"; }
+jq -e '[.rows[] | select(.window == "gemini 7-day")] | .[0].used_pct == 28.3' <<<"$rows" >/dev/null || fail "terminal figure is the parsed percent used"
+jq -e '.via == "terminal"' "$OBS" >/dev/null || fail "/quotas saves the terminal reading as source terminal"
+pass "/quotas: a failed backend falls back to the visible terminal, rows say source terminal"
+
+# The real path: a pseudo-terminal as stdin and controlling terminal, no device override (a person
+# running /quotas in a terminal). The source loop must not take stdin away from the terminal source.
+rm -f "$OBS" "$AGY_STUB_LOG"
+q="$(AGY_STUB_MODE=ready tdrive tty bash "$SCRIPTS/ai-quotas.sh" --json)"
+jq -e '[.stdout | fromjson | .rows[] | select(.provider == "antigravity")] | length == 5 and all(.status == "ok" and .source == "terminal")' <<<"$q" >/dev/null \
+  || { printf '%s\n' "$q" | jq -c '.stdout | fromjson | .rows[] | select(.provider == "antigravity")' >&2; fail "from a real terminal /quotas reads through the terminal source"; }
+pass "terminal: a person running /quotas in a terminal gets the terminal read (stdin preserved)"
+
+# Sign-in state is the prompt on screen now: text before a clear-screen is history, and a
+# "signed in" message that merely mentions authentication is not a prompt.
+python3 -I - "$PARSER" <<'PYEOF' || fail "sign-in detection reads the current screen, not retained history"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("q", sys.argv[1])
+q = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(q)
+done = b"You must sign in to continue.\r\n\x1b[2J\x1b[HSigned in. Authentication successful.\r\nready >\r\n"
+assert not q.SIGNIN.search(q.current_screen_text(done, 0)), "history after a clear counted as a prompt"
+assert q.SIGNIN.search(q.current_screen_text(b"Welcome\r\nYou must sign in to continue.\r\n", 0)), "an active prompt was missed"
+assert q.SIGNIN.search(q.current_screen_text(b"x\x1b[2Jopen accounts.google.com to sign in\r\n", 0)), "a prompt painted after a clear was missed"
+PYEOF
+pass "terminal: sign-in detection follows the screen, not retained history"
+
+# Signed out: the instruction shows in the tab, the person signs in there, the read completes.
+rm -f "$OBS" "$AGY_STUB_LOG"
+r="$(AGY_STUB_MODE=signedout tdrive signin bash "$SCRIPTS/quotas-antigravity-capture.sh" --terminal)"
+jq -e '.rc == 0 and (.stdout | test("saved: 5 windows"))' <<<"$r" >/dev/null || { printf '%s\n' "$r" >&2; fail "the read completes after the person signs in"; }
+jq -e '.tab | test("sign in to Antigravity in this terminal, then wait")' <<<"$r" >/dev/null || fail "the tab shows the plain sign-in instruction"
+[[ "$(cat "$AGY_STUB_LOG")" == $'ARGS \nHUMAN human-signed-in\nLINE /usage' ]] || { cat "$AGY_STUB_LOG" >&2; fail "only the person typed the sign-in; the tool typed /usage only after it"; }
+pass "terminal: signed out shows the instruction, the person signs in, the read finishes"
+
+# A panel the TUI painted twice is refused, never saved as duplicate rows.
+rm -f "$OBS" "$AGY_STUB_LOG"
+r="$(AGY_STUB_MODE=repaint tdrive none bash "$SCRIPTS/quotas-antigravity-capture.sh" --terminal)"
+jq -e '.rc == 3 and (.stderr | test("repeats windows"))' <<<"$r" >/dev/null || { printf '%s\n' "$r" >&2; fail "a repainted panel is refused"; }
+[[ ! -e "$OBS" ]] || fail "a refused repaint saves nothing"
+pass "terminal: a repainted (duplicated) panel is refused, nothing saved"
+
+# No sign-in before the timeout: unreadable with the reason and the manual paste command; /usage never typed.
+rm -f "$OBS" "$AGY_STUB_LOG"
+r="$(AI_QUOTAS_TERMINAL_TIMEOUT=8 AGY_STUB_MODE=nosignin tdrive none bash "$SCRIPTS/quotas-antigravity-capture.sh" --terminal)"
+jq -e '.rc == 3 and (.stderr | test("no sign-in to Antigravity within 8s")) and (.stderr | test("pbpaste"))' <<<"$r" >/dev/null || { printf '%s\n' "$r" >&2; fail "a missing sign-in times out with the reason and the paste command"; }
+[[ ! -e "$OBS" ]] || fail "a timed-out read saves nothing"
+grep -Fq 'LINE' "$AGY_STUB_LOG" && fail "nothing is typed into a sign-in prompt"
+rm -f "$AGY_STUB_LOG"
+q="$(AI_QUOTAS_TERMINAL_TIMEOUT=8 AGY_STUB_MODE=nosignin tdrive none bash "$SCRIPTS/ai-quotas.sh" --json)"
+jq -e '[.stdout | fromjson | .rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and .[0].used_pct == null and (.[0].detail | test("terminal read failed: no sign-in to Antigravity within 8s.*pbpaste"))' <<<"$q" >/dev/null \
+  || { printf '%s\n' "$q" | jq -c '.stdout | fromjson | .rows[] | select(.provider == "antigravity")' >&2; fail "/quotas row is unreadable with the timeout reason and the paste command"; }
+pass "terminal: no sign-in before the timeout is unreadable with reason and manual command"
+
+# Unattended: no terminal opened, even with a terminal available; the reason is recorded.
+rm -f "$OBS" "$AGY_STUB_LOG"
+q="$(AGY_STUB_MODE=ready tdrive none bash "$SCRIPTS/ai-quotas.sh" --json --quiet)"
+jq -e '.tab == ""' <<<"$q" >/dev/null || fail "an unattended run shows nothing in any terminal"
+[[ ! -e "$AGY_STUB_LOG" ]] || fail "an unattended run never starts agy"
+jq -e '[.stdout | fromjson | .rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and (.[0].detail | test("no terminal is opened on an unattended run"))' <<<"$q" >/dev/null || fail "unattended: unreadable with the reason"
+rm -f "$OBS" "$AGY_STUB_LOG"
+q="$(AGY_STUB_MODE=ready tdrive none env AI_QUOTAS_TERMINAL=off bash "$SCRIPTS/ai-quotas.sh" --json)"
+jq -e '.tab == ""' <<<"$q" >/dev/null || fail "AI_QUOTAS_TERMINAL=off opens nothing"
+jq -e '[.stdout | fromjson | .rows[] | select(.provider == "antigravity")] | .[0].detail | test("AI_QUOTAS_TERMINAL=off") and (test("unattended") | not)' <<<"$q" >/dev/null || fail "the off switch gives its own reason, not the unattended one"
+rm -f "$AGY_STUB_LOG"
+q="$(AI_QUOTAS_SOURCE=scheduled AGY_STUB_MODE=ready tdrive none bash "$SCRIPTS/ai-quotas.sh" --json)"
+jq -e '.tab == ""' <<<"$q" >/dev/null || fail "a scheduled snapshot shows nothing in any terminal"
+[[ ! -e "$AGY_STUB_LOG" ]] || fail "a scheduled snapshot never starts agy"
+jq -e '[.stdout | fromjson | .rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and (.[0].detail | test("no terminal is opened on an unattended run"))' <<<"$q" >/dev/null || fail "a scheduled snapshot records unreadable with the reason"
+pass "terminal: unattended runs never open a terminal and record unreadable with the reason"
+
+# Attended but no terminal on the shell (an agent's pipe-backed shell): refuses at once, names the command.
+rm -f "$OBS" "$AGY_STUB_LOG"
+u="$(AI_QUOTAS_AGY_BIN="$AGY_TERM" AI_QUOTAS_TERMINAL=on bash "$SCRIPTS/ai-quotas.sh" --json </dev/null 2>/dev/null)"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and (.[0].detail | test("no visible terminal here.*quotas-antigravity-capture.sh --terminal"))' <<<"$u" >/dev/null || fail "no terminal: unreadable, naming the command to run in a visible tab"
+[[ ! -e "$AGY_STUB_LOG" ]] || fail "no terminal: agy is never started"
+pass "terminal: a shell with no terminal fails fast and says what to run"
+
+# The terminal source is display-only and keeps no session output but a parsed panel.
+if grep -n 'antigravity' "$SCRIPTS/quota-reserve.sh" >/dev/null; then fail "quota-reserve must not mention antigravity"; fi
+unset AGY_STUB_PANEL AGY_STUB_LOG
 
 # --- display only ---------------------------------------------------------------------
 grep -Fq 'select(.provider == "claude" or .provider == "codex")' "$SCRIPTS/quota-reserve.sh" || fail "quota-reserve keeps only Claude and Codex rows"
