@@ -183,6 +183,23 @@ check_eq "$RCS,$(jq -r '.accounts[0] | has("plan_override")' "$CONFIG")" "0,fals
 run --json
 check_eq "$(plan_cells "$CL" 7-day)" "Pro|provider|20|list" "after clearing, the provider's own plan shows again"
 
+# A printable non-ASCII tier is accepted; a control character is refused (Issue #2469 review).
+OUTS="$(set_plan "$CL" "Élite" 50)"; RCS=$?
+check_eq "$RCS,$(jq -r '.accounts[0].plan_override.tier' "$CONFIG")" "0,Élite" "a printable non-ASCII tier is accepted"
+OUTS="$(set_plan "$CL" "$(printf 'Pro\tX')")"; RCS=$?
+check_eq "$RCS" "3" "a tier with a control character is refused"
+
+# Worst case: every value setup accepts, on the widest rows, still fits 140 columns (--json keeps the full value).
+LONGNICK="Averyveryverylongnicknamethatgoesonandon"
+LONGTIER="Discount Platinum Plus Ultra Premium"
+LONGTIER="${LONGTIER:0:32}"
+write_config "$(account_json claude "$CL" "$c1" | jq --arg n "$LONGNICK" --arg t "$LONGTIER" '. + {nickname: $n, plan_override: {tier: $t, usd_per_month: 999999.99}}')"
+run --five-hour
+W="$(table_width "$(table_only "$OUT")")"
+if [[ "$W" -le 140 && "$W" -gt 0 ]]; then ok "the worst-case accepted values fit 140 columns (widest line: $W)"; else bad "the worst-case table is $W columns wide"; fi
+run --json
+check_eq "$(plan_cells "$CL" 7-day)" "$LONGTIER|override|999999.99|override" "and --json keeps the full tier and price"
+
 # The old nickname and the override live side by side.
 HOME="$CASE_HOME" AI_QUOTAS_CONFIG="$CONFIG" bash "$SETUP" nick "$CL" "Work" >/dev/null 2>&1
 set_plan "$CL" "Ultra" 200 >/dev/null
@@ -190,7 +207,7 @@ check_eq "$(jq -c '.accounts[0] | [.nickname, .plan_override.tier]' "$CONFIG")" 
 
 # --- 4. display only -----------------------------------------------------------------------------
 
-check_eq "$(grep -c 'plan_tier\|plan_usd_month\|price' "$HERE/../quota-reserve.sh")" "0" "quota-reserve.sh never reads the plan or price"
+check_eq "$(grep -c 'plan_tier\|plan_usd_month\|plan_override\|usd_per_month\|price' "$HERE/../quota-reserve.sh")" "0" "quota-reserve.sh never reads the plan or price"
 
 printf 'ai-quotas-plan.test.sh: %s passed, %s failed\n' "$PASS" "$FAILED"
 [[ "$FAILED" -eq 0 ]]

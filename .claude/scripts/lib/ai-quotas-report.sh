@@ -423,6 +423,8 @@ render_quota_table() {
                                          or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255)
                                          or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135)
                                          or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) then 2 else 1 end) | add // 0;
+      # Issue #2469: a cell wider than its ceiling is cut with an ellipsis so the table stays within 140 columns for every value setup accepts; --json keeps the full value.
+      def fit($n): if length > $n then .[0:($n - 1)] + "…" else . end;
       def spaces($n): [range(0; $n)] | map(" ") | join("");
       def pad($w): . + spaces($w - wide);
       # Account-level values print on the row that carries them and are blank on the
@@ -432,7 +434,7 @@ render_quota_table() {
       | map(
           . as $x
           | {
-            acct: (.nickname // .reported_email),
+            acct: ((.nickname // .reported_email) | if type == "string" then fit(24) else . end),
             # The pool name when the provider has pools, the window otherwise. A
             # composite Antigravity window (`<group> <window>`) is shortened to
             # `<group> 7d` / `<group> 5h`.
@@ -463,15 +465,15 @@ render_quota_table() {
                   elif .paid_enabled == false then "off"
                   elif .paid_cap_unlimited == true then "none"
                   elif foreign then "-"
-                  elif ((.paid_cap_usd | num) and .paid_cap_usd >= 0) then (.paid_cap_usd | cap_usd)
+                  elif ((.paid_cap_usd | num) and .paid_cap_usd >= 0) then (.paid_cap_usd | cap_usd | fit(8))
                   else "-" end),
-            spent: (if .account_primary == false or foreign or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else "$" + (.paid_spent_usd | two_dp) end),
+            spent: (if .account_primary == false or foreign or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else ("$" + (.paid_spent_usd | two_dp) | fit(9)) end),
             rst: (if .account_primary == false or ((.limit_resets_available | num) | not) or .limit_resets_available < 0 then "-" else (.limit_resets_available | floor | tostring) end),
             tier: (if .account_primary == false or (.plan_tier | type) != "string" then "-"
-                   else ((.plan_tier | if length > 9 then .[0:8] + "…" else . end) + (if .plan_tier_source == "override" then "*" else "" end)) end),
+                   else (((.plan_tier | fit(8)) + (if .plan_tier_source == "override" then "*" else "" end))) end),
             mo: (if .account_primary == false or ((.plan_usd_month | num) | not) then "-"
-                 else ((.plan_usd_month | cap_usd) + (if .plan_price_source == "override" then "*" else "" end)) end),
-            top: (if .account_primary == false then "-" else (.top_label | dash) end),
+                 else (((.plan_usd_month | cap_usd | fit(8)) + (if .plan_price_source == "override" then "*" else "" end))) end),
+            top: (if .account_primary == false then "-" else (.top_label | dash | if type == "string" then fit(8) else . end) end),
             toppct: (if .account_primary == false or ((.top_used_pct | num) | not) or .top_used_pct < 0 or .top_used_pct > 100 then "-"
                      else (.top_used_pct | (if . == floor then floor else . end) | tostring) + "%" end),
             reset: ((.resets_at_et_short // .resets_at_et
