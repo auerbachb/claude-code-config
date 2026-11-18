@@ -134,14 +134,19 @@ login. Its status still reflects the credential the helper can see.
   so there is no profile to move aside and nothing to roll back.
 - **`antigravity`** (Issue #2407) — **no profile directory and no login to launch.** `agy` holds
   one signed-in Google account, so one machine registers one (a second label is refused with
-  exit `3`). `add` only checks that the `agy` CLI is installed — it never runs it — and says the
-  account is **not verified**. `/quotas` reads the figures itself from Google's quota service with
+  exit `3`). `add` and `list` check that the `agy` CLI is installed (they never run it) **and say
+  whether it is signed in and as which account** (Issue #2467): the sign-in is read in memory
+  from the keychain item `agy` keeps, and only the state and the account email are shown, never
+  a credential. Signed out prints the sign-in step (`run agy and sign in with your Google
+  account`) and `add` still registers the slot; `list` shows `needs-login`. A lapsed access
+  token with a refresh token still counts as signed in (it renews the next time `agy` runs).
+  `/quotas` reads the figures itself from Google's quota service with
   the sign-in `agy` holds (Issue #2465; source `backend`, used in memory only, never stored). If
   that fails, the fallback is the `/usage` panel text: tell the user to run `agy` and sign in, or
   to run `agy`, type `/usage`, copy the panel, then run `pbpaste | quotas-antigravity-capture.sh --stdin` (`--stdin` reads piped input, not the
   clipboard itself; or `--from-file <file>`); `--live` tries
-  `agy -p "/usage"` and is unverified. `list` shows only whether the CLI is installed;
-  `/quotas` shows whether a saved panel exists and how old it is. Display only.
+  `agy -p "/usage"` and is unverified. `/quotas` shows whether a saved panel exists and how old it
+  is. Display only.
 
 The `claude` and `codex` logins are interactive and blocking. Tell the user one is about
 to open, and let it run — a magic link or SSO round trip can take a minute. Adding a
@@ -218,6 +223,10 @@ last unattended reading happened.
 - **The job never gates anything.** It reads figures and appends them to
   `~/.claude/ai-quotas-history.jsonl`. Nothing consults that file to decide whether work
   may proceed, and you must not either.
+- It records Antigravity through the `backend` source only, never the terminal or a saved
+  panel: a failed backend read is an `unreadable` row with the reason and appends nothing.
+  Its readings build the history that fills the START, %/DAY and LEFT forecast columns for
+  Antigravity rows after two or more days.
 - It opens **no browser at all** (#1703 removed the last one). A Cursor IDE that is
   signed out records as `needs-login` and waits for the user to sign in there; nothing
   is recorded for that row — an unread row appends no snapshot rather than a fabricated

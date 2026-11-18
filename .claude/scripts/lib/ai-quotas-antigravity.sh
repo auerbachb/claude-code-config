@@ -140,7 +140,7 @@ read_antigravity_terminal() { # <label>
 }
 
 read_antigravity_account() { # <label> [<source-name>]
-  local label="$1" row_source="${2:-observation}" obs result status account age stale_after captured via_note why
+  local label="$1" row_source="${2:-observation}" obs result status account age stale_after captured via_note why live_read
   obs="$(antigravity_observation_file)"
   why="${ANTIGRAVITY_BACKEND_WHY:+; ${ANTIGRAVITY_BACKEND_WHY}}"
   if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$SELF_DIR/lib/quotas-antigravity.py" ]]; then
@@ -150,6 +150,8 @@ read_antigravity_account() { # <label> [<source-name>]
   fi
   # ANTIGRAVITY_SNAPSHOT: a reading the caller already validated, rendered as is (no re-read).
   result="${ANTIGRAVITY_SNAPSHOT:-}"
+  live_read=false
+  [[ -z "$result" ]] || live_read=true   # read from the backend during this very run, not a saved copy
   [[ -n "$result" ]] || result="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" show "$obs" "$NOW" 2>/dev/null || true)"
   status="$(printf '%s' "$result" | jq -r '.status // "unreadable"' 2>/dev/null || echo unreadable)"
   case "$status" in
@@ -180,7 +182,7 @@ read_antigravity_account() { # <label> [<source-name>]
   stale_after=10800
   [[ -z "${AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS:-}" ]] \
     || stale_after="$(positive_int_or_default "$AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS" 10800 AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS)"
-  local line window used resets group models fet_et res_et top
+  local line window used resets group models fet_et res_et top span
   fet_et="$(epoch_to_et "$captured")"
   # The top tier (#2415): the group the panel prints with no "Models within this group"
   # line, because it is a single named model with its own allowance ("<VENDOR> <N> <NAME>").
@@ -219,10 +221,13 @@ read_antigravity_account() { # <label> [<source-name>]
               last_known_resets_et: (if $ret == "" then null else $ret end),
               last_known_expired: ($r != "" and (($r | tonumber) <= $now))}')"
     else
+      # Issue #2467: the window's length lets the history-based forecast (START, %/DAY, LEFT) place
+      # this reading; an unseen window name has no known length and gets none.
+      case "${window##* }" in 7-day) span=604800 ;; 5-hour) span=18000 ;; 1-day) span=86400 ;; 30-day) span=2592000 ;; *) span="" ;; esac
       emit_row antigravity "$label" "$account" "$window" "$used" "$resets" ok \
         "from ${via_note}, observed $(antigravity_age "$age") ago; account not verified${why}" "$row_source" "" \
-        "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" --argjson top "$top" \
-             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at} + $top')"
+        "$(with_window_start "$(jq -nc --arg g "$group" --argjson m "$models" --argjson a "$age" --argjson at "$captured" --argjson top "$top" --argjson live "$live_read" \
+             '{group: $g, group_models: $m, observed_age_seconds: $a, fetched_at_epoch: $at, live_read: $live} + $top')" "$resets" "$span")"
     fi
   done < <(printf '%s' "$result" | jq -c '.groups[] | .name as $g | .models as $m | .slug as $s
       | .windows[] | {window: ($s + " " + .name), used_pct, resets_at_epoch, group: $g, models: $m}')

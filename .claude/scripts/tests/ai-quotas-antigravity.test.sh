@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# catalog: tests — Verifies the Antigravity /usage parser, observation capture, the Google-backend source (against a loopback stub), the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample and the visible-terminal fallback (Issues #2407, #2465, #2466)
+# catalog: tests — Verifies the Antigravity /usage parser, observation capture, the Google-backend source (against a loopback stub), the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample and the visible-terminal fallback (Issues #2407, #2465, #2466, #2467)
 set -euo pipefail
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -144,6 +144,18 @@ live_now="$(AI_QUOTAS_NOW="$CAP" bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null
 jq -e '[.rows[] | select(.provider == "antigravity")] | all(.fetched == "live" and .fetched_display == "now")' <<<"$live_now" >/dev/null || fail "an observation captured at the start of the run is now"
 pass "FETCHED on Antigravity rows: capture date, now only when captured during the run"
 
+# Daily and monthly windows have known lengths too, so their rows are placed in the window.
+cp "$OBS" "$T/obs-keep"
+span_txt="$T/span-usage.txt"
+printf 'GEMINI MODELS\n  Daily Limit Remaining\n    50%%\n    Refreshes in 10h\n  Monthly Limit Remaining\n    80%%\n    Refreshes in 10d\n' > "$span_txt"
+rm -f "$OBS"
+bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$span_txt" --captured-at "$CAP" >/dev/null
+span_rows="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
+jq -e '[.rows[] | select(.window == "gemini 1-day")] | .[0] | .window_start_epoch == (.resets_at_epoch - 86400)' <<<"$span_rows" >/dev/null || { printf '%s\n' "$span_rows" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "a daily window is placed from its 1-day length"; }
+jq -e '[.rows[] | select(.window == "gemini 30-day")] | .[0] | .window_start_epoch == (.resets_at_epoch - 2592000)' <<<"$span_rows" >/dev/null || fail "a monthly window is placed from its 30-day length"
+cp "$T/obs-keep" "$OBS"
+pass "daily and monthly Antigravity windows carry a start for the forecast"
+
 # Stale: shown with its age and the last known figure, not as a live one.
 stale="$(AI_QUOTAS_NOW=$((CAP + 4*3600)) bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | all(.status == "unreadable" and .used_pct == null and (.detail | test("stale: captured 4h 0m ago.*account not verified")) )' <<<"$stale" >/dev/null || fail "stale rows carry age and no live figure"
@@ -267,6 +279,105 @@ jq -e '[.rows[] | select(.provider == "antigravity")] | length == 4 and all(.sta
   || { printf '%s\n' "$rp" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "rows show the fetched backend figures even if the saved reading is replaced mid-request"; }
 echo ok > "$SRV/mode"
 pass "backend failures: unreadable with reason and next step, nothing invented or saved"
+
+# --- sign-in status and the daily snapshot (Issue #2467) -------------------------------
+EMAIL="someone@example.test"
+write_signin() { # <file> <expiry> <with-refresh yes|no> [email]
+  local refresh='' mail=''
+  [[ "$3" != yes ]] || refresh=',"refresh_token":"REFRESH-sentinel-77"'
+  [[ -z "${4:-}" ]] || mail=",\"id_token_email\":\"$4\""
+  printf 'go-keyring-base64:%s' "$(printf '{"token":{"access_token":"%s","expiry":"%s"%s},"auth_method":"consumer"%s}' "$SENT" "$2" "$refresh" "$mail" | base64 | tr -d '\n')" > "$1"
+}
+si() { AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$1" python3 -I "$PARSER" signin "$NOW"; }
+write_signin "$T/si-ok" "2099-01-01T00:00:00Z" yes "$EMAIL"
+jq -e --arg e "$EMAIL" '.status == "signed_in" and .account == $e and .token == "current"' <<<"$(si "$T/si-ok")" >/dev/null || fail "signin: a current sign-in reports the account"
+write_signin "$T/si-lapsed" "2020-01-01T00:00:00Z" yes "$EMAIL"
+jq -e '.status == "signed_in" and .token == "expired"' <<<"$(si "$T/si-lapsed")" >/dev/null || fail "signin: a lapsed access token with a refresh token is still signed in"
+write_signin "$T/si-dead" "2020-01-01T00:00:00Z" no "$EMAIL"
+jq -e '.status == "signed_out" and (.reason | test("expired"))' <<<"$(si "$T/si-dead")" >/dev/null || fail "signin: a lapsed token with nothing to renew it is signed out"
+jq -e '.status == "signed_out" and .account == null' <<<"$(si "$T/no-such-token")" >/dev/null || fail "signin: no saved sign-in is signed out"
+printf 'garbage' > "$T/si-bad"
+jq -e '.status == "unknown"' <<<"$(si "$T/si-bad")" >/dev/null || fail "signin: an unknown shape is unknown, not signed out"
+write_signin "$T/si-noemail" "2099-01-01T00:00:00Z" yes "not an address"
+jq -e '.status == "signed_in" and .account == null' <<<"$(si "$T/si-noemail")" >/dev/null || fail "signin: an account that is not an email is dropped"
+si_out="$(si "$T/si-ok")"
+if grep -Fq "$SENT" <<<"$si_out" || grep -Fq REFRESH-sentinel <<<"$si_out"; then fail "signin output carries a credential"; fi
+pass "signin: state and account only, never a credential"
+
+# list and add report the state and the account instead of only "agy CLI found".
+sl="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-ok" bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
+grep -Fq "signed in as $EMAIL" <<<"$sl" || { printf '%s\n' "$sl" >&2; fail "list shows signed in and the account"; }
+grep -Eq 'antigravity[[:space:]]+personal[[:space:]]+-[[:space:]]+ok' <<<"$sl" || fail "list status is ok when signed in"
+if grep -Fq "$SENT" <<<"$sl"; then fail "list leaks the token"; fi
+sj="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-ok" bash "$SCRIPTS/ai-quotas-setup.sh" list --json 2>&1)"
+jq -e --arg e "$EMAIL" '.[] | select(.provider == "antigravity") | .status == "ok" and (.detail | test("signed in as " + $e))' <<<"$sj" >/dev/null || fail "list --json carries the sign-in detail"
+so="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/no-such-token" bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
+grep -Fq "signed out" <<<"$so" && grep -Fq "run agy and sign in" <<<"$so" || fail "list says signed out with the sign-in step"
+grep -Eq 'antigravity[[:space:]]+personal[[:space:]]+-[[:space:]]+needs-login' <<<"$so" || fail "list status is needs-login when signed out"
+su="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-bad" bash "$SCRIPTS/ai-quotas-setup.sh" list --json 2>&1)"
+jq -e '.[] | select(.provider == "antigravity") | .status == "unverified"' <<<"$su" >/dev/null || fail "list --json reports an unverifiable sign-in as unverified, never ok"
+sx="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/si-lapsed" bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
+grep -Fq "renews the next time agy runs" <<<"$sx" || fail "list notes a lapsed access token renews when agy runs"
+SAVE_CFG="$AI_QUOTAS_CONFIG"
+for variant in in out; do
+  export AI_QUOTAS_CONFIG="$T/accounts-$variant.json"
+  printf '%s\n' '{"schema_version":"1.0","accounts":[]}' > "$AI_QUOTAS_CONFIG"
+  if [[ "$variant" == in ]]; then tf="$T/si-ok"; else tf="$T/no-such-token"; fi
+  ad="$(AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$tf" bash "$SCRIPTS/ai-quotas-setup.sh" add antigravity personal 2>&1)" || fail "add antigravity ($variant) registers"
+  jq -e '[.accounts[] | select(.provider == "antigravity")] | length == 1' "$AI_QUOTAS_CONFIG" >/dev/null || fail "add ($variant): the account is registered"
+  if [[ "$variant" == in ]]; then
+    grep -Fq "signed in as $EMAIL" <<<"$ad" || { printf '%s\n' "$ad" >&2; fail "add shows signed in and the account"; }
+  else
+    grep -Fq "signed out" <<<"$ad" && grep -Fq "run agy and sign in" <<<"$ad" || { printf '%s\n' "$ad" >&2; fail "add says signed out with the sign-in step"; }
+  fi
+  if grep -Fq "account not verified" <<<"$ad"; then fail "add no longer says the account is not verified"; fi
+  if grep -Fq "$SENT" <<<"$ad"; then fail "add leaks the token"; fi
+done
+export AI_QUOTAS_CONFIG="$SAVE_CFG"
+if grep -q "only checks that the .agy. CLI is installed" "$SCRIPTS/ai-quotas-setup.sh" "$SCRIPTS/../skills/quotas-setup/SKILL.md"; then fail "the old 'only checks the CLI' wording is gone"; fi
+pass "setup: list and add show Antigravity signed-in state and account"
+
+# The daily snapshot reads the backend only and records history that fills the forecast.
+SNAP_HIST="$T/snap-history.jsonl"
+WIN_START=$((1795624826 - 604800))
+snap() { # <now> -> rows JSON, run as the scheduled snapshot
+  AI_QUOTAS_SOURCE=scheduled AI_QUOTAS_NOW="$1" AI_QUOTAS_HISTORY="$SNAP_HIST" bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null
+}
+rm -f "$OBS" "$SNAP_HIST" "$SRV/seen"
+write_token "2099-01-01T00:00:00Z"
+export AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/agy-token"
+echo ok > "$SRV/mode"
+s1="$(snap $((WIN_START + 86400)))"
+jq -e '[.rows[] | select(.provider == "antigravity" and .status == "ok")] | length == 4 and all(.source == "backend")' <<<"$s1" >/dev/null || fail "snapshot: Antigravity is read through the backend"
+jq -s -e '[.[] | select(.provider == "antigravity")] | length == 4 and all(.source == "scheduled" and (.resets_at_epoch == null or .window_start_epoch != null)) and any(.window == "gemini 7-day" and .window_start_epoch == '"$WIN_START"')' "$SNAP_HIST" >/dev/null || { cat "$SNAP_HIST" >&2; fail "snapshot: one history line per window, placed in its window"; }
+s2="$(snap $((WIN_START + 3*86400)))"
+jq -e '[.rows[] | select(.window == "gemini 7-day")] | .[0] | .usage_start_epoch != null and .pct_per_day != null' <<<"$s2" >/dev/null \
+  || { printf '%s\n' "$s2" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "after two readings the forecast fills START and %/DAY for an Antigravity row"; }
+jq -e '[.rows[] | select(.window == "gemini 7-day")] | .[0] | (.days_left != null or .days_left_note != null)' <<<"$s2" >/dev/null || fail "the LEFT column has a value or a note"
+if grep -Fq "$SENT" "$SNAP_HIST"; then fail "the token value appears in the snapshot history"; fi
+pass "snapshot: Antigravity recorded via the backend; two readings fill START, %/DAY and LEFT"
+
+# A failed backend on a scheduled run: unreadable with the reason when nothing recent is saved, and a
+# saved reading shown as a fallback is never appended to the history as the snapshot.
+n_before="$(grep -c antigravity "$SNAP_HIST")"
+echo 401 > "$SRV/mode"
+s3="$(snap $((WIN_START + 4*86400)))"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length >= 1 and all(.status == "unreadable" and .used_pct == null)' <<<"$s3" >/dev/null || fail "snapshot: a failed backend is unreadable when the saved reading is stale"
+jq -e '[.rows[] | select(.provider == "antigravity")] | map(.detail) | join(" ") | test("Google rejected the saved agy sign-in")' <<<"$s3" >/dev/null || fail "snapshot: the unreadable row names the backend reason"
+[[ "$(grep -c antigravity "$SNAP_HIST")" == "$n_before" ]] || fail "snapshot: an unreadable Antigravity read appends nothing to the history"
+s4="$(snap $((WIN_START + 3*86400 + 3600)))"
+jq -e '[.rows[] | select(.provider == "antigravity")] | all(.detail | test("Google rejected the saved agy sign-in"))' <<<"$s4" >/dev/null || fail "snapshot: a saved fallback reading still names the backend reason"
+[[ "$(grep -c antigravity "$SNAP_HIST")" == "$n_before" ]] || fail "snapshot: a saved reading shown as a fallback is not recorded as the snapshot"
+jq -e 'any(.status == "unreadable" and .error_class != "")' "${SNAP_HIST%.jsonl}.outcomes.jsonl" >/dev/null 2>&1 \
+  || jq -s -e 'any(.[]; .provider == "antigravity" and .status == "logged_out")' "${SNAP_HIST%.jsonl}.outcomes.jsonl" >/dev/null \
+  || fail "snapshot: the failed backend read is in the outcomes ledger with its class"
+echo ok > "$SRV/mode"
+pass "snapshot: a failed backend is reported with the reason; a saved fallback is never recorded"
+
+# quota-reserve never sees Antigravity rows, even with a history that holds them.
+res="$(AI_QUOTAS_HISTORY="$SNAP_HIST" AI_QUOTAS_NOW="$((WIN_START + 3*86400))" bash "$SCRIPTS/quota-reserve.sh" 2>&1 || true)"
+if grep -Fqi antigravity <<<"$res"; then fail "quota-reserve output contains an Antigravity row"; fi
+pass "quota-reserve: no Antigravity rows"
 
 # The backend is the default source; setup accepts it; the pasted route stays.
 list_out="$(bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"

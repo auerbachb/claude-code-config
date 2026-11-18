@@ -1,4 +1,4 @@
-# Google Antigravity — quota research (Issues #2407, #2465, #2466)
+# Google Antigravity — quota research (Issues #2407, #2465, #2466, #2467)
 
 Research date: 2026-11-16; reader built the same day (Issue #2407). Not auto-loaded. Part of
 the quota-tracking reference set (`ai-quotas.md`). **Outcome: the interactive `/usage` panel
@@ -119,14 +119,16 @@ the owner approved that on 2026-11-18 and it is now the first source (see "Backe
   `claude-gpt 5-hour`, `gemini-4-argon 7-day`), `source` `observation`, the detail naming
   where the text came from (`pasted /usage text` or `agy -p /usage`) and its age, plus
   `group` and `group_models` fields. Registered by `/quotas-setup add antigravity <label>`
-  (one account per machine; checks only that `agy` is installed; "account not verified").
+  (one account per machine; checks that `agy` is installed and, since Issue #2467, whether it is
+  signed in and as whom; see "Setup status and the daily snapshot").
 - **Stale and missing**: an observation older than 3 hours (`AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS`),
   or a window whose computed reset has passed, is shown `unreadable` with its age and the last
   known figure; no figure is invented. With no saved text the row says so and names the capture
-  command. The forecast columns (START, %/DAY, LEFT) stay blank: no history-based forecast applies.
+  command. The forecast columns (START, %/DAY, LEFT) fill from the daily snapshot history (Issue #2467, below).
 - **Display only:** `quota-reserve.sh` keeps only Claude and Codex rows, so Antigravity never
-  feeds the weekly reserve gate. Last-known staging and the history-based forecast do not apply
-  (the observation file is its own last-known); the outcomes ledger records it.
+  feeds the weekly reserve gate. Last-known staging does not apply
+  (the observation file is its own last-known); the history-based forecast does (Issue #2467,
+  below); the outcomes ledger records it.
 - **Capture** (`.claude/scripts/quotas-antigravity-capture.sh`): `--from-file FILE` or `--stdin`
   save pasted text (manual route: run `agy`, type `/usage`, copy the panel, `pbpaste |
   quotas-antigravity-capture.sh --stdin`). `--live` runs `agy -p "/usage"` with stdin closed
@@ -240,6 +242,34 @@ real sign-in prompt says (if it avoids the sign-in pattern the tool types `/usag
 once per 20 s, at most four times, harmlessly), that Ctrl-C ends `agy` (SIGTERM follows), and that
 `agy` starts in the home directory without a folder-trust prompt. Check: run
 `quotas-antigravity-capture.sh --terminal` in a terminal with `agy` signed in, then signed out.
+
+## Setup status and the daily snapshot (Issue #2467)
+
+**Sign-in status.** `ai-quotas-setup.sh list` and `add` ask `lib/quotas-antigravity.py signin <now>`,
+which reads the same keychain item as the backend source, in memory, and prints only
+`{status: signed_in|signed_out|unknown, account, token: current|expired, reason}`. No request is
+made and no credential is printed: the account is the item's `id_token_email` (kept only when it
+looks like an email). `signed_in` means the item exists and either its access token is current or
+a refresh token can renew it (a lapsed access token shows "renews the next time agy runs");
+`signed_out` is no item, or a lapsed token with nothing to renew it; `unknown` is any platform or
+shape the probe cannot read (the CLI is still reported installed). `list` maps signed in to
+`ok` and signed out to `needs-login` with the step `run agy and sign in with your Google account`;
+`add` prints the same state but still registers the slot when signed out.
+
+**Daily snapshot.** The LaunchAgent run (`AI_QUOTAS_SOURCE=scheduled`, `--quiet`) reads Antigravity
+through the `backend` source; the terminal source is skipped, as before. A failed backend read is
+an `unreadable` outcome with its reason class in the outcomes ledger, and the table still shows
+the saved reading (if any) with the backend reason in its note. History only takes a scheduled
+Antigravity row that is a backend reading made in that run (at most 5 minutes old): a saved
+reading shown as a fallback would otherwise be appended with the snapshot's own timestamp. A
+failed read appends nothing (no null percentage), exactly like the other providers.
+
+**Forecast.** Antigravity ok rows carry `window_start_epoch` (reset minus the window length:
+7-day = 604800 s, 5-hour = 18000 s; an unseen window name gets none), which `quotas-forecast.sh`
+needs because the composite label (`gemini 7-day`) is not one it can derive a window from. After
+two or more daily readings START, %/DAY and LEFT fill in. The last-known fallback is the
+observation file itself (stale rows show the last figure); the last-known folder stays Claude,
+Codex and Cursor only. Display only: `quota-reserve.sh` still never sees Antigravity.
 
 ## Needs a live check
 
