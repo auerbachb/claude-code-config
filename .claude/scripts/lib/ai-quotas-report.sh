@@ -424,7 +424,8 @@ render_quota_table() {
                                          or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135)
                                          or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) then 2 else 1 end) | add // 0;
       # Issue #2469: a cell wider than its ceiling is cut with an ellipsis so the table stays within 140 columns for every value setup accepts; --json keeps the full value.
-      def fit($n): if length > $n then .[0:($n - 1)] + "…" else . end;
+      def fit($n): . as $t | if ($t | wide) <= $n then $t
+                          else ([range($t | length; -1; -1) | select(($t[0:.] | wide) <= ($n - 1))] | first) as $k | $t[0:$k] + "…" end;
       def spaces($n): [range(0; $n)] | map(" ") | join("");
       def pad($w): . + spaces($w - wide);
       # Account-level values print on the row that carries them and are blank on the

@@ -183,14 +183,14 @@ check_eq "$RCS,$(jq -r '.accounts[0] | has("plan_override")' "$CONFIG")" "0,fals
 run --json
 check_eq "$(plan_cells "$CL" 7-day)" "Pro|provider|20|list" "after clearing, the provider's own plan shows again"
 
-# A printable non-ASCII tier is accepted; a control character is refused (Issue #2469 review).
+# Plan values are printable ASCII, so a character is a terminal column (Issue #2469 review).
 OUTS="$(set_plan "$CL" "Élite" 50)"; RCS=$?
-check_eq "$RCS,$(jq -r '.accounts[0].plan_override.tier' "$CONFIG")" "0,Élite" "a printable non-ASCII tier is accepted"
+check_eq "$RCS" "3" "a non-ASCII tier is refused"
 OUTS="$(set_plan "$CL" "$(printf 'Pro\tX')")"; RCS=$?
 check_eq "$RCS" "3" "a tier with a control character is refused"
 
 # Worst case: every value setup accepts, on the widest rows, still fits 140 columns (--json keeps the full value).
-LONGNICK="Averyveryverylongnicknamethatgoesonandon"
+LONGNICK="漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字"
 LONGTIER="Discount Platinum Plus Ultra Premium"
 LONGTIER="${LONGTIER:0:32}"
 write_config "$(account_json claude "$CL" "$c1" | jq --arg n "$LONGNICK" --arg t "$LONGTIER" '. + {nickname: $n, plan_override: {tier: $t, usd_per_month: 999999.99}}')"
