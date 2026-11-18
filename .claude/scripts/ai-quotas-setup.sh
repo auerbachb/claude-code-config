@@ -139,7 +139,7 @@
 #             account, so one is registered per machine and there is no profile
 #             to create or log in to. `add` only checks that the `agy` CLI is
 #             installed (it never runs it) and says plainly that the account is
-#             not verified; `/quotas` reads the `/usage` panel text saved by
+#             not verified; `/quotas` reads usage from Google's backend with the sign-in agy holds (Issue #2465), falling back to the `/usage` panel text saved by
 #             quotas-antigravity-capture.sh. Display only: it never gates work.
 #
 # LAYOUT
@@ -863,9 +863,9 @@ run_login() { # <provider> <profile_dir>
     codex)  CODEX_HOME="$dir" "$bin" login ;;
     antigravity)
       # Nothing to run: the CLI holds its own sign-in and this tool never reads
-      # it. Setup only confirms the CLI is installed; `/quotas` reads the panel
+      # it (`/quotas` uses it in memory only, Issue #2465). Setup only confirms the CLI is installed; the fallback is the panel
       # text saved by quotas-antigravity-capture.sh.
-      echo "${SELF_NAME}: agy found at ${bin}; sign in by running agy yourself, then save its /usage panel with quotas-antigravity-capture.sh." >&2
+      echo "${SELF_NAME}: agy found at ${bin}; sign in by running agy yourself, then /quotas reads usage from Google automatically (manual fallback: quotas-antigravity-capture.sh)." >&2
       return 0
       ;;
     cursor)
@@ -1227,7 +1227,7 @@ action_add() {
   if [[ "$provider" == "cursor" ]]; then
     echo "${SELF_NAME}: cursor reads the Cursor IDE login at $(cursor_state_db) — no profile directory is created."
   elif [[ "$provider" == "antigravity" ]]; then
-    echo "${SELF_NAME}: antigravity reads the /usage panel text saved by quotas-antigravity-capture.sh — no profile directory is created."
+    echo "${SELF_NAME}: antigravity reads usage from Google with the sign-in agy holds, falling back to the /usage panel text saved by quotas-antigravity-capture.sh — no profile directory is created."
   else
     ensure_profile_dir "$dir"
   fi
@@ -1335,7 +1335,7 @@ action_sources() {
   else
     index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
     provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
-    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; antigravity) allowed=observation ;; *) die_usage "unsupported provider" ;; esac
+    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; antigravity) allowed=backend,observation ;; *) die_usage "unsupported provider" ;; esac
     if [[ "$ARG_NICK" == default ]]; then
       config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
     else
@@ -2158,7 +2158,7 @@ action_list() {
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     local source_order
-    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["observation"] else ["ide-token","browser"] end) | join(",")')"
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["backend","observation"] else ["ide-token","browser"] end) | join(",")')"
     [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \

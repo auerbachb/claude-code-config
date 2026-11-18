@@ -6,6 +6,8 @@ Usage:
   quotas-antigravity.py ingest  <text-file|-> <captured-epoch> <via> <observation-file>
   quotas-antigravity.py show    <observation-file> <now-epoch>
   quotas-antigravity.py capture <agy-bin> <captured-epoch> <observation-file>
+  quotas-antigravity.py backend <captured-epoch> <observation-file>
+  quotas-antigravity.py parse-backend <json-file|-> <captured-epoch>
 
 The panel prints percent REMAINING per window; this tool reports percent USED
 (one decimal). "Refreshes in 153h 32m" becomes an absolute epoch computed from the
@@ -13,7 +15,19 @@ capture time; "Quota available" means a full window with no reset. Input that ho
 no window yields status "unreadable", never 0%. No credential is read: the live
 capture runs the CLI's own slash command and keeps neither stderr nor raw bytes beyond
 the panel text. Observation files are written 0600, atomically.
+
+`backend` (Issue #2465) asks Google's quota service for the same figures with the OAuth
+access token `agy` keeps in the macOS login keychain (service "gemini", account
+"antigravity"). The token lives in memory for the two requests only: it is never printed,
+logged, saved or put in an error message, and the saved observation holds the service's
+response (groups, buckets, fractions, reset times) and nothing else. Any failure is
+reported as status "unreadable" with a fixed reason and error_class, never as a figure.
 """
+import base64
+import datetime
+import urllib.error
+import urllib.parse
+import urllib.request
 import fcntl
 import json
 import os
@@ -166,6 +180,214 @@ def parse_panel(text, captured):
     return {"status": "ok", "account": account, "groups": groups}
 
 
+# --- backend source (Issue #2465) ---------------------------------------------------------
+DEFAULT_BASE = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+KEYCHAIN_PREFIX = "go-keyring-base64:"
+LOAD_BODY = {"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}
+PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+MAX_BODY = 1024 * 1024
+
+
+class BackendError(Exception):
+    def __init__(self, error_class, reason):
+        Exception.__init__(self, reason)
+        self.error_class = error_class
+        self.reason = reason
+
+
+def base_url():
+    """The service root. Only a loopback override is honoured (tests), so the token can never
+    be sent to a host chosen by the environment."""
+    override = os.environ.get("AI_QUOTAS_ANTIGRAVITY_BACKEND_URL")
+    if not override:
+        return DEFAULT_BASE
+    parsed = urllib.parse.urlparse(override)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise BackendError("backend_url", "AI_QUOTAS_ANTIGRAVITY_BACKEND_URL must point at a loopback address")
+    return override.rstrip("/")
+
+
+def read_stored_token():
+    """-> (access_token, expiry_epoch|None). The value never leaves this process."""
+    path = os.environ.get("AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE")
+    if path:
+        try:
+            raw = open(path).read().strip()
+        except OSError:
+            raise BackendError("token_missing", "no saved agy sign-in found")
+    elif sys.platform == "darwin":
+        try:
+            proc = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                  timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise BackendError("token_missing", "the macOS keychain could not be read")
+        if proc.returncode != 0:
+            raise BackendError("token_missing", "agy has no saved sign-in in the keychain")
+        raw = proc.stdout.decode("utf-8", "replace").strip()
+    else:
+        raise BackendError("token_unsupported", "reading the agy sign-in is only supported on macOS")
+    try:
+        if raw.startswith(KEYCHAIN_PREFIX):
+            raw = raw[len(KEYCHAIN_PREFIX):]
+            raw = base64.b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8")
+        token = json.loads(raw)["token"]
+        access = token["access_token"]
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        raise BackendError("token_shape", "the saved agy sign-in has an unknown shape")
+    if not isinstance(access, str) or not access or any(ord(ch) < 33 or ord(ch) > 126 for ch in access):
+        raise BackendError("token_shape", "the saved agy sign-in has an unknown shape")
+    expiry = None
+    stamp = token.get("expiry")
+    if isinstance(stamp, str):
+        try:
+            expiry = parse_rfc3339(stamp)
+        except ValueError:
+            expiry = None
+    return access, expiry
+
+
+def parse_rfc3339(text):
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[Tt ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?([Zz]|[+-]\d{2}:\d{2})", text.strip())
+    if not m:
+        raise ValueError("not RFC 3339")
+    frac = (m.group(3) or "")[:6]
+    zone = "+00:00" if m.group(4) in ("Z", "z") else m.group(4)
+    stamp = "%sT%s%s%s" % (m.group(1), m.group(2), "." + frac if frac else "", zone)
+    return int(datetime.datetime.fromisoformat(stamp).timestamp())
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: the Authorization header must never follow one to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def post_json(url, body, access):
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Authorization": "Bearer " + access, "Content-Type": "application/json", "User-Agent": "antigravity-cli"})
+    try:
+        with OPENER.open(req, timeout=25) as resp:
+            raw = resp.read(MAX_BODY + 1)
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        if code == 401:
+            raise BackendError("http_401", "Google rejected the saved agy sign-in (expired or signed out)")
+        if code == 403:
+            raise BackendError("http_403", "Google says this account has no Antigravity license")
+        if code == 429:
+            raise BackendError("http_429", "Google rate-limited the usage request")
+        raise BackendError("http_%d" % code, "Google answered HTTP %d" % code)
+    except (urllib.error.URLError, OSError, ValueError):
+        raise BackendError("network", "Google could not be reached")
+    if len(raw) > MAX_BODY:
+        raise BackendError("response_shape", "the usage response was too large")
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise BackendError("response_shape", "the usage response was not JSON")
+    if not isinstance(doc, dict):
+        raise BackendError("response_shape", "the usage response was not an object")
+    return doc
+
+
+def fetch_backend(now):
+    access, expiry = read_stored_token()
+    if expiry is not None and expiry <= int(now):
+        raise BackendError("token_expired", "the saved agy sign-in has expired (agy renews it when it runs)")
+    base = base_url()
+    loaded = post_json(base + ":loadCodeAssist", LOAD_BODY, access)
+    project = loaded.get("cloudaicompanionProject")
+    if isinstance(project, dict):
+        project = project.get("id")
+    if not isinstance(project, str) or not PROJECT.match(project):
+        raise BackendError("response_shape", "the account lookup named no usable project")
+    summary = post_json(base + ":retrieveUserQuotaSummary", {"project": project}, access)
+    result = parse_backend(summary, int(now))
+    if result["status"] != "ok":
+        raise BackendError("response_shape", result["reason"])
+    return summary, result
+
+
+def clean_text(text):
+    return "".join(ch for ch in ANSI.sub("", text) if ch >= " ").strip()[:200]
+
+
+def parse_backend(doc, captured):
+    """Quota summary response -> the same result shape parse_panel returns. A bucket without
+    a usable remainingFraction makes the whole reading unreadable: JSON omits zero, so an
+    absent value cannot be told from an exhausted window and is never turned into a figure."""
+    def bad(reason):
+        return {"status": "unreadable", "reason": reason, "account": None, "groups": []}
+
+    if not isinstance(doc, dict):
+        return bad("the usage response was not an object")
+    raw_groups = []
+    listed = doc.get("groups")
+    if listed is not None and not isinstance(listed, list):
+        return bad("the usage groups have an unknown shape")
+    for g in (listed or []):
+        if not isinstance(g, dict) or not isinstance(g.get("buckets"), list):
+            return bad("a usage group has an unknown shape")
+        raw_groups.append((g.get("displayName"), g.get("description"), g["buckets"]))
+    loose = doc.get("buckets")
+    if isinstance(loose, list) and loose:
+        raw_groups.append((None, None, loose))
+    elif loose is not None and not isinstance(loose, list):
+        return bad("the usage buckets have an unknown shape")
+    groups = []
+    for name, desc, buckets in raw_groups:
+        name = clean_text(name) if isinstance(name, str) else ""
+        if not name:
+            name = "Unknown"
+        models = []
+        if isinstance(desc, str):
+            mm = MODELS.match(clean_text(desc))
+            if mm:
+                models = [x.strip() for x in mm.group(1).split(",") if x.strip()]
+        group = {"name": name, "raw_name": name, "slug": "unknown" if name == "Unknown" else short_group(name), "models": models, "windows": []}
+        for b in buckets:
+            if not isinstance(b, dict):
+                return bad("a usage bucket has an unknown shape")
+            if b.get("disabled") is True:
+                continue
+            frac = b.get("remainingFraction")
+            if isinstance(frac, bool) or not isinstance(frac, (int, float)) or frac != frac:
+                return bad("a usage bucket has no remainingFraction; the response is not trusted")
+            if not 0.0 <= float(frac) <= 1.0:
+                return bad("a remainingFraction outside 0-1 was returned; the response is not trusted")
+            title = clean_text(b.get("displayName")) if isinstance(b.get("displayName"), str) else ""
+            wname = window_name(title) if title else ""
+            if not wname or wname == "window":
+                raw_window = b.get("window")
+                wname = window_name(raw_window.replace("_", " ")) if isinstance(raw_window, str) and raw_window else "window"
+            resets = None
+            if b.get("resetTime") is not None:
+                if not isinstance(b["resetTime"], str):
+                    return bad("a reset time has an unknown shape")
+                try:
+                    resets = parse_rfc3339(b["resetTime"])
+                except ValueError:
+                    return bad("a reset time is not a date; the response is not trusted")
+            remaining = round(float(frac) * 100.0, 1)
+            group["windows"].append({
+                "name": wname, "title": title or wname, "remaining_pct": remaining,
+                "used_pct": round(100.0 - float(frac) * 100.0, 1), "resets_at_epoch": resets,
+                "full": resets is None and remaining >= 100.0,
+                "reset_text": b["resetTime"] if isinstance(b.get("resetTime"), str) else None,
+            })
+        if group["windows"]:
+            groups.append(group)
+    if not groups:
+        return bad("no usage window found in the response")
+    return {"status": "ok", "account": None, "groups": groups}
+
+
 def read_text(path):
     data = sys.stdin.buffer.read(MAX_TEXT + 1) if path == "-" else open(path, "rb").read(MAX_TEXT + 1)
     return data.decode("utf-8", "replace")
@@ -175,8 +397,12 @@ class NewerKept(Exception):
     """A newer observation is already saved; the older capture is not written."""
 
 
-def write_observation(path, captured, via, text):
-    doc = {"schema": SCHEMA, "provider": "antigravity", "captured_at_epoch": int(captured), "via": via, "text": text[:MAX_TEXT]}
+def write_observation(path, captured, via, text, response=None):
+    doc = {"schema": SCHEMA, "provider": "antigravity", "captured_at_epoch": int(captured), "via": via}
+    if response is not None:
+        doc["response"] = response
+    else:
+        doc["text"] = text[:MAX_TEXT]
     folder = os.path.dirname(os.path.abspath(path))
     os.makedirs(folder, exist_ok=True)
     lock = os.open(os.path.join(folder, ".agy-obs.lock"), os.O_CREAT | os.O_RDWR, 0o600)
@@ -232,7 +458,8 @@ def main(argv):
             except (OSError, ValueError):
                 print(json.dumps({"status": "unreadable", "reason": "observation file is not valid JSON"}))
                 return 0
-            if not isinstance(doc, dict) or doc.get("schema") != SCHEMA or not isinstance(doc.get("text"), str) \
+            if not isinstance(doc, dict) or doc.get("schema") != SCHEMA \
+                    or not (isinstance(doc.get("text"), str) or isinstance(doc.get("response"), dict)) \
                     or not isinstance(doc.get("captured_at_epoch"), int) or isinstance(doc.get("captured_at_epoch"), bool):
                 print(json.dumps({"status": "unreadable", "reason": "observation file has an unknown shape"}))
                 return 0
@@ -240,9 +467,32 @@ def main(argv):
             if captured > int(argv[3]) + FUTURE_SLACK:
                 print(json.dumps({"status": "unreadable", "reason": "the saved capture time is in the future"}))
                 return 0
-            result = parse_panel(doc["text"], captured)
+            if isinstance(doc.get("response"), dict) and doc.get("via") == "backend":
+                result = parse_backend(doc["response"], captured)
+            elif isinstance(doc.get("text"), str):
+                result = parse_panel(doc["text"], captured)
+            else:
+                result = {"status": "unreadable", "reason": "observation file has an unknown shape", "account": None, "groups": []}
             result.update(captured_at_epoch=captured, age_seconds=max(0, int(argv[3]) - captured),
                           via=doc.get("via") if isinstance(doc.get("via"), str) else "unknown")
+            print(json.dumps(result))
+            return 0
+        if cmd == "parse-backend" and len(argv) == 4:
+            try:
+                parsed = json.loads(read_text(argv[2]))
+            except ValueError:
+                print(json.dumps({"status": "unreadable", "reason": "the usage response was not JSON"}))
+                return 3
+            print(json.dumps(parse_backend(parsed, int(argv[3]))))
+            return 0
+        if cmd == "backend" and len(argv) == 4:
+            captured = int(argv[2])
+            try:
+                summary, result = fetch_backend(captured)
+            except BackendError as exc:
+                print(json.dumps({"status": "unreadable", "reason": exc.reason, "error_class": exc.error_class}))
+                return 3
+            write_observation(argv[3], captured, "backend", None, response=summary)
             print(json.dumps(result))
             return 0
         if cmd == "capture" and len(argv) == 5:

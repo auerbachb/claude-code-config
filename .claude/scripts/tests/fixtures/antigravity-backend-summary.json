@@ -1,0 +1,26 @@
+{
+  "groups": [
+    {
+      "displayName": "Gemini models",
+      "description": "Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash",
+      "buckets": [
+        {"bucketId": "gemini-weekly", "displayName": "Weekly Limit Remaining", "window": "weekly", "resetTime": "2026-11-25T16:40:26Z", "remainingFraction": 0.7168},
+        {"bucketId": "gemini-5h", "displayName": "Five Hour Limit Remaining", "window": "five_hour", "remainingFraction": 1}
+      ]
+    },
+    {
+      "displayName": "Claude and GPT models",
+      "description": "Models within this group: Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B",
+      "buckets": [
+        {"bucketId": "3p-weekly", "displayName": "Weekly Limit Remaining", "window": "weekly", "resetTime": "2026-11-25T16:38:44Z", "remainingFraction": 1}
+      ]
+    },
+    {
+      "displayName": "Gemini 4 Argon",
+      "buckets": [
+        {"bucketId": "argon-weekly", "displayName": "Gemini 4 Argon Weekly Limit", "window": "weekly", "resetTime": "2026-11-25T16:40:00Z", "remainingFraction": 0.2495}
+      ]
+    }
+  ],
+  "description": "Within each group, models share a weekly limit."
+}

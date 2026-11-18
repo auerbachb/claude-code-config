@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# catalog: tests — Verifies the Antigravity /usage parser, observation capture, the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample (Issue #2407)
+# catalog: tests — Verifies the Antigravity /usage parser, observation capture, the Google-backend source (against a loopback stub), the `antigravity` provider rows in /quotas and its /quotas-setup registration against a recorded sample (Issues #2407, #2465)
 set -euo pipefail
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -99,6 +99,8 @@ export AI_QUOTAS_CONFIG="$T/accounts.json"
 export AI_QUOTAS_HISTORY="$T/history.jsonl"
 export AI_QUOTAS_LAST_KNOWN_DIR="$T/last-known"
 export AI_QUOTAS_NOW="$NOW"
+# The backend source finds no sign-in until the Issue #2465 section below sets one up.
+export AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/no-such-token"
 export AI_QUOTAS_CLAUDE_VERSION=1.0.0
 export AI_QUOTAS_AGY_BIN="$T/agy-good"
 rm -f "$OBS"
@@ -159,6 +161,111 @@ printf 'not json' > "$OBS"
 bad="$(bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | .[0].status == "unreadable" and .[0].used_pct == null' <<<"$bad" >/dev/null || fail "a corrupt observation is unreadable, not 0%"
 pass "missing or corrupt observation gives an unreadable row"
+
+# --- backend source (Issue #2465) -----------------------------------------------------
+FIX="$SCRIPTS/tests/fixtures"
+bparsed="$(python3 -I "$PARSER" parse-backend "$FIX/antigravity-backend-summary.json" "$NOW")"
+jq -e '.status == "ok" and (.groups | map(.slug)) == ["gemini","claude-gpt","gemini-4-argon"]' <<<"$bparsed" >/dev/null || fail "backend fixture parses to the same three groups"
+jq -e '.groups[0].windows[0] | .name == "7-day" and .used_pct == 28.3 and .remaining_pct == 71.7 and .resets_at_epoch == 1795624826 and .full == false' <<<"$bparsed" >/dev/null || fail "backend weekly bucket: percent used and reset epoch"
+jq -e '.groups[0].windows[1] | .name == "5-hour" and .used_pct == 0 and .resets_at_epoch == null and .full == true' <<<"$bparsed" >/dev/null || fail "backend bucket with no reset is full"
+jq -e '.groups[0].models == ["Gemini 4 Hydrogen","Gemini 3.8 Flash"] and .groups[2].models == [] and .groups[2].windows[0].used_pct == 75' <<<"$bparsed" >/dev/null || fail "backend models list and the top-tier group"
+for bad in '[]' '{"groups":"x"}' '{"groups":[]}' '{"groups":[{"buckets":[{"remainingFraction":1.5}]}]}' '{"groups":[{"buckets":[{"remainingFraction":"0.5"}]}]}' '{"groups":[{"buckets":[{"remainingFraction":true}]}]}' '{"groups":[{"buckets":[{"remainingFraction":0.5,"resetTime":"soon"}]}]}'; do
+  printf '%s' "$bad" | python3 -I "$PARSER" parse-backend - "$NOW" | jq -e '.status == "unreadable" and (.groups | length) == 0' >/dev/null || fail "backend shape refused: $bad"
+done
+python3 -I "$PARSER" parse-backend "$FIX/antigravity-backend-bad-shape.json" "$NOW" | jq -e '.status == "unreadable" and (.reason | test("remainingFraction"))' >/dev/null || fail "a bucket with no remainingFraction is unreadable, never 0%"
+pass "backend response: same rows as the panel parser, odd shapes unreadable"
+
+SRV="$T/srv"
+mkdir -p "$SRV"
+SENT="TESTTOKEN-sentinel-4f9a7c21"
+printf '%s' "$SENT" > "$SRV/token"
+cp "$FIX/antigravity-backend-summary.json" "$SRV/good.json"
+cp "$FIX/antigravity-backend-bad-shape.json" "$SRV/bad.json"
+echo ok > "$SRV/mode"
+python3 -I "$SCRIPTS/tests/lib/antigravity-backend-stub.py" "$SRV" &
+STUB_PID=$!
+trap 'kill "$STUB_PID" 2>/dev/null || true; rm -rf "$T"' EXIT
+for _ in $(seq 1 50); do [[ -s "$SRV/port" ]] && break; sleep 0.1; done
+[[ -s "$SRV/port" ]] || fail "stub backend did not start"
+export AI_QUOTAS_ANTIGRAVITY_BACKEND_URL="http://127.0.0.1:$(cat "$SRV/port")/v1internal"
+write_token() { # <expiry>
+  printf 'go-keyring-base64:%s' "$(printf '{"token":{"access_token":"%s","expiry":"%s"},"auth_method":"consumer"}' "$SENT" "$1" | base64 | tr -d '\n')" > "$T/agy-token"
+}
+write_token "2099-01-01T00:00:00Z"
+export AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/agy-token"
+run_quotas() { bash "$SCRIPTS/ai-quotas.sh" --json 2>&1; } # stderr kept: the token must not appear there either
+ALL_OUT=""
+
+rm -f "$OBS" "$SRV/seen"
+b="$(run_quotas)"; ALL_OUT+="$b"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length == 4' <<<"$b" >/dev/null || fail "backend: one row per group and window"
+jq -e '[.rows[] | select(.window == "gemini 7-day")] | .[0] | .status == "ok" and .used_pct == 28.3 and .resets_at_epoch == 1795624826 and (.detail | test("from Google backend, observed 0m ago"))' <<<"$b" >/dev/null || fail "backend row: figure, reset and the source in the detail"
+jq -e '[.rows[] | select(.window == "gemini-4-argon 7-day")] | .[0] | .used_pct == 75' <<<"$b" >/dev/null || fail "backend Argon row"
+jq -e '[.rows[] | select(.provider == "antigravity")] | all(.fetched == "live")' <<<"$b" >/dev/null || fail "a backend read counts as fetched now"
+jq -e '.via == "backend" and (.response.groups | length) == 3 and (has("text") | not)' "$OBS" >/dev/null || fail "the saved reading records its source (backend) and the response"
+[[ "$(stat -c %a "$OBS" 2>/dev/null || stat -f %Lp "$OBS")" == 600 ]] || fail "backend observation is private (0600)"
+grep -Fq "/v1internal:loadCodeAssist token_ok=True" "$SRV/seen" && grep -Fq ":retrieveUserQuotaSummary token_ok=True project=aicode-consumers" "$SRV/seen" || fail "backend: both requests carry the token and the project"
+leaks="$(grep -rlF --exclude=token --exclude=agy-token "$SENT" "$T" 2>/dev/null || true)"
+[[ -z "$leaks" ]] || fail "the token value appears in: $leaks"
+grep -Fq "$SENT" <<<"$ALL_OUT" && fail "the token value appears in /quotas output"
+if [[ -r "$HOME/.claude/ai-quotas-history.jsonl" ]] && grep -Fq "$SENT" "$HOME/.claude/ai-quotas-history.jsonl"; then fail "the token value appears in the history"; fi
+pass "backend: rows, source recorded, token absent from files and output"
+
+# A reading younger than the refresh bound is reused; an older one is fetched again.
+n1="$(wc -l < "$SRV/seen" | tr -d ' ')"
+AI_QUOTAS_NOW=$((NOW + 60)) bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null | jq -e '[.rows[] | select(.provider == "antigravity")] | length == 4 and all(.status == "ok")' >/dev/null || fail "a young backend reading still shows"
+[[ "$(wc -l < "$SRV/seen" | tr -d ' ')" == "$n1" ]] || fail "a reading younger than the refresh bound does not call Google again"
+AI_QUOTAS_NOW=$((NOW + 3600)) bash "$SCRIPTS/ai-quotas.sh" --json 2>/dev/null | jq -e '[.rows[] | select(.provider == "antigravity")] | length == 4 and all(.status == "ok" and (.detail | test("from Google backend, observed 0m ago")))' >/dev/null || fail "an older reading is refreshed from the backend"
+[[ "$(wc -l < "$SRV/seen" | tr -d ' ')" -gt "$n1" ]] || fail "an older reading calls Google again"
+pass "backend: refreshes when missing or older than the refresh bound, not on every run"
+
+# Failures: unreadable with the reason and the next step, never a figure, never 0%.
+check_unreadable() { # <name> <reason-regex> [env assignments are exported by the caller]
+  local out
+  rm -f "$OBS"
+  out="$(run_quotas)"; ALL_OUT+="$out"
+  jq -e --arg re "$2" '[.rows[] | select(.provider == "antigravity")] | length == 1 and .[0].status == "unreadable" and .[0].used_pct == null and (.[0].detail | test($re))' <<<"$out" >/dev/null \
+    || { printf '%s\n' "$out" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "$1"; }
+  [[ ! -e "$OBS" ]] || fail "$1: nothing is saved on a failed read"
+}
+echo 401 > "$SRV/mode"
+check_unreadable "a rejected token is unreadable with the next step" 'Google usage read failed: Google rejected the saved agy sign-in.*run agy and sign in'
+echo ok > "$SRV/mode"
+write_token "2020-01-01T00:00:00Z"
+: > "$SRV/seen"
+check_unreadable "an expired token is unreadable with the next step" 'sign-in has expired.*run agy and sign in'
+[[ ! -s "$SRV/seen" ]] || fail "an expired token is never sent"
+write_token "2099-01-01T00:00:00Z"
+AI_QUOTAS_ANTIGRAVITY_TOKEN_FILE="$T/no-such-token" check_unreadable "no saved sign-in is unreadable with the next step" 'no saved agy sign-in.*run agy and sign in'
+echo shape > "$SRV/mode"
+check_unreadable "an unexpected response shape is unreadable" 'remainingFraction'
+echo notjson > "$SRV/mode"
+check_unreadable "a non-JSON response is unreadable" 'not JSON'
+echo redirect > "$SRV/mode"
+check_unreadable "a redirect is refused, never followed with the token" 'HTTP 302'
+echo ok > "$SRV/mode"
+AI_QUOTAS_ANTIGRAVITY_BACKEND_URL="http://example.com/v1internal" check_unreadable "a non-loopback backend override is refused" 'loopback'
+if grep -Fq "$SENT" <<<"$ALL_OUT"; then fail "the token value appears in failure output"; fi
+# A stale pasted reading behind a failed backend keeps its stale row and names the backend reason.
+echo 401 > "$SRV/mode"
+bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$SAMPLE" --captured-at "$CAP" >/dev/null
+st="$(AI_QUOTAS_NOW=$((CAP + 4*3600)) run_quotas)"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5 and all(.status == "unreadable" and .used_pct == null and (.detail | test("stale: captured 4h 0m ago.*Google usage read failed")))' <<<"$st" >/dev/null || fail "a failed backend and a stale paste show both reasons, no live figure"
+okfb="$(AI_QUOTAS_NOW=$((CAP + 3600)) run_quotas)"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5 and all(.status == "ok" and (.detail | test("pasted /usage text, observed 1h 0m ago.*Google usage read failed")))' <<<"$okfb" >/dev/null || fail "a usable pasted reading behind a failed backend still names the backend reason"
+echo ok > "$SRV/mode"
+pass "backend failures: unreadable with reason and next step, nothing invented or saved"
+
+# The backend is the default source; setup accepts it; the pasted route stays.
+list_out="$(bash "$SCRIPTS/ai-quotas-setup.sh" list 2>&1)"
+grep -Fq 'sources: backend,observation' <<<"$list_out" || { printf '%s\n' "$list_out" >&2; fail "default Antigravity source order is backend,observation"; }
+bash "$SCRIPTS/ai-quotas-setup.sh" sources personal observation,backend antigravity >/dev/null 2>&1 || fail "setup accepts the backend source in either order"
+jq -e '.accounts[] | select(.provider == "antigravity") | .sources == ["observation","backend"]' "$AI_QUOTAS_CONFIG" >/dev/null || fail "the order is saved"
+if bash "$SCRIPTS/ai-quotas-setup.sh" sources personal terminal antigravity >/dev/null 2>&1; then fail "an unknown Antigravity source is refused"; fi
+bash "$SCRIPTS/ai-quotas-setup.sh" sources personal default antigravity >/dev/null 2>&1 || fail "setup restores the default order"
+jq -e '.accounts[] | select(.provider == "antigravity") | has("sources") | not' "$AI_QUOTAS_CONFIG" >/dev/null || fail "default clears the saved order"
+kill "$STUB_PID" 2>/dev/null || true; wait "$STUB_PID" 2>/dev/null || true
+pass "sources: backend is the default, accepted by setup, with observation as the fallback"
 
 # --- display only ---------------------------------------------------------------------
 grep -Fq 'select(.provider == "claude" or .provider == "codex")' "$SCRIPTS/quota-reserve.sh" || fail "quota-reserve keeps only Claude and Codex rows"

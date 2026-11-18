@@ -138,10 +138,14 @@ no email at all and could never carry the note.
 
 **Antigravity rows (Issue #2407)** are one per model group and window, shown as
 `<group> <window>` (for example `gemini 7-day`, `claude-gpt 5-hour`, `gemini-4-argon 7-day`).
-The panel prints percent remaining; the row shows percent used. The text comes from a file
-saved by `quotas-antigravity-capture.sh` (paste the panel with `pbpaste | … --stdin`, or
-`--live` to try `agy -p "/usage"`, which is not yet verified), so every row says how old
-that text is and that the account is not verified. Older than 3 h, or past its window's
+The panel prints percent remaining; the row shows percent used. **`/quotas` reads them itself
+(Issue #2465):** it asks Google's quota service with the sign-in `agy` already holds, and saves
+the response as the reading, so a plain `/quotas` shows fresh rows with `from Google backend` in
+the detail. A reading under 5 minutes old is reused; older or missing, it is fetched again. When
+that read fails (no sign-in, expired, HTTP error, unexpected shape) the row is `unreadable` with
+the reason and the next step, and a saved pasted reading is the fallback: paste the panel with
+`pbpaste | quotas-antigravity-capture.sh --stdin`. Every row says where its reading came from
+(`Google backend` or `pasted /usage text`), how old it is, and that the account is not verified. Older than 3 h, or past its window's
 reset, a row turns `unreadable`, names its age, and shows the last known figure. With no
 saved text there is one `unreadable` row saying what is missing. Antigravity is display
 only: it never feeds the weekly reserve gate. Details: `.claude/reference/ai-quotas-antigravity.md`.
