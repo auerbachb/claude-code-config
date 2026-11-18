@@ -223,6 +223,14 @@ run --five-hour
 W="$(table_width "$(table_only "$OUT")")"
 if [[ "$W" -le 140 && "$W" -gt 0 ]]; then ok "the emoji-nickname Cursor override row fits 140 columns (widest line: $W)"; else bad "the emoji-nickname Cursor override row is $W columns wide"; fi
 
+# The same with a nickname of eight U+16FE0 characters (East Asian Width wide, outside the common ranges): a 24-character nickname, the long cursor-models window, the longest override and a paid spend together.
+fresh
+write_config "$(account_json cursor cursor-one@example.com "$CUR" | jq '. + {nickname: "𖿠𖿠𖿠𖿠𖿠𖿠𖿠𖿠", plan_override: {tier: "Discount", usd_per_month: 99999.99}}')"
+cursor_spend_body > "$STUB_CURSOR_USAGE"
+run --five-hour
+W="$(table_width "$(table_only "$OUT")")"
+if [[ "$W" -le 140 && "$W" -gt 0 ]]; then ok "the U+16FE0-nickname Cursor override row fits 140 columns (widest line: $W)"; else bad "the U+16FE0-nickname Cursor override row is $W columns wide"; fi
+
 # --- 4. display only -----------------------------------------------------------------------------
 
 check_eq "$(grep -c 'plan_tier\|plan_usd_month\|plan_override\|usd_per_month\|price' "$HERE/../quota-reserve.sh")" "0" "quota-reserve.sh never reads the plan or price"
