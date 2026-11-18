@@ -36,8 +36,21 @@
 # under ~/.claude/slow-read-cache/ (never in a worktree), are written atomically
 # with mode 600 in a mode 700 directory.
 #
+# Age is counted from the moment the live read STARTED (the caller passes that
+# time to slow_cache_put), never from the write, and a write never replaces an
+# entry whose read started no earlier than its own: a slow or delayed run can
+# therefore neither extend a value's life nor put an older read over a newer one.
+#
+# Host: the value of GH_HOST (github.com when unset) is part of the identity (stored and
+# compared; it also names the file). Hosts chosen only through gh's own config are
+# NOT distinguished: telling them apart would mean reading gh's config or
+# credentials, which this library never does. The risk is a same-named repository
+# on another host with the same base tip and the same login inside the lifetime.
+#
 # Environment: SLOW_READ_CACHE_TTL (seconds; clamped to the kind's maximum,
-# non-numeric -> the maximum, 0 -> no caching), SLOW_READ_CACHE_DIR (tests).
+# non-numeric -> the maximum, 0 -> no caching; callers check slow_cache_enabled
+# first, so with caching off not even the base-tip probe runs),
+# SLOW_READ_CACHE_DIR (tests).
 
 SLOW_CACHE_MAX_SHA_KEYED=300
 SLOW_CACHE_MAX_SETTING=120
@@ -58,6 +71,13 @@ slow_cache_ttl() {
   printf '%s' "$v"
 }
 
+# slow_cache_enabled <kind> -> 0 when entries of this kind may be stored/served.
+slow_cache_enabled() { [[ "$(slow_cache_ttl "$1")" =~ ^[1-9][0-9]*$ ]]; }
+
+# slow_cache_host -> the lowercased GH_HOST, or "github.com" when it is unset or
+# empty. Nothing else.
+slow_cache_host() { printf '%s' "${GH_HOST:-github.com}" | tr '[:upper:]' '[:lower:]'; }
+
 slow_cache_dir() { printf '%s' "${SLOW_READ_CACHE_DIR:-$HOME/.claude/slow-read-cache}"; }
 
 # slow_cache_file <kind> <owner/repo> <ref> -> path (fails on unusable input)
@@ -66,7 +86,7 @@ slow_cache_file() {
   or_lc="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
   [[ "$kind" =~ ^[a-z-]+$ && "$or_lc" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ && -n "$ref" ]] || return 1
   # cksum only names the file; the ref itself is stored and compared on load.
-  sum="$(printf '%s' "$ref" | cksum | tr -d ' \t')" || return 1
+  sum="$(printf '%s|%s' "$(slow_cache_host)" "$ref" | cksum | tr -d ' \t')" || return 1
   [[ "$sum" =~ ^[0-9]+$ ]] || return 1
   printf '%s/%s__%s.%s.json' "$(slow_cache_dir)" "${or_lc//\//__}" "$kind" "$sum"
 }
@@ -106,26 +126,37 @@ slow_cache_get() {
   [[ -n "$key" && -n "$viewer" && -f "$f" && -r "$f" && -w "$f" ]] || return 1
   now="$(date +%s)"
   jq -je --arg kind "$kind" --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --arg ref "$ref" \
-     --arg key "$key" --arg viewer "$viewer" --argjson now "$now" --argjson ttl "$ttl" '
+     --arg host "$(slow_cache_host)" --arg key "$key" --arg viewer "$viewer" --argjson now "$now" --argjson ttl "$ttl" '
     select(type == "object" and .schema == 1 and .kind == $kind and .owner_repo == $or and .ref == $ref
-      and .key == $key and (.viewer | type) == "string" and .viewer == $viewer
+      and .host == $host and .key == $key and (.viewer | type) == "string" and .viewer == $viewer
       and (.saved_epoch | type) == "number" and ($now - .saved_epoch) >= 0 and ($now - .saved_epoch) < $ttl
       and (.value | type) == "string")
     | .value' "$f" 2>/dev/null
 }
 
-# slow_cache_put <kind> <owner/repo> <ref> <key> <viewer> <value> -> 0 saved, 1 not. Never prints.
+# slow_cache_put <kind> <owner/repo> <ref> <key> <viewer> <value> [read_started_epoch]
+# -> 0 saved or kept a newer entry, 1 not. Never prints. read_started_epoch is the
+# time the live read began (default: now); it is the entry's age origin.
 slow_cache_put() {
-  local kind="$1" or="$2" ref="$3" key="$4" viewer="${5:-}" value="$6" f dir tmp now
+  local kind="$1" or="$2" ref="$3" key="$4" viewer="${5:-}" value="$6" started="${7:-}" f dir tmp now cur
   [[ "$(slow_cache_ttl "$kind")" =~ ^[1-9][0-9]*$ && -n "$key" && -n "$viewer" ]] || return 1
   f="$(slow_cache_file "$kind" "$or" "$ref")" || return 1
   dir="$(dirname "$f")"
   (umask 077; mkdir -p "$dir") 2>/dev/null || return 1
   tmp="$(mktemp "$dir/.slow.XXXXXX" 2>/dev/null)" || return 1
   now="$(date +%s)"
+  [[ "$started" =~ ^[0-9]{1,12}$ ]] || started="$now"
+  (( started > now )) && started="$now"
+  # Never put an older read over a newer one: leave an entry whose read started at
+  # or after ours alone (a narrow check-then-rename race remains, but every entry's
+  # age is counted from its own read start, so none can outlive its lifetime).
+  if [[ -f "$f" ]]; then
+    cur="$(jq -r 'select(type == "object") | .saved_epoch | select(type == "number")' "$f" 2>/dev/null)" || cur=""
+    if [[ "$cur" =~ ^[0-9]+$ ]] && (( cur >= started )); then rm -f "$tmp" 2>/dev/null; return 0; fi
+  fi
   if jq -cn --arg kind "$kind" --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --arg ref "$ref" \
-       --arg key "$key" --arg viewer "$viewer" --argjson now "$now" --arg value "$value" \
-       '{schema: 1, kind: $kind, owner_repo: $or, ref: $ref, key: $key, viewer: $viewer, saved_epoch: $now, value: $value}' \
+       --arg host "$(slow_cache_host)" --arg key "$key" --arg viewer "$viewer" --argjson now "$started" --arg value "$value" \
+       '{schema: 1, kind: $kind, owner_repo: $or, ref: $ref, host: $host, key: $key, viewer: $viewer, saved_epoch: $now, value: $value}' \
        > "$tmp" 2>/dev/null \
      && [[ -s "$tmp" ]] && chmod 600 "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
     return 0

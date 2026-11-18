@@ -48,6 +48,7 @@ cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$SCRIPTS/lib/"
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
+if [ -n "${FAKE_GATE_TTL_LOG:-}" ]; then printf '%s\n' "${SLOW_READ_CACHE_TTL-unset}" >> "$FAKE_GATE_TTL_LOG"; fi
 if [ -n "${FAKE_GATE_PWD_LOG:-}" ]; then printf '%s\n' "$PWD" >> "$FAKE_GATE_PWD_LOG"; fi
 MISSING="${FAKE_GATE_MISSING:-[]}"
 HUMAN="${FAKE_GATE_HUMAN:-[]}"
@@ -611,6 +612,20 @@ if grep -q -- "--allow-nonauthor" "$GATE_LOG2"; then
   bad "--allow-nonauthor unexpectedly present when the flag was not passed (logged calls: $(cat "$GATE_LOG2"))"
 else
   ok "no --allow-nonauthor forwarded when the flag was not passed"
+fi
+
+# 27c. Issue #2443: an admin merge can bypass branch protection, so every
+#      merge-gate.sh it runs (directly or through clean-behind-check.sh) reads the
+#      required-check list live — whatever lifetime the caller's environment asks for.
+new_log
+TTL_LOG="$TMP/ttl.log"; : > "$TTL_LOG"
+SLOW_READ_CACHE_TTL=300 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_TTL_LOG="$TTL_LOG" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 12 --print --repo-path "$CLONE" --branch main
+if [[ -s "$TTL_LOG" && "$(sort -u "$TTL_LOG")" == "0" ]]; then
+  ok "merge-gate.sh runs with the read cache off (SLOW_READ_CACHE_TTL=0), even when the caller sets 300"
+else
+  bad "merge-gate.sh did not get SLOW_READ_CACHE_TTL=0 (logged: $(tr '\n' ' ' < "$TTL_LOG"))"
 fi
 
 # ============================================================================

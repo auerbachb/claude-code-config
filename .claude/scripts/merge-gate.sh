@@ -762,9 +762,10 @@ CODEOWNERS_TEXT=""
 # that was found with every earlier path an explicit HTTP 404, or all three paths
 # an explicit 404. A rate limit, a 5xx or an odd response is never stored, and any
 # doubt is the live read below.
-CO_CACHE=0 CO_TIP1="" CO_DEFINITE=1 CO_HIT_OK=0
+CO_CACHE=0 CO_TIP1="" CO_DEFINITE=1 CO_HIT_OK=0 CO_START=""
 if [[ -n "$BASE_REF" && -n "${GH_VIEWER_LOGIN:-}" && -r "${SCRIPT_DIR}/lib/slow-read-cache.sh" ]] \
-   && . "${SCRIPT_DIR}/lib/slow-read-cache.sh" 2>/dev/null \
+   && . "${SCRIPT_DIR}/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled codeowners \
+   && CO_START="$(date +%s)" \
    && CO_TIP1="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF")"; then
   CO_CACHE=1
   if CODEOWNERS_TEXT="$(slow_cache_get codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN")"; then
@@ -800,7 +801,7 @@ done
 if [[ "$CO_CACHE" == 1 && "$CO_DEFINITE" == 1 ]]; then
   CO_TIP2="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF" 2>/dev/null)" || CO_TIP2=""
   if [[ -n "$CO_TIP2" && "$CO_TIP2" == "$CO_TIP1" ]]; then
-    slow_cache_put codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN" "$CODEOWNERS_TEXT" >/dev/null 2>&1 || true
+    slow_cache_put codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN" "$CODEOWNERS_TEXT" "$CO_START" >/dev/null 2>&1 || true
   fi
 fi
 fi

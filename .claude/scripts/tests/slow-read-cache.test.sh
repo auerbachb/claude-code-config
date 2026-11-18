@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/merge-gate-test-fixtures.sh"
 
 export SLOW_READ_CACHE_DIR="$HOME/.claude/slow-read-cache"
+# A TTL or host inherited from the caller's environment would change every scenario.
+unset SLOW_READ_CACHE_TTL GH_HOST
 CALLS="$TMP/calls"
 TIPFILE="$TMP/tip"
 TIPSEQ="$TMP/tipseq"
@@ -256,6 +258,102 @@ check_eq 0 "$(cache_files)" "'unavailable' is never stored"
 # ------------------------------------------------------------------ the library
 echo "== lifetime clamps, file mode, no credentials"
 . "$REPO_ROOT/.claude/scripts/lib/slow-read-cache.sh"
+echo "== required checks: corrupt element, host, caching off, concurrent writers"
+reset_cache; run_req
+f="$(find "$SLOW_READ_CACHE_DIR" -type f -name 'solo__repo__required-checks*' | head -1)"
+jq -c '.value = (.value | fromjson | .contexts = [null] | tojson)' "$f" > "$f.n" && mv "$f.n" "$f"
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "an entry whose contexts hold a null: live read"
+check_eq "$R_COLD" "$OUT" "null-context entry: right answer"
+jq -c '.value = (.value | fromjson | .contexts = [""] | tojson)' "$f" > "$f.n" && mv "$f.n" "$f"
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "an entry whose contexts hold an empty string: live read"
+
+reset_cache; GH_HOST=ghe.example.com run_req
+reset_calls; GH_HOST=ghe.example.com run_req
+check_eq 0 "$(calls protection)" "same GH_HOST: reused"
+reset_calls; GH_HOST=other.example.com run_req
+check_eq 1 "$(calls protection)" "another GH_HOST: miss, never another host's list"
+reset_calls; GH_HOST=GHE.Example.com run_req
+check_eq 0 "$(calls protection)" "host compared case-insensitively; each host has its own entry"
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "GH_HOST unset (github.com) after another host's entries: miss"
+check_eq github.com "$(GH_HOST=GitHub.com slow_cache_host 2>/dev/null || true)" "host identity is the lowercased GH_HOST"
+
+echo "== every payload type: the exact shape the live path produces, or a live read"
+mutate() { # <name glob> <jq filter applied to the envelope>
+  local g
+  g="$(find "$SLOW_READ_CACHE_DIR" -type f -name "$1" | head -1)"
+  jq -c "$2" "$g" > "$g.n" && mv "$g.n" "$g"
+}
+reset_cache; run_req
+mutate '*required-checks*' '.value = (.value | fromjson | .apps = {"rule-lint": "15368"} | tojson)'
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "required-checks: an app id that is not a number: live read"
+mutate '*required-checks*' '.value = (.value | fromjson | .apps = [] | tojson)'
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "required-checks: apps that is not an object: live read"
+mutate '*required-checks*' '.value = (.value | fromjson | .source = "none" | tojson)'
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "required-checks: a 'none' source in an entry: live read"
+mutate '*required-checks*' '.value = (.value | fromjson | .error = "x" | tojson)'
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "required-checks: an entry carrying an error: live read"
+mutate '*required-checks*' '.value = "not json"'
+reset_calls; run_req
+check_eq 1 "$(calls protection)" "required-checks: a value that is not JSON: live read"
+
+reset_cache; FAKE_PM_CONFIG="$POLICY" run_tier
+for v in '{"present":"yes"}' '{"present":true,"text":5}' '{"present":true,"text":""}' '[1]' '"x"'; do
+  mutate '*pm-config*' ".value = ($(printf '%s' "$v" | jq -Rs .))"
+  reset_calls; FAKE_PM_CONFIG="$POLICY" run_tier
+  check_eq 1 "$(calls pmconfig)" "pm-config: entry value $v: live read"
+  check_eq ci-only "$(jq -r .gate <<<"$OUT")" "pm-config: entry value $v: right answer"
+done
+
+reset_cache; run_gate
+mutate '*codeowners*' '.value = 5'
+reset_calls; run_gate
+check_eq 2 "$(calls codeowners)" "codeowners: a value that is not a string: live read"
+check_eq '["coderabbitai[bot]"]' "$(bots)" "codeowners: right answer"
+mutate '*codeowners*' '.value = null'
+reset_calls; run_gate
+check_eq 2 "$(calls codeowners)" "codeowners: a null value: live read"
+mutate '*codeowners*' '.host = "other.example.com"'
+reset_calls; run_gate
+check_eq 2 "$(calls codeowners)" "codeowners: an entry stored for another host: live read"
+
+reset_cache; run_req
+reset_calls; GH_HOST=github.com run_req
+check_eq 0 "$(calls protection)" "GH_HOST=github.com is the same host as GH_HOST unset"
+check_eq github.com "$(slow_cache_host)" "host identity defaults to github.com"
+
+reset_cache; SLOW_READ_CACHE_TTL=0 run_req
+check_eq 0 "$(calls tip)" "caching off: no base-tip probe (required checks)"
+check_eq 0 "$(calls user)" "caching off: no login lookup (required checks)"
+check_eq 1 "$(calls protection)" "caching off: live read"
+reset_calls; FAKE_PM_CONFIG="$POLICY" SLOW_READ_CACHE_TTL=0 run_tier
+check_eq 0 "$(calls tip)" "caching off: no base-tip probe (review-tier)"
+
+reset_cache; SLOW_READ_CACHE_TTL=0 run_gate
+check_eq 0 "$(calls tip)" "caching off: no base-tip probe (merge-gate)"
+check_eq 0 "$(cache_files)" "caching off: nothing stored (merge-gate)"
+# Age counts from the read's START; an older read never replaces a newer entry.
+reset_cache
+NOW="$(date +%s)"
+slow_cache_put required-checks solo/repo main "$TIP_A" solouser '{"v":"started-130s-ago"}' $((NOW - 130))
+check_eq 1 "$(cache_files)" "entry stored"
+if slow_cache_get required-checks solo/repo main "$TIP_A" solouser >/dev/null; then bad "a read that STARTED 130s ago was served (age ran from the write)"; else ok "age counts from the read start: a 130s-old read is a miss"; fi
+reset_cache
+slow_cache_put required-checks solo/repo main "$TIP_A" solouser '{"v":"newer"}' $((NOW - 10))
+slow_cache_put required-checks solo/repo main "$TIP_A" solouser '{"v":"older"}' $((NOW - 60))
+check_eq '{"v":"newer"}' "$(slow_cache_get required-checks solo/repo main "$TIP_A" solouser)" "an older read never overwrites a newer entry"
+check_eq $((NOW - 10)) "$(jq -r .saved_epoch "$(find "$SLOW_READ_CACHE_DIR" -type f -name '*.json' | head -1)")" "the newer entry keeps its own start time"
+slow_cache_put required-checks solo/repo main "$TIP_A" solouser '{"v":"newest"}' $((NOW - 5))
+check_eq '{"v":"newest"}' "$(slow_cache_get required-checks solo/repo main "$TIP_A" solouser)" "a newer read replaces an older entry"
+slow_cache_put required-checks solo/repo main "$TIP_A" solouser '{"v":"future"}' $((NOW + 500))
+check_eq 1 "$(( $(jq -r .saved_epoch "$(find "$SLOW_READ_CACHE_DIR" -type f -name '*.json' | head -1)") <= $(date +%s) ))" "a start time in the future is clamped to now"
+
 check_eq 300 "$(SLOW_READ_CACHE_TTL=99999 slow_cache_ttl codeowners)" "file reads: environment above the maximum -> 300"
 check_eq 120 "$(SLOW_READ_CACHE_TTL=99999 slow_cache_ttl required-checks)" "settings: environment above the maximum -> 120"
 check_eq 300 "$(SLOW_READ_CACHE_TTL=abc slow_cache_ttl pm-config)" "non-numeric -> maximum"

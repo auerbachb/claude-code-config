@@ -297,7 +297,11 @@ esac
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             stub = root / "gh"
-            stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$API_LOG\"\n"
+            stub.write_text("#!/bin/sh\n"
+                            # Log only the repository REST paths this test is about. The signed-in
+                            # login lookup ("user") and the base-tip lookup ("graphql") behind the
+                            # short-lived read caches (issue #2443) are not path reads.
+                            "case \"$2\" in repos/*) printf '%s\\n' \"$2\" >> \"$API_LOG\" ;; esac\n"
                             "case \"$2\" in\n"
                             "  */protection/required_status_checks) printf '%s\\n' '{\"contexts\":[\"aggregate\"]}' ;;\n"
                             "  *) printf '%s\\n' '{\"name\":\"release/2.0#safe%\",\"protected\":true}' ;;\nesac\n")

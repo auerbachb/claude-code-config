@@ -394,9 +394,10 @@ elif [[ -n "$PR_NUMBER" ]]; then
   # bound to the repo and the signed-in login. A miss, a stale entry or any doubt
   # is the live read below; only a definite answer (a decoded file, or an
   # HTTP 404) is ever stored.
-  SC_OK=0 SC_TIP1="" SC_FROM_CACHE=0 SC_STORE=""
+  SC_OK=0 SC_TIP1="" SC_FROM_CACHE=0 SC_STORE="" SC_START=""
   if [[ -n "$BASE_REF" && -r "$SCRIPT_DIR/lib/slow-read-cache.sh" ]] \
-     && . "$SCRIPT_DIR/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_viewer \
+     && . "$SCRIPT_DIR/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled pm-config \
+     && SC_START="$(date +%s)" && slow_cache_viewer \
      && SC_TIP1="$(slow_cache_base_tip "$REPO" "$BASE_REF")"; then
     SC_OK=1
     if SC_HIT="$(slow_cache_get pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER")" \
@@ -404,7 +405,7 @@ elif [[ -n "$PR_NUMBER" ]]; then
        && [[ "$SC_PRESENT" == "false" ]]; then
       SC_FROM_CACHE=1
     elif [[ "${SC_PRESENT:-}" == "true" ]] \
-       && printf '%s' "$SC_HIT" | jq -e '(.text | type) == "string"' >/dev/null 2>&1 \
+       && printf '%s' "$SC_HIT" | jq -e '(.text | type) == "string" and (.text | length) > 0' >/dev/null 2>&1 \
        && printf '%s' "$SC_HIT" | jq -j '.text' > "$POLICY_COPY" 2>/dev/null; then
       SC_FROM_CACHE=1
       HAVE_POLICY=1
@@ -445,7 +446,7 @@ elif [[ -n "$PR_NUMBER" ]]; then
       fi
       SC_TIP2="$(slow_cache_base_tip "$REPO" "$BASE_REF" 2>/dev/null)" || SC_TIP2=""
       if [[ -n "$SC_VALUE" && -n "$SC_TIP2" && "$SC_TIP2" == "$SC_TIP1" ]]; then
-        slow_cache_put pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$SC_VALUE" >/dev/null 2>&1 || true
+        slow_cache_put pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$SC_VALUE" "$SC_START" >/dev/null 2>&1 || true
       fi
     fi
   fi

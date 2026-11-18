@@ -139,6 +139,12 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# This path can merge past branch protection, so the merge gate it runs must read
+# the repository's required-check list live: pin the short-lived read cache off
+# for this process and everything it starts (issue #2443; lib/slow-read-cache.sh —
+# a TTL of 0 disables it, and nothing a caller sets can raise it back).
+export SLOW_READ_CACHE_TTL=0
+
 # The shared wall-clock bound (issue #1404). Loaded here, consumed only by
 # resolve_repo_path's fallback below — the one git call this script makes
 # itself. Loading is best-effort at this point ON PURPOSE: every other mode,

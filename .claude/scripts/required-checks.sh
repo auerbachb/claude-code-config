@@ -20,15 +20,16 @@ done
 # before and after the live read) additionally drops the entry whenever the base
 # moves. "none" and "unavailable" are never stored or served, so an old "no
 # requirement" cannot outlive a change. Any doubt is a live read.
-SC_OK=0 SC_TIP1=""
+SC_OK=0 SC_TIP1="" SC_START=""
 if [[ -n "$BASE_REF" && "$OWNER" != "{owner}" && "$REPO" != "{repo}" \
       && -r "$(dirname "$0")/lib/slow-read-cache.sh" ]] \
-   && . "$(dirname "$0")/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_viewer \
+   && . "$(dirname "$0")/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled required-checks \
+   && SC_START="$(date +%s)" && slow_cache_viewer \
    && SC_TIP1="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF")"; then
   SC_OK=1
   if SC_HIT="$(slow_cache_get required-checks "$OWNER/$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER")" \
      && jq -e 'type == "object" and (.source | IN("branch_protection", "branch_object")) and .error == ""
-               and (.contexts | type == "array" and length > 0) and (.apps | type == "object")' >/dev/null 2>&1 <<<"$SC_HIT"; then
+               and (.contexts | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and (.apps | type == "object" and all(.[]; type == "number"))' >/dev/null 2>&1 <<<"$SC_HIT"; then
     printf '%s\n' "$SC_HIT"
     exit 0
   fi
@@ -150,7 +151,7 @@ if [[ "$SC_OK" == 1 && "$REQUIRED_ERROR" == "" && "$REQUIRED_CONTEXTS_JSON" != "
       && ( "$REQUIRED_SOURCE" == "branch_protection" || "$REQUIRED_SOURCE" == "branch_object" ) ]]; then
   SC_TIP2="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF" 2>/dev/null)" || SC_TIP2=""
   if [[ -n "$SC_TIP2" && "$SC_TIP2" == "$SC_TIP1" ]]; then
-    slow_cache_put required-checks "$OWNER/$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$REQUIRED_OUT" >/dev/null 2>&1 || true
+    slow_cache_put required-checks "$OWNER/$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$REQUIRED_OUT" "$SC_START" >/dev/null 2>&1 || true
   fi
 fi
 printf '%s\n' "$REQUIRED_OUT"
