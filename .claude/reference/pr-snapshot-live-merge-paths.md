@@ -36,3 +36,7 @@ recovery, guarded commit); if the lock cannot be taken in about two seconds or w
 broken mid-write, nothing is written. Residual limit: a lock holder wedged past
 the library's 120-second stale age could still finish a write it began before the
 break; the consequence is bounded to one 60-second entry on polling paths.
+
+Known limits: write ordering relies on the shared `state-lock.sh`; a reported
+stale-break race in it is tracked in Issue #2460. The effect here is bounded to 60
+seconds on polling cycles, and merge paths read live.
