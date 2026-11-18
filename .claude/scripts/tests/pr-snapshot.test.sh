@@ -247,7 +247,7 @@ reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
 NOW="$(date +%s)"
 slow_cache_test_hook() {
   slow_cache_test_hook() { :; }   # only the first writer pauses
-  ( pr_snap_put pr-reviews '[{"id":2}]' "$NOW" ) &
+  ( unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN; pr_snap_put pr-reviews '[{"id":2}]' "$NOW" ) &
   HOOK_B_PID=$!
   sleep 0.5
 }
@@ -260,7 +260,7 @@ unset -f slow_cache_test_hook
 reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
 slow_cache_test_hook() {
   slow_cache_test_hook() { :; }
-  ( pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))" ) &
+  ( unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN; pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))" ) &
   HOOK_A_PID=$!
   sleep 0.5
 }
@@ -269,32 +269,40 @@ wait "$HOOK_A_PID" 2>/dev/null
 check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "newer writer paused between compare and rename: the older one writes nothing over it"
 unset -f slow_cache_test_hook
 
+# Locking is state-lock.sh's (ownership token, dead-owner recovery, guarded commit).
 # A lock that cannot be taken: nothing is written (fail closed), nothing is damaged.
 reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
 pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))"
 LOCKED_FILE="$(find "$SLOW_READ_CACHE_DIR" -type f -name '*__pr-reviews.*.json' | head -1)"
-mkdir "$LOCKED_FILE.lock"
+mkdir "$LOCKED_FILE.lock"   # a fresh lock with no owner record yet is never treated as dead
 pr_snap_put pr-reviews '[{"id":2}]' "$NOW"; RC_LOCKED=$?
 check_eq 1 "$RC_LOCKED" "a held lock: the write is refused"
-rmdir "$LOCKED_FILE.lock"
 check_eq '[{"id":1}]' "$(pr_snap_get pr-reviews)" "a held lock: the existing entry is untouched"
-# A dead writer's lock (older than ten seconds) is cleared and the write goes through.
-mkdir "$LOCKED_FILE.lock"; touch -t 202001010000 "$LOCKED_FILE.lock"
+rmdir "$LOCKED_FILE.lock"
+# A lock whose owner died (SIGKILL: no cleanup ran) is recovered by the lock library.
+dead_owner_lock() { # <entry file>: leave a lock held by a process that no longer exists
+  # A separate process, not a subshell: the lock records $$, which a subshell shares with us.
+  env -u CLAUDE_STATE_LOCK_HELD -u CLAUDE_STATE_LOCK_TOKEN bash -c \
+    '. "$1/state-lock.sh"; state_lock_acquire "$2" 2 2>/dev/null || exit 1; kill -9 $$' _ "$SCRIPTS_DIR" "$1"
+  true
+}
+dead_owner_lock "$LOCKED_FILE"
+check_eq 1 "$([[ -d "$LOCKED_FILE.lock" ]] && echo 1 || echo 0)" "dead-owner fixture: the abandoned lock is on disk"
 pr_snap_put pr-reviews '[{"id":2}]' "$NOW"
-check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "a stale lock directory is cleared and the newer read is stored"
+check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "a lock whose owner died is recovered and the newer read is stored"
 check_eq 0 "$(find "$SLOW_READ_CACHE_DIR" -name '*.lock' | wc -l | tr -d ' ')" "no lock directory is left behind"
-# The same on a GNU-style stat (what Linux CI runs): `stat -f` is filesystem status
-# there (multi-line, not a timestamp) and only `stat -c %Y` gives the mtime. A stub
-# stat that behaves that way proves a dead writer's lock is still cleared.
+# The same recovery under a GNU-style stat (what Linux CI runs, where `stat -f` is
+# filesystem status and only `stat -c %Y` is the mtime): a lock with no owner record
+# and an old mtime is aged out by the lock library. A shim stat behaves that way.
 GNU_BIN="$TMP/gnu-stat-bin"; mkdir -p "$GNU_BIN"
 REAL_STAT="$(command -v stat)"
 cat > "$GNU_BIN/stat" <<EOF
 #!/usr/bin/env bash
-if [[ "\$1" == "-c" && "\$2" == "%Y" ]]; then
-  t="\$("$REAL_STAT" -c %Y "\$3" 2>/dev/null)" || t="\$("$REAL_STAT" -f %m "\$3" 2>/dev/null)" || exit 1
+if [[ "\$1" == "-c" ]]; then
+  t="\$("$REAL_STAT" -c "\$2" "\$3" 2>/dev/null)" || t="\$("$REAL_STAT" -f %m "\$3" 2>/dev/null)" || exit 1
   printf '%s\n' "\$t"; exit 0
 fi
-if [[ "\$1" == "-f" ]]; then printf '  File: "%s"\n    ID: 0 Namelen: 255 Type: ext2/ext3\n' "\$3"; exit 0; fi
+if [[ "\$1" == "-f" ]]; then printf '  File: "%s"\n    ID: 0 Namelen: 255\n' "\$3"; exit 0; fi
 exit 1
 EOF
 chmod +x "$GNU_BIN/stat"
@@ -303,7 +311,29 @@ pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 30))"
 LOCKED_FILE="$(find "$SLOW_READ_CACHE_DIR" -type f -name '*__pr-reviews.*.json' | head -1)"
 mkdir "$LOCKED_FILE.lock"; touch -t 202001010000 "$LOCKED_FILE.lock"
 PATH="$GNU_BIN:$PATH" pr_snap_put pr-reviews '[{"id":2}]' "$NOW"
-check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "GNU-style stat (-f is filesystem status): the stale lock is still cleared and the newer read stored"
+check_eq '[{"id":2}]' "$(pr_snap_get pr-reviews)" "GNU-style stat: an old ownerless lock is aged out and the newer read stored"
+# Two writers find the SAME abandoned lock at once: one breaks it, the other must not
+# remove the winner's fresh lock, and the older read must never land last. Repeated
+# so the interleavings vary.
+for round in 1 2 3 4 5; do
+  reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
+  pr_snap_put pr-reviews '[{"id":0}]' "$((NOW - 40))"
+  LOCKED_FILE="$(find "$SLOW_READ_CACHE_DIR" -type f -name '*__pr-reviews.*.json' | head -1)"
+  dead_owner_lock "$LOCKED_FILE"
+  ( unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN; pr_snap_put pr-reviews '[{"id":1}]' "$((NOW - 20))" ) &
+  PID_OLD=$!
+  ( unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN; pr_snap_put pr-reviews '[{"id":2}]' "$NOW" ) &
+  PID_NEW=$!
+  wait "$PID_OLD" 2>/dev/null; wait "$PID_NEW" 2>/dev/null
+  GOT="$(pr_snap_get pr-reviews)"
+  if [[ "$GOT" == '[{"id":2}]' ]]; then ok "racing cleaners, round $round: the newer entry survives"; else bad "racing cleaners, round $round: got $GOT, expected the newer entry"; fi
+done
+
+# The lock must not chain the caller's EXIT trap into command substitutions: a
+# caller whose trap cleans up temp files would see it fire early in the subshell.
+TRAP_OUT="$(bash -c 'trap "echo CALLER_TRAP_FIRED" EXIT; . "$1/lib/pr-snapshot.sh"; pr_snap_init solo/repo 1 "$2"; x="$(pr_snap_put pr-reviews "[{\"id\":7}]" "$3")"; echo "after:$x"' _ "$SCRIPTS_DIR" "$HEAD_SHA" "$NOW")"
+check_eq "after:
+CALLER_TRAP_FIRED" "$TRAP_OUT" "a caller's EXIT trap fires once, at its own exit, never inside the lock's command substitution"
 
 echo "== check-run list shapes (check_run_workflows.py builds id-less entries itself)"
 reset_all; pr_snap_init solo/repo 1 "$HEAD_SHA"
@@ -336,7 +366,9 @@ CRS_SHARED="$("$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HE
 check_eq 0 "$(( $(calls checkruns) + $(calls workflows) ))" "check-runs-snapshot.sh --pr: served from the gate's snapshot"
 check_eq 0 "$RC_CRS" "check-runs-snapshot.sh --pr: exits 0 (a zero-call result only counts if the command succeeded)"
 reset_calls
-CRS_LIVE="$(PR_SNAPSHOT_TTL=0 "$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HEAD_SHA" --pr 1 2>/dev/null)"
+CRS_LIVE="$(PR_SNAPSHOT_TTL=0 "$SCRIPTS_DIR/check-runs-snapshot.sh" --repo solo/repo --head "$HEAD_SHA" --pr 1 2>/dev/null)"; RC_CRS_LIVE=$?
+check_eq 0 "$RC_CRS_LIVE" "check-runs-snapshot.sh --pr, forced live control: exits 0"
+check_eq "$RC_CRS_LIVE" "$RC_CRS" "check-runs-snapshot.sh --pr: exit status identical to the forced-live control"
 check_eq 1 "$(calls checkruns)" "check-runs-snapshot.sh --pr, forced live control: reads live"
 check_eq "$(jq -S -c . <<<"$CRS_LIVE")" "$(jq -S -c . <<<"$CRS_SHARED")" "check-runs-snapshot.sh --pr: output identical to the forced-live control"
 [[ -n "$CRS_LIVE" ]] && ok "check-runs-snapshot.sh control produced output" || bad "check-runs-snapshot.sh control produced no output"

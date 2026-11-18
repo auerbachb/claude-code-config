@@ -143,11 +143,42 @@ slow_cache_get() {
     | .value' "$f" 2>/dev/null
 }
 
+
+# Ownership-safe per-entry locking comes from the repo's existing state-lock.sh
+# (the lock session-state.sh and handoff-state.sh use): a lock directory next to
+# the entry, a unique owner token per acquisition, dead-owner recovery with a
+# re-sampled, rename-aside break (so one cleaner wins and a successor's lock is
+# never removed on an older observation), and a guarded commit that refuses to
+# write once the lock was broken underneath the holder. No lock code of our own.
+_slow_cache_load_lock() {
+  declare -F state_lock_acquire >/dev/null 2>&1 && return 0
+  [[ -r "$_SLOW_CACHE_LIB_DIR/../state-lock.sh" ]] || return 1
+  # shellcheck source=../state-lock.sh
+  . "$_SLOW_CACHE_LIB_DIR/../state-lock.sh" 2>/dev/null || return 1
+  declare -F state_lock_acquire >/dev/null 2>&1 || return 1
+  # state_lock_acquire chains an EXIT trap that re-runs the caller's own cleanup
+  # trap. This library runs inside command substitutions of scripts that have such
+  # traps (temp-file cleanup), where that chained trap would fire early in the
+  # subshell. Every path below releases explicitly, and a lock left by a killed
+  # process is recovered by state-lock.sh's dead-owner rule, so the trap is not
+  # needed: mark it as already installed.
+  _STATE_LOCK_TRAP_INSTALLED=1
+  return 0
+}
+
 # slow_cache_put <kind> <owner/repo> <ref> <key> <viewer> <value> [read_started_epoch]
 # -> 0 saved or kept a newer entry, 1 not. Never prints. read_started_epoch is the
 # time the live read began (default: now); it is the entry's age origin.
+#
+# Never puts an older read over a newer one: the compare and the rename happen
+# under the per-entry lock, so two writers cannot both pass the compare before
+# either renames. If the lock cannot be taken within about two seconds, or the
+# lock library is missing, or the lock was broken mid-write, nothing is written
+# (no entry beats a possibly older one). Residual limit: state-lock.sh breaks a
+# lock held by a dead owner or older than its stale age (120s); a holder wedged
+# past that could still finish a write it began before the break.
 slow_cache_put() {
-  local kind="$1" or="$2" ref="$3" key="$4" viewer="${5:-}" value="$6" started="${7:-}" f dir tmp now cur lock rc
+  local kind="$1" or="$2" ref="$3" key="$4" viewer="${5:-}" value="$6" started="${7:-}" f dir tmp now cur rc
   [[ "$(slow_cache_ttl "$kind")" =~ ^[1-9][0-9]*$ && -n "$key" && -n "$viewer" ]] || return 1
   f="$(slow_cache_file "$kind" "$or" "$ref")" || return 1
   dir="$(dirname "$f")"
@@ -156,14 +187,16 @@ slow_cache_put() {
   now="$(date +%s)"
   [[ "$started" =~ ^[0-9]{1,12}$ ]] || started="$now"
   (( started > now )) && started="$now"
-  # Never put an older read over a newer one: leave an entry whose read started at
-  # or after ours alone. The compare and the rename happen under a short per-entry
-  # lock (a mkdir lock directory next to the entry), so two writers cannot both
-  # pass the compare before either renames. If the lock cannot be taken within
-  # about two seconds nothing is written (no entry beats a possibly older one); a
-  # lock directory older than ten seconds belongs to a dead writer and is cleared.
-  lock="$f.lock"
-  if ! _slow_cache_lock "$lock"; then rm -f "$tmp" 2>/dev/null; return 1; fi
+  if ! { jq -cn --arg kind "$kind" --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --arg ref "$ref" \
+           --arg host "$(slow_cache_host)" --arg key "$key" --arg viewer "$viewer" --argjson now "$started" --arg value "$value" \
+           '{schema: 1, kind: $kind, owner_repo: $or, ref: $ref, host: $host, key: $key, viewer: $viewer, saved_epoch: $now, value: $value}' \
+           > "$tmp" 2>/dev/null \
+         && [[ -s "$tmp" ]] && chmod 600 "$tmp" 2>/dev/null; }; then
+    rm -f "$tmp" 2>/dev/null; return 1
+  fi
+  if ! _slow_cache_load_lock || ! state_lock_acquire "$f" 2 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null; return 1
+  fi
   rc=1
   if [[ -f "$f" ]]; then
     cur="$(jq -r 'select(type == "object") | .saved_epoch | select(type == "number")' "$f" 2>/dev/null)" || cur=""
@@ -171,31 +204,9 @@ slow_cache_put() {
   fi
   if (( rc != 0 )); then
     if declare -F slow_cache_test_hook >/dev/null 2>&1; then slow_cache_test_hook; fi
-    if jq -cn --arg kind "$kind" --arg or "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]')" --arg ref "$ref" \
-         --arg host "$(slow_cache_host)" --arg key "$key" --arg viewer "$viewer" --argjson now "$started" --arg value "$value" \
-         '{schema: 1, kind: $kind, owner_repo: $or, ref: $ref, host: $host, key: $key, viewer: $viewer, saved_epoch: $now, value: $value}' \
-         > "$tmp" 2>/dev/null \
-       && [[ -s "$tmp" ]] && chmod 600 "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
-      rc=0
-    fi
+    state_lock_commit "$tmp" "$f" 2>/dev/null && rc=0
   fi
-  rmdir "$lock" 2>/dev/null
+  state_lock_release
   rm -f "$tmp" 2>/dev/null
   return "$rc"
-}
-
-# _slow_cache_lock <lock-dir> -> 0 held (the caller rmdirs it), 1 not taken. Waits
-# up to about two seconds and clears a lock directory older than ten seconds.
-_slow_cache_lock() {
-  local lock="$1" i m now
-  for (( i = 0; i < 20; i++ )); do
-    if mkdir "$lock" 2>/dev/null; then return 0; fi
-    # GNU form first: on GNU stat `-f` means filesystem status (it prints
-    # filesystem info), so the BSD form must only be a fallback.
-    m="$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null)" || m=""
-    now="$(date +%s)"
-    if [[ "$m" =~ ^[0-9]+$ ]] && (( now - m > 10 )); then rmdir "$lock" 2>/dev/null; continue; fi
-    sleep 0.1
-  done
-  return 1
 }

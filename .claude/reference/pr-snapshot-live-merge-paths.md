@@ -24,6 +24,15 @@ Left on the snapshot (polling only, never the last check before a merge):
 re-reads live.
 
 What a stale snapshot can hide on a polling run, for at most 60 seconds: a new
-human `CHANGES_REQUESTED` in the reviews list and a newly failed check-run. A new
-bot finding is not hidden: review threads are read live on every run. Fixtures:
+human `CHANGES_REQUESTED` in the reviews list, a newly failed check-run, and a
+bot finding posted only as a review body or an issue comment (those come from the
+snapshot lists). A bot finding with an inline thread is not hidden: review threads
+are read live on every run. The next poll after the entry expires reads the lists
+live, and every `--live` merge path reads them live at once. Fixtures:
 `tests/pr-snapshot.test.sh`, section "a merge path reads live".
+
+Entry writes are serialized with `state-lock.sh` (owner token, dead-owner
+recovery, guarded commit); if the lock cannot be taken in about two seconds or was
+broken mid-write, nothing is written. Residual limit: a lock holder wedged past
+the library's 120-second stale age could still finish a write it began before the
+break; the consequence is bounded to one 60-second entry on polling paths.
