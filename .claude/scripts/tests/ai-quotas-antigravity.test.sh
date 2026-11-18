@@ -254,6 +254,16 @@ jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5 and all(.sta
 okfb="$(AI_QUOTAS_NOW=$((CAP + 3600)) run_quotas)"
 jq -e '[.rows[] | select(.provider == "antigravity")] | length == 5 and all(.status == "ok" and (.detail | test("pasted /usage text, observed 1h 0m ago.*Google usage read failed")))' <<<"$okfb" >/dev/null || fail "a usable pasted reading behind a failed backend still names the backend reason"
 echo ok > "$SRV/mode"
+# A manual capture replacing the saved reading while the backend request is in flight must not be
+# shown as backend data: the rows render the figures this run fetched (CodeRabbit).
+rm -f "$OBS"
+bash "$SCRIPTS/quotas-antigravity-capture.sh" --from-file "$SAMPLE" --captured-at "$((NOW - 7200))" >/dev/null
+cp "$OBS" "$SRV/replace.json"; printf '%s' "$OBS" > "$SRV/replace_to"; rm -f "$OBS"
+echo replace > "$SRV/mode"
+rp="$(run_quotas)"
+jq -e '[.rows[] | select(.provider == "antigravity")] | length == 4 and all(.status == "ok" and (.detail | test("from Google backend, observed 0m ago")))' <<<"$rp" >/dev/null \
+  || { printf '%s\n' "$rp" | jq -c '.rows[] | select(.provider == "antigravity")' >&2; fail "rows show the fetched backend figures even if the saved reading is replaced mid-request"; }
+echo ok > "$SRV/mode"
 pass "backend failures: unreadable with reason and next step, nothing invented or saved"
 
 # The backend is the default source; setup accepts it; the pasted route stays.

@@ -180,7 +180,10 @@ Antigravity stays display-only: `quota-reserve.sh` never sees it.
 is not a validation route; the manual paste (`pbpaste | quotas-antigravity-capture.sh --stdin`)
 is the panel-capture fallback. To validate the backend reader, the owner runs `/quotas` once with
 a signed-in `agy` and checks that the Antigravity rows say `from Google backend`; with no sign-in
-the row must be `unreadable` with the next step. The live request has not been run in tests
+the row must be `unreadable` with the next step, unless a saved reading exists: a backend reading younger than 5 minutes is shown without a fetch, and any
+saved reading under 3 hours old is shown as the fallback with the backend failure reason appended, so
+neither proves the no-sign-in path. Remove the saved reading (the Antigravity observation file) before
+the no-sign-in check. The live request has not been run in tests
 (it contacts Google); the tests use a loopback stub.
 
 Design constraints kept: display-only; no credential read, printed, logged or stored; the

@@ -266,6 +266,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 OPENER = urllib.request.build_opener(NoRedirect)
+# Loopback test overrides bypass environment proxies so the bearer token stays local.
+LOOPBACK_OPENER = urllib.request.build_opener(NoRedirect, urllib.request.ProxyHandler({}))
+
+
+def opener_for(url):
+    host = urllib.parse.urlparse(url).hostname
+    return LOOPBACK_OPENER if host in ("127.0.0.1", "localhost", "::1") else OPENER
 
 
 def post_json(url, body, access):
@@ -273,7 +280,7 @@ def post_json(url, body, access):
     req = urllib.request.Request(url, data=data, method="POST", headers={
         "Authorization": "Bearer " + access, "Content-Type": "application/json", "User-Agent": "antigravity-cli"})
     try:
-        with OPENER.open(req, timeout=25) as resp:
+        with opener_for(url).open(req, timeout=25) as resp:
             raw = resp.read(MAX_BODY + 1)
     except urllib.error.HTTPError as exc:
         code = exc.code

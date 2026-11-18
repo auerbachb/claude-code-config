@@ -51,13 +51,15 @@ read_antigravity_backend() { # <label>
   saved="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" show "$obs" "$NOW" 2>/dev/null || true)"
   if [[ "$(printf '%s' "$saved" | jq -r --argjson m "$min_age" --argjson now "$NOW" 'if .status == "ok" and .via == "backend" and (.age_seconds | type) == "number" and .age_seconds <= $m
          and ([.groups[].windows[].resets_at_epoch | select(. != null and . <= $now)] | length) == 0 then "fresh" else "" end' 2>/dev/null || true)" == fresh ]]; then
-    read_antigravity_account "$label" backend
+    ANTIGRAVITY_SNAPSHOT="$saved" read_antigravity_account "$label" backend
     return 0
   fi
   result="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" backend "$NOW" "$obs" 2>/dev/null || true)"
   status="$(printf '%s' "$result" | jq -r '.status // "unreadable"' 2>/dev/null || echo unreadable)"
   if [[ "$status" == ok ]]; then
-    read_antigravity_account "$label" backend
+    # Render the figures this call fetched, not a re-read of the file a manual capture may have replaced.
+    ANTIGRAVITY_SNAPSHOT="$(printf '%s' "$result" | jq -c --argjson now "$NOW" '. + {captured_at_epoch: $now, age_seconds: 0, via: "backend"}' 2>/dev/null || true)" \
+      read_antigravity_account "$label" backend
     return 0
   fi
   error_class="$(printf '%s' "$result" | jq -r '.error_class // "unclassified"' 2>/dev/null || echo unclassified)"
@@ -90,7 +92,9 @@ read_antigravity_account() { # <label> [<source-name>]
     emit_row antigravity "$label" "" "usage" "" "" unreadable "Antigravity parser unavailable (python3 or lib/quotas-antigravity.py missing)" "$row_source" ""
     return 0
   fi
-  result="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" show "$obs" "$NOW" 2>/dev/null || true)"
+  # ANTIGRAVITY_SNAPSHOT: a reading the caller already validated, rendered as is (no re-read).
+  result="${ANTIGRAVITY_SNAPSHOT:-}"
+  [[ -n "$result" ]] || result="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" show "$obs" "$NOW" 2>/dev/null || true)"
   status="$(printf '%s' "$result" | jq -r '.status // "unreadable"' 2>/dev/null || echo unreadable)"
   case "$status" in
     ok) ;;
@@ -109,9 +113,9 @@ read_antigravity_account() { # <label> [<source-name>]
   captured="$(printf '%s' "$result" | jq -r '.captured_at_epoch')"
   via_note="$(printf '%s' "$result" | jq -r '.via | if . == "backend" then "Google backend" elif . == "agy-print" then "agy -p /usage" elif . == "pasted" then "pasted /usage text" else "saved /usage text" end')"
 
-  # Label rows by what the saved reading really is: a manual capture that replaced the
-  # backend reading between the check and this read must not be credited to Google.
-  [[ "$row_source" != backend || "$(printf '%s' "$result" | jq -r '.via')" == backend ]] || row_source=observation
+  # Label rows by what the saved reading really is: a manual capture must not be credited
+  # to Google, and a saved backend reading shown by the fallback keeps its backend provenance.
+  if [[ "$(printf '%s' "$result" | jq -r '.via')" == backend ]]; then row_source=backend; else row_source=observation; fi
 
   stale_after=10800
   [[ -z "${AI_QUOTAS_ANTIGRAVITY_STALE_SECONDS:-}" ]] \

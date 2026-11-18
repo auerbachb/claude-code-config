@@ -2,7 +2,7 @@
 """Loopback stand-in for Google's quota service, for ai-quotas-antigravity.test.sh.
 
 Usage: antigravity-backend-stub.py <dir>
-<dir>/mode holds ok | 401 | shape | notjson (read on every request); the served port is
+<dir>/mode holds ok | 401 | shape | notjson | redirect | replace (read on every request); the served port is
 written to <dir>/port. For each request one line goes to <dir>/seen: the path, whether the
 bearer token equalled the contents of <dir>/token, and the request body's project field.
 The token itself is never written anywhere.
@@ -41,6 +41,14 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send(401, b'{"error":{"code":401}}')
         elif self.path.endswith(":loadCodeAssist"):
             self.send(200, b'{"cloudaicompanionProject":"aicode-consumers"}')
+        elif mode == "replace" and not self.path.endswith(":loadCodeAssist"):
+            # A manual capture lands while the request is in flight: swap the saved reading.
+            target = open(os.path.join(D, "replace_to")).read().strip()
+            tmp = target + ".swap"
+            with open(tmp, "wb") as f:
+                f.write(open(os.path.join(D, "replace.json"), "rb").read())
+            os.replace(tmp, target)
+            self.send(200, GOOD)
         elif mode == "notjson":
             self.send(200, b"<html>")
         else:
