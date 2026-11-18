@@ -128,6 +128,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # for this process and everything it starts (issue #2443; lib/slow-read-cache.sh —
 # a TTL of 0 disables it, and nothing a caller sets can raise it back).
 export SLOW_READ_CACHE_TTL=0
+# Same for the per-PR snapshot of reviews, comments, statuses, check-runs and the
+# HEAD commit (issue #2444; lib/pr-snapshot.sh): nothing this path acts on may be
+# a shared read. SLOW_READ_CACHE_TTL=0 already turns it off; this names it too.
+export PR_SNAPSHOT_TTL=0
 
 print_usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||

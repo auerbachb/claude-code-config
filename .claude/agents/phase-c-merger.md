@@ -179,9 +179,9 @@ if [[ -z "$REVIEWER_ERROR" ]]; then
   # assignment would abort the block under `set -e` before GATE_EXIT was set.
   GATE_EXIT=0
   if [[ -n "$REVIEWER" ]]; then
-    GATE_JSON=$(run_script merge-gate.sh {{PR_NUMBER}} --reviewer "$REVIEWER") || GATE_EXIT=$?
+    GATE_JSON=$(run_script merge-gate.sh {{PR_NUMBER}} --live --reviewer "$REVIEWER") || GATE_EXIT=$?
   else
-    GATE_JSON=$(run_script merge-gate.sh {{PR_NUMBER}}) || GATE_EXIT=$?
+    GATE_JSON=$(run_script merge-gate.sh {{PR_NUMBER}} --live) || GATE_EXIT=$?
   fi
 fi
 ```

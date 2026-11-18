@@ -120,8 +120,15 @@
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
-#                             [--allow-unverified-required-checks]
+#                             [--allow-unverified-required-checks] [--live]
 #   merge-gate.sh --help
+#
+# --live (issue #2444): every read this run makes, and every script it starts,
+# is a live GitHub read — the per-PR snapshot (lib/pr-snapshot.sh) and the slow
+# read cache (lib/slow-read-cache.sh) are pinned off. Pass it on every gate run
+# that is the last check before a merge (/wrap, /merge, Phase C). Polling runs
+# leave it off and may share reads for up to 60s. Detail:
+# .claude/reference/pr-snapshot-live-merge-paths.md
 #
 # Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
 # confirmed foreign-author PR (adds a `missing` entry; the `authorship` field is
@@ -269,6 +276,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 # library's header for the rule, the PR #883 failures that motivated it, and why
 # review-substance.sh keeps a deliberately different variant.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
 if [[ ! -f "$TS_NORMALIZER_LIB" || ! -r "$TS_NORMALIZER_LIB" ]]; then
   echo "merge-gate.sh: sibling library missing or unreadable: $TS_NORMALIZER_LIB" >&2
@@ -314,6 +322,7 @@ ALLOW_HOLLOW=false
 # check", it is "we checked and the check never ran", which is the entire defect
 # #1361 exists to close.
 ALLOW_UNVERIFIED_REQ=false
+LIVE_READS=false
 
 print_usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -336,6 +345,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-unverified-required-checks)
       ALLOW_UNVERIFIED_REQ=true
+      shift
+      ;;
+    --live)
+      LIVE_READS=true
       shift
       ;;
     --reviewer)
@@ -372,6 +385,15 @@ if [[ -z "$PR_NUMBER" ]]; then
   echo "ERROR: <pr_number> is required" >&2
   print_usage >&2
   exit 2
+fi
+
+# --live: a gate run that is the last check before a merge reads everything live.
+# Exported so every child script (pr-state.sh, check-runs-snapshot.sh, ci-status.sh,
+# reviewer-of.sh, required-checks.sh) inherits it; a TTL of 0 stores and reuses
+# nothing, and nothing a caller sets can raise it back (issues #2443, #2444).
+if [[ "$LIVE_READS" == true ]]; then
+  export SLOW_READ_CACHE_TTL=0
+  export PR_SNAPSHOT_TTL=0
 fi
 
 if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -501,7 +523,17 @@ fi
 # submitted_at predates this committer date (force-push retargeting).
 # Non-fatal: an empty result disables both filters (comments/approvals accepted
 # regardless of age), which is preferable to silently blocking a clean review.
-LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
+# Per-PR snapshot (issue #2444): the HEAD commit, check-runs, statuses, reviews
+# and both comment lists are shared with the other scripts of this poll cycle for
+# at most 60s; any doubt is a live read (lib/pr-snapshot.sh). Missing library:
+# plain live reads, exactly as before.
+if [[ -r "${SCRIPT_DIR}/lib/pr-snapshot.sh" ]] && . "${SCRIPT_DIR}/lib/pr-snapshot.sh" 2>/dev/null; then
+  pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
+else
+  pr_snap_list() { gh api --paginate "$2"; }
+  pr_snap_object() { gh api "$2"; }
+fi
+LAST_COMMIT_TS=$(pr_snap_object head-commit "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
 
 # --------------------------------------------------------------------------
 # Fetch data once, reuse everywhere
@@ -522,7 +554,7 @@ die_local() {
   exit 4
 }
 
-if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" 2>/dev/null); then
+if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" --pr "$PR_NUMBER" 2>/dev/null); then
   die_api "check/workflow snapshot"
 fi
 # Keep the legacy envelope for the no-review timing reader as well as CI.
@@ -559,7 +591,7 @@ if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2
   die_api "ci-status.sh"
 fi
 
-if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
+if ! REVIEWS_RAW=$(pr_snap_list reviews "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
 fi
 # GitHub still reports its native review decision. Retired-app review objects
@@ -574,14 +606,14 @@ fi
 # evidence payload, and a busy PR pushes the walkthrough or the inline findings
 # past comment 100. Losing them there does not merely under-report: it turns a
 # genuine approval hollow and blocks the merge.
-if ! PR_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+if ! PR_COMMENTS_RAW=$(pr_snap_list comments "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
 fi
 PR_COMMENTS_JSON=$(echo "$PR_COMMENTS_RAW" | jq -s 'add // []')
 if [[ -z "$PR_COMMENTS_JSON" ]] || ! echo "$PR_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "pull-comments parse"
 fi
-if ! ISSUE_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+if ! ISSUE_COMMENTS_RAW=$(pr_snap_list issue-comments "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "issue-comments"
 fi
 ISSUE_COMMENTS_JSON=$(echo "$ISSUE_COMMENTS_RAW" | jq -s 'add // []')
@@ -1089,7 +1121,7 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # Legacy statuses are required evidence too. When a check and a commit
   # status share a required name, both must pass. Each API page is an array,
   # newest first, so the first entry per context is its current state.
-  if ! _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null) ||
+  if ! _CS_RAW=$(pr_snap_list statuses "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null) ||
      ! COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sec '
         if length > 0 and all(.[]; type == "array" and
           all(.[]; type == "object" and (.context | type) == "string"))

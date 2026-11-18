@@ -101,7 +101,7 @@ Run the shared merge-gate verifier, which implements the authoritative gate from
 
 ```bash
 PR_NUM=$(gh pr view --json number --jq .number)
-GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
+GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM" --live)
 GATE_EXIT=$?
 ```
 
@@ -156,7 +156,7 @@ If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): .
 2. Read a specific failure's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
 3. Fix the issue (lint errors, type errors, test failures, etc.)
 4. Commit, push, and wait for CI to re-run
-5. Re-run `"$MERGE_GATE_SH" "$PR_NUM"` to confirm CI is green before proceeding
+5. Re-run `"$MERGE_GATE_SH" "$PR_NUM" --live` to confirm CI is green before proceeding
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 

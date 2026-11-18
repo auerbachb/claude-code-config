@@ -331,6 +331,18 @@ if [[ "$CURRENT_REVIEWER" == "self_review" ]]; then
   emit "self_review"
 fi
 
+# Per-PR snapshot (issue #2444): resolve the signed-in login once, here, so that
+# pr-state.sh and the scripts it runs inherit it instead of each looking it up
+# (a REST call apiece); the snapshot itself is initialised below, once HEAD is
+# known. Off (no call at all) when PR_SNAPSHOT_TTL=0; a missing library means
+# plain live reads, exactly as before.
+if [[ -r "$SCRIPT_DIR/lib/pr-snapshot.sh" ]] && . "$SCRIPT_DIR/lib/pr-snapshot.sh" 2>/dev/null; then
+  if slow_cache_enabled pr-reviews; then slow_cache_viewer || true; fi
+else
+  pr_snap_init() { :; }
+  pr_snap_object() { gh api "$2"; }
+fi
+
 STATE_PATH="$("$PR_STATE" --pr "$PR_NUMBER" 2>/dev/null)"
 if [[ -z "$STATE_PATH" || ! -f "$STATE_PATH" ]]; then
   die 4 "failed to gather PR state for #$PR_NUMBER"
@@ -343,6 +355,7 @@ read -r OWNER REPO HEAD_SHA < <(jq -r '[.pr.owner, .pr.repo, .pr.head_sha] | @ts
 if [[ -z "$OWNER" || -z "$REPO" || -z "$HEAD_SHA" ]]; then
   die 4 "PR state missing owner/repo/head_sha"
 fi
+pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
 
 # Gate-already-met short-circuit (issue reported on PR #619, 2026-07-21): before
 # evaluating ANY CR->BugBot->Greptile escalation, check whether the CR-path
@@ -406,7 +419,7 @@ SUBSTANCE_OK=false
 # in. Read only by the evaluator-outage cap after AGE_SECONDS.
 EVALUATOR_UNUSABLE=false
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
-  HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
+  HEAD_COMMIT_TS="$(pr_snap_object head-commit "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
   if [[ -z "$HEAD_COMMIT_TS" ]]; then
     # Fail closed, matching merge-gate.sh's CR_APPROVAL_FRESHNESS_UNKNOWN: an
     # unverifiable approval must not short-circuit escalation. Callers re-poll
