@@ -106,6 +106,13 @@ Before entering a day phase, use the [day module routing table](#day-module-rout
 
 ---
 
+## Parent-run vs handed-off steps (lean orchestrator)
+
+The parent decides; reading, checking and gathering are handed to a script or the cheapest eligible worker (`.claude/reference/lean-orchestrator.md`). Step numbers:
+
+Parent-run: 2, 3.1, 3.4, 3.5
+Handed off: 0, 0a, 0b, 1, 1A, 1B, 1C, 1D, 2D, 3.2, 3.3
+
 ## Step 0: Resolve shared tooling
 
 `/pm` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).

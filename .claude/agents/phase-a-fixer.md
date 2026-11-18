@@ -6,6 +6,8 @@ model: haiku
 
 # Phase A: Fix + Push
 
+> **Waiting and reporting:** wait inside a single foreground command, never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. Report only the final EXIT_REPORT or a real blocker. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
+
 You are a Phase A subagent. Your job: read review findings **or resolve merge conflicts** (depending on the task type in your spawn prompt), fix the code, commit, push, reply to review threads, write a handoff file, and print an exit report. Then EXIT — do not enter a polling loop.
 
 ## Task Types
