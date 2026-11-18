@@ -495,38 +495,6 @@ if [[ -z "$HEAD_SHA" ]]; then
   exit 4
 fi
 
-# Review tier (issue #1726) — resolved once, here, by the sibling resolver and
-# always against the base branch: this call passes no --config, and nothing in
-# this script lets a flag or the environment supply one, so a PR can never pick
-# the policy it is judged by. Any failure (missing resolver, non-zero exit,
-# unparseable output, an unknown gate) leaves REVIEW_TIER_GATE empty — the full
-# reviewer path then runs — and records a reason the gate adds to `missing`.
-REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
-REVIEW_TIER_GATE=""
-REVIEW_TIER_JSON="null"
-REVIEW_TIER_FAILURE=""
-NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
-if [[ ! -x "$REVIEW_TIER_SH" ]]; then
-  REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
-else
-  REVIEW_TIER_RC=0
-  REVIEW_TIER_OUT=$("$REVIEW_TIER_SH" "$PR_NUMBER" --repo "$OWNER_REPO" ${BASE_REF:+--base "$BASE_REF"} --json) || REVIEW_TIER_RC=$?
-  if [[ "$REVIEW_TIER_RC" -ne 0 ]]; then
-    REVIEW_TIER_FAILURE="review-tier.sh exited $REVIEW_TIER_RC"
-  elif ! REVIEW_TIER_JSON=$(printf '%s' "$REVIEW_TIER_OUT" | jq -ce '
-        select(type == "object" and (.gate | IN("legacy", "ci-only", "ci+codeant-one-round", "full")))
-        | {gate, tier, policy}' 2>/dev/null); then
-    REVIEW_TIER_FAILURE="review-tier.sh returned no usable tier"
-    REVIEW_TIER_JSON="null"
-  else
-    REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
-    # No-review override window (issue #1899), minutes → seconds; read from the
-    # same base-branch policy. Absent, null, or non-integer → disabled.
-    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
-    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
-  fi
-fi
-
 # Fetch last commit timestamp for Greptile freshness gate (issue #723) and the
 # stale-approval guard (issue #836). Used in greptile) to confirm a 👍 issue
 # comment is post-push; used in cr) and bugbot) to reject approvals whose
@@ -743,23 +711,99 @@ if [[ -z "$RESOLVED_COMMENT_IDS" ]] \
   RESOLVED_COMMENT_IDS='[]'
 fi
 
+# Review tier (issue #1726) — resolved once, here, by the sibling resolver and
+# always against the base branch: this call passes no --config, and nothing in
+# this script lets a flag or the environment supply one, so a PR can never pick
+# the policy it is judged by. Any failure (missing resolver, non-zero exit,
+# unparseable output, an unknown gate) leaves REVIEW_TIER_GATE empty — the full
+# reviewer path then runs — and records a reason the gate adds to `missing`.
+# Resolve the signed-in login once, before the helpers below: they bind their
+# short-lived read caches to it (issue #2443) and inherit the shared lookup, so
+# the authorship check further down reuses it instead of asking again.
+if [[ -r "${SCRIPT_DIR}/lib/gh-viewer.sh" ]] && . "${SCRIPT_DIR}/lib/gh-viewer.sh" 2>/dev/null; then
+  gh_viewer_resolve || true
+fi
+REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
+REVIEW_TIER_GATE=""
+REVIEW_TIER_JSON="null"
+REVIEW_TIER_FAILURE=""
+NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
+if [[ ! -x "$REVIEW_TIER_SH" ]]; then
+  REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
+else
+  REVIEW_TIER_RC=0
+  REVIEW_TIER_OUT=$("$REVIEW_TIER_SH" "$PR_NUMBER" --repo "$OWNER_REPO" ${BASE_REF:+--base "$BASE_REF"} --json) || REVIEW_TIER_RC=$?
+  if [[ "$REVIEW_TIER_RC" -ne 0 ]]; then
+    REVIEW_TIER_FAILURE="review-tier.sh exited $REVIEW_TIER_RC"
+  elif ! REVIEW_TIER_JSON=$(printf '%s' "$REVIEW_TIER_OUT" | jq -ce '
+        select(type == "object" and (.gate | IN("legacy", "ci-only", "ci+codeant-one-round", "full")))
+        | {gate, tier, policy}' 2>/dev/null); then
+    REVIEW_TIER_FAILURE="review-tier.sh returned no usable tier"
+    REVIEW_TIER_JSON="null"
+  else
+    REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
+    # No-review override window (issue #1899), minutes → seconds; read from the
+    # same base-branch policy. Absent, null, or non-integer → disabled.
+    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
+    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
+  fi
+fi
+# (Resolved here, after the review-thread walk, rather than earlier: nothing above
+# reads the tier, and a gate that dies on a failed thread read no longer spends the
+# tier's calls first — issue #2443.)
+
 # Runtime CODEOWNERS detection. Branch protection is repo-specific, so only
 # enforce reviewDecision against bot code-owner approvals when this repo actually
 # names CR or Greptile as a code owner.
 CODEOWNERS_TEXT=""
-for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
-  if [[ -n "$BASE_REF" ]]; then
-    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="$BASE_REF" 2>/dev/null || true)
+# Short-lived reuse (issue #2443; lib/slow-read-cache.sh): keyed by the base
+# branch's tip SHA, read before and after the live reads and stored only when both
+# agree, bound to the repo and the signed-in login. A definite answer only: a file
+# that was found with every earlier path an explicit HTTP 404, or all three paths
+# an explicit 404. A rate limit, a 5xx or an odd response is never stored, and any
+# doubt is the live read below.
+CO_CACHE=0 CO_TIP1="" CO_DEFINITE=1 CO_HIT_OK=0
+if [[ -n "$BASE_REF" && -n "${GH_VIEWER_LOGIN:-}" && -r "${SCRIPT_DIR}/lib/slow-read-cache.sh" ]] \
+   && . "${SCRIPT_DIR}/lib/slow-read-cache.sh" 2>/dev/null \
+   && CO_TIP1="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF")"; then
+  CO_CACHE=1
+  if CODEOWNERS_TEXT="$(slow_cache_get codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN")"; then
+    CO_HIT_OK=1
   else
-    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null || true)
+    CODEOWNERS_TEXT=""
   fi
+fi
+if [[ "$CO_HIT_OK" != 1 ]]; then
+for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
+  CO_ERR="$(mktemp 2>/dev/null)" || CO_ERR=/dev/null
+  CO_RC=0
+  if [[ -n "$BASE_REF" ]]; then
+    # With the cache on, read the commit the key names, so the stored value is
+    # exactly that commit's file whatever the branch does meanwhile.
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="${CO_TIP1:-$BASE_REF}" 2>"$CO_ERR") || CO_RC=$?
+  else
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" 2>"$CO_ERR") || CO_RC=$?
+  fi
+  if [[ "$CO_RC" -ne 0 ]] && ! grep -q 'HTTP 404' "$CO_ERR" 2>/dev/null; then CO_DEFINITE=0; fi
+  [[ "$CO_ERR" == /dev/null ]] || rm -f "$CO_ERR"
   if [[ -n "$CODEOWNERS_JSON" ]]; then
     CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null || true)
     if [[ -n "$CODEOWNERS_TEXT" ]]; then
       break
     fi
+    # A body with no decodable content is neither a clean 404 nor a clean file.
+    [[ "$CO_RC" -ne 0 ]] || CO_DEFINITE=0
+  elif [[ "$CO_RC" -eq 0 ]]; then
+    CO_DEFINITE=0   # success with an empty body: not an answer
   fi
 done
+if [[ "$CO_CACHE" == 1 && "$CO_DEFINITE" == 1 ]]; then
+  CO_TIP2="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF" 2>/dev/null)" || CO_TIP2=""
+  if [[ -n "$CO_TIP2" && "$CO_TIP2" == "$CO_TIP1" ]]; then
+    slow_cache_put codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN" "$CODEOWNERS_TEXT" >/dev/null 2>&1 || true
+  fi
+fi
+fi
 
 CODE_OWNER_BOTS=$(printf '%s\n' "$CODEOWNERS_TEXT" | jq -R -s -c '
   split("\n")

@@ -140,6 +140,11 @@ case "$ARGS" in
     printf '%s' "${FAKE_PR_COMMENTS:-[]}"; exit 0 ;;
   *issues/*/comments*)
     printf '%s' "${FAKE_ISSUE_COMMENTS:-[]}"; exit 0 ;;
+  *"ref(qualifiedName"*)
+    # The base-branch tip read behind the short-lived read caches (issue #2443)
+    # is not a review-thread request: answer "unavailable" (the callers then read
+    # live) without logging it, so the counts below stay a count of thread pages.
+    echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;
   *graphql*)
     # Cursor-aware: record the call, then serve page 1 until the caller sends
     # page 1's endCursor back as `after`. A caller that never paginates keeps
