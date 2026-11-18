@@ -27,7 +27,7 @@ Run before the first poll tick and before any new review trigger on push, resume
 2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]` (no fix reply, code unchanged, not outdated/resolved).
 3. **If ANY unresolved: invoke `/fixpr` now** — no polling or new reviews until complete.
 
-### Per-cycle check (every 60 seconds)
+### Per-cycle check (every poll cycle; see Polling)
 
 Query everything in “Polling” for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
 
@@ -60,7 +60,7 @@ Verdicts: `gate_met`, `polling_cr`, `no_reviewer`, `tier_gate`, `self_review` (`
 
 ### Polling
 
-- Poll every 60 seconds, `per_page=100` on every GitHub API call.
+- Poll on the `active-work-cap.sh --poll-interval` cycle (60s, or 120s above 8 pipelines), `per_page=100` on every GitHub API call.
 - **Poll ALL THREE endpoints every cycle:**
   1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments

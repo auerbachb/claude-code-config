@@ -489,15 +489,18 @@ Resolve the limit once, before the first launch — both modes read only the rep
 ```bash
 CEILING=4; LIMIT=4                               # script absent: the default (Step 0 DEGRADED)
 if [[ -n "$ACTIVE_WORK_CAP_SH" ]]; then
-  if CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
-    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min() — the cap is the backstop
+  if CEILING=$("$ACTIVE_WORK_CAP_SH" --width) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
+    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min(mode width, cap) — --width already clamps; kept as the backstop
   else
     CEILING=0; LIMIT=0                          # read failed: launch nothing new
   fi
 fi
 ```
 
-- Treat each issue's A→B→C run as one **pipeline**. Keep at most `LIMIT` running at once — the ceiling from `subagent-orchestration.md`, which a repo widens with its own `PIPELINE_CEILING` knob and never past its `ACTIVE_WORK_CAP` (`active-work-cap.md` §Subordination). Use the resolved number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
+- Treat each issue's A→B→C run as one **pipeline**. Keep at most `LIMIT` running at once. `LIMIT` is the run mode's width from `"$ACTIVE_WORK_CAP_SH" --width` (default and speed read 15 unless configured, cheap `CHEAP_MODE_WIDTH` which defaults to the repo's `PIPELINE_CEILING` and may be set lower), already clamped to the repo-wide cap, so a mode never raises that cap (`active-work-cap.md` §Per-mode width). Use the resolved number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
+- **Default mode judges the width.** `LIMIT` is a maximum, not a target. Read the mode silently with `run-mode.sh get`. In default mode, launch fewer than `LIMIT` when the ready, unqueued issues, the overlap-chain heads, the open PRs still waiting on a bot verdict, or GitHub request headroom say so. Launch that judged number, then write the reason to the repo's `width_judgment` object in `session-state.json` (`mode`, `width`, `limit`, `ready`, `chain_heads`, `awaiting_review`, `reason`), via `session-state.sh --set` as in Step 6.2. A failed write launches nothing.
+- **Cheap mode launches nothing new** while any running pipeline is waiting on a retry or a review round it can still finish first. Running pipelines are untouched. Launch the next queued pipeline only once none is waiting.
+- **One-time notes, keyed in `width_judgment`.** (a) When `LIMIT` is below the mode width because the repo cap binds, print once: `Mode <mode> would run <width> wide; ACTIVE_WORK_CAP holds it at <LIMIT>.` Set `cap_note_printed` true. (b) The first time the running width exceeds the free reviewer's hourly capacity (5 reviews an hour, `active-work-cap.md` §Per-mode width), print once: `Running <N> wide: expect roughly two in three PRs in a busy hour to merge without a bot review.` Set `reviewer_note_printed` true. Never reprint either on a later tick. No paid review is triggered to cover the gap.
 - If more issues qualify than the ceiling, launch the first `LIMIT` now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
 - **A full ceiling means queue, never route out.** Subagent-fit work that arrives with every slot busy **waits inline** — it does not become a separate-thread chip or prompt. Only a named Step 4 disqualifier sends an issue to a thread; a busy pipeline is a scheduling state, not a fit verdict. (Shared gate: `.claude/reference/chip-launching.md`; rationale: `too-big-recalibration-2026-07.md`.)
 - When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
@@ -1584,7 +1587,9 @@ It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replaceme
 
 Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is now orchestration.
 
-### Monitor loop (repeat every ~60 seconds):
+### Monitor loop (repeat every `--poll-interval` seconds):
+
+Cadence: `"$ACTIVE_WORK_CAP_SH" --poll-interval <running pipelines>` prints 120 above 8 running pipelines and 60 at or below 8 (#2430; the shared GitHub request allowance holds). Record the value every tick, repo-scoped, with `"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].poll_interval_s=<value>"` (`REPO_KEY="$("$SESSION_STATE_SH" --repo-key)"`, as `run-mode.sh` does) so another repo's monitor never overwrites it and each running Phase B re-reads it per cycle (its `POLL_INTERVAL_S` is only the launch value); a failed write keeps the previous value and is reported, not guessed. A rate-limited or failed GitHub response is **no data** for that cycle: keep the last watermark, never read it as clean or as zero findings.
 
 0. **Read the usage horizon** (#1619, #2147). Run `subagent-thread-limit-park.md` §7.1, resolved through Step 0.1's candidate order. Pass only a counter this turn's harness actually printed to `usage-horizon.sh --observe` before `--check`; otherwise check with the §7.3 attestation only if no counter is visible anywhere in your context. Never estimate or reuse a remembered figure.
    - `clear` → the cycle proceeds unchanged.
@@ -1952,12 +1957,13 @@ If missing, reconstruct state from GitHub API.
 
 ## Phase B Instructions
 
+0. Parent sets `POLL_INTERVAL_S={POLL_INTERVAL_S}` at launch from `"$ACTIVE_WORK_CAP_SH" --poll-interval <running pipelines>` (120 above 8 running pipelines, else 60). Use it for every poll cycle below; a rate-limited or failed response is no data.
 1. Read the handoff file (resolve path: `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}`). **Phase-order check:** rank `A=1, B=2, C=3`; you expect `phase_completed: "A"` (or `"B"` when you are a replacement Phase B). Anything else — missing, empty, unrecognized — print a warning naming both the value found and the value expected, then continue on GitHub-derived state rather than the handoff's `reviewer`/`head_sha`.
 2. Check for unresolved findings BEFORE requesting any review:
    - Fetch all 3 endpoints (reviews, inline comments, issue comments) with per_page=100.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
 3. Check ALL CI check-runs. Fix any failures before continuing.
-4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
+4. Poll for CR review every `POLL_INTERVAL_S` seconds on all 3 endpoints. Filter by coderabbitai[bot].
 5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
    - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD, or the gate is met via the no-review override (issue #1899) — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
@@ -1965,7 +1971,7 @@ If missing, reconstruct state from GitHub API.
    - `tier_gate`: the PR's review tier excludes BugBot — do NOT switch or post `@cursor review`; trigger nothing, keep polling, and let the merge gate apply the tier's gate.
    - `self_review`: perform/report self-review fallback; merge remains blocked.
 6. Check commit status for CR completion signal and rate-limit fast-path.
-7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
+7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence is the Phase B poll cycle (`POLL_INTERVAL_S`, re-read from `.repos["<key>"].poll_interval_s` each cycle); a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
 8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread through `reply-thread.sh` with the mandatory verdict flags (`--verdict fixed|deferred|declined --defect real|not`, plus `--fix as-given|adapted|wrong|none` with `--defect real` — issues #1842, #1843; rule and mapping: `review-stack-audit.md` §The marker), resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).

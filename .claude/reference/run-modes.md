@@ -2,7 +2,7 @@
 
 Orchestration threads (`/pm`, `/subagent`) can be given one of three named run modes: **default**, **speed** and **cheap**. A human sets the mode in one word, and it stays until changed.
 
-The mode is settable, readable, shown on the board and recovered after compaction (#2428). Its model effect (#2429) is in `task-model-routing.md` §Run mode and issue tier: it sets each worker's starting tier and escalation patience, not how many pipelines run. Parallel width is #2430 and is unaffected.
+The mode is settable, readable, shown on the board and recovered after compaction (#2428). Its model effect (#2429) is in `task-model-routing.md` §Run mode and issue tier: it sets each worker's starting tier and escalation patience, not how many pipelines run. Parallel width (#2430) is also set per mode: default and speed allow up to 15 pipelines and cheap allows the repo's `PIPELINE_CEILING` (`active-work-cap.md` §Per-mode width). Mode changes never stop running pipelines.
 
 ## Storage and the one read path
 
@@ -52,4 +52,4 @@ Decision-only output: an explicit set prints one line; routine reads print nothi
 
 ## Follow-ups
 
-Deferred to later increments: parallel width (#2430) and any expiry policy change. The model mix per mode is in `task-model-routing.md` §Run mode and issue tier.
+Parallel width (#2430) is set per mode by `active-work-cap.sh --width` (`active-work-cap.md` §Per-mode width). Default and speed allow up to 15 pipelines; cheap allows the repo's `PIPELINE_CEILING`. Every limit still binds, and the governing width is `min(mode width, ACTIVE_WORK_CAP)`. The model mix per mode is in `task-model-routing.md` §Run mode and issue tier.
