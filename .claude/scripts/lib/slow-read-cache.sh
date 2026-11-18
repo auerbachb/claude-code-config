@@ -54,17 +54,26 @@
 
 SLOW_CACHE_MAX_SHA_KEYED=300
 SLOW_CACHE_MAX_SETTING=120
+SLOW_CACHE_MAX_PR_SNAPSHOT=60
 _SLOW_CACHE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # slow_cache_ttl <kind> -> seconds (0 for an unknown kind: never cached)
 slow_cache_ttl() {
   local max v
+  v="${SLOW_READ_CACHE_TTL:-}"
   case "$1" in
     codeowners | pm-config) max="$SLOW_CACHE_MAX_SHA_KEYED" ;;
     required-checks) max="$SLOW_CACHE_MAX_SETTING" ;;
+    # Per-PR snapshot kinds (lib/pr-snapshot.sh, issue #2444): their own switch,
+    # PR_SNAPSHOT_TTL, plus the shared "off" switch: SLOW_READ_CACHE_TTL=0 (which
+    # admin-merge.sh and clean-behind-check.sh export) turns them off too.
+    pr-reviews | pr-comments | pr-issue-comments | pr-statuses | pr-head-commit | pr-check-runs)
+      max="$SLOW_CACHE_MAX_PR_SNAPSHOT"
+      if [[ "$v" =~ ^0+$ ]]; then printf '0'; return 0; fi
+      v="${PR_SNAPSHOT_TTL:-}" ;;
     *) printf '0'; return 0 ;;
   esac
-  v="${SLOW_READ_CACHE_TTL:-$max}"
+  [[ -n "$v" ]] || v="$max"
   [[ "$v" =~ ^[0-9]{1,9}$ ]] || v="$max"
   v=$((10#$v))
   (( v > max )) && v="$max"

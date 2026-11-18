@@ -501,7 +501,17 @@ fi
 # submitted_at predates this committer date (force-push retargeting).
 # Non-fatal: an empty result disables both filters (comments/approvals accepted
 # regardless of age), which is preferable to silently blocking a clean review.
-LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
+# Per-PR snapshot (issue #2444): the HEAD commit, check-runs, statuses, reviews
+# and both comment lists are shared with the other scripts of this poll cycle for
+# at most 60s; any doubt is a live read (lib/pr-snapshot.sh). Missing library:
+# plain live reads, exactly as before.
+if [[ -r "${SCRIPT_DIR}/lib/pr-snapshot.sh" ]] && . "${SCRIPT_DIR}/lib/pr-snapshot.sh" 2>/dev/null; then
+  pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
+else
+  pr_snap_list() { gh api --paginate "$2"; }
+  pr_snap_object() { gh api "$2"; }
+fi
+LAST_COMMIT_TS=$(pr_snap_object head-commit "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
 
 # --------------------------------------------------------------------------
 # Fetch data once, reuse everywhere
@@ -522,7 +532,7 @@ die_local() {
   exit 4
 }
 
-if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" 2>/dev/null); then
+if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" --pr "$PR_NUMBER" 2>/dev/null); then
   die_api "check/workflow snapshot"
 fi
 # Keep the legacy envelope for the no-review timing reader as well as CI.
@@ -559,7 +569,7 @@ if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2
   die_api "ci-status.sh"
 fi
 
-if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
+if ! REVIEWS_RAW=$(pr_snap_list reviews "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
 fi
 # GitHub still reports its native review decision. Retired-app review objects
@@ -574,14 +584,14 @@ fi
 # evidence payload, and a busy PR pushes the walkthrough or the inline findings
 # past comment 100. Losing them there does not merely under-report: it turns a
 # genuine approval hollow and blocks the merge.
-if ! PR_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+if ! PR_COMMENTS_RAW=$(pr_snap_list comments "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
 fi
 PR_COMMENTS_JSON=$(echo "$PR_COMMENTS_RAW" | jq -s 'add // []')
 if [[ -z "$PR_COMMENTS_JSON" ]] || ! echo "$PR_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "pull-comments parse"
 fi
-if ! ISSUE_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+if ! ISSUE_COMMENTS_RAW=$(pr_snap_list issue-comments "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "issue-comments"
 fi
 ISSUE_COMMENTS_JSON=$(echo "$ISSUE_COMMENTS_RAW" | jq -s 'add // []')
@@ -1089,7 +1099,7 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # Legacy statuses are required evidence too. When a check and a commit
   # status share a required name, both must pass. Each API page is an array,
   # newest first, so the first entry per context is its current state.
-  if ! _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null) ||
+  if ! _CS_RAW=$(pr_snap_list statuses "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null) ||
      ! COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sec '
         if length > 0 and all(.[]; type == "array" and
           all(.[]; type == "object" and (.context | type) == "string"))

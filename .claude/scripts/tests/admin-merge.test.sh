@@ -49,6 +49,7 @@ cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
 if [ -n "${FAKE_GATE_TTL_LOG:-}" ]; then printf '%s\n' "${SLOW_READ_CACHE_TTL-unset}" >> "$FAKE_GATE_TTL_LOG"; fi
+if [ -n "${FAKE_GATE_SNAP_LOG:-}" ]; then printf '%s\n' "${PR_SNAPSHOT_TTL-unset}" >> "$FAKE_GATE_SNAP_LOG"; fi
 if [ -n "${FAKE_GATE_PWD_LOG:-}" ]; then printf '%s\n' "$PWD" >> "$FAKE_GATE_PWD_LOG"; fi
 MISSING="${FAKE_GATE_MISSING:-[]}"
 HUMAN="${FAKE_GATE_HUMAN:-[]}"
@@ -626,6 +627,19 @@ if [[ -s "$TTL_LOG" && "$(sort -u "$TTL_LOG")" == "0" ]]; then
   ok "merge-gate.sh runs with the read cache off (SLOW_READ_CACHE_TTL=0), even when the caller sets 300"
 else
   bad "merge-gate.sh did not get SLOW_READ_CACHE_TTL=0 (logged: $(tr '\n' ' ' < "$TTL_LOG"))"
+fi
+
+# 27d. Issue #2444: the same for the per-PR snapshot of reviews, comments, statuses,
+#      check-runs and the HEAD commit — an admin merge never acts on a shared read.
+new_log
+SNAP_LOG="$TMP/snap.log"; : > "$SNAP_LOG"
+PR_SNAPSHOT_TTL=60 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_SNAP_LOG="$SNAP_LOG" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 12 --print --repo-path "$CLONE" --branch main
+if [[ -s "$SNAP_LOG" && "$(sort -u "$SNAP_LOG")" == "0" ]]; then
+  ok "merge-gate.sh runs with the PR snapshot off (PR_SNAPSHOT_TTL=0), even when the caller sets 60"
+else
+  bad "merge-gate.sh did not get PR_SNAPSHOT_TTL=0 (logged: $(tr '\n' ' ' < "$SNAP_LOG"))"
 fi
 
 # ============================================================================
