@@ -711,7 +711,13 @@ claude_statusline_rows() { # <label>
   # Issue #2469: the saved reading names the subscription (`ultra`, `max`, `pro`); only when it
   # does not, the stored login is asked, so a fresh reading alone never touches the store.
   ROW_PLAN_DEFAULT="$(jq -r '.subscription_type // "" | if type == "string" then . else "" end' "$best_file" 2>/dev/null || true)"
-  [[ -n "$ROW_PLAN_DEFAULT" ]] || claude_detect_plan "${CLAUDE_ACCT_DIR:-}" "${CLAUDE_ACCT_SERVICE:-}"
+  # A bare `max` carries no 5x/20x multiplier, so the stored login's `rateLimitTier` is asked to
+  # refine it (Max 20x is $200, not $100); when the login cannot say, the saved name stands.
+  if [[ -z "$ROW_PLAN_DEFAULT" || "$ROW_PLAN_DEFAULT" == "max" ]]; then
+    local saved_plan="$ROW_PLAN_DEFAULT"
+    claude_detect_plan "${CLAUDE_ACCT_DIR:-}" "${CLAUDE_ACCT_SERVICE:-}"
+    [[ -n "$ROW_PLAN_DEFAULT" ]] || ROW_PLAN_DEFAULT="$saved_plan"
+  fi
   acct_extra="$(claude_account_fields_from "$best_file" "$usable_files")"
   age_txt="$(claude_age_text "$CSR_AGE")"
   case "$best_kind" in

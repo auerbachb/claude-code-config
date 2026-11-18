@@ -131,6 +131,17 @@ write_config "$(account_json claude "$CL" "$c1" "$SVC_PLAN")"
 run --json
 check_eq "$(plan_cells "$CL" 7-day)" "Max|provider|100|list" "the token path: the stored login's subscription type is the tier"
 
+# A saved reading that says a bare `max` is refined by the stored login's rateLimitTier (Max 20x is $200, not $100).
+fresh
+SVC_PLAN="Claude Code-credentials-PLAN20"
+c1="$(seed_claude_profile "$CL" "$SVC_PLAN")"
+printf '%s\t%s\t%s\n' "$SVC_PLAN" "$CLAUDE_KEYCHAIN_ACCT" \
+  "$(jq -cn --arg at "$CLAUDE_SECRET" '{claudeAiOauth: {accessToken: $at, scopes: ["user:inference","user:profile"], subscriptionType: "max", rateLimitTier: "default_claude_max_20x"}}')" > "$STUB_KEYCHAIN_DB"
+seed_claude_app "$CL" '"max"'
+write_config "$(account_json claude "$CL" "$c1" "$SVC_PLAN")"
+run --json
+check_eq "$(plan_cells "$CL" 7-day)" "Max 20x|provider|200|list" "a saved bare max is refined to Max 20x by the stored login"
+
 # A tier the list does not price keeps its name and shows `-` for the price.
 fresh
 x1="$(seed_codex_profile codex-one@example.com "$(codex_snap enterprise_plus)" codex-one@example.com)"
