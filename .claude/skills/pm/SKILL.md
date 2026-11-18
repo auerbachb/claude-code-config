@@ -195,20 +195,20 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 
 The autonomy grants, the monitor-mode rules, and the pipeline ceiling's default need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project (`portable-skill-resolution.md`), so they are already in context wherever `/pm` runs.
 
-**Resolve the per-thread pipeline ceiling once, here** — every slot count below (3.1 dispatch, the 3.4 refill, the D5 `slots` heartbeat, the window-fit `makespan.sh` call) reads this `CEILING` / `LIMIT`, never a literal:
+**Resolve the per-thread width once, here** — every slot count below (3.1 dispatch, the 3.4 refill, the D5 `slots` heartbeat, the window-fit `makespan.sh` call) reads this `CEILING` / `LIMIT`, never a literal. `CEILING` is the per-mode width from `--width` (run mode via `run-mode.sh get`: default and speed 15, cheap the repo's `PIPELINE_CEILING`):
 
 ```bash
 CEILING=4; LIMIT=4                                 # script absent: the default (DEGRADED above)
 if [[ -n "$ACTIVE_WORK_CAP_SH" ]]; then
-  if CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
-    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))    # min() — the cap is the backstop
+  if CEILING=$("$ACTIVE_WORK_CAP_SH" --width) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
+    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))    # min(mode width, cap) — --width already clamps; kept as the backstop
   else
     CEILING=0; LIMIT=0                            # usage-error exit: dispatch nothing new
   fi
 fi
 ```
 
-`CEILING` is the repo's `PIPELINE_CEILING` (`.claude/pm-config.md` `## Active work`; both modes are network-free), default 4. `LIMIT = min(CEILING, ACTIVE_WORK_CAP)` is what a launch actually fills to — the ceiling never raises the cap (`active-work-cap.md` §Subordination).
+`LIMIT` is what a launch actually fills to — a mode never raises the cap (`active-work-cap.md` §Per-mode width). Review-poll cadence: `"$ACTIVE_WORK_CAP_SH" --poll-interval <running>` (120s above 8 running pipelines, else 60s). The default-mode judgment, the cheap-mode refill hold and the once-per-thread notes are `/subagent` Step 7's rules on this same `LIMIT`; `/pm` dispatch (3.1) and refill (3.4) apply them there, not here.
 
 
 Mark `0 ran` after resolving dependencies and setting the limits. An unavailable

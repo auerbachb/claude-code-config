@@ -63,6 +63,7 @@ The parent agent provides:
 - **Handoff file path** (e.g., `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json`; resolve with `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}}`)
 - **HEAD SHA** from the previous phase
 - **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
+- **POLL_INTERVAL_S**: the seconds between poll cycles, read by the parent from `active-work-cap.sh --poll-interval <running pipelines>` at launch (120 above 8 running pipelines, else 60)
 - **Existing findings** (if any were already posted before this agent launched)
 
 ## Safety Rules (NON-NEGOTIABLE)
@@ -151,7 +152,9 @@ Run the session-start / pre-review comment audit per `cr-github-review.md` ("Ses
 
 ## CodeRabbit Review Path (when `reviewer` = `cr`)
 
-### Polling (60-second cycle)
+### Polling (POLL_INTERVAL_S cycle)
+
+Sleep `POLL_INTERVAL_S` seconds between cycles. The count of running pipelines changes during the run, so before each cycle re-read the cadence the parent records for this repo: `KEY=$(run_script session-state.sh --repo {{OWNER}}/{{REPO}} --repo-key)` then `run_script session-state.sh --repo {{OWNER}}/{{REPO}} --get-json ".repos[\"$KEY\"].poll_interval_s"` (if `run_script` cannot resolve the helper, say so in one line; do not keep the launch cadence silently) (the parent writes it, repo-scoped under the same normalized key, every monitor tick from `active-work-cap.sh --poll-interval <running pipelines>`). If that read fails, is empty, or is `null`, keep the last value you have; use 60 only when no value was ever supplied. A rate-limited or failed GitHub response is **no data** for that cycle: keep the last watermark and never read it as clean.
 
 **Call `run_script pr-state.sh --pr {{PR_NUMBER}}` ONCE per poll cycle.** It resolves the HEAD SHA fresh every invocation (eliminating the stale-SHA hazard) and bundles reviews, inline comments, issue comments, unresolved threads, check-runs, and bot statuses into one JSON file. Read everything downstream via jq — do NOT re-issue separate `gh api` calls:
 
@@ -233,7 +236,7 @@ The script caches `.prs["{{PR_NUMBER}}"].bugbot_installed` in `~/.claude/session
 
 ### Rate-Limit and CR-Silence Paths
 
-Do not hand-roll fallback timing here. The mandatory Reviewer Escalation Gate above owns rate-limit fast-path handling, CR silence thresholds, BugBot installed-cache behavior, Greptile trigger eligibility, and self-review fallback. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
+Do not hand-roll fallback timing here. The mandatory Reviewer Escalation Gate above owns rate-limit fast-path handling, CR silence thresholds, BugBot installed-cache behavior, Greptile trigger eligibility, and self-review fallback. Polling cadence is the poll cycle above; a clean CR check-run completion short-circuits the wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
 
 > **Owner approval required (issue #1897).** Never post `@cursor review` or `@greptileai` by hand. A paid review the owner approved is recorded as a grant for one PR, HEAD, and vendor (issue #1898); spend it only with `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor cursor|greptile` — `STATUS=triggered` is the only success, and any refusal means follow `no_reviewer`. Never ask the owner and never write a grant from this agent. Decline any vendor offer to pay for a review now unless `paid-review-grant.sh --offer-check` answers `STATUS=consumed`. Contract: `.claude/reference/paid-review-approval.md`.
 
@@ -247,7 +250,7 @@ If CR remains silent or cannot produce a current-HEAD approval, keep using the R
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
-**Owner-approval only (issue #1897).** This path is reached only for a PR already sticky on BugBot from before #1897, or once the owner approved a BugBot review in chat. Never invite BugBot yourself: no `@cursor review` post and no `--claim cursor` (it is always denied `approval_required`). Poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
+**Owner-approval only (issue #1897).** This path is reached only for a PR already sticky on BugBot from before #1897, or once the owner approved a BugBot review in chat. Never invite BugBot yourself: no `@cursor review` post and no `--claim cursor` (it is always denied `approval_required`). Poll for `cursor[bot]` reviews on all 3 endpoints every poll cycle (the Polling cadence above).
 
 ### Polling
 
@@ -255,7 +258,7 @@ Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bo
 
 **Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
 
-**Timeout:** 10 minutes from the push, or from the owner's approval in chat if that came later. Polling cadence stays 60 s; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, do NOT trigger Greptile (paid, owner approval only): report the blocker and keep polling until the no-review override (issue #1899) or a free review clears the gate.
+**Timeout:** 10 minutes from the push, or from the owner's approval in chat if that came later. Polling cadence is the poll cycle above; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, do NOT trigger Greptile (paid, owner approval only): report the blocker and keep polling until the no-review override (issue #1899) or a free review clears the gate.
 
 ### BugBot Merge Gate
 
@@ -291,7 +294,7 @@ Owner-approval only (issue #1897). Under an owner grant: `run_script paid-review
 
 ### Polling
 
-Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` across `.comments.reviews`, `.comments.inline`, `.comments.conversation`. Timeout: 10 minutes. Polling cadence stays 60 s — exit immediately when the review lands, do not keep polling to 10 min. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
+Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` across `.comments.reviews`, `.comments.inline`, `.comments.conversation`. Timeout: 10 minutes. Polling cadence is the poll cycle above — exit immediately when the review lands, do not keep polling to 10 min. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
 
 ### Severity Classification (P0/P1/P2)
 
