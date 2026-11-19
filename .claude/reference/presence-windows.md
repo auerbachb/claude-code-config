@@ -211,6 +211,46 @@ question): the notice and push are the mitigation. Return acts only on a lapsed 
 accepted trade-off: after an expiry, an operator who is reading but not typing gets no menus until he
 says something.
 
+## Stepping away (issue #2418)
+
+**`/afk` is an alias, not a second owner.** The operator reached for `/afk`, not `/presence`.
+`.claude/skills/afk/SKILL.md` exists so the word shows in the command list and routes into the
+presence skill; here-or-away keeps one owner. `presence.sh afk-parse --by <source> -- <text>` reads
+the words and is pure (it writes nothing). It runs the source gate first: any `--by` other than
+`operator-message` prints the one refusal line and exits 5. The trigger must open the message
+(`/afk`, `afk`, `going afk`, `I'm afk`), so "the afk skill is broken" is not one (exit 1). The rest
+is an optional duration: `<N>m`/`<N>h` spelled any common way, `an hour`, `half an hour`,
+`overnight` (`--rest-of-day`), `until I say otherwise` (`--open-ended`). No duration, or one it
+cannot read, exits 4: the skill asks how long once, inside the same menu round as the ask-now
+questions. Laptop wording exits 3 and goes through `/leave-by`. Clock times ("afk until 5") are
+left to the dialog for now; `/pm --away` already reads them through `window-plan.sh`.
+
+**Ask now, then leave.** The questions the next hour will raise are often knowable before he goes:
+a paid review only he may approve, a merge only a human may run, a sign-in, a parked step. Asked
+after he leaves they become a list he returns to; asked before, a ten-second answer turns into
+finished work. So every away declaration in the presence skill first takes one round:
+
+- **Order.** The round runs before `set away`, because away arms unattended mode, whose guard denies
+  menus.
+- **Bound.** Sub-agents and linked sessions are asked by message once and given two minutes in
+  total; the round never waits longer. A reply after that is recorded as usual once away is set.
+  A dismissed menu, an unanswered message or a live desk that captures the menu all still set away.
+- **One round.** One `AskUserQuestion` call, at most four questions (the tool's limit), recommended
+  option first, most consequential first; the rest are recorded as usual. With nothing to ask, one
+  line and no menu.
+- **Where answers live.** Each answer is recorded where the work reads it: the per-repo
+  saved-question file (`unattended.sh record`, then `answer --by operator`, so it never shows up as an
+  open question on his return), a comment on the issue or PR it concerns, and a message to the
+  sub-agent or session that asked. While away, a thread checks `unattended.sh list` for an answered
+  question about the same decision before recording a new one. A question first known after he
+  leaves is handled exactly as before.
+- **Authority.** An answer in this round is the operator's own answer in chat. It approves only what
+  it names: one paid review approved is that one review (`safety.md` §Paid AI Reviews).
+
+**How a sub-agent reports its likely questions** (the issue's open question): a plain reply to the
+parent's message, one line per decision with its recommended option. No new field or file: the
+parent turns replies into menu questions, and a sub-agent that cannot answer in time loses nothing.
+
 ## Left out (later increments)
 
 - The pre-leave pass and the long-away check-in (issue #2295).
