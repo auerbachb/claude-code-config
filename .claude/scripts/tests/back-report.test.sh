@@ -45,6 +45,12 @@ export GH_LOG="$tmp/gh.log"
 cat >"$tmp/owner-task.sh" <<'OT'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$OT_LOG"
+if [ "$1" = add ]; then   # OT_ADD_RC=N fails every add with exit N
+  [ "${OT_ADD_RC:-0}" = 0 ] || exit "$OT_ADD_RC"
+  n=$(grep -c '^add ' "$OT_LOG")
+  while [ $# -gt 0 ]; do [ "$1" = --source ] && printf '%s\n' "$2" >>"$OT_LOG.source"; shift; done
+  printf 'ht-0000000%s\n' "$n"; exit 0
+fi
 case "${OT_MODE:-ok}" in
   fail) exit 4 ;;
   empty) printf '[]\n' ;;
@@ -151,6 +157,51 @@ printf '{"pr_number":8,"phase_completed":"A","head_sha":"abc"}\n' >"$HOME/.claud
 R --session sess-a --now "$NOW"
 check "a handoff is listed" "$(f '[.handoffs[] | "\(.repo)#\(.pr):\(.phase_completed)"] | join(",")')" "acme/widgets#8:A"
 check "an empty handoff file is named" "$(f '[.unreadable[].source | select(endswith("pr-9-handoff.json"))] | length')" 1
+
+printf '== --save-recovered: tasks handed over in the thread but never saved\n'
+cat >"$tmp/found.json" <<'J'
+[{"what":"Sign in to Railway","why":"only you hold the login"},
+ {"what":"  fill in .ENV.local ","why":"already listed, other case and spacing"},
+ {"what":"OLD","why":"already listed and done"},
+ {"what":"sign in to railway","why":"repeated in the same scan"},
+ {"what":"Run the live test on your profile","why":"it uses your account"}]
+J
+: >"$OT_LOG"; rm -f "$OT_LOG.source"
+R --save-recovered "$tmp/found.json" --session sess-a --now "$NOW"
+check "exit 0" "$rc" 0
+check "the list, done tasks included, is read for duplicates" "$(head -1 "$OT_LOG")" "list --all --json --repo acme/widgets"
+check "two new tasks saved, with their ids" "$(f '[.saved[] | .id + "=" + .what] | join("|")')" "ht-00000001=Sign in to Railway|ht-00000002=Run the live test on your profile"
+check "the source carries the recovered marker" "$(sort -u "$OT_LOG.source")" "recovered by /back from this thread (session sess-a, 2026-11-19)"
+check "the saved record shows the same source" "$(f '.saved[0].source')" "recovered by /back from this thread (session sess-a, 2026-11-19)"
+check "already on the list (open or done) or repeated: not saved twice" "$(f '[.duplicates[].existing_id] | join(",")')" "T-1,T-2,earlier in this list"
+check "only the two new tasks were added" "$(grep -c '^add ' "$OT_LOG" | tr -d ' ')" 2
+check "nothing not saved" "$(f '.not_saved | length')" 0
+
+printf '== --save-recovered: a public repo with no bucket, an unreadable list, no helper\n'
+OT_ADD_RC=3 R --save-recovered "$tmp/found.json" --now "$NOW"
+check "no location: both new tasks listed as not saved" "$(f '[.not_saved[].what] | join("|")')" "Sign in to Railway|Run the live test on your profile"
+check "no location: the reason names exit 3" "$(f '.not_saved[0].reason')" "no location for this repo's tasks: a public repo with no private bucket in the pointer file (owner-task.sh add exited 3)"
+check "no location: the task's why is kept" "$(f '.not_saved[0].why')" "only you hold the login"
+check "no location: nothing reported saved" "$(f '.saved | length')" 0
+R --save-recovered "$tmp/found.json" --now "$NOW"
+check "no session id: the marker still says recovered" "$(f '.saved[0].source')" "recovered by /back from this thread (2026-11-19)"
+OT_ADD_RC=5 R --save-recovered "$tmp/found.json" --now "$NOW"
+check "secret refused: named" "$(f '.not_saved[0].reason')" "refused as a possible secret (owner-task.sh add exited 5)"
+OT_ADD_RC=7 R --save-recovered "$tmp/found.json" --now "$NOW"
+check "checker missing: named" "$(f '.not_saved[0].reason')" "the secret checker is missing, so the write was refused (owner-task.sh add exited 7)"
+: >"$OT_LOG"
+OT_MODE=fail R --save-recovered "$tmp/found.json" --now "$NOW"
+check "unreadable list: every task not saved, none added" "$(f '.not_saved | length'):$(grep -c '^add ' "$OT_LOG" | tr -d ' ')" "5:0"
+check "unreadable list: the reason says why" "$(f '.not_saved[0].reason')" "the task list could not be read to check for duplicates (owner-task.sh list exited 4)"
+BACK_REPORT_OWNER_TASK="$tmp/missing.sh" R --save-recovered "$tmp/found.json" --now "$NOW"
+check "helper missing: not saved, said so" "$(f '"\(.saved | length):\(.not_saved[0].reason)"')" "0:owner-task.sh not found (checked all three paths)"
+printf '{"what":"x"}\n' >"$tmp/bad.json"
+R --save-recovered "$tmp/bad.json"; check "not an array: usage error" "$rc" 2
+printf '[]\n[]\n' >"$tmp/two.json"
+R --save-recovered "$tmp/two.json"; check "two top-level values: usage error" "$rc" 2
+printf '[]\n' >"$tmp/empty.json"
+R --save-recovered "$tmp/empty.json"; check "an empty array: nothing saved, exit 0" "$rc:$(f '.saved | length')" "0:0"
+R --save-recovered "$tmp/nope.json"; check "missing file: usage error" "$rc" 2
 
 printf '== usage\n'
 R --since 08 --now "$NOW"; check "a leading-zero epoch is read as decimal" "$rc:$(f .since)" "0:8"

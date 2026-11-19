@@ -123,12 +123,31 @@ A checklist, one line each: `- [ ] <what> — <why a person is needed> (<source>
 
 - `tasks` is `null`: print `Human tasks: unavailable (<reason from .unreadable>)`, never "none".
 - An empty list: `No open human tasks.`
-- **Recovered tasks.** Read this thread's own messages since the away declaration (`since`): anything it
-  handed to the operator to do himself (an `OWNER_ACTION:` line, "only you can…", "you need to…", a
-  sign-in, a `.env` value, a live test on his profile) that is not in the list is saved with
-  `"$OWNER_TASK_SH" add` (check `add --help` for its flags), its source naming this thread and
-  `recovered by /back`, and shown with `(recovered)`. With the task list unavailable, show them under
-  `Not saved (task list unavailable):` instead. In `/back all` only this thread is scanned.
+- **Recovered tasks (the fallback scan).** Read this thread's own messages since the away declaration
+  (`since`). A handed-over task is a step this thread told the operator to do himself because only a
+  person can: an `OWNER_ACTION:` line, "only you can…", "you need to…", a sign-in or login, a `.env` or
+  secret value to fill in, an agreement to accept, a live test on his own profile or account. Not a
+  question (those are Step 3), not a status line, not work an agent can still do. Write each one as
+  `{"what": "<the step, one line>", "why": "<why a person is needed>"}` into a JSON array in a file
+  (the scratchpad), never with a secret value in it, then save them in one call:
+
+  ```bash
+  "$BACK_REPORT_SH" --save-recovered "<file>"
+  ```
+
+  It reads the list (`owner-task.sh list --all --json`, done tasks included) and, for each task whose
+  `what` (case and spacing ignored) is not already there or earlier in the file, runs
+  `owner-task.sh add --what "<what>" --why "<why>" --source "recovered by /back from this thread
+  (session <id>, <date>)"`. The task contract has no recovered field, so `source` carries the marker.
+  Its JSON names each result:
+  - `saved`: show in the checklist with `(recovered)` after the source.
+  - `duplicates`: already on the list; nothing is saved twice and nothing extra is shown.
+  - `not_saved`: show each under `Not saved:` as `- [ ] <what> — <why> (<reason>)`, so a task is never
+    dropped. Reasons include a public repo with no private bucket (`add` exit 3), an unreadable list
+    (4), a refused secret (5), a missing secret checker (7) and a missing `owner-task.sh`.
+
+  Nothing found: skip the call. A usage error (exit 2) means the file was malformed: show the found
+  tasks under `Not saved:` with that reason. In `/back all` only this thread is scanned.
 
 ## Step 5: The digest
 

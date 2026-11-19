@@ -5,8 +5,9 @@
 # PURPOSE (issue #2541)
 #   Coming back from away used to mean pasting the same "what happened, what do you need from me"
 #   message into every thread. /back (.claude/skills/back/SKILL.md) asks it once. This script does
-#   all of its reading; the skill only presents. It writes nothing, starts nothing and dispatches
-#   nothing. A source it cannot read is listed in `.unreadable` with the reason and its section is
+#   all of its reading; the skill only presents. It starts nothing and dispatches nothing, and the
+#   report writes nothing; the one write is --save-recovered (below), which /back runs for tasks it
+#   found handed to the operator in its own thread but never saved. A source it cannot read is listed in `.unreadable` with the reason and its section is
 #   null, so the skill can say "unavailable" instead of showing an empty list as if nothing waited.
 #
 # USAGE
@@ -19,6 +20,16 @@
 #                written by every away arming); with none stored, the last 24 hours
 #     --now      pinned clock (tests). Default: now
 #     --cwd      the thread's checkout. Default: the current directory
+#
+#   back-report.sh --save-recovered FILE [--session ID] [--now EPOCH] [--cwd DIR]
+#     FILE is a JSON array of {what, why}: tasks this thread handed to the operator that were never
+#     saved. Each is saved with `owner-task.sh add --what W --why Y --source "recovered by /back from
+#     this thread (session ID, YYYY-MM-DD)"`; the task contract has no recovered field, so the source
+#     carries the marker. A task whose `what` (case and spacing ignored) is already on this repo's
+#     list, open or done, or repeated earlier in FILE, is not saved again. Prints one JSON object
+#     {saved: [{id, what, why, source}], duplicates: [{what, existing_id}],
+#      not_saved: [{what, why, reason}]}. A task that could not be saved is always in not_saved with
+#     the reason (no location, unreadable list, secret refused, checker or helper missing).
 #
 # OUTPUT (stdout, one JSON object)
 #   scope            thread | all
@@ -50,7 +61,8 @@
 #   gh               on PATH
 #
 # EXIT CODES
-#   0 report printed (unreadable sources are inside it); 1 jq not found; 2 usage error.
+#   0 report printed (unreadable sources are inside it), or --save-recovered ran (failures are in its
+#   not_saved); 1 jq not found; 2 usage error (including a FILE that is not a JSON array of {what, why}).
 #
 # Bash 3.2 compatible (macOS /bin/bash).
 set -uo pipefail
@@ -69,7 +81,7 @@ if [ -z "$JQ" ]; then
 fi
 [ -z "$JQ" ] || case "$JQ" in /*) PATH="$PATH:$(dirname "$JQ")"; export PATH ;; esac
 
-ALL=0 SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" SINCE="" NOW="" CWD="$PWD"
+RECOVER="" ALL=0 SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" SINCE="" NOW="" CWD="$PWD"
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help|help) usage; exit 0 ;;
@@ -78,6 +90,7 @@ while [ $# -gt 0 ]; do
     --since) [ $# -ge 2 ] || die_usage "--since needs a value"; SINCE="$2"; shift 2 ;;
     --now) [ $# -ge 2 ] || die_usage "--now needs a value"; NOW="$2"; shift 2 ;;
     --cwd) [ $# -ge 2 ] || die_usage "--cwd needs a value"; CWD="$2"; shift 2 ;;
+    --save-recovered) [ $# -ge 2 ] || die_usage "--save-recovered needs a file"; RECOVER="$2"; shift 2 ;;
     *) die_usage "unknown argument: $1" ;;
   esac
 done
@@ -114,6 +127,17 @@ iso() { # EPOCH -> ISO-8601 UTC
   date -u -r "$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null
 }
 
+# --- owner-task.sh -------------------------------------------------------------
+OT="${BACK_REPORT_OWNER_TASK:-}"
+if [ -z "$OT" ]; then
+  for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/owner-task.sh}" \
+           "${HOME:+$HOME/.claude/scripts/owner-task.sh}" ".claude/scripts/owner-task.sh"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then OT="$c"; break; fi
+  done
+fi
+# Absolute before any cd, so the helper that was found is the one that runs.
+case "$OT" in ''|/*) ;; *) OT="$PWD/$OT" ;; esac
+
 # --- repo, absence -------------------------------------------------------------
 REPO=""
 if [ -x "$HERE/session-state.sh" ]; then
@@ -126,6 +150,72 @@ QREPO="$REPO"
 if [ -z "$QREPO" ]; then
   qtop=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || qtop=""
   QREPO="_local/$(printf '%s' "${qtop:-$CWD}" | tr '/' '_')"
+fi
+
+# --- --save-recovered: the one write ----------------------------------------------------------
+if [ -n "$RECOVER" ]; then
+  [ -r "$RECOVER" ] || die_usage "--save-recovered: cannot read $RECOVER"
+  # Slurped: exactly one top-level value, so two arrays back to back are refused, not half-read.
+  "$JQ" -e -s 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object"
+             and (.what | type == "string") and (.what | test("\\S")) and (.why | type == "string")))' \
+    "$RECOVER" >/dev/null 2>&1 \
+    || die_usage "--save-recovered: FILE must be a JSON array of {what, why} with a non-empty what"
+  RARGS=(); case "$REPO" in ''|_local/*) ;; *) RARGS=(--repo "$REPO") ;; esac
+  DAY=$(date -u -r "$NOW" '+%Y-%m-%d' 2>/dev/null || date -u -d "@$NOW" '+%Y-%m-%d' 2>/dev/null)
+  if [ -n "$SID" ]; then SRC="recovered by /back from this thread (session $SID, $DAY)"
+  else SRC="recovered by /back from this thread ($DAY)"; fi
+  OUT="$WORK/recovered.jsonl"; : >"$OUT"
+  SEEN="$WORK/seen.txt"; : >"$SEEN"
+  NORM='ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")'
+  # Every task the list already holds, open or done: without it no duplicate check is possible, so
+  # nothing is saved and each task is reported as not saved.
+  EXIST="" LRC=0 WHY_NOT=""
+  if [ -z "$OT" ] || [ ! -x "$OT" ]; then
+    WHY_NOT="owner-task.sh not found (checked all three paths)"
+  else
+    EXIST=$(cd "$CWD" 2>/dev/null && "$OT" list --all --json ${RARGS[@]+"${RARGS[@]}"} 2>/dev/null) || LRC=$?
+    if [ "$LRC" -ne 0 ] || ! printf '%s' "$EXIST" | "$JQ" -e 'type == "array"' >/dev/null 2>&1; then
+      WHY_NOT="the task list could not be read to check for duplicates (owner-task.sh list exited $LRC)"
+    fi
+  fi
+  n=$("$JQ" 'length' "$RECOVER") i=0
+  while [ "$i" -lt "$n" ]; do
+    W=$("$JQ" -r --argjson i "$i" '.[$i].what' "$RECOVER")
+    Y=$("$JQ" -r --argjson i "$i" '.[$i].why' "$RECOVER")
+    i=$((i + 1))
+    if [ -n "$WHY_NOT" ]; then
+      "$JQ" -cn --arg w "$W" --arg y "$Y" --arg r "$WHY_NOT" '{k: "not_saved", v: {what: $w, why: $y, reason: $r}}' >>"$OUT"
+      continue
+    fi
+    KEY=$("$JQ" -rn --arg w "$W" "\$w | $NORM")
+    DUP=$(printf '%s' "$EXIST" | "$JQ" -r --arg k "$KEY" "[.[] | select((.what | $NORM) == \$k) | .id][0] // empty")
+    if [ -z "$DUP" ] && grep -qxF -- "$KEY" "$SEEN"; then DUP="earlier in this list"; fi
+    if [ -n "$DUP" ]; then
+      "$JQ" -cn --arg w "$W" --arg d "$DUP" '{k: "duplicates", v: {what: $w, existing_id: $d}}' >>"$OUT"
+      continue
+    fi
+    printf '%s\n' "$KEY" >>"$SEEN"
+    ARC=0
+    ID=$(cd "$CWD" 2>/dev/null && "$OT" add --what "$W" --why "$Y" --source "$SRC" ${RARGS[@]+"${RARGS[@]}"} 2>/dev/null) || ARC=$?
+    ID=$(printf '%s\n' "$ID" | tail -1)
+    if [ "$ARC" -eq 0 ] && [ -n "$ID" ]; then
+      "$JQ" -cn --arg i "$ID" --arg w "$W" --arg y "$Y" --arg s "$SRC" \
+        '{k: "saved", v: {id: $i, what: $w, why: $y, source: $s}}' >>"$OUT"
+      continue
+    fi
+    case "$ARC" in
+      0) R="owner-task.sh add printed no task id" ;;
+      3) R="no location for this repo's tasks: a public repo with no private bucket in the pointer file (owner-task.sh add exited 3)" ;;
+      4) R="a task source could not be read (owner-task.sh add exited 4)" ;;
+      5) R="refused as a possible secret (owner-task.sh add exited 5)" ;;
+      7) R="the secret checker is missing, so the write was refused (owner-task.sh add exited 7)" ;;
+      *) R="owner-task.sh add exited $ARC" ;;
+    esac
+    "$JQ" -cn --arg w "$W" --arg y "$Y" --arg r "$R" '{k: "not_saved", v: {what: $w, why: $y, reason: $r}}' >>"$OUT"
+  done
+  "$JQ" -s '{saved: [.[] | select(.k == "saved") | .v], duplicates: [.[] | select(.k == "duplicates") | .v],
+             not_saved: [.[] | select(.k == "not_saved") | .v]}' "$OUT"
+  exit 0
 fi
 
 SINCE_SOURCE=flag
@@ -198,15 +288,6 @@ else
 fi
 
 # --- human tasks (Issue #2538 contract) ---------------------------------------------------
-OT="${BACK_REPORT_OWNER_TASK:-}"
-if [ -z "$OT" ]; then
-  for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/owner-task.sh}" \
-           "${HOME:+$HOME/.claude/scripts/owner-task.sh}" ".claude/scripts/owner-task.sh"; do
-    if [ -n "$c" ] && [ -x "$c" ]; then OT="$c"; break; fi
-  done
-fi
-# Absolute before the cd below, so the helper that was found is the one that runs.
-case "$OT" in ''|/*) ;; *) OT="$PWD/$OT" ;; esac
 if [ -z "$OT" ] || [ ! -x "$OT" ]; then
   null_section tasks
   unreadable "human tasks" "owner-task.sh not found (checked all three paths)"
