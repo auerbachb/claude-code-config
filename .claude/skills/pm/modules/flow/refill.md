@@ -52,7 +52,7 @@ tick is unattended by construction, and `--window` already armed `.window` in St
 **A non-null `$SCOPE` constrains every refill source** — it is a narrowing, not a stop, and it is worthless if it is only recorded. Every candidate, operator-ordered, queued, or from the backlog, must fall inside it; one that doesn't is skipped exactly like a failed re-validation, and if that empties the candidate set the reason is `nothing eligible (scope: <scope>)`. Reading `refill.scope` and then ranking the whole backlog would auto-launch precisely the work the user just excluded.
 
 <!-- pm-routing:begin -->
-Epic scope (issue #2545): on every evaluation, read `shared:epic` and run its Restore block after the scope read. A stored epic narrows every refill source to its open children, re-read from GitHub on each evaluation. An unreadable epic is `paused (epic scope unreadable)`. When no child is eligible, run its Completion block; a closed epic makes the reason `nothing eligible (epic #N complete)`.
+Epic scope (issue #2545): on every evaluation, read `shared:epic` and run its Restore block after the scope read. A stored epic narrows every refill source to its open children, re-read from GitHub on each evaluation. An unreadable epic is `paused (epic scope unreadable)`. When no child is eligible, run its Completion block. A completed epic stays stored as complete, so the candidate set stays empty with the reason `nothing eligible (epic #N complete)` and refill never falls through to the whole backlog.
 <!-- pm-routing:end -->
 
 Write it **only** when a human says stop in chat, and clear it **only** on an explicit human resume — never on an unrelated later message:

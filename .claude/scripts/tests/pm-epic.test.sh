@@ -44,6 +44,10 @@ if [ "\$1" = api ] && [ "\$2" = --paginate ]; then
 fi
 if [ "\$1" = api ]; then
   n=\$(printf '%s' "\$2" | sed -n 's#^repos/acme/w/issues/\([0-9]*\)\$#\1#p')
+  if [ -n "\$n" ] && [ -f "\$fx/next-issue-\$n.json" ] && [ -f "\$fx/served-\$n" ]; then
+    mv "\$fx/next-issue-\$n.json" "\$fx/issue-\$n.json"
+  fi
+  [ -n "\$n" ] && touch "\$fx/served-\$n"
   if [ -n "\$n" ] && [ -f "\$fx/issue-\$n.json" ]; then cat "\$fx/issue-\$n.json"; exit 0; fi
   if [ -f "\$fx/fail-all" ]; then echo "HTTP 502" >&2; exit 1; fi
   echo "gh: Not Found (HTTP 404)" >&2; exit 1
@@ -93,7 +97,7 @@ cat > "$TMP/fx/sub-100.json" <<'EOF'
 EOF
 
 out=$("$SCRIPT" children acme/w '#100'); rc=$?
-check_eq "children: open parent with children exits 0" "0" "$rc"
+check_eq "children: a listed child GitHub cannot find exits 6 (JSON still printed)" "6" "$rc"
 check_eq "children: same-repo children in first-seen order" "104,101,102,103" "$(jq -r '[.children[].number] | join(",")' <<< "$out")"
 check_eq "children: open set excludes the closed child" "104,101,103" "$(jq -r '.open | join(",")' <<< "$out")"
 check_eq "children: closed set" "102" "$(jq -r '.closed | join(",")' <<< "$out")"
@@ -120,10 +124,22 @@ out=$("$SCRIPT" children acme/w 510); rc=$?
 check_eq "fence indent: exits 0" "0" "$rc"
 check_eq "fence indent: 0-3 spaces only; backtick info strings open nothing" "101,104,102" "$(jq -r '[.children[] | select(.sources | index("task-list")) | .number] | join(",")' <<< "$out")"
 
+# Conservative rule: only top-level items (0-3 spaces, no tab) are children, so a
+# fence nested in a list item and indented code never leak an example.
+BODY520=$'- Examples:\n    ~~~\n    - [ ] #200\n    ~~~\n- [ ] #101\n'
+issue 520 open "List-container fence parent" "$BODY520"
+out=$("$SCRIPT" children acme/w 520); rc=$?
+check_eq "list-item fence: exits 0" "0" "$rc"
+check_eq "list-item fence: only the top-level #101" "101" "$(jq -r '[.children[].number] | join(",")' <<< "$out")"
+BODY530=$'Text.\n\n    - [ ] #200 indented code\n\t- [ ] #201 tab-indented\n   - [ ] #104 three spaces still counts\n'
+issue 530 open "Indented code parent" "$BODY530"
+out=$("$SCRIPT" children acme/w 530); rc=$?
+check_eq "indented code: 4+ spaces and tabs are never children" "104" "$(jq -r '[.children[].number] | join(",")' <<< "$out")"
+
 # ---- sub-issue API unavailable: body still stands ------------------------------
 rm "$TMP/fx/sub-100.json"
 out=$("$SCRIPT" children acme/w 100); rc=$?
-check_eq "no sub-issue API: still exits 0" "0" "$rc"
+check_eq "no sub-issue API: still reads (exit 6 only for the missing #106)" "6" "$rc"
 check_eq "no sub-issue API: reported unavailable" "unavailable" "$(jq -r '.sub_issues' <<< "$out")"
 check_eq "no sub-issue API: checklist + task list children only" "104,101,102" "$(jq -r '[.children[].number] | join(",")' <<< "$out")"
 
@@ -175,6 +191,65 @@ check_eq "close-if-done: idempotent on a closed parent" "already-closed #500" "$
 "$SCRIPT" close-if-done acme/w 300 >/dev/null; rc=$?
 check_eq "close-if-done: a childless parent is never closed" "5" "$rc"
 
+issue 700 closed "Closed parent, open child" $'- [x] #501\n- [ ] #502\n'
+issue 502 open "c2 reopened" ""
+echo '[]' > "$TMP/fx/sub-700.json"
+: > "$TMP/calls.log"
+out=$("$SCRIPT" close-if-done acme/w 700 2>/dev/null); rc=$?
+check_eq "close-if-done: closed parent with an open child is a discrepancy (exit 1)" "1" "$rc"
+check_eq "close-if-done: discrepancy line" "discrepancy #700 closed with 1 of 2 children open" "$out"
+issue 720 closed "Closed parent, only a missing child" $'- [x] #799\n'
+echo '[]' > "$TMP/fx/sub-720.json"
+"$SCRIPT" close-if-done acme/w 720 >/dev/null 2>&1; rc=$?
+check_eq "close-if-done: a closed parent listing only a missing child is not done (exit 1)" "1" "$rc"
+issue 730 closed "Closed parent, sub-issues unreadable" "No list."
+"$SCRIPT" close-if-done acme/w 730 >/dev/null 2>&1; rc=$?
+check_eq "close-if-done: a closed parent with unreadable sub-issues is not done (exit 1)" "1" "$rc"
+issue 710 open "Race parent" $'- [x] #501\n- [x] #711\n'
+issue 711 closed "c711" ""
+echo '[]' > "$TMP/fx/sub-710.json"
+rm -f "$TMP/fx/served-711"
+jq '.state = "open"' "$TMP/fx/issue-711.json" > "$TMP/fx/next-issue-711.json"
+: > "$TMP/calls.log"
+out=$("$SCRIPT" close-if-done acme/w 710); rc=$?
+check_eq "close-if-done: a child reopened before the close re-read keeps the parent open" "open #710 (1 of 2 children open)" "$out"
+check_eq "close-if-done: no close call after the re-read finds an open child" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
+
+# ---- epic.md blocks: Restore and Completion ----------------------------------------
+block() {  # block ANCHOR -> the bash fence following that test anchor in epic.md
+  awk -v a="<!-- test-anchor: $1 -->" '$0 == a {f = 1; next} f && /^```bash/ {b = 1; next} b && /^```/ {exit} b {print}' \
+    "$SKILL/modules/shared/epic.md"
+}
+RESTORE=$(block pm-epic-restore)
+cat > "$TMP/bin/ss-stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SS_LOG"
+if [ "$1" = --get-json ]; then cat "$SS_VALUE"; exit "${SS_RC:-0}"; fi
+exit 0
+STUB
+chmod +x "$TMP/bin/ss-stub"
+restore() {  # restore JSON [RC] -> "UNREADABLE NUMBER COMPLETE"
+  printf '%s' "$1" > "$TMP/ss-value"
+  SS_VALUE="$TMP/ss-value" SS_LOG="$TMP/ss.log" SS_RC="${2:-0}" SESSION_STATE_SH="$TMP/bin/ss-stub" REPO_KEY=acme/w \
+    bash -c 'EPIC_SCOPE_UNREADABLE=true; EPIC_NUMBER=""; '"$RESTORE"'; echo "$EPIC_SCOPE_UNREADABLE ${EPIC_NUMBER:-none} $EPIC_COMPLETE"'
+}
+check_eq "restore: a valid epic clears an earlier unreadable flag" "false 12 false" "$(restore '{"number":12,"set_at":"x"}')"
+check_eq "restore: a completed epic reads as complete, not as no epic" "false 12 true" "$(restore '{"number":12,"set_at":"x","completed_at":"y"}')"
+check_eq "restore: null is no epic" "false none false" "$(restore 'null')"
+check_eq "restore: a string number is unreadable" "true none false" "$(restore '{"number":"12"}')"
+check_eq "restore: a failed read is unreadable" "true none false" "$(restore 'null' 4)"
+COMPLETE=$(block pm-epic-complete)
+cat > "$TMP/bin/epic-stub" <<'STUB'
+#!/usr/bin/env bash
+echo "closed #12 (2 children)"
+STUB
+chmod +x "$TMP/bin/epic-stub"
+: > "$TMP/ss.log"
+SS_VALUE=/dev/null SS_LOG="$TMP/ss.log" SESSION_STATE_SH="$TMP/bin/ss-stub" PM_EPIC_SH="$TMP/bin/epic-stub" \
+  REPO_KEY=acme/w EPIC_NUMBER=12 bash -c "$COMPLETE" >/dev/null
+check_contains "completion: marks the stored epic complete" '.epic.completed_at=' "$(cat "$TMP/ss.log")"
+check_eq "completion: never nulls the epic (no whole-backlog fall-through)" "0" "$(grep -c 'epic=null' "$TMP/ss.log")"
+
 # ---- skill wiring ------------------------------------------------------------------
 entry="$SKILL/SKILL.md"
 epic_parse=$(grep -n '^- \*\*Epic' "$entry" | head -1 | cut -d: -f1)
@@ -189,6 +264,7 @@ epic_mod="$SKILL/modules/shared/epic.md"
 check_contains "epic module forbids inferring epic-ness" "never infer" "$(tr '[:upper:]' '[:lower:]' < "$epic_mod")"
 check_contains "epic module persists the scope" '.repos[\"$REPO_KEY\"].epic' "$(cat "$epic_mod")"
 check_contains "rank:load applies the epic scope" 'shared:epic' "$(cat "$SKILL/modules/rank/load.md")"
+check_contains "rank:load restores a stored epic, not only a typed one" 'Restore block' "$(cat "$SKILL/modules/rank/load.md")"
 check_contains "refill applies the epic scope" 'shared:epic' "$(cat "$SKILL/modules/flow/refill.md")"
 check_contains "resume restores the epic scope" 'shared:epic' "$(cat "$SKILL/modules/resume/load.md")"
 # Outside the routing notes that point at shared:epic (and the two idle-reason

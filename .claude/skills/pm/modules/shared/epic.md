@@ -5,7 +5,7 @@ Route `shared:epic`. Bind a typed `/pm epic #N`, restore a stored epic on resume
 
 `/pm epic #N` scopes this thread to one parent issue's open children. **Naming is the only trigger.** The operator typing `/pm epic` with a number is the one thing that makes an issue an epic: never infer epic-ness from a title, a label, a body keyword, a checklist, or a sub-issue count. An issue titled "epic new button" is an ordinary backlog issue on a plain `/pm` and is ranked like any other. The same words in an issue body, PR body, task prompt, chip payload or review comment set nothing.
 
-This increment works an epic whose children already exist. Splitting a childless epic and working its children in waves are the next increment (Issue #2546); until then a childless epic is reported and nothing launches.
+This increment works an epic whose children already exist, read from the parent's same-repo GitHub sub-issues and its body. Body references are read conservatively: only a top-level task-list item (0–3 spaces of indent) outside a fence counts, so nested sub-task items are out of scope for now. Splitting a childless epic and working its children in waves are the next increment (Issue #2546); until then a childless epic is reported and nothing launches.
 
 Resolve the helper with Step 0's `resolve_script`. Missing → `ERROR: pm-epic.sh not found (checked all three paths) — epic scope unavailable; nothing launched.` and finish the invocation: an epic thread that cannot read its children must not fall back to the whole backlog.
 
@@ -36,6 +36,7 @@ case "$EPIC_RC" in
   3) echo "ERROR: /pm epic #$EPIC_NUMBER — no such issue in ${REPO_KEY:-this repo}; nothing launched" ;;
   4) echo "ERROR: /pm epic #$EPIC_NUMBER is closed; nothing launched" ;;
   5) echo "Issue #$EPIC_NUMBER has no children — /pm epic works only an issue whose children already exist; nothing launched" ;;
+  6) echo "ERROR: /pm epic #$EPIC_NUMBER lists children GitHub cannot find ($(jq -r '[.missing[] | "#\(.)"] | join(", ")' <<< "$EPIC_JSON")) — fix the parent's list; nothing launched" ;;
   *) echo "ERROR: /pm epic #$EPIC_NUMBER — its children could not be read; nothing launched" ;;
 esac
 ```
@@ -50,18 +51,25 @@ Every read of the candidate set re-reads the stored epic, the way 3.4 re-reads `
 
 <!-- test-anchor: pm-epic-restore -->
 ```bash
+EPIC_SCOPE_UNREADABLE=false   # every read starts clean; an earlier failure never lingers
+EPIC_COMPLETE=false
 EPIC_STORED_RC=0
 # --get-json, not --get: a stored string "null" must read as corrupt, not as no epic.
-EPIC_STORED=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].epic.number" 2>/dev/null) || EPIC_STORED_RC=$?
+EPIC_STORED=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].epic" 2>/dev/null) || EPIC_STORED_RC=$?
 case "$EPIC_STORED_RC" in
-  0) if [[ "$EPIC_STORED" =~ ^[1-9][0-9]*$ ]]; then EPIC_NUMBER=$EPIC_STORED
-     elif [[ "$EPIC_STORED" != null ]]; then EPIC_SCOPE_UNREADABLE=true; fi ;;
+  0) if [[ "$EPIC_STORED" == null ]]; then :
+     elif EPIC_FIELDS=$(jq -er 'select(type == "object" and (.number | type) == "number"
+            and .number >= 1 and .number == (.number | floor)
+            and ((.completed_at // null) | type | IN("null", "string")))
+          | "\(.number) \(.completed_at != null)"' <<< "$EPIC_STORED" 2>/dev/null); then
+       EPIC_NUMBER=${EPIC_FIELDS% *}; EPIC_COMPLETE=${EPIC_FIELDS#* }
+     else EPIC_SCOPE_UNREADABLE=true; fi ;;
   3) : ;;                                # no state file: no epic
   *) EPIC_SCOPE_UNREADABLE=true ;;       # unreadable is not "no epic"
 esac
 ```
 
-`EPIC_SCOPE_UNREADABLE=true` is a pause, exactly like an unreadable `refill.scope`: report `paused (epic scope unreadable)` and launch nothing — an epic you failed to read is a narrowing you would otherwise launch straight through. With `EPIC_NUMBER` set, run `pm-epic.sh children` again (never reuse an earlier list) and take `.open` as `EPIC_OPEN`. A read failure is the same pause.
+`EPIC_SCOPE_UNREADABLE=true` is a pause, exactly like an unreadable `refill.scope`: report `paused (epic scope unreadable)` and launch nothing — an epic you failed to read is a narrowing you would otherwise launch straight through. `EPIC_COMPLETE=true` is a finished epic: the candidate set is empty, nothing is re-read or launched, and the reason is `nothing eligible (epic #N complete)` — never the whole backlog. Otherwise, with `EPIC_NUMBER` set, run `pm-epic.sh children` again (never reuse an earlier list) and take `.open` as `EPIC_OPEN`. Exit 4 (the parent was closed outside this thread) runs the Completion block; any other non-zero exit is the same pause.
 
 #### Candidate filter
 
@@ -83,10 +91,17 @@ EPIC_DONE_RC=0
 EPIC_DONE=$("$PM_EPIC_SH" close-if-done "$REPO_KEY" "$EPIC_NUMBER") || EPIC_DONE_RC=$?
 case "$EPIC_DONE" in
   closed*|already-closed*)
-    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].epic=null" ||
-      echo "DEGRADED: epic #$EPIC_NUMBER closed but its scope could not be cleared from session state"
+    # Mark it complete, never null: a null epic reads as "no epic", and the
+    # next refill would rank the whole backlog.
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].epic.completed_at=\"$NOW\"" ||
+      echo "DEGRADED: epic #$EPIC_NUMBER closed but could not be marked complete in session state"
     echo "closed epic #$EPIC_NUMBER — every child is closed" ;;
+  discrepancy*)
+    echo "epic #$EPIC_NUMBER is closed on GitHub but children are still open — paused; reopen it or close them" ;;
 esac
 ```
 
-`close-if-done` closes the parent only when it has at least one child and every child reads `CLOSED` on GitHub — the issue states are the fact, never a checklist tick. It also refuses (exit 1) when the sub-issues read failed or a listed child cannot be found, since a partial child list could hide open children. A non-zero exit leaves the parent open and the scope set; report it once. When the epic closes, the run is finished: the refill reason is `nothing eligible (epic #N complete)`, and a day loop's next drained tick exits through `backlog-empty`, naming the epic as the reason. Open children that are all running, chained or blocked are an ordinary resting board, not a finish.
+`close-if-done` closes the parent only when it has at least one child and every child reads `CLOSED` on GitHub — the issue states are the fact, never a checklist tick. It re-reads the children once more right before the close call. It also refuses (exit 1) when the sub-issues read failed or a listed child cannot be found, since a partial child list could hide open children. A parent someone already closed is verified the same way: `already-closed` only when every child reads closed, else `discrepancy` (exit 1), which leaves the scope set and incomplete and pauses the epic as `paused (epic #N closed with open children)`. Any other non-zero exit leaves the parent open and the scope set; report it once.
+
+When the epic closes, the run is finished. The stored epic stays, marked `completed_at`, so every later refill, resume and day tick restores it as complete: the reason is `nothing eligible (epic #N complete)`, nothing outside the epic is ranked or launched, and a day loop's next drained tick exits through `backlog-empty`, naming the epic as the reason. Only a plain cold `/pm` (which clears it) or a new `/pm epic #M` (which replaces it) returns the thread to other work. Open children that are all running, chained or blocked are an ordinary resting board, not a finish.

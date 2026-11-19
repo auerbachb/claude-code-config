@@ -20,6 +20,11 @@
 #      only. Not every token can read them: a failed read is reported as
 #      `"sub_issues": "unavailable"` and the checklist and task list stand.
 #   Lines inside fenced code blocks (``` or ~~~) are examples, never children.
+#   Only a top-level task-list item counts: 0-3 spaces of indent, no leading
+#   tab. Anything indented 4+ (indented code, content nested in a list item,
+#   a fence inside a list item) is never a child — a deliberately conservative
+#   rule instead of a CommonMark emulator. Nested sub-task children are out of
+#   scope for this increment.
 #   The parent itself, pull requests and missing numbers are never children
 #   (missing ones are listed under `missing`).
 #
@@ -42,11 +47,15 @@
 #                  body order, then sub-issues).
 #   close-if-done  re-reads the children from GitHub (never a cached list)
 #                  and, when there is at least one child and every child is
-#                  CLOSED, closes the parent with a comment naming them.
+#                  CLOSED, re-reads them once more immediately before the
+#                  close call and closes the parent with a comment naming them.
 #                  It never closes on a partial child list: when the
 #                  sub-issues read failed, or a listed child cannot be found
 #                  (`missing`), it exits 1 and leaves the parent open.
-#                  Prints `closed #N (k children)`, `already-closed #N`, or
+#                  A parent already closed is checked the same way: it prints
+#                  `already-closed #N` only when every child reads CLOSED, and
+#                  `discrepancy #N closed with j of k children open` (exit 1)
+#                  otherwise. Other output: `closed #N (k children)` or
 #                  `open #N (j of k children open)`.
 #
 # EXIT CODES
@@ -56,6 +65,9 @@
 #   3  the issue does not exist (or is a pull request)
 #   4  the issue is closed (children: the JSON is still printed)
 #   5  the issue has no children (children: the JSON is still printed)
+#   6  children: a listed child cannot be found (`missing` is non-empty; the
+#      JSON is still printed) — the child list is incomplete, so a caller
+#      must not bind or work it
 
 set -uo pipefail
 
@@ -117,7 +129,9 @@ body_children() {
     fence { next }
     /^##[[:space:]]/ { chain = ($0 ~ /^##[[:space:]]+Increment chain[[:space:]]*$/) }
     {
-      if (match($0, /^[[:space:]]*[-*+][[:space:]]+\[[ xX]\][[:space:]]+#[0-9]+/)) {
+      # Top-level items only: 0-3 spaces, no tab. 4+ is indented code or
+      # content nested in a list item (where a fence may hide an example).
+      if (match($0, /^ ? ? ?[-*+][[:space:]]+\[[ xX]\][[:space:]]+#[0-9]+/)) {
         item = substr($0, RSTART, RLENGTH)
         sub(/.*#/, "", item)
         rest = substr($0, RSTART + RLENGTH, 1)
@@ -187,30 +201,73 @@ children_cmd() {
   json=$(children_json "$repo" "$n") || exit $?
   printf '%s\n' "$json"
   if [[ "$(jq -r '.state' <<< "$json")" == CLOSED ]]; then exit 4; fi
+  if [[ "$(jq -r '.missing | length' <<< "$json")" -gt 0 ]]; then
+    printf 'pm-epic.sh: #%s lists children GitHub cannot find (%s)\n' "$n" \
+      "$(jq -r '[.missing[] | "#\(.)"] | join(", ")' <<< "$json")" >&2
+    exit 6
+  fi
   if [[ "$(jq -r '.children | length' <<< "$json")" -eq 0 ]]; then exit 5; fi
   exit 0
 }
 
-close_if_done() {
-  local repo="$1" n="$2" json total open names
-  json=$(children_json "$repo" "$n") || exit $?
+# done_verdict JSON N -> prints the verdict line; returns 0 when every child is
+# verified CLOSED on a complete child list and the parent is open (safe to
+# close), 3 when the parent is already closed and that holds, 2 when children
+# are still open on an open parent, 5 childless, 1 otherwise (a discrepancy or
+# a partial child list).
+list_incomplete() {  # list_incomplete JSON N -> 0 (with a stderr line) when the child list is partial
+  if [[ "$(jq -r '.sub_issues' <<< "$1")" != read ]]; then
+    printf 'pm-epic.sh: sub-issues of #%s unreadable; not closing on a partial child list\n' "$2" >&2; return 0
+  fi
+  if [[ "$(jq -r '.missing | length' <<< "$1")" -gt 0 ]]; then
+    printf 'pm-epic.sh: #%s lists children GitHub cannot find (%s); not closing\n' "$2" \
+      "$(jq -r '[.missing[] | "#\(.)"] | join(", ")' <<< "$1")" >&2; return 0
+  fi
+  return 1
+}
+
+done_verdict() {
+  local json="$1" n="$2" total open state
   total=$(jq -r '.children | length' <<< "$json")
   open=$(jq -r '.open | length' <<< "$json")
-  if [[ "$(jq -r '.state' <<< "$json")" == CLOSED ]]; then
-    printf 'already-closed #%s\n' "$n"; exit 0
-  fi
+  state=$(jq -r '.state' <<< "$json")
   if [[ "$total" -eq 0 ]]; then
-    printf 'open #%s (no children)\n' "$n"; exit 5
+    if [[ "$state" != CLOSED ]]; then printf 'open #%s (no children)\n' "$n"; return 5; fi
+    # A closed parent is "done" only on a complete child list.
+    list_incomplete "$json" "$n" && return 1
+    printf 'already-closed #%s\n' "$n"; return 3
   fi
   if [[ "$open" -gt 0 ]]; then
-    printf 'open #%s (%s of %s children open)\n' "$n" "$open" "$total"; exit 0
+    if [[ "$state" == CLOSED ]]; then
+      printf 'discrepancy #%s closed with %s of %s children open\n' "$n" "$open" "$total"; return 1
+    fi
+    printf 'open #%s (%s of %s children open)\n' "$n" "$open" "$total"; return 2
   fi
-  if [[ "$(jq -r '.sub_issues' <<< "$json")" != read ]]; then
-    die 1 "sub-issues of #$n unreadable; not closing on a partial child list"
-  fi
-  if [[ "$(jq -r '.missing | length' <<< "$json")" -gt 0 ]]; then
-    die 1 "#$n lists children GitHub cannot find ($(jq -r '[.missing[] | "#\(.)"] | join(", ")' <<< "$json")); not closing"
-  fi
+  list_incomplete "$json" "$n" && return 1
+  if [[ "$state" == CLOSED ]]; then printf 'already-closed #%s\n' "$n"; return 3; fi
+  return 0
+}
+
+close_if_done() {
+  local repo="$1" n="$2" json total names rc
+  json=$(children_json "$repo" "$n") || exit $?
+  rc=0; done_verdict "$json" "$n" || rc=$?
+  case "$rc" in
+    0) : ;;
+    2|3) exit 0 ;;
+    *) exit "$rc" ;;
+  esac
+  # Re-read once more right before closing: a child reopened or added since
+  # the first read keeps the parent open. GitHub offers no conditional close,
+  # so a tiny window between this read and the close call remains.
+  json=$(children_json "$repo" "$n") || exit $?
+  rc=0; done_verdict "$json" "$n" || rc=$?
+  case "$rc" in
+    0) : ;;
+    2|3) exit 0 ;;
+    *) exit "$rc" ;;
+  esac
+  total=$(jq -r '.children | length' <<< "$json")
   names=$(jq -r '[.children[].number | "#\(.)"] | join(", ")' <<< "$json")
   gh issue close "$n" --repo "$repo" \
     --comment "Closed by \`/pm epic #$n\`: every child is closed ($names)." >/dev/null 2>&1 ||
