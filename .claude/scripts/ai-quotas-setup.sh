@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile; reports whether `agy` is signed in and as which account) likewise — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile; reports whether `agy` is signed in and as which account) likewise — name them with short nicknames, set a manual plan tier and monthly price override, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -29,6 +29,7 @@
 #   ai-quotas-setup.sh repair-layout <claude|codex>
 #   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
 #   ai-quotas-setup.sh nick <label> <name> [<provider>]
+#   ai-quotas-setup.sh plan <label> <tier> [<usd_per_month>] [<provider>]
 #   ai-quotas-setup.sh report <label> <window> <used_pct> [<reset>] [<provider>]
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
@@ -58,7 +59,16 @@
 #             account's short display name. `/quotas` shows it in place of
 #             the label, which is what keeps a five-account table of full
 #             subscription emails inside 100 columns.
-#   remove    Drop an account from the config. The profile directory is LEFT
+#   plan      Set a manual plan override on a registered account (Issue #2469):
+#             `plan <label> <tier> [<usd_per_month>] [<provider>]`. /quotas
+#             shows the tier and monthly price in its TIER and $/MO columns,
+#             marked `*` when set here; the override beats what the provider
+#             reports and what the price list says. `<usd_per_month>` is
+#             optional (without it the price list is tried for that tier name).
+#             An empty tier clears the override. Stored as
+#             `plan_override: {tier, usd_per_month?}` on the account entry.
+#             Display only — it never gates work.
+#   remove   Drop an account from the config. The profile directory is LEFT
 #             ON DISK and its path is printed: removing a registry row must
 #             never destroy a working login. Delete it yourself if you mean to.
 #   relogin   Re-run the provider's login against an already-registered
@@ -337,6 +347,8 @@ NO_LOGIN=0
 ARG_PROVIDER=""
 ARG_LABEL=""
 ARG_NICK=""
+ARG_PLAN_TIER=""
+ARG_PLAN_USD=""
 REPORT_WINDOW=""
 REPORT_PCT=""
 REPORT_RESET=""
@@ -423,6 +435,28 @@ case "$ACTION" in
       ARG_PROVIDER="${POSITIONAL[3]}"
     fi
     ;;
+  plan)
+    # `plan <label> <tier> [<usd_per_month>] [<provider>]`: a third argument that names a
+    # provider is the provider, not a price.
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 5 ]] \
+      || die_usage "plan requires <label> <tier> [<usd_per_month>] [<provider>] (pass '' as the tier to clear)"
+    ARG_LABEL="${POSITIONAL[1]}"
+    ARG_PLAN_TIER="${POSITIONAL[2]}"
+    if [[ ${#POSITIONAL[@]} -eq 4 ]]; then
+      case "${POSITIONAL[3]}" in
+        claude|codex|cursor|antigravity) ARG_PROVIDER="${POSITIONAL[3]}" ;;
+        *) ARG_PLAN_USD="${POSITIONAL[3]}" ;;
+      esac
+    elif [[ ${#POSITIONAL[@]} -eq 5 ]]; then
+      ARG_PLAN_USD="${POSITIONAL[3]}"
+      ARG_PROVIDER="${POSITIONAL[4]}"
+    fi
+    [[ -z "$ARG_PLAN_USD" || "$ARG_PLAN_USD" =~ ^[0-9]{1,5}(\.[0-9]{1,2})?$ ]] \
+      || die_usage "plan: <usd_per_month> must be a plain amount like 200 or 19.99 (got '${ARG_PLAN_USD}')"
+    [[ -z "$ARG_PLAN_TIER" || $(LC_ALL=C; [[ "$ARG_PLAN_TIER" != *[![:print:]]* ]] && echo ok) == ok && ${#ARG_PLAN_TIER} -le 32 && "$ARG_PLAN_TIER" != " "* && "$ARG_PLAN_TIER" != *" " ]] \
+      || die_usage "plan: invalid tier (max 32 printable ASCII characters, no leading/trailing spaces)"
+    [[ -n "$ARG_PLAN_TIER" || -z "$ARG_PLAN_USD" ]] || die_usage "plan: a price needs a tier"
+    ;;
   launchers)
     [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "launchers takes no arguments"
     ;;
@@ -455,7 +489,7 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, plan, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
     ;;
 esac
 
@@ -1557,6 +1591,39 @@ action_nick() {
     echo "${SELF_NAME}: ${provider} account '${label}' is now shown as \"${ARG_NICK}\"."
   else
     echo "${SELF_NAME}: ${provider} account '${label}' no longer has a nickname; /quotas will show its label."
+  fi
+}
+
+action_plan() {
+  local config index provider label
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  index="$(match_indices "$config" "$ARG_LABEL" "${ARG_PROVIDER:-$provider}" | head -n 1)"
+  if [[ -z "$index" ]]; then
+    state_lock_release || true
+    die 4 "no account registered with label '$ARG_LABEL' (removed by another process?)"
+  fi
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  # An empty tier deletes the key, like `nick ''`; an omitted price stores no price key.
+  config="$(printf '%s' "$config" | jq --argjson i "$index" --arg tier "$ARG_PLAN_TIER" --arg usd "$ARG_PLAN_USD" '
+    .accounts[$i] = (if $tier == "" then (.accounts[$i] | del(.plan_override))
+                     else (.accounts[$i] + {plan_override: ({tier: $tier}
+                           + (if $usd == "" then {} else {usd_per_month: ($usd | tonumber)} end))}) end)')" \
+    || { state_lock_release || true; die 5 "could not update the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  if [[ -z "$ARG_PLAN_TIER" ]]; then
+    echo "${SELF_NAME}: ${provider} account '${label}' no longer has a plan override; /quotas will show what the provider reports."
+  elif [[ -n "$ARG_PLAN_USD" ]]; then
+    echo "${SELF_NAME}: ${provider} account '${label}' is now shown as plan \"${ARG_PLAN_TIER}\" at \$${ARG_PLAN_USD}/month (manual override)."
+  else
+    echo "${SELF_NAME}: ${provider} account '${label}' is now shown as plan \"${ARG_PLAN_TIER}\" (manual override; price from the price list when it has this tier)."
   fi
 }
 
@@ -2885,7 +2952,8 @@ case "$ACTION" in
   repair-layout) action_repair_layout ;;
   add)      action_add ;;
   nick)     action_nick ;;
-  report)   action_report ;;
+  plan)     action_plan ;;
+  report)  action_report ;;
   sources)  action_sources ;;
   remove)   action_remove ;;
   relogin)  action_relogin ;;

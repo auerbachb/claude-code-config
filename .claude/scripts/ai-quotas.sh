@@ -856,7 +856,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
   jq -nc \
     --arg provider "$1" --arg account_label "$2" --arg email "$3" --arg window "$4" \
     --arg used "$used" --arg resets "$resets" \
-    --arg status "$7" --arg detail "${8:-}" --arg source "${9:-}" --arg plan "${10:-}" \
+    --arg status "$7" --arg detail "${8:-}" --arg source "${9:-}" --arg plan "${10:-${ROW_PLAN_DEFAULT:-}}" \
     --arg nickname "$ROW_NICKNAME" \
     --arg et "$(epoch_to_et "$resets")" --arg et_short "$(epoch_to_et_short "$resets")" \
     --arg in "$(countdown "$resets")" \
@@ -1225,6 +1225,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
     [[ -z "$BROWSER_RESULTS" || "$source" == "browser" || "$success" -eq 2 ]] || continue
     [[ -z "$BROWSER_RESULTS" || "$source" != "browser" ]] || success=2
     ROWS="$TMP/source-rows.jsonl"; : > "$ROWS"
+    ROW_PLAN_DEFAULT=""
     OUTCOME_STATUS=""; OUTCOME_SOURCE=""; OUTCOME_ERROR_CLASS=""; OUTCOME_USABLE=0; skip=""
     if [[ "$source" == browser && ( "$BROWSER" -eq 0 || "$SNAPSHOT_SOURCE" == scheduled ) ]]; then
       set_outcome unreadable browser browser_unattended; skip="browser-unattended"
@@ -1266,6 +1267,7 @@ read_source_chain() { # <provider> <label> <dir> <service> <index>
     count=$((count+1))
   done < <(effective_sources "$provider" "$index")
   exec 9<&-
+  ROW_PLAN_DEFAULT=""
   ROWS="$real_rows"
   [[ "$last_index" -lt 0 ]] || jq -sc --argjson last "$last_index" 'to_entries[] | .value + (if .key == $last then {terminal:true} else {} end)' "$attempts" >> "$OUTCOMES_RUN"
   if [[ "$last_index" -lt 0 ]]; then
@@ -1662,6 +1664,7 @@ jq 'map(. + {action: (if .status != "needs-login" or (.label|test("[\u0000-\u001
   || die 70 "could not build account actions"
 mv "$TMP/actions.json" "$ROWS_JSON"
 derive_account_fields "$ROWS_JSON"
+derive_plan_fields "$ROWS_JSON"
 annotate_rows "$ROWS_JSON"
 
 # Recorded BEFORE the footer is read, so a scheduled run's own snapshot is the

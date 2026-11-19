@@ -218,11 +218,11 @@ WIDTH="$(table_width "$TABLE")"
 if [[ "$WIDTH" -le 140 && "$WIDTH" -gt 0 ]]; then ok "the six-account table fits 140 terminal columns (widest line: $WIDTH)"
 else bad "the six-account table does not fit 140 terminal columns (widest line: $WIDTH)"; fi
 check_eq "$(printf '%s\n' "$TABLE" | grep -c '^Antigravity ')" "5" "control(+): all five Antigravity rows are in the measured table"
-has_row "$(row_of "$TABLE" 'Claude Personal')" '✅ \$500 +\$315\.79 +- +Fable +84% ' "Claude Personal row: ✅, \$500 cap, \$315.79 spent, no resets, Fable 84%"
-has_row "$(row_of "$TABLE" 'Claude Work')" '❌ off +\$0\.00 +2 +Fable +0% ' "Claude Work row: ❌ (credits off), off in \$ CAP despite the \$1000 limit, \$0.00, 2 resets, Fable 0%"
+has_row "$(row_of "$TABLE" 'Claude Personal')" '✅ \$500 +\$315\.79 +- +Ultra +\$200 +Fable +84% ' "Claude Personal row: ✅, \$500 cap, \$315.79 spent, no resets, Fable 84%"
+has_row "$(row_of "$TABLE" 'Claude Work')" '❌ off +\$0\.00 +2 +Ultra +\$200 +Fable +0% ' "Claude Work row: ❌ (credits off), off in \$ CAP despite the \$1000 limit, \$0.00, 2 resets, Fable 0%"
 check_not_contains "$(row_of "$TABLE" 'Claude Work')" '1000' "Claude Work row: the unused \$1000 limit is not printed beside a ❌"
-has_row "$(row_of "$TABLE" 'GPT LM')" ' - +- +- +0 +- +- ' "GPT LM row: 0 resets, paid usage blank (never ❌ or \$0)"
-has_row "$(row_of "$TABLE" 'GPT Personal')" ' - +- +- +- +- +- ' "GPT Personal row: resets unknown shows the blank marker, not 0"
+has_row "$(row_of "$TABLE" 'GPT LM')" ' - +- +- +0 +Pro +- +- +- ' "GPT LM row: 0 resets, paid usage blank (never ❌ or \$0)"
+has_row "$(row_of "$TABLE" 'GPT Personal')" ' - +- +- +- +Pro +- +- +- ' "GPT Personal row: resets unknown shows the blank marker, not 0"
 check_not_contains "$(row_of "$TABLE" 'GPT Personal')" ' 0 ' "GPT Personal row: no 0 anywhere in the new columns"
 has_row "$(row_of "$TABLE" 'Cursor')" '✅ \$50 +\$6\.33 ' "Cursor row: ✅, \$50, \$6.33"
 check_eq "$(printf '%s\n' "$TABLE" | grep -c '\$6\.33')" "1" "Cursor: the two pool rows do not double-count the spend"
@@ -234,7 +234,7 @@ has_row "$(row_of "$TABLE" 'Antigravity')" ' Argon +75% ' "Antigravity first row
 check_contains "$TABLE" "[1]" "a long note is a footnote marker in its row"
 check_contains "$OUT" "[1] from the Claude app" "and the text is printed below the table"
 check_not_contains "$TABLE" "from the Claude app" "the long text is not in the table itself"
-check_contains "$OUT" "[2] on-demand \$6.33 of \$50" "an overage label too long for its cell is footnoted too"
+check_contains "$OUT" "] on-demand \$6.33 of \$50" "an overage label too long for its cell is footnoted too"
 # --quiet still drops the trailing advisory sections and keeps the table and its footnotes.
 run --quiet
 check_not_contains "$OUT" "Informational only" "--quiet drops the cheapest-next block"
@@ -257,7 +257,7 @@ run --json
 check_eq "$(paid_null)" "true" "a Claude reading with no extra-usage data leaves every new field null"
 run
 TABLE="$(table_only "$OUT")"
-has_row "$(row_of "$TABLE" 'Claude Personal')" ' - +- +- +- +- +- ' "and the table shows the blank marker in all six new columns"
+has_row "$(row_of "$TABLE" 'Claude Personal')" ' - +- +- +- +Ultra +\$200 +- +- ' "and the table shows the blank marker in all six new columns (the plan columns still show the plan)"
 check_not_contains "$TABLE" '❌' "unknown paid usage is never shown as ❌"
 check_not_contains "$TABLE" '$0' "and never as \$0"
 check_not_contains "$TABLE" '✅' "nor as ✅"

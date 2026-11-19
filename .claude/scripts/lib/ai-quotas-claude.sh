@@ -708,6 +708,16 @@ claude_statusline_rows() { # <label>
     return 1
   fi
   CSR_FILE="$best_file"; CSR_AGE="$best_age"
+  # Issue #2469: the saved reading names the subscription (`ultra`, `max`, `pro`); only when it
+  # does not, the stored login is asked, so a fresh reading alone never touches the store.
+  ROW_PLAN_DEFAULT="$(jq -r '.subscription_type // "" | if type == "string" then . else "" end' "$best_file" 2>/dev/null || true)"
+  # A bare `max` carries no 5x/20x multiplier, so the stored login's `rateLimitTier` is asked to
+  # refine it (Max 20x is $200, not $100); when the login cannot say, the saved name stands.
+  if [[ -z "$ROW_PLAN_DEFAULT" || "$ROW_PLAN_DEFAULT" == "max" ]]; then
+    local saved_plan="$ROW_PLAN_DEFAULT"
+    claude_detect_plan "${CLAUDE_ACCT_DIR:-}" "${CLAUDE_ACCT_SERVICE:-}"
+    [[ -n "$ROW_PLAN_DEFAULT" ]] || ROW_PLAN_DEFAULT="$saved_plan"
+  fi
   acct_extra="$(claude_account_fields_from "$best_file" "$usable_files")"
   age_txt="$(claude_age_text "$CSR_AGE")"
   case "$best_kind" in
@@ -819,6 +829,40 @@ claude_try_refresh() { # <label>
 # forever.
 CLAUDE_ROW_NOTE=""
 
+# Issue #2469. The plan the account's own stored Claude Code login names, for the TIER column:
+# `subscriptionType` (pro, max, ...) refined by the multiplier in `rateLimitTier` when it ends
+# in 5x or 20x (default_claude_max_20x -> max_20x). Read-only and in memory: only those two
+# non-secret fields are extracted; no token is kept, printed or sent anywhere. Sets
+# ROW_PLAN_DEFAULT, which emit_row puts on every row of this account; anything unreadable
+# leaves it empty (the table shows `-`, never a guess).
+claude_detect_plan() { # <profile_dir> <keychain_service|"">
+  local dir="$1" service="$2" raw=""
+  ROW_PLAN_DEFAULT=""
+  if [[ -s "$dir/.credentials.json" ]]; then
+    raw="$(cat "$dir/.credentials.json" 2>/dev/null || true)"
+  elif [[ "$PLATFORM" == "Darwin" && -n "$service" ]] && command -v "$SECURITY_BIN" >/dev/null 2>&1; then
+    raw="$("$SECURITY_BIN" find-generic-password -s "$service" -w 2>/dev/null || true)"
+  fi
+  claude_plan_from_doc "$raw"
+  return 0
+}
+
+# The same extraction from a stored document already in hand (the token path holds one, so
+# it must not read the store a second time).
+claude_plan_from_doc() { # <stored-json-document>
+  local raw="$1" plan=""
+  ROW_PLAN_DEFAULT=""
+  case "$raw" in '{'*) ;; *) return 0 ;; esac
+  plan="$(printf '%s' "$raw" | jq -r '
+      (.claudeAiOauth // .) as $c
+      | (if ($c.subscriptionType | type) == "string" then $c.subscriptionType else "" end) as $s
+      | (if ($c.rateLimitTier | type) == "string" then (($c.rateLimitTier | ascii_downcase | capture("(?<m>5x|20x)$") | .m) // "") else "" end) as $m
+      | if $s == "" then "" elif $m != "" and ($s | ascii_downcase) == "max" then "max_" + $m else $s end' 2>/dev/null || true)"
+  raw=""
+  ROW_PLAN_DEFAULT="$plan"
+  return 0
+}
+
 read_claude_account() { # <label> <profile_dir> <keychain_service>
   local label="$1" dir="$2" service="$3"
   local body="$TMP/claude-body.json" hdrs="$TMP/claude-hdrs.txt"
@@ -826,6 +870,7 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   local refreshed=0 refresh_rc=0
 
   CLAUDE_ROW_NOTE=""
+  CLAUDE_ACCT_DIR="$dir"; CLAUDE_ACCT_SERVICE="$service"
 
   # A fresh status-line reading answers without touching the credential store
   # or the network. Otherwise fall through to the token path, keeping the
@@ -840,6 +885,8 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
       "$CLAUDE_TOKEN_DETAIL — run: $(relogin_hint claude "$label")" "" ""
     return 0
   fi
+  # Issue #2469: the plan from the stored login this read already holds (no second read).
+  claude_plan_from_doc "$CLAUDE_CRED_RAW"
 
   # Renew BEFORE spending a request on a token the store already says is dead.
   # Claude Code renews on launch; a profile nobody launches has nothing else

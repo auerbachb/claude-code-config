@@ -167,6 +167,8 @@ read_antigravity_account() { # <label> [<source-name>]
       return 0 ;;
   esac
   account="$(printf '%s' "$result" | jq -r '.account // "" | gsub("[\u0000-\u001f\u007f]"; "")')"
+  # Issue #2469: the plan Google's account lookup named (backend reads only), carried on every row.
+  ROW_PLAN_DEFAULT="$(printf '%s' "$result" | jq -r '.plan // "" | if type == "string" then gsub("[\u0000-\u001f\u007f]"; "") else "" end' 2>/dev/null || true)"
   age="$(printf '%s' "$result" | jq -r '.age_seconds')"
   captured="$(printf '%s' "$result" | jq -r '.captured_at_epoch')"
   via_note="$(printf '%s' "$result" | jq -r '.via | if . == "backend" then "Google backend" elif . == "agy-print" then "agy -p /usage" elif . == "terminal" then "agy terminal /usage" elif . == "pasted" then "pasted /usage text" else "saved /usage text" end')"

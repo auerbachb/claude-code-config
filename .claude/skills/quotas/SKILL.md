@@ -232,6 +232,17 @@ A note or overage label too long for its cell prints as `[1]` in the row and the
 as a numbered footnote under the table; the footnotes are part of the table. The time column
 is `RESET (ET)`, and START prints `≤` where `--json` has `<=`.
 
+## Step 3a-iv — Plan tier and monthly price (TIER, $/MO)
+
+Two columns, one value per account like the paid-usage columns (`-` on its other rows):
+
+| Column | Reads as |
+|--------|----------|
+| `TIER` | The plan the provider itself reports, by its own name: Claude's subscription type from the saved reading or the stored login (`Pro`, `Max`, `Ultra`), Codex's plan type, Cursor's membership name, the plan Google's account lookup names for Antigravity (when it names one). `-` when the provider reports none: it is never guessed. |
+| `$/MO` | The monthly list price before tax, from the dated price list `.claude/reference/quotas-plan-prices.json` (provider and tier to USD, with source link and last-checked date). `-` when the tier is not on the list or has no verified price (ChatGPT Pro has several price points, so it shows no price), never `$0`. |
+
+A `*` after either cell means it was set by hand with `ai-quotas-setup.sh plan <label> <tier> [<usd_per_month>] [<provider>]`; a hand-set value beats the provider's and the list (use it for a discount, annual billing, or a plan the reader cannot detect). `plan <label> ""` clears it. `--json` carries `plan_tier`, `plan_tier_source` (`provider` or `override`), `plan_usd_month` and `plan_price_source` (`list` or `override`) on every row. Display only: it never gates work and `quota-reserve.sh` never reads it. To make room, WINDOW is capped at 13 columns (a longer name keeps its window suffix, `gemini-4-… 7d`), OVERAGE labels longer than 8 characters are footnoted, and an `IN` countdown of ten or more days shows days only.
+
 ## Step 3b — The Overage column and the cheapest-next line
 
 The **OVERAGE** column is what continuing PAST that row's cap costs: `1 free reset` or

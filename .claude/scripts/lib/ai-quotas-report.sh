@@ -309,6 +309,50 @@ derive_account_fields() { # <rows-json-file>
   fi
 }
 
+# Issue #2469. Each row gets plan_tier, plan_tier_source (provider | override),
+# plan_usd_month and plan_price_source (list | override). The tier is what the provider
+# reported (row `plan`, set by each reader) or the account's manual override from the
+# registry (`plan_override`: {tier, usd_per_month?}, set by `ai-quotas-setup.sh plan`);
+# the override wins. The price is the override's own figure, else the dated list in
+# .claude/reference/quotas-plan-prices.json looked up by provider and tier. An unknown
+# tier or price stays null (the table shows `-`); nothing is guessed and `$0` is never
+# printed for "unknown". Display only: nothing reads these fields to gate work.
+derive_plan_fields() { # <rows-json-file>
+  local rows="$1" out="$TMP/rows.plan.json" prices="${AI_QUOTAS_PRICE_LIST:-}" cfg="${CONFIG:-}"
+  [[ -n "$prices" ]] || prices="$SELF_DIR/../reference/quotas-plan-prices.json"
+  [[ -r "$prices" ]] && jq -e 'type == "object"' "$prices" >/dev/null 2>&1 || {
+    warn "DEGRADED: plan price list not readable (${prices}) — prices show as unknown"
+    prices="$TMP/no-prices.json"; printf '{}' > "$prices"
+  }
+  printf '%s' "$cfg" | jq -e 'type == "object"' >/dev/null 2>&1 || cfg='{}'
+  if jq --slurpfile pl "$prices" --argjson cfg "$cfg" '
+      def norm: ascii_downcase | gsub("[^a-z0-9]+"; "_") | gsub("^_+|_+$"; "");
+      def clean: gsub("[\u0000-\u001f\u007f]"; " ") | gsub("^ +| +$"; "") | .[0:40];
+      def num: type == "number" and . >= 0;
+      ($pl[0].providers // {}) as $P
+      | map(
+          . as $r
+          | ((($cfg.accounts // []) | map(select(.provider == $r.provider and .label == $r.label)) | first // {}).plan_override
+             | if type == "object" and (.tier | type) == "string" and (.tier | clean) != "" then . else null end) as $ov
+          | ((($P[$r.provider].tiers // {}) | to_entries | map(.value)) as $tiers
+             | def find($s): ($s | norm) as $k | ([$tiers[] | select((.match // []) | index($k) != null)] | first // null);
+               (if $ov != null then ($ov.tier | clean) elif ($r.plan | type) == "string" and ($r.plan | clean) != "" then ($r.plan | clean) else null end) as $raw
+               | if $raw == null then {plan_tier: null, plan_tier_source: null, plan_usd_month: null, plan_price_source: null}
+                 else find($raw) as $m
+                   | {plan_tier: (if $ov != null then $raw elif $m != null then $m.name
+                                          elif ($raw | test("^[a-z]")) then (($raw[0:1] | ascii_upcase) + $raw[1:]) else $raw end),
+                      plan_tier_source: (if $ov != null then "override" else "provider" end)}
+                   + (if $ov != null and ($ov.usd_per_month | num) then {plan_usd_month: $ov.usd_per_month, plan_price_source: "override"}
+                      elif $m != null and ($m.usd_per_month | num) then {plan_usd_month: $m.usd_per_month, plan_price_source: "list"}
+                      else {plan_usd_month: null, plan_price_source: null} end)
+                 end)
+          | $r + .)' "$rows" > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    mv "$out" "$rows"
+  else
+    warn "DEGRADED: could not derive the plan tier and price columns — they show as unknown"
+  fi
+}
+
 # Marks, on each row, whether it carries its account's values in the table: the first
 # row of the account that has any of them, or its first row when none does, so a
 # multi-row account (Cursor pools, Antigravity groups, five-hour rows) is shown once.
@@ -316,7 +360,7 @@ stamp_account_primary() { # <doc-json-file>
   local doc="$1" out="$TMP/doc.primary.json"
   if jq '
       def has_data: (.paid_enabled != null or .paid_cap_usd != null or .paid_cap_unlimited != null or .paid_spent_usd != null
-                     or .limit_resets_available != null or .top_label != null);
+                     or .limit_resets_available != null or .top_label != null or .plan_tier != null);
       .rows as $rows
       | ($rows | to_entries
          | reduce .[] as $e ({first: {}, data: {}};
@@ -324,7 +368,8 @@ stamp_account_primary() { # <doc-json-file>
              | .first[$k] = (.first[$k] // $e.key)
              | if ($e.value | has_data) then .data[$k] = (.data[$k] // $e.key) else . end)) as $idx
       | def groups: [["paid_enabled","paid_cap_usd","paid_cap_unlimited","paid_spent_usd","paid_currency","paid_period","paid_read_at_epoch"],
-                      ["limit_resets_available","limit_resets"], ["top_label","top_used_pct","top_resets_at_epoch"]];
+                      ["limit_resets_available","limit_resets"], ["top_label","top_used_pct","top_resets_at_epoch"],
+                      ["plan_tier","plan_tier_source","plan_usd_month","plan_price_source"]];
         # Each group of values (paid usage, resets, top tier) is shown once per account, on the
         # primary row. A group the primary row lacks is taken whole from the first other row of the
         # same account that has it, so one known value never prints as `-` because it sits on a
@@ -372,12 +417,16 @@ render_quota_table() {
       def foreign: (.paid_currency | type) == "string" and .paid_currency != "USD";
       def clean: if type == "string" then gsub("[\u0000-\u001f\u007f]"; " ") else . end;
       # Terminal width: the two icons and East Asian wide characters take two columns, combining marks none.
-      def wide: explode | map(if . >= 768 and . <= 879 then 0
-                                       elif . == 9989 or . == 10060 or . >= 127744
-                                         or (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191)
-                                         or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255)
-                                         or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135)
-                                         or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) then 2 else 1 end) | add // 0;
+      # Terminal width by Unicode East Asian Width: wide and fullwidth characters take two columns, combining marks and zero-width characters none (tables generated from unicodedata, Unicode 17.0.0).
+      def wr: [[4352,4447],[8986,8987],[9001,9002],[9193,9196],[9200,9200],[9203,9203],[9725,9726],[9748,9749],[9776,9783],[9800,9811],[9855,9855],[9866,9871],[9875,9875],[9889,9889],[9898,9899],[9917,9918],[9924,9925],[9934,9934],[9940,9940],[9962,9962],[9970,9971],[9973,9973],[9978,9978],[9981,9981],[9989,9989],[9994,9995],[10024,10024],[10060,10060],[10062,10062],[10067,10069],[10071,10071],[10133,10135],[10160,10160],[10175,10175],[11035,11036],[11088,11088],[11093,11093],[11904,11929],[11931,12019],[12032,12245],[12272,12350],[12353,12438],[12441,12543],[12549,12591],[12593,12686],[12688,12773],[12783,12830],[12832,12871],[12880,42124],[42128,42182],[43360,43388],[44032,55203],[63744,64255],[65040,65049],[65072,65106],[65108,65126],[65128,65131],[65281,65376],[65504,65510],[94176,94180],[94192,94198],[94208,101589],[101631,101662],[101760,101874],[110576,110579],[110581,110587],[110589,110590],[110592,110882],[110898,110898],[110928,110930],[110933,110933],[110948,110951],[110960,111355],[119552,119638],[119648,119670],[126980,126980],[127183,127183],[127374,127374],[127377,127386],[127488,127490],[127504,127547],[127552,127560],[127568,127569],[127584,127589],[127744,127776],[127789,127797],[127799,127868],[127870,127891],[127904,127946],[127951,127955],[127968,127984],[127988,127988],[127992,128062],[128064,128064],[128066,128252],[128255,128317],[128331,128334],[128336,128359],[128378,128378],[128405,128406],[128420,128420],[128507,128591],[128640,128709],[128716,128716],[128720,128722],[128725,128728],[128732,128735],[128747,128748],[128756,128764],[128992,129003],[129008,129008],[129292,129338],[129340,129349],[129351,129535],[129648,129660],[129664,129674],[129678,129734],[129736,129736],[129741,129756],[129759,129770],[129775,129784],[131072,196605],[196608,262141]];
+      def zr: [[768,879],[1155,1161],[1425,1469],[1471,1471],[1473,1474],[1476,1477],[1479,1479],[1552,1562],[1611,1631],[1648,1648],[1750,1756],[1759,1764],[1767,1768],[1770,1773],[1809,1809],[1840,1866],[1958,1968],[2027,2035],[2045,2045],[2070,2073],[2075,2083],[2085,2087],[2089,2093],[2137,2139],[2199,2207],[2250,2273],[2275,2306],[2362,2362],[2364,2364],[2369,2376],[2381,2381],[2385,2391],[2402,2403],[2433,2433],[2492,2492],[2497,2500],[2509,2509],[2530,2531],[2558,2558],[2561,2562],[2620,2620],[2625,2626],[2631,2632],[2635,2637],[2641,2641],[2672,2673],[2677,2677],[2689,2690],[2748,2748],[2753,2757],[2759,2760],[2765,2765],[2786,2787],[2810,2815],[2817,2817],[2876,2876],[2879,2879],[2881,2884],[2893,2893],[2901,2902],[2914,2915],[2946,2946],[3008,3008],[3021,3021],[3072,3072],[3076,3076],[3132,3132],[3134,3136],[3142,3144],[3146,3149],[3157,3158],[3170,3171],[3201,3201],[3260,3260],[3263,3263],[3270,3270],[3276,3277],[3298,3299],[3328,3329],[3387,3388],[3393,3396],[3405,3405],[3426,3427],[3457,3457],[3530,3530],[3538,3540],[3542,3542],[3633,3633],[3636,3642],[3655,3662],[3761,3761],[3764,3772],[3784,3790],[3864,3865],[3893,3893],[3895,3895],[3897,3897],[3953,3966],[3968,3972],[3974,3975],[3981,3991],[3993,4028],[4038,4038],[4141,4144],[4146,4151],[4153,4154],[4157,4158],[4184,4185],[4190,4192],[4209,4212],[4226,4226],[4229,4230],[4237,4237],[4253,4253],[4957,4959],[5906,5908],[5938,5939],[5970,5971],[6002,6003],[6068,6069],[6071,6077],[6086,6086],[6089,6099],[6109,6109],[6155,6157],[6159,6159],[6277,6278],[6313,6313],[6432,6434],[6439,6440],[6450,6450],[6457,6459],[6679,6680],[6683,6683],[6742,6742],[6744,6750],[6752,6752],[6754,6754],[6757,6764],[6771,6780],[6783,6783],[6832,6877],[6880,6891],[6912,6915],[6964,6964],[6966,6970],[6972,6972],[6978,6978],[7019,7027],[7040,7041],[7074,7077],[7080,7081],[7083,7085],[7142,7142],[7144,7145],[7149,7149],[7151,7153],[7212,7219],[7222,7223],[7376,7378],[7380,7392],[7394,7400],[7405,7405],[7412,7412],[7416,7417],[7616,7679],[8203,8205],[8288,8288],[8400,8432],[11503,11505],[11647,11647],[11744,11775],[12330,12333],[12441,12442],[42607,42610],[42612,42621],[42654,42655],[42736,42737],[43010,43010],[43014,43014],[43019,43019],[43045,43046],[43052,43052],[43204,43205],[43232,43249],[43263,43263],[43302,43309],[43335,43345],[43392,43394],[43443,43443],[43446,43449],[43452,43453],[43493,43493],[43561,43566],[43569,43570],[43573,43574],[43587,43587],[43596,43596],[43644,43644],[43696,43696],[43698,43700],[43703,43704],[43710,43711],[43713,43713],[43756,43757],[43766,43766],[44005,44005],[44008,44008],[44013,44013],[64286,64286],[65024,65039],[65056,65071],[65279,65279],[66045,66045],[66272,66272],[66422,66426],[68097,68099],[68101,68102],[68108,68111],[68152,68154],[68159,68159],[68325,68326],[68900,68903],[68969,68973],[69291,69292],[69370,69375],[69446,69456],[69506,69509],[69633,69633],[69688,69702],[69744,69744],[69747,69748],[69759,69761],[69811,69814],[69817,69818],[69826,69826],[69888,69890],[69927,69931],[69933,69940],[70003,70003],[70016,70017],[70070,70078],[70089,70092],[70095,70095],[70191,70193],[70196,70196],[70198,70199],[70206,70206],[70209,70209],[70367,70367],[70371,70378],[70400,70401],[70459,70460],[70464,70464],[70502,70508],[70512,70516],[70587,70592],[70606,70606],[70608,70608],[70610,70610],[70625,70626],[70712,70719],[70722,70724],[70726,70726],[70750,70750],[70835,70840],[70842,70842],[70847,70848],[70850,70851],[71090,71093],[71100,71101],[71103,71104],[71132,71133],[71219,71226],[71229,71229],[71231,71232],[71339,71339],[71341,71341],[71344,71349],[71351,71351],[71453,71453],[71455,71455],[71458,71461],[71463,71467],[71727,71735],[71737,71738],[71995,71996],[71998,71998],[72003,72003],[72148,72151],[72154,72155],[72160,72160],[72193,72202],[72243,72248],[72251,72254],[72263,72263],[72273,72278],[72281,72283],[72330,72342],[72344,72345],[72544,72544],[72546,72548],[72550,72550],[72752,72758],[72760,72765],[72767,72767],[72850,72871],[72874,72880],[72882,72883],[72885,72886],[73009,73014],[73018,73018],[73020,73021],[73023,73029],[73031,73031],[73104,73105],[73109,73109],[73111,73111],[73459,73460],[73472,73473],[73526,73530],[73536,73536],[73538,73538],[73562,73562],[78912,78912],[78919,78933],[90398,90409],[90413,90415],[92912,92916],[92976,92982],[94031,94031],[94095,94098],[94180,94180],[113821,113822],[118528,118573],[118576,118598],[119143,119145],[119163,119170],[119173,119179],[119210,119213],[119362,119364],[121344,121398],[121403,121452],[121461,121461],[121476,121476],[121499,121503],[121505,121519],[122880,122886],[122888,122904],[122907,122913],[122915,122916],[122918,122922],[123023,123023],[123184,123190],[123566,123566],[123628,123631],[124140,124143],[124398,124399],[124643,124643],[124646,124646],[124654,124655],[124661,124661],[125136,125142],[125252,125258],[917760,917999]];
+      def inr($t): . as $c | any($t[]; $c >= .[0] and $c <= .[1]);
+      def wide: explode | map(if inr(zr) then 0 elif inr(wr) then 2 else 1 end) | add // 0;
+      # Issue #2469: a cell wider than its ceiling is cut with an ellipsis so the table stays within 140 columns for every value setup accepts; --json keeps the full value.
+      def fit0($n): . as $t | if ($t | wide) <= $n then $t
+                          else ([range($t | length; -1; -1) | select(($t[0:.] | wide) <= ($n - 1))] | first) as $k | $t[0:$k] + "…" end;
+      # The trailing `*` (set by hand) survives a cut.
+      def fit($n): if endswith("*") and length > 1 then (.[:-1] | fit0($n - 1)) + "*" else fit0($n) end;
       def spaces($n): [range(0; $n)] | map(" ") | join("");
       def pad($w): . + spaces($w - wide);
       # Account-level values print on the row that carries them and are blank on the
@@ -387,11 +436,15 @@ render_quota_table() {
       | map(
           . as $x
           | {
-            acct: (.nickname // .reported_email),
+            acct: ((.nickname // .reported_email) | if type == "string" then fit(24) else . end),
             # The pool name when the provider has pools, the window otherwise. A
             # composite Antigravity window (`<group> <window>`) is shortened to
             # `<group> 7d` / `<group> 5h`.
-            win: ((.pool // .window) | if test(" ") then (sub("-hour$"; "h") | sub("-day$"; "d")) else . end),
+            win: ((.pool // .window) | if test(" ") then (sub("-hour$"; "h") | sub("-day$"; "d")) else . end
+                  # Issue #2469: capped at 13 columns to make room for TIER and $/MO; a long composite name keeps its window suffix.
+                  | if length <= 13 then .
+                    elif test(" ") then (split(" ") | .[-1] as $t | (.[:-1] | join(" ")) as $g | $g[0:(11 - ($t | length))] + "… " + $t)
+                    else .[0:12] + "…" end),
             # A failed read with a saved (last-known) figure shows the saved percent here and
             # its date in FETCHED; the reason and the "last known" explanation are in the
             # note, which is a footnote. An expired saved figure, or none, stays `-`.
@@ -414,18 +467,23 @@ render_quota_table() {
                   elif .paid_enabled == false then "off"
                   elif .paid_cap_unlimited == true then "none"
                   elif foreign then "-"
-                  elif ((.paid_cap_usd | num) and .paid_cap_usd >= 0) then (.paid_cap_usd | cap_usd)
+                  elif ((.paid_cap_usd | num) and .paid_cap_usd >= 0) then (.paid_cap_usd | cap_usd | fit(8))
                   else "-" end),
-            spent: (if .account_primary == false or foreign or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else "$" + (.paid_spent_usd | two_dp) end),
+            spent: (if .account_primary == false or foreign or ((.paid_spent_usd | num) | not) or .paid_spent_usd < 0 then "-" else ("$" + (.paid_spent_usd | two_dp) | fit(9)) end),
             rst: (if .account_primary == false or ((.limit_resets_available | num) | not) or .limit_resets_available < 0 then "-" else (.limit_resets_available | floor | tostring) end),
-            top: (if .account_primary == false then "-" else (.top_label | dash) end),
+            tier: (if .account_primary == false or (.plan_tier | type) != "string" then "-"
+                   else (((.plan_tier | fit(8)) + (if .plan_tier_source == "override" then "*" else "" end))) end),
+            mo: (if .account_primary == false or ((.plan_usd_month | num) | not) then "-"
+                 else (((.plan_usd_month | cap_usd | fit(8)) + (if .plan_price_source == "override" then "*" else "" end))) end),
+            top: (if .account_primary == false then "-" else (.top_label | dash | if type == "string" then fit(8) else . end) end),
             toppct: (if .account_primary == false or ((.top_used_pct | num) | not) or .top_used_pct < 0 or .top_used_pct > 100 then "-"
                      else (.top_used_pct | (if . == floor then floor else . end) | tostring) + "%" end),
             reset: ((.resets_at_et_short // .resets_at_et
                      // (if (.last_known_used_pct | num) and .last_known_expired != true
                          then (.last_known_resets_et // "" | [match("[A-Z][a-z]{2} [0-9]{1,2}").string][0]) else null end))
                     | dash | sub("(?<h>[0-9]) (?<p>[AP]M)"; "\(.h)\(.p)")),
-            inn: (.countdown | dash | sub("^in "; "")),
+            # Ten or more days away shows days only (`19d`): the hours are noise at that range, and the column makes room for TIER and $/MO (#2469).
+            inn: (.countdown | dash | sub("^in "; "") | sub("^(?<d>[0-9]{2,})d [0-9]+h$"; "\(.d)d")),
             # ACTIONABLE TEXT ONLY (#1700). Provenance (`plan pro`, `via app-server`) is on
             # every --json row. What stays is what the reader must act on: the status word
             # on a row that is not `ok`, the mislabelled-account warning, the detail belonging
@@ -450,18 +508,27 @@ render_quota_table() {
           | with_entries(.value |= clean)) as $R
       # A label or note longer than its cell goes under the table, numbered in the
       # order it first appears; identical texts share one number.
-      | ($R | map((if (.ovg | length) > 12 then .ovg else empty end), (if (.note | length) > 11 then .note else empty end))
+      | ($R | map((if (.ovg | length) > 8 then .ovg else empty end), (if (.note | length) > 11 then .note else empty end))
          | reduce .[] as $t ([]; if any(.[]; . == $t) then . else . + [$t] end)) as $foot
       | ($R | map([.acct, .win, .used, .fetched, .start, .pday, .left,
-                   (if (.ovg | length) > 12 then fnum($foot; .ovg) else .ovg end),
-                   .paid, .cap, .spent, .rst, .top, .toppct, .reset, .inn,
+                   (if (.ovg | length) > 8 then fnum($foot; .ovg) else .ovg end),
+                   .paid, .cap, .spent, .rst, .tier, .mo, .top, .toppct, .reset, .inn,
                    (if (.note | length) > 11 then fnum($foot; .note) else .note end)])) as $body
-      | ([["ACCOUNT", "WINDOW", "USED", "FETCHED", "START", "%/DAY", "LEFT", "OVERAGE", "$?", "$ CAP", "$", "RST", "TOP", "TOP%", "RESET (ET)", "IN", "NOTE"]] + $body) as $all
+      | ([["ACCOUNT", "WINDOW", "USED", "FETCHED", "START", "%/DAY", "LEFT", "OVERAGE", "$?", "$ CAP", "$", "RST", "TIER", "$/MO", "TOP", "TOP%", "RESET (ET)", "IN", "NOTE"]] + $body) as $all
       | ($all[0] | length) as $n
-      | ([range(0; $n)] | map(. as $c | [$all[] | .[$c] | wide] | max)) as $w
+      | ([range(0; $n)] | map(. as $c | [$all[] | .[$c] | wide] | max)) as $w0
+      # Issue #2469: past 140 columns the widest of the cut-able columns (account, window, $ cap, $, tier, $/MO, top) gives up one column at a time, down to 7, and its cells are cut to fit; --json keeps every full value.
+      | ([0, 1, 9, 10, 12, 13, 14]) as $red
+      | (reduce range(0; 80) as $_ ($w0;
+           . as $w
+           | if (($w | add) + $n - 1) > 140
+             then ([$red[] | select($w[.] > 7)] | if length == 0 then $w else (max_by($w[.]) as $i | $w | .[$i] -= 1) end)
+             else $w end)) as $w
+      | ($all | map(. as $r | reduce $red[] as $c ($r; .[$c] = (.[$c] | fit($w[$c]))))) as $all
       | ($all[] | . as $row | [range(0; $n)]
          | map(. as $c | if $c == $n - 1 then $row[$c] else ($row[$c] | pad($w[$c])) end) | join(" ")),
-        (if ($foot | length) > 0 then "", ($foot | to_entries[] | "[\(.key + 1)] \(.value)") else empty end)' "$DOC" > "$TABLE"
+        (if ($foot | length) > 0 then "", ($foot | to_entries[] | "[\(.key + 1)] \(.value)") else empty end),
+        (if any($R[]; (.tier | endswith("*")) or (.mo | endswith("*"))) then (if ($foot | length) > 0 then empty else "" end), "* set by hand with ai-quotas-setup.sh plan, not read from the provider" else empty end)' "$DOC" > "$TABLE"
   cat "$TABLE"
 
   # The cheapest-next hint, printed ONLY when the helper returned one — i.e.

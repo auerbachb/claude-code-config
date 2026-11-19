@@ -15,7 +15,7 @@ triggers:
   - generate the account launchers
   - make a shell function for my second Claude account
   - share my skills and rules with the other profile
-argument-hint: "[list [--json] | add <claude|codex|cursor|antigravity> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
+argument-hint: "[list [--json] | add <claude|codex|cursor|antigravity> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | plan <label> <tier> [usd_per_month] [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
 model: sonnet
 allowed-tools:
   - Read
@@ -81,6 +81,7 @@ profile directories drift apart.
 | "add \<provider\> \<label\>" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label>` |
 | "register it now, I'll log in later" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label> --no-login` |
 | "call it \<name\>", "nickname this account" | `"$AI_QUOTAS_SETUP_SH" nick <label> "<name>" [<provider>]` |
+| "this account is on the Max 20x plan, $200 a month", "set the plan for \<label\>", "I get a discount" | `"$AI_QUOTAS_SETUP_SH" plan <label> "<tier>" [<usd_per_month>] [<provider>]` — a manual override shown with `*` in the TIER and $/MO columns of `/quotas`; an empty tier clears it. Display only |
 | "record 86% for \<label\>, resets Nov 17", "I can see the figure, the reader can't" | `"$AI_QUOTAS_SETUP_SH" report <label> <window> <used_pct> [<reset>] [<provider>]` — stored as owner-reported; the next usable live read replaces it |
 | "use <order> for <label>", "reset source order" | `"$AI_QUOTAS_SETUP_SH" sources <label> <comma-separated order\|default> [<provider>]` |
 | "recommend a source change after N failures" | `"$AI_QUOTAS_SETUP_SH" sources threshold <N>` |
