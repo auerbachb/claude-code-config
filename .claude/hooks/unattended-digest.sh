@@ -111,6 +111,8 @@ fi
 
 dialog_text="PRESENCE DIALOG (presence.sh, issue #2294): the operator is back. After you answer his message, run '$PRESENCE_SH' ask: exit 0 prints a token; then open the dialog as the /presence skill describes (set --by operator-dialog --generation <token>, or release --dismissed when he dismisses it). Any other exit: do not open it. Skip it entirely when his message already says where he is or for how long: set that from the message instead."
 
+back_pointer="BACK (issue #2541): tell him in one line that /back gives the whole return in one go: waiting questions as menus, his open tasks, and a digest of what happened while he was away."
+
 list_frame="UNATTENDED QUESTIONS (human-queue.md, Unattended): show the operator the questions below in your reply, before anything else, each item with its recommended option and what was done meanwhile. A question stays listed until it is answered or dismissed, so a repeat is expected and harmless. When he answers one in chat, record it: '$UNATTENDED_SH' answer U-<n> --answer '<his answer>' --by operator. When he dismisses one without answering, run '$UNATTENDED_SH' dismiss U-<n> --reason '<why>'. For a question of another repo (a list labelled [owner/repo]) add --repo <owner/repo> to answer and to dismiss; leave it off for this repo's own. Record an answer only when he gave one."
 
 if [ "$kind" = automated ]; then
@@ -173,6 +175,7 @@ else
       add "PRESENCE RETURN (presence-windows.md): the operator is back, so away handling has ended and menus work again. No questions are waiting."
       "$PRESENCE_SH" dialog-ready --now >/dev/null 2>&1 && add "$dialog_text"
     fi
+    add "$back_pointer"
   else
     if [ "$failed" -eq 1 ]; then
       add "PRESENCE RETURN FAILED (presence-windows.md): the operator is back, but the state write that ends away handling failed, so away handling has NOT ended and menus are still denied. The saved questions of other repos have not been listed and the presence dialog has not been asked. Tell him so in your reply. His next message retries the return; this hook does not retry within the turn."

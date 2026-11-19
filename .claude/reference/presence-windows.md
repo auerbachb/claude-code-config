@@ -251,6 +251,17 @@ finished work. So every away declaration in the presence skill first takes one r
 parent's message, one line per decision with its recommended option. No new field or file: the
 parent turns replies into menu questions, and a sub-agent that cannot answer in time loses nothing.
 
+## Coming back: `/back` (issue #2541)
+
+`/back` is the counterpart of `/afk`. A message inside a live away window changes nothing (he may be
+writing from his phone), so the hook never ends one early; `/back` is him saying outright that he is
+back, so it runs `presence.sh return --early`, which also ends a window that has not run out and
+records it as a return (`returned_epoch`). It then asks **For how long?** once, presents every open
+question and Desk Decision as menus, his open human tasks, and a digest since the away declaration
+(`.unattended.since_epoch`). All reading is `back-report.sh`, one JSON object; a source it cannot read
+is named, never shown as empty. It starts nothing and dispatches nothing. The hook's return notice
+points at it in one line.
+
 ## Left out (later increments)
 
 - The pre-leave pass and the long-away check-in (issue #2295).

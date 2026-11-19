@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [active-work-cap.sh](../active-work-cap.sh) | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP` and the per-thread `PIPELINE_CEILING`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
+| [back-report.sh](../back-report.sh) | /back's data in one JSON object: open questions and Desk Decisions, open human tasks, and a digest of GitHub, stoppage and pipeline activity since the away declaration; an unreadable source is named, never read as empty |
 | [bgwork-ceiling.sh](../bgwork-ceiling.sh) | Hard ceiling on chat silence while background work (subagents, watchers) runs |
 | [gh-window.sh](../gh-window.sh) | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
 | [install-backfill-review.sh](../install-backfill-review.sh) | Register the overnight backfill review (`backfill-review.sh --repo-dir <checkout>`) as a macOS launchd LaunchAgent — every `--interval` seconds (default 1800); the runner gates on its own quiet window |

@@ -50,6 +50,8 @@
 #   unattended.sh seen --session ID --from PATH  (hooks) record the ids PATH names as shown in full to ID
 #   unattended.sh list [--all]                   EVERY recorded question regardless of what was shown, with
 #                                                its status (open | answered | dismissed); --all spans repos
+#   unattended.sh list [--all] --json            the same as ONE JSON array, each question with its `repo` key
+#                                                ([] when none); an unreadable file exits 1, printing nothing
 #   unattended.sh --help
 #
 # STATE
@@ -574,14 +576,36 @@ list_file() { # FILE LABEL
            elif .status == "dismissed" then "\n   Dismissed: \(.resolution // "no reason given")" else "" end))'
 }
 
+# --json (issue #2541, /back): one array over the chosen files, each question labelled with its repo key.
+list_json() { # ALL
+  local f key a acc='[]'
+  if [ "$1" -eq 1 ]; then
+    [ -d "$Q_DIR" ] || { printf '[]\n'; return 0; }
+    [ -r "$Q_DIR" ] && [ -x "$Q_DIR" ] || { printf 'unattended.sh: cannot read %s\n' "$Q_DIR" >&2; return 1; }
+    for f in "$Q_DIR"/*.jsonl; do
+      [ -f "$f" ] || continue
+      key=$(basename "$f" .jsonl); key="${key/__//}"
+      a=$(all_json "$f") && [ -n "$a" ] || { printf 'unattended.sh: cannot read %s\n' "$f" >&2; return 1; }
+      acc=$(printf '%s\n%s' "$acc" "$a" | "$JQ" -cs --arg k "$key" '.[0] + [.[1][] | . + {repo: $k}]') || return 1
+    done
+  else
+    f=$(q_file); key=$(repo_key)
+    a=$(all_json "$f") && [ -n "$a" ] || { printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
+    acc=$(printf '%s' "$a" | "$JQ" -c --arg k "$key" '[.[] | . + {repo: $k}]') || return 1
+  fi
+  printf '%s\n' "$acc"
+}
+
 cmd_list() {
-  local all=0 rc=0 f key
+  local all=0 json=0 rc=0 f key
   while [ $# -gt 0 ]; do
     case "$1" in
       --all) all=1; shift ;;
+      --json) json=1; shift ;;
       *) die_usage "unknown argument to list: $1" ;;
     esac
   done
+  if [ "$json" -eq 1 ]; then list_json "$all"; return; fi
   if [ "$all" -eq 1 ]; then
     [ -d "$Q_DIR" ] || return 0
     for f in "$Q_DIR"/*.jsonl; do
