@@ -593,7 +593,7 @@ for SH in $BLOCK_SHELLS; do
   check "[$SH] desk-checkin-card: exit=0" "$(printf '%s\n' "$OUT" | tail -1)" "exit=0"
   check "[$SH] desk-checkin-card: whether a check-in is stored, first" "$(printf '%s\n' "$OUT" | sed -n 1p)" '{"checked_in":false}'
   check_contains "[$SH] desk-checkin-card: the card" "$OUT" "> **Morning check-in · Thu Oct 8**"
-  check "[$SH] desk-checkin-card: one read" "$(hq_args)" "[checkin][get][--json]"
+  check "[$SH] desk-checkin-card: one read, with the task count" "$(hq_args)" "[checkin][get][--tasks][--json]"
   check "[$SH] desk-checkin-card: removes its file" "$(leftovers)" "0"
   printf 'get-set.json\n' > "$STUB_DIR/get-reply"
   OUT=$(run_block "$SH" "$TMP/block-desk-checkin-card.sh")
