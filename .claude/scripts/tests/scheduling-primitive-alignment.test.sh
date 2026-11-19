@@ -26,6 +26,21 @@ require_text CLAUDE.md '**`Monitor` for recurring polls.**' \
 require_text .claude/rules/scheduling-reliability.md \
   '> **Always:** Use a persistent `Monitor` for user-facing "poll every N" requests' \
   'the scheduling rule must make Monitor authoritative'
+require_text .claude/rules/scheduling-reliability.md \
+  'Monitors expire: use maximum `timeout_ms` (`persistent: true` only if listed); re-arm on each expiry notice until the workflow ends (`monitor-expiry.md`).' \
+  'the loaded rule must make expiry re-arm a required step (Issue #2201)'
+require_text .claude/reference/monitor-expiry.md 'An **expiry receipt** is an expiry notice that names the exact recorded task ID' \
+  'monitor-expiry.md must define the expiry receipt'
+require_text .claude/skills/babysit-pr/SKILL.md '## EXPIRY MODE' \
+  'babysit-pr must own an expiry re-arm branch'
+require_text .claude/skills/babysit-pr/SKILL.md 'The receipt satisfies the exact-stop requirement for that one ID and nothing else.' \
+  'babysit-pr expiry receipt must stand in for the exact stop of one ID only'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md 'through this same `.pmm_rearm` claim, where the receipt stands in for the exact `TaskStop` of that one' \
+  'PMM must re-arm an expired main watch under its lifecycle claim'
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md 'is an expiry receipt' \
+  'PMM auto-wake must re-arm on an expiry receipt'
+require_text .claude/skills/pm/modules/day-arm.md 'Respect park, manual-resume and probe-count bounds first' \
+  'pm day must re-arm on expiry within its existing bounds'
 require_text .claude/reference/scheduling-failure-modes.md \
   '| dynamic `/loop` / recurring `ScheduleWakeup` | PR #937 and PR #944 stopped until a manual turn | **negative** |' \
   'Pattern 7 must preserve the negative dynamic-loop evidence'

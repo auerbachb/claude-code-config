@@ -538,9 +538,22 @@ while sleep "$WINDDOWN_SLEEP"; do
 done
 ```
 
-Pass `persistent: true` and description `leave-time wind-down`. **Never `CronCreate`, never a chain
+Pass `timeout_ms` at the runtime maximum (1800000 where capped), `persistent: true` only if the
+Monitor schema lists it, and description `leave-time wind-down`. **Never `CronCreate`, never a chain
 of one-shot wake-ups, never a dynamic `/loop`** — `scheduling-reliability.md` is the contract, and
 `Monitor` is the only primitive with positive out-of-turn liveness evidence (issues #914, #924).
+
+**A sleep longer than the maximum `timeout_ms` expires before the check-in** (Issue #2201). An
+expiry notice that names the exact recorded `winddown_task_id` while the recorded
+`winddown_generation` is still `$WINDDOWN_GENERATION` is an expiry receipt
+(`.claude/reference/monitor-expiry.md`). Read the current shared deadline
+(`.window.deadline_epoch` through `session-state.sh`) **first** — `/pm --window` can shorten it.
+In this order: if the leave time has passed, retire the record (Step 11's table) and re-arm
+nothing; else if the check-in time has passed, run `/leave-by --checkin --generation
+$WINDDOWN_GENERATION` now; else re-arm this same loop with the same generation for the
+**remaining** time and CAS the new task ID over the old one (`--expect` the expired ID), the
+receipt standing in for the exact stop of that one ID. An unbound notice re-arms nothing
+— Step 11 recovery owns it. This re-arm is the expiry contract, not the forbidden wake-up chain.
 
 Publish the task ID **immediately** — an unrecorded Monitor cannot be stopped, and `/pause`
 Step 2 and `/pause-resume` Step 5 both tear down by exactly these fields. The generation is already

@@ -36,10 +36,72 @@ BREACH_FILE="${MARKER_DIR}/claude-bgceiling-unguarded-${SAFE_ID}"
 MAX_BLOCKS="${CLAUDE_BGWORK_MAX_BLOCKS:-2}"
 [[ "$MAX_BLOCKS" =~ ^[0-9]+$ ]] || MAX_BLOCKS=2
 
-# Nothing to guard, or already armed — clear any block counter and get out of
-# the way. The counter is per-stretch-of-unarmed-work, not per-session.
-if "$CEILING_SH" --check --session "$SESSION_ID"; then
+# How to arm, worded for every runtime: the desktop Monitor has no
+# `persistent` parameter and caps timeout_ms at 30 minutes (Issue #2201).
+MONITOR_HOW='call the Monitor tool with description "background-work silence ceiling", timeout_ms at the runtime maximum (1800000 where capped; pass persistent: true only if the tool schema lists it), and command:'
+REARM_NOTE='Re-arm it the same way on every expiry notice while background work runs (.claude/reference/monitor-expiry.md).'
+
+file_mtime() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    stat -f %m "$1" 2>/dev/null
+  else
+    stat -c %Y "$1" 2>/dev/null
+  fi
+}
+
+# Nothing to guard, or armed and ticking — clear any block counter and get out
+# of the way. The counter is per-stretch-of-unarmed-work, not per-session.
+lapse_key() {
+  local a t
+  a=$(file_mtime "${MARKER_DIR}/claude-bgceiling-armed-${SAFE_ID}")
+  t=$(file_mtime "${MARKER_DIR}/claude-bgceiling-ticked-${SAFE_ID}")
+  printf '%s-%s' "${a:-0}" "${t:-0}"
+}
+# Snapshot the arm/tick markers BEFORE the check, so a lapse is recorded under
+# the exact marker state that produced it (a tick landing in between is
+# detected below rather than recorded as already reported).
+PRE_LAPSE_KEY=$(lapse_key)
+CHECK_RC=0
+"$CEILING_SH" --check --session "$SESSION_ID" || CHECK_RC=$?
+if (( CHECK_RC == 0 )); then
   rm -f "$BLOCKS_FILE" 2>/dev/null || true
+  exit 0
+fi
+
+# Armed but no longer ticking: the Monitor most likely expired and the thread
+# did not act on the expiry notice. Never a block — the background-work marker
+# is append-only, so a block here would fire on every Stop long after the work
+# ended. One non-blocking notice per lapse instead, deduped on the arm/tick
+# marker mtimes; a lapse that cannot be recorded stays silent rather than
+# repeating on every Stop (a Stop notice costs a model request).
+if (( CHECK_RC == 3 )); then
+  rm -f "$BLOCKS_FILE" 2>/dev/null || true
+  LAPSE_KEY="$PRE_LAPSE_KEY"
+  if [[ "$(lapse_key)" != "$LAPSE_KEY" ]]; then
+    # A tick or re-arm landed after the stale check: the watch is alive again.
+    echo '{}'
+    exit 0
+  fi
+  LAPSE_FILE="${MARKER_DIR}/claude-bgceiling-lapsenotice-${SAFE_ID}"
+  if [[ -f "$LAPSE_FILE" && "$(cat "$LAPSE_FILE" 2>/dev/null)" == "$LAPSE_KEY" ]]; then
+    echo '{}'
+    exit 0
+  fi
+  AGE=$("$CEILING_SH" --status --session "$SESSION_ID" 2>/dev/null | jq -r '.tick_age_s // empty' 2>/dev/null)
+  [[ "$AGE" =~ ^[0-9]+$ ]] || AGE="?"
+  ARM_COMMAND=$("$CEILING_SH" --arm-command --session "$SESSION_ID" 2>/dev/null)
+  NOTICE="BACKGROUND WORK CEILING LAPSED: no ceiling tick for ${AGE}s, so its Monitor most likely expired and was not re-armed. If background work this thread waits on is still running, re-arm now: ${MONITOR_HOW} ${ARM_COMMAND} — ${REARM_NOTE} If none is still running, do not re-arm. Either way this is automatic recovery, not status: do not report it to the user."
+  # Channel: Stop hookSpecificOutput.additionalContext — documented for Stop in
+  # the Claude Code hooks reference ("Add context for Claude"), delivered as
+  # non-error "Stop hook feedback", and already used by dirty-main-warn.sh.
+  # Not decision:block. Build the output first; record the lapse as reported
+  # only once there is a notice to emit.
+  OUT=$(jq -cn --arg message "$NOTICE" '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $message}}' 2>/dev/null)
+  if [[ -z "$OUT" ]] || ! printf '%s' "$LAPSE_KEY" > "$LAPSE_FILE" 2>/dev/null; then
+    echo '{}'
+    exit 0
+  fi
+  printf '%s\n' "$OUT"
   exit 0
 fi
 
@@ -75,7 +137,7 @@ if ! printf '%s' "$blocks" > "$BLOCKS_FILE" 2>/dev/null; then
   exit 0
 fi
 
-REASON="Do not end this turn yet. Background work is in flight and this thread has no silence ceiling armed, so it can now go quiet indefinitely with no tool call left to warn it — the exact failure this guard exists to prevent. Arm it now: call the Monitor tool with persistent: true, description \"background-work silence ceiling\", and command: ${ARM_COMMAND} — then finish the turn as you intended. The watch stays silent unless the thread actually goes quiet, so it adds no noise to a healthy thread. Do not report the arming to the user; it is bookkeeping, not status."
+REASON="Do not end this turn yet. Background work is in flight and this thread has no silence ceiling armed, so it can now go quiet indefinitely with no tool call left to warn it — the exact failure this guard exists to prevent. Arm it now: ${MONITOR_HOW} ${ARM_COMMAND} — then finish the turn as you intended. ${REARM_NOTE} The watch stays silent unless the thread actually goes quiet, so it adds no noise to a healthy thread. Do not report the arming to the user; it is bookkeeping, not status."
 
 printf 'bgwork-ceiling-guard: blocking turn end (%s/%s) — background work in flight with no ceiling armed for session %s.\n' \
   "$blocks" "$MAX_BLOCKS" "$SAFE_ID" >&2

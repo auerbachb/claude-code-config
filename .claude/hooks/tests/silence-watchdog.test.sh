@@ -178,6 +178,34 @@ run_watchdog
 [[ "$(notify_count)" -eq 0 ]] || fail "(g) armed session with stale bgwork marker should NOT notify — armed guard must suppress historical-work false positives"
 ok "(g) armed ceiling + bgwork marker present, stale heartbeat -> silent (Monitor was responsible; armed guard suppresses false positive)"
 
+# ── (g2) Armed ceiling that stopped ticking (Issue #2201) ───────────────────
+# The desktop Monitor expires after 30 minutes; a watch nobody re-armed stops
+# ticking. A RECENT lapse must alert with its own wording, once per silence.
+reset_all
+SID=$(new_sid lapsed)
+touch -t "$(past_stamp 12)" "${MARKER_DIR}/claude-heartbeat-${SID}"
+CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" "$BGWORK_CEILING" --note-started "Agent" --session "$SID"
+CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" "$BGWORK_CEILING" --record-armed --session "$SID"
+touch -t "$(past_stamp 20)" "${MARKER_DIR}/claude-bgceiling-armed-${SID}"
+touch -t "$(past_stamp 15)" "${MARKER_DIR}/claude-bgceiling-ticked-${SID}"
+run_watchdog
+[[ "$(notify_count)" -eq 1 ]] || fail "(g2) a recently lapsed armed ceiling should notify once, got $(notify_count)"
+grep -q 'ceiling watch stopped ticking; re-arm' "$NOTIFY_LOG" || fail "(g2) lapse alert must use its own wording: $(cat "$NOTIFY_LOG")"
+run_watchdog
+[[ "$(notify_count)" -eq 1 ]] || fail "(g2) the same lapse must not re-notify on the next run"
+ok "(g2) armed ceiling that stopped ticking recently -> one lapse alert"
+
+# ── (g3) A long-past lapse stays quiet (historical sessions) ────────────────
+reset_all
+SID=$(new_sid oldlapse)
+touch -t "$(past_stamp 300)" "${MARKER_DIR}/claude-heartbeat-${SID}"
+CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" "$BGWORK_CEILING" --note-started "Agent" --session "$SID"
+CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" "$BGWORK_CEILING" --record-armed --session "$SID"
+touch -t "$(past_stamp 300)" "${MARKER_DIR}/claude-bgceiling-armed-${SID}"
+run_watchdog
+[[ "$(notify_count)" -eq 0 ]] || fail "(g3) a lapse hours old must not notify"
+ok "(g3) a lapse older than the recent window stays silent"
+
 # ── (h) Telemetry guard: HOME trouble must never abort the watchdog ─────────
 # (issue #1430) The usage-log append at the top of the script ran unguarded
 # under `set -euo pipefail`: a HOME without .claude/ killed the run at the
