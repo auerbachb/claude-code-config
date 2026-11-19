@@ -427,7 +427,7 @@ On `AWAY_SET=true`, follow the lines `presence.sh` printed exactly as the presen
 ## Step 0d: Epic scope
 
 <!-- pm-routing:begin -->
-Runs on a user invocation after Step 0c, before 2D.1 and the Step 1 gate. When `EPIC_ARG=true`, read `shared:epic` and run its Bind block: a missing, closed or childless issue, or an unreadable child list, is its one line and the end of the invocation, with nothing launched. When `EPIC_ARG=false` on a cold start, read `shared:epic` only to clear a stored epic. Resume, ticks and refill restore a stored epic through the same module at their candidate gates (`rank:load`, `resume:load`, `flow:refill`).
+Runs on a user invocation after Step 0c, before 2D.1 and the Step 1 gate. When `EPIC_ARG=true`, read `shared:epic` and run its Bind block: a missing or closed issue, or an unreadable child list, is its one line and the end of the invocation, with nothing launched. A childless epic, or one whose children leave scope uncovered, is split there in waves of at most five (its §Waves). When `EPIC_ARG=false` on a cold start, read `shared:epic` only to clear a stored epic. Resume, ticks and refill restore a stored epic through the same module at their candidate gates (`rank:load`, `resume:load`, `flow:refill`).
 <!-- pm-routing:end -->
 
 ---
