@@ -966,7 +966,7 @@ state_lock_sweep_asides() (
     reason="$(
       [[ -n "$phys_dir" ]] || { echo "parent directory unresolvable"; exit 0; }
       cd -P -- "$c" 2>/dev/null || { [[ -e "$c" || -L "$c" ]] && echo "could not enter"; exit 0; }
-      [[ "$(pwd -P)" == "$phys_dir/$name" && -O . ]] || { echo "changed before removal: resolves elsewhere"; exit 0; }
+      [[ "$(pwd -P)" == "${phys_dir%/}/$name" && -O . ]] || { echo "changed before removal: resolves elsewhere"; exit 0; }
       for entry in ./*; do
         problem="$(entry_problem "$entry")"
         [[ -z "$problem" ]] || { echo "changed before removal: $problem"; exit 0; }

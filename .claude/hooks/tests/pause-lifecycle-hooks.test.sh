@@ -8,7 +8,15 @@ COMPLETE="$ROOT/.claude/hooks/background-task-complete.sh"
 PAUSE="$ROOT/.claude/scripts/execution-pause.sh"
 REGISTRY="$ROOT/.claude/scripts/background-task-registry.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# Stop the issue #2402 background writers (if started) before removing $TMP,
+# so an early assertion exit never leaves them looping against a deleted tree.
+WRITER_PIDS=()
+cleanup_tmp() {
+  local wp
+  for wp in ${WRITER_PIDS[@]+"${WRITER_PIDS[@]}"}; do kill "$wp" 2>/dev/null; done
+  rm -rf "$TMP"
+}
+trap cleanup_tmp EXIT
 export HOME="$TMP/home"
 export CLAUDE_EXECUTION_PAUSE_MARKER_DIR="$TMP/markers"
 export CLAUDE_BGWORK_MARKER_DIR="$TMP/bgmarkers"
@@ -603,7 +611,7 @@ WRITER_PIDS=()
 for w in $(seq 1 "$WRITERS"); do
   (
     n=0
-    while [[ ! -e "$WRITER_STOP" ]]; do
+    while [[ ! -e "$WRITER_STOP" && -d "$TMP" ]]; do
       n=$((n + 1))
       if CLAUDE_STATE_LOCK_TIMEOUT=120 "$ROOT/.claude/scripts/session-state.sh" --raw-path \
            --set ".repos[\"writer-2402/w$w\"].count=$n" >/dev/null 2>&1; then
