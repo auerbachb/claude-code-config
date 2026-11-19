@@ -103,9 +103,11 @@
 #   two `Wave:` lines, a list item in the section (bullet `-`/`*`/`+` or
 #   ordered `1.`/`1)`) that is not a full row (bad item id, unknown status,
 #   missing delimiter), a duplicate `S` id, a covered wave past the current
-#   wave, a wave with filed children but no `last`, a `last` that covers no
-#   item of the current wave, two sections — is malformed (exit 7),
-#   and every caller fails closed on it. Edits are line-level: prose and
+#   wave, a wave with filed children but no `last`, two sections — is
+#   malformed (exit 7). A `last` whose row is no longer covered (a re-cut row
+#   set back to `remaining`) is stale and reads as unset: the wave resumes,
+#   and the next `record` names a new tail. Every caller fails closed on a
+#   malformed record. Edits are line-level: prose and
 #   other sections are never rewritten. Every writing verb (scope-init,
 #   wave-open, record, stop) re-reads the parent right before its write and
 #   writes nothing (exit 1) when the body differs from the snapshot it
@@ -622,14 +624,16 @@ scope_from_file() {
            ([.items[] | select(.status == "covered" and .wave > 0) | .child] | unique | length)
         then error("shared")
       # The tail (`last #T`) is the child filed last in the current wave, the
-      # one the next wave waits on: it must cover an item of this wave, and a
-      # wave with filed children must name it.
+      # one the next wave waits on. A `last` whose row is no longer covered
+      # (the documented re-cut: a row set back to `remaining`) is stale and
+      # reads as unset; the item is then re-filed in this wave (`resume`). A
+      # wave with filed children and no `last` at all is malformed.
       elif .last != null and (. as $r | [.items[] | select(.status == "covered" and .wave == $wave and .child == $r.last)] | length) == 0
-        then error("last")
+        then .last = null
       elif $wave > 0 and .last == null and any(.items[]; .status == "covered" and .wave == $wave)
         then error("nolast")
       else . end' 2>/dev/null || {
-    malformed "$n" "a covered item names a wave past Wave: $wave, wave $wave holds more children than planned, one wave child covers two items, or the Wave: line's last child is missing or not a child of wave $wave"; return 7; }
+    malformed "$n" "a covered item names a wave past Wave: $wave, wave $wave holds more children than planned, one wave child covers two items, or wave $wave has covered items but the Wave: line names no last child"; return 7; }
 }
 
 # read_scope REPO N FILE -> the record JSON plus {epic, state}; the body is left

@@ -653,7 +653,13 @@ check_eq "wave-open: a same-wave same-count retry is still a no-op" "wave 1 alre
 prs 950 '[{"number":12,"state":"OPEN","isDraft":false}]'
 check_eq "wave-open: opens once the last-filed child is in review" "opened wave 2 on #993 (1 planned)" "$("$SCRIPT" wave-open acme/w 993 2 1)"
 mal 994 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n' "a wave with a filed child but no last"
-mal 995 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #952\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n' "a last child that covers nothing in the wave"
+# The documented re-cut (the tail's row set back to `remaining`) leaves a stale
+# `last`: it reads as unset, the record stays readable and the wave resumes.
+issue 995 open "Re-cut tail" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2 · last #952\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n'
+"$SCRIPT" scope acme/w 995 >/dev/null 2>&1; rc=$?
+check_eq "scope: a stale last after a re-cut is not malformed" "0" "$rc"
+check_eq "scope: a stale last reads as unset" "null" "$("$SCRIPT" scope acme/w 995 | jq -r .last)"
+check_eq "wave-due: a re-cut wave resumes with the re-cut item" "resume 1 S2 1/2" "$("$SCRIPT" wave-due acme/w 995)"
 
 # (d) record, wave-open and stop re-read the parent right before writing and
 # never overwrite an edit made since their read.
