@@ -157,4 +157,11 @@ report B clean B > "$TMP/r.txt"; run --phase B "$TMP/r.txt"
 [[ $RC -eq 0 && "$OUT" != *OWNER_ACTION* ]] || fail "no OWNER_ACTION expected (rc=$RC out=$OUT)"
 pass "OWNER_ACTION lines above the last report are forwarded"
 
+printf 'OWNER_ACTION: judgment-call: Pick the plan tier — his budget\nEXIT_REPORT\nAGENT: researcher\nOUTCOME: findings\n' > "$TMP/r.txt"
+run "$TMP/r.txt"
+[[ $RC -eq 0 && "$(field PHASE)" == researcher && "$(field OUTCOME)" == findings \
+   && "$(field OWNER_ACTION)" == "judgment-call: Pick the plan tier — his budget" ]] \
+  || fail "researcher OWNER_ACTION (rc=$RC out=$OUT)"
+pass "researcher report forwards OWNER_ACTION lines"
+
 echo "All exit-report-extract tests passed."

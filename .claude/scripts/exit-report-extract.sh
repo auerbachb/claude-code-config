@@ -102,8 +102,20 @@ for v in $valid; do
 done
 [[ "$outcome_ok" == 1 ]] || bad "outcome $outcome is not valid for $phase"
 
+# OWNER_ACTION lines sit in the prose directly above the last EXIT_REPORT
+# (issue #2561), so the parent, which reads only this output, still saves them.
+# Only lines between the previous header (or the start) and the last one count.
+forward_owner_actions() {
+  printf '%s\n' "$content" | awk '
+    /^EXIT_REPORT[[:space:]]*$/ { saved=cur; cur=""; next }
+    /^OWNER_ACTION: *[^ ]/ { sub(/^OWNER_ACTION: */, ""); cur = cur "OWNER_ACTION=" substr($0, 1, 300) "\n" }
+    END { printf "%s", saved }
+  '
+}
+
 if [[ "$phase" == "researcher" ]]; then
   printf 'PHASE=%s\nOUTCOME=%s\n' "$phase" "$outcome"
+  forward_owner_actions
   exit 0
 fi
 
@@ -159,12 +171,5 @@ for pair in VERDICTS_POSTED:VERDICTS FIXPR_WAIT_ITERATIONS:FIXPR_WAIT_ITERATIONS
   src=${pair%%:*}; dst=${pair##*:}
   if has "$src"; then printf '%s=%s\n' "$dst" "$(get "$src")"; fi
 done
-# OWNER_ACTION lines sit in the prose directly above the last EXIT_REPORT
-# (issue #2561), so the parent, which reads only this output, still saves them.
-# Only lines between the previous header (or the start) and the last one count.
-printf '%s\n' "$content" | awk '
-  /^EXIT_REPORT[[:space:]]*$/ { saved=cur; cur=""; next }
-  /^OWNER_ACTION: *[^ ]/ { sub(/^OWNER_ACTION: */, ""); cur = cur "OWNER_ACTION=" substr($0, 1, 300) "\n" }
-  END { printf "%s", saved }
-'
+forward_owner_actions
 exit 0
