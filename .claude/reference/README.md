@@ -36,4 +36,4 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 - [Verification logs](catalog/verification-logs.md)
 
-New entries go in the matching catalog page, not here. Edit this index only to add a category: add its `###` heading and page link, then add the page under `catalog/`. `.claude/scripts/reference-catalog-lint.sh` checks every entry across the pages.
+New entries go in the matching catalog page, not here. Edit this index only to add a category: add its `###` heading and page link, then add the page under `catalog/`. `.claude/scripts/reference-catalog-lint.sh` checks every root-level entry across the pages (the `diagrams/` rows are not parity-checked) and that each link sits under its matching heading.

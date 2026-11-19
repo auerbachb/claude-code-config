@@ -10,6 +10,9 @@ split in #2188's own Proposed solution was taken as the recommended option.
 **Supersedes** the Issue #816 keep decision (append-only catalog with a
 completeness lint) **for this file only**; the completeness lint is kept and now
 spans every catalog page. A recorded owner KEEP on #1996 would reopen this.
+**Owner-reversible:** this is a recommended-option decision taken without an
+owner verdict; the owner may overrule it at any time by recording a KEEP on
+#1996, and the split would then be reverted.
 
 ## What was decided, and against what
 

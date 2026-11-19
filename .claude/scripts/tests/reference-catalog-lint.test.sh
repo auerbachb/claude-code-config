@@ -188,6 +188,10 @@ expect "hub linking a page twice fails" 1 \
   "Hub links '\.claude/reference/catalog/one\.md' more than once" \
   bash -c 'printf "\n%s\n" "- [One again](catalog/one.md)" >> .claude/reference/README.md'
 
+expect "swapped hub links under the wrong headings fail" 1 \
+  "sits under heading 'One' but the page is titled 'Two'" \
+  bash -c 'sed -i.bak -e "s#(catalog/one.md)#(catalog/TMP.md)#" -e "s#(catalog/two.md)#(catalog/one.md)#" -e "s#(catalog/TMP.md)#(catalog/two.md)#" .claude/reference/README.md; rm -f .claude/reference/README.md.bak'
+
 # --- index purity ---------------------------------------------------------
 expect "entry row left in the hub fails" 1 \
   "Hub index holds an entry row for 'alpha.md'" \

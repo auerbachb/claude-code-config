@@ -15,6 +15,11 @@
 #   4. Every catalog/*.md page on disk is linked exactly once from the hub
 #      ## Contents section, and every linked page exists.
 #   5. The hub ## Contents section holds no registration bullets (index purity).
+#   6. Each hub link sits under the ### heading whose text equals the linked
+#      page's H1, so swapped links cannot point readers at the wrong category.
+#
+# Scope note: diagrams/ rows (path-qualified, `diagrams/x.md`) are deliberately
+# NOT checked for parity — the lint covers root-level files only.
 #
 # Companion to .github/scripts/skill-catalog-lint.sh, which enforces the same
 # index-alignment invariant for .claude/skills/ against README.md.
@@ -153,6 +158,22 @@ while IFS= read -r p; do
   echo "::error file=${README}::Hub links '${CATALOG_DIR}/${p}' more than once"
   errors=$((errors + 1))
 done <<< "$repeat_links"
+
+# Each link must sit under the ### heading matching the page's H1.
+current_heading=""
+while IFS= read -r line; do
+  if [[ "$line" =~ ^###[[:space:]]+(.*)$ ]]; then
+    current_heading="${BASH_REMATCH[1]}"
+  elif [[ "$line" =~ \]\(catalog/([^/\)#]+\.md)\) ]]; then
+    page="${BASH_REMATCH[1]}"
+    [[ -f "${CATALOG_DIR}/${page}" ]] || continue
+    page_title=$(sed -n '1s/^# *//p' "${CATALOG_DIR}/${page}")
+    if [[ "$current_heading" != "$page_title" ]]; then
+      echo "::error file=${README}::Hub link to '${CATALOG_DIR}/${page}' sits under heading '${current_heading}' but the page is titled '${page_title}'"
+      errors=$((errors + 1))
+    fi
+  fi
+done <<< "$hub_contents"
 
 # --- 3. Rows from every page -----------------------------------------------
 # Tab-separated "name<TAB>page" so a diagnostic can name the page that holds
