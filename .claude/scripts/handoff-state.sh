@@ -88,6 +88,27 @@
 #                               the file first is preserved rather than
 #                               overwritten — which a caller-side test before
 #                               --create cannot guarantee (CodeAnt, PR #1598).
+#   handoff-state.sh --owner-repo <owner/repo> --seed-owner <pr_number> <head_sha>
+#                               Sanctioned repair (issue #2471) for an EXISTING
+#                               scoped record whose `owner_repo` is absent, null
+#                               or "" — the shape every identity-guarded write
+#                               refuses (exit 4) and no guarded write can fix.
+#                               Under the record lock it requires exactly one
+#                               JSON object whose numeric `pr_number` equals
+#                               <pr_number> and whose `head_sha` equals
+#                               <head_sha> exactly, then sets `owner_repo` to the
+#                               lowercased scope, preserving every other field.
+#                               Requires an EXPLICIT --owner-repo (a derived,
+#                               flat or ambient-flat scope exits 2 — the scope is
+#                               what gets attested, so it is never guessed).
+#                               Never creates a record (absent -> exit 3). A
+#                               non-empty matching owner is a no-op that leaves
+#                               the bytes untouched (exit 0); a conflicting or
+#                               non-string owner, a wrong PR or HEAD, or a body
+#                               that is not a single object exits 4 unwritten.
+#                               Exit codes: 0 ok/no-op, 2 usage or scope, 3 no
+#                               record, 4 identity mismatch/bad JSON, 5 disk,
+#                               6 lock timeout.
 #   handoff-state.sh [<scope-flags>] --set    <pr_number> <jq-path>=<value>
 #   handoff-state.sh [<scope-flags>] --append <pr_number> <field> <value>
 #                               <field> must name one of the schema's array
@@ -257,6 +278,7 @@ EXPECTED_OWNER=""
 EXPECTED_HEAD=""
 EXPECTED_CONTENT_SHA=""
 SCOPE_SOURCE=""
+SEED_HEAD=""
 
 # Every array field the handoff schema defines — the complete set --append may
 # create (issue #1514; see --append FIELD NAMES in the header for why this is an
@@ -386,6 +408,17 @@ case "$1" in
       echo "handoff-state.sh: --repair requires <pr_number> <json-body>" >&2; exit 2
     fi
     ;;
+  --seed-owner)
+    MODE="seed-owner"
+    PR_NUMBER="${2:-}"
+    SEED_HEAD="${3:-}"
+    # Scope is the attested value, so it must be named, never derived (#2471).
+    if [[ -z "$OWNER_REPO_EXPLICIT" || "$LEGACY_FLAT" -eq 1 ]]; then
+      echo "handoff-state.sh: --seed-owner requires an explicit --owner-repo <owner/repo> scope (not a derived, --legacy-flat or CLAUDE_HANDOFF_FLAT_OK scope); nothing was read or written" >&2; exit 2
+    fi
+    [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "handoff-state.sh: --seed-owner requires a positive PR number" >&2; exit 2; }
+    [[ "$SEED_HEAD" =~ ^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$ ]] || { echo "handoff-state.sh: --seed-owner requires a full HEAD SHA" >&2; exit 2; }
+    ;;
   --set)
     MODE="set"
     PR_NUMBER="${2:-}"
@@ -457,7 +490,7 @@ fi
 # rather than discarding them (issue #1366).
 case "$MODE" in
   path|get|delete)  _expected_argc=2 ;;
-  create|init|repair|set) _expected_argc=3 ;;
+  create|init|repair|set|seed-owner) _expected_argc=3 ;;
   append)           _expected_argc=4 ;;
   *)                _expected_argc=$# ;;
 esac
@@ -577,7 +610,7 @@ fi
 HANDOFF_FILE="$(_resolve_handoff_path "$PR_NUMBER" "$OWNER_REPO")" || exit 2
 
 case "$MODE" in
-  create|init|repair|set|append|delete) MODE_IS_WRITE=1 ;;
+  create|init|repair|set|append|delete|seed-owner) MODE_IS_WRITE=1 ;;
   *)                             MODE_IS_WRITE=0 ;;
 esac
 
@@ -759,18 +792,60 @@ _atomic_write() {
   # the exact lost-append failure in issue #930. Exit 6 ("unchanged, retry")
   # instead: a loud, retryable error beats a silent overwrite. This sits as
   # late as possible, immediately before the commit.
-  if ! state_lock_assert_held; then
-    rm -f "$tmp" 2>/dev/null || true
+  # The check and the mv run together under the commit gate inside
+  # state_lock_commit, so a stale break cannot land between them (#2460).
+  local _commit_rc=0 _commit_err=""
+  _commit_err="$(state_lock_commit "$tmp" "$HANDOFF_FILE" 2>&1)" || _commit_rc=$?
+  # exit 6 = unchanged, retry (lock lost or gate busy); anything else is a
+  # real write failure whose diagnostic must reach the operator.
+  (( _commit_rc == 0 || _commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$_commit_err" ]] || printf '%s\n' "$_commit_err" >&2
+  if (( _commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
     state_lock_release
     _rmw_retry_or_fail
   fi
-  if ! mv "$tmp" "$HANDOFF_FILE"; then
-    rm -f "$tmp" 2>/dev/null || true
+  if (( _commit_rc != 0 )); then
     echo "handoff-state.sh: mv to $HANDOFF_FILE failed" >&2
     state_lock_release
     exit 5
   fi
 }
+
+# ---------------------------------------------------------------------------
+# --seed-owner: attribute an EXISTING scoped record to its explicit scope
+# (issue #2471). Every check and the write run under the lock; a stolen lock
+# re-executes the whole call via _atomic_write -> _rmw_retry_or_fail, which
+# re-reads and re-checks. Never creates; never touches a record whose PR/HEAD
+# differ; leaves a matching owner byte-identical.
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "seed-owner" ]]; then
+  if [[ ! -f "$HANDOFF_FILE" ]]; then
+    echo "handoff-state.sh: --seed-owner on PR #${PR_NUMBER}: no handoff at $HANDOFF_FILE; nothing written" >&2
+    state_lock_release; exit 3
+  fi
+  if ! jq -se --argjson pr "$PR_NUMBER" --arg head "$SEED_HEAD" \
+    'length == 1 and (.[0] | type == "object" and (.pr_number | type == "number") and .pr_number == $pr and .head_sha == $head)' \
+    "$HANDOFF_FILE" >/dev/null 2>&1; then
+    echo "handoff-state.sh: --seed-owner refused: $HANDOFF_FILE is not a single object for PR #${PR_NUMBER} at HEAD ${SEED_HEAD}; nothing written" >&2
+    state_lock_release; exit 4
+  fi
+  _owner_kind="$(jq -r '.owner_repo | if . == null or . == "" then "absent" elif type == "string" then "string" else "other" end' "$HANDOFF_FILE" 2>/dev/null)" || _owner_kind="other"
+  if [[ "$_owner_kind" == "string" ]]; then
+    if jq -e --arg o "$OWNER_REPO" '.owner_repo | ascii_downcase == $o' "$HANDOFF_FILE" >/dev/null 2>&1; then
+      state_lock_release; exit 0
+    fi
+    echo "handoff-state.sh: --seed-owner refused: $HANDOFF_FILE already names a different owner_repo; nothing written" >&2
+    state_lock_release; exit 4
+  elif [[ "$_owner_kind" != "absent" ]]; then
+    echo "handoff-state.sh: --seed-owner refused: owner_repo in $HANDOFF_FILE is not a string; nothing written" >&2
+    state_lock_release; exit 4
+  fi
+  if ! UPDATED="$(jq --arg o "$OWNER_REPO" '.owner_repo = $o' "$HANDOFF_FILE" 2>/dev/null)"; then
+    echo "handoff-state.sh: --seed-owner jq failed; nothing written" >&2
+    state_lock_release; exit 4
+  fi
+  _atomic_write "$UPDATED"
+  state_lock_release; exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # --create: create or overwrite the handoff file with the supplied JSON body.

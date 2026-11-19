@@ -119,7 +119,7 @@ Run the merge through `unreviewed-merge-ledger.sh merge --pr N --repo OWNER/REPO
 
 **For the backfill (Issue #1900):** `unreviewed-merge-ledger.sh list [--repo R] [--pending]` reads it; `backfill --pr N --sha S --status <s> [--repo R]` updates `backfill_status` (starts `pending`) and stamps `backfill_updated_at`; `--detail-json` stores the outcome object. The runner is `backfill-review.sh` — `backfill-review.md`. A bot `CHANGES_REQUESTED` that lands after an override merge is not read by the runner — it reviews the merged diff afresh with the local CLIs.
 
-Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 7 no snapshot, 8 `HOME` unset.
+Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 7 no snapshot, 8 `HOME` unset. Merge-only codes (issue #2432): `merge --gate-json` exits **9** when the gate is a complete, met, normal (non-override) gate for the same PR — nothing merged, no snapshot written; rerun as `merge --sha <head_sha>`. It exits 1 when the GitHub merge request fails (snapshot retained; check native PR state first). `merge --sha` returns the `gh pr merge` status unchanged. Which helper takes which gate shape: [Which merge helper for which gate](../scripts/docs/merge-gate-sequencing.md#which-merge-helper-for-which-gate).
 
 ## Known limits
 

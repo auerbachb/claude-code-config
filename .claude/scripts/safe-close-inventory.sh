@@ -24,6 +24,10 @@
 #   --repo R        owner/name (default: resolved from the checkout's origin).
 #   --worktree P    The thread's own checkout (default: cwd's top level).
 #   --scratchpad D  The thread's scratchpad directory, when it has one.
+#   --session-start T
+#                   The session's first recorded activity, ISO-8601 UTC
+#                   (default: the first `timestamp` in the session's own
+#                   transcript, ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/<session>.jsonl).
 #   --json          Machine-readable output (default).
 #   --text          Short human report: verdict line, then outstanding items.
 #
@@ -41,8 +45,9 @@
 #   categories        {<name>: {status: "ok"|"unknown", reason, items: N}}
 #   items[]           {category, id, summary, consequence, detail, ref}
 #                     consequence: lost | keeps_running | orphaned | harmless | unknown
-#   excluded[]        other threads' / other authors' items: context only,
-#                     never counted
+#   excluded[]        other threads' / other authors' items, and ownerless
+#                     records that predate the session: context only, never counted
+#   session_start     {at, source} or null — the time the predate rule compares against
 #   agent_checks[]    {id, what, how} facts only the harness can see
 #
 # ATTRIBUTION
@@ -51,6 +56,14 @@
 #   session registered. A record naming another session or repo is excluded.
 #   A non-terminal record that names no owner cannot be attributed: it is
 #   reported as ONE `unknown` item per category, never claimed and never ignored.
+#   One narrowing (issue #2448): an ownerless record whose own launch or start
+#   time (launched, launched_at, started_at, spawned_at, created_at) is earlier
+#   than the session's first recorded activity provably predates this thread,
+#   so it is listed under excluded[] with that reason instead. It needs both
+#   times: no record timestamp, an unparsable one, or no session start keeps
+#   the record `unknown` (fail closed). The session start is reported as
+#   `session_start` {at, source}. Old ownerless records that are finished can
+#   be retired for good with ownerless-state-retire.sh.
 #
 # Bash 3.2 compatible (macOS); passes under bash 5.
 set -uo pipefail
@@ -68,13 +81,14 @@ SESSION_ID="${CLAUDE_SESSION_ID:-}"
 REPO_OPT=""
 WT_OPT=""
 SCRATCH=""
+SESSION_START_OPT=""
 FORMAT=json
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --json) FORMAT=json; shift ;;
     --text) FORMAT=text; shift ;;
-    --session|--repo|--worktree|--scratchpad)
+    --session|--repo|--worktree|--scratchpad|--session-start)
       [[ $# -ge 2 ]] || die_usage "$1 requires a value"
       # An empty --session means "no session id" (the caller's variable was unset): the
       # session-scoped categories then report unknown. Every other flag needs a value.
@@ -84,6 +98,7 @@ while [[ $# -gt 0 ]]; do
         --repo) REPO_OPT="$2" ;;
         --worktree) WT_OPT="$2" ;;
         --scratchpad) SCRATCH="$2" ;;
+        --session-start) SESSION_START_OPT="$2" ;;
       esac
       shift 2 ;;
     *) die_usage "unknown argument: $1" ;;
@@ -164,6 +179,33 @@ ss_get() {
   printf '%s' "$out"
 }
 
+# ---- session start: the thread's first recorded activity (issue #2448) -----------------
+# jq: an ISO-8601 UTC string -> epoch seconds, or null. Fractional seconds are dropped;
+# only a `Z` or `+00:00` zone parses, so any other offset fails closed as "no time".
+JQ_EPOCH='def ep: if type == "string" then (try (sub("\\.[0-9]+"; "") | sub("\\+00:?00$"; "Z") | fromdateiso8601) catch null) else null end;'
+iso_epoch() { jq -rn --arg t "$1" "$JQ_EPOCH"' $t | ep // empty' 2>/dev/null; }
+SESSION_START_AT=""
+SESSION_START_EPOCH=""
+SESSION_START_SRC=""
+if [[ -n "$SESSION_START_OPT" ]]; then
+  SESSION_START_EPOCH="$(iso_epoch "$SESSION_START_OPT")"
+  [[ -n "$SESSION_START_EPOCH" ]] || die_usage "--session-start must be an ISO-8601 UTC time, got: $SESSION_START_OPT"
+  SESSION_START_AT="$SESSION_START_OPT"; SESSION_START_SRC="--session-start"
+elif [[ -n "$SESSION_ID" && "$SESSION_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  # Every transcript of this session id; the earliest first timestamp wins, so the
+  # start can only err early (fewer exclusions), never late.
+  for tf in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$SESSION_ID".jsonl; do
+    [[ -f "$tf" && -r "$tf" ]] || continue
+    ts="$(head -n 200 "$tf" 2>/dev/null | jq -rRn 'first(inputs | fromjson? | objects | .timestamp? | strings)' 2>/dev/null)" || ts=""
+    [[ -n "$ts" ]] || continue
+    ep="$(iso_epoch "$ts")"
+    [[ -n "$ep" ]] || continue
+    if [[ -z "$SESSION_START_EPOCH" ]] || (( ep < SESSION_START_EPOCH )); then
+      SESSION_START_EPOCH="$ep"; SESSION_START_AT="$ts"; SESSION_START_SRC="transcript:$tf"
+    fi
+  done
+fi
+
 # jq: normalise a collection (object, array, null) into records carrying _key.
 JQ_RECS='def recs: if . == null then [] elif type == "object" then (to_entries | map(if (.value|type)=="object" then .value + {_key:.key} else {_key:.key, _value:.value} end)) elif type == "array" then (to_entries | map(if (.value|type)=="object" then .value + {_key:(.key|tostring)} else {_key:(.key|tostring), _value:.value} end)) else error("unexpected shape") end;'
 # jq: classify one record as this | other | unknown | terminal.
@@ -219,7 +261,9 @@ scan_records() { # category jq-path label consequence-for-this
     cat_unknown "$cat" "session-state $path unreadable"
     return
   fi
-  if ! recs="$(jq -c "$JQ_RECS $JQ_ATTR"' recs | map(. + {_cls: attr($s; $h; $r; $ids)})' \
+  if ! recs="$(jq -c "$JQ_RECS $JQ_ATTR $JQ_EPOCH"' recs | map(. + {_cls: attr($s; $h; $r; $ids),
+        _ts: ([.launched, .launched_at, .started_at, .spawned_at, .created_at] | map(select(type == "string" and length > 0)) | first // null)}
+        | . + {_ts_epoch: (._ts | ep)})' \
       --arg s "$SESSION_ID" --arg h "$HOLDER_DEFAULT" --arg r "$REPO" --argjson ids "$REG_IDS" <<<"$raw" 2>/dev/null)"; then
     cat_unknown "$cat" "session-state $path has an unexpected shape"
     return
@@ -236,7 +280,15 @@ scan_records() { # category jq-path label consequence-for-this
           "$(if [[ "$c" == lost ]]; then echo "queued but not started; closing drops it"; elif [[ "$c" == orphaned ]]; then echo "pipeline started; nothing will carry it forward"; else echo "recorded as live; closing leaves it unattended"; fi)" \
           "$(jq -c --arg p "$path" '{kind:"state_record",path:$p,key:._key,issue:(.issue // null),pr:(.pr // null)}' <<<"$row")" ;;
       other) add_excluded "$cat" "$path:$id" "$label $id" "owned by another thread or repo" ;;
-      unknown) n_unk=$((n_unk + 1)); unk_ids="$unk_ids $id" ;;
+      unknown)
+        # Provably older than this thread (issue #2448): context, not this thread's work.
+        rep="$(jq -r '._ts_epoch // empty' <<<"$row")"
+        if [[ -n "$SESSION_START_EPOCH" && "$rep" =~ ^[0-9]+$ ]] && (( rep < SESSION_START_EPOCH )); then
+          add_excluded "$cat" "$path:$id" "$label $id" \
+            "names no owner and was recorded at $(jq -r '._ts' <<<"$row"), before this session's first activity ($SESSION_START_AT)"
+        else
+          n_unk=$((n_unk + 1)); unk_ids="$unk_ids $id"
+        fi ;;
     esac
   done < <(jq -c '.[]' <<<"$recs")
   if (( n_unk > 0 )); then
@@ -352,9 +404,14 @@ add_pr() { case " $PR_NUMS " in *" $1 "*) ;; *) PR_NUMS="$PR_NUMS $1" ;; esac; }
 default_ref() { # <wt> -> remote default branch ref, or empty
   local r
   r="$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)" && { printf '%s' "${r#refs/remotes/}"; return; }
+  # Without origin/HEAD the default is only knowable when exactly one of main/master exists;
+  # with both present it is ambiguous, so resolve nothing and let the branch get its PR checks.
+  local found="" n=0
   for r in origin/main origin/master; do
-    git -C "$1" rev-parse --verify --quiet "$r" >/dev/null 2>&1 && { printf '%s' "$r"; return; }
+    git -C "$1" rev-parse --verify --quiet "$r" >/dev/null 2>&1 && { found="$r"; n=$((n + 1)); }
   done
+  (( n == 1 )) && printf '%s' "$found"
+  return 0
 }
 
 if [[ -z "$WT" ]]; then
@@ -375,7 +432,12 @@ else
     [[ -n "$st_out" ]] && ndirty="$(printf '%s\n' "$st_out" | grep -c .)"
     dref="$(default_ref "$w")"
     on_default=0
-    case "$br_out" in main|master) on_default=1 ;; esac
+    # Exempt only the default branch resolved from origin/HEAD (fallback origin/main, origin/master),
+    # and only when that ref resolves to a commit: a dangling or absent default fails closed to unknown.
+    if [[ -n "$br_out" && -n "$dref" && "$br_out" == "${dref#origin/}" ]] \
+       && git -C "$w" rev-parse --verify --quiet "$dref^{commit}" >/dev/null 2>&1; then
+      on_default=1
+    fi
     wref="$(jq -n --arg p "$w" --arg b "$br_out" '{kind:"worktree",path:$p,branch:$b}')"
     if (( ndirty > 0 )); then
       add_item worktrees "dirty:$w" "$ndirty uncommitted path(s) in $w${br_out:+ ($br_out)}" lost \
@@ -628,8 +690,10 @@ VERDICT=safe
 
 RESULT="$(jq -n --argjson items "$ITEMS" --argjson excl "$EXCLUDED" --argjson cats "$CATS" --argjson checks "$AGENT_CHECKS" \
   --arg verdict "$VERDICT" --argjson out "$OUTSTANDING" --arg session "$SESSION_ID" --arg repo "$REPO" --arg wt "$WT" \
+  --arg sstart "$SESSION_START_AT" --arg ssrc "$SESSION_START_SRC" \
   '{schema_version:1, verdict:$verdict, outstanding:$out, needs_agent_checks:($checks|length>0),
     session:(if $session=="" then null else $session end), repo:(if $repo=="" then null else $repo end),
+    session_start:(if $sstart=="" then null else {at:$sstart, source:$ssrc} end),
     worktree:(if $wt=="" then null else $wt end),
     categories:$cats, items:$items, excluded:$excl, agent_checks:$checks}')" || { echo "safe-close-inventory.sh: could not assemble the result" >&2; exit 3; }
 

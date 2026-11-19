@@ -76,7 +76,7 @@ With `--check` or `--json`, stop here and add at most one closing line naming wh
 
 ## Notes
 
-- Ownership is shown by the session id on a record, the thread's own worktree or branch, or a runtime id this session registered. A non-terminal record that names no owner is reported as one `unknown` item, never claimed and never ignored.
+- Ownership is shown by the session id on a record, the thread's own worktree or branch, or a runtime id this session registered. A non-terminal record that names no owner is reported as one `unknown` item, never claimed and never ignored — unless its own launch or start time is earlier than this session's first recorded activity (`session_start` in the JSON, from the session transcript), in which case it is listed under `excluded[]` with that reason. No timestamp or no session start keeps it `unknown`. When old ownerless records keep a thread at "not yet", say so and point at `ownerless-state-retire.sh --repo <repo>` (dry run first, `--apply` to retire the finished ones); never run its `--apply` from `/safe-close` without the user asking.
 - The verdict is only as good as what was recorded: a task or agent that was never registered is invisible to the script, which is why Step 2 exists.
 
 ## Step 4: Plan the stop (bare `/safe-close` only)

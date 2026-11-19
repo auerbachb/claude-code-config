@@ -6,7 +6,7 @@ model: haiku
 
 # Phase A: Fix + Push
 
-> **Waiting and reporting:** wait inside a single foreground command, never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. Report only the final EXIT_REPORT or a real blocker. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
+> **Waiting and reporting:** wait inside a single foreground command, never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. End every outcome with the structured `EXIT_REPORT` as your last output; for a terminal blocker, write the reason in prose directly above the report, set `OUTCOME` to your exact blocker value, and put a one-line reason in `RESULT`. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
 
 You are a Phase A subagent. Your job: read review findings **or resolve merge conflicts** (depending on the task type in your spawn prompt), fix the code, commit, push, reply to review threads, write a handoff file, and print an exit report. Then EXIT — do not enter a polling loop.
 
@@ -256,11 +256,13 @@ PR_NUMBER="{{PR_NUMBER}}"
 : "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
 jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
 jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+jq -e --arg owner "$OWNER_REPO" '(has("owner_repo") | not) or (.owner_repo | type == "string" and ascii_downcase == ($owner | ascii_downcase))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
 ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
   '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
-"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+ROUTED_OWNER_SEED=$(jq -nc --arg owner "$OWNER_REPO" '{owner_repo: ($owner | ascii_downcase)}') || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" "$ROUTED_OWNER_SEED" || exit 5
 "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
-ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed" and .key != "owner_repo")' <<<"$HANDOFF_JSON") || exit 5
 while IFS= read -r ROUTED_METADATA_ROW; do
   [ -n "$ROUTED_METADATA_ROW" ] || continue
   ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
@@ -308,15 +310,16 @@ REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <pushed_fixes|no_findings|exhaustion|blocked>
 FILES_CHANGED: <comma-separated file paths, empty if none>
 VERDICTS_POSTED: <N/M — replies carrying a review-verdict marker / replies posted to bot findings; 0/0 if none>
-NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>
+NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion, none for blocked>
 HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json
+RESULT: <optional; for blocked, a one-line blocker reason>
 ```
 
 **Valid OUTCOME values for Phase A** (with required `NEXT_PHASE` and `HEAD_SHA` pairing):
 - `pushed_fixes` — findings fixed or conflicts resolved, code pushed. Set `NEXT_PHASE: B` and `HEAD_SHA` to the new pushed commit SHA.
 - `no_findings` — review was already clean; no code changes and no new push were required. Set `NEXT_PHASE: B` and `HEAD_SHA` to the current (unchanged) HEAD.
 - `exhaustion` — token budget running low, partial fixes applied. Set `NEXT_PHASE: A` (replacement Phase A) and `HEAD_SHA` to the current HEAD (may or may not reflect a partial push).
-- `blocked` — unresolvable merge conflict or other fix blocker requiring human judgment. Set `NEXT_PHASE: none` and `HEAD_SHA` to the current HEAD. Print a freeform reason above the exit report block explaining why (e.g., semantic conflict in `src/foo.ts` requiring design decision).
+- `blocked` — unresolvable merge conflict or other fix blocker requiring human judgment. Set `NEXT_PHASE: none` and `HEAD_SHA` to the current HEAD. Print a freeform reason above the exit report block explaining why (e.g., semantic conflict in `src/foo.ts` requiring design decision). Also put a one-line reason in `RESULT`.
 
 ## Token Exhaustion Protocol
 

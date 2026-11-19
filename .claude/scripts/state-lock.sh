@@ -324,38 +324,142 @@ _state_lock_destroy() {
   fi
 }
 
+# COMMIT GATE (issue #2460)
+#   Judging a lock stale and renaming it away are two steps, and the commit's
+#   ownership check and its `mv` are two more. A cleaner could pass the stale
+#   check, pause, and rename a SUCCESSOR's fresh lock; a writer could pass its
+#   ownership check, be broken and replaced, then land its `mv` after the
+#   successor's. Both are closed by one tiny mutual-exclusion directory,
+#   `<lock>.gate`, taken (mkdir, atomic) around exactly those pairs:
+#     - the breaker re-judges staleness and renames UNDER the gate, so what it
+#       judged is what it moves;
+#     - the committer asserts ownership and `mv`s UNDER the gate, so a breaker
+#       cannot swap the lock in between.
+#     - release checks its token and removes the lock UNDER the gate, so a lock
+#       cannot be released and re-taken between a breaker's re-check and its
+#       rename (the lock directory only ever vanishes under the gate).
+#   A breaker that finds the gate taken abandons the break (the committer is
+#   live and mid-commit). A committer that finds it taken waits briefly, then
+#   refuses with exit 6 (unchanged, retry) -- the safe direction.
+#
+#   The gate records its holder's pid in `<gate>/pid`. A gate is abandoned --
+#   and removable -- ONLY when that pid is dead, or when no pid was ever written
+#   and the gate is older than _STATE_LOCK_GATE_STALE seconds (holder killed
+#   between mkdir and the pid write). Age alone never frees a gate whose holder
+#   is alive: a commit stalled mid-gate (SIGSTOP, a suspended laptop) must not
+#   have its gate stolen, or the lock behind it could be broken and the resumed
+#   commit would overwrite newer state. A live-but-stalled holder therefore
+#   blocks commits and breaks until it resumes; everyone else fails closed
+#   (exit 6 / acquire timeout), never open.
+_STATE_LOCK_GATE_STALE=30
+
+# 0 when the gate at $1 is abandoned (see COMMIT GATE above).
+_state_lock_gate_abandoned() {
+  local gate="$1" pid mtime now
+  pid="$(cat "$gate/pid" 2>/dev/null)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    ! kill -0 "$pid" 2>/dev/null
+    return
+  fi
+  mtime="$(_state_lock_file_mtime "$gate")" || return 1
+  now="$(_state_lock_now)"
+  (( now - mtime >= _STATE_LOCK_GATE_STALE ))
+}
+
+# Remove an abandoned gate. Rename-aside first, then confirm what was moved is
+# still abandoned; a gate another process re-took in between is put back.
+# 0 when the gate is gone, 1 when it is still (or again) in place.
+_state_lock_gate_reap() {
+  local gate="$1" aside="${1}.dead.$$-${RANDOM}"
+  if ! mv "$gate" "$aside" 2>/dev/null; then
+    [[ -d "$gate" ]] && return 1
+    return 0
+  fi
+  if _state_lock_gate_abandoned "$aside"; then
+    rm -rf "$aside" 2>/dev/null || true
+    return 0
+  fi
+  mv "$aside" "$gate" 2>/dev/null || rm -rf "$aside" 2>/dev/null || true
+  return 1
+}
+
+# _state_lock_gate_take <lock-dir> <retries>: 0 when taken (0.1s per retry).
+_state_lock_gate_take() {
+  local gate="${1}.gate" tries="${2:-0}"
+  while :; do
+    if mkdir "$gate" 2>/dev/null; then
+      printf '%s\n' "$$" > "$gate/pid" 2>/dev/null || true
+      return 0
+    fi
+    # Already ours: an EXIT trap releasing while this process was mid-commit.
+    [[ "$(cat "$gate/pid" 2>/dev/null)" == "$$" ]] && return 0
+    if [[ -d "$gate" ]] && _state_lock_gate_abandoned "$gate" \
+       && _state_lock_gate_reap "$gate"; then
+      continue
+    fi
+    (( tries-- > 0 )) || return 1
+    sleep 0.1
+  done
+}
+
+# Drop a gate this process took. Never removes one recording another pid.
+_state_lock_gate_drop() {
+  local gate="${1}.gate" pid
+  pid="$(cat "$gate/pid" 2>/dev/null)"
+  [[ -z "$pid" || "$pid" == "$$" ]] || return 0
+  rm -f "$gate/pid" 2>/dev/null || true
+  rmdir "$gate" 2>/dev/null || true
+}
+
 # Break a stale lock, guarded against the double-steal described above.
 # Returns 0 when the lock was removed (or vanished on its own), 1 when the
 # break was abandoned because the lock changed hands or stopped being stale.
 _state_lock_break() {
-  local lock_dir="$1" stale_age="$2" before after aside
+  local lock_dir="$1" stale_age="$2" before after aside before_token
   before="$(cat "$lock_dir/owner" 2>/dev/null || printf '__no_owner__')"
   sleep 0.2
   [[ -d "$lock_dir" ]] || return 0
   after="$(cat "$lock_dir/owner" 2>/dev/null || printf '__no_owner__')"
-  # Different bytes ⇒ a live holder rewrote it or the lock was re-acquired by
+  # Different bytes => a live holder rewrote it or the lock was re-acquired by
   # someone else in the interim. Never break in that case. Each acquisition
   # stamps a fresh `token=`, so a lock that changed hands never compares equal
   # even if the same pid re-took it.
   [[ "$before" == "$after" ]] || return 1
-  # Re-sampling identical "__no_owner__" bytes proves nothing on its own — an
+  # Re-sampling identical "__no_owner__" bytes proves nothing on its own -- an
   # acquire and a release both pass through that state, and under CPU
   # contention a holder can sit in it longer than the resample window. The
   # decision is left to _state_lock_is_stale, which for an owner-less lock
-  # falls back to the DIRECTORY's mtime: fresh ⇒ leave it alone (a live holder
-  # mid-acquire), older than STALE_AGE ⇒ genuinely orphaned and breakable, so
+  # falls back to the DIRECTORY's mtime: fresh => leave it alone (a live holder
+  # mid-acquire), older than STALE_AGE => genuinely orphaned and breakable, so
   # a holder that died between mkdir and publishing `owner` still recovers
   # rather than wedging the fleet forever (#930).
   _state_lock_is_stale "$lock_dir" "$stale_age" || return 1
+  before_token="$(_state_lock_meta "$lock_dir/owner" token)"
+  # Judge-and-move must be one step (#2460): take the gate, then confirm the
+  # lock is STILL the instance judged stale before renaming it. Without this a
+  # cleaner that paused after the check above could rename a successor's fresh
+  # lock. A taken gate means a commit is in flight -- abandon, never wait.
+  _state_lock_gate_take "$lock_dir" 0 || return 1
+  if [[ ! -d "$lock_dir" ]]; then
+    _state_lock_gate_drop "$lock_dir"
+    return 0
+  fi
+  if [[ "$(_state_lock_meta "$lock_dir/owner" token)" != "$before_token" ]] \
+     || ! _state_lock_is_stale "$lock_dir" "$stale_age"; then
+    _state_lock_gate_drop "$lock_dir"
+    return 1
+  fi
   aside="${lock_dir}.stale.$$-${RANDOM}"
   # Rename-aside is atomic: at most one racer can move this exact directory.
   if mv "$lock_dir" "$aside" 2>/dev/null; then
+    _state_lock_gate_drop "$lock_dir"
     local dead_pid
     dead_pid="$(_state_lock_meta "$aside/owner" pid)"
     rm -rf "$aside" 2>/dev/null || true
     echo "state-lock: broke stale lock $lock_dir (previous holder pid ${dead_pid:-unknown})" >&2
     return 0
   fi
+  _state_lock_gate_drop "$lock_dir"
   return 1
 }
 
@@ -465,8 +569,12 @@ state_lock_acquire() {
     STATE_LOCK_WAITED=1
 
     if [[ -d "$lock_dir" ]] && _state_lock_is_stale "$lock_dir" "$stale_age"; then
-      _state_lock_break "$lock_dir" "$stale_age" || true
-      continue
+      # A refused break (commit gate busy, lock changed hands) falls through to
+      # the timeout check below instead of retrying unconditionally — otherwise
+      # a persistently busy gate would spin past the caller's timeout (#2460).
+      if _state_lock_break "$lock_dir" "$stale_age"; then
+        continue
+      fi
     fi
 
     if (( SECONDS - started_at >= timeout )); then
@@ -494,6 +602,14 @@ state_lock_release() {
   unset CLAUDE_STATE_LOCK_HELD
   unset CLAUDE_STATE_LOCK_TOKEN
   [[ -d "$lock_dir" ]] || return 0
+  # Token check and removal run under the commit gate (#2460): a breaker that
+  # re-checked this lock's token under the gate must not see it released and
+  # re-taken before its rename. If the gate stays busy (a live holder stalled
+  # mid-commit), release without it rather than leak the lock -- the residual
+  # is a release racing a break of this same lock, which our token check
+  # below still confines to a lock we own.
+  local gated=0
+  _state_lock_gate_take "$lock_dir" 50 && gated=1
   owner_token="$(_state_lock_meta "$lock_dir/owner" token)"
   # Delete ONLY on a positive ownership match, and match on the TOKEN rather
   # than the pid: a pid match cannot distinguish our acquisition from a later
@@ -505,9 +621,11 @@ state_lock_release() {
   # via the staleness rules; one we wrongly delete lets two writers into the
   # critical section at once.
   if [[ -z "$token" || "$owner_token" != "$token" ]]; then
+    (( gated )) && _state_lock_gate_drop "$lock_dir"
     return 0
   fi
   _state_lock_destroy "$lock_dir"
+  (( gated )) && _state_lock_gate_drop "$lock_dir"
   return 0
 }
 
@@ -534,36 +652,37 @@ state_lock_release() {
 # that each writer has to remember independently is one that some writer will
 # eventually skip — as three of them already had (CodeAnt, PR #937).
 #
-# RESIDUAL WINDOW (deliberate, documented rather than papered over)
-#   The assertion and the `mv` are two operations, so in principle a breaker
-#   could steal the lock between them and this function would still commit.
-#   POSIX shell has no compare-and-swap that would close that gap, so the
-#   window is narrowed instead of eliminated, on two fronts:
-#     • Nothing forks between the check and the `mv` — the gap is microseconds,
-#       against the entire read-modify-write it used to span.
-#     • Breaking a live lock now requires POSITIVE evidence: a dead holder pid,
-#       or an age past STALE_AGE (120s default). A holder that reaches this
-#       function within its first two minutes is not breakable at all, so the
-#       residual applies only to a holder already wedged past that ceiling —
-#       the case the header's FAILURE MODES section accepts on purpose.
-#   Do not read this as "the race is fixed". It is bounded and evidence-gated;
-#   a caller that needs more must not share one state file across writers.
+# CLOSED WINDOW (issue #2460)
+#   The assertion and the `mv` used to be two unguarded operations. They now
+#   run under the commit gate (COMMIT GATE above), which a breaker must also
+#   hold to rename a lock away, so a stale break cannot land between them. A
+#   wedged holder that loses the race is refused (exit 6), never committed.
 state_lock_commit() {
-  local tmp="$1" dest="$2" mv_err
+  local tmp="$1" dest="$2" mv_err gate_dir="$STATE_LOCK_HELD_DIR"
+  # Ownership check and `mv` run under the commit gate so a breaker cannot
+  # replace the lock between them (#2460); see COMMIT GATE above.
+  if [[ -n "$gate_dir" ]] && ! _state_lock_gate_take "$gate_dir" 50; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "state-lock: commit gate busy; refusing to commit $dest (unchanged, retry)" >&2
+    return "$STATE_LOCK_EXIT_TIMEOUT"
+  fi
   if ! state_lock_assert_held; then
+    [[ -n "$gate_dir" ]] && _state_lock_gate_drop "$gate_dir"
     rm -f "$tmp" 2>/dev/null || true
     echo "state-lock: lock was broken by another writer mid-update; refusing to commit $dest (unchanged, retry)" >&2
     return "$STATE_LOCK_EXIT_TIMEOUT"
   fi
-  # Capture mv's own diagnostic. A commit fails for distinct reasons — a
-  # read-only filesystem, ENOSPC, a permission change, a cross-device temp —
+  # Capture mv's own diagnostic. A commit fails for distinct reasons -- a
+  # read-only filesystem, ENOSPC, a permission change, a cross-device temp --
   # and each needs a different response, so swallowing stderr leaves the
   # operator with one indistinguishable message (CodeRabbit, PR #937).
   if ! mv_err="$(mv "$tmp" "$dest" 2>&1)"; then
+    [[ -n "$gate_dir" ]] && _state_lock_gate_drop "$gate_dir"
     rm -f "$tmp" 2>/dev/null || true
     echo "state-lock: could not write $dest${mv_err:+ — $mv_err}" >&2
     return 5
   fi
+  [[ -n "$gate_dir" ]] && _state_lock_gate_drop "$gate_dir"
   return 0
 }
 

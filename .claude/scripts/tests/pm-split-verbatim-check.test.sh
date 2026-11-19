@@ -331,6 +331,55 @@ class PMReadTrace(unittest.TestCase):
         self.assertIn('if the first whitespace-delimited token of the remaining `$ARGUMENTS` is exactly `resume`', skill)
         self.assertNotIn('contains "resume"', skill)
 
+    def test_refresh_config_matches_only_the_whole_remainder(self):
+        skill = (ROOT / '.claude/skills/pm/SKILL.md').read_text()
+        self.assertIn('If what is left is exactly `refresh config` (the whole remainder)', skill)
+        self.assertIn('bare run-mode tokens (`speed`, `cheap`, `default`', skill)
+        self.assertIn('`/pm speed refresh config` is an explicit refresh run in `speed` mode', skill)
+        self.assertIn('treat internal whitespace runs as one space, and ignore letter case', skill)
+        self.assertNotIn('contains the phrase `refresh config`', skill)
+        self.assertIn('`/pm refresh config`: explicit refresh, then cold-start ranking.', skill)
+        self.assertIn('`/pm refresh config loading in the dashboard`: cold-start ranking against the full goal, with no explicit refresh.', skill)
+        self.assertIn('`/pm day refresh config`: `day` is stripped first', skill)
+        self.assertIn('explicit refresh on the cold-start route in day mode', skill)
+
+    def test_refresh_config_inputs_select_the_documented_routes(self):
+        # LIMITATION: /pm argument parsing is prose in SKILL.md, not an executable
+        # parser, so no input can be fed to the real skill. This is a reference
+        # model of the documented parse order (the wording is pinned by
+        # test_refresh_config_matches_only_the_whole_remainder); the module paths
+        # it selects come from the real dispatch-module.sh.
+        dispatcher = ROOT / '.claude/skills/pm/scripts/dispatch-module.sh'
+
+        def module(op, phase):
+            out = subprocess.run(['bash', str(dispatcher), op, phase], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            return out.split('/modules/', 1)[1]
+
+        def route(args):
+            rest = ' '.join(args.split())
+            mode = 'cold'
+            refresh = rest.lower() == 'refresh config'
+            if refresh:
+                rest = ''
+            if rest.split(' ')[0] == 'resume':
+                mode = 'resume'
+            routes = []
+            if refresh:
+                routes.append(module('shared', 'config'))
+            if mode == 'cold':
+                routes += [module('rank', p) for p in ('load', 'fetch', 'score', 'present')]
+            return refresh, routes
+
+        refresh, routes = route('refresh config')
+        self.assertTrue(refresh)
+        self.assertEqual(routes[0], 'shared/config.md')
+        self.assertEqual(routes[1:], ['rank/load.md', 'rank/fetch.md', 'rank/score.md', 'rank/present.md'])
+        refresh, routes = route('refresh config loading in the dashboard')
+        self.assertFalse(refresh)
+        self.assertNotIn('shared/config.md', routes)
+        self.assertEqual(routes, ['rank/load.md', 'rank/fetch.md', 'rank/score.md', 'rank/present.md'])
+
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
 PY

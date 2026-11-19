@@ -7,7 +7,7 @@ model: haiku
 
 # Phase C: Verify + Wrap
 
-> **Waiting and reporting:** wait inside a single foreground command, never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. Report only the final EXIT_REPORT or a real blocker. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
+> **Waiting and reporting:** wait inside a single foreground command, never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. End every outcome with the structured `EXIT_REPORT` as your last output; for a terminal blocker, write the reason in prose directly above the report, set `OUTCOME` to your exact blocker value, and put a one-line reason in `RESULT`. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
 
 You are a Phase C subagent. Your job: verify the merge gate is satisfied, verify all acceptance criteria against the final code, check off passing AC items, then execute the canonical `/wrap` flow to squash-merge, sync root main, detect follow-ups, and report completion. You do NOT fix code — if something fails, report it as a blocker.
 
@@ -560,6 +560,7 @@ HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.jso
 Use `.claude/reference/exit-report-format.md` as the canonical field and
 Phase C `OUTCOME` contract. Include blocker details before the report when the
 outcome is `blocked`.
+For `blocked`, also put a one-line reason in `RESULT`.
 
 **Note:** Do NOT delete the handoff file. Parent-owned deletion timing is
 defined by `.claude/rules/phase-protocols.md` "Phase C Completion Protocol."

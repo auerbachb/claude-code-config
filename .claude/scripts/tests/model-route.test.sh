@@ -526,3 +526,35 @@ echo 'Actual Phase A refusal: local commit retained, push suppressed, recovery p
 HANDOFF_JSON='{"phase_completed":"","head_sha":"unpushed-fixture","outcome":"blocked","notes":"submission refused"}' bash "$ROUTE_TMP/handoff-write.sh"
 "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.phase_completed == "" and .outcome == "blocked" and .head_sha == "unpushed-fixture" and .model_routing["pr-123-new-findings"].A.decision.action == "start"' >/dev/null
 echo 'Blocked recovery handoff: unpushed SHA/routing preserved, completion marker cleared.'
+
+# Fresh routed write embeds the repo identity (issue #2471); a later guarded
+# write, Phase C's real completion publish, then succeeds on that same record.
+OWNER_FRESH=Fixture/Router
+FRESH_PR=2471
+FRESH_HEAD=$(printf 'c%.0s' $(seq 1 40))
+FRESH_FILE=$("$HANDOFF_STATE_SH" --owner-repo "$OWNER_FRESH" --path "$FRESH_PR")
+[[ ! -e "$FRESH_FILE" ]]
+jq '.task="issue-2471"' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/fresh-request.json"
+fresh_decision=$("$MODEL_ROUTE_SH" --input "$ROUTE_TMP/fresh-request.json")
+FRESH_RECORD=$(jq -cn --slurpfile request "$ROUTE_TMP/fresh-request.json" --argjson decision "$fresh_decision" '{request:$request[0],decision:$decision}')
+FRESH_META=$(jq -cn --arg sha "$FRESH_HEAD" '{schema_version:"1.0",pr_number:2471,head_sha:$sha,reviewer:"cr",phase_completed:"A",findings_fixed:["f1"],threads_replied:["t1"],files_changed:["a.sh"],notes:"fresh"}')
+# A metadata owner naming another repo is refused before anything is written.
+rc=0
+OWNER_REPO=$OWNER_FRESH PR_NUMBER=$FRESH_PR MODEL_ROUTE_RECORD="$FRESH_RECORD" \
+  HANDOFF_JSON=$(jq -c '.owner_repo="evil/other"' <<<"$FRESH_META") bash "$ROUTE_TMP/handoff-write.sh" 2>/dev/null || rc=$?
+[[ "$rc" == 5 && ! -e "$FRESH_FILE" ]]
+OWNER_REPO=$OWNER_FRESH PR_NUMBER=$FRESH_PR MODEL_ROUTE_RECORD="$FRESH_RECORD" HANDOFF_JSON="$FRESH_META" bash "$ROUTE_TMP/handoff-write.sh"
+[[ "$("$HANDOFF_STATE_SH" --owner-repo "$OWNER_FRESH" --get "$FRESH_PR" | jq -r '.owner_repo')" == fixture/router ]]
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_FRESH" --get "$FRESH_PR" | jq -e --arg sha "$FRESH_HEAD" --argjson route "$FRESH_RECORD" \
+  '.pr_number == 2471 and .head_sha == $sha and .phase_completed == "A" and .findings_fixed == ["f1"] and .threads_replied == ["t1"] and .model_routing["issue-2471"].A == $route' >/dev/null
+FRESH_BEFORE=$(jq -S 'del(.issue_completion, .phase_completed)' "$FRESH_FILE")
+extract_skill_bash "$ROOT/.claude/reference/issue-completion.md" issue-completion-publish > "$ROUTE_TMP/publish.sh"
+FRESH_REPORT=$(jq -cn --arg sha "$FRESH_HEAD" '{owner_repo:"fixture/router",pr:2471,head_sha:$sha,error_class:null,outcome:"verified",scope_verified:true}')
+(
+  resolve_script() { printf '%s/.claude/scripts/%s\n' "$ROOT" "$1"; }
+  source "$ROUTE_TMP/publish.sh"
+  PR_NUM=$FRESH_PR OWNER_REPO=$OWNER_FRESH HEAD_SHA=$FRESH_HEAD COMPLETION_JSON=$FRESH_REPORT publish_completed_handoff
+)
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_FRESH" --get "$FRESH_PR" | jq -e '.phase_completed == "C" and .issue_completion.outcome == "verified"' >/dev/null
+[[ "$(jq -S 'del(.issue_completion, .phase_completed)' "$FRESH_FILE")" == "$FRESH_BEFORE" ]]
+echo 'Fresh routed handoff: owner_repo seeded, conflicting owner refused unwritten, Phase C publish succeeds on the same record.'
