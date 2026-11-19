@@ -123,6 +123,10 @@ check_contains "done refusal names --proof" "--proof" "$ERR"
 check_eq "refused done leaves the comment unchanged" "$BEFORE" "$(db ".comments[\"$PRIV#101\"][0].body")"
 check_eq "refused done writes nothing" "" "$(writes)"
 
+run "done" "$ID1" --proof "   "
+check_eq "done with a whitespace-only --proof exits 6" 6 "$RC"
+check_eq "whitespace-only proof writes nothing" "" "$(writes)"
+
 run "done" "$ID1" --by robot
 check_eq "done --by with an unknown value is a usage error" 2 "$RC"
 
@@ -235,6 +239,14 @@ check_contains "where names the bucket" "$BUCKET#" "$OUT"
 check_contains "where says why" "is public" "$OUT"
 run "done" "$PUBID" --proof "railway whoami printed the account"
 check_eq "done works on a bucket task" 0 "$RC"
+
+# The repo turns private: new tasks go to the repo, and where still names the
+# bucket tracker holding the earlier task.
+jq --arg p "$PUB" '.repos[$p] = "private"' "$FAKE_STATE/db.json" > "$TMP/db" && mv "$TMP/db" "$FAKE_STATE/db.json"
+run where
+check_contains "where on a now-private repo names the repo" "$PUB (repo, tracker not created yet)" "$OUT"
+check_contains "where still names the bucket holding earlier tasks" "earlier tasks: $BUCKET#" "$OUT"
+jq --arg p "$PUB" '.repos[$p] = "public"' "$FAKE_STATE/db.json" > "$TMP/db" && mv "$TMP/db" "$FAKE_STATE/db.json"
 
 # ---- --all-repos ----------------------------------------------------------------------
 export FAKE_CURRENT_REPO="$PRIV"

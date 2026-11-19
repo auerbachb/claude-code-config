@@ -15,7 +15,7 @@ owner-task.sh list --all --json          # include done; machine-readable
 owner-task.sh list --json --all-repos    # every repo with a tracker or a pointer entry
 owner-task.sh done ht-xxxxxxxx --proof "grep STRIPE_PUBLISHABLE .env found a value"
 owner-task.sh done ht-xxxxxxxx --by operator
-owner-task.sh where                      # which location holds this repo's tasks, and why
+owner-task.sh where                      # which location holds this repo's tasks, and why (plus any earlier tracker list still reads)
 ```
 
 `--repo OWNER/NAME` overrides the current checkout's repo on every command except `--all-repos`.
@@ -62,7 +62,7 @@ Pointer file: `~/.claude/owner-tasks-pointer.json` (override with `OWNER_TASK_PO
 
 ## Done with proof
 
-- An agent marks a task done only with `--proof "<the check it ran>"`, for example `railway whoami printed the account`. Without `--proof` and without `--by operator`, `done` exits **6** and changes nothing.
+- An agent marks a task done only with `--proof "<the check it ran>"`, for example `railway whoami printed the account`. Without `--proof` (a whitespace-only one counts as none) and without `--by operator`, `done` exits **6** and changes nothing.
 - The operator can always mark one done: `--by operator` needs no proof (the recorded proof then reads `marked done by the operator`).
 - Done is final: a second `done` on the same task reports `already done` and changes nothing.
 

@@ -394,7 +394,7 @@ cmd_add() {
 }
 
 cmd_where() {
-  local repo="" n nums
+  local repo="" n nums host locs
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) [ $# -ge 2 ] || die "$EXIT_USAGE" "--repo needs a value"; repo="$2"; shift 2 ;;
@@ -411,6 +411,16 @@ cmd_where() {
   else
     printf '%s (%s, tracker not created yet) — %s\n' "$LOC_REPO" "$LOC_KIND" "$LOC_WHY"
   fi
+  # Tasks written before the repo changed visibility stay where they were
+  # written; list still reads them, so say where they are.
+  locs="$(read_locations "$repo")" || exit $?
+  for host in $locs; do
+    [ "$host" != "$LOC_REPO" ] || continue
+    valid_repo "$host" || continue
+    nums="$(trackers_in "$host" "$repo")" || exit $?
+    n="$(printf '%s' "$nums" | jq -r '.[0] // empty')"
+    [ -z "$n" ] || printf 'earlier tasks: %s#%s (read by list, not written to)\n' "$host" "$n"
+  done
 }
 
 # all_hosts -> every repo that may hold a tracker, one per line: repos where
@@ -525,6 +535,8 @@ cmd_done() {
   [ -n "$id" ] || die "$EXIT_USAGE" "done: a task id is required"
   [[ $id =~ ^ht-[0-9a-f]{8}$ ]] || die "$EXIT_USAGE" "done: '$id' is not a task id (ht-xxxxxxxx)"
   case "$by" in agent|operator) ;; *) die "$EXIT_USAGE" "--by must be agent or operator" ;; esac
+  # A whitespace-only proof names no check, so it counts as no proof.
+  [[ $proof =~ ^[[:space:]]*$ ]] && proof=""
   if [ -z "$proof" ] && [ "$by" != "operator" ]; then
     die "$EXIT_NO_PROOF" "done $id refused: an agent must pass --proof naming the check it ran (or the operator passes --by operator); nothing changed"
   fi
