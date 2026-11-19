@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for monitor-quiet-tick.sh and its wiring into the /babysit-pr and /pm day Monitors (issue #2459).
 # catalog: tests — Unchanged Monitor tick is silent with counters advanced shell-side; change, cadence widen, streak-9 pause and N-blocker terminal emit on the same tick as before
-# covers: .claude/scripts/monitor-quiet-tick.sh .claude/skills/babysit-pr/SKILL.md .claude/skills/pm/modules/day-arm.md .claude/skills/pm/modules/day-tick.md
+# covers: .claude/scripts/monitor-quiet-tick.sh .claude/scripts/pm-priority.sh .claude/skills/babysit-pr/SKILL.md .claude/skills/pm/modules/day-arm.md .claude/skills/pm/modules/day-tick.md
 #
 # Drives the real script against a real session-state.sh in a throwaway $HOME.
 # Ticks pass --input-digest so no GitHub call is made; the digest projection is
@@ -363,5 +363,90 @@ rm -f "$STATE"
 set +e; "$GATE" --disarm --kind babysit --pr 7 --repo "$REPO" 2>/dev/null; rc=$?; set -e
 [[ $rc -eq 0 ]] || fail "--disarm without state must still exit 0 (rc=$rc)"
 pass "--disarm turns off an armed contract and never blocks the printed tick"
+
+# 16. pm day digest carries the operator priority D2 applies (CodeAnt review on PR #2491): a /desk
+#     edit, and a park that expires purely because the date rolled over, both make the next tick emit.
+#     The real pm-priority.sh runs against a fixture checkout with --today pinned by the wrapper.
+PRIO_REPO="$TMP/prio-repo"; mkdir -p "$PRIO_REPO"
+git -C "$PRIO_REPO" init -q
+git -C "$PRIO_REPO" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init
+git -C "$PRIO_REPO" remote add origin git@github.com:Acme/Widgets.git
+export REAL_PRIO="$ROOT/.claude/scripts/pm-priority.sh" PRIO_REPO PRIO_TODAY=2026-10-07
+cat > "$BIN/pm-priority.sh" <<'EOF'
+#!/usr/bin/env bash
+[[ -z "${PRIO_FAIL:-}" ]] || exit "$PRIO_FAIL"
+exec "$REAL_PRIO" --dir "$PRIO_REPO" --today "$PRIO_TODAY" show --json
+EOF
+chmod +x "$BIN/pm-priority.sh"
+desk() { "$REAL_PRIO" --dir "$PRIO_REPO" --today 2026-10-07 "$@" >/dev/null; }
+echo '[{"number":9,"headRefOid":"a1","updatedAt":"2026-01-01T00:00:00Z"}]' > "$PRS_FIXTURE"
+arm_day() { # record a fresh pm day contract from a tick-start digest taken now
+  seed_day 0 5 3; jq '.active_agents = []' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"
+  local s; s=$(QT --print-digest --kind pm-day --repo "$REPO" 2>/dev/null) || fail "pm day digest read failed"
+  QT --record --kind pm-day --repo "$REPO" --quiet-ok true --tick-start-digest "$s" 2>/dev/null || fail "pm day record failed"
+}
+day_tick() { set +e; QT --kind pm-day --repo "$REPO" --generation d1 2>"$TMP/err"; RC=$?; set -e; }
+arm_day; day_tick
+[[ $RC -eq 10 ]] || fail "pm day with an unchanged priority file should be quiet (rc=$RC: $(cat "$TMP/err"))"
+arm_day; desk top 3; day_tick
+[[ $RC -eq 0 ]] || fail "a /desk order edit must make the next pm day tick emit (rc=$RC)"
+desk park 3 --until 2026-10-08
+arm_day; day_tick
+[[ $RC -eq 10 ]] || fail "pm day with a park still in force should be quiet (rc=$RC: $(cat "$TMP/err"))"
+arm_day; PRIO_TODAY=2026-10-08 day_tick
+[[ $RC -eq 0 ]] || fail "a park expiring overnight, with no file write, must make the next pm day tick emit (rc=$RC)"
+set +e; PRIO_FAIL=4 QT --print-digest --kind pm-day --repo "$REPO" >/dev/null 2>&1; rc=$?; set -e
+[[ $rc -eq 1 ]] || fail "an unreadable priority file must fail the pm day digest read (rc=$rc)"
+rm -f "$BIN/pm-priority.sh"
+pass "pm day digest changes on a /desk edit and on an overnight park expiry; an unreadable priority read fails"
+
+# 17. A disarm that loses its compare-and-set to a concurrent writer retries against the fresh object;
+#     if session state cannot take the write at all, a forced-emit flag makes every tick print.
+cat > "$TMP/cas-race.sh" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == --cas && ! -e "$TMP/raced" ]]; then
+    : > "$TMP/raced"
+    "$REAL_STATE" --repo "$REPO" --set '.prs["7"].babysit.other_writer=1' >/dev/null 2>&1   # lands between read and write
+  fi
+done
+exec "$REAL_STATE" "\$@"
+EOF
+cat > "$TMP/cas-only-fails.sh" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == --cas ]] && exit 7; done
+exec "$REAL_STATE" "\$@"
+EOF
+cat > "$TMP/writes-fail.sh" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == --cas || "\$a" == --set ]] && exit 6; done
+exec "$REAL_STATE" "\$@"
+EOF
+chmod +x "$TMP/cas-race.sh" "$TMP/cas-only-fails.sh" "$TMP/writes-fail.sh"
+FLAG="$HOME/.claude/monitor-quiet/force-emit-babysit-acme_widgets-7"
+seed_babysit 1 5 0 false null 1; rm -f "$TMP/raced"
+set +e; MONITOR_QUIET_STATE_HELPER="$TMP/cas-race.sh" "$GATE" "${BT[@]}" --input-digest D2 2>"$TMP/err"; RC=$?; set -e
+[[ $RC -eq 0 && -e "$TMP/raced" ]] || fail "the racing emit should emit (rc=$RC)"
+[[ "$(bget "$B.babysit.quiet.quiet_ok")" == false && "$(bget "$B.babysit.other_writer")" == 1 ]] ||
+  fail "a disarm that lost its CAS must retry on the fresh object and keep the other write: $(bget "$B.babysit")"
+seed_babysit 1 5 0 false null 1
+set +e; MONITOR_QUIET_STATE_HELPER="$TMP/cas-only-fails.sh" "$GATE" "${BT[@]}" --input-digest D2 2>/dev/null; RC=$?; set -e
+[[ $RC -eq 0 && "$(bget "$B.babysit.quiet.quiet_ok")" == false && ! -e "$FLAG" ]] ||
+  fail "a disarm whose CAS always loses must fall back to a blind quiet_ok=false (rc=$RC)"
+seed_babysit 1 5 0 false null 1
+set +e; MONITOR_QUIET_STATE_HELPER="$TMP/writes-fail.sh" "$GATE" "${BT[@]}" --input-digest D2 2>/dev/null; RC=$?; set -e
+[[ $RC -eq 0 && -e "$FLAG" && "$(bget "$B.babysit.quiet.quiet_ok")" == true ]] ||
+  fail "an undisarmable contract must set the forced-emit flag (rc=$RC)"
+tick "${BT[@]}" --input-digest D1
+[[ $RC -eq 0 ]] && grep -q "forced-emit flag" "$TMP/err" || fail "the forced-emit flag must make an unchanged tick emit (rc=$RC)"
+[[ ! -e "$FLAG" && "$(bget "$B.babysit.quiet.quiet_ok")" == false ]] || fail "a later successful disarm must clear the flag"
+mkdir -p "$(dirname "$FLAG")"; : > "$FLAG"
+seed_babysit 1 5 0 false null 2 "del($P.babysit.quiet)"
+"$GATE" --record --kind babysit --pr 7 --repo "$REPO" --quiet-ok true --input-digest D9 2>/dev/null || fail "record should succeed"
+[[ ! -e "$FLAG" ]] || fail "a fresh --record must clear the forced-emit flag"
+set +e; MONITOR_QUIET_STATE_HELPER="$TMP/writes-fail.sh" "$GATE" --disarm --kind babysit --pr 7 --repo "$REPO" 2>/dev/null; rc=$?; set -e
+[[ $rc -eq 0 && -e "$FLAG" ]] || fail "--disarm that cannot write must still exit 0 and set the flag (rc=$rc)"
+rm -f "$FLAG"
+pass "a lost disarm retries on the fresh object, falls back to a blind write, then to a forced-emit flag"
 
 echo "ALL $PASS PASSED"

@@ -33,6 +33,10 @@
 #   --disarm sets an armed contract to quiet_ok=false, prints nothing and exits 0.
 #   A Monitor loop runs it on any tick it prints without the gate (the babysit
 #   review-deadline tick), so no later tick goes quiet while that one is handled.
+#   Every disarm (this mode and the tick-mode emits) retries a lost compare-and-set
+#   against the fresh watcher object, then writes quiet_ok=false blind, then sets
+#   a forced-emit flag under ~/.claude/monitor-quiet/. While that flag exists every
+#   tick emits; a successful disarm or a fresh --record clears it.
 #
 #   --tick-start-digest (record only) is the --print-digest value the tick took
 #   before classifying. babysit stores it as is. pm day keeps its external part
@@ -81,7 +85,9 @@
 #   pm-day external: .active_agents and the .repos[R] keys the tick does not own
 #     (refill pause, window, leave, any other) with tick bookkeeping stripped, open
 #     PRs by @me (head, updatedAt, merge state, review decision), open issues
-#     (number, updatedAt), credit-budget.sh --check exit, horizon status.
+#     (number, updatedAt), operator priority from pm-priority.sh show --json
+#     (order and the parks in force today, so an overnight park expiry or a /desk
+#     edit changes it), credit-budget.sh --check exit, horizon status.
 #   pm-day own: the tick-owned .repos[R] keys (day, prs, pipelines,
 #     pm_backlog_scan_at, pm_standing_queues, pm_receipts), bookkeeping stripped.
 #
@@ -250,23 +256,39 @@ read_repo_state() {
   state --get-json ".repos[\"$REPO\"]" > "$TMPD/repo.json" 2>/dev/null || return 1
 }
 
+# Operator priority as D2's refill applies it today: the /desk order and the parks still
+# in force. pm-priority.sh filters parks by today's date (America/New_York), so a park that
+# expires overnight leaves this list and changes the digest with no file write. `today`,
+# `updated_at` and the file path are dropped: they move without changing what refill does.
+# An absent helper is "na", as /pm's own read degrades; any failed or malformed read fails.
+priority_projection() {
+  local s="$SCRIPT_DIR/pm-priority.sh"
+  [[ -x "$s" ]] || { printf '%s\n' '"na"'; return 0; }
+  "$s" --repo "$REPO" show --json > "$TMPD/prio.json" 2>/dev/null || return 1
+  jq -cS 'if type == "object" and (.order | type) == "array" and (.parked | type) == "array"
+          then {present, order, parked} else error("malformed pm-priority read") end' "$TMPD/prio.json" 2>/dev/null
+}
+
 pm_day_external_projection() {
   local hz
   tmpdir || return 1
   hz=$(horizon_status) || return 1
+  priority_projection > "$TMPD/prio-proj.json" || return 1
+  [[ -s "$TMPD/prio-proj.json" ]] || return 1
   read_repo_state || return 1
   state --get-json '.active_agents' > "$TMPD/agents.json" 2>/dev/null || return 1
   gh pr list --repo "$REPO" --author "@me" --state open --limit 200 \
     --json number,headRefOid,updatedAt,mergeStateStatus,reviewDecision > "$TMPD/prs.json" 2>/dev/null || return 1
   gh issue list --repo "$REPO" --state open --limit 300 --json number,updatedAt > "$TMPD/issues.json" 2>/dev/null || return 1
   jq -cnS --slurpfile ss "$TMPD/repo.json" --slurpfile ags "$TMPD/agents.json" \
-    --slurpfile ps "$TMPD/prs.json" --slurpfile iss "$TMPD/issues.json" \
+    --slurpfile ps "$TMPD/prs.json" --slurpfile iss "$TMPD/issues.json" --slurpfile pri "$TMPD/prio-proj.json" \
     --arg budget "$(check_rc credit-budget.sh --check)" --arg hz "$hz" "$JQ_STRIP$JQ_OWN"'
-    if ([$ss, $ags, $ps, $iss] | any(length != 1)) or ($ss[0] | type) != "object"
+    if ([$ss, $ags, $ps, $iss, $pri] | any(length != 1)) or ($ss[0] | type) != "object"
        or ($ps[0] | type) != "array" or ($iss[0] | type) != "array"
     then error("degenerate state or GitHub read") else . end |
     {repo_foreign: ($ss[0] | foreign | strip), agents: ($ags[0] | strip),
-     prs: ($ps[0] | sort_by(.number)), issues: ($iss[0] | sort_by(.number)), budget: $budget, horizon: $hz}'
+     prs: ($ps[0] | sort_by(.number)), issues: ($iss[0] | sort_by(.number)), priority: $pri[0],
+     budget: $budget, horizon: $hz}'
 }
 
 pm_day_state_projection() {
@@ -320,20 +342,46 @@ bounded_digest() {
 
 # W selects the watcher object inside OBJ: .babysit for a PR, the day object itself for pm day.
 JQ_W='def W: if $kind == "babysit" then .babysit else . end;'
+if [[ "$KIND" == babysit ]]; then QUIET_PATH="$OBJ_PATH.babysit.quiet"; else QUIET_PATH="$OBJ_PATH.quiet"; fi
+
+# Forced-emit flag: the last resort when a contract cannot be disarmed in session state.
+# While it exists every tick emits; a successful disarm or a fresh --record clears it.
+force_flag() {
+  local key="${REPO:-}"
+  [[ -n "$key" ]] || key=$(git config --get remote.origin.url 2>/dev/null) || key=""
+  key="$KIND-${key:-unknown}-${PR:-day}"
+  printf '%s/.claude/monitor-quiet/force-emit-%s' "${HOME:-/tmp}" "$(printf '%s' "$key" | tr -c 'A-Za-z0-9._-' '_')"
+}
+
+# disarm_contract REASON — set an armed contract to quiet_ok=false. A lost compare-and-set
+# (another writer touched the watcher object) retries against the fresh object; after three
+# losses it writes quiet_ok=false blind, which can only ever cost quietness; if even that
+# fails it sets the forced-emit flag. Exit 0 = nothing armed or disarmed; 1 = flag fallback.
+disarm_contract() {
+  local reason="$1" obj new now
+  for _ in 1 2 3; do
+    obj=$(state --get-json "$OBJ_PATH" 2>/dev/null) || break
+    jq -e --arg kind "$KIND" "$JQ_W"' type == "object" and (W | type == "object") and W.quiet.quiet_ok == true' \
+      >/dev/null 2>&1 <<<"$obj" || return 0
+    now=$(date -u +%FT%TZ)
+    new=$(jq -c --arg kind "$KIND" --arg r "$reason" --arg now "$now" "$JQ_W"'
+      W.quiet.quiet_ok = false | W.quiet.disarmed_reason = $r | W.quiet.disarmed_at = $now' <<<"$obj") || break
+    state --cas "$OBJ_PATH=$new" --expect "$obj" >/dev/null 2>&1 && return 0
+  done
+  state --set "$QUIET_PATH.quiet_ok=false" --set "$QUIET_PATH.disarmed_reason=$reason" >/dev/null 2>&1 && return 0
+  if mkdir -p "$(dirname "$(force_flag)")" 2>/dev/null && : > "$(force_flag)" 2>/dev/null; then
+    echo "monitor-quiet-tick.sh: contract could not be disarmed; forced-emit flag set" >&2
+  else
+    echo "monitor-quiet-tick.sh: contract could not be disarmed and the forced-emit flag could not be set" >&2
+  fi
+  return 1
+}
 
 if [[ "$MODE" == disarm ]]; then
   # A tick the loop prints without consulting the gate (the babysit review-deadline tick)
   # must not leave an armed contract behind, or the next unchanged tick could go quiet and
   # advance counters while the model is still handling that printed tick.
-  for _ in 1 2 3; do
-    OBJ=$(state --get-json "$OBJ_PATH" 2>/dev/null) || exit 0
-    jq -e --arg kind "$KIND" "$JQ_W"' type == "object" and (W | type == "object") and W.quiet.quiet_ok == true' \
-      >/dev/null 2>&1 <<<"$OBJ" || exit 0
-    NEW=$(jq -c --arg kind "$KIND" --arg now "$(date -u +%FT%TZ)" "$JQ_W"'
-      W.quiet.quiet_ok = false | W.quiet.disarmed_reason = "forced emit" | W.quiet.disarmed_at = $now' <<<"$OBJ") || exit 0
-    state --cas "$OBJ_PATH=$NEW" --expect "$OBJ" >/dev/null 2>&1 && exit 0
-  done
-  echo "monitor-quiet-tick.sh: disarm write lost three times" >&2
+  disarm_contract "forced emit" || true
   exit 0
 fi
 
@@ -374,10 +422,17 @@ if [[ "$MODE" == record ]]; then
     { echo "monitor-quiet-tick.sh: could not build the contract" >&2; exit 1; }
   state --cas "$OBJ_PATH=$NEW" --expect "$OBJ" >/dev/null 2>&1 ||
     { echo "monitor-quiet-tick.sh: contract write lost or failed; the next tick will emit" >&2; exit 1; }
+  # A model tick that recorded a fresh contract has handled whatever a failed disarm flagged.
+  rm -f "$(force_flag)" 2>/dev/null || true
   exit "$RC"
 fi
 
 # ---- tick mode -----------------------------------------------------------------
+if [[ -e "$(force_flag)" ]]; then
+  # An earlier disarm failed: emit, and drop the flag only once the contract is disarmed.
+  disarm_contract "forced-emit flag" && rm -f "$(force_flag)"
+  emit "forced-emit flag"
+fi
 OBJ=$(state --get-json "$OBJ_PATH" 2>/dev/null) || emit "watcher state unreadable"
 # Cheap precheck first: no GitHub read unless the contract could allow a quiet tick.
 PRE=$(jq -r --arg kind "$KIND" --arg gen "$GENERATION" "$JQ_W"'
@@ -412,12 +467,10 @@ PRE=$(jq -r --arg kind "$KIND" --arg gen "$GENERATION" "$JQ_W"'
 # every later tick also emits until the model's own tick records a fresh contract. A
 # Monitor tick that lands while the model is still handling this event therefore wakes
 # it again, as before, instead of advancing counters under the running tick's feet. A
-# lost or failed disarm write still emits.
+# lost write retries against the fresh object, then falls back to a blind quiet_ok=false
+# and finally to the forced-emit flag (disarm_contract); this tick emits in every case.
 disarm() {
-  local new
-  new=$(jq -c --arg kind "$KIND" --arg r "$1" --arg now "$(date -u +%FT%TZ)" "$JQ_W"'
-    W.quiet.quiet_ok = false | W.quiet.disarmed_reason = $r | W.quiet.disarmed_at = $now' <<<"$OBJ") || emit "$1"
-  state --cas "$OBJ_PATH=$new" --expect "$OBJ" >/dev/null 2>&1 || true
+  disarm_contract "$1" || true
   emit "$1"
 }
 case "$PRE" in
