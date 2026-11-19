@@ -23,19 +23,19 @@ Planning a batch? Claim the whole batch up front with the sibling in the same fo
 No helper installed (for example a cloud sandbox)? Use plain `gh`. This writes the same claim, and the helper reads it:
 
 ```bash
-ME=$(gh api user --jq .login); HOLDER="<agent>-$(date +%s)-$$-$RANDOM"; NOW=$(date -u +%FT%TZ)
+ME=$(gh api user --jq .login); HOLDER="<agent>-$(date +%s)-$$-$RANDOM"; NOW=$(date -u +%FT%TZ)   # no login? STOP.
+gh issue view N --json state,labels,assignees,comments   # go on ONLY if this read succeeds, state is OPEN and nobody else holds it. Closed, missing, unreadable, claimed by someone else? STOP: nothing written yet.
 gh label create in-progress 2>/dev/null || true
-gh issue view N --json labels,assignees,comments   # claimed by someone else, or unreadable? STOP.
 gh issue edit N --add-label in-progress --add-assignee @me
 gh api repos/{owner}/{repo}/issues/N/comments -f body="🔒 Claimed by \`$ME\` for active work. Held by <agent> on device <nickname>. It will be released when this issue's PR merges or when the issue closes; it becomes stale if not renewed within 4h.
 
 <!-- claude-claim: {\"holder\":\"$HOLDER\",\"login\":\"$ME\",\"since\":\"$NOW\",\"provider\":\"<agent>\",\"device\":\"<nickname>\"} -->"
 gh api --paginate repos/{owner}/{repo}/issues/N/comments --jq '.[] | [.id, .created_at, .body] | @tsv'   # re-read every page: an earlier live claim by another holder (equal times: lower id wins)? Delete your own comment (keep its id from the POST) and STOP. Unreadable? Same.
-# Release: delete your claim comment, then:
+# Release: delete every claim comment you posted for this holder (a refreshed claim leaves two), then:
 gh issue edit N --remove-label in-progress --remove-assignee @me
 ```
 
-A fallback claim cannot be renewed; it expires after 4 hours without a renewal. If you are still working, post a fresh claim comment.
+A fallback claim cannot be renewed; it expires after 4 hours without a renewal. If you are still working, first re-read the issue and its comments: if it is closed, someone else's claim is newer, or the read fails, STOP; otherwise post a fresh claim comment. The state screen cannot stop the issue closing after you read it: if it closes while you work, release the claim.
 
 Working across worktrees? A claim made with the default holder belongs to the checkout it was made in, so a later `gh pr create` from another worktree can be blocked by your own claim. Claim with an explicit `--holder` before you create the worktree and keep that holder. Run the claim as its own command, never in the same command as `git worktree add`, `git checkout -b` or `gh pr create`: the guard checks the whole command before any of it runs. If the guard says your own claim may not be visible from this checkout, rerun the command with the `export CLAUDE_CLAIM_HOLDER='...' && ` prefix it prints, but only if you made that claim. Never copy a holder from the GitHub marker.
 

@@ -98,8 +98,15 @@ case "${1:-}" in
       esac
     done
     ENDPOINT="${ENDPOINT%%\?*}"
+    # Endpoint log: lets a test prove a call (GET /user) never happened.
+    [[ -d "$S" ]] && printf '%s %s\n' "$METHOD" "$ENDPOINT" >> "$S/calls.log"
     case "$ENDPOINT" in
       user)
+        # FAKE_USER_FAIL mimics the Actions installation token, which cannot
+        # call GET /user (issue #2412).
+        if [[ -n "${FAKE_USER_FAIL:-}" ]]; then
+          echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1
+        fi
         echo "viewer-stub"; exit 0 ;;
       repos/*/pulls/*)
         if [[ -e "$S/pr_garbage" ]]; then echo "<html>maintenance page</html>"; exit 0; fi
@@ -144,7 +151,7 @@ reset_state() {
   rm -rf "$S"
   mkdir -p "$S"
   export FAKE_VIEWER="viewer-stub"
-  unset FAKE_COMMENTS_FAIL
+  unset FAKE_COMMENTS_FAIL FAKE_USER_FAIL
   unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_REPO
 }
 
@@ -417,6 +424,99 @@ Backticked example: \`<!-- claim-holder: $MATCH_DIGEST -->\` in a sentence.
 run_check
 check_eq "A25 sentence mention plus real own-line marker -> match (one marker)" "match" "$(verdict_of)"
 
+# ==== A3. GFM fence rules (issue #2412) =======================================
+echo "== A3. GFM fence rules =="
+
+# Each line below looks like a fence but is not one under GFM, so the closing
+# keyword and the claim line after it stay visible: the verdict is match, not
+# skipped (a hidden keyword) or no_claim_line (a hidden marker).
+TAB="$(printf '\t')"
+for NOT_FENCE in "    \`\`\`" "$TAB\`\`\`" "\`\`\` info\`with-backtick"; do
+  reset_state
+  set_issue 2288 open labeled
+  add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+  set_pr "Intro.
+
+$NOT_FENCE
+Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+  run_check
+  check_eq "A26 not a fence ($(printf '%s' "$NOT_FENCE" | tr '\t' 'T')): keyword and claim line visible -> match" "match" "$(verdict_of)"
+done
+
+reset_state
+set_pr "Example:
+
+~~~ info\`with-backtick
+Closes #2288
+~~~" "human-dev" "User"
+run_check
+check_eq "A27 tilde opener with a backtick info string still hides content -> skipped" "skipped" "$(verdict_of)"
+
+reset_state
+set_pr "Example:
+
+\`\`\`
+    \`\`\`
+Closes #2288
+\`\`\`" "human-dev" "User"
+run_check
+check_eq "A28 a four-space closer does not close a real fence -> skipped" "skipped" "$(verdict_of)"
+
+reset_state
+set_pr "Example:
+
+   \`\`\`
+Closes #2288
+   \`\`\`" "human-dev" "User"
+run_check
+check_eq "A29 three-space indented fence still hides content -> skipped" "skipped" "$(verdict_of)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+CR="$(printf '\r')"
+set_pr "Example:$CR
+$CR
+\`\`\`$CR
+not a keyword$CR
+\`\`\`$CR
+Closes #2288$CR
+$CR
+<!-- claim-holder: $MATCH_DIGEST -->$CR" "human-dev" "User"
+run_check
+check_eq "A29b CRLF body: the closing fence still closes -> match" "match" "$(verdict_of)"
+
+# ==== A4. Actions token cannot call GET /user (issue #2412) ===================
+echo "== A4. viewer lookup unavailable =="
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+export FAKE_USER_FAIL=1
+run_check
+check_eq "A30 GET /user fails, holder matches -> match" "match" "$(verdict_of)"
+check_eq "A30 no GET /user request was made" "0" "$(grep -c ' user$' "$S/calls.log" 2>/dev/null || true)"
+check_contains "A30 the claim comments were read" "GET repos/owner/repo/issues/2288/comments" "$(cat "$S/calls.log")"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "codex-thread-beta" "codex" "box-7" "run-9" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $(expect_digest "some-other-thread") -->" "human-dev" "User"
+export FAKE_USER_FAIL=1
+run_check
+check_eq "A31 GET /user fails, other holder -> foreign" "foreign" "$(verdict_of)"
+OUT="$(bash "$CHECK" 900 --repo owner/repo --report 2>"$TMP/stderr")"; RC=$?
+check_eq "A31 foreign --report exits 1" "1" "$RC"
+check_eq "A31 no GET /user request was made" "0" "$(grep -c ' user$' "$S/calls.log" 2>/dev/null || true)"
+unset FAKE_USER_FAIL
+
 # ==== B. pr-claim-line.sh =====================================================
 echo "== B. claim line =="
 
@@ -550,11 +650,25 @@ check_eq "C10 prose mention of claim-holder is ignored -> match" "match" "$(verd
 reset_state
 set_pr "Closes #2288" "human-dev" "User"
 touch "$S/pr_fail"
-bash "$CHECK" 900 --repo owner/repo --report >"$TMP/c11.out" 2>/dev/null; RC=$?
+bash "$CHECK" 900 --repo owner/repo --report >"$TMP/c11.out" 2>"$TMP/c11.err"; RC=$?
 check_eq "C11 early unverifiable with --report still warns and exits 0" "0" "$RC"
-check_contains "C11 early unverifiable warning emitted" "unverifiable" "$(cat "$TMP/c11.out")"
+check_contains "C11 early unverifiable emits a ::warning:: annotation" "::warning::" "$(cat "$TMP/c11.out")"
+check_eq "C11 JSON reason is pr_read_failed" "unverifiable|pr_read_failed" \
+  "$(head -n 1 "$TMP/c11.out" | jq -r '[.verdict, .reason] | join("|")' 2>/dev/null)"
+check_absent "C11 no unbound-variable abort" "unbound variable" "$(cat "$TMP/c11.err")"
 check_eq "C11 early unverifiable posts a comment" "1" \
   "$(jq '[.[] | select(.body | startswith("<!-- pr-claim-check:unverifiable:"))] | length' "$S/comments-900.json" 2>/dev/null || echo 0)"
+rm -f "$S/pr_fail"
+
+# C11b: an inherited LINKED from the environment never leaks into the marker.
+reset_state
+set_pr "Closes #2288" "human-dev" "User"
+touch "$S/pr_fail"
+LINKED="4242" bash "$CHECK" 900 --repo owner/repo --report >/dev/null 2>"$TMP/c11b.err"; RC=$?
+check_eq "C11b inherited LINKED: exits 0" "0" "$RC"
+check_eq "C11b inherited LINKED: early marker lists no issues" "1" \
+  "$(jq '[.[] | select(.body | startswith("<!-- pr-claim-check:unverifiable: -->"))] | length' "$S/comments-900.json" 2>/dev/null || echo 0)"
+check_absent "C11b inherited LINKED: value not used" "4242" "$(jq -r '.[].body' "$S/comments-900.json" 2>/dev/null)"
 rm -f "$S/pr_fail"
 
 # C12: no temporary directory in --report mode is a warning, never a silent pass.
@@ -593,6 +707,59 @@ set_pr "Closes #2288
 <!-- claim-holder: $(expect_digest "pr-claim-check") -->" "human-dev" "User"
 run_check
 check_eq "C13 claim held by literal pr-claim-check, matching PR line -> match" "match" "$(verdict_of)"
+
+# ==== E. workflow shape (issue #2412) =========================================
+echo "== E. workflow =="
+WF="$REPO_ROOT/.github/workflows/pr-claim-check.yml"
+WF_TEXT="$(cat "$WF")"
+check_contains "E1 runs serialize per PR" \
+  'group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number || github.run_id }}' "$WF_TEXT"
+check_contains "E1 a running check is never cancelled mid-POST" "cancel-in-progress: false" "$WF_TEXT"
+check_absent "E1 no cancel-in-progress: true" "cancel-in-progress: true" "$WF_TEXT"
+check_contains "E2 checks out the base SHA (trusted code)" 'ref: ${{ github.event.pull_request.base.sha }}' "$WF_TEXT"
+check_contains "E2 does not persist credentials" "persist-credentials: false" "$WF_TEXT"
+
+# ==== F. installed gate: bootstrap into a scratch repo (issue #2412) ==========
+echo "== F. installed gate =="
+GATE_REPO="$TMP/gate-repo"
+mkdir -p "$GATE_REPO"
+git init -q "$GATE_REPO"
+reset_state
+# The stub answers branch-protection reads as unexpected endpoints, so the
+# bootstrap exit code reflects that gap; only a write failure (5) is a failure.
+(cd "$GATE_REPO" && bash "$REPO_ROOT/.claude/scripts/repo-bootstrap.sh" --apply >"$TMP/gate-apply.out" 2>&1); RC=$?
+# Documented codes: 0 clean, 1 gap, 4 gh error (the stub's branch-protection
+# read); 5 (write failure) or anything else fails.
+case "$RC" in
+  0|1|4) ok "F1 bootstrap --apply finished with a documented non-write-failure code ($RC)" ;;
+  *) bad "F1 bootstrap --apply exit $RC: $(cat "$TMP/gate-apply.out")" ;;
+esac
+for f in .claude/scripts/pr-claim-check.sh .claude/scripts/issue-claim.sh .claude/scripts/pr-claim-line.sh .github/workflows/pr-claim-check.yml; do
+  if [[ -f "$GATE_REPO/$f" ]]; then ok "F1 installed $f"; else bad "F1 $f not installed"; fi
+done
+GATE_CHECK="$GATE_REPO/.claude/scripts/pr-claim-check.sh"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "codex-thread-beta" "codex" "box-7" "run-9" "$NOW"
+set_pr "Closes #2288
+
+<!-- claim-holder: $(expect_digest "some-other-thread") -->" "human-dev" "User"
+FAKE_USER_FAIL=1 bash "$GATE_CHECK" 900 --repo owner/repo --report >"$TMP/gate.out" 2>/dev/null; RC=$?
+check_eq "F2 installed gate, foreign claim, GET /user failing -> --report exits 1" "1" "$RC"
+check_eq "F2 installed gate verdict is foreign" "foreign" "$(head -n 1 "$TMP/gate.out" | jq -r .verdict 2>/dev/null)"
+
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+# The claim line comes from the installed helper, run directly (mode 755).
+GATE_LINE="$("$GATE_REPO/.claude/scripts/pr-claim-line.sh" 2288 --holder "$MATCH_RAW" 2>/dev/null)"
+check_eq "F3 installed pr-claim-line.sh prints the matching line" "<!-- claim-holder: $MATCH_DIGEST -->" "$GATE_LINE"
+set_pr "Closes #2288
+
+$GATE_LINE" "human-dev" "User"
+OUT="$(FAKE_USER_FAIL=1 bash "$GATE_CHECK" 900 --repo owner/repo 2>/dev/null)"
+check_eq "F3 installed gate, matching claim, GET /user failing -> match" "match" "$(verdict_of)"
 
 # ==== D. usage ================================================================
 echo "== D. usage =="

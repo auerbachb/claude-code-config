@@ -423,6 +423,40 @@ FAKE_ISSUE_MODE=error run 873 --claim --holder threadA
 check_eq "claim fails closed too" 4 "$RC"
 
 ############################################################################
+echo "== (8a) --no-viewer: a check-only read that skips GET /user (issue #2412) =="
+reset_issue
+run 873 --claim --holder threadA
+check_eq "premise: threadA holds the claim" 0 "$RC"
+FAKE_VIEWER=__FAIL__ run 873 --check --no-viewer --holder threadA --json
+check_eq "no-viewer: same holder still reads mine" "0|mine" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "no-viewer: viewer is null" "null" "$(jq -r .viewer <<<"$OUT")"
+FAKE_VIEWER=__FAIL__ run 873 --check --no-viewer --holder threadB --json
+check_eq "no-viewer: another holder reads claimed (exit 1)" "1|claimed" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "no-viewer: the winning holder is reported" "threadA" "$(jq -r .claimant_holder <<<"$OUT")"
+check_eq "no-viewer: no claimant_is_viewer evidence" "false" "$(jq -r 'has("claimant_is_viewer")' <<<"$OUT")"
+# Control: ordinary --check still fails closed on the same viewer failure.
+FAKE_VIEWER=__FAIL__ run 873 --check --holder threadB --json
+check_eq "control: ordinary check on viewer failure is unknown/4" "4|unknown" "$RC|$(jq -r .verdict <<<"$OUT")"
+reset_issue
+FAKE_VIEWER=__FAIL__ run 873 --check --no-viewer --holder threadB
+check_eq "no-viewer: an unclaimed issue reads unclaimed" "0|unclaimed" "$RC|$OUT"
+FAKE_ISSUE_MODE=error FAKE_VIEWER=__FAIL__ run 873 --check --no-viewer --holder threadB
+check_eq "no-viewer: an issue read failure still fails closed" "4|unknown" "$RC|$OUT"
+# Any writing action with --no-viewer is a usage error and writes nothing.
+reset_issue
+run 873 --claim --holder threadA
+NV_BEFORE="$(cat "$STATE/comments.json")|$(cat "$STATE/labels")|$(cat "$STATE/assignees")"
+echo 0 > "$STATE/edit_calls"
+for NV_ACTION in --claim --renew --release; do
+  run 873 "$NV_ACTION" --no-viewer --holder threadA
+  check_eq "no-viewer with $NV_ACTION: usage error (exit 2)" 2 "$RC"
+  check_contains "no-viewer with $NV_ACTION: names the rule" "only valid with --check" "$ERR"
+done
+check_eq "no-viewer write actions: no issue edits" 0 "$(cat "$STATE/edit_calls")"
+check_eq "no-viewer write actions: claim state untouched" "$NV_BEFORE" \
+  "$(cat "$STATE/comments.json")|$(cat "$STATE/labels")|$(cat "$STATE/assignees")"
+
+############################################################################
 echo "== (8b) an unreadable winning marker is not an absent claim =="
 reset_issue
 jq -n --arg at "$(iso_ago 1)" '[

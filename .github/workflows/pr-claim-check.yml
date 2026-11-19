@@ -1,8 +1,18 @@
 on:
   pull_request:
-    # The claim holder named in the PR body is read from the event payload and
-    # the body is re-read on every edit, so each of these events can change the verdict.
+    # The checker re-reads the PR body through the API on every run (never from
+    # the event payload), so each of these events can change the verdict.
     types: [opened, reopened, edited, synchronize]
+
+# One run at a time per PR (issue #2412): the checker lists the PR's comments
+# and then posts its advisory comment, so two overlapping runs could both miss
+# the other's comment and post twice. Serialized runs cannot overlap; GitHub
+# replaces an older pending run with the newest. Not cancel-in-progress, which
+# could stop a run mid-POST. A local --report call or another writer can still
+# race a run, so the comment dedupe stays best effort.
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -30,8 +40,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # If the gate or the issue-claim helper it reads is not on the base
-          # branch (the bootstrap PR introducing it, or a repo without the claim
-          # helpers), print a notice and pass. The check is advisory either way.
+          # branch yet (the bootstrap PR that installs them reads the base SHA),
+          # print a notice and pass. The check is advisory either way.
           if [[ ! -f .claude/scripts/pr-claim-check.sh ]]; then
             echo "::notice::pr-claim-check: PASS (bootstrap - script not yet on base branch)"
             exit 0
