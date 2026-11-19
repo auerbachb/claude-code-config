@@ -147,7 +147,7 @@ A capture session **offers to run every open issue it filed, right here in this 
 
 **Repo-wide cap (before the offer, for a single issue or batch).** Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, or `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory. Read the census once per session; the default output line gives `CAP`, `ACTIVE`, and `FREE` together. Offer inline while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope: `hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)`. If the script does not resolve, print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering inline without a repo-wide bound` and offer it anyway (the run applies its own ceiling; withholding it strands the issues). A **non-zero exit** from a script that did resolve means the count could not be read — treat it as `FREE = 0` and defer, naming the read failure rather than a fabricated count.
 
-**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string. It is written through `mine` (the write-helper section), so it reaches only `$REPO`'s session-filed open rows and can never overwrite a token that belongs to another session's batch.
+**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string. It is written through `runnable` — `mine` minus a tracking parent (`create:doc-gate`) — so it reaches only `$REPO`'s session-filed open rows that `/subagent` can run, and can never overwrite a token that belongs to another session's batch. A tracking parent is never offered, never stamped, and never sent in `INLINE_REQUEST` (`/subagent` refuses it as tracking-only); its children are offered like any chain.
 
 <!-- test-anchor: issue-maker-step9c-offer-stamp -->
 ```bash
@@ -156,7 +156,7 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   exit 1
 fi
 OFFER_TOKEN="offer-$(date +%s%N)"
-set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | .delivery_mode = "inline" | (.issues[] | mine | .chip_task_id) = $tok' \
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | .delivery_mode = "inline" | (.issues[] | runnable | .chip_task_id) = $tok' \
   --arg tok "$OFFER_TOKEN" --arg repo "$REPO"
 ```
 
@@ -186,7 +186,7 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   exit 1
 fi
 INLINE_ATTEMPT_ID="inline-$(date -u +%s)-$$-$RANDOM-$RANDOM"
-set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | [.issues[] | mine | .number] as $covered |
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | [.issues[] | runnable | .number] as $covered |
   if ($covered|length)==0 then error("no session issues") else
   .inline_checkpoint = {attempt_id:$attempt,state:"invocation-pending", repository:$repo, issues:$covered} end' --arg repo "$REPO" --arg attempt "$INLINE_ATTEMPT_ID" || exit 1
 printf 'INLINE_REQUEST=%s\n' "$(jq -c '.inline_checkpoint' "$LOG")"
