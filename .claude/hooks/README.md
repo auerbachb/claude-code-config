@@ -141,8 +141,14 @@ An active marker makes the launch gate fail closed if session state becomes
 unreadable after activation. Other hook/dependency failures stay fail-open so a
 malformed payload cannot brick all tool use.
 
-The status read stays serialized under the state lock (an unlocked read can see
-a half-applied activation or clear), but a busy lock is retried (Issue #2433).
+The status read is lock-free (Issue #2402): one state snapshot, then the marker
+checks, so a half-applied activation or clear still reads `active` and a held
+state lock no longer refuses a launch. The current helper therefore never
+exits 6 from status; the retry below remains for an older installed helper and
+for the retained locked read (`CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=1`).
+Contract: `.claude/reference/state-file-contracts.md` §Write locks.
+
+In those cases a busy lock is retried (Issue #2433).
 Only exit 6 is retried, with 100–290 ms jitter, each attempt waiting at most
 `CLAUDE_PAUSE_GATE_ATTEMPT_TIMEOUT` seconds (default 1) for the lock, all inside
 `CLAUDE_PAUSE_GATE_BUDGET_MS` (default 3500) — below the 5 s host timeout. The

@@ -875,6 +875,82 @@ check_eq "release completes once the gate is free; nothing left behind" "0" \
   "$([[ -e "$LOCK_DIR" || -e "$GATE" ]] && echo 1 || echo 0)"
 
 echo
+echo "== issue #2402: stale lock-aside sweep =="
+SWEEP="$REPO_ROOT/.claude/scripts/state-lock-sweep.sh"
+reset_state; run --set '.seed=1'
+OLD=202601010000   # touch -t stamp, months older than the 1h grace
+mk_aside() { # name [entries...] ; created old unless AGE=young
+  local d="$STATE_FILE.$1"; shift
+  mkdir -p "$d"
+  local e; for e in "$@"; do printf 'pid=1\n' > "$d/$e"; done
+  [[ "${AGE:-old}" == young ]] || touch -t "$OLD" "$d"
+}
+mk_aside lock.rel.111-1 owner
+mk_aside lock.rel.222-2 .owner.222
+mk_aside lock.stale.333-3
+AGE=young mk_aside lock.rel.444-4 owner
+mk_aside lock.rel.555-5 owner unexpected.txt
+mk_aside lock.rel.666-6 owner; mkdir "$STATE_FILE.lock.rel.666-6/nested"; touch -t "$OLD" "$STATE_FILE.lock.rel.666-6"
+VICTIM="$HOME/victim-2402"; mkdir -p "$VICTIM"; printf 'keep\n' > "$VICTIM/owner"
+ln -s "$VICTIM" "$STATE_FILE.lock.rel.777-7"
+printf 'x\n' > "$STATE_FILE.lock.rel.888-8"; touch -t "$OLD" "$STATE_FILE.lock.rel.888-8"
+mk_aside lock.rel.999-9 owner; ln -s "$VICTIM/owner" "$STATE_FILE.lock.rel.999-9/.owner.9"; touch -t "$OLD" "$STATE_FILE.lock.rel.999-9"
+mkdir -p "$LOCK_DIR"; printf 'pid=1\n' > "$LOCK_DIR/owner"; touch -t "$OLD" "$LOCK_DIR"
+inv="$(bash "$SWEEP")"; inv_rc=$?
+check_eq "inventory exits 0" "0" "$inv_rc"
+check_eq "inventory lists the three valid old asides as removable" "3" "$(grep -c '^removable' <<<"$inv")"
+check_eq "inventory deletes nothing" "9" "$(find "$HOME/.claude" -maxdepth 1 -name 'session-state.json.lock.*' | wc -l | tr -d ' ')"
+check_eq "inventory totals" "removed=0 removable=3 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$inv" | cut -f2)"
+app="$(bash "$SWEEP" --apply)"; app_rc=$?
+check_eq "apply exits 0" "0" "$app_rc"
+check_eq "apply totals" "removed=3 removable=0 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$app" | cut -f2)"
+for a in lock.rel.111-1 lock.rel.222-2 lock.stale.333-3; do
+  check_eq "removed valid old aside $a" "0" "$([[ -e "$STATE_FILE.$a" ]] && echo 1 || echo 0)"
+done
+for a in lock.rel.444-4 lock.rel.555-5 lock.rel.666-6 lock.rel.777-7 lock.rel.888-8 lock.rel.999-9; do
+  check_eq "retained $a" "1" "$([[ -e "$STATE_FILE.$a" || -L "$STATE_FILE.$a" ]] && echo 1 || echo 0)"
+done
+check_eq "young aside retained as too young" "1" "$(grep -c $'^retained\ttoo young.*lock.rel.444-4$' <<<"$app")"
+check_eq "symlink aside retained as symlink" "1" "$(grep -c $'^retained\tsymlink\t.*lock.rel.777-7$' <<<"$app")"
+check_eq "symlink victim untouched" "keep" "$(cat "$VICTIM/owner")"
+check_eq "aside with a symlinked owner file retained" "1" "$(grep -c $'^retained\tsymlink entry .owner.9\t' <<<"$app")"
+check_eq "live lock untouched" "1" "$([[ -f "$LOCK_DIR/owner" ]] && echo 1 || echo 0)"
+check_eq "state file untouched" "1" "$(jq -r '.seed' "$STATE_FILE")"
+again="$(bash "$SWEEP" --apply)"
+check_eq "second apply is idempotent" "removed=0 removable=0 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$again" | cut -f2)"
+capped="$(bash "$SWEEP" --max 2)"
+check_eq "candidates beyond --max are unexamined, not zero" "4" "$(grep -c '^unexamined' <<<"$capped")"
+check_eq "bad --max is a usage error" "2" "$(bash "$SWEEP" --max x >/dev/null 2>&1; echo $?)"
+other="$HOME/other-2402.json"; mkdir -p "$other.lock.rel.1-1"; touch -t "$OLD" "$other.lock.rel.1-1"
+multi="$(bash "$SWEEP" --apply --state-file "$STATE_FILE" --state-file "$other")"
+check_eq "repeated --state-file sweeps each scope" "2" "$(grep -c '^totals' <<<"$multi")"
+check_eq "second scope's aside removed" "0" "$([[ -e "$other.lock.rel.1-1" ]] && echo 1 || echo 0)"
+check_eq "--quiet prints nothing for an empty scope" "" "$(bash "$SWEEP" --quiet --state-file "$HOME/none-2402.json")"
+rm -rf "$LOCK_DIR" "$STATE_FILE".lock.rel.* "$VICTIM"
+# A zero-padded grace is decimal, not octal: "010" is ten seconds, so a
+# nine-second-old aside is still too young (octal would make it eight).
+# Fixed clock: mtime 1000000, "now" 1000009 — no wall-clock boundary.
+mkdir -p "$STATE_FILE.lock.rel.123-4"; printf 'pid=1\n' > "$STATE_FILE.lock.rel.123-4/owner"
+python3 -c 'import os,sys; os.utime(sys.argv[1],(1000000,1000000))' "$STATE_FILE.lock.rel.123-4"
+padded="$(bash -c 'source "$1"; _state_lock_now() { printf 1000009; }; state_lock_sweep_asides "$2" apply 010' \
+  _ "$LOCK_LIB" "$STATE_FILE")"
+check_eq "zero-padded grace is read as decimal" "1" "$(grep -c $'^retained\ttoo young' <<<"$padded")"
+check_eq "oversized --grace-seconds is a usage error" "2" "$(bash "$SWEEP" --grace-seconds 99999999999 >/dev/null 2>&1; echo $?)"
+rm -rf "$STATE_FILE.lock.rel.123-4"
+
+# The sweep runs while a real holder acquires and releases in a loop: every
+# write survives and the active lock is never removed by the sweep.
+reset_state; run --set '.loop=0'
+LOOP_STOP="$HOME/loop-2402.stop"
+( for i in $(seq 1 40); do [[ -e "$LOOP_STOP" ]] && break; run --set ".loop=$i" >/dev/null 2>&1; done ) &
+LOOP_PID=$!
+for _ in $(seq 1 20); do bash "$SWEEP" --apply --grace-seconds 0 >/dev/null 2>&1; done
+wait "$LOOP_PID" 2>/dev/null
+touch "$LOOP_STOP"
+check_eq "concurrent writer's last update survives the sweep" "40" "$(jq -r '.loop' "$STATE_FILE")"
+check_eq "no lock or aside left after the loop" "0" "$(find "$HOME/.claude" -maxdepth 1 -name 'session-state.json.lock*' | wc -l | tr -d ' ')"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2

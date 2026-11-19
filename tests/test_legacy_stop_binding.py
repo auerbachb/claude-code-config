@@ -227,10 +227,13 @@ class LegacyStopTest(unittest.TestCase):
         self.assertEqual(self.pause("--status", "--session", NATIVE), "inactive")
         gate = ROOT / ".claude/hooks/pause-launch-gate.sh"
         payload = {"tool_name": "Agent", "cwd": str(self.checkout)}
-        for native, expected in ((NATIVE, 2), (OTHER, 0)):
-            result = subprocess.run([str(gate)], input=json.dumps(dict(payload, session_id=native)),
-                                    cwd=self.checkout, env=self.env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, expected, result.stderr)
+        # Default lock-free status and the retained locked read agree (#2402).
+        for locked in ("", "1"):
+            gate_env = dict(self.env, CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=locked)
+            for native, expected in ((NATIVE, 2), (OTHER, 0)):
+                result = subprocess.run([str(gate)], input=json.dumps(dict(payload, session_id=native)),
+                                        cwd=self.checkout, env=gate_env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, (locked, result.stderr))
 
 
         self.arm(NATIVE)

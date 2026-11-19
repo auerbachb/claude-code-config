@@ -122,16 +122,6 @@ SCOPE_HASH="$(scope_hash "$SESSION_ID")" || {
 MARKER="$MARKER_DIR/claude-execution-pause-v2-$SCOPE_HASH"
 PATH_EXPR="$(pause_path "$SESSION_ID")" || exit 5
 
-# Marker and session-state are one lifecycle invariant. Hold the canonical
-# state lock across status, activation, and clearing so neither a concurrent
-# resume nor a launch-gate read can observe a half-applied transition. The
-# nested session-state.sh process inherits this lock and re-enters safely.
-[[ -f "$LOCK_LIB" ]] || { echo "execution-pause.sh: state-lock.sh unavailable" >&2; exit 5; }
-# shellcheck source=state-lock.sh
-source "$LOCK_LIB"
-state_lock_acquire "$STATE_FILE" || exit $?
-trap 'state_lock_release' EXIT
-
 read_end_proof() {
   jq -Sce --arg session "$SESSION_ID" '
     select(type == "object" and .active == true and .command == "end"
@@ -163,6 +153,19 @@ legacy_snapshot() {
     '{token:$token,at:$state.at,pending:$pending}'
 }
 
+# Token of an already-read native gate record ($2, compact JSON as --get-json
+# prints it) for the scope hash $1. Shared by the guarded legacy clear (which
+# records the token) and both status paths (which compare against it), so the
+# canonicalization can never drift between writer and reader. Returns 7 when
+# the gate is active, 4 when it is malformed.
+native_token_of() {
+  local native_hash="$1" state="$2"
+  if jq -e 'type == "object" and .active == true' <<< "$state" >/dev/null; then return 7; fi
+  state="$(jq -cS 'if . == null or (type == "object" and .active == false)
+                   then . else error("native gate malformed") end' <<< "$state")" || return 4
+  printf '%s\0%s' "$native_hash" "$state" | sha256_input
+}
+
 native_gate_token() {
   local session="$1" native_hash native_path state
   native_hash="$(scope_hash "$session")" || return 4
@@ -172,10 +175,7 @@ native_gate_token() {
     return 7
   fi
   state="$(session_state --raw-path --get-json "$native_path")" || return 4
-  if jq -e 'type == "object" and .active == true' <<< "$state" >/dev/null; then return 7; fi
-  state="$(jq -cS 'if . == null or (type == "object" and .active == false)
-                   then . else error("native gate malformed") end' <<< "$state")" || return 4
-  printf '%s\0%s' "$native_hash" "$state" | sha256_input
+  native_token_of "$native_hash" "$state"
 }
 
 legacy_resume_scope() {
@@ -227,6 +227,136 @@ legacy_launch_held() {
   active="$(session_state --raw-path --get-json "$legacy_path.active")" || return 0
   [[ "$active" != false && "$active" != null ]]
 }
+
+# ----------------------------------------------------------------------------
+# Lock-free status (issue #2402)
+#
+# `--status` reads the state file ONCE, without the state lock, then checks
+# markers. Writers publish the state by atomic rename, so one open of the file
+# is one consistent snapshot. Every marker check happens AFTER the snapshot,
+# which keeps half-applied transitions conservative:
+#   - activation publishes the marker before the state: a snapshot taken
+#     before the state write still sees the marker afterwards -> active;
+#   - clear writes inactive state before removing the marker: `inactive` needs
+#     an inactive snapshot AND a missing marker afterwards, i.e. a clear that
+#     had already finished removing it.
+# The answer is a point-in-time check, not a reservation through the launch —
+# exactly what the locked read gave. The locked read is kept behind
+# CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=1 as parity oracle and rollback; only it
+# can return exit 6. One intended difference: the unlocked read does not run
+# session-state.sh's in-memory flat-.prs migration, so a malformed legacy flat
+# container no longer turns status into exit 4.
+# ----------------------------------------------------------------------------
+STATUS_SNAPSHOT_JQ="$(cat <<'JQ'
+  def field(f): try {ok: f} catch {err: true};
+  [inputs]
+  | if length != 1 or (.[0] | type) != "object"
+    then error("state file must contain exactly one top-level JSON object") else .[0] end
+  | . as $d
+  | {primary: field($d.repos[$repo].execution_pauses[$session].active
+                    | if type == "string" then . else tojson end)}
+  + if $launch then
+      field($d.repos[$repo].legacy_end_resume_scopes[$session]) as $binding
+      | {binding: $binding}
+      # Legacy-only inputs only when a usable binding exists; the task
+      # inventory is reduced to the one boolean the hold needs, so a large
+      # inventory is never copied out (errors stay errors: they hold).
+      + if ($binding.ok | type) == "object" and ($binding.ok.legacy | type) == "string" then
+          {native: field($d.repos[$repo].execution_pauses[$session]),
+           rearming: field($d.repos[$repo].background_tasks
+             | if . == null then false
+               elif type == "array" then any(.[]; .session_id == $binding.ok.legacy and .status == "rearming")
+               else error("task inventory malformed") end),
+           legacy_active: field($d.repos[$repo].execution_pauses[$binding.ok.legacy].active)}
+        else {} end
+    else {} end
+JQ
+)"
+
+# Mirror of legacy_launch_held over the snapshot in $SNAP. 0 = launch held.
+# Same hold / no-hold branches; markers are read here, after the snapshot.
+snapshot_legacy_held() {
+  local binding legacy recorded native_hash state current active legacy_hash
+  jq -e '.binding | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 1
+  binding="$(jq -c '.binding.ok' <<< "$SNAP")" || return 1
+  [[ "$binding" != null ]] || return 1
+  legacy="$(jq -er '.legacy | select(type == "string" and length > 0)' <<< "$binding" 2>/dev/null)" || return 0
+  recorded="$(jq -er '.native_token | select(type == "string" and test("^[a-f0-9]{64}$"))' \
+    <<< "$binding" 2>/dev/null)" || return 0
+  native_hash="$(scope_hash "$SESSION_ID")" || return 0
+  if [[ -e "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ||
+        -L "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ]]; then
+    return 0
+  fi
+  jq -e '.native | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 0
+  state="$(jq -c '.native.ok' <<< "$SNAP")" || return 0
+  current="$(native_token_of "$native_hash" "$state" 2>/dev/null)" || return 0
+  [[ "$current" == "$recorded" ]] || return 1
+  jq -e '.rearming | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 0
+  active="$(jq -r '.rearming.ok' <<< "$SNAP")" || return 0
+  [[ "$active" == true ]] || return 1
+  legacy_hash="$(scope_hash "$legacy")" || return 0
+  if [[ -e "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ||
+        -L "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ]]; then
+    return 0
+  fi
+  jq -e '.legacy_active | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 0
+  active="$(jq -c '.legacy_active.ok' <<< "$SNAP")" || return 0
+  [[ "$active" != false && "$active" != null ]]
+}
+
+status_unlocked() {
+  local launch=false class=ok value
+  if [[ "${CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK:-}" == 1 &&
+        "$SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
+    launch=true
+  fi
+  SNAP=""
+  if [[ ! -f "$STATE_FILE" ]]; then
+    class=missing
+  elif ! SNAP="$(jq -cn --arg repo "$REPO_KEY" --arg session "$SESSION_ID" --argjson launch "$launch" \
+                 "$STATUS_SNAPSHOT_JQ" "$STATE_FILE" 2>/dev/null)"; then
+    # A file that vanished between the test and jq's open reads as missing.
+    if [[ -e "$STATE_FILE" ]]; then class=unreadable; else class=missing; fi
+  elif ! value="$(jq -er '.primary.ok' <<< "$SNAP" 2>/dev/null)"; then
+    class=unreadable
+  fi
+  # Markers only after the snapshot. A surviving marker is authoritative.
+  if [[ -f "$MARKER" ]]; then printf 'active\n'; return 0; fi
+  case "$class" in
+    missing) printf 'inactive\n'; return 0 ;;
+    unreadable)
+      echo "execution-pause.sh: execution-pause state unreadable and no active marker exists" >&2
+      return 4 ;;
+  esac
+  if [[ "$value" == true ]]; then printf 'active\n'; return 0; fi
+  if [[ "$value" == false || "$value" == null ]]; then
+    if [[ "$launch" == true ]] && snapshot_legacy_held; then
+      printf 'active\n'
+    else
+      printf 'inactive\n'
+    fi
+    return 0
+  fi
+  echo "execution-pause.sh: execution-pause state unreadable and no active marker exists" >&2
+  return 4
+}
+
+if [[ "$MODE" == status && "${CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED:-}" != 1 ]]; then
+  status_unlocked
+  exit $?
+fi
+
+# Marker and session-state are one lifecycle invariant. Hold the canonical
+# state lock across activation, clearing, and the legacy proofs so a
+# concurrent resume never observes a half-applied transition. The nested
+# session-state.sh process inherits this lock and re-enters safely. (Status is
+# unlocked by default — see "Lock-free status" above.)
+[[ -f "$LOCK_LIB" ]] || { echo "execution-pause.sh: state-lock.sh unavailable" >&2; exit 5; }
+# shellcheck source=state-lock.sh
+source "$LOCK_LIB"
+state_lock_acquire "$STATE_FILE" || exit $?
+trap 'state_lock_release' EXIT
 
 case "$MODE" in
   snapshot-legacy)

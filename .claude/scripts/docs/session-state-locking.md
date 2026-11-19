@@ -24,6 +24,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [session-state-audit.sh](../session-state-audit.sh) | Audit and guarded repair of `~/.claude/session-state.json` |
 | [session-state-compact.sh](../session-state-compact.sh) | Archive old per-PR, per-agent and terminal background-task entries so the state file stays small (issue #2433) |
 | [session-state.sh](../session-state.sh) | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
+| [state-lock-sweep.sh](../state-lock-sweep.sh) | Inventory (default) or remove leftover `<state>.lock.rel.*` / `.lock.stale.*` lock-aside directories (issue #2402) |
 | [state-lock.sh](../state-lock.sh) | *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes |
 <!-- catalog:rows:end -->
 

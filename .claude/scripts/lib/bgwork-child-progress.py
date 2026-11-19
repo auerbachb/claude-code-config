@@ -103,10 +103,17 @@ def timestamp(value):
     return datetime.fromisoformat(value[:-1] + '+00:00').timestamp()
 
 
+# Bound on the state-file read (issue #2402). Large enough for a realistic
+# multi-megabyte session-state.json (the old 8 MiB bound turned a ~9 MB file
+# into a permanent progress_probe_failed); oversized input is still rejected
+# before parsing.
+STATE_READ_LIMIT = 32 * 1024 * 1024
+
+
 def observe(session, cache_path):
     now = time.time()
     source = os.environ.get('CLAUDE_SESSION_STATE_FILE', str(Path.home()/'.claude/session-state.json'))
-    inventory = read_json(source, 8 * 1024 * 1024)
+    inventory = read_json(source, STATE_READ_LIMIT)
     repos = inventory.get('repos')
     if not isinstance(repos, dict):
         raise Unknown('inventory_shape_invalid')
