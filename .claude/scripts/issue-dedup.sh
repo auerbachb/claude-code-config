@@ -60,7 +60,8 @@ if [[ -n "${HOME:-}" ]]; then
 fi
 
 usage() {
-  sed -n '3,50p' "$0" | sed 's/^# \{0,1\}//'
+  # The whole header comment block from line 3, however long it grows.
+  awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 if [ "$#" -eq 0 ]; then

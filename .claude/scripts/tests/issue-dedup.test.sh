@@ -244,6 +244,9 @@ done
 assert_eq "unknown option → exit 2" "2" "$rc_badopt"
 assert_eq "non-numeric limit → exit 2" "2" "$rc_badnum"
 assert_eq "--help → exit 0" "0" "$rc_help"
+# --help prints the whole header, not a fixed line range it can outgrow.
+help_tail="$("$DEDUP" --help 2>/dev/null | tail -1)"
+assert_eq "--help ends with the header's last line" "Thresholds and the comment-vs-file decision: .claude/reference/autofile-dedup.md" "$help_tail"
 
 # ---- regression #696: fix 1 — score-first ranking ----------------------------
 echo "== regression #696: high-score closed beats low-score open (score-first ranking) =="

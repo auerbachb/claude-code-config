@@ -26,7 +26,10 @@
 #       `unclaimed` straight away; a CLOSED or nonexistent one is `unknown`
 #       (exit 4, not startable), never a startable `unclaimed`;
 #     - an issue in the index is checked in full by `issue-claim.sh --check`
-#       (that is the usual handful, not the whole batch).
+#       (that is the usual handful, not the whole batch);
+#     - so is an open issue labelled `human-tasks` (the owner's to-do list,
+#       #2539; the same read returns labels), which therefore reads `claimed`,
+#       never a startable `unclaimed`.
 #   So checking 50 free open issues costs 3 calls, not 150. This is the same
 #   label-index pre-filter /wave uses; the label is written before the claim
 #   comment, so a fresh claim nearly always carries it. The residual (a marker
@@ -285,7 +288,7 @@ read_states() {
     chunk=()
     while (( $# > 0 && ${#chunk[@]} < 50 )); do chunk+=("$1"); shift; done
     q="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {"
-    for n in "${chunk[@]}"; do q+=" i$n: issue(number: $n) { number state }"; done
+    for n in "${chunk[@]}"; do q+=" i$n: issue(number: $n) { number state labels(first: 100) { nodes { name } } }"; done
     q+=" } }"
     # An explicit --repo goes in with -f (raw string): -F converts all-digit and
     # true/false/null values to JSON types, so a repo named `1234` would fail the
@@ -304,6 +307,13 @@ read_states() {
         elif ([ .errors[]? | select(.type == "NOT_FOUND" and (.path // [] | .[1]) == $a) ] | length) > 0 then "missing"
         else "err" end' 2>/dev/null || echo err)"
       case "$body" in open|closed|missing) ;; *) body=err ;; esac
+      # The owner's `human-tasks` list issue (#2539) is never startable. Flag it
+      # (case-insensitively) so batch_check hands it to the authoritative
+      # single-issue --check instead of reporting it `unclaimed` from the index.
+      if [[ "$body" == open ]] && printf '%s' "$raw" | jq -e --arg a "i$n" \
+          '[.data.repository[$a].labels.nodes[]?.name | ascii_downcase] | index("human-tasks") != null' >/dev/null 2>&1; then
+        body=open-human-tasks
+      fi
       printf '%s\n' "$body" > "$WORK/state.$n"
     done
   done
@@ -324,7 +334,9 @@ batch_check() {
   for (( i = 0; i < TOTAL; i++ )); do
     issue="${ISSUES[$i]}"
     st="$(cat "$WORK/state.$issue" 2>/dev/null || echo err)"
-    if [[ "$INDEX_NUMBERS" == *" $issue "* && "$st" != closed ]]; then
+    # An indexed issue, or a `human-tasks` one anywhere, gets the full
+    # single-issue check (the latter reads `claimed`, not startable — #2539).
+    if [[ ( "$INDEX_NUMBERS" == *" $issue "* && "$st" != closed ) || "$st" == open-human-tasks ]]; then
       run_one "$i" "$issue" --check ${COMMON[@]+"${COMMON[@]}"}
       continue
     fi
