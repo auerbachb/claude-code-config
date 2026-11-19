@@ -49,10 +49,10 @@ A record that exists but cannot be read is not a first observation: it prints a 
 |---------|--------|----------|
 | `/pr-monitor-and-manage` fleet Monitor | Quiet when unchanged (its own shell gate) | `pr-monitor-and-manage/SKILL.md` "Verify or re-arm the Monitor": `pmm-pre-dispatch.sh` prints nothing for unchanged state |
 | `bgwork-ceiling.sh --tick`, `table-freshness.sh --tick` | Quiet unless stale | the ceiling and hourly floor, unchanged |
-| `/babysit-pr` Monitor | Not gated: emits `/babysit-pr <PR> --tick` every cadence | `babysit-pr/SKILL.md` block `babysit-pr-monitor-loop` |
-| `/pm day` Monitor | Not gated: emits `/pm day --tick` every cadence | `pm/modules/day-arm.md` arm block |
+| `/babysit-pr` Monitor | Quiet when unchanged (`monitor-quiet-tick.sh`) | `babysit-pr/SKILL.md` blocks `babysit-pr-monitor-loop`, `babysit-pr-t6a-quiet-record` |
+| `/pm day` Monitor | Quiet when unchanged (`monitor-quiet-tick.sh`) | `pm/modules/day-arm.md` block `pm-day-monitor-loop`, `day-tick.md` block `pm-day-tick-quiet-record` |
 
-The last two compute the digest, the streak and backoff (widen at 3, stop or pause at 9) and the blocker-tick terminal inside the model turn that the emitted line starts. Silencing an unchanged tick in the shell would stop those counters advancing, which changes liveness behavior, so they are left unchanged here. Moving the digest and counters into the Monitor shell is tracked on Issue #2459. `/subagent`'s Step 8 loop is the parent's in-turn poll, not a Monitor.
+The last two compute their digest, streak and backoff (widen at 3, stop or pause at 9) and the blocker-tick terminal inside the model turn. Since Issue #2459, a model tick ends by recording a contract: whether a repeat would do nothing new, plus an input digest the shell computed at the start of that tick, before it classified, so an event that lands mid-tick still wakes the model. On an unchanged tick, `monitor-quiet-tick.sh` advances exactly the counters that turn would have advanced (`digest_streak`, `blocker_streak` when counting, `tick_count`, `last_tick_at`) and prints nothing. It emits the tick that would change the cadence tier, reach streak 9 or reach the blocker cap, leaving the counter to the model, so every threshold fires on the same tick as before. A changed digest, a stale contract and any failure emit too. `/subagent`'s Step 8 loop is the parent's in-turn poll, not a Monitor.
 
 ## Worker results
 

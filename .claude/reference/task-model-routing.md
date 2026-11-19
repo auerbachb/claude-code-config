@@ -210,7 +210,7 @@ and creates/updates `MODEL_ROUTE_REQUEST` from its `.request` as needed.
 The initial PR handoff must copy that current phase record from session state;
 subsequent fix tasks retain earlier task histories. Use this write block with
 the existing `HANDOFF_JSON` metadata instead of an overwriting `--create`.
-Each literal assignment uses the handoff helper's lock; write the completion marker last. Never read/overwrite the whole existing record outside that lock.
+New records are created carrying the lowercased `owner_repo` (a conflicting `HANDOFF_JSON.owner_repo` is refused); Phase C repairs an older record that lacks it with `handoff-state.sh --seed-owner`. Each literal assignment uses the handoff helper's lock; write the completion marker last. Never read/overwrite the whole existing record outside that lock.
 
 <!-- test-anchor: routed-handoff-write -->
 ```bash
@@ -218,11 +218,13 @@ Each literal assignment uses the handoff helper's lock; write the completion mar
 : "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
 jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
 jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+jq -e --arg owner "$OWNER_REPO" '(has("owner_repo") | not) or (.owner_repo | type == "string" and ascii_downcase == ($owner | ascii_downcase))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
 ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
   '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
-"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+ROUTED_OWNER_SEED=$(jq -nc --arg owner "$OWNER_REPO" '{owner_repo: ($owner | ascii_downcase)}') || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" "$ROUTED_OWNER_SEED" || exit 5
 "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
-ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed" and .key != "owner_repo")' <<<"$HANDOFF_JSON") || exit 5
 while IFS= read -r ROUTED_METADATA_ROW; do
   [ -n "$ROUTED_METADATA_ROW" ] || continue
   ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5

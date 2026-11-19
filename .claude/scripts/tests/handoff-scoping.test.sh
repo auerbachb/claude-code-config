@@ -12,6 +12,7 @@
 #     then the cwd origin; underivable + no flag refuses and writes nothing
 #   - Legacy flat path reachable only via --legacy-flat / CLAUDE_HANDOFF_FLAT_OK=1
 #   - --set rejects raw jq expressions rather than storing them (issue #1357)
+#   - --seed-owner: narrow, identity-checked owner repair (issue #2471)
 #
 # Discovered by CI auto-detection (hook-scripts.yml) — no workflow edits needed.
 
@@ -949,6 +950,79 @@ dsb_stripped="${TMP_DIR}/dsb-no-migration-note.sh"
 grep -v -- 'in place of .--legacy-flat' "$DSB" > "$dsb_stripped"
 dsb_neg="$(grep -c -- 'in place of .--legacy-flat' "$dsb_stripped" || true)"
 check "  negative control: predicate flags a stripped migration note" "0" "$dsb_neg"
+
+echo ""
+echo "=== --seed-owner: sanctioned owner repair (issue #2471) ==="
+SO_REPO="acme/consumer"
+SO_FILE="$HOME/.claude/handoffs/acme/consumer/pr-2471-handoff.json"
+SO_HEAD="$(printf 'a%.0s' $(seq 1 40))"
+SO_OTHER="$(printf 'b%.0s' $(seq 1 40))"
+mkdir -p "$(dirname "$SO_FILE")"
+so() { env -u CLAUDE_SESSION_REPO -u CLAUDE_HANDOFF_FLAT_OK "$HANDOFF_STATE" "$@"; }
+so_write() { printf '%s\n' "$1" > "$SO_FILE"; }
+so_legacy='{"schema_version":"1.0","pr_number":2471,"head_sha":"'"$SO_HEAD"'","reviewer":"cr","unknown_field":{"k":1},"threads_replied":["t1"],"model_routing":{"issue-1":{"A":{"x":1}}}}'
+so_guarded() { so --owner-repo "$SO_REPO" --require-existing --expect-pr 2471 --expect-owner "$SO_REPO" --expect-head "$SO_HEAD" --set 2471 "$1"; }
+so_snap="${TMP_DIR}/so-snap"
+so_refuse() { # desc expected-rc args...
+  local desc="$1" want="$2"; shift 2
+  cp "$SO_FILE" "$so_snap"
+  local rc=0; so "$@" >/dev/null 2>&1 || rc=$?
+  check "$desc exits $want" "$want" "$rc"
+  if cmp -s "$SO_FILE" "$so_snap"; then ok "  and left the bytes identical"; else fail "  bytes changed on refusal: $desc"; fi
+}
+
+# Negative control: a guarded write cannot bootstrap a missing owner.
+so_write "$so_legacy"
+rc=0; so_guarded '.notes="x"' >/dev/null 2>&1 || rc=$?
+check "guarded write on a record without owner_repo exits 4 (control)" "4" "$rc"
+
+# Positive: absent owner is seeded (lowercased), everything else survives.
+rc=0; so --owner-repo "Acme/Consumer" --seed-owner 2471 "$SO_HEAD" >/dev/null 2>&1 || rc=$?
+check "--seed-owner on an absent owner exits 0" "0" "$rc"
+check "  owner_repo seeded lowercased" "acme/consumer" "$(jq -r '.owner_repo' "$SO_FILE")"
+check "  unknown fields and arrays preserved" "1|t1|1" \
+  "$(jq -r '[.unknown_field.k, .threads_replied[0], .model_routing["issue-1"].A.x] | join("|")' "$SO_FILE")"
+rc=0; so_guarded '.notes="x"' >/dev/null 2>&1 || rc=$?
+check "guarded write succeeds after the repair" "0" "$rc"
+check "  guarded write landed" "x" "$(jq -r '.notes' "$SO_FILE")"
+
+# null and "" owners are repaired too.
+for so_empty in 'null' '""'; do
+  so_write "$(jq -c --argjson o "$so_empty" '.owner_repo = $o' <<<"$so_legacy")"
+  rc=0; so --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD" >/dev/null 2>&1 || rc=$?
+  check "owner_repo=$so_empty is repaired (exit 0)" "0" "$rc"
+  check "  and now names the scope" "acme/consumer" "$(jq -r '.owner_repo' "$SO_FILE")"
+done
+
+# No-op: a mixed-case match stays byte-identical (spelling kept).
+so_write "$(jq -c '.owner_repo = "Acme/Consumer"' <<<"$so_legacy")"
+so_refuse "matching mixed-case owner is a no-op, rc" 0 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD"
+
+# Refusals leave bytes untouched.
+so_write "$(jq -c '.owner_repo = "evil/other"' <<<"$so_legacy")"
+so_refuse "conflicting owner" 4 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD"
+so_write "$(jq -c '.owner_repo = 7' <<<"$so_legacy")"
+so_refuse "non-string owner" 4 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD"
+so_write "$so_legacy"
+so_refuse "wrong HEAD" 4 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_OTHER"
+so_write "$(jq -c '.pr_number = 99' <<<"$so_legacy")"
+so_refuse "embedded PR differs from the path PR" 4 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD"
+so_write '[{"pr_number":2471}]'
+so_refuse "non-object body" 4 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD"
+so_write "$so_legacy"$'\n'"$so_legacy"
+so_refuse "multi-document body" 4 --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD"
+so_write "$so_legacy"
+so_refuse "derived scope" 2 --seed-owner 2471 "$SO_HEAD"
+so_refuse "--legacy-flat scope" 2 --legacy-flat --seed-owner 2471 "$SO_HEAD"
+so_refuse "invalid PR argument" 2 --owner-repo "$SO_REPO" --seed-owner 02471 "$SO_HEAD"
+so_refuse "invalid HEAD argument" 2 --owner-repo "$SO_REPO" --seed-owner 2471 abc123
+
+# An ambient flat variable does not override an explicit scope; a missing file
+# exits 3 without creating one.
+rm -f "$SO_FILE"
+rc=0; CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --owner-repo "$SO_REPO" --seed-owner 2471 "$SO_HEAD" >/dev/null 2>&1 || rc=$?
+check "missing record exits 3" "3" "$rc"
+check "  and no record was created" "0" "$(test -e "$SO_FILE" && echo 1 || echo 0)"
 
 # ---------------------------------------------------------------------------
 # Summary
