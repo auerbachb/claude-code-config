@@ -61,6 +61,8 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_epic_comment": "Epic scope for /pm epic #N (issue #2545): {number, set_at, completed_at?}, or null/absent when no epic is set. Written only when the operator types /pm epic #N (Step 0d, shared:epic Bind); completed_at is added when every child is verified closed and the parent closes, so later refills read a finished epic, never the whole backlog; cleared only by a plain cold /pm or replaced by a new /pm epic #M. Resume, day ticks and refill read it so the thread stays scoped to that parent's open children across compaction. Never inferred from a title, label or keyword.",
+      "epic": null,
       "_run_mode_comment": "PM run mode for this repo (issue #2428): a JSON string enum, one of default | speed | cheap. Absent, invalid or unreadable reads as default (fail-open). Written only by .claude/scripts/run-mode.sh set, only on a human's chat instruction. Read only through run-mode.sh get. The runtime type maps do not enforce repo-scoped fields; the accessor validates the value. Informational in increment 1: it changes no model choice, width or gate. Contract: .claude/reference/run-modes.md.",
       "_poll_interval_s_comment": "Review-poll cadence in seconds for this repo's running Phase B agents (issue #2430): 120 above 8 running pipelines, else 60, from active-work-cap.sh --poll-interval. Written each /pm or /subagent monitor tick; each Phase B re-reads it per cycle. Informational; a rate-limited read is no data, never a clean result.",
       "poll_interval_s": 60,

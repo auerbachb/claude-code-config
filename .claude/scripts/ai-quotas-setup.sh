@@ -15,8 +15,9 @@
 #   DISPLAY / CONFIG ONLY. Nothing here may gate dispatch, pause work, or feed
 #   `credit-budget.sh`. Quota and spend authority stays where
 #   `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" puts it:
-#   Anthropic's own in-app UI and upstream harness signals. Schema, re-login
-#   commands, and the increment boundary: `.claude/reference/ai-quotas.md`.
+#   Anthropic's own in-app UI and upstream harness signals. Schema and
+#   the increment boundary: `.claude/reference/ai-quotas.md`; re-login commands:
+#   `.claude/reference/ai-quotas-setup.md`.
 #
 #   NO CREDENTIAL VALUE IS EVER READ, PRINTED, OR STORED. The config holds a
 #   provider, a label, a profile directory, and — on macOS — the NAME of the

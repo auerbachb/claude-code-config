@@ -43,6 +43,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 DOC="$REPO_ROOT/.claude/reference/subagent-thread-limit-park.md"
 GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
+# The park lane's dispatch text is the usage-limit-park kind module (issue #2181).
+GO_ON_PARK="$REPO_ROOT/.claude/skills/go-on/modules/kinds/usage-limit-park.md"
 SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
@@ -660,7 +662,7 @@ check_eq "  and it still names the orphaned PR" \
 require_text "and go-on documents that records outlive a retired parked_until" \
   "$GO_ON" 'Records OUTLIVE a retired'
 require_text "  and that a bare claim is not a confirmed resume" \
-  "$GO_ON" 'claimed-not-confirmed'
+  "$GO_ON_PARK" 'claimed-not-confirmed'
 require_text "  and that the park digest covers every parked PR" \
   "$GO_ON" 'carries every parked PR'
 require_text "pause-resume reclaims a dead usage_limit_relaunching claim" \
@@ -1150,10 +1152,12 @@ require_text "  and the reference doc names the same claim" \
 # pipelines, so the /go-on park lane relaunching its own saved PARK_PIPELINES
 # afterwards produced two Phase B/C pipelines on one branch.
 require_text "the go-on park lane delegates the relaunch and launches nothing" \
-  "$GO_ON" 'relaunch nothing here'
+  "$GO_ON_PARK" 'relaunch nothing here'
 require_text "  and treats PARK_PIPELINES as an expectation, not a work list" \
-  "$GO_ON" 'not a second work list'
+  "$GO_ON_PARK" 'not a second work list'
 refute_text "  so it no longer relaunches each PARK_PIPELINES entry itself" \
+  "$GO_ON_PARK" 'for each entry in .PARK_PIPELINES., read its scoped handoff file and relaunch'
+refute_text "  nor does the entry" \
   "$GO_ON" 'for each entry in .PARK_PIPELINES., read its scoped handoff file and relaunch'
 # CodeAnt #1621: probe F filled missing phase/head_sha/needs with empty strings,
 # so a damaged record reported as resumable instead of unreadable.

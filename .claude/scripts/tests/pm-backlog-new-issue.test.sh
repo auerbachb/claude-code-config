@@ -129,7 +129,9 @@ FILED=$(issue 11 "Desk: an idea filed an hour ago" "$(iso_ago 60)" '[]' "enhance
 MINE=$(issue 12 "Assigned already" "$(iso_ago 50)" '[{"login":"someone"}]' "")
 HELD=$(issue 13 "Parked" "$(iso_ago 40)" '[]' "On-Hold")
 DUP=$(issue 14 "Same as #11" "$(iso_ago 30)" '[]' "Duplicate,bug")
-backlog "$OLD" "$FILED" "$MINE" "$HELD" "$DUP"
+# Issue #2539: the owner's to-do list issue is never new backlog work.
+TODO=$(issue 17 "Human tasks" "$(iso_ago 20)" '[]' "Human-Tasks")
+backlog "$OLD" "$FILED" "$MINE" "$HELD" "$DUP" "$TODO"
 run_block
 check_eq "first scan: only the unassigned, unexcluded issue from the last 24 h is new" "11" "$NEW"
 check_contains "first scan: says where the window came from" "the last 24 h (no earlier scan recorded)" "$OUT"

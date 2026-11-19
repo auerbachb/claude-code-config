@@ -26,6 +26,8 @@
 #      "solved-by-pr"|"inactive"|"superseded"|"potential-duplicate",
 #      "rationale": "..."}
 #   Zero flags is a valid result (prints "[]" / no lines) — not an error.
+#   An open issue labelled `human-tasks` (the owner's to-do list, #2539) is
+#   never flagged, in any category.
 #
 # EXIT CODES:
 #   0  OK — ran to completion (including the zero-flags case)
@@ -120,6 +122,9 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
+# Label of the owner's own to-do list issue; never flagged in any category.
+HUMAN_TASKS_LABEL="human-tasks"
+
 # ---------------------------------------------------------------------------
 # Fetch the three GitHub state snapshots /pm-clean's Steps 1-3 depend on.
 # ---------------------------------------------------------------------------
@@ -131,6 +136,14 @@ if ! OPEN_ISSUES=$(gh issue list --state open --limit 500 \
 fi
 if [ "$(printf '%s' "$OPEN_ISSUES" | jq 'length')" -eq 500 ]; then
   err "Open issue count hit the 500-item fetch cap — results may be incomplete."
+fi
+# The owner's `human-tasks` list issue (#2539) is never backlog work and never
+# closes: drop it before every check, solved-by-PR included, so no category can
+# propose closing it.
+if ! OPEN_ISSUES=$(printf '%s' "$OPEN_ISSUES" | jq -c --arg l "$HUMAN_TASKS_LABEL" \
+    '[.[] | select([(.labels // [])[].name | ascii_downcase] | index($l) | not)]' 2>"$TMP/open.err"); then
+  err "could not filter open issues by label: $(cat "$TMP/open.err")"
+  exit 3
 fi
 
 if ! MERGED_PRS=$(gh pr list --state merged --limit 200 \

@@ -27,6 +27,7 @@ Quick links: [Setup](docs/provisioning.md) · [CLI](docs/items.md) · [Capture h
 | `bin/lib/filings.sh` | The desk's pending filings, shared by `filed` and `sync-reviews` (see "Ideas") |
 | `bin/lib/report.sh`, `bin/lib/report.jq` | The weekly attention report's thread-model lookup and its one-page rendering (see "Weekly attention report") |
 | `bin/lib/todo.sh` | The operator's to-do layer: tag and snooze-time parsing, and the one locked write `tag`, `untag`, `note`, `snooze`, `unsnooze`, and `mine` share (see "The to-do layer") |
+| `bin/lib/owner-tasks.sh` | Reads the operator's open human tasks from `owner-task.sh` for `tasks` and `checkin get --tasks`; stores nothing (see "Open human tasks") |
 | `bin/lib/budget.sh` | The reading budget's measurements from `events`, shared by `stats`, `checkin`, and `plan forecast` (see "Morning check-in and reading budget") |
 | `bin/lib/impact.jq` | The derived-impact rule behind `impact` (see "Derived impact") |
 | `bin/lib/export.sh`, `bin/lib/export.jq` | The paper copy's PDF renderers and its Markdown, text, and HTML rendering (see "Export to paper") |
@@ -79,6 +80,7 @@ The hook entries under `.claude/hooks/` are symlinks into this folder
 - <a name="review-batches"></a>[Review batches](docs/review-batches.md)
 - <a name="export-to-paper-issue-1759"></a>[Export to paper (issue #1759)](docs/export-to-paper.md)
 - <a name="stoppage-log-issue-2292"></a>[Stoppage log (issue #2292)](docs/stoppages.md)
+- <a name="open-human-tasks-issue-2542"></a>[Open human tasks (issue #2542)](docs/tasks.md)
 <!-- desk-docs-index:end -->
 
 ### Queue owner: decisions (issue #2184)

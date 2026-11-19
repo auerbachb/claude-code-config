@@ -14,7 +14,9 @@
 # OUTPUT (exit 0): KEY=value lines — PHASE, PR, HEAD, REVIEWER, OUTCOME, NEXT,
 #   HANDOFF, FILES_COUNT, FILES (cut to 300 chars), and VERDICTS /
 #   FIXPR_WAIT_ITERATIONS / FIXPR_TOTAL_WAIT_SECS / FIXPR_WAIT_FINAL / RESULT (one-line task result, e.g. a pm-worker's
-#   created issue number; required for pm-worker/completed) when present.
+#   created issue number; required for pm-worker/completed) when present, then one
+#   OWNER_ACTION=<reason>: <what> line per `OWNER_ACTION:` line in the prose above
+#   the last EXIT_REPORT block (issue #2561).
 #   Every value is cut to 300 chars, so output stays bounded for any input size.
 #
 # EXIT STATUS: 0 valid; 1 malformed (missing field, bad outcome for the phase,
@@ -30,7 +32,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --phase) [[ $# -ge 2 ]] || { echo "exit-report-extract: --phase needs a value" >&2; exit 2; }
              want_phase="$2"; shift 2 ;;
-    --help|-h) sed -n '2,24p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,26p' "$0"; exit 0 ;;
     -) file="-"; shift ;;
     -*) echo "exit-report-extract: unknown option $1" >&2; exit 2 ;;
     *) file="$1"; shift ;;
@@ -100,8 +102,20 @@ for v in $valid; do
 done
 [[ "$outcome_ok" == 1 ]] || bad "outcome $outcome is not valid for $phase"
 
+# OWNER_ACTION lines sit in the prose directly above the last EXIT_REPORT
+# (issue #2561), so the parent, which reads only this output, still saves them.
+# Only lines between the previous header (or the start) and the last one count.
+forward_owner_actions() {
+  printf '%s\n' "$content" | awk '
+    /^EXIT_REPORT[[:space:]]*$/ { saved=cur; cur=""; next }
+    /^OWNER_ACTION: *[^ ]/ { sub(/^OWNER_ACTION: */, ""); cur = cur "OWNER_ACTION=" substr($0, 1, 300) "\n" }
+    END { printf "%s", saved }
+  '
+}
+
 if [[ "$phase" == "researcher" ]]; then
   printf 'PHASE=%s\nOUTCOME=%s\n' "$phase" "$outcome"
+  forward_owner_actions
   exit 0
 fi
 
@@ -157,4 +171,5 @@ for pair in VERDICTS_POSTED:VERDICTS FIXPR_WAIT_ITERATIONS:FIXPR_WAIT_ITERATIONS
   src=${pair%%:*}; dst=${pair##*:}
   if has "$src"; then printf '%s=%s\n' "$dst" "$(get "$src")"; fi
 done
+forward_owner_actions
 exit 0

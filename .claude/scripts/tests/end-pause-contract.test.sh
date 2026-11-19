@@ -31,6 +31,16 @@ hasnt() {
   grep -Eq -- "$2" "$1" && fail "$(basename "$1") must NOT contain: $2"
   return 0
 }
+# /go-on loads its lane procedures from modules (issue #2181). An absence check
+# scans the entry and every module, so a fragment that moved into a module can
+# never make it pass by mistake; an empty module glob fails rather than passing.
+GO_ON_MODULES=("$ROOT"/.claude/skills/go-on/modules/*/*.md)
+[[ ${#GO_ON_MODULES[@]} -eq 8 && -r "${GO_ON_MODULES[0]}" ]] \
+  || fail "expected the 8 /go-on modules, found ${#GO_ON_MODULES[@]}"
+hasnt_go_on() {
+  local f
+  for f in "$GO_ON" "${GO_ON_MODULES[@]}"; do hasnt "$f" "$1"; done
+}
 
 has "$END" '^name: end$'
 has "$END" 'default: --window 5m'
@@ -51,8 +61,13 @@ has "$ARM_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 has "$ARM_HOOK" 'CLAUDE_STATE_RMW_MAX_RETRY=0'
 has "$COMPLETE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 has "$COMPLETE_HOOK" 'CLAUDE_STATE_RMW_MAX_RETRY=0'
-has "$GATE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
+# issue #2433: the gate retries exit 6 inside a ms budget with a short
+# per-attempt lock timeout instead of one fixed 3s attempt.
+has "$GATE_HOOK" 'CLAUDE_PAUSE_GATE_BUDGET_MS:-3500'
+has "$GATE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT="\$ATTEMPT_TIMEOUT"'
 has "$GATE_HOOK" 'RC.*-eq 6'
+has "$GATE_HOOK" 'lock-busy'
+has "$GATE_HOOK" 'could not be verified'
 has "$PAUSE_SCRIPT" 'execution-pause-markers'
 has "$PAUSE_SCRIPT" 'chmod 700'
 has "$REGISTRY" 'failed|stop_failed|rearmed'
@@ -111,7 +126,7 @@ has "$SWEEP_SCRIPT" 'not a pause record, or holds a malformed record'
 # No reader may raise out of the combine any more — that is what threw away the
 # surviving slots. (`error(` appears nowhere in these three pause programs.)
 hasnt "$PAUSE_RESUME" 'error\("legacy'
-hasnt "$GO_ON" 'error\("legacy'
+hasnt_go_on 'error\("legacy'
 hasnt "$SWEEP_SCRIPT" 'error\("legacy'
 # A malformed VALUE inside an otherwise-valid map is corrupt too — `select`
 # would drop it silently, reporting a clean no-op over a damaged board.
@@ -139,7 +154,7 @@ has "$GO_ON" 'legacy resume receipt could not be read'
 # so the skills stay free to name the trap in prose, which they do.
 has "$PAUSE_RESUME" 'active != false'
 hasnt "$PAUSE_RESUME" "[(\"']\.active // true"
-hasnt "$GO_ON" "[(\"']\.active // true"
+hasnt_go_on "[(\"']\.active // true"
 has "$PAUSE_RESUME" 'STATE_KEY="suspend"'
 has "$PAUSE_RESUME" 'handoffs/suspend-'
 has "$PAUSE_RESUME" 'MARKER_NAME.*suspend-'
@@ -149,7 +164,7 @@ has "$PAUSE_RESUME" '\.repos\[.*\]\.suspend'
 # Resume receipts are keyed per session too, and the legacy singleton is only
 # consulted when it belongs to the reading session.
 has "$GO_ON" '\.repos\[.*\]\.resumes\[.*SESSION_ID'
-hasnt "$GO_ON" '\.repos\[\\"\$REPO_KEY\\"\]\.resume='
+hasnt_go_on '\.repos\[\\"\$REPO_KEY\\"\]\.resume='
 has "$GO_ON" 'LEGACY_SESSION'
 # One sanitization rule, applied at every site that builds a session key.
 has "$PAUSE" 'SESSION_ID//\[\^\[:alnum:\]_\.-\]'
@@ -363,6 +378,14 @@ jq -e '
   .hooks.PreToolUse[] | select(.matcher == "Agent|Workflow|Monitor|Bash")
   | .hooks[] | select(.command | endswith("/pause-launch-gate.sh"))
 ' "$SETTINGS" >/dev/null || fail "PreToolUse pause launch gate is not registered"
+GATE_HOST_TIMEOUT=$(jq -r '
+  [.hooks.PreToolUse[] | select(.matcher == "Agent|Workflow|Monitor|Bash")
+   | .hooks[] | select(.command | endswith("/pause-launch-gate.sh")) | .timeout][0] // 0
+' "$SETTINGS")
+GATE_BUDGET_MS=$(sed -n 's/.*CLAUDE_PAUSE_GATE_BUDGET_MS:-\([0-9]*\).*/\1/p' "$GATE_HOOK" | head -n 1)
+[[ "$GATE_BUDGET_MS" =~ ^[0-9]+$ ]] || fail "could not read the launch-gate budget"
+(( GATE_HOST_TIMEOUT * 1000 > GATE_BUDGET_MS + 1000 )) \
+  || fail "launch-gate host timeout ${GATE_HOST_TIMEOUT}s does not exceed its ${GATE_BUDGET_MS}ms budget plus margin"
 jq -e '
   .hooks.SubagentStop[].hooks[]
   | select(.command | endswith("/background-task-complete.sh"))

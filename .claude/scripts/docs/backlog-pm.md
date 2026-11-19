@@ -25,11 +25,14 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [issue-deps.sh](../issue-deps.sh) | Parse issue dependency markers (`Depends on #N`, `blocked by`, `unblocks`, …) from bodies and comments — the one reading `/pm` 1B.3, `/wave` 5.1, and the desk's derived impact share; `edges` and transitive `dependents` |
 | [issue-file.sh](../issue-file.sh) | Validate a seven-section issue body and file it with checked labels: the one create path for /issue-maker and the desk's idea: intent |
 | [makespan.sh](../makespan.sh) | Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput |
+| [owner-task.sh](../owner-task.sh) | Keep one GitHub-stored list per repo of human tasks (add, list, done with proof, where), redirecting public repos to a private bucket |
 | [park-generation.sh](../park-generation.sh) | Mints a durable usage-limit park identity from OS entropy |
 | [park-retire.sh](../park-retire.sh) | Retires a bound park snapshot without adopting a replacement |
 | [park-wake-publish.sh](../park-wake-publish.sh) | Publishes a wake identity onto its bound park; recovery can replace a proven-dead wake |
 | [pm-board-page.sh](../pm-board-page.sh) | Publish a private read-only project board from verified PM evidence. |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
+| [pm-epic.sh](../pm-epic.sh) | `/pm epic #N` (issues #2545, #2546): parse the epic argument, read a named parent's same-repo children from its `## Increment chain` checklist, GitHub sub-issues and `#N` task-list items, keep the parent's `## Epic scope` coverage record (covered vs remaining items, wave by wave, at most five children a wave), decide when the next wave is due, and close the parent only once every child is closed and no scope remains |
+| [pm-human-tasks.sh](../pm-human-tasks.sh) | `/pm` human tasks (issue #2563): save each operator-only item /pm surfaces through `owner-task.sh add`, skipping one already on the list for the same what and source (done ones included), and count the repo's open tasks from `owner-task.sh list --json`, reporting an unreadable list as unreadable, never as zero |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |
 | [pm-rank-cache.sh](../pm-rank-cache.sh) | `/pm`'s latest backlog ranking cache (`~/.claude/pm-rank/<owner>-<repo>.json`): `/pm` 1B.4c writes the order it presents, the desk's derived impact reads an issue's rank while the cache is under 24 hours old (else rank unknown) |
 | [pm-run-receipt.sh](../pm-run-receipt.sh) | Record and render the step receipt for a /pm invocation. |

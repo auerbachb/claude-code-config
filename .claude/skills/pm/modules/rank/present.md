@@ -11,6 +11,9 @@ exit or incomplete ranking leaves the receipt unpublished.
 
 See `.claude/reference/pm-output-templates.md` §User-Scoped Sections for the block format (Your Open PRs, Forgotten PRs, PRs Awaiting Your Review, Issues Assigned to You).
 
+<!-- pm-routing:begin -->
+Before `## Suggested Next Issues`, read `shared:human-tasks`: save each operator-only item this presentation surfaces, then print its human-task count line.
+<!-- pm-routing:end -->
 Then display a short list of the top 3–5 backlog issues (unassigned / up for pickup) — see `.claude/reference/pm-output-templates.md` §Suggested Next Issues for the block format.
 
 **Operator order first (1B.4 item 7).** Every eligible override row leads, marked `Operator order (desk) #k`, before filling the remaining display rows from the ranking. The context line carries `PRIORITY_STATUS` (1B.1a); a `Parked (desk):` line names each parked issue with its return date, and a `Not eligible (desk):` line names each ordered issue that was excluded, with its reason. The full ranking below opens with an `## Operator order (desk)` section above the tiers. Formats: `pm-output-templates.md`.

@@ -51,6 +51,10 @@ tick is unattended by construction, and `--window` already armed `.window` in St
 
 **A non-null `$SCOPE` constrains every refill source** — it is a narrowing, not a stop, and it is worthless if it is only recorded. Every candidate, operator-ordered, queued, or from the backlog, must fall inside it; one that doesn't is skipped exactly like a failed re-validation, and if that empties the candidate set the reason is `nothing eligible (scope: <scope>)`. Reading `refill.scope` and then ranking the whole backlog would auto-launch precisely the work the user just excluded.
 
+<!-- pm-routing:begin -->
+Epic scope (issue #2545): on every evaluation, read `shared:epic` and run its Restore block after the scope read. A stored epic narrows every refill source to its open children, re-read from GitHub on each evaluation. An unreadable epic is `paused (epic scope unreadable)`. Before reading the children, it runs its wave check (issue #2546) and follows that verdict: file a due wave of at most five children, finish a part-filed one, or file nothing. When no child is eligible, run its Completion block; an epic whose filing stopped (no clean seam) is `nothing eligible (epic #N stopped: <reason>)`. A completed epic stays stored as complete, so the candidate set stays empty with the reason `nothing eligible (epic #N complete)` and refill never falls through to the whole backlog.
+<!-- pm-routing:end -->
+
 Write it **only** when a human says stop in chat, and clear it **only** on an explicit human resume — never on an unrelated later message:
 
 ```bash
@@ -240,6 +244,9 @@ Redirecting after the fact is the correction mechanism that replaces the removed
 | Reason | Meaning |
 |--------|---------|
 | `nothing eligible` | No inline-eligible candidate left — backlog empty, everything closed, or every remaining issue already has a PR. Append `(scope: <scope>)` when a non-null `$SCOPE` is what emptied the set, so a narrowing never looks like an exhausted backlog |
+| `nothing eligible (epic #N complete)` | `/pm epic #N` only — every child of the epic is closed and `shared:epic` closed the parent. The epic run is finished |
+| `nothing eligible (epic #N stopped: <reason>)` | `/pm epic #N` only — no child is eligible and the parent's scope record says filing stopped (no clean seam). The parent stays open; filing resumes once the operator re-cuts the remaining items and deletes the record's `Stopped:` line |
+| `paused (epic scope unreadable)` | The stored epic or its children could not be read (`shared:epic`). Nothing new starts; never falls back to the whole backlog. Census reason `paused_state_unreadable` |
 | `chained` | Every remaining candidate is serialized behind a contested file (`/subagent` Step 6.0b) |
 | `paused` | The user said stop, or the pause state is unreadable (Execution Boundary) — refilling stays off until a human explicitly resumes it |
 | `paused (pipeline failures)` | **Day mode only** — `day.refill_halted` is set after `max_pipeline_failures` consecutive `blocked` outcomes (2D.3 D1). Distinct from `paused` on purpose: the board is held by a detected failure pattern, not by the user, and the fix is to look at the surfaced blockers |

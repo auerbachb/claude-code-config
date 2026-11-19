@@ -1872,6 +1872,26 @@ reset_issue
 run 873 --check --holder someone-else
 check_eq "recipe control: unclaimed issue reads unclaimed" "unclaimed" "$OUT"
 
+############################################################################
+echo "== (2539) the human-tasks list issue is never startable =="
+reset_issue
+printf 'Human-Tasks\n' > "$STATE/labels"
+run 873 --check --holder threadA
+check_eq "human-tasks: --check verdict claimed" "claimed" "$OUT"
+check_eq "human-tasks: --check exit 1 (not startable)" 1 "$RC"
+check_contains "human-tasks: --check names the reason" "never agent work" "$ERR"
+run 873 --claim --holder threadA --allow-claimed
+check_eq "human-tasks: --claim refused even with --allow-claimed" "1|claimed" "$RC|$OUT"
+check_eq "human-tasks: --claim wrote no marker" 0 "$(claim_comment_count)"
+check_eq "human-tasks: --claim added no in-progress label" "Human-Tasks" "$(cat "$STATE/labels")"
+check_eq "human-tasks: --claim assigned nobody" "" "$(cat "$STATE/assignees")"
+run 873 --check --holder threadA --json
+check_eq "human-tasks: --json verdict claimed" "claimed" "$(jq -r .verdict <<<"$OUT")"
+# Control: the same issue without the label is startable.
+reset_issue
+run 873 --check --holder threadA
+check_eq "human-tasks control: unlabelled issue is unclaimed" "0|unclaimed" "$RC|$OUT"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

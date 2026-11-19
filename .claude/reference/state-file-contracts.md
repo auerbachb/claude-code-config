@@ -100,6 +100,37 @@ Both exit **6** on lock timeout; the caller retries. Locks whose holder process 
 
 The reason inline `jq … > tmp && mv tmp` is banned is that it is atomic with respect to the *file* but not with respect to the *lock* — it will happily clobber a concurrent writer's siblings.
 
+**Timeout diagnostics and the bounded deadline (issue #2433).** `CLAUDE_STATE_LOCK_TIMEOUT` is a real upper bound — it is checked after a failed parent-directory creation and after every failed stale-break attempt, not only after a lost `mkdir`. The exit-6 message is one line and always names a holder: `held by pid <pid> on <host> (cmd …, held Ns)`, `last observed held by pid … on … (Ns ago)`, or `held by pid unknown on unknown (<reason>)`. Forms whose reason ends `not contention` mean the lock could not be created at all (unwritable directory, missing parent) rather than that someone holds it. The waiter's own identity is never reported. Forms and wording: the `state-lock.sh` header (BOUNDED DEADLINE AND TIMEOUT DIAGNOSTICS). `pause-launch-gate.sh` classifies on these forms to report *lock-busy* separately from *paused* and *unavailable* (`.claude/hooks/README.md`).
+
+**`--migrate` is locked (issue #2433).** `session-state.sh --migrate` reads, migrates and compares under the state lock, and rewrites only when the migrated document differs (ignoring `last_updated`). A no-op migration — the normal case for the call `session-scheduling-reconcile.sh` makes on every startup — leaves the file's bytes and mtime alone. `--dry-run` stays lock-free and read-only.
+
+## Compaction (issue #2433)
+
+Every locked writer rewrites the whole file, so size is lock-hold time. `session-state-compact.sh` keeps the file small by moving provably old entries into a local archive, in one jq pass under the shared lock. It is offline (local evidence only); the GitHub-backed `session-state-audit.sh --prune` remains the separate, explicit tool.
+
+| Category | Eligible when (defaults) | Always retained |
+|---|---|---|
+| `.repos[R].prs[N]` | newest valid ISO-8601 timestamp anywhere in the entry (offsets applied) is older than 30 days (`--pr-age-days`) | `babysit.active == true`; non-empty `wrap_sweep.needs_decision`; PRs named by the `.pr` of an agent the age rule keeps (the session view attributes agents through them); no valid timestamp at all |
+| `.repos[R].background_tasks[i]` | terminal status (`done`, `abandoned`, `rearmed`) and `updated_at`/`started_at` older than 3 days (`--task-age-days`); `stopped`/`failed` only past the 30-day PR window (`/end-resume` lists them as recoverable work) | every non-terminal status (`running`, `stopping`, `stop_failed`, `rearming`) — age never converts a possibly-billable task; `stopped`/`failed` younger than 30 days; no timestamp |
+| `.active_agents[ID]` | `last_seen_at`/`launched` older than 7 days (`--agent-age-days`) | agents whose `.pr` names a PR entry the age pass kept; no timestamp |
+| `.polling_failures`, `.polling_backoffs` | beyond the newest 100 items (`--history`) | the newest 100 |
+| `.repos[R]` | only once compaction left nothing but an empty `prs`/`background_tasks` | anything else in it |
+
+Everything else — `execution_pauses`, `.pauses`, legacy `.pause`/`.suspend`, `tasks`, `pipelines`, `rounds`, unknown keys — is never touched. `_unknown` and legacy scopes get the same age rules; compaction never re-attributes or migrates. Thresholds also read `CLAUDE_STATE_COMPACT_{PR,AGENT,TASK}_AGE_DAYS` and `CLAUDE_STATE_COMPACT_HISTORY`.
+
+**Size cap.** After the age pass, if the estimated file size is still above `CLAUDE_STATE_COMPACT_SIZE_CAP` (default 2 MiB, `--size-cap`), further eligible-category items (unprotected PRs, terminal tasks) are archived oldest first until it fits. Agents are never size-archived: one the age pass kept may still be live. Sizes are UTF-8 bytes, and the candidate's real pretty-printed size is re-measured; while it is still over the cap the size pass re-plans against a cap lowered by the overshoot (bounded). Protected and undated items are never archived; `--check` and `--apply` report what remains.
+
+**Apply contract.** Lock → validate one top-level object → one jq pass producing the candidate and every removed item with its JSON path → nothing eligible: release, no rewrite, `last_updated` untouched → validate (one object; everything outside the touched categories byte-equal; field-type contract) → archive → `state_lock_commit`. A failed validation writes no archive; a failed commit removes the archive it just wrote (nothing was committed), so repeated failures cannot grow the archive. Failures are reported, never retried silently. Exit codes: 0, 2 usage, 3 missing, 4 invalid, 5 write failure, 6 lock.
+
+**Archive.** `~/.claude/session-state-archive/` (mode `0700`), one `compact-<state-file-name>-<cksum of its full path>-<id>.json` per run (mode `0600`): `{compaction_id, compacted_at, state_file, trigger, items:[{cat, path, container, ts, value}]}`. The newest 30 files per state file are kept (`CLAUDE_STATE_COMPACT_ARCHIVE_KEEP`); retention never touches another state file's archives (it deletes only archives whose `state_file` names this exact path; `<id>` leads with a microsecond UTC stamp, so name order is age order). There is no restore command. To restore by hand, hold no session open, then for an `object` item set `getpath(path)` back to `value`; for an `array` item append `value` to the array at `path[:-1]` — for example with `jq --slurpfile a <archive> 'reduce $a[0].items[] as $i (.; if $i.container == "array" then setpath($i.path[:-1]; (getpath($i.path[:-1]) // []) + [$i.value]) else setpath($i.path; $i.value) end)'`, writing the result through a temp file while no writer runs.
+
+**Triggers.** Both are detached and never wait; neither touches a launch-critical path.
+
+- *Post-write size check* — `session-state.sh` `--set`/`--cas`/`--migrate`, after a successful commit **and** after releasing the lock: if the file is larger than the size cap, no compaction is running (a `<state>.compact.run/` guard younger than 10 minutes; an older one is left for the compactor to reclaim), the last successful run (`<state>.compact.stamp`) is older than `CLAUDE_STATE_COMPACT_MIN_INTERVAL` (600 s) and the last attempt (`<state>.compact.attempt`) older than `CLAUDE_STATE_COMPACT_ATTEMPT_INTERVAL` (60 s), it starts `session-state-compact.sh --apply --lock-timeout 5` with output to `<state>.compact.log`. Never inside an inherited lock (`CLAUDE_STATE_LOCK_HELD`) and never from the compactor (`CLAUDE_STATE_COMPACT_RUNNING`).
+- *Session-start cadence* — `session-start-sync.sh`, after the config-sync lock is released, for every `source`: when the stamp is absent or older than `CLAUDE_STATE_COMPACT_CADENCE_SECS` (86400), it starts `--apply --if-due <cadence>`.
+
+A run that cannot take the lock exits 6 and leaves the stamp alone, so the next trigger retries. `CLAUDE_STATE_COMPACT_AUTO=0` disables both triggers. The stamp, guard, attempt and log files live next to the state file, never inside it.
+
 ## `HOME` unset — exit 8 (issue #1434)
 
 `session-state.sh` and `reviewer-of.sh` resolve their state file from `$HOME`. When `HOME` is unset there is no state file to resolve, so both exit **8** with a single named stderr line (`HOME is unset; cannot resolve ~/.claude/session-state.json`) instead of aborting with bash's `HOME: unbound variable` under `set -u`. `silence-watchdog.sh` and `script-usage-report.sh` use the same code for the same condition on their own `~/.claude` paths.

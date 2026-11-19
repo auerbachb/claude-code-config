@@ -9,7 +9,7 @@
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
-**Closing order for a filing.** Earlier `Created #N: …` links in a batch or chain are intermediate output. After the final issue is filed, finish all report prose and any applicable inline-run offer or deferral. Then print the one canonical summary table (Step 9a) immediately before the final `Created #N: …` link. The table and link are the last two parts of the response: no text goes between them or after the link.
+**Closing order for a filing.** Earlier `Created #N: …` links in a batch or chain are intermediate output. After the final issue is filed, finish all report prose, then the coherence pass for a qualifying batch or chain (Step 9b2), then any applicable inline-run offer or deferral. Then print the one canonical summary table (Step 9a) immediately before the final `Created #N: …` link. The table and link are the last two parts of the response: no text goes between them or after the link.
 
 **Initialize `CHAIN_JSON` for drafting.** The emitted create receipt freezes the selected chain coordinates; recording below restores them so separate shell calls cannot inherit stale coordinates. `create:increment-draft` minted/restored the stable identity before dedup. Every record starts with null so ordinary issues cannot inherit a prior chain object:
 
@@ -38,13 +38,17 @@ ISSUE_TIER=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.tier') || exit 1
 DELIVERS=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.delivers') || exit 1
 EST_BOUND=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.bound') || exit 1
 CHAIN_JSON=$(printf '%s' "$CREATE_RECEIPT" | jq -c '.chain // null') || exit 1
+SET_MEMBER=$(printf '%s' "$CREATE_RECEIPT" | jq -c '.set_member == true') || exit 1
 # ACCEPTED_LABELS holds the labels applied to this issue, one per line
 # (empty if none). Convert to a JSON array — `[]` when there are none.
 LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
 
 set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) then . else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
                       created_at:$ts, origin:"create", status:"open", chip_task_id:null, chain:$chain,
-                      tier:$tier, delivers:$delivers, est_bound:($bound|tonumber)}]
+                      tier:$tier, delivers:$delivers, est_bound:($bound|tonumber),
+                      set_id:(if $member | not then null
+                              elif .active_set != null and .active_set.repository == $repo then .active_set.set_id
+                              else error("set member filed with no open coherence set; reconcile confirmed receipt") end)}]
          | if $chain == null and .create_intent.kind == "new-standalone"
            then if .create_intent.repository != $repo or .active_chain != .create_intent.superseded_chain
                 then error("create intent changed; reconcile confirmed receipt")
@@ -54,11 +58,13 @@ set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) th
            then .active_chain = null | .create_intent = null else . end end' \
   --arg repo "$REPO" --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON" \
-  --argjson chain "$CHAIN_JSON" --arg tier "$ISSUE_TIER" \
+  --argjson chain "$CHAIN_JSON" --argjson member "$SET_MEMBER" --arg tier "$ISSUE_TIER" \
   --arg delivers "$DELIVERS" --arg bound "$EST_BOUND" || exit 1
 ```
 
 **`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 4, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time. Because they are persisted rather than re-derived, a later `/update` that changes the delivered scope or the estimate has to write them back — Step 10 sub-step 6 owns that refresh.
+
+**`set_id` ties the row to its filing.** It is copied from `.active_set`, which `batch:chain` opens before the first member of a batch or chain (Step 6b); a single issue records `null`. Membership comes from the receipt's `set_member` (`create:file`), never from whether a set happens to be open, so a standalone issue filed while an unfinished batch's set is still open is never stamped into it. The coherence pass (Step 9b2) reads its members by this id, never by title, label, or filing time.
 
 **`chain_id` is what makes the chain recoverable.** Sibling detection (Step 4), the queued-successor note (Step 9c), and retraction (Step 12) all resolve membership by matching `chain_id` in `$LOG` — never by theme text or position number, which collide across unrelated chains and cannot survive a re-worded title. It also survives compaction: the log is re-read in Step 1, so a chain interrupted mid-filing is still identifiable afterwards, which in-context memory alone would not give you.
 
@@ -141,13 +147,42 @@ For a **large gap** (e.g. Heavy batch on a Haiku or Sonnet thread), additionally
 
 **Both the tier name and recommended model/effort reach Step 9c** — named in the offer text before the acceptance question. A tier computed here and then dropped is the defect #791 fixed.
 
+### Step 9b2: Read a finished set back before the offer
+
+Run this once, right after the **last** member of a batch or chain has its per-issue summary and decision points and the `/update #N` / `close #N` reminder, and before the Step 9c offer. The last member is the final request of a batch (every increment included, when a request became a chain) or the final position of a standalone chain. With no open set — a single issue — skip this step silently; the gate also does nothing when the issue just recorded is not a member of the open set, so a standalone issue filed while an earlier set is unfinished leaves that set open for its own last member.
+
+<!-- test-anchor: issue-maker-coherence-gate -->
+```bash
+# jq -e: 0 = true, 1 = false; anything else is an unreadable log and stops here.
+OPEN_RC=0
+# Open in this repo AND the row just recorded is one of its members: a standalone
+# issue filed while an unfinished set is open neither closes nor runs that set.
+jq -e --arg repo "$REPO" "$MINE_DEF"'.active_set != null and .active_set.repository == $repo
+  and ([.issues[] | select(same_repo)] | last | .set_id) == .active_set.set_id' "$LOG" >/dev/null || OPEN_RC=$?
+case "$OPEN_RC" in 0|1) ;; *) echo "ERROR: could not read $LOG for the coherence gate; stop before the offer" >&2; exit 1 ;; esac
+if [ "$OPEN_RC" -eq 0 ]; then
+  SET_ID=$(jq -er '.active_set.set_id' "$LOG") || exit 1
+  QUALIFY_RC=0
+  jq -e --arg repo "$REPO" --arg id "$SET_ID" "$MINE_DEF"'.active_set.has_chain or ([.issues[] | select(same_repo and .set_id == $id)] | length) >= 3' "$LOG" >/dev/null || QUALIFY_RC=$?
+  case "$QUALIFY_RC" in
+    0) printf 'COHERENCE=run SET_ID=%s\n' "$SET_ID" ;;
+    1) set_log 'if .active_set.set_id != $id then error("coherence set changed") else
+         .coherence_runs = ((.coherence_runs // []) + [{set_id:$id, repository:$repo, status:"skipped", completed_at:$ts, report:[]}])
+         | .active_set = null end' --arg id "$SET_ID" --arg repo "$REPO" --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" || exit 1 ;;
+    *) echo "ERROR: could not count the coherence set in $LOG; stop before the offer" >&2; exit 1 ;;
+  esac
+fi
+```
+
+`COHERENCE=run` loads `create:coherence` and follows it to the end before Step 9c. Anything else prints nothing here: a one- or two-issue batch with no chain closes its set with a `skipped` receipt and adds no output. A failed receipt write stops before the offer, with the set still open for recovery.
+
 ### Step 9c: Offer the inline run before the closing table
 
 A capture session **offers to run every open issue it filed, right here in this thread, via `/subagent`** — not by emitting a separate-thread chip. Make the offer **once per session**, after the last issue is filed and before the final table (Step 9). No auto-start: execution begins only on an explicit "yes" in chat.
 
 **Repo-wide cap (before the offer, for a single issue or batch).** Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, or `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory. Read the census once per session; the default output line gives `CAP`, `ACTIVE`, and `FREE` together. Offer inline while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope: `hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)`. If the script does not resolve, print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering inline without a repo-wide bound` and offer it anyway (the run applies its own ceiling; withholding it strands the issues). A **non-zero exit** from a script that did resolve means the count could not be read — treat it as `FREE = 0` and defer, naming the read failure rather than a fabricated count.
 
-**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string. It is written through `mine` (the write-helper section), so it reaches only `$REPO`'s session-filed open rows and can never overwrite a token that belongs to another session's batch.
+**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string. It is written through `runnable` — `mine` minus a tracking parent (`create:doc-gate`) — so it reaches only `$REPO`'s session-filed open rows that `/subagent` can run, and can never overwrite a token that belongs to another session's batch. A tracking parent is never offered, never stamped, and never sent in `INLINE_REQUEST` (`/subagent` refuses it as tracking-only); its children are offered like any chain.
 
 <!-- test-anchor: issue-maker-step9c-offer-stamp -->
 ```bash
@@ -156,7 +191,7 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   exit 1
 fi
 OFFER_TOKEN="offer-$(date +%s%N)"
-set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | .delivery_mode = "inline" | (.issues[] | mine | .chip_task_id) = $tok' \
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | .delivery_mode = "inline" | (.issues[] | runnable | .chip_task_id) = $tok' \
   --arg tok "$OFFER_TOKEN" --arg repo "$REPO"
 ```
 
@@ -186,7 +221,7 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   exit 1
 fi
 INLINE_ATTEMPT_ID="inline-$(date -u +%s)-$$-$RANDOM-$RANDOM"
-set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | [.issues[] | mine | .number] as $covered |
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | [.issues[] | runnable | .number] as $covered |
   if ($covered|length)==0 then error("no session issues") else
   .inline_checkpoint = {attempt_id:$attempt,state:"invocation-pending", repository:$repo, issues:$covered} end' --arg repo "$REPO" --arg attempt "$INLINE_ATTEMPT_ID" || exit 1
 printf 'INLINE_REQUEST=%s\n' "$(jq -c '.inline_checkpoint' "$LOG")"

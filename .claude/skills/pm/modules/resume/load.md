@@ -93,6 +93,10 @@ echo "DAY_STATE=${DAY_STATE:-null} DAY_RC=$DAY_RC"
 
 ```
 
+<!-- pm-routing:begin -->
+Epic scope (issue #2545): the stored `.repos[<key>].epic` lives under the same repo block, so `--session-view` hides it too. Read `shared:epic` and run its Restore block here. A typed `/pm epic #N resume` was already bound at Step 0d and wins. A restored epic keeps this resume scoped to its open children, and 1A.4 names it (`Epic: #N — <title> (j of k children open)`). An unreadable epic is a pause, never the whole backlog. A fresh thread continues a half-finished epic from the parent's `## Epic scope` record (issue #2546): Restore's wave check resumes a part-filed wave or files the next one, never re-filing an item the record shows covered.
+<!-- pm-routing:end -->
+
 Run the handoff block in the same shell as the scoped state reads above.
 Resolve handoffs from that scoped PR list. A scoped file takes precedence.
 A flat or linked scoped file must name this repository. Read each payload once

@@ -139,6 +139,16 @@ The Step 6 / `escalate-review.sh` bypass is a separate future extraction candida
 `script-extraction-audit.md` and should be adjudicated independently, not as part of a future
 churn-hotspot re-filing.
 
+## 2026-11-19 update — incremental loading (Issue #2181)
+
+The 2026-11 large-file audit (`large-file-audit-2026-11.md`) found the file at about 13,000 words
+and 13 merged PRs in 60 days, so this KEEP verdict no longer holds for the file layout. Issue
+#2181 split it on the `/pm` loader conventions: `SKILL.md` keeps the Step 0 classifier and every
+always-hold gate, each stoppage kind's dispatch text is a module under `modules/kinds/`, and the
+review lane (Steps 0b–10) is four modules under `modules/review/`. The lane itself is unchanged
+and still runs sequentially across those four modules. The Step 6 observation above now applies
+to `modules/review/respond.md`. Slice record and parity: `incremental-skill-loading.md` §/go-on slice.
+
 ## Related
 
 - PR #763 / Issue #757 — diff-survival guard: Step 1 feature addition (guard rebase/conflict
