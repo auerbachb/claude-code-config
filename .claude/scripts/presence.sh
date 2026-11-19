@@ -38,8 +38,10 @@
 #                                   10 it ran out but another thread holds the claim (or the write was refused,
 #                                   which the next evaluation retries); 11 the claim could not be written, or a closing-deadline
 #                                   correction is still pending (nothing is claimed until it lands)
-#   presence.sh return [--no-dialog]  the operator spoke after a window ran out: end away handling, record a
+#   presence.sh return [--no-dialog] [--early]  the operator spoke after a window ran out: end away handling, record a
 #                                   pending dialog. Exit 0 returned, 1 nothing to return from, 10 lost the race, 11 the write failed (or a closing correction is pending)
+#                                   --early (issue #2541, /back): also end an away window that has NOT run out yet;
+#                                   the operator said he is back, so it is recorded as a return (returned_epoch)
 #   presence.sh relist              a return winner stopped listing (the dialog is still "listing" after two
 #                                   minutes): take over the return and list. Exit 0 taken, 10 another took it, 1 none stale, 11 the write failed
 #   presence.sh dialog-claim        claim the pending post-return dialog once, globally. Exit 0 claimed, else 1
@@ -534,8 +536,10 @@ eval_json() {
        else null end) as $rec
     | {lapse: $lp,
        claimed: (($lp != null) and ($p.expiry_claim | type == "object") and ($p.expiry_claim.generation == $lp.generation)),
+       away: decide($p; $u; $now).away,
        claim: ($p.expiry_claim // null), ps: ($p.state // null), pt: ($p.declared_epoch // null),
        ut: ($u.since_epoch // null), ua: (if ($u | has("active")) then $u.active else null end), rec: $rec,
+       pu: ($p.until_epoch // null), uu: ($u.until_epoch // null),
        dlg: ($p.return.dialog? // null), dlg_gen: ($p.return.generation? // null)}' "$STATE_FILE" 2>/dev/null ||
     printf '{"lapse":null,"rec":null}\n'
 }
@@ -658,12 +662,14 @@ cmd_expire() {
 # The operator spoke after a window ran out: away handling ends, and the presence dialog is owed.
 # One compare-and-set per window generation, so only one session handles each return. Acts only on
 # a LAPSED window: a message inside a window the operator declared and that is still running
-# changes nothing (he may be writing from his phone while away).
+# changes nothing (he may be writing from his phone while away). --early is the exception: /back is
+# the operator saying outright that he is back, so a live away window ends too (issue #2541).
 cmd_return() {
-  local nodialog=0 e lp n ret rc=0
+  local nodialog=0 early=0 e lp n ret rc=0 guard
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-dialog) nodialog=1; shift ;;
+      --early) early=1; shift ;;
       *) die_usage "unknown argument to return: $1" ;;
     esac
   done
@@ -671,7 +677,16 @@ cmd_return() {
   reconcile_closing || return 11   # a pending correction may mean the window has not really lapsed
   get_eval; e="$EVAL"
   lp=$(jf "$e" '.lapse')
-  [ -n "$lp" ] && [ "$lp" != null ] || return 1
+  if [ -n "$lp" ] && [ "$lp" != null ]; then
+    guard=(--expect-at "$(deadline_path "$lp")" "$(jf "$lp" '.until')")
+  elif [ "$early" -eq 1 ] && [ "$(jr "$e" '.away')" = true ]; then
+    # A live away window: guard both stored ends from the same snapshot the other guards come
+    # from, so a re-declaration meanwhile (even in the same second) makes this lose.
+    guard=(--expect-at ".presence.until_epoch" "$(jf "$e" '.pu')"
+           --expect-at ".unattended.until_epoch" "$(jf "$e" '.uu')")
+  else
+    return 1
+  fi
   n=$(now)
   # dialog starts as "listing": the winner is still listing the saved questions, and no other
   # hook may ask the dialog until it says so (dialog-ready).
@@ -680,7 +695,7 @@ cmd_return() {
     --expect-at ".presence.declared_epoch" "$(jf "$e" '.pt')" \
     --expect-at ".unattended.since_epoch" "$(jf "$e" '.ut')" \
     --expect-at ".unattended.active" "$(jf "$e" '.ua')" \
-    --expect-at "$(deadline_path "$lp")" "$(jf "$lp" '.until')" \
+    "${guard[@]}" \
     --set ".presence.until_epoch=null" --set ".presence.machine_on=true" --set ".presence.closing_repo=null" \
     --set ".presence.returned_epoch=$n" --set ".presence.return=$ret" \
     --set ".unattended.active=false" >/dev/null 2>&1 || rc=$?

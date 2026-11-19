@@ -6,9 +6,9 @@
 
 ## Emission gate — may this chip exist?
 
-**Default: no.** In a thread that can execute, a discovered subagent-fit follow-up is **filed as an issue, then queued or launched inline** through this thread's own subagent pipeline under the existing ceiling and repo-wide cap, within `CLAUDE.md` "Thread scope".
+**Default: no.** In a thread that can execute, a discovered subagent-fit follow-up is **filed as an issue, then queued or launched inline** through this thread's own subagent pipeline under the ceiling and repo-wide cap, within `CLAUDE.md` "Thread scope".
 
-**Ad-hoc `spawn_task` chips are barred.** The legitimate cases are the ones `chip-launching.md` "PM-context inline gate" already enumerates — a named `/subagent` Step 4 criterion-1/2 verdict, an explicit user request for a hand-off or prompt, the capture-mode pre-acceptance offer — each routing through a canonical emitter below.
+**Ad-hoc `spawn_task` chips are barred.** The legitimate cases are those `chip-launching.md` "PM-context inline gate" enumerates — a named `/subagent` Step 4 criterion-1/2 verdict, an explicit user request for a hand-off or prompt, the capture-mode offer (and its epic-parent `/pm epic` thread) — each via a canonical emitter below.
 
 **Monitor mode never justifies a chip.** Spawning or queueing subagents for discovered work **is** orchestration — permitted and expected in dedicated monitor mode (`monitor-mode.md`; refill per `/pm` Step 3.4). "I can't do substantive work here" routes work inline, never to a chip.
 

@@ -431,6 +431,24 @@ P $owner2 ask --afk; check "ask --afk: a second thread still loses the one-asker
 P $owner1 release --generation "$tok"; check "ask --afk: claim released" "$rc" 0
 P $owner1 ask --bogus; check "ask: unknown flag is a usage error" "$rc" 2
 
+printf '== return --early (issue #2541, /back): a live away window ends when he says he is back\n'
+P $owner1 set away --by operator-message --for 2h; check "early: away set" "$rc" 0
+P $owner1 return; check "plain return inside a live window: nothing to return from" "$rc" 1
+P $owner2 status --json; check "plain return left him away" "$(field .state)" away
+check "early: the away window is still open before /back" "$(jq -r '(.presence.until_epoch // 0) > now' "$HOME/.claude/session-state.json")" true
+P $owner1 return --bogus; check "return: an unknown flag exits 2 naming it (what /back reads as older installed scripts)" "$rc:$(grep -c 'unknown argument to return: --bogus' "$tmp/err" | tr -d ' ')" "2:1"
+P $owner1 return --early --no-dialog; check "return --early: returned" "$rc" 0
+P $owner2 status --json; check "after return --early: no longer away" "$(field .away)" false
+P $owner2 is-away; check "after return --early: is-away false" "$rc" 1
+check "return --early recorded as a return" "$(jq -r '.presence.returned_epoch | type' "$HOME/.claude/session-state.json")" number
+check "return --early ended unattended mode" "$(jq -r '.unattended.active' "$HOME/.claude/session-state.json")" false
+P $owner1 return --early; check "return --early when already here: nothing to return from" "$rc" 1
+P $owner1 ask; check "after return --early: the how-long dialog can be asked" "$rc" 0
+P $owner1 release --generation "$out" >/dev/null
+P $owner1 set here --by operator-message --for 1h >/dev/null
+P $owner1 return --early; check "return --early while here: nothing to return from" "$rc" 1
+P $owner2 status --json; check "return --early never ends a here window" "$(field .state)" here
+
 printf '== skill text: an "I'"'"'ll do it later" answer becomes a human task (issue #2562)\n'
 pskill=$(tr '\n' ' ' < "$root/.claude/skills/presence/SKILL.md" | tr -s ' ')
 askill=$(tr '\n' ' ' < "$root/.claude/skills/afk/SKILL.md" | tr -s ' ')

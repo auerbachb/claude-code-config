@@ -188,6 +188,7 @@ check "automated prompt after the end: the notice was already claimed, nothing m
 OUT=$(prompt_payload "$REPO_A" "I'm back" | "$DIGEST")
 RCTX=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')
 has "the operator's message returns him and lists what was saved since" "$RCTX" "U-5: Which SMS provider"
+has "the return notice points him at /back" "$RCTX" "/back gives the whole return"
 check "after the return: away handling has ended" "$(U is-active; echo $?)" "1"
 OUT=$(ask_payload "$REPO_A" | "$GUARD")
 check "after the return: the menu renders" "$OUT" ""
@@ -321,6 +322,10 @@ has "list: its answer" "$LA" "Answer: us-west"
 has "list: the dismissed one with its reason" "$LA" "Dismissed: moot"
 has "list --all: spans repos and labels them" "$(UC list --all)" "[acme/sprockets] Recorded questions (5):"
 has "list --all: includes another repo's questions" "$(UC list --all)" "[acme/widgets]"
+LJ=$(UC list --json)
+check "list --json: one array of every question" "$(printf '%s' "$LJ" | jq -r 'length')" "5"
+check "list --json: status and repo per question" "$(printf '%s' "$LJ" | jq -r '.[0] | [.id, .status, .repo] | join("|")')" "U-1|answered|acme/sprockets"
+check "list --all --json: spans repos" "$(UC list --all --json | jq -r '[.[].repo] | unique | (index("acme/widgets") != null and index("acme/sprockets") != null)')" "true"
 
 printf '== issue #2352: records written before this change\n'
 REPO_D="$TMP/repo-d"; git init -q "$REPO_D"; git -C "$REPO_D" remote add origin https://github.com/acme/legacy.git
